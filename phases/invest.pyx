@@ -558,13 +558,31 @@ cdef class InvestPhase:
     # =========================================================================
 
     cdef void _update_presidency(self, GameState state, int corp_id) noexcept:
-        """Update presidency after share change."""
+        """
+        Update presidency after share change.
+
+        Per RULES.md: "If the player has become the current owner of more corporation
+        shares than any other player, he now becomes the president of that corporation."
+
+        Key rule: Presidency only transfers when someone has STRICTLY MORE shares than
+        the current president. If tied, the current president keeps the presidency.
+        """
         cdef int i
         cdef int max_shares = 0
-        cdef int president = -1
+        cdef int current_president = -1
+        cdef int new_president = -1
         cdef float* player
         cdef float* corp
         cdef int shares
+        cdef int current_president_shares = 0
+
+        # First find the current president and all share counts
+        for i in range(self._num_players):
+            player = self._get_player(state, i)
+            shares = get_player_shares(player, &self._po, corp_id)
+            if player[self._po.is_president + corp_id] == 1.0:
+                current_president = i
+                current_president_shares = shares
 
         # Find player with most shares
         for i in range(self._num_players):
@@ -572,12 +590,20 @@ cdef class InvestPhase:
             shares = get_player_shares(player, &self._po, corp_id)
             if shares > max_shares:
                 max_shares = shares
-                president = i
+                new_president = i
+
+        # Check if presidency should transfer:
+        # - If no current president, anyone with shares becomes president
+        # - If tied with current president, current president keeps it
+        # - Only transfer if someone has strictly MORE shares
+        if current_president >= 0 and max_shares <= current_president_shares:
+            # Current president keeps it (tie or still has most)
+            new_president = current_president
 
         # Update presidency flags
         for i in range(self._num_players):
             player = self._get_player(state, i)
-            if i == president and max_shares > 0:
+            if i == new_president and max_shares > 0:
                 player[self._po.is_president + corp_id] = 1.0
             else:
                 player[self._po.is_president + corp_id] = 0.0
