@@ -16,7 +16,7 @@ from data import (
     COMPANY_NAME_TO_ID, CORP_NAME_TO_ID,
     py_get_company_face_value, py_get_company_low_price, py_get_company_high_price,
 )
-from conftest import debug_print
+from debug_utils import debug_print
 
 # =============================================================================
 # CONSTANTS
@@ -637,6 +637,26 @@ class GameReplayer:
         self.action_idx = 0
         self.current_round = 1
 
+        # Per-player auto-pass flags (set by program_share_pass actions)
+        # Maps player_index -> bool
+        self.player_auto_pass = {i: False for i in range(len(self.players))}
+
+    def clear_auto_pass(self):
+        """Clear all auto-pass flags (called at phase transitions)."""
+        for i in range(len(self.players)):
+            self.player_auto_pass[i] = False
+
+    def set_auto_pass(self, player_entity):
+        """Set auto-pass flag for a player given their 18xx entity ID."""
+        player_idx = self.player_id_to_index.get(player_entity)
+        if player_idx is not None:
+            self.player_auto_pass[player_idx] = True
+            debug_print(f"Auto-pass enabled for player {player_idx} ({self.players[player_idx]['name']})")
+
+    def is_auto_pass(self, player_idx):
+        """Check if a player has auto-pass enabled."""
+        return self.player_auto_pass.get(player_idx, False)
+
     def setup_game(self):
         """Initialize game state."""
         num_players = len(self.players)
@@ -700,26 +720,6 @@ class GameReplayer:
         # Action not valid - this indicates a translation error
         return None
 
-    def find_action_for_player(self, player_id, action_type, lookahead=10):
-        """
-        Find an action of the given type for the given player in the action queue.
-
-        Used to handle auto-passes that may be out of turn order.
-
-        Returns (action_index, action) or (None, None) if not found.
-        """
-        player_entity = self.players[player_id]['id']  # Get 18xx.games player ID
-
-        for offset in range(lookahead):
-            idx = self.action_idx + offset
-            if idx >= len(self.actions):
-                break
-            action = self.actions[idx]
-            if action.get('type') == action_type and action.get('entity') == player_entity:
-                return idx, action
-
-        return None, None
-
     def translate_next_action(self):
         """
         Translate the next 18xx.games action to an engine action index.
@@ -732,45 +732,49 @@ class GameReplayer:
         action = self.actions[self.action_idx]
         phase = self.state.phase
 
+        # Handle program_share_pass - set auto-pass flag for the player
+        if action.get('type') == 'program_share_pass':
+            self.set_auto_pass(action.get('entity'))
+            self.action_idx += 1
+            return None, True  # Consumed, continue processing
+
         # Skip actions that don't require engine input
-        skip_types = {'program_share_pass', 'undo', 'redo'}
+        skip_types = {'undo', 'redo'}
         if action.get('type') in skip_types:
             self.action_idx += 1
             return None, True
 
         try:
             if phase == PHASE_INVEST:
-                # Check if the action entity matches the active player
                 active_player = self.get_active_player()
                 active_entity = self.players[active_player]['id']
                 action_entity = action.get('entity')
 
-                # If this is a player action but wrong player, look for correct one
-                if action.get('entity_type') == 'player' and action_entity != active_entity:
-                    # Active player doesn't match action - auto-pass this player
-                    # Don't modify self.actions, just return a pass without consuming
-                    return self.layout['pass_invest'], False  # Don't consume
+                # If active player has auto-pass enabled, pass without consuming action
+                if self.is_auto_pass(active_player):
+                    return self.layout['pass_invest'], False
 
-                # If the next action is a company action (IPO phase), auto-pass
+                # If the next action is for a different player or a company, auto-pass
+                if action.get('entity_type') == 'player' and action_entity != active_entity:
+                    return self.layout['pass_invest'], False  # Don't consume
                 if action.get('entity_type') == 'company':
-                    # The engine expects a player action but we have a company action
-                    # This means all player passes should have happened - auto-pass
-                    return self.layout['pass_invest'], False  # False = don't consume the action
+                    return self.layout['pass_invest'], False  # Don't consume
 
                 engine_action = translate_invest_action(
                     self.state, action, active_player, self.layout
                 )
 
             elif phase == PHASE_BID_IN_AUCTION:
-                # Check for auction phase actions
                 active_player = self.get_active_player()
                 active_entity = self.players[active_player]['id']
                 action_entity = action.get('entity')
 
+                # If active player has auto-pass enabled, leave auction
+                if self.is_auto_pass(active_player):
+                    return self.layout['leave_auction'], False
+
+                # If action is for a different player, leave auction
                 if action.get('entity_type') == 'player' and action_entity != active_entity:
-                    # Active player doesn't match the action entity
-                    # This usually means the active player has auto-pass (program_share_pass)
-                    # Don't search ahead - just auto-generate leave_auction
                     return self.layout['leave_auction'], False  # Don't consume
 
                 engine_action = translate_auction_action(self.state, action, self.layout)
@@ -899,6 +903,10 @@ class GameReplayer:
 
             # Check for phase transition
             if phase != last_phase or round_num != last_round:
+                # Clear auto-pass flags when entering a new INVEST phase
+                if phase == PHASE_INVEST and last_phase != PHASE_INVEST:
+                    self.clear_auto_pass()
+
                 # Validate at phase boundaries
                 if last_phase is not None:
                     phase_code = {v: k for k, v in PHASE_CODE_MAP.items()}.get(last_phase)

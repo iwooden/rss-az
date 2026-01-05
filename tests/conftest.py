@@ -1,10 +1,13 @@
 """Pytest configuration and fixtures for debug support."""
 
 import os
+import sys
 import pytest
 
-# Module-level debug flag that can be checked without fixtures
-_debug_enabled = False
+# Ensure the tests directory is in the path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from debug_utils import set_debug_enabled, is_debug_enabled, debug_print
 
 
 def pytest_addoption(parser):
@@ -19,19 +22,7 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     """Set module-level debug flag based on command line option."""
-    global _debug_enabled
-    _debug_enabled = config.getoption("--game-debug", default=False)
-
-
-def is_debug_enabled():
-    """Check if debug mode is enabled (via --game-debug flag or RSS_DEBUG env var)."""
-    return _debug_enabled or os.environ.get("RSS_DEBUG", "").lower() in ("1", "true", "yes")
-
-
-def debug_print(*args, **kwargs):
-    """Print only if debug mode is enabled."""
-    if is_debug_enabled():
-        print(*args, **kwargs)
+    set_debug_enabled(config.getoption("--game-debug", default=False))
 
 
 @pytest.fixture
