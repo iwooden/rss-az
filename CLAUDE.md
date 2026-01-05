@@ -20,6 +20,10 @@ pytest tests/test_invest.py -v
 
 # Clean build artifacts (.c, .so, .html, build/, *.egg-info)
 python setup.py clean
+
+# Benchmark: measure games per minute (requires build first)
+python setup.py benchmark                          # 1000 games, 3 players
+python setup.py benchmark --num-games=5000 --num-players=6
 ```
 
 ## Architecture
