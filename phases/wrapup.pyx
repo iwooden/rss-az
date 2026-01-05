@@ -31,10 +31,12 @@ cdef struct PlayerSortKey:
     int old_order
 
 
-cdef void sort_players_by_cash(GameState state) noexcept:
+cdef int sort_players_by_cash(GameState state) noexcept:
     """
     Sort players by cash (descending), ties broken by old turn order.
     Updates the turn_order one-hot for each player.
+
+    Returns: player_id of the first player (turn_order=0) after sorting.
     """
     cdef int num_players = state._num_players
     cdef PlayerSortKey[6] keys  # Max 6 players
@@ -64,6 +66,9 @@ cdef void sort_players_by_cash(GameState state) noexcept:
     # Update turn order for each player
     for i in range(num_players):
         state.set_player_turn_order(keys[i].player_id, i)
+
+    # Return the player_id with turn_order=0 (first player)
+    return keys[0].player_id
 
 
 # =============================================================================
@@ -132,11 +137,13 @@ cdef class WrapUpPhase:
 
     cpdef void execute(self, GameState state):
         """Execute the entire Wrap Up phase."""
+        cdef int first_player_id
+
         if state.get_phase() != PHASE_WRAP_UP:
             raise ValueError("Not in Wrap Up phase")
 
-        # 1. Determine new player order
-        sort_players_by_cash(state)
+        # 1. Determine new player order (returns player_id of first player)
+        first_player_id = sort_players_by_cash(state)
 
         # 2. Foreign Investor buys companies
         fi_buy_companies(state)
@@ -146,7 +153,8 @@ cdef class WrapUpPhase:
 
         # 4. Transition to Acquisition phase
         state.set_phase(PHASE_ACQUISITION)
-        state._set_active_player(0)
+        state.clear_acq_corps_done()  # Reset for new acquisition round
+        state._set_active_player(first_player_id)
 
 
 # =============================================================================

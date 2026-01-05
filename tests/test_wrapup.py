@@ -70,9 +70,7 @@ class TestPlayerOrderSorting:
         builder.set_player_cash(2, 30)
 
         # Initial order: 0, 1, 2
-        builder.set_player_turn_order(0, 0)
-        builder.set_player_turn_order(1, 1)
-        builder.set_player_turn_order(2, 2)
+        builder.init_default_turn_order()
 
         handler.execute(state)
 
@@ -134,9 +132,7 @@ class TestForeignInvestorBuying:
         builder.set_company_for_auction(0, True)  # Face value 1
         builder.set_company_for_auction(2, True)  # Face value 5
 
-        builder.set_player_turn_order(0, 0)
-        builder.set_player_turn_order(1, 1)
-        builder.set_player_turn_order(2, 2)
+        builder.init_default_turn_order()
 
         handler.execute(state)
 
@@ -157,9 +153,7 @@ class TestForeignInvestorBuying:
         builder.set_company_for_auction(1, True)
         builder.set_company_for_auction(2, True)
 
-        builder.set_player_turn_order(0, 0)
-        builder.set_player_turn_order(1, 1)
-        builder.set_player_turn_order(2, 2)
+        builder.init_default_turn_order()
 
         handler.execute(state)
 
@@ -175,9 +169,7 @@ class TestForeignInvestorBuying:
         # Company 2 (face=5) available - too expensive
         builder.set_company_for_auction(2, True)
 
-        builder.set_player_turn_order(0, 0)
-        builder.set_player_turn_order(1, 1)
-        builder.set_player_turn_order(2, 2)
+        builder.init_default_turn_order()
 
         handler.execute(state)
 
@@ -190,9 +182,7 @@ class TestForeignInvestorBuying:
         builder.set_company_for_auction(0, True)  # Face value 1
         builder.setup_deck([10, 11])  # Company 10 on top
 
-        builder.set_player_turn_order(0, 0)
-        builder.set_player_turn_order(1, 1)
-        builder.set_player_turn_order(2, 2)
+        builder.init_default_turn_order()
 
         handler.execute(state)
 
@@ -214,9 +204,7 @@ class TestRevealedToAuction:
         builder.set_company_revealed(5, True)
         builder.set_company_revealed(6, True)
 
-        builder.set_player_turn_order(0, 0)
-        builder.set_player_turn_order(1, 1)
-        builder.set_player_turn_order(2, 2)
+        builder.init_default_turn_order()
 
         handler.execute(state)
 
@@ -236,9 +224,7 @@ class TestPhaseTransition:
     """Test phase transition to Acquisition."""
 
     def test_transitions_to_acquisition(self, state, handler, builder):
-        builder.set_player_turn_order(0, 0)
-        builder.set_player_turn_order(1, 1)
-        builder.set_player_turn_order(2, 2)
+        builder.init_default_turn_order()
 
         handler.execute(state)
 
@@ -247,9 +233,7 @@ class TestPhaseTransition:
     def test_active_player_reset(self, state, handler, builder):
         state.active_player = 2
 
-        builder.set_player_turn_order(0, 0)
-        builder.set_player_turn_order(1, 1)
-        builder.set_player_turn_order(2, 2)
+        builder.init_default_turn_order()
 
         handler.execute(state)
 
@@ -268,9 +252,7 @@ class TestConvenienceFunctions:
         builder.set_player_cash(1, 20)
         builder.set_player_cash(2, 15)
 
-        builder.set_player_turn_order(0, 0)
-        builder.set_player_turn_order(1, 1)
-        builder.set_player_turn_order(2, 2)
+        builder.init_default_turn_order()
 
         handle_wrap_up(state)
 

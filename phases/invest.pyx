@@ -590,13 +590,16 @@ cdef class InvestPhase:
             set_corp_in_receivership(corp, &self._co, False)
 
     cdef void _advance_auction_player(self, GameState state) noexcept:
-        """Advance to next player still in auction."""
+        """Advance to next player still in auction (using turn order)."""
         cdef int current = self._get_active_player(state)
-        cdef int next_player = current
+        cdef int current_position = state.get_player_turn_order(current)
+        cdef int next_position = current_position
+        cdef int next_player
         cdef int checked = 0
 
         while checked < self._num_players:
-            next_player = (next_player + 1) % self._num_players
+            next_position = (next_position + 1) % self._num_players
+            next_player = state.get_player_at_turn_order(next_position)
             checked += 1
             if not state.get_auction_passed(next_player):
                 break
@@ -634,8 +637,8 @@ cdef class InvestPhase:
         cdef float* auction_companies = self._get_auction_companies(state)
         remove_company_from_auction(auction_companies, company_id)
 
-        # Draw new company to auction (if deck not empty)
-        self._draw_company_to_auction(state)
+        # Draw new company to revealed pile (becomes available in Wrap-up phase)
+        state.draw_company_to_revealed()
 
         # Clear auction state
         state.clear_auction_state()
@@ -646,8 +649,11 @@ cdef class InvestPhase:
         # Clear consecutive passes (action was taken)
         state.clear_consecutive_passes()
 
-        # Next player is after the auction STARTER (not winner)
-        state._set_active_player((starter + 1) % self._num_players)
+        # Next player is after the auction STARTER (not winner) in turn order
+        cdef int starter_position = state.get_player_turn_order(starter)
+        cdef int next_position = (starter_position + 1) % self._num_players
+        cdef int next_player = state.get_player_at_turn_order(next_position)
+        state._set_active_player(next_player)
 
     cdef void _draw_company_to_auction(self, GameState state) noexcept:
         """Draw top company from deck to auction pool."""

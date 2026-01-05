@@ -34,6 +34,10 @@ cdef class GameDriver:
     cdef int _num_players
     cdef ActionLayout _layout
 
+    # Debug mode
+    cdef public bint debug
+    cdef public list _history
+
     # Cached phase handlers
     cdef InvestPhase _invest
     cdef AcquisitionPhase _acquisition
@@ -47,6 +51,13 @@ cdef class GameDriver:
 
     # Main entry point
     cpdef void apply_action(self, GameState state, int action_idx)
+
+    # Debug methods
+    cpdef void enable_debug(self)
+    cpdef void disable_debug(self)
+    cpdef void clear_history(self)
+    cpdef list get_history(self)
+    cpdef str dump_history(self)
 
     # Internal dispatch methods
     cdef void _dispatch_action(self, GameState state, ActionInfo* info) noexcept

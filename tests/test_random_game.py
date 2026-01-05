@@ -285,6 +285,12 @@ def play_random_game(num_players, seed=None, max_steps=10000):
         context = f"Step {step}, Phase {state.phase}, Turn {state.turn_number}"
         assert len(valid_indices) > 0, f"No valid actions but game not over. {context}"
 
+        # IMPORTANT: Must have MORE than one valid action
+        # If there's only one valid action, the engine should auto-apply it
+        # instead of asking the NN to "choose" a forced move
+        assert len(valid_indices) > 1, \
+            f"Only one valid action ({valid_indices[0]}) - engine should auto-apply forced moves. {context}"
+
         # Choose random action
         action = np.random.choice(valid_indices)
 

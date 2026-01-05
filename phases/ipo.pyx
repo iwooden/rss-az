@@ -391,6 +391,7 @@ cdef class IPOPhase:
         """Transition to INVEST phase."""
         cdef float* turn = self._get_turn(state)
         cdef int i
+        cdef int first_player
 
         # Clear IPO state
         for i in range(NUM_COMPANIES):
@@ -400,8 +401,9 @@ cdef class IPOPhase:
         # Set phase to INVEST
         state.set_phase(PHASE_INVEST)
 
-        # Set active player to first player in turn order
-        state._set_active_player(0)
+        # Set active player to first player in turn order (position 0)
+        first_player = state.get_player_at_turn_order(0)
+        state._set_active_player(first_player)
 
 
 # =============================================================================

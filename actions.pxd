@@ -107,3 +107,6 @@ cdef int get_total_actions_for_players(int num_players) noexcept nogil
 
 # Action decoding
 cdef ActionInfo decode_action(ActionLayout* layout, int action_idx) noexcept nogil
+
+# Forced action check (returns single valid action if only one exists)
+cpdef tuple get_forced_action(GameState state)

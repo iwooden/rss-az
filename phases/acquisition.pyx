@@ -256,6 +256,8 @@ cdef bint find_next_general_offer(GameState state, int* out_corp, int* out_compa
             continue
         if state.is_corp_in_receivership(corp_id):
             continue  # Receivership corps don't do general acquisitions
+        if state.has_corp_done_acquisition(corp_id):
+            continue  # Already had turn this phase
         corp_order[corp_count] = corp_id
         corp_prices[corp_count] = state.get_corp_share_price(corp_id)
         corp_count += 1
@@ -411,6 +413,8 @@ cdef class AcquisitionPhase:
                 execute_fi_purchase(state, corp_id, company_id)
             # else: pass, do nothing
         else:
+            # Mark corp as done with acquisition this phase
+            state.set_corp_done_acquisition(corp_id)
             if action != ACQ_ACTION_PASS:
                 # Execute purchase at given price offset
                 price = get_company_low_price(company_id) + action

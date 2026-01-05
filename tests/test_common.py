@@ -189,6 +189,18 @@ class StateBuilder:
         self._arr[offset + position] = 1.0
         return self
 
+    def init_default_turn_order(self):
+        """
+        Initialize default turn order (player i at position i).
+
+        This is the initial turn order at game start. During gameplay,
+        turn order is updated in WRAP_UP phase based on player cash.
+        Turn order is ONLY used in INVEST phase.
+        """
+        for i in range(self._num_players):
+            self.set_player_turn_order(i, i)
+        return self
+
     def get_player_turn_order(self, player_id: int) -> int:
         """Get player's turn order position."""
         offset = self._player_offset(player_id) + self.P_TURN_ORDER

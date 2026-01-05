@@ -499,6 +499,56 @@ cpdef object get_valid_action_mask(GameState state):
     return mask
 
 
+cpdef tuple get_forced_action(GameState state):
+    """
+    Check if there's only one valid action (forced move).
+
+    Returns:
+        (action_idx, True) if exactly one valid action (forced)
+        (-1, False) if zero or multiple valid actions
+    """
+    cdef int num_players = state._num_players
+    cdef ActionLayout layout = compute_action_layout(num_players)
+    cdef int total_actions = layout.total_size
+    cdef cnp.ndarray mask = np.zeros(total_actions, dtype=np.float32)
+    cdef float* mask_ptr = <float*>cnp.PyArray_DATA(mask)
+    cdef int phase = state.get_phase()
+    cdef int i, count, single_action
+
+    # Fill the mask based on phase
+    if phase == PHASE_INVEST:
+        _fill_invest_mask(state, &layout, mask_ptr)
+    elif phase == PHASE_BID_IN_AUCTION:
+        _fill_bid_mask(state, &layout, mask_ptr)
+    elif phase == PHASE_ACQUISITION:
+        _fill_acquisition_mask(state, &layout, mask_ptr)
+    elif phase == PHASE_CLOSING:
+        _fill_closing_mask(state, &layout, mask_ptr)
+    elif phase == PHASE_DIVIDENDS:
+        _fill_dividends_mask(state, &layout, mask_ptr)
+    elif phase == PHASE_ISSUE_SHARES:
+        _fill_issue_mask(state, &layout, mask_ptr)
+    elif phase == PHASE_IPO:
+        _fill_ipo_mask(state, &layout, mask_ptr)
+    else:
+        return (-1, False)
+
+    # Count valid actions
+    count = 0
+    single_action = -1
+    for i in range(total_actions):
+        if mask_ptr[i] == 1.0:
+            count += 1
+            if count == 1:
+                single_action = i
+            elif count > 1:
+                return (-1, False)  # Multiple valid actions
+
+    if count == 1:
+        return (single_action, True)
+    return (-1, False)
+
+
 cpdef tuple decode_action_py(int action_idx, int num_players):
     """
     Python-accessible action decoding.

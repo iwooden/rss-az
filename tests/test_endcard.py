@@ -80,9 +80,7 @@ class TestPlayerNetWorth:
         builder.set_player_net_worth(0, 100)
         builder.set_player_net_worth(1, 150)
         builder.set_player_net_worth(2, 150)  # Tie with player 1
-        builder.set_player_turn_order(0, 0)
-        builder.set_player_turn_order(1, 1)
-        builder.set_player_turn_order(2, 2)
+        builder.init_default_turn_order()
 
         scores = state.get_final_scores()
 

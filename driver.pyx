@@ -16,7 +16,7 @@ from state cimport (
 )
 from actions cimport (
     ActionLayout, ActionInfo,
-    compute_action_layout, decode_action,
+    compute_action_layout, decode_action, get_forced_action,
     ACTION_PASS, ACTION_AUCTION, ACTION_BUY_SHARE, ACTION_SELL_SHARE,
     ACTION_LEAVE_AUCTION, ACTION_RAISE_BID,
     ACTION_ACQ_PRICE, ACTION_ACQ_FI_HIGH, ACTION_ACQ_FI_FACE,
@@ -56,6 +56,10 @@ cdef class GameDriver:
         self._num_players = num_players
         self._layout = compute_action_layout(num_players)
 
+        # Debug mode - disabled by default
+        self.debug = False
+        self._history = []
+
         # Create phase handlers
         self._invest = InvestPhase(num_players)
         self._acquisition = AcquisitionPhase(num_players)
@@ -66,6 +70,54 @@ cdef class GameDriver:
         self._wrapup = WrapUpPhase(num_players)
         self._income = IncomePhase(num_players)
         self._endcard = EndCardPhase(num_players)
+
+    # =========================================================================
+    # DEBUG METHODS
+    # =========================================================================
+
+    cpdef void enable_debug(self):
+        """Enable debug mode - starts recording action history."""
+        self.debug = True
+        self._history = []
+
+    cpdef void disable_debug(self):
+        """Disable debug mode."""
+        self.debug = False
+
+    cpdef void clear_history(self):
+        """Clear the recorded action history."""
+        self._history = []
+
+    cpdef list get_history(self):
+        """Get the recorded action history as a list of dicts."""
+        return self._history
+
+    cpdef str dump_history(self):
+        """Format the action history as a human-readable string."""
+        cdef list lines = []
+        cdef int i
+        cdef dict entry
+
+        if not self._history:
+            return "No actions recorded."
+
+        lines.append(f"=== Action History ({len(self._history)} entries) ===")
+        for i, entry in enumerate(self._history):
+            lines.append(f"\n[{i}] {entry.get('event', 'unknown')}")
+            if 'phase' in entry:
+                lines.append(f"    Phase: {_phase_name(entry['phase'])}")
+            if 'action_idx' in entry:
+                lines.append(f"    Action: {entry['action_idx']}")
+            if 'action_type' in entry:
+                lines.append(f"    Type: {_action_type_name(entry['action_type'])}")
+            if 'details' in entry:
+                lines.append(f"    Details: {entry['details']}")
+            if 'current_player' in entry:
+                lines.append(f"    Current Player: {entry['current_player']}")
+            if 'from_phase' in entry and 'to_phase' in entry:
+                lines.append(f"    Transition: {_phase_name(entry['from_phase'])} -> {_phase_name(entry['to_phase'])}")
+
+        return "\n".join(lines)
 
     # =========================================================================
     # MAIN ENTRY POINT
@@ -85,12 +137,36 @@ cdef class GameDriver:
         3. Runs any automatic phases until player input needed
         """
         cdef ActionInfo info = decode_action(&self._layout, action_idx)
+        cdef int phase_before = -1
+        cdef int phase_after = -1
+
+        # Record action if debug enabled
+        if self.debug:
+            phase_before = state.get_phase()
+            self._history.append({
+                'event': 'apply_action',
+                'action_idx': action_idx,
+                'phase': phase_before,
+                'action_type': info.action_type,
+                'current_player': state._get_active_player(),
+                'details': _format_action_details(&info),
+            })
 
         # Dispatch the action
         self._dispatch_action(state, &info)
 
         # Run automatic phases
         self._run_automatic_phases(state)
+
+        # Record phase transition if debug enabled
+        if self.debug:
+            phase_after = state.get_phase()
+            if phase_after != phase_before:
+                self._history.append({
+                    'event': 'phase_transition',
+                    'from_phase': phase_before,
+                    'to_phase': phase_after,
+                })
 
     # =========================================================================
     # ACTION DISPATCH
@@ -218,7 +294,8 @@ cdef class GameDriver:
 
     cdef void _run_automatic_phases(self, GameState state) noexcept:
         """
-        Run automatic phases until reaching a phase that requires player input.
+        Run automatic phases until reaching a phase that requires player input
+        AND there are multiple valid actions to choose from.
 
         Automatic phases:
         - WRAP_UP: Player order + FI buys + reveal companies
@@ -231,10 +308,15 @@ cdef class GameDriver:
         - DIVIDENDS: advance_to_next_corp (auto-pays for receivership)
         - ISSUE_SHARES: advance_to_next_corp (auto-issues for receivership)
         - IPO: advance_to_next_company (skips unaffordable)
+
+        IMPORTANT: Also auto-applies forced moves (when only one action is valid).
         """
         cdef int phase
         cdef int iterations = 0
-        cdef int MAX_ITERATIONS = 100  # Safety limit
+        cdef int MAX_ITERATIONS = 500  # Safety limit (need to handle degenerate games)
+        cdef int forced_action
+        cdef bint is_forced
+        cdef ActionInfo info
 
         while iterations < MAX_ITERATIONS:
             iterations += 1
@@ -264,7 +346,13 @@ cdef class GameDriver:
                     if not self._acquisition.setup_next_offer(state):
                         self._acquisition.transition_to_closing(state)
                         continue
-                break  # Waiting for player action
+                # Check for forced move before breaking
+                forced_action, is_forced = get_forced_action(state)
+                if is_forced:
+                    info = decode_action(&self._layout, forced_action)
+                    self._dispatch_action(state, &info)
+                    continue
+                break  # Waiting for player action (multiple choices)
 
             if phase == PHASE_CLOSING:
                 if not self._closing.is_waiting_for_action(state):
@@ -273,7 +361,13 @@ cdef class GameDriver:
                         # No more closeables, transition to income
                         state.set_phase(PHASE_INCOME)
                         continue
-                break  # Waiting for player action
+                # Check for forced move before breaking
+                forced_action, is_forced = get_forced_action(state)
+                if is_forced:
+                    info = decode_action(&self._layout, forced_action)
+                    self._dispatch_action(state, &info)
+                    continue
+                break  # Waiting for player action (multiple choices)
 
             if phase == PHASE_DIVIDENDS:
                 if self._dividends.get_current_corp(state) < 0:
@@ -282,7 +376,13 @@ cdef class GameDriver:
                     # Check if we transitioned out
                     if state.get_phase() != PHASE_DIVIDENDS:
                         continue
-                break  # Waiting for player action
+                # Check for forced move before breaking
+                forced_action, is_forced = get_forced_action(state)
+                if is_forced:
+                    info = decode_action(&self._layout, forced_action)
+                    self._dispatch_action(state, &info)
+                    continue
+                break  # Waiting for player action (multiple choices)
 
             if phase == PHASE_ISSUE_SHARES:
                 if self._issue.get_current_corp(state) < 0:
@@ -291,7 +391,13 @@ cdef class GameDriver:
                     # Check if we transitioned out
                     if state.get_phase() != PHASE_ISSUE_SHARES:
                         continue
-                break  # Waiting for player action
+                # Check for forced move before breaking
+                forced_action, is_forced = get_forced_action(state)
+                if is_forced:
+                    info = decode_action(&self._layout, forced_action)
+                    self._dispatch_action(state, &info)
+                    continue
+                break  # Waiting for player action (multiple choices)
 
             if phase == PHASE_IPO:
                 if self._ipo.get_current_company(state) < 0:
@@ -300,14 +406,85 @@ cdef class GameDriver:
                     # Check if we transitioned out
                     if state.get_phase() != PHASE_IPO:
                         continue
-                break  # Waiting for player action
+                # Check for forced move before breaking
+                forced_action, is_forced = get_forced_action(state)
+                if is_forced:
+                    info = decode_action(&self._layout, forced_action)
+                    self._dispatch_action(state, &info)
+                    continue
+                break  # Waiting for player action (multiple choices)
 
-            # Phases that require player input
+            # Phases that require player input (INVEST, BID_IN_AUCTION)
             if phase in (PHASE_INVEST, PHASE_BID_IN_AUCTION):
-                break
+                # Check for forced move before breaking
+                forced_action, is_forced = get_forced_action(state)
+                if is_forced:
+                    info = decode_action(&self._layout, forced_action)
+                    self._dispatch_action(state, &info)
+                    continue
+                break  # Waiting for player action (multiple choices)
 
             # Unknown phase - break to avoid infinite loop
             break
+
+
+# =============================================================================
+# DEBUG HELPER FUNCTIONS
+# =============================================================================
+
+PHASE_NAMES = {
+    PHASE_INVEST: "INVEST",
+    PHASE_BID_IN_AUCTION: "BID_IN_AUCTION",
+    PHASE_WRAP_UP: "WRAP_UP",
+    PHASE_ACQUISITION: "ACQUISITION",
+    PHASE_CLOSING: "CLOSING",
+    PHASE_INCOME: "INCOME",
+    PHASE_DIVIDENDS: "DIVIDENDS",
+    PHASE_END_CARD: "END_CARD",
+    PHASE_ISSUE_SHARES: "ISSUE_SHARES",
+    PHASE_IPO: "IPO",
+    PHASE_GAME_OVER: "GAME_OVER",
+}
+
+ACTION_TYPE_NAMES = {
+    ACTION_PASS: "PASS",
+    ACTION_AUCTION: "AUCTION",
+    ACTION_BUY_SHARE: "BUY_SHARE",
+    ACTION_SELL_SHARE: "SELL_SHARE",
+    ACTION_LEAVE_AUCTION: "LEAVE_AUCTION",
+    ACTION_RAISE_BID: "RAISE_BID",
+    ACTION_ACQ_PRICE: "ACQ_PRICE",
+    ACTION_ACQ_FI_HIGH: "ACQ_FI_HIGH",
+    ACTION_ACQ_FI_FACE: "ACQ_FI_FACE",
+    ACTION_CLOSE: "CLOSE",
+    ACTION_DIVIDEND: "DIVIDEND",
+    ACTION_ISSUE: "ISSUE",
+    ACTION_IPO: "IPO",
+}
+
+
+cdef str _phase_name(int phase):
+    """Get human-readable phase name."""
+    return PHASE_NAMES.get(phase, f"UNKNOWN({phase})")
+
+
+cdef str _action_type_name(int action_type):
+    """Get human-readable action type name."""
+    return ACTION_TYPE_NAMES.get(action_type, f"UNKNOWN({action_type})")
+
+
+cdef str _format_action_details(ActionInfo* info):
+    """Format action details as a string."""
+    cdef list parts = []
+
+    if info.corp_id >= 0:
+        parts.append(f"corp={info.corp_id}")
+    if info.slot >= 0:
+        parts.append(f"slot={info.slot}")
+    if info.amount >= 0:
+        parts.append(f"amount={info.amount}")
+
+    return ", ".join(parts) if parts else "none"
 
 
 # =============================================================================

@@ -20,6 +20,9 @@ def state():
     s.phase = PHASE_INVEST
     s.coo_level = 1
     s.active_player = 0
+    # Initialize turn order (player i is at position i)
+    for i in range(3):
+        s.set_player_turn_order_py(i, i)
     return s
 
 
@@ -403,8 +406,8 @@ class TestAuctionDeckDraw:
         handler.do_leave_auction(state)
         handler.do_leave_auction(state)
 
-        # Company 10 should now be available for auction
-        assert builder.has_company_for_auction(10)
+        # Company 10 should be drawn to revealed pile (becomes available in WRAP_UP)
+        assert state.is_company_revealed_py(10)
 
 
 # =============================================================================

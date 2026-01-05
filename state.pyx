@@ -205,6 +205,7 @@ cdef struct StateLayout:
     int hidden_auction_high_bidder_offset
     int hidden_auction_starter_offset
     int hidden_corp_price_indices_offset  # 8 ints for corp price indices
+    int hidden_acq_corps_done_offset  # bitmask of corps that have had acquisition turn
 
 
 cdef StateLayout compute_layout(int num_players) noexcept nogil:
@@ -339,7 +340,8 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     layout.hidden_auction_high_bidder_offset = 3 + MAX_DECK_SIZE + 3  # 42
     layout.hidden_auction_starter_offset = 3 + MAX_DECK_SIZE + 4  # 43
     layout.hidden_corp_price_indices_offset = 3 + MAX_DECK_SIZE + 5  # 44
-    layout.hidden_size = 3 + MAX_DECK_SIZE + 5 + NUM_CORPS  # 52 total
+    layout.hidden_acq_corps_done_offset = 3 + MAX_DECK_SIZE + 5 + NUM_CORPS  # 52
+    layout.hidden_size = 3 + MAX_DECK_SIZE + 5 + NUM_CORPS + 1  # 53 total
 
     layout.total_size = layout.visible_size + layout.hidden_size
 
@@ -836,7 +838,10 @@ cdef class GameState:
     cdef inline void advance_active_player(self) noexcept nogil:
         """Move to next player in turn order."""
         cdef int current = self._get_active_player()
-        self._set_active_player((current + 1) % self._num_players)
+        cdef int current_position = self.get_player_turn_order(current)
+        cdef int next_position = (current_position + 1) % self._num_players
+        cdef int next_player = self.get_player_at_turn_order(next_position)
+        self._set_active_player(next_player)
 
     # =========================================================================
     # PLAYER TURN ORDER AND CASH
@@ -859,6 +864,14 @@ cdef class GameState:
             player[self._player_fields.turn_order + i] = 0.0
         if position >= 0 and position < self._num_players:
             player[self._player_fields.turn_order + position] = 1.0
+
+    cdef inline int get_player_at_turn_order(self, int position) noexcept nogil:
+        """Get the player ID at the given turn order position (0 = first)."""
+        cdef int player_id
+        for player_id in range(self._num_players):
+            if self.get_player_turn_order(player_id) == position:
+                return player_id
+        return 0  # Default to player 0 if not found
 
     cdef inline int get_player_cash(self, int player_id) noexcept nogil:
         """Get player's cash."""
@@ -1141,6 +1154,22 @@ cdef class GameState:
         self.set_acq_target_company(-1)
         cdef float* ptr = self._turn_ptr() + self._turn.acq_is_fi_offer
         ptr[0] = -1.0
+
+    # Acquisition corps done bitmask (tracks which corps have had their turn)
+    cdef inline bint has_corp_done_acquisition(self, int corp_id) noexcept nogil:
+        """Check if corp has already had its acquisition turn this phase."""
+        cdef int bitmask = <int>self._data[self._layout.visible_size + self._layout.hidden_acq_corps_done_offset]
+        return (bitmask & (1 << corp_id)) != 0
+
+    cdef inline void set_corp_done_acquisition(self, int corp_id) noexcept nogil:
+        """Mark corp as having had its acquisition turn this phase."""
+        cdef int bitmask = <int>self._data[self._layout.visible_size + self._layout.hidden_acq_corps_done_offset]
+        bitmask |= (1 << corp_id)
+        self._data[self._layout.visible_size + self._layout.hidden_acq_corps_done_offset] = <float>bitmask
+
+    cdef inline void clear_acq_corps_done(self) noexcept nogil:
+        """Clear the acquisition corps done bitmask (call at start of acquisition phase)."""
+        self._data[self._layout.visible_size + self._layout.hidden_acq_corps_done_offset] = 0.0
 
     cdef inline void finalize_acquisitions(self) noexcept nogil:
         """Move acquisition companies to owned and proceeds to cash for all corps."""
@@ -1775,6 +1804,43 @@ cdef class GameState:
         # Store deck in hidden state
         self._set_deck_top(len(deck) - 1)
         for i, company_id in enumerate(deck):
+            self._set_deck_company(i, company_id)
+
+        # Draw initial companies to auction
+        for _ in range(self._num_players):
+            self.draw_company_to_revealed()
+        self.move_revealed_to_auction()
+
+        # Initialize FI cash
+        self.set_fi_cash(0)
+
+    def setup_with_deck(self, deck_order, removed_companies=None):
+        """
+        Set up a new game with a specific deck order.
+
+        This allows replaying games with known deck configurations.
+
+        Args:
+            deck_order: List of company IDs in deck order (index 0 = bottom, last = top)
+            removed_companies: List of company IDs that are removed from game
+        """
+        # Set phase to INVEST
+        self.set_phase(PHASE_INVEST)
+
+        # Initialize players
+        for player_id in range(self._num_players):
+            self.set_player_cash(player_id, 30)
+            self.set_player_turn_order(player_id, player_id)
+            self.set_player_net_worth(player_id, 30)
+
+        # Mark removed companies
+        if removed_companies:
+            for company_id in removed_companies:
+                self.set_company_removed(company_id, True)
+
+        # Store deck in hidden state
+        self._set_deck_top(len(deck_order) - 1)
+        for i, company_id in enumerate(deck_order):
             self._set_deck_company(i, company_id)
 
         # Draw initial companies to auction

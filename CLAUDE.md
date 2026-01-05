@@ -74,3 +74,55 @@ Tests use `StateBuilder` from `tests/test_common.py` to construct specific game 
 - Compiler directives optimize for performance: `boundscheck=False, wraparound=False, cdivision=True`
 - Build generates `.html` annotation files showing Python/C interaction
 - After modifying `.pyx` files, rebuild with `python setup.py build_ext --inplace`
+
+## Development Guidelines
+
+### Code Duplication
+Never duplicate code or constants that are already defined in a central file. If the same logic is needed in multiple places, add it to one of the `helpers/` modules, `state.pyx`, or another appropriate shared location. Constants should be defined once and imported where needed.
+
+If you encounter existing duplicated code or constants, stop your current task and refactor immediately: remove the duplicates and update all usages to reference the single centralized definition. Do not proceed with other work until the duplication is eliminated.
+
+### Test Failures
+When a test fails, never make the test more permissive, skip it, or otherwise weaken assertions to make it pass. Tests exist to verify the engine implements the rules correctly. When fixing test failures:
+1. Read `RULES.md` to understand the correct game behavior
+2. Modify the engine code to follow those rules exactly
+3. If the fix causes other tests to fail, fix those as well
+
+The primary objective is a game engine that implements the rules with complete accuracy. Performance is a strong secondary concern but must never compromise correctness.
+
+### Debugging
+
+Use the built-in debug infrastructure rather than writing long inline Python scripts to debug tests. There are two ways to enable debug output:
+
+**1. GameDriver debug mode** (for detailed action history):
+```python
+from driver import GameDriver
+
+driver = GameDriver(3)
+driver.enable_debug()  # Start recording
+
+# ... run game actions ...
+
+print(driver.dump_history())  # Print formatted action history
+driver.get_history()          # Get raw history as list of dicts
+driver.clear_history()        # Clear without disabling
+driver.disable_debug()        # Stop recording
+```
+
+**2. Pytest --game-debug flag** (for test debugging):
+```bash
+# Enable debug output for all tests
+pytest tests/test_invest.py -v --game-debug
+
+# Or via environment variable
+RSS_DEBUG=1 pytest tests/test_invest.py -v
+```
+
+**Adding debug output**: When you need additional debug information, add it directly to the engine or test code using `debug_print()` from `tests/conftest.py`:
+```python
+from conftest import debug_print
+
+debug_print(f"Current phase: {state.phase}")  # Only prints when debug enabled
+```
+
+Do not write long standalone Python scripts to debug issues. Instead, add permanent debug instrumentation to the codebase that can be enabled via these flags.

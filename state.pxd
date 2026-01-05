@@ -76,6 +76,7 @@ cdef struct StateLayout:
     int hidden_auction_high_bidder_offset
     int hidden_auction_starter_offset
     int hidden_corp_price_indices_offset
+    int hidden_acq_corps_done_offset
 
 
 cdef struct TurnStateOffsets:
@@ -206,6 +207,7 @@ cdef class GameState:
     # Player turn order
     cdef int get_player_turn_order(self, int player_id) noexcept nogil
     cdef void set_player_turn_order(self, int player_id, int position) noexcept nogil
+    cdef int get_player_at_turn_order(self, int position) noexcept nogil
     cdef int get_player_cash(self, int player_id) noexcept nogil
     cdef void set_player_cash(self, int player_id, int cash) noexcept nogil
 
@@ -260,6 +262,9 @@ cdef class GameState:
     cdef bint is_acq_fi_offer(self) noexcept nogil
     cdef void set_acq_is_fi_offer(self, bint is_fi) noexcept nogil
     cdef void clear_acq_offer(self) noexcept nogil
+    cdef bint has_corp_done_acquisition(self, int corp_id) noexcept nogil
+    cdef void set_corp_done_acquisition(self, int corp_id) noexcept nogil
+    cdef void clear_acq_corps_done(self) noexcept nogil
     cdef void finalize_acquisitions(self) noexcept nogil
 
     # Closing phase offer state
