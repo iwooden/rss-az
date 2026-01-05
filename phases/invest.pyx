@@ -620,7 +620,7 @@ cdef class InvestPhase:
         cdef int current = self._get_active_player(state)
         cdef int current_position = state.get_player_turn_order(current)
         cdef int next_position = current_position
-        cdef int next_player
+        cdef int next_player = current
         cdef int checked = 0
 
         while checked < self._num_players:
