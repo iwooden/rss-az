@@ -1,9 +1,9 @@
 """Tests for Dividends phase."""
 
 import pytest
-from cython_core.state import GameState
-from cython_core.phases.dividends import DividendsPhase, get_phase_handler
-from cython_core.data import py_get_company_stars, py_get_market_price
+from state import GameState
+from phases.dividends import DividendsPhase, get_phase_handler
+from data import py_get_company_stars, py_get_market_price
 
 from tests.test_common import (
     StateBuilder, PHASE_INCOME, PHASE_DIVIDENDS, PHASE_END_CARD, MARKET_PRICES,

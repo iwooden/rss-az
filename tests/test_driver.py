@@ -2,9 +2,9 @@
 Tests for the game driver module.
 """
 import pytest
-from cython_core.state import GameState
-from cython_core.driver import GameDriver, get_driver, apply_action
-from cython_core.actions import get_action_layout, decode_action_py
+from state import GameState
+from driver import GameDriver, get_driver, apply_action
+from actions import get_action_layout, decode_action_py
 
 
 class TestDriverCreation:

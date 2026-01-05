@@ -2,8 +2,8 @@
 
 import pytest
 import numpy as np
-from cython_core.state import GameState
-from cython_core.actions import (
+from state import GameState
+from actions import (
     get_total_action_count,
     get_action_layout,
     decode_action_py,

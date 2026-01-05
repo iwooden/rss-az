@@ -5,7 +5,7 @@
 # state is a contiguous float array that can be passed directly to PyTorch
 # without serialization overhead.
 
-from .state import (
+from state import (
     GameState,
     get_market_index,
     get_market_price,
@@ -13,7 +13,7 @@ from .state import (
     get_visible_size,
     PHASE_NAMES,
 )
-from .data import (
+from data import (
     COMPANY_NAMES,
     COMPANY_NAME_TO_ID,
     CORP_NAMES,

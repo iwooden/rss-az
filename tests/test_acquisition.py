@@ -1,12 +1,12 @@
 """Tests for Acquisition phase."""
 
 import pytest
-from cython_core.state import GameState
-from cython_core.phases.acquisition import (
+from state import GameState
+from phases.acquisition import (
     AcquisitionPhase, get_phase_handler, handle_acquisition_phase,
     get_action_constants
 )
-from cython_core.data import py_get_company_face_value, py_get_company_low_price, py_get_company_high_price
+from data import py_get_company_face_value, py_get_company_low_price, py_get_company_high_price
 
 from tests.test_common import (
     StateBuilder, PHASE_ACQUISITION, PHASE_CLOSING,

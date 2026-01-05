@@ -1,9 +1,9 @@
 """Tests for Issue Shares phase."""
 
 import pytest
-from cython_core.state import GameState
-from cython_core.phases.issue import IssuePhase, get_constants
-from cython_core.data import py_get_corp_share_count, py_get_market_price
+from state import GameState
+from phases.issue import IssuePhase, get_constants
+from data import py_get_corp_share_count, py_get_market_price
 
 from tests.test_common import (
     StateBuilder, PHASE_ISSUE_SHARES, PHASE_IPO,

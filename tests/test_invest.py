@@ -2,9 +2,9 @@
 
 import pytest
 import numpy as np
-from cython_core.state import GameState
-from cython_core.phases.invest import InvestPhase, get_phase_handler
-from cython_core.data import py_get_company_face_value
+from state import GameState
+from phases.invest import InvestPhase, get_phase_handler
+from data import py_get_company_face_value
 
 from tests.test_common import StateBuilder, PHASE_INVEST, PHASE_WRAP_UP, PHASE_BID_IN_AUCTION
 

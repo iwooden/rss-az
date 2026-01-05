@@ -1,9 +1,9 @@
 """Tests for IPO phase."""
 
 import pytest
-from cython_core.state import GameState
-from cython_core.phases.ipo import IPOPhase, get_constants
-from cython_core.data import (
+from state import GameState
+from phases.ipo import IPOPhase, get_constants
+from data import (
     py_get_company_face_value, py_get_company_stars,
     py_get_market_price, py_get_par_price, py_is_valid_par_price,
     py_get_corp_share_count

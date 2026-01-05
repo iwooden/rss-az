@@ -2,7 +2,7 @@
 
 import pytest
 import numpy as np
-from cython_core.state import (
+from state import (
     GameState,
     get_state_size,
     get_visible_size,

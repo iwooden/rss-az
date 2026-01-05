@@ -1,9 +1,9 @@
 """Tests for End Card phase."""
 
 import pytest
-from cython_core.state import GameState
-from cython_core.phases.endcard import EndCardPhase, get_constants
-from cython_core.data import py_get_corp_share_count
+from state import GameState
+from phases.endcard import EndCardPhase, get_constants
+from data import py_get_corp_share_count
 
 from tests.test_common import (
     StateBuilder, PHASE_DIVIDENDS, PHASE_END_CARD, PHASE_ISSUE_SHARES, PHASE_GAME_OVER,

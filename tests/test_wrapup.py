@@ -1,9 +1,9 @@
 """Tests for Wrap Up phase."""
 
 import pytest
-from cython_core.state import GameState
-from cython_core.phases.wrapup import WrapUpPhase, get_phase_handler, handle_wrap_up
-from cython_core.data import py_get_company_face_value
+from state import GameState
+from phases.wrapup import WrapUpPhase, get_phase_handler, handle_wrap_up
+from data import py_get_company_face_value
 
 from tests.test_common import StateBuilder, PHASE_WRAP_UP
 

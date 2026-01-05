@@ -6,10 +6,10 @@ after each action to catch bugs in the Cython game engine.
 """
 import pytest
 import numpy as np
-from cython_core.state import GameState
-from cython_core.driver import apply_action
-from cython_core.actions import get_valid_action_mask
-from cython_core.data import py_get_corp_share_count
+from state import GameState
+from driver import apply_action
+from actions import get_valid_action_mask
+from data import py_get_corp_share_count
 
 # Constants
 PHASE_GAME_OVER = 10

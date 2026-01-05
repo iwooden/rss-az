@@ -1,9 +1,9 @@
 """Tests for Income phase."""
 
 import pytest
-from cython_core.state import GameState
-from cython_core.phases.income import IncomePhase
-from cython_core.data import (
+from state import GameState
+from phases.income import IncomePhase
+from data import (
     py_get_company_income, py_get_company_stars, py_get_cost_of_ownership,
     py_get_company_synergy, COMPANY_NAME_TO_ID
 )

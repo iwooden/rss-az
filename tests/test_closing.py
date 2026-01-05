@@ -1,9 +1,9 @@
 """Tests for Closing phase."""
 
 import pytest
-from cython_core.state import GameState
-from cython_core.phases.closing import ClosingPhase, get_action_constants
-from cython_core.data import (
+from state import GameState
+from phases.closing import ClosingPhase, get_action_constants
+from data import (
     py_get_company_income, py_get_company_stars,
     py_get_cost_of_ownership, COMPANY_NAME_TO_ID
 )

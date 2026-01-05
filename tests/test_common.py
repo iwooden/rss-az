@@ -1,7 +1,7 @@
 """Shared test utilities, constants, and StateBuilder for phase tests."""
 
 import pytest
-from cython_core.state import GameState
+from state import GameState
 
 
 # =============================================================================
