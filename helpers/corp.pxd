@@ -103,6 +103,7 @@ cdef int get_corp_company_count(float* corp, CorpOffsets* c) noexcept nogil
 
 cdef int get_president_of_corp(GameState state, int corp_id, int num_players) noexcept nogil
 cdef void set_active_player_to_president(GameState state, int corp_id, int num_players) noexcept
+cdef int find_corp_owning_company(GameState state, int player_id, int company_id) noexcept nogil
 
 
 # =============================================================================
@@ -110,7 +111,6 @@ cdef void set_active_player_to_president(GameState state, int corp_id, int num_p
 # =============================================================================
 
 cdef int calculate_corp_company_stars(float* corp, CorpOffsets* c) noexcept nogil
-cdef int calculate_corp_total_stars(GameState state, int corp_id) noexcept nogil
 cdef int calculate_target_stars(float* corp, CorpOffsets* c) noexcept nogil
 
 

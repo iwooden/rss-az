@@ -160,14 +160,6 @@ cdef void _init_price_lookup() noexcept nogil:
         if MARKET_PRICES[i] < 76:
             PRICE_TO_MARKET_INDEX[MARKET_PRICES[i]] = i
 
-# Par prices by star tier (1-indexed: tier 1 = reds, tier 5 = blues)
-# This array isn't currently used but kept for reference
-cdef int[14] PAR_PRICES_FLAT = [
-    10, 11, 12, 13, 14,         # Tier 1: 5 prices
-    16, 18, 20, 22, 24, 27,     # Tier 2-3 additional: 6 prices
-    30, 33, 37,                 # Tier 4-5 additional: 3 prices
-]
-
 # All unique par prices (sorted)
 cdef int[14] ALL_PAR_PRICES = [
     10, 11, 12, 13, 14, 16, 18, 20, 22, 24, 27, 30, 33, 37

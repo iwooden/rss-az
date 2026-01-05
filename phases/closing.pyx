@@ -17,7 +17,7 @@ from data cimport (
 )
 
 # Import shared helpers
-from helpers.corp cimport get_president_of_corp
+from helpers.corp cimport get_president_of_corp, find_corp_owning_company
 
 # =============================================================================
 # CONSTANTS (offer-based: close or pass)
@@ -67,25 +67,6 @@ cdef void close_company_for_fi(GameState state, int company_id) noexcept nogil:
     """Close a company owned by FI."""
     state.set_fi_owns_company(company_id, False)
     state.set_company_removed(company_id, True)
-
-
-cdef int get_player_by_turn_order(GameState state, int position) noexcept nogil:
-    """Get player ID at given turn order position."""
-    cdef int player_id
-    for player_id in range(state._num_players):
-        if state.get_player_turn_order(player_id) == position:
-            return player_id
-    return -1
-
-
-cdef int find_corp_owning_company(GameState state, int player_id, int company_id) noexcept nogil:
-    """Find which corp (that player presides) owns the company, or -1."""
-    cdef int corp_id
-    for corp_id in range(NUM_CORPS):
-        if state.is_player_president(player_id, corp_id):
-            if state.corp_owns_company(corp_id, company_id):
-                return corp_id
-    return -1
 
 
 # =============================================================================

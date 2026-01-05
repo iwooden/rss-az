@@ -681,6 +681,10 @@ cdef class GameState:
         """Get pointer to turn state section."""
         return self._data + self._layout.turn_offset
 
+    cdef inline float* _market_ptr(self) noexcept nogil:
+        """Get pointer to market state section."""
+        return self._data + self._layout.market_offset
+
     cdef inline float* _hidden_price_indices_ptr(self) noexcept nogil:
         """Get pointer to hidden corp price indices storage."""
         return self._data + self._layout.visible_size + self._layout.hidden_corp_price_indices_offset
@@ -1359,12 +1363,10 @@ cdef class GameState:
 
     cdef void _rotate_for_nn(self, float* out, int active_player) noexcept nogil:
         """Rotate state so active_player becomes player 0."""
-        cdef int i, src_player, dst_player
-        cdef int offset
+        cdef int i, src_player
 
         # Copy non-player data unchanged (phase, coo)
         memcpy(out, self._data, (self._layout.phase_size + self._layout.coo_size) * sizeof(float))
-        offset = self._layout.phase_size + self._layout.coo_size
 
         # Rotate player data
         for i in range(self._num_players):

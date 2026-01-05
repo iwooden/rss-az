@@ -34,15 +34,6 @@ cdef struct IssueTurnOffsets:
 
 
 # =============================================================================
-# BASE OFFSETS (constant across all phases)
-# =============================================================================
-
-cdef int get_turn_number_offset() noexcept nogil
-cdef int get_end_card_flipped_offset() noexcept nogil
-cdef int get_consecutive_passes_offset() noexcept nogil
-
-
-# =============================================================================
 # PHASE-SPECIFIC OFFSET GETTERS
 # =============================================================================
 

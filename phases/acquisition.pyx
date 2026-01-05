@@ -45,18 +45,6 @@ def get_action_constants():
 
 
 # =============================================================================
-# OFFER TUPLE STRUCTURE
-# =============================================================================
-
-cdef struct AcqOffer:
-    int corp_id
-    int company_id
-    int corp_share_price  # For sorting
-    int company_face_value  # For sorting
-    bint is_fi_offer
-
-
-# =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
 
@@ -95,7 +83,7 @@ cdef void execute_fi_purchase(GameState state, int corp_id, int company_id) noex
 
 cdef void execute_corp_purchase(GameState state, int buyer_corp, int company_id, int price) noexcept nogil:
     """Execute purchase of company by corp from player or other corp."""
-    cdef int seller_player, seller_corp, i
+    cdef int i
 
     # Find who owns the company
     # Check players first
@@ -255,9 +243,7 @@ cdef bint find_next_general_offer(GameState state, int* out_corp, int* out_compa
     Returns True if an offer was found, False if no more offers.
     """
     cdef int corp_id, company_id, i, j
-    cdef int best_corp = -1
     cdef int best_company = -1
-    cdef int best_corp_price = -1
     cdef int best_face_value = -1
 
     # Iterate through corps by share price descending

@@ -80,7 +80,7 @@ cdef class IssuePhase:
         return state._turn_ptr()
 
     cdef float* _get_market(self, GameState state) noexcept nogil:
-        return state._data + state._layout.market_offset
+        return state._market_ptr()
 
     # =========================================================================
     # PHASE SETUP

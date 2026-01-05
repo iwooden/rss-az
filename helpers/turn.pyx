@@ -33,25 +33,6 @@ from data cimport NUM_COMPANIES, NUM_CORPS, MAX_DIVIDEND
 
 
 # =============================================================================
-# BASE OFFSETS
-# =============================================================================
-
-cdef inline int get_turn_number_offset() noexcept nogil:
-    """Offset of turn_number field (always 0)."""
-    return 0
-
-
-cdef inline int get_end_card_flipped_offset() noexcept nogil:
-    """Offset of end_card_flipped field (always 1)."""
-    return 1
-
-
-cdef inline int get_consecutive_passes_offset() noexcept nogil:
-    """Offset of consecutive_passes field (always 2)."""
-    return 2
-
-
-# =============================================================================
 # AUCTION OFFSETS
 # =============================================================================
 

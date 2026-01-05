@@ -173,6 +173,7 @@ cdef class GameState:
     cdef float* _player_ptr(self, int player_id) noexcept nogil
     cdef float* _corp_ptr(self, int corp_id) noexcept nogil
     cdef float* _turn_ptr(self) noexcept nogil
+    cdef float* _market_ptr(self) noexcept nogil
     cdef float* _hidden_price_indices_ptr(self) noexcept nogil
 
     # Turn state

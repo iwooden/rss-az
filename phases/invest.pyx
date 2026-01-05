@@ -295,7 +295,7 @@ cdef class InvestPhase:
 
     cdef float* _get_market(self, GameState state) noexcept nogil:
         """Get pointer to market data."""
-        return state._data + state._layout.market_offset
+        return state._market_ptr()
 
     cdef float* _get_auction_companies(self, GameState state) noexcept nogil:
         """Get pointer to companies available for auction."""

@@ -278,6 +278,20 @@ cdef void set_active_player_to_president(GameState state, int corp_id, int num_p
             return
 
 
+cdef int find_corp_owning_company(GameState state, int player_id, int company_id) noexcept nogil:
+    """
+    Find which corp (that player presides) owns the company.
+
+    Returns corp_id if found, -1 if not owned by any corp the player presides.
+    """
+    cdef int corp_id
+    for corp_id in range(NUM_CORPS):
+        if state.is_player_president(player_id, corp_id):
+            if state.corp_owns_company(corp_id, company_id):
+                return corp_id
+    return -1
+
+
 # =============================================================================
 # STARS CALCULATION
 # =============================================================================
@@ -292,27 +306,6 @@ cdef int calculate_corp_company_stars(float* corp, CorpOffsets* c) noexcept nogi
     for company_id in range(NUM_COMPANIES):
         if corp_owns_company(corp, c, company_id):
             total += get_company_stars(company_id)
-
-    return total
-
-
-cdef int calculate_corp_total_stars(GameState state, int corp_id) noexcept nogil:
-    """
-    Calculate corporation's total stars.
-
-    stars = company_stars + cash // 10 + SI_bonus
-    """
-    cdef CorpOffsets co = get_corp_offsets()
-    cdef float* corp = state._corp_ptr(corp_id)
-    cdef int total = calculate_corp_company_stars(corp, &co)
-    cdef int cash = get_corp_cash(corp, &co)
-
-    # Add cash contribution
-    total += cash // 10
-
-    # SI (Stars, Inc.) gets +2 stars
-    if corp_id == CORP_SI:
-        total += 2
 
     return total
 

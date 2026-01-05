@@ -72,7 +72,7 @@ cdef void sort_players_by_cash(GameState state) noexcept:
 
 cdef int find_cheapest_auction_company(GameState state) noexcept nogil:
     """Find the cheapest company available for auction. Returns -1 if none."""
-    cdef int i
+    cdef int i, face_value
     cdef int cheapest_id = -1
     cdef int cheapest_value = 999999
 

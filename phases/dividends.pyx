@@ -81,7 +81,7 @@ cdef class DividendsPhase:
 
     cdef float* _get_market(self, GameState state) noexcept nogil:
         """Get pointer to market data."""
-        return state._data + state._layout.market_offset
+        return state._market_ptr()
 
     # =========================================================================
     # PHASE SETUP
