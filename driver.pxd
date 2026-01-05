@@ -5,19 +5,19 @@ Game driver declarations.
 Provides the main entry point for applying actions to game state.
 """
 
-from cython_core.state cimport GameState
-from cython_core.actions cimport ActionLayout, ActionInfo
+from state cimport GameState
+from actions cimport ActionLayout, ActionInfo
 
 # Phase handler imports
-from cython_core.phases.invest cimport InvestPhase
-from cython_core.phases.acquisition cimport AcquisitionPhase
-from cython_core.phases.closing cimport ClosingPhase
-from cython_core.phases.dividends cimport DividendsPhase
-from cython_core.phases.issue cimport IssuePhase
-from cython_core.phases.ipo cimport IPOPhase
-from cython_core.phases.wrapup cimport WrapUpPhase
-from cython_core.phases.income cimport IncomePhase
-from cython_core.phases.endcard cimport EndCardPhase
+from phases.invest cimport InvestPhase
+from phases.acquisition cimport AcquisitionPhase
+from phases.closing cimport ClosingPhase
+from phases.dividends cimport DividendsPhase
+from phases.issue cimport IssuePhase
+from phases.ipo cimport IPOPhase
+from phases.wrapup cimport WrapUpPhase
+from phases.income cimport IncomePhase
+from phases.endcard cimport EndCardPhase
 
 
 # =============================================================================

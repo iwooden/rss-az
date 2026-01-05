@@ -3,7 +3,7 @@
 Declaration file for wrap up phase.
 """
 
-from cython_core.state cimport GameState
+from state cimport GameState
 
 cdef class WrapUpPhase:
     cdef int _num_players

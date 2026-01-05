@@ -6,7 +6,7 @@ Defines the action space layout, action decoding, and mask generation for
 the NN output layer.
 """
 
-from cython_core.state cimport GameState
+from state cimport GameState
 
 # =============================================================================
 # CONSTANTS

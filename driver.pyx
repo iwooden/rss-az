@@ -8,13 +8,13 @@ Handles action decoding, phase dispatch, and automatic phase transitions.
 
 cimport cython
 
-from cython_core.state cimport (
+from state cimport (
     GameState,
     PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_WRAP_UP, PHASE_ACQUISITION,
     PHASE_CLOSING, PHASE_INCOME, PHASE_DIVIDENDS, PHASE_END_CARD,
     PHASE_ISSUE_SHARES, PHASE_IPO, PHASE_GAME_OVER
 )
-from cython_core.actions cimport (
+from actions cimport (
     ActionLayout, ActionInfo,
     compute_action_layout, decode_action,
     ACTION_PASS, ACTION_AUCTION, ACTION_BUY_SHARE, ACTION_SELL_SHARE,
@@ -22,23 +22,23 @@ from cython_core.actions cimport (
     ACTION_ACQ_PRICE, ACTION_ACQ_FI_HIGH, ACTION_ACQ_FI_FACE,
     ACTION_CLOSE, ACTION_DIVIDEND, ACTION_ISSUE, ACTION_IPO
 )
-from cython_core.data cimport get_par_index_for_slot, get_company_stars
-from cython_core.helpers.company cimport get_auction_company_for_slot
+from data cimport get_par_index_for_slot, get_company_stars
+from helpers.company cimport get_auction_company_for_slot
 
 # Phase handlers
-from cython_core.phases.invest cimport InvestPhase
-from cython_core.phases.acquisition cimport (
+from phases.invest cimport InvestPhase
+from phases.acquisition cimport (
     AcquisitionPhase, ACQ_ACTION_PASS, ACQ_FI_ACTION_BUY, ACQ_FI_ACTION_PASS
 )
-from cython_core.phases.closing cimport (
+from phases.closing cimport (
     ClosingPhase, CLOSING_ACTION_CLOSE, CLOSING_ACTION_PASS
 )
-from cython_core.phases.dividends cimport DividendsPhase
-from cython_core.phases.issue cimport IssuePhase
-from cython_core.phases.ipo cimport IPOPhase
-from cython_core.phases.wrapup cimport WrapUpPhase
-from cython_core.phases.income cimport IncomePhase
-from cython_core.phases.endcard cimport EndCardPhase
+from phases.dividends cimport DividendsPhase
+from phases.issue cimport IssuePhase
+from phases.ipo cimport IPOPhase
+from phases.wrapup cimport WrapUpPhase
+from phases.income cimport IncomePhase
+from phases.endcard cimport EndCardPhase
 
 
 # =============================================================================

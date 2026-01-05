@@ -6,7 +6,7 @@ Provides accessor functions for player state stored in the float tensor represen
 All functions operate on raw float pointers for maximum performance in nogil contexts.
 """
 
-from cython_core.data cimport NUM_COMPANIES, NUM_CORPS, get_company_face_value
+from data cimport NUM_COMPANIES, NUM_CORPS, get_company_face_value
 
 # Import constants - DEF statements need to be redeclared for use in this module
 DEF CASH_DIVISOR = 200.0
@@ -180,7 +180,7 @@ cdef inline void clear_roundtrip_tracking(float* player, PlayerOffsets* p) noexc
 # Note: These functions require corp helpers for share price lookups.
 # They import from corp.pyx at runtime to avoid circular import issues.
 
-from cython_core.state cimport GameState
+from state cimport GameState
 
 # Forward declare corp helper imports - actual implementation uses cimport
 cdef int calculate_player_net_worth(GameState state, int player_id, int num_players) noexcept nogil:

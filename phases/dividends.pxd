@@ -6,10 +6,10 @@ In the dividends phase, corps (in descending share price order) choose how much
 to pay out as dividends, then adjust their share price based on stars vs target.
 """
 
-from cython_core.state cimport GameState
-from cython_core.helpers.player cimport PlayerOffsets
-from cython_core.helpers.corp cimport CorpOffsets
-from cython_core.helpers.turn cimport DividendTurnOffsets
+from state cimport GameState
+from helpers.player cimport PlayerOffsets
+from helpers.corp cimport CorpOffsets
+from helpers.turn cimport DividendTurnOffsets
 
 
 cdef class DividendsPhase:

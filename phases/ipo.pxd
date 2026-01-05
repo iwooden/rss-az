@@ -7,10 +7,10 @@ Players choose a corp and par price; if par < face_value, 4 shares issued (2 eac
 otherwise 2 shares issued (1 each).
 """
 
-from cython_core.state cimport GameState
-from cython_core.helpers.player cimport PlayerOffsets
-from cython_core.helpers.corp cimport CorpOffsets
-from cython_core.helpers.turn cimport IssueTurnOffsets
+from state cimport GameState
+from helpers.player cimport PlayerOffsets
+from helpers.corp cimport CorpOffsets
+from helpers.turn cimport IssueTurnOffsets
 
 
 cdef class IPOPhase:

@@ -5,8 +5,8 @@ Company state helper declarations.
 Provides functions for company state access including auction slot mapping.
 """
 
-from cython_core.state cimport GameState
-from cython_core.data cimport NUM_COMPANIES
+from state cimport GameState
+from data cimport NUM_COMPANIES
 
 
 # =============================================================================

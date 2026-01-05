@@ -19,14 +19,14 @@ During an auction (BID_IN_AUCTION sub-phase):
 cimport cython
 from libc.string cimport memset
 
-from cython_core.state cimport GameState, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_WRAP_UP
-from cython_core.data cimport (
+from state cimport GameState, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_WRAP_UP
+from data cimport (
     NUM_COMPANIES, NUM_CORPS, NUM_MARKET_SPACES,
     get_company_face_value, get_company_high_price, get_market_price,
 )
 
 # Import shared helpers
-from cython_core.helpers.player cimport (
+from helpers.player cimport (
     PlayerOffsets, get_player_offsets,
     get_player_cash, set_player_cash, add_player_cash,
     get_player_shares, set_player_shares,
@@ -35,14 +35,14 @@ from cython_core.helpers.player cimport (
     get_share_sells, increment_share_sells,
     get_roundtrips, clear_roundtrip_tracking
 )
-from cython_core.helpers.corp cimport (
+from helpers.corp cimport (
     CorpOffsets, get_corp_offsets,
     is_corp_active, get_corp_bank_shares, set_corp_bank_shares,
     get_corp_share_price, get_corp_price_index, set_corp_price_index,
     is_corp_in_receivership, set_corp_in_receivership, handle_corp_bankruptcy
 )
-from cython_core.helpers.player cimport update_all_player_net_worths
-from cython_core.helpers.market cimport (
+from helpers.player cimport update_all_player_net_worths
+from helpers.market cimport (
     is_market_space_available, set_market_space_available,
     find_next_higher_price_index, find_next_lower_price_index
 )

@@ -13,8 +13,8 @@ No player decisions in this phase.
 """
 
 cimport cython
-from cython_core.state cimport GameState, NUM_COMPANIES
-from cython_core.data cimport get_company_face_value
+from state cimport GameState, NUM_COMPANIES
+from data cimport get_company_face_value
 
 # Phase constants
 DEF PHASE_WRAP_UP = 2

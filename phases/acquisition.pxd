@@ -3,7 +3,7 @@
 Declaration file for acquisition phase.
 """
 
-from cython_core.state cimport GameState
+from state cimport GameState
 
 # Constants
 cdef enum:

@@ -5,7 +5,7 @@ Declaration file for income phase.
 Income phase is fully automatic - no player actions.
 """
 
-from cython_core.state cimport GameState
+from state cimport GameState
 
 # Constants
 cdef enum:

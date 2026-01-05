@@ -4,9 +4,9 @@ Declaration file for invest phase.
 Allows other Cython modules to cimport the invest functions.
 """
 
-from cython_core.state cimport GameState
-from cython_core.helpers.player cimport PlayerOffsets
-from cython_core.helpers.corp cimport CorpOffsets
+from state cimport GameState
+from helpers.player cimport PlayerOffsets
+from helpers.corp cimport CorpOffsets
 
 
 # =============================================================================

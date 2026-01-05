@@ -6,13 +6,13 @@ Provides accessor functions for corporation state stored in the float tensor rep
 All functions operate on raw float pointers for maximum performance in nogil contexts.
 """
 
-from cython_core.data cimport (
+from data cimport (
     NUM_COMPANIES, NUM_CORPS, NUM_MARKET_SPACES,
     get_market_price, get_corp_share_count, get_company_stars,
     CORP_SI
 )
-from cython_core.state cimport GameState
-from cython_core.helpers.player cimport PlayerOffsets, get_player_offsets
+from state cimport GameState
+from helpers.player cimport PlayerOffsets, get_player_offsets
 
 # Import constants
 DEF CASH_DIVISOR = 200.0

@@ -13,8 +13,8 @@ Flow:
 """
 
 cimport cython
-from cython_core.state cimport GameState, PHASE_INCOME, PHASE_DIVIDENDS, NUM_COMPANIES, NUM_CORPS
-from cython_core.data cimport (
+from state cimport GameState, PHASE_INCOME, PHASE_DIVIDENDS, NUM_COMPANIES, NUM_CORPS
+from data cimport (
     get_adjusted_company_income, get_company_income, get_company_synergy,
     get_cost_of_ownership, get_company_stars, get_corp_share_count,
     CORP_JS, CORP_S, CORP_OS, CORP_SM, CORP_PR, CORP_DA, CORP_VM, CORP_SI

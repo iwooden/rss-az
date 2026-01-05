@@ -6,7 +6,7 @@ Provides structs and functions for computing offsets into the turn state
 portion of the game state tensor. Each phase has its own view of turn state.
 """
 
-from cython_core.data cimport NUM_COMPANIES, NUM_CORPS, MAX_DIVIDEND
+from data cimport NUM_COMPANIES, NUM_CORPS, MAX_DIVIDEND
 
 # =============================================================================
 # TURN STATE OFFSET STRUCTS

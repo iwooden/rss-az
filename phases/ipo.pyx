@@ -15,11 +15,11 @@ After all companies processed (or no valid IPO possible), transition to INVEST p
 """
 
 cimport cython
-from cython_core.state cimport (
+from state cimport (
     GameState, PHASE_IPO, PHASE_INVEST,
     NUM_COMPANIES, NUM_CORPS, NUM_MARKET_SPACES
 )
-from cython_core.data cimport (
+from data cimport (
     get_market_price, get_market_index, get_corp_share_count,
     get_company_face_value, get_company_stars,
     is_valid_par_price, get_par_price,
@@ -27,7 +27,7 @@ from cython_core.data cimport (
 )
 
 # Import shared helpers
-from cython_core.helpers.player cimport (
+from helpers.player cimport (
     PlayerOffsets, get_player_offsets,
     get_player_cash, set_player_cash,
     get_player_shares, set_player_shares,
@@ -35,14 +35,14 @@ from cython_core.helpers.player cimport (
     set_player_president,
     calculate_player_net_worth, update_all_player_net_worths
 )
-from cython_core.helpers.corp cimport (
+from helpers.corp cimport (
     CorpOffsets, get_corp_offsets,
     is_corp_active, set_corp_active,
     set_corp_cash, set_corp_price_index,
     set_corp_issued_shares, set_corp_bank_shares, set_corp_unissued_shares,
     set_corp_owns_company
 )
-from cython_core.helpers.turn cimport (
+from helpers.turn cimport (
     IssueTurnOffsets, get_issue_turn_offsets
 )
 

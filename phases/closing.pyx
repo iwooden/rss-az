@@ -10,14 +10,14 @@ In this phase:
 """
 
 cimport cython
-from cython_core.state cimport GameState, PHASE_CLOSING, PHASE_INCOME, NUM_COMPANIES, NUM_CORPS
-from cython_core.data cimport (
+from state cimport GameState, PHASE_CLOSING, PHASE_INCOME, NUM_COMPANIES, NUM_CORPS
+from data cimport (
     get_adjusted_company_income, get_company_income, get_company_face_value,
     get_company_stars, get_cost_of_ownership, CORP_JS
 )
 
 # Import shared helpers
-from cython_core.helpers.corp cimport get_president_of_corp
+from helpers.corp cimport get_president_of_corp
 
 # =============================================================================
 # CONSTANTS (offer-based: close or pass)

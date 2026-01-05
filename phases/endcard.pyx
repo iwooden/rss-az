@@ -13,14 +13,14 @@ Flow:
 """
 
 cimport cython
-from cython_core.state cimport (
+from state cimport (
     GameState, PHASE_END_CARD, PHASE_ISSUE_SHARES, PHASE_GAME_OVER,
     NUM_COMPANIES, NUM_CORPS
 )
-from cython_core.data cimport get_corp_share_count, MAX_SHARE_PRICE, COO_LEVEL_END_CARD_FLIPPED
+from data cimport get_corp_share_count, MAX_SHARE_PRICE, COO_LEVEL_END_CARD_FLIPPED
 
 # Import shared helpers
-from cython_core.helpers.turn cimport IssueTurnOffsets, get_issue_turn_offsets
+from helpers.turn cimport IssueTurnOffsets, get_issue_turn_offsets
 
 
 # =============================================================================

@@ -5,7 +5,7 @@ Market state helper declarations.
 Provides functions for market space availability and price index navigation.
 """
 
-from cython_core.data cimport NUM_MARKET_SPACES
+from data cimport NUM_MARKET_SPACES
 
 # =============================================================================
 # MARKET SPACE AVAILABILITY

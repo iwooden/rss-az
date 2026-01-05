@@ -6,7 +6,7 @@ The End Card phase is automatic - no player actions.
 It checks for game end conditions and transitions to Issue Shares phase.
 """
 
-from cython_core.state cimport GameState
+from state cimport GameState
 
 # Constants
 cdef enum:

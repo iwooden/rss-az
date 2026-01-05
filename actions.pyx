@@ -16,19 +16,19 @@ cimport cython
 import numpy as np
 cimport numpy as cnp
 
-from cython_core.state cimport (
+from state cimport (
     GameState, NUM_COMPANIES, NUM_CORPS, NUM_MARKET_SPACES,
     PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_ACQUISITION,
     PHASE_CLOSING, PHASE_DIVIDENDS, PHASE_ISSUE_SHARES, PHASE_IPO
 )
-from cython_core.data cimport (
+from data cimport (
     get_company_face_value, get_company_low_price, get_company_high_price,
     get_company_stars, get_par_price, get_market_index, get_market_price,
     is_valid_par_price, get_par_index_for_slot, NUM_PAR_PRICES, CORP_OS
 )
 
 # Import types and functions from our own pxd
-from cython_core.actions cimport (
+from actions cimport (
     ActionLayout, ActionInfo, ActionType,
     ACTION_PASS, ACTION_AUCTION, ACTION_BUY_SHARE, ACTION_SELL_SHARE,
     ACTION_LEAVE_AUCTION, ACTION_RAISE_BID, ACTION_ACQ_PRICE, ACTION_ACQ_FI_HIGH,
@@ -39,12 +39,12 @@ from cython_core.actions cimport (
 )
 
 # Import phase helpers
-from cython_core.phases.invest cimport can_buy_share, can_sell_share
-from cython_core.phases.closing cimport CLOSING_ACTION_CLOSE, CLOSING_ACTION_PASS
+from phases.invest cimport can_buy_share, can_sell_share
+from phases.closing cimport CLOSING_ACTION_CLOSE, CLOSING_ACTION_PASS
 
 # Import low-level helpers for direct access
-from cython_core.helpers.player cimport get_player_shares, PlayerOffsets, get_player_offsets
-from cython_core.helpers.company cimport get_auction_company_for_slot
+from helpers.player cimport get_player_shares, PlayerOffsets, get_player_offsets
+from helpers.company cimport get_auction_company_for_slot
 
 
 cdef int get_total_actions_for_players(int num_players) noexcept nogil:

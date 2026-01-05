@@ -4,7 +4,7 @@ Cython helper module re-exports.
 
 Allows convenient cimport of all helper structs and functions:
 
-    from cython_core.helpers cimport (
+    from helpers cimport (
         PlayerOffsets, get_player_offsets, get_player_cash, ...
         CorpOffsets, get_corp_offsets, is_corp_active, ...
         is_market_space_available, find_next_higher_price_index, ...
@@ -13,7 +13,7 @@ Allows convenient cimport of all helper structs and functions:
 """
 
 # Re-export from player module
-from cython_core.helpers.player cimport (
+from helpers.player cimport (
     PlayerOffsets,
     get_player_offsets,
     get_player_cash,
@@ -36,7 +36,7 @@ from cython_core.helpers.player cimport (
 )
 
 # Re-export from corp module
-from cython_core.helpers.corp cimport (
+from helpers.corp cimport (
     CorpOffsets,
     get_corp_offsets,
     is_corp_active,
@@ -68,7 +68,7 @@ from cython_core.helpers.corp cimport (
 )
 
 # Re-export from market module
-from cython_core.helpers.market cimport (
+from helpers.market cimport (
     is_market_space_available,
     set_market_space_available,
     find_next_higher_price_index,
@@ -77,7 +77,7 @@ from cython_core.helpers.market cimport (
 )
 
 # Re-export from turn module
-from cython_core.helpers.turn cimport (
+from helpers.turn cimport (
     AuctionTurnOffsets,
     DividendTurnOffsets,
     IssueTurnOffsets,

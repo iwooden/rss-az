@@ -16,13 +16,13 @@ acquisition_proceeds become cash.
 """
 
 cimport cython
-from cython_core.state cimport GameState, NUM_COMPANIES, NUM_CORPS
-from cython_core.data cimport (
+from state cimport GameState, NUM_COMPANIES, NUM_CORPS
+from data cimport (
     get_company_face_value, get_company_low_price, get_company_high_price
 )
 
 # Import shared helpers
-from cython_core.helpers.corp cimport get_president_of_corp
+from helpers.corp cimport get_president_of_corp
 
 # Phase constants
 DEF PHASE_ACQUISITION = 3

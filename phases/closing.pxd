@@ -3,7 +3,7 @@
 Declaration file for closing phase (offer-based).
 """
 
-from cython_core.state cimport GameState
+from state cimport GameState
 
 # Constants
 cdef enum:

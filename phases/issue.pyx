@@ -13,22 +13,22 @@ After all corps processed, transition to IPO phase.
 """
 
 cimport cython
-from cython_core.state cimport (
+from state cimport (
     GameState, PHASE_ISSUE_SHARES, PHASE_IPO,
     NUM_COMPANIES, NUM_CORPS, NUM_MARKET_SPACES
 )
-from cython_core.data cimport (
+from data cimport (
     get_market_price, get_corp_share_count, get_company_face_value,
     CORP_SM
 )
 
 # Import shared helpers
-from cython_core.helpers.player cimport (
+from helpers.player cimport (
     PlayerOffsets, get_player_offsets,
     player_owns_company,
     update_all_player_net_worths
 )
-from cython_core.helpers.corp cimport (
+from helpers.corp cimport (
     CorpOffsets, get_corp_offsets,
     is_corp_active, get_corp_cash, set_corp_cash,
     get_corp_share_price, get_corp_price_index, set_corp_price_index,
@@ -39,10 +39,10 @@ from cython_core.helpers.corp cimport (
     set_active_player_to_president,
     handle_corp_bankruptcy
 )
-from cython_core.helpers.turn cimport (
+from helpers.turn cimport (
     IssueTurnOffsets, get_issue_turn_offsets
 )
-from cython_core.helpers.market cimport (
+from helpers.market cimport (
     find_next_lower_price_index
 )
 

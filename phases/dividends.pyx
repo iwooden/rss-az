@@ -12,21 +12,21 @@ After all corps have paid, transition to END_CARD phase.
 """
 
 cimport cython
-from cython_core.state cimport (
+from state cimport (
     GameState, PHASE_DIVIDENDS, PHASE_END_CARD,
     NUM_COMPANIES, NUM_CORPS, NUM_MARKET_SPACES
 )
-from cython_core.data cimport (
+from data cimport (
     get_company_stars, get_market_price, get_corp_share_count,
     CORP_SI, MAX_DIVIDEND
 )
 
 # Import shared helpers
-from cython_core.helpers.player cimport (
+from helpers.player cimport (
     PlayerOffsets, get_player_offsets,
     get_player_shares, add_player_cash
 )
-from cython_core.helpers.corp cimport (
+from helpers.corp cimport (
     CorpOffsets, get_corp_offsets,
     is_corp_active, get_corp_cash, set_corp_cash,
     get_corp_issued_shares, get_corp_share_price,
@@ -36,10 +36,10 @@ from cython_core.helpers.corp cimport (
     calculate_corp_company_stars, calculate_target_stars,
     handle_corp_bankruptcy
 )
-from cython_core.helpers.turn cimport (
+from helpers.turn cimport (
     DividendTurnOffsets, get_dividend_turn_offsets
 )
-from cython_core.helpers.market cimport (
+from helpers.market cimport (
     find_adjusted_price_index
 )
 

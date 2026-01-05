@@ -7,10 +7,10 @@ Corps in receivership must issue if they have unissued shares.
 Stock Masters (SM) special: share price does not decrease when issuing.
 """
 
-from cython_core.state cimport GameState
-from cython_core.helpers.player cimport PlayerOffsets
-from cython_core.helpers.corp cimport CorpOffsets
-from cython_core.helpers.turn cimport IssueTurnOffsets
+from state cimport GameState
+from helpers.player cimport PlayerOffsets
+from helpers.corp cimport CorpOffsets
+from helpers.turn cimport IssueTurnOffsets
 
 
 cdef class IssuePhase:

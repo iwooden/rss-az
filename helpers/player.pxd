@@ -6,8 +6,8 @@ Provides PlayerOffsets struct and accessor functions for player state
 stored in the float tensor representation.
 """
 
-from cython_core.state cimport GameState
-from cython_core.data cimport NUM_COMPANIES, NUM_CORPS
+from state cimport GameState
+from data cimport NUM_COMPANIES, NUM_CORPS
 
 # =============================================================================
 # PLAYER OFFSETS STRUCT

@@ -14,7 +14,7 @@ from libc.string cimport memcpy, memset
 cimport numpy as cnp
 import numpy as np
 
-from cython_core.data cimport get_adjusted_company_income
+from data cimport get_adjusted_company_income
 
 cnp.import_array()
 
@@ -1715,7 +1715,7 @@ cdef class GameState:
             shuffle_seed: Optional random seed for deck shuffling
         """
         import random
-        from cython_core.data import py_get_company_stars
+        from data import py_get_company_stars
 
         if shuffle_seed is not None:
             random.seed(shuffle_seed)

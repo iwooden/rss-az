@@ -6,9 +6,9 @@ Provides CorpOffsets struct and accessor functions for corporation state
 stored in the float tensor representation.
 """
 
-from cython_core.state cimport GameState
-from cython_core.data cimport NUM_COMPANIES, NUM_CORPS, NUM_MARKET_SPACES
-from cython_core.helpers.player cimport PlayerOffsets
+from state cimport GameState
+from data cimport NUM_COMPANIES, NUM_CORPS, NUM_MARKET_SPACES
+from helpers.player cimport PlayerOffsets
 
 # =============================================================================
 # CORP OFFSETS STRUCT
