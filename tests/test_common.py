@@ -105,20 +105,21 @@ class StateBuilder:
     - [73-108]  acquisition_companies (36 values)
     """
 
-    # Class constants for layout (3 players)
+    # Class constants for layout
     PHASE_OFFSET = 0
     COO_OFFSET = 11  # After phase one-hot (11 phases now, was 12)
     PLAYERS_OFFSET = 18  # After phase[11] + coo[7]
-    PLAYER_STRIDE = 74
+    # PLAYER_STRIDE is dynamic: 71 + num_players (turn_order is num_players one-hot)
 
-    # Player field offsets (within player block)
+    # Player field offsets (within player block) - static ones only
     P_CASH = 0
     P_NET_WORTH = 1
     P_TURN_ORDER = 2
-    P_AUCTION_HIGH_BIDDER = 5
-    P_OWNED_COMPANIES = 6
-    P_OWNED_SHARES = 42
-    P_IS_PRESIDENT = 50
+    # Dynamic offsets (depend on num_players) computed in __init__:
+    # P_AUCTION_HIGH_BIDDER = 2 + num_players
+    # P_OWNED_COMPANIES = 2 + num_players + 1
+    # P_OWNED_SHARES = P_OWNED_COMPANIES + 36
+    # P_IS_PRESIDENT = P_OWNED_SHARES + 8
 
     # Corp field offsets (within corp block)
     C_ACTIVE = 0
@@ -142,9 +143,18 @@ class StateBuilder:
         self._arr = state.as_numpy()
         self._num_players = num_players
 
-        # Compute dynamic offsets based on player count
+        # Compute dynamic player field offsets
+        # Player stride = 1 (cash) + 1 (net_worth) + num_players (turn_order) + 1 (auction_high_bidder)
+        #               + 36 (companies) + 8 (shares) + 8 (president) + 8 (share_buys) + 8 (share_sells)
+        #               = 71 + num_players
+        self._p_auction_high_bidder = 2 + num_players
+        self._p_owned_companies = 2 + num_players + 1
+        self._p_owned_shares = self._p_owned_companies + 36
+        self._p_is_president = self._p_owned_shares + 8
+
+        # Compute dynamic global offsets based on player count
         self._players_offset = self.PLAYERS_OFFSET
-        self._player_stride = self.PLAYER_STRIDE
+        self._player_stride = 71 + num_players
         self._fi_offset = self._players_offset + num_players * self._player_stride
         self._auction_companies_offset = self._fi_offset + 37
         self._revealed_companies_offset = self._auction_companies_offset + 36
@@ -211,35 +221,35 @@ class StateBuilder:
 
     def set_player_owns_company(self, player_id: int, company_id: int, owns: bool = True):
         """Set whether player owns a company."""
-        offset = self._player_offset(player_id) + self.P_OWNED_COMPANIES + company_id
+        offset = self._player_offset(player_id) + self._p_owned_companies + company_id
         self._arr[offset] = 1.0 if owns else 0.0
         return self
 
     def player_owns_company(self, player_id: int, company_id: int) -> bool:
         """Check if player owns a company."""
-        offset = self._player_offset(player_id) + self.P_OWNED_COMPANIES + company_id
+        offset = self._player_offset(player_id) + self._p_owned_companies + company_id
         return self._arr[offset] == 1.0
 
     def set_player_shares(self, player_id: int, corp_id: int, shares: int):
         """Set player's shares of a corp."""
-        offset = self._player_offset(player_id) + self.P_OWNED_SHARES + corp_id
+        offset = self._player_offset(player_id) + self._p_owned_shares + corp_id
         self._arr[offset] = shares / SHARE_DIVISOR
         return self
 
     def get_player_shares(self, player_id: int, corp_id: int) -> int:
         """Get player's shares of a corp."""
-        offset = self._player_offset(player_id) + self.P_OWNED_SHARES + corp_id
+        offset = self._player_offset(player_id) + self._p_owned_shares + corp_id
         return int(self._arr[offset] * SHARE_DIVISOR + 0.5)
 
     def set_player_president(self, player_id: int, corp_id: int, is_pres: bool = True):
         """Set whether player is president of a corp."""
-        offset = self._player_offset(player_id) + self.P_IS_PRESIDENT + corp_id
+        offset = self._player_offset(player_id) + self._p_is_president + corp_id
         self._arr[offset] = 1.0 if is_pres else 0.0
         return self
 
     def is_player_president(self, player_id: int, corp_id: int) -> bool:
         """Check if player is president of a corp."""
-        offset = self._player_offset(player_id) + self.P_IS_PRESIDENT + corp_id
+        offset = self._player_offset(player_id) + self._p_is_president + corp_id
         return self._arr[offset] == 1.0
 
     # =========================================================================
