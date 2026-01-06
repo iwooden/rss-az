@@ -18,6 +18,7 @@ from data cimport (
 
 # Import shared helpers
 from helpers.corp cimport get_president_of_corp, find_corp_owning_company
+from helpers.player cimport update_all_player_net_worths
 
 # =============================================================================
 # CONSTANTS (offer-based: close or pass)
@@ -191,6 +192,8 @@ cdef class ClosingPhase:
         # Determine owner (player or corp)
         if state.player_owns_company(player_id, company_id):
             close_company_for_player(state, player_id, company_id)
+            # Update net worths (player's company was closed)
+            update_all_player_net_worths(state, self._num_players)
         else:
             corp_id = find_corp_owning_company(state, player_id, company_id)
             if corp_id >= 0:

@@ -23,6 +23,7 @@ from data cimport (
 
 # Import shared helpers
 from helpers.corp cimport get_president_of_corp
+from helpers.player cimport update_all_player_net_worths
 
 # Phase constants
 DEF PHASE_ACQUISITION = 3
@@ -419,6 +420,8 @@ cdef class AcquisitionPhase:
                 # Execute purchase at given price offset
                 price = get_company_low_price(company_id) + action
                 execute_corp_purchase(state, corp_id, company_id, price)
+                # Update net worths after purchase (player cash and company ownership changed)
+                update_all_player_net_worths(state, state._num_players)
             # else: pass, do nothing
 
         # Clear offer state

@@ -327,6 +327,9 @@ cdef class InvestPhase:
 
         invest_buy_share(player, &self._po, corp, &self._co, market, state._hidden_price_indices_ptr(), corp_id)
 
+        # Update net worths (player cash changed, share count changed, price may have changed)
+        update_all_player_net_worths(state, self._num_players)
+
         # Clear consecutive passes (action taken)
         state.clear_consecutive_passes()
 
@@ -368,6 +371,9 @@ cdef class InvestPhase:
             # Advance to next player
             state.advance_active_player()
             return
+
+        # Update net worths (player cash changed, share count changed, price changed)
+        update_all_player_net_worths(state, self._num_players)
 
         # Clear consecutive passes (action taken)
         state.clear_consecutive_passes()
@@ -658,6 +664,9 @@ cdef class InvestPhase:
 
         # Deduct payment
         add_player_cash(player, &self._po, -bid)
+
+        # Update net worths (player's cash changed, they gained a company)
+        update_all_player_net_worths(state, self._num_players)
 
         # Remove company from auction pool
         cdef float* auction_companies = self._get_auction_companies(state)

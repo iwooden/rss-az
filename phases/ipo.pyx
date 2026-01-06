@@ -388,15 +388,20 @@ cdef class IPOPhase:
     # =========================================================================
 
     cdef void _transition_to_invest(self, GameState state) noexcept:
-        """Transition to INVEST phase."""
+        """Transition to INVEST phase for the next turn."""
         cdef float* turn = self._get_turn(state)
         cdef int i
         cdef int first_player
+        cdef int current_turn
 
         # Clear IPO state
         for i in range(NUM_COMPANIES):
             turn[self._ito.ipo_company + i] = -1.0
             turn[self._ito.ipo_remaining + i] = -1.0
+
+        # Increment turn number (we're starting a new turn)
+        current_turn = state.get_turn_number()
+        state.set_turn_number(current_turn + 1)
 
         # Set phase to INVEST
         state.set_phase(PHASE_INVEST)

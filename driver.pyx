@@ -371,9 +371,10 @@ cdef class GameDriver:
 
             if phase == PHASE_DIVIDENDS:
                 if self._dividends.get_current_corp(state) < 0:
-                    # No current corp, advance to next
-                    self._dividends.advance_to_next_corp(state)
-                    # Check if we transitioned out
+                    # No current corp - need to setup dividends phase first
+                    # This sets up dividend_remaining flags and advances to first corp
+                    self._dividends.setup_dividends(state)
+                    # Check if we transitioned out (no active corps)
                     if state.get_phase() != PHASE_DIVIDENDS:
                         continue
                 # Check for forced move before breaking

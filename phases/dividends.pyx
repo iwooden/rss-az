@@ -24,7 +24,8 @@ from data cimport (
 # Import shared helpers
 from helpers.player cimport (
     PlayerOffsets, get_player_offsets,
-    get_player_shares, add_player_cash
+    get_player_shares, add_player_cash,
+    update_all_player_net_worths
 )
 from helpers.corp cimport (
     CorpOffsets, get_corp_offsets,
@@ -260,6 +261,9 @@ cdef class DividendsPhase:
 
         # Adjust share price
         self._adjust_share_price(state, corp_id)
+
+        # Update net worths (player cash changed from dividends, share prices changed)
+        update_all_player_net_worths(state, self._num_players)
 
         # Mark this corp as done
         cdef float* turn = self._get_turn(state)

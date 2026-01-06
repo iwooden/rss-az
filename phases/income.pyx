@@ -19,6 +19,7 @@ from data cimport (
     get_cost_of_ownership, get_company_stars, get_corp_share_count,
     CORP_JS, CORP_S, CORP_OS, CORP_SM, CORP_PR, CORP_DA, CORP_VM, CORP_SI
 )
+from helpers.player cimport update_all_player_net_worths
 
 # =============================================================================
 # CONSTANTS (phase-specific only; NUM_COMPANIES/NUM_CORPS from state.pxd)
@@ -76,7 +77,10 @@ cdef class IncomePhase:
                 state.set_corp_unissued_shares(corp_id, share_count)
                 state.bankrupt_corp(corp_id)
 
-        # 4. Transition to Dividends
+        # 4. Update net worths (player cash changed from income)
+        update_all_player_net_worths(state, self._num_players)
+
+        # 5. Transition to Dividends
         state.set_phase(PHASE_DIVIDENDS)
 
     cpdef int calculate_fi_income(self, GameState state):
