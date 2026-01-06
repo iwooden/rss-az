@@ -11,17 +11,6 @@ cimport cython
 from libc.stdint cimport uint8_t, uint16_t, uint64_t, int8_t
 
 # =============================================================================
-# CONSTANTS
-# =============================================================================
-
-DEF NUM_COMPANIES = 36
-DEF NUM_CORPS = 8
-DEF NUM_MARKET_SPACES = 27
-DEF NUM_PHASES = 12
-DEF MAX_PLAYERS = 6
-DEF MAX_STAR_TIERS = 5
-
-# =============================================================================
 # COMPANY DATA
 # =============================================================================
 
@@ -124,16 +113,6 @@ CORP_NAMES = ["JS", "S", "OS", "SM", "PR", "DA", "VM", "SI"]
 # Map corp name to index
 CORP_NAME_TO_ID = {name: i for i, name in enumerate(CORP_NAMES)}
 
-# Corp indices for special abilities
-DEF CORP_JS = 0   # Gets 2x income when closing companies
-DEF CORP_S = 1    # Gets +1 income per 2 synergies
-DEF CORP_OS = 2   # Buys from FI at face value (not high price)
-DEF CORP_SM = 3   # Stock price does not decrease when issuing share
-DEF CORP_PR = 4   # Gets +1 income per company owned
-DEF CORP_DA = 5   # Gets +max(company incomes) bonus
-DEF CORP_VM = 6   # Gets min(10, total_cost_of_ownership) bonus
-DEF CORP_SI = 7   # Gets +2 share price movement after dividends
-
 # Share counts per corp
 cdef int[8] CORP_SHARE_COUNT = [7, 7, 6, 6, 5, 5, 4, 4]
 
@@ -157,19 +136,16 @@ cdef void _init_price_lookup() noexcept nogil:
     for i in range(76):
         PRICE_TO_MARKET_INDEX[i] = -1
     for i in range(27):
-        if MARKET_PRICES[i] < 76:
-            PRICE_TO_MARKET_INDEX[MARKET_PRICES[i]] = i
+        PRICE_TO_MARKET_INDEX[MARKET_PRICES[i]] = i
 
 # All unique par prices (sorted)
 cdef int[14] ALL_PAR_PRICES = [
     10, 11, 12, 13, 14, 16, 18, 20, 22, 24, 27, 30, 33, 37
 ]
 
-DEF NUM_PAR_PRICES = 14
-
 # Par price validity by star tier
 # PAR_VALID[star-1][par_price_index] = 1 if valid for that tier
-cdef uint8_t[5][14] PAR_PRICE_VALID = [
+cdef bint[5][14] PAR_PRICE_VALID = [
     # Star 1 (reds): 10-14
     [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     # Star 2 (oranges): 10-20
@@ -189,78 +165,77 @@ cdef uint8_t[5][14] PAR_PRICE_VALID = [
 # cost_of_ownership[coo_level-1][star_tier-1] = cost
 # CoO levels are 1-7, star tiers are 1-5
 cdef int[7][5] COST_OF_OWNERSHIP = [
-    [0, 0, 0, 0, 0],  # Level 1
-    [0, 0, 0, 0, 0],  # Level 2
-    [0, 0, 0, 0, 0],  # Level 3
-    [2, 0, 0, 0, 0],  # Level 4: reds cost 2
-    [4, 4, 0, 0, 0],  # Level 5: reds/oranges cost 4
-    [7, 7, 7, 0, 0],  # Level 6: reds/oranges/yellows cost 7
-    [10, 10, 10, 10, 0],  # Level 7: all but blues cost 10
+    [0, 0, 0, 0, 0],  # Level 1 - Initial
+    [0, 0, 0, 0, 0],  # Level 2 - Orange on top of deck
+    [0, 0, 0, 0, 0],  # Level 3 - Yellow on top of deck
+    [2, 0, 0, 0, 0],  # Level 4: reds cost 2 - Green on top of deck
+    [4, 4, 0, 0, 0],  # Level 5: reds/oranges cost 4 - Blue on top of deck
+    [7, 7, 7, 0, 0],  # Level 6: reds/oranges/yellows cost 7 - End card face-up
+    [10, 10, 10, 10, 0],  # Level 7: all but blues cost 10 - End card flipped
 ]
 
 # =============================================================================
 # ACCESSOR FUNCTIONS (nogil)
 # =============================================================================
 
-cdef inline int get_company_face_value(int company_id) noexcept nogil:
+cpdef inline int get_company_face_value(int company_id) noexcept nogil:
     return COMPANY_FACE_VALUE[company_id]
 
-cdef inline int get_company_low_price(int company_id) noexcept nogil:
+cpdef inline int get_company_low_price(int company_id) noexcept nogil:
     return COMPANY_LOW_PRICE[company_id]
 
-cdef inline int get_company_high_price(int company_id) noexcept nogil:
+cpdef inline int get_company_high_price(int company_id) noexcept nogil:
     return COMPANY_HIGH_PRICE[company_id]
 
-cdef inline int get_company_stars(int company_id) noexcept nogil:
+cpdef inline int get_company_stars(int company_id) noexcept nogil:
     return COMPANY_STARS[company_id]
 
-cdef inline int get_company_income(int company_id) noexcept nogil:
+cpdef inline int get_company_income(int company_id) noexcept nogil:
     return COMPANY_INCOME[company_id]
 
-cdef inline int get_company_synergy(int company_id, int target_id) noexcept nogil:
+cpdef inline int get_company_synergy(int company_id, int target_id) noexcept nogil:
     return COMPANY_SYNERGY[company_id][target_id]
 
-cdef inline bint is_last_in_group(int company_id) noexcept nogil:
+cpdef inline bint is_last_in_group(int company_id) noexcept nogil:
     return COMPANY_LAST_IN_GROUP[company_id] != 0
 
-cdef inline int get_corp_share_count(int corp_id) noexcept nogil:
+cpdef inline int get_corp_share_count(int corp_id) noexcept nogil:
     return CORP_SHARE_COUNT[corp_id]
 
-cdef inline int get_market_price(int index) noexcept nogil:
+cpdef inline int get_market_price(int index) noexcept nogil:
     return MARKET_PRICES[index]
 
-cdef inline int get_market_index(int price) noexcept nogil:
+cpdef inline int get_market_index(int price) noexcept nogil:
     if price < 0 or price >= 76:
         return -1
     return PRICE_TO_MARKET_INDEX[price]
 
-cdef inline int get_cost_of_ownership(int coo_level, int star_tier) noexcept nogil:
+cpdef inline int get_cost_of_ownership(int coo_level, int star_tier) noexcept nogil:
     """Get cost of ownership for a company with given stars at given CoO level."""
     if coo_level < 1 or coo_level > 7 or star_tier < 1 or star_tier > 5:
         return 0
     return COST_OF_OWNERSHIP[coo_level - 1][star_tier - 1]
 
-cdef inline int get_adjusted_company_income(int company_id, int coo_level) noexcept nogil:
+cpdef inline int get_adjusted_company_income(int company_id, int coo_level) noexcept nogil:
     """Get company income after cost of ownership."""
     cdef int base_income = COMPANY_INCOME[company_id]
     cdef int stars = COMPANY_STARS[company_id]
     cdef int cost = get_cost_of_ownership(coo_level, stars)
     return base_income - cost
 
-cdef inline bint is_valid_par_price(int star_tier, int par_index) noexcept nogil:
+cpdef inline bint is_valid_par_price(int star_tier, int par_index) noexcept nogil:
     """Check if par price at index is valid for given star tier."""
     if star_tier < 1 or star_tier > 5 or par_index < 0 or par_index >= 14:
         return False
     return PAR_PRICE_VALID[star_tier - 1][par_index] != 0
 
-cdef inline int get_par_price(int par_index) noexcept nogil:
+cpdef inline int get_par_price(int par_index) noexcept nogil:
     """Get par price at index."""
     if par_index < 0 or par_index >= 14:
         return -1
     return ALL_PAR_PRICES[par_index]
 
-
-cdef inline int get_par_index_for_slot(int star_tier, int par_slot) noexcept nogil:
+cpdef inline int get_par_index_for_slot(int star_tier, int par_slot) noexcept nogil:
     """
     Return par_index for Nth valid par price of star tier, or -1.
 
@@ -269,14 +244,13 @@ cdef inline int get_par_index_for_slot(int star_tier, int par_slot) noexcept nog
     then slot 0 maps to index 2, slot 1 to index 3, etc.
     """
     cdef int count = 0
-    cdef int par_index
-    for par_index in range(NUM_PAR_PRICES):
-        if is_valid_par_price(star_tier, par_index):
+    cdef unsigned int par_index
+    for par_index in range(GameConstants.NUM_PAR_PRICES):
+        if is_valid_par_price(star_tier, <int>par_index):
             if count == par_slot:
                 return par_index
             count += 1
     return -1
-
 
 # =============================================================================
 # MODULE INITIALIZATION
@@ -340,40 +314,3 @@ def _populate_synergies():
 
 # Auto-initialize on import
 _init_module()
-
-# =============================================================================
-# PYTHON ACCESSORS (for testing/debugging)
-# =============================================================================
-
-def py_get_company_face_value(int company_id):
-    return COMPANY_FACE_VALUE[company_id]
-
-def py_get_company_low_price(int company_id):
-    return COMPANY_LOW_PRICE[company_id]
-
-def py_get_company_high_price(int company_id):
-    return COMPANY_HIGH_PRICE[company_id]
-
-def py_get_company_stars(int company_id):
-    return COMPANY_STARS[company_id]
-
-def py_get_company_income(int company_id):
-    return COMPANY_INCOME[company_id]
-
-def py_get_company_synergy(int company_id, int target_id):
-    return COMPANY_SYNERGY[company_id][target_id]
-
-def py_get_corp_share_count(int corp_id):
-    return CORP_SHARE_COUNT[corp_id]
-
-def py_get_market_price(int index):
-    return MARKET_PRICES[index]
-
-def py_get_cost_of_ownership(int level, int star):
-    return COST_OF_OWNERSHIP[level][star]
-
-def py_get_par_price(int index):
-    return ALL_PAR_PRICES[index]
-
-def py_is_valid_par_price(int star_tier, int par_index):
-    return PAR_PRICE_VALID[star_tier][par_index]
