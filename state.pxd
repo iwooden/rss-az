@@ -49,7 +49,6 @@ cdef struct StateLayout:
     int hidden_auction_high_bidder_offset
     int hidden_auction_starter_offset
     int hidden_corp_price_indices_offset
-    int hidden_acq_corps_done_offset
 
 cdef struct TurnStateOffsets:
     int turn_number
@@ -107,3 +106,12 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil
 cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil
 cdef PlayerFieldOffsets compute_player_field_offsets(int num_players) noexcept nogil
 cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil
+
+cdef class GameState:
+    cdef float* _data
+    cdef public object _array
+    cdef StateLayout _layout
+    cdef TurnStateOffsets _turn_offsets
+    cdef PlayerFieldOffsets _player_fields
+    cdef CorpFieldOffsets _corp_fields
+    cdef int _num_players
