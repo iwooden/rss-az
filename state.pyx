@@ -15,49 +15,17 @@ cimport numpy as cnp
 import numpy as np
 
 from data cimport get_adjusted_company_income
+from data cimport (
+    get_adjusted_company_income,
+    GameConstants,
+    GamePhases,
+    CASH_DIVISOR,
+    SHARE_DIVISOR,
+    STAR_DIVISOR,
+    MARKET_PRICES
+)
 
 cnp.import_array()
-
-# =============================================================================
-# CONSTANTS
-# =============================================================================
-
-DEF NUM_COMPANIES = 36
-DEF NUM_CORPS = 8
-DEF NUM_MARKET_SPACES = 27
-DEF NUM_PHASES = 11  # Including GAME_OVER
-DEF NUM_COO_LEVELS = 7  # Cost of ownership levels 1-7
-DEF MAX_PLAYERS = 6
-DEF MAX_DECK_SIZE = 36
-DEF NUM_PAR_PRICES = 14
-DEF MAX_DIVIDEND = 26  # Max dividend per share option
-
-# Phase indices
-DEF PHASE_INVEST = 0
-DEF PHASE_BID_IN_AUCTION = 1
-DEF PHASE_WRAP_UP = 2
-DEF PHASE_ACQUISITION = 3
-DEF PHASE_CLOSING = 4
-DEF PHASE_INCOME = 5
-DEF PHASE_DIVIDENDS = 6
-DEF PHASE_END_CARD = 7
-DEF PHASE_ISSUE_SHARES = 8
-DEF PHASE_IPO = 9
-DEF PHASE_GAME_OVER = 10
-
-# Normalization divisors
-DEF CASH_DIVISOR = 200.0
-DEF SHARE_DIVISOR = 7.0
-DEF STAR_DIVISOR = 20.0
-DEF MAX_ROUNDTRIPS = 2.0
-DEF INCOME_DIVISOR = 10.0  # Company adjusted income range is roughly -10 to +10
-
-# Market prices (27 spaces, index 0 = bankruptcy)
-cdef int[27] MARKET_PRICES = [
-    0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16,
-    18, 20, 22, 24, 27, 30, 33, 37, 41, 45,
-    50, 55, 61, 68, 75
-]
 
 # =============================================================================
 # STATE LAYOUT STRUCTURE
@@ -159,67 +127,18 @@ cdef int[27] MARKET_PRICES = [
 # LAYOUT COMPUTATION
 # =============================================================================
 
-cdef struct StateLayout:
-    # Visible section sizes
-    int phase_size
-    int coo_size
-    int player_stride
-    int players_size
-    int fi_size
-    int companies_size
-    int market_size
-    int corp_stride
-    int corps_size
-    int turn_size
-    int static_size
-    int visible_size
-
-    # Hidden section sizes
-    int hidden_size
-
-    # Total
-    int total_size
-
-    # Offsets (into visible section)
-    int phase_offset
-    int coo_offset
-    int players_offset
-    int fi_offset
-    int auction_companies_offset
-    int revealed_companies_offset
-    int removed_companies_offset
-    int market_offset
-    int corps_offset
-    int turn_offset
-    int static_offset
-
-    # Offsets (into hidden section, relative to visible_size)
-    int hidden_active_player_offset
-    int hidden_num_players_offset
-    int hidden_deck_top_offset
-    int hidden_deck_order_offset
-    # Compact storage for frequently-accessed one-hot fields (performance optimization)
-    int hidden_phase_offset
-    int hidden_coo_level_offset
-    int hidden_auction_company_offset
-    int hidden_auction_high_bidder_offset
-    int hidden_auction_starter_offset
-    int hidden_corp_price_indices_offset  # 8 ints for corp price indices
-    int hidden_acq_corps_done_offset  # bitmask of corps that have had acquisition turn
-
-
 cdef StateLayout compute_layout(int num_players) noexcept nogil:
     """Compute complete state layout for given player count."""
     cdef StateLayout layout
     cdef int offset = 0
 
     # Phase one-hot
-    layout.phase_size = NUM_PHASES
+    layout.phase_size = GameConstants.NUM_PHASES
     layout.phase_offset = offset
     offset += layout.phase_size
 
     # Cost of ownership one-hot
-    layout.coo_size = NUM_COO_LEVELS
+    layout.coo_size = GameConstants.NUM_COO_LEVELS
     layout.coo_offset = offset
     offset += layout.coo_size
 
@@ -229,37 +148,37 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         1 +                 # net_worth
         num_players +       # turn_order one-hot
         1 +                 # is_auction_high_bidder
-        NUM_COMPANIES +     # owned_companies
-        NUM_CORPS +         # owned_shares
-        NUM_CORPS +         # is_president
-        NUM_CORPS +         # share_buys
-        NUM_CORPS           # share_sells
+        GameConstants.NUM_COMPANIES +     # owned_companies
+        GameConstants.NUM_CORPS +         # owned_shares
+        GameConstants.NUM_CORPS +         # is_president
+        GameConstants.NUM_CORPS +         # share_buys
+        GameConstants.NUM_CORPS           # share_sells
     )
     layout.players_offset = offset
     layout.players_size = layout.player_stride * num_players
     offset += layout.players_size
 
     # Foreign investor
-    layout.fi_size = 1 + NUM_COMPANIES
+    layout.fi_size = 1 + GameConstants.NUM_COMPANIES
     layout.fi_offset = offset
     offset += layout.fi_size
 
     # Company locations (3 arrays)
-    layout.companies_size = NUM_COMPANIES * 3
+    layout.companies_size = GameConstants.NUM_COMPANIES * 3
     layout.auction_companies_offset = offset
-    offset += NUM_COMPANIES
+    offset += GameConstants.NUM_COMPANIES
     layout.revealed_companies_offset = offset
-    offset += NUM_COMPANIES
+    offset += GameConstants.NUM_COMPANIES
     layout.removed_companies_offset = offset
-    offset += NUM_COMPANIES
+    offset += GameConstants.NUM_COMPANIES
 
     # Company adjusted incomes (dynamic based on CoO level)
-    layout.company_incomes_size = NUM_COMPANIES
+    layout.company_incomes_size = GameConstants.NUM_COMPANIES
     layout.company_incomes_offset = offset
-    offset += NUM_COMPANIES
+    offset += GameConstants.NUM_COMPANIES
 
     # Market availability
-    layout.market_size = NUM_MARKET_SPACES
+    layout.market_size = GameConstants.NUM_MARKET_SPACES
     layout.market_offset = offset
     offset += layout.market_size
 
@@ -275,12 +194,12 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         1 +                 # share_price
         1 +                 # acquisition_proceeds
         1 +                 # in_receivership
-        NUM_MARKET_SPACES + # price_index one-hot
-        NUM_COMPANIES +     # owned_companies
-        NUM_COMPANIES       # acquisition_companies
+        GameConstants.NUM_MARKET_SPACES + # price_index one-hot
+        GameConstants.NUM_COMPANIES +     # owned_companies
+        GameConstants.NUM_COMPANIES       # acquisition_companies
     )
     layout.corps_offset = offset
-    layout.corps_size = layout.corp_stride * NUM_CORPS
+    layout.corps_size = layout.corp_stride * GameConstants.NUM_CORPS
     offset += layout.corps_size
 
     # Turn state
@@ -289,31 +208,31 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         1 +                 # end_card_flipped
         1 +                 # consecutive_passes
         # Auction
-        NUM_COMPANIES +     # auction_company
+        GameConstants.NUM_COMPANIES +     # auction_company
         1 +                 # auction_price
         num_players +       # auction_high_bidder
         num_players +       # auction_starter
         num_players +       # auction_passed
         # Dividends
-        NUM_CORPS +         # dividend_corp
-        MAX_DIVIDEND +      # dividend_impact
-        NUM_CORPS +         # dividend_remaining
+        GameConstants.NUM_CORPS +         # dividend_corp
+        GameConstants.MAX_DIVIDEND +      # dividend_impact
+        GameConstants.NUM_CORPS +         # dividend_remaining
         # Issue
-        NUM_CORPS +         # issue_corp
-        NUM_CORPS +         # issue_remaining
+        GameConstants.NUM_CORPS +         # issue_corp
+        GameConstants.NUM_CORPS +         # issue_remaining
         # IPO
-        NUM_COMPANIES +     # ipo_company
-        NUM_COMPANIES +     # ipo_remaining
+        GameConstants.NUM_COMPANIES +     # ipo_company
+        GameConstants.NUM_COMPANIES +     # ipo_remaining
         # Acquisition offers
-        NUM_CORPS +         # acq_active_corp
-        NUM_COMPANIES +     # acq_target_company
+        GameConstants.NUM_CORPS +         # acq_active_corp
+        GameConstants.NUM_COMPANIES +     # acq_target_company
         1                   # acq_is_fi_offer
     )
     layout.turn_offset = offset
     offset += layout.turn_size
 
     # Static company data
-    layout.static_size = NUM_COMPANIES * (4 + NUM_COMPANIES)  # stars, low, face, high, synergies
+    layout.static_size = GameConstants.NUM_COMPANIES * (4 + GameConstants.NUM_COMPANIES)  # stars, low, face, high, synergies
     layout.static_offset = offset
     offset += layout.static_size
 
@@ -341,7 +260,7 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     layout.hidden_auction_starter_offset = 3 + MAX_DECK_SIZE + 4  # 43
     layout.hidden_corp_price_indices_offset = 3 + MAX_DECK_SIZE + 5  # 44
     layout.hidden_acq_corps_done_offset = 3 + MAX_DECK_SIZE + 5 + NUM_CORPS  # 52
-    layout.hidden_size = 3 + MAX_DECK_SIZE + 5 + NUM_CORPS + 1  # 53 total
+    layout.hidden_size = 3 + GameConstants.MAX_DECK_SIZE + 5 + GameConstants.NUM_CORPS + 1  # 53 total
 
     layout.total_size = layout.visible_size + layout.hidden_size
 
@@ -351,34 +270,6 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
 # =============================================================================
 # TURN STATE SUB-OFFSETS
 # =============================================================================
-
-cdef struct TurnStateOffsets:
-    int turn_number
-    int end_card_flipped
-    int consecutive_passes
-    # Auction
-    int auction_company
-    int auction_price
-    int auction_high_bidder
-    int auction_starter
-    int auction_passed
-    # Dividends
-    int dividend_corp
-    int dividend_impact
-    int dividend_remaining
-    # Issue
-    int issue_corp
-    int issue_remaining
-    # IPO
-    int ipo_company
-    int ipo_remaining
-    # Acquisition offers
-    int acq_active_corp
-    int acq_target_company
-    int acq_is_fi_offer
-    # Closing phase
-    int closing_company
-
 
 cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
     """Compute sub-offsets within turn state section."""
@@ -394,7 +285,7 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
 
     # Auction
     t.auction_company = offset
-    offset += NUM_COMPANIES
+    offset += GameConstants.NUM_COMPANIES
     t.auction_price = offset
     offset += 1
     t.auction_high_bidder = offset
@@ -406,35 +297,35 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
 
     # Dividends
     t.dividend_corp = offset
-    offset += NUM_CORPS
+    offset += GameConstants.NUM_CORPS
     t.dividend_impact = offset
-    offset += MAX_DIVIDEND
+    offset += GameConstants.MAX_DIVIDEND
     t.dividend_remaining = offset
-    offset += NUM_CORPS
+    offset += GameConstants.NUM_CORPS
 
     # Issue
     t.issue_corp = offset
-    offset += NUM_CORPS
+    offset += GameConstants.NUM_CORPS
     t.issue_remaining = offset
-    offset += NUM_CORPS
+    offset += GameConstants.NUM_CORPS
 
     # IPO
     t.ipo_company = offset
-    offset += NUM_COMPANIES
+    offset += GameConstants.NUM_COMPANIES
     t.ipo_remaining = offset
-    offset += NUM_COMPANIES
+    offset += GameConstants.NUM_COMPANIES
 
     # Acquisition offers
     t.acq_active_corp = offset
-    offset += NUM_CORPS
+    offset += GameConstants.NUM_CORPS
     t.acq_target_company = offset
-    offset += NUM_COMPANIES
+    offset += GameConstants.NUM_COMPANIES
     t.acq_is_fi_offer = offset
     offset += 1
 
     # Closing phase
     t.closing_company = offset
-    offset += NUM_COMPANIES
+    offset += GameConstants.NUM_COMPANIES
 
     return t
 
@@ -442,18 +333,6 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
 # =============================================================================
 # PLAYER FIELD OFFSETS (within player stride)
 # =============================================================================
-
-cdef struct PlayerFieldOffsets:
-    int cash
-    int net_worth
-    int turn_order
-    int is_auction_high_bidder
-    int owned_companies
-    int owned_shares
-    int is_president
-    int share_buys
-    int share_sells
-
 
 cdef PlayerFieldOffsets compute_player_field_offsets(int num_players) noexcept nogil:
     """Compute field offsets within a player's data block."""
@@ -469,13 +348,13 @@ cdef PlayerFieldOffsets compute_player_field_offsets(int num_players) noexcept n
     p.is_auction_high_bidder = offset
     offset += 1
     p.owned_companies = offset
-    offset += NUM_COMPANIES
+    offset += GameConstants.NUM_COMPANIES
     p.owned_shares = offset
-    offset += NUM_CORPS
+    offset += GameConstants.NUM_CORPS
     p.is_president = offset
-    offset += NUM_CORPS
+    offset += GameConstants.NUM_CORPS
     p.share_buys = offset
-    offset += NUM_CORPS
+    offset += GameConstants.NUM_CORPS
     p.share_sells = offset
 
     return p
@@ -484,22 +363,6 @@ cdef PlayerFieldOffsets compute_player_field_offsets(int num_players) noexcept n
 # =============================================================================
 # CORP FIELD OFFSETS (within corp stride)
 # =============================================================================
-
-cdef struct CorpFieldOffsets:
-    int active
-    int cash
-    int unissued_shares
-    int issued_shares
-    int bank_shares
-    int income
-    int stars
-    int share_price
-    int acquisition_proceeds
-    int in_receivership
-    int price_index
-    int owned_companies
-    int acquisition_companies
-
 
 cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil:
     """Compute field offsets within a corp's data block."""
@@ -527,9 +390,9 @@ cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil:
     c.in_receivership = offset
     offset += 1
     c.price_index = offset
-    offset += NUM_MARKET_SPACES
+    offset += GameConstants.NUM_MARKET_SPACES
     c.owned_companies = offset
-    offset += NUM_COMPANIES
+    offset += GameConstants.NUM_COMPANIES
     c.acquisition_companies = offset
 
     return c
@@ -551,8 +414,8 @@ cdef class GameState:
     """
 
     def __cinit__(self, int num_players):
-        if num_players < 2 or num_players > MAX_PLAYERS:
-            raise ValueError(f"num_players must be 2-{MAX_PLAYERS}")
+        if num_players < 2 or num_players > GameConstants.MAX_PLAYERS:
+            raise ValueError(f"num_players must be 2-{GameConstants.MAX_PLAYERS}")
 
         self._num_players = num_players
 
@@ -572,7 +435,7 @@ cdef class GameState:
         # Initialize deck as empty
         self._set_deck_top(-1)
         cdef int i
-        for i in range(MAX_DECK_SIZE):
+        for i in range(GameConstants.MAX_DECK_SIZE):
             self._data[self._layout.visible_size + self._layout.hidden_deck_order_offset + i] = -1.0
 
         # Initialize one-hot visible fields and compact hidden storage together
@@ -593,11 +456,11 @@ cdef class GameState:
         self._data[self._layout.visible_size + self._layout.hidden_auction_starter_offset] = -1.0
 
         # Corp price indices: set to -1 (no price card / inactive) in compact storage
-        for i in range(NUM_CORPS):
+        for i in range(GameConstants.NUM_CORPS):
             self._data[self._layout.visible_size + self._layout.hidden_corp_price_indices_offset + i] = -1.0
 
         # Initialize market spaces as all available
-        for i in range(NUM_MARKET_SPACES):
+        for i in range(GameConstants.NUM_MARKET_SPACES):
             self._data[self._layout.market_offset + i] = 1.0
 
     def __init__(self, int num_players):
@@ -638,9 +501,9 @@ cdef class GameState:
         cdef int i
         cdef float* phase_ptr = self._data + self._layout.phase_offset
         # Update one-hot visible state
-        for i in range(NUM_PHASES):
+        for i in range(GameConstants.NUM_PHASES):
             phase_ptr[i] = 0.0
-        if phase >= 0 and phase < NUM_PHASES:
+        if phase >= 0 and phase < GameConstants.NUM_PHASES:
             phase_ptr[phase] = 1.0
         # Update compact hidden storage
         self._data[self._layout.visible_size + self._layout.hidden_phase_offset] = <float>phase
@@ -658,9 +521,9 @@ cdef class GameState:
         cdef int i
         cdef float* coo_ptr = self._data + self._layout.coo_offset
         # Update one-hot visible state
-        for i in range(NUM_COO_LEVELS):
+        for i in range(GameConstants.NUM_COO_LEVELS):
             coo_ptr[i] = 0.0
-        if level >= 1 and level <= NUM_COO_LEVELS:
+        if level >= 1 and level <= GameConstants.NUM_COO_LEVELS:
             coo_ptr[level - 1] = 1.0
         # Update compact hidden storage
         self._data[self._layout.visible_size + self._layout.hidden_coo_level_offset] = <float>level
@@ -738,9 +601,9 @@ cdef class GameState:
         cdef float* ptr = self._turn_ptr() + self._turn.auction_company
         # Update one-hot visible state
         cdef float val = -1.0 if company_id < 0 else 0.0
-        for i in range(NUM_COMPANIES):
+        for i in range(GameConstants.NUM_COMPANIES):
             ptr[i] = val
-        if company_id >= 0 and company_id < NUM_COMPANIES:
+        if company_id >= 0 and company_id < GameConstants.NUM_COMPANIES:
             ptr[company_id] = 1.0
         # Update compact hidden storage
         self._data[self._layout.visible_size + self._layout.hidden_auction_company_offset] = <float>company_id
@@ -833,7 +696,7 @@ cdef class GameState:
 
     cdef inline bint is_game_over(self) noexcept nogil:
         """Check if game is over."""
-        return self.get_phase() == PHASE_GAME_OVER
+        return self.get_phase() == GamePhases.PHASE_GAME_OVER
 
     cdef inline void advance_active_player(self) noexcept nogil:
         """Move to next player in turn order."""
@@ -947,7 +810,7 @@ cdef class GameState:
     cdef inline void move_revealed_to_auction(self) noexcept nogil:
         """Move all revealed companies to available for auction."""
         cdef int i
-        for i in range(NUM_COMPANIES):
+        for i in range(GameConstants.NUM_COMPANIES):
             if self.is_company_revealed(i):
                 self.set_company_for_auction(i, True)
                 self.set_company_revealed(i, False)
@@ -1034,9 +897,9 @@ cdef class GameState:
         cdef float* corp = self._corp_ptr(corp_id)
         cdef int i
         # Update one-hot visible state
-        for i in range(NUM_MARKET_SPACES):
+        for i in range(GameConstants.NUM_MARKET_SPACES):
             corp[self._corp_fields.price_index + i] = 0.0
-        if index >= 0 and index < NUM_MARKET_SPACES:
+        if index >= 0 and index < GameConstants.NUM_MARKET_SPACES:
             corp[self._corp_fields.price_index + index] = 1.0
             # Update share_price field
             corp[self._corp_fields.share_price] = <float>MARKET_PRICES[index] / CASH_DIVISOR
@@ -1066,7 +929,7 @@ cdef class GameState:
         cdef float* corp = self._corp_ptr(corp_id)
         cdef int count = 0
         cdef int i
-        for i in range(NUM_COMPANIES):
+        for i in range(GameConstants.NUM_COMPANIES):
             if corp[self._corp_fields.owned_companies + i] == 1.0:
                 count += 1
         return count
@@ -1104,7 +967,7 @@ cdef class GameState:
         """Get active buying corp in acquisition offer, or -1."""
         cdef int i
         cdef float* ptr = self._turn_ptr() + self._turn.acq_active_corp
-        for i in range(NUM_CORPS):
+        for i in range(GameConstants.NUM_CORPS):
             if ptr[i] == 1.0:
                 return i
         return -1
@@ -1114,9 +977,9 @@ cdef class GameState:
         cdef int i
         cdef float* ptr = self._turn_ptr() + self._turn.acq_active_corp
         cdef float val = -1.0 if corp_id < 0 else 0.0
-        for i in range(NUM_CORPS):
+        for i in range(GameConstants.NUM_CORPS):
             ptr[i] = val
-        if corp_id >= 0 and corp_id < NUM_CORPS:
+        if corp_id >= 0 and corp_id < GameConstants.NUM_CORPS:
             ptr[corp_id] = 1.0
 
     cdef inline int get_acq_target_company(self) noexcept nogil:
@@ -1134,8 +997,10 @@ cdef class GameState:
         cdef float* ptr = self._turn_ptr() + self._turn.acq_target_company
         cdef float val = -1.0 if company_id < 0 else 0.0
         for i in range(NUM_COMPANIES):
+        for i in range(GameConstants.NUM_COMPANIES):
             ptr[i] = val
         if company_id >= 0 and company_id < NUM_COMPANIES:
+        if company_id >= 0 and company_id < GameConstants.NUM_COMPANIES:
             ptr[company_id] = 1.0
 
     cdef inline bint is_acq_fi_offer(self) noexcept nogil:
@@ -1175,7 +1040,7 @@ cdef class GameState:
         """Move acquisition companies to owned and proceeds to cash for all corps."""
         cdef int corp_id, company_id
         cdef float* corp
-        for corp_id in range(NUM_CORPS):
+        for corp_id in range(GameConstants.NUM_CORPS):
             if not self.is_corp_active(corp_id):
                 continue
             corp = self._corp_ptr(corp_id)
@@ -1183,7 +1048,7 @@ cdef class GameState:
             self.add_corp_cash(corp_id, self.get_corp_acquisition_proceeds(corp_id))
             self.set_corp_acquisition_proceeds(corp_id, 0)
             # Move acquisition companies to owned
-            for company_id in range(NUM_COMPANIES):
+            for company_id in range(GameConstants.NUM_COMPANIES):
                 if self.corp_has_acquisition_company(corp_id, company_id):
                     self.set_corp_owns_company(corp_id, company_id, True)
                     self.set_corp_acquisition_company(corp_id, company_id, False)
@@ -1196,7 +1061,7 @@ cdef class GameState:
         """Get current company offered for closing, or -1 if none."""
         cdef int i
         cdef float* ptr = self._turn_ptr() + self._turn.closing_company
-        for i in range(NUM_COMPANIES):
+        for i in range(GameConstants.NUM_COMPANIES):
             if ptr[i] == 1.0:
                 return i
         return -1
@@ -1206,9 +1071,9 @@ cdef class GameState:
         cdef int i
         cdef float* ptr = self._turn_ptr() + self._turn.closing_company
         cdef float val = -1.0 if company_id < 0 else 0.0
-        for i in range(NUM_COMPANIES):
+        for i in range(GameConstants.NUM_COMPANIES):
             ptr[i] = val
-        if company_id >= 0 and company_id < NUM_COMPANIES:
+        if company_id >= 0 and company_id < GameConstants.NUM_COMPANIES:
             ptr[company_id] = 1.0
 
     cdef inline void clear_closing_company(self) noexcept nogil:
@@ -1267,16 +1132,16 @@ cdef class GameState:
 
     cdef inline int get_company_adjusted_income(self, int company_id) noexcept nogil:
         """Get company's adjusted income (base income minus CoO cost)."""
-        return <int>(self._data[self._layout.company_incomes_offset + company_id] * INCOME_DIVISOR + 0.5)
+        return <int>(self._data[self._layout.company_incomes_offset + company_id] * CASH_DIVISOR + 0.5)
 
     cdef inline void update_all_company_incomes(self) noexcept nogil:
         """Update all company incomes based on current CoO level."""
         cdef int company_id
         cdef int coo_level = self.get_coo_level()
         cdef int adjusted_income
-        for company_id in range(NUM_COMPANIES):
+        for company_id in range(GameConstants.NUM_COMPANIES):
             adjusted_income = get_adjusted_company_income(company_id, coo_level)
-            self._data[self._layout.company_incomes_offset + company_id] = <float>adjusted_income / INCOME_DIVISOR
+            self._data[self._layout.company_incomes_offset + company_id] = <float>adjusted_income / CASH_DIVISOR
 
     # =========================================================================
     # MARKET SPACE AVAILABILITY
@@ -1316,20 +1181,20 @@ cdef class GameState:
         self.set_corp_acquisition_proceeds(corp_id, 0)
 
         # Clear price index (no market card)
-        for i in range(NUM_MARKET_SPACES):
+        for i in range(GameConstants.NUM_MARKET_SPACES):
             corp[self._corp_fields.price_index + i] = 0.0
 
         # Clear share price
         corp[self._corp_fields.share_price] = 0.0
 
         # Remove all owned companies
-        for i in range(NUM_COMPANIES):
+        for i in range(GameConstants.NUM_COMPANIES):
             if self.corp_owns_company(corp_id, i):
                 self.set_corp_owns_company(corp_id, i, False)
                 self.set_company_removed(i, True)
 
         # Clear acquisition companies
-        for i in range(NUM_COMPANIES):
+        for i in range(GameConstants.NUM_COMPANIES):
             self.set_corp_acquisition_company(corp_id, i, False)
 
         # Clear player presidencies for this corp
@@ -1446,7 +1311,7 @@ cdef class GameState:
         memcpy(
             dst + self._turn.auction_company,
             src + self._turn.auction_company,
-            NUM_COMPANIES * sizeof(float)
+            GameConstants.NUM_COMPANIES * sizeof(float)
         )
 
         # Auction price
@@ -1752,7 +1617,7 @@ cdef class GameState:
             random.seed(shuffle_seed)
 
         # Set phase to INVEST
-        self.set_phase(PHASE_INVEST)
+        self.set_phase(GamePhases.PHASE_INVEST)
 
         # Initialize players
         for player_id in range(self._num_players):
@@ -1825,7 +1690,7 @@ cdef class GameState:
             removed_companies: List of company IDs that are removed from game
         """
         # Set phase to INVEST
-        self.set_phase(PHASE_INVEST)
+        self.set_phase(GamePhases.PHASE_INVEST)
 
         # Initialize players
         for player_id in range(self._num_players):
@@ -1887,14 +1752,14 @@ def get_visible_size(int num_players):
 
 def get_market_price(int index):
     """Get share price at market index."""
-    if index < 0 or index >= NUM_MARKET_SPACES:
+    if index < 0 or index >= GameConstants.NUM_MARKET_SPACES:
         return -1
     return MARKET_PRICES[index]
 
 def get_market_index(int price):
     """Get market index for a share price."""
     cdef int i
-    for i in range(NUM_MARKET_SPACES):
+    for i in range(GameConstants.NUM_MARKET_SPACES):
         if MARKET_PRICES[i] == price:
             return i
     return -1

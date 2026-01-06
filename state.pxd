@@ -7,33 +7,6 @@ Allows other Cython modules to cimport GameState and its methods.
 cimport numpy as cnp
 
 # =============================================================================
-# CONSTANTS
-# =============================================================================
-
-cdef enum:
-    NUM_COMPANIES = 36
-    NUM_CORPS = 8
-    NUM_MARKET_SPACES = 27
-    NUM_PHASES = 11
-    NUM_COO_LEVELS = 7
-    MAX_PLAYERS = 6
-    MAX_DECK_SIZE = 36
-
-cdef enum:
-    PHASE_INVEST = 0
-    PHASE_BID_IN_AUCTION = 1
-    PHASE_WRAP_UP = 2
-    PHASE_ACQUISITION = 3
-    PHASE_CLOSING = 4
-    PHASE_INCOME = 5
-    PHASE_DIVIDENDS = 6
-    PHASE_END_CARD = 7
-    PHASE_ISSUE_SHARES = 8
-    PHASE_IPO = 9
-    PHASE_GAME_OVER = 10
-
-
-# =============================================================================
 # LAYOUT STRUCTURES
 # =============================================================================
 
@@ -78,7 +51,6 @@ cdef struct StateLayout:
     int hidden_corp_price_indices_offset
     int hidden_acq_corps_done_offset
 
-
 cdef struct TurnStateOffsets:
     int turn_number
     int end_card_flipped
@@ -101,7 +73,6 @@ cdef struct TurnStateOffsets:
     # Closing phase
     int closing_company
 
-
 cdef struct PlayerFieldOffsets:
     int cash
     int net_worth
@@ -112,7 +83,6 @@ cdef struct PlayerFieldOffsets:
     int is_president
     int share_buys
     int share_sells
-
 
 cdef struct CorpFieldOffsets:
     int active
@@ -129,7 +99,6 @@ cdef struct CorpFieldOffsets:
     int owned_companies
     int acquisition_companies
 
-
 # =============================================================================
 # LAYOUT COMPUTATION FUNCTIONS
 # =============================================================================
@@ -138,7 +107,6 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil
 cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil
 cdef PlayerFieldOffsets compute_player_field_offsets(int num_players) noexcept nogil
 cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil
-
 
 # =============================================================================
 # GAMESTATE CLASS
