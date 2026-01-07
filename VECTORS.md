@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | ~1650        | 52          | ~1702      |
-| 3       | ~1750        | 52          | ~1802      |
-| 4       | ~1850        | 52          | ~1902      |
-| 5       | ~1950        | 52          | ~2002      |
-| 6       | ~2050        | 52          | ~2102      |
+| 2       | 2941         | 52          | 2993       |
+| 3       | 3020         | 52          | 3072       |
+| 4       | 3101         | 52          | 3153       |
+| 5       | 3184         | 52          | 3236       |
+| 6       | 3269         | 52          | 3321       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 
@@ -210,6 +210,7 @@ Per company (40 floats):
 
 ## Hidden State Layout
 
+Hidden state starts at `visible_size` offset. Total hidden size = 52.
 Hidden state starts at `visible_size` offset. Total hidden size = 52.
 
 | Field | Offset | Size | Notes |

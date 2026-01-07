@@ -26,6 +26,7 @@ cdef class Corporation:
         self.name = name
         self._base_offset = 0
         self._num_players = 0
+        self._hidden_price_index_offset = 0
 
     cpdef void initialize(self, GameState state):
         """
@@ -38,6 +39,9 @@ cdef class Corporation:
 
         self._num_players = state._num_players
         self._base_offset = layout.corps_offset + (self.corp_id * layout.corp_stride)
+
+        # Hidden state offset for fast price index access (one slot per corp)
+        self._hidden_price_index_offset = layout.visible_size + layout.hidden_corp_price_indices_offset + self.corp_id
 
         # Cache absolute offsets for each field
         self._active_offset = self._base_offset + fields.active
@@ -144,22 +148,19 @@ cdef class Corporation:
         state._data[self._share_price_offset] = <float>price / CASH_DIVISOR
 
     cpdef int get_price_index(self, GameState state):
-        """Get market price index (0-26, where 0 is bankruptcy)."""
-        cdef int i
-        for i in range(GameConstants.NUM_MARKET_SPACES):
-            if state._data[self._price_index_offset + i] == 1.0:
-                return i
-        return -1  # Not found (shouldn't happen for active corp)
+        """Get market price index (0-26, where 0 is bankruptcy). Uses hidden compact storage for O(1) access."""
+        return <int>state._data[self._hidden_price_index_offset]
 
     cpdef void set_price_index(self, GameState state, int index):
-        """Set market price index (one-hot encoded)."""
+        """Set market price index. Updates both one-hot and hidden compact storage."""
         cdef int i
-        # Clear all positions
+        # Clear one-hot encoding
         for i in range(GameConstants.NUM_MARKET_SPACES):
             state._data[self._price_index_offset + i] = 0.0
-        # Set the specified position
+        # Set one-hot and hidden compact value
         if index >= 0 and index < GameConstants.NUM_MARKET_SPACES:
             state._data[self._price_index_offset + index] = 1.0
+            state._data[self._hidden_price_index_offset] = <float>index
             # Also update the denormalized share_price field
             self.set_share_price(state, MARKET_PRICES[index])
 

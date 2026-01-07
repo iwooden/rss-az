@@ -9,6 +9,9 @@ reused across all game states.
 
 from entities import player as _player_module
 from entities import corp as _corp_module
+from entities import fi as _fi_module
+from entities import market as _market_module
+from entities import turn as _turn_module
 
 # Re-export at package level
 Player = _player_module.Player
@@ -17,4 +20,13 @@ PLAYERS = _player_module.PLAYERS
 Corporation = _corp_module.Corporation
 CORPS = _corp_module.CORPS
 
-__all__ = ['Player', 'PLAYERS', 'Corporation', 'CORPS']
+ForeignInvestor = _fi_module.ForeignInvestor
+FI = _fi_module.FI
+
+Market = _market_module.Market
+MARKET = _market_module.MARKET
+
+TurnState = _turn_module.TurnState
+TURN = _turn_module.TURN
+
+__all__ = ['Player', 'PLAYERS', 'Corporation', 'CORPS', 'ForeignInvestor', 'FI', 'Market', 'MARKET', 'TurnState', 'TURN']

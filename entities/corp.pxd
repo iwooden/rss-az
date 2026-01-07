@@ -12,6 +12,9 @@ cdef class Corporation:
     cdef int _base_offset      # Cached offset to this corp's data in state array
     cdef int _num_players      # Cached player count
 
+    # Hidden state offset for fast price index access
+    cdef int _hidden_price_index_offset
+
     # Field offsets within corp stride (cached on first use)
     cdef int _active_offset
     cdef int _cash_offset
