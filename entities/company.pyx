@@ -1,0 +1,345 @@
+# cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
+"""
+Company entity implementation.
+
+Provides clean getter/setter access to company state and efficient transfer
+operations. Each Company instance tracks where it exists in the state vector
+for O(1) location queries and atomic transfers.
+"""
+
+from state cimport GameState, StateLayout, PlayerFieldOffsets, CorpFieldOffsets
+from data cimport (
+    GameConstants, CASH_DIVISOR,
+    get_company_face_value, get_company_low_price, get_company_high_price,
+    get_company_stars, get_company_income, get_company_synergy,
+    is_last_in_group as data_is_last_in_group
+)
+from data import COMPANY_NAMES
+
+
+cdef class Company:
+    """
+    Entity handle for accessing company state.
+
+    Companies are instantiated once at module load with their company_id.
+    Offsets are computed on first access to a GameState via initialize().
+    All methods take GameState as first argument for stateless operation.
+
+    The company tracks its current location in the game state for efficient
+    transfers. When transferring, the old location is cleared and the new
+    location is set atomically.
+    """
+
+    def __cinit__(self, int company_id, str name):
+        self.company_id = company_id
+        self.name = name
+        self._location = LOC_UNKNOWN
+        self._owner_id = -1
+        self._num_players = 0
+
+    cpdef void initialize(self, GameState state):
+        """
+        Initialize offsets from state layout. Call once when starting a new game.
+
+        This must be called before using any other methods on this Company instance.
+        """
+        cdef StateLayout layout = state._layout
+        cdef PlayerFieldOffsets player_fields = state._player_fields
+        cdef CorpFieldOffsets corp_fields = state._corp_fields
+
+        self._num_players = state._num_players
+
+        # Direct offsets for this company's flags
+        self._auction_offset = layout.auction_companies_offset + self.company_id
+        self._revealed_offset = layout.revealed_companies_offset + self.company_id
+        self._removed_offset = layout.removed_companies_offset + self.company_id
+        self._fi_offset = layout.fi_offset + 1 + self.company_id  # +1 for fi_cash
+        self._income_offset = layout.company_incomes_offset + self.company_id
+
+        # Player ownership requires computing per-player offsets
+        self._players_offset = layout.players_offset
+        self._player_stride = layout.player_stride
+        self._player_companies_field = player_fields.owned_companies
+
+        # Corp ownership requires computing per-corp offsets
+        self._corps_offset = layout.corps_offset
+        self._corp_stride = layout.corp_stride
+        self._corp_companies_field = corp_fields.owned_companies
+        self._corp_acq_field = corp_fields.acquisition_companies
+
+        # Scan to find initial location
+        self._scan_location(state)
+
+    # =========================================================================
+    # LOCATION QUERIES
+    # =========================================================================
+
+    cdef void _scan_location(self, GameState state):
+        """Scan state to find where this company currently exists."""
+        cdef int i
+
+        # Check auction
+        if state._data[self._auction_offset] == 1.0:
+            self._location = LOC_AUCTION
+            self._owner_id = -1
+            return
+
+        # Check revealed
+        if state._data[self._revealed_offset] == 1.0:
+            self._location = LOC_REVEALED
+            self._owner_id = -1
+            return
+
+        # Check removed
+        if state._data[self._removed_offset] == 1.0:
+            self._location = LOC_REMOVED
+            self._owner_id = -1
+            return
+
+        # Check FI ownership
+        if state._data[self._fi_offset] == 1.0:
+            self._location = LOC_FI
+            self._owner_id = -1
+            return
+
+        # Check player ownership
+        for i in range(self._num_players):
+            if state._data[self._players_offset + i * self._player_stride + self._player_companies_field + self.company_id] == 1.0:
+                self._location = LOC_PLAYER
+                self._owner_id = i
+                return
+
+        # Check corp ownership and acquisition piles
+        for i in range(GameConstants.NUM_CORPS):
+            if state._data[self._corps_offset + i * self._corp_stride + self._corp_companies_field + self.company_id] == 1.0:
+                self._location = LOC_CORP
+                self._owner_id = i
+                return
+            if state._data[self._corps_offset + i * self._corp_stride + self._corp_acq_field + self.company_id] == 1.0:
+                self._location = LOC_CORP_ACQ
+                self._owner_id = i
+                return
+
+        # Not found in any visible location - must be in deck
+        self._location = LOC_DECK
+        self._owner_id = -1
+
+    cpdef int get_location(self, GameState state):
+        """Get current location type. Returns CompanyLocation enum value."""
+        # Re-scan if unknown (shouldn't happen after initialize)
+        if self._location == LOC_UNKNOWN:
+            self._scan_location(state)
+        return <int>self._location
+
+    cpdef int get_owner_id(self, GameState state):
+        """Get owner ID (player or corp) if applicable, -1 otherwise."""
+        if self._location == LOC_UNKNOWN:
+            self._scan_location(state)
+        return self._owner_id
+
+    cpdef bint is_in_deck(self, GameState state):
+        """Check if company is in the draw deck."""
+        if self._location == LOC_UNKNOWN:
+            self._scan_location(state)
+        return self._location == LOC_DECK
+
+    cpdef bint is_for_auction(self, GameState state):
+        """Check if company is available for auction."""
+        return state._data[self._auction_offset] == 1.0
+
+    cpdef bint is_revealed(self, GameState state):
+        """Check if company was revealed this turn (drawn but not auctionable)."""
+        return state._data[self._revealed_offset] == 1.0
+
+    cpdef bint is_owned_by_player(self, GameState state, int player_id):
+        """Check if company is owned by specific player."""
+        if player_id < 0 or player_id >= self._num_players:
+            return False
+        return state._data[self._players_offset + player_id * self._player_stride + self._player_companies_field + self.company_id] == 1.0
+
+    cpdef bint is_owned_by_fi(self, GameState state):
+        """Check if company is owned by Foreign Investor."""
+        return state._data[self._fi_offset] == 1.0
+
+    cpdef bint is_owned_by_corp(self, GameState state, int corp_id):
+        """Check if company is owned by specific corporation."""
+        if corp_id < 0 or corp_id >= GameConstants.NUM_CORPS:
+            return False
+        return state._data[self._corps_offset + corp_id * self._corp_stride + self._corp_companies_field + self.company_id] == 1.0
+
+    cpdef bint is_in_corp_acquisition(self, GameState state, int corp_id):
+        """Check if company is in specific corporation's acquisition pile."""
+        if corp_id < 0 or corp_id >= GameConstants.NUM_CORPS:
+            return False
+        return state._data[self._corps_offset + corp_id * self._corp_stride + self._corp_acq_field + self.company_id] == 1.0
+
+    cpdef bint is_removed(self, GameState state):
+        """Check if company has been removed from the game."""
+        return state._data[self._removed_offset] == 1.0
+
+    # =========================================================================
+    # TRANSFER OPERATIONS
+    # =========================================================================
+
+    cpdef void clear_location(self, GameState state):
+        """Clear company from its current location without setting a new one."""
+        cdef int i
+
+        # Clear based on cached location for efficiency
+        if self._location == LOC_AUCTION:
+            state._data[self._auction_offset] = 0.0
+        elif self._location == LOC_REVEALED:
+            state._data[self._revealed_offset] = 0.0
+        elif self._location == LOC_REMOVED:
+            state._data[self._removed_offset] = 0.0
+        elif self._location == LOC_FI:
+            state._data[self._fi_offset] = 0.0
+        elif self._location == LOC_PLAYER:
+            state._data[self._players_offset + self._owner_id * self._player_stride + self._player_companies_field + self.company_id] = 0.0
+        elif self._location == LOC_CORP:
+            state._data[self._corps_offset + self._owner_id * self._corp_stride + self._corp_companies_field + self.company_id] = 0.0
+        elif self._location == LOC_CORP_ACQ:
+            state._data[self._corps_offset + self._owner_id * self._corp_stride + self._corp_acq_field + self.company_id] = 0.0
+        # LOC_DECK has no flag to clear
+
+        self._location = LOC_DECK  # Default to deck after clearing
+        self._owner_id = -1
+
+    cpdef void transfer_to_player(self, GameState state, int player_id):
+        """Transfer company to player ownership."""
+        if player_id < 0 or player_id >= self._num_players:
+            return
+
+        # Clear old location
+        self.clear_location(state)
+
+        # Set new location
+        state._data[self._players_offset + player_id * self._player_stride + self._player_companies_field + self.company_id] = 1.0
+        self._location = LOC_PLAYER
+        self._owner_id = player_id
+
+    cpdef void transfer_to_fi(self, GameState state):
+        """Transfer company to Foreign Investor ownership."""
+        # Clear old location
+        self.clear_location(state)
+
+        # Set new location
+        state._data[self._fi_offset] = 1.0
+        self._location = LOC_FI
+        self._owner_id = -1
+
+    cpdef void transfer_to_corp(self, GameState state, int corp_id):
+        """Transfer company to corporation ownership."""
+        if corp_id < 0 or corp_id >= GameConstants.NUM_CORPS:
+            return
+
+        # Clear old location
+        self.clear_location(state)
+
+        # Set new location
+        state._data[self._corps_offset + corp_id * self._corp_stride + self._corp_companies_field + self.company_id] = 1.0
+        self._location = LOC_CORP
+        self._owner_id = corp_id
+
+    cpdef void transfer_to_corp_acquisition(self, GameState state, int corp_id):
+        """Transfer company to corporation's acquisition pile."""
+        if corp_id < 0 or corp_id >= GameConstants.NUM_CORPS:
+            return
+
+        # Clear old location
+        self.clear_location(state)
+
+        # Set new location
+        state._data[self._corps_offset + corp_id * self._corp_stride + self._corp_acq_field + self.company_id] = 1.0
+        self._location = LOC_CORP_ACQ
+        self._owner_id = corp_id
+
+    cpdef void move_to_auction(self, GameState state):
+        """Make company available for auction."""
+        # Clear old location
+        self.clear_location(state)
+
+        # Set new location
+        state._data[self._auction_offset] = 1.0
+        self._location = LOC_AUCTION
+        self._owner_id = -1
+
+    cpdef void set_revealed(self, GameState state, bint revealed):
+        """Set whether company is revealed this turn (drawn but not auctionable)."""
+        if revealed:
+            # Clear old location first
+            self.clear_location(state)
+            state._data[self._revealed_offset] = 1.0
+            self._location = LOC_REVEALED
+            self._owner_id = -1
+        else:
+            # Just clear the revealed flag without changing location
+            state._data[self._revealed_offset] = 0.0
+            if self._location == LOC_REVEALED:
+                # Need to rescan since we don't know where it went
+                self._scan_location(state)
+
+    cpdef void remove_from_game(self, GameState state):
+        """Remove company from the game (closed)."""
+        # Clear old location
+        self.clear_location(state)
+
+        # Set removed flag
+        state._data[self._removed_offset] = 1.0
+        self._location = LOC_REMOVED
+        self._owner_id = -1
+
+    # =========================================================================
+    # STATIC COMPANY DATA
+    # =========================================================================
+
+    cpdef int get_face_value(self):
+        """Get company's face value."""
+        return get_company_face_value(self.company_id)
+
+    cpdef int get_low_price(self):
+        """Get company's low acquisition price."""
+        return get_company_low_price(self.company_id)
+
+    cpdef int get_high_price(self):
+        """Get company's high acquisition price."""
+        return get_company_high_price(self.company_id)
+
+    cpdef int get_stars(self):
+        """Get company's star rating."""
+        return get_company_stars(self.company_id)
+
+    cpdef int get_base_income(self):
+        """Get company's base income (before cost of ownership)."""
+        return get_company_income(self.company_id)
+
+    cpdef bint is_last_in_group(self):
+        """Check if company is last in its color group (triggers CoO increase)."""
+        return data_is_last_in_group(self.company_id)
+
+    cpdef int get_synergy_with(self, int other_company_id):
+        """Get synergy bonus when this company is paired with another."""
+        if other_company_id < 0 or other_company_id >= GameConstants.NUM_COMPANIES:
+            return 0
+        return get_company_synergy(self.company_id, other_company_id)
+
+    # =========================================================================
+    # DYNAMIC DATA FROM STATE
+    # =========================================================================
+
+    cpdef int get_adjusted_income(self, GameState state):
+        """Get company's adjusted income (after cost of ownership)."""
+        return <int>(state._data[self._income_offset] * CASH_DIVISOR + 0.5)
+
+    cpdef void set_adjusted_income(self, GameState state, int income):
+        """Set company's adjusted income."""
+        state._data[self._income_offset] = <float>income / CASH_DIVISOR
+
+
+# =============================================================================
+# GLOBAL COMPANY INSTANCES
+# =============================================================================
+
+# Initialize companies and store in both list (by ID) and dict (by name)
+COMPANIES = [Company(i, name) for i, name in enumerate(COMPANY_NAMES)]
+COMPANIES_BY_NAME = {name: COMPANIES[i] for i, name in enumerate(COMPANY_NAMES)}
