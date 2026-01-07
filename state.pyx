@@ -330,7 +330,7 @@ cdef class GameState:
     Holds the raw memory buffer and layout information.
     Logic is delegated to Entity handles and Phase classes.
     """
-    def __cinit__(self, int num_players):
+    def __cinit__(self, unsigned int num_players):
         if num_players < 2 or num_players > GameConstants.MAX_PLAYERS:
             raise ValueError(f"num_players must be 2-{GameConstants.MAX_PLAYERS}")
 
@@ -348,9 +348,3 @@ cdef class GameState:
 
         # Initialize constant hidden state fields
         self._data[self._layout.visible_size + self._layout.hidden_num_players_offset] = <float>num_players
-        self._data[self._layout.visible_size + self._layout.hidden_deck_top_offset] = -1.0
-        
-        # Initialize deck order to -1
-        cdef int i
-        for i in range(GameConstants.MAX_DECK_SIZE):
-            self._data[self._layout.visible_size + self._layout.hidden_deck_order_offset + i] = -1.0

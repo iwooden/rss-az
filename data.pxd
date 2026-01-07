@@ -45,17 +45,12 @@ cpdef enum CorpIndices:
     CORP_VM = 6 # Gets min(10, total_cost_of_ownership) bonus
     CORP_SI = 7 # Gets +2 share price movement after dividends
 
-# Normalization constants (can't declare floats in enums)
-cdef const float CASH_DIVISOR = 200.0
-cdef const float SHARE_DIVISOR = 7.0
-cdef const float STAR_DIVISOR = 20.0
-cdef const float MAX_ROUNDTRIPS = 2.0
-
-# Python normalization declarations
-PY_CASH_DIVISOR = CASH_DIVISOR
-PY_SHARE_DIVISOR = SHARE_DIVISOR
-PY_STAR_DIVISOR = STAR_DIVISOR
-PY_MAX_ROUNDTRIPS = MAX_ROUNDTRIPS
+# Normalization constants
+# Note: These are declared as extern here, defined in data.pyx
+cdef float CASH_DIVISOR
+cdef float SHARE_DIVISOR
+cdef float STAR_DIVISOR
+cdef float MAX_ROUNDTRIPS
 
 # Company data arrays
 cdef int[36] COMPANY_FACE_VALUE
