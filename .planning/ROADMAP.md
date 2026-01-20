@@ -2,7 +2,7 @@
 
 ## Overview
 
-Single-phase implementation of GameState.initialize_new_game() method. All 25 requirements work together to deliver one atomic capability: producing a valid starting game state following official setup rules.
+Single-phase implementation of GameState.initialize_game() method. All 25 requirements work together to deliver one atomic capability: producing a valid starting game state following official setup rules.
 
 ## Phases
 
@@ -21,16 +21,16 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Depends on**: Nothing (first phase)
 **Requirements**: INIT-01, INIT-02, PLYR-01, PLYR-02, PLYR-03, PLYR-04, FI-01, FI-02, CORP-01, CORP-02, CORP-03, CORP-04, MKT-01, DECK-01, DECK-02, DECK-03, DECK-04, DECK-05, DRAW-01, DRAW-02, TURN-01, TURN-02, TURN-03, TURN-04, TURN-05
 **Success Criteria** (what must be TRUE):
-  1. Developer can call GameState.initialize_new_game() with optional seed and receive a valid starting state
-  2. Players receive correct starting cash (30● for 3-5p, 25● for 6p) and turn order
-  3. All corporations start inactive with reset shares, Foreign Investor has 4●
+  1. Developer can call GameState.initialize_game() with optional seed and receive a valid starting state
+  2. Players receive correct starting cash (30 for 3-5p, 25 for 6p) and turn order
+  3. All corporations start inactive with reset shares, Foreign Investor has 4
   4. Deck is built correctly per RULES.md (game end card at bottom, colors stacked, correct counts by player count)
   5. N companies (N = player count) drawn from deck and marked available for auction
   6. Turn state reflects game start (phase 1, CoO level 1, turn 1, active player 0)
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- TBD (will be created during plan-phase)
+- [ ] 01-01-PLAN.md - Implement initialize_game() method with comprehensive tests
 
 ## Progress
 
@@ -39,4 +39,4 @@ Phases execute in numeric order.
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Game State Initialization | 0/TBD | Not started | - |
+| 1. Game State Initialization | 0/1 | Planned | - |
