@@ -11,13 +11,12 @@
 **Files affected:**
 - `core/state.pyx`
 - `core/data.pyx`
-- `actions.pyx`
+- `core/actions.pyx`
 - `entities/*.pyx` (all entity files)
-- `helpers/*.pyx` (all helper files)
 
 **Impact:** Array index out-of-bounds errors will cause undefined behavior (segmentation faults, memory corruption) rather than clean Python exceptions. Makes debugging difficult and can silently corrupt game state.
 
-**Current mitigation:** Extensive use of `noexcept nogil` declarations throughout codebase ensures compile-time verification. Manual bounds checking done in critical paths like `decode_action()` (`actions.pyx:162-163`).
+**Current mitigation:** Extensive use of `noexcept nogil` declarations throughout codebase ensures compile-time verification. Manual bounds checking done in critical paths like `decode_action()` (`core/actions.pyx:162-163`).
 
 **Improvement path:**
 1. Document the index computation contracts precisely (why indices are safe)
@@ -31,17 +30,17 @@
 
 ### No Manual Memory Cleanup in Entity Handles
 
-**Issue:** Entity classes (`Player`, `Company`, `Corp`, `Turn`, `Deck`, etc. in `entities/` and `helpers/`) cache offset calculations in `__cinit__` and `initialize()`. If `initialize()` is never called, or called with incompatible state, cached offsets become invalid.
+**Issue:** Entity classes (`Player`, `Company`, `Corp`, `Turn`, `Deck`, etc. in `entities/`) cache offset calculations in `__cinit__` and `initialize()`. If `initialize()` is never called, or called with incompatible state, cached offsets become invalid.
 
 **Files:**
-- `entities/player.pyx:25-50` - caches offsets in `initialize()`
-- `entities/company.pyx:40-71` - caches offsets with location scanning
-- `entities/corp.pyx:31-60` - similar pattern
-- `entities/turn.pyx:35-80` - similar pattern
+- `entities/player.pyx:29-73` - caches offsets in `initialize()`
+- `entities/company.pyx:75-106` - caches offsets with location scanning
+- `entities/corp.pyx` - similar pattern
+- `entities/turn.pyx:35-93` - similar pattern
 
 **Impact:** Using an entity handle without calling `initialize()` will access memory at offset 0 (the first element of state vector), likely reading/writing wrong game state. Silent corruption.
 
-**Current mitigation:** Documentation states "This must be called before using any other methods." Global singleton instances (e.g., `PLAYERS = [Player(i) for i in range(6)]` in `entities/player.pyx:189`) are initialized once at game start.
+**Current mitigation:** Documentation states "This must be called before using any other methods." Global singleton instances (e.g., `PLAYERS = [Player(i) for i in range(6)]`) are initialized once at game start.
 
 **Risk:** New code paths that create entities and forget to call `initialize()` will fail silently. No compile-time checking.
 
@@ -71,10 +70,10 @@
 
 **Risk:** Changes to state layout (new fields, reordering) require manual updates to:
 1. `compute_layout()`
-2. Sub-offset functions (`compute_turn_offsets()`, `compute_player_field_offsets()`)
+2. Sub-offset functions (`compute_turn_offsets()`, `compute_player_field_offsets()`, `compute_corp_field_offsets()`)
 3. `VECTORS.md` documentation
 4. All entity `initialize()` methods
-5. Action decoding logic in `actions.pyx`
+5. Action decoding logic in `core/actions.pyx`
 
 Easy to miss steps and introduce subtle bugs.
 
@@ -102,7 +101,7 @@ Everything else returns sentinel values (-1) or undefined behavior.
 
 **Files affected:** All core modules lack assertions/validation:
 - `core/data.pyx` - lookup functions return -1 on invalid input
-- `actions.pyx` - action decoding returns partially-filled `ActionInfo` struct on invalid action index
+- `core/actions.pyx` - action decoding returns partially-filled `ActionInfo` struct on invalid action index
 - Entity methods assume valid corp_id/player_id/company_id
 
 **Impact:**
@@ -113,7 +112,7 @@ Everything else returns sentinel values (-1) or undefined behavior.
 **Examples of risky patterns:**
 - `core/data.pyx:225` - `get_market_index(int price)` returns -1 if price not in market
 - `entities/turn.pyx:207` - `get_auction_company()` returns -1 if not found, but callers may not check
-- `actions.pyx:162-163` - bounds check returns partially-initialized ActionInfo
+- `core/actions.pyx:162-163` - bounds check returns partially-initialized ActionInfo
 
 **Improvement path:**
 1. Add precondition checks at function entry points for critical functions
@@ -127,7 +126,7 @@ Everything else returns sentinel values (-1) or undefined behavior.
 
 ### Test Directory Empty / Tests Deleted
 
-**Issue:** `tests/` directory exists but is empty. CLAUDE.md references `pytest tests/test_invest.py -v` but no test files exist. Recent git commits show "delete tests" (commit 315a129).
+**Issue:** `tests/` directory exists but is empty. `CLAUDE.md:18-19` references `pytest tests/` but no test files exist. Recent git commits show "delete tests" (commit 315a129).
 
 **Files:**
 - `tests/` - completely empty
@@ -164,16 +163,11 @@ Everything else returns sentinel values (-1) or undefined behavior.
 
 ### Missing calculate_net_worth() Implementation
 
-**Issue:** `entities/player.pyx:81-82` has TODO:
+**Issue:** `entities/player.pyx` stores net worth as a value but never calculates it from current game state. The getter/setter exist but there's no logic to recompute net worth when game state changes.
 
-```python
-# TODO: calculate_net_worth() - requires Corp entity for share prices
-# Net worth = cash + sum(company face values) + sum(shares * share_price)
-```
+**Files:** `entities/player.pyx` - net worth storage only, no calculation
 
-**Files:** `entities/player.pyx:73-82`
-
-**Impact:** Net worth is only stored as a value (`set_net_worth()`), never calculated from current game state. If stored net worth becomes stale, it will diverge from actual net worth. Player state could be inconsistent.
+**Impact:** Net worth is only stored as a cached value (`set_net_worth()`), never calculated from current game state. If stored net worth becomes stale, it will diverge from actual net worth. Player state could be inconsistent.
 
 **Current usage:** Net worth appears to be set manually during game phases (stored but never updated). No clear code path that recalculates it.
 
@@ -223,14 +217,16 @@ Everything else returns sentinel values (-1) or undefined behavior.
 
 ### Entity Global Singleton Pattern Assumes Single Game Instance
 
-**Issue:** Global PLAYERS list initialized at module import:
+**Issue:** Global entity instances initialized at module import:
+- `entities/player.pyx` - PLAYERS global
+- `entities/company.pyx` - COMPANIES global
+- `entities/corp.pyx` - CORPS global
+- `entities/turn.pyx` - TURN global
+- `entities/deck.pyx` - DECK global
+- `entities/market.pyx` - MARKET global
+- `entities/fi.pyx` - FI global
 
-```python
-# entities/player.pyx:189
-PLAYERS = [Player(i) for i in range(6)]
-```
-
-Similar pattern for all entity types. Each entity caches state offsets in `initialize()`.
+Each entity caches state offsets in `initialize()`.
 
 **Impact:** If running multiple concurrent game instances with different player counts, the cached offsets become wrong. The offsets are player-count-dependent (see `compute_layout(num_players)` in `core/state.pyx:42`).
 
@@ -239,17 +235,16 @@ Similar pattern for all entity types. Each entity caches state offsets in `initi
 - API server serving multiple game instances
 - Testing multiple games simultaneously
 
-**Risk:** Silent state corruption if two games with different player counts try to use the same PLAYERS entity simultaneously.
+**Risk:** Silent state corruption if two games with different player counts try to use the same global entity instances simultaneously.
 
 **Files affected:**
-- `entities/player.pyx:189` - PLAYERS global
-- `entities/*.pyx` - all entity modules have similar globals
+- All entity modules use global singleton pattern
 - `core/state.pyx` - state layout cached per GameState instance (OK), but entities assume shared globals
 
 **Improvement path:**
 1. Document: "Not thread-safe. Designed for single sequential game instance per process"
 2. Or: restructure to pass player_count through entity method calls (remove state-dependent caching)
-3. Or: make entity pools thread-local
+3. Or: make entity pools thread-local or per-GameState
 4. Add test that verifies multi-instance isolation
 
 ---
@@ -263,7 +258,7 @@ Similar pattern for all entity types. Each entity caches state offsets in `initi
 **Files:**
 - `entities/player.pyx:56-67` - cash stored as `cash / CASH_DIVISOR`
 - `entities/player.pyx:122-128` - shares stored as `shares / SHARE_DIVISOR`
-- Divisors: `CASH_DIVISOR=200.0`, `SHARE_DIVISOR=7.0`
+- Divisors: `CASH_DIVISOR=200.0`, `SHARE_DIVISOR=7.0`, `STAR_DIVISOR=20.0`
 
 **Impact:** Repeated round-trip quantization can accumulate rounding errors:
 
@@ -290,6 +285,31 @@ float32 has ~7 decimal digits precision. For cash values up to $1M, precision lo
 
 ---
 
+## Code Organization
+
+### Scattered Action Decoding Logic
+
+**Issue:** Action space computation and decoding logic is spread across multiple functions in `core/actions.pyx`:
+- `compute_action_layout()` - computes action offsets
+- `decode_action()` - decodes action index to ActionInfo
+- `_fill_*_mask()` functions - generate valid action masks per phase
+
+**Files:** `core/actions.pyx:73-460`
+
+**Impact:**
+- Hard to maintain consistency when action space changes
+- Risk of off-by-one errors when action layout is modified
+- No central spec for action space structure
+
+**Risk:** Adding/removing action types requires updates in multiple functions, easy to miss one.
+
+**Improvement path:**
+1. Consider creating a structured action specification (enum-based or data-driven)
+2. Consolidate action layout computation into single source of truth
+3. Add comprehensive tests for each action phase's mask generation
+
+---
+
 ## Technical Debt Summary
 
 | Concern | Severity | Impact | Effort to Fix |
@@ -302,6 +322,7 @@ float32 has ~7 decimal digits precision. For cash values up to $1M, precision lo
 | Missing input validation | Medium | Silent failures | Medium |
 | Thread-unsafe global entities | Low | Blocks parallel usage | High |
 | Float32 precision risk | Low | Rounding errors at scale | Low |
+| Scattered action decoding | Medium | Maintenance burden | Medium |
 
 ---
 
