@@ -47,9 +47,9 @@ DEF PHASE_DIVIDENDS = 6
 DEF PHASE_ISSUE_SHARES = 8
 DEF PHASE_IPO = 9
 
-# Import low-level helpers for direct access
-from helpers.player cimport get_player_shares, PlayerOffsets, get_player_offsets
-from helpers.company cimport get_auction_company_for_slot
+# Import low-level functions from entities for direct access
+from entities.player cimport get_player_shares, PlayerOffsets, get_player_offsets
+from entities.company cimport get_auction_company_for_slot
 
 
 cdef int get_total_actions_for_players(int num_players) noexcept nogil:

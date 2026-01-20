@@ -68,7 +68,7 @@ def find_pyx_files(directory):
     return pyx_files
 
 # Get pyx files from subdirectories and root level
-pyx_files = find_pyx_files('helpers') + find_pyx_files('phases') + find_pyx_files('core')
+pyx_files = find_pyx_files('phases') + find_pyx_files('core') + find_pyx_files('entities')
 # Add root level pyx files (non-recursive)
 pyx_files += [f for f in os.listdir('.') if f.endswith('.pyx')]
 
@@ -87,7 +87,7 @@ for pyx_file in pyx_files:
 
 setup(
     name="rss-cython-core",
-    packages=['phases', 'helpers', 'entities', 'core'],
+    packages=['phases', 'entities', 'core'],
     ext_modules=cythonize(
         extensions,
         compiler_directives=compiler_directives,

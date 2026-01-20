@@ -6,7 +6,7 @@ Allows other Cython modules to cimport the data arrays and accessor functions.
 
 from libc.stdint cimport uint8_t, uint16_t, uint64_t, int8_t
 
-# Constants (these need to be accessible)
+# Constants enum - use GameConstants.NUM_COMPANIES etc.
 cpdef enum GameConstants:
     NUM_COMPANIES = 36
     NUM_CORPS = 8

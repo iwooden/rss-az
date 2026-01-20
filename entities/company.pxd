@@ -10,6 +10,13 @@ transfer operations that update both the old and new locations atomically.
 from core.state cimport GameState
 
 
+# =============================================================================
+# LOW-LEVEL FUNCTIONS (for nogil performance)
+# =============================================================================
+
+cdef int get_auction_company_for_slot(GameState state, int slot) noexcept nogil
+
+
 # Location type enum
 cdef enum CompanyLocation:
     LOC_UNKNOWN = -1    # Not yet initialized or invalid
