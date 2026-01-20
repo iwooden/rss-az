@@ -62,9 +62,9 @@ cdef class Deck:
         """
         cdef StateLayout layout = state._layout
 
-        # Hidden state offsets (relative to visible_size)
-        self._deck_top_offset = layout.visible_size + layout.hidden_deck_top_offset
-        self._deck_order_offset = layout.visible_size + layout.hidden_deck_order_offset
+        # Hidden state offsets are already absolute (computed continuing from visible_size)
+        self._deck_top_offset = layout.hidden_deck_top_offset
+        self._deck_order_offset = layout.hidden_deck_order_offset
 
     # =========================================================================
     # BASIC OPERATIONS

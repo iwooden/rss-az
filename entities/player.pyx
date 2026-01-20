@@ -7,6 +7,8 @@ Each Player instance is bound to a specific player_id and caches offsets
 for fast repeated access.
 """
 
+from libc.math cimport round
+
 from state cimport GameState, StateLayout, PlayerFieldOffsets
 from data cimport GameConstants, CASH_DIVISOR, SHARE_DIVISOR, MAX_ROUNDTRIPS
 
@@ -53,7 +55,7 @@ cdef class Player:
 
     cpdef int get_cash(self, GameState state):
         """Get player's cash (integer dollars)."""
-        return <int>(state._data[self._cash_offset] * CASH_DIVISOR + 0.5)
+        return <int>round(state._data[self._cash_offset] * CASH_DIVISOR)
 
     cpdef void set_cash(self, GameState state, int cash):
         """Set player's cash (integer dollars)."""
@@ -70,7 +72,7 @@ cdef class Player:
 
     cpdef int get_net_worth(self, GameState state):
         """Get player's stored net worth (integer dollars)."""
-        return <int>(state._data[self._net_worth_offset] * CASH_DIVISOR + 0.5)
+        return <int>round(state._data[self._net_worth_offset] * CASH_DIVISOR)
 
     cpdef void set_net_worth(self, GameState state, int net_worth):
         """Set player's net worth (integer dollars)."""
@@ -119,7 +121,7 @@ cdef class Player:
 
     cpdef int get_shares(self, GameState state, int corp_id):
         """Get player's shares of a corporation."""
-        return <int>(state._data[self._owned_shares_offset + corp_id] * SHARE_DIVISOR + 0.5)
+        return <int>round(state._data[self._owned_shares_offset + corp_id] * SHARE_DIVISOR)
 
     cpdef void set_shares(self, GameState state, int corp_id, int shares):
         """Set player's shares of a corporation."""
@@ -143,7 +145,7 @@ cdef class Player:
 
     cpdef int get_share_buys(self, GameState state, int corp_id):
         """Get share buy count for round-trip tracking."""
-        return <int>(state._data[self._share_buys_offset + corp_id] * MAX_ROUNDTRIPS * 2 + 0.5)
+        return <int>round(state._data[self._share_buys_offset + corp_id] * MAX_ROUNDTRIPS * 2)
 
     cpdef void increment_share_buys(self, GameState state, int corp_id):
         """Increment share buy count."""
@@ -152,7 +154,7 @@ cdef class Player:
 
     cpdef int get_share_sells(self, GameState state, int corp_id):
         """Get share sell count for round-trip tracking."""
-        return <int>(state._data[self._share_sells_offset + corp_id] * MAX_ROUNDTRIPS * 2 + 0.5)
+        return <int>round(state._data[self._share_sells_offset + corp_id] * MAX_ROUNDTRIPS * 2)
 
     cpdef void increment_share_sells(self, GameState state, int corp_id):
         """Increment share sell count."""

@@ -41,7 +41,8 @@ cdef class Corporation:
         self._base_offset = layout.corps_offset + (self.corp_id * layout.corp_stride)
 
         # Hidden state offset for fast price index access (one slot per corp)
-        self._hidden_price_index_offset = layout.visible_size + layout.hidden_corp_price_indices_offset + self.corp_id
+        # hidden_corp_price_indices_offset is already absolute
+        self._hidden_price_index_offset = layout.hidden_corp_price_indices_offset + self.corp_id
 
         # Cache absolute offsets for each field
         self._active_offset = self._base_offset + fields.active

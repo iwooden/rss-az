@@ -48,12 +48,12 @@ cdef class TurnState:
         self._coo_offset = layout.coo_offset
 
         # Hidden state offsets (compact integer storage for fast access)
-        # These are relative to visible_size, so we add it to get absolute offsets
-        self._hidden_phase_offset = layout.visible_size + layout.hidden_phase_offset
-        self._hidden_coo_level_offset = layout.visible_size + layout.hidden_coo_level_offset
-        self._hidden_auction_company_offset = layout.visible_size + layout.hidden_auction_company_offset
-        self._hidden_auction_high_bidder_offset = layout.visible_size + layout.hidden_auction_high_bidder_offset
-        self._hidden_auction_starter_offset = layout.visible_size + layout.hidden_auction_starter_offset
+        # These are already absolute offsets (computed continuing from visible_size)
+        self._hidden_phase_offset = layout.hidden_phase_offset
+        self._hidden_coo_level_offset = layout.hidden_coo_level_offset
+        self._hidden_auction_company_offset = layout.hidden_auction_company_offset
+        self._hidden_auction_high_bidder_offset = layout.hidden_auction_high_bidder_offset
+        self._hidden_auction_starter_offset = layout.hidden_auction_starter_offset
 
         # Turn state base offset
         self._turn_offset = layout.turn_offset
