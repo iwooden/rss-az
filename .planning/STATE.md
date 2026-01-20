@@ -5,14 +5,14 @@
 See: .planning/PROJECT.md (updated 2026-01-20)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** Planning next milestone
+**Current focus:** v2 INVEST & BID_IN_AUCTION
 
 ## Current Position
 
-Phase: Ready for next milestone
-Plan: Not started
-Status: v1 complete, ready to plan v2
-Last activity: 2026-01-20 — v1 milestone complete
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-01-20 — Milestone v2 started
 
 Progress: v1 ✓ | v2 [ ]
 
@@ -52,7 +52,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-20 (milestone complete)
-Stopped at: v1 milestone shipped
+Last session: 2026-01-20 (milestone started)
+Stopped at: Defining v2 requirements
 Resume file: None
-Next action: /gsd:new-milestone to start v2
+Next action: Complete requirements and roadmap definition

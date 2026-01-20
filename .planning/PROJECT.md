@@ -24,7 +24,21 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 
 ### Active
 
-(Defined in next milestone's REQUIREMENTS.md)
+(Defined in v2 REQUIREMENTS.md)
+
+## Current Milestone: v2 INVEST & BID_IN_AUCTION
+
+**Goal:** Implement the first game phase actions with a game driver architecture for action dispatch.
+
+**Target features:**
+- INVEST phase actions (pass, buy share, sell share, start auction)
+- BID_IN_AUCTION phase actions (leave auction, raise bid)
+- Game driver class for action dispatch and legal move generation
+- Full corporation bankruptcy procedure
+- Change of presidency and receivership handling
+- Player net worth updates after relevant actions
+- Round-trip buy/sell limit enforcement
+- Comprehensive test suite for phase logic
 
 ### Out of Scope
 
@@ -64,4 +78,4 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - **Compatibility:** State array must be directly usable by PyTorch
 
 ---
-*Last updated: 2026-01-20 after v1 milestone*
+*Last updated: 2026-01-20 after v2 milestone start*
