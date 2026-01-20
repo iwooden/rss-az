@@ -7,52 +7,52 @@
 
 ### Method Signature
 
-- [ ] **INIT-01**: Method accepts optional seed parameter for reproducible deck shuffling
-- [ ] **INIT-02**: Method can be called on existing GameState to reinitialize
+- [x] **INIT-01**: Method accepts optional seed parameter for reproducible deck shuffling
+- [x] **INIT-02**: Method can be called on existing GameState to reinitialize
 
 ### Player Setup
 
-- [ ] **PLYR-01**: Each player receives 30● starting cash (25● for 6-player)
-- [ ] **PLYR-02**: Players assigned linear turn order (player 0 = order 1, etc.)
-- [ ] **PLYR-03**: All player-owned companies cleared
-- [ ] **PLYR-04**: All player-owned shares cleared
+- [x] **PLYR-01**: Each player receives 30● starting cash (25● for 6-player)
+- [x] **PLYR-02**: Players assigned linear turn order (player 0 = order 1, etc.)
+- [x] **PLYR-03**: All player-owned companies cleared
+- [x] **PLYR-04**: All player-owned shares cleared
 
 ### Foreign Investor Setup
 
-- [ ] **FI-01**: Foreign Investor receives 4● starting cash
-- [ ] **FI-02**: Foreign Investor owns no companies
+- [x] **FI-01**: Foreign Investor receives 4● starting cash
+- [x] **FI-02**: Foreign Investor owns no companies
 
 ### Corporation Setup
 
-- [ ] **CORP-01**: All 8 corporations inactive
-- [ ] **CORP-02**: Each corporation's shares reset (all unissued)
-- [ ] **CORP-03**: No corporation owns any companies
-- [ ] **CORP-04**: No corporation has a share price card
+- [x] **CORP-01**: All 8 corporations inactive
+- [x] **CORP-02**: Each corporation's shares reset (all unissued)
+- [x] **CORP-03**: No corporation owns any companies
+- [x] **CORP-04**: No corporation has a share price card
 
 ### Market Setup
 
-- [ ] **MKT-01**: All 27 share price slots marked available
+- [x] **MKT-01**: All 27 share price slots marked available
 
 ### Deck Building
 
-- [ ] **DECK-01**: Game end card placed at deck bottom
-- [ ] **DECK-02**: Highest face value company of each color set aside initially
-- [ ] **DECK-03**: Remaining companies shuffled by color (using seed)
-- [ ] **DECK-04**: Correct company count per color based on player count
-- [ ] **DECK-05**: Colors stacked: blue, green, yellow, orange, red (red on top)
+- [x] **DECK-01**: Game end card placed at deck bottom
+- [x] **DECK-02**: Highest face value company of each color set aside initially
+- [x] **DECK-03**: Remaining companies shuffled by color (using seed)
+- [x] **DECK-04**: Correct company count per color based on player count
+- [x] **DECK-05**: Colors stacked: blue, green, yellow, orange, red (red on top)
 
 ### Initial Draw
 
-- [ ] **DRAW-01**: N companies drawn from deck (N = player count)
-- [ ] **DRAW-02**: Drawn companies marked as available for auction
+- [x] **DRAW-01**: N companies drawn from deck (N = player count)
+- [x] **DRAW-02**: Drawn companies marked as available for auction
 
 ### Turn State
 
-- [ ] **TURN-01**: Phase set to 1 (Investment)
-- [ ] **TURN-02**: CoO level set to 1
-- [ ] **TURN-03**: Turn number set to 1
-- [ ] **TURN-04**: Active player set to player 0
-- [ ] **TURN-05**: All auction/dividend/IPO state cleared
+- [x] **TURN-01**: Phase set to 1 (Investment)
+- [x] **TURN-02**: CoO level set to 1
+- [x] **TURN-03**: Turn number set to 1
+- [x] **TURN-04**: Active player set to player 0
+- [x] **TURN-05**: All auction/dividend/IPO state cleared
 
 ## v2 Requirements
 
@@ -71,37 +71,37 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| INIT-01 | Phase 1 | Pending |
-| INIT-02 | Phase 1 | Pending |
-| PLYR-01 | Phase 1 | Pending |
-| PLYR-02 | Phase 1 | Pending |
-| PLYR-03 | Phase 1 | Pending |
-| PLYR-04 | Phase 1 | Pending |
-| FI-01 | Phase 1 | Pending |
-| FI-02 | Phase 1 | Pending |
-| CORP-01 | Phase 1 | Pending |
-| CORP-02 | Phase 1 | Pending |
-| CORP-03 | Phase 1 | Pending |
-| CORP-04 | Phase 1 | Pending |
-| MKT-01 | Phase 1 | Pending |
-| DECK-01 | Phase 1 | Pending |
-| DECK-02 | Phase 1 | Pending |
-| DECK-03 | Phase 1 | Pending |
-| DECK-04 | Phase 1 | Pending |
-| DECK-05 | Phase 1 | Pending |
-| DRAW-01 | Phase 1 | Pending |
-| DRAW-02 | Phase 1 | Pending |
-| TURN-01 | Phase 1 | Pending |
-| TURN-02 | Phase 1 | Pending |
-| TURN-03 | Phase 1 | Pending |
-| TURN-04 | Phase 1 | Pending |
-| TURN-05 | Phase 1 | Pending |
+| INIT-01 | Phase 1 | Complete |
+| INIT-02 | Phase 1 | Complete |
+| PLYR-01 | Phase 1 | Complete |
+| PLYR-02 | Phase 1 | Complete |
+| PLYR-03 | Phase 1 | Complete |
+| PLYR-04 | Phase 1 | Complete |
+| FI-01 | Phase 1 | Complete |
+| FI-02 | Phase 1 | Complete |
+| CORP-01 | Phase 1 | Complete |
+| CORP-02 | Phase 1 | Complete |
+| CORP-03 | Phase 1 | Complete |
+| CORP-04 | Phase 1 | Complete |
+| MKT-01 | Phase 1 | Complete |
+| DECK-01 | Phase 1 | Complete |
+| DECK-02 | Phase 1 | Complete |
+| DECK-03 | Phase 1 | Complete |
+| DECK-04 | Phase 1 | Complete |
+| DECK-05 | Phase 1 | Complete |
+| DRAW-01 | Phase 1 | Complete |
+| DRAW-02 | Phase 1 | Complete |
+| TURN-01 | Phase 1 | Complete |
+| TURN-02 | Phase 1 | Complete |
+| TURN-03 | Phase 1 | Complete |
+| TURN-04 | Phase 1 | Complete |
+| TURN-05 | Phase 1 | Complete |
 
 **Coverage:**
 - v1 requirements: 25 total
 - Mapped to phases: 25
-- Unmapped: 0 ✓
+- Complete: 25 ✓
 
 ---
 *Requirements defined: 2026-01-20*
-*Last updated: 2026-01-20 after roadmap creation*
+*Last updated: 2026-01-20 after phase 1 completion*
