@@ -7,7 +7,7 @@ tracks where it currently exists in the state vector and provides efficient
 transfer operations that update both the old and new locations atomically.
 """
 
-from state cimport GameState
+from core.state cimport GameState
 
 
 # Location type enum

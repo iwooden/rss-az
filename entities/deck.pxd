@@ -7,7 +7,7 @@ drawing cards, tracking remaining count, and the complex setup rules that
 vary by player count.
 """
 
-from state cimport GameState
+from core.state cimport GameState
 
 
 cdef class Deck:

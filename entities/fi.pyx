@@ -7,8 +7,8 @@ state vector. The FI is a special entity that buys companies at high price
 and holds them until corporations acquire them.
 """
 
-from state cimport GameState, StateLayout
-from data cimport CASH_DIVISOR
+from core.state cimport GameState, StateLayout
+from core.data cimport CASH_DIVISOR
 
 
 cdef class ForeignInvestor:

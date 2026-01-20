@@ -6,12 +6,12 @@ Provides accessor functions for corporation state stored in the float tensor rep
 All functions operate on raw float pointers for maximum performance in nogil contexts.
 """
 
-from data cimport (
+from core.data cimport (
     NUM_COMPANIES, NUM_CORPS, NUM_MARKET_SPACES,
     get_market_price, get_corp_share_count, get_company_stars,
     CORP_SI
 )
-from state cimport GameState
+from core.state cimport GameState
 from helpers.player cimport PlayerOffsets, get_player_offsets
 
 # Import constants
@@ -264,7 +264,7 @@ cdef int get_president_of_corp(GameState state, int corp_id, int num_players) no
     """
     cdef int player_id
     for player_id in range(num_players):
-        if state.is_player_president(player_id, corp_id):
+        if state._is_player_president(player_id, corp_id):
             return player_id
     return -1
 
@@ -273,7 +273,7 @@ cdef void set_active_player_to_president(GameState state, int corp_id, int num_p
     """Set the active player to the president of the given corporation."""
     cdef int player_id
     for player_id in range(num_players):
-        if state.is_player_president(player_id, corp_id):
+        if state._is_player_president(player_id, corp_id):
             state._set_active_player(player_id)
             return
 
@@ -286,8 +286,8 @@ cdef int find_corp_owning_company(GameState state, int player_id, int company_id
     """
     cdef int corp_id
     for corp_id in range(NUM_CORPS):
-        if state.is_player_president(player_id, corp_id):
-            if state.corp_owns_company(corp_id, company_id):
+        if state._is_player_president(player_id, corp_id):
+            if state._corp_owns_company(corp_id, company_id):
                 return corp_id
     return -1
 

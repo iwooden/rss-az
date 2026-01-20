@@ -9,8 +9,8 @@ for fast repeated access.
 
 from libc.math cimport round
 
-from state cimport GameState, StateLayout, PlayerFieldOffsets
-from data cimport GameConstants, CASH_DIVISOR, SHARE_DIVISOR, MAX_ROUNDTRIPS
+from core.state cimport GameState, StateLayout, PlayerFieldOffsets
+from core.data cimport GameConstants, CASH_DIVISOR, SHARE_DIVISOR, MAX_ROUNDTRIPS
 
 
 cdef class Player:

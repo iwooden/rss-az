@@ -14,8 +14,8 @@ Deck setup rules (from RULES.md):
 """
 
 from libc.stdlib cimport rand, srand
-from state cimport GameState, StateLayout
-from data cimport GameConstants, get_company_stars
+from core.state cimport GameState, StateLayout
+from core.data cimport GameConstants, get_company_stars
 
 
 # Company index ranges by color (star tier)

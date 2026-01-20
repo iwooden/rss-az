@@ -3,7 +3,7 @@
 Player entity declarations.
 """
 
-from state cimport GameState
+from core.state cimport GameState
 
 
 cdef class Player:

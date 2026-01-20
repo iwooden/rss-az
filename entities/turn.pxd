@@ -5,7 +5,7 @@ Turn state entity declarations.
 Includes phase, cost-of-ownership, and all turn-specific tracking state.
 """
 
-from state cimport GameState
+from core.state cimport GameState
 
 
 cdef class TurnState:

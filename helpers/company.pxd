@@ -5,8 +5,8 @@ Company state helper declarations.
 Provides functions for company state access including auction slot mapping.
 """
 
-from state cimport GameState
-from data cimport NUM_COMPANIES
+from core.state cimport GameState
+from core.data cimport NUM_COMPANIES
 
 
 # =============================================================================

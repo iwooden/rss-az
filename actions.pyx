@@ -16,12 +16,9 @@ cimport cython
 import numpy as np
 cimport numpy as cnp
 
-from state cimport (
-    GameState, NUM_COMPANIES, NUM_CORPS, NUM_MARKET_SPACES,
-    PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_ACQUISITION,
-    PHASE_CLOSING, PHASE_DIVIDENDS, PHASE_ISSUE_SHARES, PHASE_IPO
-)
-from data cimport (
+from core.state cimport GameState
+from core.data cimport (
+    GameConstants, GamePhases,
     get_company_face_value, get_company_low_price, get_company_high_price,
     get_company_stars, get_par_price, get_market_index, get_market_price,
     is_valid_par_price, get_par_index_for_slot, NUM_PAR_PRICES, CORP_OS
@@ -38,9 +35,17 @@ from actions cimport (
     NUM_PAR_PRICES as ACTION_NUM_PAR_PRICES
 )
 
-# Import phase helpers
-from phases.invest cimport can_buy_share, can_sell_share
-from phases.closing cimport CLOSING_ACTION_CLOSE, CLOSING_ACTION_PASS
+# Constants from data module
+DEF NUM_COMPANIES = 36
+DEF NUM_CORPS = 8
+DEF NUM_MARKET_SPACES = 27
+DEF PHASE_INVEST = 0
+DEF PHASE_BID_IN_AUCTION = 1
+DEF PHASE_ACQUISITION = 3
+DEF PHASE_CLOSING = 4
+DEF PHASE_DIVIDENDS = 6
+DEF PHASE_ISSUE_SHARES = 8
+DEF PHASE_IPO = 9
 
 # Import low-level helpers for direct access
 from helpers.player cimport get_player_shares, PlayerOffsets, get_player_offsets

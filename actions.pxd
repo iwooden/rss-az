@@ -6,7 +6,7 @@ Defines the action space layout, action decoding, and mask generation for
 the NN output layer.
 """
 
-from state cimport GameState
+from core.state cimport GameState
 
 # =============================================================================
 # CONSTANTS

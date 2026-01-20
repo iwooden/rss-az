@@ -7,9 +7,9 @@ Each Corporation instance is bound to a specific corp_id and caches offsets
 for fast repeated access.
 """
 
-from state cimport GameState, StateLayout, CorpFieldOffsets
-from data cimport GameConstants, CASH_DIVISOR, SHARE_DIVISOR, STAR_DIVISOR, MARKET_PRICES
-from data import CORP_NAMES
+from core.state cimport GameState, StateLayout, CorpFieldOffsets
+from core.data cimport GameConstants, CASH_DIVISOR, SHARE_DIVISOR, STAR_DIVISOR, MARKET_PRICES
+from core.data import CORP_NAMES
 
 
 cdef class Corporation:

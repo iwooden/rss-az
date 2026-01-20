@@ -6,8 +6,8 @@ Provides CorpOffsets struct and accessor functions for corporation state
 stored in the float tensor representation.
 """
 
-from state cimport GameState
-from data cimport NUM_COMPANIES, NUM_CORPS, NUM_MARKET_SPACES
+from core.state cimport GameState
+from core.data cimport NUM_COMPANIES, NUM_CORPS, NUM_MARKET_SPACES
 from helpers.player cimport PlayerOffsets
 
 # =============================================================================

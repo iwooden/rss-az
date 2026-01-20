@@ -8,8 +8,8 @@ Provides clean getter/setter access to turn-specific state including:
 - Auction, dividends, issue, IPO, acquisition, and closing phase tracking
 """
 
-from state cimport GameState, StateLayout, TurnStateOffsets
-from data cimport GameConstants, GamePhases, CASH_DIVISOR
+from core.state cimport GameState, StateLayout, TurnStateOffsets
+from core.data cimport GameConstants, GamePhases, CASH_DIVISOR
 
 
 cdef class TurnState:

@@ -5,7 +5,10 @@ Company state helper functions.
 Provides functions for company state access including auction slot mapping.
 """
 
-from state cimport GameState, NUM_COMPANIES
+from core.state cimport GameState
+from core.data cimport GameConstants
+
+DEF NUM_COMPANIES = 36
 
 
 # =============================================================================
@@ -29,7 +32,7 @@ cdef inline int get_auction_company_for_slot(GameState state, int slot) noexcept
     cdef int count = 0
     cdef int company_id
     for company_id in range(NUM_COMPANIES):
-        if state.is_company_for_auction(company_id):
+        if state._is_company_for_auction(company_id):
             if count == slot:
                 return company_id
             count += 1

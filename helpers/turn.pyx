@@ -29,7 +29,7 @@ Issue/IPO (issue and IPO phases):
 - ipo_remaining (NUM_COMPANIES) - ternary (-1/0/1)
 """
 
-from data cimport NUM_COMPANIES, NUM_CORPS, MAX_DIVIDEND
+from core.data cimport NUM_COMPANIES, NUM_CORPS, MAX_DIVIDEND
 
 
 # =============================================================================

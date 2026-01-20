@@ -7,8 +7,8 @@ state vector. The market has 27 spaces (indices 0-26) with corresponding prices.
 Index 0 is the bankruptcy space (price 0).
 """
 
-from state cimport GameState, StateLayout
-from data cimport get_market_price, get_market_index, GameConstants
+from core.state cimport GameState, StateLayout
+from core.data cimport get_market_price, get_market_index, GameConstants
 
 
 cdef class Market:

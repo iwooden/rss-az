@@ -7,14 +7,14 @@ operations. Each Company instance tracks where it exists in the state vector
 for O(1) location queries and atomic transfers.
 """
 
-from state cimport GameState, StateLayout, PlayerFieldOffsets, CorpFieldOffsets
-from data cimport (
+from core.state cimport GameState, StateLayout, PlayerFieldOffsets, CorpFieldOffsets
+from core.data cimport (
     GameConstants, CASH_DIVISOR,
     get_company_face_value, get_company_low_price, get_company_high_price,
     get_company_stars, get_company_income, get_company_synergy,
     is_last_in_group as data_is_last_in_group
 )
-from data import COMPANY_NAMES
+from core.data import COMPANY_NAMES
 
 
 cdef class Company:

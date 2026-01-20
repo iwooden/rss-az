@@ -9,7 +9,7 @@ Index 1-25 = prices $5-$68 (unique per active corp)
 Index 26 = price $75 (multiple corps allowed, on or off market)
 """
 
-from data cimport NUM_MARKET_SPACES
+from core.data cimport NUM_MARKET_SPACES
 
 
 # =============================================================================
