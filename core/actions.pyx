@@ -25,7 +25,7 @@ from core.data cimport (
 )
 
 # Import types and functions from our own pxd
-from actions cimport (
+from core.actions cimport (
     ActionLayout, ActionInfo, ActionType,
     ACTION_PASS, ACTION_AUCTION, ACTION_BUY_SHARE, ACTION_SELL_SHARE,
     ACTION_LEAVE_AUCTION, ACTION_RAISE_BID, ACTION_ACQ_PRICE, ACTION_ACQ_FI_HIGH,
