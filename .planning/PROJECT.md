@@ -1,75 +1,67 @@
-# Rolling Stock Stars - Game State Initialization
+# Rolling Stock Stars - Cython Game Engine
 
 ## What This Is
 
-A game state initialization method for the Rolling Stock Stars Cython game engine. The method sets up a valid starting game state according to the official rules, enabling reproducible games for AlphaZero-style self-play training.
+A high-performance Cython game engine for "Rolling Stock Stars" board game with complete game state initialization. The engine stores state as a single contiguous float32 array for zero-copy passing to PyTorch, optimized for AlphaZero-style self-play training.
 
 ## Core Value
 
-Given a player count and optional seed, produce a correctly initialized game state that follows all setup rules from RULES.md.
+Fast, reproducible game simulation for AI training with full rules compliance.
 
 ## Requirements
 
 ### Validated
 
-- ✓ GameState class allocates contiguous float32 array — existing
-- ✓ State layout computed based on player count — existing
-- ✓ Entity accessors (Player, Corp, Company, etc.) provide getters/setters — existing
-- ✓ Deck entity tracks card order and draw state — existing
-- ✓ TurnState entity tracks phase, CoO level, auction state — existing
-- ✓ Static company data (face values, synergies, prices) in core/data — existing
+- ✓ GameState.initialize_game(seed) method produces valid starting state — v1
+- ✓ Players receive correct starting cash (30 for 3-5p, 25 for 6p) — v1
+- ✓ Foreign Investor starts with 4 cash, no companies — v1
+- ✓ All 8 corporations start inactive with unissued shares — v1
+- ✓ All 27 market price slots start available — v1
+- ✓ Deck built per rules (game end at bottom, colors stacked, correct counts) — v1
+- ✓ N companies drawn and marked available for auction — v1
+- ✓ Turn state initialized (phase 1, CoO 1, turn 1, player 0) — v1
+- ✓ Reproducible games via seed parameter — v1
 
 ### Active
 
-- [ ] GameState.initialize_new_game(seed=None) method
-- [ ] Player starting cash set correctly (30● or 25● for 6p)
-- [ ] Random player turn order (1 to N, seeded)
-- [ ] Foreign Investor starting cash (4●)
-- [ ] All corporations inactive, shares reset
-- [ ] All 27 market price slots marked available
-- [ ] Deck built per rules (game end card at bottom, colors stacked correctly)
-- [ ] Company counts per color based on player count
-- [ ] Deck shuffled with provided seed
-- [ ] N companies drawn and marked available for auction
-- [ ] Turn state initialized (phase 1, CoO level 1, turn 1)
-- [ ] Active player set to player 0
+(Defined in next milestone's REQUIREMENTS.md)
 
 ### Out of Scope
 
-- Phase transition logic — separate feature, not part of initialization
-- Action validation/masking — already exists separately
-- Game loop/play mechanics — initialization only
+- Mobile/web client — CLI/API only
+- Game replay viewer — training focus only
+- Save/load to disk — in-memory state only for now
 
 ## Context
 
-**Existing codebase:** High-performance Cython game engine with single-vector state representation. State stored as float32 array passed directly to PyTorch. Entity accessor pattern provides clean API.
+**Shipped v1:** Game State Initialization (2026-01-20)
+- 1 phase, 1 plan, 25 requirements
+- ~24,500 LOC Cython, ~350 LOC Python (tests)
+- Comprehensive test suite: 28 tests
 
-**Key files:**
-- `core/state.pyx` — GameState class (add method here)
-- `core/data.pyx` — Game constants, company data
-- `entities/` — Entity accessors for state sections
-- `RULES.md` — Official game rules, setup section (lines 90-113)
+**Tech stack:** Cython, NumPy, PyTorch-compatible state format
 
-**Deck building rules (from RULES.md):**
-1. Game end card at bottom
-2. Highest face value company of each color set aside
-3. Remaining companies shuffled by color
-4. Add N companies per color (special cases: 4p gets 5 orange, 5p gets 7 orange, 6p uses all)
-5. Stack: blue, green, yellow, orange, red (red on top)
-6. Draw N cards as available for auction
-
-## Constraints
-
-- **Performance**: Method runs once per game, so performance is less critical than game loop. Still prefer Cython for consistency.
-- **Reproducibility**: Must accept seed parameter for deterministic deck shuffling
-- **Compatibility**: Must work with existing entity accessor pattern
+**Patterns established:**
+- Entity handle initialization (init all handles before state modification)
+- Module import pattern for Cython globals
+- Per-task atomic commits with feat/test prefixes
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| GameState method (not standalone function) | Keeps initialization close to state management | — Pending |
-| Seed parameter with None default | Enables reproducible training while allowing random games | — Pending |
+| GameState method (not standalone) | Keeps initialization close to state management | ✓ Good |
+| Seed parameter with -1 default | Enables reproducible training while allowing random games | ✓ Good |
+| Entity initialization order | Initialize all handles before setting state to ensure offset caching | ✓ Good |
+| Module import pattern for entities | Avoids Cython circular import issues | ✓ Good |
+| Starting cash: 30 (3-5p), 25 (6p) | Official game rules | ✓ Good |
+| Float32 state array | Zero-copy to PyTorch tensors | ✓ Good (existing) |
+
+## Constraints
+
+- **Performance:** Must support high-throughput self-play (thousands of games/minute)
+- **Reproducibility:** Seed parameter must produce identical games
+- **Compatibility:** State array must be directly usable by PyTorch
 
 ---
-*Last updated: 2026-01-20 after initialization*
+*Last updated: 2026-01-20 after v1 milestone*

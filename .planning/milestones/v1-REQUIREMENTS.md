@@ -1,3 +1,13 @@
+# Requirements Archive: v1 Game State Initialization
+
+**Archived:** 2026-01-20
+**Status:** ✅ SHIPPED
+
+This is the archived requirements specification for v1.
+For current requirements, see `.planning/REQUIREMENTS.md` (created for next milestone).
+
+---
+
 # Requirements: Game State Initialization
 
 **Defined:** 2026-01-20
@@ -103,5 +113,12 @@
 - Complete: 25 ✓
 
 ---
-*Requirements defined: 2026-01-20*
-*Last updated: 2026-01-20 after phase 1 completion*
+
+## Milestone Summary
+
+**Shipped:** 25 of 25 v1 requirements
+**Adjusted:** None
+**Dropped:** None
+
+---
+*Archived: 2026-01-20 as part of v1 milestone completion*
