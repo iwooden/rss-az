@@ -11,6 +11,7 @@ The visible state is presented to the NN with player rotation (active player fir
 
 cimport cython
 from libc.string cimport memcpy, memset
+from libc.time cimport time
 cimport numpy as cnp
 import numpy as np
 
@@ -22,8 +23,17 @@ from core.data cimport (
     CASH_DIVISOR,
     SHARE_DIVISOR,
     STAR_DIVISOR,
-    MARKET_PRICES
+    MARKET_PRICES,
+    get_corp_share_count
 )
+
+# Import entity modules for their global instances
+from entities import player as player_module
+from entities import fi as fi_module
+from entities import corp as corp_module
+from entities import market as market_module
+from entities import turn as turn_module
+from entities import deck as deck_module
 
 cnp.import_array()
 
@@ -668,3 +678,125 @@ cdef class GameState:
         cdef int i
         for i in range(GameConstants.NUM_COMPANIES):
             turn[self._turn_offsets.closing_company + i] = 1.0 if i == company_id else 0.0
+
+    # =========================================================================
+    # GAME INITIALIZATION
+    # =========================================================================
+
+    cpdef void initialize_game(self, int seed=-1):
+        """
+        Initialize a new game with all starting state.
+
+        Args:
+            seed: Random seed for deck shuffling. If -1 (default), uses current time.
+
+        This sets up:
+        - Players with starting cash, turn order, and cleared ownership
+        - Foreign Investor with starting cash and no companies
+        - All corporations as inactive with unissued shares
+        - All market spaces available
+        - Deck built and shuffled, with initial companies drawn
+        - Turn state for phase 1, turn 1, active player 0
+        """
+        cdef int i, corp_id, company_id
+        cdef int actual_seed
+        cdef int starting_cash
+
+        # 1. Initialize all entity handles FIRST
+        for i in range(self._num_players):
+            player_module.PLAYERS[i].initialize(self)
+        fi_module.FI.initialize(self)
+        for corp in corp_module.CORPS.values():
+            corp.initialize(self)
+        market_module.MARKET.initialize(self)
+        turn_module.TURN.initialize(self)
+        deck_module.DECK.initialize(self)
+
+        # 2. Set player starting state
+        starting_cash = 25 if self._num_players == 6 else 30
+        for i in range(self._num_players):
+            player_module.PLAYERS[i].set_cash(self, starting_cash)
+            player_module.PLAYERS[i].set_turn_order(self, i)
+            player_module.PLAYERS[i].set_net_worth(self, starting_cash)
+
+            # Clear all owned companies
+            for company_id in range(GameConstants.NUM_COMPANIES):
+                player_module.PLAYERS[i].set_owns_company(self, company_id, False)
+
+            # Clear all shares
+            for corp_id in range(GameConstants.NUM_CORPS):
+                player_module.PLAYERS[i].set_shares(self, corp_id, 0)
+                player_module.PLAYERS[i].set_president_of(self, corp_id, False)
+
+        # 3. Set Foreign Investor state
+        fi_module.FI.set_cash(self, 4)
+        for company_id in range(GameConstants.NUM_COMPANIES):
+            fi_module.FI.set_owns_company(self, company_id, False)
+
+        # 4. Reset all corporations
+        for corp in corp_module.CORPS.values():
+            corp.set_active(self, False)
+            corp.set_cash(self, 0)
+            corp.set_in_receivership(self, False)
+            corp.set_unissued_shares(self, get_corp_share_count(corp.corp_id))
+            corp.set_issued_shares(self, 0)
+            corp.set_bank_shares(self, 0)
+            corp.set_income(self, 0)
+            corp.set_stars(self, 0)
+            corp.set_share_price(self, 0)
+            corp.set_price_index(self, 0)
+            corp.set_acquisition_proceeds(self, 0)
+
+            # Clear all owned companies
+            for company_id in range(GameConstants.NUM_COMPANIES):
+                corp.set_owns_company(self, company_id, False)
+                corp.set_acquisition_company(self, company_id, False)
+
+        # 5. Initialize market - all spaces available
+        for i in range(GameConstants.NUM_MARKET_SPACES):
+            market_module.MARKET.set_space_available(self, i, True)
+
+        # 6. Build and shuffle deck
+        if seed < 0:
+            actual_seed = <int>time(NULL)
+        else:
+            actual_seed = seed
+        deck_module.DECK.setup(self, self._num_players, actual_seed)
+
+        # 7. Draw initial companies
+        for i in range(self._num_players):
+            company_id = deck_module.DECK.draw(self)
+            self.set_company_for_auction(company_id, True)
+
+        # 8. Set turn state
+        turn_module.TURN.set_phase(self, GamePhases.PHASE_INVEST)
+        turn_module.TURN.set_coo_level(self, 1)
+        turn_module.TURN.set_turn_number(self, 1)
+        turn_module.TURN.set_end_card_flipped(self, False)
+        turn_module.TURN.clear_consecutive_passes(self)
+
+        # Clear all auction state
+        turn_module.TURN.clear_auction_company(self)
+        turn_module.TURN.clear_auction_high_bidder(self)
+        turn_module.TURN.clear_auction_starter(self)
+        turn_module.TURN.clear_auction_passed(self)
+
+        # Clear dividend state
+        turn_module.TURN.clear_dividend_corp(self)
+
+        # Clear issue state
+        turn_module.TURN.clear_issue_corp(self)
+
+        # Clear IPO state
+        turn_module.TURN.clear_ipo_company(self)
+
+        # Clear acquisition state
+        turn_module.TURN.clear_acq_active_corp(self)
+        turn_module.TURN.clear_acq_target_company(self)
+        turn_module.TURN.set_acq_fi_offer(self, False)
+
+        # Clear closing state
+        turn_module.TURN.clear_closing_company(self)
+
+        # Set active player
+        self._set_active_player(0)

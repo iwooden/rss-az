@@ -187,3 +187,6 @@ cdef class GameState:
     # Closing state access
     cpdef int get_current_closing_company(self)
     cpdef void set_current_closing_company(self, int company_id)
+
+    # Game initialization
+    cpdef void initialize_game(self, int seed=*)
