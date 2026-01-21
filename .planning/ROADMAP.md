@@ -56,10 +56,12 @@ Plans:
   3. Players can leave auction or raise bid in proper rotation
   4. Auction resolves correctly when one bidder remains (winner pays, gets company)
   5. Turn returns to player after auction starter (not winner) when auction completes
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 03-01: TBD
+- [ ] 03-01-PLAN.md — Implement INVEST phase pass and start auction
+- [ ] 03-02-PLAN.md — Implement BID_IN_AUCTION phase handler
+- [ ] 03-03-PLAN.md — Test coverage for INVEST and BID phases
 
 ### Phase 4: Share Trading
 **Goal**: Players can buy and sell shares with proper price movement and trading limits
@@ -113,7 +115,7 @@ Plans:
 |-------|-----------|----------------|--------|-----------|
 | 1. Game State Init | v1 | 1/1 | Complete | 2026-01-20 |
 | 2. Infrastructure Setup | v2 | 2/2 | Complete | 2026-01-21 |
-| 3. INVEST Core & Auction | v2 | 0/? | Not started | - |
+| 3. INVEST Core & Auction | v2 | 0/3 | In progress | - |
 | 4. Share Trading | v2 | 0/? | Not started | - |
 | 5. Presidency & Bankruptcy | v2 | 0/? | Not started | - |
 | 6. Integration & Tests | v2 | 0/? | Not started | - |
