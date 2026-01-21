@@ -252,6 +252,14 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     player_shares = player_module.PLAYERS[player_id].get_shares(state, corp_id)
     player_module.PLAYERS[player_id].set_shares(state, corp_id, player_shares + 1)
 
+    # Check receivership exit (INV-21 - buying from receivership clears it)
+    # Per CONTEXT.md: shares are fungible, no special "president share" handling
+    # Buyer becomes president simply by having the most shares (the only player with shares)
+    _check_receivership(state, corp_id)
+
+    # Check presidency (INV-18, INV-19)
+    _check_presidency(state, corp_id)
+
     # Round-trip tracking (INV-16)
     player_module.PLAYERS[player_id].increment_share_buys(state, corp_id)
 
@@ -323,6 +331,13 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
 
     # Occupy new space (non-bankruptcy case)
     market_module.MARKET.set_space_available(state, new_index, False)
+
+    # Check receivership (INV-20) - must check before presidency
+    _check_receivership(state, corp_id)
+
+    # Check presidency (INV-18, INV-19) - only if not in receivership
+    if not corp.is_in_receivership(state):
+        _check_presidency(state, corp_id)
 
     # Round-trip tracking (INV-16)
     player_module.PLAYERS[player_id].increment_share_sells(state, corp_id)
