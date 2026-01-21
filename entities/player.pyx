@@ -221,6 +221,11 @@ cdef void update_all_player_net_worths(GameState state, int num_players) noexcep
         state.set_player_net_worth(player_id, net_worth)
 
 
+def update_all_net_worths(GameState state):
+    """Update net worth for all players. Python-visible wrapper."""
+    update_all_player_net_worths(state, state._num_players)
+
+
 # =============================================================================
 # HIGH-LEVEL PLAYER CLASS
 # =============================================================================

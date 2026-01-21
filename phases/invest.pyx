@@ -193,7 +193,6 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     """
     cdef int player_id, current_index, new_index, new_price
     cdef int bank_shares, player_shares
-    cdef int i  # Loop variable for net worth updates
     cdef object corp  # Corporation entity
 
     # Get active player
@@ -235,8 +234,7 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     player_module.PLAYERS[player_id].increment_share_buys(state, corp_id)
 
     # Update net worth for all players (price movement affects all shareholders)
-    for i in range(state._num_players):
-        player_module.PLAYERS[i].update_net_worth(state)
+    player_module.update_all_net_worths(state)
 
     # Reset consecutive passes (INV-02)
     turn_module.TURN.clear_consecutive_passes(state)
@@ -264,7 +262,6 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     """
     cdef int player_id, current_index, new_index, sell_price
     cdef int bank_shares, player_shares
-    cdef int i  # Loop variable for net worth updates
     cdef object corp  # Corporation entity
 
     # Get active player
@@ -295,8 +292,7 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     if new_index == 0:
         _execute_bankruptcy(state, corp_id)
         # Update net worth for all players (bankruptcy affects all shareholders)
-        for i in range(state._num_players):
-            player_module.PLAYERS[i].update_net_worth(state)
+        player_module.update_all_net_worths(state)
         # Reset consecutive passes (INV-02)
         turn_module.TURN.clear_consecutive_passes(state)
         # Advance active player
@@ -317,8 +313,7 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     player_module.PLAYERS[player_id].increment_share_sells(state, corp_id)
 
     # Update net worth for all players (price movement affects all shareholders)
-    for i in range(state._num_players):
-        player_module.PLAYERS[i].update_net_worth(state)
+    player_module.update_all_net_worths(state)
 
     # Reset consecutive passes (INV-02)
     turn_module.TURN.clear_consecutive_passes(state)
