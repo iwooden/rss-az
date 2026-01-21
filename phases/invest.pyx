@@ -118,6 +118,68 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     _advance_active_player(state)
 
 
+cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
+    """
+    Handle sell share action.
+
+    Per CONTEXT.md: Sell receives current price, then price moves down
+
+    Sequence:
+    1. Get current price (before movement)
+    2. Transfer money (corp pays sell price to player)
+    3. Transfer share (player to bank)
+    4. Move price down (skipping occupied spaces)
+    5. Track round-trip
+    6. Update net worth
+    7. Reset consecutive passes
+    8. Advance to next player
+
+    Note: If price reaches 0, bankruptcy handling is deferred to Phase 5.
+    """
+    cdef int player_id, current_index, new_index, sell_price
+    cdef int bank_shares, player_shares
+    cdef object corp  # Corporation entity
+
+    # Get active player
+    player_id = state._get_active_player()
+
+    # Get corp by name lookup
+    corp = corp_module.CORPS[CORP_NAMES[corp_id]]
+
+    # Get current price BEFORE movement (INV-11)
+    current_index = corp.get_price_index(state)
+    sell_price = get_market_price(current_index)
+
+    # Transfer money (INV-11)
+    player_module.PLAYERS[player_id].add_cash(state, sell_price)
+
+    # Transfer share (INV-12)
+    player_shares = player_module.PLAYERS[player_id].get_shares(state, corp_id)
+    player_module.PLAYERS[player_id].set_shares(state, corp_id, player_shares - 1)
+    bank_shares = corp.get_bank_shares(state)
+    corp.set_bank_shares(state, bank_shares + 1)
+
+    # Move price down (INV-13)
+    new_index = market_module.MARKET.find_next_lower_space(state, current_index)
+    market_module.MARKET.set_space_available(state, current_index, True)  # Free old
+    corp.set_price_index(state, new_index)  # Updates price
+    if new_index > 0:  # Occupy new space (unless bankruptcy)
+        market_module.MARKET.set_space_available(state, new_index, False)
+    # Note: new_index == 0 means bankruptcy - Phase 5 handles the procedure
+
+    # Round-trip tracking (INV-16)
+    player_module.PLAYERS[player_id].increment_share_sells(state, corp_id)
+
+    # Update net worth (INV-15)
+    player_module.PLAYERS[player_id].update_net_worth(state)
+
+    # Reset consecutive passes (INV-02)
+    turn_module.TURN.clear_consecutive_passes(state)
+
+    # Advance active player
+    _advance_active_player(state)
+
+
 # =============================================================================
 # MAIN PHASE HANDLER
 # =============================================================================
@@ -180,7 +242,7 @@ cdef int apply_invest_action(GameState state, ActionInfo* info) noexcept:
         return 0
 
     elif info.action_type == ACTION_SELL_SHARE:
-        # TODO Phase 4: Sell share logic
+        _handle_sell_share(state, info.corp_id)
         return 0
 
     return 1  # Invalid action type for INVEST phase
