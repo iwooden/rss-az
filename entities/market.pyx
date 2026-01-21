@@ -67,6 +67,57 @@ cdef class Market:
         """
         return get_market_index(price)
 
+    # =========================================================================
+    # PRICE MOVEMENT HELPERS
+    # =========================================================================
+
+    cpdef int find_next_higher_space(self, GameState state, int current_index):
+        """
+        Find next available higher market space for price movement.
+
+        Starting from current_index + 1, finds first space where
+        state._data[market_offset + index] == 1.0 (available).
+
+        Index 26 (price $75) is always available as fallback since
+        multiple corps can share it.
+
+        Args:
+            state: Game state
+            current_index: Current price index (0-26)
+
+        Returns:
+            Index of next available higher space (always returns valid index)
+        """
+        cdef int index
+        for index in range(current_index + 1, GameConstants.NUM_MARKET_SPACES - 1):
+            if state._data[self._market_offset + index] == 1.0:
+                return index
+        # No available space found before 26, return 26 (price $75 always valid)
+        return 26
+
+    cpdef int find_next_lower_space(self, GameState state, int current_index):
+        """
+        Find next available lower market space for price movement.
+
+        Starting from current_index - 1, finds first space where
+        state._data[market_offset + index] == 1.0 (available).
+
+        If no available space found (all occupied), returns 0 (bankruptcy).
+
+        Args:
+            state: Game state
+            current_index: Current price index (0-26)
+
+        Returns:
+            Index of next available lower space, or 0 if none found
+        """
+        cdef int index
+        for index in range(current_index - 1, -1, -1):
+            if state._data[self._market_offset + index] == 1.0:
+                return index
+        # No available space found, return 0 (bankruptcy)
+        return 0
+
 
 # =============================================================================
 # GLOBAL MARKET INSTANCE
