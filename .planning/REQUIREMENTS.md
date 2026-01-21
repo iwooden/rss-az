@@ -9,10 +9,10 @@ Requirements for INVEST and BID_IN_AUCTION phase implementation with game driver
 
 ### Game Driver
 
-- [ ] **DRV-01**: GameDriver class dispatches actions to phase handlers based on game phase
-- [ ] **DRV-02**: GameDriver.apply_action(state, action_idx) mutates state and returns status
-- [ ] **DRV-03**: GameDriver.get_legal_moves(state) returns action mask for current state
-- [ ] **DRV-04**: Action dispatch uses existing decode_action() from actions.pyx
+- [x] **DRV-01**: GameDriver class dispatches actions to phase handlers based on game phase
+- [x] **DRV-02**: GameDriver.apply_action(state, action_idx) mutates state and returns status
+- [x] **DRV-03**: GameDriver.get_legal_moves(state) returns action mask for current state
+- [x] **DRV-04**: Action dispatch uses existing decode_action() from actions.pyx
 
 ### INVEST Phase - Core Actions
 
@@ -112,10 +112,10 @@ Deferred to later milestones.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DRV-01 | Phase 2 | Pending |
-| DRV-02 | Phase 2 | Pending |
-| DRV-03 | Phase 2 | Pending |
-| DRV-04 | Phase 2 | Pending |
+| DRV-01 | Phase 2 | Complete |
+| DRV-02 | Phase 2 | Complete |
+| DRV-03 | Phase 2 | Complete |
+| DRV-04 | Phase 2 | Complete |
 | INV-01 | Phase 3 | Pending |
 | INV-02 | Phase 3 | Pending |
 | INV-03 | Phase 3 | Pending |
