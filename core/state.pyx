@@ -387,6 +387,14 @@ cdef class GameState:
         """Set active player ID in hidden state."""
         self._data[self._layout.hidden_active_player_offset] = <float>player_id
 
+    cpdef int get_active_player(self):
+        """Get active player ID (Python-accessible)."""
+        return self._get_active_player()
+
+    cpdef int get_num_players(self):
+        """Get number of players (Python-accessible)."""
+        return self._num_players
+
     # =========================================================================
     # PHASE ACCESS
     # =========================================================================

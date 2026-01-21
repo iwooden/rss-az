@@ -124,6 +124,10 @@ cdef class GameState:
     cdef int _get_active_player(self) noexcept nogil
     cdef void _set_active_player(self, int player_id) noexcept nogil
 
+    # Active player and num_players access (Python-accessible)
+    cpdef int get_active_player(self)
+    cpdef int get_num_players(self)
+
     # Phase access
     cpdef int get_phase(self)
     cpdef void set_phase(self, int phase)
