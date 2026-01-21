@@ -84,15 +84,16 @@ Plans:
 **Depends on**: Phase 4
 **Requirements**: INV-18, INV-19, INV-20, INV-21, INV-22, INV-23, INV-24, INV-25, INV-26, INV-27
 **Success Criteria** (what must be TRUE):
-  1. Presidency transfers to player with most shares (tie-break by turn order)
+  1. Presidency transfers to player with most shares (incumbent keeps on tie)
   2. Receivership flag set when all player shares sold
-  3. Buying from receivership requires taking president share
+  3. Buying from receivership exits receivership and sets buyer as president
   4. Corporation bankruptcy triggers when price drops to 0
   5. Bankruptcy procedure removes companies, returns shares/money/price card, corp available for future IPO
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 05-01: TBD
+- [ ] 05-01-PLAN.md — Implement bankruptcy procedure and integrate into sell handler
+- [ ] 05-02-PLAN.md — Implement presidency/receivership checks and test coverage
 
 ### Phase 6: Integration & Tests
 **Goal**: Comprehensive test coverage validates all phase logic and edge cases
@@ -118,7 +119,7 @@ Plans:
 | 2. Infrastructure Setup | v2 | 2/2 | Complete | 2026-01-21 |
 | 3. INVEST Core & Auction | v2 | 3/3 | Complete | 2026-01-21 |
 | 4. Share Trading | v2 | 2/2 | Complete | 2026-01-21 |
-| 5. Presidency & Bankruptcy | v2 | 0/? | Not started | - |
+| 5. Presidency & Bankruptcy | v2 | 0/2 | Ready | - |
 | 6. Integration & Tests | v2 | 0/? | Not started | - |
 
 ---
