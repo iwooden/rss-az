@@ -40,10 +40,11 @@ Plans:
   2. GameDriver.get_legal_moves(state) returns valid action mask for current phase
   3. Action decoding uses existing decode_action() without modification
   4. All dispatch functions maintain noexcept nogil for performance
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 02-01: TBD
+- [ ] 02-01-PLAN.md — Create GameDriver class and phase handler stubs
+- [ ] 02-02-PLAN.md — Test GameDriver dispatch and validation
 
 ### Phase 3: INVEST Core & Auction Flow
 **Goal**: Players can pass, start auctions, bid, and complete full auction cycles
@@ -111,7 +112,7 @@ Plans:
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 1. Game State Init | v1 | 1/1 | Complete | 2026-01-20 |
-| 2. Infrastructure Setup | v2 | 0/? | Not started | - |
+| 2. Infrastructure Setup | v2 | 0/2 | Planned | - |
 | 3. INVEST Core & Auction | v2 | 0/? | Not started | - |
 | 4. Share Trading | v2 | 0/? | Not started | - |
 | 5. Presidency & Bankruptcy | v2 | 0/? | Not started | - |
