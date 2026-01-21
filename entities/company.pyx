@@ -220,7 +220,10 @@ cdef class Company:
         """Clear company from its current location without setting a new one."""
         cdef int i
 
-        # Clear based on cached location for efficiency
+        # Re-scan to get current location (don't trust stale cache)
+        self._scan_location(state)
+
+        # Clear based on current location
         if self._location == LOC_AUCTION:
             state._data[self._auction_offset] = 0.0
         elif self._location == LOC_REVEALED:
