@@ -20,6 +20,93 @@ from core.data import CORP_NAMES
 # HELPER FUNCTIONS
 # =============================================================================
 
+cdef void _check_receivership(GameState state, int corp_id) noexcept:
+    """
+    Check if corporation enters or exits receivership.
+
+    Receivership = all player-owned shares are 0 (bank owns all issued shares).
+    """
+    cdef int player_id, total_player_shares
+    cdef object corp
+
+    corp = corp_module.CORPS[CORP_NAMES[corp_id]]
+    total_player_shares = 0
+
+    for player_id in range(state._num_players):
+        total_player_shares += player_module.PLAYERS[player_id].get_shares(state, corp_id)
+
+    if total_player_shares == 0:
+        corp.set_in_receivership(state, True)
+        # Clear all president flags - no president in receivership
+        for player_id in range(state._num_players):
+            player_module.PLAYERS[player_id].set_president_of(state, corp_id, False)
+    else:
+        corp.set_in_receivership(state, False)
+
+
+cdef void _check_presidency(GameState state, int corp_id) noexcept:
+    """
+    Check if presidency should transfer.
+
+    President = player with most shares. Tie-breaking: incumbent keeps it.
+    Per CONTEXT.md: "current president keeps it when shares are equal"
+    """
+    cdef int player_id, shares, max_shares, president_id, current_president, incumbent_shares
+    cdef object corp
+
+    corp = corp_module.CORPS[CORP_NAMES[corp_id]]
+
+    # Skip if in receivership (no president)
+    if corp.is_in_receivership(state):
+        return
+
+    # Find current president
+    current_president = -1
+    for player_id in range(state._num_players):
+        if player_module.PLAYERS[player_id].is_president_of(state, corp_id):
+            current_president = player_id
+            break
+
+    # Find player with most shares
+    # Incumbent advantage: on ties, incumbent keeps presidency
+    # We handle this by initializing with incumbent's shares if they exist
+    max_shares = 0
+    president_id = -1
+
+    # First pass: find the maximum share count
+    for player_id in range(state._num_players):
+        shares = player_module.PLAYERS[player_id].get_shares(state, corp_id)
+        if shares > max_shares:
+            max_shares = shares
+
+    # Second pass: find winner (incumbent wins ties)
+    # If incumbent has max_shares, they keep it
+    # Otherwise, first player with max_shares wins
+    if max_shares > 0:
+        if current_president >= 0:
+            incumbent_shares = player_module.PLAYERS[current_president].get_shares(state, corp_id)
+            if incumbent_shares == max_shares:
+                # Incumbent ties for max - they keep presidency
+                president_id = current_president
+
+        # If incumbent doesn't have max shares, find first player who does
+        if president_id < 0:
+            for player_id in range(state._num_players):
+                shares = player_module.PLAYERS[player_id].get_shares(state, corp_id)
+                if shares == max_shares:
+                    president_id = player_id
+                    break
+
+    # Update if changed (and someone has shares)
+    if president_id >= 0 and president_id != current_president:
+        if current_president >= 0:
+            player_module.PLAYERS[current_president].set_president_of(state, corp_id, False)
+        player_module.PLAYERS[president_id].set_president_of(state, corp_id, True)
+    elif president_id < 0 and current_president >= 0:
+        # No one has shares but there was a president - clear (shouldn't happen if receivership check ran first)
+        player_module.PLAYERS[current_president].set_president_of(state, corp_id, False)
+
+
 cdef void _execute_bankruptcy(GameState state, int corp_id) noexcept:
     """
     Execute bankruptcy procedure for a corporation (INV-22 through INV-27).
