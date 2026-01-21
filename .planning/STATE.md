@@ -12,7 +12,7 @@ See: .planning/PROJECT.md (updated 2026-01-20)
 Phase: 6 of 6 (Integration & Tests)
 Plan: 0 of ? in current phase
 Status: Ready to plan
-Last activity: 2026-01-21 — Completed quick task 001: Refactor duplicate code in phases directory
+Last activity: 2026-01-21 — Completed quick task 002: Move net worth updates to player entity
 
 Progress: v1 ✓ | v2 [████████░░] 80%
 
@@ -68,6 +68,7 @@ Key patterns from v1 and v2:
 - Two-pass presidency algorithm — Find max shares first, then check incumbent for tie-breaking (05-02)
 - Receivership before presidency pattern — Check receivership first, skip presidency if in receivership (05-02)
 - Bankruptcy fixture pattern — issued_shares = bank_shares + player_shares for validity (05-02)
+- Python-visible wrapper pattern — Module-level def wrappers for cdef functions to enable Python access (quick-002)
 
 ### Pending Todos
 
@@ -82,10 +83,11 @@ None.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 001 | Refactor duplicate code in phases directory to entities and utilities | 2026-01-21 | b4b8a6e | [001-refactor-duplicate-code-in-phases-direct](./quick/001-refactor-duplicate-code-in-phases-direct/) |
+| 002 | Move net worth updates to player entity via Python-visible wrapper | 2026-01-21 | 065b6e9 | [002-move-update-all-net-worths-to-player-ent](./quick/002-move-update-all-net-worths-to-player-ent/) |
 
 ## Session Continuity
 
-Last session: 2026-01-21 (Phase 5 complete)
-Stopped at: Phase 5 verified and complete
+Last session: 2026-01-21 (Quick task 002 complete)
+Stopped at: Completed quick task 002
 Resume file: None
 Next action: /gsd:discuss-phase 6
