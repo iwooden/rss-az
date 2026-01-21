@@ -48,7 +48,10 @@ DEF PHASE_ISSUE_SHARES = 8
 DEF PHASE_IPO = 9
 
 # Import low-level functions from entities for direct access
-from entities.player cimport get_player_shares, PlayerOffsets, get_player_offsets
+from entities.player cimport (
+    get_player_shares, PlayerOffsets, get_player_offsets,
+    get_roundtrips, get_share_buys, get_share_sells
+)
 from entities.company cimport get_auction_company_for_slot
 
 
@@ -256,6 +259,9 @@ cdef void _fill_invest_mask(GameState state, ActionLayout* layout, float* mask) 
     cdef float* player = state._player_ptr(player_id)
     cdef PlayerOffsets po = get_player_offsets(state._num_players)
     cdef int num_auction_slots = state._num_players  # Dynamic based on player count
+    # Round-trip tracking variables (INV-17)
+    cdef int buys, sells, roundtrips
+    cdef bint roundtrip_blocked
 
     # Pass is always valid
     mask[layout.pass_invest] = 1.0
@@ -277,8 +283,14 @@ cdef void _fill_invest_mask(GameState state, ActionLayout* layout, float* mask) 
     cdef int current_price_index, buy_index, buy_price
     cdef float* market_ptr = state._data + state._layout.market_offset
     for corp_id in range(NUM_CORPS):
-        # Buy: corp is active, has bank shares, and player can afford
-        if state.is_corp_active(corp_id):
+        # Round-trip limit check (INV-17)
+        buys = get_share_buys(player, &po, corp_id)
+        sells = get_share_sells(player, &po, corp_id)
+        roundtrips = (buys + sells) // 2
+        roundtrip_blocked = roundtrips >= 2  # MAX_ROUNDTRIPS
+
+        # Buy: corp is active, has bank shares, player can afford, not roundtrip blocked
+        if state.is_corp_active(corp_id) and not roundtrip_blocked:
             bank_shares = state.get_corp_bank_shares(corp_id)
             if bank_shares > 0:
                 # Check if player can afford the buy price (next higher index)
@@ -293,10 +305,11 @@ cdef void _fill_invest_mask(GameState state, ActionLayout* layout, float* mask) 
                 if player_cash >= buy_price:
                     mask[layout.buy_share_base + corp_id] = 1.0
 
-        # Sell: player owns shares
-        player_shares = get_player_shares(player, &po, corp_id)
-        if player_shares > 0:
-            mask[layout.sell_share_base + corp_id] = 1.0
+        # Sell: player owns shares, not roundtrip blocked
+        if not roundtrip_blocked:
+            player_shares = get_player_shares(player, &po, corp_id)
+            if player_shares > 0:
+                mask[layout.sell_share_base + corp_id] = 1.0
 
 
 cdef void _fill_bid_mask(GameState state, ActionLayout* layout, float* mask) noexcept:
