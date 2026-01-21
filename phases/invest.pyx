@@ -189,12 +189,11 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     2. Transfer money (corp pays sell price to player)
     3. Transfer share (player to bank)
     4. Move price down (skipping occupied spaces)
-    5. Track round-trip
-    6. Update net worth
-    7. Reset consecutive passes
-    8. Advance to next player
-
-    Note: If price reaches 0, bankruptcy handling is deferred to Phase 5.
+    5. If price reaches 0, execute bankruptcy and return
+    6. Track round-trip
+    7. Update net worth
+    8. Reset consecutive passes
+    9. Advance to next player
     """
     cdef int player_id, current_index, new_index, sell_price
     cdef int bank_shares, player_shares
@@ -223,9 +222,20 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     new_index = market_module.MARKET.find_next_lower_space(state, current_index)
     market_module.MARKET.set_space_available(state, current_index, True)  # Free old
     corp.set_price_index(state, new_index)  # Updates price
-    if new_index > 0:  # Occupy new space (unless bankruptcy)
-        market_module.MARKET.set_space_available(state, new_index, False)
-    # Note: new_index == 0 means bankruptcy - Phase 5 handles the procedure
+
+    # Check for bankruptcy (INV-22)
+    if new_index == 0:
+        _execute_bankruptcy(state, corp_id)
+        # Update net worth even after bankruptcy (player received cash)
+        player_module.PLAYERS[player_id].update_net_worth(state)
+        # Reset consecutive passes (INV-02)
+        turn_module.TURN.clear_consecutive_passes(state)
+        # Advance active player
+        _advance_active_player(state)
+        return  # Skip remaining steps - corp is gone
+
+    # Occupy new space (non-bankruptcy case)
+    market_module.MARKET.set_space_available(state, new_index, False)
 
     # Round-trip tracking (INV-16)
     player_module.PLAYERS[player_id].increment_share_sells(state, corp_id)
