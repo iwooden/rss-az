@@ -73,10 +73,11 @@ Plans:
   3. Price movement skips occupied market spaces
   4. Round-trip limit (2 per corp per turn) prevents excessive trading
   5. Player net worth updates after each buy/sell action
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 04-01: TBD
+- [ ] 04-01-PLAN.md — Implement buy/sell share handlers with price movement
+- [ ] 04-02-PLAN.md — Add round-trip limits to mask and test coverage
 
 ### Phase 5: Presidency & Bankruptcy
 **Goal**: Corporation ownership transfers correctly and bankruptcy procedure completes cleanly
@@ -116,7 +117,7 @@ Plans:
 | 1. Game State Init | v1 | 1/1 | Complete | 2026-01-20 |
 | 2. Infrastructure Setup | v2 | 2/2 | Complete | 2026-01-21 |
 | 3. INVEST Core & Auction | v2 | 3/3 | Complete | 2026-01-21 |
-| 4. Share Trading | v2 | 0/? | Not started | - |
+| 4. Share Trading | v2 | 0/2 | Not started | - |
 | 5. Presidency & Bankruptcy | v2 | 0/? | Not started | - |
 | 6. Integration & Tests | v2 | 0/? | Not started | - |
 
