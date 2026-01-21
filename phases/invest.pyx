@@ -8,8 +8,11 @@ from core.actions cimport (
 )
 from entities import turn as turn_module
 from entities import player as player_module
+from entities import corp as corp_module
+from entities import market as market_module
 from entities.company cimport get_auction_company_for_slot
-from core.data cimport GamePhases, get_company_face_value
+from core.data cimport GamePhases, get_company_face_value, get_market_price
+from core.data import CORP_NAMES
 
 
 # =============================================================================
@@ -53,6 +56,66 @@ cdef void _advance_to_next_bidder(GameState state) noexcept:
         checked += 1
 
     # Should never reach here - means all players passed
+
+
+cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
+    """
+    Handle buy share action.
+
+    Per CONTEXT.md: Price moves BEFORE payment (player pays new price)
+
+    Sequence:
+    1. Find new price after price movement (skipping occupied spaces)
+    2. Update market space availability
+    3. Transfer money (player pays new price to corp)
+    4. Transfer share (bank to player)
+    5. Track round-trip
+    6. Update net worth
+    7. Reset consecutive passes
+    8. Advance to next player
+    """
+    cdef int player_id, current_index, new_index, new_price
+    cdef int bank_shares, player_shares
+    cdef object corp  # Corporation entity
+
+    # Get active player
+    player_id = state._get_active_player()
+
+    # Get corp by name lookup (existing pattern from corp.pyx)
+    corp = corp_module.CORPS[CORP_NAMES[corp_id]]
+
+    # Get current price index and find new index
+    current_index = corp.get_price_index(state)
+    new_index = market_module.MARKET.find_next_higher_space(state, current_index)
+    new_price = get_market_price(new_index)
+
+    # Update market space availability
+    market_module.MARKET.set_space_available(state, current_index, True)  # Free old
+    corp.set_price_index(state, new_index)  # Updates price too
+    if new_index != 26:  # Price 75 is always available, don't mark occupied
+        market_module.MARKET.set_space_available(state, new_index, False)
+
+    # Transfer money (INV-07, INV-08)
+    player_module.PLAYERS[player_id].add_cash(state, -new_price)
+    corp.add_cash(state, new_price)
+
+    # Transfer share (INV-09)
+    bank_shares = corp.get_bank_shares(state)
+    corp.set_bank_shares(state, bank_shares - 1)
+    player_shares = player_module.PLAYERS[player_id].get_shares(state, corp_id)
+    player_module.PLAYERS[player_id].set_shares(state, corp_id, player_shares + 1)
+
+    # Round-trip tracking (INV-16)
+    player_module.PLAYERS[player_id].increment_share_buys(state, corp_id)
+
+    # Update net worth (INV-15)
+    player_module.PLAYERS[player_id].update_net_worth(state)
+
+    # Reset consecutive passes (INV-02)
+    turn_module.TURN.clear_consecutive_passes(state)
+
+    # Advance active player
+    _advance_active_player(state)
 
 
 # =============================================================================
@@ -113,7 +176,7 @@ cdef int apply_invest_action(GameState state, ActionInfo* info) noexcept:
         return 0
 
     elif info.action_type == ACTION_BUY_SHARE:
-        # TODO Phase 4: Buy share logic
+        _handle_buy_share(state, info.corp_id)
         return 0
 
     elif info.action_type == ACTION_SELL_SHARE:
