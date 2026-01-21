@@ -1,5 +1,5 @@
 ---
-status: complete
+status: diagnosed
 phase: 05-presidency-bankruptcy
 source: [05-01-SUMMARY.md, 05-02-SUMMARY.md]
 started: 2026-01-21T20:00:00Z
@@ -45,19 +45,19 @@ result: pass
 ## Summary
 
 total: 7
-passed: 6
-issues: 1
+passed: 7
+issues: 0
 pending: 0
 skipped: 0
+fixed: 1
 
 ## Gaps
 
-- truth: "All players' net worth updated after bankruptcy"
-  status: failed
-  reason: "User reported: Other players who held shares in the bankrupt corp don't have their net worth updated. State vector must be complete and up-to-date for AI model."
+- truth: "All players' net worth updated after any state change affecting valuations"
+  status: fixed
+  reason: "User reported: Buy/sell/bankruptcy only update active player's net worth, but price changes affect all shareholders. State vector must be complete and up-to-date for AI model."
   severity: major
   test: 1
-  root_cause: ""
-  artifacts: []
-  missing: []
-  debug_session: ""
+  root_cause: "Buy/sell handlers only call update_net_worth() for active player, not all players affected by price movement"
+  fix_commit: "a47b264"
+  fix_description: "Added _update_all_net_worths() helper, replaced single-player updates in buy/sell/bankruptcy handlers"
