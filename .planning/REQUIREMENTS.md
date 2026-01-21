@@ -16,13 +16,13 @@ Requirements for INVEST and BID_IN_AUCTION phase implementation with game driver
 
 ### INVEST Phase - Core Actions
 
-- [ ] **INV-01**: Pass action increments consecutive_passes counter
-- [ ] **INV-02**: Non-pass actions reset consecutive_passes to 0
-- [ ] **INV-03**: Phase transitions to WRAP_UP when consecutive_passes >= num_players
-- [ ] **INV-04**: Active player advances to next player in turn order (not just next index)
-- [ ] **INV-04a**: Turn order is read from player turn_order one-hot vectors in game state
-- [ ] **INV-05**: Start auction action initializes auction state (company, price, high_bidder, starter)
-- [ ] **INV-06**: Start auction action transitions phase to BID_IN_AUCTION
+- [x] **INV-01**: Pass action increments consecutive_passes counter
+- [x] **INV-02**: Non-pass actions reset consecutive_passes to 0
+- [x] **INV-03**: Phase transitions to WRAP_UP when consecutive_passes >= num_players
+- [x] **INV-04**: Active player advances to next player in turn order (not just next index)
+- [x] **INV-04a**: Turn order is read from player turn_order one-hot vectors in game state
+- [x] **INV-05**: Start auction action initializes auction state (company, price, high_bidder, starter)
+- [x] **INV-06**: Start auction action transitions phase to BID_IN_AUCTION
 
 ### INVEST Phase - Share Trading
 
@@ -59,18 +59,18 @@ Requirements for INVEST and BID_IN_AUCTION phase implementation with game driver
 
 ### BID_IN_AUCTION Phase
 
-- [ ] **BID-01**: Leave auction sets auction_passed flag for player
-- [ ] **BID-02**: Active bidder rotation skips players who have left auction
-- [ ] **BID-03**: Raise bid updates auction price and high bidder
-- [ ] **BID-04**: Raise bid must exceed current auction price
-- [ ] **BID-05**: Auction resolves when only one bidder remains
-- [ ] **BID-06**: Auction winner pays bid price to bank
-- [ ] **BID-07**: Auction winner receives company
-- [ ] **BID-08**: Auction resolution clears all auction state
-- [ ] **BID-09**: Auction resolution draws new company (marked unavailable)
-- [ ] **BID-10**: Auction resolution transitions back to INVEST phase
-- [ ] **BID-11**: Next action goes to player after auction starter in turn order (not winner)
-- [ ] **BID-12**: Player net worth updated when winning auction
+- [x] **BID-01**: Leave auction sets auction_passed flag for player
+- [x] **BID-02**: Active bidder rotation skips players who have left auction
+- [x] **BID-03**: Raise bid updates auction price and high bidder
+- [x] **BID-04**: Raise bid must exceed current auction price
+- [x] **BID-05**: Auction resolves when only one bidder remains
+- [x] **BID-06**: Auction winner pays bid price to bank
+- [x] **BID-07**: Auction winner receives company
+- [x] **BID-08**: Auction resolution clears all auction state
+- [x] **BID-09**: Auction resolution draws new company (marked unavailable)
+- [x] **BID-10**: Auction resolution transitions back to INVEST phase
+- [x] **BID-11**: Next action goes to player after auction starter in turn order (not winner)
+- [x] **BID-12**: Player net worth updated when winning auction
 
 ### Test Coverage
 
@@ -116,13 +116,13 @@ Deferred to later milestones.
 | DRV-02 | Phase 2 | Complete |
 | DRV-03 | Phase 2 | Complete |
 | DRV-04 | Phase 2 | Complete |
-| INV-01 | Phase 3 | Pending |
-| INV-02 | Phase 3 | Pending |
-| INV-03 | Phase 3 | Pending |
-| INV-04 | Phase 3 | Pending |
-| INV-04a | Phase 3 | Pending |
-| INV-05 | Phase 3 | Pending |
-| INV-06 | Phase 3 | Pending |
+| INV-01 | Phase 3 | Complete |
+| INV-02 | Phase 3 | Complete |
+| INV-03 | Phase 3 | Complete |
+| INV-04 | Phase 3 | Complete |
+| INV-04a | Phase 3 | Complete |
+| INV-05 | Phase 3 | Complete |
+| INV-06 | Phase 3 | Complete |
 | INV-07 | Phase 4 | Pending |
 | INV-08 | Phase 4 | Pending |
 | INV-09 | Phase 4 | Pending |
@@ -144,18 +144,18 @@ Deferred to later milestones.
 | INV-25 | Phase 5 | Pending |
 | INV-26 | Phase 5 | Pending |
 | INV-27 | Phase 5 | Pending |
-| BID-01 | Phase 3 | Pending |
-| BID-02 | Phase 3 | Pending |
-| BID-03 | Phase 3 | Pending |
-| BID-04 | Phase 3 | Pending |
-| BID-05 | Phase 3 | Pending |
-| BID-06 | Phase 3 | Pending |
-| BID-07 | Phase 3 | Pending |
-| BID-08 | Phase 3 | Pending |
-| BID-09 | Phase 3 | Pending |
-| BID-10 | Phase 3 | Pending |
-| BID-11 | Phase 3 | Pending |
-| BID-12 | Phase 3 | Pending |
+| BID-01 | Phase 3 | Complete |
+| BID-02 | Phase 3 | Complete |
+| BID-03 | Phase 3 | Complete |
+| BID-04 | Phase 3 | Complete |
+| BID-05 | Phase 3 | Complete |
+| BID-06 | Phase 3 | Complete |
+| BID-07 | Phase 3 | Complete |
+| BID-08 | Phase 3 | Complete |
+| BID-09 | Phase 3 | Complete |
+| BID-10 | Phase 3 | Complete |
+| BID-11 | Phase 3 | Complete |
+| BID-12 | Phase 3 | Complete |
 | TST-01 | Phase 6 | Pending |
 | TST-02 | Phase 6 | Pending |
 | TST-03 | Phase 6 | Pending |

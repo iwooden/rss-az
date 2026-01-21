@@ -24,7 +24,7 @@ Plans:
 **Milestone Goal:** Implement INVEST and BID_IN_AUCTION phase actions with game driver architecture, full share trading mechanics, and corporation lifecycle management.
 
 - [x] **Phase 2: Infrastructure Setup** - Game driver dispatch and phase module structure
-- [ ] **Phase 3: INVEST Core & Auction Flow** - Pass, start auction, and full auction cycle
+- [x] **Phase 3: INVEST Core & Auction Flow** - Pass, start auction, and full auction cycle
 - [ ] **Phase 4: Share Trading** - Buy/sell shares with price movement and round-trip limits
 - [ ] **Phase 5: Presidency & Bankruptcy** - Corporation ownership changes and bankruptcy handling
 - [ ] **Phase 6: Integration & Tests** - Comprehensive test coverage and edge case validation
@@ -59,9 +59,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — Implement INVEST phase pass and start auction
-- [ ] 03-02-PLAN.md — Implement BID_IN_AUCTION phase handler
-- [ ] 03-03-PLAN.md — Test coverage for INVEST and BID phases
+- [x] 03-01-PLAN.md — Implement INVEST phase pass and start auction
+- [x] 03-02-PLAN.md — Implement BID_IN_AUCTION phase handler
+- [x] 03-03-PLAN.md — Test coverage for INVEST and BID phases
 
 ### Phase 4: Share Trading
 **Goal**: Players can buy and sell shares with proper price movement and trading limits
@@ -115,7 +115,7 @@ Plans:
 |-------|-----------|----------------|--------|-----------|
 | 1. Game State Init | v1 | 1/1 | Complete | 2026-01-20 |
 | 2. Infrastructure Setup | v2 | 2/2 | Complete | 2026-01-21 |
-| 3. INVEST Core & Auction | v2 | 0/3 | In progress | - |
+| 3. INVEST Core & Auction | v2 | 3/3 | Complete | 2026-01-21 |
 | 4. Share Trading | v2 | 0/? | Not started | - |
 | 5. Presidency & Bankruptcy | v2 | 0/? | Not started | - |
 | 6. Integration & Tests | v2 | 0/? | Not started | - |
