@@ -26,20 +26,20 @@ Requirements for INVEST and BID_IN_AUCTION phase implementation with game driver
 
 ### INVEST Phase - Share Trading
 
-- [ ] **INV-07**: Buy share deducts buy price from player cash
-- [ ] **INV-08**: Buy share adds buy price to corporation cash
-- [ ] **INV-09**: Buy share transfers 1 share from bank to player
-- [ ] **INV-10**: Buy share moves corp price to next higher available market space
-- [ ] **INV-11**: Sell share adds sell price to player cash
-- [ ] **INV-12**: Sell share transfers 1 share from player to bank
-- [ ] **INV-13**: Sell share moves corp price to next lower available market space
-- [ ] **INV-14**: Price movement skips market spaces occupied by other corps
-- [ ] **INV-15**: Player net worth updated after buy/sell share actions
+- [x] **INV-07**: Buy share deducts buy price from player cash
+- [x] **INV-08**: Buy share adds buy price to corporation cash
+- [x] **INV-09**: Buy share transfers 1 share from bank to player
+- [x] **INV-10**: Buy share moves corp price to next higher available market space
+- [x] **INV-11**: Sell share adds sell price to player cash
+- [x] **INV-12**: Sell share transfers 1 share from player to bank
+- [x] **INV-13**: Sell share moves corp price to next lower available market space
+- [x] **INV-14**: Price movement skips market spaces occupied by other corps
+- [x] **INV-15**: Player net worth updated after buy/sell share actions
 
 ### INVEST Phase - Round-Trip Limits
 
-- [ ] **INV-16**: Round-trip tracking increments share_buys/share_sells counters per player per corp
-- [ ] **INV-17**: Buy/sell blocked when round-trips >= MAX_ROUNDTRIPS (2) for that corp
+- [x] **INV-16**: Round-trip tracking increments share_buys/share_sells counters per player per corp
+- [x] **INV-17**: Buy/sell blocked when round-trips >= MAX_ROUNDTRIPS (2) for that corp
 
 ### INVEST Phase - Presidency & Receivership
 
@@ -123,17 +123,17 @@ Deferred to later milestones.
 | INV-04a | Phase 3 | Complete |
 | INV-05 | Phase 3 | Complete |
 | INV-06 | Phase 3 | Complete |
-| INV-07 | Phase 4 | Pending |
-| INV-08 | Phase 4 | Pending |
-| INV-09 | Phase 4 | Pending |
-| INV-10 | Phase 4 | Pending |
-| INV-11 | Phase 4 | Pending |
-| INV-12 | Phase 4 | Pending |
-| INV-13 | Phase 4 | Pending |
-| INV-14 | Phase 4 | Pending |
-| INV-15 | Phase 4 | Pending |
-| INV-16 | Phase 4 | Pending |
-| INV-17 | Phase 4 | Pending |
+| INV-07 | Phase 4 | Complete |
+| INV-08 | Phase 4 | Complete |
+| INV-09 | Phase 4 | Complete |
+| INV-10 | Phase 4 | Complete |
+| INV-11 | Phase 4 | Complete |
+| INV-12 | Phase 4 | Complete |
+| INV-13 | Phase 4 | Complete |
+| INV-14 | Phase 4 | Complete |
+| INV-15 | Phase 4 | Complete |
+| INV-16 | Phase 4 | Complete |
+| INV-17 | Phase 4 | Complete |
 | INV-18 | Phase 5 | Pending |
 | INV-19 | Phase 5 | Pending |
 | INV-20 | Phase 5 | Pending |

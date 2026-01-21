@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-01-20)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** Phase 4 - Share Trading
+**Current focus:** Phase 5 - Presidency & Bankruptcy
 
 ## Current Position
 
-Phase: 4 of 6 (Share Trading)
-Plan: 2 of 2 in current phase
-Status: Phase complete
-Last activity: 2026-01-21 - Completed 04-02-PLAN.md
+Phase: 5 of 6 (Presidency & Bankruptcy)
+Plan: 0 of ? in current phase
+Status: Ready to plan
+Last activity: 2026-01-21 — Phase 4 verified and complete
 
-Progress: v1 [completed] | v2 [██████░░░░] 60%
+Progress: v1 ✓ | v2 [██████░░░░] 60%
 
 ## Performance Metrics
 
@@ -72,7 +72,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-21
-Stopped at: Completed 04-02-PLAN.md (Phase 4 complete)
+Last session: 2026-01-21 (Phase 4 complete)
+Stopped at: Phase 4 verified and complete
 Resume file: None
-Next action: Begin Phase 5 (Presidency & Bankruptcy) or discuss next phase
+Next action: /gsd:discuss-phase 5
