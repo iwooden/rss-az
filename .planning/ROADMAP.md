@@ -26,7 +26,7 @@ Plans:
 - [x] **Phase 2: Infrastructure Setup** - Game driver dispatch and phase module structure
 - [x] **Phase 3: INVEST Core & Auction Flow** - Pass, start auction, and full auction cycle
 - [x] **Phase 4: Share Trading** - Buy/sell shares with price movement and round-trip limits
-- [ ] **Phase 5: Presidency & Bankruptcy** - Corporation ownership changes and bankruptcy handling
+- [x] **Phase 5: Presidency & Bankruptcy** - Corporation ownership changes and bankruptcy handling
 - [ ] **Phase 6: Integration & Tests** - Comprehensive test coverage and edge case validation
 
 ## Phase Details
@@ -92,8 +92,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 05-01-PLAN.md — Implement bankruptcy procedure and integrate into sell handler
-- [ ] 05-02-PLAN.md — Implement presidency/receivership checks and test coverage
+- [x] 05-01-PLAN.md — Implement bankruptcy procedure and integrate into sell handler
+- [x] 05-02-PLAN.md — Implement presidency/receivership checks and test coverage
 
 ### Phase 6: Integration & Tests
 **Goal**: Comprehensive test coverage validates all phase logic and edge cases
@@ -119,7 +119,7 @@ Plans:
 | 2. Infrastructure Setup | v2 | 2/2 | Complete | 2026-01-21 |
 | 3. INVEST Core & Auction | v2 | 3/3 | Complete | 2026-01-21 |
 | 4. Share Trading | v2 | 2/2 | Complete | 2026-01-21 |
-| 5. Presidency & Bankruptcy | v2 | 0/2 | Ready | - |
+| 5. Presidency & Bankruptcy | v2 | 2/2 | Complete | 2026-01-21 |
 | 6. Integration & Tests | v2 | 0/? | Not started | - |
 
 ---

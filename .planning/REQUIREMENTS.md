@@ -43,19 +43,19 @@ Requirements for INVEST and BID_IN_AUCTION phase implementation with game driver
 
 ### INVEST Phase - Presidency & Receivership
 
-- [ ] **INV-18**: Change of presidency triggers when another player has more shares
-- [ ] **INV-19**: Presidency tie-breaking uses turn order (earlier player wins)
-- [ ] **INV-20**: Receivership flag set when all player-owned shares are sold
-- [ ] **INV-21**: Buying share from receivership corp requires taking president share
+- [x] **INV-18**: Change of presidency triggers when another player has more shares
+- [x] **INV-19**: Presidency tie-breaking uses incumbent advantage (incumbent keeps on tie)
+- [x] **INV-20**: Receivership flag set when all player-owned shares are sold
+- [x] **INV-21**: Buying share from receivership corp sets buyer as president (fungible shares)
 
 ### INVEST Phase - Bankruptcy
 
-- [ ] **INV-22**: Corporation goes bankrupt when share price drops to 0
-- [ ] **INV-23**: Bankruptcy removes all corporation's companies from game
-- [ ] **INV-24**: Bankruptcy returns all issued shares to unissued stack
-- [ ] **INV-25**: Bankruptcy returns corporation money to bank
-- [ ] **INV-26**: Bankruptcy returns share price card to market row
-- [ ] **INV-27**: Bankrupt corporation available for future IPO
+- [x] **INV-22**: Corporation goes bankrupt when share price drops to 0
+- [x] **INV-23**: Bankruptcy removes all corporation's companies from game
+- [x] **INV-24**: Bankruptcy returns all issued shares to unissued stack
+- [x] **INV-25**: Bankruptcy returns corporation money to bank
+- [x] **INV-26**: Bankruptcy returns share price card to market row
+- [x] **INV-27**: Bankrupt corporation available for future IPO
 
 ### BID_IN_AUCTION Phase
 
@@ -134,16 +134,16 @@ Deferred to later milestones.
 | INV-15 | Phase 4 | Complete |
 | INV-16 | Phase 4 | Complete |
 | INV-17 | Phase 4 | Complete |
-| INV-18 | Phase 5 | Pending |
-| INV-19 | Phase 5 | Pending |
-| INV-20 | Phase 5 | Pending |
-| INV-21 | Phase 5 | Pending |
-| INV-22 | Phase 5 | Pending |
-| INV-23 | Phase 5 | Pending |
-| INV-24 | Phase 5 | Pending |
-| INV-25 | Phase 5 | Pending |
-| INV-26 | Phase 5 | Pending |
-| INV-27 | Phase 5 | Pending |
+| INV-18 | Phase 5 | Complete |
+| INV-19 | Phase 5 | Complete |
+| INV-20 | Phase 5 | Complete |
+| INV-21 | Phase 5 | Complete |
+| INV-22 | Phase 5 | Complete |
+| INV-23 | Phase 5 | Complete |
+| INV-24 | Phase 5 | Complete |
+| INV-25 | Phase 5 | Complete |
+| INV-26 | Phase 5 | Complete |
+| INV-27 | Phase 5 | Complete |
 | BID-01 | Phase 3 | Complete |
 | BID-02 | Phase 3 | Complete |
 | BID-03 | Phase 3 | Complete |

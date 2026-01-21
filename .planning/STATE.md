@@ -5,14 +5,14 @@
 See: .planning/PROJECT.md (updated 2026-01-20)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** Phase 5 - Presidency & Bankruptcy
+**Current focus:** Phase 6 - Integration & Tests
 
 ## Current Position
 
-Phase: 5 of 6 (Presidency & Bankruptcy)
-Plan: 2 of 2 in current phase
-Status: Phase complete
-Last activity: 2026-01-21 — Completed 05-02-PLAN.md (presidency & receivership)
+Phase: 6 of 6 (Integration & Tests)
+Plan: 0 of ? in current phase
+Status: Ready to plan
+Last activity: 2026-01-21 — Phase 5 verified and complete
 
 Progress: v1 ✓ | v2 [████████░░] 80%
 
@@ -79,7 +79,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-21T19:51:08Z
-Stopped at: Completed 05-02-PLAN.md (presidency & receivership)
+Last session: 2026-01-21 (Phase 5 complete)
+Stopped at: Phase 5 verified and complete
 Resume file: None
-Next action: Begin Phase 6 (Operating Round)
+Next action: /gsd:discuss-phase 6
