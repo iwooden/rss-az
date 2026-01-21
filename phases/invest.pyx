@@ -20,19 +20,6 @@ from core.data import CORP_NAMES
 # HELPER FUNCTIONS
 # =============================================================================
 
-cdef void _update_all_net_worths(GameState state) noexcept:
-    """
-    Update net worth for all players.
-
-    Call after any action that affects valuations (buy/sell shares, auctions,
-    acquisitions, income, bankruptcy). This ensures the state vector always
-    reflects accurate net worth for all players.
-    """
-    cdef int player_id
-    for player_id in range(state._num_players):
-        player_module.PLAYERS[player_id].update_net_worth(state)
-
-
 cdef void _check_receivership(GameState state, int corp_id) noexcept:
     """
     Check if corporation enters or exits receivership.
@@ -179,43 +166,13 @@ cdef void _execute_bankruptcy(GameState state, int corp_id) noexcept:
         corp.set_acquisition_company(state, company_id, False)
 
 
-cdef int _find_player_at_position(GameState state, int position) noexcept:
-    """Find player_id with given turn order position."""
-    cdef int player_id
-    for player_id in range(state._num_players):
-        if player_module.PLAYERS[player_id].get_turn_order(state) == position:
-            return player_id
-    return -1
-
-
 cdef void _advance_active_player(GameState state) noexcept:
     """Advance to next player in turn order."""
     cdef int current_player = state._get_active_player()
     cdef int current_position = player_module.PLAYERS[current_player].get_turn_order(state)
     cdef int next_position = (current_position + 1) % state._num_players
-    cdef int next_player = _find_player_at_position(state, next_position)
+    cdef int next_player = turn_module.TURN.find_player_at_position(state, next_position)
     state._set_active_player(next_player)
-
-
-cdef void _advance_to_next_bidder(GameState state) noexcept:
-    """Advance to next non-passed bidder in turn order."""
-    cdef int current_player = state._get_active_player()
-    cdef int current_position = player_module.PLAYERS[current_player].get_turn_order(state)
-    cdef int next_position, candidate
-    cdef int checked = 0
-
-    while checked < state._num_players:
-        next_position = (current_position + 1) % state._num_players
-        candidate = _find_player_at_position(state, next_position)
-
-        if not turn_module.TURN.has_player_passed_auction(state, candidate):
-            state._set_active_player(candidate)
-            return
-
-        current_position = next_position
-        checked += 1
-
-    # Should never reach here - means all players passed
 
 
 cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
@@ -236,6 +193,7 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     """
     cdef int player_id, current_index, new_index, new_price
     cdef int bank_shares, player_shares
+    cdef int i  # Loop variable for net worth updates
     cdef object corp  # Corporation entity
 
     # Get active player
@@ -277,7 +235,8 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     player_module.PLAYERS[player_id].increment_share_buys(state, corp_id)
 
     # Update net worth for all players (price movement affects all shareholders)
-    _update_all_net_worths(state)
+    for i in range(state._num_players):
+        player_module.PLAYERS[i].update_net_worth(state)
 
     # Reset consecutive passes (INV-02)
     turn_module.TURN.clear_consecutive_passes(state)
@@ -305,6 +264,7 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     """
     cdef int player_id, current_index, new_index, sell_price
     cdef int bank_shares, player_shares
+    cdef int i  # Loop variable for net worth updates
     cdef object corp  # Corporation entity
 
     # Get active player
@@ -335,7 +295,8 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     if new_index == 0:
         _execute_bankruptcy(state, corp_id)
         # Update net worth for all players (bankruptcy affects all shareholders)
-        _update_all_net_worths(state)
+        for i in range(state._num_players):
+            player_module.PLAYERS[i].update_net_worth(state)
         # Reset consecutive passes (INV-02)
         turn_module.TURN.clear_consecutive_passes(state)
         # Advance active player
@@ -356,7 +317,8 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     player_module.PLAYERS[player_id].increment_share_sells(state, corp_id)
 
     # Update net worth for all players (price movement affects all shareholders)
-    _update_all_net_worths(state)
+    for i in range(state._num_players):
+        player_module.PLAYERS[i].update_net_worth(state)
 
     # Reset consecutive passes (INV-02)
     turn_module.TURN.clear_consecutive_passes(state)
@@ -418,7 +380,7 @@ cdef int apply_invest_action(GameState state, ActionInfo* info) noexcept:
         turn_module.TURN.set_phase(state, GamePhases.PHASE_BID_IN_AUCTION)
 
         # Advance to next bidder (skipping passed players)
-        _advance_to_next_bidder(state)
+        turn_module.TURN.advance_to_next_bidder(state)
 
         return 0
 
