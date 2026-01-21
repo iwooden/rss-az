@@ -170,6 +170,32 @@ class TestBuyShare:
         new_buys = player.get_share_buys(trade_state, 0)
         assert new_buys == initial_buys + 1
 
+    def test_buy_share_updates_all_players_net_worth(self, trade_state):
+        """Price movement affects all shareholders' net worth."""
+        corp = CORPS[CORP_NAMES[0]]
+
+        # Give player 1 some shares of the same corp
+        PLAYERS[1].set_shares(trade_state, 0, 2)
+        PLAYERS[1].set_cash(trade_state, 50)
+
+        # Calculate expected net worth for player 1 before buy
+        PLAYERS[1].update_net_worth(trade_state)
+        initial_net_worth_p1 = PLAYERS[1].get_net_worth(trade_state)
+        initial_price = corp.get_share_price(trade_state)
+
+        # Player 0 buys, which moves price up
+        layout = get_action_layout(3)
+        buy_idx = layout['buy_share_base'] + 0
+        DRIVER.apply_action(trade_state, buy_idx)
+
+        # Player 1's net worth should reflect the new higher price
+        new_price = corp.get_share_price(trade_state)
+        new_net_worth_p1 = PLAYERS[1].get_net_worth(trade_state)
+
+        # Price went up, so player 1's net worth should have increased
+        assert new_price > initial_price
+        assert new_net_worth_p1 > initial_net_worth_p1
+
 
 # =============================================================================
 # SELL SHARE TESTS
@@ -486,6 +512,33 @@ class TestBankruptcy:
         # No player should be president
         for player_id in range(3):
             assert not PLAYERS[player_id].is_president_of(bankruptcy_state, 0)
+
+    def test_bankruptcy_updates_all_players_net_worth(self, bankruptcy_state):
+        """Bankruptcy updates net worth for all players who held shares."""
+        corp = CORPS[CORP_NAMES[0]]
+
+        # Give player 1 shares of the corp that will go bankrupt
+        PLAYERS[1].set_shares(bankruptcy_state, 0, 1)
+        # Update issued shares to match
+        corp.set_issued_shares(bankruptcy_state, 5)  # P0: 2, P1: 1, bank: 2
+        PLAYERS[1].set_cash(bankruptcy_state, 50)
+
+        # Calculate initial net worth for player 1
+        PLAYERS[1].update_net_worth(bankruptcy_state)
+        initial_net_worth_p1 = PLAYERS[1].get_net_worth(bankruptcy_state)
+        share_value = corp.get_share_price(bankruptcy_state)  # Value of 1 share
+
+        # Player 0 sells, triggering bankruptcy
+        layout = get_action_layout(3)
+        sell_idx = layout['sell_share_base'] + 0
+        DRIVER.apply_action(bankruptcy_state, sell_idx)
+
+        # Player 1's shares are now gone (zeroed by bankruptcy)
+        assert PLAYERS[1].get_shares(bankruptcy_state, 0) == 0
+
+        # Player 1's net worth should be updated (lost share value)
+        new_net_worth_p1 = PLAYERS[1].get_net_worth(bankruptcy_state)
+        assert new_net_worth_p1 == initial_net_worth_p1 - share_value
 
 
 # =============================================================================

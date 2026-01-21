@@ -20,6 +20,19 @@ from core.data import CORP_NAMES
 # HELPER FUNCTIONS
 # =============================================================================
 
+cdef void _update_all_net_worths(GameState state) noexcept:
+    """
+    Update net worth for all players.
+
+    Call after any action that affects valuations (buy/sell shares, auctions,
+    acquisitions, income, bankruptcy). This ensures the state vector always
+    reflects accurate net worth for all players.
+    """
+    cdef int player_id
+    for player_id in range(state._num_players):
+        player_module.PLAYERS[player_id].update_net_worth(state)
+
+
 cdef void _check_receivership(GameState state, int corp_id) noexcept:
     """
     Check if corporation enters or exits receivership.
@@ -263,8 +276,8 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     # Round-trip tracking (INV-16)
     player_module.PLAYERS[player_id].increment_share_buys(state, corp_id)
 
-    # Update net worth (INV-15)
-    player_module.PLAYERS[player_id].update_net_worth(state)
+    # Update net worth for all players (price movement affects all shareholders)
+    _update_all_net_worths(state)
 
     # Reset consecutive passes (INV-02)
     turn_module.TURN.clear_consecutive_passes(state)
@@ -321,8 +334,8 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     # Check for bankruptcy (INV-22)
     if new_index == 0:
         _execute_bankruptcy(state, corp_id)
-        # Update net worth even after bankruptcy (player received cash)
-        player_module.PLAYERS[player_id].update_net_worth(state)
+        # Update net worth for all players (bankruptcy affects all shareholders)
+        _update_all_net_worths(state)
         # Reset consecutive passes (INV-02)
         turn_module.TURN.clear_consecutive_passes(state)
         # Advance active player
@@ -342,8 +355,8 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     # Round-trip tracking (INV-16)
     player_module.PLAYERS[player_id].increment_share_sells(state, corp_id)
 
-    # Update net worth (INV-15)
-    player_module.PLAYERS[player_id].update_net_worth(state)
+    # Update net worth for all players (price movement affects all shareholders)
+    _update_all_net_worths(state)
 
     # Reset consecutive passes (INV-02)
     turn_module.TURN.clear_consecutive_passes(state)
