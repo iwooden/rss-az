@@ -146,3 +146,8 @@ cdef class TurnState:
     cpdef int get_closing_company(self, GameState state)
     cpdef void set_closing_company(self, GameState state, int company_id)
     cpdef void clear_closing_company(self, GameState state)
+
+    # Turn order navigation
+    cpdef int find_player_at_position(self, GameState state, int position)
+    cpdef void advance_to_next_bidder(self, GameState state)
+    cpdef void set_active_player_after(self, GameState state, int player_id)

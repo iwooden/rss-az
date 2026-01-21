@@ -10,6 +10,7 @@ Provides clean getter/setter access to turn-specific state including:
 
 from core.state cimport GameState, StateLayout, TurnStateOffsets
 from core.data cimport GameConstants, GamePhases, CASH_DIVISOR
+from entities import player as player_module
 
 
 cdef class TurnState:
@@ -478,6 +479,64 @@ cdef class TurnState:
         cdef int i
         for i in range(GameConstants.NUM_COMPANIES):
             state._data[self._closing_company_offset + i] = 0.0
+
+    # =========================================================================
+    # TURN ORDER NAVIGATION
+    # =========================================================================
+
+    cpdef int find_player_at_position(self, GameState state, int position):
+        """
+        Find player_id with given turn order position.
+
+        Args:
+            state: Game state
+            position: Turn order position to find (0-indexed)
+
+        Returns:
+            player_id or -1 if not found
+        """
+        cdef int player_id
+        for player_id in range(state._num_players):
+            if player_module.PLAYERS[player_id].get_turn_order(state) == position:
+                return player_id
+        return -1
+
+    cpdef void advance_to_next_bidder(self, GameState state):
+        """
+        Advance active player to next non-passed bidder in turn order.
+
+        Used during auction to skip players who have left the auction.
+        """
+        cdef int current_player = state._get_active_player()
+        cdef int current_position = player_module.PLAYERS[current_player].get_turn_order(state)
+        cdef int next_position, candidate
+        cdef int checked = 0
+
+        while checked < state._num_players:
+            next_position = (current_position + 1) % state._num_players
+            candidate = self.find_player_at_position(state, next_position)
+
+            if not self.has_player_passed_auction(state, candidate):
+                state._set_active_player(candidate)
+                return
+
+            current_position = next_position
+            checked += 1
+
+        # Should never reach here - means all players passed
+
+    cpdef void set_active_player_after(self, GameState state, int player_id):
+        """
+        Set active player to next player after given player in turn order.
+
+        Args:
+            state: Game state
+            player_id: Player whose turn just finished
+        """
+        cdef int position = player_module.PLAYERS[player_id].get_turn_order(state)
+        cdef int next_position = (position + 1) % state._num_players
+        cdef int next_player = self.find_player_at_position(state, next_position)
+        state._set_active_player(next_player)
 
 
 # =============================================================================
