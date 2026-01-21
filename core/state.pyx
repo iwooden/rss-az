@@ -31,6 +31,7 @@ from core.data cimport (
 from entities import player as player_module
 from entities import fi as fi_module
 from entities import corp as corp_module
+from entities import company as company_module
 from entities import market as market_module
 from entities import turn as turn_module
 from entities import deck as deck_module
@@ -708,6 +709,8 @@ cdef class GameState:
         fi_module.FI.initialize(self)
         for corp in corp_module.CORPS.values():
             corp.initialize(self)
+        for company in company_module.COMPANIES:
+            company.initialize(self)
         market_module.MARKET.initialize(self)
         turn_module.TURN.initialize(self)
         deck_module.DECK.initialize(self)
