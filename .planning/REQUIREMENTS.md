@@ -156,16 +156,16 @@ Deferred to later milestones.
 | BID-10 | Phase 3 | Pending |
 | BID-11 | Phase 3 | Pending |
 | BID-12 | Phase 3 | Pending |
-| TST-01 | All | Pending |
-| TST-02 | All | Pending |
-| TST-03 | All | Pending |
-| TST-04 | All | Pending |
+| TST-01 | Phase 6 | Pending |
+| TST-02 | Phase 6 | Pending |
+| TST-03 | Phase 6 | Pending |
+| TST-04 | Phase 6 | Pending |
 
 **Coverage:**
-- v2 requirements: 45 total
-- Mapped to phases: 45
-- Unmapped: 0 ✓
+- v2 requirements: 48 total
+- Mapped to phases: 48
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-01-20*
-*Last updated: 2026-01-20 after initial definition*
+*Last updated: 2026-01-20 after roadmap creation*
