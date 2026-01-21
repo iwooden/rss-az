@@ -10,25 +10,25 @@ See: .planning/PROJECT.md (updated 2026-01-20)
 ## Current Position
 
 Phase: 3 of 6 (INVEST Core & Auction Flow)
-Plan: 1 of ? in current phase
+Plan: 2 of ? in current phase
 Status: In progress
-Last activity: 2026-01-21 — Completed 03-01-PLAN.md
+Last activity: 2026-01-21 — Completed 03-02-PLAN.md
 
-Progress: v1 ✓ | v2 [███░░░░░░░] 30%
+Progress: v1 ✓ | v2 [████░░░░░░] 40%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 4 (1 v1, 3 v2)
-- Average duration: 2min 53sec
-- Total execution time: 0.19 hours
+- Total plans completed: 5 (1 v1, 4 v2)
+- Average duration: 3min 17sec
+- Total execution time: 0.27 hours
 
 **By Milestone:**
 
 | Milestone | Phases | Plans | Duration |
 |-----------|--------|-------|----------|
 | v1 Game State Init | 1 | 1 | 4min 25sec |
-| v2 INVEST/BID | 5 | 3/? | 7min 25sec (avg 2min 28sec) |
+| v2 INVEST/BID | 5 | 4/? | 12min 22sec (avg 3min 6sec) |
 
 *Updated after each plan completion*
 
@@ -50,6 +50,9 @@ Key patterns from v1 and v2:
 - pytest conftest pattern — Add project root to sys.path for Cython modules (02-02)
 - Cdef variable declaration pattern — Declare all cdef vars at function start in Cython (03-01)
 - Turn order navigation pattern — Find player at position, advance with wraparound (03-01)
+- Auction resolution sequence pattern — pay → transfer → update → draw → cleanup → transition (03-02)
+- Active player counting pattern — Iterate all players checking flag status (03-02)
+- Company entity initialization — Must call company.initialize(state) in GameState.initialize_game (03-02)
 
 ### Pending Todos
 
@@ -61,7 +64,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-21T00:44:45Z
-Stopped at: Completed 03-01-PLAN.md (INVEST pass and auction actions)
+Last session: 2026-01-21T01:19:10Z
+Stopped at: Completed 03-02-PLAN.md (BID_IN_AUCTION phase)
 Resume file: None
-Next action: Continue Phase 3 (BID_IN_AUCTION implementation)
+Next action: Continue Phase 3 or plan next phase
