@@ -104,10 +104,12 @@ Plans:
   2. Common game scenarios from rules documented and tested
   3. Edge cases (bankruptcy cascade, presidency change, receivership) have dedicated tests
   4. Action mask matches valid actions after every state change
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 06-01: TBD
+- [ ] 06-01-PLAN.md — Migrate tests to tests/phases/ and create shared assertion helpers
+- [ ] 06-02-PLAN.md — Add INVEST integration tests and edge case coverage
+- [ ] 06-03-PLAN.md — Add BID_IN_AUCTION integration tests and edge case coverage
 
 ## Progress
 
@@ -120,7 +122,7 @@ Plans:
 | 3. INVEST Core & Auction | v2 | 3/3 | Complete | 2026-01-21 |
 | 4. Share Trading | v2 | 2/2 | Complete | 2026-01-21 |
 | 5. Presidency & Bankruptcy | v2 | 2/2 | Complete | 2026-01-21 |
-| 6. Integration & Tests | v2 | 0/? | Not started | - |
+| 6. Integration & Tests | v2 | 0/3 | Planning complete | - |
 
 ---
 *Roadmap created: 2026-01-20*
