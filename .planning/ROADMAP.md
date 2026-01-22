@@ -19,6 +19,11 @@ Implement iterative auto-application of forced actions in GameDriver. When exact
 
 **Dependencies:** None (builds on existing GameDriver from v2)
 
+**Plans:** 1 plan
+
+Plans:
+- [ ] 07-01-PLAN.md - Auto-apply loop with history tracking (exceptions, struct, helper functions, loop)
+
 **Requirements:**
 - HELP-01: ForcedActionResult struct
 - HELP-02: _check_forced_action() function
@@ -47,6 +52,8 @@ Implement iterative auto-application of forced actions in GameDriver. When exact
 
 **Dependencies:** Phase 7 complete
 
+**Plans:** (created by /gsd:plan-phase)
+
 **Requirements:**
 - TEST-01: apply_and_track() fixture in conftest.py
 - TEST-02: Helper provides access to full action history
@@ -70,7 +77,7 @@ Implement iterative auto-application of forced actions in GameDriver. When exact
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
-| 7 | Core Implementation | 12 | Pending |
+| 7 | Core Implementation | 12 | Planned |
 | 8 | Test Updates | 7 | Pending |
 
 **Total:** 19 requirements across 2 phases
