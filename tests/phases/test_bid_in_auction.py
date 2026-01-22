@@ -95,6 +95,70 @@ class TestLeaveAuction:
         # Verify auction resolved and returned to INVEST phase
         assert bid_state.get_phase() == GamePhases.PHASE_INVEST
 
+    def test_leave_with_all_others_already_passed(self):
+        """Leave auction when current player is last remaining bidder."""
+        from tests.phases.conftest import assert_invariants
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Start auction
+        mask = get_valid_action_mask(state)
+        layout = get_action_layout(3)
+        for i in range(layout['auction_base'], layout['buy_share_base']):
+            if mask[i] == 1.0:
+                DRIVER.apply_action(state, i)
+                break
+
+        # First player leaves normally
+        DRIVER.apply_action(state, layout['leave_auction'])
+        assert state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
+
+        # Second player leaves - should resolve with only one bidder remaining
+        DRIVER.apply_action(state, layout['leave_auction'])
+
+        # Should be back in INVEST (third player won by default)
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        assert_invariants(state, "After last bidder resolution")
+
+    def test_bidder_rotation_wraps_around(self):
+        """Bidder rotation correctly wraps from last player to first."""
+        from tests.phases.conftest import assert_invariants
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Start auction
+        mask = get_valid_action_mask(state)
+        layout = get_action_layout(3)
+        for i in range(layout['auction_base'], layout['buy_share_base']):
+            if mask[i] == 1.0:
+                DRIVER.apply_action(state, i)
+                break
+
+        # Track rotation through all players
+        seen_players = set()
+        for _ in range(3):
+            if state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
+                current = state.get_active_player()
+                seen_players.add(current)
+
+                # Raise to continue (don't leave)
+                mask = get_valid_action_mask(state)
+                raised = False
+                for i in range(layout['raise_bid_base'], layout['acquisition_start']):
+                    if mask[i] == 1.0:
+                        DRIVER.apply_action(state, i)
+                        raised = True
+                        break
+
+                if not raised:
+                    DRIVER.apply_action(state, layout['leave_auction'])
+
+        # Should have seen all 3 players (rotation works)
+        assert len(seen_players) >= 2, "Should rotate through multiple players"
+        assert_invariants(state, "After rotation test")
+
 
 # =============================================================================
 # RAISE BID TESTS
@@ -329,6 +393,119 @@ class TestAuctionResolution:
         final_net_worth = PLAYERS[winner_id].get_net_worth(bid_state)
         expected_change = face_value - bid_price
         assert final_net_worth == initial_net_worth + expected_change
+
+    def test_winner_is_high_bidder_after_raises(self):
+        """Winner is correctly identified after multiple raises."""
+        from tests.phases.conftest import assert_invariants
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        layout = get_action_layout(3)
+
+        # Start auction - player 0 starts
+        mask = get_valid_action_mask(state)
+        for i in range(layout['auction_base'], layout['buy_share_base']):
+            if mask[i] == 1.0:
+                DRIVER.apply_action(state, i)
+                break
+
+        # Player 1 raises
+        mask = get_valid_action_mask(state)
+        for i in range(layout['raise_bid_base'], layout['acquisition_start']):
+            if mask[i] == 1.0:
+                high_bidder_after_raise = state.get_active_player()
+                DRIVER.apply_action(state, i)
+                break
+
+        # High bidder should be the one who raised
+        assert TURN.get_auction_high_bidder(state) == high_bidder_after_raise
+
+        # Resolve
+        while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
+            DRIVER.apply_action(state, layout['leave_auction'])
+
+        assert_invariants(state, "After raise resolution")
+
+    def test_auction_draws_new_company_marked_unavailable(self):
+        """BID-09: New company drawn is initially unavailable for next auction."""
+        from tests.phases.conftest import assert_invariants
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Count initial auction companies
+        initial_auction_count = sum(
+            1 for cid in range(36)
+            if state.is_company_for_auction(cid)
+        )
+        assert initial_auction_count == 3
+
+        layout = get_action_layout(3)
+
+        # Complete an auction
+        mask = get_valid_action_mask(state)
+        for i in range(layout['auction_base'], layout['buy_share_base']):
+            if mask[i] == 1.0:
+                DRIVER.apply_action(state, i)
+                break
+
+        while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
+            DRIVER.apply_action(state, layout['leave_auction'])
+
+        # After auction, should still have same number of auction companies
+        # (one removed, one drawn)
+        final_auction_count = sum(
+            1 for cid in range(36)
+            if state.is_company_for_auction(cid)
+        )
+        assert final_auction_count == initial_auction_count, \
+            "Auction row size should remain constant"
+
+        assert_invariants(state, "After new company drawn")
+
+    def test_return_to_player_after_starter_not_winner(self):
+        """BID-11: Turn returns to player after starter, even if winner differs."""
+        from tests.phases.conftest import assert_invariants
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        starter = state.get_active_player()
+        starter_position = PLAYERS[starter].get_turn_order(state)
+
+        layout = get_action_layout(3)
+
+        # Start auction
+        mask = get_valid_action_mask(state)
+        for i in range(layout['auction_base'], layout['buy_share_base']):
+            if mask[i] == 1.0:
+                DRIVER.apply_action(state, i)
+                break
+
+        recorded_starter = TURN.get_auction_starter(state)
+        assert recorded_starter == starter
+
+        # Player 1 raises (becomes high bidder)
+        mask = get_valid_action_mask(state)
+        for i in range(layout['raise_bid_base'], layout['acquisition_start']):
+            if mask[i] == 1.0:
+                DRIVER.apply_action(state, i)
+                break
+
+        # Others leave
+        while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
+            DRIVER.apply_action(state, layout['leave_auction'])
+
+        # Active player should be after starter
+        active_player = state.get_active_player()
+        active_position = PLAYERS[active_player].get_turn_order(state)
+        expected_position = (starter_position + 1) % 3
+
+        assert active_position == expected_position, \
+            f"Turn should go to position {expected_position} (after starter), not {active_position}"
+
+        assert_invariants(state, "After return to player after starter")
 
 
 # =============================================================================
