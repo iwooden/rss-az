@@ -1,403 +1,521 @@
-# Domain Pitfalls: INVEST/BID_IN_AUCTION Phase Implementation
+# Pitfalls Research: Forced Action Auto-Application
 
-**Domain:** Game action dispatch and phase logic for Cython game engine
-**Project:** Rolling Stock Stars (18xx-style board game engine for AlphaZero training)
-**Researched:** 2026-01-20
-**Focus:** Adding game actions to existing state-based game engine
+**Domain:** Iterative forced action auto-application in game engine
+**Project:** Rolling Stock Stars Cython engine (v2.1 milestone)
+**Researched:** 2026-01-21
+**Focus:** Common mistakes when implementing auto-apply loop for single legal actions
 
 ---
 
 ## Critical Pitfalls
 
-Mistakes that cause rewrites or major issues. Addressing these is mandatory for success.
+Mistakes that cause system hangs, infinite loops, or state corruption. Must be addressed before implementation.
 
 ---
 
-### Pitfall 1: Legal Move Mask Out of Sync with Actual State
+### 1. Infinite Loop from Self-Reinforcing Forced Actions
 
-**What goes wrong:**
-The `get_valid_action_mask()` function returns a mask that doesn't match what actions are actually legal given the current state. The neural network selects an action marked as valid, but when applied, it produces an invalid game state.
+**Risk:** Auto-application creates a cycle where applying action A produces a state where action B is the only option, and B produces a state where A is the only option, looping forever.
 
-**Why it happens:**
-- Mask generation logic duplicates validity checks that exist in action application code
-- Mask checks one set of conditions; action application checks different conditions
-- Edge cases (e.g., player has exactly enough cash for auction) handled differently
-- State is modified between mask generation and action application (stale mask)
+**Why it happens in this codebase:**
+- Phase transitions (INVEST -> BID_IN_AUCTION -> INVEST) could create cycles
+- Auction resolution returns to INVEST with next player - if that player has only one valid action, loop continues
+- Bankruptcy cascades that reset state to configurations with forced actions
+- State where every player only has "pass" available, triggering WRAP_UP repeatedly
 
-**Consequences:**
-- Invalid game states during training (silent corruption)
-- Training instability as network learns from illegal move executions
-- Difficult to debug because the bug only manifests in specific game states
+**Warning Signs:**
+- Application hangs during random game simulations
+- CPU usage spikes to 100% on `apply_action()` call
+- Tests timeout without assertion failure
+- Benchmarks show 0 games/minute completion rate
 
 **Prevention:**
-1. **Single source of truth pattern:** Extract validity logic into shared `cdef` functions that both mask generation and action application call
-2. **Design invariant:** `apply_action(state, action_idx)` must be a no-op or error if `mask[action_idx] == 0.0`
-3. **Test every action type:** For each action type, generate valid mask, then verify applying each valid action produces a legal state
+1. **Iteration limit with emergency exit:**
+   ```python
+   MAX_AUTO_ADVANCES = 100  # Reasonable upper bound
+   iterations = 0
+   while is_forced_action(state) and iterations < MAX_AUTO_ADVANCES:
+       apply_single_action(state, forced_action_idx)
+       iterations += 1
+   if iterations >= MAX_AUTO_ADVANCES:
+       raise RuntimeError("Forced action loop limit exceeded")
+   ```
 
-**Detection:**
-- Write tests that iterate all valid actions and verify post-apply state is consistent
-- Add assertions in action application that check mask validity (debug builds only)
-- Fuzz testing: random states + random valid actions should never corrupt state
+2. **State cycle detection (hash-based):**
+   - Track last N state hashes in auto-apply loop
+   - If same state hash appears twice, we have a cycle
+   - Cost: O(1) per iteration with hash table
 
-**Phase to address:** First phase implementing any action dispatch (likely "Game Driver Core")
+3. **Debug logging in development builds:**
+   - Log each auto-applied action with phase and action type
+   - Makes cycles immediately visible in test output
+
+**Affected Area:** `GameDriver.apply_action()` main loop implementation
 
 ---
 
-### Pitfall 2: Partial State Updates (Non-Atomic Actions)
+### 2. Zero Legal Actions Treated as "No Forced Action"
 
-**What goes wrong:**
-An action modifies some state fields but fails or exits early before completing all required updates, leaving state in an inconsistent intermediate form.
+**Risk:** When zero legal actions exist (should be impossible in non-terminal states), the auto-apply loop exits thinking there's no forced action, leaving the game in an unplayable state.
 
-**Why it happens:**
-- Share purchase action updates player cash but not corporation bank shares
-- Auction action sets auction_company but forgets to set auction_price
-- Error path exits function before completing all field updates
-- Cascading updates (bankruptcy) have early exit bugs
+**Why it happens in this codebase:**
+- Current `get_forced_action()` returns `(-1, False)` for both 0 and 2+ actions
+- Mask generation bug could produce all-zero mask
+- Phase handler transitions to unexpected phase with no valid actions
+- Bankruptcy procedure leaves corp state that blocks all actions
 
-**Consequences:**
-- Game state invariants violated (e.g., total shares don't sum correctly)
-- Downstream actions see corrupted state and make invalid decisions
-- Neural network trains on impossible game positions
+**Warning Signs:**
+- `get_valid_action_mask()` returns all zeros outside GAME_OVER phase
+- Tests fail with "no valid actions" assertion
+- Game state stuck without GAME_OVER flag set
 
 **Prevention:**
-1. **All-or-nothing pattern:** Compute all new values FIRST, then write all fields in a single block at the end
-2. **State invariant assertions:** After each action, verify key invariants (share sums, cash conservation, etc.)
-3. **Transaction-like pattern:** For complex actions, collect all mutations in a list, apply atomically
+1. **Explicit zero-action validation:**
+   ```python
+   count = count_valid_actions(mask)
+   if count == 0 and phase != PHASE_GAME_OVER:
+       raise RuntimeError(f"Zero legal actions in phase {phase}")
+   elif count == 1:
+       # Auto-apply
+   else:
+       # Return to caller for decision
+   ```
 
-**Detection:**
-- Post-action invariant checks (e.g., total player cash + corp cash + bank = constant)
-- Property-based testing: generate random valid action sequences, verify invariants hold throughout
+2. **Invariant check after every action:**
+   - Add to existing `assert_invariants()`: verify at least one valid action exists
+   - Run invariant checks in test builds
 
-**Phase to address:** Every phase implementing action handlers
+3. **Separate helper functions:**
+   - `_count_legal_actions(state)` returns count
+   - `_find_single_legal_action(state)` returns index or -1
+   - Different return values for 0 vs 2+ cases
+
+**Affected Area:** Helper functions for forced action detection, validation logic in `apply_action()`
 
 ---
 
-### Pitfall 3: Cascading Bankruptcy State Corruption
+### 3. State Corruption During Mid-Loop Interruption
 
-**What goes wrong:**
-Corporation bankruptcy triggers a chain of state changes (close companies, return shares, update player net worth, possibly trigger receivership or additional bankruptcies), and somewhere in this cascade, state becomes inconsistent.
+**Risk:** If an exception or error occurs mid-way through the auto-apply loop, the game state is left in a partially-applied state that violates invariants.
 
-**Why it happens:**
-- Bankruptcy procedure has multiple steps that must happen in correct order
-- Shares returned to players may change presidency, which has its own complex rules
-- Companies closed may affect multiple players' and corps' income
-- Recursive bankruptcy (corp A bankruptcy causes corp B to lose value, triggering corp B bankruptcy)
-- Net worth recalculation done at wrong time in cascade
+**Why it happens in this codebase:**
+- Auto-apply loop applies action 1, then action 2 fails with invalid state
+- State is now after action 1 but before expected state after action 2
+- Subsequent operations see corrupted intermediate state
+- Tests may pass locally but fail on different seeds
 
-**Consequences:**
-- Player net worth doesn't reflect actual holdings
-- President flag doesn't match player with most shares
-- Closed companies still showing as owned
+**Warning Signs:**
+- Share counts don't sum correctly after certain action sequences
+- Player cash goes negative unexpectedly
+- Presidency flags inconsistent with share ownership
+- Non-deterministic test failures ("flaky tests")
 
 **Prevention:**
-1. **Explicit procedure documentation:** Write out the exact step order before coding
-2. **Staged processing:** Complete each stage (close companies, then return shares, then update presidencies, then recalculate net worth) before starting the next
-3. **Breadth-first, not depth-first:** Collect all bankruptcy triggers first, then process in batch
-4. **Test edge cases:** Corp with no president (receivership) going bankrupt, multiple corps bankrupting same turn
+1. **Copy-on-advance pattern (expensive but safe):**
+   - Clone state before entering auto-apply loop
+   - Restore from clone if any error occurs
+   - Trade-off: memory allocation overhead
 
-**Detection:**
-- Explicit bankruptcy test cases covering each variation
-- Invariant: sum of all shares (player + bank + unissued) = total shares for each corp
-- Invariant: exactly one president per active corp (or receivership flag set)
+2. **All-or-nothing validation (preferred):**
+   - Validate each action can succeed BEFORE applying
+   - Since actions are pre-validated via mask, this is already done
+   - Ensure phase handlers never fail after mask validation passes
 
-**Phase to address:** Bankruptcy procedure implementation phase
+3. **Atomic phase handler design:**
+   - Each phase handler must complete all mutations or none
+   - Never exit early after partial state modification
+   - Pattern from existing code: compute all values first, write all at end
+
+**Affected Area:** All phase handlers in `phases/*.pyx`, error handling in `apply_action()`
 
 ---
 
-### Pitfall 4: Change of Presidency Logic Errors
+### 4. Recursive Auto-Application Depth Explosion
 
-**What goes wrong:**
-When shares change hands (buy, sell, auction, bankruptcy share return), the presidency may need to transfer. The logic for determining the new president is complex and easy to get wrong.
+**Risk:** Auto-apply calls itself recursively, or a phase handler triggers auto-apply again, leading to stack overflow.
 
-**Why it happens:**
-- Multiple players may tie for most shares (rules specify tie-break by turn order)
-- Selling president must transfer presidency before losing shares, but only if another player has equal or more
-- Player selling all shares may need to find any eligible president
-- Receivership (no president) has special rules when shares are bought
-- 18xx games have notoriously complex presidency rules with edge cases
+**Why it happens in this codebase:**
+- Phase handler for action A calls `apply_action()` directly for cleanup actions
+- Nested auto-apply loops compound iteration counts
+- Bankruptcy handler might try to auto-apply subsequent forced actions
 
-**Consequences:**
-- Wrong player controls corporation (makes all decisions)
-- Receivership flag incorrectly set or not set
-- Player thinks they can sell but can't due to presidency constraint
+**Warning Signs:**
+- Stack overflow errors or segfaults
+- Maximum recursion depth exceeded
+- Unpredictable behavior on deep action chains
 
 **Prevention:**
-1. **Separate presidency check function:** `recalculate_presidency(state, corp_id)` called after any share transfer
-2. **Test matrix:** Cover all combinations of before/after share counts that trigger presidency changes
-3. **Document the exact rule:** "President is player with most shares; ties go to earlier turn order; if no players own shares, receivership"
-4. **Avoid implicit order dependencies:** Always recalculate, never assume previous state is correct
+1. **Iterative-only design (no recursion):**
+   - Use `while` loop, never recursive calls
+   - Phase handlers never call `apply_action()` themselves
+   - All cascading logic handled in single flat loop
 
-**Detection:**
-- Test: after every share transaction, verify `is_president_of()` returns True for exactly one player (or receivership)
-- Test: player with most shares is always president (respecting tie-break)
-- Test: selling president with buyer having equal shares triggers transfer
+2. **Depth tracking (if recursion unavoidable):**
+   ```python
+   cdef int _apply_action_impl(state, action_idx, int depth):
+       if depth > MAX_DEPTH:
+           raise RecursionError("Auto-apply depth exceeded")
+       # ... apply and recurse with depth + 1
+   ```
 
-**Phase to address:** Share transaction phases (buy share, sell share, auction win)
+3. **Clear separation of concerns:**
+   - `apply_action()` handles auto-apply loop
+   - Phase handlers ONLY modify state for their one action
+   - No phase handler calls back into driver
 
----
-
-### Pitfall 5: Auction Sub-Phase State Leakage
-
-**What goes wrong:**
-Auction runs as a sub-phase within INVEST. When auction ends, auction state fields (company, price, bidders, starter, passed flags) remain set and pollute subsequent logic or the next auction.
-
-**Why it happens:**
-- Auction winner is determined, but auction state not cleared
-- Phase transitions back to INVEST without resetting auction fields
-- Next auction inherits previous auction's passed players
-- "Clear auction state" step forgotten in one of multiple exit paths (winner, all pass, etc.)
-
-**Consequences:**
-- Second auction sees wrong passed players
-- Mask generation uses stale auction data
-- Company marked as "for auction" but auction state says different company
-
-**Prevention:**
-1. **Clear on enter pattern:** Clear all sub-phase state when entering sub-phase
-2. **Clear on exit pattern:** Clear all sub-phase state when exiting (redundant safety)
-3. **Isolate sub-phase state:** Use dedicated struct/section for auction state, clear atomically
-4. **State machine diagram:** Document all transitions in/out of auction, verify each clears state
-
-**Detection:**
-- Test: run multiple auctions in sequence, verify second auction is independent
-- Invariant check: if phase != BID_IN_AUCTION, all auction state fields should be cleared/default
-
-**Phase to address:** Auction implementation phase
+**Affected Area:** `GameDriver.apply_action()` structure, phase handler boundaries
 
 ---
 
 ## Moderate Pitfalls
 
-Mistakes that cause delays or technical debt.
+Mistakes that cause test failures or implementation delays.
 
 ---
 
-### Pitfall 6: Entity Handle Initialization Order (Known from v1)
+### 5. Test Brittleness from Unexpected State Advancement
 
-**What goes wrong:**
-Entity handles (PLAYERS, CORPS, TURN, etc.) have their offsets cached during `initialize()`. If action code calls entity methods before `initialize()` is called, the offsets are zero/stale, and state is read/written at wrong positions.
+**Risk:** Existing tests assert specific intermediate states that are now auto-skipped, causing mass test failures.
 
-**Why it happens:**
-- New action handler created that uses entity handles
-- Developer assumes handles are auto-initialized or forgets to call initialize
-- Refactoring moves code path before entity initialization
-- Test fixture forgets to initialize handles after creating GameState
+**Why it happens in this codebase:**
+- Tests like `test_pass_increments_consecutive_passes` check state after one action
+- With auto-apply, that "one action" might trigger 3 more auto-applied actions
+- Test expects player 0 active, but auto-apply advanced to player 1
+- Assertions on intermediate state (auction company, bid price) may be bypassed
 
-**Consequences:**
-- State corruption at arbitrary offsets
-- Seemingly unrelated fields modified
-- Tests pass locally but fail in different order
+**Specific tests at risk (from codebase analysis):**
+- `test_pass_advances_active_player` - may advance further than expected
+- `test_start_auction_sets_*` - auction might resolve immediately if all but one player pass
+- `test_leave_auction_returns_ok` - auction might auto-resolve before assertion
+- Any test checking `TURN.get_consecutive_passes()` mid-sequence
+
+**Warning Signs:**
+- Many tests fail with "unexpected active player" or "unexpected phase"
+- Tests pass in isolation but fail in specific orders
+- Assertions about intermediate state fail
 
 **Prevention:**
-1. **Copy v1 pattern exactly:** In `initialize_game()`, initialize ALL entity handles before any state modification
-2. **Document requirement:** Entity handles MUST be initialized before use
-3. **Consider lazy init:** Have entity methods check if initialized and auto-init (adds overhead)
-4. **Test helper:** Create fixture that always initializes all handles
+1. **Test behavior, not intermediate state:**
+   - Instead of: "after pass, consecutive_passes == 1"
+   - Test: "after N players pass, phase is WRAP_UP"
+   - Focus on final outcomes, not step-by-step state
 
-**Detection:**
-- Tests that create GameState without calling entity.initialize() fail predictably
-- Consider adding assertion in entity methods (debug mode) that checks initialization
+2. **Create explicit "no auto-apply" test mode:**
+   - Add flag to GameDriver: `auto_apply_enabled: bool = True`
+   - Tests that need to check intermediate state disable auto-apply
+   - Document which tests require this mode
 
-**Phase to address:** All phases; especially important for any new entity types
+3. **Update test assertions to be auto-apply aware:**
+   - Use `assert phase in [INVEST, WRAP_UP]` instead of exact match
+   - Check "player changed" instead of "player is 1"
+   - Use delta assertions: "consecutive_passes increased"
+
+4. **Categorize tests before implementation:**
+   - **Category A:** Behavior tests (need no changes)
+   - **Category B:** Intermediate state tests (need auto-apply disabled)
+   - **Category C:** End-state tests (may need assertion updates)
+
+**Affected Area:** All tests in `tests/phases/`, test fixtures in `conftest.py`
 
 ---
 
-### Pitfall 7: Round-Trip Limit Enforcement Bugs
+### 6. Active Player Tracking Confusion
 
-**What goes wrong:**
-Players have a limit on buy+sell pairs per corporation per turn (round-trip limit). The limit is not enforced correctly, allowing manipulation or incorrectly blocking valid trades.
+**Risk:** Auto-apply changes active player multiple times in one `apply_action()` call, confusing tests and callers that expect a single player change.
 
-**Why it happens:**
-- Round-trip counter incremented at wrong time (before or after transaction)
-- Counter not reset when player's turn starts
-- Limit checked for buys but not sells (or vice versa)
-- Off-by-one error in limit check (2 round-trips means 4 transactions, not 2)
+**Why it happens in this codebase:**
+- INVEST pass advances to next player
+- If next player also has only "pass" valid, they auto-pass
+- Original caller expected player 0 -> player 1, got player 0 -> player 2
+- Return value doesn't indicate how many players were auto-advanced
 
-**Consequences:**
-- Player can manipulate share prices by unlimited buying/selling
-- Legal trades incorrectly blocked, limiting valid actions
-- Training learns incorrect game dynamics
+**Warning Signs:**
+- Tests fail with "expected player 1, got player 2"
+- Turn order appears to skip players
+- Assertions on "next player" logic fail
 
 **Prevention:**
-1. **Clear spec:** Document exactly what "round-trip" means (buy+sell pair = 1 round-trip, 2 max means 4 total transactions with same corp)
-2. **Increment on both:** Increment buy counter on buy, sell counter on sell
-3. **Check formula:** Round-trips = min(buys, sells); block if round-trips >= MAX
-4. **Reset location:** Clear tracking at start of INVEST phase for active player
+1. **Document return semantics clearly:**
+   - `apply_action()` returns status of FINAL state, not each intermediate
+   - Add method `get_last_applied_action_count()` for debugging
 
-**Detection:**
-- Test: player can buy 2, sell 2 (2 round-trips)
-- Test: player cannot buy 3 after already selling 2 (would be 3rd round-trip)
-- Test: second player has fresh counters (not affected by first player's trades)
+2. **Provide action history for debugging:**
+   - Track list of auto-applied actions in debug builds
+   - Available via `state.get_auto_applied_actions()` for tests
 
-**Phase to address:** Buy/sell share action implementation
+3. **Update test philosophy:**
+   - Don't assert on which player is active
+   - Assert on game outcomes and final state
+   - Use property-based tests that work regardless of player advancement
+
+**Affected Area:** Test assertions involving active player, `apply_action()` documentation
 
 ---
 
-### Pitfall 8: Action Decoding Offset Drift
+### 7. Performance Regression from Repeated Mask Generation
 
-**What goes wrong:**
-The action layout computation (`compute_action_layout()`) produces offsets that don't match what `decode_action()` expects, or what mask generation uses.
+**Risk:** Auto-apply loop calls `get_valid_action_mask()` on every iteration, multiplying mask generation cost.
 
-**Why it happens:**
-- New action type added to layout but decoding not updated
-- Player count-dependent offsets (auction has num_players * 20 slots) miscalculated
-- Layout struct updated but not all code paths updated
-- Constants duplicated (DEF vs cdef enum) and get out of sync
+**Why it happens in this codebase:**
+- Current `get_forced_action()` generates full mask to check action count
+- 10 forced actions in a row = 10 full mask generations
+- Mask generation is O(num_companies + num_corps) per call
+- Self-play throughput drops significantly
 
-**Consequences:**
-- Action 137 is "leave auction" in layout but decoded as "buy share"
-- Mask marks wrong indices as valid
-- NN output is misinterpreted, applying wrong actions
+**Warning Signs:**
+- Benchmark shows 2x-10x slowdown after auto-apply implementation
+- Profiler shows `get_valid_action_mask()` as top hotspot
+- Games per minute drops below acceptable threshold
 
 **Prevention:**
-1. **Single source of truth:** All constants come from `actions.pxd`, never duplicate
-2. **Computed layout:** Use `compute_action_layout()` everywhere, never hardcode offsets
-3. **Round-trip test:** Encode action -> get index -> decode action -> verify match
-4. **Boundary tests:** Test first and last action of each phase
+1. **Optimized forced action detection:**
+   ```cython
+   cdef tuple _count_and_find_single_action(GameState state):
+       """Count valid actions; if exactly 1, return its index."""
+       # Early exit as soon as count > 1 (no need to scan full mask)
+       count = 0
+       single_idx = -1
+       for i in range(total_actions):
+           if is_action_valid(state, i):  # Inline validity check
+               count += 1
+               if count == 1:
+                   single_idx = i
+               elif count > 1:
+                   return (count, -1)  # Multiple actions, no forced
+       return (count, single_idx)
+   ```
 
-**Detection:**
-- Test: for each action type, encode and decode, verify round-trip
-- Test: layout.bid_start == first BID_IN_AUCTION action index
-- Test: layout.total_size == 186 + (num_players * 20) for all player counts
+2. **Early termination in mask generation:**
+   - Add parameter: `stop_after_n: int = 0` (0 = generate full mask)
+   - For forced action check, call with `stop_after_n = 2`
+   - Returns immediately after finding 2 valid actions
 
-**Phase to address:** When adding any new actions or modifying layout
+3. **Cache mask within auto-apply loop:**
+   - Generate mask once per iteration
+   - Reuse for both count check and action application
+   - Invalidate only after state mutation
+
+**Affected Area:** `core/actions.pyx` `get_forced_action()`, new helper functions
 
 ---
 
-### Pitfall 9: Net Worth Update Timing Errors
+### 8. Phase Transition Edge Cases
 
-**What goes wrong:**
-Player net worth must be updated after actions that change cash, shares, or share prices. Updates happen at wrong time (before vs after), are skipped, or use stale share prices.
+**Risk:** Auto-apply encounters unexpected phase during iteration, causing invalid action dispatch.
 
-**Why it happens:**
-- Net worth updated before share transaction completes
-- Buy share updates net worth but sell share doesn't
-- Share price changes during dividend phase but net worth not recalculated until next turn
-- Bankruptcy returns shares at old prices
+**Why it happens in this codebase:**
+- BID_IN_AUCTION has single bidder -> auto-resolves to INVEST
+- INVEST has all passes -> transitions to WRAP_UP
+- WRAP_UP may have forced actions (not yet implemented)
+- Auto-apply doesn't know how to handle WRAP_UP phase
 
-**Consequences:**
-- NN sees incorrect player valuations
-- Game end winner determination wrong
-- Training reward signals incorrect
-
-**Prevention:**
-1. **Update after all mutations:** Call `update_player_net_worth()` at END of action, not middle
-2. **Batch update helper:** `update_all_player_net_worths(state)` to update everyone at once
-3. **Test net worth formula:** net_worth = cash + sum(shares * share_price) + sum(company_face_values)
-
-**Detection:**
-- After every action in tests, verify net worth matches calculated value
-- Test: buy share, verify net worth changed by exactly (share_value - cash_paid)
-
-**Phase to address:** All action phases; create helper function early
-
----
-
-### Pitfall 10: Float Normalization Precision Issues
-
-**What goes wrong:**
-State is stored as normalized floats (cash / 200.0, shares / 7.0). Integer values are recovered via `int(x * DIVISOR + 0.5)`. Edge cases cause off-by-one errors due to floating-point precision.
-
-**Why it happens:**
-- Storing value 14 as 14/7.0 = 2.0, retrieving as int(2.0 * 7.0 + 0.5) = 14 (OK)
-- But 1/7.0 = 0.14285714... * 7 = 0.99999999... + 0.5 = 1.49999... = 1 (OK)
-- Edge cases where floating point rounds wrong direction
-- Using different DIVISOR values in different places
-
-**Consequences:**
-- Player has 29 cash but reads as 30
-- Corporation has 3 shares but reads as 2
-- Mask says player can afford action, but actual cash is 1 less
+**Warning Signs:**
+- `STATUS_INVALID` returned from auto-apply loop
+- "Invalid phase for action dispatch" errors
+- Game appears stuck at phase boundary
 
 **Prevention:**
-1. **Consistent DIVISOR usage:** Import from single source (`core/data.pxd`)
-2. **Use round() not truncation:** `int(round(x * DIVISOR))` instead of `int(x * DIVISOR + 0.5)`
-3. **Test boundary values:** Test storing and retrieving values near normalization boundaries
-4. **Consider integer storage for critical values:** At cost of NN input format
+1. **Phase-aware loop termination:**
+   ```python
+   TERMINAL_PHASES = {PHASE_GAME_OVER, PHASE_WRAP_UP}
+   while count == 1 and phase not in TERMINAL_PHASES:
+       apply_action(...)
+       phase = state.get_phase()
+   ```
 
-**Detection:**
-- Test: store every integer from 0 to MAX, retrieve, verify exact match
-- Test: run 1000 games, verify no invariant violations from precision errors
+2. **Explicit handling for each phase:**
+   - Define which phases support auto-apply
+   - Define which phases are "terminal" for auto-apply purposes
+   - WRAP_UP is terminal until its handlers are implemented
 
-**Phase to address:** When implementing any new get/set accessors
+3. **Graceful degradation:**
+   - If phase not recognized, exit auto-apply loop
+   - Return current state to caller
+   - Log warning for debugging
+
+**Affected Area:** `apply_action()` loop condition, phase constant definitions
 
 ---
 
 ## Minor Pitfalls
 
-Mistakes that cause annoyance but are fixable.
+Issues that cause confusion or require small fixes.
 
 ---
 
-### Pitfall 11: Test Setup Boilerplate Duplication
+### 9. Return Value Ambiguity
 
-**What goes wrong:**
-Every test file duplicates the same GameState setup code, entity initialization, and fixture creation. Changes require updates in many places.
+**Risk:** `apply_action()` returns STATUS_OK after auto-applying 5 actions, but caller doesn't know this.
 
 **Prevention:**
-- Create shared test fixtures in `conftest.py`
-- Provide helper functions: `create_initialized_game(num_players, seed=42)`
-- Use pytest fixtures for common state setups
+- Document clearly: "STATUS_OK means final state is valid after all auto-applications"
+- Consider returning count of applied actions for debugging
+- Add optional callback for observing auto-applied actions
 
-**Phase to address:** First test implementation phase
+**Affected Area:** `apply_action()` documentation and return semantics
 
 ---
 
-### Pitfall 12: Implicit Phase Transition Assumptions
+### 10. Seed Reproducibility with Auto-Apply
 
-**What goes wrong:**
-Code assumes specific phase sequences (e.g., after INVEST always comes BID_IN_AUCTION) without checking, breaking when phase flow is more complex.
+**Risk:** Auto-apply changes the sequence of random calls (if any), breaking seed reproducibility.
 
 **Prevention:**
-- Explicit phase state machine with documented transitions
-- Never assume "current phase + 1" is next phase
-- Use named constants, not magic numbers
+- Auto-apply should not introduce any new random calls
+- Verify same seed produces same game with auto-apply enabled/disabled
+- Add regression test for seed determinism
 
-**Phase to address:** Phase transition implementation
+**Affected Area:** Tests verifying seed reproducibility
 
 ---
 
-### Pitfall 13: Missing Active Player Updates
+### 11. Debug Output Overwhelming
 
-**What goes wrong:**
-After an action, the active player may need to change (next bidder in auction, next player in INVEST). Forgetting to update `_set_active_player()` causes same player to act repeatedly.
+**Risk:** Logging every auto-applied action produces massive output during training.
 
 **Prevention:**
-- End of action handler always considers active player update
-- Use helper: `advance_to_next_player(state, skip_condition)`
-- Test: after player 0 passes, active player is player 1
+- Use compile-time flag for verbose auto-apply logging
+- Production builds: no logging in auto-apply loop
+- Test builds: optional verbose mode
 
-**Phase to address:** All action handlers
+**Affected Area:** Logging infrastructure, build configuration
 
 ---
 
-## Phase-Specific Warnings
+## Test Update Strategies
 
-| Phase Topic | Likely Pitfall | Mitigation |
-|-------------|----------------|------------|
-| Game Driver Core | Legal mask / action sync | Single source of truth for validity checks |
-| INVEST Pass | Consecutive passes not tracked | Update counter, check for phase end |
-| Buy Share | Round-trip limits, presidency | Increment counters, recalculate presidency |
-| Sell Share | Presidency dump, round-trip | Check can't sell to dump presidency illegally |
-| Start Auction | Sub-phase state init | Clear all auction state on entry |
-| BID_IN_AUCTION | Exit paths leave stale state | Clear on every exit path |
-| Auction Win | Company transfer, auction clear | Transfer company, clear auction, return to INVEST |
-| Corporation Bankruptcy | Cascading updates | Staged procedure, breadth-first |
-| Change of Presidency | Tie-breaking, receivership | Exhaustive test matrix |
-| Net Worth Updates | Timing relative to mutations | Always update at end of action |
+### Strategy 1: Behavior-Focused Assertions
+
+**Before (brittle):**
+```python
+def test_pass_advances_active_player(game_state):
+    initial_player = game_state.get_active_player()
+    DRIVER.apply_action(game_state, layout['pass_invest'])
+    new_player = game_state.get_active_player()
+    assert new_player == (initial_player + 1) % 3  # Assumes exactly one advance
+```
+
+**After (resilient):**
+```python
+def test_pass_advances_active_player(game_state):
+    initial_player = game_state.get_active_player()
+    DRIVER.apply_action(game_state, layout['pass_invest'])
+    new_player = game_state.get_active_player()
+    # Player changed (may have advanced multiple times due to auto-apply)
+    assert new_player != initial_player or game_state.get_phase() == GamePhases.PHASE_WRAP_UP
+```
+
+### Strategy 2: Disable Auto-Apply for Specific Tests
+
+```python
+@pytest.fixture
+def game_state_no_auto():
+    """State with auto-apply disabled for intermediate state testing."""
+    state = GameState(num_players=3)
+    state.initialize_game(seed=42)
+    # If GameDriver supports it:
+    # DRIVER.set_auto_apply(False)
+    return state
+
+def test_intermediate_state(game_state_no_auto):
+    # Test can now check intermediate state
+    pass
+```
+
+### Strategy 3: Delta Assertions
+
+**Before:**
+```python
+assert TURN.get_consecutive_passes(game_state) == 1
+```
+
+**After:**
+```python
+passes_before = TURN.get_consecutive_passes(game_state)
+DRIVER.apply_action(game_state, layout['pass_invest'])
+passes_after = TURN.get_consecutive_passes(game_state)
+assert passes_after > passes_before or game_state.get_phase() != GamePhases.PHASE_INVEST
+```
+
+### Strategy 4: End-State Testing
+
+Focus tests on final outcomes rather than intermediate states:
+
+```python
+def test_all_players_pass_ends_invest(game_state):
+    """Eventually transitions to WRAP_UP when all pass."""
+    layout = get_action_layout(3)
+    # Apply passes until phase changes (auto-apply handles the rest)
+    for _ in range(10):  # Safety limit
+        if game_state.get_phase() != GamePhases.PHASE_INVEST:
+            break
+        DRIVER.apply_action(game_state, layout['pass_invest'])
+    assert game_state.get_phase() == GamePhases.PHASE_WRAP_UP
+```
+
+### Test Categorization Checklist
+
+Before implementing auto-apply, categorize all tests:
+
+| Test File | Test Count | Category A (behavior) | Category B (intermediate) | Category C (needs update) |
+|-----------|------------|----------------------|--------------------------|---------------------------|
+| test_invest.py | ~40 | Review | Review | Review |
+| test_bid_in_auction.py | ~30 | Review | Review | Review |
+| test_driver.py | ~15 | Review | Review | Review |
+
+---
+
+## Performance Considerations
+
+### Baseline Metrics (before auto-apply)
+- Games per minute: (measure current benchmark)
+- Mask generation time: (profile)
+- Actions per game average: (measure)
+
+### Expected Impact
+- Additional mask generations per `apply_action()` call: 0-20 (depends on forced action chains)
+- Overhead per forced action: ~1 mask generation
+- Mitigation: Early termination optimization can reduce to O(1) for non-forced cases
+
+### Monitoring
+- Add benchmark comparison: with vs without auto-apply
+- Track average auto-applies per user action
+- Alert if performance drops >20% from baseline
+
+### Optimization Priority
+1. First: Correct implementation with iteration limit
+2. Then: Early termination for count > 1 detection
+3. Optional: Mask caching within auto-apply loop
 
 ---
 
 ## Sources
 
-- Game Programming Patterns: [State Machine Pattern](https://gameprogrammingpatterns.com/state.html)
-- Cython GIL and nogil: [Cython Documentation](https://cython.readthedocs.io/en/latest/src/userguide/nogil.html)
-- 18XX Rules (change of presidency): [1830 Rules Clarifications](http://www.18xx.net/1830/1830f.htm)
-- AlphaZero legal move masking: [PettingZoo Chess](https://pettingzoo.farama.org/environments/classic/chess/)
-- State Machine Tips: [State Machines for Game Dev](https://www.numberanalytics.com/blog/state-machines-for-game-dev-success)
-- Project v1 patterns: `/home/icebreaker/rss-az-cython2/.planning/PROJECT.md` (Entity initialization order, module import pattern)
-- Existing codebase: `/home/icebreaker/rss-az-cython2/core/actions.pyx`, `/home/icebreaker/rss-az-cython2/core/state.pyx`
+### General Game Engine Patterns
+- [Game Programming Patterns: State Machine](https://gameprogrammingpatterns.com/state.html) - State machine design, infinite loop concerns
+- [Game Programming Patterns: Game Loop](https://gameprogrammingpatterns.com/game-loop.html) - Loop iteration safety patterns
+
+### Board Game Frameworks
+- [boardgame.io: Automatic Skip Turn Issue](https://github.com/boardgameio/boardgame.io/issues/859) - Turn skipping implementation patterns
+- [Board Game Arena Forum: Automatic Skip](https://forum.boardgamearena.com/viewtopic.php?t=22661) - User preference for auto-skip
+
+### Testing Patterns
+- [xUnit Patterns: Fragile Test](http://xunitpatterns.com/Fragile%20Test.html) - Avoiding brittle tests
+- [Preventing Brittle Tests](http://blog.wingman-sw.com/preventing-brittle-tests) - Behavior vs implementation testing
+
+### Performance
+- [GameDev.net: Game Loop Optimization](https://www.gamedev.net/forums/topic/692878-can-my-game-loop-be-optimized/) - Tight loop performance
+- [Wayline: Fix Game Loop Performance](https://www.wayline.io/blog/fix-game-loop-performance) - Iteration limit patterns
+
+### Iteration Safety
+- [How to prevent infinite loop in C++](https://labex.io/tutorials/cpp-how-to-prevent-infinite-loop-in-c-436657) - Safety counter patterns
+- [GameDev.net: Infinite Loops and State Machines](https://www.gamedev.net/forums/topic/670940-infinite-loops-and-state-machines/) - State machine loop prevention
+
+### Project-Specific
+- `/home/icebreaker/rss-az-cython2/core/actions.pyx` - Existing `get_forced_action()` implementation
+- `/home/icebreaker/rss-az-cython2/core/driver.pyx` - Current `apply_action()` structure
+- `/home/icebreaker/rss-az-cython2/tests/phases/conftest.py` - Existing test patterns
 
 ---
 
-*Research confidence: HIGH for codebase-specific pitfalls (verified against existing code), MEDIUM for domain pitfalls (based on 18xx rule complexity and general game engine patterns)*
+*Research confidence: HIGH for pitfalls 1-4, 5-7 (verified against codebase structure and common patterns); MEDIUM for pitfalls 8-11 (extrapolated from general best practices)*

@@ -1,197 +1,131 @@
-# Research Summary: V2 Milestone - Action Dispatch & Phase Implementation
+# Research Summary: v2.1 Forced Action Auto-Application
 
-**Project:** Rolling Stock Stars Cython Engine
-**Milestone:** V2 - INVEST/BID_IN_AUCTION Phase Implementation
-**Synthesized:** 2026-01-20
+**Synthesized:** 2026-01-21
+**Source Files:** FORCED_ACTION_STACK.md, FORCED_ACTION_FEATURES.md, ARCHITECTURE.md, PITFALLS.md
 
 ---
 
 ## Executive Summary
 
-This milestone adds action dispatch and phase logic to the existing high-performance Cython game engine. The recommended approach is to **extend existing patterns** rather than introduce new abstractions. The codebase already contains the foundational components (ActionLayout, ActionInfo structs, entity accessors, GamePhases enum) that the new phase implementations will build upon.
+The forced action auto-application feature should implement an iterative while-loop inside `GameDriver.apply_action()` that automatically applies actions when exactly one legal action exists, continuing until 2+ choices are available or the game ends. The existing `get_forced_action()` function in `core/actions.pyx` already provides the detection mechanism; the primary work is integrating an auto-apply loop into the driver with proper termination guards and a new helper struct that distinguishes 0 from 2+ legal actions (which the current API cannot do).
 
-The primary technical approach is **enum-switch dispatch**: actions are decoded using the existing `decode_action()` function, then routed to phase-specific handlers based on the current game phase. All handlers must be `noexcept nogil` to maintain the 10,000+ games/minute benchmark. No new dependencies are required; the existing Cython/NumPy stack is sufficient.
-
-The highest-risk areas are: (1) keeping legal move masks synchronized with actual action validity, (2) partial state updates leaving the game in an inconsistent state, and (3) complex cascading logic around presidency changes and bankruptcy. These risks are mitigated by establishing a single source of truth for validity checks, atomic state update patterns, and comprehensive test coverage for edge cases.
+The implementation is low-risk with HIGH confidence across all research areas. The main technical challenges are: (1) preventing infinite loops via iteration limits, (2) distinguishing zero-action error states from multi-action choice states, and (3) updating tests that assert on intermediate states. Performance impact is negligible since early-exit counting is O(k) where k is the position of the second valid action.
 
 ---
 
 ## Key Findings
 
-### From STACK.md: Technology Recommendations
+### Implementation Approach (from ARCHITECTURE.md)
 
-| Component | Recommendation | Rationale |
-|-----------|---------------|-----------|
-| Dependencies | **None required** | Existing Cython 3.2.4 + NumPy 2.4.0 stack is sufficient |
-| Dispatch pattern | **Enum-switch** | Compiles to C switch, O(1) dispatch, matches existing codebase |
-| State machine | **Implicit in phase enum** | No external FSM library needed; state tracked in GameState array |
-| Phase handlers | **cdef noexcept nogil** | All hot-path functions must release GIL |
+**Recommended Pattern:** Iterative loop inside `apply_action()` using a new `ForcedActionResult` struct.
 
-**Do NOT add:** transitions, python-statemachine, or any Python-level dispatch libraries. These would break nogil and degrade performance.
-
-### From FEATURES.md: Feature Priorities
-
-**Table Stakes (must implement):**
-- Pass action with consecutive pass tracking
-- Buy/sell share with price movement
-- Start auction action (triggers phase transition)
-- Leave auction and raise bid actions
-- Auction resolution (winner pays, company transferred)
-- Active player rotation
-- Phase transition logic
-
-**Differentiators (valuable for training quality):**
-- Round-trip limits (MAX_ROUNDTRIPS=2 per corp per turn)
-- Change of presidency on share transfer
-- Corporation bankruptcy on price reaching 0
-- Receivership when all shares sold
-
-**Anti-features (explicitly avoid):**
-- Undo/redo stack, event logging, UI state
-- Human-readable action names in hot path
-- Defensive bounds checking in nogil code
-- Dynamic allocation during game loop
-
-### From ARCHITECTURE.md: Structure and Patterns
-
-**New files to create:**
-```
-phases/
-    __init__.pyx, __init__.pxd    # Package init
-    invest.pyx, invest.pxd         # INVEST + BID_IN_AUCTION handlers
-
-core/
-    driver.pyx, driver.pxd         # GameDriver dispatch class
+```cython
+cdef struct ForcedActionResult:
+    int action_idx   # -1 if not forced
+    int legal_count  # 0, 1, or 2+ (stop counting at 2)
 ```
 
-**Key patterns to follow:**
-1. Phase handler signature: `cpdef void phase_apply_action(GameState state, int action_type, int slot, int corp_id, int amount)`
-2. Entity access via global instances: `PLAYERS[i].get_cash(state)`, `TURN.set_phase(state, phase)`
-3. Phase transitions via `TURN.set_phase()` with proper state cleanup
-4. Driver dispatch: decode action, route by phase, call handler
+**Why iterative, not recursive:**
+- Stack safety for long forced chains (auction resolution -> all passes -> wrap-up)
+- Cython optimizes iterative loops better
+- No risk of stack overflow
 
-**Anti-patterns to avoid:**
-- Storing state in phase modules (breaks thread-safety)
-- Direct array access `state._data[offset]` (use entity accessors)
-- Phase logic influencing mask generation (creates circular dependency)
-- Python-level loops in hot paths
+**File Modifications Required:**
+| File | Change |
+|------|--------|
+| `core/driver.pyx` | Add `_check_forced_action()` helper, modify `apply_action()` to loop |
+| `core/driver.pxd` | Declare `ForcedActionResult` struct, new cdef helpers |
 
-### From PITFALLS.md: Critical Risks
+**No changes needed to:** phase handlers, actions.pyx, entity accessors.
 
-**Top 5 pitfalls with prevention:**
+### Edge Cases (from FORCED_ACTION_FEATURES.md)
 
-| Pitfall | Severity | Prevention |
-|---------|----------|------------|
-| **Legal mask out of sync with action validity** | Critical | Single source of truth for validity checks; both mask and apply call same cdef function |
-| **Partial state updates** | Critical | Compute all values first, then write all fields atomically at end |
-| **Cascading bankruptcy corruption** | Critical | Staged procedure (close companies, then shares, then presidency, then net worth); breadth-first not depth-first |
-| **Presidency change logic errors** | Critical | Separate `recalculate_presidency(state, corp_id)` function; test all tie-break scenarios |
-| **Auction sub-phase state leakage** | Critical | Clear all auction state on both entry AND exit from sub-phase |
+**Critical Edge Cases:**
 
-**Phase-specific warnings:**
-- Game Driver: Mask/action synchronization
-- Buy/Sell Share: Round-trip limits, presidency transfer
-- Start Auction: Clear all auction state on entry
-- BID_IN_AUCTION exits: Clear state on EVERY exit path
-- Bankruptcy: Staged processing, watch for recursive triggers
+1. **Phase Transition Chains (EC-01):** Action causes phase change, new phase has only one legal action. Loop must continue across phase boundaries.
+
+2. **Auction Resolution with Single Bidder (EC-02):** All but one player leave auction. Resolution is forced, then INVEST may also have only one valid action.
+
+3. **All Players Must Pass (EC-03):** Each player's only legal action is PASS. Loop N times, then transition to WRAP_UP. Do not batch.
+
+4. **Bankruptcy During Forced Action (EC-04):** Forced sell triggers bankruptcy (price hits 0). Bankruptcy executes inline, then loop continues.
+
+5. **Infinite Loop Prevention (EC-06):** Add iteration limit of 100. Should never trigger in correct implementation.
+
+6. **Zero Legal Actions:** Should never occur outside GAME_OVER. Return STATUS_INVALID and log error if encountered.
+
+### AlphaZero Integration (from FORCED_ACTION_FEATURES.md)
+
+- **Skip training samples** for forced states (policy has no signal to learn)
+- **Skip MCTS search** for forced moves during self-play
+- **Neural network only sees states** with 2+ legal actions
+- **Value propagation** from final state after forced sequence completes
+
+### Critical Pitfalls (from PITFALLS.md)
+
+**Top 5 Pitfalls to Avoid:**
+
+| Pitfall | Risk | Prevention |
+|---------|------|------------|
+| 1. Infinite Loop | HIGH | Iteration limit (100), state hash cycle detection in debug |
+| 2. Zero Actions = No Forced | HIGH | Explicit count check; distinguish 0 from 2+ |
+| 3. State Corruption Mid-Loop | MEDIUM | Ensure phase handlers are atomic; no partial mutations |
+| 4. Recursive Depth Explosion | HIGH | Iterative only; phase handlers never call `apply_action()` |
+| 5. Test Brittleness | MEDIUM | Update tests to assert behavior, not intermediate state |
+
+**Test Update Strategy:** Categorize existing tests into:
+- **Category A:** Behavior tests (no changes needed)
+- **Category B:** Intermediate state tests (may need auto-apply disabled or assertion updates)
+- **Category C:** End-state tests (minor assertion updates)
+
+### Stack Recommendations (from FORCED_ACTION_STACK.md)
+
+- **No new dependencies required** - existing Cython/NumPy stack sufficient
+- **Keep float32 mask format** - required for neural network compatibility
+- **Use `noexcept` for internal helpers** - no GIL overhead
+- **Early-exit loop is optimal** - O(k) where k is position of second valid action
+- **Performance impact negligible** - counting loop not the bottleneck
 
 ---
 
 ## Implications for Roadmap
 
-Based on combined research, the implementation should be structured as follows:
-
 ### Suggested Phase Structure
 
-**Phase 1: Infrastructure Setup**
-- Create `phases/` module structure with .pxd and .pyx files
-- Create `core/driver.pyx` GameDriver class shell
-- Establish shared validity check functions (single source of truth pattern)
+**Phase 1: Helper Infrastructure** (Low Risk)
+- Add `ForcedActionResult` struct to `core/driver.pxd`
+- Add `_check_forced_action()` cdef function
+- Add `_apply_single_action()` cdef function (extract current `apply_action()` body)
+- Build and unit test helpers in isolation
 
-**Rationale:** Foundation must exist before any action handlers. The driver and phase structure enable incremental testing.
+**Phase 2: Loop Integration** (Medium Risk)
+- Modify `apply_action()` to use iterative auto-apply pattern
+- Add iteration limit guard (100 iterations)
+- Handle zero-action case explicitly
+- Manual testing with various game scenarios
 
-**Delivers:** Compilable phase module, driver skeleton, shared utility functions
+**Phase 3: Test Updates** (Medium Risk)
+- Categorize all existing phase tests
+- Update tests asserting intermediate state
+- Add new tests for:
+  - Forced action sequences (chain of single-action phases)
+  - Long forced chains (10+ auto-applies)
+  - Zero legal actions detection (if reachable)
+  - Seed reproducibility with auto-apply
 
-**Features:** None (infrastructure only)
+### Rationale for Phase Order
 
-**Pitfalls to avoid:** Entity handle initialization order
-
----
-
-**Phase 2: INVEST Pass Action**
-- Implement pass action handler
-- Implement consecutive pass tracking
-- Implement phase-end detection (all players passed)
-- Implement active player rotation
-
-**Rationale:** Simplest action type, validates entire dispatch pathway, enables testing of turn mechanics.
-
-**Delivers:** Working pass action, turn rotation, phase end detection
-
-**Features:** Pass action, consecutive pass tracking, active player rotation, phase end detection
-
-**Pitfalls to avoid:** Missing active player updates, implicit phase transition assumptions
-
----
-
-**Phase 3: Auction Flow**
-- Implement start auction action (INVEST -> BID_IN_AUCTION transition)
-- Implement leave auction action
-- Implement raise bid action
-- Implement auction resolution (winner determination, company transfer)
-- Implement return to INVEST phase
-
-**Rationale:** Completes the second phase type, tests sub-phase transitions, relatively contained logic.
-
-**Delivers:** Full auction cycle from start to resolution
-
-**Features:** Start auction, leave auction, raise bid, auction resolution, company transfer, phase transition back to INVEST
-
-**Pitfalls to avoid:** Auction sub-phase state leakage (clear on all exit paths), auction starter tracking for turn resumption
-
----
-
-**Phase 4: Share Trading**
-- Implement buy share action
-- Implement sell share action
-- Implement price movement (up on buy, down on sell)
-- Implement round-trip limit tracking and enforcement
-
-**Rationale:** Complex state mutations with market price dependencies. Build on working pass/auction to validate integration.
-
-**Delivers:** Complete share trading mechanics
-
-**Features:** Buy share, sell share, price movement, round-trip limits
-
-**Pitfalls to avoid:** Partial state updates, round-trip limit enforcement bugs, net worth update timing
-
----
-
-**Phase 5: Presidency & Bankruptcy**
-- Implement presidency change logic (on share transfer)
-- Implement receivership detection
-- Implement corporation bankruptcy (price reaches 0)
-- Implement cascading state cleanup
-
-**Rationale:** Most complex logic, deferred to last phase. Builds on working share trading.
-
-**Delivers:** Complete corporation lifecycle management
-
-**Features:** Change of presidency, receivership, corporation bankruptcy
-
-**Pitfalls to avoid:** Presidency logic errors (tie-breaking, receivership edge cases), cascading bankruptcy state corruption
-
----
+1. **Helpers first** - Can be tested independently without breaking existing behavior
+2. **Loop integration second** - After helpers verified, integration is mechanical
+3. **Tests last** - Existing tests may fail after Phase 2; batch test updates together
 
 ### Research Flags
 
-| Phase | Needs `/gsd:research-phase`? | Notes |
-|-------|------------------------------|-------|
-| Phase 1: Infrastructure | No | Standard patterns, well-documented in codebase |
-| Phase 2: Pass Action | No | Simple, follows existing patterns |
-| Phase 3: Auction Flow | No | Game rules clear, architectural patterns established |
-| Phase 4: Share Trading | Maybe | Market price movement logic may need clarification |
-| Phase 5: Presidency & Bankruptcy | Yes | 18xx rules complex; presidency tie-breaking and bankruptcy cascade need detailed research |
+| Phase | Needs Research? | Reason |
+|-------|-----------------|--------|
+| Phase 1 | NO | Standard pattern, well-documented in ARCHITECTURE.md |
+| Phase 2 | NO | Clear implementation from research; existing codebase patterns |
+| Phase 3 | NO | Test patterns documented in PITFALLS.md |
 
 ---
 
@@ -199,51 +133,36 @@ Based on combined research, the implementation should be structured as follows:
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | **HIGH** | No new dependencies; extends proven patterns |
-| Features | **HIGH** | Table stakes derived from existing action mask code; game rules documented |
-| Architecture | **HIGH** | Patterns match existing codebase; clear integration points |
-| Pitfalls | **HIGH** for codebase-specific, **MEDIUM** for 18xx domain rules | Domain pitfalls based on general 18xx complexity |
+| Stack | HIGH | Based on existing codebase patterns and official Cython docs |
+| Features | HIGH | Verified against existing `get_forced_action()` implementation |
+| Architecture | HIGH | Direct codebase analysis; clear modification points |
+| Pitfalls | HIGH | Based on proven game engine patterns and codebase structure |
+| Overall | HIGH | Well-scoped feature; existing infrastructure handles most complexity |
 
-### Gaps to Address During Planning
+### Gaps to Address
 
-1. **Market price movement**: Exact algorithm for finding next available market space when spaces are occupied
-2. **Presidency tie-breaking**: Confirm exact rules for tie-breaking by turn order
-3. **Bankruptcy cascade**: Document exact order of operations when bankruptcy triggers additional bankruptcies
-4. **FI auction fallback**: Rules when no players bid (FI gets company at face value) - deferred to v2+
+1. **Value Propagation Detail:** Exact mechanism for value targets through forced sequences may need refinement during AlphaZero integration (post-v2.1).
+
+2. **WRAP_UP Phase:** Auto-apply behavior at WRAP_UP boundary depends on WRAP_UP implementation (not yet built). Current scope: treat WRAP_UP as terminal for auto-apply purposes.
+
+3. **Performance Baseline:** Should measure games/minute before implementation to quantify any regression.
 
 ---
 
 ## Sources
 
-### Stack Research
-- Cython documentation (official docs, HIGH confidence)
-- Existing codebase patterns in `core/actions.pyx`, `entities/*.pyx` (HIGH confidence)
-- Performance benchmarks from `setup.py benchmark` (validated)
+### Primary (HIGH confidence)
+- `/home/icebreaker/rss-az-cython2/core/actions.pyx` lines 520-567 - existing `get_forced_action()` implementation
+- `/home/icebreaker/rss-az-cython2/core/driver.pyx` - current `apply_action()` structure (93 lines)
+- `/home/icebreaker/rss-az-cython2/phases/invest.pyx` - phase handler patterns
+- `/home/icebreaker/rss-az-cython2/phases/bid.pyx` - auction resolution patterns
+- [Cython 3.x Documentation](https://cython.readthedocs.io/) - noexcept, nogil, memoryviews
 
-### Feature Research
-- Rolling Stock Stars How to Play (boardgameblitz.com)
-- Daemon18xx GitHub - 18XX rules engine patterns
-- 18XX with Ambie: Dumping Companies & Hostile Takeovers
-- Simple Alpha Zero action dispatch patterns
-- Game Programming Patterns: State
-- Existing codebase: `core/actions.pyx`, `VECTORS.md`
-
-### Architecture Research
-- `/home/icebreaker/rss-az-cython2/core/state.pyx` (GameState implementation)
-- `/home/icebreaker/rss-az-cython2/core/actions.pyx` (Action layout and mask generation)
-- `/home/icebreaker/rss-az-cython2/entities/turn.pyx` (TurnState entity)
-- `/home/icebreaker/rss-az-cython2/.planning/codebase/ARCHITECTURE.md`
-- `/home/icebreaker/rss-az-cython2/.planning/codebase/CONVENTIONS.md`
-
-### Pitfall Research
-- Game Programming Patterns: State Machine Pattern
-- Cython GIL and nogil documentation
-- 1830 Rules Clarifications (18xx.net)
-- PettingZoo Chess (AlphaZero legal move masking)
-- State Machines for Game Dev (numberanalytics.com)
-- Existing codebase: `core/actions.pyx`, `core/state.pyx`
+### Secondary (MEDIUM confidence)
+- [alpha-zero-general MCTS.py](https://github.com/suragnair/alpha-zero-general/blob/master/MCTS.py) - forced move skipping patterns
+- [Game Programming Patterns: State Machine](https://gameprogrammingpatterns.com/state.html) - infinite loop concerns
+- [Board Game Arena Forums](https://forum.boardgamearena.com/) - auto-skip turn discussions
 
 ---
 
-*Research synthesis: 2026-01-20*
-*Overall confidence: HIGH - Mature codebase with established patterns, clear game rules, well-documented pitfalls*
+*Research synthesis: 2026-01-21*
