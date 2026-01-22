@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-01-20)
 ## Current Position
 
 Phase: 6 of 6 (Integration & Tests)
-Plan: 1 of ? in current phase
+Plan: 3 of ? in current phase
 Status: In progress
-Last activity: 2026-01-21 — Completed 06-01: Test infrastructure migration
+Last activity: 2026-01-21 — Completed 06-03: BID_IN_AUCTION integration tests
 
-Progress: v1 ✓ | v2 [████████░░] 82%
+Progress: v1 ✓ | v2 [████████░░] 84%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 11 (1 v1, 10 v2)
-- Average duration: 3min 52sec
-- Total execution time: 0.71 hours
+- Total plans completed: 12 (1 v1, 11 v2)
+- Average duration: 3min 39sec
+- Total execution time: 0.73 hours
 
 **By Milestone:**
 
@@ -31,7 +31,7 @@ Progress: v1 ✓ | v2 [████████░░] 82%
 | v2 INVEST/BID | 5 | 5/5 | 22min 43sec (avg 4min 33sec) |
 | v2 Share Trading | 4 | 2/2 | 4min 35sec (avg 2min 17sec) |
 | v2 Presidency & Bankruptcy | 5 | 2/2 | 6min 11sec (avg 3min 6sec) |
-| v2 Integration & Tests | 6 | 1/? | 8min (avg 8min) |
+| v2 Integration & Tests | 6 | 3/? | 10min 35sec (avg 3min 32sec) |
 
 *Updated after each plan completion*
 
@@ -73,6 +73,9 @@ Key patterns from v1 and v2:
 - Test directory naming pattern — tests/phases/ without __init__.py avoids Cython module conflicts (06-01)
 - Shared conftest pattern — Centralized fixtures and assertion helpers for consistent testing (06-01)
 - Fixture hierarchy pattern — Base game_state, derived phase-specific fixtures (invest_state, bid_state, trade_state, bankruptcy_state) (06-01)
+- Integration test pattern — Full flow tests with invariant checking at every step using apply_action_and_verify (06-03)
+- Mechanics test pattern — Unit tests for action encoding/decoding logic like slot mapping and price calculation (06-03)
+- Edge case test pattern — Exhaustive coverage of boundary conditions and special cases (06-03)
 
 ### Pending Todos
 
@@ -92,6 +95,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-21
-Stopped at: Completed 06-01-PLAN.md
+Stopped at: Completed 06-03-PLAN.md
 Resume file: None
 Next action: Continue phase 6 planning
