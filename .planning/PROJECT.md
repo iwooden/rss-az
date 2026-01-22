@@ -36,7 +36,11 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 
 ### Active
 
-(Defined per-milestone in REQUIREMENTS.md)
+**v2.1 - Forced Action Auto-Application:**
+- [ ] Auto-apply forced actions when only 1 legal action exists
+- [ ] Iterative loop until 2+ choices available or game over
+- [ ] Validate 0 legal actions is error (unless GAME_OVER phase)
+- [ ] Update tests to account for auto-advancement behavior
 
 ### Out of Scope
 
@@ -45,6 +49,16 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - Save/load to disk — in-memory state only for now
 - FI auction fallback — edge case, defer
 - State cloning optimization — basic NumPy copy sufficient
+
+## Current Milestone: v2.1 Forced Action Auto-Application
+
+**Goal:** Ensure the game driver never presents a state with 0 or 1 legal actions to the model - auto-apply forced actions iteratively until a real choice exists.
+
+**Target features:**
+- Iterative auto-application loop in GameDriver.apply_action()
+- Helper methods: _count_legal_actions(), _find_single_legal_action()
+- Zero legal actions validation (error unless GAME_OVER)
+- Test updates for auto-advancement behavior
 
 ## Context
 
@@ -87,4 +101,4 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - **Compatibility:** State array must be directly usable by PyTorch
 
 ---
-*Last updated: 2026-01-21 after v2 milestone*
+*Last updated: 2026-01-21 after v2.1 milestone start*

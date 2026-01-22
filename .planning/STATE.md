@@ -9,12 +9,12 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 
 ## Current Position
 
-Milestone: v2 INVEST & BID_IN_AUCTION complete
-Phase: 6 of 6 (final v2 phase) ✓
-Status: Ready to plan next milestone
-Last activity: 2026-01-21 — v2 milestone archived
+Milestone: v2.1 Forced Action Auto-Application
+Phase: Not started (defining requirements)
+Status: Defining requirements
+Last activity: 2026-01-21 — Milestone v2.1 started
 
-Progress: v1 ✓ | v2 ✓ [██████████] 100%
+Progress: v1 ✓ | v2 ✓ | v2.1 [░░░░░░░░░░] 0%
 
 ## Archived Milestones
 
@@ -63,6 +63,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-21
-Stopped at: v2 milestone archived
+Stopped at: Defining v2.1 requirements
 Resume file: None
-Next action: /gsd:new-milestone
+Next action: Complete requirements and roadmap
