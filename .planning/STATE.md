@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-01-20)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** Phase 6 - Integration & Tests
+**Current focus:** v2 INVEST & BID_IN_AUCTION milestone complete
 
 ## Current Position
 
-Phase: 6 of 6 (Integration & Tests)
-Plan: 2 of ? in current phase
-Status: In progress
-Last activity: 2026-01-21 — Completed 06-02: INVEST integration tests
+Phase: 6 of 6 (Integration & Tests) ✓
+Plan: 3 of 3 in current phase
+Status: Milestone complete
+Last activity: 2026-01-21 — Completed Phase 6: Integration & Tests
 
-Progress: v1 ✓ | v2 [████████░░] 83%
+Progress: v1 ✓ | v2 ✓ [██████████] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 12 (1 v1, 11 v2)
-- Average duration: 3min 41sec
-- Total execution time: 0.73 hours
+- Total plans completed: 13 (1 v1, 12 v2)
+- Average duration: 3min 38sec
+- Total execution time: 0.79 hours
 
 **By Milestone:**
 
@@ -31,7 +31,7 @@ Progress: v1 ✓ | v2 [████████░░] 83%
 | v2 INVEST/BID | 5 | 5/5 | 22min 43sec (avg 4min 33sec) |
 | v2 Share Trading | 4 | 2/2 | 4min 35sec (avg 2min 17sec) |
 | v2 Presidency & Bankruptcy | 5 | 2/2 | 6min 11sec (avg 3min 6sec) |
-| v2 Integration & Tests | 6 | 2/? | 12min 14sec (avg 6min 7sec) |
+| v2 Integration & Tests | 6 | 3/3 | 14min 49sec (avg 4min 56sec) |
 
 *Updated after each plan completion*
 
@@ -76,6 +76,7 @@ Key patterns from v1 and v2:
 - Integration test structure pattern — assert_invariants → apply_action_and_verify → verify outcome → assert_invariants (06-02)
 - Edge case test focus pattern — Parametrized player counts (3, 6) for scalability boundary verification (06-02)
 - Terminal phase handling pattern — Skip valid action checks for phases like WRAP_UP that have no actions (06-02)
+- Auction mechanics test pattern — Verify slot mapping, price calculation, bidder rotation independently (06-03)
 
 ### Pending Todos
 
@@ -94,7 +95,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-22
-Stopped at: Completed 06-02-PLAN.md
+Last session: 2026-01-21
+Stopped at: v2 milestone complete
 Resume file: None
-Next action: Continue phase 6 planning
+Next action: /gsd:audit-milestone or /gsd:complete-milestone

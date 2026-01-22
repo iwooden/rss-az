@@ -74,10 +74,10 @@ Requirements for INVEST and BID_IN_AUCTION phase implementation with game driver
 
 ### Test Coverage
 
-- [ ] **TST-01**: Comprehensive test suite in tests/phases/ directory
-- [ ] **TST-02**: Tests cover common scenarios from game rules
-- [ ] **TST-03**: Tests cover edge cases (bankruptcy, presidency change, receivership)
-- [ ] **TST-04**: Tests verify action mask matches valid actions after state changes
+- [x] **TST-01**: Comprehensive test suite in tests/phases/ directory
+- [x] **TST-02**: Tests cover common scenarios from game rules
+- [x] **TST-03**: Tests cover edge cases (bankruptcy, presidency change, receivership)
+- [x] **TST-04**: Tests verify action mask matches valid actions after state changes
 
 ## Future Requirements
 
@@ -156,10 +156,10 @@ Deferred to later milestones.
 | BID-10 | Phase 3 | Complete |
 | BID-11 | Phase 3 | Complete |
 | BID-12 | Phase 3 | Complete |
-| TST-01 | Phase 6 | Pending |
-| TST-02 | Phase 6 | Pending |
-| TST-03 | Phase 6 | Pending |
-| TST-04 | Phase 6 | Pending |
+| TST-01 | Phase 6 | Complete |
+| TST-02 | Phase 6 | Complete |
+| TST-03 | Phase 6 | Complete |
+| TST-04 | Phase 6 | Complete |
 
 **Coverage:**
 - v2 requirements: 48 total
@@ -168,4 +168,4 @@ Deferred to later milestones.
 
 ---
 *Requirements defined: 2026-01-20*
-*Last updated: 2026-01-20 after roadmap creation*
+*Last updated: 2026-01-21 after Phase 6 completion*

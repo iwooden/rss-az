@@ -27,7 +27,7 @@ Plans:
 - [x] **Phase 3: INVEST Core & Auction Flow** - Pass, start auction, and full auction cycle
 - [x] **Phase 4: Share Trading** - Buy/sell shares with price movement and round-trip limits
 - [x] **Phase 5: Presidency & Bankruptcy** - Corporation ownership changes and bankruptcy handling
-- [ ] **Phase 6: Integration & Tests** - Comprehensive test coverage and edge case validation
+- [x] **Phase 6: Integration & Tests** - Comprehensive test coverage and edge case validation
 
 ## Phase Details
 
@@ -107,9 +107,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 06-01-PLAN.md — Migrate tests to tests/phases/ and create shared assertion helpers
-- [ ] 06-02-PLAN.md — Add INVEST integration tests and edge case coverage
-- [ ] 06-03-PLAN.md — Add BID_IN_AUCTION integration tests and edge case coverage
+- [x] 06-01-PLAN.md — Migrate tests to tests/phases/ and create shared assertion helpers
+- [x] 06-02-PLAN.md — Add INVEST integration tests and edge case coverage
+- [x] 06-03-PLAN.md — Add BID_IN_AUCTION integration tests and edge case coverage
 
 ## Progress
 
@@ -122,7 +122,7 @@ Plans:
 | 3. INVEST Core & Auction | v2 | 3/3 | Complete | 2026-01-21 |
 | 4. Share Trading | v2 | 2/2 | Complete | 2026-01-21 |
 | 5. Presidency & Bankruptcy | v2 | 2/2 | Complete | 2026-01-21 |
-| 6. Integration & Tests | v2 | 0/3 | Planning complete | - |
+| 6. Integration & Tests | v2 | 3/3 | Complete | 2026-01-21 |
 
 ---
 *Roadmap created: 2026-01-20*
