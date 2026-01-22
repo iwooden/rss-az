@@ -4,7 +4,13 @@ Game driver for action dispatch and legal move generation.
 
 The GameDriver routes actions to phase-specific handlers and provides
 legal move generation for the neural network.
+
+Auto-applies forced actions iteratively until a choice is needed (2+ legal
+actions) or the game ends. Ensures neural network only sees decision states.
 """
+
+import numpy as np
+cimport numpy as cnp
 
 from core.state cimport GameState
 from core.actions cimport (
@@ -12,9 +18,44 @@ from core.actions cimport (
 )
 from core.actions import get_valid_action_mask
 from core.data cimport GamePhases, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_GAME_OVER
-from core.driver cimport ActionStatus, STATUS_OK, STATUS_INVALID, STATUS_GAME_OVER
+from core.driver cimport ActionStatus, STATUS_OK, STATUS_INVALID, STATUS_GAME_OVER, ForcedActionResult
 from phases.invest cimport apply_invest_action
 from phases.bid cimport apply_bid_action
+from src.exceptions import ForcedActionLoopError, ZeroLegalActionsError
+
+# Maximum iterations for auto-apply loop (prevents infinite loops from bugs)
+DEF MAX_FORCED_ITERATIONS = 100
+
+
+cdef ForcedActionResult _check_forced_action(GameState state) noexcept:
+    """
+    Check legal action count and find single action if forced.
+
+    Returns:
+        ForcedActionResult with count (0, 1, or 2+) and action_idx
+        - count=0: no legal actions (error condition)
+        - count=1: exactly one action (forced), action_idx set
+        - count=2+: multiple actions (choice needed), action_idx=-1
+    """
+    cdef ForcedActionResult result
+    cdef object mask = get_valid_action_mask(state)
+    cdef int total = mask.shape[0]
+    cdef float* mask_ptr = <float*>cnp.PyArray_DATA(mask)
+    cdef int i
+
+    result.action_idx = -1
+    result.count = 0
+
+    for i in range(total):
+        if mask_ptr[i] == 1.0:
+            result.count += 1
+            if result.count == 1:
+                result.action_idx = i
+            elif result.count == 2:
+                result.action_idx = -1  # Not forced
+                return result  # Early exit - no need to count higher
+
+    return result
 
 
 cdef class GameDriver:
@@ -29,18 +70,21 @@ cdef class GameDriver:
         """Initialize driver (no state needed - stateless pattern)."""
         pass
 
-    cpdef int apply_action(self, GameState state, int action_idx):
+    cdef int _apply_single_action(self, GameState state, int action_idx, object history):
         """
-        Apply action to game state by dispatching to appropriate phase handler.
+        Apply one action without auto-continuation.
+
+        Internal helper for apply_action(). Validates, dispatches, and optionally
+        records to history.
 
         Args:
             state: GameState object to modify
             action_idx: Index into action vector (0 to total_actions-1)
+            history: Optional list to append (state.copy(), action) tuple
 
         Returns:
             STATUS_OK (0) if action applied successfully
             STATUS_INVALID (1) if action is invalid for current state
-            STATUS_GAME_OVER (2) if game ended after this action
         """
         cdef int num_players = state._num_players
         cdef ActionLayout layout = compute_action_layout(num_players)
@@ -56,6 +100,10 @@ cdef class GameDriver:
         if mask[action_idx] != 1.0:
             return STATUS_INVALID
 
+        # Append to history if provided (before applying action)
+        if history is not None:
+            history.append((state._array.copy(), action_idx))
+
         # Decode action
         info = decode_action(&layout, action_idx)
 
@@ -70,11 +118,61 @@ cdef class GameDriver:
             # Other phases not yet implemented (stubs for Phase 3+)
             return STATUS_INVALID
 
-        # Check if game ended after action
+        return result
+
+    cpdef int apply_action(self, GameState state, int action_idx, object history=None):
+        """
+        Apply action to game state, auto-applying forced actions until choice needed.
+
+        This method applies the user's action, then iteratively auto-applies any
+        forced actions (states with exactly one legal action) until a decision
+        point is reached (2+ legal actions) or the game ends.
+
+        Args:
+            state: GameState object to modify
+            action_idx: Index into action vector (0 to total_actions-1)
+            history: Optional list to collect (state.copy(), action) tuples
+
+        Returns:
+            STATUS_OK (0) if action applied successfully (2+ choices now available)
+            STATUS_INVALID (1) if action is invalid for current state
+            STATUS_GAME_OVER (2) if game ended after this action
+
+        Raises:
+            ForcedActionLoopError: If auto-apply exceeds 100 iterations
+            ZeroLegalActionsError: If zero legal actions exist outside GAME_OVER
+        """
+        cdef int result, iterations
+        cdef ForcedActionResult forced
+
+        # Apply the user's action
+        result = self._apply_single_action(state, action_idx, history)
+        if result != STATUS_OK:
+            return result
         if state.get_phase() == PHASE_GAME_OVER:
             return STATUS_GAME_OVER
 
-        return result
+        # Auto-apply forced actions
+        iterations = 0
+        while iterations < MAX_FORCED_ITERATIONS:
+            forced = _check_forced_action(state)
+
+            if forced.count == 0:
+                raise ZeroLegalActionsError("Zero legal actions in non-terminal state")
+
+            if forced.count >= 2:
+                return STATUS_OK  # Choice needed - return to caller
+
+            # Exactly 1 action - auto-apply it
+            result = self._apply_single_action(state, forced.action_idx, history)
+            if result != STATUS_OK:
+                return result
+            if state.get_phase() == PHASE_GAME_OVER:
+                return STATUS_GAME_OVER
+
+            iterations += 1
+
+        raise ForcedActionLoopError(f"Forced action loop exceeded {MAX_FORCED_ITERATIONS} iterations")
 
     cpdef object get_legal_moves(self, GameState state):
         """

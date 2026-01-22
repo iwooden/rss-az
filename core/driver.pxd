@@ -18,5 +18,6 @@ cdef struct ForcedActionResult:
 cdef ForcedActionResult _check_forced_action(GameState state) noexcept
 
 cdef class GameDriver:
+    cdef int _apply_single_action(self, GameState state, int action_idx, object history)
     cpdef int apply_action(self, GameState state, int action_idx, object history=*)
     cpdef object get_legal_moves(self, GameState state)

@@ -340,8 +340,9 @@ cdef int apply_invest_action(GameState state, ActionInfo* info) noexcept:
 
         # Check if all players have passed
         if turn_module.TURN.get_consecutive_passes(state) >= state._num_players:
-            # Transition to WRAP_UP phase
-            turn_module.TURN.set_phase(state, GamePhases.PHASE_WRAP_UP)
+            # All players passed - end game
+            # TODO(v3+): Replace with PHASE_WRAP_UP when implemented
+            turn_module.TURN.set_phase(state, GamePhases.PHASE_GAME_OVER)
         else:
             # Advance to next player in turn order
             _advance_active_player(state)
