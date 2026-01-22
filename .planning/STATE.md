@@ -10,17 +10,17 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 ## Current Position
 
 Milestone: v2.1 Forced Action Auto-Application
-Phase: 7 - Core Implementation (pending)
-Status: Roadmap complete, ready for planning
-Last activity: 2026-01-21 - Roadmap created
+Phase: 7 - Core Implementation (1 of 1 complete)
+Status: In progress - Core Implementation complete, Test Updates pending
+Last activity: 2026-01-22 - Completed 07-01-PLAN.md
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [░░░░░░░░░░] 0%
+Progress: v1 [##########] | v2 [##########] | v2.1 [█████░░░░░] 50%
 
 ## Phase Overview
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
-| 7 | Core Implementation | 12 | Pending |
+| 7 | Core Implementation | 12 | Complete (1/1 plans) |
 | 8 | Test Updates | 7 | Pending |
 
 ## Archived Milestones
@@ -42,6 +42,8 @@ See `.planning/milestones/` for full archives.
 - Stateless singleton pattern - GameDriver follows entity handle design
 - Phase handler pattern - cdef noexcept functions for zero overhead
 - Cdef variable declaration - Declare all cdef vars at function start
+- Auto-apply loop pattern - Iterative forced action application until 2+ choices
+- Early-exit counting - Stop at count=2 instead of counting all actions
 
 **Game logic patterns:**
 - Turn order navigation - Find player at position, advance with wraparound
@@ -65,11 +67,14 @@ None.
 
 ### Blockers/Concerns
 
-None.
+**Test suite status (v2.1):**
+- 163/170 tests passing (95.9%)
+- 7 tests failing: All WRAP_UP-related (expected - phase not implemented until v3+)
+- Will be addressed in Phase 8 (Test Updates)
 
 ## Session Continuity
 
-Last session: 2026-01-21
-Stopped at: Roadmap creation complete
-Resume file: .planning/ROADMAP.md
-Next action: /gsd:plan-phase 7
+Last session: 2026-01-22
+Stopped at: Completed 07-01-PLAN.md
+Resume file: .planning/phases/07-core-implementation/07-01-SUMMARY.md
+Next action: Phase 8 planning and execution
