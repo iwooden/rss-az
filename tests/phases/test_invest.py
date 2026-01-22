@@ -732,7 +732,15 @@ class TestPresidency:
 
         # Player 0 is president with 2 shares
         # Buy increases shares to 3, should maintain presidency
-        corp.set_bank_shares(trade_state, 5)
+        # Adjust unissued to allow more bank shares (7 total = 3 unissued + 4 bank + 0 player)
+        corp.set_unissued_shares(trade_state, 3)
+        corp.set_bank_shares(trade_state, 4)
+        corp.set_issued_shares(trade_state, 0)  # No shares issued yet
+        PLAYERS[0].set_shares(trade_state, 0, 0)
+        # After this setup, we need to actually give player 0 shares
+        corp.set_issued_shares(trade_state, 2)
+        corp.set_bank_shares(trade_state, 2)
+        PLAYERS[0].set_shares(trade_state, 0, 2)
 
         layout = get_action_layout(3)
         buy_idx = layout['buy_share_base'] + 0
@@ -741,6 +749,52 @@ class TestPresidency:
         # Player 0 should still be president (now with 3 shares)
         assert PLAYERS[0].is_president_of(trade_state, 0)
         assert PLAYERS[0].get_shares(trade_state, 0) == 3
+
+    def test_presidency_transfer_on_buy(self, trade_state):
+        """INV-18: Buying shares can trigger presidency transfer."""
+        from tests.phases.conftest import assert_invariants
+
+        corp = CORPS[CORP_NAMES[0]]
+
+        # Player 0 is president with 2 shares
+        # Give player 1 more shares so they have majority
+        PLAYERS[1].set_shares(trade_state, 0, 3)
+        # Update issued shares to match
+        corp.set_issued_shares(trade_state, 5)  # bank(2) + P0(2) + P1(3) - but only 7 total shares
+        # So we need: unissued(0) + bank(2) + P0(2) + P1(3) = 7
+        corp.set_unissued_shares(trade_state, 0)
+
+        # Player 0 buys, now has 3 shares - tie with player 1
+        # Since player 1 had more before, check presidency rules
+        layout = get_action_layout(3)
+        buy_idx = layout['buy_share_base'] + 0
+        DRIVER.apply_action(trade_state, buy_idx)
+
+        # After buy: P0 has 3, P1 has 3 - incumbent (P0) keeps
+        assert PLAYERS[0].is_president_of(trade_state, 0)
+        assert_invariants(trade_state, "After buy with tie")
+
+    def test_presidency_three_way_competition(self, trade_state):
+        """Presidency goes to player with most shares among three shareholders."""
+        from tests.phases.conftest import assert_invariants
+
+        # Set up: P0=2 (president), P1=1, P2=1
+        PLAYERS[1].set_shares(trade_state, 0, 1)
+        PLAYERS[2].set_shares(trade_state, 0, 1)
+        # Update issued shares: bank(2) + P0(2) + P1(1) + P2(1) = 6, but corp has 7 total
+        # So: unissued(1) + bank(2) + P0(2) + P1(1) + P2(1) = 7
+        corp = CORPS[CORP_NAMES[0]]
+        corp.set_unissued_shares(trade_state, 1)
+        corp.set_issued_shares(trade_state, 6)
+
+        # P0 sells, now has 1 share - three-way tie
+        layout = get_action_layout(3)
+        sell_idx = layout['sell_share_base'] + 0
+        DRIVER.apply_action(trade_state, sell_idx)
+
+        # All have 1 share - incumbent keeps presidency
+        assert PLAYERS[0].is_president_of(trade_state, 0)
+        assert_invariants(trade_state, "After three-way tie")
 
 
 # =============================================================================
@@ -803,6 +857,72 @@ class TestReceivership:
         if corp.is_in_receivership(trade_state):
             for player_id in range(3):
                 assert not PLAYERS[player_id].is_president_of(trade_state, 0)
+
+    def test_receivership_corp_still_tradeable(self, trade_state):
+        """Corp in receivership can still have shares bought (exits receivership)."""
+        from tests.phases.conftest import assert_invariants
+
+        corp = CORPS[CORP_NAMES[0]]
+
+        # Put corp in receivership - adjust shares to maintain invariant
+        # Corp 0 has 7 total: unissued(3) + bank(4) + all_players(0) = 7
+        corp.set_in_receivership(trade_state, True)
+        corp.set_bank_shares(trade_state, 4)
+        corp.set_issued_shares(trade_state, 0)
+        PLAYERS[0].set_shares(trade_state, 0, 0)
+        PLAYERS[0].set_president_of(trade_state, 0, False)
+
+        # Verify corp is in receivership
+        assert corp.is_in_receivership(trade_state)
+
+        # Buy should be valid
+        mask = get_valid_action_mask(trade_state)
+        layout = get_action_layout(3)
+        buy_idx = layout['buy_share_base'] + 0
+
+        assert mask[buy_idx] == 1.0, "Buy should be valid for receivership corp"
+
+        DRIVER.apply_action(trade_state, buy_idx)
+
+        # No longer in receivership
+        assert not corp.is_in_receivership(trade_state)
+        assert PLAYERS[0].is_president_of(trade_state, 0)
+        assert_invariants(trade_state, "After exit receivership")
+
+    def test_receivership_sell_all_shares_from_multiple_players(self):
+        """Multiple players selling down eventually leads to receivership."""
+        from tests.phases.conftest import assert_invariants
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        corp = CORPS[CORP_NAMES[0]]
+        corp.set_active(state, True)
+        corp.set_price_index(state, 15)
+        corp.set_unissued_shares(state, 6)
+        corp.set_bank_shares(state, 0)
+        corp.set_issued_shares(state, 1)
+
+        # Only P0 owns 1 share (is president)
+        PLAYERS[0].set_shares(state, 0, 1)
+        PLAYERS[0].set_president_of(state, 0, True)
+        PLAYERS[0].set_cash(state, 100)
+
+        MARKET.set_space_available(state, 15, False)
+
+        layout = get_action_layout(3)
+        sell_idx = layout['sell_share_base'] + 0
+
+        # P0 sells their only share - corp should enter receivership
+        DRIVER.apply_action(state, sell_idx)
+
+        # Corp should be in receivership (all player shares = 0)
+        assert corp.is_in_receivership(state)
+        # No one should be president
+        for player_id in range(3):
+            assert not PLAYERS[player_id].is_president_of(state, 0)
+
+        assert_invariants(state, "After entering receivership")
 
 
 # =============================================================================
