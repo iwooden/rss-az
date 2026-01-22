@@ -9,6 +9,14 @@ cdef enum ActionStatus:
     STATUS_INVALID = 1      # Invalid action for current state
     STATUS_GAME_OVER = 2    # Game ended after this action
 
+# Result struct for forced action checking
+cdef struct ForcedActionResult:
+    int count       # 0, 1, or 2 (stop counting at 2 for early exit)
+    int action_idx  # -1 if count != 1, otherwise the single valid action index
+
+# Helper function for forced action detection
+cdef ForcedActionResult _check_forced_action(GameState state) noexcept
+
 cdef class GameDriver:
-    cpdef int apply_action(self, GameState state, int action_idx)
+    cpdef int apply_action(self, GameState state, int action_idx, object history=*)
     cpdef object get_legal_moves(self, GameState state)
