@@ -99,7 +99,11 @@ def apply_action_and_verify(state, action_idx, msg=""):
     assert result == STATUS_OK, f"{msg}\nAction {action_idx} failed with status {result}"
 
     assert_invariants(state, f"{msg}\nAfter action {action_idx}")
-    assert np.sum(get_valid_action_mask(state)) > 0, f"{msg}\nNo valid actions after {action_idx}"
+
+    # Don't check for valid actions in terminal phases (WRAP_UP has no actions)
+    phase = state.get_phase()
+    if phase not in [GamePhases.PHASE_WRAP_UP]:
+        assert np.sum(get_valid_action_mask(state)) > 0, f"{msg}\nNo valid actions after {action_idx}"
 
     return result
 
@@ -145,10 +149,12 @@ def trade_state():
     state.initialize_game(seed=42)
 
     # Manually activate corp 0 (JS) with tradeable shares
+    # Corp 0 has 7 total shares: unissued(3) + bank(2) + player(2) = 7
     corp = CORPS[CORP_NAMES[0]]
     corp.set_active(state, True)
     corp.set_price_index(state, 10)
-    corp.set_bank_shares(state, 3)
+    corp.set_unissued_shares(state, 3)
+    corp.set_bank_shares(state, 2)
     corp.set_issued_shares(state, 4)
 
     PLAYERS[0].set_shares(state, 0, 2)
