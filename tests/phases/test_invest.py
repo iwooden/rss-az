@@ -685,6 +685,121 @@ class TestBankruptcy:
         new_net_worth_p1 = PLAYERS[1].get_net_worth(bankruptcy_state)
         assert new_net_worth_p1 == initial_net_worth_p1 - share_value
 
+    def test_bankruptcy_with_multiple_companies(self, bankruptcy_state):
+        """INV-23: Bankruptcy removes ALL companies owned by corp."""
+        from tests.phases.conftest import assert_invariants
+
+        corp = CORPS[CORP_NAMES[0]]
+
+        # Add second company to corp
+        COMPANIES[1].transfer_to_corp(bankruptcy_state, 0)
+        corp.set_owns_company(bankruptcy_state, 1, True)
+
+        # Trigger bankruptcy
+        layout = get_action_layout(3)
+        sell_idx = layout['sell_share_base'] + 0
+        DRIVER.apply_action(bankruptcy_state, sell_idx)
+
+        # Both companies should be removed
+        assert COMPANIES[0].is_removed(bankruptcy_state)
+        assert COMPANIES[1].is_removed(bankruptcy_state)
+        assert not corp.is_active(bankruptcy_state)
+        assert_invariants(bankruptcy_state, "After multi-company bankruptcy")
+
+    def test_bankruptcy_resets_corp_for_new_ipo(self, bankruptcy_state):
+        """INV-27: After bankruptcy, corp is reset and available for new IPO."""
+        from core.data import get_corp_share_count
+        from tests.phases.conftest import assert_invariants
+
+        corp = CORPS[CORP_NAMES[0]]
+
+        # Give corp some cash before bankruptcy
+        corp.set_cash(bankruptcy_state, 100)
+
+        # Trigger bankruptcy
+        layout = get_action_layout(3)
+        sell_idx = layout['sell_share_base'] + 0
+        DRIVER.apply_action(bankruptcy_state, sell_idx)
+
+        # Corp state should be fully reset
+        assert not corp.is_active(bankruptcy_state)
+        assert corp.get_cash(bankruptcy_state) == 0
+        assert corp.get_unissued_shares(bankruptcy_state) == get_corp_share_count(0)
+        assert corp.get_issued_shares(bankruptcy_state) == 0
+        assert corp.get_bank_shares(bankruptcy_state) == 0
+        assert not corp.is_in_receivership(bankruptcy_state)
+
+        # Market space should be freed
+        assert MARKET.is_space_available(bankruptcy_state, 1)
+
+        assert_invariants(bankruptcy_state, "Corp reset for IPO")
+
+    def test_bankruptcy_affects_all_shareholders_net_worth(self, bankruptcy_state):
+        """Bankruptcy zeros shares for all players holding shares."""
+        from tests.phases.conftest import assert_invariants
+
+        corp = CORPS[CORP_NAMES[0]]
+
+        # Give multiple players shares
+        PLAYERS[1].set_shares(bankruptcy_state, 0, 1)
+        PLAYERS[2].set_shares(bankruptcy_state, 0, 1)
+        # Update issued shares: bank(2) + P0(2) + P1(1) + P2(1) = 6
+        corp.set_issued_shares(bankruptcy_state, 6)
+        corp.set_bank_shares(bankruptcy_state, 0)  # Adjust bank to match (unissued stays at 1)
+
+        PLAYERS[1].set_cash(bankruptcy_state, 50)
+        PLAYERS[2].set_cash(bankruptcy_state, 50)
+
+        # Record share values before
+        p1_shares_before = PLAYERS[1].get_shares(bankruptcy_state, 0)
+        p2_shares_before = PLAYERS[2].get_shares(bankruptcy_state, 0)
+        assert p1_shares_before == 1
+        assert p2_shares_before == 1
+
+        # Trigger bankruptcy
+        layout = get_action_layout(3)
+        sell_idx = layout['sell_share_base'] + 0
+        DRIVER.apply_action(bankruptcy_state, sell_idx)
+
+        # All players' shares zeroed
+        assert PLAYERS[0].get_shares(bankruptcy_state, 0) == 0
+        assert PLAYERS[1].get_shares(bankruptcy_state, 0) == 0
+        assert PLAYERS[2].get_shares(bankruptcy_state, 0) == 0
+
+        assert_invariants(bankruptcy_state, "After multi-player bankruptcy")
+
+    @pytest.mark.parametrize("num_players", [3, 6])
+    def test_bankruptcy_different_player_counts(self, num_players):
+        """Bankruptcy procedure works for all player counts."""
+        from tests.phases.conftest import assert_invariants
+
+        state = GameState(num_players=num_players)
+        state.initialize_game(seed=42)
+
+        corp = CORPS[CORP_NAMES[0]]
+        corp.set_active(state, True)
+        corp.set_price_index(state, 1)
+        corp.set_unissued_shares(state, 3)
+        corp.set_bank_shares(state, 2)
+        corp.set_issued_shares(state, 2)
+
+        COMPANIES[0].transfer_to_corp(state, 0)
+        corp.set_owns_company(state, 0, True)
+
+        PLAYERS[0].set_shares(state, 0, 2)
+        PLAYERS[0].set_president_of(state, 0, True)
+        PLAYERS[0].set_cash(state, 100)
+
+        MARKET.set_space_available(state, 1, False)
+
+        layout = get_action_layout(num_players)
+        sell_idx = layout['sell_share_base'] + 0
+        DRIVER.apply_action(state, sell_idx)
+
+        assert not corp.is_active(state)
+        assert COMPANIES[0].is_removed(state)
+        assert_invariants(state, f"Bankruptcy with {num_players} players")
+
 
 # =============================================================================
 # PRESIDENCY TESTS
