@@ -1,4 +1,33 @@
-# Project Milestones: Rolling Stock Stars - Game State Initialization
+# Project Milestones: Rolling Stock Stars
+
+## v2 INVEST & BID_IN_AUCTION (Shipped: 2026-01-21)
+
+**Delivered:** Complete INVEST and BID_IN_AUCTION phase implementation with game driver architecture, full share trading mechanics, corporation lifecycle management (bankruptcy, presidency, receivership), and comprehensive test coverage.
+
+**Phases completed:** 2-6 (12 plans total)
+
+**Key accomplishments:**
+
+- GameDriver class for action dispatch and legal move mask generation
+- INVEST phase: pass, start auction, buy/sell shares with price movement and round-trip limits
+- BID_IN_AUCTION phase: leave auction, raise bid, auction resolution with company transfer
+- Corporation bankruptcy procedure (price 0 → company removal → share return → corp available for IPO)
+- Presidency transfer with incumbent tie-breaking advantage
+- Receivership detection and exit handling
+- 170 tests with shared fixtures and invariant checking in tests/phases/
+
+**Stats:**
+
+- 160 files created/modified
+- ~25,000 lines Cython, ~2,850 lines Python tests
+- 5 phases, 12 plans, 48 requirements
+- 17 days from v1 to v2 ship
+
+**Git range:** `feat(02-01)` → `Cleanup for milestone 2`
+
+**What's next:** WRAP_UP phase, remaining game phases (ACQ, CLO, INC, DIV, END, ISS, IPO)
+
+---
 
 ## v1 Game State Initialization (Shipped: 2026-01-20)
 

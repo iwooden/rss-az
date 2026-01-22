@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A high-performance Cython game engine for "Rolling Stock Stars" board game with complete game state initialization. The engine stores state as a single contiguous float32 array for zero-copy passing to PyTorch, optimized for AlphaZero-style self-play training.
+A high-performance Cython game engine for "Rolling Stock Stars" board game with complete INVEST and BID_IN_AUCTION phases. The engine stores state as a single contiguous float32 array for zero-copy passing to PyTorch, optimized for AlphaZero-style self-play training.
 
 ## Core Value
 
@@ -12,6 +12,7 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 
 ### Validated
 
+**v1 - Game State Initialization:**
 - ✓ GameState.initialize_game(seed) method produces valid starting state — v1
 - ✓ Players receive correct starting cash (30 for 3-5p, 25 for 6p) — v1
 - ✓ Foreign Investor starts with 4 cash, no companies — v1
@@ -22,36 +23,35 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - ✓ Turn state initialized (phase 1, CoO 1, turn 1, player 0) — v1
 - ✓ Reproducible games via seed parameter — v1
 
+**v2 - INVEST & BID_IN_AUCTION:**
+- ✓ GameDriver class dispatches actions to phase handlers — v2
+- ✓ INVEST phase: pass, start auction, buy/sell shares — v2
+- ✓ BID_IN_AUCTION phase: leave auction, raise bid, resolution — v2
+- ✓ Share price movement skips occupied spaces — v2
+- ✓ Round-trip limit enforcement (2 per corp per turn) — v2
+- ✓ Corporation bankruptcy at price 0 — v2
+- ✓ Presidency transfer with incumbent advantage — v2
+- ✓ Receivership when all player shares sold — v2
+- ✓ 170 tests with invariant checking — v2
+
 ### Active
 
-(Defined in v2 REQUIREMENTS.md)
-
-## Current Milestone: v2 INVEST & BID_IN_AUCTION
-
-**Goal:** Implement the first game phase actions with a game driver architecture for action dispatch.
-
-**Target features:**
-- INVEST phase actions (pass, buy share, sell share, start auction)
-- BID_IN_AUCTION phase actions (leave auction, raise bid)
-- Game driver class for action dispatch and legal move generation
-- Full corporation bankruptcy procedure
-- Change of presidency and receivership handling
-- Player net worth updates after relevant actions
-- Round-trip buy/sell limit enforcement
-- Comprehensive test suite for phase logic
+(Defined per-milestone in REQUIREMENTS.md)
 
 ### Out of Scope
 
 - Mobile/web client — CLI/API only
 - Game replay viewer — training focus only
 - Save/load to disk — in-memory state only for now
+- FI auction fallback — edge case, defer
+- State cloning optimization — basic NumPy copy sufficient
 
 ## Context
 
-**Shipped v1:** Game State Initialization (2026-01-20)
-- 1 phase, 1 plan, 25 requirements
-- ~24,500 LOC Cython, ~350 LOC Python (tests)
-- Comprehensive test suite: 28 tests
+**Shipped v2:** INVEST & BID_IN_AUCTION (2026-01-21)
+- 5 phases (2-6), 12 plans, 48 requirements
+- ~25,000 LOC Cython, ~2,850 LOC Python (tests)
+- Comprehensive test suite: 170 tests
 
 **Tech stack:** Cython, NumPy, PyTorch-compatible state format
 
@@ -59,6 +59,10 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - Entity handle initialization (init all handles before state modification)
 - Module import pattern for Cython globals
 - Per-task atomic commits with feat/test prefixes
+- Stateless singleton pattern for GameDriver
+- Phase handler pattern (cdef noexcept functions for zero overhead)
+- Two-pass presidency algorithm for tie-breaking
+- Bankruptcy inline execution during sell handler
 
 ## Key Decisions
 
@@ -70,6 +74,11 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 | Module import pattern for entities | Avoids Cython circular import issues | ✓ Good |
 | Starting cash: 30 (3-5p), 25 (6p) | Official game rules | ✓ Good |
 | Float32 state array | Zero-copy to PyTorch tensors | ✓ Good (existing) |
+| GameDriver stateless singleton | Following entity handle pattern, all state in GameState | ✓ Good |
+| Phase handlers as cdef noexcept | Maximum performance, zero error-handling overhead | ✓ Good |
+| Bankruptcy inline execution | Execute immediately during sell, no deferral | ✓ Good |
+| Two-pass presidency algorithm | Correct incumbent tie-breaking | ✓ Good |
+| Shared test fixtures (conftest.py) | Consistent invariant checking across all tests | ✓ Good |
 
 ## Constraints
 
@@ -78,4 +87,4 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - **Compatibility:** State array must be directly usable by PyTorch
 
 ---
-*Last updated: 2026-01-20 after v2 milestone start*
+*Last updated: 2026-01-21 after v2 milestone*

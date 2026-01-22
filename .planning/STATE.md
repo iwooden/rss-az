@@ -2,81 +2,55 @@
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-01-20)
+See: .planning/PROJECT.md (updated 2026-01-21)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** v2 INVEST & BID_IN_AUCTION milestone complete
+**Current focus:** Planning next milestone
 
 ## Current Position
 
-Phase: 6 of 6 (Integration & Tests) ✓
-Plan: 3 of 3 in current phase
-Status: Milestone complete
-Last activity: 2026-01-21 — Completed Phase 6: Integration & Tests
+Milestone: v2 INVEST & BID_IN_AUCTION complete
+Phase: 6 of 6 (final v2 phase) ✓
+Status: Ready to plan next milestone
+Last activity: 2026-01-21 — v2 milestone archived
 
 Progress: v1 ✓ | v2 ✓ [██████████] 100%
 
-## Performance Metrics
+## Archived Milestones
 
-**Velocity:**
-- Total plans completed: 13 (1 v1, 12 v2)
-- Average duration: 3min 38sec
-- Total execution time: 0.79 hours
+| Version | Name | Phases | Plans | Shipped |
+|---------|------|--------|-------|---------|
+| v1 | Game State Init | 1 | 1 | 2026-01-20 |
+| v2 | INVEST & BID_IN_AUCTION | 2-6 | 12 | 2026-01-21 |
 
-**By Milestone:**
-
-| Milestone | Phases | Plans | Duration |
-|-----------|--------|-------|----------|
-| v1 Game State Init | 1 | 1 | 4min 25sec |
-| v2 INVEST/BID | 5 | 5/5 | 22min 43sec (avg 4min 33sec) |
-| v2 Share Trading | 4 | 2/2 | 4min 35sec (avg 2min 17sec) |
-| v2 Presidency & Bankruptcy | 5 | 2/2 | 6min 11sec (avg 3min 6sec) |
-| v2 Integration & Tests | 6 | 3/3 | 14min 49sec (avg 4min 56sec) |
-
-*Updated after each plan completion*
+See `.planning/milestones/` for full archives.
 
 ## Accumulated Context
 
-### Decisions
+### Key Patterns (from v1 and v2)
 
-Decisions are logged in PROJECT.md Key Decisions table.
-Key patterns from v1 and v2:
+**Cython patterns:**
+- Entity initialization order — Initialize all handles before setting state
+- Module import pattern — Avoid circular imports with `from entities import X as X_module`
+- Stateless singleton pattern — GameDriver follows entity handle design
+- Phase handler pattern — cdef noexcept functions for zero overhead
+- Cdef variable declaration — Declare all cdef vars at function start
 
-- Entity initialization order pattern — Initialize all handles before setting state
-- Module import pattern for entities — Avoid Cython circular imports (03-01)
+**Game logic patterns:**
+- Turn order navigation — Find player at position, advance with wraparound
+- Auction resolution sequence — pay -> transfer -> update -> draw -> cleanup -> transition
+- Price movement — find_next_higher/lower_space skips occupied spaces
+- Index 26 always available — Price $75 never marked occupied
+- Bankruptcy inline execution — Execute immediately during sell, no deferral
+- Two-pass presidency algorithm — Find max shares first, then check incumbent for tie-breaking
+- Receivership before presidency — Check receivership first, skip presidency if in receivership
+
+**Testing patterns:**
 - Per-task atomic commits — feat/test prefixes for git bisect
-- Stateless singleton pattern — GameDriver follows entity handle design (02-01)
-- Phase handler pattern — cdef noexcept functions for zero overhead (02-01)
-- Validation at dispatch — Check action mask before routing to phase handlers (02-01)
-- Test fixture pattern — game_state, invest_state, bid_state fixtures (02-02)
-- Parametrized player count tests — Verify all 3-6 player configurations (02-02)
-- pytest conftest pattern — Add project root to sys.path for Cython modules (02-02)
-- Cdef variable declaration pattern — Declare all cdef vars at function start in Cython (03-01)
-- Turn order navigation pattern — Find player at position, advance with wraparound (03-01)
-- Auction resolution sequence pattern — pay -> transfer -> update -> draw -> cleanup -> transition (03-02)
-- Active player counting pattern — Iterate all players checking flag status (03-02)
-- Company entity initialization — Must call company.initialize(state) in GameState.initialize_game (03-02)
-- Public accessor pattern — Add cpdef wrappers for test access to cdef methods (03-03)
-- Test fixture pattern — Phase-specific fixtures return state in target phase (03-03)
-- Location cache invalidation — Rescan location before clearing to avoid stale cache (03-03)
-- Price movement pattern — find_next_higher/lower_space skips occupied spaces (04-01)
-- Index 26 always available — Price $75 never marked occupied, multiple corps can share (04-01)
-- Round-trip blocking pattern — Check round-trips before buy/sell mask generation (04-02)
-- Trade state fixture pattern — Manually configure corp for testing without IPO (04-02)
-- Bankruptcy inline execution pattern — Execute immediately during sell, no deferral (05-01)
-- Early return pattern — Skip remaining sell steps after bankruptcy (05-01)
-- set_president_of scope — Only affects specified corp_id parameter, not other corps (05-01)
-- Two-pass presidency algorithm — Find max shares first, then check incumbent for tie-breaking (05-02)
-- Receivership before presidency pattern — Check receivership first, skip presidency if in receivership (05-02)
-- Bankruptcy fixture pattern — issued_shares = bank_shares + player_shares for validity (05-02)
-- Python-visible wrapper pattern — Module-level def wrappers for cdef functions to enable Python access (quick-002)
-- Test directory naming pattern — tests/phases/ without __init__.py avoids Cython module conflicts (06-01)
-- Shared conftest pattern — Centralized fixtures and assertion helpers for consistent testing (06-01)
-- Fixture hierarchy pattern — Base game_state, derived phase-specific fixtures (invest_state, bid_state, trade_state, bankruptcy_state) (06-01)
-- Integration test structure pattern — assert_invariants → apply_action_and_verify → verify outcome → assert_invariants (06-02)
-- Edge case test focus pattern — Parametrized player counts (3, 6) for scalability boundary verification (06-02)
-- Terminal phase handling pattern — Skip valid action checks for phases like WRAP_UP that have no actions (06-02)
-- Auction mechanics test pattern — Verify slot mapping, price calculation, bidder rotation independently (06-03)
+- Test fixture pattern — Phase-specific fixtures return state in target phase
+- Shared conftest pattern — Centralized fixtures and assertion helpers
+- Integration test structure — assert_invariants → apply_action_and_verify → verify outcome → assert_invariants
+- Parametrized player counts (3, 6) — Boundary verification
 
 ### Pending Todos
 
@@ -86,16 +60,9 @@ None.
 
 None.
 
-### Quick Tasks Completed
-
-| # | Description | Date | Commit | Directory |
-|---|-------------|------|--------|-----------|
-| 001 | Refactor duplicate code in phases directory to entities and utilities | 2026-01-21 | b4b8a6e | [001-refactor-duplicate-code-in-phases-direct](./quick/001-refactor-duplicate-code-in-phases-direct/) |
-| 002 | Move net worth updates to player entity via Python-visible wrapper | 2026-01-21 | 065b6e9 | [002-move-update-all-net-worths-to-player-ent](./quick/002-move-update-all-net-worths-to-player-ent/) |
-
 ## Session Continuity
 
 Last session: 2026-01-21
-Stopped at: v2 milestone complete
+Stopped at: v2 milestone archived
 Resume file: None
-Next action: /gsd:audit-milestone or /gsd:complete-milestone
+Next action: /gsd:new-milestone

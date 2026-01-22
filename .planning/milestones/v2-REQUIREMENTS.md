@@ -1,3 +1,13 @@
+# Requirements Archive: v2 INVEST & BID_IN_AUCTION
+
+**Archived:** 2026-01-21
+**Status:** SHIPPED
+
+This is the archived requirements specification for v2.
+For current requirements, see `.planning/REQUIREMENTS.md` (created for next milestone).
+
+---
+
 # Requirements: Rolling Stock Stars - v2 INVEST & BID_IN_AUCTION
 
 **Defined:** 2026-01-20
@@ -167,5 +177,12 @@ Deferred to later milestones.
 - Unmapped: 0
 
 ---
-*Requirements defined: 2026-01-20*
-*Last updated: 2026-01-21 after Phase 6 completion*
+
+## Milestone Summary
+
+**Shipped:** 48 of 48 v2 requirements
+**Adjusted:** None
+**Dropped:** None
+
+---
+*Archived: 2026-01-21 as part of v2 milestone completion*
