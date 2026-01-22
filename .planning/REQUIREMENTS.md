@@ -1,7 +1,7 @@
 # Requirements: v2.1 Forced Action Auto-Application
 
 **Defined:** 2026-01-21
-**Core Value:** Never present model with 0 or 1 legal actions — auto-apply forced actions until real choice exists
+**Core Value:** Never present model with 0 or 1 legal actions - auto-apply forced actions until real choice exists
 
 ## v2.1 Requirements
 
@@ -39,13 +39,13 @@ Requirements for forced action auto-application. Each maps to roadmap phases.
 - [ ] **TUPD-01**: Categorize existing tests by auto-apply impact
 - [ ] **TUPD-02**: Update tests that assert on intermediate states to use history helper
 - [ ] **TUPD-03**: Add tests for forced action chains (multiple auto-applies in sequence)
-- [ ] **TUPD-04**: Add tests for phase transition during auto-apply (BID → INVEST)
+- [ ] **TUPD-04**: Add tests for phase transition during auto-apply (BID -> INVEST)
 - [ ] **TUPD-05**: Add test for iteration limit guard (defensive)
 - [ ] **TUPD-06**: Add test for zero legal actions error
 
 ## Future Requirements
 
-(None — this is a focused enhancement milestone)
+(None - this is a focused enhancement milestone)
 
 ## Out of Scope
 
@@ -85,8 +85,8 @@ Requirements for forced action auto-application. Each maps to roadmap phases.
 **Coverage:**
 - v2.1 requirements: 19 total
 - Mapped to phases: 19
-- Unmapped: 0 ✓
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-01-21*
-*Last updated: 2026-01-21 after initial definition*
+*Last updated: 2026-01-21 after roadmap creation*

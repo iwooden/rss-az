@@ -5,16 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-01-21)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** Planning next milestone
+**Current focus:** v2.1 Forced Action Auto-Application
 
 ## Current Position
 
 Milestone: v2.1 Forced Action Auto-Application
-Phase: Not started (defining requirements)
-Status: Defining requirements
-Last activity: 2026-01-21 — Milestone v2.1 started
+Phase: 7 - Core Implementation (pending)
+Status: Roadmap complete, ready for planning
+Last activity: 2026-01-21 - Roadmap created
 
-Progress: v1 ✓ | v2 ✓ | v2.1 [░░░░░░░░░░] 0%
+Progress: v1 [##########] | v2 [##########] | v2.1 [░░░░░░░░░░] 0%
+
+## Phase Overview
+
+| Phase | Name | Requirements | Status |
+|-------|------|--------------|--------|
+| 7 | Core Implementation | 12 | Pending |
+| 8 | Test Updates | 7 | Pending |
 
 ## Archived Milestones
 
@@ -30,27 +37,27 @@ See `.planning/milestones/` for full archives.
 ### Key Patterns (from v1 and v2)
 
 **Cython patterns:**
-- Entity initialization order — Initialize all handles before setting state
-- Module import pattern — Avoid circular imports with `from entities import X as X_module`
-- Stateless singleton pattern — GameDriver follows entity handle design
-- Phase handler pattern — cdef noexcept functions for zero overhead
-- Cdef variable declaration — Declare all cdef vars at function start
+- Entity initialization order - Initialize all handles before setting state
+- Module import pattern - Avoid circular imports with `from entities import X as X_module`
+- Stateless singleton pattern - GameDriver follows entity handle design
+- Phase handler pattern - cdef noexcept functions for zero overhead
+- Cdef variable declaration - Declare all cdef vars at function start
 
 **Game logic patterns:**
-- Turn order navigation — Find player at position, advance with wraparound
-- Auction resolution sequence — pay -> transfer -> update -> draw -> cleanup -> transition
-- Price movement — find_next_higher/lower_space skips occupied spaces
-- Index 26 always available — Price $75 never marked occupied
-- Bankruptcy inline execution — Execute immediately during sell, no deferral
-- Two-pass presidency algorithm — Find max shares first, then check incumbent for tie-breaking
-- Receivership before presidency — Check receivership first, skip presidency if in receivership
+- Turn order navigation - Find player at position, advance with wraparound
+- Auction resolution sequence - pay -> transfer -> update -> draw -> cleanup -> transition
+- Price movement - find_next_higher/lower_space skips occupied spaces
+- Index 26 always available - Price $75 never marked occupied
+- Bankruptcy inline execution - Execute immediately during sell, no deferral
+- Two-pass presidency algorithm - Find max shares first, then check incumbent for tie-breaking
+- Receivership before presidency - Check receivership first, skip presidency if in receivership
 
 **Testing patterns:**
-- Per-task atomic commits — feat/test prefixes for git bisect
-- Test fixture pattern — Phase-specific fixtures return state in target phase
-- Shared conftest pattern — Centralized fixtures and assertion helpers
-- Integration test structure — assert_invariants → apply_action_and_verify → verify outcome → assert_invariants
-- Parametrized player counts (3, 6) — Boundary verification
+- Per-task atomic commits - feat/test prefixes for git bisect
+- Test fixture pattern - Phase-specific fixtures return state in target phase
+- Shared conftest pattern - Centralized fixtures and assertion helpers
+- Integration test structure - assert_invariants -> apply_action_and_verify -> verify outcome -> assert_invariants
+- Parametrized player counts (3, 6) - Boundary verification
 
 ### Pending Todos
 
@@ -63,6 +70,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-21
-Stopped at: Defining v2.1 requirements
-Resume file: None
-Next action: Complete requirements and roadmap
+Stopped at: Roadmap creation complete
+Resume file: .planning/ROADMAP.md
+Next action: /gsd:plan-phase 7
