@@ -1,795 +1,903 @@
-# Architecture Research: Forced Action Auto-Application (v2.1)
+# Architecture Patterns: WRAP_UP Phase Integration
 
-**Researched:** 2026-01-21
-**Confidence:** HIGH (based on direct codebase analysis)
+**Domain:** Rolling Stock Stars Cython Game Engine
+**Researched:** 2026-01-22
+**Focus:** WRAP_UP phase integration with existing architecture
 
-## Current GameDriver Structure
+## Executive Summary
 
-### Overview
+The WRAP_UP phase integrates cleanly with the existing Cython game engine architecture. It follows established patterns from INVEST and BID_IN_AUCTION phases: a stateless phase handler function (`apply_wrap_up_action`) dispatched by GameDriver, with ForeignInvestor entity handle managing company purchases. The phase transitions from INVEST (all players pass) and proceeds to either ACQUISITION (if companies exist) or back to INVEST (new turn).
 
-The `GameDriver` class in `core/driver.pyx` follows a **stateless singleton pattern** - all game state lives in the `GameState` object, and `GameDriver` is a dispatcher.
-
-```
-core/driver.pyx (93 lines)
-  - class GameDriver (cdef class)
-    - cpdef apply_action(state, action_idx) -> int (STATUS_OK/INVALID/GAME_OVER)
-    - cpdef get_legal_moves(state) -> numpy array
-
-core/driver.pxd
-  - ActionStatus enum: STATUS_OK=0, STATUS_INVALID=1, STATUS_GAME_OVER=2
-  - Declares cpdef methods for Python accessibility
-```
-
-### Current apply_action Flow
-
-```python
-cpdef int apply_action(self, GameState state, int action_idx):
-    1. Validate action_idx bounds
-    2. Get legal action mask via get_valid_action_mask(state)
-    3. Check mask[action_idx] == 1.0, else return STATUS_INVALID
-    4. Decode action via decode_action()
-    5. Dispatch to phase handler based on state.get_phase()
-    6. Check if game ended (PHASE_GAME_OVER), return STATUS_GAME_OVER
-    7. Return result from phase handler
-```
-
-### Key Dependencies
-
-| Module | What GameDriver Uses |
-|--------|---------------------|
-| `core/actions.pyx` | `get_valid_action_mask()`, `compute_action_layout()`, `decode_action()` |
-| `core/actions.pxd` | `ActionLayout`, `ActionInfo` structs |
-| `phases/invest.pyx` | `apply_invest_action()` |
-| `phases/bid.pyx` | `apply_bid_action()` |
-
-### Existing Forced Action Detection
-
-`core/actions.pyx` already has `get_forced_action()` (lines 520-567):
-
-```python
-cpdef tuple get_forced_action(GameState state):
-    """
-    Returns:
-        (action_idx, True) if exactly one valid action (forced)
-        (-1, False) if zero or multiple valid actions
-    """
-```
-
-This function:
-1. Generates the action mask for current phase
-2. Counts valid actions
-3. Returns early if count > 1 (not forced)
-4. Returns (single_action, True) if count == 1
-5. Returns (-1, False) if count == 0 or > 1
-
-**Key insight:** The detection logic exists but is not integrated into `apply_action()`.
-
-## Integration Approach
-
-### Recommendation: Loop Inside apply_action()
-
-**Where:** Inside `GameDriver.apply_action()` method, wrapping the existing logic.
-
-**Why inside (not wrapper):**
-1. **Single entry point** - All callers automatically get auto-application
-2. **Return value semantics** - STATUS_GAME_OVER still works correctly
-3. **Existing pattern** - Phase handlers return success/failure, no change needed
-4. **Performance** - No extra function call overhead per action
-
-**Why iterative (not recursive):**
-1. **Stack safety** - Long forced action chains possible (e.g., auction resolution -> everyone passes -> wrap-up)
-2. **Cython optimization** - Iterative loops optimize better
-3. **Predictable memory** - No risk of stack overflow
-
-### Proposed apply_action Structure
-
-```python
-cpdef int apply_action(self, GameState state, int action_idx):
-    cdef int result
-    cdef int forced_action
-    cdef bint is_forced
-    cdef int legal_count
-
-    # Apply the requested action (existing code)
-    result = self._apply_single_action(state, action_idx)
-    if result != STATUS_OK:
-        return result
-
-    # Check for game over after initial action
-    if state.get_phase() == PHASE_GAME_OVER:
-        return STATUS_GAME_OVER
-
-    # Auto-apply forced actions iteratively
-    while True:
-        legal_count = _count_legal_actions(state)
-
-        if legal_count == 0:
-            # Error: no legal actions but not game over
-            # This indicates a bug or unhandled game state
-            return STATUS_INVALID  # Or could be a new STATUS_NO_MOVES
-
-        if legal_count == 1:
-            forced_action = _find_single_legal_action(state)
-            result = self._apply_single_action(state, forced_action)
-            if result != STATUS_OK:
-                return result
-            if state.get_phase() == PHASE_GAME_OVER:
-                return STATUS_GAME_OVER
-            continue  # Check again
-
-        # legal_count >= 2: real choice exists, return to caller
-        return STATUS_OK
-```
-
-### File Modifications
-
-| File | Change | Scope |
-|------|--------|-------|
-| `core/driver.pyx` | Add helper methods, modify `apply_action()` | Main implementation |
-| `core/driver.pxd` | Declare new cdef helpers | Declaration only |
-| `core/actions.pyx` | Add `cdef` helpers if needed (or use existing) | Optional |
-| `core/actions.pxd` | Declare any new cdef functions | Declaration only |
-
-## Helper Method Design
-
-### Option A: Helpers in driver.pyx (Recommended)
-
-Keep helpers close to usage. Reuse existing `get_forced_action()` which already counts and finds.
-
-```cython
-# core/driver.pyx
-
-cdef int _count_legal_actions(GameState state) noexcept:
-    """Count valid actions in mask. Returns count."""
-    cdef object mask = get_valid_action_mask(state)
-    cdef int total = mask.shape[0]
-    cdef float* mask_ptr = <float*>cnp.PyArray_DATA(mask)
-    cdef int count = 0
-    cdef int i
-
-    for i in range(total):
-        if mask_ptr[i] == 1.0:
-            count += 1
-    return count
-
-
-cdef int _find_single_legal_action(GameState state) noexcept:
-    """Find the single legal action. Assumes exactly 1 exists."""
-    cdef object mask = get_valid_action_mask(state)
-    cdef int total = mask.shape[0]
-    cdef float* mask_ptr = <float*>cnp.PyArray_DATA(mask)
-    cdef int i
-
-    for i in range(total):
-        if mask_ptr[i] == 1.0:
-            return i
-    return -1  # Should never reach if called correctly
-
-
-cdef int _apply_single_action(GameDriver self, GameState state, int action_idx) noexcept:
-    """Apply one action without auto-continuation. Internal use only."""
-    # Current apply_action body moves here
-    ...
-```
-
-### Option B: Leverage get_forced_action()
-
-The existing `get_forced_action()` already does count + find in one pass:
-
-```cython
-cpdef int apply_action(self, GameState state, int action_idx):
-    ...
-    # After initial action applied
-    while True:
-        forced = get_forced_action(state)  # Returns (action_idx, is_forced)
-        if forced[1]:  # is_forced == True
-            result = self._apply_single_action(state, forced[0])
-            ...
-        else:
-            if forced[0] == -1:
-                # Either 0 or 2+ legal actions
-                # Need separate check for 0 vs multiple
-                ...
-```
-
-**Problem with Option B:** `get_forced_action()` returns (-1, False) for both 0 actions and 2+ actions. We need to distinguish these cases to catch the error condition.
-
-### Option C: Modify get_forced_action() Return (Not Recommended)
-
-Could change return to `(action_idx, count)` but this changes existing API.
-
-### Recommendation: Option A with Combined Helper
-
-Create one optimized helper that returns both count and action:
-
-```cython
-cdef struct ForcedActionResult:
-    int action_idx   # -1 if not forced
-    int legal_count  # 0, 1, or 2+ (stop counting at 2)
-
-cdef ForcedActionResult _check_forced_action(GameState state) noexcept:
-    """Check legal action count and find single action if forced."""
-    cdef ForcedActionResult result
-    cdef object mask = get_valid_action_mask(state)
-    cdef int total = mask.shape[0]
-    cdef float* mask_ptr = <float*>cnp.PyArray_DATA(mask)
-    cdef int i
-
-    result.action_idx = -1
-    result.legal_count = 0
-
-    for i in range(total):
-        if mask_ptr[i] == 1.0:
-            result.legal_count += 1
-            if result.legal_count == 1:
-                result.action_idx = i
-            elif result.legal_count == 2:
-                result.action_idx = -1  # Not forced
-                return result  # Early exit: no need to count higher
-
-    return result
-```
-
-## cdef vs cpdef Decisions
-
-| Function | Visibility | Rationale |
-|----------|-----------|-----------|
-| `apply_action()` | `cpdef` | Must remain callable from Python (existing API) |
-| `_apply_single_action()` | `cdef` | Internal only, max performance |
-| `_check_forced_action()` | `cdef` | Internal only, returns C struct |
-| `get_legal_moves()` | `cpdef` | Must remain callable from Python (existing API) |
-
-## nogil Compatibility
-
-**Current state:** The mask generation functions use Python objects (NumPy arrays) and cannot be `nogil`. This is acceptable because:
-
-1. The GIL release would only matter for multi-threaded usage
-2. Self-play training typically parallelizes at the process level (separate game instances)
-3. The NumPy array pattern is established throughout the codebase
-
-**Recommendation:** Do not attempt `nogil` for the auto-application loop. The mask generation requires GIL, and the performance benefit is minimal for the use case.
-
-## Return Value Semantics
-
-| Condition | Return | Meaning |
-|-----------|--------|---------|
-| Action applied, 2+ legal next | STATUS_OK (0) | Normal case |
-| Action applied, chain leads to game over | STATUS_GAME_OVER (2) | Game ended |
-| Invalid action_idx | STATUS_INVALID (1) | Caller error |
-| Action not in mask | STATUS_INVALID (1) | Caller error |
-| 0 legal actions (bug) | STATUS_INVALID (1) | Implementation error |
-
-**Open question:** Should 0 legal actions be a distinct status code?
-
-Options:
-1. Keep STATUS_INVALID (simple, existing)
-2. Add STATUS_NO_MOVES (explicit, easier debugging)
-3. Raise exception (breaks Cython performance pattern)
-
-**Recommendation:** Keep STATUS_INVALID for now. The only way to reach 0 legal actions is a bug in phase transition logic or mask generation. Add an assertion/warning in debug builds if needed.
-
-## Implementation Order
-
-### Phase 1: Helper Methods (Low Risk)
-
-1. Add `ForcedActionResult` struct to `core/driver.pxd`
-2. Add `_check_forced_action()` cdef function to `core/driver.pyx`
-3. Add `_apply_single_action()` cdef function - extract current `apply_action()` body
-4. Add declarations to `core/driver.pxd`
-
-### Phase 2: apply_action Modification (Medium Risk)
-
-5. Modify `apply_action()` to use iterative loop pattern
-6. Build and test manually
-
-### Phase 3: Test Updates (Required)
-
-7. Update existing tests that check state after `apply_action()` - state may have advanced further
-8. Add new tests for:
-   - Forced action sequences (chain of single-action phases)
-   - Zero legal actions detection (if reachable)
-   - Long forced chains (stress test)
-
-## Edge Cases to Handle
-
-### Forced Chain Termination
-
-The loop must terminate. Termination conditions:
-- `legal_count == 0` - Error, return invalid
-- `legal_count >= 2` - Normal exit, return OK
-- `PHASE_GAME_OVER` - Game ended, return GAME_OVER
-
-**Question:** Can infinite loops occur?
-
-Analysis: Each action changes game state. The game has finite resources (cash, shares, companies) and all phases eventually advance. However, a buggy phase handler could theoretically oscillate between two states.
-
-**Mitigation:** Add a max iteration guard (e.g., 1000 iterations). If exceeded, return STATUS_INVALID or raise. This catches bugs without affecting normal gameplay.
-
-```cython
-DEF MAX_FORCED_ITERATIONS = 1000
-
-cpdef int apply_action(...):
-    cdef int iterations = 0
-    ...
-    while iterations < MAX_FORCED_ITERATIONS:
-        iterations += 1
-        ...
-    # If we exit loop via iterations, it's a bug
-    return STATUS_INVALID
-```
-
-### Bankruptcy During Forced Chain
-
-If a forced action causes bankruptcy, that bankruptcy is processed inline (existing pattern in `_handle_sell_share()`). The loop continues checking for more forced actions after bankruptcy completes.
-
-### Phase Transitions
-
-Phase handlers set the next phase. Some transitions might immediately have only one legal action:
-- INVEST -> BID_IN_AUCTION (but multiple bid options usually exist)
-- BID_IN_AUCTION -> INVEST (after auction resolution)
-- INVEST -> WRAP_UP (when all pass - WRAP_UP not yet implemented)
-
-The loop handles these naturally by checking after each action.
-
-## Sources
-
-All analysis from direct codebase reading:
-- `/home/icebreaker/rss-az-cython2/core/driver.pyx` (lines 1-93)
-- `/home/icebreaker/rss-az-cython2/core/driver.pxd` (lines 1-15)
-- `/home/icebreaker/rss-az-cython2/core/actions.pyx` (lines 1-621, especially 520-567 for `get_forced_action`)
-- `/home/icebreaker/rss-az-cython2/core/actions.pxd` (lines 1-113)
-- `/home/icebreaker/rss-az-cython2/phases/invest.pyx` (lines 1-391)
-- `/home/icebreaker/rss-az-cython2/phases/bid.pyx` (lines 1-118)
-- `/home/icebreaker/rss-az-cython2/core/state.pxd` (lines 1-196)
-- `/home/icebreaker/rss-az-cython2/.planning/PROJECT.md` (milestone context)
-
----
-
-# Architecture Patterns: INVEST/BID_IN_AUCTION Phase Implementation (v2 Reference)
-
-**Domain:** Cython game engine phase implementation
-**Researched:** 2026-01-20
+**Key Integration Points:**
+1. Phase handler: `phases/wrap_up.pyx` following `cdef int apply_wrap_up_action(GameState state, ActionInfo* info) noexcept` pattern
+2. GameDriver dispatch: Add WRAP_UP case to driver.pyx routing logic
+3. Action encoding: ACTION_FI_BUY with company_id parameter in actions.pyx
+4. Entity integration: ForeignInvestor entity (entities/fi.pyx) already supports company ownership
+5. Phase transitions: INVEST -> WRAP_UP (trigger: consecutive_passes >= num_players), WRAP_UP -> next phase
 
 ## Recommended Architecture
 
-Phase implementations integrate with the existing Single-Vector State Machine architecture as new modules that mutate state through established entity accessors.
+### Component Structure
 
 ```
-                                +-----------------+
-                                |   Game Driver   |
-                                | core/driver.pyx |
-                                +-----------------+
-                                        |
-                    action_idx + state  |
-                                        v
-                        +-------------------------------+
-                        |     Action Dispatch Layer     |
-                        |  (decode action, route by     |
-                        |   phase, call phase handler)  |
-                        +-------------------------------+
-                                        |
-                                        v
-        +-------------------+-------------------+-------------------+
-        |                   |                   |                   |
-        v                   v                   v                   v
-+---------------+   +---------------+   +---------------+   +---------------+
-| INVEST Phase  |   | BID_IN_AUCTION|   | ACQUISITION   |   | Other Phases  |
-| phases/invest |   | Phase         |   | Phase         |   |     ...       |
-|    .pyx       |   | (in invest.pyx|   | (future)      |   |               |
-+---------------+   +---------------+   +---------------+   +---------------+
-        |                   |                   |                   |
-        v                   v                   v                   v
-        +-------------------+-------------------+-------------------+
-                                        |
-                        +-------------------------------+
-                        |     Entity Accessor Layer     |
-                        |  PLAYERS, CORPS, TURN, FI,    |
-                        |  DECK, MARKET, COMPANIES      |
-                        +-------------------------------+
-                                        |
-                                        v
-                        +-------------------------------+
-                        |      GameState._data[]        |
-                        |   (contiguous float32 array)  |
-                        +-------------------------------+
+GameDriver (core/driver.pyx)
+    ├─> Phase Dispatch Logic
+    │   ├─> PHASE_INVEST -> apply_invest_action()
+    │   ├─> PHASE_BID_IN_AUCTION -> apply_bid_action()
+    │   └─> PHASE_WRAP_UP -> apply_wrap_up_action()  [NEW]
+    │
+    └─> Auto-Apply Loop
+        └─> Continues through WRAP_UP forced actions
+
+Phase Handler (phases/wrap_up.pyx) [NEW FILE]
+    ├─> apply_wrap_up_action(state, info)
+    │   ├─> Decode action (ACTION_FI_BUY or ACTION_PASS)
+    │   ├─> Execute FI purchase logic
+    │   └─> Transition to next phase
+    │
+    └─> Helper Functions
+        ├─> _fi_buy_company(state, company_id)
+        ├─> _get_next_fi_target(state) -> company_id
+        └─> _transition_to_next_phase(state)
+
+Entity Integration
+    ├─> ForeignInvestor (entities/fi.pyx)
+    │   ├─> get_cash() / set_cash()
+    │   ├─> owns_company() / set_owns_company()
+    │   └─> add_cash()  [existing methods]
+    │
+    ├─> Company (entities/company.pyx)
+    │   ├─> transfer_to_fi(state)
+    │   ├─> get_high_price()
+    │   └─> is_for_auction()  [existing methods]
+    │
+    └─> TurnState (entities/turn.pyx)
+        ├─> set_phase(state, phase)
+        ├─> set_turn_number(state, turn)
+        └─> clear_consecutive_passes(state)  [existing methods]
+
+Action System (core/actions.pyx)
+    ├─> ACTION_FI_BUY = 4  [NEW]
+    │   └─> Encodes: company_id (0-35)
+    │
+    └─> Legal Action Generation
+        ├─> In WRAP_UP: if FI has cash >= high_price
+        ├─> ACTION_FI_BUY for each affordable auction company
+        └─> ACTION_PASS always legal (FI declines to buy)
 ```
 
-### Component Boundaries
-
-| Component | Responsibility | Communicates With |
-|-----------|---------------|-------------------|
-| `core/driver.pyx` | Main game loop, action dispatch, forced action handling | actions.pyx, phases/*.pyx, state.pyx |
-| `phases/invest.pyx` | INVEST phase logic (pass, start auction, buy/sell shares) + BID_IN_AUCTION phase logic (raise bid, leave auction) | Entity accessors, turn.pyx, data.pyx |
-| `core/actions.pyx` | Action decoding, mask generation (already exists) | state.pyx, data.pyx |
-| Entity accessors | State field access (already exist) | state.pyx |
-
-### Data Flow
-
-**Action Dispatch Flow:**
+### Data Flow: WRAP_UP Phase Execution
 
 ```
-1. Driver receives (state, action_idx)
-2. Driver reads phase from state: TURN.get_phase(state)
-3. Driver decodes action: decode_action(&layout, action_idx) -> ActionInfo
-4. Driver dispatches to phase handler based on phase:
-   - PHASE_INVEST -> invest_phase_apply_action(state, &action_info)
-   - PHASE_BID_IN_AUCTION -> bid_phase_apply_action(state, &action_info)
-   - etc.
-5. Phase handler mutates state via entity accessors
-6. Phase handler may transition phase via TURN.set_phase()
-7. Driver returns updated state
-```
+1. Phase Entry (from INVEST)
+   INVEST: all players pass
+   └─> consecutive_passes >= num_players
+       └─> TURN.set_phase(state, PHASE_WRAP_UP)
+           └─> active_player unchanged (last player who passed)
 
-**INVEST Phase Action Flow:**
+2. FI Buying Loop
+   GameDriver.apply_action(state, action_idx)
+   └─> decode_action() -> ActionInfo
+       └─> if ACTION_FI_BUY:
+           ├─> _fi_buy_company(state, company_id)
+           │   ├─> FI.add_cash(state, -high_price)
+           │   ├─> COMPANIES[id].transfer_to_fi(state)
+           │   └─> COMPANIES[id].clear_from_auction(state)
+           │
+           └─> Check if more companies affordable
+               ├─> YES: Return (stay in WRAP_UP, auto-apply if forced)
+               └─> NO: Fall through to phase transition
 
-```
-ACTION_PASS:
-1. Increment consecutive_passes counter
-2. Advance active player
-3. If consecutive_passes == num_players: transition to PHASE_WRAP_UP
+       └─> if ACTION_PASS:
+           └─> FI declines to buy, proceed to phase transition
 
-ACTION_AUCTION (slot, bid_offset):
-1. Decode slot to company_id via get_auction_company_for_slot()
-2. Compute bid = face_value + bid_offset
-3. Deduct bid from player cash
-4. Set auction state: company, price, high_bidder, starter
-5. Remove company from auction pool
-6. Transition to PHASE_BID_IN_AUCTION
-7. Advance to next player for bidding
-
-ACTION_BUY_SHARE (corp_id):
-1. Find next higher available market space
-2. Deduct buy_price from player cash
-3. Add buy_price to corp cash
-4. Transfer share: bank_shares--, player_shares++
-5. Move corp price index up
-6. Clear consecutive_passes (action taken)
-7. Update round-trip tracking
-
-ACTION_SELL_SHARE (corp_id):
-1. Find next lower available market space
-2. Add sell_price to player cash
-3. Transfer share: player_shares--, bank_shares++
-4. Move corp price index down
-5. Handle president change if needed
-6. Clear consecutive_passes
-7. Update round-trip tracking
-```
-
-**BID_IN_AUCTION Phase Action Flow:**
-
-```
-ACTION_LEAVE_AUCTION:
-1. Mark player as passed in auction
-2. Find next non-passed player
-3. If only high_bidder remains:
-   - Award company to high_bidder
-   - Transition back to PHASE_INVEST
-   - Set active player to auction_starter for next action
-4. Else: advance to next non-passed player
-
-ACTION_RAISE_BID (bid_offset):
-1. Compute new_bid = face_value + bid_offset + 1
-2. Refund previous high_bidder (add old price to their cash)
-3. Deduct new_bid from current player cash
-4. Update auction state: price, high_bidder
-5. Advance to next non-passed player
+3. Phase Transition (exit WRAP_UP)
+   _transition_to_next_phase(state)
+   ├─> if any companies in FI ownership:
+   │   └─> TURN.set_phase(state, PHASE_ACQUISITION)
+   │       └─> Begin corporation acquisition offers
+   │
+   └─> else:
+       └─> Start new turn
+           ├─> TURN.increment_turn_number(state)
+           ├─> TURN.clear_consecutive_passes(state)
+           ├─> Rotate player order (future: WRAP_UP determines new first player)
+           └─> TURN.set_phase(state, PHASE_INVEST)
 ```
 
 ## Integration Points with Existing Components
 
-### Existing Components (No Modifications Needed)
+### 1. GameDriver Dispatch (core/driver.pyx)
 
-| Component | Integration Point | Notes |
-|-----------|------------------|-------|
-| `core/state.pyx` | GameState class, all getters/setters | Phases use via cpdef methods |
-| `core/data.pyx` | GameConstants, GamePhases, company data | Import constants and lookup functions |
-| `core/actions.pyx` | Action decoding, mask generation | Masks already implemented; decode_action() used by driver |
-| `entities/player.pyx` | Player cash, shares, president status | Use PLAYERS[i].method(state) pattern |
-| `entities/turn.pyx` | Phase, auction state, consecutive passes | Use TURN.method(state) pattern |
-| `entities/corp.pyx` | Corp cash, bank shares, price index | Use CORPS['XX'].method(state) pattern |
-| `entities/company.pyx` | Company location, transfer operations | Use COMPANIES[id].method(state) pattern |
-| `entities/market.pyx` | Market space availability | Use MARKET.method(state) pattern |
-| `entities/fi.pyx` | FI ownership (for auction winners) | Use FI.method(state) pattern |
+**File:** `core/driver.pyx`
+**Function:** `GameDriver._apply_single_action()`
+**Lines:** ~110-120
 
-### New Components Required
+**Current Pattern:**
+```cython
+if phase == PHASE_INVEST:
+    result = apply_invest_action(state, &info)
+elif phase == PHASE_BID_IN_AUCTION:
+    result = apply_bid_action(state, &info)
+else:
+    return STATUS_INVALID
+```
 
-| Component | Purpose | Depends On |
-|-----------|---------|------------|
-| `phases/invest.pyx` | INVEST + BID_IN_AUCTION phase logic | state, data, actions, all entities |
-| `phases/invest.pxd` | C-level declarations for invest.pyx | state.pxd, data.pxd, actions.pxd |
-| `phases/__init__.pyx` | Package init, re-exports | invest.pyx |
-| `phases/__init__.pxd` | Package declarations | invest.pxd |
-| `core/driver.pyx` | Game loop, action dispatch | state, actions, phases |
-| `core/driver.pxd` | C-level declarations for driver | state.pxd, actions.pxd |
+**Integration:**
+```cython
+# Add import at top
+from phases.wrap_up cimport apply_wrap_up_action
 
-### setup.py Modifications
+# Add to dispatch logic
+if phase == PHASE_INVEST:
+    result = apply_invest_action(state, &info)
+elif phase == PHASE_BID_IN_AUCTION:
+    result = apply_bid_action(state, &info)
+elif phase == PHASE_WRAP_UP:
+    result = apply_wrap_up_action(state, &info)  # NEW
+else:
+    return STATUS_INVALID
+```
 
-The existing setup.py already scans `phases/` directory for .pyx files, so new phase modules will be automatically discovered and compiled. No changes needed to setup.py.
+**Why:** Follows established pattern. Phase handlers are stateless functions dispatched by phase ID.
 
-## Patterns to Follow
+---
 
-### Pattern 1: Phase Handler Function Signature
+### 2. Phase Transition from INVEST (phases/invest.pyx)
 
-**What:** Phase handlers are cpdef functions that take state and action info, return nothing (mutate in place).
+**File:** `phases/invest.pyx`
+**Function:** `apply_invest_action()`
+**Lines:** 337-350
 
-**When:** All phase implementations.
+**Current Implementation:**
+```cython
+if info.action_type == ACTION_PASS:
+    turn_module.TURN.increment_consecutive_passes(state)
 
-**Example:**
+    if turn_module.TURN.get_consecutive_passes(state) >= state._num_players:
+        # All players passed - end game
+        # TODO(v3+): Replace with PHASE_WRAP_UP when implemented
+        turn_module.TURN.set_phase(state, GamePhases.PHASE_GAME_OVER)
+    else:
+        _advance_active_player(state)
+
+    return 0
+```
+
+**Integration Change:**
+```cython
+if turn_module.TURN.get_consecutive_passes(state) >= state._num_players:
+    # All players passed - transition to WRAP_UP
+    turn_module.TURN.set_phase(state, GamePhases.PHASE_WRAP_UP)
+    # Active player remains last player who passed (for future turn order rotation)
+else:
+    _advance_active_player(state)
+```
+
+**Why:** WRAP_UP is triggered by all players passing consecutively. Remove GAME_OVER stub transition.
+
+---
+
+### 3. Action Encoding (core/actions.pyx)
+
+**File:** `core/actions.pyx`
+**Additions Needed:**
+
+**Action Type Enum:**
+```cython
+cpdef enum ActionType:
+    ACTION_PASS = 0
+    ACTION_AUCTION = 1
+    ACTION_BUY_SHARE = 2
+    ACTION_SELL_SHARE = 3
+    ACTION_FI_BUY = 4  # NEW - FI buys company in WRAP_UP
+    ACTION_LEAVE_AUCTION = 5
+    ACTION_RAISE_BID = 6
+```
+
+**Action Layout Update:**
+```cython
+cdef ActionLayout compute_action_layout(int num_players) noexcept nogil:
+    cdef ActionLayout layout
+    cdef int offset = 0
+
+    layout.pass_action = offset
+    offset += 1
+
+    layout.auction_offset = offset
+    layout.auction_count = MAX_AUCTION_SLOTS * (MAX_BID_AMOUNT + 1)
+    offset += layout.auction_count
+
+    # ... existing offsets ...
+
+    # FI Buy actions (WRAP_UP phase only)
+    layout.fi_buy_offset = offset
+    layout.fi_buy_count = NUM_COMPANIES  # One action per company
+    offset += layout.fi_buy_count
+
+    layout.total_size = offset
+    return layout
+```
+
+**Legal Action Generation (WRAP_UP):**
+```python
+def get_valid_action_mask(state: GameState) -> np.ndarray:
+    # ... existing phase checks ...
+
+    elif phase == GamePhases.PHASE_WRAP_UP:
+        # FI can buy any auction company if affordable
+        fi_cash = fi_module.FI.get_cash(state)
+
+        for company_id in range(GameConstants.NUM_COMPANIES):
+            company = company_module.COMPANIES[company_id]
+            if company.is_for_auction(state):
+                high_price = company.get_high_price()
+                if fi_cash >= high_price:
+                    # ACTION_FI_BUY for this company
+                    action_idx = layout.fi_buy_offset + company_id
+                    mask[action_idx] = 1.0
+
+        # PASS always available (FI declines to buy)
+        mask[layout.pass_action] = 1.0
+```
+
+**Why:** Follows established action encoding pattern. Each company gets a dedicated action slot.
+
+---
+
+### 4. ForeignInvestor Entity (entities/fi.pyx)
+
+**File:** `entities/fi.pyx`
+**Status:** Already complete - no changes needed
+
+**Existing Interface:**
+```cython
+cpdef int get_cash(self, GameState state)
+cpdef void set_cash(self, GameState state, int cash)
+cpdef void add_cash(self, GameState state, int amount)
+cpdef bint owns_company(self, GameState state, int company_id)
+cpdef void set_owns_company(self, GameState state, int company_id, bint owns)
+```
+
+**Usage in WRAP_UP:**
+```cython
+# Purchase flow
+fi_cash = fi_module.FI.get_cash(state)
+high_price = company.get_high_price()
+if fi_cash >= high_price:
+    fi_module.FI.add_cash(state, -high_price)
+    company_module.COMPANIES[company_id].transfer_to_fi(state)
+```
+
+**Why:** Existing entity handle pattern works perfectly. No new methods needed.
+
+---
+
+### 5. Company Entity (entities/company.pyx)
+
+**File:** `entities/company.pyx`
+**Status:** Already complete - no changes needed
+
+**Existing Interface Used:**
+```cython
+cpdef bint is_for_auction(self, GameState state)
+cpdef int get_high_price(self)
+cpdef void transfer_to_fi(self, GameState state)
+cpdef void clear_location(self, GameState state)
+```
+
+**Usage in WRAP_UP:**
+```cython
+# Check if company available for FI purchase
+if company.is_for_auction(state):
+    high_price = company.get_high_price()
+    # ... affordability check ...
+    company.transfer_to_fi(state)  # Atomic transfer
+```
+
+**Why:** Company entity handles all location transfers atomically. Existing methods sufficient.
+
+---
+
+### 6. TurnState Entity (entities/turn.pyx)
+
+**File:** `entities/turn.pyx`
+**Status:** Already complete - no changes needed for WRAP_UP core
+
+**Existing Interface Used:**
+```cython
+cpdef void set_phase(self, GameState state, int phase)
+cpdef void set_turn_number(self, GameState state, int turn)
+cpdef void clear_consecutive_passes(self, GameState state)
+cpdef int get_turn_number(self, GameState state)
+```
+
+**Usage in WRAP_UP:**
+```cython
+# Phase transitions
+turn_module.TURN.set_phase(state, GamePhases.PHASE_WRAP_UP)
+turn_module.TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
+turn_module.TURN.set_phase(state, GamePhases.PHASE_INVEST)
+
+# New turn setup (if skipping ACQUISITION)
+turn_module.TURN.increment_turn_number(state)
+turn_module.TURN.clear_consecutive_passes(state)
+```
+
+**Why:** TurnState already manages phase transitions and turn tracking. No new methods needed.
+
+## New File Structure
+
+### phases/wrap_up.pyx
+
+**Purpose:** WRAP_UP phase handler - FI company purchasing logic
+**Pattern:** Matches phases/invest.pyx and phases/bid.pyx structure
+
+**Function Signature:**
+```cython
+# cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
+"""WRAP_UP phase handler implementation."""
+
+from core.state cimport GameState
+from core.actions cimport ActionInfo, ActionType, ACTION_PASS, ACTION_FI_BUY
+from entities import turn as turn_module
+from entities import fi as fi_module
+from entities import company as company_module
+from core.data cimport GamePhases, GameConstants
+
+cdef int apply_wrap_up_action(GameState state, ActionInfo* info) noexcept:
+    """
+    Apply WRAP_UP phase action to state.
+
+    In WRAP_UP phase, the Foreign Investor (FI) has the opportunity to buy
+    companies from the auction row at high price. FI buys companies sequentially
+    until it either runs out of cash or chooses to pass.
+
+    After FI buying completes:
+    - If FI owns companies: transition to ACQUISITION phase
+    - Otherwise: start new turn in INVEST phase
+
+    Args:
+        state: GameState to modify
+        info: Decoded action (ACTION_FI_BUY or ACTION_PASS)
+
+    Returns:
+        0 = success, 1 = invalid
+    """
+    cdef int company_id, high_price, fi_cash
+
+    if info.action_type == ACTION_FI_BUY:
+        # FI buys company at high price
+        company_id = info.company_id  # Decoded from action
+
+        # Get company high price
+        high_price = company_module.COMPANIES[company_id].get_high_price()
+
+        # Deduct cash from FI
+        fi_module.FI.add_cash(state, -high_price)
+
+        # Transfer company to FI ownership
+        company_module.COMPANIES[company_id].transfer_to_fi(state)
+
+        # Stay in WRAP_UP phase - FI may buy more companies
+        # Auto-apply will continue if only one affordable company remains
+        return 0
+
+    elif info.action_type == ACTION_PASS:
+        # FI declines to buy (or no more affordable companies)
+        # Transition to next phase
+        _transition_to_next_phase(state)
+        return 0
+
+    return 1  # Invalid action type
+
+cdef void _transition_to_next_phase(GameState state) noexcept:
+    """
+    Determine next phase after WRAP_UP completes.
+
+    - If FI owns companies: ACQUISITION phase (corps make offers)
+    - Otherwise: New turn in INVEST phase
+    """
+    cdef int company_id
+    cdef bint fi_has_companies = False
+
+    # Check if FI owns any companies
+    for company_id in range(GameConstants.NUM_COMPANIES):
+        if fi_module.FI.owns_company(state, company_id):
+            fi_has_companies = True
+            break
+
+    if fi_has_companies:
+        # FI has companies - begin ACQUISITION phase
+        turn_module.TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
+    else:
+        # FI has no companies - start new turn
+        _start_new_turn(state)
+
+cdef void _start_new_turn(GameState state) noexcept:
+    """
+    Start a new turn after WRAP_UP with no FI companies.
+
+    Future enhancement: Rotate player order based on WRAP_UP phase results.
+    For now: Keep existing turn order, increment turn number.
+    """
+    # Increment turn number
+    cdef int current_turn = turn_module.TURN.get_turn_number(state)
+    turn_module.TURN.set_turn_number(state, current_turn + 1)
+
+    # Clear consecutive passes for new turn
+    turn_module.TURN.clear_consecutive_passes(state)
+
+    # TODO(future): Rotate player order based on WRAP_UP results
+    # For now, player order remains unchanged from initialization
+
+    # Transition to INVEST phase
+    turn_module.TURN.set_phase(state, GamePhases.PHASE_INVEST)
+```
+
+**Why This Structure:**
+- Matches existing phase handler pattern (cdef noexcept for performance)
+- Delegates entity manipulation to entity handles (fi_module, company_module)
+- Phase transition logic centralized in helper function
+- Stateless - all state in GameState object
+
+---
+
+### phases/wrap_up.pxd
+
+**Purpose:** Declaration file for wrap_up phase handler
+**Pattern:** Matches phases/invest.pxd and phases/bid.pxd
 
 ```cython
-# phases/invest.pyx
+# cython: language_level=3
+"""WRAP_UP phase handler declarations."""
 
 from core.state cimport GameState
 from core.actions cimport ActionInfo
 
-cpdef void invest_phase_apply_action(GameState state, int action_type, int slot, int corp_id, int amount):
-    """Apply an action during INVEST phase."""
-    if action_type == ACTION_PASS:
-        _handle_invest_pass(state)
-    elif action_type == ACTION_AUCTION:
-        _handle_start_auction(state, slot, amount)
-    elif action_type == ACTION_BUY_SHARE:
-        _handle_buy_share(state, corp_id)
-    elif action_type == ACTION_SELL_SHARE:
-        _handle_sell_share(state, corp_id)
-
-cdef void _handle_invest_pass(GameState state) noexcept:
-    """Handle pass action in INVEST phase."""
-    from entities.turn import TURN
-
-    TURN.increment_consecutive_passes(state)
-
-    if TURN.get_consecutive_passes(state) >= state._num_players:
-        # All players passed - end invest round
-        TURN.set_phase(state, GamePhases.PHASE_WRAP_UP)
-    else:
-        _advance_to_next_player(state)
+cdef int apply_wrap_up_action(GameState state, ActionInfo* info) noexcept
 ```
 
-### Pattern 2: Entity Access Through Global Instances
+**Why:** Allows GameDriver to cimport the phase handler function.
 
-**What:** Use pre-initialized entity singletons from entity modules.
+## Phase Transition Flow
 
-**When:** All state access in phase handlers.
+### Complete Phase Sequence
 
-**Example:**
+```
+INVEST (players take actions)
+    └─> All players pass
+        └─> consecutive_passes >= num_players
+            └─> WRAP_UP
 
-```cython
-from entities.player import PLAYERS
-from entities.corp import CORPS
-from entities.turn import TURN
-from entities.company import COMPANIES
+WRAP_UP (FI buys companies)
+    ├─> FI buys company A (ACTION_FI_BUY)
+    │   └─> More affordable companies?
+    │       ├─> YES: Stay in WRAP_UP (auto-apply if forced)
+    │       └─> NO: Proceed to transition
+    │
+    ├─> FI passes (ACTION_PASS)
+    │   └─> Proceed to transition
+    │
+    └─> Phase Transition Decision:
+        ├─> FI owns companies?
+        │   └─> YES: ACQUISITION (corps make offers for FI companies)
+        │
+        └─> NO: New turn
+            ├─> Increment turn number
+            ├─> Clear consecutive passes
+            ├─> Reset player state for new turn
+            └─> INVEST (first player acts)
 
-cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
-    cdef int player_id = state._get_active_player()
-    cdef int buy_price
-    cdef int current_index = CORPS_BY_ID[corp_id].get_price_index(state)
-
-    # Find next higher available market space
-    buy_price = _find_buy_price(state, current_index)
-
-    # Mutate state through entity accessors
-    PLAYERS[player_id].add_cash(state, -buy_price)
-    CORPS_BY_ID[corp_id].add_cash(state, buy_price)
-    CORPS_BY_ID[corp_id].set_bank_shares(state,
-        CORPS_BY_ID[corp_id].get_bank_shares(state) - 1)
-    PLAYERS[player_id].set_shares(state, corp_id,
-        PLAYERS[player_id].get_shares(state, corp_id) + 1)
+ACQUISITION (if FI has companies)
+    └─> [Future implementation]
+        └─> After all acquisitions: New turn -> INVEST
 ```
 
-### Pattern 3: Phase Transition
+### State Modifications
 
-**What:** Phase transitions via TURN.set_phase() with proper state cleanup.
-
-**When:** End of phase, sub-phase transitions.
-
-**Example:**
-
+**INVEST -> WRAP_UP:**
 ```cython
-cdef void _complete_auction(GameState state) noexcept:
-    """Award company to high bidder and return to INVEST."""
-    from entities.turn import TURN
-    from entities.company import COMPANIES
+# Trigger condition
+if consecutive_passes >= num_players:
+    # State changes
+    TURN.set_phase(state, PHASE_WRAP_UP)
+    # Note: active_player unchanged (last player who passed)
+    # Note: consecutive_passes NOT cleared (preserved for debugging)
+```
 
-    cdef int company_id = TURN.get_auction_company(state)
-    cdef int winner_id = TURN.get_auction_high_bidder(state)
-    cdef int starter_id = TURN.get_auction_starter(state)
+**WRAP_UP -> ACQUISITION:**
+```cython
+# Trigger condition
+if FI owns at least one company:
+    # State changes
+    TURN.set_phase(state, PHASE_ACQUISITION)
+    # Note: FI ownership flags remain set
+    # Note: Companies removed from auction row (transferred to FI)
+```
 
-    # Transfer company to winner
-    COMPANIES[company_id].transfer_to_player(state, winner_id)
-
-    # Clear auction state
-    TURN.clear_auction_company(state)
-    TURN.clear_auction_high_bidder(state)
-    TURN.clear_auction_passed(state)
-
-    # Clear consecutive passes (auction counts as action)
+**WRAP_UP -> INVEST (new turn):**
+```cython
+# Trigger condition
+if FI owns zero companies:
+    # State changes
+    TURN.increment_turn_number(state)
     TURN.clear_consecutive_passes(state)
-
-    # Return to INVEST phase
-    TURN.set_phase(state, GamePhases.PHASE_INVEST)
-
-    # Next action goes to player after auction starter
-    _set_active_player_after(state, starter_id)
+    TURN.set_phase(state, PHASE_INVEST)
+    # TODO(future): Rotate player order
+    # Note: active_player reset to position 0 (or rotated first player)
 ```
 
-### Pattern 4: Driver Dispatch Pattern
+## Player Order State Management
 
-**What:** Central dispatcher routes actions to phase handlers.
+### Current Implementation
 
-**When:** Main game loop.
-
-**Example:**
-
+**State Storage:**
 ```cython
-# core/driver.pyx
+# Player turn_order field (one-hot encoding)
+# In state vector: players_offset + player_id * player_stride + turn_order_field
+# Size: num_players floats per player
+# player_0: [1.0, 0.0, 0.0, 0.0] = position 0
+# player_1: [0.0, 1.0, 0.0, 0.0] = position 1
+# player_2: [0.0, 0.0, 1.0, 0.0] = position 2
+# player_3: [0.0, 0.0, 0.0, 1.0] = position 3
+```
 
-from core.state cimport GameState
-from core.actions cimport ActionLayout, ActionInfo, decode_action, compute_action_layout
-from core.data cimport GamePhases
+**Access Pattern:**
+```cython
+# entities/player.pyx
+cpdef int get_turn_order(self, GameState state):
+    """Get player's position in turn order (0 to num_players-1)."""
+    cdef int i
+    for i in range(self._num_players):
+        if state._data[self._turn_order_offset + i] == 1.0:
+            return i
+    return -1  # Should never happen
 
-cpdef void apply_action(GameState state, int action_idx):
-    """Apply an action to game state."""
-    cdef ActionLayout layout = compute_action_layout(state._num_players)
-    cdef ActionInfo info = decode_action(&layout, action_idx)
-    cdef int phase = state.get_phase()
+cpdef void set_turn_order(self, GameState state, int position):
+    """Set player's position in turn order."""
+    cdef int i
+    for i in range(self._num_players):
+        state._data[self._turn_order_offset + i] = 1.0 if i == position else 0.0
+```
 
-    if phase == GamePhases.PHASE_INVEST:
-        from phases.invest import invest_phase_apply_action
-        invest_phase_apply_action(state, info.action_type, info.slot, info.corp_id, info.amount)
-    elif phase == GamePhases.PHASE_BID_IN_AUCTION:
-        from phases.invest import bid_phase_apply_action
-        bid_phase_apply_action(state, info.action_type, info.slot, info.corp_id, info.amount)
-    # ... other phases
+**Navigation:**
+```cython
+# entities/turn.pyx
+cpdef int find_player_at_position(self, GameState state, int position):
+    """Find which player_id is at given turn order position."""
+    cdef int player_id
+    for player_id in range(state._num_players):
+        if player_module.PLAYERS[player_id].get_turn_order(state) == position:
+            return player_id
+    return -1
+```
+
+### WRAP_UP Player Order Changes
+
+**Current Behavior:**
+- Player order is set once at initialization (player i -> position i)
+- Never rotated during game
+- Active player advances through positions 0 -> 1 -> 2 -> ... -> (n-1) -> 0
+
+**Future Enhancement (deferred):**
+Player order rotation based on WRAP_UP results:
+1. Last player to take action in INVEST phase before all-pass
+2. Becomes first player for next turn
+3. Turn order rotates accordingly
+
+**Implementation (deferred to future milestone):**
+```cython
+cdef void _rotate_player_order(GameState state) noexcept:
+    """
+    Rotate player order so active_player becomes position 0.
+
+    Example:
+        Before: P0=pos0, P1=pos1, P2=pos2, P3=pos3, active=P2
+        After:  P2=pos0, P3=pos1, P0=pos2, P1=pos3, active=P2
+    """
+    cdef int current_active = state._get_active_player()
+    cdef int current_position = player_module.PLAYERS[current_active].get_turn_order(state)
+    cdef int player_id, old_position, new_position
+
+    # Rotate all players
+    for player_id in range(state._num_players):
+        old_position = player_module.PLAYERS[player_id].get_turn_order(state)
+        new_position = (old_position - current_position + state._num_players) % state._num_players
+        player_module.PLAYERS[player_id].set_turn_order(state, new_position)
+
+    # Active player is now at position 0
+    state._set_active_player(current_active)
+```
+
+**Why Deferred:**
+- Not required for WRAP_UP core functionality
+- Can add in future milestone without breaking changes
+- Current behavior (fixed turn order) is simpler and sufficient for v3
+
+## Auto-Apply Integration
+
+### FI Buying Decision: Deterministic vs. Policy-Driven
+
+**CRITICAL DESIGN QUESTION:** Should FI buying be deterministic (always buy cheapest) or policy-driven (NN chooses)?
+
+**Option A: Deterministic FI Buying (RECOMMENDED)**
+```cython
+# FI always buys cheapest affordable company
+# Repeat until out of cash or no affordable companies
+# No NN decisions - fully automated
+# Legal actions: [ACTION_PASS] only
+# Auto-apply: Immediately triggers, entire WRAP_UP phase automated
+```
+
+**Option B: Policy-Driven FI Buying**
+```cython
+# FI buying is an NN decision
+# Legal actions: [ACTION_FI_BUY(company_0), ..., ACTION_FI_BUY(company_n), ACTION_PASS]
+# Auto-apply: Only when exactly one affordable company
+# NN sees WRAP_UP states and makes purchase decisions
+```
+
+**Recommendation: Option A (Deterministic)**
+- Matches typical board game NPC behavior
+- Simpler implementation
+- Reduces action space for NN
+- Faster training (no NN evaluation during WRAP_UP)
+- Can switch to Option B later if needed
+
+### Auto-Apply Behavior (Deterministic Mode)
+
+**Legal Action Mask:**
+```python
+elif phase == GamePhases.PHASE_WRAP_UP:
+    # Only PASS action is exposed to NN
+    # FI buying is deterministic and handled internally
+    mask[layout.pass_action] = 1.0
+```
+
+**Phase Handler (Deterministic):**
+```cython
+cdef int apply_wrap_up_action(GameState state, ActionInfo* info) noexcept:
+    """WRAP_UP phase is fully deterministic - no player/NN decisions."""
+    if info.action_type == ACTION_PASS:
+        # Execute full FI buying sequence deterministically
+        _execute_fi_buying_sequence(state)
+        _transition_to_next_phase(state)
+        return 0
+    return 1  # Only PASS is valid
+
+cdef void _execute_fi_buying_sequence(GameState state) noexcept:
+    """Buy companies from cheapest to most expensive until out of cash."""
+    cdef int company_id, high_price, cheapest_id, cheapest_price, fi_cash
+
+    while True:
+        fi_cash = fi_module.FI.get_cash(state)
+        cheapest_id = -1
+        cheapest_price = 999999
+
+        # Find cheapest affordable company
+        for company_id in range(GameConstants.NUM_COMPANIES):
+            if company_module.COMPANIES[company_id].is_for_auction(state):
+                high_price = company_module.COMPANIES[company_id].get_high_price()
+                if fi_cash >= high_price and high_price < cheapest_price:
+                    cheapest_id = company_id
+                    cheapest_price = high_price
+
+        if cheapest_id < 0:
+            break  # No affordable companies
+
+        # Buy cheapest company
+        fi_module.FI.add_cash(state, -cheapest_price)
+        company_module.COMPANIES[cheapest_id].transfer_to_fi(state)
+```
+
+**Auto-Apply Flow:**
+```
+INVEST: All players pass
+└─> Phase transitions to WRAP_UP
+    └─> Auto-apply checks legal actions
+        └─> Exactly 1 action: ACTION_PASS
+            └─> Auto-apply triggers
+                └─> apply_wrap_up_action(ACTION_PASS)
+                    └─> _execute_fi_buying_sequence()
+                    └─> _transition_to_next_phase()
+                        ├─> -> ACQUISITION (if FI owns companies)
+                        └─> -> INVEST (new turn, if FI owns nothing)
+```
+
+**Result:** NN never sees WRAP_UP phase. It's completely transparent to training loop.
+
+## Patterns to Follow
+
+### Pattern 1: Stateless Phase Handler
+
+**What:** Phase handlers are cdef functions, not classes. All state in GameState.
+**When:** Always for phase handlers
+**Example:**
+```cython
+# Good - stateless function
+cdef int apply_wrap_up_action(GameState state, ActionInfo* info) noexcept:
+    # All state accessed via state parameter
+    fi_cash = fi_module.FI.get_cash(state)
+    return 0
+
+# Bad - stateful class
+cdef class WrapUpPhase:
+    cdef int fi_cash  # Don't store state here!
+```
+
+### Pattern 2: Entity Handle Delegation
+
+**What:** Delegate all state manipulation to entity handles (FI, Company, TurnState)
+**When:** Always for state modifications
+**Example:**
+```cython
+# Good - delegate to entity handle
+fi_module.FI.add_cash(state, -high_price)
+company_module.COMPANIES[company_id].transfer_to_fi(state)
+
+# Bad - direct state manipulation
+state._data[fi_cash_offset] -= high_price / CASH_DIVISOR
+state._data[company_owner_offset + company_id] = FI_OWNER_ID
+```
+
+### Pattern 3: Phase Transition Centralization
+
+**What:** Centralize phase transition logic in helper function
+**When:** When multiple exit paths from phase
+**Example:**
+```cython
+# Good - centralized transition
+cdef void _transition_to_next_phase(GameState state) noexcept:
+    if fi_has_companies:
+        turn_module.TURN.set_phase(state, PHASE_ACQUISITION)
+    else:
+        _start_new_turn(state)
+
+# Bad - scattered transitions
+if fi_has_companies:
+    turn_module.TURN.set_phase(state, PHASE_ACQUISITION)
+else:
+    turn_module.TURN.set_turn_number(state, turn + 1)
+    # ... duplicate logic in multiple places
 ```
 
 ## Anti-Patterns to Avoid
 
-### Anti-Pattern 1: Storing State in Phase Modules
+### Anti-Pattern 1: Stateful Phase Handlers
 
-**What:** Storing game state or mutable data at module level in phase files.
+**What:** Storing state in phase handler class instead of GameState
+**Why Bad:** Breaks stateless singleton pattern, prevents state serialization
+**Instead:** All state in GameState, phase handlers are pure functions
 
-**Why bad:** Breaks thread-safety, causes cross-game contamination, violates stateless accessor pattern.
+### Anti-Pattern 2: Direct State Array Manipulation
 
-**Instead:** All state lives in GameState._data[]. Phase functions take state as parameter, never cache it.
+**What:** Accessing state._data offsets directly in phase handler
+**Why Bad:** Breaks encapsulation, hard to maintain, error-prone
+**Instead:** Use entity handle methods (FI.get_cash(), Company.transfer_to_fi())
 
-### Anti-Pattern 2: Direct Array Access in Phase Logic
+### Anti-Pattern 3: Python-Level Logic in Phase Handler
 
-**What:** Accessing state._data[offset] directly in phase handlers.
+**What:** Implementing phase logic in Python instead of Cython
+**Why Bad:** Performance penalty, defeats purpose of Cython optimization
+**Instead:** Keep phase handlers in .pyx files with cdef functions
 
-**Why bad:** Fragile, layout-dependent, bypasses normalization, hard to maintain.
+### Anti-Pattern 4: Incomplete Phase Transitions
 
-**Instead:** Use entity accessor methods: `PLAYERS[i].get_cash(state)`, `TURN.set_phase(state, phase)`.
+**What:** Changing phase without cleaning up related state
+**Why Bad:** Leaves stale state, causes bugs in next phase
+**Instead:** Clear all phase-specific state (e.g., consecutive_passes) during transition
 
-### Anti-Pattern 3: Modifying actions.pyx Masks in Phase Modules
+## Scalability Considerations
 
-**What:** Having phase logic influence mask generation.
+### At 100 Games/Minute
+**Approach:** Current architecture sufficient
+- WRAP_UP is deterministic (no NN evaluation needed)
+- Entity handle operations are O(1)
+- Phase transition overhead negligible
 
-**Why bad:** Creates circular dependency, masks should be pure state queries.
+### At 10K Games/Minute
+**Approach:** Current architecture sufficient
+- Cython phase handlers already optimized (noexcept, nogil where possible)
+- FI buying loop is O(n) where n = auction row size (max 6)
+- No allocations in hot path
 
-**Instead:** Masks in actions.pyx query current state. Phase handlers only mutate state. Clear separation.
+### At 1M Games/Minute
+**Approach:** Profile and optimize if needed
+**Potential Optimization:**
+- Pre-sort auction companies by price (avoid linear search)
+- Batch FI purchases (single loop instead of one-at-a-time)
+- Consider parallel game execution (multi-threading)
 
-### Anti-Pattern 4: Python-Level Loops in Performance Paths
+**Note:** WRAP_UP phase is not a bottleneck. Most time spent in NN evaluation during INVEST/BID phases.
 
-**What:** Using Python `for` loops or list comprehensions in hot paths.
+## Component Boundaries
 
-**Why bad:** GIL overhead, slow iteration, prevents vectorization.
+| Component | Responsibility | Communicates With |
+|-----------|---------------|-------------------|
+| GameDriver | Route actions to phase handlers, auto-apply loop | Phase handlers (invest, bid, wrap_up) |
+| phases/wrap_up.pyx | WRAP_UP phase logic, FI buying, phase transition | Entities (FI, Company, Turn) |
+| entities/fi.pyx | FI cash and company ownership state | GameState (via offsets) |
+| entities/company.pyx | Company location and transfer operations | GameState, FI |
+| entities/turn.pyx | Phase tracking, turn number, consecutive passes | GameState |
+| core/actions.pyx | Action encoding/decoding, legal action mask | Phase handlers (via ActionInfo) |
 
-**Instead:** Use cdef functions with C-level loops and `noexcept nogil` where possible.
-
-## Suggested Build Order
-
-Based on dependencies, implement in this order:
-
-### Phase 1: Core Infrastructure (Must be first)
-
-1. **`phases/__init__.pxd`** - Empty package declaration file
-2. **`phases/__init__.pyx`** - Empty package init (will grow with re-exports)
-3. **`phases/invest.pxd`** - Function declarations for invest phase
-
-### Phase 2: INVEST Phase Actions
-
-4. **`phases/invest.pyx`** - INVEST phase implementation
-   - `invest_phase_apply_action()` main handler
-   - `_handle_invest_pass()` - Pass action
-   - `_advance_to_next_player()` - Player rotation helper
-   - Start with pass action only; test thoroughly
-
-5. Add auction start handling:
-   - `_handle_start_auction()` - Start auction action
-
-6. Add share trading:
-   - `_handle_buy_share()` - Buy share action
-   - `_handle_sell_share()` - Sell share action
-   - `_update_president()` - President change logic
-
-### Phase 3: BID_IN_AUCTION Phase
-
-7. Add bid phase handlers to invest.pyx:
-   - `bid_phase_apply_action()` - Main bid phase handler
-   - `_handle_leave_auction()` - Leave auction
-   - `_handle_raise_bid()` - Raise bid
-   - `_complete_auction()` - Award company, transition back
-
-### Phase 4: Driver Integration
-
-8. **`core/driver.pxd`** - Driver declarations
-9. **`core/driver.pyx`** - Game driver implementation
-   - `apply_action()` - Main entry point
-   - `step()` - Single step including forced actions
-   - `play_game()` - Full game loop (optional)
-
-### Phase 5: Modify core/__init__.py
-
-10. Export driver in core package (one-line addition)
-
-### Dependency Graph
-
-```
-phases/__init__.pxd (new)
-        |
-        v
-phases/invest.pxd (new)
-        |
-        +-- core/state.pxd (existing)
-        +-- core/actions.pxd (existing)
-        +-- core/data.pxd (existing)
-        |
-        v
-phases/invest.pyx (new)
-        |
-        +-- entities/player.pyx (existing)
-        +-- entities/turn.pyx (existing)
-        +-- entities/corp.pyx (existing)
-        +-- entities/company.pyx (existing)
-        +-- entities/market.pyx (existing)
-        +-- entities/fi.pyx (existing)
-        |
-        v
-core/driver.pxd (new)
-        |
-        +-- core/state.pxd (existing)
-        +-- core/actions.pxd (existing)
-        |
-        v
-core/driver.pyx (new)
-        |
-        +-- phases/invest.pyx (new)
-        +-- core/actions.pyx (existing)
-```
+**Interface Contract:**
+- Phase handlers receive `ActionInfo*` pointer (decoded action)
+- Phase handlers return `int` (0=success, 1=invalid)
+- Phase handlers modify `GameState` via entity handles only
+- GameDriver handles STATUS_OK/STATUS_INVALID/STATUS_GAME_OVER logic
 
 ## Testing Strategy
 
-### Unit Tests for Phase Handlers
+### Unit Tests (tests/phases/test_wrap_up.py)
 
-```
-tests/
-  test_invest_pass.py      - Pass action, consecutive passes, phase transition
-  test_invest_auction.py   - Start auction, state setup
-  test_invest_shares.py    - Buy/sell share, price movement, president
-  test_bid_actions.py      - Raise bid, leave auction, award company
-  test_driver.py           - Action dispatch, forced actions
+**Coverage:**
+1. FI buys single company (basic flow)
+2. FI buys multiple companies (iteration)
+3. FI insufficient cash (no purchases)
+4. FI buys cheapest companies first (ordering)
+5. Phase transition to ACQUISITION (FI owns companies)
+6. Phase transition to INVEST (FI owns no companies)
+7. Turn number increment on new turn
+8. Consecutive passes cleared on new turn
+9. Action mask correctness (PASS only in deterministic mode)
+10. Auto-apply behavior (WRAP_UP completely transparent)
+
+**Pattern:**
+```python
+def test_fi_buys_single_company(game_state):
+    """FI buys one company and transitions to ACQUISITION."""
+    # Setup: FI has $50, auction has company worth $30
+    fi_module.FI.set_cash(game_state, 50)
+    company_module.COMPANIES[0].move_to_auction(game_state)
+    # Company 0 has high_price = 30 (from game data)
+
+    # Execute WRAP_UP (deterministic - auto-applies)
+    turn_module.TURN.set_phase(game_state, GamePhases.PHASE_INVEST)
+    # ... simulate all players passing ...
+    # Phase auto-transitions to WRAP_UP and completes
+
+    # Verify
+    assert fi_module.FI.get_cash(game_state) == 20  # 50 - 30
+    assert fi_module.FI.owns_company(game_state, 0)
+    assert game_state.get_phase() == GamePhases.PHASE_ACQUISITION
 ```
 
 ### Integration Tests
 
-```
-tests/
-  test_invest_round.py     - Full invest round: multiple actions, transitions
-  test_auction_cycle.py    - Complete auction from start to award
-  test_action_mask.py      - Verify masks match valid actions after state changes
-```
+**Coverage:**
+1. Full turn: INVEST (all pass) -> WRAP_UP -> INVEST (new turn)
+2. Full turn: INVEST -> WRAP_UP -> ACQUISITION
+3. Auto-apply behavior through WRAP_UP
+4. Invariants maintained (cash conservation, company location uniqueness)
+5. Multiple turns with alternating WRAP_UP outcomes
 
 ## Sources
 
-- `/home/icebreaker/rss-az-cython2/core/state.pyx` - GameState implementation (lines 1-802)
-- `/home/icebreaker/rss-az-cython2/core/actions.pyx` - Action layout and mask generation (lines 1-608)
-- `/home/icebreaker/rss-az-cython2/entities/turn.pyx` - TurnState entity (lines 1-489)
-- `/home/icebreaker/rss-az-cython2/entities/player.pyx` - Player entity (lines 1-422)
-- `/home/icebreaker/rss-az-cython2/.planning/codebase/ARCHITECTURE.md` - Existing architecture documentation
-- `/home/icebreaker/rss-az-cython2/.planning/codebase/CONVENTIONS.md` - Coding conventions
+**Codebase Analysis (HIGH confidence):**
+- /home/icebreaker/rss-az-cython2/core/driver.pyx (lines 1-191) - GameDriver dispatch, auto-apply loop
+- /home/icebreaker/rss-az-cython2/phases/invest.pyx (lines 1-392) - Phase handler pattern, INVEST->WRAP_UP transition stub
+- /home/icebreaker/rss-az-cython2/phases/bid.pyx (lines 1-118) - Phase handler reference implementation
+- /home/icebreaker/rss-az-cython2/entities/fi.pyx (lines 1-75) - ForeignInvestor entity complete interface
+- /home/icebreaker/rss-az-cython2/entities/company.pyx (lines 1-384) - Company entity transfer operations
+- /home/icebreaker/rss-az-cython2/entities/turn.pyx (lines 1-150+) - TurnState entity phase management
+- /home/icebreaker/rss-az-cython2/entities/player.pyx (lines 1-200) - Player turn_order implementation
+- /home/icebreaker/rss-az-cython2/core/state.pyx (lines 1-828) - State layout, player turn_order storage
+- /home/icebreaker/rss-az-cython2/core/data.pxd (lines 1-96) - GamePhases enum (PHASE_WRAP_UP = 2)
 
----
+**Documentation (HIGH confidence):**
+- /home/icebreaker/rss-az-cython2/.planning/PROJECT.md - Architecture patterns, entity handle pattern
+- /home/icebreaker/rss-az-cython2/.planning/research/STACK.md - Technology stack, phase transition flow
+- /home/icebreaker/rss-az-cython2/.planning/research/PITFALLS.md - Phase transition edge cases, auto-apply warnings
+- /home/icebreaker/rss-az-cython2/.planning/research/FORCED_ACTION_FEATURES.md - Auto-apply behavior specification
+- /home/icebreaker/rss-az-cython2/.planning/phases/03-invest-core-auction-flow/03-RESEARCH.md - INVEST phase design
+- /home/icebreaker/rss-az-cython2/.planning/phases/07-core-implementation/07-RESEARCH.md - Auto-apply loop implementation
 
-*Architecture analysis: 2026-01-20, Updated: 2026-01-21 for v2.1 forced action auto-application*
+**Overall Confidence: HIGH**
+- All integration points verified in existing code
+- Entity interfaces confirmed complete (no new methods needed)
+- Phase handler pattern established (2 working implementations)
+- Auto-apply behavior specified and implemented
+- WRAP_UP stub already exists in codebase (PHASE_WRAP_UP = 2 in enum)
+- No unknowns or external dependencies
