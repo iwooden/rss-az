@@ -12,7 +12,7 @@ from entities import corp as corp_module
 from entities import market as market_module
 from entities import company as company_module
 from entities.company cimport get_auction_company_for_slot
-from core.data cimport GamePhases, get_company_face_value, get_market_price, get_corp_share_count, GameConstants
+from core.data cimport GamePhases, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_WRAP_UP, PHASE_GAME_OVER, get_company_face_value, get_market_price, get_corp_share_count, GameConstants
 from core.data import CORP_NAMES
 
 
@@ -340,9 +340,8 @@ cdef int apply_invest_action(GameState state, ActionInfo* info) noexcept:
 
         # Check if all players have passed
         if turn_module.TURN.get_consecutive_passes(state) >= state._num_players:
-            # All players passed - end game
-            # TODO(v3+): Replace with PHASE_WRAP_UP when implemented
-            turn_module.TURN.set_phase(state, GamePhases.PHASE_GAME_OVER)
+            # All players passed - transition to WRAP_UP phase
+            turn_module.TURN.set_phase(state, PHASE_WRAP_UP)
         else:
             # Advance to next player in turn order
             _advance_active_player(state)
@@ -373,7 +372,7 @@ cdef int apply_invest_action(GameState state, ActionInfo* info) noexcept:
         turn_module.TURN.clear_consecutive_passes(state)
 
         # Transition to BID_IN_AUCTION phase
-        turn_module.TURN.set_phase(state, GamePhases.PHASE_BID_IN_AUCTION)
+        turn_module.TURN.set_phase(state, PHASE_BID_IN_AUCTION)
 
         # Advance to next bidder (skipping passed players)
         turn_module.TURN.advance_to_next_bidder(state)
