@@ -2,14 +2,85 @@
 """WRAP_UP phase handler implementation."""
 
 from core.state cimport GameState
-from core.data cimport GamePhases
+from core.data cimport GamePhases, GameConstants, get_company_face_value
 from entities import turn as turn_module
 from entities import player as player_module
+from entities import company as company_module
+from entities import fi as fi_module
+from entities import deck as deck_module
 
 
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
+
+cdef int _find_cheapest_affordable_available(GameState state) noexcept:
+    """
+    Find the cheapest available company that FI can afford.
+
+    Iterates companies in ascending face value order (company_id 0-35).
+    Returns first affordable company (guaranteed cheapest due to iteration order).
+
+    Returns:
+        company_id (0-35) if affordable company found, -1 if none
+    """
+    cdef int company_id
+    cdef int fi_cash = fi_module.FI.get_cash(state)
+    cdef int face_value
+
+    for company_id in range(GameConstants.NUM_COMPANIES):
+        if company_module.COMPANIES[company_id].is_for_auction(state):
+            face_value = get_company_face_value(company_id)
+            if face_value <= fi_cash:
+                return company_id  # First affordable = cheapest
+
+    return -1  # No affordable companies
+
+
+cdef void _fi_purchase_company(GameState state, int company_id) noexcept:
+    """
+    Execute FI purchase of a single company.
+
+    Steps:
+    1. Deduct face value from FI cash
+    2. Transfer company to FI
+    3. Draw replacement card from deck
+    4. Mark replacement as revealed (unavailable)
+
+    Args:
+        state: Game state
+        company_id: Company to purchase (0-35)
+    """
+    cdef int face_value, new_company
+
+    face_value = get_company_face_value(company_id)
+    fi_module.FI.add_cash(state, -face_value)
+    company_module.COMPANIES[company_id].transfer_to_fi(state)
+
+    new_company = deck_module.DECK.draw(state)
+    if new_company >= 0:
+        company_module.COMPANIES[new_company].set_revealed(state, True)
+
+
+cdef void _process_fi_purchases(GameState state) noexcept:
+    """
+    Execute FI purchase loop.
+
+    FI repeatedly purchases cheapest affordable available company at face value
+    until no affordable companies remain. Each purchase draws a replacement card
+    that becomes unavailable (revealed).
+
+    Uses while-loop with re-query pattern (no snapshotting) to handle dynamic
+    company availability changes during purchases.
+    """
+    cdef int company_id
+
+    while True:
+        company_id = _find_cheapest_affordable_available(state)
+        if company_id < 0:
+            break
+        _fi_purchase_company(state, company_id)
+
 
 cdef void _reorder_players_by_cash(GameState state) noexcept:
     """
