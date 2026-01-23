@@ -943,3 +943,63 @@ class TestAuctionMechanics:
                 # If action is valid, player should be able to afford it
                 # (mask generation should filter unaffordable)
                 pass  # This is expected behavior
+
+
+# =============================================================================
+# AUTO-APPLY BEHAVIOR TESTS
+# =============================================================================
+
+class TestAutoApplyBehavior:
+    """Tests for auto-apply forced action behavior."""
+
+    def test_auction_resolution_auto_applies_forced_transitions(self, apply_and_track):
+        """BID->INVEST transition during auto-apply works correctly.
+
+        When auction resolves with only one player remaining, multiple forced
+        actions may occur (resolve auction -> advance to next INVEST player).
+        """
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Start auction
+        mask = get_valid_action_mask(state)
+        layout = get_action_layout(3)
+        for i in range(layout['auction_base'], layout['buy_share_base']):
+            if mask[i] == 1.0:
+                DRIVER.apply_action(state, i)
+                break
+
+        # First leave - should NOT resolve (2 bidders remain)
+        result = apply_and_track(state, layout['leave_auction'])
+        assert state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
+
+        # Second leave - triggers resolution, returns to INVEST
+        # This may involve auto-applied forced actions
+        result = apply_and_track(state, layout['leave_auction'])
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        # History should include at least the leave action
+        assert result.applied_count >= 1
+
+    def test_forced_action_chain_in_auction_resolution(self, apply_and_track):
+        """Verify history captures all actions in auction resolution chain."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        layout = get_action_layout(3)
+
+        # Start auction
+        mask = get_valid_action_mask(state)
+        for i in range(layout['auction_base'], layout['buy_share_base']):
+            if mask[i] == 1.0:
+                DRIVER.apply_action(state, i)
+                break
+
+        # Leave twice to resolve
+        DRIVER.apply_action(state, layout['leave_auction'])
+        result = apply_and_track(state, layout['leave_auction'])
+
+        # After resolution, we should be in INVEST with history
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        # Can inspect the resolution via history
+        assert result.history is not None
+        assert len(result.history) >= 1

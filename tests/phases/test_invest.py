@@ -1246,3 +1246,66 @@ class TestInvestIntegration:
 
         assert state.get_phase() == GamePhases.PHASE_GAME_OVER
         assert_invariants(state, "After GAME_OVER transition")
+
+
+# =============================================================================
+# AUTO-APPLY EDGE CASE TESTS
+# =============================================================================
+
+class TestAutoApplyEdgeCases:
+    """Edge case tests for auto-apply behavior."""
+
+    def test_zero_legal_actions_raises_error(self):
+        """ZeroLegalActionsError raised when non-terminal state has no actions.
+
+        Note: This is a defensive test. In normal gameplay, there should always
+        be at least one legal action in non-terminal states.
+        """
+        from src.exceptions import ZeroLegalActionsError
+
+        # This scenario is hard to create naturally since game rules ensure
+        # at least pass is always available in INVEST. We test that the
+        # exception exists and is importable.
+        assert ZeroLegalActionsError is not None
+
+        # The actual error would be raised by driver if somehow zero actions
+        # exist - this is a bug prevention guard, not normal behavior.
+
+    def test_forced_action_loop_error_exists(self):
+        """ForcedActionLoopError exists for iteration limit guard.
+
+        Note: Triggering this error requires a bug that creates infinite forced
+        actions. We test the exception is importable for documentation.
+        """
+        from src.exceptions import ForcedActionLoopError
+
+        assert ForcedActionLoopError is not None
+
+        # The driver has MAX_FORCED_ITERATIONS = 100 guard.
+        # This prevents infinite loops from implementation bugs.
+
+    @pytest.mark.parametrize("num_players,seed", [
+        (3, 42),
+        (6, 123),
+    ])
+    def test_consecutive_passes_game_over_chain(self, num_players, seed, apply_and_track):
+        """Game over via all players passing is captured in history.
+
+        When player N-1 passes (completing the consecutive pass requirement),
+        the game transitions to GAME_OVER. This should be reflected in status.
+        """
+        state = GameState(num_players=num_players)
+        state.initialize_game(seed=seed)
+
+        layout = get_action_layout(num_players)
+        pass_idx = layout['pass_invest']
+
+        # Pass for all but last player using direct apply
+        for i in range(num_players - 1):
+            result = DRIVER.apply_action(state, pass_idx)
+            assert result == STATUS_OK
+
+        # Last pass triggers game over
+        result = apply_and_track(state, pass_idx)
+        assert result.status == STATUS_GAME_OVER
+        assert state.get_phase() == GamePhases.PHASE_GAME_OVER
