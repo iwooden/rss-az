@@ -2,26 +2,19 @@
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-01-21)
+See: .planning/PROJECT.md (updated 2026-01-23)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** v2.1 Forced Action Auto-Application
+**Current focus:** Planning next milestone
 
 ## Current Position
 
-Milestone: v2.1 Forced Action Auto-Application
-Phase: 8 - Test Updates (2 of 2 complete)
-Status: Phase complete
-Last activity: 2026-01-23 - Completed 08-02-PLAN.md (auto-apply behavior tests)
+Milestone: v2.1 complete - planning next
+Phase: 8 of 8 complete
+Status: Milestone shipped
+Last activity: 2026-01-23 - v2.1 milestone complete
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [██████████] 100%
-
-## Phase Overview
-
-| Phase | Name | Requirements | Status |
-|-------|------|--------------|--------|
-| 7 | Core Implementation | 12 | Complete (1/1 plans) |
-| 8 | Test Updates | 7 | Complete (2/2 plans) |
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] 100%
 
 ## Archived Milestones
 
@@ -29,12 +22,13 @@ Progress: v1 [##########] | v2 [##########] | v2.1 [█████████�
 |---------|------|--------|-------|---------|
 | v1 | Game State Init | 1 | 1 | 2026-01-20 |
 | v2 | INVEST & BID_IN_AUCTION | 2-6 | 12 | 2026-01-21 |
+| v2.1 | Forced Action Auto-Application | 7-8 | 3 | 2026-01-23 |
 
 See `.planning/milestones/` for full archives.
 
 ## Accumulated Context
 
-### Key Patterns (from v1 and v2)
+### Key Patterns (from v1, v2, and v2.1)
 
 **Cython patterns:**
 - Entity initialization order - Initialize all handles before setting state
@@ -71,11 +65,11 @@ None.
 
 ### Blockers/Concerns
 
-None - all tests passing (176/176). v2.1 milestone complete.
+None - v2.1 milestone shipped. Ready for next milestone.
 
 ## Session Continuity
 
 Last session: 2026-01-23
-Stopped at: Completed 08-02-PLAN.md (v2.1 milestone complete)
+Stopped at: v2.1 milestone complete
 Resume file: None
-Next action: Plan next milestone or feature work
+Next action: Start next milestone with /gsd:new-milestone

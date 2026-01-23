@@ -34,13 +34,15 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - ✓ Receivership when all player shares sold — v2
 - ✓ 170 tests with invariant checking — v2
 
+**v2.1 - Forced Action Auto-Application:**
+- ✓ Auto-apply forced actions when only 1 legal action exists — v2.1
+- ✓ Iterative loop until 2+ choices available or game over — v2.1
+- ✓ Validate 0 legal actions is error (unless GAME_OVER phase) — v2.1
+- ✓ Update tests to account for auto-advancement behavior — v2.1
+
 ### Active
 
-**v2.1 - Forced Action Auto-Application:**
-- [ ] Auto-apply forced actions when only 1 legal action exists
-- [ ] Iterative loop until 2+ choices available or game over
-- [ ] Validate 0 legal actions is error (unless GAME_OVER phase)
-- [ ] Update tests to account for auto-advancement behavior
+(Pending next milestone definition)
 
 ### Out of Scope
 
@@ -50,22 +52,16 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - FI auction fallback — edge case, defer
 - State cloning optimization — basic NumPy copy sufficient
 
-## Current Milestone: v2.1 Forced Action Auto-Application
-
-**Goal:** Ensure the game driver never presents a state with 0 or 1 legal actions to the model - auto-apply forced actions iteratively until a real choice exists.
-
-**Target features:**
-- Iterative auto-application loop in GameDriver.apply_action()
-- Helper methods: _count_legal_actions(), _find_single_legal_action()
-- Zero legal actions validation (error unless GAME_OVER)
-- Test updates for auto-advancement behavior
-
 ## Context
+
+**Shipped v2.1:** Forced Action Auto-Application (2026-01-23)
+- 2 phases (7-8), 3 plans, 21 requirements
+- ~25,100 LOC Cython total
+- Test suite: 176 tests
 
 **Shipped v2:** INVEST & BID_IN_AUCTION (2026-01-21)
 - 5 phases (2-6), 12 plans, 48 requirements
 - ~25,000 LOC Cython, ~2,850 LOC Python (tests)
-- Comprehensive test suite: 170 tests
 
 **Tech stack:** Cython, NumPy, PyTorch-compatible state format
 
@@ -93,6 +89,9 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 | Bankruptcy inline execution | Execute immediately during sell, no deferral | ✓ Good |
 | Two-pass presidency algorithm | Correct incumbent tie-breaking | ✓ Good |
 | Shared test fixtures (conftest.py) | Consistent invariant checking across all tests | ✓ Good |
+| Auto-apply loop pattern | Iterative forced action until 2+ choices | ✓ Good |
+| Early-exit counting | Stop at count=2 instead of counting all | ✓ Good |
+| History tracking via optional param | Zero overhead in production, full observability in tests | ✓ Good |
 
 ## Constraints
 
@@ -101,4 +100,4 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - **Compatibility:** State array must be directly usable by PyTorch
 
 ---
-*Last updated: 2026-01-21 after v2.1 milestone start*
+*Last updated: 2026-01-23 after v2.1 milestone complete*

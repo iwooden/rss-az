@@ -1,5 +1,33 @@
 # Project Milestones: Rolling Stock Stars
 
+## v2.1 Forced Action Auto-Application (Shipped: 2026-01-23)
+
+**Delivered:** GameDriver auto-applies forced actions iteratively until 2+ choices available, with optional history tracking for test observability and comprehensive error handling.
+
+**Phases completed:** 7-8 (3 plans total)
+
+**Key accomplishments:**
+
+- GameDriver.apply_action() auto-applies forced actions iteratively until real choice exists
+- Optional history parameter for full action chain observability in tests
+- ForcedActionLoopError (100 iteration limit) and ZeroLegalActionsError exceptions
+- GameState.from_array() staticmethod for state reconstruction from snapshots
+- apply_and_track() fixture and ApplyTrackResult class for clean test assertions
+- Test suite expanded to 176 tests with edge case coverage
+
+**Stats:**
+
+- 29 files created/modified
+- ~25,100 lines Cython total
+- 2 phases, 3 plans, 21 requirements
+- 2 days from milestone start to ship
+
+**Git range:** `feat(07-01)` → `docs(08): complete Test Updates phase`
+
+**What's next:** WRAP_UP phase, remaining game phases (ACQ, CLO, INC, DIV, END, ISS, IPO)
+
+---
+
 ## v2 INVEST & BID_IN_AUCTION (Shipped: 2026-01-21)
 
 **Delivered:** Complete INVEST and BID_IN_AUCTION phase implementation with game driver architecture, full share trading mechanics, corporation lifecycle management (bankruptcy, presidency, receivership), and comprehensive test coverage.
