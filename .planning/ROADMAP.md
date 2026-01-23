@@ -115,11 +115,11 @@ Plans:
   3. WRAP_UP phase transitions to new INVEST turn with incremented turn number
   4. WRAP_UP execution creates discrete state history entry (not absorbed into INVEST)
   5. GameDriver allows 0 legal actions for non-player phases without error
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 09-01: TBD
-- [ ] 09-02: TBD
+- [ ] 09-01-PLAN.md — Create WRAP_UP and ACQUISITION phase handlers
+- [ ] 09-02-PLAN.md — Integrate handlers into INVEST and GameDriver
 
 ### Phase 10: Foreign Investor Purchase Logic
 **Goal**: Foreign Investor purchases cheapest available companies at face value
@@ -164,7 +164,7 @@ Plans:
 | 6. Presidency Transfer | v2 | 2/2 | Complete | 2026-01-21 |
 | 7. Core Implementation | v2.1 | 2/2 | Complete | 2026-01-23 |
 | 8. Test Updates | v2.1 | 2/2 | Complete | 2026-01-23 |
-| 9. WRAP_UP Core Logic | v3.0 | 0/TBD | Not started | - |
+| 9. WRAP_UP Core Logic | v3.0 | 0/2 | Planned | - |
 | 10. FI Purchase Logic | v3.0 | 0/TBD | Not started | - |
 | 11. Test Updates | v3.0 | 0/TBD | Not started | - |
 
