@@ -82,6 +82,20 @@ cdef void _process_fi_purchases(GameState state) noexcept:
         _fi_purchase_company(state, company_id)
 
 
+cdef void _make_all_revealed_available(GameState state) noexcept:
+    """
+    Make all revealed companies available for auction.
+
+    Converts all LOC_REVEALED companies to LOC_AUCTION (available).
+    This prepares the company pool for the next INVEST round.
+    """
+    cdef int company_id
+
+    for company_id in range(GameConstants.NUM_COMPANIES):
+        if company_module.COMPANIES[company_id].is_revealed(state):
+            company_module.COMPANIES[company_id].move_to_auction(state)
+
+
 cdef void _reorder_players_by_cash(GameState state) noexcept:
     """
     Reorder players by descending cash with old position tie-breaking.
@@ -149,11 +163,18 @@ cdef int apply_wrap_up(GameState state) noexcept:
     1. Reorder players by descending cash (tie-break by old position)
     2. Set active player to new position 0
     3. Clear consecutive passes for next INVEST round
-    4. Transition to ACQUISITION (which stubs to INVEST)
+    4. FI purchases cheapest available companies at face value
+    5. All revealed companies become available for auction
+    6. Transition to ACQUISITION
 
     Returns: 0 always (deterministic, no failure modes)
     """
     _reorder_players_by_cash(state)
     turn_module.TURN.clear_consecutive_passes(state)
+
+    # Phase 10: FI purchases and availability transition
+    _process_fi_purchases(state)
+    _make_all_revealed_available(state)
+
     turn_module.TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
     return 0
