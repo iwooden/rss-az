@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-23)
 
 Milestone: v3.0 WRAP_UP Phase
 Phase: 9 of 11 (WRAP_UP Core Logic)
-Plan: 1 of 2
-Status: In progress
-Last activity: 2026-01-23 — Completed 09-01-PLAN.md
+Plan: 2 of 2
+Status: Phase complete
+Last activity: 2026-01-23 — Completed 09-02-PLAN.md
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [#         ] 11%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##        ] 22%
 
 ## Archived Milestones
 
@@ -89,17 +89,29 @@ See `.planning/milestones/` for full archives.
 - Turn number increment in ACQUISITION (final phase before INVEST)
 - setup.py auto-discovery handles new phase modules (no manual edits needed)
 
+**From 09-02 (2026-01-23):**
+- Sentinel action values (negative integers) for non-player phase history entries
+- Non-player phases execute automatically in auto-apply loop with history recording
+- Complete phase flow: INVEST → WRAP_UP → ACQUISITION → INVEST (new turn)
+
 ### Pending Todos
 
 None.
 
 ### Blockers/Concerns
 
-None - All entity interfaces verified complete. No new dependencies needed.
+**Phase 9 complete - ready for Phase 10:**
+- WRAP_UP and ACQUISITION phases integrated and working
+- Phase flow tested (9 test failures expected - covered in Phase 11)
+
+**Known issues for Phase 11 (test updates):**
+- 9 tests in test_invest.py expect GAME_OVER after all-pass but now get STATUS_OK (new turn)
+- Tests need updates to verify WRAP_UP → ACQUISITION → INVEST flow
+- Tests need verification of sentinel action history entries
 
 ## Session Continuity
 
 Last session: 2026-01-23
-Stopped at: Completed 09-01-PLAN.md (WRAP_UP/ACQUISITION handlers created)
+Stopped at: Completed 09-02-PLAN.md (Phase 9 complete)
 Resume file: None
-Next action: Plan 09-02 (GameDriver integration)
+Next action: Phase 10 - FI Purchase Logic
