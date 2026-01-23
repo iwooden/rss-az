@@ -5,7 +5,7 @@
 See: .planning/PROJECT.md (updated 2026-01-23)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** Phase 9 - WRAP_UP Core Logic
+**Current focus:** Phase 10 - FI Purchase Logic
 
 ## Current Position
 

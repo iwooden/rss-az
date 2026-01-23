@@ -4,9 +4,9 @@
 
 ### Player Reordering
 
-- [ ] **REORDER-01**: Reorder players by descending cash at start of WRAP_UP
-- [ ] **REORDER-02**: Preserve old turn order for tie-breaking (equal cash → lower old position wins)
-- [ ] **REORDER-03**: Update active player to new position 0 after reordering
+- [x] **REORDER-01**: Reorder players by descending cash at start of WRAP_UP
+- [x] **REORDER-02**: Preserve old turn order for tie-breaking (equal cash → lower old position wins)
+- [x] **REORDER-03**: Update active player to new position 0 after reordering
 
 ### Foreign Investor Purchases
 
@@ -24,10 +24,10 @@
 
 ### Phase Transitions
 
-- [ ] **PHASE-01**: Trigger WRAP_UP when all players pass consecutively in INVEST
-- [ ] **PHASE-02**: WRAP_UP transitions to next phase (ACQUISITION when implemented, else new INVEST turn)
-- [ ] **PHASE-03**: Loosen 0-action invariant: allow 0 actions for non-player phases (WRAP_UP, INCOME, etc.)
-- [ ] **PHASE-04**: WRAP_UP gets discrete state history entry (not absorbed into INVEST transition)
+- [x] **PHASE-01**: Trigger WRAP_UP when all players pass consecutively in INVEST
+- [x] **PHASE-02**: WRAP_UP transitions to next phase (ACQUISITION when implemented, else new INVEST turn)
+- [x] **PHASE-03**: Loosen 0-action invariant: allow 0 actions for non-player phases (WRAP_UP, INCOME, etc.)
+- [x] **PHASE-04**: WRAP_UP gets discrete state history entry (not absorbed into INVEST transition)
 
 ### Testing
 
@@ -53,26 +53,26 @@
 
 ## Traceability
 
-| REQ-ID | Phase | Plan |
-|--------|-------|------|
-| REORDER-01 | Phase 9 | TBD |
-| REORDER-02 | Phase 9 | TBD |
-| REORDER-03 | Phase 9 | TBD |
-| PHASE-01 | Phase 9 | TBD |
-| PHASE-02 | Phase 9 | TBD |
-| PHASE-03 | Phase 9 | TBD |
-| PHASE-04 | Phase 9 | TBD |
-| FI-01 | Phase 10 | TBD |
-| FI-02 | Phase 10 | TBD |
-| FI-03 | Phase 10 | TBD |
-| FI-04 | Phase 10 | TBD |
-| FI-05 | Phase 10 | TBD |
-| FI-06 | Phase 10 | TBD |
-| FI-07 | Phase 10 | TBD |
-| AVAIL-01 | Phase 10 | TBD |
-| TEST-01 | Phase 11 | TBD |
-| TEST-02 | Phase 11 | TBD |
-| TEST-03 | Phase 11 | TBD |
+| REQ-ID | Phase | Plan | Status |
+|--------|-------|------|--------|
+| REORDER-01 | Phase 9 | 09-01 | ✓ Complete |
+| REORDER-02 | Phase 9 | 09-01 | ✓ Complete |
+| REORDER-03 | Phase 9 | 09-01 | ✓ Complete |
+| PHASE-01 | Phase 9 | 09-02 | ✓ Complete |
+| PHASE-02 | Phase 9 | 09-01, 09-02 | ✓ Complete |
+| PHASE-03 | Phase 9 | 09-02 | ✓ Complete |
+| PHASE-04 | Phase 9 | 09-02 | ✓ Complete |
+| FI-01 | Phase 10 | TBD | Pending |
+| FI-02 | Phase 10 | TBD | Pending |
+| FI-03 | Phase 10 | TBD | Pending |
+| FI-04 | Phase 10 | TBD | Pending |
+| FI-05 | Phase 10 | TBD | Pending |
+| FI-06 | Phase 10 | TBD | Pending |
+| FI-07 | Phase 10 | TBD | Pending |
+| AVAIL-01 | Phase 10 | TBD | Pending |
+| TEST-01 | Phase 11 | TBD | Pending |
+| TEST-02 | Phase 11 | TBD | Pending |
+| TEST-03 | Phase 11 | TBD | Pending |
 
 ---
 *18 requirements across 5 categories*

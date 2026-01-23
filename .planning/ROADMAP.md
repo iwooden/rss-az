@@ -105,7 +105,7 @@ Plans:
 
 **Milestone Goal:** Implement deterministic WRAP_UP phase that reorders players by cash and executes Foreign Investor purchases at end of INVEST round.
 
-### Phase 9: WRAP_UP Core Logic
+### Phase 9: WRAP_UP Core Logic ✓
 **Goal**: Deterministic player reordering and phase transitions
 **Depends on**: Phase 8 (v2.1)
 **Requirements**: REORDER-01, REORDER-02, REORDER-03, PHASE-01, PHASE-02, PHASE-03, PHASE-04
@@ -116,10 +116,11 @@ Plans:
   4. WRAP_UP execution creates discrete state history entry (not absorbed into INVEST)
   5. GameDriver allows 0 legal actions for non-player phases without error
 **Plans**: 2 plans
+**Completed**: 2026-01-23
 
 Plans:
-- [ ] 09-01-PLAN.md — Create WRAP_UP and ACQUISITION phase handlers
-- [ ] 09-02-PLAN.md — Integrate handlers into INVEST and GameDriver
+- [x] 09-01-PLAN.md — Create WRAP_UP and ACQUISITION phase handlers
+- [x] 09-02-PLAN.md — Integrate handlers into INVEST and GameDriver
 
 ### Phase 10: Foreign Investor Purchase Logic
 **Goal**: Foreign Investor purchases cheapest available companies at face value
@@ -164,7 +165,7 @@ Plans:
 | 6. Presidency Transfer | v2 | 2/2 | Complete | 2026-01-21 |
 | 7. Core Implementation | v2.1 | 2/2 | Complete | 2026-01-23 |
 | 8. Test Updates | v2.1 | 2/2 | Complete | 2026-01-23 |
-| 9. WRAP_UP Core Logic | v3.0 | 0/2 | Planned | - |
+| 9. WRAP_UP Core Logic | v3.0 | 2/2 | Complete | 2026-01-23 |
 | 10. FI Purchase Logic | v3.0 | 0/TBD | Not started | - |
 | 11. Test Updates | v3.0 | 0/TBD | Not started | - |
 
