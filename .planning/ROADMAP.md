@@ -55,8 +55,8 @@ Plans:
 **Plans:** 2 plans
 
 Plans:
-- [ ] 08-01-PLAN.md - Test infrastructure (ApplyTrackResult, apply_and_track fixture, from_array method, fix WRAP_UP tests)
-- [ ] 08-02-PLAN.md - Update existing tests with explicit assertions, add edge case tests
+- [x] 08-01-PLAN.md - Test infrastructure (ApplyTrackResult, apply_and_track fixture, from_array method, fix WRAP_UP tests)
+- [x] 08-02-PLAN.md - Update existing tests with explicit assertions, add edge case tests
 
 **Requirements:**
 - TEST-01: apply_and_track() fixture in conftest.py
@@ -82,7 +82,7 @@ Plans:
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
 | 7 | Core Implementation | 12 | Complete |
-| 8 | Test Updates | 7 | Pending |
+| 8 | Test Updates | 7 | Complete |
 
 **Total:** 19 requirements across 2 phases
 
