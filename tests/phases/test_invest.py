@@ -13,6 +13,7 @@ from entities.company import COMPANIES
 from core.data import GameConstants
 
 STATUS_OK = 0
+STATUS_GAME_OVER = 2
 
 # Fixtures come from conftest.py automatically
 # Helper functions also available: assert_valid_mask, assert_invariants, apply_action_and_verify
@@ -33,12 +34,16 @@ def get_first_valid_auction_action(state):
 
 
 def apply_pass_to_all_players(state, num_players):
-    """Apply pass action for all players (for wrap_up test)."""
+    """Apply pass action for all players (triggers GAME_OVER)."""
     layout = get_action_layout(num_players)
     pass_idx = layout['pass_invest']
-    for _ in range(num_players):
+    for i in range(num_players):
         result = DRIVER.apply_action(state, pass_idx)
-        assert result == STATUS_OK
+        if i < num_players - 1:
+            assert result == STATUS_OK
+        else:
+            # Last pass triggers game over
+            assert result == STATUS_GAME_OVER
 
 
 # =============================================================================
@@ -105,13 +110,13 @@ class TestPassAction:
             # All players should have unique positions
             assert position in [0, 1, 2]
 
-    def test_all_players_pass_transitions_to_wrap_up(self, game_state):
-        """INV-03: WRAP_UP transition when all players pass."""
+    def test_all_players_pass_transitions_to_game_over(self, game_state):
+        """INV-03: GAME_OVER transition when all players pass."""
         # Apply pass for all 3 players
         apply_pass_to_all_players(game_state, 3)
 
         # Verify phase transition
-        assert game_state.get_phase() == GamePhases.PHASE_WRAP_UP
+        assert game_state.get_phase() == GamePhases.PHASE_GAME_OVER
 
     def test_non_pass_resets_consecutive_passes(self, game_state):
         """INV-02: Non-pass action (auction) resets consecutive_passes."""
@@ -1076,8 +1081,8 @@ class TestMultiplePlayerCounts:
             assert state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
 
     @pytest.mark.parametrize("num_players", [3, 4, 5, 6])
-    def test_wrap_up_triggers_at_correct_pass_count(self, num_players):
-        """WRAP_UP triggers after exactly num_players passes."""
+    def test_game_over_triggers_at_correct_pass_count(self, num_players):
+        """GAME_OVER triggers after exactly num_players passes."""
         state = GameState(num_players=num_players)
         state.initialize_game(seed=42)
 
@@ -1085,7 +1090,7 @@ class TestMultiplePlayerCounts:
         apply_pass_to_all_players(state, num_players)
 
         # Verify phase transition
-        assert state.get_phase() == GamePhases.PHASE_WRAP_UP
+        assert state.get_phase() == GamePhases.PHASE_GAME_OVER
 
     @pytest.mark.parametrize("num_players", [3, 4, 5, 6])
     def test_buy_works_all_player_counts(self, num_players):
@@ -1212,8 +1217,8 @@ class TestInvestIntegration:
         assert_invariants(trade_state, "After two buys")
 
     @pytest.mark.parametrize("num_players", [3, 6])
-    def test_wrap_up_transition_maintains_invariants(self, num_players):
-        """Phase transition to WRAP_UP maintains invariants."""
+    def test_game_over_transition_maintains_invariants(self, num_players):
+        """Phase transition to GAME_OVER maintains invariants."""
         from tests.phases.conftest import apply_action_and_verify, assert_invariants
 
         state = GameState(num_players=num_players)
@@ -1222,8 +1227,13 @@ class TestInvestIntegration:
         assert_invariants(state, "Initial state")
 
         layout = get_action_layout(num_players)
-        for i in range(num_players):
+        # Apply all but last pass with verify helper
+        for i in range(num_players - 1):
             apply_action_and_verify(state, layout['pass_invest'], f"Pass {i+1}")
 
-        assert state.get_phase() == GamePhases.PHASE_WRAP_UP
-        assert_invariants(state, "After WRAP_UP transition")
+        # Last pass triggers GAME_OVER, apply manually
+        result = DRIVER.apply_action(state, layout['pass_invest'])
+        assert result == STATUS_GAME_OVER
+
+        assert state.get_phase() == GamePhases.PHASE_GAME_OVER
+        assert_invariants(state, "After GAME_OVER transition")

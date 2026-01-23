@@ -100,9 +100,9 @@ def apply_action_and_verify(state, action_idx, msg=""):
 
     assert_invariants(state, f"{msg}\nAfter action {action_idx}")
 
-    # Don't check for valid actions in terminal phases (WRAP_UP has no actions)
+    # Don't check for valid actions in terminal phases (WRAP_UP, GAME_OVER have no actions)
     phase = state.get_phase()
-    if phase not in [GamePhases.PHASE_WRAP_UP]:
+    if phase not in [GamePhases.PHASE_WRAP_UP, GamePhases.PHASE_GAME_OVER]:
         assert np.sum(get_valid_action_mask(state)) > 0, f"{msg}\nNo valid actions after {action_idx}"
 
     return result
