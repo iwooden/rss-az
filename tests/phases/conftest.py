@@ -1,4 +1,32 @@
-"""Shared fixtures and assertion helpers for phase tests."""
+"""Shared fixtures and assertion helpers for phase tests.
+
+Test Categorization for Auto-Apply (v2.1):
+=========================================
+
+Category 1: No Changes Needed
+- Tests that only check final state outcomes
+- Tests using apply_action_and_verify (already handles status)
+- Examples: most buy/sell/bankruptcy tests
+
+Category 2: Updated with Explicit Assertions
+- Tests checking intermediate states now use apply_and_track()
+- Assert `len(result.history) == 1` when no auto-apply expected
+- Documents intent and catches regressions
+
+Category 3: New Edge Case Tests
+- TestAutoApplyEdgeCases in test_invest.py
+- TestAutoApplyBehavior in test_bid_in_auction.py
+- Cover: phase transitions, forced chains, error guards
+
+Fixture Usage Guide:
+-------------------
+- apply_action_and_verify(state, action): Standard action with invariant checks
+- apply_and_track(state, action): Returns ApplyTrackResult with history access
+- Use apply_and_track when you need to:
+  - Verify no auto-apply occurred (history length == 1)
+  - Inspect intermediate states in a forced action chain
+  - Verify specific action sequence in history
+"""
 import pytest
 import numpy as np
 from core.state import GameState
