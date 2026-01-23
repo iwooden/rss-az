@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 ## Current Position
 
 Milestone: v2.1 Forced Action Auto-Application
-Phase: 8 - Test Updates (1 of 2 complete)
-Status: In progress
-Last activity: 2026-01-23 - Completed 08-01-PLAN.md (test infrastructure)
+Phase: 8 - Test Updates (2 of 2 complete)
+Status: Phase complete
+Last activity: 2026-01-23 - Completed 08-02-PLAN.md (auto-apply behavior tests)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [███████░░░] 75%
+Progress: v1 [##########] | v2 [##########] | v2.1 [██████████] 100%
 
 ## Phase Overview
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
 | 7 | Core Implementation | 12 | Complete (1/1 plans) |
-| 8 | Test Updates | 7 | In progress (1/2 plans) |
+| 8 | Test Updates | 7 | Complete (2/2 plans) |
 
 ## Archived Milestones
 
@@ -62,6 +62,8 @@ See `.planning/milestones/` for full archives.
 - Parametrized player counts (3, 6) - Boundary verification
 - History tracking pattern - pass history=[] to DRIVER.apply_action for full chain observation
 - State snapshot pattern - get_state_at(index) reconstructs GameState from history tuple
+- Explicit history assertions - assert len(result.history) == 1 for no-auto-apply verification
+- Test categorization - 3 categories: no changes, explicit assertions, edge cases
 
 ### Pending Todos
 
@@ -69,11 +71,11 @@ None.
 
 ### Blockers/Concerns
 
-None - all tests passing (170/170).
+None - all tests passing (176/176). v2.1 milestone complete.
 
 ## Session Continuity
 
 Last session: 2026-01-23
-Stopped at: Completed 08-01-PLAN.md
+Stopped at: Completed 08-02-PLAN.md (v2.1 milestone complete)
 Resume file: None
-Next action: Execute 08-02-PLAN.md (auto-apply behavior tests)
+Next action: Plan next milestone or feature work
