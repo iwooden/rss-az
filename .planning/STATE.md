@@ -10,12 +10,12 @@ See: .planning/PROJECT.md (updated 2026-01-23)
 ## Current Position
 
 Milestone: v3.0 WRAP_UP Phase
-Phase: 9 of 11 (WRAP_UP Core Logic)
-Plan: 2 of 2
+Phase: 10 of 11 (FI Purchase Logic)
+Plan: 1 of 1
 Status: Phase complete
-Last activity: 2026-01-23 — Completed 09-02-PLAN.md
+Last activity: 2026-01-23 — Completed 10-01-PLAN.md
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##        ] 22%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [###       ] 33%
 
 ## Archived Milestones
 
@@ -94,24 +94,30 @@ See `.planning/milestones/` for full archives.
 - Non-player phases execute automatically in auto-apply loop with history recording
 - Complete phase flow: INVEST → WRAP_UP → ACQUISITION → INVEST (new turn)
 
+**From 10-01 (2026-01-23):**
+- FI purchase loop uses while-loop with re-query pattern (no snapshotting)
+- Purchase iteration in ascending company_id order (0-35) guarantees cheapest-first
+- Availability transition after all FI purchases (revealed → auction state change)
+
 ### Pending Todos
 
 None.
 
 ### Blockers/Concerns
 
-**Phase 9 complete - ready for Phase 10:**
-- WRAP_UP and ACQUISITION phases integrated and working
+**Phase 10 complete - ready for Phase 11:**
+- WRAP_UP phase fully implemented with FI purchases and availability transition
 - Phase flow tested (9 test failures expected - covered in Phase 11)
 
 **Known issues for Phase 11 (test updates):**
 - 9 tests in test_invest.py expect GAME_OVER after all-pass but now get STATUS_OK (new turn)
 - Tests need updates to verify WRAP_UP → ACQUISITION → INVEST flow
-- Tests need verification of sentinel action history entries
+- Tests need verification of sentinel action history entries for non-player phases
+- Tests need verification of FI purchase behavior and company availability state changes
 
 ## Session Continuity
 
 Last session: 2026-01-23
-Stopped at: Completed 09-02-PLAN.md (Phase 9 complete)
+Stopped at: Completed 10-01-PLAN.md (Phase 10 complete)
 Resume file: None
-Next action: Phase 10 - FI Purchase Logic
+Next action: Phase 11 - Test Updates
