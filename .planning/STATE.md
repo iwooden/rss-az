@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-23)
 
 Milestone: v3.0 WRAP_UP Phase
 Phase: 9 of 11 (WRAP_UP Core Logic)
-Plan: Ready to plan
-Status: Ready to plan Phase 9
-Last activity: 2026-01-23 — Roadmap created for v3.0
+Plan: 1 of 2
+Status: In progress
+Last activity: 2026-01-23 — Completed 09-01-PLAN.md
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [          ] 0%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [#         ] 11%
 
 ## Archived Milestones
 
@@ -84,6 +84,11 @@ See `.planning/milestones/` for full archives.
 - Use while-loop with re-query for FI purchases (no snapshotting)
 - All entity interfaces already exist (no new methods needed)
 
+**From 09-01 (2026-01-23):**
+- Selection sort for player reordering (stable, explicit tie-breaking at 6 players max)
+- Turn number increment in ACQUISITION (final phase before INVEST)
+- setup.py auto-discovery handles new phase modules (no manual edits needed)
+
 ### Pending Todos
 
 None.
@@ -95,6 +100,6 @@ None - All entity interfaces verified complete. No new dependencies needed.
 ## Session Continuity
 
 Last session: 2026-01-23
-Stopped at: Roadmap created
+Stopped at: Completed 09-01-PLAN.md (WRAP_UP/ACQUISITION handlers created)
 Resume file: None
-Next action: /gsd:plan-phase 9
+Next action: Plan 09-02 (GameDriver integration)
