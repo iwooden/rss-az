@@ -52,7 +52,11 @@ Plans:
 
 **Dependencies:** Phase 7 complete
 
-**Plans:** (created by /gsd:plan-phase)
+**Plans:** 2 plans
+
+Plans:
+- [ ] 08-01-PLAN.md - Test infrastructure (ApplyTrackResult, apply_and_track fixture, from_array method, fix WRAP_UP tests)
+- [ ] 08-02-PLAN.md - Update existing tests with explicit assertions, add edge case tests
 
 **Requirements:**
 - TEST-01: apply_and_track() fixture in conftest.py
