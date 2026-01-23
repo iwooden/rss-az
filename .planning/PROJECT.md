@@ -40,9 +40,29 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - ✓ Validate 0 legal actions is error (unless GAME_OVER phase) — v2.1
 - ✓ Update tests to account for auto-advancement behavior — v2.1
 
-### Active
+### Active — v3.0 WRAP_UP Phase
 
-(Pending next milestone definition)
+**Player Reordering:**
+- [ ] Reorder players by descending cash with tie-breaking by old order
+- [ ] Update active player to new position 0
+
+**Foreign Investor Purchases:**
+- [ ] FI buys cheapest available companies at face value
+- [ ] Draw new card after each purchase, mark unavailable
+- [ ] Handle edge cases (0 cash, empty deck, no available companies)
+
+**Company Availability:**
+- [ ] All unavailable companies become available after FI done
+
+**Phase Transitions:**
+- [ ] WRAP_UP triggers when all players pass in INVEST
+- [ ] Loosen 0-action invariant for non-player phases
+- [ ] WRAP_UP gets discrete state history entry
+
+**Testing:**
+- [ ] Fix existing tests that auto-continue past WRAP_UP
+- [ ] Add set_phase() utility for tests
+- [ ] Add player order verification tests
 
 ### Out of Scope
 
@@ -99,5 +119,15 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - **Reproducibility:** Seed parameter must produce identical games
 - **Compatibility:** State array must be directly usable by PyTorch
 
+## Current Milestone: v3.0 WRAP_UP Phase
+
+**Goal:** Implement the WRAP_UP phase that handles player reordering and Foreign Investor purchases at end of INVEST round.
+
+**Target features:**
+- Player reordering by descending cash with tie-breaking
+- Foreign Investor automatic company purchases
+- Company availability state transition
+- Phase transition with discrete state history
+
 ---
-*Last updated: 2026-01-23 after v2.1 milestone complete*
+*Last updated: 2026-01-23 — v3.0 milestone started*

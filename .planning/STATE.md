@@ -5,16 +5,17 @@
 See: .planning/PROJECT.md (updated 2026-01-23)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** Planning next milestone
+**Current focus:** v3.0 WRAP_UP Phase
 
 ## Current Position
 
-Milestone: v2.1 complete - planning next
-Phase: 8 of 8 complete
-Status: Milestone shipped
-Last activity: 2026-01-23 - v2.1 milestone complete
+Milestone: v3.0 WRAP_UP Phase
+Phase: Not started (defining roadmap)
+Plan: —
+Status: Defining roadmap
+Last activity: 2026-01-23 — Milestone v3.0 started
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] 100%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [          ] 0%
 
 ## Archived Milestones
 
@@ -70,6 +71,6 @@ None - v2.1 milestone shipped. Ready for next milestone.
 ## Session Continuity
 
 Last session: 2026-01-23
-Stopped at: v2.1 milestone complete
+Stopped at: Defining v3.0 roadmap
 Resume file: None
-Next action: Start next milestone with /gsd:new-milestone
+Next action: Create roadmap, then /gsd:plan-phase 9
