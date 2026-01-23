@@ -68,7 +68,7 @@ class TestPassAction:
         new_passes = TURN.get_consecutive_passes(game_state)
         assert new_passes == initial_passes + 1
 
-    def test_pass_advances_active_player(self, game_state):
+    def test_pass_advances_active_player(self, game_state, apply_and_track):
         """INV-04: Pass action advances active player in turn order."""
         # Get initial active player
         initial_player = game_state.get_active_player()
@@ -76,8 +76,11 @@ class TestPassAction:
 
         # Apply pass action
         layout = get_action_layout(3)
-        result = DRIVER.apply_action(game_state, layout['pass_invest'])
-        assert result == STATUS_OK
+        result = apply_and_track(game_state, layout['pass_invest'])
+
+        # No auto-apply - multiple valid actions after pass
+        assert len(result.history) == 1, "Expected no forced actions after pass"
+        assert result.status == STATUS_OK
 
         # Verify active player advanced
         new_player = game_state.get_active_player()
@@ -240,7 +243,7 @@ class TestStartAuction:
         # Verify phase transition
         assert game_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
 
-    def test_start_auction_advances_to_next_bidder(self, game_state):
+    def test_start_auction_advances_to_next_bidder(self, game_state, apply_and_track):
         """Start auction advances active player to next in turn order."""
         starter_id = game_state.get_active_player()
         starter_position = PLAYERS[starter_id].get_turn_order(game_state)
@@ -250,8 +253,11 @@ class TestStartAuction:
         assert auction_idx is not None
 
         # Apply auction action
-        result = DRIVER.apply_action(game_state, auction_idx)
-        assert result == STATUS_OK
+        result = apply_and_track(game_state, auction_idx)
+
+        # No auto-apply - bidders have choice to raise or leave
+        assert len(result.history) == 1, "Expected no forced actions after starting auction"
+        assert result.status == STATUS_OK
 
         # Verify active player advanced
         new_player = game_state.get_active_player()
@@ -282,7 +288,7 @@ class TestStartAuction:
 class TestBuyShare:
     """Test buy share action behavior."""
 
-    def test_buy_share_transfers_money_to_corp(self, trade_state):
+    def test_buy_share_transfers_money_to_corp(self, trade_state, apply_and_track):
         """INV-07, INV-08: Buy share moves cash from player to corp."""
         corp = CORPS[CORP_NAMES[0]]
         player = PLAYERS[0]
@@ -295,8 +301,11 @@ class TestBuyShare:
         buy_idx = layout['buy_share_base'] + 0  # Corp 0
 
         # Apply buy action
-        result = DRIVER.apply_action(trade_state, buy_idx)
-        assert result == STATUS_OK
+        result = apply_and_track(trade_state, buy_idx)
+
+        # No auto-apply - player can still buy/sell/pass after
+        assert len(result.history) == 1, "Expected no forced actions after buy"
+        assert result.status == STATUS_OK
 
         # Price moved up, so we need the new price that was paid
         # From index 10, next available should be 11 (if available)

@@ -38,18 +38,21 @@ class TestLeaveAuction:
         # Verify passed flag set
         assert TURN.has_player_passed_auction(bid_state, player_id)
 
-    def test_leave_advances_to_next_bidder(self, bid_state):
+    def test_leave_advances_to_next_bidder(self, bid_state, apply_and_track):
         """BID-02: Leave auction advances to next non-passed bidder."""
         initial_player = bid_state.get_active_player()
         initial_position = PLAYERS[initial_player].get_turn_order(bid_state)
 
         # Apply leave auction
         layout = get_action_layout(3)
-        result = DRIVER.apply_action(bid_state, layout['leave_auction'])
-        assert result == STATUS_OK
+        result = apply_and_track(bid_state, layout['leave_auction'])
 
         # Verify active player advanced (if auction didn't resolve)
         if bid_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
+            # No auto-apply - next bidder has choice to raise or leave
+            assert len(result.history) == 1, "Expected no forced actions after leave (auction continues)"
+            assert result.status == STATUS_OK
+
             new_player = bid_state.get_active_player()
             new_position = PLAYERS[new_player].get_turn_order(bid_state)
             # Should have advanced to next position
@@ -209,7 +212,7 @@ class TestRaiseBid:
             high_bidder = TURN.get_auction_high_bidder(bid_state)
             assert high_bidder == current_player
 
-    def test_raise_advances_to_next_bidder(self, bid_state):
+    def test_raise_advances_to_next_bidder(self, bid_state, apply_and_track):
         """Raise bid advances to next non-passed bidder."""
         initial_player = bid_state.get_active_player()
         initial_position = PLAYERS[initial_player].get_turn_order(bid_state)
@@ -224,8 +227,11 @@ class TestRaiseBid:
                 break
 
         if raise_idx is not None:
-            result = DRIVER.apply_action(bid_state, raise_idx)
-            assert result == STATUS_OK
+            result = apply_and_track(bid_state, raise_idx)
+
+            # No auto-apply - next bidder has choice to raise or leave
+            assert len(result.history) == 1, "Expected no forced actions after raise"
+            assert result.status == STATUS_OK
 
             # Verify active player advanced
             new_player = bid_state.get_active_player()
