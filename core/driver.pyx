@@ -17,14 +17,48 @@ from core.actions cimport (
     ActionLayout, ActionInfo, compute_action_layout, decode_action
 )
 from core.actions import get_valid_action_mask
-from core.data cimport GamePhases, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_GAME_OVER
+from core.data cimport GamePhases, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_GAME_OVER, PHASE_WRAP_UP, PHASE_ACQUISITION
 from core.driver cimport ActionStatus, STATUS_OK, STATUS_INVALID, STATUS_GAME_OVER, ForcedActionResult
 from phases.invest cimport apply_invest_action
 from phases.bid cimport apply_bid_action
+from phases.wrap_up cimport apply_wrap_up
+from phases.acquisition cimport apply_acquisition_stub
 from src.exceptions import ForcedActionLoopError, ZeroLegalActionsError
 
 # Maximum iterations for auto-apply loop (prevents infinite loops from bugs)
 DEF MAX_FORCED_ITERATIONS = 100
+
+# Sentinel action values for non-player phases (negative to distinguish from real actions)
+DEF ACTION_WRAP_UP_SENTINEL = -100
+DEF ACTION_ACQUISITION_SENTINEL = -101
+
+
+cdef bint _is_non_player_phase(int phase) noexcept nogil:
+    """Check if phase has no player actions (deterministic execution)."""
+    return phase == PHASE_WRAP_UP or phase == PHASE_ACQUISITION
+
+
+cdef void _execute_non_player_phase(GameState state, object history):
+    """Execute deterministic non-player phase and record to history."""
+    cdef int phase = state.get_phase()
+    cdef int sentinel
+
+    if phase == PHASE_WRAP_UP:
+        sentinel = ACTION_WRAP_UP_SENTINEL
+    elif phase == PHASE_ACQUISITION:
+        sentinel = ACTION_ACQUISITION_SENTINEL
+    else:
+        return  # Unknown non-player phase
+
+    # Record state BEFORE execution (matches player action pattern)
+    if history is not None:
+        history.append((state._array.copy(), sentinel))
+
+    # Execute phase logic
+    if phase == PHASE_WRAP_UP:
+        apply_wrap_up(state)
+    elif phase == PHASE_ACQUISITION:
+        apply_acquisition_stub(state)
 
 
 cdef ForcedActionResult _check_forced_action(GameState state) noexcept:
@@ -158,6 +192,13 @@ cdef class GameDriver:
             forced = _check_forced_action(state)
 
             if forced.count == 0:
+                # Check if this is a non-player phase (0 actions is valid)
+                if _is_non_player_phase(state.get_phase()):
+                    _execute_non_player_phase(state, history)
+                    if state.get_phase() == PHASE_GAME_OVER:
+                        return STATUS_GAME_OVER
+                    iterations += 1
+                    continue  # Re-check after phase execution
                 raise ZeroLegalActionsError("Zero legal actions in non-terminal state")
 
             if forced.count >= 2:
