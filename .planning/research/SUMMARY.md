@@ -11,7 +11,7 @@ The WRAP_UP phase is a deterministic end-of-turn transition phase that executes 
 
 The recommended approach is to implement WRAP_UP as a fully atomic, deterministic operation with zero player actions. This means the entire phase executes in a single function call when all players pass in INVEST phase, using C stdlib qsort for player reordering and sequential iteration for FI purchases. The phase handler follows the established `cdef int apply_wrap_up_action(GameState state, ActionInfo* info) noexcept` pattern, delegating all state manipulation to existing entity handles (Player, ForeignInvestor, Company, TurnState).
 
-The primary risk is state corruption during the FI purchase loop, where iterating over available companies while simultaneously modifying their availability can cause inconsistent state. This is mitigated by capturing snapshot lists before each iteration and executing purchases atomically. Secondary risks include player reordering tie-breaking errors (prevented by stable sort with explicit tie-breaking logic) and phase transition timing issues (prevented by making WRAP_UP fully atomic).
+The primary risk is state corruption during the FI purchase loop if using a cached list while modifying availability. This is mitigated by using a while-loop that re-queries available companies each iteration — no snapshotting needed since we always operate on current state. Secondary risks include player reordering tie-breaking errors (prevented by stable sort with explicit tie-breaking logic) and phase transition timing issues (prevented by making WRAP_UP fully atomic).
 
 ## Key Findings
 
@@ -82,7 +82,7 @@ Research identified 11 domain-specific pitfalls. Top 5 critical risks:
 
 1. **Player Reordering Tie-Breaking Corruption** — Incorrect tie-breaking implementation creates non-deterministic behavior. Use stable sort with explicit tie-breaking: sort by (-cash, old_turn_order) in single pass. Capture old state before mutations, apply new positions in separate phase. Test with equal cash scenarios and seed reproducibility.
 
-2. **Foreign Investor Purchase Loop State Corruption** — State modifications during iteration (marking companies unavailable, drawing new cards) corrupt subsequent queries. Use snapshot-based iteration: capture available companies list, validate affordability, execute atomic purchase, re-query for next iteration. Never modify state mid-loop.
+2. **Foreign Investor Purchase Loop State Corruption** — State modifications during iteration (marking companies unavailable, drawing new cards) can corrupt subsequent queries if using a cached list. Use a while-loop that re-queries available companies each iteration: find cheapest affordable, execute atomic purchase, loop until none affordable. No snapshotting needed.
 
 3. **Company Availability State Confusion** — Losing track of which companies should flip from unavailable to available. Need clear state machine: either add explicit `unavailable_companies` flag or document invariant (revealed AND !for_auction AND !owned => unavailable). Test before/after WRAP_UP to verify correct flipping.
 
@@ -129,7 +129,7 @@ Based on research, WRAP_UP implementation should be structured as 2-3 focused ph
 ---
 
 ### Phase 2: FI Purchase Logic
-**Rationale:** Most complex algorithmic piece with highest risk of state corruption. Requires careful iteration pattern with snapshot-based queries and atomic purchase execution. Building on Phase 1's foundation ensures phase transitions work before adding purchase complexity.
+**Rationale:** Most complex algorithmic piece with highest risk of state corruption if iteration pattern is wrong. Use while-loop with re-query each iteration — straightforward and safe. Building on Phase 1's foundation ensures phase transitions work before adding purchase complexity.
 
 **Delivers:**
 - FI company purchase loop (ascending face value order)

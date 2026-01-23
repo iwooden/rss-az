@@ -83,9 +83,9 @@ for company_id in get_available_companies(state):
         FI.buy_company(state, company_id)  # Modifies availability!
         draw_new_company(state)             # Changes what's "available"!
 
-# RIGHT: Pre-compute iteration list, validate each iteration
+# RIGHT: Re-query each iteration (always operates on current state)
 while True:
-    # Step 1: Get snapshot of current available companies
+    # Step 1: Query current available companies
     available = get_available_companies_sorted_by_face_value(state)
     if not available:
         break
@@ -103,7 +103,7 @@ while True:
     # Step 3: Execute atomic purchase
     execute_fi_purchase(state, company_id)  # All modifications here
 
-    # Step 4: Re-query for next iteration (fresh snapshot)
+    # Step 4: Loop continues, re-queries on next iteration
 
 # Atomic purchase function
 def execute_fi_purchase(state, company_id):
