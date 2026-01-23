@@ -132,11 +132,10 @@ Plans:
   3. Purchase loop stops when FI cannot afford any remaining available company
   4. Edge cases handled correctly (FI 0 cash, empty deck, no available companies)
   5. After FI purchases complete, all unavailable companies become available
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 10-01: TBD
-- [ ] 10-02: TBD
+- [ ] 10-01-PLAN.md — Implement FI purchase loop and availability transition
 
 ### Phase 11: Test Updates
 **Goal**: Fix existing tests and add WRAP_UP verification tests
@@ -166,7 +165,7 @@ Plans:
 | 7. Core Implementation | v2.1 | 2/2 | Complete | 2026-01-23 |
 | 8. Test Updates | v2.1 | 2/2 | Complete | 2026-01-23 |
 | 9. WRAP_UP Core Logic | v3.0 | 2/2 | Complete | 2026-01-23 |
-| 10. FI Purchase Logic | v3.0 | 0/TBD | Not started | - |
+| 10. FI Purchase Logic | v3.0 | 0/1 | Not started | - |
 | 11. Test Updates | v3.0 | 0/TBD | Not started | - |
 
 ---
