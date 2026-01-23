@@ -55,24 +55,24 @@
 
 | REQ-ID | Phase | Plan |
 |--------|-------|------|
-| REORDER-01 | TBD | — |
-| REORDER-02 | TBD | — |
-| REORDER-03 | TBD | — |
-| FI-01 | TBD | — |
-| FI-02 | TBD | — |
-| FI-03 | TBD | — |
-| FI-04 | TBD | — |
-| FI-05 | TBD | — |
-| FI-06 | TBD | — |
-| FI-07 | TBD | — |
-| AVAIL-01 | TBD | — |
-| PHASE-01 | TBD | — |
-| PHASE-02 | TBD | — |
-| PHASE-03 | TBD | — |
-| PHASE-04 | TBD | — |
-| TEST-01 | TBD | — |
-| TEST-02 | TBD | — |
-| TEST-03 | TBD | — |
+| REORDER-01 | Phase 9 | TBD |
+| REORDER-02 | Phase 9 | TBD |
+| REORDER-03 | Phase 9 | TBD |
+| PHASE-01 | Phase 9 | TBD |
+| PHASE-02 | Phase 9 | TBD |
+| PHASE-03 | Phase 9 | TBD |
+| PHASE-04 | Phase 9 | TBD |
+| FI-01 | Phase 10 | TBD |
+| FI-02 | Phase 10 | TBD |
+| FI-03 | Phase 10 | TBD |
+| FI-04 | Phase 10 | TBD |
+| FI-05 | Phase 10 | TBD |
+| FI-06 | Phase 10 | TBD |
+| FI-07 | Phase 10 | TBD |
+| AVAIL-01 | Phase 10 | TBD |
+| TEST-01 | Phase 11 | TBD |
+| TEST-02 | Phase 11 | TBD |
+| TEST-03 | Phase 11 | TBD |
 
 ---
 *18 requirements across 5 categories*

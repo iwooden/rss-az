@@ -5,15 +5,15 @@
 See: .planning/PROJECT.md (updated 2026-01-23)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** v3.0 WRAP_UP Phase
+**Current focus:** Phase 9 - WRAP_UP Core Logic
 
 ## Current Position
 
 Milestone: v3.0 WRAP_UP Phase
-Phase: Not started (defining roadmap)
-Plan: —
-Status: Defining roadmap
-Last activity: 2026-01-23 — Milestone v3.0 started
+Phase: 9 of 11 (WRAP_UP Core Logic)
+Plan: Ready to plan
+Status: Ready to plan Phase 9
+Last activity: 2026-01-23 — Roadmap created for v3.0
 
 Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [          ] 0%
 
@@ -26,6 +26,21 @@ Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [        
 | v2.1 | Forced Action Auto-Application | 7-8 | 3 | 2026-01-23 |
 
 See `.planning/milestones/` for full archives.
+
+## v3.0 Roadmap Summary
+
+**Phases:** 3 (9-11)
+**Requirements:** 18 total
+- Player Reordering: 3 requirements (REORDER-01 to REORDER-03)
+- Foreign Investor Purchases: 7 requirements (FI-01 to FI-07)
+- Company Availability: 1 requirement (AVAIL-01)
+- Phase Transitions: 4 requirements (PHASE-01 to PHASE-04)
+- Testing: 3 requirements (TEST-01 to TEST-03)
+
+**Phase structure:**
+- Phase 9: WRAP_UP Core Logic — Player reordering + phase transitions (7 requirements)
+- Phase 10: FI Purchase Logic — Foreign Investor purchases + company availability (8 requirements)
+- Phase 11: Test Updates — Fix tests + add verification tests (3 requirements)
 
 ## Accumulated Context
 
@@ -60,17 +75,26 @@ See `.planning/milestones/` for full archives.
 - Explicit history assertions - assert len(result.history) == 1 for no-auto-apply verification
 - Test categorization - 3 categories: no changes, explicit assertions, edge cases
 
+### Key Decisions for v3.0
+
+**From research (2026-01-22):**
+- WRAP_UP is fully deterministic (zero player choices)
+- Implement as atomic operation that gets discrete state history entry
+- Loosen 0-action invariant for non-player phases
+- Use while-loop with re-query for FI purchases (no snapshotting)
+- All entity interfaces already exist (no new methods needed)
+
 ### Pending Todos
 
 None.
 
 ### Blockers/Concerns
 
-None - v2.1 milestone shipped. Ready for next milestone.
+None - All entity interfaces verified complete. No new dependencies needed.
 
 ## Session Continuity
 
 Last session: 2026-01-23
-Stopped at: Defining v3.0 roadmap
+Stopped at: Roadmap created
 Resume file: None
-Next action: Create roadmap, then /gsd:plan-phase 9
+Next action: /gsd:plan-phase 9
