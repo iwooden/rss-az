@@ -363,6 +363,21 @@ cdef class GameState:
         # Store turn offsets for convenience
         self._turn = self._turn_offsets
 
+    @staticmethod
+    def from_array(array, int num_players):
+        """Reconstruct GameState from raw numpy array.
+
+        Args:
+            array: numpy float32 array (will be copied)
+            num_players: number of players (required to compute layout)
+
+        Returns:
+            New GameState with copied array data
+        """
+        state = GameState(num_players)
+        np.copyto(state._array, array)
+        return state
+
     # =========================================================================
     # INTERNAL POINTER ACCESS
     # =========================================================================

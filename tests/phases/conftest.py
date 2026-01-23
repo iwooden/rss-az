@@ -108,6 +108,30 @@ def apply_action_and_verify(state, action_idx, msg=""):
     return result
 
 
+class ApplyTrackResult:
+    """Result wrapper for apply_and_track() fixture."""
+
+    def __init__(self, state, history, status, num_players):
+        self.state = state              # Final state after all actions
+        self.history = history          # List of (state_array, action_idx) tuples
+        self.status = status            # Return status from apply_action
+        self.applied_count = len(history)
+        self._num_players = num_players
+
+    def get_state_at(self, index):
+        """Get state snapshot at position (supports negative indexing)."""
+        return GameState.from_array(self.history[index][0], self._num_players)
+
+    def get_action_at(self, index):
+        """Get action at position (supports negative indexing)."""
+        return self.history[index][1]
+
+    @property
+    def last_action(self):
+        """Last action applied (convenience property)."""
+        return self.history[-1][1] if self.history else None
+
+
 # =============================================================================
 # FIXTURES
 # =============================================================================
@@ -188,3 +212,19 @@ def bankruptcy_state():
     MARKET.set_space_available(state, 1, False)
 
     return state
+
+
+@pytest.fixture
+def apply_and_track():
+    """Fixture providing action application with full history tracking.
+
+    Usage:
+        result = apply_and_track(state, action_idx)
+        assert result.applied_count >= 1
+        intermediate = result.get_state_at(0)  # State before first action
+    """
+    def _apply(state, action_idx):
+        history = []
+        status = DRIVER.apply_action(state, action_idx, history=history)
+        return ApplyTrackResult(state, history, status, state.get_num_players())
+    return _apply
