@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 ## Current Position
 
 Milestone: v2.1 Forced Action Auto-Application
-Phase: 7 - Core Implementation (1 of 1 complete)
-Status: Phase 7 verified, ready for Phase 8
-Last activity: 2026-01-22 - Phase 7 verified (4/4 must-haves passed)
+Phase: 8 - Test Updates (1 of 2 complete)
+Status: In progress
+Last activity: 2026-01-23 - Completed 08-01-PLAN.md (test infrastructure)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [█████░░░░░] 50%
+Progress: v1 [##########] | v2 [##########] | v2.1 [███████░░░] 75%
 
 ## Phase Overview
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
 | 7 | Core Implementation | 12 | Complete (1/1 plans) |
-| 8 | Test Updates | 7 | Pending |
+| 8 | Test Updates | 7 | In progress (1/2 plans) |
 
 ## Archived Milestones
 
@@ -60,6 +60,8 @@ See `.planning/milestones/` for full archives.
 - Shared conftest pattern - Centralized fixtures and assertion helpers
 - Integration test structure - assert_invariants -> apply_action_and_verify -> verify outcome -> assert_invariants
 - Parametrized player counts (3, 6) - Boundary verification
+- History tracking pattern - pass history=[] to DRIVER.apply_action for full chain observation
+- State snapshot pattern - get_state_at(index) reconstructs GameState from history tuple
 
 ### Pending Todos
 
@@ -67,14 +69,11 @@ None.
 
 ### Blockers/Concerns
 
-**Test suite status (v2.1):**
-- 163/170 tests passing (95.9%)
-- 7 tests failing: All WRAP_UP-related (expected - phase not implemented until v3+)
-- Will be addressed in Phase 8 (Test Updates)
+None - all tests passing (170/170).
 
 ## Session Continuity
 
-Last session: 2026-01-22
-Stopped at: Phase 7 verified
-Resume file: .planning/phases/07-core-implementation/07-VERIFICATION.md
-Next action: /gsd:discuss-phase 8
+Last session: 2026-01-23
+Stopped at: Completed 08-01-PLAN.md
+Resume file: None
+Next action: Execute 08-02-PLAN.md (auto-apply behavior tests)
