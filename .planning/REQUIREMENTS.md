@@ -10,17 +10,17 @@
 
 ### Foreign Investor Purchases
 
-- [ ] **FI-01**: FI buys cheapest available company at face value
-- [ ] **FI-02**: Process purchases in ascending face value order (cheapest first)
-- [ ] **FI-03**: Draw new card after each purchase and mark unavailable
-- [ ] **FI-04**: Stop purchasing when FI cannot afford any remaining available company
-- [ ] **FI-05**: Handle edge case: FI has 0 cash (skip purchase loop)
-- [ ] **FI-06**: Handle edge case: deck empty after purchase (no new card drawn)
-- [ ] **FI-07**: Handle edge case: no available companies (skip purchase loop)
+- [x] **FI-01**: FI buys cheapest available company at face value
+- [x] **FI-02**: Process purchases in ascending face value order (cheapest first)
+- [x] **FI-03**: Draw new card after each purchase and mark unavailable
+- [x] **FI-04**: Stop purchasing when FI cannot afford any remaining available company
+- [x] **FI-05**: Handle edge case: FI has 0 cash (skip purchase loop)
+- [x] **FI-06**: Handle edge case: deck empty after purchase (no new card drawn)
+- [x] **FI-07**: Handle edge case: no available companies (skip purchase loop)
 
 ### Company Availability
 
-- [ ] **AVAIL-01**: After FI purchases complete, all unavailable companies become available
+- [x] **AVAIL-01**: After FI purchases complete, all unavailable companies become available
 
 ### Phase Transitions
 
@@ -62,14 +62,14 @@
 | PHASE-02 | Phase 9 | 09-01, 09-02 | ✓ Complete |
 | PHASE-03 | Phase 9 | 09-02 | ✓ Complete |
 | PHASE-04 | Phase 9 | 09-02 | ✓ Complete |
-| FI-01 | Phase 10 | TBD | Pending |
-| FI-02 | Phase 10 | TBD | Pending |
-| FI-03 | Phase 10 | TBD | Pending |
-| FI-04 | Phase 10 | TBD | Pending |
-| FI-05 | Phase 10 | TBD | Pending |
-| FI-06 | Phase 10 | TBD | Pending |
-| FI-07 | Phase 10 | TBD | Pending |
-| AVAIL-01 | Phase 10 | TBD | Pending |
+| FI-01 | Phase 10 | 10-01 | ✓ Complete |
+| FI-02 | Phase 10 | 10-01 | ✓ Complete |
+| FI-03 | Phase 10 | 10-01 | ✓ Complete |
+| FI-04 | Phase 10 | 10-01 | ✓ Complete |
+| FI-05 | Phase 10 | 10-01 | ✓ Complete |
+| FI-06 | Phase 10 | 10-01 | ✓ Complete |
+| FI-07 | Phase 10 | 10-01 | ✓ Complete |
+| AVAIL-01 | Phase 10 | 10-01 | ✓ Complete |
 | TEST-01 | Phase 11 | TBD | Pending |
 | TEST-02 | Phase 11 | TBD | Pending |
 | TEST-03 | Phase 11 | TBD | Pending |

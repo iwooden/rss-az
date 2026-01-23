@@ -5,7 +5,7 @@
 See: .planning/PROJECT.md (updated 2026-01-23)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** Phase 10 - FI Purchase Logic
+**Current focus:** Phase 11 - Test Updates
 
 ## Current Position
 
@@ -15,7 +15,7 @@ Plan: 1 of 1
 Status: Phase complete
 Last activity: 2026-01-23 — Completed 10-01-PLAN.md
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [###       ] 33%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [######    ] 67%
 
 ## Archived Milestones
 
@@ -110,7 +110,7 @@ None.
 - Phase flow tested (9 test failures expected - covered in Phase 11)
 
 **Known issues for Phase 11 (test updates):**
-- 9 tests in test_invest.py expect GAME_OVER after all-pass but now get STATUS_OK (new turn)
+- 1 test in test_invest.py expects GAME_OVER after all-pass but now gets STATUS_OK (new turn)
 - Tests need updates to verify WRAP_UP → ACQUISITION → INVEST flow
 - Tests need verification of sentinel action history entries for non-player phases
 - Tests need verification of FI purchase behavior and company availability state changes

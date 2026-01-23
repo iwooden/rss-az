@@ -122,7 +122,7 @@ Plans:
 - [x] 09-01-PLAN.md — Create WRAP_UP and ACQUISITION phase handlers
 - [x] 09-02-PLAN.md — Integrate handlers into INVEST and GameDriver
 
-### Phase 10: Foreign Investor Purchase Logic
+### Phase 10: Foreign Investor Purchase Logic ✓
 **Goal**: Foreign Investor purchases cheapest available companies at face value
 **Depends on**: Phase 9
 **Requirements**: FI-01, FI-02, FI-03, FI-04, FI-05, FI-06, FI-07, AVAIL-01
@@ -133,9 +133,10 @@ Plans:
   4. Edge cases handled correctly (FI 0 cash, empty deck, no available companies)
   5. After FI purchases complete, all unavailable companies become available
 **Plans**: 1 plan
+**Completed**: 2026-01-23
 
 Plans:
-- [ ] 10-01-PLAN.md — Implement FI purchase loop and availability transition
+- [x] 10-01-PLAN.md — Implement FI purchase loop and availability transition
 
 ### Phase 11: Test Updates
 **Goal**: Fix existing tests and add WRAP_UP verification tests
@@ -165,7 +166,7 @@ Plans:
 | 7. Core Implementation | v2.1 | 2/2 | Complete | 2026-01-23 |
 | 8. Test Updates | v2.1 | 2/2 | Complete | 2026-01-23 |
 | 9. WRAP_UP Core Logic | v3.0 | 2/2 | Complete | 2026-01-23 |
-| 10. FI Purchase Logic | v3.0 | 0/1 | Not started | - |
+| 10. FI Purchase Logic | v3.0 | 1/1 | Complete | 2026-01-23 |
 | 11. Test Updates | v3.0 | 0/TBD | Not started | - |
 
 ---
