@@ -146,10 +146,10 @@ Plans:
   1. Existing INVEST/auction tests pass with auto-continue behavior through WRAP_UP
   2. Test utilities include set_phase() method for manual phase manipulation
   3. Player order verification tests confirm reordering correctness
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 11-01: TBD
+- [ ] 11-01-PLAN.md — Fix test failures and add WRAP_UP verification tests
 
 ## Progress
 
@@ -167,7 +167,7 @@ Plans:
 | 8. Test Updates | v2.1 | 2/2 | Complete | 2026-01-23 |
 | 9. WRAP_UP Core Logic | v3.0 | 2/2 | Complete | 2026-01-23 |
 | 10. FI Purchase Logic | v3.0 | 1/1 | Complete | 2026-01-23 |
-| 11. Test Updates | v3.0 | 0/TBD | Not started | - |
+| 11. Test Updates | v3.0 | 0/1 | Not started | - |
 
 ---
 *Last updated: 2026-01-23*
