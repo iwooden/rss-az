@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A high-performance Cython game engine for "Rolling Stock Stars" board game with complete INVEST, BID_IN_AUCTION, and WRAP_UP phases. The engine stores state as a single contiguous float32 array for zero-copy passing to PyTorch, optimized for AlphaZero-style self-play training.
+A high-performance Cython game engine for "Rolling Stock Stars" board game with complete INVEST, BID_IN_AUCTION, WRAP_UP, and ACQUISITION phases. The engine stores state as a single contiguous float32 array for zero-copy passing to PyTorch, optimized for AlphaZero-style self-play training.
 
 ## Core Value
 
@@ -55,7 +55,18 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 
 ### Active
 
-(None — planning next milestone)
+**v4.0 - ACQUISITION Phase (AlphaZero-optimized):**
+- [ ] Offer-based acquisition flow with sorted priority presentation
+- [ ] Same-president trade restriction (no inter-player negotiation)
+- [ ] OS→FI priority (always first, pays face value)
+- [ ] Corp→FI priority by descending share price
+- [ ] Corp→Corp acquisitions (same president required)
+- [ ] Corp→Player private company acquisitions
+- [ ] Acquisition proceeds zone (companies + cash can't be reused in phase)
+- [ ] Receivership corp auto-buy integration
+- [ ] Full validation (price range, cash, minimum companies, no re-acquire)
+- [ ] Phase transition to CLOSING when no more offers
+- [ ] Merge acquisition_companies into owned_companies at phase end
 
 ### Out of Scope
 
@@ -64,6 +75,8 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - Save/load to disk — in-memory state only for now
 - FI auction fallback — edge case, defer
 - State cloning optimization — basic NumPy copy sufficient
+- Inter-player acquisition negotiation — simplified for AlphaZero training
+- FI intervention/preemption mechanics — handled via sorted offer priority
 
 ## Context
 
@@ -124,4 +137,4 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - **Compatibility:** State array must be directly usable by PyTorch
 
 ---
-*Last updated: 2026-01-24 — v3.0 milestone complete*
+*Last updated: 2026-01-24 — v4.0 milestone started*

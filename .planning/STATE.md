@@ -9,13 +9,13 @@ See: .planning/PROJECT.md (updated 2026-01-24)
 
 ## Current Position
 
-Milestone: v3.0 WRAP_UP Phase — SHIPPED
-Phase: Complete (11 phases total through v3.0)
-Plan: N/A
-Status: Ready for next milestone
-Last activity: 2026-01-24 — v3.0 milestone completed and archived
+Milestone: v4.0 ACQUISITION Phase
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-01-24 — Milestone v4.0 started
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] 100%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [          ] 0%
 
 ## Archived Milestones
 
@@ -28,11 +28,18 @@ Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [########
 
 See `.planning/milestones/` for full archives.
 
-## Next Milestone
+## Current Milestone: v4.0 ACQUISITION Phase
 
-**Candidates for v4.0:**
-- Remaining game phases: ACQ (Acquisition), CLO (Closing), INC (Income), DIV (Dividends), END (End Card), ISS (Issue Share), IPO (Form Corporation)
-- Full game loop completion (all 9 phases per turn)
+**Goal:** Implement ACQUISITION phase with AlphaZero-optimized mechanics
+
+**Key design decisions:**
+- Same-president trade restriction (no inter-player negotiation)
+- Offer-based flow with sorted priority presentation
+- Receivership auto-buy integrated into offer loop
+- Acquisition proceeds zone prevents re-acquisition loops
+
+**After v4.0 - Remaining phases:**
+- CLO (Closing), INC (Income), DIV (Dividends), END (End Card), ISS (Issue Share), IPO (Form Corporation)
 
 ## Accumulated Context
 
@@ -80,6 +87,6 @@ None - ready for next milestone.
 ## Session Continuity
 
 Last session: 2026-01-24
-Stopped at: v3.0 milestone completion
+Stopped at: v4.0 milestone initialization
 Resume file: None
-Next action: /gsd:new-milestone for v4.0
+Next action: Define requirements, create roadmap
