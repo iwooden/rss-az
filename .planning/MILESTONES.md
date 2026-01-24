@@ -1,5 +1,33 @@
 # Project Milestones: Rolling Stock Stars
 
+## v3.0 WRAP_UP Phase (Shipped: 2026-01-24)
+
+**Delivered:** Deterministic WRAP_UP phase that reorders players by descending cash and executes Foreign Investor automatic company purchases at end of each INVEST round.
+
+**Phases completed:** 9-11 + 10.1 inserted (6 plans total)
+
+**Key accomplishments:**
+
+- WRAP_UP phase handler with player reordering by descending cash (tie-break by old position)
+- Foreign Investor purchases cheapest available companies at face value until unaffordable
+- Availability transition makes all revealed companies available for next INVEST round
+- GameDriver auto-executes non-player phases (WRAP_UP, ACQUISITION) with sentinel action history
+- Terminal state detection prevents infinite phase loops
+- Fixed player_stride calculation bug (phase 10.1) affecting player 1+ and FI data
+
+**Stats:**
+
+- 12 files created/modified
+- ~25,419 lines Cython, ~3,384 lines Python tests
+- 4 phases, 6 plans, 18 requirements
+- 1 day from v2.1 to v3.0 ship
+
+**Git range:** `feat(09-01)` → `docs(11): complete test-updates phase`
+
+**What's next:** Remaining game phases (CLO, INC, DIV, END, ISS, IPO)
+
+---
+
 ## v2.1 Forced Action Auto-Application (Shipped: 2026-01-23)
 
 **Delivered:** GameDriver auto-applies forced actions iteratively until 2+ choices available, with optional history tracking for test observability and comprehensive error handling.

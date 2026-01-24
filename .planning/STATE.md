@@ -2,18 +2,18 @@
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-01-23)
+See: .planning/PROJECT.md (updated 2026-01-24)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** v3.0 Complete - Ready to ship
+**Current focus:** Planning next milestone
 
 ## Current Position
 
-Milestone: v3.0 WRAP_UP Phase
-Phase: 11 of 11 (Test Updates) — COMPLETE
-Plan: 2 of 2
-Status: All plans complete
-Last activity: 2026-01-24 — Completed 11-02-PLAN.md (integration test consolidation)
+Milestone: v3.0 WRAP_UP Phase — SHIPPED
+Phase: Complete (11 phases total through v3.0)
+Plan: N/A
+Status: Ready for next milestone
+Last activity: 2026-01-24 — v3.0 milestone completed and archived
 
 Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] 100%
 
@@ -24,28 +24,19 @@ Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [########
 | v1 | Game State Init | 1 | 1 | 2026-01-20 |
 | v2 | INVEST & BID_IN_AUCTION | 2-6 | 12 | 2026-01-21 |
 | v2.1 | Forced Action Auto-Application | 7-8 | 3 | 2026-01-23 |
+| v3.0 | WRAP_UP Phase | 9-11 + 10.1 | 6 | 2026-01-24 |
 
 See `.planning/milestones/` for full archives.
 
-## v3.0 Roadmap Summary
+## Next Milestone
 
-**Phases:** 4 (9-11 + 10.1 inserted)
-**Requirements:** 18 total
-- Player Reordering: 3 requirements (REORDER-01 to REORDER-03)
-- Foreign Investor Purchases: 7 requirements (FI-01 to FI-07)
-- Company Availability: 1 requirement (AVAIL-01)
-- Phase Transitions: 4 requirements (PHASE-01 to PHASE-04)
-- Testing: 3 requirements (TEST-01 to TEST-03)
-
-**Phase structure:**
-- Phase 9: WRAP_UP Core Logic — Player reordering + phase transitions (7 requirements) COMPLETE
-- Phase 10: FI Purchase Logic — Foreign Investor purchases + company availability (8 requirements) COMPLETE
-- Phase 10.1: Fix WRAP_UP Bugs — Bug fixes for critical issues (inserted) COMPLETE
-- Phase 11: Test Updates — Fix tests + add verification tests (3 requirements) COMPLETE
+**Candidates for v4.0:**
+- Remaining game phases: CLO (Close of Market), INC (Income), DIV (Dividend), END (End of Turn), ISS (Issue Stock), IPO (Initial Public Offering)
+- Full game loop completion
 
 ## Accumulated Context
 
-### Key Patterns (from v1, v2, and v2.1)
+### Key Patterns (from v1-v3.0)
 
 **Cython patterns:**
 - Entity initialization order - Initialize all handles before setting state
@@ -55,6 +46,8 @@ See `.planning/milestones/` for full archives.
 - Cdef variable declaration - Declare all cdef vars at function start
 - Auto-apply loop pattern - Iterative forced action application until 2+ choices
 - Early-exit counting - Stop at count=2 instead of counting all actions
+- Non-player phase pattern - 0 actions valid for deterministic phases (WRAP_UP, ACQUISITION)
+- Sentinel action values - Negative integers (-100, -101) for non-player phase history
 
 **Game logic patterns:**
 - Turn order navigation - Find player at position, advance with wraparound
@@ -65,56 +58,16 @@ See `.planning/milestones/` for full archives.
 - Two-pass presidency algorithm - Find max shares first, then check incumbent for tie-breaking
 - Receivership before presidency - Check receivership first, skip presidency if in receivership
 - Terminal state detection - Check for playable game state before transitioning to INVEST
+- Player reordering - Selection sort by (-cash, old_position) for descending cash with tie-breaking
+- FI purchase loop - While-loop with re-query, ascending company_id for cheapest-first
 
 **Testing patterns:**
 - Per-task atomic commits - feat/test prefixes for git bisect
 - Test fixture pattern - Phase-specific fixtures return state in target phase
 - Shared conftest pattern - Centralized fixtures and assertion helpers
-- Integration test structure - assert_invariants -> apply_action_and_verify -> verify outcome -> assert_invariants
-- Parametrized player counts (3, 6) - Boundary verification
-- History tracking pattern - pass history=[] to DRIVER.apply_action for full chain observation
-- State snapshot pattern - get_state_at(index) reconstructs GameState from history tuple
-- Explicit history assertions - assert len(result.history) == 1 for no-auto-apply verification
-- Test categorization - 3 categories: no changes, explicit assertions, edge cases
-- Integration test consolidation - all cross-phase invariant tests in test_integration.py
-
-### Key Decisions for v3.0
-
-**From research (2026-01-22):**
-- WRAP_UP is fully deterministic (zero player choices)
-- Implement as atomic operation that gets discrete state history entry
-- Loosen 0-action invariant for non-player phases
-- Use while-loop with re-query for FI purchases (no snapshotting)
-- All entity interfaces already exist (no new methods needed)
-
-**From 09-01 (2026-01-23):**
-- Selection sort for player reordering (stable, explicit tie-breaking at 6 players max)
-- Turn number increment in ACQUISITION (final phase before INVEST)
-- setup.py auto-discovery handles new phase modules (no manual edits needed)
-
-**From 09-02 (2026-01-23):**
-- Sentinel action values (negative integers) for non-player phase history entries
-- Non-player phases execute automatically in auto-apply loop with history recording
-- Complete phase flow: INVEST -> WRAP_UP -> ACQUISITION -> INVEST (new turn)
-
-**From 10-01 (2026-01-23):**
-- FI purchase loop uses while-loop with re-query pattern (no snapshotting)
-- Purchase iteration in ascending company_id order (0-35) guarantees cheapest-first
-- Availability transition after all FI purchases (revealed -> auction state change)
-
-**From 11-01 (2026-01-24):**
-- Simplified test strategy when implementation has critical bugs - document bugs, test what can be verified
-- Test files should document known bugs in header comments
-- Phase transition tests can verify flow even when intermediate logic has bugs
-
-**From 10.1-01 (2026-01-24):**
-- player_stride must include is_auction_high_bidder field (stride=74, not 73)
-- Terminal state detection added to acquisition stub (no companies + no corps = GAME_OVER)
-- Player 1+ data corruption was caused by stride mismatch in compute_layout()
-
-**From 11-02 (2026-01-24):**
-- Integration tests consolidated in test_integration.py for centralized extension
-- Per-phase test files focused on unit tests only
+- Integration test consolidation - Cross-phase tests in test_integration.py
+- History tracking pattern - pass history=[] for full chain observation
+- State snapshot pattern - get_state_at(index) reconstructs GameState from history
 
 ### Pending Todos
 
@@ -122,15 +75,11 @@ None.
 
 ### Blockers/Concerns
 
-None - v3.0 milestone complete.
-
-## Roadmap Evolution
-
-- Phase 10.1 inserted after Phase 10: Fix WRAP_UP bugs (URGENT) - 2026-01-24 - COMPLETE
+None - ready for next milestone.
 
 ## Session Continuity
 
-Last session: 2026-01-24T02:05:00Z
-Stopped at: Completed 11-02-PLAN.md
+Last session: 2026-01-24
+Stopped at: v3.0 milestone completion
 Resume file: None
-Next action: Ship v3.0 milestone
+Next action: /gsd:new-milestone for v4.0

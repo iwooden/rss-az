@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A high-performance Cython game engine for "Rolling Stock Stars" board game with complete INVEST and BID_IN_AUCTION phases. The engine stores state as a single contiguous float32 array for zero-copy passing to PyTorch, optimized for AlphaZero-style self-play training.
+A high-performance Cython game engine for "Rolling Stock Stars" board game with complete INVEST, BID_IN_AUCTION, and WRAP_UP phases. The engine stores state as a single contiguous float32 array for zero-copy passing to PyTorch, optimized for AlphaZero-style self-play training.
 
 ## Core Value
 
@@ -40,29 +40,22 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - ✓ Validate 0 legal actions is error (unless GAME_OVER phase) — v2.1
 - ✓ Update tests to account for auto-advancement behavior — v2.1
 
-### Active — v3.0 WRAP_UP Phase
+**v3.0 - WRAP_UP Phase:**
+- ✓ Reorder players by descending cash with tie-breaking by old order — v3.0
+- ✓ Update active player to new position 0 — v3.0
+- ✓ FI buys cheapest available companies at face value — v3.0
+- ✓ Draw new card after each purchase, mark unavailable — v3.0
+- ✓ Handle edge cases (0 cash, empty deck, no available companies) — v3.0
+- ✓ All unavailable companies become available after FI done — v3.0
+- ✓ WRAP_UP triggers when all players pass in INVEST — v3.0
+- ✓ Loosen 0-action invariant for non-player phases — v3.0
+- ✓ WRAP_UP gets discrete state history entry — v3.0
+- ✓ Terminal state detection prevents infinite phase loops — v3.0
+- ✓ 194 tests with comprehensive WRAP_UP coverage — v3.0
 
-**Player Reordering:**
-- [ ] Reorder players by descending cash with tie-breaking by old order
-- [ ] Update active player to new position 0
+### Active
 
-**Foreign Investor Purchases:**
-- [ ] FI buys cheapest available companies at face value
-- [ ] Draw new card after each purchase, mark unavailable
-- [ ] Handle edge cases (0 cash, empty deck, no available companies)
-
-**Company Availability:**
-- [ ] All unavailable companies become available after FI done
-
-**Phase Transitions:**
-- [ ] WRAP_UP triggers when all players pass in INVEST
-- [ ] Loosen 0-action invariant for non-player phases
-- [ ] WRAP_UP gets discrete state history entry
-
-**Testing:**
-- [ ] Fix existing tests that auto-continue past WRAP_UP
-- [ ] Add set_phase() utility for tests
-- [ ] Add player order verification tests
+(None — planning next milestone)
 
 ### Out of Scope
 
@@ -73,6 +66,11 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - State cloning optimization — basic NumPy copy sufficient
 
 ## Context
+
+**Shipped v3.0:** WRAP_UP Phase (2026-01-24)
+- 4 phases (9-11 + 10.1), 6 plans, 18 requirements
+- ~25,419 LOC Cython, ~3,384 LOC Python (tests)
+- Test suite: 194 tests
 
 **Shipped v2.1:** Forced Action Auto-Application (2026-01-23)
 - 2 phases (7-8), 3 plans, 21 requirements
@@ -93,6 +91,9 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - Phase handler pattern (cdef noexcept functions for zero overhead)
 - Two-pass presidency algorithm for tie-breaking
 - Bankruptcy inline execution during sell handler
+- Non-player phase pattern (0 actions valid for deterministic phases)
+- Sentinel action values for non-player phase history (-100, -101)
+- While-loop re-query pattern for dynamic state iteration
 
 ## Key Decisions
 
@@ -112,6 +113,9 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 | Auto-apply loop pattern | Iterative forced action until 2+ choices | ✓ Good |
 | Early-exit counting | Stop at count=2 instead of counting all | ✓ Good |
 | History tracking via optional param | Zero overhead in production, full observability in tests | ✓ Good |
+| Selection sort for player reordering | Stable, explicit tie-breaking at O(n²) for n≤6 | ✓ Good |
+| Sentinel actions for non-player phases | Negative values (-100, -101) distinguish from real actions | ✓ Good |
+| Terminal state check in ACQUISITION | Prevents infinite INVEST→WRAP_UP→ACQUISITION loops | ✓ Good |
 
 ## Constraints
 
@@ -119,15 +123,5 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - **Reproducibility:** Seed parameter must produce identical games
 - **Compatibility:** State array must be directly usable by PyTorch
 
-## Current Milestone: v3.0 WRAP_UP Phase
-
-**Goal:** Implement the WRAP_UP phase that handles player reordering and Foreign Investor purchases at end of INVEST round.
-
-**Target features:**
-- Player reordering by descending cash with tie-breaking
-- Foreign Investor automatic company purchases
-- Company availability state transition
-- Phase transition with discrete state history
-
 ---
-*Last updated: 2026-01-23 — v3.0 milestone started*
+*Last updated: 2026-01-24 — v3.0 milestone complete*
