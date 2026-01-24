@@ -5,17 +5,17 @@
 See: .planning/PROJECT.md (updated 2026-01-23)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** Phase 11 - Test Updates (ready to proceed)
+**Current focus:** v3.0 Complete - Ready to ship
 
 ## Current Position
 
 Milestone: v3.0 WRAP_UP Phase
-Phase: 11 of 11 (Test Updates) — IN PROGRESS
+Phase: 11 of 11 (Test Updates) — COMPLETE
 Plan: 2 of 2
-Status: Plan 11-01 complete, 11-02 ready
-Last activity: 2026-01-24 — Created 11-02-PLAN.md (integration test factoring)
+Status: All plans complete
+Last activity: 2026-01-24 — Completed 11-02-PLAN.md (integration test consolidation)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [#########.] 95% (11-02 remaining)
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] 100%
 
 ## Archived Milestones
 
@@ -41,7 +41,7 @@ See `.planning/milestones/` for full archives.
 - Phase 9: WRAP_UP Core Logic — Player reordering + phase transitions (7 requirements) COMPLETE
 - Phase 10: FI Purchase Logic — Foreign Investor purchases + company availability (8 requirements) COMPLETE
 - Phase 10.1: Fix WRAP_UP Bugs — Bug fixes for critical issues (inserted) COMPLETE
-- Phase 11: Test Updates — Fix tests + add verification tests (3 requirements) READY
+- Phase 11: Test Updates — Fix tests + add verification tests (3 requirements) COMPLETE
 
 ## Accumulated Context
 
@@ -76,6 +76,7 @@ See `.planning/milestones/` for full archives.
 - State snapshot pattern - get_state_at(index) reconstructs GameState from history tuple
 - Explicit history assertions - assert len(result.history) == 1 for no-auto-apply verification
 - Test categorization - 3 categories: no changes, explicit assertions, edge cases
+- Integration test consolidation - all cross-phase invariant tests in test_integration.py
 
 ### Key Decisions for v3.0
 
@@ -111,16 +112,17 @@ See `.planning/milestones/` for full archives.
 - Terminal state detection added to acquisition stub (no companies + no corps = GAME_OVER)
 - Player 1+ data corruption was caused by stride mismatch in compute_layout()
 
+**From 11-02 (2026-01-24):**
+- Integration tests consolidated in test_integration.py for centralized extension
+- Per-phase test files focused on unit tests only
+
 ### Pending Todos
 
 None.
 
 ### Blockers/Concerns
 
-**All bugs fixed - Phase 10.1 complete:**
-- 194 tests total: 194 passing, 0 failing
-- All WRAP_UP bugs resolved
-- Ready to proceed with Phase 11 or ship v3.0
+None - v3.0 milestone complete.
 
 ## Roadmap Evolution
 
@@ -128,7 +130,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-24T01:30:00Z
-Stopped at: Created 11-02-PLAN.md
+Last session: 2026-01-24T02:05:00Z
+Stopped at: Completed 11-02-PLAN.md
 Resume file: None
-Next action: /gsd:execute-phase 11 (plan 11-02 pending)
+Next action: Ship v3.0 milestone
