@@ -1,12 +1,4 @@
-"""Tests for WRAP_UP phase behavior.
-
-NOTE: Comprehensive testing blocked by critical bugs in WRAP_UP implementation:
-- Bug 1: FI cash becomes 0 after purchases instead of correct remainder
-- Bug 2: Player cash becomes 0 for players 1+ after WRAP_UP cycle
-
-These bugs prevent testing FI purchase scenarios and player reordering by cash.
-Tests below cover what CAN be verified given the current implementation state.
-"""
+"""Tests for WRAP_UP phase behavior."""
 import pytest
 from core.state import GameState
 from core.driver import DRIVER
@@ -14,6 +6,7 @@ from core.actions import get_action_layout
 from core.data import GamePhases
 from entities.turn import TURN
 from entities.player import PLAYERS
+from entities.fi import FI
 from entities.company import COMPANIES
 
 STATUS_OK = 0
@@ -139,11 +132,162 @@ class TestPhaseTransitions:
 
 
 # =============================================================================
-# BLOCKED TESTS (due to implementation bugs)
+# PLAYER CASH PRESERVATION TESTS - These expose Bug 2
 # =============================================================================
-# The following test classes are commented out due to critical bugs:
-#
-# TestPlayerReordering - Player cash becomes 0 after WRAP_UP (Bug 2)
-# TestFIPurchases - FI cash becomes 0 after purchases (Bug 1)
-#
-# These tests should be uncommented and completed once the bugs are fixed.
+
+class TestPlayerCashPreservation:
+    """Test that player cash is preserved through WRAP_UP cycle.
+
+    BUG: Player cash for players 1+ becomes 0 after WRAP_UP.
+    These tests WILL FAIL until the bug is fixed.
+    """
+
+    def test_player_cash_preserved_through_wrap_up(self):
+        """All players should retain their cash after WRAP_UP cycle."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set specific cash values
+        PLAYERS[0].set_cash(state, 20)
+        PLAYERS[1].set_cash(state, 30)
+        PLAYERS[2].set_cash(state, 25)
+
+        # Record cash before
+        cash_before = [PLAYERS[i].get_cash(state) for i in range(3)]
+
+        # Trigger WRAP_UP
+        trigger_wrap_up(state)
+
+        # All players should retain their cash
+        for i in range(3):
+            actual_cash = PLAYERS[i].get_cash(state)
+            assert actual_cash == cash_before[i], \
+                f"Player {i} cash should be {cash_before[i]}, got {actual_cash}"
+
+    @pytest.mark.parametrize("num_players", [3, 6])
+    def test_player_cash_preserved_all_player_counts(self, num_players):
+        """Player cash preservation works for all player counts."""
+        state = GameState(num_players=num_players)
+        state.initialize_game(seed=42)
+
+        # Set cash: player i gets (i+1)*10
+        for i in range(num_players):
+            PLAYERS[i].set_cash(state, (i + 1) * 10)
+
+        cash_before = [PLAYERS[i].get_cash(state) for i in range(num_players)]
+
+        # Trigger WRAP_UP
+        trigger_wrap_up(state)
+
+        # All players should retain their cash
+        for i in range(num_players):
+            actual_cash = PLAYERS[i].get_cash(state)
+            assert actual_cash == cash_before[i], \
+                f"Player {i} cash should be {cash_before[i]}, got {actual_cash}"
+
+
+# =============================================================================
+# FI CASH PRESERVATION TESTS - These expose Bug 1
+# =============================================================================
+
+class TestFICashPreservation:
+    """Test that FI cash is correctly calculated after purchases.
+
+    BUG: FI cash becomes 0 after WRAP_UP regardless of purchases made.
+    These tests WILL FAIL until the bug is fixed.
+    """
+
+    def test_fi_cash_preserved_when_no_purchases(self):
+        """FI should retain cash when no companies are available to purchase."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Clear all companies from auction (nothing to buy)
+        for company_id in range(36):
+            COMPANIES[company_id].remove_from_game(state)
+
+        # Set FI cash
+        FI.set_cash(state, 50)
+        fi_cash_before = FI.get_cash(state)
+
+        # Trigger WRAP_UP
+        trigger_wrap_up(state)
+
+        # FI should retain all cash (nothing to buy)
+        assert FI.get_cash(state) == fi_cash_before, \
+            f"FI cash should be {fi_cash_before}, got {FI.get_cash(state)}"
+
+    def test_fi_cash_zero_means_no_change(self):
+        """FI with 0 cash should still have 0 cash after WRAP_UP."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set FI cash to 0
+        FI.set_cash(state, 0)
+
+        # Trigger WRAP_UP
+        trigger_wrap_up(state)
+
+        # FI should still have 0 (can't buy anything)
+        assert FI.get_cash(state) == 0
+
+
+# =============================================================================
+# PLAYER REORDERING TESTS - These expose Bug 2 indirectly
+# =============================================================================
+
+class TestPlayerReordering:
+    """Test player reordering by cash with tie-breaking.
+
+    These tests verify REORDER-01, REORDER-02, REORDER-03.
+    They WILL FAIL until Bug 2 is fixed (player cash becomes 0).
+    """
+
+    @pytest.mark.parametrize("cash_values,expected_order", [
+        # No ties - descending cash order
+        ([20, 30, 25], [1, 2, 0]),  # Player 1 (30) > Player 2 (25) > Player 0 (20)
+        ([30, 25, 20], [0, 1, 2]),  # Already sorted
+        ([25, 20, 30], [2, 0, 1]),  # Player 2 (30) > Player 0 (25) > Player 1 (20)
+    ])
+    def test_reorder_by_descending_cash(self, cash_values, expected_order):
+        """Players should be reordered by descending cash."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set specific cash values
+        for i in range(3):
+            PLAYERS[i].set_cash(state, cash_values[i])
+
+        # Trigger WRAP_UP
+        trigger_wrap_up(state)
+
+        # Check turn order matches expected
+        for expected_position, player_id in enumerate(expected_order):
+            actual_position = PLAYERS[player_id].get_turn_order(state)
+            assert actual_position == expected_position, \
+                f"Player {player_id} should be at position {expected_position}, got {actual_position}"
+
+    @pytest.mark.parametrize("cash_values,expected_order", [
+        # Two-way tie - old position preserved
+        ([30, 30, 20], [0, 1, 2]),  # Players 0,1 tied at 30, old order preserved
+        ([20, 30, 30], [1, 2, 0]),  # Players 1,2 tied at 30, old order preserved
+        # Three-way tie
+        ([30, 30, 30], [0, 1, 2]),  # All tied, old order preserved
+    ])
+    def test_tie_breaking_preserves_old_order(self, cash_values, expected_order):
+        """When players have equal cash, old turn order is preserved."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set specific cash values
+        for i in range(3):
+            PLAYERS[i].set_cash(state, cash_values[i])
+
+        # Trigger WRAP_UP
+        trigger_wrap_up(state)
+
+        # Check turn order matches expected
+        for expected_position, player_id in enumerate(expected_order):
+            actual_position = PLAYERS[player_id].get_turn_order(state)
+            assert actual_position == expected_position, \
+                f"Player {player_id} should be at position {expected_position}, got {actual_position}"
