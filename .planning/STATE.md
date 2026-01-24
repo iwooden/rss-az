@@ -31,8 +31,8 @@ See `.planning/milestones/` for full archives.
 ## Next Milestone
 
 **Candidates for v4.0:**
-- Remaining game phases: CLO (Close of Market), INC (Income), DIV (Dividend), END (End of Turn), ISS (Issue Stock), IPO (Initial Public Offering)
-- Full game loop completion
+- Remaining game phases: ACQ (Acquisition), CLO (Closing), INC (Income), DIV (Dividends), END (End Card), ISS (Issue Share), IPO (Form Corporation)
+- Full game loop completion (all 9 phases per turn)
 
 ## Accumulated Context
 
