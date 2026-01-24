@@ -138,9 +138,25 @@ Plans:
 Plans:
 - [x] 10-01-PLAN.md — Implement FI purchase loop and availability transition
 
+### Phase 10.1: Fix WRAP_UP Bugs (INSERTED)
+**Goal**: Fix player_stride calculation bug causing player 1+ and FI data corruption
+**Depends on**: Phase 10
+**Requirements**: Fixes for REORDER-01, REORDER-02, REORDER-03, FI-01 through FI-07
+**Success Criteria** (what must be TRUE):
+  1. Player cash preserved through WRAP_UP cycle (players 1+ no longer zeroed)
+  2. FI cash correctly calculated after purchases (remainder preserved, not zeroed)
+  3. No infinite loop when no companies available for FI purchase
+  4. All 4 failing tests in test_wrap_up.py pass
+**Plans**: 1 plan
+
+Plans:
+- [ ] 10.1-01-PLAN.md — Add is_auction_high_bidder to player_stride
+
+**Root cause:** compute_layout() missing is_auction_high_bidder in player_stride calculation (stride=73 but should be 74). This causes player 1+ base offsets to drift by 1 float per player, corrupting all data access.
+
 ### Phase 11: Test Updates
 **Goal**: Fix existing tests and add WRAP_UP verification tests
-**Depends on**: Phase 10
+**Depends on**: Phase 10.1
 **Requirements**: TEST-01, TEST-02, TEST-03
 **Success Criteria** (what must be TRUE):
   1. Existing INVEST/auction tests pass with auto-continue behavior through WRAP_UP
@@ -153,7 +169,7 @@ Plans:
 
 ## Progress
 
-**Execution Order:** 9 → 10 → 11
+**Execution Order:** 9 → 10 → 10.1 → 11
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -167,7 +183,8 @@ Plans:
 | 8. Test Updates | v2.1 | 2/2 | Complete | 2026-01-23 |
 | 9. WRAP_UP Core Logic | v3.0 | 2/2 | Complete | 2026-01-23 |
 | 10. FI Purchase Logic | v3.0 | 1/1 | Complete | 2026-01-23 |
-| 11. Test Updates | v3.0 | 0/1 | Not started | - |
+| 10.1 Fix WRAP_UP Bugs | v3.0 | 0/1 | Ready | - |
+| 11. Test Updates | v3.0 | 0/1 | Blocked on 10.1 | - |
 
 ---
-*Last updated: 2026-01-23*
+*Last updated: 2026-01-24*
