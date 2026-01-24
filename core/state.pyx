@@ -70,6 +70,7 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         1 +                 # cash
         1 +                 # net_worth
         num_players +       # turn_order one-hot
+        1 +                 # is_auction_high_bidder
         GameConstants.NUM_COMPANIES +     # owned_companies
         GameConstants.NUM_CORPS +         # owned_shares
         GameConstants.NUM_CORPS +         # is_president
