@@ -5,17 +5,17 @@
 See: .planning/PROJECT.md (updated 2026-01-23)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** Phase 11 - Test Updates
+**Current focus:** Phase 11 - Test Updates (ready to proceed)
 
 ## Current Position
 
 Milestone: v3.0 WRAP_UP Phase
-Phase: 10.1 of 11 (Fix WRAP_UP Bugs) — INSERTED
-Plan: 0 of ? (not yet planned)
-Status: Awaiting planning
-Last activity: 2026-01-24 — Inserted Phase 10.1 for bug fixes
+Phase: 10.1 of 11 (Fix WRAP_UP Bugs) — COMPLETE
+Plan: 1 of 1
+Status: Phase complete
+Last activity: 2026-01-24 — Completed 10.1-01-PLAN.md (bug fixes)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [######!   ] 67% (4 failing tests)
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [#########.] 90% (all tests passing)
 
 ## Archived Milestones
 
@@ -29,7 +29,7 @@ See `.planning/milestones/` for full archives.
 
 ## v3.0 Roadmap Summary
 
-**Phases:** 3 (9-11)
+**Phases:** 4 (9-11 + 10.1 inserted)
 **Requirements:** 18 total
 - Player Reordering: 3 requirements (REORDER-01 to REORDER-03)
 - Foreign Investor Purchases: 7 requirements (FI-01 to FI-07)
@@ -38,9 +38,10 @@ See `.planning/milestones/` for full archives.
 - Testing: 3 requirements (TEST-01 to TEST-03)
 
 **Phase structure:**
-- Phase 9: WRAP_UP Core Logic — Player reordering + phase transitions (7 requirements)
-- Phase 10: FI Purchase Logic — Foreign Investor purchases + company availability (8 requirements)
-- Phase 11: Test Updates — Fix tests + add verification tests (3 requirements)
+- Phase 9: WRAP_UP Core Logic — Player reordering + phase transitions (7 requirements) COMPLETE
+- Phase 10: FI Purchase Logic — Foreign Investor purchases + company availability (8 requirements) COMPLETE
+- Phase 10.1: Fix WRAP_UP Bugs — Bug fixes for critical issues (inserted) COMPLETE
+- Phase 11: Test Updates — Fix tests + add verification tests (3 requirements) READY
 
 ## Accumulated Context
 
@@ -63,6 +64,7 @@ See `.planning/milestones/` for full archives.
 - Bankruptcy inline execution - Execute immediately during sell, no deferral
 - Two-pass presidency algorithm - Find max shares first, then check incumbent for tie-breaking
 - Receivership before presidency - Check receivership first, skip presidency if in receivership
+- Terminal state detection - Check for playable game state before transitioning to INVEST
 
 **Testing patterns:**
 - Per-task atomic commits - feat/test prefixes for git bisect
@@ -92,17 +94,22 @@ See `.planning/milestones/` for full archives.
 **From 09-02 (2026-01-23):**
 - Sentinel action values (negative integers) for non-player phase history entries
 - Non-player phases execute automatically in auto-apply loop with history recording
-- Complete phase flow: INVEST → WRAP_UP → ACQUISITION → INVEST (new turn)
+- Complete phase flow: INVEST -> WRAP_UP -> ACQUISITION -> INVEST (new turn)
 
 **From 10-01 (2026-01-23):**
 - FI purchase loop uses while-loop with re-query pattern (no snapshotting)
 - Purchase iteration in ascending company_id order (0-35) guarantees cheapest-first
-- Availability transition after all FI purchases (revealed → auction state change)
+- Availability transition after all FI purchases (revealed -> auction state change)
 
 **From 11-01 (2026-01-24):**
 - Simplified test strategy when implementation has critical bugs - document bugs, test what can be verified
 - Test files should document known bugs in header comments
 - Phase transition tests can verify flow even when intermediate logic has bugs
+
+**From 10.1-01 (2026-01-24):**
+- player_stride must include is_auction_high_bidder field (stride=74, not 73)
+- Terminal state detection added to acquisition stub (no companies + no corps = GAME_OVER)
+- Player 1+ data corruption was caused by stride mismatch in compute_layout()
 
 ### Pending Todos
 
@@ -110,37 +117,18 @@ None.
 
 ### Blockers/Concerns
 
-**Phase 11 complete - WRAP_UP testing reveals critical bugs:**
-- 190 tests total: 186 passing, 4 failing
-- test_invest.py updated for WRAP_UP flow (9 tests fixed)
-- test_wrap_up.py created with 18 tests (14 passing, 4 failing)
-- **Failing tests document bugs** - this is correct behavior
-
-**CRITICAL BUGS in WRAP_UP implementation (4 failing tests):**
-
-**Bug 1: FI cash becomes 0 after purchases**
-- Test: `TestFICashPreservation::test_fi_cash_preserved_when_no_purchases`
-- FI cash incorrectly zeroed after WRAP_UP regardless of purchases
-- Example: FI has 50 cash, no purchases, ends with 0 cash
-
-**Bug 2: Player cash becomes 0 for players 1+ after WRAP_UP**
-- Tests: `TestPlayerCashPreservation::test_player_cash_preserved_*` (3 tests)
-- After WRAP_UP cycle, players 1+ have cash=0 regardless of initial value
-- Example: Set cash [20, 30, 25], after WRAP_UP: [20, 0, 0]
-
-**Bug 3: Infinite loop when no companies available**
-- ForcedActionLoopError when FI purchase loop has no companies to buy
-- Discovered via failing `test_fi_cash_preserved_when_no_purchases`
-
-**v3.0 cannot ship until bugs are fixed** - tests will remain failing as documentation
+**All bugs fixed - Phase 10.1 complete:**
+- 194 tests total: 194 passing, 0 failing
+- All WRAP_UP bugs resolved
+- Ready to proceed with Phase 11 or ship v3.0
 
 ## Roadmap Evolution
 
-- Phase 10.1 inserted after Phase 10: Fix WRAP_UP bugs (URGENT) — 2026-01-24
+- Phase 10.1 inserted after Phase 10: Fix WRAP_UP bugs (URGENT) - 2026-01-24 - COMPLETE
 
 ## Session Continuity
 
-Last session: 2026-01-24
-Stopped at: Inserted Phase 10.1 for bug fixes
+Last session: 2026-01-24T00:57:32Z
+Stopped at: Completed 10.1-01-PLAN.md
 Resume file: None
-Next action: /gsd:plan-phase 10.1
+Next action: /gsd:plan-phase 11 (or ship v3.0)
