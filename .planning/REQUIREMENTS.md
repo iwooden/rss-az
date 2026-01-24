@@ -31,9 +31,9 @@
 
 ### Testing
 
-- [ ] **TEST-01**: Fix existing INVEST/auction tests that now auto-continue past WRAP_UP
-- [ ] **TEST-02**: Add `set_phase()` method to Turn entity for test utilities
-- [ ] **TEST-03**: Add player order verification tests (INVEST → WRAP_UP → set_phase(INVEST) → verify order)
+- [x] **TEST-01**: Fix existing INVEST/auction tests that now auto-continue past WRAP_UP
+- [x] **TEST-02**: Add `set_phase()` method to Turn entity for test utilities
+- [x] **TEST-03**: Add player order verification tests (INVEST → WRAP_UP → set_phase(INVEST) → verify order)
 
 ---
 
@@ -70,9 +70,9 @@
 | FI-06 | Phase 10 | 10-01 | ✓ Complete |
 | FI-07 | Phase 10 | 10-01 | ✓ Complete |
 | AVAIL-01 | Phase 10 | 10-01 | ✓ Complete |
-| TEST-01 | Phase 11 | TBD | Pending |
-| TEST-02 | Phase 11 | TBD | Pending |
-| TEST-03 | Phase 11 | TBD | Pending |
+| TEST-01 | Phase 11 | 11-01 | ✓ Complete |
+| TEST-02 | Phase 11 | 11-01 | ✓ Complete |
+| TEST-03 | Phase 11 | 11-01 | ✓ Complete |
 
 ---
 *18 requirements across 5 categories*

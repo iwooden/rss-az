@@ -167,7 +167,7 @@ Plans:
 
 Plans:
 - [x] 11-01-PLAN.md — Fix test failures and add WRAP_UP verification tests
-- [ ] 11-02-PLAN.md — Factor out integration tests to test_integration.py
+- [x] 11-02-PLAN.md — Factor out integration tests to test_integration.py
 
 ## Progress
 
@@ -186,7 +186,7 @@ Plans:
 | 9. WRAP_UP Core Logic | v3.0 | 2/2 | Complete | 2026-01-23 |
 | 10. FI Purchase Logic | v3.0 | 1/1 | Complete | 2026-01-23 |
 | 10.1 Fix WRAP_UP Bugs | v3.0 | 1/1 | Complete | 2026-01-24 |
-| 11. Test Updates | v3.0 | 1/2 | In Progress | - |
+| 11. Test Updates | v3.0 | 2/2 | Complete | 2026-01-24 |
 
 ---
 *Last updated: 2026-01-24*
