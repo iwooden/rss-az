@@ -34,16 +34,13 @@ def get_first_valid_auction_action(state):
 
 
 def apply_pass_to_all_players(state, num_players):
-    """Apply pass action for all players (triggers GAME_OVER)."""
+    """Apply pass action for all players (triggers WRAP_UP -> ACQUISITION -> new INVEST turn)."""
     layout = get_action_layout(num_players)
     pass_idx = layout['pass_invest']
     for i in range(num_players):
         result = DRIVER.apply_action(state, pass_idx)
-        if i < num_players - 1:
-            assert result == STATUS_OK
-        else:
-            # Last pass triggers game over
-            assert result == STATUS_GAME_OVER
+        # All passes return STATUS_OK now (WRAP_UP auto-applies and returns to INVEST)
+        assert result == STATUS_OK
 
 
 # =============================================================================
@@ -113,13 +110,17 @@ class TestPassAction:
             # All players should have unique positions
             assert position in [0, 1, 2]
 
-    def test_all_players_pass_transitions_to_game_over(self, game_state):
-        """INV-03: GAME_OVER transition when all players pass."""
+    def test_all_players_pass_triggers_wrap_up_cycle(self, game_state):
+        """INV-03: All players passing triggers WRAP_UP -> ACQUISITION -> new INVEST turn."""
         # Apply pass for all 3 players
         apply_pass_to_all_players(game_state, 3)
 
-        # Verify phase transition
-        assert game_state.get_phase() == GamePhases.PHASE_GAME_OVER
+        # Verify phase transition to new INVEST turn (after WRAP_UP -> ACQUISITION)
+        assert game_state.get_phase() == GamePhases.PHASE_INVEST
+        # Turn number should be incremented (ACQUISITION increments it)
+        assert TURN.get_turn_number(game_state) == 2
+        # Consecutive passes reset after WRAP_UP
+        assert TURN.get_consecutive_passes(game_state) == 0
 
     def test_non_pass_resets_consecutive_passes(self, game_state):
         """INV-02: Non-pass action (auction) resets consecutive_passes."""
@@ -1090,16 +1091,18 @@ class TestMultiplePlayerCounts:
             assert state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
 
     @pytest.mark.parametrize("num_players", [3, 4, 5, 6])
-    def test_game_over_triggers_at_correct_pass_count(self, num_players):
-        """GAME_OVER triggers after exactly num_players passes."""
+    def test_wrap_up_triggers_at_correct_pass_count(self, num_players):
+        """WRAP_UP triggers after exactly num_players passes, returning to INVEST."""
         state = GameState(num_players=num_players)
         state.initialize_game(seed=42)
 
         # Apply pass for all players
         apply_pass_to_all_players(state, num_players)
 
-        # Verify phase transition
-        assert state.get_phase() == GamePhases.PHASE_GAME_OVER
+        # Verify phase transition back to INVEST (after WRAP_UP -> ACQUISITION)
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        # Turn number incremented
+        assert TURN.get_turn_number(state) == 2
 
     @pytest.mark.parametrize("num_players", [3, 4, 5, 6])
     def test_buy_works_all_player_counts(self, num_players):
@@ -1226,8 +1229,8 @@ class TestInvestIntegration:
         assert_invariants(trade_state, "After two buys")
 
     @pytest.mark.parametrize("num_players", [3, 6])
-    def test_game_over_transition_maintains_invariants(self, num_players):
-        """Phase transition to GAME_OVER maintains invariants."""
+    def test_wrap_up_transition_maintains_invariants(self, num_players):
+        """Phase transition through WRAP_UP maintains invariants."""
         from tests.phases.conftest import apply_action_and_verify, assert_invariants
 
         state = GameState(num_players=num_players)
@@ -1236,16 +1239,14 @@ class TestInvestIntegration:
         assert_invariants(state, "Initial state")
 
         layout = get_action_layout(num_players)
-        # Apply all but last pass with verify helper
-        for i in range(num_players - 1):
+        # Apply all passes with verify helper
+        for i in range(num_players):
             apply_action_and_verify(state, layout['pass_invest'], f"Pass {i+1}")
 
-        # Last pass triggers GAME_OVER, apply manually
-        result = DRIVER.apply_action(state, layout['pass_invest'])
-        assert result == STATUS_GAME_OVER
-
-        assert state.get_phase() == GamePhases.PHASE_GAME_OVER
-        assert_invariants(state, "After GAME_OVER transition")
+        # After all passes, should be back in INVEST (after WRAP_UP -> ACQUISITION)
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        assert TURN.get_turn_number(state) == 2
+        assert_invariants(state, "After WRAP_UP -> ACQUISITION -> INVEST transition")
 
 
 # =============================================================================
@@ -1288,11 +1289,12 @@ class TestAutoApplyEdgeCases:
         (3, 42),
         (6, 123),
     ])
-    def test_consecutive_passes_game_over_chain(self, num_players, seed, apply_and_track):
-        """Game over via all players passing is captured in history.
+    def test_consecutive_passes_wrap_up_chain(self, num_players, seed, apply_and_track):
+        """All players passing triggers WRAP_UP -> ACQUISITION -> INVEST with sentinel actions in history.
 
-        When player N-1 passes (completing the consecutive pass requirement),
-        the game transitions to GAME_OVER. This should be reflected in status.
+        When player N passes (completing the consecutive pass requirement),
+        the game auto-applies WRAP_UP and ACQUISITION phases, returning to INVEST.
+        Sentinel actions (-100 for WRAP_UP, -101 for ACQUISITION) should appear in history.
         """
         state = GameState(num_players=num_players)
         state.initialize_game(seed=seed)
@@ -1305,7 +1307,16 @@ class TestAutoApplyEdgeCases:
             result = DRIVER.apply_action(state, pass_idx)
             assert result == STATUS_OK
 
-        # Last pass triggers game over
+        # Last pass triggers WRAP_UP auto-apply chain
         result = apply_and_track(state, pass_idx)
-        assert result.status == STATUS_GAME_OVER
-        assert state.get_phase() == GamePhases.PHASE_GAME_OVER
+        assert result.status == STATUS_OK
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        assert TURN.get_turn_number(state) == 2
+
+        # Verify history contains sentinel actions for WRAP_UP (-100) and ACQUISITION (-101)
+        # History should have: pass action, -100 (WRAP_UP), -101 (ACQUISITION)
+        assert len(result.history) >= 3, f"Expected at least 3 history entries (pass + 2 sentinels), got {len(result.history)}"
+        # Check that sentinels appear in history
+        action_values = [entry[1] for entry in result.history]
+        assert -100 in action_values, "WRAP_UP sentinel (-100) not found in history"
+        assert -101 in action_values, "ACQUISITION sentinel (-101) not found in history"
