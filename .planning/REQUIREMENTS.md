@@ -17,10 +17,10 @@ AlphaZero-optimized ACQUISITION phase with offer-based flow, same-president rest
 ### Offer Generation & Priority
 
 - [ ] **OFFER-01**: Generate valid acquisition offers in sorted priority order
-- [ ] **OFFER-02**: OS→FI offers come first (OS always has FI priority)
-- [ ] **OFFER-03**: Other Corp→FI offers sorted by descending share price
-- [ ] **OFFER-04**: Corp→Corp offers (same president) sorted by (buyer share price, target face value)
-- [ ] **OFFER-05**: Corp→Player private company offers sorted by (buyer share price, target face value)
+- [ ] **OFFER-02**: OS->FI offers come first (OS always has FI priority)
+- [ ] **OFFER-03**: Other Corp->FI offers sorted by descending share price
+- [ ] **OFFER-04**: Corp->Corp offers (same president) sorted by (buyer share price, target face value)
+- [ ] **OFFER-05**: Corp->Player private company offers sorted by (buyer share price, target face value)
 
 ### Offer State Management
 
@@ -40,7 +40,7 @@ AlphaZero-optimized ACQUISITION phase with offer-based flow, same-president rest
 
 - [ ] **VALID-01**: Price must be within company's [low_price, high_price] span
 - [ ] **VALID-02**: Buyer corp must have sufficient cash
-- [ ] **VALID-03**: Seller corp must keep ≥1 company (owned + acquisition_companies after sale)
+- [ ] **VALID-03**: Seller corp must keep >=1 company (owned + acquisition_companies after sale)
 - [ ] **VALID-04**: Target company cannot already be in acquisition_companies
 - [ ] **VALID-05**: Target company cannot be in buyer's owned_companies
 - [ ] **VALID-06**: Same-president requirement for corp-to-corp and corp-to-player offers
@@ -71,56 +71,56 @@ AlphaZero-optimized ACQUISITION phase with offer-based flow, same-president rest
 - [ ] **TEST-03**: Unit tests for all validation rules (price range, cash, minimum companies, etc.)
 - [ ] **TEST-04**: Unit tests for receivership auto-buy behavior
 - [ ] **TEST-05**: Unit tests for phase flow (offer advancement, phase transition, proceeds merge)
-- [ ] **TEST-06**: Integration tests covering INVEST→WRAP_UP→ACQUISITION→CLOSING flow
+- [ ] **TEST-06**: Integration tests covering INVEST->WRAP_UP->ACQUISITION->CLOSING flow
 - [ ] **TEST-07**: Edge case tests (no valid offers, all corps in receivership, empty FI, etc.)
 
 ---
 
 ## Traceability
 
-| Requirement | Phase | Plan |
-|-------------|-------|------|
-| OFFER-01 | TBD | TBD |
-| OFFER-02 | TBD | TBD |
-| OFFER-03 | TBD | TBD |
-| OFFER-04 | TBD | TBD |
-| OFFER-05 | TBD | TBD |
-| STATE-01 | TBD | TBD |
-| STATE-02 | TBD | TBD |
-| STATE-03 | TBD | TBD |
-| STATE-04 | TBD | TBD |
-| ACTION-01 | TBD | TBD |
-| ACTION-02 | TBD | TBD |
-| ACTION-03 | TBD | TBD |
-| ACTION-04 | TBD | TBD |
-| VALID-01 | TBD | TBD |
-| VALID-02 | TBD | TBD |
-| VALID-03 | TBD | TBD |
-| VALID-04 | TBD | TBD |
-| VALID-05 | TBD | TBD |
-| VALID-06 | TBD | TBD |
-| RECV-01 | TBD | TBD |
-| RECV-02 | TBD | TBD |
-| RECV-03 | TBD | TBD |
-| FLOW-01 | TBD | TBD |
-| FLOW-02 | TBD | TBD |
-| FLOW-03 | TBD | TBD |
-| FLOW-04 | TBD | TBD |
-| DRIVER-01 | TBD | TBD |
-| DRIVER-02 | TBD | TBD |
-| DRIVER-03 | TBD | TBD |
-| TEST-01 | TBD | TBD |
-| TEST-02 | TBD | TBD |
-| TEST-03 | TBD | TBD |
-| TEST-04 | TBD | TBD |
-| TEST-05 | TBD | TBD |
-| TEST-06 | TBD | TBD |
-| TEST-07 | TBD | TBD |
+| Requirement | Phase | Plan | Status |
+|-------------|-------|------|--------|
+| OFFER-01 | 12 | TBD | Pending |
+| OFFER-02 | 12 | TBD | Pending |
+| OFFER-03 | 12 | TBD | Pending |
+| OFFER-04 | 12 | TBD | Pending |
+| OFFER-05 | 12 | TBD | Pending |
+| STATE-01 | 12 | TBD | Pending |
+| STATE-02 | 12 | TBD | Pending |
+| STATE-03 | 12 | TBD | Pending |
+| STATE-04 | 12 | TBD | Pending |
+| ACTION-01 | 13 | TBD | Pending |
+| ACTION-02 | 13 | TBD | Pending |
+| ACTION-03 | 13 | TBD | Pending |
+| ACTION-04 | 13 | TBD | Pending |
+| VALID-01 | 13 | TBD | Pending |
+| VALID-02 | 13 | TBD | Pending |
+| VALID-03 | 13 | TBD | Pending |
+| VALID-04 | 13 | TBD | Pending |
+| VALID-05 | 13 | TBD | Pending |
+| VALID-06 | 13 | TBD | Pending |
+| RECV-01 | 14 | TBD | Pending |
+| RECV-02 | 14 | TBD | Pending |
+| RECV-03 | 14 | TBD | Pending |
+| FLOW-01 | 14 | TBD | Pending |
+| FLOW-02 | 14 | TBD | Pending |
+| FLOW-03 | 14 | TBD | Pending |
+| FLOW-04 | 14 | TBD | Pending |
+| DRIVER-01 | 14 | TBD | Pending |
+| DRIVER-02 | 14 | TBD | Pending |
+| DRIVER-03 | 14 | TBD | Pending |
+| TEST-01 | 15 | TBD | Pending |
+| TEST-02 | 15 | TBD | Pending |
+| TEST-03 | 15 | TBD | Pending |
+| TEST-04 | 15 | TBD | Pending |
+| TEST-05 | 15 | TBD | Pending |
+| TEST-06 | 15 | TBD | Pending |
+| TEST-07 | 15 | TBD | Pending |
 
 ---
 
 ## Out of Scope
 
-- Inter-player acquisition negotiation — simplified for AlphaZero training
-- FI intervention/preemption mechanics — handled via sorted offer priority
-- Price negotiation within spans — fixed accept/reject model
+- Inter-player acquisition negotiation - simplified for AlphaZero training
+- FI intervention/preemption mechanics - handled via sorted offer priority
+- Price negotiation within spans - fixed accept/reject model

@@ -5,15 +5,15 @@
 See: .planning/PROJECT.md (updated 2026-01-24)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** Planning next milestone
+**Current focus:** v4.0 ACQUISITION Phase - Phase 12 (Offer Infrastructure)
 
 ## Current Position
 
 Milestone: v4.0 ACQUISITION Phase
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-01-24 — Milestone v4.0 started
+Phase: 12 of 15 (Offer Infrastructure)
+Plan: Ready to plan
+Status: Ready to plan
+Last activity: 2026-01-24 - Roadmap created for v4.0 milestone
 
 Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [          ] 0%
 
@@ -32,14 +32,17 @@ See `.planning/milestones/` for full archives.
 
 **Goal:** Implement ACQUISITION phase with AlphaZero-optimized mechanics
 
+**Phases:**
+- Phase 12: Offer Infrastructure (9 requirements)
+- Phase 13: Actions & Validation (10 requirements)
+- Phase 14: Flow & Integration (10 requirements)
+- Phase 15: Testing (7 requirements)
+
 **Key design decisions:**
 - Same-president trade restriction (no inter-player negotiation)
 - Offer-based flow with sorted priority presentation
 - Receivership auto-buy integrated into offer loop
 - Acquisition proceeds zone prevents re-acquisition loops
-
-**After v4.0 - Remaining phases:**
-- CLO (Closing), INC (Income), DIV (Dividends), END (End Card), ISS (Issue Share), IPO (Form Corporation)
 
 ## Accumulated Context
 
@@ -48,33 +51,13 @@ See `.planning/milestones/` for full archives.
 **Cython patterns:**
 - Entity initialization order - Initialize all handles before setting state
 - Module import pattern - Avoid circular imports with `from entities import X as X_module`
-- Stateless singleton pattern - GameDriver follows entity handle design
 - Phase handler pattern - cdef noexcept functions for zero overhead
-- Cdef variable declaration - Declare all cdef vars at function start
-- Auto-apply loop pattern - Iterative forced action application until 2+ choices
-- Early-exit counting - Stop at count=2 instead of counting all actions
-- Non-player phase pattern - 0 actions valid for deterministic phases (WRAP_UP, ACQUISITION)
-- Sentinel action values - Negative integers (-100, -101) for non-player phase history
-
-**Game logic patterns:**
-- Turn order navigation - Find player at position, advance with wraparound
-- Auction resolution sequence - pay -> transfer -> update -> draw -> cleanup -> transition
-- Price movement - find_next_higher/lower_space skips occupied spaces
-- Index 26 always available - Price $75 never marked occupied
-- Bankruptcy inline execution - Execute immediately during sell, no deferral
-- Two-pass presidency algorithm - Find max shares first, then check incumbent for tie-breaking
-- Receivership before presidency - Check receivership first, skip presidency if in receivership
-- Terminal state detection - Check for playable game state before transitioning to INVEST
-- Player reordering - Selection sort by (-cash, old_position) for descending cash with tie-breaking
-- FI purchase loop - While-loop with re-query, ascending company_id for cheapest-first
+- Non-player phase pattern - 0 actions valid for deterministic phases
+- While-loop re-query pattern for dynamic state iteration
 
 **Testing patterns:**
 - Per-task atomic commits - feat/test prefixes for git bisect
-- Test fixture pattern - Phase-specific fixtures return state in target phase
-- Shared conftest pattern - Centralized fixtures and assertion helpers
 - Integration test consolidation - Cross-phase tests in test_integration.py
-- History tracking pattern - pass history=[] for full chain observation
-- State snapshot pattern - get_state_at(index) reconstructs GameState from history
 
 ### Pending Todos
 
@@ -82,11 +65,11 @@ None.
 
 ### Blockers/Concerns
 
-None - ready for next milestone.
+None - ready for Phase 12 planning.
 
 ## Session Continuity
 
 Last session: 2026-01-24
-Stopped at: v4.0 milestone initialization
+Stopped at: Roadmap creation for v4.0
 Resume file: None
-Next action: Define requirements, create roadmap
+Next action: `/gsd:plan-phase 12`
