@@ -12,10 +12,10 @@ See: .planning/PROJECT.md (updated 2026-01-23)
 Milestone: v3.0 WRAP_UP Phase
 Phase: 11 of 11 (Test Updates)
 Plan: 1 of 1
-Status: Phase complete
-Last activity: 2026-01-24 — Completed 11-01-PLAN.md
+Status: Phase complete - bugs block milestone
+Last activity: 2026-01-24 — Added failing tests for WRAP_UP bugs
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [#########-] 90%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [#########!] 90% (4 failing tests)
 
 ## Archived Milestones
 
@@ -110,32 +110,33 @@ None.
 
 ### Blockers/Concerns
 
-**Phase 11 complete - v3.0 WRAP_UP Phase testing complete:**
-- 183 tests passing (0 failures)
+**Phase 11 complete - WRAP_UP testing reveals critical bugs:**
+- 190 tests total: 186 passing, 4 failing
 - test_invest.py updated for WRAP_UP flow (9 tests fixed)
-- test_wrap_up.py created with 7 passing tests
+- test_wrap_up.py created with 18 tests (14 passing, 4 failing)
+- **Failing tests document bugs** - this is correct behavior
 
-**CRITICAL BUGS DISCOVERED in WRAP_UP implementation:**
+**CRITICAL BUGS in WRAP_UP implementation (4 failing tests):**
 
 **Bug 1: FI cash becomes 0 after purchases**
-- FI purchases companies correctly but final cash incorrectly zeroed
-- Blocks FI purchase edge case testing (FI-01 through FI-07)
-- Example: FI has 10 cash, buys companies totaling 8, should have 2 left, actually has 0
-- Investigation: Likely state array corruption or unintended reset
+- Test: `TestFICashPreservation::test_fi_cash_preserved_when_no_purchases`
+- FI cash incorrectly zeroed after WRAP_UP regardless of purchases
+- Example: FI has 50 cash, no purchases, ends with 0 cash
 
 **Bug 2: Player cash becomes 0 for players 1+ after WRAP_UP**
+- Tests: `TestPlayerCashPreservation::test_player_cash_preserved_*` (3 tests)
 - After WRAP_UP cycle, players 1+ have cash=0 regardless of initial value
-- Blocks player reordering tests (REORDER-01, REORDER-02, REORDER-03)
 - Example: Set cash [20, 30, 25], after WRAP_UP: [20, 0, 0]
-- Hypothesis: Potential PLAYERS singleton accessing beyond num_players bounds
 
-**Impact:** ~14 comprehensive tests written but commented out in test_wrap_up.py until bugs fixed
+**Bug 3: Infinite loop when no companies available**
+- ForcedActionLoopError when FI purchase loop has no companies to buy
+- Discovered via failing `test_fi_cash_preserved_when_no_purchases`
 
-**Recommended next phase:** Bug fixes for WRAP_UP implementation before proceeding with new features
+**v3.0 cannot ship until bugs are fixed** - tests will remain failing as documentation
 
 ## Session Continuity
 
 Last session: 2026-01-24
-Stopped at: Completed 11-01-PLAN.md (Phase 11 complete)
+Stopped at: Added proper failing tests for WRAP_UP bugs
 Resume file: None
-Next action: v3.0 milestone review or bug fix phase
+Next action: Fix WRAP_UP bugs (investigate state array corruption in phases 9-10)
