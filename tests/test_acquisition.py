@@ -92,3 +92,48 @@ class TestPhaseFlow:
         gs.initialize_game()
         setup_acquisition_phase_py(gs)
         assert get_offer_count(gs) == 0
+
+
+class TestValidation:
+    """
+    Validation tests - verify through action handler behavior.
+    These tests will be implemented in Plan 13-02 after apply_acquisition_action
+    is integrated with the driver and Python wrappers are available.
+    """
+
+    def test_price_in_range_succeeds(self):
+        """Price within [low, high] is valid - action executes."""
+        # Implemented in 13-02 after handler integration
+        pass
+
+    def test_price_below_low_rejected(self):
+        """Price below low_price returns invalid (1)."""
+        pass
+
+    def test_price_above_high_rejected(self):
+        """Price above high_price returns invalid (1)."""
+        pass
+
+    def test_insufficient_cash_rejected(self):
+        """Corp with insufficient cash returns invalid (1)."""
+        pass
+
+    def test_fi_buy_high_rejects_os_corp(self):
+        """OS corp cannot use FI Buy High action."""
+        pass
+
+    def test_fi_buy_face_rejects_non_os_corp(self):
+        """Non-OS corp cannot use FI Buy Face action."""
+        pass
+
+    def test_seller_retains_one_company(self):
+        """Corp seller with 2 companies can sell 1, keeps 1."""
+        pass
+
+    def test_target_already_acquired_rejected(self):
+        """Cannot buy company already in acquisition_companies (VALID-04)."""
+        pass
+
+    def test_target_already_owned_rejected(self):
+        """Cannot buy company already in buyer's owned_companies (VALID-05)."""
+        pass
