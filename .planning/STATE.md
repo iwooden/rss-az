@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-24)
 
 Milestone: v4.0 ACQUISITION Phase
 Phase: 12 of 15 (Offer Infrastructure)
-Plan: Ready to plan
-Status: Ready to plan
-Last activity: 2026-01-24 - Roadmap created for v4.0 milestone
+Plan: 1 of 3
+Status: In progress
+Last activity: 2026-01-25 - Completed 12-01-PLAN.md
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [          ] 0%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [#         ] 11%
 
 ## Archived Milestones
 
@@ -59,6 +59,13 @@ See `.planning/milestones/` for full archives.
 - Per-task atomic commits - feat/test prefixes for git bisect
 - Integration test consolidation - Cross-phase tests in test_integration.py
 
+### Recent Decisions
+
+| ID | Decision | Plan | Impact |
+|----|----------|------|--------|
+| offer-buffer-size | 250 offer slots (500 floats) | 12-01 | Hidden state buffer for pre-computed offers |
+| acquisition-proceeds-normalization | Use CASH_DIVISOR | 12-01 | Consistent with other cash fields |
+
 ### Pending Todos
 
 None.
@@ -69,7 +76,7 @@ None - ready for Phase 12 planning.
 
 ## Session Continuity
 
-Last session: 2026-01-24
-Stopped at: Roadmap creation for v4.0
+Last session: 2026-01-25
+Stopped at: Completed 12-01-PLAN.md
 Resume file: None
-Next action: `/gsd:plan-phase 12`
+Next action: Continue to 12-02-PLAN.md or plan phase 12 plan 02
