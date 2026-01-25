@@ -12,10 +12,10 @@ See: .planning/PROJECT.md (updated 2026-01-24)
 Milestone: v4.0 ACQUISITION Phase
 Phase: 12 of 15 (Offer Infrastructure)
 Plan: 3 of 3
-Status: In progress
-Last activity: 2026-01-25 - Completed 12-03-PLAN.md
+Status: Phase complete
+Last activity: 2026-01-25 - Completed 12-02-PLAN.md (all phase 12 plans complete)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##        ] 13%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [###       ] 16%
 
 ## Archived Milestones
 
@@ -65,6 +65,8 @@ See `.planning/milestones/` for full archives.
 |----|----------|------|--------|
 | offer-buffer-size | 250 offer slots (500 floats) | 12-01 | Hidden state buffer for pre-computed offers |
 | acquisition-proceeds-normalization | Use CASH_DIVISOR | 12-01 | Consistent with other cash fields |
+| use-is-president-of | Use player.is_president_of() for president lookup | 12-02 | Cleaner API than share counting |
+| os-first-priority | OS->FI offers always appear first | 12-02 | OS has special acquisition rights per rules |
 | president-detection-method | Find president by max share count | 12-03 | Simpler than is_president_of lookup |
 | validation-skip-strategy | While-loop skip in _present_current_offer | 12-03 | Auto-skip invalid offers during presentation |
 | receivership-active-player | Set active_player to 0 when president is -1 | 12-03 | Safe fallback for receivership corps |
@@ -75,11 +77,11 @@ None.
 
 ### Blockers/Concerns
 
-None - ready for Phase 12 planning.
+None - Phase 12 complete. Ready for Phase 13 (Actions & Validation).
 
 ## Session Continuity
 
 Last session: 2026-01-25
-Stopped at: Completed 12-03-PLAN.md
+Stopped at: Completed 12-02-PLAN.md (Phase 12 complete)
 Resume file: None
-Next action: Phase 12 complete - ready for Phase 13 planning
+Next action: Phase 12 (Offer Infrastructure) complete - ready for Phase 13 planning
