@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-24)
 
 Milestone: v4.0 ACQUISITION Phase
 Phase: 13 of 15 (Actions & Validation)
-Plan: Ready to plan
-Status: Ready to plan
-Last activity: 2026-01-25 - Phase 12 verified and complete (17/17 must-haves passed)
+Plan: 01 of 02
+Status: In progress
+Last activity: 2026-01-25 - Completed 13-01-PLAN.md (validation helpers and action handlers)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [###       ] 25%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [####      ] 29%
 
 ## Archived Milestones
 
@@ -72,6 +72,9 @@ See `.planning/milestones/` for full archives.
 | receivership-active-player | Set active_player to 0 when president is -1 | 12-03 | Safe fallback for receivership corps |
 | restore-missing-functions | Restored presentation functions from git history | 12-04 | Functions lost in commit bdba0d1 (12-02 overwrote 12-03) |
 | python-wrapper-for-testing | Added apply_wrap_up_py wrapper | 12-04 | Enable integration tests for cdef functions |
+| corp-acquisition-proceeds-pattern | Corp sellers use get+set pattern for acquisition_proceeds | 13-01 | Corp entity lacks add_acquisition_proceeds method |
+| valid-06-guaranteed | Same-president guaranteed by offer generation | 13-01 | No runtime re-check needed in validation |
+| validation-test-deferral | Test scaffolding now, implementation in 13-02 | 13-01 | Validation functions are cdef, need Python wrapper first |
 
 ### Pending Todos
 
@@ -79,11 +82,11 @@ None.
 
 ### Blockers/Concerns
 
-None - Phase 12 verified complete (17/17 must-haves). Ready for Phase 13 (Actions & Validation).
+None - Plan 13-01 complete. Ready for Plan 13-02 (Driver Integration).
 
 ## Session Continuity
 
 Last session: 2026-01-25
-Stopped at: Phase 12 verified complete
+Stopped at: Completed 13-01-PLAN.md
 Resume file: None
-Next action: `/gsd:discuss-phase 13` or `/gsd:plan-phase 13`
+Next action: `/gsd:execute-phase 13-02` when plan exists
