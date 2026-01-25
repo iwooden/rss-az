@@ -19,7 +19,7 @@ This milestone implements the ACQUISITION phase with AlphaZero-optimized mechani
 - Integer phases (12, 13, 14, 15): Planned milestone work
 - Decimal phases (12.1, etc.): Urgent insertions if needed
 
-- [ ] **Phase 12: Offer Infrastructure** - Offer generation, sorting, and state management
+- [x] **Phase 12: Offer Infrastructure** - Offer generation, sorting, and state management
 - [ ] **Phase 13: Actions & Validation** - Accept/pass actions with full validation rules
 - [ ] **Phase 14: Flow & Integration** - Receivership auto-buy, phase transitions, driver integration
 - [ ] **Phase 15: Testing** - Unit, integration, and edge case tests
@@ -38,10 +38,10 @@ This milestone implements the ACQUISITION phase with AlphaZero-optimized mechani
 **Plans**: 4 plans in 3 waves
 
 Plans:
-- [ ] 12-01-PLAN.md — State infrastructure (hidden offer buffer, player acquisition_proceeds)
-- [ ] 12-02-PLAN.md — Offer generation and sorting logic
-- [ ] 12-03-PLAN.md — Offer state presentation (visible state from buffer)
-- [ ] 12-04-PLAN.md — Phase entry integration (WRAP_UP -> ACQUISITION)
+- [x] 12-01-PLAN.md — State infrastructure (hidden offer buffer, player acquisition_proceeds)
+- [x] 12-02-PLAN.md — Offer generation and sorting logic
+- [x] 12-03-PLAN.md — Offer state presentation (visible state from buffer)
+- [x] 12-04-PLAN.md — Phase entry integration (WRAP_UP -> ACQUISITION)
 
 ### Phase 13: Actions & Validation
 **Goal**: Players can accept or pass on acquisition offers with full validation
@@ -94,7 +94,7 @@ Phases execute in numeric order: 12 -> 13 -> 14 -> 15
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 12. Offer Infrastructure | v4.0 | 0/4 | Planned | - |
+| 12. Offer Infrastructure | v4.0 | 4/4 | Complete | 2026-01-25 |
 | 13. Actions & Validation | v4.0 | 0/? | Not started | - |
 | 14. Flow & Integration | v4.0 | 0/? | Not started | - |
 | 15. Testing | v4.0 | 0/? | Not started | - |

@@ -16,18 +16,18 @@ AlphaZero-optimized ACQUISITION phase with offer-based flow, same-president rest
 
 ### Offer Generation & Priority
 
-- [ ] **OFFER-01**: Generate valid acquisition offers in sorted priority order
-- [ ] **OFFER-02**: OS->FI offers come first (OS always has FI priority)
-- [ ] **OFFER-03**: Other Corp->FI offers sorted by descending share price
-- [ ] **OFFER-04**: Corp->Corp offers (same president) sorted by (buyer share price, target face value)
-- [ ] **OFFER-05**: Corp->Player private company offers sorted by (buyer share price, target face value)
+- [x] **OFFER-01**: Generate valid acquisition offers in sorted priority order
+- [x] **OFFER-02**: OS->FI offers come first (OS always has FI priority)
+- [x] **OFFER-03**: Other Corp->FI offers sorted by descending share price
+- [x] **OFFER-04**: Corp->Corp offers (same president) sorted by (buyer share price, target face value)
+- [x] **OFFER-05**: Corp->Player private company offers sorted by (buyer share price, target face value)
 
 ### Offer State Management
 
-- [ ] **STATE-01**: Set acq_active_corp, acq_target_company, acq_is_fi_offer for current offer
-- [ ] **STATE-02**: Track acquisition_companies per corp (pending acquisitions)
-- [ ] **STATE-03**: Track acquisition_proceeds per corp (pending cash)
-- [ ] **STATE-04**: Clear acq_active_corp (-1) when no more offers
+- [x] **STATE-01**: Set acq_active_corp, acq_target_company, acq_is_fi_offer for current offer
+- [x] **STATE-02**: Track acquisition_companies per corp (pending acquisitions)
+- [x] **STATE-03**: Track acquisition_proceeds per corp (pending cash)
+- [x] **STATE-04**: Clear acq_active_corp (-1) when no more offers
 
 ### Action Handling
 
@@ -80,15 +80,15 @@ AlphaZero-optimized ACQUISITION phase with offer-based flow, same-president rest
 
 | Requirement | Phase | Plan | Status |
 |-------------|-------|------|--------|
-| OFFER-01 | 12 | TBD | Pending |
-| OFFER-02 | 12 | TBD | Pending |
-| OFFER-03 | 12 | TBD | Pending |
-| OFFER-04 | 12 | TBD | Pending |
-| OFFER-05 | 12 | TBD | Pending |
-| STATE-01 | 12 | TBD | Pending |
-| STATE-02 | 12 | TBD | Pending |
-| STATE-03 | 12 | TBD | Pending |
-| STATE-04 | 12 | TBD | Pending |
+| OFFER-01 | 12 | 12-02 | Complete |
+| OFFER-02 | 12 | 12-02 | Complete |
+| OFFER-03 | 12 | 12-02 | Complete |
+| OFFER-04 | 12 | 12-02 | Complete |
+| OFFER-05 | 12 | 12-02 | Complete |
+| STATE-01 | 12 | 12-03 | Complete |
+| STATE-02 | 12 | 12-01 | Complete |
+| STATE-03 | 12 | 12-01 | Complete |
+| STATE-04 | 12 | 12-03 | Complete |
 | ACTION-01 | 13 | TBD | Pending |
 | ACTION-02 | 13 | TBD | Pending |
 | ACTION-03 | 13 | TBD | Pending |

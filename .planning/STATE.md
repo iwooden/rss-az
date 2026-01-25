@@ -5,17 +5,17 @@
 See: .planning/PROJECT.md (updated 2026-01-24)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** v4.0 ACQUISITION Phase - Phase 12 (Offer Infrastructure)
+**Current focus:** v4.0 ACQUISITION Phase - Phase 13 (Actions & Validation)
 
 ## Current Position
 
 Milestone: v4.0 ACQUISITION Phase
-Phase: 12 of 15 (Offer Infrastructure)
-Plan: 4 of 4
-Status: Phase complete
-Last activity: 2026-01-25 - Completed 12-04-PLAN.md (Phase 12 complete)
+Phase: 13 of 15 (Actions & Validation)
+Plan: Ready to plan
+Status: Ready to plan
+Last activity: 2026-01-25 - Phase 12 verified and complete (17/17 must-haves passed)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [####      ] 20%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [###       ] 25%
 
 ## Archived Milestones
 
@@ -33,7 +33,7 @@ See `.planning/milestones/` for full archives.
 **Goal:** Implement ACQUISITION phase with AlphaZero-optimized mechanics
 
 **Phases:**
-- Phase 12: Offer Infrastructure (9 requirements)
+- Phase 12: Offer Infrastructure (9 requirements) ✓
 - Phase 13: Actions & Validation (10 requirements)
 - Phase 14: Flow & Integration (10 requirements)
 - Phase 15: Testing (7 requirements)
@@ -79,13 +79,11 @@ None.
 
 ### Blockers/Concerns
 
-None - Phase 12 complete (all 4 plans). Ready for Phase 13 (Actions & Validation).
-
-**Note:** During 12-04 execution, discovered that presentation functions from 12-03 were lost when 12-02 rewrote acquisition.pyx. Restored from git history. Future: ensure plan execution order matches dependencies.
+None - Phase 12 verified complete (17/17 must-haves). Ready for Phase 13 (Actions & Validation).
 
 ## Session Continuity
 
-Last session: 2026-01-25 20:09:40 UTC
-Stopped at: Completed 12-04-PLAN.md (Phase 12 complete - all 4 plans)
+Last session: 2026-01-25
+Stopped at: Phase 12 verified complete
 Resume file: None
-Next action: Phase 12 (Offer Infrastructure) complete - ready for Phase 13 planning
+Next action: `/gsd:discuss-phase 13` or `/gsd:plan-phase 13`
