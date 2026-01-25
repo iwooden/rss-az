@@ -52,10 +52,11 @@ Plans:
   2. FI Buy High and FI Buy Face actions execute correctly for FI offers
   3. Pass action advances to next offer without modifying state
   4. Invalid actions are rejected (wrong price, insufficient cash, would leave seller with 0 companies, target already acquired, same-president violation)
-**Plans**: TBD
+**Plans**: 2 plans in 2 waves
 
 Plans:
-- [ ] 13-01: TBD
+- [ ] 13-01-PLAN.md — Validation helpers and action handlers
+- [ ] 13-02-PLAN.md — Main handler and driver integration
 
 ### Phase 14: Flow & Integration
 **Goal**: Phase executes correctly with receivership auto-buy and proper transitions
@@ -95,6 +96,6 @@ Phases execute in numeric order: 12 -> 13 -> 14 -> 15
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 12. Offer Infrastructure | v4.0 | 4/4 | Complete | 2026-01-25 |
-| 13. Actions & Validation | v4.0 | 0/? | Not started | - |
+| 13. Actions & Validation | v4.0 | 0/2 | Not started | - |
 | 14. Flow & Integration | v4.0 | 0/? | Not started | - |
 | 15. Testing | v4.0 | 0/? | Not started | - |
