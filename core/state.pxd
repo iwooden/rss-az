@@ -85,6 +85,7 @@ cdef struct PlayerFieldOffsets:
     int is_president
     int share_buys
     int share_sells
+    int acquisition_proceeds
 
 cdef struct CorpFieldOffsets:
     int active

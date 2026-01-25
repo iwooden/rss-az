@@ -69,6 +69,9 @@ cdef PlayerOffsets get_player_offsets(int num_players) noexcept nogil:
     offset += NUM_CORPS
 
     p.share_sells = offset
+    offset += NUM_CORPS
+
+    p.acquisition_proceeds = offset
 
     return p
 
@@ -265,6 +268,7 @@ cdef class Player:
         self._is_president_offset = self._base_offset + fields.is_president
         self._share_buys_offset = self._base_offset + fields.share_buys
         self._share_sells_offset = self._base_offset + fields.share_sells
+        self._acquisition_proceeds_offset = self._base_offset + fields.acquisition_proceeds
 
     # =========================================================================
     # CASH OPERATIONS
@@ -417,6 +421,27 @@ cdef class Player:
         for i in range(GameConstants.NUM_CORPS):
             state._data[self._share_buys_offset + i] = 0.0
             state._data[self._share_sells_offset + i] = 0.0
+
+    # =========================================================================
+    # ACQUISITION PROCEEDS
+    # =========================================================================
+
+    cpdef int get_acquisition_proceeds(self, GameState state):
+        """Get player's acquisition proceeds (integer dollars)."""
+        return <int>round(state._data[self._acquisition_proceeds_offset] * CASH_DIVISOR)
+
+    cpdef void set_acquisition_proceeds(self, GameState state, int proceeds):
+        """Set player's acquisition proceeds (integer dollars)."""
+        state._data[self._acquisition_proceeds_offset] = <float>proceeds / CASH_DIVISOR
+
+    cpdef void add_acquisition_proceeds(self, GameState state, int amount):
+        """Add to player's acquisition proceeds (can be negative to subtract)."""
+        cdef int current = self.get_acquisition_proceeds(state)
+        self.set_acquisition_proceeds(state, current + amount)
+
+    cpdef void clear_acquisition_proceeds(self, GameState state):
+        """Clear player's acquisition proceeds (set to 0)."""
+        state._data[self._acquisition_proceeds_offset] = 0.0
 
 
 # =============================================================================

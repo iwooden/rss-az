@@ -78,7 +78,8 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         GameConstants.NUM_CORPS +         # owned_shares
         GameConstants.NUM_CORPS +         # is_president
         GameConstants.NUM_CORPS +         # share_buys
-        GameConstants.NUM_CORPS           # share_sells
+        GameConstants.NUM_CORPS +         # share_sells
+        1                   # acquisition_proceeds
     )
     layout.players_offset = offset
     layout.players_size = layout.player_stride * num_players
@@ -302,6 +303,8 @@ cdef PlayerFieldOffsets compute_player_field_offsets(int num_players) noexcept n
     p.share_buys = offset
     offset += GameConstants.NUM_CORPS
     p.share_sells = offset
+    offset += GameConstants.NUM_CORPS
+    p.acquisition_proceeds = offset
 
     return p
 
