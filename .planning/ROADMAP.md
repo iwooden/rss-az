@@ -35,10 +35,13 @@ This milestone implements the ACQUISITION phase with AlphaZero-optimized mechani
   2. Active offer state (acq_active_corp, acq_target_company, acq_is_fi_offer) reflects current offer
   3. Acquisition zones (acquisition_companies, acquisition_proceeds) accumulate purchases within phase
   4. When no offers exist, acq_active_corp is set to -1
-**Plans**: TBD
+**Plans**: 4 plans in 3 waves
 
 Plans:
-- [ ] 12-01: TBD
+- [ ] 12-01-PLAN.md — State infrastructure (hidden offer buffer, player acquisition_proceeds)
+- [ ] 12-02-PLAN.md — Offer generation and sorting logic
+- [ ] 12-03-PLAN.md — Offer state presentation (visible state from buffer)
+- [ ] 12-04-PLAN.md — Phase entry integration (WRAP_UP -> ACQUISITION)
 
 ### Phase 13: Actions & Validation
 **Goal**: Players can accept or pass on acquisition offers with full validation
@@ -91,7 +94,7 @@ Phases execute in numeric order: 12 -> 13 -> 14 -> 15
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 12. Offer Infrastructure | v4.0 | 0/? | Not started | - |
+| 12. Offer Infrastructure | v4.0 | 0/4 | Planned | - |
 | 13. Actions & Validation | v4.0 | 0/? | Not started | - |
 | 14. Flow & Integration | v4.0 | 0/? | Not started | - |
 | 15. Testing | v4.0 | 0/? | Not started | - |
