@@ -494,10 +494,10 @@ cpdef int get_offer_index(GameState state):
 # VALIDATION HELPERS
 # =============================================================================
 
-# Company location constants
-DEF LOC_FI = 0
-DEF LOC_PLAYER = 1
-DEF LOC_CORP = 2
+# Company location constants (from entities/company.pxd)
+DEF LOC_PLAYER = 3
+DEF LOC_FI = 4
+DEF LOC_CORP = 5
 
 
 cdef bint _is_target_already_acquired(GameState state, int company_id) noexcept:
@@ -796,6 +796,14 @@ cpdef void setup_acquisition_phase(GameState state):
 def setup_acquisition_phase_py(GameState state):
     """Python wrapper for testing."""
     setup_acquisition_phase(state)
+
+
+def apply_acquisition_action_py(GameState state, int action_type, int amount=0):
+    """Python wrapper for testing."""
+    cdef ActionInfo info
+    info.action_type = action_type
+    info.amount = amount
+    return apply_acquisition_action(state, &info)
 
 
 # =============================================================================

@@ -24,6 +24,7 @@ from phases.bid cimport apply_bid_action
 from phases.wrap_up cimport apply_wrap_up
 from phases.acquisition cimport apply_acquisition_action, apply_acquisition_stub
 from src.exceptions import ForcedActionLoopError, ZeroLegalActionsError
+from entities import turn as turn_module
 
 # Maximum iterations for auto-apply loop (prevents infinite loops from bugs)
 DEF MAX_FORCED_ITERATIONS = 100
@@ -33,9 +34,20 @@ DEF ACTION_WRAP_UP_SENTINEL = -100
 DEF ACTION_ACQUISITION_SENTINEL = -101
 
 
-cdef bint _is_non_player_phase(int phase) noexcept nogil:
-    """Check if phase has no player actions (deterministic execution)."""
-    return phase == PHASE_WRAP_UP
+cdef bint _is_non_player_phase_check(GameState state, int phase) noexcept:
+    """
+    Check if phase has no player actions (deterministic execution).
+
+    ACQUISITION is a hybrid: non-player when no offers exist, player when offers exist.
+    """
+    if phase == PHASE_WRAP_UP:
+        return True
+
+    if phase == PHASE_ACQUISITION:
+        # ACQUISITION with no active corp = no offers = non-player phase
+        return turn_module.TURN.get_acq_active_corp(state) == -1
+
+    return False
 
 
 cdef void _execute_non_player_phase(GameState state, object history):
@@ -195,7 +207,7 @@ cdef class GameDriver:
 
             if forced.count == 0:
                 # Check if this is a non-player phase (0 actions is valid)
-                if _is_non_player_phase(state.get_phase()):
+                if _is_non_player_phase_check(state, state.get_phase()):
                     _execute_non_player_phase(state, history)
                     if state.get_phase() == PHASE_GAME_OVER:
                         return STATUS_GAME_OVER
