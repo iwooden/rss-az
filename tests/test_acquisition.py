@@ -1,44 +1,57 @@
-"""Tests for ACQUISITION phase offer state presentation."""
+"""Tests for ACQUISITION phase offer generation."""
 
 import pytest
 from core.state import GameState
+from core.data import CORP_NAMES, get_company_face_value
+from entities.player import PLAYERS
+from entities.fi import FI
+from entities.corp import CORPS
 from entities.turn import TURN
 from phases.acquisition import (
-    present_current_offer_py,
-    advance_to_next_offer_py,
-    get_offer_index
+    generate_offers_py,
+    get_offer_count,
+    get_offer_at
 )
 
 
-class TestOfferStatePresentation:
-    """STATE-01 through STATE-04: Offer state management."""
+class TestOfferGeneration:
+    """OFFER-01 through OFFER-05: Offer generation and priority."""
 
-    def test_no_offers_clears_state(self):
-        """STATE-04: No offers sets acq_active_corp to -1."""
+    def test_no_offers_fresh_game(self):
+        """No offers when no corps active and FI has no companies."""
         gs = GameState(3)
         gs.initialize_game()
+        generate_offers_py(gs)
+        assert get_offer_count(gs) == 0
 
-        # With no offers in buffer (count=0), presenting should clear state
-        present_current_offer_py(gs)
-
-        assert TURN.get_acq_active_corp(gs) == -1
-        assert TURN.get_acq_target_company(gs) == -1
-        assert not TURN.is_acq_fi_offer(gs)
-
-    def test_offer_sets_active_corp(self):
-        """STATE-01: Current offer sets acq_active_corp."""
-        # Setup state with valid offer
-        # Verify acq_active_corp matches offer's corp_id
+    def test_fi_offers_generated(self):
+        """OFFER-02, OFFER-03: FI offers generated when corps active."""
+        # TODO: This test requires setting up complex game state with:
+        # - FI owning companies
+        # - Active corps with cash
+        # Full implementation deferred until integration testing
         pass
 
-    def test_offer_sets_target_company(self):
-        """STATE-01: Current offer sets acq_target_company."""
+    def test_os_fi_offers_first(self):
+        """OFFER-02: OS->FI offers come before other corp->FI offers."""
+        # TODO: Setup scenario with OS and another corp both able to buy from FI
+        # Verify OS offers appear first in buffer
         pass
 
-    def test_fi_offer_flag_set(self):
-        """STATE-01: acq_is_fi_offer true when FI owns target."""
+    def test_corp_fi_sorted_by_price(self):
+        """OFFER-03: Non-OS corp->FI offers sorted by descending share price."""
+        # TODO: Setup multiple corps with different share prices
+        # Verify offers sorted correctly
         pass
 
-    def test_advance_increments_index(self):
-        """Advancing moves to next offer."""
+    def test_corp_corp_offers_same_president(self):
+        """OFFER-04: Corp->Corp offers only for same president."""
+        # TODO: Setup player as president of multiple corps
+        # Verify offers only between corps with same president
+        pass
+
+    def test_player_private_offers(self):
+        """OFFER-05: Corp->Player private offers generated."""
+        # TODO: Setup player with private companies and corp presidency
+        # Verify offers generated
         pass
