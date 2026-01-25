@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-24)
 
 Milestone: v4.0 ACQUISITION Phase
 Phase: 12 of 15 (Offer Infrastructure)
-Plan: 3 of 3
+Plan: 4 of 4
 Status: Phase complete
-Last activity: 2026-01-25 - Completed 12-02-PLAN.md (all phase 12 plans complete)
+Last activity: 2026-01-25 - Completed 12-04-PLAN.md (Phase 12 complete)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [###       ] 16%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [####      ] 20%
 
 ## Archived Milestones
 
@@ -70,6 +70,8 @@ See `.planning/milestones/` for full archives.
 | president-detection-method | Find president by max share count | 12-03 | Simpler than is_president_of lookup |
 | validation-skip-strategy | While-loop skip in _present_current_offer | 12-03 | Auto-skip invalid offers during presentation |
 | receivership-active-player | Set active_player to 0 when president is -1 | 12-03 | Safe fallback for receivership corps |
+| restore-missing-functions | Restored presentation functions from git history | 12-04 | Functions lost in commit bdba0d1 (12-02 overwrote 12-03) |
+| python-wrapper-for-testing | Added apply_wrap_up_py wrapper | 12-04 | Enable integration tests for cdef functions |
 
 ### Pending Todos
 
@@ -77,11 +79,13 @@ None.
 
 ### Blockers/Concerns
 
-None - Phase 12 complete. Ready for Phase 13 (Actions & Validation).
+None - Phase 12 complete (all 4 plans). Ready for Phase 13 (Actions & Validation).
+
+**Note:** During 12-04 execution, discovered that presentation functions from 12-03 were lost when 12-02 rewrote acquisition.pyx. Restored from git history. Future: ensure plan execution order matches dependencies.
 
 ## Session Continuity
 
-Last session: 2026-01-25
-Stopped at: Completed 12-02-PLAN.md (Phase 12 complete)
+Last session: 2026-01-25 20:09:40 UTC
+Stopped at: Completed 12-04-PLAN.md (Phase 12 complete - all 4 plans)
 Resume file: None
 Next action: Phase 12 (Offer Infrastructure) complete - ready for Phase 13 planning
