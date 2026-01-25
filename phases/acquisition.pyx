@@ -490,6 +490,280 @@ cpdef int get_offer_index(GameState state):
 
 
 # =============================================================================
+# VALIDATION HELPERS
+# =============================================================================
+
+# Company location constants
+DEF LOC_FI = 0
+DEF LOC_PLAYER = 1
+DEF LOC_CORP = 2
+
+
+cdef bint _is_target_already_acquired(GameState state, int company_id) noexcept:
+    """
+    Check if target company is already in any corp's acquisition_companies.
+
+    VALID-04: Defensive check - offer generation filters this, but re-verify at action time.
+    Returns True if already acquired, False otherwise.
+    """
+    cdef int check_corp
+    for check_corp in range(GameConstants.NUM_CORPS):
+        if corp_module.CORPS[CORP_NAMES[check_corp]].has_acquisition_company(state, company_id):
+            return True
+    return False
+
+
+cdef int _count_seller_companies(GameState state, int seller_corp_id, int target_company_id) noexcept:
+    """
+    Count companies seller retains after selling target.
+
+    Counts:
+    - Companies in seller's owned_companies (excluding target)
+    - Companies in seller's acquisition_companies (excluding target)
+
+    Returns total count.
+    """
+    cdef int count = 0
+    cdef int company_id
+
+    for company_id in range(GameConstants.NUM_COMPANIES):
+        if company_id == target_company_id:
+            continue
+        if corp_module.CORPS[CORP_NAMES[seller_corp_id]].owns_company(state, company_id):
+            count += 1
+        if corp_module.CORPS[CORP_NAMES[seller_corp_id]].has_acquisition_company(state, company_id):
+            count += 1
+
+    return count
+
+
+cdef bint _validate_price_action(GameState state, int price) noexcept:
+    """
+    Validate price-based acquisition action.
+
+    Checks:
+    - VALID-01: Price in [low_price, high_price] range
+    - VALID-02: Corp has sufficient cash
+    - VALID-03: Corp seller retains >= 1 company after sale
+    - VALID-04: Target not already acquired
+    - VALID-05: Target not already in buyer's owned_companies
+    - VALID-06: Same-president (guaranteed by offer generation, no runtime check)
+
+    Returns True if valid, False otherwise.
+    """
+    cdef int corp_id = turn_module.TURN.get_acq_active_corp(state)
+    cdef int company_id = turn_module.TURN.get_acq_target_company(state)
+    cdef bint is_fi = turn_module.TURN.is_acq_fi_offer(state)
+    cdef int low_price, high_price, corp_cash
+    cdef int location, seller_corp_id
+
+    # Get price bounds
+    low_price = get_company_low_price(company_id)
+    high_price = company_module.COMPANIES[company_id].get_high_price()
+
+    # VALID-01: Price in range
+    if price < low_price or price > high_price:
+        return False
+
+    # VALID-02: Corp can afford
+    corp_cash = corp_module.CORPS[CORP_NAMES[corp_id]].get_cash(state)
+    if corp_cash < price:
+        return False
+
+    # VALID-04: Target not already acquired
+    if _is_target_already_acquired(state, company_id):
+        return False
+
+    # VALID-05: Target not already in buyer's owned_companies
+    if corp_module.CORPS[CORP_NAMES[corp_id]].owns_company(state, company_id):
+        return False
+
+    # VALID-03: Seller retains >= 1 company (only for corp sellers, not FI or players)
+    if not is_fi:
+        location = company_module.COMPANIES[company_id].get_location(state)
+        if location == LOC_CORP:
+            seller_corp_id = company_module.COMPANIES[company_id].get_owner_id(state)
+            if _count_seller_companies(state, seller_corp_id, company_id) < 1:
+                return False
+
+    return True
+
+
+cdef bint _validate_fi_buy_high(GameState state) noexcept:
+    """
+    Validate FI Buy High action (non-OS corps buying at high price).
+
+    Checks:
+    - Defensive: is_acq_fi_offer is True
+    - Corp is not OS (OS must use face value)
+    - VALID-02: Corp has sufficient cash for high_price
+    - VALID-04: Target not already acquired
+
+    Returns True if valid, False otherwise.
+    """
+    cdef int corp_id = turn_module.TURN.get_acq_active_corp(state)
+    cdef int company_id = turn_module.TURN.get_acq_target_company(state)
+    cdef bint is_fi = turn_module.TURN.is_acq_fi_offer(state)
+
+    # Defensive: Must be FI offer
+    if not is_fi:
+        return False
+
+    # OS cannot use FI Buy High
+    if corp_id == OS_CORP_ID:
+        return False
+
+    # VALID-02: Corp can afford high price
+    cdef int high_price = company_module.COMPANIES[company_id].get_high_price()
+    cdef int corp_cash = corp_module.CORPS[CORP_NAMES[corp_id]].get_cash(state)
+    if corp_cash < high_price:
+        return False
+
+    # VALID-04: Target not already acquired
+    if _is_target_already_acquired(state, company_id):
+        return False
+
+    return True
+
+
+cdef bint _validate_fi_buy_face(GameState state) noexcept:
+    """
+    Validate FI Buy Face action (OS only, buying at face value).
+
+    Checks:
+    - Defensive: is_acq_fi_offer is True
+    - Corp is OS (only OS uses face value)
+    - VALID-02: Corp has sufficient cash for face_value
+    - VALID-04: Target not already acquired
+
+    Returns True if valid, False otherwise.
+    """
+    cdef int corp_id = turn_module.TURN.get_acq_active_corp(state)
+    cdef int company_id = turn_module.TURN.get_acq_target_company(state)
+    cdef bint is_fi = turn_module.TURN.is_acq_fi_offer(state)
+
+    # Defensive: Must be FI offer
+    if not is_fi:
+        return False
+
+    # Only OS can use FI Buy Face
+    if corp_id != OS_CORP_ID:
+        return False
+
+    # VALID-02: Corp can afford face value
+    cdef int face_value = get_company_face_value(company_id)
+    cdef int corp_cash = corp_module.CORPS[CORP_NAMES[corp_id]].get_cash(state)
+    if corp_cash < face_value:
+        return False
+
+    # VALID-04: Target not already acquired
+    if _is_target_already_acquired(state, company_id):
+        return False
+
+    return True
+
+
+# =============================================================================
+# ACTION HANDLERS
+# =============================================================================
+
+cdef void _handle_accept_price(GameState state, int price) noexcept:
+    """
+    Execute price-based acquisition (non-FI offers).
+
+    Transfers:
+    - Money from buyer corp to seller (corp or player)
+    - Company to buyer's acquisition zone
+
+    Then advances to next offer.
+    """
+    cdef int corp_id = turn_module.TURN.get_acq_active_corp(state)
+    cdef int company_id = turn_module.TURN.get_acq_target_company(state)
+    cdef int location, seller_id, current_proceeds
+
+    # Determine seller from company location
+    location = company_module.COMPANIES[company_id].get_location(state)
+    seller_id = company_module.COMPANIES[company_id].get_owner_id(state)
+
+    # Buyer pays
+    corp_module.CORPS[CORP_NAMES[corp_id]].add_cash(state, -price)
+
+    # Seller receives (to acquisition_proceeds)
+    if location == LOC_CORP:
+        # Corp seller: use get+set pattern (no add_acquisition_proceeds method)
+        current_proceeds = corp_module.CORPS[CORP_NAMES[seller_id]].get_acquisition_proceeds(state)
+        corp_module.CORPS[CORP_NAMES[seller_id]].set_acquisition_proceeds(state, current_proceeds + price)
+    elif location == LOC_PLAYER:
+        # Player seller: has add_acquisition_proceeds method
+        player_module.PLAYERS[seller_id].add_acquisition_proceeds(state, price)
+
+    # Transfer company to buyer's acquisition zone
+    company_module.COMPANIES[company_id].transfer_to_corp_acquisition(state, corp_id)
+
+    # Advance to next offer
+    _advance_to_next_offer(state)
+
+
+cdef void _handle_fi_buy_high(GameState state) noexcept:
+    """
+    Execute FI purchase at high price (non-OS corps).
+
+    Transfers:
+    - high_price from buyer corp to FI
+    - Company to buyer's acquisition zone
+
+    Then advances to next offer.
+    """
+    cdef int corp_id = turn_module.TURN.get_acq_active_corp(state)
+    cdef int company_id = turn_module.TURN.get_acq_target_company(state)
+    cdef int high_price = company_module.COMPANIES[company_id].get_high_price()
+
+    # Transfer money: buyer -> FI
+    corp_module.CORPS[CORP_NAMES[corp_id]].add_cash(state, -high_price)
+    fi_module.FI.add_cash(state, high_price)
+
+    # Transfer company to buyer's acquisition zone
+    company_module.COMPANIES[company_id].transfer_to_corp_acquisition(state, corp_id)
+
+    # Advance to next offer
+    _advance_to_next_offer(state)
+
+
+cdef void _handle_fi_buy_face(GameState state) noexcept:
+    """
+    Execute FI purchase at face value (OS only).
+
+    Transfers:
+    - face_value from OS to FI
+    - Company to OS's acquisition zone
+
+    Then advances to next offer.
+    """
+    cdef int corp_id = turn_module.TURN.get_acq_active_corp(state)
+    cdef int company_id = turn_module.TURN.get_acq_target_company(state)
+    cdef int face_value = get_company_face_value(company_id)
+
+    # Transfer money: OS -> FI
+    corp_module.CORPS[CORP_NAMES[corp_id]].add_cash(state, -face_value)
+    fi_module.FI.add_cash(state, face_value)
+
+    # Transfer company to OS's acquisition zone
+    company_module.COMPANIES[company_id].transfer_to_corp_acquisition(state, corp_id)
+
+    # Advance to next offer
+    _advance_to_next_offer(state)
+
+
+cdef void _handle_pass(GameState state) noexcept:
+    """
+    Pass on current offer, advance to next.
+
+    Pass permanently skips current offer - index advances and next offer is presented.
+    """
+    _advance_to_next_offer(state)
+
+
+# =============================================================================
 # PHASE ENTRY SETUP
 # =============================================================================
 
