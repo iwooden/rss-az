@@ -3,6 +3,7 @@
 
 from core.state cimport GameState
 from core.data cimport GamePhases, GameConstants, get_company_face_value, get_company_low_price
+from core.actions cimport ActionInfo, ACTION_PASS, ACTION_ACQ_PRICE, ACTION_ACQ_FI_HIGH, ACTION_ACQ_FI_FACE
 from entities import turn as turn_module
 from entities import player as player_module
 from entities import company as company_module
@@ -830,6 +831,57 @@ cdef bint _is_game_terminal(GameState state) noexcept:
 
     # Terminal if no auction companies AND no active corps
     return not has_auction_companies and not has_active_corps
+
+
+# =============================================================================
+# MAIN ACTION HANDLER
+# =============================================================================
+
+cdef int apply_acquisition_action(GameState state, ActionInfo* info) noexcept:
+    """
+    Apply ACQUISITION phase action to state.
+
+    Action types:
+    - ACTION_ACQ_PRICE: Buy at low_price + info.amount
+    - ACTION_ACQ_FI_HIGH: Buy FI company at high price (non-OS)
+    - ACTION_ACQ_FI_FACE: Buy FI company at face value (OS only)
+    - ACTION_PASS: Decline current offer
+
+    Returns: 0=success, 1=invalid
+    """
+    cdef int company_id, low_price, price
+
+    if info.action_type == ACTION_ACQ_PRICE:
+        # Calculate actual price from offset
+        company_id = turn_module.TURN.get_acq_target_company(state)
+        low_price = get_company_low_price(company_id)
+        price = low_price + info.amount
+
+        # Validate and execute
+        if not _validate_price_action(state, price):
+            return 1
+        _handle_accept_price(state, price)
+        return 0
+
+    elif info.action_type == ACTION_ACQ_FI_HIGH:
+        if not _validate_fi_buy_high(state):
+            return 1
+        _handle_fi_buy_high(state)
+        return 0
+
+    elif info.action_type == ACTION_ACQ_FI_FACE:
+        if not _validate_fi_buy_face(state):
+            return 1
+        _handle_fi_buy_face(state)
+        return 0
+
+    elif info.action_type == ACTION_PASS:
+        # Pass is always valid
+        _handle_pass(state)
+        return 0
+
+    # Unknown action type
+    return 1
 
 
 # =============================================================================
