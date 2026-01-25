@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | 2941         | 52          | 2993       |
-| 3       | 3020         | 52          | 3072       |
-| 4       | 3101         | 52          | 3153       |
-| 5       | 3184         | 52          | 3236       |
-| 6       | 3269         | 52          | 3321       |
+| 2       | 2943         | 554         | 3497       |
+| 3       | 3023         | 554         | 3577       |
+| 4       | 3105         | 554         | 3659       |
+| 5       | 3189         | 554         | 3743       |
+| 6       | 3275         | 554         | 3829       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 
@@ -63,7 +63,7 @@ Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact 
 
 ### Players (repeated `num_players` times)
 
-Player stride = `3 + num_players + 36 + 32` = `71 + num_players`
+Player stride = `4 + num_players + 36 + 32` = `72 + num_players`
 
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
@@ -76,6 +76,7 @@ Player stride = `3 + num_players + 36 + 32` = `71 + num_players`
 | `is_president` | 8 | flags | 1 per corp |
 | `share_buys` | 8 | normalized | Round-trip tracking |
 | `share_sells` | 8 | normalized | Round-trip tracking |
+| `acquisition_proceeds` | 1 | normalized | Cash from selling companies this phase |
 
 **Player Field Offsets (within player stride):**
 | Field | Offset |
@@ -89,6 +90,7 @@ Player stride = `3 + num_players + 36 + 32` = `71 + num_players`
 | is_president | 47 + num_players |
 | share_buys | 55 + num_players |
 | share_sells | 63 + num_players |
+| acquisition_proceeds | 71 + num_players |
 
 ### Foreign Investor
 
@@ -210,8 +212,7 @@ Per company (40 floats):
 
 ## Hidden State Layout
 
-Hidden state starts at `visible_size` offset. Total hidden size = 52.
-Hidden state starts at `visible_size` offset. Total hidden size = 52.
+Hidden state starts at `visible_size` offset. Total hidden size = 554.
 
 | Field | Offset | Size | Notes |
 |-------|--------|------|-------|
@@ -225,6 +226,9 @@ Hidden state starts at `visible_size` offset. Total hidden size = 52.
 | `auction_high_bidder` | 42 | 1 | Compact high bidder |
 | `auction_starter` | 43 | 1 | Compact auction starter |
 | `corp_price_indices` | 44 | 8 | Compact price indices per corp |
+| `offer_count` | 52 | 1 | Number of offers in buffer |
+| `offer_index` | 53 | 1 | Current offer being processed |
+| `offer_buffer` | 54 | 500 | Offer tuples (corp_id, company_id) - 250 offers × 2 floats |
 
 ---
 
