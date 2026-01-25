@@ -49,6 +49,9 @@ cdef struct StateLayout:
     int hidden_auction_high_bidder_offset
     int hidden_auction_starter_offset
     int hidden_corp_price_indices_offset
+    int hidden_offer_count_offset
+    int hidden_offer_index_offset
+    int hidden_offer_buffer_offset
 
 cdef struct TurnStateOffsets:
     int turn_number

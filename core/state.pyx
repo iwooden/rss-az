@@ -38,6 +38,9 @@ from entities import deck as deck_module
 
 cnp.import_array()
 
+# Constants
+DEF OFFER_BUFFER_SIZE = 250
+
 # =============================================================================
 # STATE LAYOUT STRUCTURE
 # =============================================================================
@@ -174,6 +177,9 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     # [42] auction_high_bidder (compact)
     # [43] auction_starter (compact)
     # [44..51] corp_price_indices (8 slots)
+    # [52] offer_count (number of offers in buffer)
+    # [53] offer_index (current offer being processed)
+    # [54..553] offer_buffer (250 offers * 2 floats: corp_id, company_id)
     layout.hidden_active_player_offset = offset
     offset += 1
     layout.hidden_num_players_offset = offset
@@ -194,6 +200,12 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     offset += 1
     layout.hidden_corp_price_indices_offset = offset
     offset += GameConstants.NUM_CORPS
+    layout.hidden_offer_count_offset = offset
+    offset += 1
+    layout.hidden_offer_index_offset = offset
+    offset += 1
+    layout.hidden_offer_buffer_offset = offset
+    offset += OFFER_BUFFER_SIZE * 2  # 250 offers * 2 floats per offer (corp_id, company_id)
     layout.hidden_size = offset - layout.visible_size
 
     layout.total_size = layout.visible_size + layout.hidden_size
