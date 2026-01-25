@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-24)
 
 Milestone: v4.0 ACQUISITION Phase
 Phase: 13 of 15 (Actions & Validation)
-Plan: 01 of 02
-Status: In progress
-Last activity: 2026-01-25 - Completed 13-01-PLAN.md (validation helpers and action handlers)
+Plan: 02 of 02
+Status: Phase complete
+Last activity: 2026-01-25 - Completed 13-02-PLAN.md (action handler integration)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [####      ] 29%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [#####     ] 33%
 
 ## Archived Milestones
 
@@ -34,7 +34,7 @@ See `.planning/milestones/` for full archives.
 
 **Phases:**
 - Phase 12: Offer Infrastructure (9 requirements) ✓
-- Phase 13: Actions & Validation (10 requirements)
+- Phase 13: Actions & Validation (10 requirements) ✓
 - Phase 14: Flow & Integration (10 requirements)
 - Phase 15: Testing (7 requirements)
 
@@ -75,6 +75,9 @@ See `.planning/milestones/` for full archives.
 | corp-acquisition-proceeds-pattern | Corp sellers use get+set pattern for acquisition_proceeds | 13-01 | Corp entity lacks add_acquisition_proceeds method |
 | valid-06-guaranteed | Same-president guaranteed by offer generation | 13-01 | No runtime re-check needed in validation |
 | validation-test-deferral | Test scaffolding now, implementation in 13-02 | 13-01 | Validation functions are cdef, need Python wrapper first |
+| acquisition-hybrid-phase | ACQUISITION is non-player when no offers, player when offers exist | 13-02 | Prevents ZeroLegalActionsError on empty buffer |
+| action-constants-exposure | Action enums exposed as *_PY suffixed constants | 13-02 | Enables Python test imports |
+| company-location-constants | Fixed LOC_PLAYER=3, LOC_FI=4, LOC_CORP=5 | 13-02 | Corrected from wrong values (1,0,2) |
 
 ### Pending Todos
 
@@ -82,11 +85,11 @@ None.
 
 ### Blockers/Concerns
 
-None - Plan 13-01 complete. Ready for Plan 13-02 (Driver Integration).
+None - Phase 13 complete. Ready for Phase 14 (Flow & Integration).
 
 ## Session Continuity
 
 Last session: 2026-01-25
-Stopped at: Completed 13-01-PLAN.md
+Stopped at: Completed 13-02-PLAN.md
 Resume file: None
-Next action: `/gsd:execute-phase 13-02` when plan exists
+Next action: Proceed to Phase 14 planning
