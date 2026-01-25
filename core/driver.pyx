@@ -22,7 +22,7 @@ from core.driver cimport ActionStatus, STATUS_OK, STATUS_INVALID, STATUS_GAME_OV
 from phases.invest cimport apply_invest_action
 from phases.bid cimport apply_bid_action
 from phases.wrap_up cimport apply_wrap_up
-from phases.acquisition cimport apply_acquisition_stub
+from phases.acquisition cimport apply_acquisition_action, apply_acquisition_stub
 from src.exceptions import ForcedActionLoopError, ZeroLegalActionsError
 
 # Maximum iterations for auto-apply loop (prevents infinite loops from bugs)
@@ -35,7 +35,7 @@ DEF ACTION_ACQUISITION_SENTINEL = -101
 
 cdef bint _is_non_player_phase(int phase) noexcept nogil:
     """Check if phase has no player actions (deterministic execution)."""
-    return phase == PHASE_WRAP_UP or phase == PHASE_ACQUISITION
+    return phase == PHASE_WRAP_UP
 
 
 cdef void _execute_non_player_phase(GameState state, object history):
@@ -148,6 +148,8 @@ cdef class GameDriver:
             result = apply_invest_action(state, &info)
         elif phase == PHASE_BID_IN_AUCTION:
             result = apply_bid_action(state, &info)
+        elif phase == PHASE_ACQUISITION:
+            result = apply_acquisition_action(state, &info)
         else:
             # Other phases not yet implemented (stubs for Phase 3+)
             return STATUS_INVALID
