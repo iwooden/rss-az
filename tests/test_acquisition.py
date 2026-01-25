@@ -2,7 +2,7 @@
 
 import pytest
 from core.state import GameState
-from core.data import CORP_NAMES, get_company_face_value
+from core.data import CORP_NAMES, GamePhases, get_company_face_value
 from entities.player import PLAYERS
 from entities.fi import FI
 from entities.corp import CORPS
@@ -10,8 +10,10 @@ from entities.turn import TURN
 from phases.acquisition import (
     generate_offers_py,
     get_offer_count,
-    get_offer_at
+    get_offer_at,
+    setup_acquisition_phase_py
 )
+from phases.wrap_up import apply_wrap_up_py
 
 
 class TestOfferGeneration:
@@ -55,3 +57,38 @@ class TestOfferGeneration:
         # TODO: Setup player with private companies and corp presidency
         # Verify offers generated
         pass
+
+
+class TestPhaseFlow:
+    """Phase entry and transition tests."""
+
+    def test_wrap_up_sets_up_acquisition(self):
+        """WRAP_UP generates offers before transitioning."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Transition through WRAP_UP
+        TURN.set_phase(gs, GamePhases.PHASE_WRAP_UP)
+        apply_wrap_up_py(gs)
+
+        # Should be in ACQUISITION
+        assert TURN.get_phase(gs) == GamePhases.PHASE_ACQUISITION
+
+        # Fresh game has no offers
+        assert TURN.get_acq_active_corp(gs) == -1
+        assert get_offer_count(gs) == 0
+
+    def test_acquisition_with_fi_company(self):
+        """Offers generated when FI has company and corp has cash."""
+        # TODO: This test requires setting up complex game state with:
+        # - FI owning companies
+        # - Active corps with cash
+        # Full implementation deferred until integration testing
+        pass
+
+    def test_empty_offers_detected(self):
+        """Empty offer buffer is detected."""
+        gs = GameState(3)
+        gs.initialize_game()
+        setup_acquisition_phase_py(gs)
+        assert get_offer_count(gs) == 0
