@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-24)
 
 Milestone: v4.0 ACQUISITION Phase
 Phase: 12 of 15 (Offer Infrastructure)
-Plan: 1 of 3
+Plan: 3 of 3
 Status: In progress
-Last activity: 2026-01-25 - Completed 12-01-PLAN.md
+Last activity: 2026-01-25 - Completed 12-03-PLAN.md
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [#         ] 11%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##        ] 13%
 
 ## Archived Milestones
 
@@ -65,6 +65,9 @@ See `.planning/milestones/` for full archives.
 |----|----------|------|--------|
 | offer-buffer-size | 250 offer slots (500 floats) | 12-01 | Hidden state buffer for pre-computed offers |
 | acquisition-proceeds-normalization | Use CASH_DIVISOR | 12-01 | Consistent with other cash fields |
+| president-detection-method | Find president by max share count | 12-03 | Simpler than is_president_of lookup |
+| validation-skip-strategy | While-loop skip in _present_current_offer | 12-03 | Auto-skip invalid offers during presentation |
+| receivership-active-player | Set active_player to 0 when president is -1 | 12-03 | Safe fallback for receivership corps |
 
 ### Pending Todos
 
@@ -77,6 +80,6 @@ None - ready for Phase 12 planning.
 ## Session Continuity
 
 Last session: 2026-01-25
-Stopped at: Completed 12-01-PLAN.md
+Stopped at: Completed 12-03-PLAN.md
 Resume file: None
-Next action: Continue to 12-02-PLAN.md or plan phase 12 plan 02
+Next action: Phase 12 complete - ready for Phase 13 planning
