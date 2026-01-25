@@ -31,19 +31,19 @@ AlphaZero-optimized ACQUISITION phase with offer-based flow, same-president rest
 
 ### Action Handling
 
-- [ ] **ACTION-01**: Accept acquisition at price within [low_price, high_price] range
-- [ ] **ACTION-02**: FI Buy High action (buy FI company at max price)
-- [ ] **ACTION-03**: FI Buy Face action (OS only, buy FI company at face value)
-- [ ] **ACTION-04**: Pass action (decline current offer, advance to next)
+- [x] **ACTION-01**: Accept acquisition at price within [low_price, high_price] range
+- [x] **ACTION-02**: FI Buy High action (buy FI company at max price)
+- [x] **ACTION-03**: FI Buy Face action (OS only, buy FI company at face value)
+- [x] **ACTION-04**: Pass action (decline current offer, advance to next)
 
 ### Validation
 
-- [ ] **VALID-01**: Price must be within company's [low_price, high_price] span
-- [ ] **VALID-02**: Buyer corp must have sufficient cash
-- [ ] **VALID-03**: Seller corp must keep >=1 company (owned + acquisition_companies after sale)
-- [ ] **VALID-04**: Target company cannot already be in acquisition_companies
-- [ ] **VALID-05**: Target company cannot be in buyer's owned_companies
-- [ ] **VALID-06**: Same-president requirement for corp-to-corp and corp-to-player offers
+- [x] **VALID-01**: Price must be within company's [low_price, high_price] span
+- [x] **VALID-02**: Buyer corp must have sufficient cash
+- [x] **VALID-03**: Seller corp must keep >=1 company (owned + acquisition_companies after sale)
+- [x] **VALID-04**: Target company cannot already be in acquisition_companies
+- [x] **VALID-05**: Target company cannot be in buyer's owned_companies
+- [x] **VALID-06**: Same-president requirement for corp-to-corp and corp-to-player offers
 
 ### Receivership Integration
 
@@ -89,16 +89,16 @@ AlphaZero-optimized ACQUISITION phase with offer-based flow, same-president rest
 | STATE-02 | 12 | 12-01 | Complete |
 | STATE-03 | 12 | 12-01 | Complete |
 | STATE-04 | 12 | 12-03 | Complete |
-| ACTION-01 | 13 | TBD | Pending |
-| ACTION-02 | 13 | TBD | Pending |
-| ACTION-03 | 13 | TBD | Pending |
-| ACTION-04 | 13 | TBD | Pending |
-| VALID-01 | 13 | TBD | Pending |
-| VALID-02 | 13 | TBD | Pending |
-| VALID-03 | 13 | TBD | Pending |
-| VALID-04 | 13 | TBD | Pending |
-| VALID-05 | 13 | TBD | Pending |
-| VALID-06 | 13 | TBD | Pending |
+| ACTION-01 | 13 | 13-01, 13-02 | Complete |
+| ACTION-02 | 13 | 13-01, 13-02 | Complete |
+| ACTION-03 | 13 | 13-01, 13-02 | Complete |
+| ACTION-04 | 13 | 13-01, 13-02 | Complete |
+| VALID-01 | 13 | 13-01 | Complete |
+| VALID-02 | 13 | 13-01 | Complete |
+| VALID-03 | 13 | 13-01 | Complete |
+| VALID-04 | 13 | 13-01 | Complete |
+| VALID-05 | 13 | 13-01 | Complete |
+| VALID-06 | 13 | 13-01 | Complete |
 | RECV-01 | 14 | TBD | Pending |
 | RECV-02 | 14 | TBD | Pending |
 | RECV-03 | 14 | TBD | Pending |

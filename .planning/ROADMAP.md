@@ -20,7 +20,7 @@ This milestone implements the ACQUISITION phase with AlphaZero-optimized mechani
 - Decimal phases (12.1, etc.): Urgent insertions if needed
 
 - [x] **Phase 12: Offer Infrastructure** - Offer generation, sorting, and state management
-- [ ] **Phase 13: Actions & Validation** - Accept/pass actions with full validation rules
+- [x] **Phase 13: Actions & Validation** - Accept/pass actions with full validation rules
 - [ ] **Phase 14: Flow & Integration** - Receivership auto-buy, phase transitions, driver integration
 - [ ] **Phase 15: Testing** - Unit, integration, and edge case tests
 
@@ -55,8 +55,8 @@ Plans:
 **Plans**: 2 plans in 2 waves
 
 Plans:
-- [ ] 13-01-PLAN.md — Validation helpers and action handlers
-- [ ] 13-02-PLAN.md — Main handler and driver integration
+- [x] 13-01-PLAN.md — Validation helpers and action handlers
+- [x] 13-02-PLAN.md — Main handler and driver integration
 
 ### Phase 14: Flow & Integration
 **Goal**: Phase executes correctly with receivership auto-buy and proper transitions
@@ -96,6 +96,6 @@ Phases execute in numeric order: 12 -> 13 -> 14 -> 15
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 12. Offer Infrastructure | v4.0 | 4/4 | Complete | 2026-01-25 |
-| 13. Actions & Validation | v4.0 | 0/2 | Not started | - |
+| 13. Actions & Validation | v4.0 | 2/2 | Complete | 2026-01-25 |
 | 14. Flow & Integration | v4.0 | 0/? | Not started | - |
 | 15. Testing | v4.0 | 0/? | Not started | - |
