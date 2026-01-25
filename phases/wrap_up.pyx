@@ -8,6 +8,7 @@ from entities import player as player_module
 from entities import company as company_module
 from entities import fi as fi_module
 from entities import deck as deck_module
+from phases import acquisition as acquisition_module
 
 
 # =============================================================================
@@ -165,7 +166,8 @@ cdef int apply_wrap_up(GameState state) noexcept:
     3. Clear consecutive passes for next INVEST round
     4. FI purchases cheapest available companies at face value
     5. All revealed companies become available for auction
-    6. Transition to ACQUISITION
+    6. Set up ACQUISITION phase (generate offers, present first)
+    7. Transition to ACQUISITION
 
     Returns: 0 always (deterministic, no failure modes)
     """
@@ -176,5 +178,13 @@ cdef int apply_wrap_up(GameState state) noexcept:
     _process_fi_purchases(state)
     _make_all_revealed_available(state)
 
+    # Set up acquisition phase (generate offers, present first)
+    acquisition_module.setup_acquisition_phase(state)
+
     turn_module.TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
     return 0
+
+
+def apply_wrap_up_py(GameState state):
+    """Python wrapper for testing."""
+    return apply_wrap_up(state)
