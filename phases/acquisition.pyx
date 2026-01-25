@@ -2,7 +2,7 @@
 """ACQUISITION phase stub - transitions immediately to INVEST."""
 
 from core.state cimport GameState
-from core.data cimport GamePhases, GameConstants, get_company_face_value
+from core.data cimport GamePhases, GameConstants, get_company_face_value, get_company_low_price
 from entities import turn as turn_module
 from entities import player as player_module
 from entities import company as company_module
@@ -368,6 +368,159 @@ cpdef tuple get_offer_at(GameState state, int index):
 cpdef int get_offer_count(GameState state):
     """Get number of offers in buffer."""
     return <int>state._data[state._layout.hidden_offer_count_offset]
+
+
+# =============================================================================
+# OFFER VALIDATION AND PRESENTATION
+# =============================================================================
+
+cdef bint _is_offer_valid(GameState state, int corp_id, int company_id) noexcept:
+    """
+    Check if offer is still valid for presentation.
+
+    Invalid if:
+    - Company already acquired this phase (in any corp's acquisition_companies)
+    - Corp doesn't have enough cash for minimum price (low_price or face for FI)
+    - Target company no longer exists at expected location
+
+    Returns True if offer is valid.
+    """
+    cdef int price, corp_cash, check_corp
+    cdef bint is_fi_company = fi_module.FI.owns_company(state, company_id)
+
+    # Check if company already acquired this phase
+    for check_corp in range(GameConstants.NUM_CORPS):
+        if corp_module.CORPS[CORP_NAMES[check_corp]].has_acquisition_company(state, company_id):
+            return False
+
+    # Check if corp can afford minimum price
+    corp_cash = corp_module.CORPS[CORP_NAMES[corp_id]].get_cash(state)
+    if is_fi_company:
+        # FI companies bought at face or high price
+        price = get_company_face_value(company_id)
+    else:
+        # Private/corp companies bought at low to high price
+        price = get_company_low_price(company_id)
+
+    if corp_cash < price:
+        return False
+
+    # Check company still owned by expected seller
+    if is_fi_company:
+        if not fi_module.FI.owns_company(state, company_id):
+            return False
+    else:
+        # For non-FI, company should be owned by player or corp
+        # (validation logic depends on seller type - simplified for now)
+        pass
+
+    return True
+
+
+cdef void _present_current_offer(GameState state) noexcept:
+    """
+    Update visible state to reflect current offer in buffer.
+
+    Skips invalid offers (already acquired, insufficient cash).
+    Reads offer at current index from hidden buffer.
+    Sets acq_active_corp, acq_target_company, acq_is_fi_offer.
+    Sets active_player to president of buying corp (or 0 for receivership).
+
+    STATE-01: Sets visible acquisition state for current offer.
+    STATE-04: Clears acq_active_corp when no more offers.
+    """
+    cdef int count = <int>state._data[state._layout.hidden_offer_count_offset]
+    cdef int index = <int>state._data[state._layout.hidden_offer_index_offset]
+    cdef int corp_id, company_id, president, base
+
+    # Skip invalid offers
+    while index < count:
+        base = state._layout.hidden_offer_buffer_offset + (index * 2)
+        corp_id = <int>state._data[base]
+        company_id = <int>state._data[base + 1]
+
+        if _is_offer_valid(state, corp_id, company_id):
+            break
+
+        # Skip invalid, try next
+        index += 1
+        state._data[state._layout.hidden_offer_index_offset] = <float>index
+
+    # No more valid offers (STATE-04)
+    if index >= count:
+        turn_module.TURN.clear_acq_active_corp(state)
+        turn_module.TURN.clear_acq_target_company(state)
+        turn_module.TURN.set_acq_fi_offer(state, False)
+        return
+
+    # Present valid offer (STATE-01)
+    turn_module.TURN.set_acq_active_corp(state, corp_id)
+    turn_module.TURN.set_acq_target_company(state, company_id)
+    turn_module.TURN.set_acq_fi_offer(state, fi_module.FI.owns_company(state, company_id))
+
+    # Set active player to president of buying corp
+    president = _get_corp_president(state, corp_id)
+    state._set_active_player(president if president >= 0 else 0)
+
+
+cdef void _advance_to_next_offer(GameState state) noexcept:
+    """
+    Advance offer index and present next offer.
+
+    Called after accept or pass on current offer.
+    """
+    cdef int index = <int>state._data[state._layout.hidden_offer_index_offset]
+    state._data[state._layout.hidden_offer_index_offset] = <float>(index + 1)
+    _present_current_offer(state)
+
+
+def present_current_offer_py(GameState state):
+    """Python wrapper for testing."""
+    _present_current_offer(state)
+
+
+def advance_to_next_offer_py(GameState state):
+    """Python wrapper for testing."""
+    _advance_to_next_offer(state)
+
+
+cpdef int get_offer_index(GameState state):
+    """Get current offer index."""
+    return <int>state._data[state._layout.hidden_offer_index_offset]
+
+
+# =============================================================================
+# PHASE ENTRY SETUP
+# =============================================================================
+
+cpdef void setup_acquisition_phase(GameState state):
+    """
+    Set up ACQUISITION phase at entry.
+
+    Called from WRAP_UP before transitioning to ACQUISITION.
+    Per CONTEXT.md: "Offer buffer populated at phase entry (not lazily)"
+
+    Steps:
+    1. Clear offer buffer index to 0
+    2. Generate all offers into buffer (OFFER-01)
+    3. Present first valid offer (or clear state if none)
+
+    Does NOT clear acquisition zones - that happens at phase EXIT (after merge).
+    """
+    # Reset offer tracking
+    state._data[state._layout.hidden_offer_index_offset] = 0.0
+    state._data[state._layout.hidden_offer_count_offset] = 0.0
+
+    # Generate offers (populates buffer)
+    _generate_offers(state)
+
+    # Present first offer (or clear if none)
+    _present_current_offer(state)
+
+
+def setup_acquisition_phase_py(GameState state):
+    """Python wrapper for testing."""
+    setup_acquisition_phase(state)
 
 
 # =============================================================================
