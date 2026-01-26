@@ -966,6 +966,111 @@ class TestZoneMerging:
         assert corp.get_acquisition_proceeds(gs) == 0
 
 
+class TestEdgeCases:
+    """TEST-07: Edge case tests for empty states and unusual configurations."""
+
+    def test_no_active_corps_no_offers(self):
+        """No corps active, verify 0 offers."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # No corps activated
+        setup_acquisition_phase_py(gs)
+
+        assert get_offer_count(gs) == 0, "No active corps should mean no offers"
+
+    def test_empty_fi_no_fi_offers(self):
+        """FI owns no companies, verify no FI offers."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Make corp active but FI has no companies
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 0, True)
+
+        setup_acquisition_phase_py(gs)
+
+        # No offers (FI empty)
+        assert get_offer_count(gs) == 0, "Empty FI should generate no offers"
+
+    def test_no_player_privates_no_private_offers(self):
+        """Players own no private companies, verify no private offers."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Make corp active with cash but no player owns privates
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 0, True)
+
+        setup_acquisition_phase_py(gs)
+
+        # No offers (no player companies)
+        assert get_offer_count(gs) == 0, "No player companies should generate no private offers"
+
+    def test_no_corp_companies_no_corp_corp_offers(self):
+        """Corps own no companies, verify no corp-to-corp offers."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Make two corps active with same president but neither owns companies
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        CORPS[CORP_NAMES[1]].set_active(gs, True)
+        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 0, True)
+        PLAYERS[0].set_president_of(gs, 1, True)
+
+        setup_acquisition_phase_py(gs)
+
+        # No offers (no corp companies to sell)
+        assert get_offer_count(gs) == 0, "No corp companies should generate no corp-to-corp offers"
+
+    def test_single_corp_no_corp_corp_offers(self):
+        """TEST-07: Only one corp active, can't have corp-to-corp offers."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give company to single active corp
+        COMPANIES[0].transfer_to_corp(gs, 0)
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 0, True)
+
+        setup_acquisition_phase_py(gs)
+
+        # No corp-to-corp offers (need buyer AND seller)
+        assert get_offer_count(gs) == 0, "Single corp cannot have corp-to-corp offers"
+
+    def test_same_president_constraint_explicit(self):
+        """TEST-07: Same-president logic is the ONLY thing blocking an offer."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Corp 0 owns a company
+        COMPANIES[0].transfer_to_corp(gs, 0)
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        PLAYERS[0].set_president_of(gs, 0, True)
+
+        # Corp 1 has cash and different president
+        CORPS[CORP_NAMES[1]].set_active(gs, True)
+        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        PLAYERS[1].set_president_of(gs, 1, True)
+
+        setup_acquisition_phase_py(gs)
+
+        # No offers due to different presidents
+        assert get_offer_count(gs) == 0, "Different presidents should block corp-to-corp offers"
+
+        # Now make same president
+        PLAYERS[0].set_president_of(gs, 1, True)
+        setup_acquisition_phase_py(gs)
+
+        # Now should have offers
+        assert get_offer_count(gs) > 0, "Same president should allow corp-to-corp offers"
+
+
 class TestReceivershipAutoBuy:
     """Tests for receivership auto-buy behavior (RECV-01, RECV-02, RECV-03)."""
 
