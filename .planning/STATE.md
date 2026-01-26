@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-26)
 
 Milestone: v5.0 CLOSING Phase
 Phase: 15.1 of 19 (Code Quality Refactoring)
-Plan: 3 of 5
+Plan: 5 of 5
 Status: In progress
-Last activity: 2026-01-26 — Completed 15.1-03-PLAN.md (Action Mask Optimization)
+Last activity: 2026-01-26 — Completed 15.1-05-PLAN.md (Test Infrastructure Consolidation)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [##_________]
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [###_______]
 
 ## Archived Milestones
 
@@ -44,11 +44,13 @@ See `.planning/milestones/` for full archives.
 - One-hot encoding helpers pattern - cdef inline noexcept nogil functions on raw float* for zero overhead (15.1-01)
 - Module-level buffer pattern - Pre-allocated static buffers with memset clearing for GIL-protected single-threaded operations (15.1-03)
 - Phase dispatch pattern - Single helper function to deduplicate phase-based branching logic (15.1-03)
+- Status code export pattern - Export Cython enum values as *_PY constants for Python access (15.1-05)
 
 **Testing patterns:**
 - Per-task atomic commits - feat/test prefixes for git bisect
 - Integration test consolidation - Cross-phase tests in test_integration.py
 - Invariant verification after every action
+- Status code imports - Phase tests import from conftest.py, core tests import from core.driver (15.1-05)
 
 ### Pending Todos
 
@@ -71,6 +73,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-26
-Stopped at: Completed 15.1-03-PLAN.md (Action Mask Optimization)
+Stopped at: Completed 15.1-05-PLAN.md (Test Infrastructure Consolidation)
 Resume file: None
-Next action: Continue Phase 15.1
+Next action: Continue Phase 15.1 or proceed to Phase 16
