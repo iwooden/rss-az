@@ -2,7 +2,17 @@
 
 ## What This Is
 
-A high-performance Cython game engine for "Rolling Stock Stars" board game with complete INVEST, BID_IN_AUCTION, WRAP_UP, and ACQUISITION phases. The engine stores state as a single contiguous float32 array for zero-copy passing to PyTorch, optimized for AlphaZero-style self-play training.
+A high-performance Cython game engine for "Rolling Stock Stars" board game with complete INVEST, BID_IN_AUCTION, WRAP_UP, ACQUISITION, and CLOSING phases. The engine stores state as a single contiguous float32 array for zero-copy passing to PyTorch, optimized for AlphaZero-style self-play training.
+
+## Current Milestone: v5.0 CLOSING Phase
+
+**Goal:** Implement the CLOSING phase where players/corporations can close (remove) companies, with auto-close logic for FI and receivership corps, and mandatory closing for players facing negative income.
+
+**Target features:**
+- Auto-close at phase start: FI closes unprofitable companies, receivership corps close per rules
+- Offer-based close flow: Present negative-income companies sorted by face value descending
+- Mandatory auto-close at phase end: Players can't have negative cash after INCOME
+- Junkyard Scrappers special: 2× printed income as scrapping bonus
 
 ## Core Value
 
@@ -69,7 +79,15 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 
 ### Active
 
-(None — next milestone not yet defined)
+**v5.0 - CLOSING Phase:**
+- [ ] FI auto-closes companies where Cost of Ownership ≥ Income
+- [ ] Receivership corps auto-close: red if CoO ≥ 4, orange if CoO ≥ 7 (keep highest face value)
+- [ ] Offer-based close flow for negative-income companies (player-owned privates & corp subsidiaries)
+- [ ] Offers sorted by face value descending
+- [ ] Accept (close) / Pass (keep) actions per offer
+- [ ] Junkyard Scrappers receives 2× printed income when closing
+- [ ] Mandatory auto-close at phase end for players facing negative cash in INCOME
+- [ ] Phase transition to INCOME after all offers processed
 
 ### Out of Scope
 
@@ -153,4 +171,4 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - **Compatibility:** State array must be directly usable by PyTorch
 
 ---
-*Last updated: 2026-01-26 — v4.0 milestone shipped*
+*Last updated: 2026-01-26 — v5.0 milestone started*

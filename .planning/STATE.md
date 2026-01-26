@@ -5,17 +5,17 @@
 See: .planning/PROJECT.md (updated 2026-01-26)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** Planning next milestone
+**Current focus:** v5.0 CLOSING Phase
 
 ## Current Position
 
-Milestone: (none active — v4.0 shipped)
-Phase: —
+Milestone: v5.0 CLOSING Phase
+Phase: Not started (defining requirements)
 Plan: —
-Status: Ready for next milestone
-Last activity: 2026-01-26 — v4.0 ACQUISITION milestone complete
+Status: Defining requirements
+Last activity: 2026-01-26 — Milestone v5.0 started
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] SHIPPED
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [__________]
 
 ## Archived Milestones
 
@@ -60,6 +60,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-26
-Stopped at: v4.0 milestone complete
+Stopped at: Milestone v5.0 started, defining requirements
 Resume file: None
-Next action: /gsd:new-milestone to plan next phase of development
+Next action: Define requirements and create roadmap
