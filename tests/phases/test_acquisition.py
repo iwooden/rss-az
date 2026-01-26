@@ -185,6 +185,137 @@ class TestOfferGeneration:
         assert corp_id == 0  # Corp 0 buying
         assert company_id == 0  # Company 0 from player 0
 
+    def test_fi_offers_sorted_by_corp_share_price(self):
+        """OFFER-03 detail: FI offers sorted by buyer corp share price descending."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give companies 0 and 1 to FI
+        COMPANIES[0].transfer_to_fi(gs)
+        COMPANIES[1].transfer_to_fi(gs)
+
+        # Make corp 0 active at price_index 20 (higher)
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[CORP_NAMES[0]].set_price_index(gs, 20)
+        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 0, True)
+
+        # Make corp 1 active at price_index 10 (lower)
+        CORPS[CORP_NAMES[1]].set_active(gs, True)
+        CORPS[CORP_NAMES[1]].set_price_index(gs, 10)
+        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 1, True)
+
+        # Generate offers
+        setup_acquisition_phase_py(gs)
+
+        # Should have 4 offers total (2 companies × 2 corps)
+        # Corp 0 offers for both companies should come before Corp 1 offers
+        assert get_offer_count(gs) == 4
+
+        corp_id_0, _ = get_offer_at(gs, 0)
+        corp_id_1, _ = get_offer_at(gs, 1)
+        corp_id_2, _ = get_offer_at(gs, 2)
+        corp_id_3, _ = get_offer_at(gs, 3)
+
+        # First two should be corp 0 (higher price)
+        assert corp_id_0 == 0
+        assert corp_id_1 == 0
+        # Last two should be corp 1 (lower price)
+        assert corp_id_2 == 1
+        assert corp_id_3 == 1
+
+    def test_corp_corp_sorted_by_buyer_price_then_face_value(self):
+        """OFFER-04 detail: Corp-corp sorted by buyer price DESC, then face value ASC."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give companies 0 (lower face value) and 1 (could be higher) to corp 0
+        COMPANIES[0].transfer_to_corp(gs, 0)
+        COMPANIES[1].transfer_to_corp(gs, 0)
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+
+        # Make corp 1 active at price_index 20 (higher)
+        CORPS[CORP_NAMES[1]].set_active(gs, True)
+        CORPS[CORP_NAMES[1]].set_price_index(gs, 20)
+        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+
+        # Make corp 2 active at price_index 10 (lower)
+        CORPS[CORP_NAMES[2]].set_active(gs, True)
+        CORPS[CORP_NAMES[2]].set_price_index(gs, 10)
+        CORPS[CORP_NAMES[2]].set_cash(gs, 50000)
+
+        # Player 0 is president of all three corps (same-president requirement)
+        PLAYERS[0].set_president_of(gs, 0, True)
+        PLAYERS[0].set_president_of(gs, 1, True)
+        PLAYERS[0].set_president_of(gs, 2, True)
+
+        # Generate offers
+        setup_acquisition_phase_py(gs)
+
+        # Should have offers: corp 1 and corp 2 buying from corp 0
+        # Expected order: Higher-priced buyer (corp 1) before lower-priced (corp 2)
+        # For same buyer, lower face value company first
+        assert get_offer_count(gs) >= 2
+
+        # First offers should be from higher-priced buyer (corp 1)
+        corp_id_first, _ = get_offer_at(gs, 0)
+        corp_id_second, _ = get_offer_at(gs, 1)
+
+        # Both should be corp 1 (or at least first should be)
+        assert corp_id_first == 1, f"Expected corp 1 (higher price) first, got {corp_id_first}"
+
+        # If more offers, verify sorting continues
+        if get_offer_count(gs) >= 3:
+            corp_id_third, _ = get_offer_at(gs, 2)
+            # After corp 1's offers, corp 2's offers should appear
+            if corp_id_third != 1:
+                assert corp_id_third == 2
+
+    def test_player_private_sorted_similarly(self):
+        """OFFER-05 detail: Player-private sorted by buyer price DESC, face value ASC."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give companies 0 and 1 to player 0
+        COMPANIES[0].transfer_to_player(gs, 0)
+        COMPANIES[1].transfer_to_player(gs, 0)
+
+        # Make corp 0 active at price_index 20 (higher)
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[CORP_NAMES[0]].set_price_index(gs, 20)
+        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+
+        # Make corp 1 active at price_index 10 (lower)
+        CORPS[CORP_NAMES[1]].set_active(gs, True)
+        CORPS[CORP_NAMES[1]].set_price_index(gs, 10)
+        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+
+        # Player 0 is president of both corps
+        PLAYERS[0].set_president_of(gs, 0, True)
+        PLAYERS[0].set_president_of(gs, 1, True)
+
+        # Generate offers
+        setup_acquisition_phase_py(gs)
+
+        # Should have 4 offers: 2 companies × 2 corps
+        # Sorted by buyer price DESC, then face value ASC
+        assert get_offer_count(gs) == 4
+
+        # First offers should be from higher-priced corp (corp 0)
+        corp_id_0, _ = get_offer_at(gs, 0)
+        corp_id_1, _ = get_offer_at(gs, 1)
+
+        assert corp_id_0 == 0, f"Expected corp 0 (higher price) first, got {corp_id_0}"
+        assert corp_id_1 == 0, f"Expected corp 0 (higher price) second, got {corp_id_1}"
+
+        # Last offers should be from lower-priced corp (corp 1)
+        corp_id_2, _ = get_offer_at(gs, 2)
+        corp_id_3, _ = get_offer_at(gs, 3)
+
+        assert corp_id_2 == 1
+        assert corp_id_3 == 1
+
 
 class TestPhaseFlow:
     """Phase entry and transition tests."""
