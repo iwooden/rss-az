@@ -764,6 +764,24 @@ cdef void _handle_pass(GameState state) noexcept:
     _advance_to_next_offer(state)
 
 
+cdef void _execute_receivership_fi_buy(GameState state, int corp_id, int company_id) noexcept:
+    """
+    Execute FI purchase for receivership corp at face value.
+
+    Receivership corps always buy from FI at face value (same as OS special ability).
+    This is called from _present_current_offer for receivership auto-buy.
+    Does NOT advance offer index - caller handles that.
+    """
+    cdef int face_value = get_company_face_value(company_id)
+
+    # Transfer money: corp -> FI
+    corp_module.CORPS[CORP_NAMES[corp_id]].add_cash(state, -face_value)
+    fi_module.FI.add_cash(state, face_value)
+
+    # Transfer company to corp's acquisition zone
+    company_module.COMPANIES[company_id].transfer_to_corp_acquisition(state, corp_id)
+
+
 # =============================================================================
 # PHASE ENTRY SETUP
 # =============================================================================
