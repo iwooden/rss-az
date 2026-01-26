@@ -951,6 +951,25 @@ cdef void _merge_acquisition_zones(GameState state) noexcept:
     _merge_corp_companies(state)
 
 
+cdef void _transition_to_closing(GameState state) noexcept:
+    """
+    Complete ACQUISITION phase and transition to CLOSING.
+
+    FLOW-02: Transition when no more valid offers.
+    DRIVER-03: Phase handler transitions internally.
+
+    Steps:
+    1. Merge all acquisition zones (proceeds + companies)
+    2. Set phase to CLOSING
+    """
+    # Merge before leaving ACQUISITION
+    _merge_acquisition_zones(state)
+
+    # Transition to CLOSING
+    # GamePhases is already imported via: from core.data cimport GamePhases
+    turn_module.TURN.set_phase(state, GamePhases.PHASE_CLOSING)
+
+
 # =============================================================================
 # MAIN ACTION HANDLER
 # =============================================================================
