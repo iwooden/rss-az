@@ -8,8 +8,7 @@ from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.fi import FI
 from entities.company import COMPANIES
-
-STATUS_OK = 0
+from tests.phases.conftest import STATUS_OK
 
 
 def trigger_wrap_up(state):

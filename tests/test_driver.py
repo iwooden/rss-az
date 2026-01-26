@@ -3,14 +3,9 @@
 import pytest
 import numpy as np
 from core.state import GameState
-from core.driver import DRIVER, GameDriver
+from core.driver import DRIVER, GameDriver, STATUS_OK_PY as STATUS_OK, STATUS_INVALID_PY as STATUS_INVALID, STATUS_GAME_OVER_PY as STATUS_GAME_OVER
 from core.actions import get_valid_action_mask, get_action_layout, decode_action_py
 from core.data import GamePhases
-
-# Status codes (match core/driver.pxd)
-STATUS_OK = 0
-STATUS_INVALID = 1
-STATUS_GAME_OVER = 2
 
 
 class TestGameDriverBasics:

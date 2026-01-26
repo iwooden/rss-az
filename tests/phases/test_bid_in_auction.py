@@ -9,8 +9,7 @@ from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.company import COMPANIES
 from entities.deck import DECK
-
-STATUS_OK = 0
+from tests.phases.conftest import STATUS_OK
 
 # Fixtures come from conftest.py automatically (bid_state is same as auction_state)
 # Helper functions also available: assert_valid_mask, assert_invariants, apply_action_and_verify
