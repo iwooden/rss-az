@@ -68,10 +68,12 @@ Plans:
   3. Phase transitions to CLOSING when no more valid offers exist
   4. Acquisition zones merge into owned_companies and corp cash at phase end
   5. Action mask returns valid price options for player-president offers
-**Plans**: TBD
+**Plans**: 3 plans in 3 waves
 
 Plans:
-- [ ] 14-01: TBD
+- [ ] 14-01-PLAN.md — Receivership auto-buy in presentation loop
+- [ ] 14-02-PLAN.md — Zone merging and phase transition to CLOSING
+- [ ] 14-03-PLAN.md — Integration tests for flow and receivership
 
 ### Phase 15: Testing
 **Goal**: Comprehensive test coverage validates ACQUISITION phase correctness
@@ -97,5 +99,5 @@ Phases execute in numeric order: 12 -> 13 -> 14 -> 15
 |-------|-----------|----------------|--------|-----------|
 | 12. Offer Infrastructure | v4.0 | 4/4 | Complete | 2026-01-25 |
 | 13. Actions & Validation | v4.0 | 2/2 | Complete | 2026-01-25 |
-| 14. Flow & Integration | v4.0 | 0/? | Not started | - |
+| 14. Flow & Integration | v4.0 | 0/3 | Planned | - |
 | 15. Testing | v4.0 | 0/? | Not started | - |
