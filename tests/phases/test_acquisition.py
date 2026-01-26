@@ -1,4 +1,78 @@
-"""Tests for ACQUISITION phase offer generation."""
+"""Tests for ACQUISITION phase offer generation.
+
+TEST REQUIREMENT COVERAGE:
+==========================
+
+TEST-01 (Offer Generation Priority):
+- TestOfferGeneration class (10 tests)
+  - test_no_offers_fresh_game: OFFER-01 (empty buffer)
+  - test_fi_offers_generated: OFFER-02, OFFER-03 (FI offers)
+  - test_os_fi_offers_first: OFFER-02 (OS priority)
+  - test_corp_fi_sorted_by_price: OFFER-03 (non-OS sorting)
+  - test_corp_corp_offers_same_president: OFFER-04 (same-president)
+  - test_different_president_no_offers: OFFER-04 (negative)
+  - test_player_private_offers: OFFER-05 (private offers)
+  - test_fi_offers_sorted_by_corp_share_price: OFFER-03 (detailed sorting)
+  - test_corp_corp_sorted_by_buyer_price_then_face_value: OFFER-04 (detailed)
+  - test_player_private_sorted_similarly: OFFER-05 (detailed)
+
+TEST-02 (Action Types):
+- TestActionIntegration class (4 tests)
+  - test_accept_price_action: Price-based acquisition
+  - test_fi_buy_high_action: Non-OS buys from FI at high price
+  - test_fi_buy_face_action: OS buys from FI at face value
+  - test_pass_action: Skip offer, advance to next
+
+TEST-03 (Validation Rules):
+- TestValidation class (18 tests)
+  - VALID-01 (price range): test_price_in_range_succeeds, test_price_below_low_rejected,
+    test_price_above_high_rejected, test_price_at_low_boundary, test_price_at_high_boundary,
+    test_price_one_below_low_fails, test_price_one_above_high_fails
+  - VALID-02 (sufficient cash): test_insufficient_cash_filters_offers,
+    test_exact_cash_for_price_succeeds, test_one_dollar_short_fails
+  - VALID-03 (seller keeps >=1): test_seller_with_two_companies_can_sell_one,
+    test_seller_with_one_company_action_rejected, test_seller_with_one_owned_one_acquisition_can_sell
+  - VALID-04 (not in acquisition zone): test_target_already_acquired_rejected,
+    test_company_in_acquisition_zone_blocks_offer
+  - VALID-05 (not in owned): test_target_already_owned_rejected
+  - VALID-06 (OS constraints): test_fi_buy_high_rejects_os_corp, test_fi_buy_face_rejects_non_os_corp
+
+TEST-04 (Receivership Auto-Buy):
+- TestReceivershipAutoBuy class (4 tests)
+  - test_receivership_auto_buys_affordable_fi: RECV-01, RECV-03 (auto-buy at face)
+  - test_receivership_skips_unaffordable_fi: RECV-03 (skip when can't afford)
+  - test_receivership_skips_non_fi_offers: RECV-03 (only from FI)
+  - test_receivership_cannot_sell: RECV-02 (no offers as seller)
+
+TEST-05 (Phase Flow):
+- TestPhaseFlow class (7 tests)
+  - test_wrap_up_sets_up_acquisition: WRAP_UP transition
+  - test_acquisition_with_fi_company: Offer-driven flow
+  - test_empty_offers_detected: Empty buffer detection
+  - test_transition_to_closing: Phase transition (to INVEST as workaround)
+  - test_transition_merges_player_proceeds: FLOW-03 (player proceeds)
+  - test_transition_merges_corp_proceeds: FLOW-03 (corp proceeds)
+  - test_transition_merges_acquisition_companies: FLOW-04 (company merging)
+- TestZoneMerging class (4 tests)
+  - test_player_proceeds_merge_to_cash: FLOW-03 (player)
+  - test_corp_proceeds_merge_to_cash: FLOW-03 (corp)
+  - test_acquisition_companies_merge_to_owned: FLOW-04 (companies)
+  - test_zones_cleared_after_merge: FLOW-03, FLOW-04 (cleanup)
+
+TEST-06 (Integration):
+- Deferred to Plan 15-03 (cross-phase flow tests)
+
+TEST-07 (Edge Cases):
+- TestEdgeCases class (6 tests)
+  - test_no_active_corps_no_offers: Empty state (no corps)
+  - test_empty_fi_no_fi_offers: Empty state (no FI companies)
+  - test_no_player_privates_no_private_offers: Empty state (no player companies)
+  - test_no_corp_companies_no_corp_corp_offers: Empty state (no corp companies)
+  - test_single_corp_no_corp_corp_offers: Configuration edge (single corp)
+  - test_same_president_constraint_explicit: Same-president as sole blocker
+
+Total: 53 tests covering TEST-01 through TEST-05, TEST-07
+"""
 
 import pytest
 from core.state import GameState
