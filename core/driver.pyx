@@ -243,3 +243,8 @@ cdef class GameDriver:
 
 # Global singleton instance (stateless pattern)
 DRIVER = GameDriver()
+
+# Python-accessible status code constants
+STATUS_OK_PY = STATUS_OK
+STATUS_INVALID_PY = STATUS_INVALID
+STATUS_GAME_OVER_PY = STATUS_GAME_OVER
