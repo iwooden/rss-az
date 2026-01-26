@@ -86,10 +86,12 @@ Plans:
   3. Unit tests verify all validation rules reject invalid actions appropriately
   4. Integration tests verify INVEST->WRAP_UP->ACQUISITION->CLOSING flow works end-to-end
   5. Edge case tests verify behavior with no valid offers, all receivership, empty FI
-**Plans**: TBD
+**Plans**: 3 plans in 2 waves
 
 Plans:
-- [ ] 15-01: TBD
+- [ ] 15-01-PLAN.md — File reorganization and offer generation priority tests (TEST-01)
+- [ ] 15-02-PLAN.md — Validation boundaries and edge case tests (TEST-03, TEST-07)
+- [ ] 15-03-PLAN.md — Integration tests for ACQUISITION flow (TEST-06)
 
 ## Progress
 
@@ -101,4 +103,4 @@ Phases execute in numeric order: 12 -> 13 -> 14 -> 15
 | 12. Offer Infrastructure | v4.0 | 4/4 | Complete | 2026-01-25 |
 | 13. Actions & Validation | v4.0 | 2/2 | Complete | 2026-01-25 |
 | 14. Flow & Integration | v4.0 | 4/4 | Complete | 2026-01-26 |
-| 15. Testing | v4.0 | 0/? | Not started | - |
+| 15. Testing | v4.0 | 0/3 | Planned | - |
