@@ -472,6 +472,24 @@ cdef void _fill_ipo_mask(GameState state, ActionLayout* layout, float* mask) noe
                 mask[layout.ipo_base + corp_id * MAX_PAR_SLOTS + par_slot] = 1.0
 
 
+cdef void _fill_mask_for_phase(GameState state, int phase, ActionLayout* layout, float* mask) noexcept:
+    """Fill mask based on current phase. Central dispatch to avoid duplication."""
+    if phase == PHASE_INVEST:
+        _fill_invest_mask(state, layout, mask)
+    elif phase == PHASE_BID_IN_AUCTION:
+        _fill_bid_mask(state, layout, mask)
+    elif phase == PHASE_ACQUISITION:
+        _fill_acquisition_mask(state, layout, mask)
+    elif phase == PHASE_CLOSING:
+        _fill_closing_mask(state, layout, mask)
+    elif phase == PHASE_DIVIDENDS:
+        _fill_dividends_mask(state, layout, mask)
+    elif phase == PHASE_ISSUE_SHARES:
+        _fill_issue_mask(state, layout, mask)
+    elif phase == PHASE_IPO:
+        _fill_ipo_mask(state, layout, mask)
+
+
 # =============================================================================
 # PUBLIC FUNCTIONS
 # =============================================================================
@@ -498,21 +516,7 @@ cpdef object get_valid_action_mask(GameState state):
     cdef float* mask_ptr = <float*>cnp.PyArray_DATA(mask)
 
     cdef int phase = state.get_phase()
-
-    if phase == PHASE_INVEST:
-        _fill_invest_mask(state, &layout, mask_ptr)
-    elif phase == PHASE_BID_IN_AUCTION:
-        _fill_bid_mask(state, &layout, mask_ptr)
-    elif phase == PHASE_ACQUISITION:
-        _fill_acquisition_mask(state, &layout, mask_ptr)
-    elif phase == PHASE_CLOSING:
-        _fill_closing_mask(state, &layout, mask_ptr)
-    elif phase == PHASE_DIVIDENDS:
-        _fill_dividends_mask(state, &layout, mask_ptr)
-    elif phase == PHASE_ISSUE_SHARES:
-        _fill_issue_mask(state, &layout, mask_ptr)
-    elif phase == PHASE_IPO:
-        _fill_ipo_mask(state, &layout, mask_ptr)
+    _fill_mask_for_phase(state, phase, &layout, mask_ptr)
 
     return mask
 
@@ -534,22 +538,7 @@ cpdef tuple get_forced_action(GameState state):
     cdef int i, count, single_action
 
     # Fill the mask based on phase
-    if phase == PHASE_INVEST:
-        _fill_invest_mask(state, &layout, mask_ptr)
-    elif phase == PHASE_BID_IN_AUCTION:
-        _fill_bid_mask(state, &layout, mask_ptr)
-    elif phase == PHASE_ACQUISITION:
-        _fill_acquisition_mask(state, &layout, mask_ptr)
-    elif phase == PHASE_CLOSING:
-        _fill_closing_mask(state, &layout, mask_ptr)
-    elif phase == PHASE_DIVIDENDS:
-        _fill_dividends_mask(state, &layout, mask_ptr)
-    elif phase == PHASE_ISSUE_SHARES:
-        _fill_issue_mask(state, &layout, mask_ptr)
-    elif phase == PHASE_IPO:
-        _fill_ipo_mask(state, &layout, mask_ptr)
-    else:
-        return (-1, False)
+    _fill_mask_for_phase(state, phase, &layout, mask_ptr)
 
     # Count valid actions
     count = 0
