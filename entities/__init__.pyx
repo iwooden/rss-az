@@ -21,6 +21,7 @@ PLAYERS = _player_module.PLAYERS
 
 Corporation = _corp_module.Corporation
 CORPS = _corp_module.CORPS
+CORPS_BY_NAME = _corp_module.CORPS_BY_NAME
 
 ForeignInvestor = _fi_module.ForeignInvestor
 FI = _fi_module.FI
@@ -40,7 +41,7 @@ DECK = _deck_module.DECK
 
 __all__ = [
     'Player', 'PLAYERS',
-    'Corporation', 'CORPS',
+    'Corporation', 'CORPS', 'CORPS_BY_NAME',
     'ForeignInvestor', 'FI',
     'Market', 'MARKET',
     'TurnState', 'TURN',
