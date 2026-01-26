@@ -9,9 +9,9 @@ Requirements for CLOSING phase implementation. Each maps to roadmap phases.
 
 ### Auto-Close (Phase Start)
 
-- [ ] **CLO-01**: FI closes companies where Cost of Ownership ≥ Income
-- [ ] **CLO-02**: Receivership corps close red companies if CoO ≥ 4
-- [ ] **CLO-03**: Receivership corps close orange companies if CoO ≥ 7
+- [ ] **CLO-01**: FI closes companies where Cost of Ownership >= Income
+- [ ] **CLO-02**: Receivership corps close red companies if CoO >= 4
+- [ ] **CLO-03**: Receivership corps close orange companies if CoO >= 7
 - [ ] **CLO-04**: Receivership corps always keep highest face value company (can't close if only 1 company)
 
 ### Offer Generation
@@ -30,7 +30,7 @@ Requirements for CLOSING phase implementation. Each maps to roadmap phases.
 
 - [ ] **CLO-11**: Accept action closes the company (removes from game)
 - [ ] **CLO-12**: Pass action keeps the company
-- [ ] **CLO-13**: Junkyard Scrappers receives 2× printed income as scrapping bonus when closing
+- [ ] **CLO-13**: Junkyard Scrappers receives 2x printed income as scrapping bonus when closing
 
 ### Mandatory Close (Phase End)
 
@@ -82,28 +82,28 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CLO-01 | TBD | Pending |
-| CLO-02 | TBD | Pending |
-| CLO-03 | TBD | Pending |
-| CLO-04 | TBD | Pending |
-| CLO-05 | TBD | Pending |
-| CLO-06 | TBD | Pending |
-| CLO-07 | TBD | Pending |
-| CLO-08 | TBD | Pending |
-| CLO-09 | TBD | Pending |
-| CLO-10 | TBD | Pending |
-| CLO-11 | TBD | Pending |
-| CLO-12 | TBD | Pending |
-| CLO-13 | TBD | Pending |
-| CLO-14 | TBD | Pending |
-| CLO-15 | TBD | Pending |
-| CLO-16 | TBD | Pending |
+| CLO-01 | Phase 16 | Pending |
+| CLO-02 | Phase 16 | Pending |
+| CLO-03 | Phase 16 | Pending |
+| CLO-04 | Phase 16 | Pending |
+| CLO-05 | Phase 17 | Pending |
+| CLO-06 | Phase 17 | Pending |
+| CLO-07 | Phase 17 | Pending |
+| CLO-08 | Phase 17 | Pending |
+| CLO-09 | Phase 17 | Pending |
+| CLO-10 | Phase 17 | Pending |
+| CLO-11 | Phase 17 | Pending |
+| CLO-12 | Phase 17 | Pending |
+| CLO-13 | Phase 17 | Pending |
+| CLO-14 | Phase 18 | Pending |
+| CLO-15 | Phase 18 | Pending |
+| CLO-16 | Phase 18 | Pending |
 
 **Coverage:**
 - v5.0 requirements: 16 total
-- Mapped to phases: 0
-- Unmapped: 16 ⚠️
+- Mapped to phases: 16
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-01-26*
-*Last updated: 2026-01-26 after initial definition*
+*Last updated: 2026-01-26 after roadmap creation*

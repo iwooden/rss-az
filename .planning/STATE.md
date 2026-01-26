@@ -10,10 +10,10 @@ See: .planning/PROJECT.md (updated 2026-01-26)
 ## Current Position
 
 Milestone: v5.0 CLOSING Phase
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-01-26 — Milestone v5.0 started
+Phase: 16 of 19 (Auto-Close Logic)
+Plan: Ready to plan
+Status: Roadmap created, ready to plan Phase 16
+Last activity: 2026-01-26 — Roadmap created for v5.0
 
 Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [__________]
 
@@ -53,13 +53,13 @@ None.
 
 ### Blockers/Concerns
 
-**CLOSING Phase:** Not yet implemented. `_transition_to_closing` currently goes to INVEST (new turn) as workaround. When CLOSING phase is added, revert to `turn_module.TURN.set_phase(state, GamePhases.PHASE_CLOSING)` in acquisition.pyx line ~970.
+**CLOSING Phase:** `_transition_to_closing` in acquisition.pyx (line ~970) currently goes to INVEST as workaround. Will be updated to transition to CLOSING once Phase 16 implements the phase handler.
 
-**Remaining Phases:** CLO (CLOSING), INC (INCOME), DIV (DIVIDENDS), END (END_GAME), ISS (ISSUE_SHARES), IPO (INITIAL_PUBLIC_OFFERING)
+**Remaining Phases After v5.0:** INC (INCOME), DIV (DIVIDENDS), END (END_GAME), ISS (ISSUE_SHARES), IPO (INITIAL_PUBLIC_OFFERING)
 
 ## Session Continuity
 
 Last session: 2026-01-26
-Stopped at: Milestone v5.0 started, defining requirements
+Stopped at: Roadmap created for v5.0 CLOSING Phase
 Resume file: None
-Next action: Define requirements and create roadmap
+Next action: /gsd:plan-phase 16
