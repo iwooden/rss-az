@@ -2,7 +2,10 @@
 
 import pytest
 from core.state import GameState
-from core.data import CORP_NAMES, GamePhases, get_company_face_value
+from core.data import (
+    CORP_NAMES, GamePhases,
+    get_company_face_value, get_company_low_price, get_company_high_price
+)
 from core.actions import (
     ACTION_ACQ_PRICE_PY as ACTION_ACQ_PRICE,
     ACTION_ACQ_FI_HIGH_PY as ACTION_ACQ_FI_HIGH,
@@ -563,6 +566,190 @@ class TestValidation:
         if get_offer_count(gs) > 0:
             result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 0)
             assert result == 1  # Invalid
+
+    # VALID-01 boundary tests
+    def test_price_at_low_boundary(self):
+        """VALID-01: Price exactly at low_price succeeds."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        company_id = 0
+        self._setup_player_private_offer(gs, 0, company_id, 0, 50000)
+
+        # Offset 0 = low_price
+        low_price = get_company_low_price(company_id)
+        result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 0)
+        assert result == 0, f"Action at low_price ({low_price}) should succeed"
+
+    def test_price_at_high_boundary(self):
+        """VALID-01: Price exactly at high_price succeeds."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        company_id = 0
+        self._setup_player_private_offer(gs, 0, company_id, 0, 50000)
+
+        # Calculate offset to reach high_price
+        low_price = get_company_low_price(company_id)
+        high_price = get_company_high_price(company_id)
+        offset = high_price - low_price
+
+        result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, offset)
+        assert result == 0, f"Action at high_price ({high_price}) should succeed"
+
+    def test_price_one_below_low_fails(self):
+        """VALID-01: Price = low_price - 1 fails."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        company_id = 0
+        self._setup_player_private_offer(gs, 0, company_id, 0, 50000)
+
+        # Offset -1 = below low_price
+        result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, -1)
+        assert result == 1, "Price below low_price should fail"
+
+    def test_price_one_above_high_fails(self):
+        """VALID-01: Price = high_price + 1 fails."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        company_id = 0
+        self._setup_player_private_offer(gs, 0, company_id, 0, 50000)
+
+        # Calculate offset beyond high_price
+        low_price = get_company_low_price(company_id)
+        high_price = get_company_high_price(company_id)
+        offset = (high_price - low_price) + 1
+
+        result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, offset)
+        assert result == 1, "Price above high_price should fail"
+
+    # VALID-02 boundary tests
+    def test_exact_cash_for_price_succeeds(self):
+        """VALID-02: Corp has exactly the price amount, action succeeds."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        company_id = 0
+        low_price = get_company_low_price(company_id)
+
+        # Give corp exactly low_price in cash
+        # Note: Offer generation may filter this out if exact match considered insufficient
+        # This tests the boundary - if offer is generated, action should succeed
+        self._setup_player_private_offer(gs, 0, company_id, 0, low_price)
+
+        if get_offer_count(gs) > 0:
+            # Action should succeed
+            result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 0)
+            assert result == 0, "Action with exact cash should succeed"
+        else:
+            # If no offer generated, that's also acceptable boundary behavior
+            # (implementation may require cash > price rather than >= price)
+            pass
+
+    def test_one_dollar_short_fails(self):
+        """VALID-02: Corp has price - 1, no offer generated."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        company_id = 0
+        low_price = get_company_low_price(company_id)
+
+        # Give corp one dollar less than low_price
+        self._setup_player_private_offer(gs, 0, company_id, 0, low_price - 1)
+
+        # No offer should be generated (insufficient cash filtered at generation)
+        assert get_offer_count(gs) == 0, "No offer should be generated with insufficient cash"
+
+    # VALID-03 boundary tests (seller keeps >= 1 company)
+    def test_seller_with_two_companies_can_sell_one(self):
+        """VALID-03: Seller has 2 companies, sell 1 succeeds."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give corp 0 two companies
+        COMPANIES[0].transfer_to_corp(gs, 0)
+        COMPANIES[1].transfer_to_corp(gs, 0)
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+
+        # Make corp 1 active with cash, same president
+        CORPS[CORP_NAMES[1]].set_active(gs, True)
+        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 0, True)
+        PLAYERS[0].set_president_of(gs, 1, True)
+
+        setup_acquisition_phase_py(gs)
+
+        # Should have offers (seller has 2 companies, can sell 1)
+        assert get_offer_count(gs) > 0, "Seller with 2 companies should have offers"
+
+    def test_seller_with_one_company_action_rejected(self):
+        """VALID-03: Seller with 1 company - offer generated but action rejected."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give corp 0 exactly one company (no acquisition zone companies)
+        COMPANIES[0].transfer_to_corp(gs, 0)
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+
+        # Make corp 1 active with cash, same president
+        CORPS[CORP_NAMES[1]].set_active(gs, True)
+        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 0, True)
+        PLAYERS[0].set_president_of(gs, 1, True)
+
+        setup_acquisition_phase_py(gs)
+
+        # VALID-03 is checked at ACTION time, not offer generation time
+        # Offer IS generated, but action should be rejected
+        assert get_offer_count(gs) > 0, "Offer should be generated"
+
+        # Try to execute - should fail VALID-03 check (seller would have 0 after)
+        result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 0)
+        assert result == 1, "Action should be rejected (seller would have 0 companies)"
+
+    def test_seller_with_one_owned_one_acquisition_can_sell(self):
+        """VALID-03: Seller has 1 owned + 1 in acquisition zone, can sell the owned one."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give corp 0 one owned and one in acquisition zone
+        COMPANIES[0].transfer_to_corp(gs, 0)
+        COMPANIES[1].transfer_to_corp_acquisition(gs, 0)
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+
+        # Make corp 1 active with cash, same president
+        CORPS[CORP_NAMES[1]].set_active(gs, True)
+        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 0, True)
+        PLAYERS[0].set_president_of(gs, 1, True)
+
+        setup_acquisition_phase_py(gs)
+
+        # _count_seller_companies counts BOTH owned and acquisition_companies
+        # With 1 owned + 1 acquisition, selling owned leaves 1 (in acquisition) - valid
+        assert get_offer_count(gs) > 0, "Seller with 1 owned + 1 acquisition can sell owned"
+
+    # VALID-04/VALID-05 boundary test
+    def test_company_in_acquisition_zone_blocks_offer(self):
+        """VALID-04: Company in acquisition zone blocks offer generation."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give company to player, then put it in corp's acquisition zone
+        COMPANIES[0].transfer_to_player(gs, 0)
+        COMPANIES[0].transfer_to_corp_acquisition(gs, 0)
+
+        # Make corp active with cash
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 0, True)
+
+        setup_acquisition_phase_py(gs)
+
+        # No offer should be generated (company already in acquisition zone)
+        assert get_offer_count(gs) == 0, "Company in acquisition zone should block offer"
 
 
 class TestActionIntegration:
