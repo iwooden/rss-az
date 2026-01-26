@@ -422,46 +422,66 @@ cdef void _present_current_offer(GameState state) noexcept:
     """
     Update visible state to reflect current offer in buffer.
 
-    Skips invalid offers (already acquired, insufficient cash).
-    Reads offer at current index from hidden buffer.
-    Sets acq_active_corp, acq_target_company, acq_is_fi_offer.
-    Sets active_player to president of buying corp (or 0 for receivership).
+    For receivership corps:
+    - FI offers: auto-execute buy if affordable, else auto-pass
+    - Non-FI offers: auto-pass (receivership can only buy from FI per RULES.md)
+
+    Loops until a player-president offer is found or offers exhausted.
 
     STATE-01: Sets visible acquisition state for current offer.
     STATE-04: Clears acq_active_corp when no more offers.
+    RECV-01: Receivership corps auto-buy FI offers if affordable.
+    RECV-03: Auto-buy executes within this loop (no player action).
     """
     cdef int count = <int>state._data[state._layout.hidden_offer_count_offset]
     cdef int index = <int>state._data[state._layout.hidden_offer_index_offset]
     cdef int corp_id, company_id, president, base
+    cdef int face_value, corp_cash
+    cdef bint is_fi_offer
 
-    # Skip invalid offers
     while index < count:
         base = state._layout.hidden_offer_buffer_offset + (index * 2)
         corp_id = <int>state._data[base]
         company_id = <int>state._data[base + 1]
 
-        if _is_offer_valid(state, corp_id, company_id):
-            break
+        # Skip invalid offers (already acquired, insufficient cash, etc.)
+        if not _is_offer_valid(state, corp_id, company_id):
+            index += 1
+            state._data[state._layout.hidden_offer_index_offset] = <float>index
+            continue
 
-        # Skip invalid, try next
-        index += 1
-        state._data[state._layout.hidden_offer_index_offset] = <float>index
+        # Check if buying corp is in receivership
+        if corp_module.CORPS[CORP_NAMES[corp_id]].is_in_receivership(state):
+            is_fi_offer = fi_module.FI.owns_company(state, company_id)
 
-    # No more valid offers (STATE-04)
-    if index >= count:
-        turn_module.TURN.clear_acq_active_corp(state)
-        turn_module.TURN.clear_acq_target_company(state)
-        turn_module.TURN.set_acq_fi_offer(state, False)
+            # Receivership corps only buy from FI (per RULES.md)
+            if is_fi_offer:
+                face_value = get_company_face_value(company_id)
+                corp_cash = corp_module.CORPS[CORP_NAMES[corp_id]].get_cash(state)
+
+                if corp_cash >= face_value:
+                    # Auto-execute: buy at face value
+                    _execute_receivership_fi_buy(state, corp_id, company_id)
+            # else: auto-pass by falling through
+
+            # Advance to next offer (auto-pass for both unaffordable FI and non-FI)
+            index += 1
+            state._data[state._layout.hidden_offer_index_offset] = <float>index
+            continue
+
+        # Found player-president offer - set visible state and return
+        turn_module.TURN.set_acq_active_corp(state, corp_id)
+        turn_module.TURN.set_acq_target_company(state, company_id)
+        turn_module.TURN.set_acq_fi_offer(state, fi_module.FI.owns_company(state, company_id))
+
+        president = _get_corp_president(state, corp_id)
+        state._set_active_player(president if president >= 0 else 0)
         return
 
-    # Present valid offer (STATE-01)
-    turn_module.TURN.set_acq_active_corp(state, corp_id)
-    turn_module.TURN.set_acq_target_company(state, company_id)
-    turn_module.TURN.set_acq_fi_offer(state, fi_module.FI.owns_company(state, company_id))
-
-    # Set active player to president of buying corp
-    president = _get_corp_president(state, corp_id)
-    state._set_active_player(president if president >= 0 else 0)
+    # No more valid offers (STATE-04)
+    turn_module.TURN.clear_acq_active_corp(state)
+    turn_module.TURN.clear_acq_target_company(state)
+    turn_module.TURN.set_acq_fi_offer(state, False)
 
 
 cdef void _advance_to_next_offer(GameState state) noexcept:
