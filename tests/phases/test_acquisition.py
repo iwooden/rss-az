@@ -38,35 +38,152 @@ class TestOfferGeneration:
 
     def test_fi_offers_generated(self):
         """OFFER-02, OFFER-03: FI offers generated when corps active."""
-        # TODO: This test requires setting up complex game state with:
-        # - FI owning companies
-        # - Active corps with cash
-        # Full implementation deferred until integration testing
-        pass
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give company 0 to FI
+        COMPANIES[0].transfer_to_fi(gs)
+
+        # Make corp 0 active with cash
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 0, True)
+
+        # Generate offers
+        setup_acquisition_phase_py(gs)
+
+        # Should have at least one FI offer
+        assert get_offer_count(gs) > 0
+        corp_id, company_id = get_offer_at(gs, 0)
+        assert company_id == 0  # Company 0 from FI
+        assert corp_id == 0     # Corp 0 buying
 
     def test_os_fi_offers_first(self):
         """OFFER-02: OS->FI offers come before other corp->FI offers."""
-        # TODO: Setup scenario with OS and another corp both able to buy from FI
-        # Verify OS offers appear first in buffer
-        pass
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give company 0 to FI
+        COMPANIES[0].transfer_to_fi(gs)
+
+        # Make OS (corp 2) and corp 0 both active with cash
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 0, True)
+
+        CORPS[CORP_NAMES[2]].set_active(gs, True)  # OS is corp 2
+        CORPS[CORP_NAMES[2]].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 2, True)
+
+        # Generate offers
+        setup_acquisition_phase_py(gs)
+
+        # Should have offers
+        assert get_offer_count(gs) >= 2
+
+        # First offer should be from OS (corp 2)
+        corp_id, company_id = get_offer_at(gs, 0)
+        assert corp_id == 2, f"Expected OS (corp 2) first, got corp {corp_id}"
+        assert company_id == 0
 
     def test_corp_fi_sorted_by_price(self):
         """OFFER-03: Non-OS corp->FI offers sorted by descending share price."""
-        # TODO: Setup multiple corps with different share prices
-        # Verify offers sorted correctly
-        pass
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give company 0 to FI
+        COMPANIES[0].transfer_to_fi(gs)
+
+        # Make corp 0 active at higher price_index (20)
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[CORP_NAMES[0]].set_price_index(gs, 20)
+        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 0, True)
+
+        # Make corp 1 active at lower price_index (10)
+        CORPS[CORP_NAMES[1]].set_active(gs, True)
+        CORPS[CORP_NAMES[1]].set_price_index(gs, 10)
+        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 1, True)
+
+        # Generate offers (skip OS so we test non-OS sorting)
+        setup_acquisition_phase_py(gs)
+
+        # Should have at least 2 offers
+        assert get_offer_count(gs) >= 2
+
+        # Higher-priced corp (0) should appear before lower-priced corp (1)
+        corp_id_first, _ = get_offer_at(gs, 0)
+        corp_id_second, _ = get_offer_at(gs, 1)
+        assert corp_id_first == 0, f"Expected corp 0 first, got {corp_id_first}"
+        assert corp_id_second == 1, f"Expected corp 1 second, got {corp_id_second}"
 
     def test_corp_corp_offers_same_president(self):
         """OFFER-04: Corp->Corp offers only for same president."""
-        # TODO: Setup player as president of multiple corps
-        # Verify offers only between corps with same president
-        pass
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give company 0 to corp 0
+        COMPANIES[0].transfer_to_corp(gs, 0)
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+
+        # Make corp 1 active with cash, make player 0 president of BOTH corps
+        CORPS[CORP_NAMES[1]].set_active(gs, True)
+        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 0, True)
+        PLAYERS[0].set_president_of(gs, 1, True)
+
+        # Generate offers
+        setup_acquisition_phase_py(gs)
+
+        # Should have at least one offer (corp 1 buying from corp 0)
+        assert get_offer_count(gs) > 0
+        corp_id, company_id = get_offer_at(gs, 0)
+        assert corp_id == 1  # Corp 1 buying
+        assert company_id == 0  # Company 0 from corp 0
+
+    def test_different_president_no_offers(self):
+        """OFFER-04: Different presidents prevents corp-to-corp offers."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give company 0 to corp 0
+        COMPANIES[0].transfer_to_corp(gs, 0)
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        PLAYERS[0].set_president_of(gs, 0, True)
+
+        # Make corp 1 active with cash, different president (player 1)
+        CORPS[CORP_NAMES[1]].set_active(gs, True)
+        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        PLAYERS[1].set_president_of(gs, 1, True)
+
+        # Generate offers
+        setup_acquisition_phase_py(gs)
+
+        # Should have NO offers (different presidents)
+        assert get_offer_count(gs) == 0
 
     def test_player_private_offers(self):
         """OFFER-05: Corp->Player private offers generated."""
-        # TODO: Setup player with private companies and corp presidency
-        # Verify offers generated
-        pass
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give company 0 to player 0
+        COMPANIES[0].transfer_to_player(gs, 0)
+
+        # Make corp 0 active with cash, player 0 is president
+        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 0, True)
+
+        # Generate offers
+        setup_acquisition_phase_py(gs)
+
+        # Should have at least one offer (corp 0 buying from player 0)
+        assert get_offer_count(gs) > 0
+        corp_id, company_id = get_offer_at(gs, 0)
+        assert corp_id == 0  # Corp 0 buying
+        assert company_id == 0  # Company 0 from player 0
 
 
 class TestPhaseFlow:
