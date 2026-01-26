@@ -848,6 +848,16 @@ def apply_acquisition_action_py(GameState state, int action_type, int amount=0):
     return apply_acquisition_action(state, &info)
 
 
+def merge_acquisition_zones_py(GameState state):
+    """Python wrapper for testing zone merging."""
+    _merge_acquisition_zones(state)
+
+
+def transition_to_closing_py(GameState state):
+    """Python wrapper for testing phase transition."""
+    _transition_to_closing(state)
+
+
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
