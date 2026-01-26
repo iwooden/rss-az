@@ -533,3 +533,119 @@ class TestZoneMerging:
         # All zones cleared
         assert player.get_acquisition_proceeds(gs) == 0
         assert corp.get_acquisition_proceeds(gs) == 0
+
+
+class TestReceivershipAutoBuy:
+    """Tests for receivership auto-buy behavior (RECV-01, RECV-02, RECV-03)."""
+
+    def test_receivership_auto_buys_affordable_fi(self):
+        """RECV-01, RECV-03: Receivership corp auto-buys affordable FI company at face value."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Transfer company 0 to FI
+        COMPANIES[0].transfer_to_fi(gs)
+
+        # Make corp 0 active with enough cash
+        corp = CORPS[CORP_NAMES[0]]
+        corp.set_active(gs, True)
+        corp.set_cash(gs, 50000)
+
+        # Put corp 0 in receivership
+        corp.set_in_receivership(gs, True)
+
+        # Record initial values
+        from core.data import get_company_face_value
+        face_value = get_company_face_value(0)
+        corp_cash_before = corp.get_cash(gs)
+        fi_cash_before = FI.get_cash(gs)
+
+        # Call setup_acquisition_phase_py to generate offers and trigger auto-buy
+        setup_acquisition_phase_py(gs)
+
+        # Verify auto-buy executed
+        assert corp.has_acquisition_company(gs, 0), "Receivership corp should auto-buy FI company"
+        assert FI.get_cash(gs) == fi_cash_before + face_value, "FI should receive face value"
+        assert corp.get_cash(gs) == corp_cash_before - face_value, "Corp should pay face value"
+        # Offer should be processed (no offers left or active corp cleared)
+        assert get_offer_count(gs) == 0 or TURN.get_acq_active_corp(gs) == -1
+
+    def test_receivership_skips_unaffordable_fi(self):
+        """RECV-03: Receivership corp auto-passes when can't afford FI company."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Transfer company 0 to FI
+        COMPANIES[0].transfer_to_fi(gs)
+
+        # Make corp 0 active with minimal cash (can't afford face value)
+        corp = CORPS[CORP_NAMES[0]]
+        corp.set_active(gs, True)
+        corp.set_cash(gs, 1)
+
+        # Put corp 0 in receivership
+        corp.set_in_receivership(gs, True)
+
+        # Record initial FI cash
+        fi_cash_before = FI.get_cash(gs)
+
+        # Call setup_acquisition_phase_py
+        setup_acquisition_phase_py(gs)
+
+        # Verify auto-pass: no buy happened
+        assert not corp.has_acquisition_company(gs, 0), "Receivership corp should not buy unaffordable company"
+        assert FI.get_cash(gs) == fi_cash_before, "FI cash should be unchanged"
+        # Company still owned by FI
+        assert FI.owns_company(gs, 0), "Company should still be owned by FI"
+
+    def test_receivership_skips_non_fi_offers(self):
+        """RECV-03: Receivership corp auto-passes on non-FI offers."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Transfer company 0 to player 0
+        COMPANIES[0].transfer_to_player(gs, 0)
+
+        # Make corp 0 active with plenty of cash
+        corp = CORPS[CORP_NAMES[0]]
+        corp.set_active(gs, True)
+        corp.set_cash(gs, 50000)
+
+        # Put corp 0 in receivership
+        corp.set_in_receivership(gs, True)
+
+        # Call setup_acquisition_phase_py
+        setup_acquisition_phase_py(gs)
+
+        # Verify: Receivership corp cannot buy from player
+        # (no offers should be generated or they should be auto-passed)
+        assert not corp.has_acquisition_company(gs, 0), "Receivership corp should not buy from player"
+        # No offers for receivership buying from player
+        assert get_offer_count(gs) == 0 or TURN.get_acq_active_corp(gs) == -1
+
+    def test_receivership_cannot_sell(self):
+        """RECV-02: Receivership corp cannot sell companies."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give company 0 to corp 0
+        COMPANIES[0].transfer_to_corp(gs, 0)
+
+        # Make corp 0 active and put in receivership
+        corp0 = CORPS[CORP_NAMES[0]]
+        corp0.set_active(gs, True)
+        corp0.set_in_receivership(gs, True)
+
+        # Make corp 1 active with cash, make player 0 president
+        corp1 = CORPS[CORP_NAMES[1]]
+        corp1.set_active(gs, True)
+        corp1.set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 1, True)
+
+        # Call setup_acquisition_phase_py
+        setup_acquisition_phase_py(gs)
+
+        # Verify: No offers should exist because:
+        # - Corp 0 has company but is in receivership (can't sell)
+        # - _get_corp_president returns -1 for receivership, never matches any player_id
+        assert get_offer_count(gs) == 0, "No offers should exist for receivership seller"
