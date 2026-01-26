@@ -10,7 +10,7 @@ This milestone implements the ACQUISITION phase with AlphaZero-optimized mechani
 - [x] **v2** - INVEST & BID_IN_AUCTION (Phases 2-6) - shipped 2026-01-21
 - [x] **v2.1** - Forced Action Auto-Application (Phases 7-8) - shipped 2026-01-23
 - [x] **v3.0** - WRAP_UP Phase (Phases 9-11 + 10.1) - shipped 2026-01-24
-- [ ] **v4.0** - ACQUISITION Phase (Phases 12-15) - in progress
+- [x] **v4.0** - ACQUISITION Phase (Phases 12-15) - shipped 2026-01-26
 
 ## Phases
 
@@ -22,7 +22,7 @@ This milestone implements the ACQUISITION phase with AlphaZero-optimized mechani
 - [x] **Phase 12: Offer Infrastructure** - Offer generation, sorting, and state management
 - [x] **Phase 13: Actions & Validation** - Accept/pass actions with full validation rules
 - [x] **Phase 14: Flow & Integration** - Receivership auto-buy, phase transitions, driver integration
-- [ ] **Phase 15: Testing** - Unit, integration, and edge case tests
+- [x] **Phase 15: Testing** - Unit, integration, and edge case tests
 
 ## Phase Details
 
@@ -89,9 +89,9 @@ Plans:
 **Plans**: 3 plans in 2 waves
 
 Plans:
-- [ ] 15-01-PLAN.md — File reorganization and offer generation priority tests (TEST-01)
-- [ ] 15-02-PLAN.md — Validation boundaries and edge case tests (TEST-03, TEST-07)
-- [ ] 15-03-PLAN.md — Integration tests for ACQUISITION flow (TEST-06)
+- [x] 15-01-PLAN.md — File reorganization and offer generation priority tests (TEST-01)
+- [x] 15-02-PLAN.md — Validation boundaries and edge case tests (TEST-03, TEST-07)
+- [x] 15-03-PLAN.md — Integration tests for ACQUISITION flow (TEST-06)
 
 ## Progress
 
@@ -103,4 +103,4 @@ Phases execute in numeric order: 12 -> 13 -> 14 -> 15
 | 12. Offer Infrastructure | v4.0 | 4/4 | Complete | 2026-01-25 |
 | 13. Actions & Validation | v4.0 | 2/2 | Complete | 2026-01-25 |
 | 14. Flow & Integration | v4.0 | 4/4 | Complete | 2026-01-26 |
-| 15. Testing | v4.0 | 0/3 | Planned | - |
+| 15. Testing | v4.0 | 3/3 | Complete | 2026-01-26 |

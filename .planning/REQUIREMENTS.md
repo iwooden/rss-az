@@ -66,13 +66,13 @@ AlphaZero-optimized ACQUISITION phase with offer-based flow, same-president rest
 
 ### Testing
 
-- [ ] **TEST-01**: Unit tests for offer generation and priority sorting
-- [ ] **TEST-02**: Unit tests for each action type (price accept, FI high, FI face, pass)
-- [ ] **TEST-03**: Unit tests for all validation rules (price range, cash, minimum companies, etc.)
-- [ ] **TEST-04**: Unit tests for receivership auto-buy behavior
-- [ ] **TEST-05**: Unit tests for phase flow (offer advancement, phase transition, proceeds merge)
-- [ ] **TEST-06**: Integration tests covering INVEST->WRAP_UP->ACQUISITION->CLOSING flow
-- [ ] **TEST-07**: Edge case tests (no valid offers, all corps in receivership, empty FI, etc.)
+- [x] **TEST-01**: Unit tests for offer generation and priority sorting
+- [x] **TEST-02**: Unit tests for each action type (price accept, FI high, FI face, pass)
+- [x] **TEST-03**: Unit tests for all validation rules (price range, cash, minimum companies, etc.)
+- [x] **TEST-04**: Unit tests for receivership auto-buy behavior
+- [x] **TEST-05**: Unit tests for phase flow (offer advancement, phase transition, proceeds merge)
+- [x] **TEST-06**: Integration tests covering INVEST->WRAP_UP->ACQUISITION->CLOSING flow
+- [x] **TEST-07**: Edge case tests (no valid offers, all corps in receivership, empty FI, etc.)
 
 ---
 
@@ -109,13 +109,13 @@ AlphaZero-optimized ACQUISITION phase with offer-based flow, same-president rest
 | DRIVER-01 | 14 | 13-02 | Complete |
 | DRIVER-02 | 14 | 13-02 | Complete |
 | DRIVER-03 | 14 | 14-02 | Complete |
-| TEST-01 | 15 | TBD | Pending |
-| TEST-02 | 15 | TBD | Pending |
-| TEST-03 | 15 | TBD | Pending |
-| TEST-04 | 15 | TBD | Pending |
-| TEST-05 | 15 | TBD | Pending |
-| TEST-06 | 15 | TBD | Pending |
-| TEST-07 | 15 | TBD | Pending |
+| TEST-01 | 15 | 15-01 | Complete |
+| TEST-02 | 15 | 15-01 | Complete |
+| TEST-03 | 15 | 15-02 | Complete |
+| TEST-04 | 15 | 14-03, 14-04 | Complete |
+| TEST-05 | 15 | 14-03 | Complete |
+| TEST-06 | 15 | 15-03 | Complete |
+| TEST-07 | 15 | 15-02 | Complete |
 
 ---
 
