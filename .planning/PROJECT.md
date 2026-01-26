@@ -53,20 +53,23 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - ✓ Terminal state detection prevents infinite phase loops — v3.0
 - ✓ 194 tests with comprehensive WRAP_UP coverage — v3.0
 
+**v4.0 - ACQUISITION Phase:**
+- ✓ Offer-based acquisition flow with sorted priority presentation — v4.0
+- ✓ Same-president trade restriction (no inter-player negotiation) — v4.0
+- ✓ OS→FI priority (always first, pays face value) — v4.0
+- ✓ Corp→FI priority by descending share price — v4.0
+- ✓ Corp→Corp acquisitions (same president required) — v4.0
+- ✓ Corp→Player private company acquisitions — v4.0
+- ✓ Acquisition proceeds zone (companies + cash can't be reused in phase) — v4.0
+- ✓ Receivership corp auto-buy integration — v4.0
+- ✓ Full validation (price range, cash, minimum companies, no re-acquire) — v4.0
+- ✓ Phase transition to CLOSING when no more offers — v4.0
+- ✓ Merge acquisition_companies into owned_companies at phase end — v4.0
+- ✓ 254 tests with comprehensive ACQUISITION coverage — v4.0
+
 ### Active
 
-**v4.0 - ACQUISITION Phase (AlphaZero-optimized):**
-- [ ] Offer-based acquisition flow with sorted priority presentation
-- [ ] Same-president trade restriction (no inter-player negotiation)
-- [ ] OS→FI priority (always first, pays face value)
-- [ ] Corp→FI priority by descending share price
-- [ ] Corp→Corp acquisitions (same president required)
-- [ ] Corp→Player private company acquisitions
-- [ ] Acquisition proceeds zone (companies + cash can't be reused in phase)
-- [ ] Receivership corp auto-buy integration
-- [ ] Full validation (price range, cash, minimum companies, no re-acquire)
-- [ ] Phase transition to CLOSING when no more offers
-- [ ] Merge acquisition_companies into owned_companies at phase end
+(None — next milestone not yet defined)
 
 ### Out of Scope
 
@@ -79,6 +82,11 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - FI intervention/preemption mechanics — handled via sorted offer priority
 
 ## Context
+
+**Shipped v4.0:** ACQUISITION Phase (2026-01-26)
+- 4 phases (12-15), 13 plans, 26 requirements
+- ~26,518 LOC Cython, ~4,929 LOC Python (tests)
+- Test suite: 254 tests
 
 **Shipped v3.0:** WRAP_UP Phase (2026-01-24)
 - 4 phases (9-11 + 10.1), 6 plans, 18 requirements
@@ -107,6 +115,8 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - Non-player phase pattern (0 actions valid for deterministic phases)
 - Sentinel action values for non-player phase history (-100, -101)
 - While-loop re-query pattern for dynamic state iteration
+- Hybrid phase pattern (non-player when no offers, player otherwise)
+- Acquisition zone pattern (pending state during phase, merge at end)
 
 ## Key Decisions
 
@@ -129,6 +139,12 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 | Selection sort for player reordering | Stable, explicit tie-breaking at O(n²) for n≤6 | ✓ Good |
 | Sentinel actions for non-player phases | Negative values (-100, -101) distinguish from real actions | ✓ Good |
 | Terminal state check in ACQUISITION | Prevents infinite INVEST→WRAP_UP→ACQUISITION loops | ✓ Good |
+| Offer-based acquisition flow | Reduced action space for AlphaZero (accept/reject vs negotiate) | ✓ Good |
+| Same-president trade restriction | Eliminates inter-player negotiation complexity | ✓ Good |
+| Hidden offer buffer | Pre-compute and sort offers once at phase entry | ✓ Good |
+| Acquisition zones (proceeds + companies) | Prevents re-acquisition within same phase | ✓ Good |
+| Hybrid phase detection | Non-player when no offers, player when offers exist | ✓ Good |
+| Zone merge at phase end | Clean separation of pending vs committed state | ✓ Good |
 
 ## Constraints
 
@@ -137,4 +153,4 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - **Compatibility:** State array must be directly usable by PyTorch
 
 ---
-*Last updated: 2026-01-24 — v4.0 milestone started*
+*Last updated: 2026-01-26 — v4.0 milestone shipped*

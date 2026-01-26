@@ -1,5 +1,33 @@
 # Project Milestones: Rolling Stock Stars
 
+## v4.0 ACQUISITION Phase (Shipped: 2026-01-26)
+
+**Delivered:** AlphaZero-optimized ACQUISITION phase with offer-based flow, same-president trade restrictions, receivership auto-buy integration, and acquisition zone management.
+
+**Phases completed:** 12-15 (13 plans total)
+
+**Key accomplishments:**
+
+- Offer-based acquisition flow with priority-sorted offers (OS→FI first, then by share price, corp-to-corp, player privates)
+- Full action support: Accept at price, FI Buy High (max price), FI Buy Face (OS only), Pass
+- 6 validation rules: price range, sufficient cash, minimum companies, no re-acquire, not already owned, same-president
+- Receivership auto-buy: Corps in receivership automatically execute affordable FI purchases
+- Zone merging: Acquisition proceeds and companies merge into owned state at phase end
+- 60 comprehensive tests covering unit, validation, integration, and edge cases
+
+**Stats:**
+
+- 58 files created/modified
+- ~26,518 lines Cython, ~4,929 lines Python tests
+- 4 phases, 13 plans, 26 requirements
+- 2 days from v3.0 to v4.0 ship
+
+**Git range:** `da6e12e` → `c0ffed5`
+
+**What's next:** CLOSING phase, remaining game phases (INC, DIV, END, ISS, IPO)
+
+---
+
 ## v3.0 WRAP_UP Phase (Shipped: 2026-01-24)
 
 **Delivered:** Deterministic WRAP_UP phase that reorders players by descending cash and executes Foreign Investor automatic company purchases at end of each INVEST round.
