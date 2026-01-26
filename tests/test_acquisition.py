@@ -19,7 +19,9 @@ from phases.acquisition import (
     get_offer_count,
     get_offer_at,
     setup_acquisition_phase_py,
-    apply_acquisition_action_py
+    apply_acquisition_action_py,
+    merge_acquisition_zones_py,
+    transition_to_closing_py
 )
 from phases.wrap_up import apply_wrap_up_py
 
@@ -369,3 +371,90 @@ class TestActionIntegration:
             else:
                 # Should clear (no more offers)
                 assert second_target == -1
+
+
+class TestZoneMerging:
+    """Tests for acquisition zone merging at phase end (FLOW-03, FLOW-04)."""
+
+    def test_player_proceeds_merge_to_cash(self):
+        """Player acquisition_proceeds merge to cash at phase end."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        player = PLAYERS[0]
+        initial_cash = player.get_cash(gs)
+        proceeds = 25
+
+        # Simulate acquisition proceeds from selling
+        player.add_acquisition_proceeds(gs, proceeds)
+        assert player.get_acquisition_proceeds(gs) == proceeds
+
+        # Trigger merge
+        merge_acquisition_zones_py(gs)
+
+        # Proceeds merged to cash
+        assert player.get_cash(gs) == initial_cash + proceeds
+        # Proceeds cleared
+        assert player.get_acquisition_proceeds(gs) == 0
+
+    def test_corp_proceeds_merge_to_cash(self):
+        """Corp acquisition_proceeds merge to cash at phase end."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        corp = CORPS[CORP_NAMES[0]]
+        corp.set_active(gs, True)
+        initial_cash = corp.get_cash(gs)
+        proceeds = 30
+
+        corp.set_acquisition_proceeds(gs, proceeds)
+        assert corp.get_acquisition_proceeds(gs) == proceeds
+
+        # Trigger merge
+        merge_acquisition_zones_py(gs)
+
+        # Proceeds merged to cash
+        assert corp.get_cash(gs) == initial_cash + proceeds
+        # Proceeds cleared
+        assert corp.get_acquisition_proceeds(gs) == 0
+
+    def test_acquisition_companies_merge_to_owned(self):
+        """Corp acquisition_companies merge to owned_companies at phase end."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        corp = CORPS[CORP_NAMES[0]]
+        corp.set_active(gs, True)
+
+        company = COMPANIES[0]
+
+        # Put company in acquisition zone
+        company.transfer_to_corp_acquisition(gs, 0)
+        assert corp.has_acquisition_company(gs, 0)
+        assert not corp.owns_company(gs, 0)
+
+        # Trigger merge
+        merge_acquisition_zones_py(gs)
+
+        # Company moved from acquisition to owned
+        assert not corp.has_acquisition_company(gs, 0)
+        assert corp.owns_company(gs, 0)
+
+    def test_zones_cleared_after_merge(self):
+        """Acquisition zones are cleared (zeroed) after merge."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        player = PLAYERS[0]
+        player.add_acquisition_proceeds(gs, 50)
+
+        corp = CORPS[CORP_NAMES[0]]
+        corp.set_active(gs, True)
+        corp.set_acquisition_proceeds(gs, 40)
+
+        # Trigger merge
+        merge_acquisition_zones_py(gs)
+
+        # All zones cleared
+        assert player.get_acquisition_proceeds(gs) == 0
+        assert corp.get_acquisition_proceeds(gs) == 0
