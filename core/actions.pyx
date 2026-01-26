@@ -15,6 +15,7 @@ Defines the action space for the neural network output layer:
 cimport cython
 import numpy as np
 cimport numpy as cnp
+from libc.string cimport memset
 
 from core.state cimport GameState
 from core.data cimport (
@@ -53,6 +54,12 @@ from entities.player cimport (
     get_roundtrips, get_share_buys, get_share_sells
 )
 from entities.company cimport get_auction_company_for_slot
+
+# Maximum action count (6 players = 186 + 120 = 306)
+DEF MAX_ACTION_COUNT = 306
+
+# Module-level mask buffer (pre-allocated, cleared before each use)
+cdef float _mask_buffer[MAX_ACTION_COUNT]
 
 
 cdef int get_total_actions_for_players(int num_players) noexcept nogil:
@@ -512,11 +519,19 @@ cpdef object get_valid_action_mask(GameState state):
     cdef int num_players = state._num_players
     cdef ActionLayout layout = compute_action_layout(num_players)
     cdef int total_actions = layout.total_size
-    cdef cnp.ndarray mask = np.zeros(total_actions, dtype=np.float32)
-    cdef float* mask_ptr = <float*>cnp.PyArray_DATA(mask)
+
+    # Clear buffer (faster than np.zeros allocation)
+    memset(_mask_buffer, 0, total_actions * sizeof(float))
 
     cdef int phase = state.get_phase()
-    _fill_mask_for_phase(state, phase, &layout, mask_ptr)
+    _fill_mask_for_phase(state, phase, &layout, _mask_buffer)
+
+    # Copy to numpy array for return (required for Python interface)
+    cdef cnp.ndarray mask = np.empty(total_actions, dtype=np.float32)
+    cdef float* mask_ptr = <float*>cnp.PyArray_DATA(mask)
+    cdef int i
+    for i in range(total_actions):
+        mask_ptr[i] = _mask_buffer[i]
 
     return mask
 
@@ -532,19 +547,20 @@ cpdef tuple get_forced_action(GameState state):
     cdef int num_players = state._num_players
     cdef ActionLayout layout = compute_action_layout(num_players)
     cdef int total_actions = layout.total_size
-    cdef cnp.ndarray mask = np.zeros(total_actions, dtype=np.float32)
-    cdef float* mask_ptr = <float*>cnp.PyArray_DATA(mask)
     cdef int phase = state.get_phase()
     cdef int i, count, single_action
 
+    # Clear buffer (faster than np.zeros allocation)
+    memset(_mask_buffer, 0, total_actions * sizeof(float))
+
     # Fill the mask based on phase
-    _fill_mask_for_phase(state, phase, &layout, mask_ptr)
+    _fill_mask_for_phase(state, phase, &layout, _mask_buffer)
 
     # Count valid actions
     count = 0
     single_action = -1
     for i in range(total_actions):
-        if mask_ptr[i] == 1.0:
+        if _mask_buffer[i] == 1.0:
             count += 1
             if count == 1:
                 single_action = i
