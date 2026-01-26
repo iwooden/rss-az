@@ -22,7 +22,7 @@ from core.driver cimport ActionStatus, STATUS_OK, STATUS_INVALID, STATUS_GAME_OV
 from phases.invest cimport apply_invest_action
 from phases.bid cimport apply_bid_action
 from phases.wrap_up cimport apply_wrap_up
-from phases.acquisition cimport apply_acquisition_action, apply_acquisition_stub
+from phases.acquisition cimport apply_acquisition_action, _transition_to_closing
 from src.exceptions import ForcedActionLoopError, ZeroLegalActionsError
 from entities import turn as turn_module
 
@@ -70,7 +70,7 @@ cdef void _execute_non_player_phase(GameState state, object history):
     if phase == PHASE_WRAP_UP:
         apply_wrap_up(state)
     elif phase == PHASE_ACQUISITION:
-        apply_acquisition_stub(state)
+        _transition_to_closing(state)
 
 
 cdef ForcedActionResult _check_forced_action(GameState state) noexcept:
