@@ -39,7 +39,7 @@ from entities.corp import CORPS
 from entities.market import MARKET
 from entities.company import COMPANIES
 
-STATUS_OK = 0
+from core.driver import STATUS_OK_PY as STATUS_OK, STATUS_INVALID_PY as STATUS_INVALID, STATUS_GAME_OVER_PY as STATUS_GAME_OVER
 
 
 # =============================================================================
@@ -80,7 +80,7 @@ def assert_invariants(state, msg=""):
 
     # Share conservation for active corps
     for corp_id in range(8):
-        corp = CORPS[CORP_NAMES[corp_id]]
+        corp = CORPS[corp_id]
         if corp.is_active(state):
             total = corp.get_unissued_shares(state) + corp.get_bank_shares(state)
             for p in range(num_players):
@@ -100,7 +100,7 @@ def assert_invariants(state, msg=""):
 
     # Corp cash non-negative for active corps
     for corp_id in range(8):
-        corp = CORPS[CORP_NAMES[corp_id]]
+        corp = CORPS[corp_id]
         if corp.is_active(state):
             cash = corp.get_cash(state)
             assert cash >= 0, f"{msg}\nCorp {corp_id} cash negative: {cash}"
@@ -202,7 +202,7 @@ def trade_state():
 
     # Manually activate corp 0 (JS) with tradeable shares
     # Corp 0 has 7 total shares: unissued(3) + bank(2) + player(2) = 7
-    corp = CORPS[CORP_NAMES[0]]
+    corp = CORPS[0]
     corp.set_active(state, True)
     corp.set_price_index(state, 10)
     corp.set_unissued_shares(state, 3)
@@ -224,7 +224,7 @@ def bankruptcy_state():
     state = GameState(num_players=3)
     state.initialize_game(seed=42)
 
-    corp = CORPS[CORP_NAMES[0]]
+    corp = CORPS[0]
     corp.set_active(state, True)
     corp.set_price_index(state, 1)  # One sell -> index 0 -> bankruptcy
     corp.set_bank_shares(state, 2)
