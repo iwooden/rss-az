@@ -884,6 +884,74 @@ cdef bint _is_game_terminal(GameState state) noexcept:
 
 
 # =============================================================================
+# ZONE MERGING (Phase 14)
+# =============================================================================
+
+cdef void _merge_player_proceeds(GameState state) noexcept:
+    """
+    Merge player acquisition_proceeds into cash, then clear.
+
+    FLOW-04: Player proceeds merge at phase end.
+    """
+    cdef int player_id, proceeds
+    for player_id in range(state._num_players):
+        proceeds = player_module.PLAYERS[player_id].get_acquisition_proceeds(state)
+        if proceeds > 0:
+            player_module.PLAYERS[player_id].add_cash(state, proceeds)
+            player_module.PLAYERS[player_id].clear_acquisition_proceeds(state)
+
+
+cdef void _merge_corp_proceeds(GameState state) noexcept:
+    """
+    Merge corp acquisition_proceeds into cash, then clear.
+
+    FLOW-04: Corp proceeds merge at phase end.
+    """
+    cdef int corp_id, proceeds
+    for corp_id in range(GameConstants.NUM_CORPS):
+        if corp_module.CORPS[CORP_NAMES[corp_id]].is_active(state):
+            proceeds = corp_module.CORPS[CORP_NAMES[corp_id]].get_acquisition_proceeds(state)
+            if proceeds > 0:
+                corp_module.CORPS[CORP_NAMES[corp_id]].add_cash(state, proceeds)
+                corp_module.CORPS[CORP_NAMES[corp_id]].set_acquisition_proceeds(state, 0)
+
+
+cdef void _merge_corp_companies(GameState state) noexcept:
+    """
+    Transfer acquisition_companies to owned_companies, then clear.
+
+    FLOW-03: Companies in acquisition zone merge to owned at phase end.
+
+    Uses Company.transfer_to_corp() which:
+    - Clears acquisition_company flag (via clear_location)
+    - Sets owned_company flag
+    - Updates company location and owner
+    """
+    cdef int corp_id, company_id
+    for corp_id in range(GameConstants.NUM_CORPS):
+        if corp_module.CORPS[CORP_NAMES[corp_id]].is_active(state):
+            for company_id in range(GameConstants.NUM_COMPANIES):
+                if corp_module.CORPS[CORP_NAMES[corp_id]].has_acquisition_company(state, company_id):
+                    # transfer_to_corp handles all state updates:
+                    # - clears acquisition flag (via clear_location)
+                    # - sets owned_company flag
+                    # - updates location to LOC_CORP and owner_id
+                    company_module.COMPANIES[company_id].transfer_to_corp(state, corp_id)
+
+
+cdef void _merge_acquisition_zones(GameState state) noexcept:
+    """
+    Merge all acquisition zones into final state.
+
+    Called before transitioning to CLOSING phase.
+    Order: proceeds first (both player and corp), then companies.
+    """
+    _merge_player_proceeds(state)
+    _merge_corp_proceeds(state)
+    _merge_corp_companies(state)
+
+
+# =============================================================================
 # MAIN ACTION HANDLER
 # =============================================================================
 
