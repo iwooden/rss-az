@@ -15,12 +15,35 @@ The CLOSING phase implementation extends the game engine with company closure me
 
 ## Phases
 
+- [ ] **Phase 15.1: Code Quality Refactoring** - DRY fixes, performance optimizations, architecture cleanup (INSERTED)
 - [ ] **Phase 16: Auto-Close Logic** - FI and receivership corps auto-close at phase start
 - [ ] **Phase 17: Offer-Based Close Flow** - Player decisions on negative-income companies
 - [ ] **Phase 18: Mandatory Close and Transition** - Auto-close at phase end, transition to INCOME
 - [ ] **Phase 19: Testing and Integration** - Comprehensive test coverage
 
 ## Phase Details
+
+### Phase 15.1: Code Quality Refactoring (INSERTED)
+**Goal**: Fix DRY violations, performance anti-patterns, and architecture issues before implementing CLOSING phase
+**Depends on**: Phase 15 (ACQUISITION complete)
+**Requirements**: None (refactoring phase)
+**Success Criteria** (what must be TRUE):
+  1. One-hot encoding helpers extracted to `entities/encoding.pyx` - all 15+ call sites refactored
+  2. `nogil` added to all `_fill_*_mask()` functions in `actions.pyx`
+  3. Mask buffer pre-allocated instead of `np.zeros()` per call
+  4. Phase dispatch extracted to single helper function (removes 14 LOC duplication)
+  5. CORPS changed from dict to list pattern (consistent with PLAYERS, COMPANIES)
+  6. Normalization helpers created for cash/share conversions
+  7. Test fixtures and status codes consolidated
+  8. All existing tests pass (no regressions)
+**Plans**: 5 plans
+
+Plans:
+- [ ] 15.1-01-PLAN.md — Create encoding helpers (set/get/clear one-hot)
+- [ ] 15.1-02-PLAN.md — Change CORPS from dict to list pattern
+- [ ] 15.1-03-PLAN.md — Optimize actions.pyx (nogil, buffer, dispatch)
+- [ ] 15.1-04-PLAN.md — Apply encoding helpers to entities
+- [ ] 15.1-05-PLAN.md — Consolidate test infrastructure
 
 ### Phase 16: Auto-Close Logic
 **Goal**: FI and receivership corps automatically close unprofitable companies at phase start
@@ -83,10 +106,11 @@ Plans:
 
 ## Progress
 
-**Execution Order:** 16 -> 17 -> 18 -> 19
+**Execution Order:** 15.1 -> 16 -> 17 -> 18 -> 19
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
+| 15.1. Code Quality Refactoring | v5.0 | 0/5 | Planned | - |
 | 16. Auto-Close Logic | v5.0 | 0/? | Not started | - |
 | 17. Offer-Based Close Flow | v5.0 | 0/? | Not started | - |
 | 18. Mandatory Close and Transition | v5.0 | 0/? | Not started | - |
@@ -95,3 +119,5 @@ Plans:
 ---
 *Roadmap created: 2026-01-26*
 *Last updated: 2026-01-26*
+*Phase 15.1 inserted: 2026-01-26 (code quality refactoring before CLOSING implementation)*
+*Phase 15.1 planned: 2026-01-26 (5 plans in 2 waves)*
