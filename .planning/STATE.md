@@ -11,9 +11,9 @@ See: .planning/PROJECT.md (updated 2026-01-24)
 
 Milestone: v4.0 ACQUISITION Phase
 Phase: 15 of 15 (Testing)
-Plan: 0 of ? pending (Phase 15 not yet planned)
-Status: Phase 14 complete, Phase 15 pending planning
-Last activity: 2026-01-26 - Completed Phase 14 (Flow & Integration) with gap closure
+Plan: 1 of ? completed (15-01 complete)
+Status: Phase 15 in progress - TEST-01 and TEST-02 complete
+Last activity: 2026-01-26 - Completed 15-01 (test organization and offer generation tests)
 
 Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [#########.] 93%
 
@@ -86,6 +86,8 @@ See `.planning/milestones/` for full archives.
 | driver-transition-pattern | Non-player phases call dedicated transition functions | 14-02 | _transition_to_closing merges zones before phase change |
 | python-wrapper-pattern | Python wrappers for internal Cython functions | 14-03 | merge_acquisition_zones_py, transition_to_closing_py enable testing |
 | transition-to-invest-workaround | Transition to INVEST instead of CLOSING | 14-03 | CLOSING phase not implemented yet, matches stub behavior |
+| test-file-organization | Phases tests in tests/phases/, integration in tests/ | 15-01 | Clear separation of unit vs integration tests |
+| fixture-re-export | Re-export phases fixtures in root conftest.py | 15-01 | Enables integration tests to access phase fixtures |
 
 ### Pending Todos
 
@@ -98,6 +100,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-26
-Stopped at: Phase 14 complete (all 4 plans + verification passed)
+Stopped at: Completed 15-01 PLAN.md (test organization and offer generation tests)
 Resume file: None
-Next action: Plan Phase 15 (Testing)
+Next action: Continue Phase 15 (TEST-03 through TEST-07 if planned)
