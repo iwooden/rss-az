@@ -235,21 +235,17 @@ class TestValidation:
         result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 100)
         assert result == 1  # Invalid
 
-    def test_insufficient_cash_rejected(self):
-        """Corp with insufficient cash returns invalid (1)."""
+    def test_insufficient_cash_filters_offers(self):
+        """Corp with insufficient cash has no offers generated (filtered at generation time)."""
         gs = GameState(3)
         gs.initialize_game()
 
-        # Corp has only $1 cash (not enough)
+        # Corp has only $1 cash (not enough for any company)
         self._setup_player_private_offer(gs, 0, 0, 0, 1)
 
-        # If no offers generated (corp can't afford), skip test
-        if get_offer_count(gs) == 0 or TURN.get_acq_active_corp(gs) == -1:
-            pytest.skip("No offers generated with insufficient cash")
-
-        # Even at low_price, should fail
-        result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 0)
-        assert result == 1  # Invalid
+        # Offers should be filtered out during generation - corp can't afford anything
+        assert get_offer_count(gs) == 0 or TURN.get_acq_active_corp(gs) == -1, \
+            "Bug: Offer generated for corp that cannot afford the minimum price"
 
     def test_fi_buy_high_rejects_os_corp(self):
         """OS corp cannot use FI Buy High action."""
