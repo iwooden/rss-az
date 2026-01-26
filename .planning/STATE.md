@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-24)
 
 Milestone: v4.0 ACQUISITION Phase
 Phase: 15 of 15 (Testing)
-Plan: 1 of ? completed (15-01 complete)
-Status: Phase 15 in progress - TEST-01 and TEST-02 complete
-Last activity: 2026-01-26 - Completed 15-01 (test organization and offer generation tests)
+Plan: 2 of ? completed (15-01, 15-02 complete)
+Status: Phase 15 in progress - TEST-01 through TEST-05, TEST-07 complete
+Last activity: 2026-01-26 - Completed 15-02 (validation boundary and edge case tests)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [#########.] 93%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [#########.] 95%
 
 ## Archived Milestones
 
@@ -88,6 +88,9 @@ See `.planning/milestones/` for full archives.
 | transition-to-invest-workaround | Transition to INVEST instead of CLOSING | 14-03 | CLOSING phase not implemented yet, matches stub behavior |
 | test-file-organization | Phases tests in tests/phases/, integration in tests/ | 15-01 | Clear separation of unit vs integration tests |
 | fixture-re-export | Re-export phases fixtures in root conftest.py | 15-01 | Enables integration tests to access phase fixtures |
+| valid-02-timing | VALID-02 enforced at offer generation time | 15-02 | Insufficient cash = no offer generated (filtered early) |
+| valid-03-timing | VALID-03 checked at action time | 15-02 | Offer generated, action rejected if seller would have 0 companies |
+| acquisition-zone-counts | Acquisition zone companies count toward VALID-03 | 15-02 | _count_seller_companies includes both owned and acquisition zones |
 
 ### Pending Todos
 
@@ -100,6 +103,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-26
-Stopped at: Completed 15-01 PLAN.md (test organization and offer generation tests)
+Stopped at: Completed 15-02 PLAN.md (validation boundary and edge case tests)
 Resume file: None
-Next action: Continue Phase 15 (TEST-03 through TEST-07 if planned)
+Next action: Phase 15 nearing completion (TEST-01 through TEST-05, TEST-07 done; only TEST-06 integration if planned)
