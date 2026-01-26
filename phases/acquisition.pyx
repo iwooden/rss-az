@@ -963,21 +963,39 @@ cdef void _merge_acquisition_zones(GameState state) noexcept:
 
 cdef void _transition_to_closing(GameState state) noexcept:
     """
-    Complete ACQUISITION phase and transition to CLOSING.
+    Complete ACQUISITION phase and transition to next turn.
 
     FLOW-02: Transition when no more valid offers.
     DRIVER-03: Phase handler transitions internally.
 
     Steps:
     1. Merge all acquisition zones (proceeds + companies)
-    2. Set phase to CLOSING
+    2. Check for game terminal state
+    3. Start new INVEST turn (CLOSING phase not yet implemented)
+
+    NOTE: Currently transitions to INVEST. When CLOSING phase is implemented,
+    this will change to: turn_module.TURN.set_phase(state, GamePhases.PHASE_CLOSING)
     """
+    cdef int current_turn = turn_module.TURN.get_turn_number(state)
+    cdef int i
+
     # Merge before leaving ACQUISITION
     _merge_acquisition_zones(state)
 
-    # Transition to CLOSING
-    # GamePhases is already imported via: from core.data cimport GamePhases
-    turn_module.TURN.set_phase(state, GamePhases.PHASE_CLOSING)
+    # Check for terminal state before transitioning to INVEST
+    if _is_game_terminal(state):
+        turn_module.TURN.set_phase(state, GamePhases.PHASE_GAME_OVER)
+        return
+
+    # Increment turn number
+    turn_module.TURN.set_turn_number(state, current_turn + 1)
+
+    # Clear per-turn tracking for all players
+    for i in range(state._num_players):
+        player_module.PLAYERS[i].clear_roundtrip_tracking(state)
+
+    # Transition to new INVEST phase
+    turn_module.TURN.set_phase(state, GamePhases.PHASE_INVEST)
 
 
 # =============================================================================

@@ -104,22 +104,24 @@ class TestPhaseFlow:
         assert get_offer_count(gs) == 0
 
     def test_transition_to_closing(self):
-        """ACQUISITION transitions to CLOSING when offers exhausted."""
+        """ACQUISITION transitions to next turn when offers exhausted."""
         gs = GameState(3)
         gs.initialize_game()
 
         # Set phase to ACQUISITION
         TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         assert gs.get_phase() == GamePhases.PHASE_ACQUISITION
+        initial_turn = TURN.get_turn_number(gs)
 
         # Call transition
         transition_to_closing_py(gs)
 
-        # Should now be CLOSING (phase 4)
-        assert gs.get_phase() == GamePhases.PHASE_CLOSING
+        # Should now be INVEST (new turn) - CLOSING phase not yet implemented
+        assert gs.get_phase() == GamePhases.PHASE_INVEST
+        assert TURN.get_turn_number(gs) == initial_turn + 1
 
     def test_transition_merges_player_proceeds(self):
-        """Transition to CLOSING merges player acquisition_proceeds."""
+        """Transition merges player acquisition_proceeds."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -138,7 +140,7 @@ class TestPhaseFlow:
         assert player.get_acquisition_proceeds(gs) == 0
 
     def test_transition_merges_corp_proceeds(self):
-        """Transition to CLOSING merges corp acquisition_proceeds."""
+        """Transition merges corp acquisition_proceeds."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -156,7 +158,7 @@ class TestPhaseFlow:
         assert corp.get_acquisition_proceeds(gs) == 0
 
     def test_transition_merges_acquisition_companies(self):
-        """Transition to CLOSING merges acquisition_companies to owned."""
+        """Transition merges acquisition_companies to owned."""
         gs = GameState(3)
         gs.initialize_game()
 
