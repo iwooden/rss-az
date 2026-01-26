@@ -103,6 +103,79 @@ class TestPhaseFlow:
         setup_acquisition_phase_py(gs)
         assert get_offer_count(gs) == 0
 
+    def test_transition_to_closing(self):
+        """ACQUISITION transitions to CLOSING when offers exhausted."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Set phase to ACQUISITION
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
+        assert gs.get_phase() == GamePhases.PHASE_ACQUISITION
+
+        # Call transition
+        transition_to_closing_py(gs)
+
+        # Should now be CLOSING (phase 4)
+        assert gs.get_phase() == GamePhases.PHASE_CLOSING
+
+    def test_transition_merges_player_proceeds(self):
+        """Transition to CLOSING merges player acquisition_proceeds."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        player = PLAYERS[0]
+        initial_cash = player.get_cash(gs)
+        proceeds = 35
+
+        player.add_acquisition_proceeds(gs, proceeds)
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
+
+        transition_to_closing_py(gs)
+
+        # Proceeds merged to cash
+        assert player.get_cash(gs) == initial_cash + proceeds
+        # Proceeds cleared
+        assert player.get_acquisition_proceeds(gs) == 0
+
+    def test_transition_merges_corp_proceeds(self):
+        """Transition to CLOSING merges corp acquisition_proceeds."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        corp = CORPS[CORP_NAMES[0]]
+        corp.set_active(gs, True)
+        initial_cash = corp.get_cash(gs)
+        proceeds = 45
+
+        corp.set_acquisition_proceeds(gs, proceeds)
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
+
+        transition_to_closing_py(gs)
+
+        assert corp.get_cash(gs) == initial_cash + proceeds
+        assert corp.get_acquisition_proceeds(gs) == 0
+
+    def test_transition_merges_acquisition_companies(self):
+        """Transition to CLOSING merges acquisition_companies to owned."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        corp = CORPS[CORP_NAMES[0]]
+        corp.set_active(gs, True)
+
+        company = COMPANIES[0]
+        company.transfer_to_corp_acquisition(gs, 0)
+
+        assert corp.has_acquisition_company(gs, 0)
+        assert not corp.owns_company(gs, 0)
+
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
+        transition_to_closing_py(gs)
+
+        # Company moved from acquisition to owned
+        assert not corp.has_acquisition_company(gs, 0)
+        assert corp.owns_company(gs, 0)
+
 
 class TestValidation:
     """Validation tests - verify through action handler behavior."""
