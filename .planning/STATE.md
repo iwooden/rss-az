@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-24)
 
 Milestone: v4.0 ACQUISITION Phase
 Phase: 14 of 15 (Flow & Integration)
-Plan: 2 of 3 complete (14-02 Zone Merging & Transition)
-Status: In progress
-Last activity: 2026-01-26 - Completed 14-02-PLAN.md (zone merging and ACQUISITION->CLOSING transition)
+Plan: 3 of 3 complete (14-03 Flow Integration Tests)
+Status: Phase 14 complete
+Last activity: 2026-01-26 - Completed 14-03-PLAN.md (integration tests and Python wrappers)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [#######   ] 66%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [########  ] 75%
 
 ## Archived Milestones
 
@@ -84,6 +84,8 @@ See `.planning/milestones/` for full archives.
 | zone-merge-order | Proceeds first (player+corp), then companies | 14-02 | Financial state settled before ownership changes |
 | use-transfer-to-corp | Use transfer_to_corp() for company merging | 14-02 | Handles all flag updates automatically |
 | driver-transition-pattern | Non-player phases call dedicated transition functions | 14-02 | _transition_to_closing merges zones before phase change |
+| python-wrapper-pattern | Python wrappers for internal Cython functions | 14-03 | merge_acquisition_zones_py, transition_to_closing_py enable testing |
+| transition-to-invest-workaround | Transition to INVEST instead of CLOSING | 14-03 | CLOSING phase not implemented yet, matches stub behavior |
 
 ### Pending Todos
 
@@ -91,13 +93,11 @@ None.
 
 ### Blockers/Concerns
 
-None - Phase 14 progressing smoothly. Ready for 14-03 (final integration).
-
-Note: CLOSING phase handler not yet implemented (Phase 15 scope).
+**CLOSING Phase:** Not yet implemented. `_transition_to_closing` currently goes to INVEST (new turn) as workaround. When CLOSING phase is added, revert to `turn_module.TURN.set_phase(state, GamePhases.PHASE_CLOSING)` in acquisition.pyx line ~970.
 
 ## Session Continuity
 
 Last session: 2026-01-26
-Stopped at: Completed 14-02-PLAN.md (3/3 tasks)
+Stopped at: Completed 14-03-PLAN.md (3/3 tasks + 1 deviation fix)
 Resume file: None
-Next action: Plan 14-03 (final ACQUISITION phase integration)
+Next action: Begin Phase 15 (Actions Validation)
