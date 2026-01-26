@@ -21,7 +21,7 @@ This milestone implements the ACQUISITION phase with AlphaZero-optimized mechani
 
 - [x] **Phase 12: Offer Infrastructure** - Offer generation, sorting, and state management
 - [x] **Phase 13: Actions & Validation** - Accept/pass actions with full validation rules
-- [ ] **Phase 14: Flow & Integration** - Receivership auto-buy, phase transitions, driver integration
+- [x] **Phase 14: Flow & Integration** - Receivership auto-buy, phase transitions, driver integration
 - [ ] **Phase 15: Testing** - Unit, integration, and edge case tests
 
 ## Phase Details
@@ -74,7 +74,7 @@ Plans:
 - [x] 14-01-PLAN.md — Receivership auto-buy in presentation loop
 - [x] 14-02-PLAN.md — Zone merging and phase transition to CLOSING
 - [x] 14-03-PLAN.md — Integration tests for flow and receivership
-- [ ] 14-04-PLAN.md — [GAP CLOSURE] Receivership auto-buy tests
+- [x] 14-04-PLAN.md — [GAP CLOSURE] Receivership auto-buy tests
 
 ### Phase 15: Testing
 **Goal**: Comprehensive test coverage validates ACQUISITION phase correctness
@@ -100,5 +100,5 @@ Phases execute in numeric order: 12 -> 13 -> 14 -> 15
 |-------|-----------|----------------|--------|-----------|
 | 12. Offer Infrastructure | v4.0 | 4/4 | Complete | 2026-01-25 |
 | 13. Actions & Validation | v4.0 | 2/2 | Complete | 2026-01-25 |
-| 14. Flow & Integration | v4.0 | 3/4 | Gap closure needed | - |
+| 14. Flow & Integration | v4.0 | 4/4 | Complete | 2026-01-26 |
 | 15. Testing | v4.0 | 0/? | Not started | - |

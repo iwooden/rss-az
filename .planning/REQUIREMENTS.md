@@ -47,22 +47,22 @@ AlphaZero-optimized ACQUISITION phase with offer-based flow, same-president rest
 
 ### Receivership Integration
 
-- [ ] **RECV-01**: Receivership corps auto-buy FI offers if affordable
-- [ ] **RECV-02**: Receivership corps cannot sell companies
-- [ ] **RECV-03**: Auto-buy executes within offer advancement loop (no player action)
+- [x] **RECV-01**: Receivership corps auto-buy FI offers if affordable
+- [x] **RECV-02**: Receivership corps cannot sell companies
+- [x] **RECV-03**: Auto-buy executes within offer advancement loop (no player action)
 
 ### Phase Flow
 
-- [ ] **FLOW-01**: Advance to next offer after each action (accept or pass)
-- [ ] **FLOW-02**: Transition to CLOSING when no more valid offers
-- [ ] **FLOW-03**: Merge acquisition_companies into owned_companies at phase end
-- [ ] **FLOW-04**: Merge acquisition_proceeds into corp cash at phase end
+- [x] **FLOW-01**: Advance to next offer after each action (accept or pass)
+- [x] **FLOW-02**: Transition to CLOSING when no more valid offers
+- [x] **FLOW-03**: Merge acquisition_companies into owned_companies at phase end
+- [x] **FLOW-04**: Merge acquisition_proceeds into corp cash at phase end
 
 ### Driver Integration
 
-- [ ] **DRIVER-01**: Remove ACQUISITION from _is_non_player_phase()
-- [ ] **DRIVER-02**: Action mask returns valid price options for player-president offers
-- [ ] **DRIVER-03**: Phase handler transitions to CLOSING internally when no more offers
+- [x] **DRIVER-01**: Remove ACQUISITION from _is_non_player_phase()
+- [x] **DRIVER-02**: Action mask returns valid price options for player-president offers
+- [x] **DRIVER-03**: Phase handler transitions to CLOSING internally when no more offers
 
 ### Testing
 
@@ -99,16 +99,16 @@ AlphaZero-optimized ACQUISITION phase with offer-based flow, same-president rest
 | VALID-04 | 13 | 13-01 | Complete |
 | VALID-05 | 13 | 13-01 | Complete |
 | VALID-06 | 13 | 13-01 | Complete |
-| RECV-01 | 14 | TBD | Pending |
-| RECV-02 | 14 | TBD | Pending |
-| RECV-03 | 14 | TBD | Pending |
-| FLOW-01 | 14 | TBD | Pending |
-| FLOW-02 | 14 | TBD | Pending |
-| FLOW-03 | 14 | TBD | Pending |
-| FLOW-04 | 14 | TBD | Pending |
-| DRIVER-01 | 14 | TBD | Pending |
-| DRIVER-02 | 14 | TBD | Pending |
-| DRIVER-03 | 14 | TBD | Pending |
+| RECV-01 | 14 | 14-01, 14-04 | Complete |
+| RECV-02 | 14 | 14-01, 14-04 | Complete |
+| RECV-03 | 14 | 14-01, 14-04 | Complete |
+| FLOW-01 | 14 | 14-01 | Complete |
+| FLOW-02 | 14 | 14-02 | Complete |
+| FLOW-03 | 14 | 14-02, 14-03 | Complete |
+| FLOW-04 | 14 | 14-02, 14-03 | Complete |
+| DRIVER-01 | 14 | 13-02 | Complete |
+| DRIVER-02 | 14 | 13-02 | Complete |
+| DRIVER-03 | 14 | 14-02 | Complete |
 | TEST-01 | 15 | TBD | Pending |
 | TEST-02 | 15 | TBD | Pending |
 | TEST-03 | 15 | TBD | Pending |
