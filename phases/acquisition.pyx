@@ -116,6 +116,10 @@ cdef int _collect_corp_corp_offers(GameState state, int* corp_ids, int* company_
     """
     Collect Corp->Corp offers where same player is president of both.
     Sorted by (buyer share price DESC, target face value ASC).
+
+    Note: Receivership corps are automatically excluded as sellers because
+    _get_corp_president returns -1 for receivership, which never matches
+    any player_id (0 to num_players-1). This implements RECV-02.
     """
     cdef int count = 0
     cdef int player_id, buyer_corp, seller_corp, company_id
