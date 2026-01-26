@@ -218,5 +218,7 @@ cdef class Corporation:
 # GLOBAL CORPORATION INSTANCES
 # =============================================================================
 
-# Initialize corporations and store in a dict keyed by name
-CORPS = {name: Corporation(i, name) for i, name in enumerate(CORP_NAMES)}
+# List indexed by corp_id (consistent with PLAYERS, COMPANIES)
+CORPS = [Corporation(i, CORP_NAMES[i]) for i in range(GameConstants.NUM_CORPS)]
+# Dict by name for convenience
+CORPS_BY_NAME = {c.name: c for c in CORPS}
