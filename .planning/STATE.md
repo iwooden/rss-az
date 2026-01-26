@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-24)
 
 Milestone: v4.0 ACQUISITION Phase
 Phase: 14 of 15 (Flow & Integration)
-Plan: Ready to plan
-Status: Ready to plan
-Last activity: 2026-01-25 - Phase 13 verified and complete (4/4 must-haves, 10/10 requirements passed)
+Plan: 1 of 3 complete (14-01 Receivership Auto-Buy)
+Status: In progress
+Last activity: 2026-01-26 - Completed 14-01-PLAN.md (receivership auto-buy integration)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [#####     ] 50%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [######    ] 60%
 
 ## Archived Milestones
 
@@ -78,6 +78,9 @@ See `.planning/milestones/` for full archives.
 | acquisition-hybrid-phase | ACQUISITION is non-player when no offers, player when offers exist | 13-02 | Prevents ZeroLegalActionsError on empty buffer |
 | action-constants-exposure | Action enums exposed as *_PY suffixed constants | 13-02 | Enables Python test imports |
 | company-location-constants | Fixed LOC_PLAYER=3, LOC_FI=4, LOC_CORP=5 | 13-02 | Corrected from wrong values (1,0,2) |
+| receivership-auto-buy-in-loop | Receivership auto-buy executes within _present_current_offer | 14-01 | Driver never sees receivership offers |
+| receivership-face-value-buy | Receivership buys FI at face value (like OS) | 14-01 | Same mechanics as OS special ability |
+| recv-02-verification | Receivership excluded as sellers by president check | 14-01 | _get_corp_president returns -1, never matches player_id |
 
 ### Pending Todos
 
@@ -89,7 +92,7 @@ None - Phase 13 verified complete (4/4 must-haves, 10/10 requirements). Ready fo
 
 ## Session Continuity
 
-Last session: 2026-01-25
-Stopped at: Phase 13 verified complete
+Last session: 2026-01-26
+Stopped at: Completed 14-01-PLAN.md (3/3 tasks)
 Resume file: None
-Next action: `/gsd:discuss-phase 14` or `/gsd:plan-phase 14`
+Next action: Plan 14-02 (merge and transfer operations)
