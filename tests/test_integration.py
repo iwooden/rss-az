@@ -352,8 +352,8 @@ class TestAcquisitionIntegration:
 
         # Set up valid acquisition offer: Player 0's private company -> Corp 0
         COMPANIES[0].transfer_to_player(state, 0)  # Give company 0 to player 0
-        CORPS[CORP_NAMES[0]].set_active(state, True)  # Activate corp 0
-        CORPS[CORP_NAMES[0]].set_cash(state, 50000)  # Give corp cash
+        CORPS[0].set_active(state, True)  # Activate corp 0
+        CORPS[0].set_cash(state, 50000)  # Give corp cash
         PLAYERS[0].set_president_of(state, 0, True)  # Player 0 is president of corp 0
 
         # Enter ACQUISITION phase
@@ -398,8 +398,8 @@ class TestAcquisitionIntegration:
 
         # Set up valid acquisition offer: Player 0's private company -> Corp 0
         COMPANIES[0].transfer_to_player(state, 0)
-        CORPS[CORP_NAMES[0]].set_active(state, True)
-        CORPS[CORP_NAMES[0]].set_cash(state, 50000)
+        CORPS[0].set_active(state, True)
+        CORPS[0].set_cash(state, 50000)
         PLAYERS[0].set_president_of(state, 0, True)
 
         # Enter ACQUISITION phase
@@ -430,8 +430,8 @@ class TestAcquisitionIntegration:
         # Set up multiple offers: Player 0's companies -> Corp 0
         COMPANIES[0].transfer_to_player(state, 0)
         COMPANIES[1].transfer_to_player(state, 0)
-        CORPS[CORP_NAMES[0]].set_active(state, True)
-        CORPS[CORP_NAMES[0]].set_cash(state, 100000)  # Enough for multiple
+        CORPS[0].set_active(state, True)
+        CORPS[0].set_cash(state, 100000)  # Enough for multiple
         PLAYERS[0].set_president_of(state, 0, True)
 
         # Enter ACQUISITION phase
@@ -479,7 +479,7 @@ class TestAcquisitionIntegration:
 
         # Set up acquisition proceeds and acquisition zone companies
         player = PLAYERS[0]
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         corp.set_active(state, True)
 

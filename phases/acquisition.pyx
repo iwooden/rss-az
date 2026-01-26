@@ -52,8 +52,8 @@ cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) no
             high_price = company_module.COMPANIES[company_id].get_high_price()
 
             # Check if OS can afford (OS always first if affordable)
-            if corp_module.CORPS[CORP_NAMES[OS_CORP_ID]].is_active(state):
-                corp_cash = corp_module.CORPS[CORP_NAMES[OS_CORP_ID]].get_cash(state)
+            if corp_module.CORPS[OS_CORP_ID].is_active(state):
+                corp_cash = corp_module.CORPS[OS_CORP_ID].get_cash(state)
                 if corp_cash >= high_price and count < OFFER_BUFFER_SIZE:
                     corp_ids[count] = OS_CORP_ID
                     company_ids[count] = company_id
@@ -69,12 +69,12 @@ cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) no
                 if corp_id == OS_CORP_ID:
                     continue
 
-                if corp_module.CORPS[CORP_NAMES[corp_id]].is_active(state):
-                    corp_cash = corp_module.CORPS[CORP_NAMES[corp_id]].get_cash(state)
+                if corp_module.CORPS[corp_id].is_active(state):
+                    corp_cash = corp_module.CORPS[corp_id].get_cash(state)
                     if corp_cash >= high_price and temp_count < OFFER_BUFFER_SIZE:
                         temp_corp_ids[temp_count] = corp_id
                         temp_company_ids[temp_count] = company_id
-                        temp_prices[temp_count] = corp_module.CORPS[CORP_NAMES[corp_id]].get_share_price(state)
+                        temp_prices[temp_count] = corp_module.CORPS[corp_id].get_share_price(state)
                         temp_count += 1
 
     # Selection sort by descending share price (like wrap_up.pyx)
@@ -137,26 +137,26 @@ cdef int _collect_corp_corp_offers(GameState state, int* corp_ids, int* company_
     for player_id in range(state._num_players):
         # Find all corps this player is president of
         for buyer_corp in range(GameConstants.NUM_CORPS):
-            if not corp_module.CORPS[CORP_NAMES[buyer_corp]].is_active(state):
+            if not corp_module.CORPS[buyer_corp].is_active(state):
                 continue
             if _get_corp_president(state, buyer_corp) != player_id:
                 continue
 
-            buyer_cash = corp_module.CORPS[CORP_NAMES[buyer_corp]].get_cash(state)
-            buyer_price = corp_module.CORPS[CORP_NAMES[buyer_corp]].get_share_price(state)
+            buyer_cash = corp_module.CORPS[buyer_corp].get_cash(state)
+            buyer_price = corp_module.CORPS[buyer_corp].get_share_price(state)
 
             # Find all other corps this player is president of
             for seller_corp in range(GameConstants.NUM_CORPS):
                 if seller_corp == buyer_corp:
                     continue
-                if not corp_module.CORPS[CORP_NAMES[seller_corp]].is_active(state):
+                if not corp_module.CORPS[seller_corp].is_active(state):
                     continue
                 if _get_corp_president(state, seller_corp) != player_id:
                     continue
 
                 # Find companies owned by seller corp
                 for company_id in range(GameConstants.NUM_COMPANIES):
-                    if corp_module.CORPS[CORP_NAMES[seller_corp]].owns_company(state, company_id):
+                    if corp_module.CORPS[seller_corp].owns_company(state, company_id):
                         high_price = company_module.COMPANIES[company_id].get_high_price()
                         face_value = get_company_face_value(company_id)
 
@@ -240,13 +240,13 @@ cdef int _collect_player_private_offers(GameState state, int* corp_ids, int* com
 
                 # Find all corps this player is president of
                 for corp_id in range(GameConstants.NUM_CORPS):
-                    if not corp_module.CORPS[CORP_NAMES[corp_id]].is_active(state):
+                    if not corp_module.CORPS[corp_id].is_active(state):
                         continue
                     if _get_corp_president(state, corp_id) != player_id:
                         continue
 
-                    corp_cash = corp_module.CORPS[CORP_NAMES[corp_id]].get_cash(state)
-                    corp_price = corp_module.CORPS[CORP_NAMES[corp_id]].get_share_price(state)
+                    corp_cash = corp_module.CORPS[corp_id].get_cash(state)
+                    corp_price = corp_module.CORPS[corp_id].get_share_price(state)
 
                     if corp_cash >= high_price and temp_count < OFFER_BUFFER_SIZE:
                         temp_corp_ids[temp_count] = corp_id
@@ -395,11 +395,11 @@ cdef bint _is_offer_valid(GameState state, int corp_id, int company_id) noexcept
 
     # Check if company already acquired this phase
     for check_corp in range(GameConstants.NUM_CORPS):
-        if corp_module.CORPS[CORP_NAMES[check_corp]].has_acquisition_company(state, company_id):
+        if corp_module.CORPS[check_corp].has_acquisition_company(state, company_id):
             return False
 
     # Check if corp can afford minimum price
-    corp_cash = corp_module.CORPS[CORP_NAMES[corp_id]].get_cash(state)
+    corp_cash = corp_module.CORPS[corp_id].get_cash(state)
     if is_fi_company:
         # FI companies bought at face or high price
         price = get_company_face_value(company_id)
@@ -455,13 +455,13 @@ cdef void _present_current_offer(GameState state) noexcept:
             continue
 
         # Check if buying corp is in receivership
-        if corp_module.CORPS[CORP_NAMES[corp_id]].is_in_receivership(state):
+        if corp_module.CORPS[corp_id].is_in_receivership(state):
             is_fi_offer = fi_module.FI.owns_company(state, company_id)
 
             # Receivership corps only buy from FI (per RULES.md)
             if is_fi_offer:
                 face_value = get_company_face_value(company_id)
-                corp_cash = corp_module.CORPS[CORP_NAMES[corp_id]].get_cash(state)
+                corp_cash = corp_module.CORPS[corp_id].get_cash(state)
 
                 if corp_cash >= face_value:
                     # Auto-execute: buy at face value
@@ -533,7 +533,7 @@ cdef bint _is_target_already_acquired(GameState state, int company_id) noexcept:
     """
     cdef int check_corp
     for check_corp in range(GameConstants.NUM_CORPS):
-        if corp_module.CORPS[CORP_NAMES[check_corp]].has_acquisition_company(state, company_id):
+        if corp_module.CORPS[check_corp].has_acquisition_company(state, company_id):
             return True
     return False
 
@@ -554,9 +554,9 @@ cdef int _count_seller_companies(GameState state, int seller_corp_id, int target
     for company_id in range(GameConstants.NUM_COMPANIES):
         if company_id == target_company_id:
             continue
-        if corp_module.CORPS[CORP_NAMES[seller_corp_id]].owns_company(state, company_id):
+        if corp_module.CORPS[seller_corp_id].owns_company(state, company_id):
             count += 1
-        if corp_module.CORPS[CORP_NAMES[seller_corp_id]].has_acquisition_company(state, company_id):
+        if corp_module.CORPS[seller_corp_id].has_acquisition_company(state, company_id):
             count += 1
 
     return count
@@ -591,7 +591,7 @@ cdef bint _validate_price_action(GameState state, int price) noexcept:
         return False
 
     # VALID-02: Corp can afford
-    corp_cash = corp_module.CORPS[CORP_NAMES[corp_id]].get_cash(state)
+    corp_cash = corp_module.CORPS[corp_id].get_cash(state)
     if corp_cash < price:
         return False
 
@@ -600,7 +600,7 @@ cdef bint _validate_price_action(GameState state, int price) noexcept:
         return False
 
     # VALID-05: Target not already in buyer's owned_companies
-    if corp_module.CORPS[CORP_NAMES[corp_id]].owns_company(state, company_id):
+    if corp_module.CORPS[corp_id].owns_company(state, company_id):
         return False
 
     # VALID-03: Seller retains >= 1 company (only for corp sellers, not FI or players)
@@ -640,7 +640,7 @@ cdef bint _validate_fi_buy_high(GameState state) noexcept:
 
     # VALID-02: Corp can afford high price
     cdef int high_price = company_module.COMPANIES[company_id].get_high_price()
-    cdef int corp_cash = corp_module.CORPS[CORP_NAMES[corp_id]].get_cash(state)
+    cdef int corp_cash = corp_module.CORPS[corp_id].get_cash(state)
     if corp_cash < high_price:
         return False
 
@@ -677,7 +677,7 @@ cdef bint _validate_fi_buy_face(GameState state) noexcept:
 
     # VALID-02: Corp can afford face value
     cdef int face_value = get_company_face_value(company_id)
-    cdef int corp_cash = corp_module.CORPS[CORP_NAMES[corp_id]].get_cash(state)
+    cdef int corp_cash = corp_module.CORPS[corp_id].get_cash(state)
     if corp_cash < face_value:
         return False
 
@@ -711,13 +711,13 @@ cdef void _handle_accept_price(GameState state, int price) noexcept:
     seller_id = company_module.COMPANIES[company_id].get_owner_id(state)
 
     # Buyer pays
-    corp_module.CORPS[CORP_NAMES[corp_id]].add_cash(state, -price)
+    corp_module.CORPS[corp_id].add_cash(state, -price)
 
     # Seller receives (to acquisition_proceeds)
     if location == LOC_CORP:
         # Corp seller: use get+set pattern (no add_acquisition_proceeds method)
-        current_proceeds = corp_module.CORPS[CORP_NAMES[seller_id]].get_acquisition_proceeds(state)
-        corp_module.CORPS[CORP_NAMES[seller_id]].set_acquisition_proceeds(state, current_proceeds + price)
+        current_proceeds = corp_module.CORPS[seller_id].get_acquisition_proceeds(state)
+        corp_module.CORPS[seller_id].set_acquisition_proceeds(state, current_proceeds + price)
     elif location == LOC_PLAYER:
         # Player seller: has add_acquisition_proceeds method
         player_module.PLAYERS[seller_id].add_acquisition_proceeds(state, price)
@@ -744,7 +744,7 @@ cdef void _handle_fi_buy_high(GameState state) noexcept:
     cdef int high_price = company_module.COMPANIES[company_id].get_high_price()
 
     # Transfer money: buyer -> FI
-    corp_module.CORPS[CORP_NAMES[corp_id]].add_cash(state, -high_price)
+    corp_module.CORPS[corp_id].add_cash(state, -high_price)
     fi_module.FI.add_cash(state, high_price)
 
     # Transfer company to buyer's acquisition zone
@@ -769,7 +769,7 @@ cdef void _handle_fi_buy_face(GameState state) noexcept:
     cdef int face_value = get_company_face_value(company_id)
 
     # Transfer money: OS -> FI
-    corp_module.CORPS[CORP_NAMES[corp_id]].add_cash(state, -face_value)
+    corp_module.CORPS[corp_id].add_cash(state, -face_value)
     fi_module.FI.add_cash(state, face_value)
 
     # Transfer company to OS's acquisition zone
@@ -799,7 +799,7 @@ cdef void _execute_receivership_fi_buy(GameState state, int corp_id, int company
     cdef int face_value = get_company_face_value(company_id)
 
     # Transfer money: corp -> FI
-    corp_module.CORPS[CORP_NAMES[corp_id]].add_cash(state, -face_value)
+    corp_module.CORPS[corp_id].add_cash(state, -face_value)
     fi_module.FI.add_cash(state, face_value)
 
     # Transfer company to corp's acquisition zone
@@ -885,7 +885,7 @@ cdef bint _is_game_terminal(GameState state) noexcept:
 
     # Check for any active corporations
     for corp_id in range(GameConstants.NUM_CORPS):
-        if corp_module.CORPS[CORP_NAMES[corp_id]].is_active(state):
+        if corp_module.CORPS[corp_id].is_active(state):
             has_active_corps = True
             break
 
@@ -919,11 +919,11 @@ cdef void _merge_corp_proceeds(GameState state) noexcept:
     """
     cdef int corp_id, proceeds
     for corp_id in range(GameConstants.NUM_CORPS):
-        if corp_module.CORPS[CORP_NAMES[corp_id]].is_active(state):
-            proceeds = corp_module.CORPS[CORP_NAMES[corp_id]].get_acquisition_proceeds(state)
+        if corp_module.CORPS[corp_id].is_active(state):
+            proceeds = corp_module.CORPS[corp_id].get_acquisition_proceeds(state)
             if proceeds > 0:
-                corp_module.CORPS[CORP_NAMES[corp_id]].add_cash(state, proceeds)
-                corp_module.CORPS[CORP_NAMES[corp_id]].set_acquisition_proceeds(state, 0)
+                corp_module.CORPS[corp_id].add_cash(state, proceeds)
+                corp_module.CORPS[corp_id].set_acquisition_proceeds(state, 0)
 
 
 cdef void _merge_corp_companies(GameState state) noexcept:
@@ -939,9 +939,9 @@ cdef void _merge_corp_companies(GameState state) noexcept:
     """
     cdef int corp_id, company_id
     for corp_id in range(GameConstants.NUM_CORPS):
-        if corp_module.CORPS[CORP_NAMES[corp_id]].is_active(state):
+        if corp_module.CORPS[corp_id].is_active(state):
             for company_id in range(GameConstants.NUM_COMPANIES):
-                if corp_module.CORPS[CORP_NAMES[corp_id]].has_acquisition_company(state, company_id):
+                if corp_module.CORPS[corp_id].has_acquisition_company(state, company_id):
                     # transfer_to_corp handles all state updates:
                     # - clears acquisition flag (via clear_location)
                     # - sets owned_company flag

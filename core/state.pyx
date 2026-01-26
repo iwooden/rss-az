@@ -746,7 +746,7 @@ cdef class GameState:
         for i in range(self._num_players):
             player_module.PLAYERS[i].initialize(self)
         fi_module.FI.initialize(self)
-        for corp in corp_module.CORPS.values():
+        for corp in corp_module.CORPS:
             corp.initialize(self)
         for company in company_module.COMPANIES:
             company.initialize(self)
@@ -776,7 +776,7 @@ cdef class GameState:
             fi_module.FI.set_owns_company(self, company_id, False)
 
         # 4. Reset all corporations
-        for corp in corp_module.CORPS.values():
+        for corp in corp_module.CORPS:
             corp.set_active(self, False)
             corp.set_cash(self, 0)
             corp.set_in_receivership(self, False)

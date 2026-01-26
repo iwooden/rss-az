@@ -11,9 +11,7 @@ from entities.corp import CORPS
 from entities.market import MARKET
 from entities.company import COMPANIES
 from core.data import GameConstants
-
-STATUS_OK = 0
-STATUS_GAME_OVER = 2
+from tests.phases.conftest import STATUS_OK, STATUS_GAME_OVER
 
 # Fixtures come from conftest.py automatically
 # Helper functions also available: assert_valid_mask, assert_invariants, apply_action_and_verify
@@ -291,7 +289,7 @@ class TestBuyShare:
 
     def test_buy_share_transfers_money_to_corp(self, trade_state, apply_and_track):
         """INV-07, INV-08: Buy share moves cash from player to corp."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         player = PLAYERS[0]
 
         initial_player_cash = player.get_cash(trade_state)
@@ -322,7 +320,7 @@ class TestBuyShare:
 
     def test_buy_share_transfers_share(self, trade_state):
         """INV-09: Buy share moves 1 share from bank to player."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         player = PLAYERS[0]
 
         initial_bank_shares = corp.get_bank_shares(trade_state)
@@ -338,7 +336,7 @@ class TestBuyShare:
 
     def test_buy_share_moves_price_up(self, trade_state):
         """INV-10: Buy share moves corp price to next higher available space."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         initial_index = corp.get_price_index(trade_state)
 
@@ -381,7 +379,7 @@ class TestBuyShare:
 
     def test_buy_share_updates_all_players_net_worth(self, trade_state):
         """Price movement affects all shareholders' net worth."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         # Give player 1 some shares of the same corp
         PLAYERS[1].set_shares(trade_state, 0, 2)
@@ -415,7 +413,7 @@ class TestSellShare:
 
     def test_sell_share_adds_cash_to_player(self, trade_state):
         """INV-11: Sell share adds sell price to player cash."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         player = PLAYERS[0]
 
         initial_player_cash = player.get_cash(trade_state)
@@ -431,7 +429,7 @@ class TestSellShare:
 
     def test_sell_share_transfers_share_to_bank(self, trade_state):
         """INV-12: Sell share moves 1 share from player to bank."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         player = PLAYERS[0]
 
         initial_bank_shares = corp.get_bank_shares(trade_state)
@@ -446,7 +444,7 @@ class TestSellShare:
 
     def test_sell_share_moves_price_down(self, trade_state):
         """INV-13: Sell share moves corp price to next lower available space."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         initial_index = corp.get_price_index(trade_state)
 
@@ -480,7 +478,7 @@ class TestPriceMovement:
 
     def test_buy_skips_occupied_space(self, trade_state):
         """INV-14: Price movement skips occupied market spaces."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         # Mark the next space (11) as occupied
         MARKET.set_space_available(trade_state, 11, False)
@@ -497,7 +495,7 @@ class TestPriceMovement:
 
     def test_sell_skips_occupied_space(self, trade_state):
         """INV-14: Sell price movement skips occupied spaces."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         # Mark the next lower space (9) as occupied
         MARKET.set_space_available(trade_state, 9, False)
@@ -566,7 +564,7 @@ class TestRoundTripLimits:
             player.increment_share_sells(trade_state, 0)
 
         # Set up corp 1 as active with shares
-        corp1 = CORPS[CORP_NAMES[1]]
+        corp1 = CORPS[1]
         corp1.set_active(trade_state, True)
         corp1.set_price_index(trade_state, 8)
         corp1.set_bank_shares(trade_state, 2)
@@ -595,7 +593,7 @@ class TestBankruptcy:
 
     def test_bankruptcy_triggers_at_price_zero(self, bankruptcy_state):
         """INV-22: Sell that drops price to 0 triggers bankruptcy."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
@@ -616,7 +614,7 @@ class TestBankruptcy:
 
     def test_bankruptcy_returns_shares_to_unissued(self, bankruptcy_state):
         """INV-24: All shares return to unissued."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
@@ -632,7 +630,7 @@ class TestBankruptcy:
 
     def test_bankruptcy_clears_corp_cash(self, bankruptcy_state):
         """INV-25: Corp cash returned to bank (set to 0)."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         corp.set_cash(bankruptcy_state, 50)  # Give corp some cash
 
         layout = get_action_layout(3)
@@ -652,7 +650,7 @@ class TestBankruptcy:
 
     def test_bankruptcy_corp_available_for_ipo(self, bankruptcy_state):
         """INV-27: Bankrupt corp can be IPO'd again."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
@@ -675,7 +673,7 @@ class TestBankruptcy:
 
     def test_bankruptcy_updates_all_players_net_worth(self, bankruptcy_state):
         """Bankruptcy updates net worth for all players who held shares."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         # Give player 1 shares of the corp that will go bankrupt
         PLAYERS[1].set_shares(bankruptcy_state, 0, 1)
@@ -704,7 +702,7 @@ class TestBankruptcy:
         """INV-23: Bankruptcy removes ALL companies owned by corp."""
         from tests.phases.conftest import assert_invariants
 
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         # Add second company to corp
         COMPANIES[1].transfer_to_corp(bankruptcy_state, 0)
@@ -726,7 +724,7 @@ class TestBankruptcy:
         from core.data import get_corp_share_count
         from tests.phases.conftest import assert_invariants
 
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         # Give corp some cash before bankruptcy
         corp.set_cash(bankruptcy_state, 100)
@@ -753,7 +751,7 @@ class TestBankruptcy:
         """Bankruptcy zeros shares for all players holding shares."""
         from tests.phases.conftest import assert_invariants
 
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         # Give multiple players shares
         PLAYERS[1].set_shares(bankruptcy_state, 0, 1)
@@ -791,7 +789,7 @@ class TestBankruptcy:
         state = GameState(num_players=num_players)
         state.initialize_game(seed=42)
 
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         corp.set_active(state, True)
         corp.set_price_index(state, 1)
         corp.set_unissued_shares(state, 3)
@@ -858,7 +856,7 @@ class TestPresidency:
 
     def test_presidency_maintained_after_buy(self, trade_state):
         """Presidency checks happen after buy transactions."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         # Player 0 is president with 2 shares
         # Buy increases shares to 3, should maintain presidency
@@ -884,7 +882,7 @@ class TestPresidency:
         """INV-18: Buying shares can trigger presidency transfer."""
         from tests.phases.conftest import assert_invariants
 
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         # Player 0 is president with 2 shares
         # Give player 1 more shares so they have majority
@@ -913,7 +911,7 @@ class TestPresidency:
         PLAYERS[2].set_shares(trade_state, 0, 1)
         # Update issued shares: bank(2) + P0(2) + P1(1) + P2(1) = 6, but corp has 7 total
         # So: unissued(1) + bank(2) + P0(2) + P1(1) + P2(1) = 7
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         corp.set_unissued_shares(trade_state, 1)
         corp.set_issued_shares(trade_state, 6)
 
@@ -936,7 +934,7 @@ class TestReceivership:
 
     def test_receivership_when_all_shares_sold(self, trade_state):
         """INV-20: Corp enters receivership when all player shares = 0."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         # Set up: only player 0 has 1 share
         PLAYERS[0].set_shares(trade_state, 0, 1)
@@ -954,7 +952,7 @@ class TestReceivership:
 
     def test_receivership_exit_on_buy(self, trade_state):
         """INV-21: Buying share from receivership corp exits receivership and makes buyer president."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         # Put corp in receivership
         corp.set_in_receivership(trade_state, True)
@@ -975,7 +973,7 @@ class TestReceivership:
 
     def test_receivership_no_president(self, trade_state):
         """Receivership clears president flag."""
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         # Sell all shares
         PLAYERS[0].set_shares(trade_state, 0, 1)  # Only 1 share
@@ -992,7 +990,7 @@ class TestReceivership:
         """Corp in receivership can still have shares bought (exits receivership)."""
         from tests.phases.conftest import assert_invariants
 
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
 
         # Put corp in receivership - adjust shares to maintain invariant
         # Corp 0 has 7 total: unissued(3) + bank(4) + all_players(0) = 7
@@ -1026,7 +1024,7 @@ class TestReceivership:
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         corp.set_active(state, True)
         corp.set_price_index(state, 15)
         corp.set_unissued_shares(state, 6)
@@ -1111,7 +1109,7 @@ class TestMultiplePlayerCounts:
         state.initialize_game(seed=42)
 
         # Set up tradeable corp
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         corp.set_active(state, True)
         corp.set_price_index(state, 10)
         corp.set_bank_shares(state, 3)
@@ -1133,7 +1131,7 @@ class TestMultiplePlayerCounts:
         state.initialize_game(seed=42)
 
         # Set up corp with player shares
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         corp.set_active(state, True)
         corp.set_price_index(state, 10)
         MARKET.set_space_available(state, 10, False)

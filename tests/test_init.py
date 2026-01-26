@@ -110,7 +110,7 @@ class TestCorporations:
         """CORP-01: All 8 corporations inactive."""
         gs = GameState(4)
         gs.initialize_game()
-        for corp in CORPS.values():
+        for corp in CORPS:
             corp.initialize(gs)
             assert not corp.is_active(gs)
 
@@ -118,7 +118,7 @@ class TestCorporations:
         """CORP-02: Each corporation's shares reset."""
         gs = GameState(4)
         gs.initialize_game()
-        for corp in CORPS.values():
+        for corp in CORPS:
             corp.initialize(gs)
             expected_shares = get_corp_share_count(corp.corp_id)
             assert corp.get_unissued_shares(gs) == expected_shares
@@ -129,7 +129,7 @@ class TestCorporations:
         """CORP-03: No corporation owns any companies."""
         gs = GameState(4)
         gs.initialize_game()
-        for corp in CORPS.values():
+        for corp in CORPS:
             corp.initialize(gs)
             for company_id in range(GameConstants.NUM_COMPANIES):
                 assert not corp.owns_company(gs, company_id)
@@ -138,7 +138,7 @@ class TestCorporations:
         """CORP-04: No corporation has a share price card."""
         gs = GameState(4)
         gs.initialize_game()
-        for corp in CORPS.values():
+        for corp in CORPS:
             corp.initialize(gs)
             # Inactive corps have no meaningful price index
             assert not corp.is_active(gs)

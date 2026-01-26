@@ -29,7 +29,7 @@ cdef void _check_receivership(GameState state, int corp_id) noexcept:
     cdef int player_id, total_player_shares
     cdef object corp
 
-    corp = corp_module.CORPS[CORP_NAMES[corp_id]]
+    corp = corp_module.CORPS[corp_id]
     total_player_shares = 0
 
     for player_id in range(state._num_players):
@@ -54,7 +54,7 @@ cdef void _check_presidency(GameState state, int corp_id) noexcept:
     cdef int player_id, shares, max_shares, president_id, current_president, incumbent_shares
     cdef object corp
 
-    corp = corp_module.CORPS[CORP_NAMES[corp_id]]
+    corp = corp_module.CORPS[corp_id]
 
     # Skip if in receivership (no president)
     if corp.is_in_receivership(state):
@@ -126,7 +126,7 @@ cdef void _execute_bankruptcy(GameState state, int corp_id) noexcept:
     cdef object corp
 
     # Get corp entity
-    corp = corp_module.CORPS[CORP_NAMES[corp_id]]
+    corp = corp_module.CORPS[corp_id]
 
     # Step 1: Remove all owned companies from game (INV-23)
     for company_id in range(GameConstants.NUM_COMPANIES):
@@ -199,7 +199,7 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     player_id = state._get_active_player()
 
     # Get corp by name lookup (existing pattern from corp.pyx)
-    corp = corp_module.CORPS[CORP_NAMES[corp_id]]
+    corp = corp_module.CORPS[corp_id]
 
     # Get current price index and find new index
     current_index = corp.get_price_index(state)
@@ -268,7 +268,7 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     player_id = state._get_active_player()
 
     # Get corp by name lookup
-    corp = corp_module.CORPS[CORP_NAMES[corp_id]]
+    corp = corp_module.CORPS[corp_id]
 
     # Get current price BEFORE movement (INV-11)
     current_index = corp.get_price_index(state)

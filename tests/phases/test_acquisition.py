@@ -122,8 +122,8 @@ class TestOfferGeneration:
         COMPANIES[0].transfer_to_fi(gs)
 
         # Make corp 0 active with cash
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
-        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        CORPS[0].set_active(gs, True)
+        CORPS[0].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 0, True)
 
         # Generate offers
@@ -144,12 +144,12 @@ class TestOfferGeneration:
         COMPANIES[0].transfer_to_fi(gs)
 
         # Make OS (corp 2) and corp 0 both active with cash
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
-        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        CORPS[0].set_active(gs, True)
+        CORPS[0].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 0, True)
 
-        CORPS[CORP_NAMES[2]].set_active(gs, True)  # OS is corp 2
-        CORPS[CORP_NAMES[2]].set_cash(gs, 50000)
+        CORPS[2].set_active(gs, True)  # OS is corp 2
+        CORPS[2].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 2, True)
 
         # Generate offers
@@ -172,15 +172,15 @@ class TestOfferGeneration:
         COMPANIES[0].transfer_to_fi(gs)
 
         # Make corp 0 active at higher price_index (20)
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
-        CORPS[CORP_NAMES[0]].set_price_index(gs, 20)
-        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        CORPS[0].set_active(gs, True)
+        CORPS[0].set_price_index(gs, 20)
+        CORPS[0].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 0, True)
 
         # Make corp 1 active at lower price_index (10)
-        CORPS[CORP_NAMES[1]].set_active(gs, True)
-        CORPS[CORP_NAMES[1]].set_price_index(gs, 10)
-        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        CORPS[1].set_active(gs, True)
+        CORPS[1].set_price_index(gs, 10)
+        CORPS[1].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 1, True)
 
         # Generate offers (skip OS so we test non-OS sorting)
@@ -202,11 +202,11 @@ class TestOfferGeneration:
 
         # Give company 0 to corp 0
         COMPANIES[0].transfer_to_corp(gs, 0)
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[0].set_active(gs, True)
 
         # Make corp 1 active with cash, make player 0 president of BOTH corps
-        CORPS[CORP_NAMES[1]].set_active(gs, True)
-        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        CORPS[1].set_active(gs, True)
+        CORPS[1].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 0, True)
         PLAYERS[0].set_president_of(gs, 1, True)
 
@@ -226,12 +226,12 @@ class TestOfferGeneration:
 
         # Give company 0 to corp 0
         COMPANIES[0].transfer_to_corp(gs, 0)
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[0].set_active(gs, True)
         PLAYERS[0].set_president_of(gs, 0, True)
 
         # Make corp 1 active with cash, different president (player 1)
-        CORPS[CORP_NAMES[1]].set_active(gs, True)
-        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        CORPS[1].set_active(gs, True)
+        CORPS[1].set_cash(gs, 50000)
         PLAYERS[1].set_president_of(gs, 1, True)
 
         # Generate offers
@@ -249,8 +249,8 @@ class TestOfferGeneration:
         COMPANIES[0].transfer_to_player(gs, 0)
 
         # Make corp 0 active with cash, player 0 is president
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
-        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        CORPS[0].set_active(gs, True)
+        CORPS[0].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 0, True)
 
         # Generate offers
@@ -272,15 +272,15 @@ class TestOfferGeneration:
         COMPANIES[1].transfer_to_fi(gs)
 
         # Make corp 0 active at price_index 20 (higher)
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
-        CORPS[CORP_NAMES[0]].set_price_index(gs, 20)
-        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        CORPS[0].set_active(gs, True)
+        CORPS[0].set_price_index(gs, 20)
+        CORPS[0].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 0, True)
 
         # Make corp 1 active at price_index 10 (lower)
-        CORPS[CORP_NAMES[1]].set_active(gs, True)
-        CORPS[CORP_NAMES[1]].set_price_index(gs, 10)
-        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        CORPS[1].set_active(gs, True)
+        CORPS[1].set_price_index(gs, 10)
+        CORPS[1].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 1, True)
 
         # Generate offers
@@ -310,17 +310,17 @@ class TestOfferGeneration:
         # Give companies 0 (lower face value) and 1 (could be higher) to corp 0
         COMPANIES[0].transfer_to_corp(gs, 0)
         COMPANIES[1].transfer_to_corp(gs, 0)
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[0].set_active(gs, True)
 
         # Make corp 1 active at price_index 20 (higher)
-        CORPS[CORP_NAMES[1]].set_active(gs, True)
-        CORPS[CORP_NAMES[1]].set_price_index(gs, 20)
-        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        CORPS[1].set_active(gs, True)
+        CORPS[1].set_price_index(gs, 20)
+        CORPS[1].set_cash(gs, 50000)
 
         # Make corp 2 active at price_index 10 (lower)
-        CORPS[CORP_NAMES[2]].set_active(gs, True)
-        CORPS[CORP_NAMES[2]].set_price_index(gs, 10)
-        CORPS[CORP_NAMES[2]].set_cash(gs, 50000)
+        CORPS[2].set_active(gs, True)
+        CORPS[2].set_price_index(gs, 10)
+        CORPS[2].set_cash(gs, 50000)
 
         # Player 0 is president of all three corps (same-president requirement)
         PLAYERS[0].set_president_of(gs, 0, True)
@@ -359,14 +359,14 @@ class TestOfferGeneration:
         COMPANIES[1].transfer_to_player(gs, 0)
 
         # Make corp 0 active at price_index 20 (higher)
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
-        CORPS[CORP_NAMES[0]].set_price_index(gs, 20)
-        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        CORPS[0].set_active(gs, True)
+        CORPS[0].set_price_index(gs, 20)
+        CORPS[0].set_cash(gs, 50000)
 
         # Make corp 1 active at price_index 10 (lower)
-        CORPS[CORP_NAMES[1]].set_active(gs, True)
-        CORPS[CORP_NAMES[1]].set_price_index(gs, 10)
-        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        CORPS[1].set_active(gs, True)
+        CORPS[1].set_price_index(gs, 10)
+        CORPS[1].set_cash(gs, 50000)
 
         # Player 0 is president of both corps
         PLAYERS[0].set_president_of(gs, 0, True)
@@ -469,7 +469,7 @@ class TestPhaseFlow:
         gs = GameState(3)
         gs.initialize_game()
 
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         corp.set_active(gs, True)
         initial_cash = corp.get_cash(gs)
         proceeds = 45
@@ -487,7 +487,7 @@ class TestPhaseFlow:
         gs = GameState(3)
         gs.initialize_game()
 
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         corp.set_active(gs, True)
 
         company = COMPANIES[0]
@@ -513,8 +513,8 @@ class TestValidation:
         COMPANIES[company_id].transfer_to_player(gs, player_id)
 
         # Make corp active and set cash
-        CORPS[CORP_NAMES[corp_id]].set_active(gs, True)
-        CORPS[CORP_NAMES[corp_id]].set_cash(gs, corp_cash)
+        CORPS[corp_id].set_active(gs, True)
+        CORPS[corp_id].set_cash(gs, corp_cash)
 
         # Make player president of corp
         PLAYERS[player_id].set_president_of(gs, corp_id, True)
@@ -579,8 +579,8 @@ class TestValidation:
 
         # Give company to FI, make OS (corp 2) active
         COMPANIES[0].transfer_to_fi(gs)
-        CORPS[CORP_NAMES[2]].set_active(gs, True)
-        CORPS[CORP_NAMES[2]].set_cash(gs, 50000)
+        CORPS[2].set_active(gs, True)
+        CORPS[2].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
 
@@ -596,8 +596,8 @@ class TestValidation:
 
         # Give company to FI, make non-OS corp active
         COMPANIES[0].transfer_to_fi(gs)
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
-        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        CORPS[0].set_active(gs, True)
+        CORPS[0].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
 
@@ -627,8 +627,8 @@ class TestValidation:
 
         # Setup offer with company in player's private
         COMPANIES[0].transfer_to_player(gs, 0)
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
-        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        CORPS[0].set_active(gs, True)
+        CORPS[0].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 0, True)
 
         # Manually transfer company to corp's owned (not acquisition)
@@ -745,11 +745,11 @@ class TestValidation:
         # Give corp 0 two companies
         COMPANIES[0].transfer_to_corp(gs, 0)
         COMPANIES[1].transfer_to_corp(gs, 0)
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[0].set_active(gs, True)
 
         # Make corp 1 active with cash, same president
-        CORPS[CORP_NAMES[1]].set_active(gs, True)
-        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        CORPS[1].set_active(gs, True)
+        CORPS[1].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 0, True)
         PLAYERS[0].set_president_of(gs, 1, True)
 
@@ -765,11 +765,11 @@ class TestValidation:
 
         # Give corp 0 exactly one company (no acquisition zone companies)
         COMPANIES[0].transfer_to_corp(gs, 0)
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[0].set_active(gs, True)
 
         # Make corp 1 active with cash, same president
-        CORPS[CORP_NAMES[1]].set_active(gs, True)
-        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        CORPS[1].set_active(gs, True)
+        CORPS[1].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 0, True)
         PLAYERS[0].set_president_of(gs, 1, True)
 
@@ -791,11 +791,11 @@ class TestValidation:
         # Give corp 0 one owned and one in acquisition zone
         COMPANIES[0].transfer_to_corp(gs, 0)
         COMPANIES[1].transfer_to_corp_acquisition(gs, 0)
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[0].set_active(gs, True)
 
         # Make corp 1 active with cash, same president
-        CORPS[CORP_NAMES[1]].set_active(gs, True)
-        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        CORPS[1].set_active(gs, True)
+        CORPS[1].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 0, True)
         PLAYERS[0].set_president_of(gs, 1, True)
 
@@ -816,8 +816,8 @@ class TestValidation:
         COMPANIES[0].transfer_to_corp_acquisition(gs, 0)
 
         # Make corp active with cash
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
-        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        CORPS[0].set_active(gs, True)
+        CORPS[0].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 0, True)
 
         setup_acquisition_phase_py(gs)
@@ -832,8 +832,8 @@ class TestActionIntegration:
     def _setup_player_private_offer(self, gs, player_id, company_id, corp_id, corp_cash):
         """Setup player private -> corp offer."""
         COMPANIES[company_id].transfer_to_player(gs, player_id)
-        CORPS[CORP_NAMES[corp_id]].set_active(gs, True)
-        CORPS[CORP_NAMES[corp_id]].set_cash(gs, corp_cash)
+        CORPS[corp_id].set_active(gs, True)
+        CORPS[corp_id].set_cash(gs, corp_cash)
         PLAYERS[player_id].set_president_of(gs, corp_id, True)
         setup_acquisition_phase_py(gs)
 
@@ -847,7 +847,7 @@ class TestActionIntegration:
 
         # Verify setup
         assert get_offer_count(gs) > 0
-        corp_cash_before = CORPS[CORP_NAMES[0]].get_cash(gs)
+        corp_cash_before = CORPS[0].get_cash(gs)
         player_proceeds_before = PLAYERS[0].get_acquisition_proceeds(gs)
 
         # Execute action (offset 0 = low_price, always valid)
@@ -855,13 +855,13 @@ class TestActionIntegration:
         assert result == 0
 
         # Verify money transfer
-        corp_cash_after = CORPS[CORP_NAMES[0]].get_cash(gs)
+        corp_cash_after = CORPS[0].get_cash(gs)
         player_proceeds_after = PLAYERS[0].get_acquisition_proceeds(gs)
         assert corp_cash_after < corp_cash_before
         assert player_proceeds_after > player_proceeds_before
 
         # Verify company in acquisition zone
-        assert CORPS[CORP_NAMES[0]].has_acquisition_company(gs, 0)
+        assert CORPS[0].has_acquisition_company(gs, 0)
 
     def test_fi_buy_high_action(self):
         """Non-OS buys from FI at high price."""
@@ -870,26 +870,26 @@ class TestActionIntegration:
 
         # Give company to FI, make non-OS corp active
         COMPANIES[0].transfer_to_fi(gs)
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
-        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        CORPS[0].set_active(gs, True)
+        CORPS[0].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
 
         if get_offer_count(gs) > 0:
-            corp_cash_before = CORPS[CORP_NAMES[0]].get_cash(gs)
+            corp_cash_before = CORPS[0].get_cash(gs)
             fi_cash_before = FI.get_cash(gs)
 
             result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_HIGH, 0)
             assert result == 0
 
             # Verify money transfer to FI
-            corp_cash_after = CORPS[CORP_NAMES[0]].get_cash(gs)
+            corp_cash_after = CORPS[0].get_cash(gs)
             fi_cash_after = FI.get_cash(gs)
             assert corp_cash_after < corp_cash_before
             assert fi_cash_after > fi_cash_before
 
             # Verify company in acquisition zone
-            assert CORPS[CORP_NAMES[0]].has_acquisition_company(gs, 0)
+            assert CORPS[0].has_acquisition_company(gs, 0)
 
     def test_fi_buy_face_action(self):
         """OS buys from FI at face value."""
@@ -898,27 +898,27 @@ class TestActionIntegration:
 
         # Give company to FI, make OS active
         COMPANIES[0].transfer_to_fi(gs)
-        CORPS[CORP_NAMES[2]].set_active(gs, True)
-        CORPS[CORP_NAMES[2]].set_cash(gs, 50000)
+        CORPS[2].set_active(gs, True)
+        CORPS[2].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
 
         if get_offer_count(gs) > 0:
-            corp_cash_before = CORPS[CORP_NAMES[2]].get_cash(gs)
+            corp_cash_before = CORPS[2].get_cash(gs)
             fi_cash_before = FI.get_cash(gs)
 
             result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_FACE, 0)
             assert result == 0
 
             # Verify money transfer at face value
-            corp_cash_after = CORPS[CORP_NAMES[2]].get_cash(gs)
+            corp_cash_after = CORPS[2].get_cash(gs)
             fi_cash_after = FI.get_cash(gs)
             face_value = get_company_face_value(0)
             assert corp_cash_after == corp_cash_before - face_value
             assert fi_cash_after == fi_cash_before + face_value
 
             # Verify company in acquisition zone
-            assert CORPS[CORP_NAMES[2]].has_acquisition_company(gs, 0)
+            assert CORPS[2].has_acquisition_company(gs, 0)
 
     def test_pass_action(self):
         """Offer index advances, next offer presented."""
@@ -928,8 +928,8 @@ class TestActionIntegration:
         # Setup two offers: two companies to same player/corp
         COMPANIES[0].transfer_to_player(gs, 0)
         COMPANIES[1].transfer_to_player(gs, 0)
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
-        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        CORPS[0].set_active(gs, True)
+        CORPS[0].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 0, True)
 
         setup_acquisition_phase_py(gs)
@@ -982,7 +982,7 @@ class TestZoneMerging:
         gs = GameState(3)
         gs.initialize_game()
 
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         corp.set_active(gs, True)
         initial_cash = corp.get_cash(gs)
         proceeds = 30
@@ -1003,7 +1003,7 @@ class TestZoneMerging:
         gs = GameState(3)
         gs.initialize_game()
 
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         corp.set_active(gs, True)
 
         company = COMPANIES[0]
@@ -1028,7 +1028,7 @@ class TestZoneMerging:
         player = PLAYERS[0]
         player.add_acquisition_proceeds(gs, 50)
 
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         corp.set_active(gs, True)
         corp.set_acquisition_proceeds(gs, 40)
 
@@ -1059,8 +1059,8 @@ class TestEdgeCases:
         gs.initialize_game()
 
         # Make corp active but FI has no companies
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
-        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        CORPS[0].set_active(gs, True)
+        CORPS[0].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 0, True)
 
         setup_acquisition_phase_py(gs)
@@ -1074,8 +1074,8 @@ class TestEdgeCases:
         gs.initialize_game()
 
         # Make corp active with cash but no player owns privates
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
-        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        CORPS[0].set_active(gs, True)
+        CORPS[0].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 0, True)
 
         setup_acquisition_phase_py(gs)
@@ -1089,10 +1089,10 @@ class TestEdgeCases:
         gs.initialize_game()
 
         # Make two corps active with same president but neither owns companies
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
-        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
-        CORPS[CORP_NAMES[1]].set_active(gs, True)
-        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        CORPS[0].set_active(gs, True)
+        CORPS[0].set_cash(gs, 50000)
+        CORPS[1].set_active(gs, True)
+        CORPS[1].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 0, True)
         PLAYERS[0].set_president_of(gs, 1, True)
 
@@ -1108,8 +1108,8 @@ class TestEdgeCases:
 
         # Give company to single active corp
         COMPANIES[0].transfer_to_corp(gs, 0)
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
-        CORPS[CORP_NAMES[0]].set_cash(gs, 50000)
+        CORPS[0].set_active(gs, True)
+        CORPS[0].set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 0, True)
 
         setup_acquisition_phase_py(gs)
@@ -1124,12 +1124,12 @@ class TestEdgeCases:
 
         # Corp 0 owns a company
         COMPANIES[0].transfer_to_corp(gs, 0)
-        CORPS[CORP_NAMES[0]].set_active(gs, True)
+        CORPS[0].set_active(gs, True)
         PLAYERS[0].set_president_of(gs, 0, True)
 
         # Corp 1 has cash and different president
-        CORPS[CORP_NAMES[1]].set_active(gs, True)
-        CORPS[CORP_NAMES[1]].set_cash(gs, 50000)
+        CORPS[1].set_active(gs, True)
+        CORPS[1].set_cash(gs, 50000)
         PLAYERS[1].set_president_of(gs, 1, True)
 
         setup_acquisition_phase_py(gs)
@@ -1157,7 +1157,7 @@ class TestReceivershipAutoBuy:
         COMPANIES[0].transfer_to_fi(gs)
 
         # Make corp 0 active with enough cash
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         corp.set_active(gs, True)
         corp.set_cash(gs, 50000)
 
@@ -1189,7 +1189,7 @@ class TestReceivershipAutoBuy:
         COMPANIES[0].transfer_to_fi(gs)
 
         # Make corp 0 active with minimal cash (can't afford face value)
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         corp.set_active(gs, True)
         corp.set_cash(gs, 1)
 
@@ -1217,7 +1217,7 @@ class TestReceivershipAutoBuy:
         COMPANIES[0].transfer_to_player(gs, 0)
 
         # Make corp 0 active with plenty of cash
-        corp = CORPS[CORP_NAMES[0]]
+        corp = CORPS[0]
         corp.set_active(gs, True)
         corp.set_cash(gs, 50000)
 
@@ -1242,12 +1242,12 @@ class TestReceivershipAutoBuy:
         COMPANIES[0].transfer_to_corp(gs, 0)
 
         # Make corp 0 active and put in receivership
-        corp0 = CORPS[CORP_NAMES[0]]
+        corp0 = CORPS[0]
         corp0.set_active(gs, True)
         corp0.set_in_receivership(gs, True)
 
         # Make corp 1 active with cash, make player 0 president
-        corp1 = CORPS[CORP_NAMES[1]]
+        corp1 = CORPS[1]
         corp1.set_active(gs, True)
         corp1.set_cash(gs, 50000)
         PLAYERS[0].set_president_of(gs, 1, True)
