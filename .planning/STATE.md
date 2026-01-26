@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-26)
 
 Milestone: v5.0 CLOSING Phase
 Phase: 15.1 of 19 (Code Quality Refactoring)
-Plan: 1 of 5
+Plan: 3 of 5
 Status: In progress
-Last activity: 2026-01-26 — Completed 15.1-01-PLAN.md (One-Hot Encoding Helpers)
+Last activity: 2026-01-26 — Completed 15.1-03-PLAN.md (Action Mask Optimization)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [#_________]
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [##_________]
 
 ## Archived Milestones
 
@@ -42,6 +42,8 @@ See `.planning/milestones/` for full archives.
 - While-loop re-query pattern for dynamic state iteration
 - Acquisition zone pattern - Pending state during phase, merge at end
 - One-hot encoding helpers pattern - cdef inline noexcept nogil functions on raw float* for zero overhead (15.1-01)
+- Module-level buffer pattern - Pre-allocated static buffers with memset clearing for GIL-protected single-threaded operations (15.1-03)
+- Phase dispatch pattern - Single helper function to deduplicate phase-based branching logic (15.1-03)
 
 **Testing patterns:**
 - Per-task atomic commits - feat/test prefixes for git bisect
@@ -56,6 +58,8 @@ None.
 
 **CLOSING Phase:** `_transition_to_closing` in acquisition.pyx (line ~970) currently goes to INVEST as workaround. Will be updated to transition to CLOSING once Phase 16 implements the phase handler.
 
+**nogil for mask functions (15.1-03):** Task 1 deferred - requires ~15 GameState accessor methods to have nogil versions. Will be addressed in Phase 15.1-04 as comprehensive GameState nogil refactoring.
+
 **Remaining Phases After v5.0:** INC (INCOME), DIV (DIVIDENDS), END (END_GAME), ISS (ISSUE_SHARES), IPO (INITIAL_PUBLIC_OFFERING)
 
 ### Quick Tasks Completed
@@ -67,6 +71,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-26
-Stopped at: Completed 15.1-01-PLAN.md (One-Hot Encoding Helpers)
+Stopped at: Completed 15.1-03-PLAN.md (Action Mask Optimization)
 Resume file: None
-Next action: /gsd:execute-plan 15.1-02
+Next action: Continue Phase 15.1
