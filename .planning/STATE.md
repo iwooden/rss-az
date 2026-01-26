@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-24)
 
 Milestone: v4.0 ACQUISITION Phase
 Phase: 15 of 15 (Testing)
-Plan: 2 of ? completed (15-01, 15-02 complete)
-Status: Phase 15 in progress - TEST-01 through TEST-05, TEST-07 complete
-Last activity: 2026-01-26 - Completed 15-02 (validation boundary and edge case tests)
+Plan: 3 of 3 completed (15-01, 15-02, 15-03 complete)
+Status: Phase 15 complete - All 7 test requirements satisfied
+Last activity: 2026-01-26 - Completed 15-03 (ACQUISITION integration tests)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [#########.] 95%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] 100%
 
 ## Archived Milestones
 
@@ -36,7 +36,7 @@ See `.planning/milestones/` for full archives.
 - Phase 12: Offer Infrastructure (9 requirements) ✓
 - Phase 13: Actions & Validation (10 requirements) ✓
 - Phase 14: Flow & Integration (10 requirements) ✓
-- Phase 15: Testing (7 requirements)
+- Phase 15: Testing (7 requirements) ✓
 
 **Key design decisions:**
 - Same-president trade restriction (no inter-player negotiation)
@@ -91,6 +91,8 @@ See `.planning/milestones/` for full archives.
 | valid-02-timing | VALID-02 enforced at offer generation time | 15-02 | Insufficient cash = no offer generated (filtered early) |
 | valid-03-timing | VALID-03 checked at action time | 15-02 | Offer generated, action rejected if seller would have 0 companies |
 | acquisition-zone-counts | Acquisition zone companies count toward VALID-03 | 15-02 | _count_seller_companies includes both owned and acquisition zones |
+| acq-pass-action-index | ACQUISITION uses layout.acq_pass for pass action | 15-03 | Cannot use pass_invest (wrong phase) |
+| company-acquisition-api | Use is_in_corp_acquisition(corp_id) for zone checks | 15-03 | Requires corp_id parameter, no parameterless version |
 
 ### Pending Todos
 
@@ -103,6 +105,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-26
-Stopped at: Completed 15-02 PLAN.md (validation boundary and edge case tests)
+Stopped at: Completed 15-03 PLAN.md (ACQUISITION integration tests)
 Resume file: None
-Next action: Phase 15 nearing completion (TEST-01 through TEST-05, TEST-07 done; only TEST-06 integration if planned)
+Next action: v4.0 ACQUISITION milestone complete - ready to ship or continue to CLOSING phase
