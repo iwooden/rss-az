@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-24)
 
 Milestone: v4.0 ACQUISITION Phase
 Phase: 14 of 15 (Flow & Integration)
-Plan: 1 of 3 complete (14-01 Receivership Auto-Buy)
+Plan: 2 of 3 complete (14-02 Zone Merging & Transition)
 Status: In progress
-Last activity: 2026-01-26 - Completed 14-01-PLAN.md (receivership auto-buy integration)
+Last activity: 2026-01-26 - Completed 14-02-PLAN.md (zone merging and ACQUISITION->CLOSING transition)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [######    ] 60%
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [#######   ] 66%
 
 ## Archived Milestones
 
@@ -81,6 +81,9 @@ See `.planning/milestones/` for full archives.
 | receivership-auto-buy-in-loop | Receivership auto-buy executes within _present_current_offer | 14-01 | Driver never sees receivership offers |
 | receivership-face-value-buy | Receivership buys FI at face value (like OS) | 14-01 | Same mechanics as OS special ability |
 | recv-02-verification | Receivership excluded as sellers by president check | 14-01 | _get_corp_president returns -1, never matches player_id |
+| zone-merge-order | Proceeds first (player+corp), then companies | 14-02 | Financial state settled before ownership changes |
+| use-transfer-to-corp | Use transfer_to_corp() for company merging | 14-02 | Handles all flag updates automatically |
+| driver-transition-pattern | Non-player phases call dedicated transition functions | 14-02 | _transition_to_closing merges zones before phase change |
 
 ### Pending Todos
 
@@ -88,11 +91,13 @@ None.
 
 ### Blockers/Concerns
 
-None - Phase 13 verified complete (4/4 must-haves, 10/10 requirements). Ready for Phase 14 (Flow & Integration).
+None - Phase 14 progressing smoothly. Ready for 14-03 (final integration).
+
+Note: CLOSING phase handler not yet implemented (Phase 15 scope).
 
 ## Session Continuity
 
 Last session: 2026-01-26
-Stopped at: Completed 14-01-PLAN.md (3/3 tasks)
+Stopped at: Completed 14-02-PLAN.md (3/3 tasks)
 Resume file: None
-Next action: Plan 14-02 (merge and transfer operations)
+Next action: Plan 14-03 (final ACQUISITION phase integration)
