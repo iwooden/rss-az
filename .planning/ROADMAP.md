@@ -54,10 +54,11 @@ Plans:
   2. Receivership corp closes red companies when CoO >= 4
   3. Receivership corp closes orange companies when CoO >= 7
   4. Receivership corp always retains highest face value company (never closes last company)
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 16-01: TBD
+- [ ] 16-01-PLAN.md — Create closing.pyx/pxd with auto-close logic
+- [ ] 16-02-PLAN.md — Driver integration and tests
 
 ### Phase 17: Offer-Based Close Flow
 **Goal**: Players can decide to close or keep negative-income companies via offer system
@@ -111,7 +112,7 @@ Plans:
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 15.1. Code Quality Refactoring | v5.0 | 5/5 | ✓ Complete | 2026-01-26 |
-| 16. Auto-Close Logic | v5.0 | 0/? | Not started | - |
+| 16. Auto-Close Logic | v5.0 | 0/2 | Planned | - |
 | 17. Offer-Based Close Flow | v5.0 | 0/? | Not started | - |
 | 18. Mandatory Close and Transition | v5.0 | 0/? | Not started | - |
 | 19. Testing and Integration | v5.0 | 0/? | Not started | - |
@@ -122,3 +123,4 @@ Plans:
 *Phase 15.1 inserted: 2026-01-26 (code quality refactoring before CLOSING implementation)*
 *Phase 15.1 planned: 2026-01-26 (5 plans in 2 waves)*
 *Phase 15.1 complete: 2026-01-26 (7/8 criteria verified, nogil deferred)*
+*Phase 16 planned: 2026-01-26 (2 plans in 2 waves)*
