@@ -17,12 +17,13 @@ from core.actions cimport (
     ActionLayout, ActionInfo, compute_action_layout, decode_action
 )
 from core.actions import get_valid_action_mask
-from core.data cimport GamePhases, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_GAME_OVER, PHASE_WRAP_UP, PHASE_ACQUISITION
+from core.data cimport GamePhases, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_GAME_OVER, PHASE_WRAP_UP, PHASE_ACQUISITION, PHASE_CLOSING
 from core.driver cimport ActionStatus, STATUS_OK, STATUS_INVALID, STATUS_GAME_OVER, ForcedActionResult
 from phases.invest cimport apply_invest_action
 from phases.bid cimport apply_bid_action
 from phases.wrap_up cimport apply_wrap_up
 from phases.acquisition cimport apply_acquisition_action, _transition_to_closing
+from phases.closing cimport apply_closing_auto
 from src.exceptions import ForcedActionLoopError, ZeroLegalActionsError
 from entities import turn as turn_module
 
@@ -32,6 +33,7 @@ DEF MAX_FORCED_ITERATIONS = 100
 # Sentinel action values for non-player phases (negative to distinguish from real actions)
 DEF ACTION_WRAP_UP_SENTINEL = -100
 DEF ACTION_ACQUISITION_SENTINEL = -101
+DEF ACTION_CLOSING_SENTINEL = -102
 
 
 cdef bint _is_non_player_phase_check(GameState state, int phase) noexcept:
@@ -47,6 +49,11 @@ cdef bint _is_non_player_phase_check(GameState state, int phase) noexcept:
         # ACQUISITION with no active corp = no offers = non-player phase
         return turn_module.TURN.get_acq_active_corp(state) == -1
 
+    if phase == PHASE_CLOSING:
+        # CLOSING with no active offer = non-player auto-close phase
+        # When offers exist (Phase 17), this will check for active offers
+        return True  # For Phase 16, always non-player
+
     return False
 
 
@@ -59,6 +66,8 @@ cdef void _execute_non_player_phase(GameState state, object history):
         sentinel = ACTION_WRAP_UP_SENTINEL
     elif phase == PHASE_ACQUISITION:
         sentinel = ACTION_ACQUISITION_SENTINEL
+    elif phase == PHASE_CLOSING:
+        sentinel = ACTION_CLOSING_SENTINEL
     else:
         return  # Unknown non-player phase
 
@@ -71,6 +80,8 @@ cdef void _execute_non_player_phase(GameState state, object history):
         apply_wrap_up(state)
     elif phase == PHASE_ACQUISITION:
         _transition_to_closing(state)
+    elif phase == PHASE_CLOSING:
+        apply_closing_auto(state)
 
 
 cdef ForcedActionResult _check_forced_action(GameState state) noexcept:
