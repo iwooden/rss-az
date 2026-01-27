@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-26)
 
 Milestone: v5.0 CLOSING Phase
 Phase: 18 of 19 (Mandatory Close and Transition)
-Plan: Ready to plan
-Status: Phase 17 complete, ready to plan Phase 18
-Last activity: 2026-01-27 — Completed Phase 17 (offer-based close flow verified)
+Plan: 1 of 1
+Status: Phase 18 complete, ready for Phase 19 (Integration and Bugfixes)
+Last activity: 2026-01-27 — Completed 18-01-PLAN.md (mandatory close and transition)
 
-Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [█████████░]
+Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [██████████]
 
 ## Archived Milestones
 
@@ -51,6 +51,9 @@ See `.planning/milestones/` for full archives.
 - Hidden buffer pattern - Pre-generate offers in hidden state buffer, present one at a time (17-01)
 - Dynamic re-validation pattern - Validate offers at presentation time, not generation time, to handle state changes (17-02)
 - Hybrid phase detection via state field - Use existing state field (closing_company == -1) to distinguish non-player/player modes (17-02)
+- Player income calculation pattern - Player method returns sum of adjusted income from owned privates only (18-01)
+- Mandatory close pattern - Iterate players by ID, close cheapest negative-income company until income + cash >= 0 (18-01)
+- Phase-end protection pattern - Mandatory close before transition prevents bankruptcy in next phase (18-01)
 
 **Testing patterns:**
 - Per-task atomic commits - feat/test prefixes for git bisect
@@ -80,6 +83,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-27
-Stopped at: Phase 17 complete
+Stopped at: Completed 18-01-PLAN.md
 Resume file: None
-Next action: /gsd:discuss-phase 18
+Next action: /gsd:discuss-phase 19
