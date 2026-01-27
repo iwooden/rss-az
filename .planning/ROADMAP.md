@@ -102,10 +102,11 @@ Plans:
   2. Integration tests verify ACQUISITION -> CLOSING -> INCOME flow
   3. Edge case tests cover empty offers, all-pass, multi-close scenarios
   4. All existing tests pass (no regressions)
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 19-01: TBD
+- [ ] 19-01-PLAN.md — Edge case tests for CLOSING phase
+- [ ] 19-02-PLAN.md — Integration tests for ACQUISITION -> CLOSING -> INCOME flow
 
 ## Progress
 
@@ -117,7 +118,7 @@ Plans:
 | 16. Auto-Close Logic | v5.0 | 2/2 | ✓ Complete | 2026-01-27 |
 | 17. Offer-Based Close Flow | v5.0 | 3/3 | ✓ Complete | 2026-01-27 |
 | 18. Mandatory Close and Transition | v5.0 | 2/2 | ✓ Complete | 2026-01-27 |
-| 19. Testing and Integration | v5.0 | 0/? | Not started | - |
+| 19. Testing and Integration | v5.0 | 0/2 | Not started | - |
 
 ---
 *Roadmap created: 2026-01-26*
@@ -131,3 +132,4 @@ Plans:
 *Phase 17 complete: 2026-01-27 (7/7 criteria verified)*
 *Phase 18 planned: 2026-01-27 (2 plans in 2 waves)*
 *Phase 18 complete: 2026-01-27 (3/3 criteria verified)*
+*Phase 19 planned: 2026-01-27 (2 plans in 1 wave)*
