@@ -10,10 +10,16 @@ from entities.turn import TURN
 from entities.company import COMPANIES
 from entities.corp import CORPS
 from entities.fi import FI
+from entities.player import PLAYERS
 from phases.closing import apply_closing_auto_py
+from core.actions import ACTION_CLOSE_PY, ACTION_PASS_PY
 
 # Import status codes from conftest
 from tests.phases.conftest import STATUS_OK
+
+# Phase constants for tests
+PHASE_CLOSING_PY = GamePhases.PHASE_CLOSING
+PHASE_INVEST_PY = GamePhases.PHASE_INVEST
 
 
 class TestFIAutoClose:
@@ -341,3 +347,137 @@ class TestJunkyardScrappersBonus:
 
         # JS should have no cash
         assert js.get_cash(state) == 0
+
+
+class TestOfferGeneration:
+    """Tests for close offer generation (CLO-05 through CLO-08)."""
+
+    def test_only_negative_income_offered(self, closing_offer_state):
+        """CLO-05: Only companies with negative adjusted income are offered."""
+        gs = closing_offer_state
+
+        # Give player company 0 (income $1, red/1-star)
+        # At CoO level 6, CoO = $6, adjusted = $1 - $6 = -$5 (negative - should be offered)
+        PLAYERS[0].set_owns_company(gs, 0, True)
+
+        # Give player company 29 (income $10, blue/5-star)
+        # At CoO level 6, CoO = $0, adjusted = $10 - $0 = $10 (positive - should NOT be offered)
+        PLAYERS[0].set_owns_company(gs, 29, True)
+
+        # Generate offers
+        from phases.closing import generate_close_offers_py, get_close_offer_count_py, get_close_offer_py
+        generate_close_offers_py(gs)
+
+        # Should only have 1 offer (company 0)
+        assert get_close_offer_count_py(gs) == 1
+        owner_type, owner_id, company_id = get_close_offer_py(gs, 0)
+        assert company_id == 0
+
+    def test_zero_income_not_offered(self, closing_offer_state):
+        """CLO-05: Companies with exactly zero adjusted income are NOT offered."""
+        gs = closing_offer_state
+
+        # Find a company where income exactly equals CoO
+        # Company 2 has income $2 (red/1-star)
+        # At CoO level 4, CoO = $2, adjusted = $2 - $2 = $0 (zero - NOT offered)
+        TURN.set_coo_level(gs, 4)
+        PLAYERS[0].set_owns_company(gs, 2, True)
+
+        from phases.closing import generate_close_offers_py, get_close_offer_count_py
+        generate_close_offers_py(gs)
+
+        assert get_close_offer_count_py(gs) == 0
+
+    def test_offers_sorted_by_face_value_ascending(self, closing_offer_state):
+        """CLO-06: Offers sorted by face value ascending (lowest first)."""
+        gs = closing_offer_state
+
+        # Give player multiple negative-income companies with different face values
+        # Company 0: face value $1 (red)
+        # Company 6: face value $5 (orange)
+        # Company 3: face value $3 (red)
+        # All should have negative income at high CoO
+        PLAYERS[0].set_owns_company(gs, 0, True)  # FV $1
+        PLAYERS[0].set_owns_company(gs, 6, True)  # FV $5
+        PLAYERS[0].set_owns_company(gs, 3, True)  # FV $3
+
+        from phases.closing import generate_close_offers_py, get_close_offer_count_py, get_close_offer_py
+        generate_close_offers_py(gs)
+
+        assert get_close_offer_count_py(gs) == 3
+
+        # Should be sorted: company 0 (FV $1), company 3 (FV $3), company 6 (FV $5)
+        _, _, cid0 = get_close_offer_py(gs, 0)
+        _, _, cid1 = get_close_offer_py(gs, 1)
+        _, _, cid2 = get_close_offer_py(gs, 2)
+
+        assert get_company_face_value(cid0) < get_company_face_value(cid1)
+        assert get_company_face_value(cid1) < get_company_face_value(cid2)
+
+    def test_player_privates_included(self, closing_offer_state):
+        """CLO-07: Player-owned private companies are included in offers."""
+        gs = closing_offer_state
+
+        # Player 1 owns company 1 directly (private)
+        PLAYERS[1].set_owns_company(gs, 1, True)
+
+        from phases.closing import generate_close_offers_py, get_close_offer_count_py, get_close_offer_py
+        generate_close_offers_py(gs)
+
+        assert get_close_offer_count_py(gs) >= 1
+        owner_type, owner_id, company_id = get_close_offer_py(gs, 0)
+        assert owner_type == 0  # OWNER_PLAYER
+        assert owner_id == 1
+        assert company_id == 1
+
+    def test_corp_subsidiaries_included(self, closing_offer_state):
+        """CLO-08: Corp subsidiaries (same-president) included in offers."""
+        gs = closing_offer_state
+
+        # Activate corp 1 and make player 0 president
+        CORPS[1].set_active(gs, True)
+        CORPS[1].set_in_receivership(gs, False)
+        PLAYERS[0].set_president_of(gs, 1, True)
+        PLAYERS[0].set_shares(gs, 1, 3)  # 3 shares to be president
+
+        # Corp owns company 2
+        CORPS[1].set_owns_company(gs, 2, True)
+
+        from phases.closing import generate_close_offers_py, get_close_offer_count_py, get_close_offer_py
+        generate_close_offers_py(gs)
+
+        assert get_close_offer_count_py(gs) >= 1
+        owner_type, owner_id, company_id = get_close_offer_py(gs, 0)
+        assert owner_type == 1  # OWNER_CORP
+        assert owner_id == 1
+        assert company_id == 2
+
+    def test_receivership_corp_excluded(self, closing_offer_state):
+        """Receivership corps excluded from offers (no president)."""
+        gs = closing_offer_state
+
+        # Activate corp 2 in receivership
+        CORPS[2].set_active(gs, True)
+        CORPS[2].set_in_receivership(gs, True)
+
+        # Corp owns company 4
+        CORPS[2].set_owns_company(gs, 4, True)
+
+        from phases.closing import generate_close_offers_py, get_close_offer_count_py
+        generate_close_offers_py(gs)
+
+        # No offers (receivership excluded)
+        assert get_close_offer_count_py(gs) == 0
+
+    def test_fi_excluded(self, closing_offer_state):
+        """FI-owned companies excluded from player offers (handled by auto-close)."""
+        gs = closing_offer_state
+
+        # FI owns company 5
+        FI.set_owns_company(gs, 5, True)
+
+        from phases.closing import generate_close_offers_py, get_close_offer_count_py
+        generate_close_offers_py(gs)
+
+        # No offers (FI excluded - handled by auto-close)
+        assert get_close_offer_count_py(gs) == 0
