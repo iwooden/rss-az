@@ -257,6 +257,120 @@ cdef void _generate_close_offers(GameState state) noexcept:
     state._data[state._layout.hidden_close_offer_count_offset] = <float>offer_count
 
 
+cdef int _count_corp_companies(GameState state, int corp_id, int exclude_company_id) noexcept:
+    """
+    Count companies corp retains after excluding target.
+    Used to enforce last-company rule.
+    Returns count of companies excluding the specified company_id.
+    """
+    cdef int count = 0
+    cdef int company_id
+
+    for company_id in range(GameConstants.NUM_COMPANIES):
+        if company_id == exclude_company_id:
+            continue
+        if corp_module.CORPS[corp_id].owns_company(state, company_id):
+            count += 1
+
+    return count
+
+
+cdef bint _is_close_offer_valid(GameState state, int owner_type, int owner_id, int company_id) noexcept:
+    """
+    Check if close offer is still valid for presentation.
+
+    Invalid if:
+    - Company already closed earlier in this phase (removed from game)
+    - Owner no longer owns company
+    - Corp owner would have 0 companies after close (last-company rule)
+
+    Returns True if offer is valid, False otherwise.
+    """
+    # Check company still exists (not already closed)
+    if company_module.COMPANIES[company_id].is_removed(state):
+        return False
+
+    # Check ownership unchanged
+    if owner_type == OWNER_PLAYER:
+        if not player_module.PLAYERS[owner_id].owns_company(state, company_id):
+            return False
+    elif owner_type == OWNER_CORP:
+        if not corp_module.CORPS[owner_id].owns_company(state, company_id):
+            return False
+
+        # Corp last-company rule: can't close if corp would have 0 companies
+        if _count_corp_companies(state, owner_id, company_id) < 1:
+            return False
+
+    return True
+
+
+cdef void _transition_to_income(GameState state) noexcept:
+    """
+    Complete CLOSING phase and transition to INCOME.
+
+    Called when no more close offers exist.
+    """
+    cdef int current_turn = turn_module.TURN.get_turn_number(state)
+    cdef int i
+
+    # Check for terminal state
+    if _is_game_terminal(state):
+        turn_module.TURN.set_phase(state, PHASE_GAME_OVER)
+        return
+
+    # Increment turn number
+    turn_module.TURN.set_turn_number(state, current_turn + 1)
+
+    # Clear per-turn tracking for all players
+    for i in range(state._num_players):
+        player_module.PLAYERS[i].clear_roundtrip_tracking(state)
+
+    # Transition to INCOME phase
+    # Note: INCOME phase not implemented yet, using INVEST as temporary target
+    # This will be updated when INCOME phase is implemented
+    turn_module.TURN.set_phase(state, GamePhases.PHASE_INVEST)
+
+
+cdef void _present_next_close_offer(GameState state) noexcept:
+    """
+    Advance to next valid offer and update visible state.
+
+    Loops until valid offer found or offers exhausted.
+    When no more offers, clears closing_company and transitions to INCOME.
+    """
+    cdef int count = <int>state._data[state._layout.hidden_close_offer_count_offset]
+    cdef int index = <int>state._data[state._layout.hidden_close_offer_index_offset]
+    cdef int owner_type, owner_id, company_id, president, base
+
+    while index < count:
+        base = state._layout.hidden_close_offer_buffer_offset + (index * 3)
+        owner_type = <int>state._data[base]
+        owner_id = <int>state._data[base + 1]
+        company_id = <int>state._data[base + 2]
+
+        # Check if offer still valid (dynamic re-validation)
+        if not _is_close_offer_valid(state, owner_type, owner_id, company_id):
+            index += 1
+            state._data[state._layout.hidden_close_offer_index_offset] = <float>index
+            continue
+
+        # Found valid offer - set visible state
+        turn_module.TURN.set_closing_company(state, company_id)
+
+        # Determine active player (owner for player, president for corp)
+        if owner_type == OWNER_PLAYER:
+            state._set_active_player(owner_id)
+        elif owner_type == OWNER_CORP:
+            president = _get_corp_president(state, owner_id)
+            state._set_active_player(president if president >= 0 else 0)
+        return
+
+    # No more valid offers - clear state and transition
+    turn_module.TURN.clear_closing_company(state)
+    _transition_to_income(state)
+
+
 cdef void _process_fi_auto_close(GameState state) noexcept:
     """
     Execute FI auto-close logic.
