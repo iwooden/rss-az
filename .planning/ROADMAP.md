@@ -87,10 +87,11 @@ Plans:
   1. Players with negative total income have privates auto-closed until income non-negative
   2. Cheapest negative-income company closed first during mandatory closing
   3. Phase transitions to INCOME when all offers processed and mandatory closes complete
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 18-01: TBD
+- [ ] 18-01-PLAN.md — Player income method and mandatory close logic
+- [ ] 18-02-PLAN.md — Comprehensive tests for CLO-14, CLO-15, CLO-16
 
 ### Phase 19: Testing and Integration
 **Goal**: Comprehensive test coverage validates CLOSING phase correctness
@@ -115,7 +116,7 @@ Plans:
 | 15.1. Code Quality Refactoring | v5.0 | 5/5 | ✓ Complete | 2026-01-26 |
 | 16. Auto-Close Logic | v5.0 | 2/2 | ✓ Complete | 2026-01-27 |
 | 17. Offer-Based Close Flow | v5.0 | 3/3 | ✓ Complete | 2026-01-27 |
-| 18. Mandatory Close and Transition | v5.0 | 0/? | Not started | - |
+| 18. Mandatory Close and Transition | v5.0 | 0/2 | Planned | - |
 | 19. Testing and Integration | v5.0 | 0/? | Not started | - |
 
 ---
@@ -128,3 +129,4 @@ Plans:
 *Phase 16 complete: 2026-01-27 (4/4 criteria verified)*
 *Phase 17 planned: 2026-01-27 (3 plans in 3 waves)*
 *Phase 17 complete: 2026-01-27 (7/7 criteria verified)*
+*Phase 18 planned: 2026-01-27 (2 plans in 2 waves)*
