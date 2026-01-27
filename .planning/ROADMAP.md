@@ -66,7 +66,7 @@ Plans:
 **Requirements**: CLO-05, CLO-06, CLO-07, CLO-08, CLO-09, CLO-10, CLO-11, CLO-12, CLO-13
 **Success Criteria** (what must be TRUE):
   1. Offers generated only for companies with negative adjusted income
-  2. Offers sorted by face value descending (highest value offered first)
+  2. Offers sorted by face value ascending (lowest value offered first)
   3. Player-owned privates and corp subsidiaries (same-president) included in offers
   4. Offer validation: corp closing offers invalid if corp would have 0 companies after close
   5. Dynamic re-validation: prior acceptance can invalidate later offers (corp down to 1 company)

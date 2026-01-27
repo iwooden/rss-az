@@ -17,7 +17,7 @@ Requirements for CLOSING phase implementation. Each maps to roadmap phases.
 ### Offer Generation
 
 - [ ] **CLO-05**: Only offer companies with negative adjusted income
-- [ ] **CLO-06**: Sort offers by face value descending
+- [ ] **CLO-06**: Sort offers by face value ascending (lowest first)
 - [ ] **CLO-07**: Include player-owned privates in offers
 - [ ] **CLO-08**: Include corp subsidiaries (same-president) in offers
 
