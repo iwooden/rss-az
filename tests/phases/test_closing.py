@@ -1010,3 +1010,147 @@ class TestClosingEdgeCases:
         # Company should NOT be removed
         assert not COMPANIES[0].is_removed(game_state)
         assert PLAYERS[0].owns_company(game_state, 0)
+
+    def test_multi_close_cascade_js_bonus(self, game_state):
+        """Edge case: Multiple closes accumulate Junkyard Scrappers bonus.
+
+        Requirement: When player closes multiple companies, JS receives 2x
+        printed income for EACH close, with bonuses accumulating.
+        """
+        from phases.closing import apply_closing_action_py
+
+        # Set high CoO level to create negative-income companies
+        TURN.set_coo_level(game_state, 7)
+
+        # Activate Junkyard Scrappers (corp 0) with starting cash
+        CORPS[0].set_active(game_state, True)
+        CORPS[0].set_cash(game_state, 50)
+        initial_js_cash = 50
+
+        # Give player 0 multiple negative-income companies
+        # Company 0: $1 income, FV $1 -> bonus = $2
+        # Company 1: $1 income, FV $1 -> bonus = $2
+        # Company 3: $2 income, FV $3 -> bonus = $4
+        PLAYERS[0].set_owns_company(game_state, 0, True)  # income $1
+        PLAYERS[0].set_owns_company(game_state, 1, True)  # income $1
+        PLAYERS[0].set_owns_company(game_state, 3, True)  # income $2
+
+        # High cash so no mandatory close needed
+        PLAYERS[0].set_cash(game_state, 1000)
+
+        # Enter CLOSING phase
+        TURN.set_phase(game_state, PHASE_CLOSING_PY)
+        apply_closing_auto_py(game_state)
+
+        # Accept all three close offers
+        # Offers are sorted by face value, so order is: company 0, company 1, company 3
+        assert TURN.get_closing_company(game_state) in [0, 1]
+        apply_closing_action_py(game_state, ACTION_CLOSE_PY)
+
+        # JS bonus after first close (2x income of closed company)
+        assert CORPS[0].get_cash(game_state) > initial_js_cash
+
+        # Continue closing
+        assert TURN.get_closing_company(game_state) in [0, 1, 3]
+        apply_closing_action_py(game_state, ACTION_CLOSE_PY)
+
+        # Third close
+        assert TURN.get_closing_company(game_state) == 3
+        apply_closing_action_py(game_state, ACTION_CLOSE_PY)
+
+        # Total JS bonus = 2*($1 + $1 + $2) = $8
+        expected_total = initial_js_cash + (2 * 1) + (2 * 1) + (2 * 2)
+        assert CORPS[0].get_cash(game_state) == expected_total
+        assert game_state.get_phase() == PHASE_INVEST_PY
+
+    def test_corp_last_company_dynamic_invalidation(self, closing_offer_state):
+        """Edge case: Corp last-company rule invalidates second offer after first close.
+
+        Requirement: When corp has 2 companies and player closes the first,
+        the second offer should be automatically skipped (corp last-company rule).
+        """
+        from phases.closing import apply_closing_action_py
+        gs = closing_offer_state
+
+        # Activate corp 1 with player 0 as president
+        CORPS[1].set_active(gs, True)
+        CORPS[1].set_in_receivership(gs, False)
+        PLAYERS[0].set_president_of(gs, 1, True)
+        PLAYERS[0].set_shares(gs, 1, 3)  # 3 shares to be president
+
+        # Corp owns exactly 2 negative-income companies
+        # Company 0: FV $1 (offered first, lower FV)
+        # Company 3: FV $3 (offered second, higher FV)
+        CORPS[1].set_owns_company(gs, 0, True)
+        CORPS[1].set_owns_company(gs, 3, True)
+
+        # Enter CLOSING phase
+        TURN.set_phase(gs, PHASE_CLOSING_PY)
+        apply_closing_auto_py(gs)
+
+        # First offer should be company 0 (lowest FV)
+        assert TURN.get_closing_company(gs) == 0
+
+        # Accept first offer (closes company 0, corp now has 1 company)
+        apply_closing_action_py(gs, ACTION_CLOSE_PY)
+
+        # Second offer (company 3) should be SKIPPED because corp now has only 1 company
+        # Phase should transition directly to INVEST
+        assert gs.get_phase() == PHASE_INVEST_PY
+        assert TURN.get_closing_company(gs) == -1
+
+        # Company 3 should NOT be closed (last company rule)
+        assert not COMPANIES[3].is_removed(gs)
+        assert CORPS[1].owns_company(gs, 3)
+
+    @pytest.mark.parametrize("num_players", [3, 6])
+    def test_closing_edge_cases_with_player_count(self, num_players):
+        """Edge case: CLOSING phase works correctly for different player counts.
+
+        Requirement: CLOSING phase handles 3 and 6 player games correctly
+        with proper offer generation and mandatory close processing.
+        """
+        from tests.phases.conftest import assert_invariants
+        from phases.closing import apply_closing_action_py
+
+        state = GameState(num_players=num_players)
+        state.initialize_game(seed=42)
+
+        # Set high CoO level
+        TURN.set_coo_level(state, 7)
+
+        # Give negative-income companies to multiple players
+        # Player 0: company 0 (income $1, CoO $10 -> adj = -$9)
+        PLAYERS[0].set_owns_company(state, 0, True)
+        PLAYERS[0].set_cash(state, 100)
+
+        # Player 1: company 2 (income $2, CoO $10 -> adj = -$8)
+        PLAYERS[1].set_owns_company(state, 2, True)
+        PLAYERS[1].set_cash(state, 5)  # Low cash for mandatory close test
+
+        # For 6-player game, also give company to player 5
+        if num_players == 6:
+            PLAYERS[5].set_owns_company(state, 4, True)
+            PLAYERS[5].set_cash(state, 100)
+
+        assert_invariants(state, f"Before CLOSING ({num_players} players)")
+
+        # Enter CLOSING phase
+        TURN.set_phase(state, PHASE_CLOSING_PY)
+        apply_closing_auto_py(state)
+
+        # Process all offers (pass on all)
+        while TURN.get_closing_company(state) >= 0:
+            apply_closing_action_py(state, ACTION_PASS_PY)
+
+        # Phase should transition to INVEST
+        assert state.get_phase() == PHASE_INVEST_PY
+
+        # Player 1 should have had mandatory close trigger (low cash)
+        assert not PLAYERS[1].owns_company(state, 2)
+        assert COMPANIES[2].is_removed(state)
+
+        # Player 0 should still have company (high cash)
+        assert PLAYERS[0].owns_company(state, 0)
+
+        assert_invariants(state, f"After CLOSING ({num_players} players)")
