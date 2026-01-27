@@ -12,6 +12,11 @@ from entities import corp as corp_module
 from entities import fi as fi_module
 from entities import player as player_module
 
+# Constants
+DEF CLOSE_OFFER_BUFFER_SIZE = 100
+DEF OWNER_PLAYER = 0  # Owner type for player-owned companies
+DEF OWNER_CORP = 1    # Owner type for corp-owned companies
+
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -76,6 +81,180 @@ cdef void _close_company(GameState state, int company_id, int owner_type, int ow
 
     # Remove company from game
     company_module.COMPANIES[company_id].remove_from_game(state)
+
+
+cdef bint _has_negative_adjusted_income(GameState state, int company_id) noexcept:
+    """Check if company has negative adjusted income (eligible for close offer)."""
+    cdef int coo_level = turn_module.TURN.get_coo_level(state)
+    cdef int base_income = get_company_income(company_id)
+    cdef int stars = get_company_stars(company_id)
+    cdef int coo_value = get_cost_of_ownership(coo_level, stars)
+    return (base_income - coo_value) < 0  # NEGATIVE only, not zero
+
+
+cdef int _get_corp_president(GameState state, int corp_id) noexcept:
+    """Get player_id of corp president, or -1 if in receivership."""
+    cdef int player_id
+    for player_id in range(state._num_players):
+        if player_module.PLAYERS[player_id].is_president_of(state, corp_id):
+            return player_id
+    return -1
+
+
+cdef int _collect_player_close_offers(
+    GameState state,
+    int* owner_types, int* owner_ids, int* company_ids, int* face_values,
+    int start_idx
+) noexcept:
+    """
+    Collect close offers for player-owned private companies.
+    Returns count of offers added (starting from start_idx).
+    """
+    cdef int count = 0
+    cdef int player_id, company_id, idx
+
+    for player_id in range(state._num_players):
+        for company_id in range(GameConstants.NUM_COMPANIES):
+            if not player_module.PLAYERS[player_id].owns_company(state, company_id):
+                continue
+            if not _has_negative_adjusted_income(state, company_id):
+                continue
+
+            idx = start_idx + count
+            if idx >= CLOSE_OFFER_BUFFER_SIZE:
+                return count
+
+            owner_types[idx] = OWNER_PLAYER
+            owner_ids[idx] = player_id
+            company_ids[idx] = company_id
+            face_values[idx] = get_company_face_value(company_id)
+            count += 1
+
+    return count
+
+
+cdef int _collect_corp_close_offers(
+    GameState state,
+    int* owner_types, int* owner_ids, int* company_ids, int* face_values,
+    int start_idx
+) noexcept:
+    """
+    Collect close offers for corp-owned companies where player is president.
+    Excludes receivership corps (no president) and FI (handled by auto-close).
+    Returns count of offers added.
+    """
+    cdef int count = 0
+    cdef int corp_id, company_id, president, idx
+
+    for corp_id in range(GameConstants.NUM_CORPS):
+        if not corp_module.CORPS[corp_id].is_active(state):
+            continue
+
+        # Skip receivership corps (no president = excluded from offers)
+        president = _get_corp_president(state, corp_id)
+        if president < 0:
+            continue
+
+        for company_id in range(GameConstants.NUM_COMPANIES):
+            if not corp_module.CORPS[corp_id].owns_company(state, company_id):
+                continue
+            if not _has_negative_adjusted_income(state, company_id):
+                continue
+
+            idx = start_idx + count
+            if idx >= CLOSE_OFFER_BUFFER_SIZE:
+                return count
+
+            owner_types[idx] = OWNER_CORP
+            owner_ids[idx] = corp_id
+            company_ids[idx] = company_id
+            face_values[idx] = get_company_face_value(company_id)
+            count += 1
+
+    return count
+
+
+cdef void _sort_close_offers_by_face_value(
+    int* owner_types, int* owner_ids, int* company_ids, int* face_values,
+    int count
+) noexcept:
+    """Sort close offers by face value ascending (lowest first)."""
+    cdef int i, j, best_idx, best_fv, curr_fv
+    cdef int swap_ot, swap_oi, swap_cid, swap_fv
+
+    for i in range(count):
+        best_idx = i
+        best_fv = face_values[i]
+
+        for j in range(i + 1, count):
+            curr_fv = face_values[j]
+            if curr_fv < best_fv:  # Lower face value wins
+                best_idx = j
+                best_fv = curr_fv
+
+        if best_idx != i:
+            # Swap all four arrays
+            swap_ot = owner_types[i]
+            owner_types[i] = owner_types[best_idx]
+            owner_types[best_idx] = swap_ot
+
+            swap_oi = owner_ids[i]
+            owner_ids[i] = owner_ids[best_idx]
+            owner_ids[best_idx] = swap_oi
+
+            swap_cid = company_ids[i]
+            company_ids[i] = company_ids[best_idx]
+            company_ids[best_idx] = swap_cid
+
+            swap_fv = face_values[i]
+            face_values[i] = face_values[best_idx]
+            face_values[best_idx] = swap_fv
+
+
+cdef void _generate_close_offers(GameState state) noexcept:
+    """
+    Generate all close offers and store in hidden buffer.
+
+    Offers sorted by face value ascending (lowest first).
+    Only companies with negative adjusted income.
+    Only from players and player-presided corps (not FI, not receivership).
+
+    Buffer layout: [count][index][offer0_owner_type][offer0_owner_id][offer0_company_id]...
+    """
+    cdef int temp_owner_types[CLOSE_OFFER_BUFFER_SIZE]
+    cdef int temp_owner_ids[CLOSE_OFFER_BUFFER_SIZE]
+    cdef int temp_company_ids[CLOSE_OFFER_BUFFER_SIZE]
+    cdef int temp_face_values[CLOSE_OFFER_BUFFER_SIZE]
+    cdef int offer_count = 0
+    cdef int i, base
+
+    # Initialize counters
+    state._data[state._layout.hidden_close_offer_count_offset] = 0.0
+    state._data[state._layout.hidden_close_offer_index_offset] = 0.0
+
+    # Collect offers from players (private companies)
+    offer_count = _collect_player_close_offers(
+        state, temp_owner_types, temp_owner_ids, temp_company_ids, temp_face_values, 0
+    )
+
+    # Collect offers from player-presided corps
+    offer_count += _collect_corp_close_offers(
+        state, temp_owner_types, temp_owner_ids, temp_company_ids, temp_face_values, offer_count
+    )
+
+    # Sort by face value ascending
+    _sort_close_offers_by_face_value(
+        temp_owner_types, temp_owner_ids, temp_company_ids, temp_face_values, offer_count
+    )
+
+    # Write to buffer
+    for i in range(offer_count):
+        base = state._layout.hidden_close_offer_buffer_offset + (i * 3)
+        state._data[base] = <float>temp_owner_types[i]
+        state._data[base + 1] = <float>temp_owner_ids[i]
+        state._data[base + 2] = <float>temp_company_ids[i]
+
+    state._data[state._layout.hidden_close_offer_count_offset] = <float>offer_count
 
 
 cdef void _process_fi_auto_close(GameState state) noexcept:
