@@ -288,9 +288,10 @@ class TestAcquisitionIntegration:
         assert_invariants(state, "After WRAP_UP->ACQUISITION->INVEST transition")
 
     def test_acquisition_to_invest_new_turn(self):
-        """ACQUISITION phase completes and transitions to INVEST with new turn."""
+        """ACQUISITION phase completes and transitions to CLOSING then INVEST with new turn."""
         from tests.phases.conftest import assert_invariants
         from phases.acquisition import transition_to_closing_py
+        from phases.closing import apply_closing_auto_py
 
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
@@ -302,13 +303,21 @@ class TestAcquisitionIntegration:
 
         assert_invariants(state, "Before transition")
 
-        # Transition to next phase
+        # Transition to CLOSING phase
         transition_to_closing_py(state)
 
-        # Should be in INVEST with new turn
+        # Should be in CLOSING (auto-close executes next)
+        assert state.get_phase() == GamePhases.PHASE_CLOSING
+        assert TURN.get_turn_number(state) == initial_turn  # Turn not incremented yet
+        assert_invariants(state, "After transition to CLOSING")
+
+        # Execute auto-close (transitions to INVEST)
+        apply_closing_auto_py(state)
+
+        # Should now be in INVEST with new turn
         assert state.get_phase() == GamePhases.PHASE_INVEST
         assert TURN.get_turn_number(state) == initial_turn + 1
-        assert_invariants(state, "After transition to INVEST")
+        assert_invariants(state, "After CLOSING to INVEST")
 
     def test_full_turn_cycle_with_acquisition(self):
         """Full turn cycle (INVEST->WRAP_UP->ACQUISITION->INVEST) maintains invariants."""

@@ -3,18 +3,49 @@
 
 from core.state cimport GameState
 from core.data cimport (
-    GameConstants,
+    GameConstants, GamePhases, PHASE_GAME_OVER,
     get_cost_of_ownership, get_company_income, get_company_stars, get_company_face_value
 )
 from entities import turn as turn_module
 from entities import company as company_module
 from entities import corp as corp_module
 from entities import fi as fi_module
+from entities import player as player_module
 
 
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
+
+cdef bint _is_game_terminal(GameState state) noexcept:
+    """
+    Check if the game has reached a terminal state.
+
+    Terminal state occurs when:
+    1. No companies are available for auction, AND
+    2. No corporations are active
+
+    This prevents infinite INVEST->WRAP_UP->ACQUISITION->CLOSING loops when
+    all companies are removed from the game.
+    """
+    cdef int company_id, corp_id
+    cdef bint has_auction_companies = False
+    cdef bint has_active_corps = False
+
+    # Check for any companies available for auction
+    for company_id in range(GameConstants.NUM_COMPANIES):
+        if company_module.COMPANIES[company_id].is_for_auction(state):
+            has_auction_companies = True
+            break
+
+    # Check for any active corporations
+    for corp_id in range(GameConstants.NUM_CORPS):
+        if corp_module.CORPS[corp_id].is_active(state):
+            has_active_corps = True
+            break
+
+    # Terminal if no auction companies AND no active corps
+    return not has_auction_companies and not has_active_corps
 
 cdef void _close_company(GameState state, int company_id, int owner_type, int owner_id) noexcept:
     """
@@ -163,11 +194,32 @@ cdef int apply_closing_auto(GameState state) noexcept:
     1. FI closes companies with negative adjusted income
     2. Receivership corps close red/orange companies above CoO thresholds
     3. Junkyard Scrappers receives 2x printed income for each closure
+    4. Transition to INVEST (Phase 16 temporary - Phase 17 will add offer logic)
 
     Returns: 0 always (deterministic, no failure modes)
     """
+    cdef int current_turn, i
+
     _process_fi_auto_close(state)
     _process_receivership_auto_close(state)
+
+    # Check for terminal state after auto-close
+    if _is_game_terminal(state):
+        turn_module.TURN.set_phase(state, PHASE_GAME_OVER)
+        return 0
+
+    # TEMPORARY (Phase 16): Transition to INVEST
+    # Phase 17 will add offer-based closing logic here instead
+    current_turn = turn_module.TURN.get_turn_number(state)
+    turn_module.TURN.set_turn_number(state, current_turn + 1)
+
+    # Clear per-turn tracking for all players
+    for i in range(state._num_players):
+        player_module.PLAYERS[i].clear_roundtrip_tracking(state)
+
+    # Transition to new INVEST phase
+    turn_module.TURN.set_phase(state, GamePhases.PHASE_INVEST)
+
     return 0
 
 
