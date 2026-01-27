@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-26)
 
 Milestone: v5.0 CLOSING Phase
 Phase: 17 of 19 (Offer-Based Close Flow)
-Plan: Ready to plan
-Status: Phase 16 complete, ready to plan Phase 17
-Last activity: 2026-01-27 — Completed Phase 16 (auto-close logic verified)
+Plan: 1 of 3 complete
+Status: In progress - Plan 17-01 complete
+Last activity: 2026-01-27 — Completed 17-01-PLAN.md (close offer buffer infrastructure)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [######____]
+Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [███████░░░]
 
 ## Archived Milestones
 
@@ -48,6 +48,7 @@ See `.planning/milestones/` for full archives.
 - Status code export pattern - Export Cython enum values as *_PY constants for Python access (15.1-05)
 - Two-pass closing pattern - Identify companies to close, then close them to avoid state mutation during iteration (16-01)
 - Temporary transition pattern - Document phase transitions that will change in future phases with TEMPORARY comments (16-02)
+- Hidden buffer pattern - Pre-generate offers in hidden state buffer, present one at a time (17-01)
 
 **Testing patterns:**
 - Per-task atomic commits - feat/test prefixes for git bisect
@@ -76,6 +77,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-27
-Stopped at: Phase 16 complete
+Stopped at: Completed 17-01-PLAN.md
 Resume file: None
-Next action: /gsd:discuss-phase 17
+Next action: Execute 17-02 (offer presentation and action handlers)
