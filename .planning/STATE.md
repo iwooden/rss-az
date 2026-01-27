@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-26)
 
 Milestone: v5.0 CLOSING Phase
 Phase: 19 of 19 (Testing and Integration)
-Plan: Ready to plan
-Status: Phase 18 verified, ready to plan Phase 19
-Last activity: 2026-01-27 — Phase 18 verified (3/3 criteria passed)
+Plan: 01 of 02 complete
+Status: In progress - 19-01 complete
+Last activity: 2026-01-27 — Completed 19-01-PLAN.md (edge case tests)
 
-Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [██████████]
+Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [█████████░]
 
 ## Archived Milestones
 
@@ -63,6 +63,8 @@ See `.planning/milestones/` for full archives.
 - Python wrapper pattern - Expose internal state for testing (*_py functions) (17-03)
 - Mandatory close test pattern - Set high CoO level, give negative-income companies, verify close order (18-02)
 - Phase transition test pattern - Call apply_*_auto_py directly rather than driver loop (18-02)
+- Edge case test pattern - Boundary condition tests with explicit assertions in TestClosingEdgeCases class (19-01)
+- Parameterized player count testing - Use @pytest.mark.parametrize("num_players", [3, 6]) for phase verification (19-01)
 
 ### Pending Todos
 
@@ -85,6 +87,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-27
-Stopped at: Completed 18-02-PLAN.md (Phase 18 complete)
+Stopped at: Completed 19-01-PLAN.md (edge case tests)
 Resume file: None
-Next action: /gsd:discuss-phase 19
+Next action: /gsd:execute-phase 19-02 (integration tests)
