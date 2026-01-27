@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-26)
 
 Milestone: v5.0 CLOSING Phase
 Phase: 16 of 19 (Auto-Close Logic)
-Plan: 01 of 01 in phase
-Status: In progress - Plan 16-01 complete
-Last activity: 2026-01-27 — Completed 16-01-PLAN.md (auto-close logic)
+Plan: 02 of 02 in phase
+Status: Phase complete
+Last activity: 2026-01-27 — Completed 16-02-PLAN.md (driver integration & testing)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [####______]
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [#####_____]
 
 ## Archived Milestones
 
@@ -47,6 +47,7 @@ See `.planning/milestones/` for full archives.
 - Phase dispatch pattern - Single helper function to deduplicate phase-based branching logic (15.1-03)
 - Status code export pattern - Export Cython enum values as *_PY constants for Python access (15.1-05)
 - Two-pass closing pattern - Identify companies to close, then close them to avoid state mutation during iteration (16-01)
+- Temporary transition pattern - Document phase transitions that will change in future phases with TEMPORARY comments (16-02)
 
 **Testing patterns:**
 - Per-task atomic commits - feat/test prefixes for git bisect
@@ -60,7 +61,7 @@ None.
 
 ### Blockers/Concerns
 
-**CLOSING Phase:** `_transition_to_closing` in acquisition.pyx (line ~970) currently goes to INVEST as workaround. Will be updated to transition to CLOSING once Phase 16 implements the phase handler.
+**CLOSING Phase temporary transition:** Phase 16 transitions CLOSING -> INVEST as temporary workaround. Phase 17 will replace with offer-based closing logic. Documented with TEMPORARY comments in phases/closing.pyx.
 
 **nogil for mask functions (15.1-03):** Task 1 deferred - requires ~15 GameState accessor methods to have nogil versions. Will be addressed in Phase 15.1-04 as comprehensive GameState nogil refactoring.
 
@@ -75,6 +76,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-27
-Stopped at: Completed 16-01-PLAN.md
+Stopped at: Completed 16-02-PLAN.md
 Resume file: None
-Next action: Plan Phase 17 (closing offers)
+Next action: Phase 16 complete - ready for Phase 17 (closing offers)
