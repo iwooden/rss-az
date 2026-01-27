@@ -528,3 +528,152 @@ class TestAcquisitionIntegration:
         assert corp.owns_company(state, 0), "Corp doesn't own company after merge"
 
         assert_invariants(state, "After transition with merges")
+
+
+# =============================================================================
+# CLOSING PHASE INTEGRATION
+# =============================================================================
+
+class TestClosingIntegration:
+    """Integration tests verifying CLOSING phase maintains invariants throughout."""
+
+    def test_closing_with_no_offers_flow(self):
+        """ACQUISITION->CLOSING->INVEST flow with no close offers (all positive income)."""
+        from tests.phases.conftest import apply_action_and_verify, assert_invariants
+        from phases.acquisition import transition_to_closing_py
+        from phases.closing import apply_closing_auto_py
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        assert_invariants(state, "Initial state")
+
+        layout = get_action_layout(3)
+
+        # Pass all players in INVEST to trigger WRAP_UP -> ACQUISITION
+        for i in range(3):
+            apply_action_and_verify(state, layout['pass_invest'], f"Pass {i+1}")
+
+        # After all passes, fresh game goes WRAP_UP -> ACQUISITION -> CLOSING -> INVEST
+        # No negative-income companies in fresh game = no close offers = direct transition
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        assert TURN.get_turn_number(state) == 2
+        assert_invariants(state, "After ACQUISITION->CLOSING->INVEST with no offers")
+
+    def test_closing_with_accept_flow(self):
+        """CLOSING flow with accept: player closes negative-income company."""
+        from tests.phases.conftest import apply_action_and_verify, assert_invariants
+        from phases.acquisition import transition_to_closing_py
+        from phases.closing import apply_closing_auto_py, apply_closing_action_py, get_close_offer_count_py
+        from core.actions import ACTION_CLOSE_PY
+        from entities.player import PLAYERS
+        from entities.company import COMPANIES
+        from entities.corp import CORPS
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set up state with negative-income company owned by player
+        # High CoO level makes companies have negative adjusted income
+        TURN.set_coo_level(state, 6)  # Level 6: Red=$6, Orange=$4 CoO
+
+        # Give player 0 a red company (company 0 has 1 star = red)
+        # Company 0: income $2, stars 1 (red), face value $1
+        # At CoO level 6: Red CoO = $6, so adjusted = $2 - $6 = -$4
+        PLAYERS[0].set_owns_company(state, 0, True)
+
+        # Set up corp 0 (Junkyard Scrappers) as active to test JS bonus
+        CORPS[0].set_active(state, True)
+        CORPS[0].set_cash(state, 100)
+        initial_js_cash = CORPS[0].get_cash(state)
+
+        # Enter ACQUISITION phase
+        TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
+        initial_turn = TURN.get_turn_number(state)
+
+        assert_invariants(state, "Before transition to CLOSING")
+
+        # Transition to CLOSING
+        transition_to_closing_py(state)
+        assert state.get_phase() == GamePhases.PHASE_CLOSING
+
+        # Execute auto-close phase entry (FI/receivership auto-close + offer generation)
+        apply_closing_auto_py(state)
+
+        # Verify we have close offers (player owns negative-income company)
+        assert get_close_offer_count_py(state) > 0, "Should have at least one close offer"
+        assert TURN.get_closing_company(state) >= 0, "Should have an active close offer"
+
+        assert_invariants(state, "In CLOSING with active offer")
+
+        # Accept the close offer
+        result = apply_closing_action_py(state, ACTION_CLOSE_PY)
+        assert result == 0, "Close action should succeed"
+
+        # Should transition to INVEST (no more offers after closing the only one)
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        assert TURN.get_turn_number(state) == initial_turn + 1
+
+        # Verify company was closed
+        assert not PLAYERS[0].owns_company(state, 0), "Company should be closed"
+        assert COMPANIES[0].is_removed(state), "Company should be removed from game"
+
+        # Verify Junkyard Scrappers bonus (2x printed income = 2*1 = $2)
+        expected_js_cash = initial_js_cash + 2  # $1 printed income * 2
+        assert CORPS[0].get_cash(state) == expected_js_cash, f"JS cash: {CORPS[0].get_cash(state)} != {expected_js_cash}"
+
+        assert_invariants(state, "After CLOSING->INVEST with accept")
+
+    def test_closing_with_pass_and_mandatory_close_flow(self):
+        """CLOSING flow with pass triggers mandatory close for player with negative income+cash."""
+        from tests.phases.conftest import assert_invariants
+        from phases.acquisition import transition_to_closing_py
+        from phases.closing import apply_closing_auto_py, apply_closing_action_py, get_close_offer_count_py
+        from core.actions import ACTION_PASS_PY
+        from entities.player import PLAYERS
+        from entities.company import COMPANIES
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set up state with negative-income company owned by player with low cash
+        TURN.set_coo_level(state, 6)  # Level 6: Red=$6 CoO
+
+        # Give player 0 a red company with negative adjusted income
+        # Company 0: income $2, stars 1 (red) -> adjusted = $2 - $6 = -$4
+        PLAYERS[0].set_owns_company(state, 0, True)
+
+        # Set player cash low enough that income + cash < 0
+        # Player income from company 0: -$4 (negative), so need cash < $4 for mandatory close
+        PLAYERS[0].set_cash(state, 2)  # income (-$4) + cash ($2) = -$2 < 0
+
+        # Enter ACQUISITION phase
+        TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
+        initial_turn = TURN.get_turn_number(state)
+
+        assert_invariants(state, "Before transition to CLOSING")
+
+        # Transition to CLOSING and execute auto-close
+        transition_to_closing_py(state)
+        apply_closing_auto_py(state)
+
+        # Verify we have close offers
+        offer_count = get_close_offer_count_py(state)
+        assert offer_count > 0, "Should have at least one close offer"
+        assert state.get_phase() == GamePhases.PHASE_CLOSING
+
+        assert_invariants(state, "In CLOSING with offer")
+
+        # Pass on the close offer - this should trigger mandatory close
+        result = apply_closing_action_py(state, ACTION_PASS_PY)
+        assert result == 0, "Pass action should succeed"
+
+        # Should transition to INVEST after mandatory close
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        assert TURN.get_turn_number(state) == initial_turn + 1
+
+        # Verify mandatory close happened - company was forcibly closed
+        assert not PLAYERS[0].owns_company(state, 0), "Company should be mandatorily closed"
+        assert COMPANIES[0].is_removed(state), "Company should be removed from game"
+
+        assert_invariants(state, "After CLOSING->INVEST with mandatory close")
