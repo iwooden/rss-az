@@ -429,7 +429,7 @@ class TestPhaseFlow:
         assert get_offer_count(gs) == 0
 
     def test_transition_to_closing(self):
-        """ACQUISITION transitions to next turn when offers exhausted."""
+        """ACQUISITION transitions to CLOSING when offers exhausted."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -441,9 +441,10 @@ class TestPhaseFlow:
         # Call transition
         transition_to_closing_py(gs)
 
-        # Should now be INVEST (new turn) - CLOSING phase not yet implemented
-        assert gs.get_phase() == GamePhases.PHASE_INVEST
-        assert TURN.get_turn_number(gs) == initial_turn + 1
+        # Should now be CLOSING (auto-close executes, then Phase 17 offers)
+        assert gs.get_phase() == GamePhases.PHASE_CLOSING
+        # Turn number does NOT increment yet (happens after CLOSING completes in Phase 18)
+        assert TURN.get_turn_number(gs) == initial_turn
 
     def test_transition_merges_player_proceeds(self):
         """Transition merges player acquisition_proceeds."""
