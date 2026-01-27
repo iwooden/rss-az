@@ -16,21 +16,21 @@ Requirements for CLOSING phase implementation. Each maps to roadmap phases.
 
 ### Offer Generation
 
-- [ ] **CLO-05**: Only offer companies with negative adjusted income
-- [ ] **CLO-06**: Sort offers by face value ascending (lowest first)
-- [ ] **CLO-07**: Include player-owned privates in offers
-- [ ] **CLO-08**: Include corp subsidiaries (same-president) in offers
+- [x] **CLO-05**: Only offer companies with negative adjusted income
+- [x] **CLO-06**: Sort offers by face value ascending (lowest first)
+- [x] **CLO-07**: Include player-owned privates in offers
+- [x] **CLO-08**: Include corp subsidiaries (same-president) in offers
 
 ### Offer Validation
 
-- [ ] **CLO-09**: Corp closing offer invalid if corp would have 0 companies after close
-- [ ] **CLO-10**: Re-validate offers as they are processed (prior acceptance can invalidate later offers)
+- [x] **CLO-09**: Corp closing offer invalid if corp would have 0 companies after close
+- [x] **CLO-10**: Re-validate offers as they are processed (prior acceptance can invalidate later offers)
 
 ### Actions
 
-- [ ] **CLO-11**: Accept action closes the company (removes from game)
-- [ ] **CLO-12**: Pass action keeps the company
-- [ ] **CLO-13**: Junkyard Scrappers receives 2x printed income as scrapping bonus when closing
+- [x] **CLO-11**: Accept action closes the company (removes from game)
+- [x] **CLO-12**: Pass action keeps the company
+- [x] **CLO-13**: Junkyard Scrappers receives 2x printed income as scrapping bonus when closing
 
 ### Mandatory Close (Phase End)
 
@@ -86,15 +86,15 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CLO-02 | Phase 16 | Complete |
 | CLO-03 | Phase 16 | Complete |
 | CLO-04 | Phase 16 | Complete |
-| CLO-05 | Phase 17 | Pending |
-| CLO-06 | Phase 17 | Pending |
-| CLO-07 | Phase 17 | Pending |
-| CLO-08 | Phase 17 | Pending |
-| CLO-09 | Phase 17 | Pending |
-| CLO-10 | Phase 17 | Pending |
-| CLO-11 | Phase 17 | Pending |
-| CLO-12 | Phase 17 | Pending |
-| CLO-13 | Phase 17 | Pending |
+| CLO-05 | Phase 17 | Complete |
+| CLO-06 | Phase 17 | Complete |
+| CLO-07 | Phase 17 | Complete |
+| CLO-08 | Phase 17 | Complete |
+| CLO-09 | Phase 17 | Complete |
+| CLO-10 | Phase 17 | Complete |
+| CLO-11 | Phase 17 | Complete |
+| CLO-12 | Phase 17 | Complete |
+| CLO-13 | Phase 17 | Complete |
 | CLO-14 | Phase 18 | Pending |
 | CLO-15 | Phase 18 | Pending |
 | CLO-16 | Phase 18 | Pending |
@@ -106,4 +106,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-01-26*
-*Last updated: 2026-01-27 after Phase 16 complete*
+*Last updated: 2026-01-27 after Phase 17 complete*
