@@ -72,11 +72,12 @@ Plans:
   5. Dynamic re-validation: prior acceptance can invalidate later offers (corp down to 1 company)
   6. Accept action removes company from game; Pass action keeps company
   7. Junkyard Scrappers receives 2x printed income as bonus when closing
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 17-01: TBD
-- [ ] 17-02: TBD
+- [ ] 17-01-PLAN.md — State infrastructure and offer generation
+- [ ] 17-02-PLAN.md — Driver integration and action handlers
+- [ ] 17-03-PLAN.md — Comprehensive tests for CLO-05 through CLO-13
 
 ### Phase 18: Mandatory Close and Transition
 **Goal**: Auto-close at phase end protects players from negative cash, then transition to INCOME
@@ -113,7 +114,7 @@ Plans:
 |-------|-----------|----------------|--------|-----------|
 | 15.1. Code Quality Refactoring | v5.0 | 5/5 | ✓ Complete | 2026-01-26 |
 | 16. Auto-Close Logic | v5.0 | 2/2 | ✓ Complete | 2026-01-27 |
-| 17. Offer-Based Close Flow | v5.0 | 0/? | Not started | - |
+| 17. Offer-Based Close Flow | v5.0 | 0/3 | Planned | - |
 | 18. Mandatory Close and Transition | v5.0 | 0/? | Not started | - |
 | 19. Testing and Integration | v5.0 | 0/? | Not started | - |
 
@@ -125,3 +126,4 @@ Plans:
 *Phase 15.1 complete: 2026-01-26 (7/8 criteria verified, nogil deferred)*
 *Phase 16 planned: 2026-01-26 (2 plans in 2 waves)*
 *Phase 16 complete: 2026-01-27 (4/4 criteria verified)*
+*Phase 17 planned: 2026-01-27 (3 plans in 3 waves)*
