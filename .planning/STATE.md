@@ -11,9 +11,9 @@ See: .planning/PROJECT.md (updated 2026-01-26)
 
 Milestone: v5.0 CLOSING Phase
 Phase: 18 of 19 (Mandatory Close and Transition)
-Plan: 1 of 1
+Plan: 2 of 2 (Complete)
 Status: Phase 18 complete, ready for Phase 19 (Integration and Bugfixes)
-Last activity: 2026-01-27 — Completed 18-01-PLAN.md (mandatory close and transition)
+Last activity: 2026-01-27 — Completed 18-02-PLAN.md (mandatory close tests)
 
 Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [██████████]
 
@@ -61,6 +61,8 @@ See `.planning/milestones/` for full archives.
 - Invariant verification after every action
 - Status code imports - Phase tests import from conftest.py, core tests import from core.driver (15.1-05)
 - Python wrapper pattern - Expose internal state for testing (*_py functions) (17-03)
+- Mandatory close test pattern - Set high CoO level, give negative-income companies, verify close order (18-02)
+- Phase transition test pattern - Call apply_*_auto_py directly rather than driver loop (18-02)
 
 ### Pending Todos
 
@@ -83,6 +85,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-27
-Stopped at: Completed 18-01-PLAN.md
+Stopped at: Completed 18-02-PLAN.md (Phase 18 complete)
 Resume file: None
 Next action: /gsd:discuss-phase 19
