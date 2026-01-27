@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-26)
 
 Milestone: v5.0 CLOSING Phase
 Phase: 16 of 19 (Auto-Close Logic)
-Plan: Ready to plan
-Status: Phase 15.1 complete, ready to plan Phase 16
-Last activity: 2026-01-26 — Completed Phase 15.1 (code quality refactoring)
+Plan: 01 of 01 in phase
+Status: In progress - Plan 16-01 complete
+Last activity: 2026-01-27 — Completed 16-01-PLAN.md (auto-close logic)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [###_______]
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [####______]
 
 ## Archived Milestones
 
@@ -46,6 +46,7 @@ See `.planning/milestones/` for full archives.
 - Module-level buffer pattern - Pre-allocated static buffers with memset clearing for GIL-protected single-threaded operations (15.1-03)
 - Phase dispatch pattern - Single helper function to deduplicate phase-based branching logic (15.1-03)
 - Status code export pattern - Export Cython enum values as *_PY constants for Python access (15.1-05)
+- Two-pass closing pattern - Identify companies to close, then close them to avoid state mutation during iteration (16-01)
 
 **Testing patterns:**
 - Per-task atomic commits - feat/test prefixes for git bisect
@@ -73,7 +74,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-26
-Stopped at: Phase 15.1 complete
+Last session: 2026-01-27
+Stopped at: Completed 16-01-PLAN.md
 Resume file: None
-Next action: /gsd:plan-phase 16
+Next action: Plan Phase 17 (closing offers)
