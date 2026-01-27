@@ -10,6 +10,7 @@ for fast repeated access.
 from core.state cimport GameState, StateLayout, CorpFieldOffsets
 from core.data cimport GameConstants, CASH_DIVISOR, SHARE_DIVISOR, STAR_DIVISOR, MARKET_PRICES
 from core.data import CORP_NAMES
+from entities.encoding cimport set_one_hot
 
 
 cdef class Corporation:
@@ -154,13 +155,8 @@ cdef class Corporation:
 
     cpdef void set_price_index(self, GameState state, int index):
         """Set market price index. Updates both one-hot and hidden compact storage."""
-        cdef int i
-        # Clear one-hot encoding
-        for i in range(GameConstants.NUM_MARKET_SPACES):
-            state._data[self._price_index_offset + i] = 0.0
-        # Set one-hot and hidden compact value
-        if index >= 0 and index < GameConstants.NUM_MARKET_SPACES:
-            state._data[self._price_index_offset + index] = 1.0
+        set_one_hot(state._data, self._price_index_offset, GameConstants.NUM_MARKET_SPACES, index)
+        if 0 <= index < GameConstants.NUM_MARKET_SPACES:
             state._data[self._hidden_price_index_offset] = <float>index
             # Also update the denormalized share_price field
             self.set_share_price(state, MARKET_PRICES[index])
