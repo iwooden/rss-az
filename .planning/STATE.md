@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-26)
 
 Milestone: v5.0 CLOSING Phase
 Phase: 17 of 19 (Offer-Based Close Flow)
-Plan: 1 of 3 complete
-Status: In progress - Plan 17-01 complete
-Last activity: 2026-01-27 — Completed 17-01-PLAN.md (close offer buffer infrastructure)
+Plan: 2 of 3 complete
+Status: In progress - Plan 17-02 complete
+Last activity: 2026-01-27 — Completed 17-02-PLAN.md (offer presentation and action handlers)
 
-Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [███████░░░]
+Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [████████░░]
 
 ## Archived Milestones
 
@@ -49,6 +49,8 @@ See `.planning/milestones/` for full archives.
 - Two-pass closing pattern - Identify companies to close, then close them to avoid state mutation during iteration (16-01)
 - Temporary transition pattern - Document phase transitions that will change in future phases with TEMPORARY comments (16-02)
 - Hidden buffer pattern - Pre-generate offers in hidden state buffer, present one at a time (17-01)
+- Dynamic re-validation pattern - Validate offers at presentation time, not generation time, to handle state changes (17-02)
+- Hybrid phase detection via state field - Use existing state field (closing_company == -1) to distinguish non-player/player modes (17-02)
 
 **Testing patterns:**
 - Per-task atomic commits - feat/test prefixes for git bisect
@@ -62,7 +64,7 @@ None.
 
 ### Blockers/Concerns
 
-**CLOSING Phase temporary transition:** Phase 16 transitions CLOSING -> INVEST as temporary workaround. Phase 17 will replace with offer-based closing logic. Documented with TEMPORARY comments in phases/closing.pyx.
+**INCOME Phase temporary transition:** Phase 17 transitions CLOSING -> INVEST as temporary workaround until INCOME phase is implemented. Documented in _transition_to_income() function.
 
 **nogil for mask functions (15.1-03):** Task 1 deferred - requires ~15 GameState accessor methods to have nogil versions. Will be addressed in Phase 15.1-04 as comprehensive GameState nogil refactoring.
 
@@ -77,6 +79,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-27
-Stopped at: Completed 17-01-PLAN.md
+Stopped at: Completed 17-02-PLAN.md
 Resume file: None
-Next action: Execute 17-02 (offer presentation and action handlers)
+Next action: Execute 17-03 (comprehensive offer flow tests)
