@@ -40,6 +40,7 @@ cnp.import_array()
 
 # Constants
 DEF OFFER_BUFFER_SIZE = 250
+DEF CLOSE_OFFER_BUFFER_SIZE = 100
 
 # =============================================================================
 # STATE LAYOUT STRUCTURE
@@ -181,6 +182,9 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     # [52] offer_count (number of offers in buffer)
     # [53] offer_index (current offer being processed)
     # [54..553] offer_buffer (250 offers * 2 floats: corp_id, company_id)
+    # [554] close_offer_count (number of close offers)
+    # [555] close_offer_index (current close offer being processed)
+    # [556..855] close_offer_buffer (100 offers * 3 floats: owner_type, owner_id, company_id)
     layout.hidden_active_player_offset = offset
     offset += 1
     layout.hidden_num_players_offset = offset
@@ -207,6 +211,14 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     offset += 1
     layout.hidden_offer_buffer_offset = offset
     offset += OFFER_BUFFER_SIZE * 2  # 250 offers * 2 floats per offer (corp_id, company_id)
+    # Close offer buffer (100 offers max)
+    # Each offer: owner_type (0=player, 1=corp), owner_id, company_id
+    layout.hidden_close_offer_count_offset = offset
+    offset += 1
+    layout.hidden_close_offer_index_offset = offset
+    offset += 1
+    layout.hidden_close_offer_buffer_offset = offset
+    offset += CLOSE_OFFER_BUFFER_SIZE * 3  # 100 offers * 3 floats per offer
     layout.hidden_size = offset - layout.visible_size
 
     layout.total_size = layout.visible_size + layout.hidden_size

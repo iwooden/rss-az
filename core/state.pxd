@@ -52,6 +52,9 @@ cdef struct StateLayout:
     int hidden_offer_count_offset
     int hidden_offer_index_offset
     int hidden_offer_buffer_offset
+    int hidden_close_offer_count_offset
+    int hidden_close_offer_index_offset
+    int hidden_close_offer_buffer_offset
 
 cdef struct TurnStateOffsets:
     int turn_number
