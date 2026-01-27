@@ -6,6 +6,7 @@ from core.data cimport (
     GameConstants, GamePhases, PHASE_GAME_OVER,
     get_cost_of_ownership, get_company_income, get_company_stars, get_company_face_value
 )
+from core.actions cimport ActionInfo, ACTION_CLOSE, ACTION_PASS
 from entities import turn as turn_module
 from entities import company as company_module
 from entities import corp as corp_module
@@ -475,24 +476,111 @@ cdef void _process_receivership_auto_close(GameState state) noexcept:
 
 
 # =============================================================================
+# ACTION HANDLERS
+# =============================================================================
+
+cdef void _handle_close_accept(GameState state) noexcept:
+    """
+    Accept current close offer: close the company and advance to next offer.
+
+    The _close_company helper handles:
+    - Clearing ownership
+    - Junkyard Scrappers bonus (2x printed income)
+    - Removing company from game
+    """
+    cdef int company_id = turn_module.TURN.get_closing_company(state)
+    cdef int index = <int>state._data[state._layout.hidden_close_offer_index_offset]
+    cdef int base, owner_type, owner_id, printed_income
+
+    if company_id < 0:
+        return  # No active offer
+
+    # Get current offer details
+    base = state._layout.hidden_close_offer_buffer_offset + (index * 3)
+    owner_type = <int>state._data[base]
+    owner_id = <int>state._data[base + 1]
+
+    # Close the company (reuses Phase 16 helper)
+    # Map OWNER_PLAYER (0) -> LOC_PLAYER (3), OWNER_CORP (1) -> LOC_CORP (5)
+    if owner_type == OWNER_PLAYER:
+        # For player-owned companies, manually clear ownership and apply bonus
+        player_module.PLAYERS[owner_id].set_owns_company(state, company_id, False)
+
+        # Junkyard Scrappers bonus
+        printed_income = get_company_income(company_id)
+        if corp_module.CORPS[0].is_active(state):
+            corp_module.CORPS[0].add_cash(state, printed_income * 2)
+
+        # Remove from game
+        company_module.COMPANIES[company_id].remove_from_game(state)
+    elif owner_type == OWNER_CORP:
+        _close_company(state, company_id, 5, owner_id)  # LOC_CORP = 5
+
+    # Advance to next offer
+    state._data[state._layout.hidden_close_offer_index_offset] = <float>(index + 1)
+    _present_next_close_offer(state)
+
+
+cdef void _handle_close_pass(GameState state) noexcept:
+    """
+    Pass on current close offer: keep company, advance to next offer.
+    """
+    cdef int index = <int>state._data[state._layout.hidden_close_offer_index_offset]
+
+    # Advance to next offer
+    state._data[state._layout.hidden_close_offer_index_offset] = <float>(index + 1)
+    _present_next_close_offer(state)
+
+
+cdef int apply_closing_action(GameState state, ActionInfo* info) noexcept:
+    """
+    Apply CLOSING phase player action.
+
+    Action types:
+    - ACTION_CLOSE: Accept offer, close company
+    - ACTION_PASS: Reject offer, keep company
+
+    Returns: 0=success, 1=invalid
+    """
+    cdef int company_id
+
+    if info.action_type == ACTION_CLOSE:
+        # Validate offer still active
+        company_id = turn_module.TURN.get_closing_company(state)
+        if company_id < 0:
+            return 1  # No active offer
+
+        _handle_close_accept(state)
+        return 0
+
+    elif info.action_type == ACTION_PASS:
+        # Validate offer still active
+        company_id = turn_module.TURN.get_closing_company(state)
+        if company_id < 0:
+            return 1  # No active offer
+
+        _handle_close_pass(state)
+        return 0
+
+    return 1  # Unknown action type
+
+
+# =============================================================================
 # MAIN PHASE HANDLER
 # =============================================================================
 
 cdef int apply_closing_auto(GameState state) noexcept:
     """
-    Execute auto-close logic for FI and receivership corps.
+    Execute auto-close logic and setup offer-based closing.
 
-    This is a deterministic non-player phase with 0 actions.
     Steps:
-    1. FI closes companies with negative adjusted income
-    2. Receivership corps close red/orange companies above CoO thresholds
-    3. Junkyard Scrappers receives 2x printed income for each closure
-    4. Transition to INVEST (Phase 16 temporary - Phase 17 will add offer logic)
+    1. FI closes companies with negative adjusted income (CLO-01)
+    2. Receivership corps close red/orange companies above CoO thresholds (CLO-02, CLO-03, CLO-04)
+    3. Generate close offers for player/corp decisions
+    4. Present first offer (or transition to INCOME if none)
 
-    Returns: 0 always (deterministic, no failure modes)
+    Returns: 0 always (deterministic entry, no failure modes)
     """
-    cdef int current_turn, i
-
     _process_fi_auto_close(state)
     _process_receivership_auto_close(state)
 
@@ -501,17 +589,11 @@ cdef int apply_closing_auto(GameState state) noexcept:
         turn_module.TURN.set_phase(state, PHASE_GAME_OVER)
         return 0
 
-    # TEMPORARY (Phase 16): Transition to INVEST
-    # Phase 17 will add offer-based closing logic here instead
-    current_turn = turn_module.TURN.get_turn_number(state)
-    turn_module.TURN.set_turn_number(state, current_turn + 1)
+    # Generate close offers (Phase 17)
+    _generate_close_offers(state)
 
-    # Clear per-turn tracking for all players
-    for i in range(state._num_players):
-        player_module.PLAYERS[i].clear_roundtrip_tracking(state)
-
-    # Transition to new INVEST phase
-    turn_module.TURN.set_phase(state, GamePhases.PHASE_INVEST)
+    # Present first offer (or transition to INCOME if none)
+    _present_next_close_offer(state)
 
     return 0
 

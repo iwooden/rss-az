@@ -2,8 +2,12 @@
 """CLOSING phase handler declarations."""
 
 from core.state cimport GameState
+from core.actions cimport ActionInfo
 
 cdef int apply_closing_auto(GameState state) noexcept
+cdef int apply_closing_action(GameState state, ActionInfo* info) noexcept
+cdef void _handle_close_accept(GameState state) noexcept
+cdef void _handle_close_pass(GameState state) noexcept
 cdef void _generate_close_offers(GameState state) noexcept
 cdef bint _has_negative_adjusted_income(GameState state, int company_id) noexcept
 cdef int _get_corp_president(GameState state, int corp_id) noexcept
