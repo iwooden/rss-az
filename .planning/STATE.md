@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-26)
 
 Milestone: v5.0 CLOSING Phase
 Phase: 17 of 19 (Offer-Based Close Flow)
-Plan: 2 of 3 complete
-Status: In progress - Plan 17-02 complete
-Last activity: 2026-01-27 — Completed 17-02-PLAN.md (offer presentation and action handlers)
+Plan: 3 of 3 complete
+Status: Phase complete - Plan 17-03 complete
+Last activity: 2026-01-27 — Completed 17-03-PLAN.md (comprehensive offer flow tests)
 
-Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [████████░░]
+Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [█████████░]
 
 ## Archived Milestones
 
@@ -57,6 +57,7 @@ See `.planning/milestones/` for full archives.
 - Integration test consolidation - Cross-phase tests in test_integration.py
 - Invariant verification after every action
 - Status code imports - Phase tests import from conftest.py, core tests import from core.driver (15.1-05)
+- Python wrapper pattern - Expose internal state for testing (*_py functions) (17-03)
 
 ### Pending Todos
 
@@ -79,6 +80,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-27
-Stopped at: Completed 17-02-PLAN.md
+Stopped at: Completed 17-03-PLAN.md (Phase 17 complete)
 Resume file: None
-Next action: Execute 17-03 (comprehensive offer flow tests)
+Next action: Plan Phase 18 (next phase in roadmap)
