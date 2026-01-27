@@ -16,6 +16,7 @@ from core.data cimport (
     GameConstants, CASH_DIVISOR, SHARE_DIVISOR, MAX_ROUNDTRIPS,
     get_company_face_value
 )
+from entities.encoding cimport set_one_hot, get_one_hot_index
 
 # Local constants from enum for nogil usage
 DEF NUM_COMPANIES = 36
@@ -332,19 +333,11 @@ cdef class Player:
 
     cpdef int get_turn_order(self, GameState state):
         """Get player's position in turn order (0 = first)."""
-        cdef int i
-        for i in range(self._num_players):
-            if state._data[self._turn_order_offset + i] == 1.0:
-                return i
-        return -1
+        return get_one_hot_index(state._data, self._turn_order_offset, self._num_players)
 
     cpdef void set_turn_order(self, GameState state, int order):
         """Set player's position in turn order (one-hot encoded)."""
-        cdef int i
-        for i in range(self._num_players):
-            state._data[self._turn_order_offset + i] = 0.0
-        if order >= 0 and order < self._num_players:
-            state._data[self._turn_order_offset + order] = 1.0
+        set_one_hot(state._data, self._turn_order_offset, self._num_players, order)
 
     # =========================================================================
     # COMPANY OWNERSHIP
