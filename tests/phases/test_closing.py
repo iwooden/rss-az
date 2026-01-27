@@ -904,3 +904,109 @@ class TestClosingPhaseTransition:
         # Phase should transition to INVEST
         assert game_state.get_phase() == GamePhases.PHASE_INVEST
         assert COMPANIES[0].is_removed(game_state)
+
+
+# =============================================================================
+# EDGE CASE TESTS (CLO-01 through CLO-16)
+# =============================================================================
+
+
+class TestClosingEdgeCases:
+    """Edge case tests for CLOSING phase boundary conditions."""
+
+    def test_no_close_offers_direct_transition(self, game_state):
+        """Edge case: All companies have positive adjusted income - direct transition.
+
+        Requirement: When no close offers exist, CLOSING phase transitions
+        directly to INVEST without presenting any offers.
+        """
+        from tests.phases.conftest import assert_invariants
+
+        # Default game state has CoO level 1 (low)
+        # At low CoO, no companies have negative adjusted income
+        assert TURN.get_coo_level(game_state) == 1
+
+        assert_invariants(game_state, "Before CLOSING phase")
+
+        # Enter CLOSING phase
+        TURN.set_phase(game_state, PHASE_CLOSING_PY)
+        apply_closing_auto_py(game_state)
+
+        # With no negative-income companies owned by players,
+        # phase should transition directly to INVEST
+        assert game_state.get_phase() == PHASE_INVEST_PY
+        assert TURN.get_closing_company(game_state) == -1
+
+        assert_invariants(game_state, "After CLOSING phase")
+
+    def test_all_pass_triggers_mandatory_close(self, game_state):
+        """Edge case: All offers passed with low cash triggers mandatory close.
+
+        Requirement: When player passes on close offers but income + cash < 0,
+        mandatory close automatically closes the cheapest negative-income company.
+        """
+        from phases.closing import apply_closing_action_py
+
+        # Set high CoO level to create negative-income companies
+        TURN.set_coo_level(game_state, 7)
+
+        # Give player 0 a negative-income company
+        # Company 0: $1 income, 1 star, CoO 7 = $10 -> adjusted = -$9
+        PLAYERS[0].set_owns_company(game_state, 0, True)
+
+        # Low cash to trigger mandatory close after passing
+        # Cash = $5, income = -$9, total = -$4 < 0
+        PLAYERS[0].set_cash(game_state, 5)
+
+        # Enter CLOSING phase and generate offers
+        TURN.set_phase(game_state, PHASE_CLOSING_PY)
+        apply_closing_auto_py(game_state)
+
+        # Should have an offer for company 0
+        assert TURN.get_closing_company(game_state) == 0
+
+        # Pass on the offer
+        apply_closing_action_py(game_state, ACTION_PASS_PY)
+
+        # After passing, mandatory close should trigger and close company
+        # Phase should transition to INVEST
+        assert game_state.get_phase() == PHASE_INVEST_PY
+        assert COMPANIES[0].is_removed(game_state)
+        assert not PLAYERS[0].owns_company(game_state, 0)
+
+    def test_all_pass_no_mandatory_close_needed(self, game_state):
+        """Edge case: All offers passed with high cash - no mandatory close.
+
+        Requirement: When player passes on close offers but income + cash >= 0,
+        no mandatory close happens and company remains.
+        """
+        from phases.closing import apply_closing_action_py
+
+        # Set high CoO level to create negative-income company
+        TURN.set_coo_level(game_state, 7)
+
+        # Give player 0 a negative-income company
+        # Company 0: $1 income, 1 star, CoO 7 = $10 -> adjusted = -$9
+        PLAYERS[0].set_owns_company(game_state, 0, True)
+
+        # High cash so no mandatory close needed
+        # Cash = $100, income = -$9, total = $91 >= 0
+        PLAYERS[0].set_cash(game_state, 100)
+
+        # Enter CLOSING phase and generate offers
+        TURN.set_phase(game_state, PHASE_CLOSING_PY)
+        apply_closing_auto_py(game_state)
+
+        # Should have an offer for company 0
+        assert TURN.get_closing_company(game_state) == 0
+
+        # Pass on the offer
+        apply_closing_action_py(game_state, ACTION_PASS_PY)
+
+        # After passing, NO mandatory close (player has enough cash)
+        # Phase should transition to INVEST
+        assert game_state.get_phase() == PHASE_INVEST_PY
+
+        # Company should NOT be removed
+        assert not COMPANIES[0].is_removed(game_state)
+        assert PLAYERS[0].owns_company(game_state, 0)
