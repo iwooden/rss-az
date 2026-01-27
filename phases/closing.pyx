@@ -601,3 +601,35 @@ cdef int apply_closing_auto(GameState state) noexcept:
 def apply_closing_auto_py(GameState state):
     """Python wrapper for testing."""
     return apply_closing_auto(state)
+
+
+def apply_closing_action_py(GameState state, int action_type):
+    """Python wrapper for testing closing actions."""
+    cdef ActionInfo info
+    info.action_type = action_type
+    return apply_closing_action(state, &info)
+
+
+def get_close_offer_count_py(GameState state):
+    """Get number of close offers in buffer."""
+    return <int>state._data[state._layout.hidden_close_offer_count_offset]
+
+
+def get_close_offer_index_py(GameState state):
+    """Get current close offer index."""
+    return <int>state._data[state._layout.hidden_close_offer_index_offset]
+
+
+def get_close_offer_py(GameState state, int index):
+    """Get close offer at index as (owner_type, owner_id, company_id) tuple."""
+    cdef int base = state._layout.hidden_close_offer_buffer_offset + (index * 3)
+    return (
+        <int>state._data[base],
+        <int>state._data[base + 1],
+        <int>state._data[base + 2]
+    )
+
+
+def generate_close_offers_py(GameState state):
+    """Python wrapper for offer generation (for testing)."""
+    _generate_close_offers(state)

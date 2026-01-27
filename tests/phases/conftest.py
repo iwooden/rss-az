@@ -256,3 +256,16 @@ def apply_and_track():
         status = DRIVER.apply_action(state, action_idx, history=history)
         return ApplyTrackResult(state, history, status, state.get_num_players())
     return _apply
+
+
+@pytest.fixture
+def closing_offer_state():
+    """Create game state with companies ready for close offers."""
+    gs = GameState(num_players=3)
+    gs.initialize_game(seed=42)
+
+    # Set high CoO level so companies have negative income
+    # Level 6: Red=$6, Orange=$4 CoO
+    TURN.set_coo_level(gs, 6)
+
+    return gs

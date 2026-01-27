@@ -18,6 +18,9 @@ from tests.phases.conftest import (
     apply_and_track,
 )
 
+# Add closing_offer_state fixture
+from tests.phases.conftest import closing_offer_state
+
 # Re-export fixtures so they're available at root level
 __all__ = [
     'game_state',
@@ -26,4 +29,5 @@ __all__ = [
     'trade_state',
     'bankruptcy_state',
     'apply_and_track',
+    'closing_offer_state',
 ]
