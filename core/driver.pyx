@@ -23,7 +23,7 @@ from phases.invest cimport apply_invest_action
 from phases.bid cimport apply_bid_action
 from phases.wrap_up cimport apply_wrap_up
 from phases.acquisition cimport apply_acquisition_action, _transition_to_closing
-from phases.closing cimport apply_closing_auto
+from phases.closing cimport apply_closing_auto, apply_closing_action
 from src.exceptions import ForcedActionLoopError, ZeroLegalActionsError
 from entities import turn as turn_module
 
@@ -50,9 +50,10 @@ cdef bint _is_non_player_phase_check(GameState state, int phase) noexcept:
         return turn_module.TURN.get_acq_active_corp(state) == -1
 
     if phase == PHASE_CLOSING:
-        # CLOSING with no active offer = non-player auto-close phase
-        # When offers exist (Phase 17), this will check for active offers
-        return True  # For Phase 16, always non-player
+        # CLOSING is hybrid: non-player when no offers, player when offers exist
+        # closing_company == -1 means no active offer (auto-close mode)
+        # closing_company >= 0 means offer active (player decision mode)
+        return turn_module.TURN.get_closing_company(state) == -1
 
     return False
 
@@ -173,6 +174,8 @@ cdef class GameDriver:
             result = apply_bid_action(state, &info)
         elif phase == PHASE_ACQUISITION:
             result = apply_acquisition_action(state, &info)
+        elif phase == PHASE_CLOSING:
+            result = apply_closing_action(state, &info)
         else:
             # Other phases not yet implemented (stubs for Phase 3+)
             return STATUS_INVALID
