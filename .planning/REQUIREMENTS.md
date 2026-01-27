@@ -34,12 +34,12 @@ Requirements for CLOSING phase implementation. Each maps to roadmap phases.
 
 ### Mandatory Close (Phase End)
 
-- [ ] **CLO-14**: Auto-close player private companies if total income would cause negative cash in INCOME
-- [ ] **CLO-15**: Close cheapest negative-income company first when mandatory closing
+- [x] **CLO-14**: Auto-close player private companies if total income would cause negative cash in INCOME
+- [x] **CLO-15**: Close cheapest negative-income company first when mandatory closing
 
 ### Phase Transition
 
-- [ ] **CLO-16**: Transition to INCOME phase when all offers processed
+- [x] **CLO-16**: Transition to INCOME phase when all offers processed
 
 ## Future Requirements
 
@@ -95,9 +95,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CLO-11 | Phase 17 | Complete |
 | CLO-12 | Phase 17 | Complete |
 | CLO-13 | Phase 17 | Complete |
-| CLO-14 | Phase 18 | Pending |
-| CLO-15 | Phase 18 | Pending |
-| CLO-16 | Phase 18 | Pending |
+| CLO-14 | Phase 18 | Complete |
+| CLO-15 | Phase 18 | Complete |
+| CLO-16 | Phase 18 | Complete |
 
 **Coverage:**
 - v5.0 requirements: 16 total
@@ -106,4 +106,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-01-26*
-*Last updated: 2026-01-27 after Phase 17 complete*
+*Last updated: 2026-01-27 after Phase 18 complete*

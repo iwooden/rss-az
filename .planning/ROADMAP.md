@@ -18,7 +18,7 @@ The CLOSING phase implementation extends the game engine with company closure me
 - [x] **Phase 15.1: Code Quality Refactoring** - DRY fixes, performance optimizations, architecture cleanup (INSERTED)
 - [x] **Phase 16: Auto-Close Logic** - FI and receivership corps auto-close at phase start
 - [x] **Phase 17: Offer-Based Close Flow** - Player decisions on negative-income companies
-- [ ] **Phase 18: Mandatory Close and Transition** - Auto-close at phase end, transition to INCOME
+- [x] **Phase 18: Mandatory Close and Transition** - Auto-close at phase end, transition to INCOME
 - [ ] **Phase 19: Testing and Integration** - Comprehensive test coverage
 
 ## Phase Details
@@ -90,8 +90,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 18-01-PLAN.md — Player income method and mandatory close logic
-- [ ] 18-02-PLAN.md — Comprehensive tests for CLO-14, CLO-15, CLO-16
+- [x] 18-01-PLAN.md — Player income method and mandatory close logic
+- [x] 18-02-PLAN.md — Comprehensive tests for CLO-14, CLO-15, CLO-16
 
 ### Phase 19: Testing and Integration
 **Goal**: Comprehensive test coverage validates CLOSING phase correctness
@@ -116,7 +116,7 @@ Plans:
 | 15.1. Code Quality Refactoring | v5.0 | 5/5 | ✓ Complete | 2026-01-26 |
 | 16. Auto-Close Logic | v5.0 | 2/2 | ✓ Complete | 2026-01-27 |
 | 17. Offer-Based Close Flow | v5.0 | 3/3 | ✓ Complete | 2026-01-27 |
-| 18. Mandatory Close and Transition | v5.0 | 0/2 | Planned | - |
+| 18. Mandatory Close and Transition | v5.0 | 2/2 | ✓ Complete | 2026-01-27 |
 | 19. Testing and Integration | v5.0 | 0/? | Not started | - |
 
 ---
@@ -130,3 +130,4 @@ Plans:
 *Phase 17 planned: 2026-01-27 (3 plans in 3 waves)*
 *Phase 17 complete: 2026-01-27 (7/7 criteria verified)*
 *Phase 18 planned: 2026-01-27 (2 plans in 2 waves)*
+*Phase 18 complete: 2026-01-27 (3/3 criteria verified)*
