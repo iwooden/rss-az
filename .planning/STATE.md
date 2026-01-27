@@ -10,10 +10,10 @@ See: .planning/PROJECT.md (updated 2026-01-26)
 ## Current Position
 
 Milestone: v5.0 CLOSING Phase
-Phase: 15.1 of 19 (Code Quality Refactoring)
-Plan: 5 of 5
-Status: In progress
-Last activity: 2026-01-27 — Completed 15.1-04-PLAN.md (Apply Encoding Helpers to Entity Files)
+Phase: 16 of 19 (Auto-Close Logic)
+Plan: Ready to plan
+Status: Phase 15.1 complete, ready to plan Phase 16
+Last activity: 2026-01-26 — Completed Phase 15.1 (code quality refactoring)
 
 Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [###_______]
 
@@ -73,7 +73,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-27
-Stopped at: Completed 15.1-04-PLAN.md (Apply Encoding Helpers to Entity Files)
+Last session: 2026-01-26
+Stopped at: Phase 15.1 complete
 Resume file: None
-Next action: Continue Phase 15.1 or proceed to Phase 16
+Next action: /gsd:plan-phase 16

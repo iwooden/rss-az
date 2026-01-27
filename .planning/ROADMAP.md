@@ -15,7 +15,7 @@ The CLOSING phase implementation extends the game engine with company closure me
 
 ## Phases
 
-- [ ] **Phase 15.1: Code Quality Refactoring** - DRY fixes, performance optimizations, architecture cleanup (INSERTED)
+- [x] **Phase 15.1: Code Quality Refactoring** - DRY fixes, performance optimizations, architecture cleanup (INSERTED)
 - [ ] **Phase 16: Auto-Close Logic** - FI and receivership corps auto-close at phase start
 - [ ] **Phase 17: Offer-Based Close Flow** - Player decisions on negative-income companies
 - [ ] **Phase 18: Mandatory Close and Transition** - Auto-close at phase end, transition to INCOME
@@ -39,11 +39,11 @@ The CLOSING phase implementation extends the game engine with company closure me
 **Plans**: 5 plans
 
 Plans:
-- [ ] 15.1-01-PLAN.md — Create encoding helpers (set/get/clear one-hot)
-- [ ] 15.1-02-PLAN.md — Change CORPS from dict to list pattern
-- [ ] 15.1-03-PLAN.md — Optimize actions.pyx (nogil, buffer, dispatch)
-- [ ] 15.1-04-PLAN.md — Apply encoding helpers to entities
-- [ ] 15.1-05-PLAN.md — Consolidate test infrastructure
+- [x] 15.1-01-PLAN.md — Create encoding helpers (set/get/clear one-hot)
+- [x] 15.1-02-PLAN.md — Change CORPS from dict to list pattern
+- [x] 15.1-03-PLAN.md — Optimize actions.pyx (buffer, dispatch) [nogil deferred]
+- [x] 15.1-04-PLAN.md — Apply encoding helpers to entities
+- [x] 15.1-05-PLAN.md — Consolidate test infrastructure
 
 ### Phase 16: Auto-Close Logic
 **Goal**: FI and receivership corps automatically close unprofitable companies at phase start
@@ -110,7 +110,7 @@ Plans:
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 15.1. Code Quality Refactoring | v5.0 | 0/5 | Planned | - |
+| 15.1. Code Quality Refactoring | v5.0 | 5/5 | ✓ Complete | 2026-01-26 |
 | 16. Auto-Close Logic | v5.0 | 0/? | Not started | - |
 | 17. Offer-Based Close Flow | v5.0 | 0/? | Not started | - |
 | 18. Mandatory Close and Transition | v5.0 | 0/? | Not started | - |
@@ -121,3 +121,4 @@ Plans:
 *Last updated: 2026-01-26*
 *Phase 15.1 inserted: 2026-01-26 (code quality refactoring before CLOSING implementation)*
 *Phase 15.1 planned: 2026-01-26 (5 plans in 2 waves)*
+*Phase 15.1 complete: 2026-01-26 (7/8 criteria verified, nogil deferred)*
