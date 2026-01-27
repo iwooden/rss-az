@@ -4,7 +4,8 @@
 from core.state cimport GameState
 from core.data cimport (
     GameConstants, GamePhases, PHASE_GAME_OVER,
-    get_cost_of_ownership, get_company_income, get_company_stars, get_company_face_value
+    get_cost_of_ownership, get_company_income, get_company_stars, get_company_face_value,
+    get_adjusted_company_income
 )
 from core.actions cimport ActionInfo, ACTION_CLOSE, ACTION_PASS
 from entities import turn as turn_module
@@ -82,6 +83,85 @@ cdef void _close_company(GameState state, int company_id, int owner_type, int ow
 
     # Remove company from game
     company_module.COMPANIES[company_id].remove_from_game(state)
+
+
+cdef void _close_player_company(GameState state, int company_id, int player_id) noexcept:
+    """
+    Close a player-owned private company during mandatory close.
+
+    Steps:
+    1. Clear player ownership
+    2. Apply Junkyard Scrappers bonus (2x printed income)
+    3. Remove company from game
+
+    Similar to _close_company but handles player ownership (LOC_PLAYER).
+    """
+    cdef int printed_income = get_company_income(company_id)
+
+    # Clear ownership
+    player_module.PLAYERS[player_id].set_owns_company(state, company_id, False)
+
+    # Junkyard Scrappers (corp_id 0) bonus: 2x printed income
+    if corp_module.CORPS[0].is_active(state):
+        corp_module.CORPS[0].add_cash(state, printed_income * 2)
+
+    # Remove company from game
+    company_module.COMPANIES[company_id].remove_from_game(state)
+
+
+cdef void _process_mandatory_close(GameState state) noexcept:
+    """
+    Auto-close player private companies to prevent negative cash in INCOME.
+
+    Called at phase end, before transition to INCOME.
+    Iterates players by ID order. For each player with income + cash < 0:
+    1. Find cheapest (lowest face value) negative-income private company
+    2. Close it
+    3. Recheck income + cash
+    4. Repeat until income + cash >= 0
+
+    Per CONTEXT.md: CoO is fixed at phase start, no re-evaluation during loop.
+    Per CONTEXT.md: Players CAN end up with zero companies (no minimum retention).
+    Per CONTEXT.md: Junkyard Scrappers bonus applies to mandatory closes.
+    """
+    cdef int player_id, company_id, income, cash
+    cdef int cheapest_company, cheapest_fv, fv
+    cdef int coo_level = turn_module.TURN.get_coo_level(state)
+
+    # Iterate players by player ID order (0, 1, 2, ...)
+    for player_id in range(state._num_players):
+        # While player has negative total (income + cash)
+        while True:
+            income = player_module.PLAYERS[player_id].get_income(state)
+            cash = player_module.PLAYERS[player_id].get_cash(state)
+
+            if income + cash >= 0:
+                break  # Player is safe
+
+            # Find cheapest negative-income company owned by player
+            cheapest_company = -1
+            cheapest_fv = 999999  # Large sentinel
+
+            for company_id in range(GameConstants.NUM_COMPANIES):
+                if not player_module.PLAYERS[player_id].owns_company(state, company_id):
+                    continue
+
+                # Check if negative income (CLO-14 targets negative-income companies)
+                if get_adjusted_company_income(company_id, coo_level) >= 0:
+                    continue
+
+                fv = get_company_face_value(company_id)
+                if fv < cheapest_fv:
+                    cheapest_fv = fv
+                    cheapest_company = company_id
+
+            if cheapest_company < 0:
+                # No more negative-income companies to close
+                # Per CONTEXT.md: impossible to still be negative after closing ALL negative-income privates
+                break
+
+            # Close the company (CLO-15: cheapest first)
+            _close_player_company(state, cheapest_company, player_id)
 
 
 cdef bint _has_negative_adjusted_income(GameState state, int company_id) noexcept:
@@ -367,8 +447,9 @@ cdef void _present_next_close_offer(GameState state) noexcept:
             state._set_active_player(president if president >= 0 else 0)
         return
 
-    # No more valid offers - clear state and transition
+    # No more valid offers - process mandatory close then transition
     turn_module.TURN.clear_closing_company(state)
+    _process_mandatory_close(state)  # CLO-14, CLO-15: mandatory close before transition
     _transition_to_income(state)
 
 
@@ -633,3 +714,8 @@ def get_close_offer_py(GameState state, int index):
 def generate_close_offers_py(GameState state):
     """Python wrapper for offer generation (for testing)."""
     _generate_close_offers(state)
+
+
+def process_mandatory_close_py(GameState state):
+    """Python wrapper for mandatory close (for testing)."""
+    _process_mandatory_close(state)
