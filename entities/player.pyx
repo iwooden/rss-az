@@ -14,9 +14,10 @@ from libc.math cimport round
 from core.state cimport GameState, StateLayout, PlayerFieldOffsets
 from core.data cimport (
     GameConstants, CASH_DIVISOR, SHARE_DIVISOR, MAX_ROUNDTRIPS,
-    get_company_face_value
+    get_company_face_value, get_company_income, get_company_stars, get_cost_of_ownership
 )
 from entities.encoding cimport set_one_hot, get_one_hot_index
+from entities import turn as turn_module
 
 # Local constants from enum for nogil usage
 DEF NUM_COMPANIES = 36
@@ -435,6 +436,31 @@ cdef class Player:
     cpdef void clear_acquisition_proceeds(self, GameState state):
         """Clear player's acquisition proceeds (set to 0)."""
         state._data[self._acquisition_proceeds_offset] = 0.0
+
+    # =========================================================================
+    # INCOME CALCULATION
+    # =========================================================================
+
+    cpdef int get_income(self, GameState state):
+        """
+        Calculate total income from player's private companies.
+
+        Income = sum of (base_income - CoO) for each owned private company.
+        Note: Only player-owned privates, NOT corp subsidiaries.
+        Used by mandatory close to check if player income + cash < 0.
+        """
+        cdef int total = 0
+        cdef int company_id, base_income, stars, coo_value
+        cdef int coo_level = turn_module.TURN.get_coo_level(state)
+
+        for company_id in range(GameConstants.NUM_COMPANIES):
+            if self.owns_company(state, company_id):
+                base_income = get_company_income(company_id)
+                stars = get_company_stars(company_id)
+                coo_value = get_cost_of_ownership(coo_level, stars)
+                total += base_income - coo_value
+
+        return total
 
 
 # =============================================================================

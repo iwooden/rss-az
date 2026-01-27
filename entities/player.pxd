@@ -127,3 +127,6 @@ cdef class Player:
     cpdef void set_acquisition_proceeds(self, GameState state, int proceeds)
     cpdef void add_acquisition_proceeds(self, GameState state, int amount)
     cpdef void clear_acquisition_proceeds(self, GameState state)
+
+    # Income calculation
+    cpdef int get_income(self, GameState state)
