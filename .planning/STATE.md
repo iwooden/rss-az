@@ -13,7 +13,7 @@ Milestone: v5.0 CLOSING Phase
 Phase: 15.1 of 19 (Code Quality Refactoring)
 Plan: 5 of 5
 Status: In progress
-Last activity: 2026-01-26 — Completed 15.1-05-PLAN.md (Test Infrastructure Consolidation)
+Last activity: 2026-01-27 — Completed 15.1-04-PLAN.md (Apply Encoding Helpers to Entity Files)
 
 Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [###_______]
 
@@ -42,6 +42,7 @@ See `.planning/milestones/` for full archives.
 - While-loop re-query pattern for dynamic state iteration
 - Acquisition zone pattern - Pending state during phase, merge at end
 - One-hot encoding helpers pattern - cdef inline noexcept nogil functions on raw float* for zero overhead (15.1-01)
+- Encoding helper application pattern - Replace inline one-hot loops with reusable helpers from encoding.pyx (15.1-04)
 - Module-level buffer pattern - Pre-allocated static buffers with memset clearing for GIL-protected single-threaded operations (15.1-03)
 - Phase dispatch pattern - Single helper function to deduplicate phase-based branching logic (15.1-03)
 - Status code export pattern - Export Cython enum values as *_PY constants for Python access (15.1-05)
@@ -72,7 +73,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-26
-Stopped at: Completed 15.1-05-PLAN.md (Test Infrastructure Consolidation)
+Last session: 2026-01-27
+Stopped at: Completed 15.1-04-PLAN.md (Apply Encoding Helpers to Entity Files)
 Resume file: None
 Next action: Continue Phase 15.1 or proceed to Phase 16
