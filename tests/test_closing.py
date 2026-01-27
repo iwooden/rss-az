@@ -212,3 +212,50 @@ class TestMandatoryClose:
         # Player 1's company should be closed
         assert not PLAYERS[1].owns_company(game_state, 5)
         assert COMPANIES[5].is_removed(game_state)
+
+
+class TestClosingPhaseTransition:
+    """Tests for CLOSING phase transition (CLO-16)."""
+
+    def test_phase_transitions_after_mandatory_close(self, game_state):
+        """CLO-16: Phase transitions to INCOME (INVEST) when no offers and mandatory close complete."""
+        from phases.closing import apply_closing_auto_py
+
+        # Simulate state where CLOSING has no offers and mandatory close has nothing to do
+        # All players have positive income + cash (default state)
+        game_state.set_phase(GamePhases.PHASE_CLOSING)
+
+        # Run auto-close (which includes offer generation, mandatory close, and transition)
+        apply_closing_auto_py(game_state)
+
+        # Should have transitioned to INVEST (temporary target for INCOME)
+        assert game_state.get_phase() == GamePhases.PHASE_INVEST
+
+    def test_closing_flow_with_mandatory_close_triggered(self, game_state):
+        """Integration test: Mandatory close triggers after offers are declined."""
+        from phases.closing import apply_closing_auto_py, apply_closing_action_py
+        from core.actions import ACTION_PASS_PY
+
+        # Set up: high CoO to create negative-income companies
+        TURN.set_coo_level(game_state, 7)
+
+        # Give player 0 a negative-income company
+        PLAYERS[0].set_owns_company(game_state, 0, True)
+
+        # Low cash to trigger mandatory close after offer processing
+        PLAYERS[0].set_cash(game_state, 5)
+
+        # Enter CLOSING phase and run auto-close
+        game_state.set_phase(GamePhases.PHASE_CLOSING)
+        apply_closing_auto_py(game_state)
+
+        # There should be a close offer for company 0
+        assert TURN.get_closing_company(game_state) == 0
+
+        # Pass on the offer (should trigger mandatory close after all offers processed)
+        apply_closing_action_py(game_state, ACTION_PASS_PY)
+
+        # After passing, mandatory close should have kicked in and closed the company
+        # Phase should transition to INVEST
+        assert game_state.get_phase() == GamePhases.PHASE_INVEST
+        assert COMPANIES[0].is_removed(game_state)
