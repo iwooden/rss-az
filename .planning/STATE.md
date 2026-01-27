@@ -10,12 +10,12 @@ See: .planning/PROJECT.md (updated 2026-01-26)
 ## Current Position
 
 Milestone: v5.0 CLOSING Phase
-Phase: 16 of 19 (Auto-Close Logic)
-Plan: 02 of 02 in phase
-Status: Phase complete
-Last activity: 2026-01-27 — Completed 16-02-PLAN.md (driver integration & testing)
+Phase: 17 of 19 (Offer-Based Close Flow)
+Plan: Ready to plan
+Status: Phase 16 complete, ready to plan Phase 17
+Last activity: 2026-01-27 — Completed Phase 16 (auto-close logic verified)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [#####_____]
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [######____]
 
 ## Archived Milestones
 
@@ -76,6 +76,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-27
-Stopped at: Completed 16-02-PLAN.md
+Stopped at: Phase 16 complete
 Resume file: None
-Next action: Phase 16 complete - ready for Phase 17 (closing offers)
+Next action: /gsd:discuss-phase 17

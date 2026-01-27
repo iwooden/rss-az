@@ -9,10 +9,10 @@ Requirements for CLOSING phase implementation. Each maps to roadmap phases.
 
 ### Auto-Close (Phase Start)
 
-- [ ] **CLO-01**: FI closes companies where Cost of Ownership >= Income
-- [ ] **CLO-02**: Receivership corps close red companies if CoO >= 4
-- [ ] **CLO-03**: Receivership corps close orange companies if CoO >= 7
-- [ ] **CLO-04**: Receivership corps always keep highest face value company (can't close if only 1 company)
+- [x] **CLO-01**: FI closes companies where Cost of Ownership >= Income
+- [x] **CLO-02**: Receivership corps close red companies if CoO >= 4
+- [x] **CLO-03**: Receivership corps close orange companies if CoO >= 7
+- [x] **CLO-04**: Receivership corps always keep highest face value company (can't close if only 1 company)
 
 ### Offer Generation
 
@@ -82,10 +82,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CLO-01 | Phase 16 | Pending |
-| CLO-02 | Phase 16 | Pending |
-| CLO-03 | Phase 16 | Pending |
-| CLO-04 | Phase 16 | Pending |
+| CLO-01 | Phase 16 | Complete |
+| CLO-02 | Phase 16 | Complete |
+| CLO-03 | Phase 16 | Complete |
+| CLO-04 | Phase 16 | Complete |
 | CLO-05 | Phase 17 | Pending |
 | CLO-06 | Phase 17 | Pending |
 | CLO-07 | Phase 17 | Pending |
@@ -106,4 +106,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-01-26*
-*Last updated: 2026-01-26 after roadmap creation*
+*Last updated: 2026-01-27 after Phase 16 complete*
