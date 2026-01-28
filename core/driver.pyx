@@ -24,8 +24,18 @@ from phases.bid cimport apply_bid_action
 from phases.wrap_up cimport apply_wrap_up
 from phases.acquisition cimport apply_acquisition_action, _transition_to_closing
 from phases.closing cimport apply_closing_auto, apply_closing_action
-from src.exceptions import ForcedActionLoopError, ZeroLegalActionsError
 from entities import turn as turn_module
+
+
+class ForcedActionLoopError(RuntimeError):
+    """Raised when forced action loop exceeds iteration limit."""
+    pass
+
+
+class ZeroLegalActionsError(RuntimeError):
+    """Raised when zero legal actions exist outside GAME_OVER phase."""
+    pass
+
 
 # Maximum iterations for auto-apply loop (prevents infinite loops from bugs)
 DEF MAX_FORCED_ITERATIONS = 100

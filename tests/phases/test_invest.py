@@ -1157,7 +1157,7 @@ class TestAutoApplyEdgeCases:
         Note: This is a defensive test. In normal gameplay, there should always
         be at least one legal action in non-terminal states.
         """
-        from src.exceptions import ZeroLegalActionsError
+        from core.driver import ZeroLegalActionsError
 
         # This scenario is hard to create naturally since game rules ensure
         # at least pass is always available in INVEST. We test that the
@@ -1173,7 +1173,7 @@ class TestAutoApplyEdgeCases:
         Note: Triggering this error requires a bug that creates infinite forced
         actions. We test the exception is importable for documentation.
         """
-        from src.exceptions import ForcedActionLoopError
+        from core.driver import ForcedActionLoopError
 
         assert ForcedActionLoopError is not None
 
