@@ -280,6 +280,9 @@ cdef void _fill_invest_mask(GameState state, ActionLayout* layout, float* mask) 
     # Round-trip tracking variables (INV-17)
     cdef int buys, sells, roundtrips
     cdef bint roundtrip_blocked
+    # Low-level corp access
+    cdef CorpOffsets co = get_corp_offsets()
+    cdef float* corp
 
     # Pass is always valid
     mask[layout.pass_invest] = 1.0
@@ -308,8 +311,9 @@ cdef void _fill_invest_mask(GameState state, ActionLayout* layout, float* mask) 
         roundtrip_blocked = roundtrips >= 2  # MAX_ROUNDTRIPS
 
         # Buy: corp is active, has bank shares, player can afford, not roundtrip blocked
-        if state.is_corp_active(corp_id) and not roundtrip_blocked:
-            bank_shares = state.get_corp_bank_shares(corp_id)
+        corp = state._corp_ptr(corp_id)
+        if is_corp_active(corp, &co) and not roundtrip_blocked:
+            bank_shares = get_corp_bank_shares(corp, &co)
             if bank_shares > 0:
                 # Check if player can afford the buy price (next higher index)
                 current_price_index = state.get_corp_price_index(corp_id)
@@ -356,8 +360,12 @@ cdef void _fill_bid_mask(GameState state, ActionLayout* layout, float* mask) noe
 
 cdef void _fill_acquisition_mask(GameState state, ActionLayout* layout, float* mask) noexcept:
     """Fill mask for ACQUISITION phase actions."""
-    cdef int corp_id = state.get_acq_active_corp()
-    cdef int company_id = state.get_acq_target_company()
+    cdef float* turn = state._turn_ptr()
+    cdef TurnOffsets to = get_turn_offsets(state._num_players)
+    cdef CorpOffsets co = get_corp_offsets()
+    cdef float* corp
+    cdef int corp_id = get_acq_active_corp_nogil(turn, &to)
+    cdef int company_id = get_acq_target_company_nogil(turn, &to)
     cdef int low_price, high_price, corp_cash, offset, price
 
     if corp_id < 0 or company_id < 0:
@@ -366,21 +374,23 @@ cdef void _fill_acquisition_mask(GameState state, ActionLayout* layout, float* m
     # Pass is always valid
     mask[layout.acq_pass] = 1.0
 
-    if state.is_acq_fi_offer():
+    corp = state._corp_ptr(corp_id)
+
+    if is_acq_fi_offer_nogil(turn, &to):
         # FI offer: only specific buy actions valid
         if corp_id == CORP_OS:
             # OS buys at face value
-            if state.get_corp_cash(corp_id) >= get_company_face_value(company_id):
+            if get_corp_cash(corp, &co) >= get_company_face_value(company_id):
                 mask[layout.acq_fi_face] = 1.0
         else:
             # Others buy at high price
-            if state.get_corp_cash(corp_id) >= get_company_high_price(company_id):
+            if get_corp_cash(corp, &co) >= get_company_high_price(company_id):
                 mask[layout.acq_fi_high] = 1.0
     else:
         # General acquisition: price offsets based on affordability
         low_price = get_company_low_price(company_id)
         high_price = get_company_high_price(company_id)
-        corp_cash = state.get_corp_cash(corp_id)
+        corp_cash = get_corp_cash(corp, &co)
         for offset in range(high_price - low_price + 1):
             price = low_price + offset
             if price <= corp_cash:
@@ -389,7 +399,9 @@ cdef void _fill_acquisition_mask(GameState state, ActionLayout* layout, float* m
 
 cdef void _fill_closing_mask(GameState state, ActionLayout* layout, float* mask) noexcept:
     """Fill mask for CLOSING phase actions."""
-    cdef int company_id = state.get_current_closing_company()
+    cdef float* turn = state._turn_ptr()
+    cdef TurnOffsets to = get_turn_offsets(state._num_players)
+    cdef int company_id = get_closing_company_nogil(turn, &to)
     if company_id >= 0:
         mask[layout.close_action] = 1.0
         mask[layout.close_pass] = 1.0
@@ -399,19 +411,21 @@ cdef void _fill_dividends_mask(GameState state, ActionLayout* layout, float* mas
     """Fill mask for DIVIDENDS phase actions."""
     # Get current corp being processed (from dividend_corp one-hot)
     cdef float* turn = state._turn_ptr()
-    cdef int corp_id, amount
+    cdef TurnOffsets to = get_turn_offsets(state._num_players)
+    cdef CorpOffsets co = get_corp_offsets()
+    cdef int corp_id = get_dividend_corp_nogil(turn, &to)
+    cdef float* corp
+    cdef int amount
     cdef int max_dividend
 
-    # Find active dividend corp
-    for corp_id in range(NUM_CORPS):
-        if turn[state._turn.dividend_corp + corp_id] == 1.0:
-            break
-    else:
+    if corp_id < 0:
         return  # No active corp
 
+    corp = state._corp_ptr(corp_id)
+
     # Calculate max dividend (simplified - corp cash / issued shares)
-    cdef int corp_cash = state.get_corp_cash(corp_id)
-    cdef int issued_shares = state.get_corp_issued_shares(corp_id)
+    cdef int corp_cash = get_corp_cash(corp, &co)
+    cdef int issued_shares = get_corp_issued_shares(corp, &co)
     if issued_shares > 0:
         max_dividend = corp_cash // issued_shares
     else:
@@ -425,38 +439,38 @@ cdef void _fill_dividends_mask(GameState state, ActionLayout* layout, float* mas
 cdef void _fill_issue_mask(GameState state, ActionLayout* layout, float* mask) noexcept:
     """Fill mask for ISSUE_SHARES phase actions."""
     cdef float* turn = state._turn_ptr()
-    cdef int corp_id
+    cdef TurnOffsets to = get_turn_offsets(state._num_players)
+    cdef CorpOffsets co = get_corp_offsets()
+    cdef int corp_id = get_issue_corp_nogil(turn, &to)
 
-    # Find active issue corp
-    for corp_id in range(NUM_CORPS):
-        if turn[state._turn.issue_corp + corp_id] == 1.0:
-            break
-    else:
+    if corp_id < 0:
         return
 
+    cdef float* corp = state._corp_ptr(corp_id)
+
     # Check if corp has unissued shares
-    if state.get_corp_unissued_shares(corp_id) > 0:
+    if get_corp_unissued_shares(corp, &co) > 0:
         mask[layout.issue_action] = 1.0
 
     # Pass is always valid (unless in receivership with unissued shares)
-    if not state.is_corp_in_receivership(corp_id) or state.get_corp_unissued_shares(corp_id) == 0:
+    if not is_corp_in_receivership(corp, &co) or get_corp_unissued_shares(corp, &co) == 0:
         mask[layout.issue_pass] = 1.0
 
 
 cdef void _fill_ipo_mask(GameState state, ActionLayout* layout, float* mask) noexcept:
     """Fill mask for IPO phase actions."""
     cdef float* turn = state._turn_ptr()
+    cdef TurnOffsets to = get_turn_offsets(state._num_players)
+    cdef CorpOffsets co = get_corp_offsets()
+    cdef float* corp
     cdef int company_id, corp_id, par_slot, par_index, par_price, market_index
     cdef int star_tier, face_value, player_cash, cost, player_shares
 
     # Pass is always valid
     mask[layout.ipo_pass] = 1.0
 
-    # Find current IPO company
-    for company_id in range(NUM_COMPANIES):
-        if turn[state._turn.ipo_company + company_id] == 1.0:
-            break
-    else:
+    company_id = get_ipo_company_nogil(turn, &to)
+    if company_id < 0:
         return  # No active company
 
     star_tier = get_company_stars(company_id)
@@ -464,7 +478,8 @@ cdef void _fill_ipo_mask(GameState state, ActionLayout* layout, float* mask) noe
     player_cash = state.get_player_cash(state._get_active_player())
 
     for corp_id in range(NUM_CORPS):
-        if state.is_corp_active(corp_id):
+        corp = state._corp_ptr(corp_id)
+        if is_corp_active(corp, &co):
             continue  # Skip active corps
 
         for par_slot in range(MAX_PAR_SLOTS):
