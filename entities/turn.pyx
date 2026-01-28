@@ -48,7 +48,7 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
     - auction_starter (num_players)
     - auction_passed (num_players)
     - dividend_corp (8)
-    - dividend_impact (26)
+    - dividend_impact (25)
     - dividend_remaining (8)
     - issue_corp (8)
     - issue_remaining (8)
@@ -74,8 +74,8 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
 
     t.dividend_corp = offset
     offset += NUM_CORPS  # 8
-    # Skip dividend_impact (26)
-    offset += 26
+    # Skip dividend_impact (25)
+    offset += 25
     # Skip dividend_remaining (8)
     offset += NUM_CORPS
 
