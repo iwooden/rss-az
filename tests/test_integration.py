@@ -618,9 +618,9 @@ class TestClosingIntegration:
         assert not PLAYERS[0].owns_company(state, 0), "Company should be closed"
         assert COMPANIES[0].is_removed(state), "Company should be removed from game"
 
-        # Verify Junkyard Scrappers bonus (2x printed income = 2*1 = $2)
-        expected_js_cash = initial_js_cash + 2  # $1 printed income * 2
-        assert CORPS[0].get_cash(state) == expected_js_cash, f"JS cash: {CORPS[0].get_cash(state)} != {expected_js_cash}"
+        # Verify Junkyard Scrappers does NOT get bonus when player closes their own company
+        # JS only gets bonus when JS itself closes one of its own companies
+        assert CORPS[0].get_cash(state) == initial_js_cash, f"JS cash should be unchanged: {CORPS[0].get_cash(state)} != {initial_js_cash}"
 
         assert_invariants(state, "After CLOSING->INVEST with accept")
 
