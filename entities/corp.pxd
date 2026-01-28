@@ -6,6 +6,39 @@ Corporation entity declarations.
 from core.state cimport GameState
 
 
+# =============================================================================
+# LOW-LEVEL NOGIL ACCESSORS
+# =============================================================================
+
+cdef struct CorpOffsets:
+    # Offsets within a corporation's data block in the state vector
+    int active
+    int cash
+    int unissued_shares
+    int issued_shares
+    int bank_shares
+    int income
+    int stars
+    int share_price
+    int acquisition_proceeds
+    int in_receivership
+
+# Offset computation
+cdef CorpOffsets get_corp_offsets() noexcept nogil
+
+# Corp state accessors (raw pointer, nogil)
+cdef bint is_corp_active(float* corp, CorpOffsets* c) noexcept nogil
+cdef int get_corp_cash(float* corp, CorpOffsets* c) noexcept nogil
+cdef int get_corp_bank_shares(float* corp, CorpOffsets* c) noexcept nogil
+cdef int get_corp_unissued_shares(float* corp, CorpOffsets* c) noexcept nogil
+cdef int get_corp_issued_shares(float* corp, CorpOffsets* c) noexcept nogil
+cdef bint is_corp_in_receivership(float* corp, CorpOffsets* c) noexcept nogil
+
+
+# =============================================================================
+# HIGH-LEVEL ENTITY CLASS
+# =============================================================================
+
 cdef class Corporation:
     cdef readonly int corp_id
     cdef readonly str name

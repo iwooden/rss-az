@@ -13,6 +13,103 @@ from core.data import CORP_NAMES
 from entities.encoding cimport set_one_hot
 
 
+# =============================================================================
+# LOW-LEVEL NOGIL ACCESSORS
+# =============================================================================
+
+cdef struct CorpOffsets:
+    # Offsets within a corporation's data block in the state vector
+    int active
+    int cash
+    int unissued_shares
+    int issued_shares
+    int bank_shares
+    int income
+    int stars
+    int share_price
+    int acquisition_proceeds
+    int in_receivership
+
+
+cdef CorpOffsets get_corp_offsets() noexcept nogil:
+    """
+    Compute field offsets within corp data block.
+
+    The corporation state is stored as a contiguous float array with the following layout:
+    - active (1)
+    - cash (1)
+    - unissued_shares (1)
+    - issued_shares (1)
+    - bank_shares (1)
+    - income (1)
+    - stars (1)
+    - share_price (1)
+    - acquisition_proceeds (1)
+    - in_receivership (1)
+    - price_index (26) - omitted from struct (uses hidden compact storage)
+    - owned_companies (36) - omitted from struct (not used in masks)
+    - acquisition_companies (36) - omitted from struct (not used in masks)
+    """
+    cdef CorpOffsets c
+    cdef int offset = 0
+
+    c.active = offset
+    offset += 1
+    c.cash = offset
+    offset += 1
+    c.unissued_shares = offset
+    offset += 1
+    c.issued_shares = offset
+    offset += 1
+    c.bank_shares = offset
+    offset += 1
+    c.income = offset
+    offset += 1
+    c.stars = offset
+    offset += 1
+    c.share_price = offset
+    offset += 1
+    c.acquisition_proceeds = offset
+    offset += 1
+    c.in_receivership = offset
+
+    return c
+
+
+cdef inline bint is_corp_active(float* corp, CorpOffsets* c) noexcept nogil:
+    """Check if corporation is active (has been IPO'd)."""
+    return corp[c.active] == 1.0
+
+
+cdef inline int get_corp_cash(float* corp, CorpOffsets* c) noexcept nogil:
+    """Get corporation's cash (integer dollars)."""
+    return <int>(corp[c.cash] * CASH_DIVISOR + 0.5)
+
+
+cdef inline int get_corp_bank_shares(float* corp, CorpOffsets* c) noexcept nogil:
+    """Get number of shares held by the bank (sold by players)."""
+    return <int>(corp[c.bank_shares] * SHARE_DIVISOR + 0.5)
+
+
+cdef inline int get_corp_unissued_shares(float* corp, CorpOffsets* c) noexcept nogil:
+    """Get number of unissued shares remaining in treasury."""
+    return <int>(corp[c.unissued_shares] * SHARE_DIVISOR + 0.5)
+
+
+cdef inline int get_corp_issued_shares(float* corp, CorpOffsets* c) noexcept nogil:
+    """Get number of issued shares (held by players)."""
+    return <int>(corp[c.issued_shares] * SHARE_DIVISOR + 0.5)
+
+
+cdef inline bint is_corp_in_receivership(float* corp, CorpOffsets* c) noexcept nogil:
+    """Check if corporation is in receivership (no president)."""
+    return corp[c.in_receivership] == 1.0
+
+
+# =============================================================================
+# HIGH-LEVEL ENTITY CLASS
+# =============================================================================
+
 cdef class Corporation:
     """
     Entity handle for accessing corporation state.
