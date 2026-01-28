@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-26)
 
 Milestone: v5.0 CLOSING Phase
 Phase: 19 of 19 (Testing and Integration)
-Plan: 01 of 02 complete
-Status: In progress - 19-01 complete
-Last activity: 2026-01-27 — Completed 19-01-PLAN.md (edge case tests)
+Plan: 02 of 02 complete
+Status: Phase 19 complete - ready for milestone verification
+Last activity: 2026-01-27 — Completed 19-02-PLAN.md (integration tests)
 
-Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [█████████░]
+Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [██████████]
 
 ## Archived Milestones
 
@@ -31,7 +31,7 @@ See `.planning/milestones/` for full archives.
 
 ## Accumulated Context
 
-### Key Patterns (from v1-v4.0)
+### Key Patterns (from v1-v5.0)
 
 **Cython patterns:**
 - Entity initialization order - Initialize all handles before setting state
@@ -65,6 +65,8 @@ See `.planning/milestones/` for full archives.
 - Phase transition test pattern - Call apply_*_auto_py directly rather than driver loop (18-02)
 - Edge case test pattern - Boundary condition tests with explicit assertions in TestClosingEdgeCases class (19-01)
 - Parameterized player count testing - Use @pytest.mark.parametrize("num_players", [3, 6]) for phase verification (19-01)
+- Company ownership in tests - Use COMPANIES[x].transfer_to_player() for proper state, not PLAYERS[x].set_owns_company() (19-02)
+- Full turn cycle testing - Track turn number increment after CLOSING->INVEST transition (19-02)
 
 ### Pending Todos
 
@@ -87,6 +89,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-27
-Stopped at: Completed 19-01-PLAN.md (edge case tests)
+Stopped at: Completed 19-02-PLAN.md (integration tests)
 Resume file: None
-Next action: /gsd:execute-phase 19-02 (integration tests)
+Next action: Milestone v5.0 verification
