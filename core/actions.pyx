@@ -54,6 +54,17 @@ from entities.player cimport (
     get_roundtrips, get_share_buys, get_share_sells
 )
 from entities.company cimport get_auction_company_for_slot
+from entities.corp cimport (
+    CorpOffsets, get_corp_offsets,
+    is_corp_active, get_corp_cash, get_corp_bank_shares,
+    get_corp_unissued_shares, get_corp_issued_shares, is_corp_in_receivership
+)
+from entities.turn cimport (
+    TurnOffsets, get_turn_offsets,
+    get_acq_active_corp_nogil, get_acq_target_company_nogil, is_acq_fi_offer_nogil,
+    get_dividend_corp_nogil, get_issue_corp_nogil, get_ipo_company_nogil,
+    get_closing_company_nogil
+)
 
 # Maximum action count (6 players = 186 + 120 = 306)
 DEF MAX_ACTION_COUNT = 306
