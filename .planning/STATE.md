@@ -2,20 +2,20 @@
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-01-26)
+See: .planning/PROJECT.md (updated 2026-01-28)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** v5.1 complete, ready for v6.0 planning
+**Current focus:** Planning next milestone (v6.0)
 
 ## Current Position
 
-Milestone: v5.1 nogil Optimization (COMPLETE)
-Phase: 20 of 20 (nogil Mask Optimization) - VERIFIED
-Plan: 03 of 03 complete
-Status: Milestone complete - 7/7 criteria verified
-Last activity: 2026-01-28 — v5.1 shipped (nogil optimization)
+Milestone: v5.1 complete, planning v6.0
+Phase: Not started
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-01-28 — v5.1 milestone archived
 
-Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [██████████] | v5.1 [██████████]
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [##########] | v5.1 [##########]
 
 ## Archived Milestones
 
@@ -26,13 +26,14 @@ Progress: v1 [██████████] | v2 [█████████�
 | v2.1 | Forced Action Auto-Application | 7-8 | 3 | 2026-01-23 |
 | v3.0 | WRAP_UP Phase | 9-11 + 10.1 | 6 | 2026-01-24 |
 | v4.0 | ACQUISITION Phase | 12-15 | 13 | 2026-01-26 |
+| v5.0 | CLOSING Phase | 15.1, 16-19 | 14 | 2026-01-27 |
 | v5.1 | nogil Optimization | 20 | 3 | 2026-01-28 |
 
 See `.planning/milestones/` for full archives.
 
 ## Accumulated Context
 
-### Key Patterns (from v1-v5.0)
+### Key Patterns (from v1-v5.1)
 
 **Cython patterns:**
 - Entity initialization order - Initialize all handles before setting state
@@ -81,7 +82,7 @@ None.
 
 **INCOME Phase temporary transition:** Phase 17 transitions CLOSING -> INVEST as temporary workaround until INCOME phase is implemented. Documented in _transition_to_income() function.
 
-**Remaining Game Phases After v5.1:** INC (INCOME), DIV (DIVIDENDS), END (END_GAME), ISS (ISSUE_SHARES), IPO (INITIAL_PUBLIC_OFFERING)
+**Remaining Game Phases for v6.0:** INC (INCOME), DIV (DIVIDENDS), END (END_GAME), ISS (ISSUE_SHARES), IPO (INITIAL_PUBLIC_OFFERING)
 
 ### Quick Tasks Completed
 
@@ -93,7 +94,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-28 22:46:11Z
-Stopped at: Completed 20-03-PLAN.md (Phase 20 complete, v5.1 shipped)
+Last session: 2026-01-28 23:30:00Z
+Stopped at: v5.1 milestone archived
 Resume file: None
-Next action: Plan v6.0 milestone (remaining game phases)
+Next action: /gsd:new-milestone to start v6.0

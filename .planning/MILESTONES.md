@@ -1,5 +1,61 @@
 # Project Milestones: Rolling Stock Stars
 
+## v5.1 nogil Optimization (Shipped: 2026-01-28)
+
+**Delivered:** GIL-free mask generation functions enabling future thread-level parallelization for AlphaZero self-play training.
+
+**Phases completed:** 20 (3 plans total)
+
+**Key accomplishments:**
+
+- Low-level nogil accessors for corp state (CorpOffsets struct + 6 functions)
+- Low-level nogil accessors for turn state (TurnOffsets struct + 7 functions with _nogil suffix)
+- All 7 mask functions + dispatch refactored to use low-level accessors and marked `noexcept nogil`
+- 5 inline nogil accessor helpers to wrap remaining state access
+- Fixed off-by-one bug in turn offset calculation discovered during refactoring
+- Established pattern: dual-layer architecture (low-level nogil + high-level cpdef)
+
+**Stats:**
+
+- 15 files created/modified
+- ~27,655 lines Cython
+- 1 phase, 3 plans, 9 tasks
+- 1 day from v5.0 to v5.1 ship (same day as Phase 20 added)
+
+**Git range:** `1c4799d` → `2b7211e`
+
+**What's next:** v6.0 - Remaining game phases (INCOME, DIVIDENDS, ISSUE_SHARES, IPO, END_GAME)
+
+---
+
+## v5.0 CLOSING Phase (Shipped: 2026-01-27)
+
+**Delivered:** Complete CLOSING phase with FI/receivership auto-close, offer-based closing flow, Junkyard Scrappers bonus, and mandatory close protection.
+
+**Phases completed:** 15.1, 16-19 (14 plans total)
+
+**Key accomplishments:**
+
+- Code quality refactoring: encoding helpers, CORPS list pattern, buffer optimization, test consolidation
+- Auto-close logic: FI closes unprofitable companies, receivership corps close per color/CoO rules
+- Offer-based close flow: sorted by face value, accept/pass actions, dynamic re-validation
+- Junkyard Scrappers 2x printed income scrapping bonus
+- Mandatory close at phase end protects players from negative cash in INCOME
+- 312 tests with comprehensive edge case and integration coverage
+
+**Stats:**
+
+- 45 files created/modified
+- ~27,100 lines Cython, ~5,500 lines Python tests
+- 5 phases, 14 plans, 16 requirements
+- 1 day from v4.0 to v5.0 ship
+
+**Git range:** `feat(15.1-01)` → `docs(19): complete testing and integration phase`
+
+**What's next:** nogil optimization (v5.1), then remaining game phases
+
+---
+
 ## v4.0 ACQUISITION Phase (Shipped: 2026-01-26)
 
 **Delivered:** AlphaZero-optimized ACQUISITION phase with offer-based flow, same-president trade restrictions, receivership auto-buy integration, and acquisition zone management.

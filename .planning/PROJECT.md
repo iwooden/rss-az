@@ -2,17 +2,16 @@
 
 ## What This Is
 
-A high-performance Cython game engine for "Rolling Stock Stars" board game with complete INVEST, BID_IN_AUCTION, WRAP_UP, ACQUISITION, and CLOSING phases. The engine stores state as a single contiguous float32 array for zero-copy passing to PyTorch, optimized for AlphaZero-style self-play training.
+A high-performance Cython game engine for "Rolling Stock Stars" board game with complete INVEST, BID_IN_AUCTION, WRAP_UP, ACQUISITION, and CLOSING phases. The engine stores state as a single contiguous float32 array for zero-copy passing to PyTorch, optimized for AlphaZero-style self-play training. All mask generation functions are GIL-free for future thread-level parallelization.
 
-## Current Milestone: v5.0 CLOSING Phase
+## Current State (v5.1 shipped)
 
-**Goal:** Implement the CLOSING phase where players/corporations can close (remove) companies, with auto-close logic for FI and receivership corps, and mandatory closing for players facing negative income.
+**Shipped:** 2026-01-28
+**Phase coverage:** INVEST, BID_IN_AUCTION, WRAP_UP, ACQUISITION, CLOSING
+**Test suite:** 312 tests
+**Codebase:** ~27,655 LOC Cython, ~5,500 LOC Python (tests)
 
-**Target features:**
-- Auto-close at phase start: FI closes unprofitable companies, receivership corps close per rules
-- Offer-based close flow: Present negative-income companies sorted by face value descending
-- Mandatory auto-close at phase end: Players can't have negative cash after INCOME
-- Junkyard Scrappers special: 2× printed income as scrapping bonus
+**Next milestone goals:** v6.0 - Remaining game phases (INCOME, DIVIDENDS, ISSUE_SHARES, IPO, END_GAME)
 
 ## Core Value
 
@@ -77,17 +76,27 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - ✓ Merge acquisition_companies into owned_companies at phase end — v4.0
 - ✓ 254 tests with comprehensive ACQUISITION coverage — v4.0
 
+**v5.0 - CLOSING Phase:**
+- ✓ FI auto-closes companies where Cost of Ownership >= Income — v5.0
+- ✓ Receivership corps auto-close: red if CoO >= 4, orange if CoO >= 7 (keep highest face value) — v5.0
+- ✓ Offer-based close flow for negative-income companies (player-owned privates & corp subsidiaries) — v5.0
+- ✓ Offers sorted by face value ascending (lowest first) — v5.0
+- ✓ Accept (close) / Pass (keep) actions per offer — v5.0
+- ✓ Junkyard Scrappers receives 2x printed income when closing — v5.0
+- ✓ Mandatory auto-close at phase end for players facing negative cash in INCOME — v5.0
+- ✓ Phase transition to INCOME after all offers processed — v5.0
+- ✓ 312 tests with comprehensive CLOSING coverage — v5.0
+
+**v5.1 - nogil Optimization:**
+- ✓ Low-level nogil accessors for corp state (CorpOffsets struct + 6 functions) — v5.1
+- ✓ Low-level nogil accessors for turn state (TurnOffsets struct + 7 functions) — v5.1
+- ✓ All 7 mask functions use low-level accessors (no state.get_*() calls) — v5.1
+- ✓ All 7 mask functions + dispatch marked noexcept nogil — v5.1
+- ✓ Performance baseline established (no regression) — v5.1
+
 ### Active
 
-**v5.0 - CLOSING Phase:**
-- [ ] FI auto-closes companies where Cost of Ownership ≥ Income
-- [ ] Receivership corps auto-close: red if CoO ≥ 4, orange if CoO ≥ 7 (keep highest face value)
-- [ ] Offer-based close flow for negative-income companies (player-owned privates & corp subsidiaries)
-- [ ] Offers sorted by face value descending
-- [ ] Accept (close) / Pass (keep) actions per offer
-- [ ] Junkyard Scrappers receives 2× printed income when closing
-- [ ] Mandatory auto-close at phase end for players facing negative cash in INCOME
-- [ ] Phase transition to INCOME after all offers processed
+None - fresh requirements will be defined for v6.0 milestone via `/gsd:new-milestone`.
 
 ### Out of Scope
 
@@ -101,24 +110,27 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 
 ## Context
 
+**Shipped v5.1:** nogil Optimization (2026-01-28)
+- 1 phase (20), 3 plans
+- ~27,655 LOC Cython, ~5,500 LOC Python (tests)
+- Test suite: 312 tests
+
+**Shipped v5.0:** CLOSING Phase (2026-01-27)
+- 5 phases (15.1, 16-19), 14 plans, 16 requirements
+- ~27,100 LOC Cython, ~5,500 LOC Python (tests)
+- Test suite: 312 tests
+
 **Shipped v4.0:** ACQUISITION Phase (2026-01-26)
 - 4 phases (12-15), 13 plans, 26 requirements
-- ~26,518 LOC Cython, ~4,929 LOC Python (tests)
-- Test suite: 254 tests
 
 **Shipped v3.0:** WRAP_UP Phase (2026-01-24)
 - 4 phases (9-11 + 10.1), 6 plans, 18 requirements
-- ~25,419 LOC Cython, ~3,384 LOC Python (tests)
-- Test suite: 194 tests
 
 **Shipped v2.1:** Forced Action Auto-Application (2026-01-23)
 - 2 phases (7-8), 3 plans, 21 requirements
-- ~25,100 LOC Cython total
-- Test suite: 176 tests
 
 **Shipped v2:** INVEST & BID_IN_AUCTION (2026-01-21)
 - 5 phases (2-6), 12 plans, 48 requirements
-- ~25,000 LOC Cython, ~2,850 LOC Python (tests)
 
 **Tech stack:** Cython, NumPy, PyTorch-compatible state format
 
@@ -135,6 +147,12 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - While-loop re-query pattern for dynamic state iteration
 - Hybrid phase pattern (non-player when no offers, player otherwise)
 - Acquisition zone pattern (pending state during phase, merge at end)
+- Two-pass closing pattern (identify then close to avoid mutation during iteration)
+- Hidden buffer pattern (pre-generate offers, present one at a time)
+- Dynamic re-validation pattern (validate at presentation, not generation)
+- Mandatory close pattern (iterate players, close cheapest until income + cash >= 0)
+- Low-level nogil accessor pattern (Offsets struct + get_offsets() + cdef inline accessors)
+- Inline nogil accessor pattern (wrap state access for GIL-free calls)
 
 ## Key Decisions
 
@@ -163,12 +181,16 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 | Acquisition zones (proceeds + companies) | Prevents re-acquisition within same phase | ✓ Good |
 | Hybrid phase detection | Non-player when no offers, player when offers exist | ✓ Good |
 | Zone merge at phase end | Clean separation of pending vs committed state | ✓ Good |
+| Dual-layer accessor architecture | Low-level nogil + high-level cpdef for flexibility | ✓ Good |
+| Inline nogil helpers for state access | Wrap cpdef calls to enable GIL-free mask generation | ✓ Good |
+| _nogil suffix convention | Distinguish low-level accessors from class methods | ✓ Good |
 
 ## Constraints
 
 - **Performance:** Must support high-throughput self-play (thousands of games/minute)
 - **Reproducibility:** Seed parameter must produce identical games
 - **Compatibility:** State array must be directly usable by PyTorch
+- **Thread safety:** Mask generation must be GIL-free for parallel execution
 
 ---
-*Last updated: 2026-01-26 — v5.0 milestone started*
+*Last updated: 2026-01-28 — v5.1 milestone complete*
