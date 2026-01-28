@@ -31,10 +31,10 @@ Implement the INCOME phase where all entities (players, corporations, Foreign In
   2. Each synergy pair is counted exactly once (A-B counted once, not A-B and B-A)
   3. Synergy count for a corporation with no synergies returns 0
   4. Synergy count works with 0, 1, or many companies owned
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 21-01: Synergy pair identification and counting
+- [ ] 21-01-PLAN.md — TDD: Synergy pair identification and counting
 
 ### Phase 22: Income Calculation
 **Goal**: All entities can calculate their total income with all modifiers applied
@@ -78,7 +78,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 21. Synergy Infrastructure | 0/1 | Not started | - |
+| 21. Synergy Infrastructure | 0/1 | Planned | - |
 | 22. Income Calculation | 0/3 | Not started | - |
 | 23. Phase Integration | 0/3 | Not started | - |
 
