@@ -11,7 +11,7 @@ A high-performance Cython game engine for "Rolling Stock Stars" board game with 
 **Test suite:** 312 tests
 **Codebase:** ~27,655 LOC Cython, ~5,500 LOC Python (tests)
 
-**Next milestone goals:** v6.0 - Remaining game phases (INCOME, DIVIDENDS, ISSUE_SHARES, IPO, END_GAME)
+**Next milestone goals:** v6.0 - INCOME phase with synergy and corporation abilities
 
 ## Core Value
 
@@ -96,7 +96,13 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 
 ### Active
 
-None - fresh requirements will be defined for v6.0 milestone via `/gsd:new-milestone`.
+**v6.0 — INCOME Phase:**
+- [ ] INCOME phase implementation with income collection
+- [ ] Cost of Ownership deduction from company income
+- [ ] Synergy income calculation for corporations
+- [ ] Corporation special abilities (PR, DA, S, VM)
+- [ ] Foreign Investor +5● income bonus
+- [ ] Corporation bankruptcy on negative income (cannot pay)
 
 ### Out of Scope
 
@@ -193,4 +199,4 @@ None - fresh requirements will be defined for v6.0 milestone via `/gsd:new-miles
 - **Thread safety:** Mask generation must be GIL-free for parallel execution
 
 ---
-*Last updated: 2026-01-28 — v5.1 milestone complete*
+*Last updated: 2026-01-28 — v6.0 milestone started (INCOME phase)*

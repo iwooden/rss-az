@@ -5,15 +5,15 @@
 See: .planning/PROJECT.md (updated 2026-01-28)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** Planning next milestone (v6.0)
+**Current focus:** v6.0 INCOME phase
 
 ## Current Position
 
-Milestone: v5.1 complete, planning v6.0
-Phase: Not started
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-01-28 — v5.1 milestone archived
+Milestone: v6.0 INCOME Phase
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-01-28 — v6.0 milestone started
 
 Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [##########] | v5.1 [##########]
 
@@ -80,9 +80,9 @@ None.
 
 ### Blockers/Concerns
 
-**INCOME Phase temporary transition:** Phase 17 transitions CLOSING -> INVEST as temporary workaround until INCOME phase is implemented. Documented in _transition_to_income() function.
+**INCOME Phase temporary transition:** Phase 17 transitions CLOSING -> INVEST as temporary workaround until INCOME phase is implemented. Documented in _transition_to_income() function. **TO BE FIXED IN v6.0.**
 
-**Remaining Game Phases for v6.0:** INC (INCOME), DIV (DIVIDENDS), END (END_GAME), ISS (ISSUE_SHARES), IPO (INITIAL_PUBLIC_OFFERING)
+**Remaining Game Phases after v6.0:** DIV (DIVIDENDS), END (END_GAME), ISS (ISSUE_SHARES), IPO (INITIAL_PUBLIC_OFFERING)
 
 ### Quick Tasks Completed
 
@@ -94,7 +94,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-28 23:30:00Z
-Stopped at: v5.1 milestone archived
+Last session: 2026-01-28
+Stopped at: v6.0 milestone initialized
 Resume file: None
-Next action: /gsd:new-milestone to start v6.0
+Next action: Define requirements → create roadmap
