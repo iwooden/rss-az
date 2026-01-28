@@ -13,7 +13,7 @@ Milestone: v5.0 CLOSING Phase
 Phase: 19 of 19 (Testing and Integration)
 Plan: 02 of 02 complete
 Status: Phase 19 verified, milestone complete
-Last activity: 2026-01-28 — Quick task 004 complete (src/ directory removed)
+Last activity: 2026-01-28 — Quick task 005 complete (JS bonus bug fixed)
 
 Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [██████████]
 
@@ -87,10 +87,11 @@ None.
 |---|-------------|------|--------|-----------|
 | 003 | Principal engineer code review | 2026-01-26 | d06a4e6 | [003-principal-engineer-code-review](./quick/003-principal-engineer-code-review/) |
 | 004 | Remove unused src/ directory | 2026-01-28 | 923b163 | [004-investigate-unused-exceptions-in-src](./quick/004-investigate-unused-exceptions-in-src/) |
+| 005 | Fix JS scrapping bonus bug | 2026-01-28 | 2b35acf | [005-fix-js-scrapping-bonus-bug](./quick/005-fix-js-scrapping-bonus-bug/) |
 
 ## Session Continuity
 
 Last session: 2026-01-28
-Stopped at: Quick task 004 complete (src/ directory removed)
+Stopped at: Quick task 005 complete (JS bonus bug fixed)
 Resume file: None
 Next action: /gsd:audit-milestone
