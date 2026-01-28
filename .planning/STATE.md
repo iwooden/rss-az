@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-26)
 
 Milestone: v5.1 nogil Optimization
 Phase: 20 of 20 (nogil Mask Optimization)
-Plan: 02 of 03 complete
-Status: In progress - mask functions refactored for nogil
-Last activity: 2026-01-28 — Completed 20-02-PLAN.md (mask refactoring)
+Plan: 03 of 03 complete
+Status: Phase complete - all mask functions marked nogil
+Last activity: 2026-01-28 — Completed 20-03-PLAN.md (nogil marking)
 
-Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [██████████] | v5.1 [██████░░░]
+Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [██████████] | v5.1 [██████████]
 
 ## Archived Milestones
 
@@ -26,6 +26,7 @@ Progress: v1 [██████████] | v2 [█████████�
 | v2.1 | Forced Action Auto-Application | 7-8 | 3 | 2026-01-23 |
 | v3.0 | WRAP_UP Phase | 9-11 + 10.1 | 6 | 2026-01-24 |
 | v4.0 | ACQUISITION Phase | 12-15 | 13 | 2026-01-26 |
+| v5.1 | nogil Optimization | 20 | 3 | 2026-01-28 |
 
 See `.planning/milestones/` for full archives.
 
@@ -57,6 +58,7 @@ See `.planning/milestones/` for full archives.
 - Exception co-location pattern - Define exceptions in the module that uses them rather than separate modules (quick-004)
 - Low-level nogil accessor pattern - Offsets struct + get_offsets() + cdef inline accessors on raw float* for GIL-free state access (20-01)
 - Mask refactoring pattern - Compute offsets once at function start, use raw pointer accessors throughout to eliminate cpdef calls (20-02)
+- Inline nogil accessor pattern - cdef inline return_type func_nogil(...) noexcept nogil wraps state access for GIL-free calls (20-03)
 
 **Testing patterns:**
 - Per-task atomic commits - feat/test prefixes for git bisect
@@ -79,8 +81,6 @@ None.
 
 **INCOME Phase temporary transition:** Phase 17 transitions CLOSING -> INVEST as temporary workaround until INCOME phase is implemented. Documented in _transition_to_income() function.
 
-**nogil for mask functions:** Phase 20-02 complete (mask functions refactored). Next: Phase 20-03 to mark functions as nogil.
-
 **Remaining Game Phases After v5.1:** INC (INCOME), DIV (DIVIDENDS), END (END_GAME), ISS (ISSUE_SHARES), IPO (INITIAL_PUBLIC_OFFERING)
 
 ### Quick Tasks Completed
@@ -93,7 +93,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-28 22:38:47Z
-Stopped at: Completed 20-02-PLAN.md
+Last session: 2026-01-28 22:46:11Z
+Stopped at: Completed 20-03-PLAN.md (Phase 20 complete, v5.1 shipped)
 Resume file: None
-Next action: Continue Phase 20 (plan 03 remaining - mark mask functions nogil)
+Next action: Plan v6.0 milestone (remaining game phases)
