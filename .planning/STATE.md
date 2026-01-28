@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-26)
 
 Milestone: v5.1 nogil Optimization
 Phase: 20 of 20 (nogil Mask Optimization)
-Plan: 00 of 03 complete
-Status: Phase 20 created, ready for planning
-Last activity: 2026-01-28 — Phase 20 added to address nogil tech debt
+Plan: 01 of 03 complete
+Status: In progress - low-level nogil accessors ready
+Last activity: 2026-01-28 — Completed 20-01-PLAN.md (nogil accessors)
 
-Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [██████████] | v5.1 [░░░░░░░░░░]
+Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [██████████] | v5.1 [███░░░░░░░]
 
 ## Archived Milestones
 
@@ -55,6 +55,7 @@ See `.planning/milestones/` for full archives.
 - Mandatory close pattern - Iterate players by ID, close cheapest negative-income company until income + cash >= 0 (18-01)
 - Phase-end protection pattern - Mandatory close before transition prevents bankruptcy in next phase (18-01)
 - Exception co-location pattern - Define exceptions in the module that uses them rather than separate modules (quick-004)
+- Low-level nogil accessor pattern - Offsets struct + get_offsets() + cdef inline accessors on raw float* for GIL-free state access (20-01)
 
 **Testing patterns:**
 - Per-task atomic commits - feat/test prefixes for git bisect
@@ -77,7 +78,7 @@ None.
 
 **INCOME Phase temporary transition:** Phase 17 transitions CLOSING -> INVEST as temporary workaround until INCOME phase is implemented. Documented in _transition_to_income() function.
 
-**nogil for mask functions:** Being addressed in Phase 20 (v5.1). Requires low-level nogil accessors for corp/turn, then refactoring mask functions to use them.
+**nogil for mask functions:** Phase 20-01 complete (low-level accessors for corp/turn). Next: Phase 20-02 to refactor mask functions to use them.
 
 **Remaining Game Phases After v5.1:** INC (INCOME), DIV (DIVIDENDS), END (END_GAME), ISS (ISSUE_SHARES), IPO (INITIAL_PUBLIC_OFFERING)
 
@@ -91,7 +92,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-28
-Stopped at: Phase 20 created for nogil optimization
+Last session: 2026-01-28 22:27:36Z
+Stopped at: Completed 20-01-PLAN.md
 Resume file: None
-Next action: /gsd:plan-phase 20
+Next action: Continue Phase 20 (plans 02-03 remaining)
