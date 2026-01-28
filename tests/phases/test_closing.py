@@ -280,10 +280,10 @@ class TestVintageMachineryReduction:
 
 
 class TestJunkyardScrappersBonus:
-    """JS (corp_id 0) receives 2x printed income when closing."""
+    """JS (corp_id 0) receives 2x printed income only when JS closes its own companies."""
 
-    def test_js_receives_bonus_on_fi_close(self):
-        """JS gets 2x income bonus when FI closes company."""
+    def test_js_no_bonus_on_fi_close(self):
+        """JS does NOT get bonus when FI closes company."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -294,17 +294,16 @@ class TestJunkyardScrappersBonus:
 
         # FI closes a red company
         red_company = 0
-        income = get_company_income(red_company)
         COMPANIES[red_company].transfer_to_fi(state)
         TURN.set_coo_level(state, 7)
 
         apply_closing_auto_py(state)
 
-        # JS should have received 2x income
-        assert js.get_cash(state) == income * 2
+        # JS should NOT have received bonus (FI closed, not JS)
+        assert js.get_cash(state) == 0
 
-    def test_js_receives_bonus_on_receivership_close(self):
-        """JS gets 2x income bonus when receivership corp closes company."""
+    def test_js_no_bonus_on_receivership_close(self):
+        """JS does NOT get bonus when receivership corp closes company."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -316,7 +315,6 @@ class TestJunkyardScrappersBonus:
         # Non-JS corp in receivership closes red
         red_company = 0
         other_company = 14  # Higher FV yellow
-        income = get_company_income(red_company)
 
         corp = CORPS[1]
         corp.set_active(state, True)
@@ -327,8 +325,8 @@ class TestJunkyardScrappersBonus:
 
         apply_closing_auto_py(state)
 
-        # JS should have received 2x income
-        assert js.get_cash(state) == income * 2
+        # JS should NOT have received bonus (corp 1 closed, not JS)
+        assert js.get_cash(state) == 0
 
     def test_js_inactive_no_bonus(self):
         """No bonus when JS is not active."""
@@ -347,6 +345,30 @@ class TestJunkyardScrappersBonus:
 
         # JS should have no cash
         assert js.get_cash(state) == 0
+
+    def test_js_gets_bonus_when_js_in_receivership_closes(self):
+        """JS DOES get bonus when JS (in receivership) closes its own company."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Activate JS in receivership
+        js = CORPS[0]
+        js.set_active(state, True)
+        js.set_in_receivership(state, True)
+        js.set_cash(state, 0)
+
+        # JS owns red company that will be auto-closed by receivership rules
+        red_company = 0
+        other_company = 14  # Higher FV yellow (protected)
+        income = get_company_income(red_company)
+        COMPANIES[red_company].transfer_to_corp(state, 0)
+        COMPANIES[other_company].transfer_to_corp(state, 0)
+        TURN.set_coo_level(state, 7)
+
+        apply_closing_auto_py(state)
+
+        # JS should have received 2x income (JS closed its own company)
+        assert js.get_cash(state) == income * 2
 
 
 class TestOfferGeneration:
@@ -606,8 +628,8 @@ class TestCloseActions:
         # Player should still own it
         assert PLAYERS[0].owns_company(gs, 2)
 
-    def test_junkyard_scrappers_bonus_on_player_close(self, closing_offer_state):
-        """CLO-13: Junkyard Scrappers receives 2x printed income when closing."""
+    def test_junkyard_scrappers_no_bonus_on_player_close(self, closing_offer_state):
+        """JS does NOT receive bonus when player closes their own company."""
         gs = closing_offer_state
 
         # Activate Junkyard Scrappers (corp 0) with some starting cash
@@ -626,12 +648,11 @@ class TestCloseActions:
         from phases.closing import apply_closing_action_py
         apply_closing_action_py(gs, ACTION_CLOSE_PY)
 
-        # JS should have received 2x printed income ($1 * 2 = $2)
-        expected_bonus = get_company_income(1) * 2
-        assert CORPS[0].get_cash(gs) == 100 + expected_bonus
+        # JS should NOT have received bonus (player closed, not JS)
+        assert CORPS[0].get_cash(gs) == 100
 
-    def test_junkyard_scrappers_bonus_on_corp_close(self, closing_offer_state):
-        """CLO-13: JS bonus applies to corp closes too."""
+    def test_junkyard_scrappers_no_bonus_on_other_corp_close(self, closing_offer_state):
+        """JS does NOT receive bonus when another corp closes their company."""
         gs = closing_offer_state
 
         # Activate Junkyard Scrappers (corp 0)
@@ -654,9 +675,36 @@ class TestCloseActions:
         from phases.closing import apply_closing_action_py
         apply_closing_action_py(gs, ACTION_CLOSE_PY)
 
-        # JS should have received 2x printed income
+        # JS should NOT have received bonus (corp 1 closed, not JS)
+        assert CORPS[0].get_cash(gs) == 50
+
+    def test_junkyard_scrappers_bonus_only_when_js_closes(self, closing_offer_state):
+        """JS receives 2x printed income bonus ONLY when JS closes its own company."""
+        gs = closing_offer_state
+
+        # Activate Junkyard Scrappers (corp 0) with starting cash and president
+        CORPS[0].set_active(gs, True)
+        CORPS[0].set_cash(gs, 100)
+        CORPS[0].set_in_receivership(gs, False)
+        PLAYERS[0].set_president_of(gs, 0, True)
+        PLAYERS[0].set_shares(gs, 0, 3)  # 3 shares to be president
+
+        # JS owns 2 companies
+        COMPANIES[0].transfer_to_corp(gs, 0)  # Income $1
+        COMPANIES[3].transfer_to_corp(gs, 0)  # Keep one
+
+        # Set phase and run auto-close
+        TURN.set_phase(gs, PHASE_CLOSING_PY)
+        from phases.closing import apply_closing_auto_py
+        apply_closing_auto_py(gs)
+
+        # Accept the close offer for company 0
+        from phases.closing import apply_closing_action_py
+        apply_closing_action_py(gs, ACTION_CLOSE_PY)
+
+        # JS should have received 2x printed income bonus ($1 * 2 = $2)
         expected_bonus = get_company_income(0) * 2
-        assert CORPS[0].get_cash(gs) == 50 + expected_bonus
+        assert CORPS[0].get_cash(gs) == 100 + expected_bonus
 
 
 # =============================================================================
@@ -807,8 +855,8 @@ class TestMandatoryClose:
         cash = PLAYERS[0].get_cash(game_state)
         assert income + cash >= 0
 
-    def test_mandatory_close_js_bonus(self, game_state):
-        """Junkyard Scrappers receives 2x printed income bonus on mandatory close."""
+    def test_mandatory_close_no_js_bonus(self, game_state):
+        """Junkyard Scrappers does NOT receive bonus on mandatory player close."""
         TURN.set_coo_level(game_state, 7)
 
         # Activate Junkyard Scrappers (corp 0)
@@ -823,8 +871,8 @@ class TestMandatoryClose:
 
         process_mandatory_close_py(game_state)
 
-        # JS should have received 2x printed income ($1 * 2 = $2)
-        assert CORPS[0].get_cash(game_state) == initial_js_cash + 2
+        # JS should NOT have received bonus (player mandatory close, not JS close)
+        assert CORPS[0].get_cash(game_state) == initial_js_cash
 
     def test_mandatory_close_only_negative_income_companies(self, game_state):
         """Mandatory close only targets negative-income companies, not positive."""
@@ -1011,11 +1059,11 @@ class TestClosingEdgeCases:
         assert not COMPANIES[0].is_removed(game_state)
         assert PLAYERS[0].owns_company(game_state, 0)
 
-    def test_multi_close_cascade_js_bonus(self, game_state):
-        """Edge case: Multiple closes accumulate Junkyard Scrappers bonus.
+    def test_multi_close_cascade_no_js_bonus_for_player_closes(self, game_state):
+        """Edge case: Player closes multiple companies - JS does NOT get bonus.
 
-        Requirement: When player closes multiple companies, JS receives 2x
-        printed income for EACH close, with bonuses accumulating.
+        Requirement: When player closes multiple companies, JS does NOT receive
+        bonus because player is closing their own companies, not JS closing.
         """
         from phases.closing import apply_closing_action_py
 
@@ -1028,9 +1076,9 @@ class TestClosingEdgeCases:
         initial_js_cash = 50
 
         # Give player 0 multiple negative-income companies
-        # Company 0: $1 income, FV $1 -> bonus = $2
-        # Company 1: $1 income, FV $1 -> bonus = $2
-        # Company 3: $2 income, FV $3 -> bonus = $4
+        # Company 0: $1 income, FV $1
+        # Company 1: $1 income, FV $1
+        # Company 3: $2 income, FV $3
         PLAYERS[0].set_owns_company(game_state, 0, True)  # income $1
         PLAYERS[0].set_owns_company(game_state, 1, True)  # income $1
         PLAYERS[0].set_owns_company(game_state, 3, True)  # income $2
@@ -1047,9 +1095,6 @@ class TestClosingEdgeCases:
         assert TURN.get_closing_company(game_state) in [0, 1]
         apply_closing_action_py(game_state, ACTION_CLOSE_PY)
 
-        # JS bonus after first close (2x income of closed company)
-        assert CORPS[0].get_cash(game_state) > initial_js_cash
-
         # Continue closing
         assert TURN.get_closing_company(game_state) in [0, 1, 3]
         apply_closing_action_py(game_state, ACTION_CLOSE_PY)
@@ -1058,9 +1103,8 @@ class TestClosingEdgeCases:
         assert TURN.get_closing_company(game_state) == 3
         apply_closing_action_py(game_state, ACTION_CLOSE_PY)
 
-        # Total JS bonus = 2*($1 + $1 + $2) = $8
-        expected_total = initial_js_cash + (2 * 1) + (2 * 1) + (2 * 2)
-        assert CORPS[0].get_cash(game_state) == expected_total
+        # JS should NOT have received any bonus (player closes, not JS)
+        assert CORPS[0].get_cash(game_state) == initial_js_cash
         assert game_state.get_phase() == PHASE_INVEST_PY
 
     def test_corp_last_company_dynamic_invalidation(self, closing_offer_state):
