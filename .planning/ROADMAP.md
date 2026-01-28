@@ -1,8 +1,8 @@
-# Roadmap: Rolling Stock Stars v5.0 CLOSING Phase
+# Roadmap: Rolling Stock Stars v5.1 nogil Optimization
 
 ## Overview
 
-The CLOSING phase implementation extends the game engine with company closure mechanics. Players and corporations can close (remove) negative-income companies from the game, with auto-close rules for FI and receivership corps at phase start, offer-based player decisions during the phase, and mandatory auto-close at phase end to protect players from negative cash in INCOME. This milestone follows the hybrid phase pattern established in ACQUISITION.
+The v5.1 milestone addresses deferred tech debt from Phase 15.1: enabling `nogil` on mask generation functions for true thread-level parallelization. This requires extending the existing low-level pointer-based accessor pattern (established in player.pyx) to corp and turn operations, then updating mask functions to use these consistently.
 
 ## Milestones
 
@@ -12,6 +12,7 @@ The CLOSING phase implementation extends the game engine with company closure me
 - ✅ **v3.0** - WRAP_UP Phase - Phases 9-11 + 10.1 (shipped 2026-01-24)
 - ✅ **v4.0** - ACQUISITION Phase - Phases 12-15 (shipped 2026-01-26)
 - ✅ **v5.0** - CLOSING Phase - Phases 16-19 (shipped 2026-01-27)
+- 🔄 **v5.1** - nogil Optimization - Phase 20
 
 ## Phases
 
@@ -20,6 +21,7 @@ The CLOSING phase implementation extends the game engine with company closure me
 - [x] **Phase 17: Offer-Based Close Flow** - Player decisions on negative-income companies
 - [x] **Phase 18: Mandatory Close and Transition** - Auto-close at phase end, transition to INCOME
 - [x] **Phase 19: Testing and Integration** - Comprehensive test coverage
+- [ ] **Phase 20: nogil Mask Optimization** - Enable GIL-free mask generation for parallelization
 
 ## Phase Details
 
@@ -108,9 +110,28 @@ Plans:
 - [x] 19-01-PLAN.md — Edge case tests for CLOSING phase
 - [x] 19-02-PLAN.md — Integration tests for ACQUISITION -> CLOSING -> INCOME flow
 
+### Phase 20: nogil Mask Optimization
+**Goal**: Enable `nogil` on all mask generation functions for true thread-level parallelization
+**Depends on**: Phase 19 (v5.0 complete)
+**Requirements**: None (optimization phase, closes deferred tech debt from 15.1)
+**Success Criteria** (what must be TRUE):
+  1. Low-level nogil accessors created for corp operations in `entities/corp.pyx`
+  2. Low-level nogil accessors created for turn state in `entities/turn.pyx`
+  3. All 7 `_fill_*_mask()` functions use low-level accessors (no `state.get_*()` calls)
+  4. All 7 `_fill_*_mask()` functions have `nogil` added to signature
+  5. `_fill_mask_for_phase()` dispatch function has `nogil` added
+  6. All existing tests pass (no regressions)
+  7. Benchmark shows no performance regression (games/minute stable or improved)
+**Plans**: 3 plans
+
+Plans:
+- [ ] 20-01-PLAN.md — Create low-level nogil accessors for corp and turn
+- [ ] 20-02-PLAN.md — Refactor mask functions to use low-level accessors
+- [ ] 20-03-PLAN.md — Add nogil to mask functions and verify
+
 ## Progress
 
-**Execution Order:** 15.1 -> 16 -> 17 -> 18 -> 19
+**Execution Order:** 15.1 -> 16 -> 17 -> 18 -> 19 -> 20
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -119,10 +140,11 @@ Plans:
 | 17. Offer-Based Close Flow | v5.0 | 3/3 | ✓ Complete | 2026-01-27 |
 | 18. Mandatory Close and Transition | v5.0 | 2/2 | ✓ Complete | 2026-01-27 |
 | 19. Testing and Integration | v5.0 | 2/2 | ✓ Complete | 2026-01-27 |
+| 20. nogil Mask Optimization | v5.1 | 0/3 | Not Started | - |
 
 ---
 *Roadmap created: 2026-01-26*
-*Last updated: 2026-01-26*
+*Last updated: 2026-01-28*
 *Phase 15.1 inserted: 2026-01-26 (code quality refactoring before CLOSING implementation)*
 *Phase 15.1 planned: 2026-01-26 (5 plans in 2 waves)*
 *Phase 15.1 complete: 2026-01-26 (7/8 criteria verified, nogil deferred)*
@@ -134,3 +156,4 @@ Plans:
 *Phase 18 complete: 2026-01-27 (3/3 criteria verified)*
 *Phase 19 planned: 2026-01-27 (2 plans in 1 wave)*
 *Phase 19 complete: 2026-01-27 (4/4 criteria verified)*
+*Phase 20 added: 2026-01-28 (closes deferred nogil tech debt from 15.1)*

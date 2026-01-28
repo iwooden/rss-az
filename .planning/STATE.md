@@ -5,17 +5,17 @@
 See: .planning/PROJECT.md (updated 2026-01-26)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** v5.0 CLOSING Phase
+**Current focus:** v5.1 nogil Optimization (tech debt from 15.1)
 
 ## Current Position
 
-Milestone: v5.0 CLOSING Phase
-Phase: 19 of 19 (Testing and Integration)
-Plan: 02 of 02 complete
-Status: Phase 19 verified, milestone complete
-Last activity: 2026-01-28 — Quick task 005 complete (JS bonus bug fixed)
+Milestone: v5.1 nogil Optimization
+Phase: 20 of 20 (nogil Mask Optimization)
+Plan: 00 of 03 complete
+Status: Phase 20 created, ready for planning
+Last activity: 2026-01-28 — Phase 20 added to address nogil tech debt
 
-Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [██████████]
+Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [██████████] | v5.1 [░░░░░░░░░░]
 
 ## Archived Milestones
 
@@ -77,9 +77,9 @@ None.
 
 **INCOME Phase temporary transition:** Phase 17 transitions CLOSING -> INVEST as temporary workaround until INCOME phase is implemented. Documented in _transition_to_income() function.
 
-**nogil for mask functions (15.1-03):** Task 1 deferred - requires ~15 GameState accessor methods to have nogil versions. Will be addressed in Phase 15.1-04 as comprehensive GameState nogil refactoring.
+**nogil for mask functions:** Being addressed in Phase 20 (v5.1). Requires low-level nogil accessors for corp/turn, then refactoring mask functions to use them.
 
-**Remaining Phases After v5.0:** INC (INCOME), DIV (DIVIDENDS), END (END_GAME), ISS (ISSUE_SHARES), IPO (INITIAL_PUBLIC_OFFERING)
+**Remaining Game Phases After v5.1:** INC (INCOME), DIV (DIVIDENDS), END (END_GAME), ISS (ISSUE_SHARES), IPO (INITIAL_PUBLIC_OFFERING)
 
 ### Quick Tasks Completed
 
@@ -92,6 +92,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-28
-Stopped at: Quick task 005 complete (JS bonus bug fixed)
+Stopped at: Phase 20 created for nogil optimization
 Resume file: None
-Next action: /gsd:audit-milestone
+Next action: /gsd:plan-phase 20
