@@ -11,9 +11,9 @@ Requirements for INCOME phase implementation. Enables income collection for all 
 
 - [ ] **INC-01**: Each entity (player, corp, FI) sums income from all owned companies
 - [ ] **INC-02**: Cost of Ownership deducted from each company's income based on star color and CoO level
-- [ ] **INC-03**: Foreign Investor receives +5● base income bonus
-- [ ] **INC-04**: Positive total income → entity receives amount from Bank
-- [ ] **INC-05**: Negative total income → entity pays amount to Bank
+- [ ] **INC-03**: Foreign Investor receives +5 base income bonus
+- [ ] **INC-04**: Positive total income -> entity receives amount from Bank
+- [ ] **INC-05**: Negative total income -> entity pays amount to Bank
 - [ ] **INC-06**: Corporation that cannot pay negative income executes bankruptcy procedure
 
 ### Synergy Income
@@ -24,10 +24,10 @@ Requirements for INCOME phase implementation. Enables income collection for all 
 
 ### Corporation Special Abilities
 
-- [ ] **CSA-01**: Prussian Railway (PR) receives +1● per company owned
+- [ ] **CSA-01**: Prussian Railway (PR) receives +1 per company owned
 - [ ] **CSA-02**: Doppler AG (DA) doubles printed income of highest Face Value company
-- [ ] **CSA-03**: Synergistic (S) receives +1● per 2 synergy markers (rounded down)
-- [ ] **CSA-04**: Vintage Machinery (VM) reduces total Cost of Ownership by up to 10● (min 0●)
+- [ ] **CSA-03**: Synergistic (S) receives +1 per 2 synergy markers (rounded down)
+- [ ] **CSA-04**: Vintage Machinery (VM) reduces total Cost of Ownership by up to 10 (min 0)
 
 ### Phase Transitions
 
@@ -43,8 +43,8 @@ Deferred to v7.0+ milestones.
 ### DIVIDENDS Phase
 
 - **DIV-01**: Corporations pay dividends in share price order (descending)
-- **DIV-02**: Dividend per share ≥ 0●, ≤ maximum on share price card
-- **DIV-03**: Corporation must have enough cash for (dividend × issued shares)
+- **DIV-02**: Dividend per share >= 0, <= maximum on share price card
+- **DIV-03**: Corporation must have enough cash for (dividend x issued shares)
 - **DIV-04**: Share price adjustment based on star requirements
 
 ### ISSUE_SHARES Phase
@@ -61,7 +61,7 @@ Deferred to v7.0+ milestones.
 
 ### END_GAME Phase
 
-- **END-01**: Game end detection (75● share price, game end card)
+- **END-01**: Game end detection (75 share price, game end card)
 - **END-02**: Final scoring calculation
 
 ## Out of Scope
@@ -82,29 +82,29 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| INC-01 | Phase [N] | Pending |
-| INC-02 | Phase [N] | Pending |
-| INC-03 | Phase [N] | Pending |
-| INC-04 | Phase [N] | Pending |
-| INC-05 | Phase [N] | Pending |
-| INC-06 | Phase [N] | Pending |
-| SYN-01 | Phase [N] | Pending |
-| SYN-02 | Phase [N] | Pending |
-| SYN-03 | Phase [N] | Pending |
-| CSA-01 | Phase [N] | Pending |
-| CSA-02 | Phase [N] | Pending |
-| CSA-03 | Phase [N] | Pending |
-| CSA-04 | Phase [N] | Pending |
-| TRN-01 | Phase [N] | Pending |
-| TRN-02 | Phase [N] | Pending |
-| TRN-03 | Phase [N] | Pending |
-| TRN-04 | Phase [N] | Pending |
+| SYN-01 | Phase 21 | Pending |
+| SYN-02 | Phase 21 | Pending |
+| INC-01 | Phase 22 | Pending |
+| INC-02 | Phase 22 | Pending |
+| INC-03 | Phase 22 | Pending |
+| INC-04 | Phase 22 | Pending |
+| INC-05 | Phase 22 | Pending |
+| SYN-03 | Phase 22 | Pending |
+| CSA-01 | Phase 22 | Pending |
+| CSA-02 | Phase 22 | Pending |
+| CSA-03 | Phase 22 | Pending |
+| CSA-04 | Phase 22 | Pending |
+| INC-06 | Phase 23 | Pending |
+| TRN-01 | Phase 23 | Pending |
+| TRN-02 | Phase 23 | Pending |
+| TRN-03 | Phase 23 | Pending |
+| TRN-04 | Phase 23 | Pending |
 
 **Coverage:**
 - v6.0 requirements: 17 total
-- Mapped to phases: 0
-- Unmapped: 17 ⚠️
+- Mapped to phases: 17
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-01-28*
-*Last updated: 2026-01-28 after initial definition*
+*Last updated: 2026-01-28 after roadmap creation*
