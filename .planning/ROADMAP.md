@@ -12,7 +12,7 @@ The v5.1 milestone addresses deferred tech debt from Phase 15.1: enabling `nogil
 - ✅ **v3.0** - WRAP_UP Phase - Phases 9-11 + 10.1 (shipped 2026-01-24)
 - ✅ **v4.0** - ACQUISITION Phase - Phases 12-15 (shipped 2026-01-26)
 - ✅ **v5.0** - CLOSING Phase - Phases 16-19 (shipped 2026-01-27)
-- 🔄 **v5.1** - nogil Optimization - Phase 20
+- ✅ **v5.1** - nogil Optimization - Phase 20 (shipped 2026-01-28)
 
 ## Phases
 
@@ -21,7 +21,7 @@ The v5.1 milestone addresses deferred tech debt from Phase 15.1: enabling `nogil
 - [x] **Phase 17: Offer-Based Close Flow** - Player decisions on negative-income companies
 - [x] **Phase 18: Mandatory Close and Transition** - Auto-close at phase end, transition to INCOME
 - [x] **Phase 19: Testing and Integration** - Comprehensive test coverage
-- [ ] **Phase 20: nogil Mask Optimization** - Enable GIL-free mask generation for parallelization
+- [x] **Phase 20: nogil Mask Optimization** - Enable GIL-free mask generation for parallelization
 
 ## Phase Details
 
@@ -125,9 +125,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 20-01-PLAN.md — Create low-level nogil accessors for corp and turn
-- [ ] 20-02-PLAN.md — Refactor mask functions to use low-level accessors
-- [ ] 20-03-PLAN.md — Add nogil to mask functions and verify
+- [x] 20-01-PLAN.md — Create low-level nogil accessors for corp and turn
+- [x] 20-02-PLAN.md — Refactor mask functions to use low-level accessors
+- [x] 20-03-PLAN.md — Add nogil to mask functions and verify
 
 ## Progress
 
@@ -140,7 +140,7 @@ Plans:
 | 17. Offer-Based Close Flow | v5.0 | 3/3 | ✓ Complete | 2026-01-27 |
 | 18. Mandatory Close and Transition | v5.0 | 2/2 | ✓ Complete | 2026-01-27 |
 | 19. Testing and Integration | v5.0 | 2/2 | ✓ Complete | 2026-01-27 |
-| 20. nogil Mask Optimization | v5.1 | 0/3 | Not Started | - |
+| 20. nogil Mask Optimization | v5.1 | 3/3 | ✓ Complete | 2026-01-28 |
 
 ---
 *Roadmap created: 2026-01-26*
@@ -157,3 +157,5 @@ Plans:
 *Phase 19 planned: 2026-01-27 (2 plans in 1 wave)*
 *Phase 19 complete: 2026-01-27 (4/4 criteria verified)*
 *Phase 20 added: 2026-01-28 (closes deferred nogil tech debt from 15.1)*
+*Phase 20 complete: 2026-01-28 (7/7 criteria verified)*
+*v5.1 shipped: 2026-01-28 (nogil optimization milestone complete)*

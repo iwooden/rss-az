@@ -5,15 +5,15 @@
 See: .planning/PROJECT.md (updated 2026-01-26)
 
 **Core value:** Fast, reproducible game simulation for AI training with full rules compliance
-**Current focus:** v5.1 nogil Optimization (tech debt from 15.1)
+**Current focus:** v5.1 complete, ready for v6.0 planning
 
 ## Current Position
 
-Milestone: v5.1 nogil Optimization
-Phase: 20 of 20 (nogil Mask Optimization)
+Milestone: v5.1 nogil Optimization (COMPLETE)
+Phase: 20 of 20 (nogil Mask Optimization) - VERIFIED
 Plan: 03 of 03 complete
-Status: Phase complete - all mask functions marked nogil
-Last activity: 2026-01-28 — Completed 20-03-PLAN.md (nogil marking)
+Status: Milestone complete - 7/7 criteria verified
+Last activity: 2026-01-28 — v5.1 shipped (nogil optimization)
 
 Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [██████████] | v5.1 [██████████]
 
