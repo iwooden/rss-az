@@ -77,8 +77,8 @@ cdef void _close_company(GameState state, int company_id, int owner_type, int ow
     elif owner_type == 5:  # LOC_CORP
         corp_module.CORPS[owner_id].set_owns_company(state, company_id, False)
 
-    # Junkyard Scrappers (corp_id 0) bonus: 2x printed income
-    if corp_module.CORPS[0].is_active(state):
+    # Junkyard Scrappers (corp_id 0) bonus: 2x printed income only when JS closes its own company
+    if owner_type == 5 and owner_id == 0:  # LOC_CORP and JS
         corp_module.CORPS[0].add_cash(state, printed_income * 2)
 
     # Remove company from game
@@ -91,19 +91,12 @@ cdef void _close_player_company(GameState state, int company_id, int player_id) 
 
     Steps:
     1. Clear player ownership
-    2. Apply Junkyard Scrappers bonus (2x printed income)
-    3. Remove company from game
+    2. Remove company from game
 
     Similar to _close_company but handles player ownership (LOC_PLAYER).
     """
-    cdef int printed_income = get_company_income(company_id)
-
     # Clear ownership
     player_module.PLAYERS[player_id].set_owns_company(state, company_id, False)
-
-    # Junkyard Scrappers (corp_id 0) bonus: 2x printed income
-    if corp_module.CORPS[0].is_active(state):
-        corp_module.CORPS[0].add_cash(state, printed_income * 2)
 
     # Remove company from game
     company_module.COMPANIES[company_id].remove_from_game(state)
@@ -584,13 +577,8 @@ cdef void _handle_close_accept(GameState state) noexcept:
     # Close the company (reuses Phase 16 helper)
     # Map OWNER_PLAYER (0) -> LOC_PLAYER (3), OWNER_CORP (1) -> LOC_CORP (5)
     if owner_type == OWNER_PLAYER:
-        # For player-owned companies, manually clear ownership and apply bonus
+        # For player-owned companies, manually clear ownership
         player_module.PLAYERS[owner_id].set_owns_company(state, company_id, False)
-
-        # Junkyard Scrappers bonus
-        printed_income = get_company_income(company_id)
-        if corp_module.CORPS[0].is_active(state):
-            corp_module.CORPS[0].add_cash(state, printed_income * 2)
 
         # Remove from game
         company_module.COMPANIES[company_id].remove_from_game(state)
