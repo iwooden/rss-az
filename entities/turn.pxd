@@ -8,6 +8,37 @@ Includes phase, cost-of-ownership, and all turn-specific tracking state.
 from core.state cimport GameState
 
 
+# =============================================================================
+# LOW-LEVEL NOGIL ACCESSORS
+# =============================================================================
+
+cdef struct TurnOffsets:
+    # Offsets within turn state data block in the state vector
+    int acq_active_corp
+    int acq_target_company
+    int acq_is_fi_offer
+    int dividend_corp
+    int issue_corp
+    int ipo_company
+    int closing_company
+
+# Offset computation
+cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil
+
+# Turn state accessors (raw pointer, nogil)
+cdef int get_acq_active_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil
+cdef int get_acq_target_company_nogil(float* turn, TurnOffsets* t) noexcept nogil
+cdef bint is_acq_fi_offer_nogil(float* turn, TurnOffsets* t) noexcept nogil
+cdef int get_dividend_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil
+cdef int get_issue_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil
+cdef int get_ipo_company_nogil(float* turn, TurnOffsets* t) noexcept nogil
+cdef int get_closing_company_nogil(float* turn, TurnOffsets* t) noexcept nogil
+
+
+# =============================================================================
+# HIGH-LEVEL ENTITY CLASS
+# =============================================================================
+
 cdef class TurnState:
     cdef int _num_players
 

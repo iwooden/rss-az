@@ -14,6 +14,156 @@ from entities import player as player_module
 from entities.encoding cimport set_one_hot, get_one_hot_index, clear_one_hot
 
 
+# DEF constants for array sizes
+DEF NUM_CORPS = 8
+DEF NUM_COMPANIES = 36
+
+
+# =============================================================================
+# LOW-LEVEL NOGIL ACCESSORS
+# =============================================================================
+
+cdef struct TurnOffsets:
+    # Offsets within turn state data block in the state vector
+    int acq_active_corp
+    int acq_target_company
+    int acq_is_fi_offer
+    int dividend_corp
+    int issue_corp
+    int ipo_company
+    int closing_company
+
+
+cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
+    """
+    Compute field offsets within turn data block.
+
+    The turn state is stored as a contiguous float array with the following layout:
+    - turn_number (1)
+    - end_card_flipped (1)
+    - consecutive_passes (1)
+    - auction_company (36)
+    - auction_price (1)
+    - auction_high_bidder (num_players)
+    - auction_starter (num_players)
+    - auction_passed (num_players)
+    - dividend_corp (8)
+    - dividend_impact (26)
+    - dividend_remaining (8)
+    - issue_corp (8)
+    - issue_remaining (8)
+    - ipo_company (36)
+    - ipo_remaining (36)
+    - acq_active_corp (8)
+    - acq_target_company (36)
+    - acq_is_fi_offer (1)
+    - closing_company (36)
+    """
+    cdef TurnOffsets t
+    cdef int offset = 0
+
+    # Skip turn_number (1), end_card_flipped (1), consecutive_passes (1)
+    offset += 3
+
+    # Skip auction_company (36)
+    offset += 36
+    # Skip auction_price (1)
+    offset += 1
+    # Skip auction_high_bidder (num_players), auction_starter (num_players), auction_passed (num_players)
+    offset += num_players * 3
+
+    t.dividend_corp = offset
+    offset += NUM_CORPS  # 8
+    # Skip dividend_impact (26)
+    offset += 26
+    # Skip dividend_remaining (8)
+    offset += NUM_CORPS
+
+    t.issue_corp = offset
+    offset += NUM_CORPS  # 8
+    # Skip issue_remaining (8)
+    offset += NUM_CORPS
+
+    t.ipo_company = offset
+    offset += NUM_COMPANIES  # 36
+    # Skip ipo_remaining (36)
+    offset += NUM_COMPANIES
+
+    t.acq_active_corp = offset
+    offset += NUM_CORPS  # 8
+    t.acq_target_company = offset
+    offset += NUM_COMPANIES  # 36
+    t.acq_is_fi_offer = offset
+    offset += 1
+
+    t.closing_company = offset
+
+    return t
+
+
+cdef inline int get_acq_active_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil:
+    """Get active acquiring corp (scan one-hot, returns -1 if none)."""
+    cdef int i
+    for i in range(NUM_CORPS):
+        if turn[t.acq_active_corp + i] == 1.0:
+            return i
+    return -1
+
+
+cdef inline int get_acq_target_company_nogil(float* turn, TurnOffsets* t) noexcept nogil:
+    """Get target company for acquisition (scan one-hot, returns -1 if none)."""
+    cdef int i
+    for i in range(NUM_COMPANIES):
+        if turn[t.acq_target_company + i] == 1.0:
+            return i
+    return -1
+
+
+cdef inline bint is_acq_fi_offer_nogil(float* turn, TurnOffsets* t) noexcept nogil:
+    """Check if current acquisition is from Foreign Investor."""
+    return turn[t.acq_is_fi_offer] == 1.0
+
+
+cdef inline int get_dividend_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil:
+    """Get current dividend corp (scan one-hot, returns -1 if none)."""
+    cdef int i
+    for i in range(NUM_CORPS):
+        if turn[t.dividend_corp + i] == 1.0:
+            return i
+    return -1
+
+
+cdef inline int get_issue_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil:
+    """Get current issue corp (scan one-hot, returns -1 if none)."""
+    cdef int i
+    for i in range(NUM_CORPS):
+        if turn[t.issue_corp + i] == 1.0:
+            return i
+    return -1
+
+
+cdef inline int get_ipo_company_nogil(float* turn, TurnOffsets* t) noexcept nogil:
+    """Get current IPO company (scan one-hot, returns -1 if none)."""
+    cdef int i
+    for i in range(NUM_COMPANIES):
+        if turn[t.ipo_company + i] == 1.0:
+            return i
+    return -1
+
+
+cdef inline int get_closing_company_nogil(float* turn, TurnOffsets* t) noexcept nogil:
+    """Get company being offered for closing (scan one-hot, returns -1 if none)."""
+    cdef int i
+    for i in range(NUM_COMPANIES):
+        if turn[t.closing_company + i] == 1.0:
+            return i
+    return -1
+
+
+# =============================================================================
+# HIGH-LEVEL ENTITY CLASS
+# =============================================================================
+
 cdef class TurnState:
     """
     Entity handle for accessing turn state.
