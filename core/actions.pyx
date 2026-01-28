@@ -17,9 +17,9 @@ import numpy as np
 cimport numpy as cnp
 from libc.string cimport memset
 
-from core.state cimport GameState
+from core.state cimport GameState, TurnStateOffsets, compute_turn_offsets
 from core.data cimport (
-    GameConstants, GamePhases,
+    GameConstants, GamePhases, CASH_DIVISOR,
     get_company_face_value, get_company_low_price, get_company_high_price,
     get_company_stars, get_par_price, get_market_index, get_market_price,
     is_valid_par_price, get_par_index_for_slot, NUM_PAR_PRICES, CORP_OS
@@ -51,7 +51,8 @@ DEF PHASE_IPO = 9
 # Import low-level functions from entities for direct access
 from entities.player cimport (
     get_player_shares, PlayerOffsets, get_player_offsets,
-    get_roundtrips, get_share_buys, get_share_sells
+    get_roundtrips, get_share_buys, get_share_sells,
+    get_player_cash
 )
 from entities.company cimport get_auction_company_for_slot
 from entities.corp cimport (
@@ -266,10 +267,43 @@ cdef ActionInfo decode_action(ActionLayout* layout, int action_idx) noexcept nog
 
 
 # =============================================================================
-# MASK GENERATION HELPERS
+# MASK GENERATION HELPERS - nogil accessors
 # =============================================================================
 
-cdef void _fill_invest_mask(GameState state, ActionLayout* layout, float* mask) noexcept:
+cdef inline int get_player_cash_nogil(GameState state, int player_id) noexcept nogil:
+    """Get player cash without GIL (inline helper for mask functions)."""
+    cdef float* player = state._player_ptr(player_id)
+    cdef PlayerOffsets po = get_player_offsets(state._num_players)
+    return get_player_cash(player, &po)
+
+
+cdef inline int get_corp_price_index_nogil(GameState state, int corp_id) noexcept nogil:
+    """Get corp price index from hidden state without GIL."""
+    return <int>state._data[state._layout.hidden_corp_price_indices_offset + corp_id]
+
+
+cdef inline int get_auction_company_nogil(GameState state) noexcept nogil:
+    """Get auction company from hidden state without GIL."""
+    return <int>state._data[state._layout.hidden_auction_company_offset]
+
+
+cdef inline int get_auction_price_nogil(GameState state) noexcept nogil:
+    """Get auction price from turn state without GIL."""
+    cdef float* turn = state._turn_ptr()
+    cdef TurnStateOffsets tso = compute_turn_offsets(state._num_players)
+    return <int>(turn[tso.auction_price] * CASH_DIVISOR + 0.5)
+
+
+cdef inline bint is_market_space_available_nogil(GameState state, int index) noexcept nogil:
+    """Check if market space is available without GIL."""
+    return state._data[state._layout.market_offset + index] == 1.0
+
+
+# =============================================================================
+# MASK GENERATION HELPERS - phase-specific fill functions
+# =============================================================================
+
+cdef void _fill_invest_mask(GameState state, ActionLayout* layout, float* mask) noexcept nogil:
     """Fill mask for INVEST phase actions."""
     cdef int slot, company_id, bid_offset, corp_id
     cdef int face_value, player_cash, bank_shares, player_shares
@@ -288,7 +322,7 @@ cdef void _fill_invest_mask(GameState state, ActionLayout* layout, float* mask) 
     mask[layout.pass_invest] = 1.0
 
     # Auction: slot-based indexing (num_players slots)
-    player_cash = state.get_player_cash(player_id)
+    player_cash = get_player_cash_nogil(state, player_id)
     for slot in range(num_auction_slots):
         company_id = get_auction_company_for_slot(state, slot)
         if company_id < 0:
@@ -316,7 +350,7 @@ cdef void _fill_invest_mask(GameState state, ActionLayout* layout, float* mask) 
             bank_shares = get_corp_bank_shares(corp, &co)
             if bank_shares > 0:
                 # Check if player can afford the buy price (next higher index)
-                current_price_index = state.get_corp_price_index(corp_id)
+                current_price_index = get_corp_price_index_nogil(state, corp_id)
                 # Find next higher available market space
                 buy_index = current_price_index + 1
                 while buy_index < NUM_MARKET_SPACES and market_ptr[buy_index] != 1.0:
@@ -334,12 +368,12 @@ cdef void _fill_invest_mask(GameState state, ActionLayout* layout, float* mask) 
                 mask[layout.sell_share_base + corp_id] = 1.0
 
 
-cdef void _fill_bid_mask(GameState state, ActionLayout* layout, float* mask) noexcept:
+cdef void _fill_bid_mask(GameState state, ActionLayout* layout, float* mask) noexcept nogil:
     """Fill mask for BID_IN_AUCTION phase actions."""
     cdef int player_id = state._get_active_player()
-    cdef int player_cash = state.get_player_cash(player_id)
-    cdef int company_id = state.get_auction_company()
-    cdef int current_bid = state.get_auction_price()
+    cdef int player_cash = get_player_cash_nogil(state, player_id)
+    cdef int company_id = get_auction_company_nogil(state)
+    cdef int current_bid = get_auction_price_nogil(state)
     cdef int face_value, bid_offset, new_bid
 
     # Leave auction is always valid
@@ -358,7 +392,7 @@ cdef void _fill_bid_mask(GameState state, ActionLayout* layout, float* mask) noe
             mask[layout.raise_bid_base + bid_offset] = 1.0
 
 
-cdef void _fill_acquisition_mask(GameState state, ActionLayout* layout, float* mask) noexcept:
+cdef void _fill_acquisition_mask(GameState state, ActionLayout* layout, float* mask) noexcept nogil:
     """Fill mask for ACQUISITION phase actions."""
     cdef float* turn = state._turn_ptr()
     cdef TurnOffsets to = get_turn_offsets(state._num_players)
@@ -397,7 +431,7 @@ cdef void _fill_acquisition_mask(GameState state, ActionLayout* layout, float* m
                 mask[layout.acq_price_base + offset] = 1.0
 
 
-cdef void _fill_closing_mask(GameState state, ActionLayout* layout, float* mask) noexcept:
+cdef void _fill_closing_mask(GameState state, ActionLayout* layout, float* mask) noexcept nogil:
     """Fill mask for CLOSING phase actions."""
     cdef float* turn = state._turn_ptr()
     cdef TurnOffsets to = get_turn_offsets(state._num_players)
@@ -407,7 +441,7 @@ cdef void _fill_closing_mask(GameState state, ActionLayout* layout, float* mask)
         mask[layout.close_pass] = 1.0
 
 
-cdef void _fill_dividends_mask(GameState state, ActionLayout* layout, float* mask) noexcept:
+cdef void _fill_dividends_mask(GameState state, ActionLayout* layout, float* mask) noexcept nogil:
     """Fill mask for DIVIDENDS phase actions."""
     # Get current corp being processed (from dividend_corp one-hot)
     cdef float* turn = state._turn_ptr()
@@ -436,7 +470,7 @@ cdef void _fill_dividends_mask(GameState state, ActionLayout* layout, float* mas
         mask[layout.dividend_base + amount] = 1.0
 
 
-cdef void _fill_issue_mask(GameState state, ActionLayout* layout, float* mask) noexcept:
+cdef void _fill_issue_mask(GameState state, ActionLayout* layout, float* mask) noexcept nogil:
     """Fill mask for ISSUE_SHARES phase actions."""
     cdef float* turn = state._turn_ptr()
     cdef TurnOffsets to = get_turn_offsets(state._num_players)
@@ -457,7 +491,7 @@ cdef void _fill_issue_mask(GameState state, ActionLayout* layout, float* mask) n
         mask[layout.issue_pass] = 1.0
 
 
-cdef void _fill_ipo_mask(GameState state, ActionLayout* layout, float* mask) noexcept:
+cdef void _fill_ipo_mask(GameState state, ActionLayout* layout, float* mask) noexcept nogil:
     """Fill mask for IPO phase actions."""
     cdef float* turn = state._turn_ptr()
     cdef TurnOffsets to = get_turn_offsets(state._num_players)
@@ -475,7 +509,7 @@ cdef void _fill_ipo_mask(GameState state, ActionLayout* layout, float* mask) noe
 
     star_tier = get_company_stars(company_id)
     face_value = get_company_face_value(company_id)
-    player_cash = state.get_player_cash(state._get_active_player())
+    player_cash = get_player_cash_nogil(state, state._get_active_player())
 
     for corp_id in range(NUM_CORPS):
         corp = state._corp_ptr(corp_id)
@@ -491,7 +525,7 @@ cdef void _fill_ipo_mask(GameState state, ActionLayout* layout, float* mask) noe
             market_index = get_market_index(par_price)
 
             # Check if market space is available
-            if market_index < 0 or not state.is_market_space_available(market_index):
+            if market_index < 0 or not is_market_space_available_nogil(state, market_index):
                 continue
 
             # Calculate cost: (player_shares * par_price) - face_value
@@ -505,7 +539,7 @@ cdef void _fill_ipo_mask(GameState state, ActionLayout* layout, float* mask) noe
                 mask[layout.ipo_base + corp_id * MAX_PAR_SLOTS + par_slot] = 1.0
 
 
-cdef void _fill_mask_for_phase(GameState state, int phase, ActionLayout* layout, float* mask) noexcept:
+cdef void _fill_mask_for_phase(GameState state, int phase, ActionLayout* layout, float* mask) noexcept nogil:
     """Fill mask based on current phase. Central dispatch to avoid duplication."""
     if phase == PHASE_INVEST:
         _fill_invest_mask(state, layout, mask)
