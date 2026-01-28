@@ -13,7 +13,7 @@ Milestone: v5.0 CLOSING Phase
 Phase: 19 of 19 (Testing and Integration)
 Plan: 02 of 02 complete
 Status: Phase 19 verified, milestone complete
-Last activity: 2026-01-27 — Phase 19 verified (4/4 criteria passed)
+Last activity: 2026-01-28 — Quick task 004 complete (src/ directory removed)
 
 Progress: v1 [██████████] | v2 [██████████] | v2.1 [██████████] | v3.0 [██████████] | v4.0 [██████████] | v5.0 [██████████]
 
@@ -54,6 +54,7 @@ See `.planning/milestones/` for full archives.
 - Player income calculation pattern - Player method returns sum of adjusted income from owned privates only (18-01)
 - Mandatory close pattern - Iterate players by ID, close cheapest negative-income company until income + cash >= 0 (18-01)
 - Phase-end protection pattern - Mandatory close before transition prevents bankruptcy in next phase (18-01)
+- Exception co-location pattern - Define exceptions in the module that uses them rather than separate modules (quick-004)
 
 **Testing patterns:**
 - Per-task atomic commits - feat/test prefixes for git bisect
@@ -85,10 +86,11 @@ None.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 003 | Principal engineer code review | 2026-01-26 | d06a4e6 | [003-principal-engineer-code-review](./quick/003-principal-engineer-code-review/) |
+| 004 | Remove unused src/ directory | 2026-01-28 | 923b163 | [004-investigate-unused-exceptions-in-src](./quick/004-investigate-unused-exceptions-in-src/) |
 
 ## Session Continuity
 
-Last session: 2026-01-27
-Stopped at: Phase 19 verified, v5.0 milestone complete
+Last session: 2026-01-28
+Stopped at: Quick task 004 complete (src/ directory removed)
 Resume file: None
 Next action: /gsd:audit-milestone
