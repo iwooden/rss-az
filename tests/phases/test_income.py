@@ -277,6 +277,275 @@ class TestFIIncome:
         assert income == expected
 
 
+class TestCorpSpecialAbilities:
+    """CSA-01 through CSA-04: Corporation special ability modifiers to income."""
+
+    def test_pr_with_zero_companies(self, game_state):
+        """CSA-01: PR with 0 companies -> +0 bonus (but still works)."""
+        from entities.corp import CORPS
+
+        # CORP_PR = 4 (Prussian Railway)
+        pr = CORPS[4]
+        pr.set_active(game_state, True)
+
+        income = pr.calculate_income(game_state)
+        assert income == 0  # No companies, no bonus
+
+    def test_pr_with_multiple_companies(self, game_state):
+        """CSA-01: PR with 3 companies -> +3 bonus."""
+        from entities.corp import CORPS
+        from entities.company import COMPANIES
+        from entities.turn import TURN
+        from core.data import get_company_income, get_company_stars, get_cost_of_ownership
+
+        pr = CORPS[4]  # CORP_PR
+        pr.set_active(game_state, True)
+
+        # Give PR three companies (0, 1, 2)
+        for cid in [0, 1, 2]:
+            COMPANIES[cid].transfer_to_corp(game_state, 4)
+            pr.set_owns_company(game_state, cid, True)
+
+        coo_level = TURN.get_coo_level(game_state)
+
+        # Calculate expected: base income - CoO + company_count
+        expected = 0
+        for cid in [0, 1, 2]:
+            expected += get_company_income(cid)
+            expected -= get_cost_of_ownership(coo_level, get_company_stars(cid))
+        expected += 3  # +1 per company
+
+        income = pr.calculate_income(game_state)
+        assert income == expected
+
+    def test_da_with_multiple_companies(self, game_state):
+        """CSA-02: DA with companies of different FVs -> bonus = printed income of highest FV."""
+        from entities.corp import CORPS
+        from entities.company import COMPANIES
+        from entities.turn import TURN
+        from core.data import (
+            get_company_income, get_company_stars, get_cost_of_ownership,
+            COMPANY_NAME_TO_ID, COMPANY_FACE_VALUE
+        )
+
+        da = CORPS[5]  # CORP_DA
+        da.set_active(game_state, True)
+
+        # Give DA companies with different FVs
+        # Need to find companies with distinct FVs
+        # BME: FV=3, income=18
+        # BSE: FV=3, income=18
+        # CDG: FV=5, income=32
+        # MAD: FV=4, income=28
+        # Let's use companies with FV 1, 3, 5
+        # FV=1: Company 23 (KK)
+        # FV=3: Company 0 (BME)
+        # FV=5: Company 3 (CDG)
+        companies = [23, 0, 3]  # KK (FV=1), BME (FV=3), CDG (FV=5)
+
+        for cid in companies:
+            COMPANIES[cid].transfer_to_corp(game_state, 5)
+            da.set_owns_company(game_state, cid, True)
+
+        coo_level = TURN.get_coo_level(game_state)
+
+        # Find highest FV and its income
+        highest_fv = max(COMPANY_FACE_VALUE[cid] for cid in companies)
+        highest_fv_income = max(
+            (get_company_income(cid) for cid in companies if COMPANY_FACE_VALUE[cid] == highest_fv),
+            default=0
+        )
+
+        # Calculate expected: base income - CoO + highest_fv_income
+        expected = 0
+        for cid in companies:
+            expected += get_company_income(cid)
+            expected -= get_cost_of_ownership(coo_level, get_company_stars(cid))
+        expected += highest_fv_income  # DA ability bonus
+
+        income = da.calculate_income(game_state)
+        assert income == expected
+
+    def test_s_with_four_synergy_markers(self, game_state):
+        """CSA-03: S with 4 synergy markers -> +2 bonus (4 // 2)."""
+        from entities.corp import CORPS
+        from entities.company import COMPANIES
+        from entities.turn import TURN
+        from core.data import (
+            get_company_income, get_company_stars, get_cost_of_ownership,
+            COMPANY_NAME_TO_ID, py_compute_synergy_bonuses
+        )
+
+        s = CORPS[1]  # CORP_S (Synergistic)
+        s.set_active(game_state, True)
+
+        # Give S companies that form 4 synergy pairs (4 markers)
+        # DR synergizes with: WT (2), BY (2), PKP (4)
+        # BY synergizes with: WT (2)
+        # This gives us: DR-WT, DR-BY, DR-PKP, WT-BY = 4 pairs
+        dr = COMPANY_NAME_TO_ID["DR"]
+        wt = COMPANY_NAME_TO_ID["WT"]
+        by = COMPANY_NAME_TO_ID["BY"]
+        pkp = COMPANY_NAME_TO_ID["PKP"]
+        companies = [dr, wt, by, pkp]
+
+        for cid in companies:
+            COMPANIES[cid].transfer_to_corp(game_state, 1)
+            s.set_owns_company(game_state, cid, True)
+
+        coo_level = TURN.get_coo_level(game_state)
+
+        # Calculate synergy
+        synergy_income, synergy_markers = py_compute_synergy_bonuses(companies)
+
+        # Calculate expected: base income - CoO + synergy_income + (synergy_markers // 2)
+        expected = 0
+        for cid in companies:
+            expected += get_company_income(cid)
+            expected -= get_cost_of_ownership(coo_level, get_company_stars(cid))
+        expected += synergy_income
+        expected += synergy_markers // 2  # S ability bonus
+
+        income = s.calculate_income(game_state)
+        assert income == expected
+
+    def test_s_with_five_synergy_markers(self, game_state):
+        """CSA-03: S with 5 synergy markers -> +2 bonus (5 // 2 = 2, rounds down)."""
+        from entities.corp import CORPS
+        from entities.company import COMPANIES
+        from entities.turn import TURN
+        from core.data import (
+            get_company_income, get_company_stars, get_cost_of_ownership,
+            COMPANY_NAME_TO_ID, py_compute_synergy_bonuses
+        )
+
+        s = CORPS[1]  # CORP_S
+        s.set_active(game_state, True)
+
+        # Give S companies that form 5 synergy pairs (5 markers)
+        # DR synergizes with: WT, BY, PKP, SNCF, SNCB
+        # Need to create 5 pairs - add SNCF to previous set
+        dr = COMPANY_NAME_TO_ID["DR"]
+        wt = COMPANY_NAME_TO_ID["WT"]
+        by = COMPANY_NAME_TO_ID["BY"]
+        pkp = COMPANY_NAME_TO_ID["PKP"]
+        sncf = COMPANY_NAME_TO_ID["SNCF"]
+        companies = [dr, wt, by, pkp, sncf]
+
+        for cid in companies:
+            COMPANIES[cid].transfer_to_corp(game_state, 1)
+            s.set_owns_company(game_state, cid, True)
+
+        coo_level = TURN.get_coo_level(game_state)
+
+        synergy_income, synergy_markers = py_compute_synergy_bonuses(companies)
+
+        # Calculate expected
+        expected = 0
+        for cid in companies:
+            expected += get_company_income(cid)
+            expected -= get_cost_of_ownership(coo_level, get_company_stars(cid))
+        expected += synergy_income
+        expected += synergy_markers // 2  # S ability bonus (5 // 2 = 2)
+
+        income = s.calculate_income(game_state)
+        assert income == expected
+
+    def test_vm_with_coo_below_ten(self, game_state):
+        """CSA-04: VM with total_coo=8 -> CoO reduced to 0."""
+        from entities.corp import CORPS
+        from entities.company import COMPANIES
+        from entities.turn import TURN
+        from core.data import get_company_income, get_company_stars, get_cost_of_ownership
+
+        vm = CORPS[6]  # CORP_VM (Vintage Machinery)
+        vm.set_active(game_state, True)
+
+        # Give VM companies that total ~8 CoO
+        # At CoO level 1: 1 star = 2, 2 stars = 4, 3 stars = 6
+        # Use two 2-star companies (Company 1 and 2) = 4 + 4 = 8
+        TURN.set_coo_level(game_state, 1)
+
+        for cid in [1, 2]:  # Two 2-star companies
+            COMPANIES[cid].transfer_to_corp(game_state, 6)
+            vm.set_owns_company(game_state, cid, True)
+
+        coo_level = TURN.get_coo_level(game_state)
+
+        # Calculate expected: base income - max(0, total_coo - 10)
+        expected = 0
+        total_coo = 0
+        for cid in [1, 2]:
+            expected += get_company_income(cid)
+            total_coo += get_cost_of_ownership(coo_level, get_company_stars(cid))
+
+        # VM ability: reduce CoO by up to 10
+        reduced_coo = max(0, total_coo - 10)
+        expected -= reduced_coo
+
+        income = vm.calculate_income(game_state)
+        assert income == expected
+
+    def test_vm_with_coo_above_ten(self, game_state):
+        """CSA-04: VM with total_coo=15 -> CoO reduced by 10, leaving 5."""
+        from entities.corp import CORPS
+        from entities.company import COMPANIES
+        from entities.turn import TURN
+        from core.data import get_company_income, get_company_stars, get_cost_of_ownership
+
+        vm = CORPS[6]  # CORP_VM
+        vm.set_active(game_state, True)
+
+        # Give VM companies that total 15 CoO
+        # At CoO level 2: 1 star = 3, 2 stars = 6, 3 stars = 9
+        # Use one 3-star (9) and one 2-star (6) = 15
+        TURN.set_coo_level(game_state, 2)
+
+        companies = [0, 1]  # 3-star and 2-star
+        for cid in companies:
+            COMPANIES[cid].transfer_to_corp(game_state, 6)
+            vm.set_owns_company(game_state, cid, True)
+
+        coo_level = TURN.get_coo_level(game_state)
+
+        # Calculate expected
+        expected = 0
+        total_coo = 0
+        for cid in companies:
+            expected += get_company_income(cid)
+            total_coo += get_cost_of_ownership(coo_level, get_company_stars(cid))
+
+        # VM ability: reduce CoO by up to 10
+        reduced_coo = max(0, total_coo - 10)
+        expected -= reduced_coo
+
+        income = vm.calculate_income(game_state)
+        assert income == expected
+
+    def test_non_income_ability_corp_unaffected(self, game_state):
+        """Other corporations (JS, OS, SM, SI) have no income modifications."""
+        from entities.corp import CORPS
+        from entities.company import COMPANIES
+        from entities.turn import TURN
+        from core.data import get_company_income, get_company_stars, get_cost_of_ownership
+
+        js = CORPS[0]  # CORP_JS - has ability but doesn't affect calculate_income
+        js.set_active(game_state, True)
+
+        # Give JS one company
+        COMPANIES[0].transfer_to_corp(game_state, 0)
+        js.set_owns_company(game_state, 0, True)
+
+        coo_level = TURN.get_coo_level(game_state)
+
+        # Calculate expected: just base income - CoO (no special ability bonus)
+        expected = get_company_income(0)
+        expected -= get_cost_of_ownership(coo_level, get_company_stars(0))
+
+        income = js.calculate_income(game_state)
+        assert income == expected
+
+
 # =============================================================================
 # Phase 23: Phase Integration
 # =============================================================================
