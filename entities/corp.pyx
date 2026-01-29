@@ -383,6 +383,14 @@ cdef class Corporation:
         return total_income
 
     # =========================================================================
+    # INCOME APPLICATION
+    # =========================================================================
+
+    cpdef void apply_income(self, GameState state, int income):
+        """Apply calculated income to corporation cash."""
+        self.add_cash(state, income)
+
+    # =========================================================================
     # ACQUISITION PILE
     # =========================================================================
 

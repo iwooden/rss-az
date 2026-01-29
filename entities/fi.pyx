@@ -99,6 +99,14 @@ cdef class ForeignInvestor:
 
         return total
 
+    # =========================================================================
+    # INCOME APPLICATION
+    # =========================================================================
+
+    cpdef void apply_income(self, GameState state, int income):
+        """Apply calculated income to FI cash."""
+        self.add_cash(state, income)
+
 
 # =============================================================================
 # GLOBAL FOREIGN INVESTOR INSTANCE
