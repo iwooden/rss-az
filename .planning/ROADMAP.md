@@ -48,12 +48,12 @@ Plans:
   5. Corporation with S ability receives +1 per 2 synergy markers (rounded down)
   6. Corporation with VM ability reduces total CoO by up to 10 (min 0)
   7. Positive income adds to entity cash, negative income subtracts from entity cash
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 22-01: Base income calculation (INC-01, INC-02, INC-03)
-- [ ] 22-02: Corporation special abilities (CSA-01, CSA-02, CSA-03, CSA-04, SYN-03)
-- [ ] 22-03: Income application (INC-04, INC-05)
+- [ ] 22-01-PLAN.md — TDD: Base income calculation for Corp and FI (INC-01, INC-02, INC-03, SYN-03)
+- [ ] 22-02-PLAN.md — TDD: Corporation special abilities (CSA-01, CSA-02, CSA-03, CSA-04)
+- [ ] 22-03-PLAN.md — Income application to entity cash (INC-04, INC-05)
 
 ### Phase 23: Phase Integration
 **Goal**: INCOME phase executes as non-player phase with correct transitions and bankruptcy handling
