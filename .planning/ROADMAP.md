@@ -17,7 +17,7 @@ Implement the INCOME phase where all entities (players, corporations, Foreign In
 - Decimal phases (21.1, etc.): Urgent insertions if needed
 
 - [x] **Phase 21: Synergy Infrastructure** - Data structures for synergy pair identification
-- [ ] **Phase 22: Income Calculation** - Core income flow with CoO, synergies, and special abilities
+- [x] **Phase 22: Income Calculation** - Core income flow with CoO, synergies, and special abilities
 - [ ] **Phase 23: Phase Integration** - INCOME phase handler with transitions and bankruptcy
 
 ## Phase Details
@@ -51,9 +51,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 22-01-PLAN.md — TDD: Base income calculation for Corp and FI (INC-01, INC-02, INC-03, SYN-03)
-- [ ] 22-02-PLAN.md — TDD: Corporation special abilities (CSA-01, CSA-02, CSA-03, CSA-04)
-- [ ] 22-03-PLAN.md — Income application to entity cash (INC-04, INC-05)
+- [x] 22-01-PLAN.md — TDD: Base income calculation for Corp and FI (INC-01, INC-02, INC-03, SYN-03)
+- [x] 22-02-PLAN.md — TDD: Corporation special abilities (CSA-01, CSA-02, CSA-03, CSA-04)
+- [x] 22-03-PLAN.md — Income application to entity cash (INC-04, INC-05)
 
 ### Phase 23: Phase Integration
 **Goal**: INCOME phase executes as non-player phase with correct transitions and bankruptcy handling
@@ -79,7 +79,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 21. Synergy Infrastructure | 1/1 | ✓ Complete | 2026-01-29 |
-| 22. Income Calculation | 0/3 | Not started | - |
+| 22. Income Calculation | 3/3 | ✓ Complete | 2026-01-29 |
 | 23. Phase Integration | 0/3 | Not started | - |
 
 ---
