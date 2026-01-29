@@ -296,24 +296,33 @@ class TestCorpSpecialAbilities:
         from entities.corp import CORPS
         from entities.company import COMPANIES
         from entities.turn import TURN
-        from core.data import get_company_income, get_company_stars, get_cost_of_ownership
+        from core.data import (
+            get_company_income, get_company_stars, get_cost_of_ownership,
+            py_compute_synergy_bonuses
+        )
 
         pr = CORPS[4]  # CORP_PR
         pr.set_active(game_state, True)
 
         # Give PR three companies (0, 1, 2)
-        for cid in [0, 1, 2]:
+        # Note: 2 (KME) synergizes with 0 (BME) for +1
+        companies = [0, 1, 2]
+        for cid in companies:
             COMPANIES[cid].transfer_to_corp(game_state, 4)
             pr.set_owns_company(game_state, cid, True)
 
         coo_level = TURN.get_coo_level(game_state)
 
-        # Calculate expected: base income - CoO + company_count
+        # Calculate synergy
+        synergy_income, _ = py_compute_synergy_bonuses(companies)
+
+        # Calculate expected: base income - CoO + synergy + company_count
         expected = 0
-        for cid in [0, 1, 2]:
+        for cid in companies:
             expected += get_company_income(cid)
             expected -= get_cost_of_ownership(coo_level, get_company_stars(cid))
-        expected += 3  # +1 per company
+        expected += synergy_income
+        expected += 3  # +1 per company (PR ability)
 
         income = pr.calculate_income(game_state)
         assert income == expected
@@ -325,7 +334,8 @@ class TestCorpSpecialAbilities:
         from entities.turn import TURN
         from core.data import (
             get_company_income, get_company_stars, get_cost_of_ownership,
-            COMPANY_NAME_TO_ID, COMPANY_FACE_VALUE
+            get_company_face_value, py_compute_synergy_bonuses,
+            COMPANY_NAME_TO_ID
         )
 
         da = CORPS[5]  # CORP_DA
@@ -349,18 +359,22 @@ class TestCorpSpecialAbilities:
 
         coo_level = TURN.get_coo_level(game_state)
 
+        # Calculate synergy
+        synergy_income, _ = py_compute_synergy_bonuses(companies)
+
         # Find highest FV and its income
-        highest_fv = max(COMPANY_FACE_VALUE[cid] for cid in companies)
+        highest_fv = max(get_company_face_value(cid) for cid in companies)
         highest_fv_income = max(
-            (get_company_income(cid) for cid in companies if COMPANY_FACE_VALUE[cid] == highest_fv),
+            (get_company_income(cid) for cid in companies if get_company_face_value(cid) == highest_fv),
             default=0
         )
 
-        # Calculate expected: base income - CoO + highest_fv_income
+        # Calculate expected: base income - CoO + synergy + highest_fv_income
         expected = 0
         for cid in companies:
             expected += get_company_income(cid)
             expected -= get_cost_of_ownership(coo_level, get_company_stars(cid))
+        expected += synergy_income
         expected += highest_fv_income  # DA ability bonus
 
         income = da.calculate_income(game_state)
