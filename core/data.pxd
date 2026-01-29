@@ -90,6 +90,9 @@ cpdef int get_market_index(int price) noexcept nogil
 cpdef int get_cost_of_ownership(int coo_level, int star_tier) noexcept nogil
 cpdef int get_adjusted_company_income(int company_id, int coo_level) noexcept nogil
 
+# Synergy calculation
+cdef (int, int) compute_synergy_bonuses(int* company_ids, int num_companies) noexcept nogil
+
 cpdef bint is_valid_par_price(int star_tier, int par_index) noexcept nogil
 cpdef int get_par_price(int par_index) noexcept nogil
 cpdef int get_par_index_for_slot(int star_tier, int par_slot) noexcept nogil

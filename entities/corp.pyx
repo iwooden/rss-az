@@ -8,9 +8,14 @@ for fast repeated access.
 """
 
 from core.state cimport GameState, StateLayout, CorpFieldOffsets
-from core.data cimport GameConstants, CASH_DIVISOR, SHARE_DIVISOR, STAR_DIVISOR, MARKET_PRICES
+from core.data cimport (
+    GameConstants, CASH_DIVISOR, SHARE_DIVISOR, STAR_DIVISOR, MARKET_PRICES,
+    get_company_income, get_company_stars, get_cost_of_ownership,
+    compute_synergy_bonuses
+)
 from core.data import CORP_NAMES
 from entities.encoding cimport set_one_hot
+from entities import turn as turn_module
 
 
 # =============================================================================
@@ -293,6 +298,56 @@ cdef class Corporation:
     cpdef void set_owns_company(self, GameState state, int company_id, bint owns):
         """Set whether corporation owns a company."""
         state._data[self._owned_companies_offset + company_id] = 1.0 if owns else 0.0
+
+    # =========================================================================
+    # INCOME CALCULATION
+    # =========================================================================
+
+    cpdef int calculate_income(self, GameState state):
+        """
+        Calculate total income for corporation with synergy bonuses.
+
+        Formula: (sum_printed_income - total_coo) + synergy
+
+        Note: Special abilities (PR, DA, S, VM) are NOT implemented here.
+        That is deferred to Phase 22-02.
+
+        Returns:
+            Total income (can be negative)
+        """
+        cdef int company_id, base_income, stars, coo_value
+        cdef int coo_level = turn_module.TURN.get_coo_level(state)
+
+        # Accumulators
+        cdef int gross_printed_income = 0
+        cdef int total_coo = 0
+        cdef int company_count = 0
+
+        # Company ID collection for synergy calculation
+        cdef int company_ids[36]
+
+        # First pass: collect companies, sum printed income, sum CoO
+        for company_id in range(GameConstants.NUM_COMPANIES):
+            if self.owns_company(state, company_id):
+                company_ids[company_count] = company_id
+                company_count += 1
+
+                base_income = get_company_income(company_id)
+                gross_printed_income += base_income
+
+                stars = get_company_stars(company_id)
+                coo_value = get_cost_of_ownership(coo_level, stars)
+                total_coo += coo_value
+
+        # Compute synergy bonuses
+        cdef int synergy_income = 0
+        cdef int synergy_markers = 0
+        if company_count > 1:
+            (synergy_income, synergy_markers) = compute_synergy_bonuses(company_ids, company_count)
+
+        # Final formula: printed - CoO + synergy
+        # Note: Special abilities will be added in Phase 22-02
+        return gross_printed_income - total_coo + synergy_income
 
     # =========================================================================
     # ACQUISITION PILE

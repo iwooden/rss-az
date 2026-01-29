@@ -146,9 +146,9 @@ class TestCorpBaseIncome:
         COMPANIES[0].transfer_to_corp(game_state, 0)
         corp.set_owns_company(game_state, 0, True)
 
-        # CoO at level 0 (start of game)
+        # CoO at level 1 (start of game)
         coo_level = TURN.get_coo_level(game_state)
-        assert coo_level == 0
+        assert coo_level == 1
 
         expected_income = get_company_income(0)
         stars = get_company_stars(0)

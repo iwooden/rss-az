@@ -107,6 +107,9 @@ cdef class Corporation:
     cpdef bint owns_company(self, GameState state, int company_id)
     cpdef void set_owns_company(self, GameState state, int company_id, bint owns)
 
+    # Income calculation
+    cpdef int calculate_income(self, GameState state)
+
     # Acquisition pile (companies pending integration)
     cpdef bint has_acquisition_company(self, GameState state, int company_id)
     cpdef void set_acquisition_company(self, GameState state, int company_id, bint has)
