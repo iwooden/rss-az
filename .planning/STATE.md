@@ -11,9 +11,9 @@ See: .planning/PROJECT.md (updated 2026-01-28)
 
 Milestone: v6.0 INCOME Phase
 Phase: 22 of 23 (Income Calculation)
-Plan: 2 of 2 complete
+Plan: 3 of 3 complete
 Status: Phase 22 complete
-Last activity: 2026-01-29 — Completed 22-02-PLAN.md
+Last activity: 2026-01-29 — Completed 22-03-PLAN.md
 
 Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [##########] | v5.1 [##########] | v6.0 [###_______]
 
@@ -44,6 +44,8 @@ See `.planning/milestones/` for full archives.
 - Pair counting pattern - i<j nested loop generates unique pairs without duplicates (21-01)
 - Entity income calculation pattern - cpdef int calculate_income(GameState) for Corp/FI (22-01)
 - Special ability dispatch pattern - if/elif chain using CorpIndices enum for clarity (22-02)
+- Income flow separation pattern - calculate_income (pure) vs apply_income (mutation) (22-03)
+- Negative cash rounding pattern - +0.5 for positive, -0.5 for negative (22-03)
 
 **Testing patterns:**
 - Per-task atomic commits - feat/test prefixes for git bisect
@@ -63,6 +65,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-29
-Stopped at: Completed 22-02-PLAN.md (Phase 22 complete)
+Stopped at: Completed 22-03-PLAN.md (Phase 22 complete)
 Resume file: None
 Next action: Plan and execute Phase 23 (INCOME Phase Handler)
