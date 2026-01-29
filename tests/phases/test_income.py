@@ -560,6 +560,95 @@ class TestCorpSpecialAbilities:
         assert income == expected
 
 
+class TestIncomeApplication:
+    """INC-04, INC-05: Income application to entity cash."""
+
+    def test_corp_positive_income_adds_cash(self, game_state):
+        """Corporation positive income increases cash."""
+        from entities.corp import CORPS
+        from entities.company import COMPANIES
+        from core.data import COMPANY_NAME_TO_ID
+
+        corp = CORPS[0]
+        corp.set_active(game_state, True)
+        corp.set_cash(game_state, 10)
+
+        # Give corp a company (CDG: income=32, stars=4, CoO_level1=8 -> net=24)
+        cdg = COMPANY_NAME_TO_ID["CDG"]
+        COMPANIES[cdg].transfer_to_corp(game_state, 0)
+        corp.set_owns_company(game_state, cdg, True)
+
+        income = corp.calculate_income(game_state)
+        assert income > 0  # Should be 24
+
+        corp.apply_income(game_state, income)
+
+        assert corp.get_cash(game_state) == 10 + income
+
+    def test_corp_negative_income_subtracts_cash(self, game_state):
+        """Corporation negative income decreases cash."""
+        from entities.corp import CORPS
+
+        corp = CORPS[0]
+        corp.set_active(game_state, True)
+        corp.set_cash(game_state, 10)
+
+        # Apply negative income directly
+        corp.apply_income(game_state, -7)
+
+        assert corp.get_cash(game_state) == 3
+
+    def test_corp_can_go_negative(self, game_state):
+        """Corporation cash can go negative after income application."""
+        from entities.corp import CORPS
+
+        corp = CORPS[0]
+        corp.set_active(game_state, True)
+        corp.set_cash(game_state, 5)
+
+        # Apply large negative income
+        corp.apply_income(game_state, -10)
+
+        assert corp.get_cash(game_state) == -5
+
+    def test_fi_income_with_bonus(self, game_state):
+        """FI income includes +5 bonus."""
+        from entities.fi import FI
+        from entities.company import COMPANIES
+        from core.data import COMPANY_NAME_TO_ID
+
+        FI.set_cash(game_state, 10)
+
+        # FI with no companies -> income = 5 (just bonus)
+        income = FI.calculate_income(game_state)
+        assert income == 5
+
+        FI.apply_income(game_state, income)
+
+        assert FI.get_cash(game_state) == 15
+
+    def test_player_income_uses_existing_methods(self, game_state):
+        """Player income applied via add_cash."""
+        from entities.player import PLAYERS
+        from entities.company import COMPANIES
+        from core.data import COMPANY_NAME_TO_ID
+
+        player = PLAYERS[0]
+        player.set_cash(game_state, 20)
+
+        # Give player a company (CDG: income=32, stars=4, CoO_level1=8 -> net=24)
+        cdg = COMPANY_NAME_TO_ID["CDG"]
+        COMPANIES[cdg].transfer_to_player(game_state, 0)
+        player.set_owns_company(game_state, cdg, True)
+
+        income = player.get_income(game_state)
+        assert income > 0  # Should be 24
+
+        player.add_cash(game_state, income)
+
+        assert player.get_cash(game_state) == 20 + income
+
+
 # =============================================================================
 # Phase 23: Phase Integration
 # =============================================================================

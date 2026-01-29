@@ -24,3 +24,4 @@ cdef class ForeignInvestor:
 
     # Income calculation
     cpdef int calculate_income(self, GameState state)
+    cpdef void apply_income(self, GameState state, int income)

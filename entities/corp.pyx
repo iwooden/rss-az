@@ -88,7 +88,11 @@ cdef inline bint is_corp_active(float* corp, CorpOffsets* c) noexcept nogil:
 
 cdef inline int get_corp_cash(float* corp, CorpOffsets* c) noexcept nogil:
     """Get corporation's cash (integer dollars)."""
-    return <int>(corp[c.cash] * CASH_DIVISOR + 0.5)
+    cdef float val = corp[c.cash] * CASH_DIVISOR
+    if val >= 0:
+        return <int>(val + 0.5)
+    else:
+        return <int>(val - 0.5)
 
 
 cdef inline int get_corp_bank_shares(float* corp, CorpOffsets* c) noexcept nogil:
@@ -180,7 +184,11 @@ cdef class Corporation:
 
     cpdef int get_cash(self, GameState state):
         """Get corporation's cash (integer dollars)."""
-        return <int>(state._data[self._cash_offset] * CASH_DIVISOR + 0.5)
+        cdef float val = state._data[self._cash_offset] * CASH_DIVISOR
+        if val >= 0:
+            return <int>(val + 0.5)
+        else:
+            return <int>(val - 0.5)
 
     cpdef void set_cash(self, GameState state, int cash):
         """Set corporation's cash (integer dollars)."""
