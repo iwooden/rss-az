@@ -267,6 +267,56 @@ cpdef inline int get_par_index_for_slot(int star_tier, int par_slot) noexcept no
             count += 1
     return -1
 
+cdef inline (int, int) compute_synergy_bonuses(
+    int* company_ids,
+    int num_companies
+) noexcept nogil:
+    """
+    Compute synergy bonuses for companies owned by a corporation.
+
+    Counts each pair exactly once per RULES.md line 569.
+
+    Args:
+        company_ids: Array of company IDs (0-35) owned by corporation
+        num_companies: Number of companies in array
+
+    Returns:
+        (total_income, marker_count): Total synergy income and number of pairs
+    """
+    cdef int i, j
+    cdef int total_income = 0
+    cdef int marker_count = 0
+    cdef int bonus_a_to_b, bonus_b_to_a
+    cdef int has_synergy
+
+    for i in range(num_companies):
+        for j in range(i + 1, num_companies):
+            has_synergy = 0
+
+            bonus_a_to_b = COMPANY_SYNERGY[company_ids[i]][company_ids[j]]
+            if bonus_a_to_b > 0:
+                total_income += bonus_a_to_b
+                has_synergy = 1
+
+            bonus_b_to_a = COMPANY_SYNERGY[company_ids[j]][company_ids[i]]
+            if bonus_b_to_a > 0:
+                total_income += bonus_b_to_a
+                has_synergy = 1
+
+            if has_synergy:
+                marker_count += 1
+
+    return (total_income, marker_count)
+
+def py_compute_synergy_bonuses(list company_ids):
+    """Python wrapper for testing compute_synergy_bonuses."""
+    cdef int[36] ids
+    cdef int n = len(company_ids)
+    cdef int i
+    for i in range(n):
+        ids[i] = company_ids[i]
+    return compute_synergy_bonuses(ids, n)
+
 # =============================================================================
 # MODULE INITIALIZATION
 # =============================================================================

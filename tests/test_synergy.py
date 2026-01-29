@@ -46,16 +46,18 @@ class TestSynergyCalculation:
         assert income == 16
         assert markers == 1  # One pair, one marker
 
-    def test_two_companies_bidirectional_synergy(self):
-        """Two companies where A synergizes with B AND B synergizes with A."""
-        # E synergizes with BR (8), BR synergizes with E (8)
-        e = COMPANY_NAME_TO_ID["E"]
-        br = COMPANY_NAME_TO_ID["BR"]
-        assert get_company_synergy(e, br) == 8
-        assert get_company_synergy(br, e) == 8
-        income, markers = py_compute_synergy_bonuses([e, br])
-        assert income == 16  # 8 + 8 (both directions)
-        assert markers == 1  # Still only ONE pair
+    def test_two_companies_asymmetric_synergies(self):
+        """Two companies where both have synergies with other companies."""
+        # DR synergizes with PKP (4)
+        # PKP synergizes with KK (4)
+        # Test that having DR+PKP only counts DR->PKP, not the unrelated PKP->KK
+        dr = COMPANY_NAME_TO_ID["DR"]
+        pkp = COMPANY_NAME_TO_ID["PKP"]
+        assert get_company_synergy(dr, pkp) == 4
+        assert get_company_synergy(pkp, dr) == 0  # No reverse synergy
+        income, markers = py_compute_synergy_bonuses([dr, pkp])
+        assert income == 4  # Only DR->PKP
+        assert markers == 1  # One pair
 
     def test_three_companies_multiple_pairs(self):
         """Three companies with multiple synergy pairs."""
