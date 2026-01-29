@@ -34,19 +34,19 @@ re_verification: false
 | `core/data.pyx` | compute_synergy_bonuses function | ✓ VERIFIED | Function exists at line 270-309 (40 lines), substantive implementation |
 | `core/data.pyx` | Function signature | ⚠️ PARTIAL | Has `cdef inline` instead of `cpdef inline`, but provides `py_compute_synergy_bonuses` wrapper |
 | `core/data.pyx` | Python wrapper | ✓ VERIFIED | py_compute_synergy_bonuses at line 311-318 provides Python access |
-| `tests/test_synergy.py` | Synergy calculation tests | ✓ VERIFIED | File exists (103 lines), TestSynergyCalculation class with 8 tests |
-| `tests/test_synergy.py` | Test coverage | ✓ VERIFIED | Tests cover 0, 1, 2, 3+ companies with various synergy patterns |
+| `tests/phases/test_income.py` | Synergy calculation tests | ✓ VERIFIED | File exists (103 lines), TestSynergyCalculation class with 8 tests |
+| `tests/phases/test_income.py` | Test coverage | ✓ VERIFIED | Tests cover 0, 1, 2, 3+ companies with various synergy patterns |
 
 **Level 1 (Existence):**
 - core/data.pyx: EXISTS (380 lines)
-- tests/test_synergy.py: EXISTS (103 lines)
+- tests/phases/test_income.py: EXISTS (103 lines)
 - compute_synergy_bonuses function: EXISTS (lines 270-309)
 - py_compute_synergy_bonuses wrapper: EXISTS (lines 311-318)
 
 **Level 2 (Substantive):**
 - compute_synergy_bonuses: SUBSTANTIVE (40 lines, no stubs, has exports)
 - py_compute_synergy_bonuses: SUBSTANTIVE (8 lines, no stubs, has exports)
-- tests/test_synergy.py: SUBSTANTIVE (103 lines, 8 comprehensive tests, no stubs)
+- tests/phases/test_income.py: SUBSTANTIVE (103 lines, 8 comprehensive tests, no stubs)
 - No TODO/FIXME/placeholder patterns found
 - No empty return patterns found
 - No stub patterns found
@@ -82,7 +82,7 @@ re_verification: false
 
 ### Anti-Patterns Found
 
-**Scan of modified files:** core/data.pyx, tests/test_synergy.py
+**Scan of modified files:** core/data.pyx, tests/phases/test_income.py
 
 **Results:**
 - 🔍 No TODO/FIXME comments found
@@ -121,7 +121,7 @@ running build_ext
 
 **Synergy Tests:** ✅ PASS (8/8)
 ```
-pytest tests/test_synergy.py -v
+pytest tests/phases/test_income.py -v
 8 passed in 0.00s
 ```
 

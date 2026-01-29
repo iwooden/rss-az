@@ -1,10 +1,22 @@
-"""Tests for synergy pair calculation (SYN-01, SYN-02)."""
+"""Tests for INCOME phase (v6.0).
+
+Requirements covered:
+- SYN-01, SYN-02: Synergy pair calculation (Phase 21)
+- INC-01 through INC-06: Income calculation (Phase 22)
+- CSA-01 through CSA-04: Corporation special abilities (Phase 22)
+- TRN-01 through TRN-04: Phase transitions (Phase 23)
+"""
 import pytest
 from core.data import (
     py_compute_synergy_bonuses,
     COMPANY_NAME_TO_ID,
     get_company_synergy,
 )
+
+
+# =============================================================================
+# Phase 21: Synergy Infrastructure
+# =============================================================================
 
 
 class TestSynergyCalculation:
@@ -101,3 +113,17 @@ class TestSynergyCalculation:
         income, markers = py_compute_synergy_bonuses([cdg, mad, fra])
         assert income == 32  # 16 + 16
         assert markers == 2  # CDG-MAD, CDG-FRA (no MAD-FRA synergy)
+
+
+# =============================================================================
+# Phase 22: Income Calculation
+# =============================================================================
+
+# TODO: Add tests for INC-01 through INC-05, SYN-03, CSA-01 through CSA-04
+
+
+# =============================================================================
+# Phase 23: Phase Integration
+# =============================================================================
+
+# TODO: Add tests for INC-06, TRN-01 through TRN-04

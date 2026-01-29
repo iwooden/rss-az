@@ -16,7 +16,7 @@ tech-stack:
     - "Bidirectional synergy summing (A->B + B->A)"
 key-files:
   created:
-    - tests/test_synergy.py
+    - tests/phases/test_income.py
   modified:
     - core/data.pyx
 decisions:
@@ -49,7 +49,7 @@ Implemented `compute_synergy_bonuses` function that takes an array of company ID
 - Marker count increments only if at least one direction has synergy
 
 **Test coverage:**
-- 8 comprehensive test cases in `TestSynergyCalculation`
+- 8 comprehensive test cases in `TestSynergyCalculation` (tests/phases/test_income.py)
 - Covers: 0 companies, 1 company, 2 companies (various synergy patterns), 3+ companies
 - Tests order independence (CDG,MAD vs MAD,CDG give same result)
 - All 320 tests pass
@@ -163,7 +163,7 @@ Corporation owns: [DR, WT, BY]
 - **Found during:** Task 1 (RED phase)
 - **Issue:** Test assumed E↔BR was bidirectional synergy (both 8)
 - **Fix:** Changed test to use DR→PKP (4), PKP→DR (0) asymmetric case
-- **Files modified:** tests/test_synergy.py
+- **Files modified:** tests/phases/test_income.py
 - **Commit:** 553e431 (part of feat commit, not separate)
 - **Reasoning:** Discovered during test execution that no bidirectional synergies exist in actual game data
 
@@ -171,7 +171,7 @@ Corporation owns: [DR, WT, BY]
 
 ✅ **Build succeeds:** `python3 setup.py build_ext --inplace` (exit 0)
 
-✅ **Synergy tests pass:** `pytest tests/test_synergy.py -v` (8/8 passed)
+✅ **Synergy tests pass:** `pytest tests/phases/test_income.py -v` (8/8 passed)
 
 ✅ **Full test suite passes:** `pytest tests/ -v` (320/320 passed)
 
@@ -219,8 +219,8 @@ cdef int calculate_corp_income(Corporation* corp) noexcept nogil:
 
 | Task | Type | Commit | Files |
 |------|------|--------|-------|
-| 1. RED - Write failing tests | test | b04b3a1 | tests/test_synergy.py |
-| 2. GREEN - Implement function | feat | 553e431 | core/data.pyx, tests/test_synergy.py (fix) |
+| 1. RED - Write failing tests | test | b04b3a1 | tests/phases/test_income.py |
+| 2. GREEN - Implement function | feat | 553e431 | core/data.pyx, tests/phases/test_income.py (fix) |
 
 **TDD cycle notes:**
 - RED: ImportError for py_compute_synergy_bonuses (expected)
