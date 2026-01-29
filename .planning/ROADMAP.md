@@ -16,7 +16,7 @@ Implement the INCOME phase where all entities (players, corporations, Foreign In
 - Integer phases (21, 22, 23): Planned milestone work
 - Decimal phases (21.1, etc.): Urgent insertions if needed
 
-- [ ] **Phase 21: Synergy Infrastructure** - Data structures for synergy pair identification
+- [x] **Phase 21: Synergy Infrastructure** - Data structures for synergy pair identification
 - [ ] **Phase 22: Income Calculation** - Core income flow with CoO, synergies, and special abilities
 - [ ] **Phase 23: Phase Integration** - INCOME phase handler with transitions and bankruptcy
 
@@ -34,7 +34,7 @@ Implement the INCOME phase where all entities (players, corporations, Foreign In
 **Plans**: 1 plan
 
 Plans:
-- [ ] 21-01-PLAN.md — TDD: Synergy pair identification and counting
+- [x] 21-01-PLAN.md — TDD: Synergy pair identification and counting
 
 ### Phase 22: Income Calculation
 **Goal**: All entities can calculate their total income with all modifiers applied
@@ -78,7 +78,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 21. Synergy Infrastructure | 0/1 | Planned | - |
+| 21. Synergy Infrastructure | 1/1 | ✓ Complete | 2026-01-29 |
 | 22. Income Calculation | 0/3 | Not started | - |
 | 23. Phase Integration | 0/3 | Not started | - |
 

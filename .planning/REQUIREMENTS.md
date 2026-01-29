@@ -82,8 +82,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SYN-01 | Phase 21 | Pending |
-| SYN-02 | Phase 21 | Pending |
+| SYN-01 | Phase 21 | Complete |
+| SYN-02 | Phase 21 | Complete |
 | INC-01 | Phase 22 | Pending |
 | INC-02 | Phase 22 | Pending |
 | INC-03 | Phase 22 | Pending |
