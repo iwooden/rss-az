@@ -1,10 +1,18 @@
 """Tests for INCOME phase (v6.0).
 
 Requirements covered:
-- SYN-01, SYN-02: Synergy pair calculation (Phase 21)
-- INC-01 through INC-06: Income calculation (Phase 22)
-- CSA-01 through CSA-04: Corporation special abilities (Phase 22)
-- TRN-01 through TRN-04: Phase transitions (Phase 23)
+- SYN-01, SYN-02: Synergy pair calculation (Phase 21) ✓
+- SYN-03: Synergy income added to entity income (Phase 21) ✓
+- INC-01: Entity sums income from owned companies (Phase 22) ✓
+- INC-02: CoO deducted from income (Phase 22) ✓
+- INC-03: FI +5 bonus (Phase 22) ✓
+- INC-04: Positive income adds to cash (Phase 22) ✓
+- INC-05: Negative income subtracts from cash (Phase 22) ✓
+- CSA-01: PR +1 per company (Phase 22) ✓
+- CSA-02: DA +printed income of highest FV (Phase 22) ✓
+- CSA-03: S +synergy_markers // 2 (Phase 22) ✓
+- CSA-04: VM reduces CoO by up to 10 (Phase 22) ✓
+- TRN-01 through TRN-04: Phase transitions (Phase 23) [TODO]
 """
 import pytest
 from core.data import (
