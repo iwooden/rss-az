@@ -317,6 +317,15 @@ python setup.py benchmark --num-games=5000 --num-players=6
 
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
+## Understanding Game Rules
+
+**Before working on any game logic**, read `RULES.md` to understand the correct behavior. This is the authoritative source for how the game should work. Common areas where rules matter:
+- Share buying/selling price calculations
+- Phase transitions and action ordering
+- Dividend payments and constraints
+- Acquisition and closing logic
+- Receivership and bankruptcy handling
+
 ## Quick Reference
 
 ```bash

@@ -412,20 +412,21 @@ class TestSellShare:
     """Test sell share action behavior."""
 
     def test_sell_share_adds_cash_to_player(self, trade_state):
-        """INV-11: Sell share adds sell price to player cash."""
+        """INV-11: Sell share pays NEW (lower) price per RULES.md."""
         corp = CORPS[0]
         player = PLAYERS[0]
 
         initial_player_cash = player.get_cash(trade_state)
-        current_price = corp.get_share_price(trade_state)
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
         DRIVER.apply_action(trade_state, sell_idx)
 
+        # Per RULES.md: "Bank pays **new** share price to player"
+        # The price drops first, then player receives the new lower price
+        new_price = corp.get_share_price(trade_state)
         new_player_cash = player.get_cash(trade_state)
-        # Player received current price (before movement)
-        assert new_player_cash == initial_player_cash + current_price
+        assert new_player_cash == initial_player_cash + new_price
 
     def test_sell_share_transfers_share_to_bank(self, trade_state):
         """INV-12: Sell share moves 1 share from player to bank."""

@@ -188,18 +188,17 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     """
     Handle sell share action.
 
-    Per CONTEXT.md: Sell receives current price, then price moves down
+    Per RULES.md: Price moves down FIRST, then player receives NEW (lower) price.
 
     Sequence:
-    1. Get current price (before movement)
-    2. Transfer money (corp pays sell price to player)
-    3. Transfer share (player to bank)
-    4. Move price down (skipping occupied spaces)
-    5. If price reaches 0, execute bankruptcy and return
-    6. Track round-trip
-    7. Update net worth
-    8. Reset consecutive passes
-    9. Advance to next player
+    1. Transfer share (player to bank)
+    2. Move price down (skipping occupied spaces)
+    3. Pay player the NEW (lower) price
+    4. If price reaches 0, execute bankruptcy and return
+    5. Track round-trip
+    6. Update net worth
+    7. Reset consecutive passes
+    8. Advance to next player
     """
     cdef int player_id, current_index, new_index, sell_price
     cdef int bank_shares, player_shares
@@ -211,23 +210,21 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     # Get corp by name lookup
     corp = corp_module.CORPS[corp_id]
 
-    # Get current price BEFORE movement (INV-11)
-    current_index = corp.get_price_index(state)
-    sell_price = get_market_price(current_index)
-
-    # Transfer money (INV-11)
-    player_module.PLAYERS[player_id].add_cash(state, sell_price)
-
-    # Transfer share (INV-12)
+    # Transfer share first (INV-12)
     player_shares = player_module.PLAYERS[player_id].get_shares(state, corp_id)
     player_module.PLAYERS[player_id].set_shares(state, corp_id, player_shares - 1)
     bank_shares = corp.get_bank_shares(state)
     corp.set_bank_shares(state, bank_shares + 1)
 
-    # Move price down (INV-13)
+    # Move price down (INV-13) - BEFORE paying player
+    current_index = corp.get_price_index(state)
     new_index = market_module.MARKET.find_next_lower_space(state, current_index)
     market_module.MARKET.set_space_available(state, current_index, True)  # Free old
     corp.set_price_index(state, new_index)  # Updates price
+
+    # Pay player the NEW (lower) price (INV-11)
+    sell_price = get_market_price(new_index)
+    player_module.PLAYERS[player_id].add_cash(state, sell_price)
 
     # Check for bankruptcy (INV-22)
     if new_index == 0:
