@@ -65,12 +65,12 @@ Plans:
   3. Corporation that cannot pay negative income executes bankruptcy procedure
   4. INCOME increments turn counter and clears roundtrip flags (end-of-turn logic)
   5. INCOME transitions to INVEST (temporary until DIVIDENDS implemented)
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 23-01: Remove CLOSING temporary transition (TRN-01)
-- [ ] 23-02: INCOME phase handler (TRN-02, TRN-03, TRN-04)
-- [ ] 23-03: Corporation bankruptcy on negative income (INC-06)
+- [ ] 23-01-PLAN.md — Refactor bankruptcy code to Corp.go_bankrupt() method (INC-06 enablement)
+- [ ] 23-02-PLAN.md — INCOME phase handler with entity income application (TRN-04, INC-06)
+- [ ] 23-03-PLAN.md — Phase transitions and TEMP_END_TURN bookkeeping (TRN-01, TRN-02, TRN-03)
 
 ## Progress
 
