@@ -216,19 +216,28 @@ class TestFICashPreservation:
         assert FI.get_cash(state) == fi_cash_before, \
             f"FI cash should be {fi_cash_before}, got {FI.get_cash(state)}"
 
-    def test_fi_cash_zero_means_no_change(self):
-        """FI with 0 cash should still have 0 cash after WRAP_UP."""
+    def test_fi_cash_zero_means_no_purchases_in_wrap_up(self):
+        """FI with 0 cash cannot purchase companies during WRAP_UP.
+
+        Note: trigger_wrap_up goes through the full cycle (WRAP_UP -> ACQUISITION ->
+        CLOSING -> INCOME -> TEMP_END_TURN -> INVEST). FI receives income during
+        INCOME phase, so final cash will include income from owned companies.
+        This test verifies FI had 0 cash going into WRAP_UP (unable to buy).
+        """
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
         # Set FI cash to 0
         FI.set_cash(state, 0)
 
-        # Trigger WRAP_UP
+        # Calculate expected income FI will receive during INCOME phase
+        fi_income = FI.calculate_income(state)
+
+        # Trigger full cycle (WRAP_UP through INVEST)
         trigger_wrap_up(state)
 
-        # FI should still have 0 (can't buy anything)
-        assert FI.get_cash(state) == 0
+        # FI should have only its income (could not purchase during WRAP_UP)
+        assert FI.get_cash(state) == fi_income
 
 
 # =============================================================================

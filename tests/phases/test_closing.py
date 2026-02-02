@@ -20,6 +20,7 @@ from tests.phases.conftest import STATUS_OK
 # Phase constants for tests
 PHASE_CLOSING_PY = GamePhases.PHASE_CLOSING
 PHASE_INVEST_PY = GamePhases.PHASE_INVEST
+PHASE_INCOME_PY = GamePhases.PHASE_INCOME
 
 
 class TestFIAutoClose:
@@ -572,9 +573,9 @@ class TestOfferValidation:
         apply_closing_action_py(gs, ACTION_CLOSE_PY)
 
         # Second offer (company 3) should be SKIPPED because corp now has only 1 company
-        # Phase should transition to INVEST (no more valid offers)
+        # Phase should transition to INCOME (no more valid offers)
         assert TURN.get_closing_company(gs) == -1
-        assert gs.get_phase() == PHASE_INVEST_PY
+        assert gs.get_phase() == PHASE_INCOME_PY
 
 
 class TestCloseActions:
@@ -922,8 +923,8 @@ class TestClosingPhaseTransition:
         # Run auto-close (which includes offer generation, mandatory close, and transition)
         apply_closing_auto_py(game_state)
 
-        # Should have transitioned to INVEST (temporary target for INCOME)
-        assert game_state.get_phase() == GamePhases.PHASE_INVEST
+        # Should have transitioned to INCOME
+        assert game_state.get_phase() == GamePhases.PHASE_INCOME
 
     def test_closing_flow_with_mandatory_close_triggered(self, game_state):
         """Integration test: Mandatory close triggers after offers are declined."""
@@ -949,8 +950,8 @@ class TestClosingPhaseTransition:
         apply_closing_action_py(game_state, ACTION_PASS_PY)
 
         # After passing, mandatory close should have kicked in and closed the company
-        # Phase should transition to INVEST
-        assert game_state.get_phase() == GamePhases.PHASE_INVEST
+        # Phase should transition to INCOME
+        assert game_state.get_phase() == GamePhases.PHASE_INCOME
         assert COMPANIES[0].is_removed(game_state)
 
 
@@ -981,8 +982,8 @@ class TestClosingEdgeCases:
         apply_closing_auto_py(game_state)
 
         # With no negative-income companies owned by players,
-        # phase should transition directly to INVEST
-        assert game_state.get_phase() == PHASE_INVEST_PY
+        # phase should transition directly to INCOME
+        assert game_state.get_phase() == PHASE_INCOME_PY
         assert TURN.get_closing_company(game_state) == -1
 
         assert_invariants(game_state, "After CLOSING phase")
@@ -1017,8 +1018,8 @@ class TestClosingEdgeCases:
         apply_closing_action_py(game_state, ACTION_PASS_PY)
 
         # After passing, mandatory close should trigger and close company
-        # Phase should transition to INVEST
-        assert game_state.get_phase() == PHASE_INVEST_PY
+        # Phase should transition to INCOME
+        assert game_state.get_phase() == PHASE_INCOME_PY
         assert COMPANIES[0].is_removed(game_state)
         assert not PLAYERS[0].owns_company(game_state, 0)
 
@@ -1052,8 +1053,8 @@ class TestClosingEdgeCases:
         apply_closing_action_py(game_state, ACTION_PASS_PY)
 
         # After passing, NO mandatory close (player has enough cash)
-        # Phase should transition to INVEST
-        assert game_state.get_phase() == PHASE_INVEST_PY
+        # Phase should transition to INCOME
+        assert game_state.get_phase() == PHASE_INCOME_PY
 
         # Company should NOT be removed
         assert not COMPANIES[0].is_removed(game_state)
@@ -1105,7 +1106,7 @@ class TestClosingEdgeCases:
 
         # JS should NOT have received any bonus (player closes, not JS)
         assert CORPS[0].get_cash(game_state) == initial_js_cash
-        assert game_state.get_phase() == PHASE_INVEST_PY
+        assert game_state.get_phase() == PHASE_INCOME_PY
 
     def test_corp_last_company_dynamic_invalidation(self, closing_offer_state):
         """Edge case: Corp last-company rule invalidates second offer after first close.
@@ -1139,8 +1140,8 @@ class TestClosingEdgeCases:
         apply_closing_action_py(gs, ACTION_CLOSE_PY)
 
         # Second offer (company 3) should be SKIPPED because corp now has only 1 company
-        # Phase should transition directly to INVEST
-        assert gs.get_phase() == PHASE_INVEST_PY
+        # Phase should transition directly to INCOME
+        assert gs.get_phase() == PHASE_INCOME_PY
         assert TURN.get_closing_company(gs) == -1
 
         # Company 3 should NOT be closed (last company rule)
@@ -1187,8 +1188,8 @@ class TestClosingEdgeCases:
         while TURN.get_closing_company(state) >= 0:
             apply_closing_action_py(state, ACTION_PASS_PY)
 
-        # Phase should transition to INVEST
-        assert state.get_phase() == PHASE_INVEST_PY
+        # Phase should transition to INCOME
+        assert state.get_phase() == PHASE_INCOME_PY
 
         # Player 1 should have had mandatory close trigger (low cash)
         assert not PLAYERS[1].owns_company(state, 2)

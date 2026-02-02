@@ -311,13 +311,14 @@ class TestAcquisitionIntegration:
         assert TURN.get_turn_number(state) == initial_turn  # Turn not incremented yet
         assert_invariants(state, "After transition to CLOSING")
 
-        # Execute auto-close (transitions to INVEST)
+        # Execute auto-close (transitions to INCOME)
         apply_closing_auto_py(state)
 
-        # Should now be in INVEST with new turn
-        assert state.get_phase() == GamePhases.PHASE_INVEST
-        assert TURN.get_turn_number(state) == initial_turn + 1
-        assert_invariants(state, "After CLOSING to INVEST")
+        # Should now be in INCOME (CLOSING transitions to INCOME now)
+        # Turn number incremented in TEMP_END_TURN phase (not reached yet)
+        assert state.get_phase() == GamePhases.PHASE_INCOME
+        assert TURN.get_turn_number(state) == initial_turn  # Not incremented yet
+        assert_invariants(state, "After CLOSING to INCOME")
 
     def test_full_turn_cycle_with_acquisition(self):
         """Full turn cycle (INVEST->WRAP_UP->ACQUISITION->INVEST) maintains invariants."""
@@ -610,9 +611,11 @@ class TestClosingIntegration:
         result = apply_closing_action_py(state, ACTION_CLOSE_PY)
         assert result == 0, "Close action should succeed"
 
-        # Should transition to INVEST (no more offers after closing the only one)
-        assert state.get_phase() == GamePhases.PHASE_INVEST
-        assert TURN.get_turn_number(state) == initial_turn + 1
+        # Should transition to INCOME (no more offers after closing the only one)
+        # Note: CLOSING now transitions to INCOME, not directly to INVEST
+        # Turn number is incremented in TEMP_END_TURN phase (not reached yet)
+        assert state.get_phase() == GamePhases.PHASE_INCOME
+        assert TURN.get_turn_number(state) == initial_turn  # Not incremented yet
 
         # Verify company was closed
         assert not PLAYERS[0].owns_company(state, 0), "Company should be closed"
@@ -668,9 +671,11 @@ class TestClosingIntegration:
         result = apply_closing_action_py(state, ACTION_PASS_PY)
         assert result == 0, "Pass action should succeed"
 
-        # Should transition to INVEST after mandatory close
-        assert state.get_phase() == GamePhases.PHASE_INVEST
-        assert TURN.get_turn_number(state) == initial_turn + 1
+        # Should transition to INCOME after mandatory close
+        # Note: CLOSING now transitions to INCOME, not directly to INVEST
+        # Turn number is incremented in TEMP_END_TURN phase (not reached yet)
+        assert state.get_phase() == GamePhases.PHASE_INCOME
+        assert TURN.get_turn_number(state) == initial_turn  # Not incremented yet
 
         # Verify mandatory close happened - company was forcibly closed
         assert not PLAYERS[0].owns_company(state, 0), "Company should be mandatorily closed"
@@ -715,9 +720,11 @@ class TestClosingIntegration:
         result = apply_closing_action_py(state, ACTION_CLOSE_PY)
         assert result == 0, "Close accept should succeed"
 
-        # Verify: CLOSING -> INVEST, turn incremented
-        assert state.get_phase() == GamePhases.PHASE_INVEST
-        assert TURN.get_turn_number(state) == 2, "Turn should be incremented"
+        # Verify: CLOSING -> INCOME (turn NOT yet incremented - that happens in TEMP_END_TURN)
+        # Note: When using apply_closing_action_py directly, we get INCOME
+        # Turn is incremented in TEMP_END_TURN phase (not reached yet)
+        assert state.get_phase() == GamePhases.PHASE_INCOME
+        assert TURN.get_turn_number(state) == 1, "Turn not yet incremented"
         assert not PLAYERS[0].owns_company(state, 1), "Company should be closed"
 
         assert_invariants(state, "After full turn cycle with closing")
@@ -762,9 +769,10 @@ class TestClosingIntegration:
         result = apply_closing_action_py(state, ACTION_CLOSE_PY)
         assert result == 0, "Close action should succeed"
 
-        # Verify transition
-        assert state.get_phase() == GamePhases.PHASE_INVEST
-        assert TURN.get_turn_number(state) == initial_turn + 1
+        # Verify transition: CLOSING -> INCOME (not directly to INVEST)
+        # Turn number incremented in TEMP_END_TURN phase (not reached yet)
+        assert state.get_phase() == GamePhases.PHASE_INCOME
+        assert TURN.get_turn_number(state) == initial_turn  # Not incremented yet
         assert not PLAYERS[0].owns_company(state, 0), "Company should be closed"
 
         assert_invariants(state, f"After CLOSING ({num_players}p)")
@@ -843,9 +851,10 @@ class TestClosingIntegration:
         result = apply_closing_action_py(state, ACTION_CLOSE_PY)
         assert result == 0, "Close action should succeed"
 
-        # Verify final state: INVEST phase, new turn
-        assert state.get_phase() == GamePhases.PHASE_INVEST
-        assert TURN.get_turn_number(state) == initial_turn + 1
+        # Verify final state: INCOME phase (CLOSING now transitions to INCOME)
+        # Turn number incremented in TEMP_END_TURN phase (not reached yet)
+        assert state.get_phase() == GamePhases.PHASE_INCOME
+        assert TURN.get_turn_number(state) == initial_turn  # Not incremented yet
 
         # Company 1 should be closed
         assert not PLAYERS[0].owns_company(state, 1), "Company 1 should be closed"
