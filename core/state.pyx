@@ -603,12 +603,6 @@ cdef class GameState:
         cdef float* corp = self._corp_ptr(corp_id)
         corp[self._corp_fields.owned_companies + company_id] = 1.0 if owns else 0.0
 
-    cpdef void bankrupt_corp(self, int corp_id):
-        """Mark corporation as bankrupt (inactive, price index 0)."""
-        self.set_corp_active(corp_id, False)
-        self.set_corp_price_index(corp_id, 0)
-        self.set_corp_in_receivership(corp_id, False)
-
     # =========================================================================
     # MARKET ACCESS
     # =========================================================================

@@ -170,7 +170,6 @@ cdef class GameState:
     cdef bint _corp_owns_company(self, int corp_id, int company_id) noexcept nogil
     cpdef bint corp_owns_company(self, int corp_id, int company_id)
     cpdef void set_corp_owns_company(self, int corp_id, int company_id, bint owns)
-    cpdef void bankrupt_corp(self, int corp_id)
 
     # Market access
     cpdef bint is_market_space_available(self, int index)
