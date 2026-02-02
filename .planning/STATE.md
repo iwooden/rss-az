@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-28)
 
 Milestone: v6.0 INCOME Phase
 Phase: 23 of 23 (Phase Integration)
-Plan: 1 of 3 complete
+Plan: 2 of 3 complete
 Status: In progress
-Last activity: 2026-02-02 — Completed 23-01-PLAN.md (Bankruptcy Refactor)
+Last activity: 2026-02-02 — Completed 23-02-PLAN.md (INCOME Phase Handler)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [##########] | v5.1 [##########] | v6.0 [########__]
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [##########] | v5.1 [##########] | v6.0 [#########_]
 
 ## Archived Milestones
 
@@ -47,6 +47,7 @@ See `.planning/milestones/` for full archives.
 - Income flow separation pattern - calculate_income (pure) vs apply_income (mutation) (22-03)
 - Negative cash rounding pattern - +0.5 for positive, -0.5 for negative (22-03)
 - Bankruptcy delegation pattern - phases call Corp.go_bankrupt() instead of inline logic (23-01)
+- Income application pattern - INCOME phase applies per-entity income with immediate bankruptcy check (23-02)
 
 **Testing patterns:**
 - Per-task atomic commits - feat/test prefixes for git bisect
@@ -59,13 +60,13 @@ None.
 
 ### Blockers/Concerns
 
-**INCOME Phase temporary transition:** Phase 17 transitions CLOSING -> INVEST as temporary workaround. **TO BE FIXED IN Phase 23 (TRN-01).**
+**Test updates needed:** 18 tests fail due to INCOME phase behavior changes (FI +5 income, turn increment moved). Plan 23-03 or separate update needed.
 
 **Remaining Game Phases after v6.0:** DIV (DIVIDENDS), END (END_GAME), ISS (ISSUE_SHARES), IPO (INITIAL_PUBLIC_OFFERING)
 
 ## Session Continuity
 
 Last session: 2026-02-02
-Stopped at: Completed 23-01-PLAN.md (1/3 plans)
+Stopped at: Completed 23-02-PLAN.md (2/3 plans)
 Resume file: None
-Next action: Execute 23-02-PLAN.md
+Next action: Execute 23-03-PLAN.md (TEMP_END_TURN phase and phase transitions)
