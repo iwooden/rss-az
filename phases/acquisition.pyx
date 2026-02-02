@@ -38,6 +38,11 @@ from core.data import CORP_NAMES, CORP_NAME_TO_ID
 DEF OFFER_BUFFER_SIZE = 250
 DEF OS_CORP_ID = 2  # OS is index 2 in CORP_NAMES
 
+# Company location constants (from entities/company.pxd)
+DEF LOC_PLAYER = 3
+DEF LOC_FI = 4
+DEF LOC_CORP = 5
+
 
 # =============================================================================
 # QUICKSORT HELPERS
@@ -437,40 +442,48 @@ cdef bint _is_offer_valid(GameState state, int corp_id, int company_id) noexcept
     Check if offer is still valid for presentation.
 
     Invalid if:
-    - Company already acquired this phase (in any corp's acquisition_companies)
-    - Corp doesn't have enough cash for minimum price (low_price or face for FI)
-    - Target company no longer exists at expected location
+    - Seller no longer owns the company (was acquired earlier this phase)
+    - Corp doesn't have enough cash for minimum price
+    - Ownership relationship no longer valid (president changed)
 
     Returns True if offer is valid.
     """
-    cdef int price, corp_cash, check_corp
-    cdef bint is_fi_company = fi_module.FI.owns_company(state, company_id)
+    cdef int price, corp_cash
+    cdef int location, owner_id, buyer_president, seller_president
 
-    # Check if company already acquired this phase
-    for check_corp in range(GameConstants.NUM_CORPS):
-        if corp_module.CORPS[check_corp].has_acquisition_company(state, company_id):
-            return False
+    # Check if FI still owns it (for FI offers)
+    if fi_module.FI.owns_company(state, company_id):
+        # FI offer: check cash (OS pays face, others pay high)
+        corp_cash = corp_module.CORPS[corp_id].get_cash(state)
+        if corp_id == OS_CORP_ID:
+            price = get_company_face_value(company_id)
+        else:
+            price = company_module.COMPANIES[company_id].get_high_price()
+        return corp_cash >= price
 
-    # Check if corp can afford minimum price
+    # Non-FI: check current location and ownership relationship
+    location = company_module.COMPANIES[company_id].get_location(state)
+    owner_id = company_module.COMPANIES[company_id].get_owner_id(state)
+    buyer_president = corp_module.CORPS[corp_id].get_president_id(state)
+
+    # Check buyer can afford minimum price (low_price for non-FI)
     corp_cash = corp_module.CORPS[corp_id].get_cash(state)
-    if is_fi_company:
-        # FI companies bought at face or high price
-        price = get_company_face_value(company_id)
-    else:
-        # Private/corp companies bought at low to high price
-        price = get_company_low_price(company_id)
-
+    price = get_company_low_price(company_id)
     if corp_cash < price:
         return False
 
-    # Check company still owned by expected seller
-    if is_fi_company:
-        if not fi_module.FI.owns_company(state, company_id):
+    if location == LOC_CORP:
+        # Corp-corp: seller corp's president must match buyer's president
+        seller_president = corp_module.CORPS[owner_id].get_president_id(state)
+        if seller_president != buyer_president or seller_president < 0:
+            return False
+    elif location == LOC_PLAYER:
+        # Player-corp: player must be buyer corp's president
+        if owner_id != buyer_president:
             return False
     else:
-        # For non-FI, company should be owned by player or corp
-        # (validation logic depends on seller type - simplified for now)
-        pass
+        # Company not owned by corp or player (acquired, removed, etc.)
+        return False
 
     return True
 
@@ -572,12 +585,6 @@ cpdef int get_offer_index(GameState state):
 # =============================================================================
 # VALIDATION HELPERS
 # =============================================================================
-
-# Company location constants (from entities/company.pxd)
-DEF LOC_PLAYER = 3
-DEF LOC_FI = 4
-DEF LOC_CORP = 5
-
 
 cdef bint _is_target_already_acquired(GameState state, int company_id) noexcept:
     """
