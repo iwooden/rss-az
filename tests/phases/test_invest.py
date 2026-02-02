@@ -1212,3 +1212,101 @@ class TestAutoApplyEdgeCases:
         action_values = [entry[1] for entry in result.history]
         assert -100 in action_values, "WRAP_UP sentinel (-100) not found in history"
         assert -101 in action_values, "ACQUISITION sentinel (-101) not found in history"
+
+
+# =============================================================================
+# $75 GAME END TESTS
+# =============================================================================
+
+class TestGameEndAt75:
+    """Test immediate game end when share price reaches $75 (index 26)."""
+
+    def test_buy_share_at_75_ends_game_immediately(self):
+        """Buying a share that moves price to $75 ends game immediately."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_price_index(state, 25)  # $68 - one step below $75
+        corp.set_unissued_shares(state, 3)
+        corp.set_bank_shares(state, 2)
+        corp.set_issued_shares(state, 2)
+
+        PLAYERS[0].set_shares(state, 0, 2)
+        PLAYERS[0].set_president_of(state, 0, True)
+        PLAYERS[0].set_cash(state, 100)  # Enough to afford $75
+
+        MARKET.set_space_available(state, 25, False)
+        # Index 26 ($75) is always available - no need to mark it
+
+        # Buy action should move price from index 25 to 26
+        layout = get_action_layout(3)
+        buy_idx = layout['buy_share_base'] + 0
+
+        result = DRIVER.apply_action(state, buy_idx)
+
+        # Game should end immediately
+        assert result == STATUS_GAME_OVER
+        assert state.get_phase() == GamePhases.PHASE_GAME_OVER
+
+        # Verify the buy was actually processed
+        assert corp.get_price_index(state) == 26  # $75
+        assert PLAYERS[0].get_shares(state, 0) == 3  # Got the share
+
+    def test_buy_share_below_75_does_not_end_game(self):
+        """Buying a share that doesn't reach $75 continues normally."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_price_index(state, 20)  # $41 - well below $75
+        corp.set_unissued_shares(state, 3)
+        corp.set_bank_shares(state, 2)
+        corp.set_issued_shares(state, 2)
+
+        PLAYERS[0].set_shares(state, 0, 2)
+        PLAYERS[0].set_president_of(state, 0, True)
+        PLAYERS[0].set_cash(state, 100)
+
+        MARKET.set_space_available(state, 20, False)
+
+        layout = get_action_layout(3)
+        buy_idx = layout['buy_share_base'] + 0
+
+        result = DRIVER.apply_action(state, buy_idx)
+
+        # Game continues
+        assert result == STATUS_OK
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        assert corp.get_price_index(state) == 21  # Moved up one space
+
+    def test_buy_share_skipping_to_75_ends_game(self):
+        """Buying when intermediate spaces are occupied still ends game at $75."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_price_index(state, 24)  # $61
+        corp.set_unissued_shares(state, 3)
+        corp.set_bank_shares(state, 2)
+        corp.set_issued_shares(state, 2)
+
+        PLAYERS[0].set_shares(state, 0, 2)
+        PLAYERS[0].set_president_of(state, 0, True)
+        PLAYERS[0].set_cash(state, 100)
+
+        MARKET.set_space_available(state, 24, False)
+        MARKET.set_space_available(state, 25, False)  # $68 occupied - skip to $75
+
+        layout = get_action_layout(3)
+        buy_idx = layout['buy_share_base'] + 0
+
+        result = DRIVER.apply_action(state, buy_idx)
+
+        # Game ends because we reached $75
+        assert result == STATUS_GAME_OVER
+        assert state.get_phase() == GamePhases.PHASE_GAME_OVER
+        assert corp.get_price_index(state) == 26

@@ -180,6 +180,11 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     # Reset consecutive passes (INV-02)
     turn_module.TURN.clear_consecutive_passes(state)
 
+    # Check for $75 game end - immediate after buy completes (RULES.md line 346)
+    if new_index == 26:
+        turn_module.TURN.set_phase(state, PHASE_GAME_OVER)
+        return
+
     # Advance active player
     _advance_active_player(state)
 
