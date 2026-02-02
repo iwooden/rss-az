@@ -1,5 +1,27 @@
 # cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
-"""ACQUISITION phase stub - transitions immediately to INVEST."""
+"""
+ACQUISITION phase: Corps acquire companies from FI, other corps, and players.
+
+DESIGN: One-by-One Offer Presentation
+=====================================
+Instead of exposing all acquisition opportunities simultaneously (which would
+create a huge action space of corp × company × price combinations), offers are:
+
+1. Generated once at phase entry into a hidden buffer (_generate_offers)
+2. Sorted by priority: OS→FI, Corp→FI by price, Corp→Corp, Corp→Player
+3. Presented one at a time via visible state (acq_active_corp, acq_target_company)
+4. Advanced sequentially after accept/pass (_advance_to_next_offer)
+5. Re-validated dynamically since earlier buys may invalidate later offers
+
+This keeps the action space constant (51 prices + 2 FI actions + pass = 54 actions)
+regardless of how many potential acquisitions exist in a given game state.
+
+Receivership corps (no president) are handled automatically:
+- Auto-buy from FI at face value if affordable (RECV-01)
+- Auto-pass on non-FI offers (RECV-02: can only buy from FI)
+
+See CLAUDE.md "Offer Buffer Pattern" for full documentation.
+"""
 
 from core.state cimport GameState
 from core.data cimport GamePhases, GameConstants, get_company_face_value, get_company_low_price

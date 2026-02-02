@@ -164,6 +164,66 @@ See `VECTORS.md` for exact offsets.
 
 **Automated phases** (no player input): WRAP_UP, INCOME, TEMP_END_TURN
 
+### Offer Buffer Pattern (acquisition.pyx, closing.pyx)
+
+Both ACQUISITION and CLOSING phases use a **one-by-one offer presentation** pattern to keep the action space small. Instead of exposing all possible offers simultaneously (which would create a combinatorial explosion), offers are:
+
+1. **Generated once** at phase entry into a hidden state buffer
+2. **Sorted** by priority rules (varies by phase)
+3. **Presented one at a time** to the active player
+4. **Advanced sequentially** after each accept/pass decision
+5. **Re-validated dynamically** since earlier decisions may invalidate later offers
+
+**Why this pattern?**
+- Action space stays constant regardless of game state complexity
+- Model sees one decision at a time (cleaner learning signal)
+- Priority ordering is deterministic (no hidden information)
+- Buffer lives in hidden state (not visible to NN, but persists across actions)
+
+#### ACQUISITION Phase Offers
+
+**Priority order** (RULES-compliant):
+1. **OS→FI**: OS corporation buys from Foreign Investor at face value (special ability)
+2. **Other Corp→FI**: By descending share price (higher-valued corps get priority)
+3. **Corp→Corp**: Same president controls buyer and seller, sorted by (buyer price DESC, face value ASC)
+4. **Corp→Player**: President's corp buying their private companies
+
+**Hidden buffer layout:**
+```
+[offer_count][offer_index][corp_id₀, company_id₀][corp_id₁, company_id₁]...
+```
+
+**Receivership handling**: Corps without a president (in receivership) have automated behavior:
+- Auto-buy from FI at face value if affordable
+- Auto-pass on all other offers (receivership can only buy from FI)
+
+**Actions**: 51 price offsets (low to high), FI_HIGH, FI_FACE (OS only), PASS
+
+#### CLOSING Phase Offers
+
+**Two-stage process:**
+1. **Auto-close** (deterministic, no player input):
+   - FI closes companies with negative adjusted income
+   - Receivership corps close red/orange companies above CoO thresholds
+2. **Offer-based close** (player decisions):
+   - Only for player-owned and player-presided corps
+   - Sorted by face value ascending (cheapest first)
+
+**Hidden buffer layout:**
+```
+[offer_count][offer_index][owner_type₀, owner_id₀, company_id₀]...
+```
+Where `owner_type` is OWNER_PLAYER (0) or OWNER_CORP (1).
+
+**Validation rules:**
+- Company not already closed this phase
+- Ownership unchanged since buffer generation
+- Corp last-company rule: can't close if corp would have 0 companies
+
+**Mandatory close** (after all offers processed): If a player would have negative income+cash, their cheapest negative-income private company is force-closed repeatedly until safe.
+
+**Actions**: CLOSE, PASS
+
 ## Code Conventions
 
 ### Naming

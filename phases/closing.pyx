@@ -1,5 +1,34 @@
 # cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
-"""CLOSING phase handler implementation."""
+"""
+CLOSING phase: Companies with negative adjusted income can be closed.
+
+DESIGN: Two-Stage Close with One-by-One Offers
+==============================================
+Stage 1 - Auto-close (deterministic, no player input):
+  - FI closes companies with negative adjusted income (income - CoO < 0)
+  - Receivership corps close red/orange companies above CoO thresholds:
+    * Red (1 star): close if CoO >= $4
+    * Orange (2 stars): close if CoO >= $7
+    * Yellow/Green/Blue: never auto-close
+  - Highest face value company in each receivership corp is protected
+
+Stage 2 - Offer-based close (player decisions):
+  - Only for player-owned privates and player-presided corps
+  - Uses same one-by-one pattern as acquisition.pyx:
+    1. Generate offers into hidden buffer (_generate_close_offers)
+    2. Sort by face value ascending (cheapest first)
+    3. Present one at a time via closing_company state
+    4. Player chooses CLOSE or PASS for each
+  - Dynamic re-validation: skip offers where company already closed
+
+Mandatory close (after all offers processed):
+  - If player would have negative income+cash, force-close their cheapest
+    negative-income private company, repeating until safe
+
+Action space: just 2 actions (CLOSE, PASS) - offers presented sequentially.
+
+See CLAUDE.md "Offer Buffer Pattern" for full documentation.
+"""
 
 from core.state cimport GameState
 from core.data cimport (
