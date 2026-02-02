@@ -158,6 +158,8 @@ In **Any Order**, corporations buy companies from:
 - If multiple intervene, highest share price has priority
 - If no intervention, announcing corporation **must** buy
 
+> **Implementation Note (FI Intervention):** The game engine eliminates the announce/intervene mechanism by presenting FI purchase offers in **descending share price order** (OS first due to its special ability, then other corps by share price). This produces identical outcomes: the highest share price corp that wants a company always gets it, since they receive the offer before any lower-priced corp can "announce." This optimization removes the need for intervention actions while preserving game-theoretic equivalence.
+
 **Corporations in Receivership:**
 - Never sell companies
 - Only buy from Foreign Investor
@@ -166,6 +168,8 @@ In **Any Order**, corporations buy companies from:
   - Non-receivership corporations may intervene as usual
   - Repeat until cannot afford more
   - Then next highest receivership corporation, etc.
+
+> **Implementation Note (Receivership):** Receivership FI purchases are handled automatically during offer presentation. Since offers are sorted by descending share price, any non-receivership corp with higher share price will have already been offered (and accepted/passed) each FI company before the receivership corp's turn. Receivership corps auto-buy at high price if affordable, auto-pass otherwise. This preserves the intervention priority without explicit intervention actions.
 
 **Overseas Trading special:** Always considered highest share price; pays only Face Value to Foreign Investor.
 
