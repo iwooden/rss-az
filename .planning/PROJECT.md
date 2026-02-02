@@ -2,16 +2,16 @@
 
 ## What This Is
 
-A high-performance Cython game engine for "Rolling Stock Stars" board game with complete INVEST, BID_IN_AUCTION, WRAP_UP, ACQUISITION, and CLOSING phases. The engine stores state as a single contiguous float32 array for zero-copy passing to PyTorch, optimized for AlphaZero-style self-play training. All mask generation functions are GIL-free for future thread-level parallelization.
+A high-performance Cython game engine for "Rolling Stock Stars" board game with complete INVEST, BID_IN_AUCTION, WRAP_UP, ACQUISITION, CLOSING, and INCOME phases. The engine stores state as a single contiguous float32 array for zero-copy passing to PyTorch, optimized for AlphaZero-style self-play training. All mask generation functions are GIL-free for future thread-level parallelization.
 
-## Current State (v5.1 shipped)
+## Current State (v6.0 shipped)
 
-**Shipped:** 2026-01-28
-**Phase coverage:** INVEST, BID_IN_AUCTION, WRAP_UP, ACQUISITION, CLOSING
-**Test suite:** 312 tests
-**Codebase:** ~27,655 LOC Cython, ~5,500 LOC Python (tests)
+**Shipped:** 2026-02-02
+**Phase coverage:** INVEST, BID_IN_AUCTION, WRAP_UP, ACQUISITION, CLOSING, INCOME
+**Test suite:** 340 tests
+**Codebase:** ~28,000 LOC Cython, ~6,000 LOC Python (tests)
 
-**Next milestone goals:** v6.0 - INCOME phase with synergy and corporation abilities
+**Next milestone goals:** v7.0 - DIVIDENDS phase with dividend declaration and share price adjustment
 
 ## Core Value
 
@@ -94,15 +94,23 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - ✓ All 7 mask functions + dispatch marked noexcept nogil — v5.1
 - ✓ Performance baseline established (no regression) — v5.1
 
+**v6.0 - INCOME Phase:**
+- ✓ Synergy pair identification with bidirectional bonus summing — v6.0
+- ✓ Corporation income calculation with CoO, synergy, and special abilities — v6.0
+- ✓ ForeignInvestor income with +5 base bonus — v6.0
+- ✓ Corporation special abilities: PR (+1/company), DA (double highest FV), S (+markers//2), VM (-10 CoO) — v6.0
+- ✓ Corporation bankruptcy when negative income (cannot pay) — v6.0
+- ✓ INCOME phase handler with per-entity income and bankruptcy check — v6.0
+- ✓ TEMP_END_TURN phase for end-of-turn bookkeeping — v6.0
+- ✓ Phase chain: CLOSING → INCOME → TEMP_END_TURN → INVEST — v6.0
+- ✓ 340 tests with comprehensive INCOME coverage — v6.0
+
 ### Active
 
-**v6.0 — INCOME Phase:**
-- [ ] INCOME phase implementation with income collection
-- [ ] Cost of Ownership deduction from company income
-- [ ] Synergy income calculation for corporations
-- [ ] Corporation special abilities (PR, DA, S, VM)
-- [ ] Foreign Investor +5● income bonus
-- [ ] Corporation bankruptcy on negative income (cannot pay)
+**v7.0 — DIVIDENDS Phase:**
+- [ ] DIVIDENDS phase implementation
+- [ ] Dividend declaration per corporation (0 to max on share price card)
+- [ ] Share price adjustment based on dividend vs star requirements
 
 ### Out of Scope
 
@@ -115,6 +123,11 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - FI intervention/preemption mechanics — handled via sorted offer priority
 
 ## Context
+
+**Shipped v6.0:** INCOME Phase (2026-02-02)
+- 3 phases (21-23), 7 plans, 17 requirements
+- ~28,000 LOC Cython, ~6,000 LOC Python (tests)
+- Test suite: 340 tests
 
 **Shipped v5.1:** nogil Optimization (2026-01-28)
 - 1 phase (20), 3 plans
@@ -159,6 +172,11 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - Mandatory close pattern (iterate players, close cheapest until income + cash >= 0)
 - Low-level nogil accessor pattern (Offsets struct + get_offsets() + cdef inline accessors)
 - Inline nogil accessor pattern (wrap state access for GIL-free calls)
+- Synergy pair counting pattern (i<j loop for unique pairs, bidirectional bonus summing)
+- Income flow separation pattern (calculate_income pure vs apply_income mutation)
+- Special ability dispatch pattern (if/elif chain using CorpIndices enum)
+- Bankruptcy delegation pattern (phases call Corp.go_bankrupt() instead of inline)
+- Temporary phase consolidation pattern (TEMP_END_TURN for end-of-turn bookkeeping)
 
 ## Key Decisions
 
@@ -190,6 +208,13 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 | Dual-layer accessor architecture | Low-level nogil + high-level cpdef for flexibility | ✓ Good |
 | Inline nogil helpers for state access | Wrap cpdef calls to enable GIL-free mask generation | ✓ Good |
 | _nogil suffix convention | Distinguish low-level accessors from class methods | ✓ Good |
+| i<j loop for synergy pairs | Each pair counted once, nogil-safe, no memory allocation | ✓ Good |
+| Bidirectional synergy summing | A→B + B→A per game rules | ✓ Good |
+| VM ability before base calc | Modifies CoO, not final income | ✓ Good |
+| DA uses printed income | Doubles printed income of highest FV company | ✓ Good |
+| S uses markers // 2 | Integer division, rounds down per rules | ✓ Good |
+| Immediate bankruptcy per-corp | Check after each corp's income application | ✓ Good |
+| TEMP_END_TURN consolidation | Temporary phase for turn increment until DIVIDENDS implemented | ✓ Good |
 
 ## Constraints
 
@@ -199,4 +224,4 @@ Fast, reproducible game simulation for AI training with full rules compliance.
 - **Thread safety:** Mask generation must be GIL-free for parallel execution
 
 ---
-*Last updated: 2026-01-28 — v6.0 milestone started (INCOME phase)*
+*Last updated: 2026-02-02 — v6.0 milestone complete (INCOME phase shipped)*

@@ -1,5 +1,34 @@
 # Project Milestones: Rolling Stock Stars
 
+## v6.0 INCOME Phase (Shipped: 2026-02-02)
+
+**Delivered:** Complete INCOME phase with synergy calculation, corporation special abilities (PR, DA, S, VM), FI income bonus, corporation bankruptcy on negative income, and proper phase transitions.
+
+**Phases completed:** 21-23 (7 plans total)
+
+**Key accomplishments:**
+
+- Synergy pair identification with bidirectional bonus summing (i<j loop pattern)
+- Corporation income calculation with CoO deduction, synergy bonuses, and 4 special abilities
+- ForeignInvestor income with +5 base bonus
+- Corporation bankruptcy when negative income (cannot pay)
+- INCOME phase handler with per-entity income application and immediate bankruptcy check
+- TEMP_END_TURN phase for end-of-turn bookkeeping (turn increment, roundtrip clear)
+- Complete phase chain: CLOSING → INCOME → TEMP_END_TURN → INVEST
+
+**Stats:**
+
+- 55 files created/modified
+- ~28,000 lines Cython
+- 3 phases, 7 plans, 17 requirements
+- 5 days from v5.1 to v6.0 ship (2026-01-28 → 2026-02-02)
+
+**Git range:** `5dcb70d` → `439506e`
+
+**What's next:** v7.0 - DIVIDENDS phase (dividend declaration and share price adjustment)
+
+---
+
 ## v5.1 nogil Optimization (Shipped: 2026-01-28)
 
 **Delivered:** GIL-free mask generation functions enabling future thread-level parallelization for AlphaZero self-play training.
