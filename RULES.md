@@ -345,7 +345,8 @@ Bonus income for corporations only. For each pair of companies with each other's
 
 If any player owns more shares of a corporation than current president:
 - Next player in Player Order (after current president) with more shares becomes president
-- Exchange one of their shares for President's Share
+
+*Note: In the physical game, players exchange share cards to transfer the "President's Share" marker. This is purely a tracking mechanism—share counts do not change. In our digital model, shares are fungible and presidency is tracked separately.*
 
 ### Collect Income
 
@@ -399,12 +400,13 @@ Same as **Sell One Share** except:
 ### Sell One Share
 
 1. Player gives one share to Bank
-2. May only sell President's Share if it's player's **last share** of that corporation
-3. Corporation returns share price card, takes **next lower available**
-4. Bank pays **new** share price to player
-5. If new price = 0● → **Go Bankrupt**
-6. If sold share was last player-owned share → corporation enters **Receivership**
-7. Otherwise: check **Change of Presidency** (treat seller as current president if President's Share sold)
+2. Corporation returns share price card, takes **next lower available**
+3. Bank pays **new** share price to player
+4. If new price = 0● → **Go Bankrupt**
+5. If sold share was last player-owned share → corporation enters **Receivership**
+6. Otherwise: check **Change of Presidency**
+
+*Note: Players may sell shares freely. If selling causes the player to no longer have the most shares, presidency transfers per "Change of Presidency" rules. The physical game's "President's Share" card is just a marker—in our model, shares are fungible.*
 
 ---
 
