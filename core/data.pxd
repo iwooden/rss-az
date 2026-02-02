@@ -33,6 +33,7 @@ cpdef enum GamePhases:
     PHASE_ISSUE_SHARES = 8
     PHASE_IPO = 9
     PHASE_GAME_OVER = 10
+    PHASE_TEMP_END_TURN = 11
 
 # Corp indices for special ability checks
 cpdef enum CorpIndices:
