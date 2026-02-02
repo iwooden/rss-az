@@ -8,10 +8,7 @@ and holds them until corporations acquire them.
 """
 
 from core.state cimport GameState, StateLayout
-from core.data cimport (
-    CASH_DIVISOR, GameConstants,
-    get_company_income, get_company_stars, get_cost_of_ownership
-)
+from core.data cimport CASH_DIVISOR, sum_adjusted_income_from_flags
 from entities import turn as turn_module
 
 
@@ -83,21 +80,12 @@ cdef class ForeignInvestor:
         Returns:
             Total income (always positive due to CLOSING phase)
         """
-        cdef int company_id, base_income, stars, coo_value
         cdef int coo_level = turn_module.TURN.get_coo_level(state)
-        cdef int total = 0
-
-        for company_id in range(GameConstants.NUM_COMPANIES):
-            if self.owns_company(state, company_id):
-                base_income = get_company_income(company_id)
-                stars = get_company_stars(company_id)
-                coo_value = get_cost_of_ownership(coo_level, stars)
-                total += base_income - coo_value
-
+        cdef int total = sum_adjusted_income_from_flags(
+            &state._data[self._owned_companies_offset], coo_level
+        )
         # FI always gets +5 bonus (RULES.md line 354)
-        total += 5
-
-        return total
+        return total + 5
 
     # =========================================================================
     # INCOME APPLICATION

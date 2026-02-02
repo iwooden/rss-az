@@ -14,7 +14,7 @@ from libc.math cimport round
 from core.state cimport GameState, StateLayout, PlayerFieldOffsets
 from core.data cimport (
     GameConstants, CASH_DIVISOR, SHARE_DIVISOR, MAX_ROUNDTRIPS,
-    get_company_face_value, get_company_income, get_company_stars, get_cost_of_ownership
+    get_company_face_value, sum_adjusted_income_from_flags
 )
 from entities.encoding cimport set_one_hot, get_one_hot_index
 from entities import turn as turn_module
@@ -449,18 +449,10 @@ cdef class Player:
         Note: Only player-owned privates, NOT corp subsidiaries.
         Used by mandatory close to check if player income + cash < 0.
         """
-        cdef int total = 0
-        cdef int company_id, base_income, stars, coo_value
         cdef int coo_level = turn_module.TURN.get_coo_level(state)
-
-        for company_id in range(GameConstants.NUM_COMPANIES):
-            if self.owns_company(state, company_id):
-                base_income = get_company_income(company_id)
-                stars = get_company_stars(company_id)
-                coo_value = get_cost_of_ownership(coo_level, stars)
-                total += base_income - coo_value
-
-        return total
+        return sum_adjusted_income_from_flags(
+            &state._data[self._owned_companies_offset], coo_level
+        )
 
 
 # =============================================================================
