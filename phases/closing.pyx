@@ -3,7 +3,7 @@
 
 from core.state cimport GameState
 from core.data cimport (
-    GameConstants, GamePhases, PHASE_GAME_OVER,
+    GameConstants, GamePhases, PHASE_GAME_OVER, PHASE_INCOME,
     get_cost_of_ownership, get_company_income, get_company_stars, get_company_face_value,
     get_adjusted_company_income
 )
@@ -385,25 +385,13 @@ cdef void _transition_to_income(GameState state) noexcept:
 
     Called when no more close offers exist.
     """
-    cdef int current_turn = turn_module.TURN.get_turn_number(state)
-    cdef int i
-
     # Check for terminal state
     if _is_game_terminal(state):
         turn_module.TURN.set_phase(state, PHASE_GAME_OVER)
         return
 
-    # Increment turn number
-    turn_module.TURN.set_turn_number(state, current_turn + 1)
-
-    # Clear per-turn tracking for all players
-    for i in range(state._num_players):
-        player_module.PLAYERS[i].clear_roundtrip_tracking(state)
-
     # Transition to INCOME phase
-    # Note: INCOME phase not implemented yet, using INVEST as temporary target
-    # This will be updated when INCOME phase is implemented
-    turn_module.TURN.set_phase(state, GamePhases.PHASE_INVEST)
+    turn_module.TURN.set_phase(state, PHASE_INCOME)
 
 
 cdef void _present_next_close_offer(GameState state) noexcept:
