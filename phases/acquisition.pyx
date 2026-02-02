@@ -40,6 +40,134 @@ DEF OS_CORP_ID = 2  # OS is index 2 in CORP_NAMES
 
 
 # =============================================================================
+# QUICKSORT HELPERS
+# =============================================================================
+
+cdef void _qsort_desc_3(int* keys, int* arr1, int* arr2, int lo, int hi) noexcept nogil:
+    """
+    Quicksort 3 parallel arrays by keys in descending order.
+
+    Used for FI offers sorted by corp share price (descending).
+    Arrays: keys=prices, arr1=corp_ids, arr2=company_ids
+    """
+    if lo >= hi:
+        return
+
+    cdef int pivot = keys[(lo + hi) // 2]
+    cdef int i = lo
+    cdef int j = hi
+    cdef int tmp
+
+    while i <= j:
+        while keys[i] > pivot:
+            i += 1
+        while keys[j] < pivot:
+            j -= 1
+        if i <= j:
+            # Swap all three arrays
+            tmp = keys[i]; keys[i] = keys[j]; keys[j] = tmp
+            tmp = arr1[i]; arr1[i] = arr1[j]; arr1[j] = tmp
+            tmp = arr2[i]; arr2[i] = arr2[j]; arr2[j] = tmp
+            i += 1
+            j -= 1
+
+    _qsort_desc_3(keys, arr1, arr2, lo, j)
+    _qsort_desc_3(keys, arr1, arr2, i, hi)
+
+
+cdef void _qsort_price_fv_4(int* prices, int* fvs, int* arr1, int* arr2, int lo, int hi) noexcept nogil:
+    """
+    Quicksort 4 parallel arrays by (price DESC, face_value ASC).
+
+    Used for corp-corp and corp-player offers.
+    Arrays: prices=sort key 1, fvs=sort key 2, arr1=corp_ids, arr2=company_ids
+
+    Comparison: (price_a, fv_a) < (price_b, fv_b) if:
+      - price_a < price_b, OR
+      - price_a == price_b AND fv_a > fv_b
+    (We want higher prices first, then lower face values)
+    """
+    if lo >= hi:
+        return
+
+    cdef int pivot_price = prices[(lo + hi) // 2]
+    cdef int pivot_fv = fvs[(lo + hi) // 2]
+    cdef int i = lo
+    cdef int j = hi
+    cdef int tmp
+
+    while i <= j:
+        # Move i right while element should come before pivot
+        while prices[i] > pivot_price or (prices[i] == pivot_price and fvs[i] < pivot_fv):
+            i += 1
+        # Move j left while element should come after pivot
+        while prices[j] < pivot_price or (prices[j] == pivot_price and fvs[j] > pivot_fv):
+            j -= 1
+        if i <= j:
+            # Swap all four arrays
+            tmp = prices[i]; prices[i] = prices[j]; prices[j] = tmp
+            tmp = fvs[i]; fvs[i] = fvs[j]; fvs[j] = tmp
+            tmp = arr1[i]; arr1[i] = arr1[j]; arr1[j] = tmp
+            tmp = arr2[i]; arr2[i] = arr2[j]; arr2[j] = tmp
+            i += 1
+            j -= 1
+
+    _qsort_price_fv_4(prices, fvs, arr1, arr2, lo, j)
+    _qsort_price_fv_4(prices, fvs, arr1, arr2, i, hi)
+
+
+def qsort_desc_3_py(list keys, list arr1, list arr2):
+    """Python wrapper for testing _qsort_desc_3."""
+    cdef int n = len(keys)
+    if n == 0:
+        return keys, arr1, arr2
+
+    cdef int c_keys[256]
+    cdef int c_arr1[256]
+    cdef int c_arr2[256]
+    cdef int i
+
+    for i in range(n):
+        c_keys[i] = keys[i]
+        c_arr1[i] = arr1[i]
+        c_arr2[i] = arr2[i]
+
+    if n > 1:
+        _qsort_desc_3(c_keys, c_arr1, c_arr2, 0, n - 1)
+
+    return ([c_keys[i] for i in range(n)],
+            [c_arr1[i] for i in range(n)],
+            [c_arr2[i] for i in range(n)])
+
+
+def qsort_price_fv_4_py(list prices, list fvs, list arr1, list arr2):
+    """Python wrapper for testing _qsort_price_fv_4."""
+    cdef int n = len(prices)
+    if n == 0:
+        return prices, fvs, arr1, arr2
+
+    cdef int c_prices[256]
+    cdef int c_fvs[256]
+    cdef int c_arr1[256]
+    cdef int c_arr2[256]
+    cdef int i
+
+    for i in range(n):
+        c_prices[i] = prices[i]
+        c_fvs[i] = fvs[i]
+        c_arr1[i] = arr1[i]
+        c_arr2[i] = arr2[i]
+
+    if n > 1:
+        _qsort_price_fv_4(c_prices, c_fvs, c_arr1, c_arr2, 0, n - 1)
+
+    return ([c_prices[i] for i in range(n)],
+            [c_fvs[i] for i in range(n)],
+            [c_arr1[i] for i in range(n)],
+            [c_arr2[i] for i in range(n)])
+
+
+# =============================================================================
 # OFFER GENERATION HELPERS
 # =============================================================================
 
@@ -56,9 +184,7 @@ cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) no
     cdef int temp_corp_ids[OFFER_BUFFER_SIZE]
     cdef int temp_company_ids[OFFER_BUFFER_SIZE]
     cdef int temp_prices[OFFER_BUFFER_SIZE]
-    cdef int i, j, best_idx
-    cdef int best_price, curr_price
-    cdef int swap_corp, swap_company, swap_price
+    cdef int i
 
     # First pass: OS->FI offers (OS always first if can afford)
     for company_id in range(GameConstants.NUM_COMPANIES):
@@ -91,30 +217,9 @@ cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) no
                         temp_prices[temp_count] = corp_module.CORPS[corp_id].get_share_price(state)
                         temp_count += 1
 
-    # Selection sort by descending share price (like wrap_up.pyx)
-    for i in range(temp_count):
-        best_idx = i
-        best_price = temp_prices[i]
-
-        for j in range(i + 1, temp_count):
-            curr_price = temp_prices[j]
-            if curr_price > best_price:
-                best_idx = j
-                best_price = curr_price
-
-        # Swap to front
-        if best_idx != i:
-            swap_corp = temp_corp_ids[i]
-            temp_corp_ids[i] = temp_corp_ids[best_idx]
-            temp_corp_ids[best_idx] = swap_corp
-
-            swap_company = temp_company_ids[i]
-            temp_company_ids[i] = temp_company_ids[best_idx]
-            temp_company_ids[best_idx] = swap_company
-
-            swap_price = temp_prices[i]
-            temp_prices[i] = temp_prices[best_idx]
-            temp_prices[best_idx] = swap_price
+    # Quicksort by descending share price
+    if temp_count > 1:
+        _qsort_desc_3(temp_prices, temp_corp_ids, temp_company_ids, 0, temp_count - 1)
 
     # Append sorted non-OS offers to output
     for i in range(temp_count):
@@ -143,9 +248,7 @@ cdef int _collect_corp_corp_offers(GameState state, int* corp_ids, int* company_
     cdef int temp_company_ids[OFFER_BUFFER_SIZE]
     cdef int temp_buyer_prices[OFFER_BUFFER_SIZE]
     cdef int temp_face_values[OFFER_BUFFER_SIZE]
-    cdef int i, j, best_idx
-    cdef int best_price, best_fv, curr_price, curr_fv
-    cdef int swap_buyer, swap_company, swap_price, swap_fv
+    cdef int i
 
     # For each player, find corps they control and generate offers
     for player_id in range(state._num_players):
@@ -181,40 +284,9 @@ cdef int _collect_corp_corp_offers(GameState state, int* corp_ids, int* company_
                             temp_face_values[temp_count] = face_value
                             temp_count += 1
 
-    # Selection sort by (buyer price DESC, face value ASC)
-    for i in range(temp_count):
-        best_idx = i
-        best_price = temp_buyer_prices[i]
-        best_fv = temp_face_values[i]
-
-        for j in range(i + 1, temp_count):
-            curr_price = temp_buyer_prices[j]
-            curr_fv = temp_face_values[j]
-
-            # Higher buyer price wins, or if equal, lower face value wins
-            if (curr_price > best_price or
-                (curr_price == best_price and curr_fv < best_fv)):
-                best_idx = j
-                best_price = curr_price
-                best_fv = curr_fv
-
-        # Swap to front
-        if best_idx != i:
-            swap_buyer = temp_buyer_corps[i]
-            temp_buyer_corps[i] = temp_buyer_corps[best_idx]
-            temp_buyer_corps[best_idx] = swap_buyer
-
-            swap_company = temp_company_ids[i]
-            temp_company_ids[i] = temp_company_ids[best_idx]
-            temp_company_ids[best_idx] = swap_company
-
-            swap_price = temp_buyer_prices[i]
-            temp_buyer_prices[i] = temp_buyer_prices[best_idx]
-            temp_buyer_prices[best_idx] = swap_price
-
-            swap_fv = temp_face_values[i]
-            temp_face_values[i] = temp_face_values[best_idx]
-            temp_face_values[best_idx] = swap_fv
+    # Quicksort by (buyer price DESC, face value ASC)
+    if temp_count > 1:
+        _qsort_price_fv_4(temp_buyer_prices, temp_face_values, temp_buyer_corps, temp_company_ids, 0, temp_count - 1)
 
     # Copy sorted results to output
     for i in range(temp_count):
@@ -240,9 +312,7 @@ cdef int _collect_player_private_offers(GameState state, int* corp_ids, int* com
     cdef int temp_company_ids[OFFER_BUFFER_SIZE]
     cdef int temp_corp_prices[OFFER_BUFFER_SIZE]
     cdef int temp_face_values[OFFER_BUFFER_SIZE]
-    cdef int i, j, best_idx
-    cdef int best_price, best_fv, curr_price, curr_fv
-    cdef int swap_corp, swap_company, swap_price, swap_fv
+    cdef int i
 
     # For each player, find their private companies and corps they control
     for player_id in range(state._num_players):
@@ -269,40 +339,9 @@ cdef int _collect_player_private_offers(GameState state, int* corp_ids, int* com
                         temp_face_values[temp_count] = face_value
                         temp_count += 1
 
-    # Selection sort by (corp price DESC, face value ASC)
-    for i in range(temp_count):
-        best_idx = i
-        best_price = temp_corp_prices[i]
-        best_fv = temp_face_values[i]
-
-        for j in range(i + 1, temp_count):
-            curr_price = temp_corp_prices[j]
-            curr_fv = temp_face_values[j]
-
-            # Higher corp price wins, or if equal, lower face value wins
-            if (curr_price > best_price or
-                (curr_price == best_price and curr_fv < best_fv)):
-                best_idx = j
-                best_price = curr_price
-                best_fv = curr_fv
-
-        # Swap to front
-        if best_idx != i:
-            swap_corp = temp_corp_ids[i]
-            temp_corp_ids[i] = temp_corp_ids[best_idx]
-            temp_corp_ids[best_idx] = swap_corp
-
-            swap_company = temp_company_ids[i]
-            temp_company_ids[i] = temp_company_ids[best_idx]
-            temp_company_ids[best_idx] = swap_company
-
-            swap_price = temp_corp_prices[i]
-            temp_corp_prices[i] = temp_corp_prices[best_idx]
-            temp_corp_prices[best_idx] = swap_price
-
-            swap_fv = temp_face_values[i]
-            temp_face_values[i] = temp_face_values[best_idx]
-            temp_face_values[best_idx] = swap_fv
+    # Quicksort by (corp price DESC, face value ASC)
+    if temp_count > 1:
+        _qsort_price_fv_4(temp_corp_prices, temp_face_values, temp_corp_ids, temp_company_ids, 0, temp_count - 1)
 
     # Copy sorted results to output
     for i in range(temp_count):

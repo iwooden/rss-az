@@ -98,7 +98,9 @@ from phases.acquisition import (
     setup_acquisition_phase_py,
     apply_acquisition_action_py,
     merge_acquisition_zones_py,
-    transition_to_closing_py
+    transition_to_closing_py,
+    qsort_desc_3_py,
+    qsort_price_fv_4_py
 )
 from phases.wrap_up import apply_wrap_up_py
 
@@ -1263,3 +1265,195 @@ class TestReceivershipAutoBuy:
         # - Corp 0 has company but is in receivership (can't sell)
         # - get_president_id returns -1 for receivership, never matches any player_id
         assert get_offer_count(gs) == 0, "No offers should exist for receivership seller"
+
+
+class TestQuicksortHelpers:
+    """Tests for quicksort helper functions used in offer sorting."""
+
+    # =========================================================================
+    # _qsort_desc_3: Single-key descending sort (3 parallel arrays)
+    # =========================================================================
+
+    def test_qsort_desc_3_basic(self):
+        """Basic descending sort."""
+        keys = [3, 1, 4, 1, 5, 9, 2, 6]
+        arr1 = [0, 1, 2, 3, 4, 5, 6, 7]
+        arr2 = [10, 11, 12, 13, 14, 15, 16, 17]
+
+        sorted_keys, sorted_arr1, sorted_arr2 = qsort_desc_3_py(keys, arr1, arr2)
+
+        assert sorted_keys == [9, 6, 5, 4, 3, 2, 1, 1]
+        # Verify parallel arrays maintain correspondence
+        for i in range(len(sorted_keys)):
+            orig_idx = keys.index(sorted_keys[i]) if i == 0 or sorted_keys[i] != sorted_keys[i-1] else \
+                       [j for j, k in enumerate(keys) if k == sorted_keys[i]][1]
+            # Each element maintains its original pairing
+            assert sorted_arr2[i] == sorted_arr1[i] + 10
+
+    def test_qsort_desc_3_already_sorted(self):
+        """Already sorted input remains unchanged."""
+        keys = [9, 7, 5, 3, 1]
+        arr1 = [0, 1, 2, 3, 4]
+        arr2 = [5, 6, 7, 8, 9]
+
+        sorted_keys, sorted_arr1, sorted_arr2 = qsort_desc_3_py(keys, arr1, arr2)
+
+        assert sorted_keys == [9, 7, 5, 3, 1]
+        assert sorted_arr1 == [0, 1, 2, 3, 4]
+        assert sorted_arr2 == [5, 6, 7, 8, 9]
+
+    def test_qsort_desc_3_reverse_sorted(self):
+        """Reverse sorted input gets properly sorted."""
+        keys = [1, 2, 3, 4, 5]
+        arr1 = [0, 1, 2, 3, 4]
+        arr2 = [10, 20, 30, 40, 50]
+
+        sorted_keys, sorted_arr1, sorted_arr2 = qsort_desc_3_py(keys, arr1, arr2)
+
+        assert sorted_keys == [5, 4, 3, 2, 1]
+        assert sorted_arr1 == [4, 3, 2, 1, 0]
+        assert sorted_arr2 == [50, 40, 30, 20, 10]
+
+    def test_qsort_desc_3_single_element(self):
+        """Single element array."""
+        keys, arr1, arr2 = qsort_desc_3_py([42], [1], [2])
+        assert keys == [42]
+        assert arr1 == [1]
+        assert arr2 == [2]
+
+    def test_qsort_desc_3_empty(self):
+        """Empty arrays."""
+        keys, arr1, arr2 = qsort_desc_3_py([], [], [])
+        assert keys == []
+        assert arr1 == []
+        assert arr2 == []
+
+    def test_qsort_desc_3_duplicates(self):
+        """Arrays with duplicate keys."""
+        keys = [5, 5, 3, 5, 3]
+        arr1 = [0, 1, 2, 3, 4]
+        arr2 = [10, 11, 12, 13, 14]
+
+        sorted_keys, sorted_arr1, sorted_arr2 = qsort_desc_3_py(keys, arr1, arr2)
+
+        assert sorted_keys == [5, 5, 5, 3, 3]
+        # All 5s should come before 3s, parallel arrays follow
+        for i, k in enumerate(sorted_keys):
+            # Verify the parallel array values match their original key
+            original_idx = sorted_arr1[i]
+            assert keys[original_idx] == k
+
+    def test_qsort_desc_3_two_elements(self):
+        """Two element swap."""
+        keys = [1, 2]
+        arr1 = [0, 1]
+        arr2 = [10, 20]
+
+        sorted_keys, sorted_arr1, sorted_arr2 = qsort_desc_3_py(keys, arr1, arr2)
+
+        assert sorted_keys == [2, 1]
+        assert sorted_arr1 == [1, 0]
+        assert sorted_arr2 == [20, 10]
+
+    # =========================================================================
+    # _qsort_price_fv_4: Two-key sort (price DESC, face_value ASC)
+    # =========================================================================
+
+    def test_qsort_price_fv_4_basic(self):
+        """Basic two-key sort: price DESC, then face_value ASC."""
+        prices = [10, 20, 10, 20, 15]
+        fvs = [5, 3, 2, 8, 4]
+        arr1 = [0, 1, 2, 3, 4]
+        arr2 = [100, 101, 102, 103, 104]
+
+        sorted_prices, sorted_fvs, sorted_arr1, sorted_arr2 = qsort_price_fv_4_py(
+            prices, fvs, arr1, arr2
+        )
+
+        # Expected order: (20,3), (20,8), (15,4), (10,2), (10,5)
+        assert sorted_prices == [20, 20, 15, 10, 10]
+        assert sorted_fvs == [3, 8, 4, 2, 5]
+        assert sorted_arr1 == [1, 3, 4, 2, 0]
+        assert sorted_arr2 == [101, 103, 104, 102, 100]
+
+    def test_qsort_price_fv_4_same_price_different_fv(self):
+        """Same price, sorted by face_value ascending."""
+        prices = [10, 10, 10, 10]
+        fvs = [30, 10, 20, 5]
+        arr1 = [0, 1, 2, 3]
+        arr2 = [0, 1, 2, 3]
+
+        sorted_prices, sorted_fvs, sorted_arr1, sorted_arr2 = qsort_price_fv_4_py(
+            prices, fvs, arr1, arr2
+        )
+
+        assert sorted_prices == [10, 10, 10, 10]
+        assert sorted_fvs == [5, 10, 20, 30]  # Ascending face value
+        assert sorted_arr1 == [3, 1, 2, 0]
+
+    def test_qsort_price_fv_4_different_prices(self):
+        """Different prices, face_value doesn't matter."""
+        prices = [5, 15, 25, 10, 20]
+        fvs = [100, 100, 100, 100, 100]  # All same fv
+        arr1 = [0, 1, 2, 3, 4]
+        arr2 = [0, 0, 0, 0, 0]
+
+        sorted_prices, sorted_fvs, sorted_arr1, sorted_arr2 = qsort_price_fv_4_py(
+            prices, fvs, arr1, arr2
+        )
+
+        assert sorted_prices == [25, 20, 15, 10, 5]  # Descending price
+        assert sorted_arr1 == [2, 4, 1, 3, 0]
+
+    def test_qsort_price_fv_4_already_sorted(self):
+        """Already sorted input."""
+        prices = [30, 20, 20, 10]
+        fvs = [1, 5, 10, 1]
+        arr1 = [0, 1, 2, 3]
+        arr2 = [0, 1, 2, 3]
+
+        sorted_prices, sorted_fvs, sorted_arr1, sorted_arr2 = qsort_price_fv_4_py(
+            prices, fvs, arr1, arr2
+        )
+
+        assert sorted_prices == [30, 20, 20, 10]
+        assert sorted_fvs == [1, 5, 10, 1]
+        assert sorted_arr1 == [0, 1, 2, 3]
+
+    def test_qsort_price_fv_4_single_element(self):
+        """Single element."""
+        prices, fvs, arr1, arr2 = qsort_price_fv_4_py([10], [5], [0], [100])
+        assert prices == [10]
+        assert fvs == [5]
+        assert arr1 == [0]
+        assert arr2 == [100]
+
+    def test_qsort_price_fv_4_empty(self):
+        """Empty arrays."""
+        prices, fvs, arr1, arr2 = qsort_price_fv_4_py([], [], [], [])
+        assert prices == []
+        assert fvs == []
+        assert arr1 == []
+        assert arr2 == []
+
+    def test_qsort_price_fv_4_realistic_scenario(self):
+        """Realistic scenario: corp prices and company face values."""
+        # Simulating: 3 corps (prices 27, 20, 20) buying companies (fvs 5, 8, 12, 30)
+        prices = [20, 27, 20, 20]  # Corp share prices
+        fvs = [8, 5, 30, 12]  # Company face values
+        corp_ids = [1, 0, 1, 2]
+        company_ids = [10, 20, 30, 40]
+
+        sorted_prices, sorted_fvs, sorted_corps, sorted_companies = qsort_price_fv_4_py(
+            prices, fvs, corp_ids, company_ids
+        )
+
+        # Expected order:
+        # (27, 5) -> corp 0, company 20
+        # (20, 8) -> corp 1, company 10
+        # (20, 12) -> corp 2, company 40
+        # (20, 30) -> corp 1, company 30
+        assert sorted_prices == [27, 20, 20, 20]
+        assert sorted_fvs == [5, 8, 12, 30]
+        assert sorted_corps == [0, 1, 2, 1]
+        assert sorted_companies == [20, 10, 40, 30]
