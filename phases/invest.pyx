@@ -12,7 +12,7 @@ from entities import corp as corp_module
 from entities import market as market_module
 from entities import company as company_module
 from entities.company cimport get_auction_company_for_slot
-from core.data cimport GamePhases, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_WRAP_UP, PHASE_GAME_OVER, get_company_face_value, get_market_price, get_corp_share_count, GameConstants
+from core.data cimport GamePhases, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_WRAP_UP, PHASE_GAME_OVER, get_company_face_value, get_market_price, GameConstants
 from core.data import CORP_NAMES
 
 
@@ -105,65 +105,6 @@ cdef void _check_presidency(GameState state, int corp_id) noexcept:
     elif president_id < 0 and current_president >= 0:
         # No one has shares but there was a president - clear (shouldn't happen if receivership check ran first)
         player_module.PLAYERS[current_president].set_president_of(state, corp_id, False)
-
-
-cdef void _execute_bankruptcy(GameState state, int corp_id) noexcept:
-    """
-    Execute bankruptcy procedure for a corporation (INV-22 through INV-27).
-
-    Triggered when share price drops to index 0. This is a complete reset:
-    - All owned companies removed from game
-    - All shares returned to unissued (cleared from players)
-    - Corp cash returned to bank (set to 0)
-    - Market space freed
-    - Corp deactivated and available for future IPO
-
-    Args:
-        state: Game state to modify
-        corp_id: Corporation that went bankrupt
-    """
-    cdef int company_id, player_id, current_index
-    cdef object corp
-
-    # Get corp entity
-    corp = corp_module.CORPS[corp_id]
-
-    # Step 1: Remove all owned companies from game (INV-23)
-    for company_id in range(GameConstants.NUM_COMPANIES):
-        if corp.owns_company(state, company_id):
-            company_module.COMPANIES[company_id].remove_from_game(state)
-            corp.set_owns_company(state, company_id, False)
-
-    # Step 2: Return all shares to unissued - clear player shares first (INV-24)
-    for player_id in range(state._num_players):
-        player_module.PLAYERS[player_id].set_shares(state, corp_id, 0)
-        player_module.PLAYERS[player_id].set_president_of(state, corp_id, False)
-
-    # Step 3: Reset corp share counts (INV-24)
-    corp.set_unissued_shares(state, get_corp_share_count(corp_id))
-    corp.set_issued_shares(state, 0)
-    corp.set_bank_shares(state, 0)
-
-    # Step 4: Return money to bank - clear corp cash (INV-25)
-    corp.set_cash(state, 0)
-
-    # Step 5: Free market space if needed (INV-26)
-    # The sell handler already freed the old space, but verify current state
-    current_index = corp.get_price_index(state)
-    if current_index > 0:
-        market_module.MARKET.set_space_available(state, current_index, True)
-
-    # Step 6: Deactivate corp and clear remaining state (INV-27)
-    corp.set_active(state, False)
-    corp.set_price_index(state, 0)
-    corp.set_in_receivership(state, False)
-    corp.set_income(state, 0)
-    corp.set_stars(state, 0)
-    corp.set_acquisition_proceeds(state, 0)
-
-    # Step 7: Clear acquisition company flags
-    for company_id in range(GameConstants.NUM_COMPANIES):
-        corp.set_acquisition_company(state, company_id, False)
 
 
 cdef void _advance_active_player(GameState state) noexcept:
@@ -290,7 +231,7 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
 
     # Check for bankruptcy (INV-22)
     if new_index == 0:
-        _execute_bankruptcy(state, corp_id)
+        corp.go_bankrupt(state)
         # Update net worth for all players (bankruptcy affects all shareholders)
         player_module.update_all_net_worths(state)
         # Reset consecutive passes (INV-02)
