@@ -15,8 +15,7 @@ from core.data cimport (
     is_last_in_group as data_is_last_in_group
 )
 
-# Local constants from enum for nogil usage
-DEF NUM_COMPANIES = 36
+# Use constants from GameConstants (imported above)
 from core.data import COMPANY_NAMES
 
 
@@ -40,7 +39,7 @@ cdef inline int get_auction_company_for_slot(GameState state, int slot) noexcept
     """
     cdef int count = 0
     cdef int company_id
-    for company_id in range(NUM_COMPANIES):
+    for company_id in range(GameConstants.NUM_COMPANIES):
         if state._is_company_for_auction(company_id):
             if count == slot:
                 return company_id

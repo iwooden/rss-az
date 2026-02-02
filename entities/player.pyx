@@ -19,9 +19,7 @@ from core.data cimport (
 from entities.encoding cimport set_one_hot, get_one_hot_index
 from entities import turn as turn_module
 
-# Local constants from enum for nogil usage
-DEF NUM_COMPANIES = 36
-DEF NUM_CORPS = 8
+# Use constants from GameConstants (imported above)
 
 
 # =============================================================================
@@ -59,19 +57,19 @@ cdef PlayerOffsets get_player_offsets(int num_players) noexcept nogil:
     offset += 1
 
     p.owned_companies = offset
-    offset += NUM_COMPANIES
+    offset += GameConstants.NUM_COMPANIES
 
     p.owned_shares = offset
-    offset += NUM_CORPS
+    offset += GameConstants.NUM_CORPS
 
     p.is_president = offset
-    offset += NUM_CORPS
+    offset += GameConstants.NUM_CORPS
 
     p.share_buys = offset
-    offset += NUM_CORPS
+    offset += GameConstants.NUM_CORPS
 
     p.share_sells = offset
-    offset += NUM_CORPS
+    offset += GameConstants.NUM_CORPS
 
     p.acquisition_proceeds = offset
 
@@ -181,7 +179,7 @@ cdef inline int get_roundtrips(float* player, PlayerOffsets* p, int corp_id) noe
 cdef inline void clear_roundtrip_tracking(float* player, PlayerOffsets* p) noexcept nogil:
     """Clear round-trip tracking for all corps (called at start of player's turn)."""
     cdef int i
-    for i in range(NUM_CORPS):
+    for i in range(GameConstants.NUM_CORPS):
         player[p.share_buys + i] = 0.0
         player[p.share_sells + i] = 0.0
 
@@ -203,12 +201,12 @@ cdef int calculate_player_net_worth(GameState state, int player_id, int num_play
     cdef int shares, share_price
 
     # Add face value of owned private companies
-    for company_id in range(NUM_COMPANIES):
+    for company_id in range(GameConstants.NUM_COMPANIES):
         if player_owns_company(player, &po, company_id):
             total += get_company_face_value(company_id)
 
     # Add value of corporation shares
-    for corp_id in range(NUM_CORPS):
+    for corp_id in range(GameConstants.NUM_CORPS):
         shares = get_player_shares(player, &po, corp_id)
         if shares > 0:
             if state._is_corp_active(corp_id):

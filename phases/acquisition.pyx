@@ -34,7 +34,7 @@ from entities import corp as corp_module
 from entities import fi as fi_module
 from core.data import CORP_NAMES, CORP_NAME_TO_ID
 
-# Constants
+# Buffer size constant (DEF required for static array sizing - cannot be imported)
 DEF OFFER_BUFFER_SIZE = 250
 
 # Company location constants (from entities/company.pxd)
@@ -81,15 +81,15 @@ cdef void _qsort_desc_3(int* keys, int* arr1, int* arr2, int lo, int hi) noexcep
 
 cdef void _qsort_price_fv_4(int* prices, int* fvs, int* arr1, int* arr2, int lo, int hi) noexcept nogil:
     """
-    Quicksort 4 parallel arrays by (price DESC, face_value ASC).
+    Quicksort 4 parallel arrays by (price DESC, face_value DESC).
 
     Used for corp-corp and corp-player offers.
     Arrays: prices=sort key 1, fvs=sort key 2, arr1=corp_ids, arr2=company_ids
 
     Comparison: (price_a, fv_a) < (price_b, fv_b) if:
       - price_a < price_b, OR
-      - price_a == price_b AND fv_a > fv_b
-    (We want higher prices first, then lower face values)
+      - price_a == price_b AND fv_a < fv_b
+    (We want higher prices first, then higher face values)
     """
     if lo >= hi:
         return
@@ -102,10 +102,10 @@ cdef void _qsort_price_fv_4(int* prices, int* fvs, int* arr1, int* arr2, int lo,
 
     while i <= j:
         # Move i right while element should come before pivot
-        while prices[i] > pivot_price or (prices[i] == pivot_price and fvs[i] < pivot_fv):
+        while prices[i] > pivot_price or (prices[i] == pivot_price and fvs[i] > pivot_fv):
             i += 1
         # Move j left while element should come after pivot
-        while prices[j] < pivot_price or (prices[j] == pivot_price and fvs[j] > pivot_fv):
+        while prices[j] < pivot_price or (prices[j] == pivot_price and fvs[j] < pivot_fv):
             j -= 1
         if i <= j:
             # Swap all four arrays
@@ -178,7 +178,8 @@ def qsort_price_fv_4_py(list prices, list fvs, list arr1, list arr2):
 cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) noexcept:
     """
     Collect Corp->FI offers. Returns count.
-    OS->FI offers come first, then other corps by descending share price.
+    OS->FI offers come first (by face value DESC), then other corps by descending share price.
+    Within each corp's offers, companies are sorted by face value DESC (most expensive first).
     Only active corps that can afford at least one FI company are included.
     """
     cdef int count = 0
@@ -188,10 +189,12 @@ cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) no
     cdef int temp_corp_ids[OFFER_BUFFER_SIZE]
     cdef int temp_company_ids[OFFER_BUFFER_SIZE]
     cdef int temp_prices[OFFER_BUFFER_SIZE]
-    cdef int i
+    cdef int temp_fvs[OFFER_BUFFER_SIZE]
+    cdef int i, face_value
 
     # First pass: OS->FI offers (OS always first if can afford)
-    for company_id in range(GameConstants.NUM_COMPANIES):
+    # Iterate in descending face value order (most expensive first)
+    for company_id in range(GameConstants.NUM_COMPANIES - 1, -1, -1):
         if fi_module.FI.owns_company(state, company_id):
             high_price = company_module.COMPANIES[company_id].get_high_price()
 
@@ -204,9 +207,11 @@ cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) no
                     count += 1
 
     # Second pass: collect other corps (not OS) into temp arrays
-    for company_id in range(GameConstants.NUM_COMPANIES):
+    # Iterate in descending face value order
+    for company_id in range(GameConstants.NUM_COMPANIES - 1, -1, -1):
         if fi_module.FI.owns_company(state, company_id):
             high_price = company_module.COMPANIES[company_id].get_high_price()
+            face_value = get_company_face_value(company_id)
 
             # Check all other corps (skip OS)
             for corp_id in range(GameConstants.NUM_CORPS):
@@ -219,11 +224,12 @@ cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) no
                         temp_corp_ids[temp_count] = corp_id
                         temp_company_ids[temp_count] = company_id
                         temp_prices[temp_count] = corp_module.CORPS[corp_id].get_share_price(state)
+                        temp_fvs[temp_count] = face_value
                         temp_count += 1
 
-    # Quicksort by descending share price
+    # Quicksort by (share price DESC, face value DESC)
     if temp_count > 1:
-        _qsort_desc_3(temp_prices, temp_corp_ids, temp_company_ids, 0, temp_count - 1)
+        _qsort_price_fv_4(temp_prices, temp_fvs, temp_corp_ids, temp_company_ids, 0, temp_count - 1)
 
     # Append sorted non-OS offers to output
     for i in range(temp_count):
@@ -238,7 +244,7 @@ cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) no
 cdef int _collect_corp_corp_offers(GameState state, int* corp_ids, int* company_ids) noexcept:
     """
     Collect Corp->Corp offers where same player is president of both.
-    Sorted by (buyer share price DESC, target face value ASC).
+    Sorted by (buyer share price DESC, target face value DESC).
 
     Note: Receivership corps are automatically excluded as sellers because
     get_president_id returns -1 for receivership, which never matches
@@ -288,7 +294,7 @@ cdef int _collect_corp_corp_offers(GameState state, int* corp_ids, int* company_
                             temp_face_values[temp_count] = face_value
                             temp_count += 1
 
-    # Quicksort by (buyer price DESC, face value ASC)
+    # Quicksort by (buyer price DESC, face value DESC)
     if temp_count > 1:
         _qsort_price_fv_4(temp_buyer_prices, temp_face_values, temp_buyer_corps, temp_company_ids, 0, temp_count - 1)
 
@@ -306,7 +312,7 @@ cdef int _collect_player_private_offers(GameState state, int* corp_ids, int* com
     """
     Collect Corp->Player private company offers.
     All corps controlled by a player can bid on each private company owned by that player.
-    Sorted by (buyer share price DESC, target face value ASC).
+    Sorted by (buyer share price DESC, target face value DESC).
     """
     cdef int count = 0
     cdef int player_id, corp_id, company_id
@@ -343,7 +349,7 @@ cdef int _collect_player_private_offers(GameState state, int* corp_ids, int* com
                         temp_face_values[temp_count] = face_value
                         temp_count += 1
 
-    # Quicksort by (corp price DESC, face value ASC)
+    # Quicksort by (corp price DESC, face value DESC)
     if temp_count > 1:
         _qsort_price_fv_4(temp_corp_prices, temp_face_values, temp_corp_ids, temp_company_ids, 0, temp_count - 1)
 

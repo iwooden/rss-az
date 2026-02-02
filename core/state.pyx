@@ -38,7 +38,10 @@ from entities import deck as deck_module
 
 cnp.import_array()
 
-# Constants
+# Buffer size constants for hidden state offer buffers
+# Note: These are duplicated in phases/acquisition.pyx and phases/closing.pyx
+# because DEF (compile-time constant) is required for static array sizing and
+# cannot be imported across Cython modules.
 DEF OFFER_BUFFER_SIZE = 250
 DEF CLOSE_OFFER_BUFFER_SIZE = 100
 

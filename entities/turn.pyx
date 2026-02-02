@@ -13,10 +13,7 @@ from core.data cimport GameConstants, GamePhases, CASH_DIVISOR
 from entities import player as player_module
 from entities.encoding cimport set_one_hot, get_one_hot_index, clear_one_hot
 
-
-# DEF constants for array sizes
-DEF NUM_CORPS = 8
-DEF NUM_COMPANIES = 36
+# Use constants from GameConstants (imported above)
 
 
 # =============================================================================
@@ -73,26 +70,26 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
     offset += num_players * 3
 
     t.dividend_corp = offset
-    offset += NUM_CORPS  # 8
+    offset += GameConstants.NUM_CORPS  # 8
     # Skip dividend_impact (25)
     offset += 25
     # Skip dividend_remaining (8)
-    offset += NUM_CORPS
+    offset += GameConstants.NUM_CORPS
 
     t.issue_corp = offset
-    offset += NUM_CORPS  # 8
+    offset += GameConstants.NUM_CORPS  # 8
     # Skip issue_remaining (8)
-    offset += NUM_CORPS
+    offset += GameConstants.NUM_CORPS
 
     t.ipo_company = offset
-    offset += NUM_COMPANIES  # 36
+    offset += GameConstants.NUM_COMPANIES  # 36
     # Skip ipo_remaining (36)
-    offset += NUM_COMPANIES
+    offset += GameConstants.NUM_COMPANIES
 
     t.acq_active_corp = offset
-    offset += NUM_CORPS  # 8
+    offset += GameConstants.NUM_CORPS  # 8
     t.acq_target_company = offset
-    offset += NUM_COMPANIES  # 36
+    offset += GameConstants.NUM_COMPANIES  # 36
     t.acq_is_fi_offer = offset
     offset += 1
 
@@ -104,7 +101,7 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
 cdef inline int get_acq_active_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil:
     """Get active acquiring corp (scan one-hot, returns -1 if none)."""
     cdef int i
-    for i in range(NUM_CORPS):
+    for i in range(GameConstants.NUM_CORPS):
         if turn[t.acq_active_corp + i] == 1.0:
             return i
     return -1
@@ -113,7 +110,7 @@ cdef inline int get_acq_active_corp_nogil(float* turn, TurnOffsets* t) noexcept 
 cdef inline int get_acq_target_company_nogil(float* turn, TurnOffsets* t) noexcept nogil:
     """Get target company for acquisition (scan one-hot, returns -1 if none)."""
     cdef int i
-    for i in range(NUM_COMPANIES):
+    for i in range(GameConstants.NUM_COMPANIES):
         if turn[t.acq_target_company + i] == 1.0:
             return i
     return -1
@@ -127,7 +124,7 @@ cdef inline bint is_acq_fi_offer_nogil(float* turn, TurnOffsets* t) noexcept nog
 cdef inline int get_dividend_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil:
     """Get current dividend corp (scan one-hot, returns -1 if none)."""
     cdef int i
-    for i in range(NUM_CORPS):
+    for i in range(GameConstants.NUM_CORPS):
         if turn[t.dividend_corp + i] == 1.0:
             return i
     return -1
@@ -136,7 +133,7 @@ cdef inline int get_dividend_corp_nogil(float* turn, TurnOffsets* t) noexcept no
 cdef inline int get_issue_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil:
     """Get current issue corp (scan one-hot, returns -1 if none)."""
     cdef int i
-    for i in range(NUM_CORPS):
+    for i in range(GameConstants.NUM_CORPS):
         if turn[t.issue_corp + i] == 1.0:
             return i
     return -1
@@ -145,7 +142,7 @@ cdef inline int get_issue_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil
 cdef inline int get_ipo_company_nogil(float* turn, TurnOffsets* t) noexcept nogil:
     """Get current IPO company (scan one-hot, returns -1 if none)."""
     cdef int i
-    for i in range(NUM_COMPANIES):
+    for i in range(GameConstants.NUM_COMPANIES):
         if turn[t.ipo_company + i] == 1.0:
             return i
     return -1
@@ -154,7 +151,7 @@ cdef inline int get_ipo_company_nogil(float* turn, TurnOffsets* t) noexcept nogi
 cdef inline int get_closing_company_nogil(float* turn, TurnOffsets* t) noexcept nogil:
     """Get company being offered for closing (scan one-hot, returns -1 if none)."""
     cdef int i
-    for i in range(NUM_COMPANIES):
+    for i in range(GameConstants.NUM_COMPANIES):
         if turn[t.closing_company + i] == 1.0:
             return i
     return -1

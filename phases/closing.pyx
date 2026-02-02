@@ -44,7 +44,7 @@ from entities import corp as corp_module
 from entities import fi as fi_module
 from entities import player as player_module
 
-# Constants
+# Buffer size constant (DEF required for static array sizing - cannot be imported)
 DEF CLOSE_OFFER_BUFFER_SIZE = 100
 DEF OWNER_PLAYER = 0  # Owner type for player-owned companies
 DEF OWNER_CORP = 1    # Owner type for corp-owned companies

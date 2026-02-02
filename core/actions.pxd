@@ -13,13 +13,11 @@ from core.state cimport GameState
 # =============================================================================
 
 cdef enum:
-    # Action space dimensions
+    # Action space dimensions (game constants like NUM_CORPS are in data.pxd)
     AUCTION_CAP = 20         # Max bid offset over face value
     MAX_PAR_SLOTS = 8        # Max valid par prices per star tier
     ACQ_PRICE_RANGE = 51     # 0-50 price offset
     MAX_DIVIDEND = 26        # 0-25 dividend amount
-    NUM_CORPS = 8
-    NUM_COMPANIES = 36
     NUM_PAR_PRICES = 14
 
 
