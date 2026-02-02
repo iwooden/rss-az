@@ -24,6 +24,7 @@ See CLAUDE.md "Offer Buffer Pattern" for full documentation.
 """
 
 from core.state cimport GameState
+from core.driver cimport _is_game_terminal
 from core.data cimport GamePhases, GameConstants, get_company_face_value, get_company_low_price
 from core.actions cimport ActionInfo, ACTION_PASS, ACTION_ACQ_PRICE, ACTION_ACQ_FI_HIGH, ACTION_ACQ_FI_FACE
 from entities import turn as turn_module
@@ -872,41 +873,6 @@ def merge_acquisition_zones_py(GameState state):
 def transition_to_closing_py(GameState state):
     """Python wrapper for testing phase transition."""
     _transition_to_closing(state)
-
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-cdef bint _is_game_terminal(GameState state) noexcept:
-    """
-    Check if the game has reached a terminal state.
-
-    Terminal state occurs when:
-    1. No companies are available for auction, AND
-    2. No corporations are active
-
-    This prevents infinite INVEST->WRAP_UP->ACQUISITION loops when
-    all companies are removed from the game.
-    """
-    cdef int company_id, corp_id
-    cdef bint has_auction_companies = False
-    cdef bint has_active_corps = False
-
-    # Check for any companies available for auction
-    for company_id in range(GameConstants.NUM_COMPANIES):
-        if company_module.COMPANIES[company_id].is_for_auction(state):
-            has_auction_companies = True
-            break
-
-    # Check for any active corporations
-    for corp_id in range(GameConstants.NUM_CORPS):
-        if corp_module.CORPS[corp_id].is_active(state):
-            has_active_corps = True
-            break
-
-    # Terminal if no auction companies AND no active corps
-    return not has_auction_companies and not has_active_corps
 
 
 # =============================================================================

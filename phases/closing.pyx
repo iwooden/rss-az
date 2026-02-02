@@ -31,6 +31,7 @@ See CLAUDE.md "Offer Buffer Pattern" for full documentation.
 """
 
 from core.state cimport GameState
+from core.driver cimport _is_game_terminal
 from core.data cimport (
     GameConstants, GamePhases, PHASE_GAME_OVER, PHASE_INCOME,
     get_cost_of_ownership, get_company_income, get_company_stars, get_company_face_value,
@@ -52,36 +53,6 @@ DEF OWNER_CORP = 1    # Owner type for corp-owned companies
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
-
-cdef bint _is_game_terminal(GameState state) noexcept:
-    """
-    Check if the game has reached a terminal state.
-
-    Terminal state occurs when:
-    1. No companies are available for auction, AND
-    2. No corporations are active
-
-    This prevents infinite INVEST->WRAP_UP->ACQUISITION->CLOSING loops when
-    all companies are removed from the game.
-    """
-    cdef int company_id, corp_id
-    cdef bint has_auction_companies = False
-    cdef bint has_active_corps = False
-
-    # Check for any companies available for auction
-    for company_id in range(GameConstants.NUM_COMPANIES):
-        if company_module.COMPANIES[company_id].is_for_auction(state):
-            has_auction_companies = True
-            break
-
-    # Check for any active corporations
-    for corp_id in range(GameConstants.NUM_CORPS):
-        if corp_module.CORPS[corp_id].is_active(state):
-            has_active_corps = True
-            break
-
-    # Terminal if no auction companies AND no active corps
-    return not has_auction_companies and not has_active_corps
 
 cdef void _close_company(GameState state, int company_id, int owner_type, int owner_id) noexcept:
     """

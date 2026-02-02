@@ -17,7 +17,7 @@ from core.actions cimport (
     ActionLayout, ActionInfo, compute_action_layout, decode_action
 )
 from core.actions import get_valid_action_mask
-from core.data cimport GamePhases, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_GAME_OVER, PHASE_WRAP_UP, PHASE_ACQUISITION, PHASE_CLOSING, PHASE_INCOME, PHASE_TEMP_END_TURN
+from core.data cimport GamePhases, GameConstants, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_GAME_OVER, PHASE_WRAP_UP, PHASE_ACQUISITION, PHASE_CLOSING, PHASE_INCOME, PHASE_TEMP_END_TURN
 from core.driver cimport ActionStatus, STATUS_OK, STATUS_INVALID, STATUS_GAME_OVER, ForcedActionResult
 from phases.invest cimport apply_invest_action
 from phases.bid cimport apply_bid_action
@@ -27,6 +27,8 @@ from phases.closing cimport apply_closing_auto, apply_closing_action
 from phases.income cimport apply_income
 from phases.temp_end_turn cimport apply_temp_end_turn
 from entities import turn as turn_module
+from entities import company as company_module
+from entities import corp as corp_module
 
 
 class ForcedActionLoopError(RuntimeError):
@@ -48,6 +50,37 @@ DEF ACTION_ACQUISITION_SENTINEL = -101
 DEF ACTION_CLOSING_SENTINEL = -102
 DEF ACTION_INCOME_SENTINEL = -103
 DEF ACTION_TEMP_END_TURN_SENTINEL = -104
+
+
+cdef bint _is_game_terminal(GameState state) noexcept:
+    """
+    Check if the game has reached a terminal state.
+
+    Terminal state occurs when:
+    1. No companies are available for auction, AND
+    2. No corporations are active
+
+    This prevents infinite INVEST->WRAP_UP->ACQUISITION->CLOSING loops when
+    all companies are removed from the game.
+    """
+    cdef int company_id, corp_id
+    cdef bint has_auction_companies = False
+    cdef bint has_active_corps = False
+
+    # Check for any companies available for auction
+    for company_id in range(GameConstants.NUM_COMPANIES):
+        if company_module.COMPANIES[company_id].is_for_auction(state):
+            has_auction_companies = True
+            break
+
+    # Check for any active corporations
+    for corp_id in range(GameConstants.NUM_CORPS):
+        if corp_module.CORPS[corp_id].is_active(state):
+            has_active_corps = True
+            break
+
+    # Terminal if no auction companies AND no active corps
+    return not has_auction_companies and not has_active_corps
 
 
 cdef bint _is_non_player_phase_check(GameState state, int phase) noexcept:
