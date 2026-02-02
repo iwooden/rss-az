@@ -111,6 +111,9 @@ cdef class Corporation:
     cpdef int calculate_income(self, GameState state)
     cpdef void apply_income(self, GameState state, int income)
 
+    # Bankruptcy
+    cpdef void go_bankrupt(self, GameState state)
+
     # Acquisition pile (companies pending integration)
     cpdef bint has_acquisition_company(self, GameState state, int company_id)
     cpdef void set_acquisition_company(self, GameState state, int company_id, bint has)

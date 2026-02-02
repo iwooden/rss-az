@@ -11,11 +11,14 @@ from core.state cimport GameState, StateLayout, CorpFieldOffsets
 from core.data cimport (
     GameConstants, CASH_DIVISOR, SHARE_DIVISOR, STAR_DIVISOR, MARKET_PRICES,
     get_company_income, get_company_stars, get_cost_of_ownership,
-    get_company_face_value, compute_synergy_bonuses, CorpIndices
+    get_company_face_value, compute_synergy_bonuses, CorpIndices, get_corp_share_count
 )
 from core.data import CORP_NAMES
 from entities.encoding cimport set_one_hot
 from entities import turn as turn_module
+from entities import company as company_module
+from entities import market as market_module
+from entities import player as player_module
 
 
 # =============================================================================
@@ -397,6 +400,59 @@ cdef class Corporation:
     cpdef void apply_income(self, GameState state, int income):
         """Apply calculated income to corporation cash."""
         self.add_cash(state, income)
+
+    # =========================================================================
+    # BANKRUPTCY
+    # =========================================================================
+
+    cpdef void go_bankrupt(self, GameState state):
+        """
+        Execute bankruptcy procedure for this corporation.
+
+        Triggered when share price drops to index 0. This is a complete reset:
+        - All owned companies removed from game
+        - All shares returned to unissued (cleared from players)
+        - Corp cash returned to bank (set to 0)
+        - Market space freed
+        - Corp deactivated and available for future IPO
+        """
+        cdef int company_id, player_id, current_index
+
+        # Step 1: Remove all owned companies from game
+        for company_id in range(GameConstants.NUM_COMPANIES):
+            if self.owns_company(state, company_id):
+                company_module.COMPANIES[company_id].remove_from_game(state)
+                self.set_owns_company(state, company_id, False)
+
+        # Step 2: Return all shares to unissued - clear player shares first
+        for player_id in range(state._num_players):
+            player_module.PLAYERS[player_id].set_shares(state, self.corp_id, 0)
+            player_module.PLAYERS[player_id].set_president_of(state, self.corp_id, False)
+
+        # Step 3: Reset corp share counts
+        self.set_unissued_shares(state, get_corp_share_count(self.corp_id))
+        self.set_issued_shares(state, 0)
+        self.set_bank_shares(state, 0)
+
+        # Step 4: Return money to bank - clear corp cash
+        self.set_cash(state, 0)
+
+        # Step 5: Free market space if needed
+        current_index = self.get_price_index(state)
+        if current_index > 0:
+            market_module.MARKET.set_space_available(state, current_index, True)
+
+        # Step 6: Deactivate corp and clear remaining state
+        self.set_active(state, False)
+        self.set_price_index(state, 0)
+        self.set_in_receivership(state, False)
+        self.set_income(state, 0)
+        self.set_stars(state, 0)
+        self.set_acquisition_proceeds(state, 0)
+
+        # Step 7: Clear acquisition company flags
+        for company_id in range(GameConstants.NUM_COMPANIES):
+            self.set_acquisition_company(state, company_id, False)
 
     # =========================================================================
     # ACQUISITION PILE
