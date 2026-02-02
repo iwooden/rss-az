@@ -15,7 +15,7 @@ Defines the action space for the neural network output layer:
 cimport cython
 import numpy as np
 cimport numpy as cnp
-from libc.string cimport memset
+from libc.string cimport memset, memcpy
 
 from core.state cimport GameState, TurnStateOffsets, compute_turn_offsets
 from core.data cimport (
@@ -589,9 +589,7 @@ cpdef object get_valid_action_mask(GameState state):
     # Copy to numpy array for return (required for Python interface)
     cdef cnp.ndarray mask = np.empty(total_actions, dtype=np.float32)
     cdef float* mask_ptr = <float*>cnp.PyArray_DATA(mask)
-    cdef int i
-    for i in range(total_actions):
-        mask_ptr[i] = _mask_buffer[i]
+    memcpy(mask_ptr, _mask_buffer, total_actions * sizeof(float))
 
     return mask
 
