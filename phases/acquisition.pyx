@@ -372,10 +372,10 @@ cdef void _generate_offers(GameState state) noexcept:
     Generate all valid acquisition offers and store in hidden buffer.
 
     Priority order:
-    1. OS->FI offers (OFFER-02)
-    2. Other Corp->FI offers by descending share price (OFFER-03)
-    3. Corp->Corp offers by (buyer price DESC, face value ASC) (OFFER-04)
-    4. Corp->Player private offers by (buyer price DESC, face value ASC) (OFFER-05)
+    1. OS->FI offers by face value DESC (OFFER-02)
+    2. Other Corp->FI offers by (share price DESC, face value DESC) (OFFER-03)
+    3. Corp->Corp offers by (buyer price DESC, face value DESC) (OFFER-04)
+    4. Corp->Player private offers by (buyer price DESC, face value DESC) (OFFER-05)
 
     Stores in hidden state buffer: [offer_count][offer_index][buffer...]
     """

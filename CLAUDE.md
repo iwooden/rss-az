@@ -188,10 +188,10 @@ Both ACQUISITION and CLOSING phases use a **one-by-one offer presentation** patt
 #### ACQUISITION Phase Offers
 
 **Priority order** (RULES-compliant):
-1. **OS→FI**: OS corporation buys from Foreign Investor at face value (special ability)
-2. **Other Corp→FI**: By descending share price (higher-valued corps get priority)
-3. **Corp→Corp**: Same president controls buyer and seller, sorted by (buyer price DESC, face value ASC)
-4. **Corp→Player**: President's corp buying their private companies
+1. **OS→FI**: OS corporation buys from Foreign Investor at face value (special ability), sorted by face value DESC
+2. **Other Corp→FI**: By (share price DESC, face value DESC) - higher-valued corps and more expensive companies first
+3. **Corp→Corp**: Same president controls buyer and seller, sorted by (buyer price DESC, face value DESC)
+4. **Corp→Player**: President's corp buying their private companies, sorted by (buyer price DESC, face value DESC)
 
 **Hidden buffer layout:**
 ```
@@ -199,7 +199,7 @@ Both ACQUISITION and CLOSING phases use a **one-by-one offer presentation** patt
 ```
 
 **Receivership handling**: Corps without a president (in receivership) have automated behavior:
-- Auto-buy from FI at face value if affordable
+- Auto-buy from FI at HIGH price if affordable (most expensive company first)
 - Auto-pass on all other offers (receivership can only buy from FI)
 
 **Actions**: 51 price offsets (low to high), FI_HIGH, FI_FACE (OS only), PASS

@@ -305,7 +305,7 @@ class TestOfferGeneration:
         assert corp_id_3 == 1
 
     def test_corp_corp_sorted_by_buyer_price_then_face_value(self):
-        """OFFER-04 detail: Corp-corp sorted by buyer price DESC, then face value ASC."""
+        """OFFER-04 detail: Corp-corp sorted by buyer price DESC, then face value DESC."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -352,7 +352,7 @@ class TestOfferGeneration:
                 assert corp_id_third == 2
 
     def test_player_private_sorted_similarly(self):
-        """OFFER-05 detail: Player-private sorted by buyer price DESC, face value ASC."""
+        """OFFER-05 detail: Player-private sorted by buyer price DESC, face value DESC."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -378,7 +378,7 @@ class TestOfferGeneration:
         setup_acquisition_phase_py(gs)
 
         # Should have 4 offers: 2 companies × 2 corps
-        # Sorted by buyer price DESC, then face value ASC
+        # Sorted by buyer price DESC, then face value DESC
         assert get_offer_count(gs) == 4
 
         # First offers should be from higher-priced corp (corp 0)
@@ -1356,11 +1356,11 @@ class TestQuicksortHelpers:
         assert sorted_arr2 == [20, 10]
 
     # =========================================================================
-    # _qsort_price_fv_4: Two-key sort (price DESC, face_value ASC)
+    # _qsort_price_fv_4: Two-key sort (price DESC, face_value DESC)
     # =========================================================================
 
     def test_qsort_price_fv_4_basic(self):
-        """Basic two-key sort: price DESC, then face_value ASC."""
+        """Basic two-key sort: price DESC, then face_value DESC."""
         prices = [10, 20, 10, 20, 15]
         fvs = [5, 3, 2, 8, 4]
         arr1 = [0, 1, 2, 3, 4]
@@ -1370,14 +1370,14 @@ class TestQuicksortHelpers:
             prices, fvs, arr1, arr2
         )
 
-        # Expected order: (20,3), (20,8), (15,4), (10,2), (10,5)
+        # Expected order: (20,8), (20,3), (15,4), (10,5), (10,2)
         assert sorted_prices == [20, 20, 15, 10, 10]
-        assert sorted_fvs == [3, 8, 4, 2, 5]
-        assert sorted_arr1 == [1, 3, 4, 2, 0]
-        assert sorted_arr2 == [101, 103, 104, 102, 100]
+        assert sorted_fvs == [8, 3, 4, 5, 2]
+        assert sorted_arr1 == [3, 1, 4, 0, 2]
+        assert sorted_arr2 == [103, 101, 104, 100, 102]
 
     def test_qsort_price_fv_4_same_price_different_fv(self):
-        """Same price, sorted by face_value ascending."""
+        """Same price, sorted by face_value descending."""
         prices = [10, 10, 10, 10]
         fvs = [30, 10, 20, 5]
         arr1 = [0, 1, 2, 3]
@@ -1388,8 +1388,8 @@ class TestQuicksortHelpers:
         )
 
         assert sorted_prices == [10, 10, 10, 10]
-        assert sorted_fvs == [5, 10, 20, 30]  # Ascending face value
-        assert sorted_arr1 == [3, 1, 2, 0]
+        assert sorted_fvs == [30, 20, 10, 5]  # Descending face value
+        assert sorted_arr1 == [0, 2, 1, 3]
 
     def test_qsort_price_fv_4_different_prices(self):
         """Different prices, face_value doesn't matter."""
@@ -1406,9 +1406,9 @@ class TestQuicksortHelpers:
         assert sorted_arr1 == [2, 4, 1, 3, 0]
 
     def test_qsort_price_fv_4_already_sorted(self):
-        """Already sorted input."""
+        """Already sorted input (price DESC, face_value DESC)."""
         prices = [30, 20, 20, 10]
-        fvs = [1, 5, 10, 1]
+        fvs = [1, 10, 5, 1]  # For price 20: 10 > 5, so already sorted DESC
         arr1 = [0, 1, 2, 3]
         arr2 = [0, 1, 2, 3]
 
@@ -1417,7 +1417,7 @@ class TestQuicksortHelpers:
         )
 
         assert sorted_prices == [30, 20, 20, 10]
-        assert sorted_fvs == [1, 5, 10, 1]
+        assert sorted_fvs == [1, 10, 5, 1]
         assert sorted_arr1 == [0, 1, 2, 3]
 
     def test_qsort_price_fv_4_single_element(self):
@@ -1448,12 +1448,12 @@ class TestQuicksortHelpers:
             prices, fvs, corp_ids, company_ids
         )
 
-        # Expected order:
+        # Expected order (price DESC, face_value DESC):
         # (27, 5) -> corp 0, company 20
-        # (20, 8) -> corp 1, company 10
-        # (20, 12) -> corp 2, company 40
         # (20, 30) -> corp 1, company 30
+        # (20, 12) -> corp 2, company 40
+        # (20, 8) -> corp 1, company 10
         assert sorted_prices == [27, 20, 20, 20]
-        assert sorted_fvs == [5, 8, 12, 30]
+        assert sorted_fvs == [5, 30, 12, 8]
         assert sorted_corps == [0, 1, 2, 1]
-        assert sorted_companies == [20, 10, 40, 30]
+        assert sorted_companies == [20, 30, 40, 10]
