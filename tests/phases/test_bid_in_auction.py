@@ -320,12 +320,12 @@ class TestAuctionResolution:
             assert not TURN.has_player_passed_auction(bid_state, player_id)
 
     def test_new_company_drawn(self, bid_state):
-        """BID-09: New company drawn after auction resolution."""
+        """BID-09: New company drawn after auction - revealed but unavailable."""
         # At start of game, num_players companies are in auction row
         # When auction starts, one company is still marked "for auction" but is being bid on
         # After resolution: that company is transferred (cleared from auction)
-        # and a new company is drawn (added to auction)
-        # Net effect: auction row size stays constant
+        # and a new company is drawn and marked REVEALED (unavailable this phase)
+        # Net effect: auction row size decreases by 1, revealed count increases by 1
 
         # Record the company being auctioned
         auctioned_company = TURN.get_auction_company(bid_state)
@@ -342,12 +342,19 @@ class TestAuctionResolution:
         # Verify the auctioned company is no longer for auction (transferred to player)
         assert not bid_state.is_company_for_auction(auctioned_company)
 
-        # Verify a new company was drawn (total count should be num_players companies)
+        # Verify auction row decreased by 1 (replacement is revealed, not available)
         auction_count = sum(
             1 for cid in range(36)
             if bid_state.is_company_for_auction(cid)
         )
-        assert auction_count == 3  # Should still have 3 companies in auction row
+        assert auction_count == 2  # One sold, replacement is revealed not auctionable
+
+        # Verify a new company was drawn and marked as revealed
+        revealed_count = sum(
+            1 for cid in range(36)
+            if COMPANIES[cid].is_revealed(bid_state)
+        )
+        assert revealed_count == 1  # Newly drawn card is revealed (unavailable)
 
     def test_returns_to_invest_phase(self, bid_state):
         """BID-10: Auction resolution returns to INVEST phase."""
@@ -433,7 +440,7 @@ class TestAuctionResolution:
         assert_invariants(state, "After raise resolution")
 
     def test_auction_draws_new_company_marked_unavailable(self):
-        """BID-09: New company drawn is initially unavailable for next auction."""
+        """BID-09: New company drawn is revealed (unavailable) for this phase."""
         from tests.phases.conftest import assert_invariants
 
         state = GameState(num_players=3)
@@ -445,6 +452,13 @@ class TestAuctionResolution:
             if state.is_company_for_auction(cid)
         )
         assert initial_auction_count == 3
+
+        # No revealed companies initially
+        initial_revealed_count = sum(
+            1 for cid in range(36)
+            if COMPANIES[cid].is_revealed(state)
+        )
+        assert initial_revealed_count == 0
 
         layout = get_action_layout(3)
 
@@ -458,14 +472,21 @@ class TestAuctionResolution:
         while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
             DRIVER.apply_action(state, layout['leave_auction'])
 
-        # After auction, should still have same number of auction companies
-        # (one removed, one drawn)
+        # Auction row decreases by 1 (replacement is revealed, not available)
         final_auction_count = sum(
             1 for cid in range(36)
             if state.is_company_for_auction(cid)
         )
-        assert final_auction_count == initial_auction_count, \
-            "Auction row size should remain constant"
+        assert final_auction_count == initial_auction_count - 1, \
+            "Auction row should decrease by 1 (replacement is revealed)"
+
+        # New company is revealed (unavailable this phase)
+        final_revealed_count = sum(
+            1 for cid in range(36)
+            if COMPANIES[cid].is_revealed(state)
+        )
+        assert final_revealed_count == 1, \
+            "Newly drawn company should be marked as revealed (unavailable)"
 
         assert_invariants(state, "After new company drawn")
 
