@@ -449,20 +449,20 @@ cdef void _present_current_offer(GameState state) noexcept:
     Update visible state to reflect current offer in buffer.
 
     For receivership corps:
-    - FI offers: auto-execute buy if affordable, else auto-pass
+    - FI offers: auto-execute buy if affordable at HIGH price, else auto-pass
     - Non-FI offers: auto-pass (receivership can only buy from FI per RULES.md)
 
     Loops until a player-president offer is found or offers exhausted.
 
     STATE-01: Sets visible acquisition state for current offer.
     STATE-04: Clears acq_active_corp when no more offers.
-    RECV-01: Receivership corps auto-buy FI offers if affordable.
+    RECV-01: Receivership corps auto-buy FI offers if affordable at HIGH price.
     RECV-03: Auto-buy executes within this loop (no player action).
     """
     cdef int count = <int>state._data[state._layout.hidden_offer_count_offset]
     cdef int index = <int>state._data[state._layout.hidden_offer_index_offset]
     cdef int corp_id, company_id, president, base
-    cdef int face_value, corp_cash
+    cdef int high_price, corp_cash
     cdef bint is_fi_offer
 
     while index < count:
@@ -482,11 +482,13 @@ cdef void _present_current_offer(GameState state) noexcept:
 
             # Receivership corps only buy from FI (per RULES.md)
             if is_fi_offer:
-                face_value = get_company_face_value(company_id)
+                # Per RULES.md: FI "Only sells at maximum allowed price"
+                # Only OS can pay face value - receivership pays high price
+                high_price = company_module.COMPANIES[company_id].get_high_price()
                 corp_cash = corp_module.CORPS[corp_id].get_cash(state)
 
-                if corp_cash >= face_value:
-                    # Auto-execute: buy at face value
+                if corp_cash >= high_price:
+                    # Auto-execute: buy at high price
                     _execute_receivership_fi_buy(state, corp_id, company_id)
             # else: auto-pass by falling through
 
@@ -812,17 +814,18 @@ cdef void _handle_pass(GameState state) noexcept:
 
 cdef void _execute_receivership_fi_buy(GameState state, int corp_id, int company_id) noexcept:
     """
-    Execute FI purchase for receivership corp at face value.
+    Execute FI purchase for receivership corp at HIGH price.
 
-    Receivership corps always buy from FI at face value (same as OS special ability).
+    Per RULES.md: FI "Only sells at maximum allowed price".
+    Only OS has the special ability to pay face value - receivership corps pay full price.
     This is called from _present_current_offer for receivership auto-buy.
     Does NOT advance offer index - caller handles that.
     """
-    cdef int face_value = get_company_face_value(company_id)
+    cdef int high_price = company_module.COMPANIES[company_id].get_high_price()
 
     # Transfer money: corp -> FI
-    corp_module.CORPS[corp_id].add_cash(state, -face_value)
-    fi_module.FI.add_cash(state, face_value)
+    corp_module.CORPS[corp_id].add_cash(state, -high_price)
+    fi_module.FI.add_cash(state, high_price)
 
     # Transfer company to corp's acquisition zone
     company_module.COMPANIES[company_id].transfer_to_corp_acquisition(state, corp_id)

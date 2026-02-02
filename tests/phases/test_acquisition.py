@@ -1150,7 +1150,11 @@ class TestReceivershipAutoBuy:
     """Tests for receivership auto-buy behavior (RECV-01, RECV-02, RECV-03)."""
 
     def test_receivership_auto_buys_affordable_fi(self):
-        """RECV-01, RECV-03: Receivership corp auto-buys affordable FI company at face value."""
+        """RECV-01, RECV-03: Receivership corp auto-buys affordable FI company at HIGH price.
+
+        Per RULES.md: FI 'Only sells at maximum allowed price'.
+        Only OS has the special ability to pay face value - receivership corps pay full price.
+        """
         gs = GameState(3)
         gs.initialize_game()
 
@@ -1165,19 +1169,18 @@ class TestReceivershipAutoBuy:
         # Put corp 0 in receivership
         corp.set_in_receivership(gs, True)
 
-        # Record initial values
-        from core.data import get_company_face_value
-        face_value = get_company_face_value(0)
+        # Record initial values - receivership pays HIGH price, not face value
+        high_price = COMPANIES[0].get_high_price()
         corp_cash_before = corp.get_cash(gs)
         fi_cash_before = FI.get_cash(gs)
 
         # Call setup_acquisition_phase_py to generate offers and trigger auto-buy
         setup_acquisition_phase_py(gs)
 
-        # Verify auto-buy executed
+        # Verify auto-buy executed at HIGH price
         assert corp.has_acquisition_company(gs, 0), "Receivership corp should auto-buy FI company"
-        assert FI.get_cash(gs) == fi_cash_before + face_value, "FI should receive face value"
-        assert corp.get_cash(gs) == corp_cash_before - face_value, "Corp should pay face value"
+        assert FI.get_cash(gs) == fi_cash_before + high_price, "FI should receive high price"
+        assert corp.get_cash(gs) == corp_cash_before - high_price, "Corp should pay high price"
         # Offer should be processed (no offers left or active corp cleared)
         assert get_offer_count(gs) == 0 or TURN.get_acq_active_corp(gs) == -1
 
@@ -1189,7 +1192,7 @@ class TestReceivershipAutoBuy:
         # Transfer company 0 to FI
         COMPANIES[0].transfer_to_fi(gs)
 
-        # Make corp 0 active with minimal cash (can't afford face value)
+        # Make corp 0 active with minimal cash (can't afford high price)
         corp = CORPS[0]
         corp.set_active(gs, True)
         corp.set_cash(gs, 1)
