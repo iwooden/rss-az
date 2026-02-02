@@ -26,8 +26,10 @@ INCOME phase executes as non-player phase with correct transitions and bankruptc
 - Balance of $0 is allowed
 
 ### Bankruptcy procedure
-- Check if bankruptcy logic already exists in INVEST phase
-- If exists: refactor to `entities/corp.pyx` as reusable method
+- **Existing code location:** `phases/invest.pyx:110` — `_execute_bankruptcy()` is the full implementation (57 lines)
+- **Remove:** `core/state.pyx:606` — `bankrupt_corp()` is an incomplete stub, delete it
+- **Refactor to:** `entities/corp.pyx` as `Corporation.go_bankrupt(state)` method
+- Update `invest.pyx` to call the new method instead of inline `_execute_bankruptcy()`
 - Single implementation used by both INVEST and INCOME phases
 - NO duplicate bankruptcy code
 - Per RULES.md (lines 378-385): remove companies, collect shares to charter, return money to Bank, return share price card
