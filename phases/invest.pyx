@@ -273,7 +273,7 @@ cdef int apply_invest_action(GameState state, ActionInfo* info) noexcept:
 
     Returns: 0=success, 1=invalid
     """
-    cdef int company_id, face_value, bid_price, player_id
+    cdef int company_id, face_value, bid_price, player_id, i
 
     if info.action_type == ACTION_PASS:
         # Increment consecutive_passes counter
@@ -281,6 +281,11 @@ cdef int apply_invest_action(GameState state, ActionInfo* info) noexcept:
 
         # Check if all players have passed
         if turn_module.TURN.get_consecutive_passes(state) >= state._num_players:
+            # Clear per-turn tracking for all players (before leaving INVEST)
+            # Per CONTEXT.md: Roundtrip clear should happen at end of INVEST phase
+            for i in range(state._num_players):
+                player_module.PLAYERS[i].clear_roundtrip_tracking(state)
+
             # All players passed - transition to WRAP_UP phase
             turn_module.TURN.set_phase(state, PHASE_WRAP_UP)
         else:
