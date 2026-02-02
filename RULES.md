@@ -532,6 +532,20 @@ Blue (5★):   HH(45), HA(46), HR(47), MAD(50), FRA(56), LHR(58), CDG(60)
 ### All Unique Par Prices
 10, 11, 12, 13, 14, 16, 18, 20, 22, 24, 27, 30, 33, 37
 
+### Target Stars (for Share Price Adjustment)
+Formula: `round(issued_shares × price / 10)`
+
+Used in Phase 6 (Dividends) to determine share price movement. A corporation's actual star count is compared against target stars to determine if price moves up, down, or stays.
+
+Implementation: `core/data.pyx::get_required_stars(price_index, issued_shares)`
+
+### Maximum Dividend Per Share
+Formula: `price // 3` (integer division)
+
+The maximum dividend a corporation can pay per share, based on its current share price.
+
+Implementation: `core/data.pyx::get_max_dividend(price_index)`
+
 ---
 
 ## Cost of Ownership
@@ -543,13 +557,13 @@ Cost of Ownership is determined by the back of the top card of the company deck 
 | CoO Level | Trigger | Red (1★) | Orange (2★) | Yellow (3★) | Green (4★) | Blue (5★) |
 |-----------|---------|----------|-------------|-------------|------------|-----------|
 | 1-3 | — | 0 | 0 | 0 | 0 | 0 |
-| 4 | Green cards revealed | 2 | 0 | 0 | 0 | 0 |
-| 5 | Blue cards revealed | 4 | 4 | 0 | 0 | 0 |
+| 4 | Green cards on top of deck | 2 | 0 | 0 | 0 | 0 |
+| 5 | Blue cards on top of deck | 4 | 4 | 0 | 0 | 0 |
 | 6 | Game end card (7● side) | 7 | 7 | 7 | 0 | 0 |
 | 7 | Game end card flipped (10● side) | 10 | 10 | 10 | 10 | 0 |
 
 **Notes:**
-- CoO level increases as higher-tier companies are revealed from the deck
+- CoO level increases as higher-tier cards reach the top of the deck
 - When the back of the top deck card shows a cost rectangle with certain colors, those colored companies suffer the indicated cost
 - Game end card (7● side) affects red, orange, and yellow companies
 - Game end card flipped (10● side) affects all companies except blue

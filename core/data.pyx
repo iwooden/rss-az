@@ -267,6 +267,48 @@ cpdef inline int get_par_index_for_slot(int star_tier, int par_slot) noexcept no
             count += 1
     return -1
 
+cpdef inline int get_required_stars(int price_index, int issued_shares) noexcept nogil:
+    """
+    Get required star count for a corporation to maintain its share price.
+
+    Formula: round(issued_shares * price / 10)
+    Source: 18xx.games RSS implementation (target_stars function)
+
+    Args:
+        price_index: Market price index (0-26)
+        issued_shares: Number of issued shares (2-7)
+
+    Returns:
+        Required star count, or 0 for invalid inputs
+    """
+    cdef int price
+    if price_index < 1 or price_index > 26:
+        return 0
+    if issued_shares < 2 or issued_shares > 7:
+        return 0
+    price = MARKET_PRICES[price_index]
+    # Round to nearest integer: (x + 0.5) truncated
+    return <int>(issued_shares * price / 10.0 + 0.5)
+
+cpdef inline int get_max_dividend(int price_index) noexcept nogil:
+    """
+    Get maximum dividend per share for a given share price.
+
+    Formula: price // 3
+    Source: 18xx.games Rolling Stock implementation (max_dividend_per_share function)
+
+    Args:
+        price_index: Market price index (0-26)
+
+    Returns:
+        Maximum dividend per share, or 0 for invalid/bankrupt price
+    """
+    cdef int price
+    if price_index < 1 or price_index > 26:
+        return 0
+    price = MARKET_PRICES[price_index]
+    return price // 3
+
 cdef inline (int, int) compute_synergy_bonuses(
     int* company_ids,
     int num_companies
