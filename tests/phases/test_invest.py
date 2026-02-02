@@ -287,8 +287,8 @@ class TestStartAuction:
 class TestBuyShare:
     """Test buy share action behavior."""
 
-    def test_buy_share_transfers_money_to_corp(self, trade_state, apply_and_track):
-        """INV-07, INV-08: Buy share moves cash from player to corp."""
+    def test_buy_share_pays_to_bank(self, trade_state, apply_and_track):
+        """INV-07: Buy share moves cash from player to bank (not corp)."""
         corp = CORPS[0]
         player = PLAYERS[0]
 
@@ -306,17 +306,13 @@ class TestBuyShare:
         assert len(result.history) == 1, "Expected no forced actions after buy"
         assert result.status == STATUS_OK
 
-        # Price moved up, so we need the new price that was paid
-        # From index 10, next available should be 11 (if available)
-        # Player paid new price, corp received it
         new_corp_cash = corp.get_cash(trade_state)
         new_player_cash = player.get_cash(trade_state)
 
-        # Cash transferred (amounts depend on price movement)
+        # Player pays to bank: cash leaves player, corp unchanged
+        # Per RULES.md: "Player pays new share price to Bank"
         assert new_player_cash < initial_player_cash
-        assert new_corp_cash > initial_corp_cash
-        # Amount should match
-        assert (initial_player_cash - new_player_cash) == (new_corp_cash - initial_corp_cash)
+        assert new_corp_cash == initial_corp_cash  # Corp doesn't receive payment
 
     def test_buy_share_transfers_share(self, trade_state):
         """INV-09: Buy share moves 1 share from bank to player."""

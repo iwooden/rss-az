@@ -153,9 +153,9 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     if new_index != 26:  # Price 75 is always available, don't mark occupied
         market_module.MARKET.set_space_available(state, new_index, False)
 
-    # Transfer money (INV-07, INV-08)
+    # Transfer money: player pays to bank (INV-07)
+    # Per RULES.md: "Player pays new share price to Bank" - money leaves circulation
     player_module.PLAYERS[player_id].add_cash(state, -new_price)
-    corp.add_cash(state, new_price)
 
     # Transfer share (INV-09)
     bank_shares = corp.get_bank_shares(state)
