@@ -17,7 +17,7 @@ from core.actions cimport (
     ActionLayout, ActionInfo, compute_action_layout, decode_action
 )
 from core.actions import get_valid_action_mask
-from core.data cimport GamePhases, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_GAME_OVER, PHASE_WRAP_UP, PHASE_ACQUISITION, PHASE_CLOSING, PHASE_INCOME
+from core.data cimport GamePhases, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_GAME_OVER, PHASE_WRAP_UP, PHASE_ACQUISITION, PHASE_CLOSING, PHASE_INCOME, PHASE_TEMP_END_TURN
 from core.driver cimport ActionStatus, STATUS_OK, STATUS_INVALID, STATUS_GAME_OVER, ForcedActionResult
 from phases.invest cimport apply_invest_action
 from phases.bid cimport apply_bid_action
@@ -25,6 +25,7 @@ from phases.wrap_up cimport apply_wrap_up
 from phases.acquisition cimport apply_acquisition_action, _transition_to_closing
 from phases.closing cimport apply_closing_auto, apply_closing_action
 from phases.income cimport apply_income
+from phases.temp_end_turn cimport apply_temp_end_turn
 from entities import turn as turn_module
 
 
@@ -46,6 +47,7 @@ DEF ACTION_WRAP_UP_SENTINEL = -100
 DEF ACTION_ACQUISITION_SENTINEL = -101
 DEF ACTION_CLOSING_SENTINEL = -102
 DEF ACTION_INCOME_SENTINEL = -103
+DEF ACTION_TEMP_END_TURN_SENTINEL = -104
 
 
 cdef bint _is_non_player_phase_check(GameState state, int phase) noexcept:
@@ -70,6 +72,9 @@ cdef bint _is_non_player_phase_check(GameState state, int phase) noexcept:
     if phase == PHASE_INCOME:
         return True
 
+    if phase == PHASE_TEMP_END_TURN:
+        return True
+
     return False
 
 
@@ -86,6 +91,8 @@ cdef void _execute_non_player_phase(GameState state, object history):
         sentinel = ACTION_CLOSING_SENTINEL
     elif phase == PHASE_INCOME:
         sentinel = ACTION_INCOME_SENTINEL
+    elif phase == PHASE_TEMP_END_TURN:
+        sentinel = ACTION_TEMP_END_TURN_SENTINEL
     else:
         return  # Unknown non-player phase
 
@@ -102,6 +109,8 @@ cdef void _execute_non_player_phase(GameState state, object history):
         apply_closing_auto(state)
     elif phase == PHASE_INCOME:
         apply_income(state)
+    elif phase == PHASE_TEMP_END_TURN:
+        apply_temp_end_turn(state)
 
 
 cdef ForcedActionResult _check_forced_action(GameState state) noexcept:
