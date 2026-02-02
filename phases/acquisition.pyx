@@ -42,15 +42,6 @@ DEF OS_CORP_ID = 2  # OS is index 2 in CORP_NAMES
 # OFFER GENERATION HELPERS
 # =============================================================================
 
-cdef int _get_corp_president(GameState state, int corp_id) noexcept:
-    """Get player_id of corp president, or -1 if in receivership."""
-    cdef int player_id
-    for player_id in range(state._num_players):
-        if player_module.PLAYERS[player_id].is_president_of(state, corp_id):
-            return player_id
-    return -1
-
-
 cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) noexcept:
     """
     Collect Corp->FI offers. Returns count.
@@ -140,7 +131,7 @@ cdef int _collect_corp_corp_offers(GameState state, int* corp_ids, int* company_
     Sorted by (buyer share price DESC, target face value ASC).
 
     Note: Receivership corps are automatically excluded as sellers because
-    _get_corp_president returns -1 for receivership, which never matches
+    get_president_id returns -1 for receivership, which never matches
     any player_id (0 to num_players-1). This implements RECV-02.
     """
     cdef int count = 0
@@ -161,7 +152,7 @@ cdef int _collect_corp_corp_offers(GameState state, int* corp_ids, int* company_
         for buyer_corp in range(GameConstants.NUM_CORPS):
             if not corp_module.CORPS[buyer_corp].is_active(state):
                 continue
-            if _get_corp_president(state, buyer_corp) != player_id:
+            if corp_module.CORPS[buyer_corp].get_president_id(state) != player_id:
                 continue
 
             buyer_cash = corp_module.CORPS[buyer_corp].get_cash(state)
@@ -173,7 +164,7 @@ cdef int _collect_corp_corp_offers(GameState state, int* corp_ids, int* company_
                     continue
                 if not corp_module.CORPS[seller_corp].is_active(state):
                     continue
-                if _get_corp_president(state, seller_corp) != player_id:
+                if corp_module.CORPS[seller_corp].get_president_id(state) != player_id:
                     continue
 
                 # Find companies owned by seller corp
@@ -264,7 +255,7 @@ cdef int _collect_player_private_offers(GameState state, int* corp_ids, int* com
                 for corp_id in range(GameConstants.NUM_CORPS):
                     if not corp_module.CORPS[corp_id].is_active(state):
                         continue
-                    if _get_corp_president(state, corp_id) != player_id:
+                    if corp_module.CORPS[corp_id].get_president_id(state) != player_id:
                         continue
 
                     corp_cash = corp_module.CORPS[corp_id].get_cash(state)
@@ -502,7 +493,7 @@ cdef void _present_current_offer(GameState state) noexcept:
         turn_module.TURN.set_acq_target_company(state, company_id)
         turn_module.TURN.set_acq_fi_offer(state, fi_module.FI.owns_company(state, company_id))
 
-        president = _get_corp_president(state, corp_id)
+        president = corp_module.CORPS[corp_id].get_president_id(state)
         state._set_active_player(president if president >= 0 else 0)
         return
 

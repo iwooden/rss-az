@@ -1261,5 +1261,5 @@ class TestReceivershipAutoBuy:
 
         # Verify: No offers should exist because:
         # - Corp 0 has company but is in receivership (can't sell)
-        # - _get_corp_president returns -1 for receivership, never matches any player_id
+        # - get_president_id returns -1 for receivership, never matches any player_id
         assert get_offer_count(gs) == 0, "No offers should exist for receivership seller"

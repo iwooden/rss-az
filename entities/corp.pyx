@@ -455,6 +455,18 @@ cdef class Corporation:
             self.set_acquisition_company(state, company_id, False)
 
     # =========================================================================
+    # PRESIDENT
+    # =========================================================================
+
+    cpdef int get_president_id(self, GameState state):
+        """Get player_id of corp president, or -1 if in receivership."""
+        cdef int player_id
+        for player_id in range(state._num_players):
+            if player_module.PLAYERS[player_id].is_president_of(state, self.corp_id):
+                return player_id
+        return -1
+
+    # =========================================================================
     # ACQUISITION PILE
     # =========================================================================
 

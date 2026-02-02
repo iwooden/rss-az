@@ -195,15 +195,6 @@ cdef bint _has_negative_adjusted_income(GameState state, int company_id) noexcep
     return (base_income - coo_value) < 0  # NEGATIVE only, not zero
 
 
-cdef int _get_corp_president(GameState state, int corp_id) noexcept:
-    """Get player_id of corp president, or -1 if in receivership."""
-    cdef int player_id
-    for player_id in range(state._num_players):
-        if player_module.PLAYERS[player_id].is_president_of(state, corp_id):
-            return player_id
-    return -1
-
-
 cdef int _collect_player_close_offers(
     GameState state,
     int* owner_types, int* owner_ids, int* company_ids, int* face_values,
@@ -254,7 +245,7 @@ cdef int _collect_corp_close_offers(
             continue
 
         # Skip receivership corps (no president = excluded from offers)
-        president = _get_corp_president(state, corp_id)
+        president = corp_module.CORPS[corp_id].get_president_id(state)
         if president < 0:
             continue
 
@@ -453,7 +444,7 @@ cdef void _present_next_close_offer(GameState state) noexcept:
         if owner_type == OWNER_PLAYER:
             state._set_active_player(owner_id)
         elif owner_type == OWNER_CORP:
-            president = _get_corp_president(state, owner_id)
+            president = corp_module.CORPS[owner_id].get_president_id(state)
             state._set_active_player(president if president >= 0 else 0)
         return
 
