@@ -185,6 +185,9 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     # [554] close_offer_count (number of close offers)
     # [555] close_offer_index (current close offer being processed)
     # [556..855] close_offer_buffer (100 offers * 3 floats: owner_type, owner_id, company_id)
+    # [856] acq_active_corp (compact, for O(1) access)
+    # [857] acq_target_company (compact, for O(1) access)
+    # [858] closing_company (compact, for O(1) access)
     layout.hidden_active_player_offset = offset
     offset += 1
     layout.hidden_num_players_offset = offset
@@ -219,6 +222,13 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     offset += 1
     layout.hidden_close_offer_buffer_offset = offset
     offset += CLOSE_OFFER_BUFFER_SIZE * 3  # 100 offers * 3 floats per offer
+    # O(1) access for one-hot fields (avoids scanning visible one-hot arrays)
+    layout.hidden_acq_active_corp_offset = offset
+    offset += 1
+    layout.hidden_acq_target_company_offset = offset
+    offset += 1
+    layout.hidden_closing_company_offset = offset
+    offset += 1
     layout.hidden_size = offset - layout.visible_size
 
     layout.total_size = layout.visible_size + layout.hidden_size
@@ -663,35 +673,39 @@ cdef class GameState:
     # ACQUISITION STATE ACCESS
     # =========================================================================
 
+    cdef int _get_acq_active_corp(self) noexcept nogil:
+        """Get active corp in acquisition phase (nogil version)."""
+        return <int>self._data[self._layout.hidden_acq_active_corp_offset]
+
     cpdef int get_acq_active_corp(self):
         """Get active corp in acquisition phase."""
-        cdef float* turn = self._turn_ptr()
-        cdef int corp_id
-        for corp_id in range(GameConstants.NUM_CORPS):
-            if turn[self._turn_offsets.acq_active_corp + corp_id] == 1.0:
-                return corp_id
-        return -1
+        return self._get_acq_active_corp()
 
     cpdef void set_acq_active_corp(self, int corp_id):
         """Set active corp in acquisition phase."""
         cdef float* turn = self._turn_ptr()
         cdef int i
+        # Update hidden compact value
+        self._data[self._layout.hidden_acq_active_corp_offset] = <float>corp_id
+        # Update one-hot encoding
         for i in range(GameConstants.NUM_CORPS):
             turn[self._turn_offsets.acq_active_corp + i] = 1.0 if i == corp_id else 0.0
 
+    cdef int _get_acq_target_company(self) noexcept nogil:
+        """Get target company in acquisition phase (nogil version)."""
+        return <int>self._data[self._layout.hidden_acq_target_company_offset]
+
     cpdef int get_acq_target_company(self):
         """Get target company in acquisition phase."""
-        cdef float* turn = self._turn_ptr()
-        cdef int company_id
-        for company_id in range(GameConstants.NUM_COMPANIES):
-            if turn[self._turn_offsets.acq_target_company + company_id] == 1.0:
-                return company_id
-        return -1
+        return self._get_acq_target_company()
 
     cpdef void set_acq_target_company(self, int company_id):
         """Set target company in acquisition phase."""
         cdef float* turn = self._turn_ptr()
         cdef int i
+        # Update hidden compact value
+        self._data[self._layout.hidden_acq_target_company_offset] = <float>company_id
+        # Update one-hot encoding
         for i in range(GameConstants.NUM_COMPANIES):
             turn[self._turn_offsets.acq_target_company + i] = 1.0 if i == company_id else 0.0
 
@@ -709,19 +723,21 @@ cdef class GameState:
     # CLOSING STATE ACCESS
     # =========================================================================
 
+    cdef int _get_current_closing_company(self) noexcept nogil:
+        """Get current company being closed (nogil version)."""
+        return <int>self._data[self._layout.hidden_closing_company_offset]
+
     cpdef int get_current_closing_company(self):
         """Get current company being closed."""
-        cdef float* turn = self._turn_ptr()
-        cdef int company_id
-        for company_id in range(GameConstants.NUM_COMPANIES):
-            if turn[self._turn_offsets.closing_company + company_id] == 1.0:
-                return company_id
-        return -1
+        return self._get_current_closing_company()
 
     cpdef void set_current_closing_company(self, int company_id):
         """Set current closing company."""
         cdef float* turn = self._turn_ptr()
         cdef int i
+        # Update hidden compact value
+        self._data[self._layout.hidden_closing_company_offset] = <float>company_id
+        # Update one-hot encoding
         for i in range(GameConstants.NUM_COMPANIES):
             turn[self._turn_offsets.closing_company + i] = 1.0 if i == company_id else 0.0
 

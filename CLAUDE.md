@@ -79,14 +79,19 @@ Central data structure: single contiguous float32 numpy array.
 
 **Two-part layout:**
 - **Visible state**: NN input (player-rotated so active player first)
-- **Hidden state**: Internal bookkeeping (deck, offer buffers)
+- **Hidden state**: Internal bookkeeping (truncated before NN sees state)
+
+**Hidden state purposes:**
+- **Information hiding**: Data the model shouldn't see (deck order, canonical active player)
+- **Bookkeeping**: Offer buffers for acquisition/closing phases
+- **Performance**: Compact storage for O(1) access to one-hot values (phase, auction company, corp price indices, etc.)
 
 **Sizes by player count:**
 | Players | Visible | Hidden | Total |
 |---------|---------|--------|-------|
-| 2 | 2943 | 554 | 3497 |
-| 3 | 3015 | 554 | 3569 |
-| 6 | 3275 | 554 | 3829 |
+| 2 | 2943 | 859 | 3802 |
+| 3 | 3023 | 859 | 3882 |
+| 6 | 3275 | 859 | 4134 |
 
 ### Actions (`core/actions.pyx`)
 

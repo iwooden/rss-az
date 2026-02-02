@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | 2943         | 554         | 3497       |
-| 3       | 3023         | 554         | 3577       |
-| 4       | 3105         | 554         | 3659       |
-| 5       | 3189         | 554         | 3743       |
-| 6       | 3275         | 554         | 3829       |
+| 2       | 2943         | 859         | 3802       |
+| 3       | 3023         | 859         | 3882       |
+| 4       | 3105         | 859         | 3964       |
+| 5       | 3189         | 859         | 4048       |
+| 6       | 3275         | 859         | 4134       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 
@@ -212,7 +212,12 @@ Per company (40 floats):
 
 ## Hidden State Layout
 
-Hidden state starts at `visible_size` offset. Total hidden size = 554.
+Hidden state starts at `visible_size` offset. Total hidden size = 859.
+
+The hidden state serves several purposes:
+- **Information hiding**: Data the NN shouldn't see (deck order, active player before rotation)
+- **Bookkeeping**: Offer buffers for acquisition/closing phases
+- **Performance**: Compact storage for O(1) access to one-hot values
 
 | Field | Offset | Size | Notes |
 |-------|--------|------|-------|
@@ -226,9 +231,15 @@ Hidden state starts at `visible_size` offset. Total hidden size = 554.
 | `auction_high_bidder` | 42 | 1 | Compact high bidder |
 | `auction_starter` | 43 | 1 | Compact auction starter |
 | `corp_price_indices` | 44 | 8 | Compact price indices per corp |
-| `offer_count` | 52 | 1 | Number of offers in buffer |
-| `offer_index` | 53 | 1 | Current offer being processed |
-| `offer_buffer` | 54 | 500 | Offer tuples (corp_id, company_id) - 250 offers × 2 floats |
+| `offer_count` | 52 | 1 | Number of acquisition offers |
+| `offer_index` | 53 | 1 | Current acquisition offer |
+| `offer_buffer` | 54 | 500 | Acquisition offers (corp_id, company_id) - 250 offers × 2 floats |
+| `close_offer_count` | 554 | 1 | Number of close offers |
+| `close_offer_index` | 555 | 1 | Current close offer |
+| `close_offer_buffer` | 556 | 300 | Close offers (owner_type, owner_id, company_id) - 100 offers × 3 floats |
+| `acq_active_corp` | 856 | 1 | Compact storage for O(1) access |
+| `acq_target_company` | 857 | 1 | Compact storage for O(1) access |
+| `closing_company` | 858 | 1 | Compact storage for O(1) access |
 
 ---
 

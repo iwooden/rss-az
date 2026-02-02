@@ -55,6 +55,10 @@ cdef struct StateLayout:
     int hidden_close_offer_count_offset
     int hidden_close_offer_index_offset
     int hidden_close_offer_buffer_offset
+    # O(1) access for one-hot fields (performance optimization)
+    int hidden_acq_active_corp_offset
+    int hidden_acq_target_company_offset
+    int hidden_closing_company_offset
 
 cdef struct TurnStateOffsets:
     int turn_number
@@ -187,14 +191,17 @@ cdef class GameState:
     cpdef void set_auction_price(self, int price)
 
     # Acquisition state access
+    cdef int _get_acq_active_corp(self) noexcept nogil
     cpdef int get_acq_active_corp(self)
     cpdef void set_acq_active_corp(self, int corp_id)
+    cdef int _get_acq_target_company(self) noexcept nogil
     cpdef int get_acq_target_company(self)
     cpdef void set_acq_target_company(self, int company_id)
     cpdef bint is_acq_fi_offer(self)
     cpdef void set_acq_fi_offer(self, bint is_fi)
 
     # Closing state access
+    cdef int _get_current_closing_company(self) noexcept nogil
     cpdef int get_current_closing_company(self)
     cpdef void set_current_closing_company(self, int company_id)
 
