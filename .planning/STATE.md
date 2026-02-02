@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-28)
 
 Milestone: v6.0 INCOME Phase
 Phase: 23 of 23 (Phase Integration)
-Plan: 2 of 3 complete
-Status: In progress
-Last activity: 2026-02-02 — Completed 23-02-PLAN.md (INCOME Phase Handler)
+Plan: 3 of 3 complete
+Status: Phase 23 complete
+Last activity: 2026-02-02 — Completed 23-03-PLAN.md (TEMP_END_TURN phase)
 
-Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [##########] | v5.1 [##########] | v6.0 [#########_]
+Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [##########] | v4.0 [##########] | v5.0 [##########] | v5.1 [##########] | v6.0 [##########]
 
 ## Archived Milestones
 
@@ -28,12 +28,13 @@ Progress: v1 [##########] | v2 [##########] | v2.1 [##########] | v3.0 [########
 | v4.0 | ACQUISITION Phase | 12-15 | 13 | 2026-01-26 |
 | v5.0 | CLOSING Phase | 15.1, 16-19 | 14 | 2026-01-27 |
 | v5.1 | nogil Optimization | 20 | 3 | 2026-01-28 |
+| v6.0 | INCOME Phase | 21-23 | 9 | 2026-02-02 |
 
 See `.planning/milestones/` for full archives.
 
 ## Accumulated Context
 
-### Key Patterns (from v1-v5.1)
+### Key Patterns (from v1-v6.0)
 
 **Cython patterns:**
 - Non-player phase pattern - 0 actions valid for deterministic phases (WRAP_UP pattern)
@@ -48,6 +49,7 @@ See `.planning/milestones/` for full archives.
 - Negative cash rounding pattern - +0.5 for positive, -0.5 for negative (22-03)
 - Bankruptcy delegation pattern - phases call Corp.go_bankrupt() instead of inline logic (23-01)
 - Income application pattern - INCOME phase applies per-entity income with immediate bankruptcy check (23-02)
+- Temporary phase consolidation pattern - TEMP_END_TURN consolidates end-of-turn bookkeeping (23-03)
 
 **Testing patterns:**
 - Per-task atomic commits - feat/test prefixes for git bisect
@@ -60,13 +62,13 @@ None.
 
 ### Blockers/Concerns
 
-**Test updates needed:** 18 tests fail due to INCOME phase behavior changes (FI +5 income, turn increment moved). Plan 23-03 or separate update needed.
+**Remaining Game Phases after v6.0:** DIV (DIVIDENDS), END (END_CARD), ISS (ISSUE_SHARES), IPO (INITIAL_PUBLIC_OFFERING)
 
-**Remaining Game Phases after v6.0:** DIV (DIVIDENDS), END (END_GAME), ISS (ISSUE_SHARES), IPO (INITIAL_PUBLIC_OFFERING)
+**TEMP_END_TURN is temporary:** Once all remaining phases are implemented, turn increment logic should move to the appropriate phase per game rules.
 
 ## Session Continuity
 
 Last session: 2026-02-02
-Stopped at: Completed 23-02-PLAN.md (2/3 plans)
+Stopped at: Completed 23-03-PLAN.md (3/3 plans, Phase 23 complete)
 Resume file: None
-Next action: Execute 23-03-PLAN.md (TEMP_END_TURN phase and phase transitions)
+Next action: Archive v6.0 milestone or continue with next milestone
