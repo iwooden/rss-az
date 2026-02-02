@@ -33,7 +33,7 @@ See CLAUDE.md "Offer Buffer Pattern" for full documentation.
 from core.state cimport GameState
 from core.driver cimport _is_game_terminal
 from core.data cimport (
-    GameConstants, GamePhases, PHASE_GAME_OVER, PHASE_INCOME,
+    GameConstants, GamePhases, CorpIndices, PHASE_GAME_OVER, PHASE_INCOME,
     get_cost_of_ownership, get_company_income, get_company_stars, get_company_face_value,
     get_adjusted_company_income
 )
@@ -77,8 +77,8 @@ cdef void _close_company(GameState state, int company_id, int owner_type, int ow
     elif owner_type == 5:  # LOC_CORP
         corp_module.CORPS[owner_id].set_owns_company(state, company_id, False)
 
-    # Junkyard Scrappers (corp_id 0) bonus: 2x printed income only when JS closes its own company
-    if owner_type == 5 and owner_id == 0:  # LOC_CORP and JS
+    # Junkyard Scrappers bonus: 2x printed income only when JS closes its own company
+    if owner_type == 5 and owner_id == CorpIndices.CORP_JS:  # LOC_CORP and JS
         corp_module.CORPS[0].add_cash(state, printed_income * 2)
 
     # Remove company from game
@@ -482,8 +482,8 @@ cdef void _process_receivership_auto_close(GameState state) noexcept:
         if not corp_module.CORPS[corp_id].is_in_receivership(state):
             continue
 
-        # Check if this is Vintage Machinery (corp_id 6)
-        is_vm = (corp_id == 6)
+        # Check if this is Vintage Machinery
+        is_vm = (corp_id == CorpIndices.CORP_VM)
 
         # Find highest face value company (protected)
         protected_company = -1

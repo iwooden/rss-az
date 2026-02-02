@@ -25,7 +25,7 @@ See CLAUDE.md "Offer Buffer Pattern" for full documentation.
 
 from core.state cimport GameState
 from core.driver cimport _is_game_terminal
-from core.data cimport GamePhases, GameConstants, get_company_face_value, get_company_low_price
+from core.data cimport GamePhases, GameConstants, CorpIndices, get_company_face_value, get_company_low_price
 from core.actions cimport ActionInfo, ACTION_PASS, ACTION_ACQ_PRICE, ACTION_ACQ_FI_HIGH, ACTION_ACQ_FI_FACE
 from entities import turn as turn_module
 from entities import player as player_module
@@ -36,7 +36,6 @@ from core.data import CORP_NAMES, CORP_NAME_TO_ID
 
 # Constants
 DEF OFFER_BUFFER_SIZE = 250
-DEF OS_CORP_ID = 2  # OS is index 2 in CORP_NAMES
 
 # Company location constants (from entities/company.pxd)
 DEF LOC_PLAYER = 3
@@ -197,10 +196,10 @@ cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) no
             high_price = company_module.COMPANIES[company_id].get_high_price()
 
             # Check if OS can afford (OS always first if affordable)
-            if corp_module.CORPS[OS_CORP_ID].is_active(state):
-                corp_cash = corp_module.CORPS[OS_CORP_ID].get_cash(state)
+            if corp_module.CORPS[CorpIndices.CORP_OS].is_active(state):
+                corp_cash = corp_module.CORPS[CorpIndices.CORP_OS].get_cash(state)
                 if corp_cash >= high_price and count < OFFER_BUFFER_SIZE:
-                    corp_ids[count] = OS_CORP_ID
+                    corp_ids[count] = CorpIndices.CORP_OS
                     company_ids[count] = company_id
                     count += 1
 
@@ -211,7 +210,7 @@ cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) no
 
             # Check all other corps (skip OS)
             for corp_id in range(GameConstants.NUM_CORPS):
-                if corp_id == OS_CORP_ID:
+                if corp_id == CorpIndices.CORP_OS:
                     continue
 
                 if corp_module.CORPS[corp_id].is_active(state):
@@ -455,7 +454,7 @@ cdef bint _is_offer_valid(GameState state, int corp_id, int company_id) noexcept
     if fi_module.FI.owns_company(state, company_id):
         # FI offer: check cash (OS pays face, others pay high)
         corp_cash = corp_module.CORPS[corp_id].get_cash(state)
-        if corp_id == OS_CORP_ID:
+        if corp_id == CorpIndices.CORP_OS:
             price = get_company_face_value(company_id)
         else:
             price = company_module.COMPANIES[company_id].get_high_price()
@@ -697,7 +696,7 @@ cdef bint _validate_fi_buy_high(GameState state) noexcept:
         return False
 
     # OS cannot use FI Buy High
-    if corp_id == OS_CORP_ID:
+    if corp_id == CorpIndices.CORP_OS:
         return False
 
     # VALID-02: Corp can afford high price
@@ -734,7 +733,7 @@ cdef bint _validate_fi_buy_face(GameState state) noexcept:
         return False
 
     # Only OS can use FI Buy Face
-    if corp_id != OS_CORP_ID:
+    if corp_id != CorpIndices.CORP_OS:
         return False
 
     # VALID-02: Corp can afford face value
