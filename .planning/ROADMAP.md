@@ -7,7 +7,7 @@ Implement the INCOME phase where all entities (players, corporations, Foreign In
 ## Milestones
 
 - v1.0 through v5.1: See `.planning/milestones/` archives
-- **v6.0 INCOME Phase** - Phases 21-23 (in progress)
+- **v6.0 INCOME Phase** - Phases 21-23 (complete)
 
 ## Phases
 
@@ -18,7 +18,7 @@ Implement the INCOME phase where all entities (players, corporations, Foreign In
 
 - [x] **Phase 21: Synergy Infrastructure** - Data structures for synergy pair identification
 - [x] **Phase 22: Income Calculation** - Core income flow with CoO, synergies, and special abilities
-- [ ] **Phase 23: Phase Integration** - INCOME phase handler with transitions and bankruptcy
+- [x] **Phase 23: Phase Integration** - INCOME phase handler with transitions and bankruptcy
 
 ## Phase Details
 
@@ -68,9 +68,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 23-01-PLAN.md — Refactor bankruptcy code to Corp.go_bankrupt() method (INC-06 enablement)
-- [ ] 23-02-PLAN.md — INCOME phase handler with entity income application (TRN-04, INC-06)
-- [ ] 23-03-PLAN.md — Phase transitions and TEMP_END_TURN bookkeeping (TRN-01, TRN-02, TRN-03)
+- [x] 23-01-PLAN.md — Refactor bankruptcy code to Corp.go_bankrupt() method (INC-06 enablement)
+- [x] 23-02-PLAN.md — INCOME phase handler with entity income application (TRN-04, INC-06)
+- [x] 23-03-PLAN.md — Phase transitions and TEMP_END_TURN bookkeeping (TRN-01, TRN-02, TRN-03)
 
 ## Progress
 
@@ -80,7 +80,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 21. Synergy Infrastructure | 1/1 | ✓ Complete | 2026-01-29 |
 | 22. Income Calculation | 3/3 | ✓ Complete | 2026-01-29 |
-| 23. Phase Integration | 0/3 | Not started | - |
+| 23. Phase Integration | 3/3 | ✓ Complete | 2026-02-02 |
 
 ---
 *Created: 2026-01-28*
