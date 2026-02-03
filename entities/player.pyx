@@ -38,8 +38,8 @@ cdef PlayerOffsets get_player_offsets(int num_players) noexcept nogil:
     - owned_companies (NUM_COMPANIES) - binary flags
     - owned_shares (NUM_CORPS) - normalized share counts
     - is_president (NUM_CORPS) - binary flags
-    - share_buys (NUM_CORPS) - round-trip tracking
-    - share_sells (NUM_CORPS) - round-trip tracking
+    - share_buys (NUM_CORPS) - buy count per corp (training loop prevention)
+    - share_sells (NUM_CORPS) - sell count per corp (training loop prevention)
     """
     cdef PlayerOffsets p
     cdef int offset = 0
@@ -143,7 +143,7 @@ cdef inline void set_player_president(float* player, PlayerOffsets* p, int corp_
 # =============================================================================
 
 cdef inline int get_share_buys(float* player, PlayerOffsets* p, int corp_id) noexcept nogil:
-    """Get share buy count for round-trip tracking."""
+    """Get share buy count for this corp this turn."""
     return <int>(player[p.share_buys + corp_id] * MAX_ROUNDTRIPS * 2 + 0.5)
 
 
@@ -154,7 +154,7 @@ cdef inline void increment_share_buys(float* player, PlayerOffsets* p, int corp_
 
 
 cdef inline int get_share_sells(float* player, PlayerOffsets* p, int corp_id) noexcept nogil:
-    """Get share sell count for round-trip tracking."""
+    """Get share sell count for this corp this turn."""
     return <int>(player[p.share_sells + corp_id] * MAX_ROUNDTRIPS * 2 + 0.5)
 
 
@@ -168,16 +168,18 @@ cdef inline int get_roundtrips(float* player, PlayerOffsets* p, int corp_id) noe
     """
     Get number of completed round-trips for a corp.
 
-    A round-trip is a buy+sell or sell+buy pair. Players are limited to
-    MAX_ROUNDTRIPS per corp per turn to prevent manipulation.
+    A round-trip is a paired buy+sell (or sell+buy). Limiting round-trips prevents
+    models from getting stuck in unprofitable buy/sell loops during training.
+    Uses min(buys, sells) so multiple buys or multiple sells alone don't trigger
+    the limit - only actual round-trips (paired operations) count.
     """
     cdef int buys = get_share_buys(player, p, corp_id)
     cdef int sells = get_share_sells(player, p, corp_id)
-    return (buys + sells) // 2
+    return buys if buys < sells else sells
 
 
 cdef inline void clear_roundtrip_tracking(float* player, PlayerOffsets* p) noexcept nogil:
-    """Clear round-trip tracking for all corps (called at start of player's turn)."""
+    """Clear buy/sell tracking for all corps. Called at end of INVEST phase."""
     cdef int i
     for i in range(GameConstants.NUM_CORPS):
         player[p.share_buys + i] = 0.0
@@ -269,6 +271,30 @@ cdef class Player:
         self._share_buys_offset = self._base_offset + fields.share_buys
         self._share_sells_offset = self._base_offset + fields.share_sells
         self._acquisition_proceeds_offset = self._base_offset + fields.acquisition_proceeds
+
+    # =========================================================================
+    # NOGIL METHODS (use cached offsets for performance)
+    # =========================================================================
+
+    cdef inline int _get_cash_nogil(self, float* data) noexcept nogil:
+        """Get player's cash (nogil version using cached offset)."""
+        return <int>(data[self._cash_offset] * CASH_DIVISOR + 0.5)
+
+    cdef inline int _get_shares_nogil(self, float* data, int corp_id) noexcept nogil:
+        """Get player's shares of a corporation (nogil version)."""
+        return <int>(data[self._owned_shares_offset + corp_id] * SHARE_DIVISOR + 0.5)
+
+    cdef inline int _get_share_buys_nogil(self, float* data, int corp_id) noexcept nogil:
+        """Get share buy count (nogil version)."""
+        return <int>(data[self._share_buys_offset + corp_id] * MAX_ROUNDTRIPS * 2 + 0.5)
+
+    cdef inline int _get_share_sells_nogil(self, float* data, int corp_id) noexcept nogil:
+        """Get share sell count (nogil version)."""
+        return <int>(data[self._share_sells_offset + corp_id] * MAX_ROUNDTRIPS * 2 + 0.5)
+
+    cdef inline bint _owns_company_nogil(self, float* data, int company_id) noexcept nogil:
+        """Check if player owns a company (nogil version)."""
+        return data[self._owned_companies_offset + company_id] == 1.0
 
     # =========================================================================
     # CASH OPERATIONS
@@ -379,7 +405,7 @@ cdef class Player:
     # =========================================================================
 
     cpdef int get_share_buys(self, GameState state, int corp_id):
-        """Get share buy count for round-trip tracking."""
+        """Get share buy count for this corp this turn."""
         return <int>round(state._data[self._share_buys_offset + corp_id] * MAX_ROUNDTRIPS * 2)
 
     cpdef void increment_share_buys(self, GameState state, int corp_id):
@@ -388,7 +414,7 @@ cdef class Player:
         state._data[self._share_buys_offset + corp_id] = <float>(current + 1) / (MAX_ROUNDTRIPS * 2)
 
     cpdef int get_share_sells(self, GameState state, int corp_id):
-        """Get share sell count for round-trip tracking."""
+        """Get share sell count for this corp this turn."""
         return <int>round(state._data[self._share_sells_offset + corp_id] * MAX_ROUNDTRIPS * 2)
 
     cpdef void increment_share_sells(self, GameState state, int corp_id):
@@ -400,15 +426,17 @@ cdef class Player:
         """
         Get number of completed round-trips for a corp.
 
-        A round-trip is a buy+sell or sell+buy pair. Players are limited to
-        MAX_ROUNDTRIPS per corp per turn to prevent manipulation.
+        A round-trip is a paired buy+sell (or sell+buy). Limiting round-trips prevents
+        models from getting stuck in unprofitable buy/sell loops during training.
+        Uses min(buys, sells) so multiple buys or multiple sells alone don't trigger
+        the limit - only actual round-trips (paired operations) count.
         """
         cdef int buys = self.get_share_buys(state, corp_id)
         cdef int sells = self.get_share_sells(state, corp_id)
-        return (buys + sells) // 2
+        return buys if buys < sells else sells
 
     cpdef void clear_roundtrip_tracking(self, GameState state):
-        """Clear round-trip tracking for all corps (called at start of player's turn)."""
+        """Clear buy/sell tracking for all corps. Called at end of INVEST phase."""
         cdef int i
         for i in range(GameConstants.NUM_CORPS):
             state._data[self._share_buys_offset + i] = 0.0

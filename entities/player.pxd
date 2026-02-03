@@ -46,7 +46,7 @@ cdef void set_player_owns_company(float* player, PlayerOffsets* p, int company_i
 cdef bint is_player_president(float* player, PlayerOffsets* p, int corp_id) noexcept nogil
 cdef void set_player_president(float* player, PlayerOffsets* p, int corp_id, bint is_pres) noexcept nogil
 
-# Round-trip tracking (raw pointer, nogil)
+# Buy/sell tracking - prevents model training loops (raw pointer, nogil)
 cdef int get_share_buys(float* player, PlayerOffsets* p, int corp_id) noexcept nogil
 cdef void increment_share_buys(float* player, PlayerOffsets* p, int corp_id) noexcept nogil
 cdef int get_share_sells(float* player, PlayerOffsets* p, int corp_id) noexcept nogil
@@ -86,6 +86,13 @@ cdef class Player:
 
     # Initialization
     cpdef void initialize(self, GameState state)
+
+    # Nogil methods (use cached offsets for performance)
+    cdef inline int _get_cash_nogil(self, float* data) noexcept nogil
+    cdef inline int _get_shares_nogil(self, float* data, int corp_id) noexcept nogil
+    cdef inline int _get_share_buys_nogil(self, float* data, int corp_id) noexcept nogil
+    cdef inline int _get_share_sells_nogil(self, float* data, int corp_id) noexcept nogil
+    cdef inline bint _owns_company_nogil(self, float* data, int company_id) noexcept nogil
 
     # Cash
     cpdef int get_cash(self, GameState state)

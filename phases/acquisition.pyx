@@ -1090,10 +1090,6 @@ cdef int apply_acquisition_stub(GameState state) noexcept:
     # Increment turn number
     turn_module.TURN.set_turn_number(state, current_turn + 1)
 
-    # Clear per-turn tracking for all players
-    for i in range(state._num_players):
-        player_module.PLAYERS[i].clear_roundtrip_tracking(state)
-
     # Transition to new INVEST phase
     turn_module.TURN.set_phase(state, GamePhases.PHASE_INVEST)
 

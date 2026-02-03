@@ -127,7 +127,7 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     2. Update market space availability
     3. Transfer money (player pays new price to corp)
     4. Transfer share (bank to player)
-    5. Track round-trip
+    5. Track buy (for training loop prevention)
     6. Update net worth
     7. Reset consecutive passes
     8. Advance to next player
@@ -200,7 +200,7 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     2. Move price down (skipping occupied spaces)
     3. Pay player the NEW (lower) price
     4. If price reaches 0, execute bankruptcy and return
-    5. Track round-trip
+    5. Track sell (for training loop prevention)
     6. Update net worth
     7. Reset consecutive passes
     8. Advance to next player
@@ -283,8 +283,8 @@ cdef int apply_invest_action(GameState state, ActionInfo* info) noexcept:
 
         # Check if all players have passed
         if turn_module.TURN.get_consecutive_passes(state) >= state._num_players:
-            # Clear per-turn tracking for all players (before leaving INVEST)
-            # Per CONTEXT.md: Roundtrip clear should happen at end of INVEST phase
+            # Clear buy/sell tracking at end of INVEST phase (bookkeeping only,
+            # avoids exposing stale data to model in subsequent phases)
             for i in range(state._num_players):
                 player_module.PLAYERS[i].clear_roundtrip_tracking(state)
 
