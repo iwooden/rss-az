@@ -921,6 +921,111 @@ class TestPresidency:
         assert PLAYERS[0].is_president_of(trade_state, 0)
         assert_invariants(trade_state, "After three-way tie")
 
+    def test_presidency_turn_order_tiebreaker(self, trade_state):
+        """INV-20: When multiple players have more shares, use turn order from incumbent."""
+        from tests.phases.conftest import assert_invariants
+
+        # Turn order with seed=42: P0=pos0, P1=pos1, P2=pos2
+        # Set up: P0=2 (president), P1=3, P2=3
+        # Both P1 and P2 have more than incumbent P0
+        # P1 should win (next in turn order after P0)
+        corp = CORPS[0]
+        PLAYERS[1].set_shares(trade_state, 0, 3)
+        PLAYERS[2].set_shares(trade_state, 0, 3)
+        # Total: P0(2) + P1(3) + P2(3) + bank(2) = 10, but corp has 7 total
+        # Adjust: unissued(0) + bank(0) + P0(2) + P1(3) + P2(2) = 7
+        # Actually let's use: unissued(0) + bank(1) + P0(1) + P1(3) + P2(2) = 7
+        PLAYERS[0].set_shares(trade_state, 0, 1)
+        PLAYERS[2].set_shares(trade_state, 0, 2)
+        corp.set_unissued_shares(trade_state, 0)
+        corp.set_bank_shares(trade_state, 1)
+        corp.set_issued_shares(trade_state, 6)
+
+        # P0 sells their only share - triggers presidency check
+        # After: P0=0, P1=3, P2=2 -> P1 wins (most shares)
+        layout = get_action_layout(3)
+        sell_idx = layout['sell_share_base'] + 0
+        DRIVER.apply_action(trade_state, sell_idx)
+
+        assert PLAYERS[1].is_president_of(trade_state, 0)
+        assert not PLAYERS[0].is_president_of(trade_state, 0)
+        assert not PLAYERS[2].is_president_of(trade_state, 0)
+        assert_invariants(trade_state, "After turn order tiebreak")
+
+    def test_presidency_turn_order_tiebreaker_tie_at_max(self, trade_state):
+        """When multiple players tie for max shares (more than incumbent), use turn order."""
+        from tests.phases.conftest import assert_invariants
+
+        # Turn order with seed=42: P0=pos0, P1=pos1, P2=pos2
+        # Set up: P0=1 (president), P1=3, P2=3
+        # Both P1 and P2 tie at 3 shares, more than P0
+        # P1 should win (next in turn order after P0 is position 1 = P1)
+        corp = CORPS[0]
+        PLAYERS[0].set_shares(trade_state, 0, 1)
+        PLAYERS[1].set_shares(trade_state, 0, 3)
+        PLAYERS[2].set_shares(trade_state, 0, 3)
+        # Total: P0(1) + P1(3) + P2(3) = 7, no bank shares needed
+        corp.set_unissued_shares(trade_state, 0)
+        corp.set_bank_shares(trade_state, 0)
+        corp.set_issued_shares(trade_state, 7)
+
+        # Sell P0's share to trigger presidency check
+        layout = get_action_layout(3)
+        sell_idx = layout['sell_share_base'] + 0
+        DRIVER.apply_action(trade_state, sell_idx)
+
+        # P1 should be president (next in turn order after P0 with max shares)
+        assert PLAYERS[1].is_president_of(trade_state, 0)
+        assert not PLAYERS[0].is_president_of(trade_state, 0)
+        assert not PLAYERS[2].is_president_of(trade_state, 0)
+        assert_invariants(trade_state, "After turn order tiebreak with tie at max")
+
+    def test_presidency_turn_order_wraps_around(self):
+        """Turn order wraps around when checking for new president."""
+        from tests.phases.conftest import assert_invariants
+
+        # Create fresh state
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set up corp 0 as active
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_price_index(state, 15)
+        MARKET.set_space_available(state, 15, False)
+
+        # Modify turn order: P0->pos2, P1->pos0, P2->pos1
+        # This way when P0 (the president and active player) sells,
+        # we check from position 2+1=0 (P1) for the tie-breaker
+        PLAYERS[0].set_turn_order(state, 2)  # P0 at position 2
+        PLAYERS[1].set_turn_order(state, 0)  # P1 at position 0
+        PLAYERS[2].set_turn_order(state, 1)  # P2 at position 1
+
+        # P0 is president with 1 share, P1 and P2 both have 3 shares
+        PLAYERS[0].set_shares(state, 0, 1)
+        PLAYERS[0].set_president_of(state, 0, True)
+        PLAYERS[1].set_shares(state, 0, 3)
+        PLAYERS[2].set_shares(state, 0, 3)
+        corp.set_unissued_shares(state, 0)
+        corp.set_bank_shares(state, 0)
+        corp.set_issued_shares(state, 7)
+
+        PLAYERS[0].set_cash(state, 100)
+
+        # P0 sells their share - triggers presidency check
+        # After: P0=0, P1=3, P2=3
+        # P0 was at position 2, so we start checking from position (2+1)%3 = 0
+        # Position 0 is P1 with 3 shares -> P1 becomes president
+        layout = get_action_layout(3)
+        sell_idx = layout['sell_share_base'] + 0
+        DRIVER.apply_action(state, sell_idx)
+
+        # P1 should be president (at position 0, first after position 2 wrapping)
+        assert PLAYERS[1].is_president_of(state, 0)
+        assert not PLAYERS[0].is_president_of(state, 0)
+        assert not PLAYERS[2].is_president_of(state, 0)
+        assert_invariants(state, "After turn order wrap-around")
+
 
 # =============================================================================
 # RECEIVERSHIP TESTS

@@ -48,10 +48,13 @@ cdef void _check_presidency(GameState state, int corp_id) noexcept:
     """
     Check if presidency should transfer.
 
-    President = player with most shares. Tie-breaking: incumbent keeps it.
-    Per CONTEXT.md: "current president keeps it when shares are equal"
+    Per RULES.md:
+    - If any player owns MORE shares than current president, presidency transfers
+    - Among players with more shares, the one NEXT in player order after current president wins
+    - If no one has MORE shares, current president keeps it (ties go to incumbent)
     """
     cdef int player_id, shares, max_shares, president_id, current_president, incumbent_shares
+    cdef int incumbent_position, position, checked, candidate
     cdef object corp
 
     corp = corp_module.CORPS[corp_id]
@@ -67,34 +70,42 @@ cdef void _check_presidency(GameState state, int corp_id) noexcept:
             current_president = player_id
             break
 
-    # Find player with most shares
-    # Incumbent advantage: on ties, incumbent keeps presidency
-    # We handle this by initializing with incumbent's shares if they exist
+    # Find maximum share count across all players
     max_shares = 0
-    president_id = -1
-
-    # First pass: find the maximum share count
     for player_id in range(state._num_players):
         shares = player_module.PLAYERS[player_id].get_shares(state, corp_id)
         if shares > max_shares:
             max_shares = shares
 
-    # Second pass: find winner (incumbent wins ties)
-    # If incumbent has max_shares, they keep it
-    # Otherwise, first player with max_shares wins
+    president_id = -1
+
     if max_shares > 0:
         if current_president >= 0:
             incumbent_shares = player_module.PLAYERS[current_president].get_shares(state, corp_id)
-            if incumbent_shares == max_shares:
-                # Incumbent ties for max - they keep presidency
-                president_id = current_president
 
-        # If incumbent doesn't have max shares, find first player who does
-        if president_id < 0:
-            for player_id in range(state._num_players):
-                shares = player_module.PLAYERS[player_id].get_shares(state, corp_id)
-                if shares == max_shares:
-                    president_id = player_id
+            if max_shares <= incumbent_shares:
+                # No one has MORE shares than incumbent - incumbent keeps it
+                president_id = current_president
+            else:
+                # Someone has more shares than incumbent
+                # Find first player in turn order (starting after incumbent) with max shares
+                incumbent_position = player_module.PLAYERS[current_president].get_turn_order(state)
+
+                checked = 0
+                position = incumbent_position
+                while checked < state._num_players:
+                    position = (position + 1) % state._num_players
+                    candidate = turn_module.TURN.find_player_at_position(state, position)
+                    if player_module.PLAYERS[candidate].get_shares(state, corp_id) == max_shares:
+                        president_id = candidate
+                        break
+                    checked += 1
+        else:
+            # No current president - first player by turn order with max shares
+            for position in range(state._num_players):
+                candidate = turn_module.TURN.find_player_at_position(state, position)
+                if player_module.PLAYERS[candidate].get_shares(state, corp_id) == max_shares:
+                    president_id = candidate
                     break
 
     # Update if changed (and someone has shares)
