@@ -652,17 +652,17 @@ class TestBankruptcy:
 class TestPhaseTransitions:
     """DIV-08: Phase transitions after all corps processed."""
 
-    def test_transition_to_temp_end_turn(self, dividend_state):
-        """After all corps processed, transitions to TEMP_END_TURN."""
+    def test_transition_to_end_card(self, dividend_state):
+        """After all corps processed, transitions to END_CARD."""
         state = dividend_state
 
         # Only one corp, pay dividend and phase should transition
         apply_dividend_action_py(state, 0)
 
-        assert state.get_phase() == GamePhases.PHASE_TEMP_END_TURN
+        assert state.get_phase() == GamePhases.PHASE_END_CARD
 
-    def test_transition_to_game_over_when_end_card(self, dividend_state):
-        """If end card flipped, transitions to GAME_OVER."""
+    def test_transition_to_end_card_when_flipped(self, dividend_state):
+        """Even if end card flipped, DIVIDENDS transitions to END_CARD (which handles GAME_OVER)."""
         state = dividend_state
 
         # Set end card as flipped
@@ -670,10 +670,11 @@ class TestPhaseTransitions:
 
         apply_dividend_action_py(state, 0)
 
-        assert state.get_phase() == GamePhases.PHASE_GAME_OVER
+        # DIVIDENDS always transitions to END_CARD; END_CARD handles the GAME_OVER logic
+        assert state.get_phase() == GamePhases.PHASE_END_CARD
 
     def test_no_active_corps_immediate_transition(self):
-        """If no active corps, immediately transitions out."""
+        """If no active corps, immediately transitions to END_CARD."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -684,8 +685,8 @@ class TestPhaseTransitions:
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
 
-        # Should immediately transition
-        assert state.get_phase() == GamePhases.PHASE_TEMP_END_TURN
+        # Should immediately transition to END_CARD
+        assert state.get_phase() == GamePhases.PHASE_END_CARD
 
 
 # =============================================================================
@@ -713,8 +714,8 @@ class TestDividendsIntegration:
         assert TURN.get_dividend_corp(state) == 2
         apply_dividend_action_py(state, 1)
 
-        # Should be done
-        assert state.get_phase() == GamePhases.PHASE_TEMP_END_TURN
+        # Should transition to END_CARD
+        assert state.get_phase() == GamePhases.PHASE_END_CARD
 
     def test_dividend_affects_price_adjustment(self, dividend_state):
         """Dividend reduces corp cash which affects cash bonus stars."""

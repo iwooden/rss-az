@@ -804,7 +804,7 @@ class TestIncomeTransition:
         assert TURN.get_phase(game_state) == GamePhases.PHASE_DIVIDENDS
 
     def test_income_transitions_even_with_no_corps(self, game_state):
-        """INCOME transitions to DIVIDENDS, which then transitions to TEMP_END_TURN."""
+        """INCOME transitions to DIVIDENDS, which then transitions to END_CARD."""
         # Ensure no corps are active
         for corp_id in range(8):
             CORPS[corp_id].set_active(game_state, False)
@@ -813,8 +813,8 @@ class TestIncomeTransition:
         apply_income_py(game_state)
 
         # INCOME sets phase to DIVIDENDS, but setup_dividends_phase
-        # immediately transitions to TEMP_END_TURN when no corps exist
-        assert TURN.get_phase(game_state) == GamePhases.PHASE_TEMP_END_TURN
+        # immediately transitions to END_CARD when no corps exist
+        assert TURN.get_phase(game_state) == GamePhases.PHASE_END_CARD
 
 
 class TestDividendSetup:

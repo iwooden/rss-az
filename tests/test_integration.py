@@ -563,12 +563,12 @@ class TestIncomeIntegration:
         assert state.get_phase() == GamePhases.PHASE_INCOME
         assert_invariants(state, "After CLOSING -> INCOME")
 
-        # Apply income (transitions to DIVIDENDS, then TEMP_END_TURN since no active corps)
+        # Apply income (transitions to DIVIDENDS, then END_CARD since no active corps)
         apply_income_py(state)
 
-        # No active corps -> DIVIDENDS -> TEMP_END_TURN immediately
-        assert state.get_phase() == GamePhases.PHASE_TEMP_END_TURN
-        assert_invariants(state, "After INCOME -> DIVIDENDS -> TEMP_END_TURN")
+        # No active corps -> DIVIDENDS -> END_CARD immediately
+        assert state.get_phase() == GamePhases.PHASE_END_CARD
+        assert_invariants(state, "After INCOME -> DIVIDENDS -> END_CARD")
 
     def test_income_with_active_corp_maintains_invariants(self):
         """INCOME with active corps maintains invariants through DIVIDENDS."""
@@ -1683,9 +1683,9 @@ class TestDividendsIntegration:
         # Pay dividend
         apply_dividend_action_py(state, 0)
 
-        # Should transition to GAME_OVER
-        assert state.get_phase() == GamePhases.PHASE_GAME_OVER
-        assert_invariants(state, "After DIVIDENDS -> GAME_OVER")
+        # Should transition to END_CARD (which will handle GAME_OVER when executed)
+        assert state.get_phase() == GamePhases.PHASE_END_CARD
+        assert_invariants(state, "After DIVIDENDS -> END_CARD")
 
     @pytest.mark.parametrize("num_players", [3, 6])
     def test_dividends_integration_player_counts(self, num_players):
@@ -1725,5 +1725,5 @@ class TestDividendsIntegration:
         # Pay dividend
         apply_dividend_action_py(state, 2)
 
-        assert state.get_phase() == GamePhases.PHASE_TEMP_END_TURN
+        assert state.get_phase() == GamePhases.PHASE_END_CARD
         assert_invariants(state, f"After DIVIDENDS ({num_players}p)")

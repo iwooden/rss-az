@@ -25,7 +25,7 @@ Action space: 26 actions (dividend amounts 0-25 per share)
 from core.state cimport GameState
 from core.data cimport (
     GameConstants, GamePhases, CorpIndices,
-    PHASE_GAME_OVER, PHASE_TEMP_END_TURN,
+    PHASE_END_CARD,
     get_required_stars, MARKET_PRICES
 )
 from core.actions cimport ActionInfo, ACTION_DIVIDEND
@@ -284,16 +284,13 @@ cdef void _transition_out_of_dividends(GameState state) noexcept:
     """
     Transition out of DIVIDENDS phase.
 
-    Goes to TEMP_END_TURN (or GAME_OVER if terminal).
+    Always transitions to END_CARD - let it handle game-over checks.
     """
     # Clear dividend corp
     turn_module.TURN.clear_dividend_corp(state)
 
-    # Check for game over condition
-    if turn_module.TURN.is_end_card_flipped(state):
-        turn_module.TURN.set_phase(state, PHASE_GAME_OVER)
-    else:
-        turn_module.TURN.set_phase(state, PHASE_TEMP_END_TURN)
+    # Transition to END_CARD phase (handles game-over logic)
+    turn_module.TURN.set_phase(state, PHASE_END_CARD)
 
 
 cdef void _advance_to_next_corp(GameState state) noexcept:
