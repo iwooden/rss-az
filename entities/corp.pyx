@@ -310,43 +310,47 @@ cdef class Corporation:
         """Set whether corporation owns a company."""
         state._data[self._owned_companies_offset + company_id] = 1.0 if owns else 0.0
 
+    cdef inline bint _owns_company_nogil(self, float* data, int company_id) noexcept nogil:
+        """Check if corporation owns a company (nogil version)."""
+        return data[self._owned_companies_offset + company_id] == 1.0
+
     # =========================================================================
     # INCOME CALCULATION
     # =========================================================================
 
-    cpdef int calculate_income(self, GameState state):
+    cdef int _calculate_income_nogil(self, float* data, int coo_level) noexcept nogil:
         """
-        Calculate total income for corporation with synergy bonuses and special abilities.
+        Calculate total income for corporation (nogil version).
 
-        Formula: (sum_printed_income - adjusted_coo) + synergy + ability_bonus
+        Formula per RULES.md: (sum_printed_income - adjusted_coo) + synergy + ability_bonus
 
-        Special abilities:
-        - PR (CORP_PR=4): +1 per company owned
-        - DA (CORP_DA=5): +printed income of highest FV company (doubles that company's income)
-        - S (CORP_S=1): +synergy_markers // 2
-        - VM (CORP_VM=6): reduce total_coo by min(total_coo, 10)
+        Special abilities per RULES.md:
+        - PR (Prussian Railway): +1 per company owned
+        - DA (Doppler AG): double printed income of highest Face Value company
+        - S (Synergistic): +1 per 2 synergy markers (rounded down)
+        - VM (Vintage Machinery): reduce total Cost of Ownership by up to 10 (minimum 0)
+
+        Args:
+            data: Pointer to state data array
+            coo_level: Current cost of ownership level (1-7)
 
         Returns:
             Total income (can be negative)
         """
         cdef int company_id, base_income, stars, coo_value, fv
-        cdef int coo_level = turn_module.TURN.get_coo_level(state)
-
-        # Accumulators
         cdef int gross_printed_income = 0
         cdef int total_coo = 0
         cdef int company_count = 0
-
-        # For DA ability: track highest FV company's income
         cdef int highest_fv = 0
         cdef int highest_fv_income = 0
-
-        # Company ID collection for synergy calculation
         cdef int company_ids[36]
+        cdef int synergy_income = 0
+        cdef int synergy_markers = 0
+        cdef int total_income
 
         # First pass: collect companies, sum printed income, sum CoO, track highest FV
         for company_id in range(GameConstants.NUM_COMPANIES):
-            if self.owns_company(state, company_id):
+            if self._owns_company_nogil(data, company_id):
                 company_ids[company_count] = company_id
                 company_count += 1
 
@@ -357,7 +361,7 @@ cdef class Corporation:
                 coo_value = get_cost_of_ownership(coo_level, stars)
                 total_coo += coo_value
 
-                # Track highest FV for DA ability
+                # Track highest FV for DA ability (doubles highest FV company's income)
                 fv = get_company_face_value(company_id)
                 if fv > highest_fv:
                     highest_fv = fv
@@ -366,32 +370,45 @@ cdef class Corporation:
                     # If tied FV, take the one with higher income
                     highest_fv_income = base_income
 
-        # Compute synergy bonuses
-        cdef int synergy_income = 0
-        cdef int synergy_markers = 0
+        # Compute synergy bonuses (corporations only per RULES.md)
         if company_count > 1:
             (synergy_income, synergy_markers) = compute_synergy_bonuses(company_ids, company_count)
 
-        # Apply VM ability FIRST (reduces CoO before subtraction)
+        # Apply VM ability FIRST (reduces CoO before subtraction, minimum 0)
         if self.corp_id == CorpIndices.CORP_VM:
-            # VM: reduce total_coo by up to 10
-            total_coo = max(0, total_coo - 10)
+            if total_coo > 10:
+                total_coo = total_coo - 10
+            else:
+                total_coo = 0
 
         # Base calculation: printed - CoO + synergy
-        cdef int total_income = gross_printed_income - total_coo + synergy_income
+        total_income = gross_printed_income - total_coo + synergy_income
 
         # Apply other special abilities
         if self.corp_id == CorpIndices.CORP_PR:
             # PR: +1 per company owned
-            total_income += company_count
+            total_income = total_income + company_count
         elif self.corp_id == CorpIndices.CORP_DA:
-            # DA: +printed income of highest FV company
-            total_income += highest_fv_income
+            # DA: +printed income of highest FV company (effectively doubles it)
+            total_income = total_income + highest_fv_income
         elif self.corp_id == CorpIndices.CORP_S:
-            # S: +synergy_markers // 2
-            total_income += synergy_markers // 2
+            # S: +1 per 2 synergy markers (rounded down)
+            total_income = total_income + (synergy_markers // 2)
 
         return total_income
+
+    cpdef int calculate_income(self, GameState state):
+        """
+        Calculate total income for corporation with synergy bonuses and special abilities.
+
+        This is a Python-accessible wrapper around _calculate_income_nogil.
+        See _calculate_income_nogil for formula details and RULES.md compliance.
+
+        Returns:
+            Total income (can be negative)
+        """
+        cdef int coo_level = turn_module.TURN.get_coo_level(state)
+        return self._calculate_income_nogil(state._data, coo_level)
 
     # =========================================================================
     # INCOME APPLICATION

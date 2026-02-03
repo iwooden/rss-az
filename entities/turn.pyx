@@ -544,6 +544,10 @@ cdef class TurnState:
             return -1
         return <int>(val * CASH_DIVISOR + 0.5)
 
+    cdef inline int _get_coo_level_nogil(self, float* data) noexcept nogil:
+        """Get cost of ownership level from hidden state. O(1) access."""
+        return <int>data[self._hidden_coo_level_offset]
+
     # =========================================================================
     # ACQUISITION STATE
     # =========================================================================
