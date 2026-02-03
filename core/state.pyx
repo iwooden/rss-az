@@ -191,6 +191,9 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     # [856] acq_active_corp (compact, for O(1) access)
     # [857] acq_target_company (compact, for O(1) access)
     # [858] closing_company (compact, for O(1) access)
+    # [859] dividend_corp (compact, for O(1) access)
+    # [860] issue_corp (compact, for O(1) access)
+    # [861] ipo_company (compact, for O(1) access)
     layout.hidden_active_player_offset = offset
     offset += 1
     layout.hidden_num_players_offset = offset
@@ -231,6 +234,12 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     layout.hidden_acq_target_company_offset = offset
     offset += 1
     layout.hidden_closing_company_offset = offset
+    offset += 1
+    layout.hidden_dividend_corp_offset = offset
+    offset += 1
+    layout.hidden_issue_corp_offset = offset
+    offset += 1
+    layout.hidden_ipo_company_offset = offset
     offset += 1
     layout.hidden_size = offset - layout.visible_size
 
@@ -721,6 +730,72 @@ cdef class GameState:
         """Set acquisition FI offer flag."""
         cdef float* turn = self._turn_ptr()
         turn[self._turn_offsets.acq_is_fi_offer] = 1.0 if is_fi else 0.0
+
+    # =========================================================================
+    # DIVIDEND STATE ACCESS
+    # =========================================================================
+
+    cdef int _get_dividend_corp(self) noexcept nogil:
+        """Get current dividend corp (nogil version)."""
+        return <int>self._data[self._layout.hidden_dividend_corp_offset]
+
+    cpdef int get_dividend_corp(self):
+        """Get current dividend corp."""
+        return self._get_dividend_corp()
+
+    cpdef void set_dividend_corp(self, int corp_id):
+        """Set current dividend corp."""
+        cdef float* turn = self._turn_ptr()
+        cdef int i
+        # Update hidden compact value
+        self._data[self._layout.hidden_dividend_corp_offset] = <float>corp_id
+        # Update one-hot encoding
+        for i in range(GameConstants.NUM_CORPS):
+            turn[self._turn_offsets.dividend_corp + i] = 1.0 if i == corp_id else 0.0
+
+    # =========================================================================
+    # ISSUE STATE ACCESS
+    # =========================================================================
+
+    cdef int _get_issue_corp(self) noexcept nogil:
+        """Get current issue corp (nogil version)."""
+        return <int>self._data[self._layout.hidden_issue_corp_offset]
+
+    cpdef int get_issue_corp(self):
+        """Get current issue corp."""
+        return self._get_issue_corp()
+
+    cpdef void set_issue_corp(self, int corp_id):
+        """Set current issue corp."""
+        cdef float* turn = self._turn_ptr()
+        cdef int i
+        # Update hidden compact value
+        self._data[self._layout.hidden_issue_corp_offset] = <float>corp_id
+        # Update one-hot encoding
+        for i in range(GameConstants.NUM_CORPS):
+            turn[self._turn_offsets.issue_corp + i] = 1.0 if i == corp_id else 0.0
+
+    # =========================================================================
+    # IPO STATE ACCESS
+    # =========================================================================
+
+    cdef int _get_ipo_company(self) noexcept nogil:
+        """Get current IPO company (nogil version)."""
+        return <int>self._data[self._layout.hidden_ipo_company_offset]
+
+    cpdef int get_ipo_company(self):
+        """Get current IPO company."""
+        return self._get_ipo_company()
+
+    cpdef void set_ipo_company(self, int company_id):
+        """Set current IPO company."""
+        cdef float* turn = self._turn_ptr()
+        cdef int i
+        # Update hidden compact value
+        self._data[self._layout.hidden_ipo_company_offset] = <float>company_id
+        # Update one-hot encoding
+        for i in range(GameConstants.NUM_COMPANIES):
+            turn[self._turn_offsets.ipo_company + i] = 1.0 if i == company_id else 0.0
 
     # =========================================================================
     # CLOSING STATE ACCESS

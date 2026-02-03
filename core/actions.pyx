@@ -45,12 +45,8 @@ from entities.corp cimport (
     is_corp_active, get_corp_cash, get_corp_bank_shares,
     get_corp_unissued_shares, get_corp_issued_shares, is_corp_in_receivership
 )
-from entities.turn cimport (
-    TurnOffsets, get_turn_offsets,
-    get_acq_active_corp_nogil, get_acq_target_company_nogil, is_acq_fi_offer_nogil,
-    get_dividend_corp_nogil, get_issue_corp_nogil, get_ipo_company_nogil,
-    get_closing_company_nogil
-)
+from entities.turn cimport TurnState
+from entities.turn import TURN
 
 # Maximum action count (6 players = 186 + 120 = 306)
 DEF MAX_ACTION_COUNT = 306
@@ -368,14 +364,13 @@ cdef void _fill_bid_mask(GameState state, ActionLayout* layout, float* mask, Pla
             mask[layout.raise_bid_base + bid_offset] = 1.0
 
 
-cdef void _fill_acquisition_mask(GameState state, ActionLayout* layout, float* mask) noexcept nogil:
+cdef void _fill_acquisition_mask(GameState state, ActionLayout* layout, float* mask, TurnState turn) noexcept nogil:
     """Fill mask for ACQUISITION phase actions."""
-    cdef float* turn = state._turn_ptr()
-    cdef TurnOffsets to = get_turn_offsets(state._num_players)
     cdef CorpOffsets co = get_corp_offsets()
     cdef float* corp
-    cdef int corp_id = get_acq_active_corp_nogil(turn, &to)
-    cdef int company_id = get_acq_target_company_nogil(turn, &to)
+    cdef float* data = state._data
+    cdef int corp_id = turn._get_acq_active_corp_nogil(data)
+    cdef int company_id = turn._get_acq_target_company_nogil(data)
     cdef int low_price, high_price, corp_cash, offset, price
 
     if corp_id < 0 or company_id < 0:
@@ -386,7 +381,7 @@ cdef void _fill_acquisition_mask(GameState state, ActionLayout* layout, float* m
 
     corp = state._corp_ptr(corp_id)
 
-    if is_acq_fi_offer_nogil(turn, &to):
+    if turn._is_acq_fi_offer_nogil(data):
         # FI offer: only specific buy actions valid
         if corp_id == CORP_OS:
             # OS buys at face value
@@ -407,23 +402,18 @@ cdef void _fill_acquisition_mask(GameState state, ActionLayout* layout, float* m
                 mask[layout.acq_price_base + offset] = 1.0
 
 
-cdef void _fill_closing_mask(GameState state, ActionLayout* layout, float* mask) noexcept nogil:
+cdef void _fill_closing_mask(GameState state, ActionLayout* layout, float* mask, TurnState turn) noexcept nogil:
     """Fill mask for CLOSING phase actions."""
-    cdef float* turn = state._turn_ptr()
-    cdef TurnOffsets to = get_turn_offsets(state._num_players)
-    cdef int company_id = get_closing_company_nogil(turn, &to)
+    cdef int company_id = turn._get_closing_company_nogil(state._data)
     if company_id >= 0:
         mask[layout.close_action] = 1.0
         mask[layout.close_pass] = 1.0
 
 
-cdef void _fill_dividends_mask(GameState state, ActionLayout* layout, float* mask) noexcept nogil:
+cdef void _fill_dividends_mask(GameState state, ActionLayout* layout, float* mask, TurnState turn) noexcept nogil:
     """Fill mask for DIVIDENDS phase actions."""
-    # Get current corp being processed (from dividend_corp one-hot)
-    cdef float* turn = state._turn_ptr()
-    cdef TurnOffsets to = get_turn_offsets(state._num_players)
     cdef CorpOffsets co = get_corp_offsets()
-    cdef int corp_id = get_dividend_corp_nogil(turn, &to)
+    cdef int corp_id = turn._get_dividend_corp_nogil(state._data)
     cdef float* corp
     cdef int amount
     cdef int max_dividend
@@ -446,12 +436,10 @@ cdef void _fill_dividends_mask(GameState state, ActionLayout* layout, float* mas
         mask[layout.dividend_base + amount] = 1.0
 
 
-cdef void _fill_issue_mask(GameState state, ActionLayout* layout, float* mask) noexcept nogil:
+cdef void _fill_issue_mask(GameState state, ActionLayout* layout, float* mask, TurnState turn) noexcept nogil:
     """Fill mask for ISSUE_SHARES phase actions."""
-    cdef float* turn = state._turn_ptr()
-    cdef TurnOffsets to = get_turn_offsets(state._num_players)
     cdef CorpOffsets co = get_corp_offsets()
-    cdef int corp_id = get_issue_corp_nogil(turn, &to)
+    cdef int corp_id = turn._get_issue_corp_nogil(state._data)
 
     if corp_id < 0:
         return
@@ -467,10 +455,8 @@ cdef void _fill_issue_mask(GameState state, ActionLayout* layout, float* mask) n
         mask[layout.issue_pass] = 1.0
 
 
-cdef void _fill_ipo_mask(GameState state, ActionLayout* layout, float* mask, Player active_player) noexcept nogil:
+cdef void _fill_ipo_mask(GameState state, ActionLayout* layout, float* mask, Player active_player, TurnState turn) noexcept nogil:
     """Fill mask for IPO phase actions."""
-    cdef float* turn = state._turn_ptr()
-    cdef TurnOffsets to = get_turn_offsets(state._num_players)
     cdef CorpOffsets co = get_corp_offsets()
     cdef float* corp
     cdef int company_id, corp_id, par_slot, par_index, par_price, market_index
@@ -479,7 +465,7 @@ cdef void _fill_ipo_mask(GameState state, ActionLayout* layout, float* mask, Pla
     # Pass is always valid
     mask[layout.ipo_pass] = 1.0
 
-    company_id = get_ipo_company_nogil(turn, &to)
+    company_id = turn._get_ipo_company_nogil(state._data)
     if company_id < 0:
         return  # No active company
 
@@ -515,22 +501,22 @@ cdef void _fill_ipo_mask(GameState state, ActionLayout* layout, float* mask, Pla
                 mask[layout.ipo_base + corp_id * MAX_PAR_SLOTS + par_slot] = 1.0
 
 
-cdef void _fill_mask_for_phase(GameState state, int phase, ActionLayout* layout, float* mask, Player active_player) noexcept nogil:
+cdef void _fill_mask_for_phase(GameState state, int phase, ActionLayout* layout, float* mask, Player active_player, TurnState turn) noexcept nogil:
     """Fill mask based on current phase. Central dispatch to avoid duplication."""
     if phase == GamePhases.PHASE_INVEST:
         _fill_invest_mask(state, layout, mask, active_player)
     elif phase == GamePhases.PHASE_BID_IN_AUCTION:
         _fill_bid_mask(state, layout, mask, active_player)
     elif phase == GamePhases.PHASE_ACQUISITION:
-        _fill_acquisition_mask(state, layout, mask)
+        _fill_acquisition_mask(state, layout, mask, turn)
     elif phase == GamePhases.PHASE_CLOSING:
-        _fill_closing_mask(state, layout, mask)
+        _fill_closing_mask(state, layout, mask, turn)
     elif phase == GamePhases.PHASE_DIVIDENDS:
-        _fill_dividends_mask(state, layout, mask)
+        _fill_dividends_mask(state, layout, mask, turn)
     elif phase == GamePhases.PHASE_ISSUE_SHARES:
-        _fill_issue_mask(state, layout, mask)
+        _fill_issue_mask(state, layout, mask, turn)
     elif phase == GamePhases.PHASE_IPO:
-        _fill_ipo_mask(state, layout, mask, active_player)
+        _fill_ipo_mask(state, layout, mask, active_player, turn)
 
 
 # =============================================================================
@@ -559,12 +545,13 @@ cpdef object get_valid_action_mask(GameState state):
     # Clear buffer (faster than np.zeros allocation)
     memset(_mask_buffer, 0, total_actions * sizeof(float))
 
-    # Get active player entity (uses cached offsets for efficient access)
+    # Get active player and turn entities (use cached offsets for efficient access)
     cdef int player_id = state._get_active_player()
     cdef Player active_player = <Player>PLAYERS[player_id]
+    cdef TurnState turn = <TurnState>TURN
 
     cdef int phase = state.get_phase()
-    _fill_mask_for_phase(state, phase, &layout, _mask_buffer, active_player)
+    _fill_mask_for_phase(state, phase, &layout, _mask_buffer, active_player, turn)
 
     # Copy to numpy array for return (required for Python interface)
     cdef cnp.ndarray mask = np.empty(total_actions, dtype=np.float32)
@@ -591,12 +578,13 @@ cpdef tuple get_forced_action(GameState state):
     # Clear buffer (faster than np.zeros allocation)
     memset(_mask_buffer, 0, total_actions * sizeof(float))
 
-    # Get active player entity (uses cached offsets for efficient access)
+    # Get active player and turn entities (use cached offsets for efficient access)
     cdef int player_id = state._get_active_player()
     cdef Player active_player = <Player>PLAYERS[player_id]
+    cdef TurnState turn = <TurnState>TURN
 
     # Fill the mask based on phase
-    _fill_mask_for_phase(state, phase, &layout, _mask_buffer, active_player)
+    _fill_mask_for_phase(state, phase, &layout, _mask_buffer, active_player, turn)
 
     # Count valid actions
     count = 0

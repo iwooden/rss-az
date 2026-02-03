@@ -46,12 +46,19 @@ cdef class TurnState:
     cdef int _phase_offset
     cdef int _coo_offset
 
-    # Hidden state offsets (compact integer storage for fast access)
+    # Hidden state offsets (compact integer storage for fast O(1) access)
     cdef int _hidden_phase_offset
     cdef int _hidden_coo_level_offset
     cdef int _hidden_auction_company_offset
     cdef int _hidden_auction_high_bidder_offset
     cdef int _hidden_auction_starter_offset
+    cdef int _hidden_acq_active_corp_offset
+    cdef int _hidden_acq_target_company_offset
+    cdef int _hidden_acq_is_fi_offer_offset  # One-hot offset (single value, already O(1))
+    cdef int _hidden_dividend_corp_offset
+    cdef int _hidden_issue_corp_offset
+    cdef int _hidden_ipo_company_offset
+    cdef int _hidden_closing_company_offset
 
     # Turn state base offset
     cdef int _turn_offset
@@ -182,3 +189,12 @@ cdef class TurnState:
     cpdef int find_player_at_position(self, GameState state, int position)
     cpdef void advance_to_next_bidder(self, GameState state)
     cpdef void set_active_player_after(self, GameState state, int player_id)
+
+    # Nogil accessors (for mask generation in actions.pyx)
+    cdef inline int _get_acq_active_corp_nogil(self, float* data) noexcept nogil
+    cdef inline int _get_acq_target_company_nogil(self, float* data) noexcept nogil
+    cdef inline bint _is_acq_fi_offer_nogil(self, float* data) noexcept nogil
+    cdef inline int _get_dividend_corp_nogil(self, float* data) noexcept nogil
+    cdef inline int _get_issue_corp_nogil(self, float* data) noexcept nogil
+    cdef inline int _get_ipo_company_nogil(self, float* data) noexcept nogil
+    cdef inline int _get_closing_company_nogil(self, float* data) noexcept nogil

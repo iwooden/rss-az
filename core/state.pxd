@@ -59,6 +59,9 @@ cdef struct StateLayout:
     int hidden_acq_active_corp_offset
     int hidden_acq_target_company_offset
     int hidden_closing_company_offset
+    int hidden_dividend_corp_offset
+    int hidden_issue_corp_offset
+    int hidden_ipo_company_offset
 
 cdef struct TurnStateOffsets:
     int turn_number
@@ -199,6 +202,21 @@ cdef class GameState:
     cpdef void set_acq_target_company(self, int company_id)
     cpdef bint is_acq_fi_offer(self)
     cpdef void set_acq_fi_offer(self, bint is_fi)
+
+    # Dividend state access
+    cdef int _get_dividend_corp(self) noexcept nogil
+    cpdef int get_dividend_corp(self)
+    cpdef void set_dividend_corp(self, int corp_id)
+
+    # Issue state access
+    cdef int _get_issue_corp(self) noexcept nogil
+    cpdef int get_issue_corp(self)
+    cpdef void set_issue_corp(self, int corp_id)
+
+    # IPO state access
+    cdef int _get_ipo_company(self) noexcept nogil
+    cpdef int get_ipo_company(self)
+    cpdef void set_ipo_company(self, int company_id)
 
     # Closing state access
     cdef int _get_current_closing_company(self) noexcept nogil
