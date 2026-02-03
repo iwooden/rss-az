@@ -87,6 +87,7 @@ cpdef int get_corp_share_count(int corp_id) noexcept nogil
 
 cpdef int get_market_price(int index) noexcept nogil
 cpdef int get_market_index(int price) noexcept nogil
+cpdef int get_max_dividend(int price_index) noexcept nogil
 
 cpdef int get_cost_of_ownership(int coo_level, int star_tier) noexcept nogil
 cpdef int get_adjusted_company_income(int company_id, int coo_level) noexcept nogil

@@ -22,7 +22,7 @@ from core.data cimport (
     GameConstants, GamePhases, CASH_DIVISOR,
     get_company_face_value, get_company_low_price, get_company_high_price,
     get_company_stars, get_par_price, get_market_index, get_market_price,
-    is_valid_par_price, get_par_index_for_slot, NUM_PAR_PRICES, CORP_OS
+    get_max_dividend, is_valid_par_price, get_par_index_for_slot, NUM_PAR_PRICES, CORP_OS
 )
 
 # Import types and functions from our own pxd
@@ -413,19 +413,29 @@ cdef void _fill_dividends_mask(GameState state, ActionLayout* layout, float* mas
     cdef float* corp
     cdef int amount
     cdef int max_dividend
+    cdef int price_index
+    cdef int card_max
+    cdef int afford_max
 
     if corp_id < 0:
         return  # No active corp
 
     corp = state._corp_ptr(corp_id)
 
-    # Calculate max dividend (simplified - corp cash / issued shares)
+    # Get price index for share price card constraint
+    price_index = get_corp_price_index_nogil(state, corp_id)
+    card_max = get_max_dividend(price_index)
+
+    # Calculate affordability constraint (corp cash / issued shares)
     cdef int corp_cash = get_corp_cash(corp, &co)
     cdef int issued_shares = get_corp_issued_shares(corp, &co)
     if issued_shares > 0:
-        max_dividend = corp_cash // issued_shares
+        afford_max = corp_cash // issued_shares
     else:
-        max_dividend = 0
+        afford_max = 0
+
+    # Use the more restrictive of the two constraints
+    max_dividend = card_max if card_max < afford_max else afford_max
 
     # Mark valid dividend amounts
     for amount in range(min(max_dividend + 1, MAX_DIVIDEND)):
