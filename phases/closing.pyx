@@ -38,6 +38,7 @@ from core.data cimport (
     get_adjusted_company_income
 )
 from core.actions cimport ActionInfo, ACTION_CLOSE, ACTION_PASS
+from entities.company cimport LOC_FI, LOC_CORP
 from entities import turn as turn_module
 from entities import company as company_module
 from entities import corp as corp_module
@@ -72,13 +73,13 @@ cdef void _close_company(GameState state, int company_id, int owner_type, int ow
     cdef int printed_income = get_company_income(company_id)
 
     # Clear ownership before removal
-    if owner_type == 4:  # LOC_FI
+    if owner_type == LOC_FI:
         fi_module.FI.set_owns_company(state, company_id, False)
-    elif owner_type == 5:  # LOC_CORP
+    elif owner_type == LOC_CORP:
         corp_module.CORPS[owner_id].set_owns_company(state, company_id, False)
 
     # Junkyard Scrappers bonus: 2x printed income only when JS closes its own company
-    if owner_type == 5 and owner_id == CorpIndices.CORP_JS:  # LOC_CORP and JS
+    if owner_type == LOC_CORP and owner_id == CorpIndices.CORP_JS:
         corp_module.CORPS[owner_id].add_cash(state, printed_income * 2)
 
     # Remove company from game
@@ -453,7 +454,7 @@ cdef void _process_fi_auto_close(GameState state) noexcept:
 
     # Second pass: close identified companies
     for company_id in range(num_to_close):
-        _close_company(state, companies_to_close[company_id], 4, -1)  # LOC_FI = 4
+        _close_company(state, companies_to_close[company_id], LOC_FI, -1)
 
 
 cdef void _process_receivership_auto_close(GameState state) noexcept:
@@ -519,7 +520,7 @@ cdef void _process_receivership_auto_close(GameState state) noexcept:
 
         # Close identified companies
         for company_id in range(num_to_close):
-            _close_company(state, companies_to_close[company_id], 5, corp_id)  # LOC_CORP = 5
+            _close_company(state, companies_to_close[company_id], LOC_CORP, corp_id)
 
 
 # =============================================================================
@@ -556,7 +557,7 @@ cdef void _handle_close_accept(GameState state) noexcept:
         # Remove from game
         company_module.COMPANIES[company_id].remove_from_game(state)
     elif owner_type == OWNER_CORP:
-        _close_company(state, company_id, 5, owner_id)  # LOC_CORP = 5
+        _close_company(state, company_id, LOC_CORP, owner_id)
 
     # Advance to next offer
     state._data[state._layout.hidden_close_offer_index_offset] = <float>(index + 1)
