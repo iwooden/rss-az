@@ -305,7 +305,7 @@ cdef void _fill_invest_mask(GameState state, ActionLayout* layout, float* mask, 
     # Buy/Sell share: corp_id indexing
     cdef int current_price_index, buy_index, buy_price
     cdef float* market_ptr = data + state._layout.market_offset
-    for corp_id in range(GameConstants.NUM_CORPS):
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
         # Round-trip limit check - prevents model training loops
         # Uses min(buys, sells) so multiple buys or sells alone don't block
         buys = active_player._get_share_buys_nogil(data, corp_id)
@@ -469,7 +469,7 @@ cdef void _fill_ipo_mask(GameState state, ActionLayout* layout, float* mask, Pla
     face_value = get_company_face_value(company_id)
     player_cash = active_player._get_cash_nogil(state._data)
 
-    for corp_id in range(GameConstants.NUM_CORPS):
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
         corp = state._corp_ptr(corp_id)
         if is_corp_active(corp, &co):
             continue  # Skip active corps

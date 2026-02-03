@@ -29,7 +29,7 @@ cdef int _find_cheapest_affordable_available(GameState state) noexcept:
     cdef int fi_cash = fi_module.FI.get_cash(state)
     cdef int face_value
 
-    for company_id in range(GameConstants.NUM_COMPANIES):
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
         if company_module.COMPANIES[company_id].is_for_auction(state):
             face_value = get_company_face_value(company_id)
             if face_value <= fi_cash:
@@ -92,7 +92,7 @@ cdef void _make_all_revealed_available(GameState state) noexcept:
     """
     cdef int company_id
 
-    for company_id in range(GameConstants.NUM_COMPANIES):
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
         if company_module.COMPANIES[company_id].is_revealed(state):
             company_module.COMPANIES[company_id].move_to_auction(state)
 

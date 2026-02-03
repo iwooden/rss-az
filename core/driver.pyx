@@ -68,13 +68,13 @@ cdef bint _is_game_terminal(GameState state) noexcept:
     cdef bint has_active_corps = False
 
     # Check for any companies available for auction
-    for company_id in range(GameConstants.NUM_COMPANIES):
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
         if company_module.COMPANIES[company_id].is_for_auction(state):
             has_auction_companies = True
             break
 
     # Check for any active corporations
-    for corp_id in range(GameConstants.NUM_CORPS):
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
         if corp_module.CORPS[corp_id].is_active(state):
             has_active_corps = True
             break

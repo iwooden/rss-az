@@ -135,7 +135,7 @@ cdef void _process_mandatory_close(GameState state) noexcept:
             cheapest_company = -1
             cheapest_fv = 999999  # Large sentinel
 
-            for company_id in range(GameConstants.NUM_COMPANIES):
+            for company_id in range(<int>GameConstants.NUM_COMPANIES):
                 if not player_module.PLAYERS[player_id].owns_company(state, company_id):
                     continue
 
@@ -179,7 +179,7 @@ cdef int _collect_player_close_offers(
     cdef int player_id, company_id, idx
 
     for player_id in range(state._num_players):
-        for company_id in range(GameConstants.NUM_COMPANIES):
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if not player_module.PLAYERS[player_id].owns_company(state, company_id):
                 continue
             if not _has_negative_adjusted_income(state, company_id):
@@ -211,7 +211,7 @@ cdef int _collect_corp_close_offers(
     cdef int count = 0
     cdef int corp_id, company_id, president, idx
 
-    for corp_id in range(GameConstants.NUM_CORPS):
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
         if not corp_module.CORPS[corp_id].is_active(state):
             continue
 
@@ -220,7 +220,7 @@ cdef int _collect_corp_close_offers(
         if president < 0:
             continue
 
-        for company_id in range(GameConstants.NUM_COMPANIES):
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if not corp_module.CORPS[corp_id].owns_company(state, company_id):
                 continue
             if not _has_negative_adjusted_income(state, company_id):
@@ -331,7 +331,7 @@ cdef int _count_corp_companies(GameState state, int corp_id, int exclude_company
     cdef int count = 0
     cdef int company_id
 
-    for company_id in range(GameConstants.NUM_COMPANIES):
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
         if company_id == exclude_company_id:
             continue
         if corp_module.CORPS[corp_id].owns_company(state, company_id):
@@ -439,7 +439,7 @@ cdef void _process_fi_auto_close(GameState state) noexcept:
     cdef int[36] companies_to_close  # Track which companies to close
 
     # First pass: identify companies to close
-    for company_id in range(GameConstants.NUM_COMPANIES):
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
         if fi_module.FI.owns_company(state, company_id):
             base_income = get_company_income(company_id)
             stars = get_company_stars(company_id)
@@ -477,7 +477,7 @@ cdef void _process_receivership_auto_close(GameState state) noexcept:
     cdef int num_to_close
     cdef int[36] companies_to_close
 
-    for corp_id in range(GameConstants.NUM_CORPS):
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
         # Skip inactive corps and non-receivership corps
         if not corp_module.CORPS[corp_id].is_active(state):
             continue
@@ -487,7 +487,7 @@ cdef void _process_receivership_auto_close(GameState state) noexcept:
         # Find highest face value company (protected)
         protected_company = -1
         max_face_value = -1
-        for company_id in range(GameConstants.NUM_COMPANIES):
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if corp_module.CORPS[corp_id].owns_company(state, company_id):
                 face_value = get_company_face_value(company_id)
                 if face_value > max_face_value:
@@ -496,7 +496,7 @@ cdef void _process_receivership_auto_close(GameState state) noexcept:
 
         # Identify companies to close
         num_to_close = 0
-        for company_id in range(GameConstants.NUM_COMPANIES):
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
             # Skip if not owned by this corp
             if not corp_module.CORPS[corp_id].owns_company(state, company_id):
                 continue

@@ -39,7 +39,7 @@ cdef inline int get_auction_company_for_slot(GameState state, int slot) noexcept
     """
     cdef int count = 0
     cdef int company_id
-    for company_id in range(GameConstants.NUM_COMPANIES):
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
         if state._is_company_for_auction(company_id):
             if count == slot:
                 return company_id
@@ -144,7 +144,7 @@ cdef class Company:
                 return
 
         # Check corp ownership and acquisition piles
-        for i in range(GameConstants.NUM_CORPS):
+        for i in range(<int>GameConstants.NUM_CORPS):
             if state._data[self._corps_offset + i * self._corp_stride + self._corp_companies_field + self.company_id] == 1.0:
                 self._location = LOC_CORP
                 self._owner_id = i

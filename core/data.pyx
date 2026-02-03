@@ -282,8 +282,8 @@ cpdef inline int get_par_index_for_slot(int star_tier, int par_slot) noexcept no
     then slot 0 maps to index 2, slot 1 to index 3, etc.
     """
     cdef int count = 0
-    cdef unsigned int par_index
-    for par_index in range(GameConstants.NUM_PAR_PRICES):
+    cdef int par_index
+    for par_index in range(<int>GameConstants.NUM_PAR_PRICES):
         if is_valid_par_price(star_tier, <int>par_index):
             if count == par_slot:
                 return par_index

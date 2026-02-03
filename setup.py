@@ -74,6 +74,11 @@ pyx_files += [f for f in os.listdir('.') if f.endswith('.pyx')]
 
 extensions = []
 
+# Extra compile args to suppress benign Cython-generated warnings
+# -Wno-unused-function: Cython generates enum-to-Python converter functions
+#   that are often unused when enums are only used in cdef code
+extra_compile_args = ['-Wno-unused-function']
+
 for pyx_file in pyx_files:
     # Convert path to module name: cython_core/state.pyx -> cython_core.state
     module_name = pyx_file.replace('/', '.').replace('\\', '.').replace('.pyx', '')
@@ -83,6 +88,7 @@ for pyx_file in pyx_files:
         [pyx_file],
         include_dirs=[np.get_include()],
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        extra_compile_args=extra_compile_args,
     ))
 
 setup(

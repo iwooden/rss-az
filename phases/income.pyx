@@ -23,7 +23,7 @@ cdef void _apply_income_to_corps(GameState state) noexcept:
     """
     cdef int corp_id, income
 
-    for corp_id in range(GameConstants.NUM_CORPS):
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
         corp = corp_module.CORPS[corp_id]
 
         if not corp.is_active(state):

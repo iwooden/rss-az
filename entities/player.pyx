@@ -181,7 +181,7 @@ cdef inline int get_roundtrips(float* player, PlayerOffsets* p, int corp_id) noe
 cdef inline void clear_roundtrip_tracking(float* player, PlayerOffsets* p) noexcept nogil:
     """Clear buy/sell tracking for all corps. Called at end of INVEST phase."""
     cdef int i
-    for i in range(GameConstants.NUM_CORPS):
+    for i in range(<int>GameConstants.NUM_CORPS):
         player[p.share_buys + i] = 0.0
         player[p.share_sells + i] = 0.0
 
@@ -203,12 +203,12 @@ cdef int calculate_player_net_worth(GameState state, int player_id, int num_play
     cdef int shares, share_price
 
     # Add face value of owned private companies
-    for company_id in range(GameConstants.NUM_COMPANIES):
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
         if player_owns_company(player, &po, company_id):
             total += get_company_face_value(company_id)
 
     # Add value of corporation shares
-    for corp_id in range(GameConstants.NUM_CORPS):
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
         shares = get_player_shares(player, &po, corp_id)
         if shares > 0:
             if state._is_corp_active(corp_id):
@@ -336,12 +336,12 @@ cdef class Player:
         cdef int shares
 
         # Add face value of owned private companies
-        for company_id in range(GameConstants.NUM_COMPANIES):
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if self.owns_company(state, company_id):
                 total += get_company_face_value(company_id)
 
         # Add value of corporation shares
-        for corp_id in range(GameConstants.NUM_CORPS):
+        for corp_id in range(<int>GameConstants.NUM_CORPS):
             shares = self.get_shares(state, corp_id)
             if shares > 0 and state.is_corp_active(corp_id):
                 total += shares * state.get_corp_share_price(corp_id)
@@ -438,7 +438,7 @@ cdef class Player:
     cpdef void clear_roundtrip_tracking(self, GameState state):
         """Clear buy/sell tracking for all corps. Called at end of INVEST phase."""
         cdef int i
-        for i in range(GameConstants.NUM_CORPS):
+        for i in range(<int>GameConstants.NUM_CORPS):
             state._data[self._share_buys_offset + i] = 0.0
             state._data[self._share_sells_offset + i] = 0.0
 

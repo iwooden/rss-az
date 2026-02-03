@@ -349,7 +349,7 @@ cdef class Corporation:
         cdef int total_income
 
         # First pass: collect companies, sum printed income, sum CoO, track highest FV
-        for company_id in range(GameConstants.NUM_COMPANIES):
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if self._owns_company_nogil(data, company_id):
                 company_ids[company_count] = company_id
                 company_count += 1
@@ -436,7 +436,7 @@ cdef class Corporation:
         cdef int company_id, player_id, current_index
 
         # Step 1: Remove all owned companies from game
-        for company_id in range(GameConstants.NUM_COMPANIES):
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if self.owns_company(state, company_id):
                 company_module.COMPANIES[company_id].remove_from_game(state)
                 self.set_owns_company(state, company_id, False)
@@ -468,7 +468,7 @@ cdef class Corporation:
         self.set_acquisition_proceeds(state, 0)
 
         # Step 7: Clear acquisition company flags
-        for company_id in range(GameConstants.NUM_COMPANIES):
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
             self.set_acquisition_company(state, company_id, False)
 
     # =========================================================================
@@ -501,6 +501,6 @@ cdef class Corporation:
 # =============================================================================
 
 # List indexed by corp_id (consistent with PLAYERS, COMPANIES)
-CORPS = [Corporation(i, CORP_NAMES[i]) for i in range(GameConstants.NUM_CORPS)]
+CORPS = [Corporation(i, CORP_NAMES[i]) for i in range(<int>GameConstants.NUM_CORPS)]
 # Dict by name for convenience
 CORPS_BY_NAME = {c.name: c for c in CORPS}

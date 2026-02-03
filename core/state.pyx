@@ -591,7 +591,7 @@ cdef class GameState:
         # Update hidden compact value
         self._data[self._layout.hidden_corp_price_indices_offset + corp_id] = <float>index
         # Update one-hot encoding
-        for i in range(GameConstants.NUM_MARKET_SPACES):
+        for i in range(<int>GameConstants.NUM_MARKET_SPACES):
             corp[self._corp_fields.price_index + i] = 1.0 if i == index else 0.0
 
     cpdef bint is_corp_in_receivership(self, int corp_id):
@@ -793,17 +793,17 @@ cdef class GameState:
             player_module.PLAYERS[i].set_net_worth(self, starting_cash)
 
             # Clear all owned companies
-            for company_id in range(GameConstants.NUM_COMPANIES):
+            for company_id in range(<int>GameConstants.NUM_COMPANIES):
                 player_module.PLAYERS[i].set_owns_company(self, company_id, False)
 
             # Clear all shares
-            for corp_id in range(GameConstants.NUM_CORPS):
+            for corp_id in range(<int>GameConstants.NUM_CORPS):
                 player_module.PLAYERS[i].set_shares(self, corp_id, 0)
                 player_module.PLAYERS[i].set_president_of(self, corp_id, False)
 
         # 3. Set Foreign Investor state
         fi_module.FI.set_cash(self, 4)
-        for company_id in range(GameConstants.NUM_COMPANIES):
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
             fi_module.FI.set_owns_company(self, company_id, False)
 
         # 4. Reset all corporations
@@ -821,12 +821,12 @@ cdef class GameState:
             corp.set_acquisition_proceeds(self, 0)
 
             # Clear all owned companies
-            for company_id in range(GameConstants.NUM_COMPANIES):
+            for company_id in range(<int>GameConstants.NUM_COMPANIES):
                 corp.set_owns_company(self, company_id, False)
                 corp.set_acquisition_company(self, company_id, False)
 
         # 5. Initialize market - all spaces available
-        for i in range(GameConstants.NUM_MARKET_SPACES):
+        for i in range(<int>GameConstants.NUM_MARKET_SPACES):
             market_module.MARKET.set_space_available(self, i, True)
 
         # 6. Build and shuffle deck

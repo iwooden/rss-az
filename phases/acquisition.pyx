@@ -194,7 +194,7 @@ cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) no
 
     # First pass: OS->FI offers (OS always first if can afford)
     # Iterate in descending face value order (most expensive first)
-    for company_id in range(GameConstants.NUM_COMPANIES - 1, -1, -1):
+    for company_id in range(<int>GameConstants.NUM_COMPANIES - 1, -1, -1):
         if fi_module.FI.owns_company(state, company_id):
             high_price = company_module.COMPANIES[company_id].get_high_price()
 
@@ -208,13 +208,13 @@ cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) no
 
     # Second pass: collect other corps (not OS) into temp arrays
     # Iterate in descending face value order
-    for company_id in range(GameConstants.NUM_COMPANIES - 1, -1, -1):
+    for company_id in range(<int>GameConstants.NUM_COMPANIES - 1, -1, -1):
         if fi_module.FI.owns_company(state, company_id):
             high_price = company_module.COMPANIES[company_id].get_high_price()
             face_value = get_company_face_value(company_id)
 
             # Check all other corps (skip OS)
-            for corp_id in range(GameConstants.NUM_CORPS):
+            for corp_id in range(<int>GameConstants.NUM_CORPS):
                 if corp_id == CorpIndices.CORP_OS:
                     continue
 
@@ -263,7 +263,7 @@ cdef int _collect_corp_corp_offers(GameState state, int* corp_ids, int* company_
     # For each player, find corps they control and generate offers
     for player_id in range(state._num_players):
         # Find all corps this player is president of
-        for buyer_corp in range(GameConstants.NUM_CORPS):
+        for buyer_corp in range(<int>GameConstants.NUM_CORPS):
             if not corp_module.CORPS[buyer_corp].is_active(state):
                 continue
             if corp_module.CORPS[buyer_corp].get_president_id(state) != player_id:
@@ -273,7 +273,7 @@ cdef int _collect_corp_corp_offers(GameState state, int* corp_ids, int* company_
             buyer_price = corp_module.CORPS[buyer_corp].get_share_price(state)
 
             # Find all other corps this player is president of
-            for seller_corp in range(GameConstants.NUM_CORPS):
+            for seller_corp in range(<int>GameConstants.NUM_CORPS):
                 if seller_corp == buyer_corp:
                     continue
                 if not corp_module.CORPS[seller_corp].is_active(state):
@@ -282,7 +282,7 @@ cdef int _collect_corp_corp_offers(GameState state, int* corp_ids, int* company_
                     continue
 
                 # Find companies owned by seller corp
-                for company_id in range(GameConstants.NUM_COMPANIES):
+                for company_id in range(<int>GameConstants.NUM_COMPANIES):
                     if corp_module.CORPS[seller_corp].owns_company(state, company_id):
                         high_price = company_module.COMPANIES[company_id].get_high_price()
                         face_value = get_company_face_value(company_id)
@@ -327,13 +327,13 @@ cdef int _collect_player_private_offers(GameState state, int* corp_ids, int* com
     # For each player, find their private companies and corps they control
     for player_id in range(state._num_players):
         # Find all private companies owned by this player
-        for company_id in range(GameConstants.NUM_COMPANIES):
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if player_module.PLAYERS[player_id].owns_company(state, company_id):
                 high_price = company_module.COMPANIES[company_id].get_high_price()
                 face_value = get_company_face_value(company_id)
 
                 # Find all corps this player is president of
-                for corp_id in range(GameConstants.NUM_CORPS):
+                for corp_id in range(<int>GameConstants.NUM_CORPS):
                     if not corp_module.CORPS[corp_id].is_active(state):
                         continue
                     if corp_module.CORPS[corp_id].get_president_id(state) != player_id:
@@ -599,7 +599,7 @@ cdef bint _is_target_already_acquired(GameState state, int company_id) noexcept:
     Returns True if already acquired, False otherwise.
     """
     cdef int check_corp
-    for check_corp in range(GameConstants.NUM_CORPS):
+    for check_corp in range(<int>GameConstants.NUM_CORPS):
         if corp_module.CORPS[check_corp].has_acquisition_company(state, company_id):
             return True
     return False
@@ -618,7 +618,7 @@ cdef int _count_seller_companies(GameState state, int seller_corp_id, int target
     cdef int count = 0
     cdef int company_id
 
-    for company_id in range(GameConstants.NUM_COMPANIES):
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
         if company_id == target_company_id:
             continue
         if corp_module.CORPS[seller_corp_id].owns_company(state, company_id):
@@ -951,7 +951,7 @@ cdef void _merge_corp_proceeds(GameState state) noexcept:
     FLOW-04: Corp proceeds merge at phase end.
     """
     cdef int corp_id, proceeds
-    for corp_id in range(GameConstants.NUM_CORPS):
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
         if corp_module.CORPS[corp_id].is_active(state):
             proceeds = corp_module.CORPS[corp_id].get_acquisition_proceeds(state)
             if proceeds > 0:
@@ -971,9 +971,9 @@ cdef void _merge_corp_companies(GameState state) noexcept:
     - Updates company location and owner
     """
     cdef int corp_id, company_id
-    for corp_id in range(GameConstants.NUM_CORPS):
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
         if corp_module.CORPS[corp_id].is_active(state):
-            for company_id in range(GameConstants.NUM_COMPANIES):
+            for company_id in range(<int>GameConstants.NUM_COMPANIES):
                 if corp_module.CORPS[corp_id].has_acquisition_company(state, company_id):
                     # transfer_to_corp handles all state updates:
                     # - clears acquisition flag (via clear_location)
