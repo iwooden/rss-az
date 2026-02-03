@@ -4,7 +4,7 @@ Requirements covered:
 - END-01: Corp at price_index 26 (75 price) triggers GAME_OVER
 - END-02: No unowned companies (deck/auction/revealed empty) flips end card
 - END-03: Pre-flipped end card triggers GAME_OVER
-- END-04: Normal transition (none of above) goes to TEMP_END_TURN
+- END-04: Normal transition (none of above) goes to ISSUE_SHARES
 - END-05: END_CARD is non-player phase (0 valid actions, auto-executes)
 - END-06: Flipping end card sets CoO level to 7
 """
@@ -36,7 +36,7 @@ def end_card_state(game_state):
     - Companies still in deck (unowned companies exist)
     - End card not flipped
 
-    Should transition to TEMP_END_TURN.
+    Should transition to ISSUE_SHARES.
     """
     TURN.set_phase(game_state, GamePhases.PHASE_END_CARD)
     return game_state
@@ -73,8 +73,8 @@ class Test75PriceCheck:
 
         apply_end_card_py(end_card_state)
 
-        # Should continue to TEMP_END_TURN, not GAME_OVER
-        assert TURN.get_phase(end_card_state) == GamePhases.PHASE_TEMP_END_TURN
+        # Should continue to ISSUE_SHARES, not GAME_OVER
+        assert TURN.get_phase(end_card_state) == GamePhases.PHASE_ISSUE_SHARES
 
     def test_multiple_corps_one_at_75(self, end_card_state):
         """If any corp is at 75, game ends regardless of others."""
@@ -236,21 +236,23 @@ class TestEndCardFlipped:
 
 
 class TestNormalTransition:
-    """END-04: Normal case transitions to TEMP_END_TURN."""
+    """END-04: Normal case transitions to ISSUE_SHARES."""
 
-    def test_normal_state_transitions_to_temp_end_turn(self, end_card_state):
-        """Default state (no end conditions) goes to TEMP_END_TURN."""
+    def test_normal_state_transitions_to_issue_shares(self, end_card_state):
+        """Default state (no end conditions) goes to ISSUE_SHARES."""
         # Default state has:
         # - No corp at 75 price
         # - Companies still in deck
         # - End card not flipped
+        # Note: With no active corps, issue phase auto-transitions to TEMP_END_TURN
 
         apply_end_card_py(end_card_state)
 
+        # No active corps -> issue phase transitions directly to TEMP_END_TURN
         assert TURN.get_phase(end_card_state) == GamePhases.PHASE_TEMP_END_TURN
 
     def test_active_corps_below_75_continue(self, end_card_state):
-        """Active corps below 75 price continue to next turn."""
+        """Active corps below 75 price continue to issue phase."""
         # Set up some active corps at various prices
         for corp_id in range(3):
             corp = CORPS[corp_id]
@@ -261,7 +263,8 @@ class TestNormalTransition:
 
         apply_end_card_py(end_card_state)
 
-        assert TURN.get_phase(end_card_state) == GamePhases.PHASE_TEMP_END_TURN
+        # Active corps exist -> stays in ISSUE_SHARES for player decisions
+        assert TURN.get_phase(end_card_state) == GamePhases.PHASE_ISSUE_SHARES
 
 
 # =============================================================================

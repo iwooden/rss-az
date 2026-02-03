@@ -472,6 +472,13 @@ class TestAcquisitionIntegration:
             assert_invariants(state, f"After action {iterations+1}")
             iterations += 1
 
+        # Process through ISSUE_SHARES phase (pass on all corps)
+        iterations = 0
+        while state.get_phase() == GamePhases.PHASE_ISSUE_SHARES and iterations < max_iterations:
+            apply_action_and_verify(state, layout['issue_pass'], f"Issue pass {iterations+1}")
+            assert_invariants(state, f"After issue pass {iterations+1}")
+            iterations += 1
+
         # Should eventually complete and transition
         assert state.get_phase() == GamePhases.PHASE_INVEST
 
@@ -1376,6 +1383,14 @@ class TestDividendsIntegration:
 
         # Should have processed all three corps in price order
         assert corps_processed == [0, 1, 2], f"Expected [0, 1, 2], got {corps_processed}"
+
+        # Process through ISSUE_SHARES phase (pass on all corps)
+        iterations = 0
+        while state.get_phase() == GamePhases.PHASE_ISSUE_SHARES and iterations < max_iterations:
+            apply_action_and_verify(state, layout['issue_pass'], f"Issue pass {iterations+1}")
+            assert_invariants(state, f"After issue pass {iterations+1}")
+            iterations += 1
+
         # TEMP_END_TURN is auto-processed by driver -> returns to INVEST
         assert state.get_phase() == GamePhases.PHASE_INVEST
         assert TURN.get_turn_number(state) == 2
@@ -1441,6 +1456,16 @@ class TestDividendsIntegration:
                 break
 
         assert_invariants(state, "After all corps processed")
+
+        # Process through ISSUE_SHARES phase (pass on all corps, receivership auto-issues)
+        layout = get_action_layout(3)
+        max_iterations = 10
+        iterations = 0
+        while state.get_phase() == GamePhases.PHASE_ISSUE_SHARES and iterations < max_iterations:
+            apply_action_and_verify(state, layout['issue_pass'], f"Issue pass {iterations+1}")
+            assert_invariants(state, f"After issue pass {iterations+1}")
+            iterations += 1
+
         # TEMP_END_TURN is auto-processed by driver -> returns to INVEST
         assert state.get_phase() == GamePhases.PHASE_INVEST
         assert TURN.get_turn_number(state) == 2
@@ -1539,6 +1564,14 @@ class TestDividendsIntegration:
             if mask[i] == 1.0:
                 apply_action_and_verify(state, i, "Dividend action")
                 break
+
+        # Process through ISSUE_SHARES phase (pass on all corps)
+        max_iterations = 10
+        iterations = 0
+        while state.get_phase() == GamePhases.PHASE_ISSUE_SHARES and iterations < max_iterations:
+            apply_action_and_verify(state, layout['issue_pass'], f"Issue pass {iterations+1}")
+            assert_invariants(state, f"After issue pass {iterations+1}")
+            iterations += 1
 
         # TEMP_END_TURN is auto-processed by driver -> returns to INVEST with turn incremented
         assert state.get_phase() == GamePhases.PHASE_INVEST

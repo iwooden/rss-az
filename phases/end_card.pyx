@@ -8,7 +8,7 @@ Checks executed in order:
 1. If 75 share price reached by any corp → GAME_OVER
 2. If no unowned companies left → flip end card, set CoO to 7
 3. If end card already flipped → GAME_OVER
-4. Otherwise → transition to TEMP_END_TURN
+4. Otherwise → transition to ISSUE_SHARES
 """
 
 from core.state cimport GameState
@@ -17,6 +17,7 @@ from entities import turn as turn_module
 from entities import corp as corp_module
 from entities import company as company_module
 from entities.company cimport LOC_DECK, LOC_AUCTION, LOC_REVEALED
+from phases.issue cimport setup_issue_phase
 
 
 # =============================================================================
@@ -81,7 +82,7 @@ cdef int apply_end_card(GameState state) noexcept:
     1. If 75 share price reached → GAME_OVER
     2. If no unowned companies → flip end card, set CoO to 7
     3. If end card already flipped → GAME_OVER
-    4. Otherwise → TEMP_END_TURN
+    4. Otherwise → ISSUE_SHARES
 
     Returns: 0 always (deterministic, no failure modes)
     """
@@ -99,8 +100,9 @@ cdef int apply_end_card(GameState state) noexcept:
         turn_module.TURN.set_phase(state, GamePhases.PHASE_GAME_OVER)
         return 0
 
-    # Check 4: Normal transition to next phase
-    turn_module.TURN.set_phase(state, GamePhases.PHASE_TEMP_END_TURN)
+    # Check 4: Normal transition to ISSUE_SHARES phase
+    turn_module.TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
+    setup_issue_phase(state)
     return 0
 
 

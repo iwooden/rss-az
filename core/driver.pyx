@@ -17,7 +17,7 @@ from core.actions cimport (
     ActionLayout, ActionInfo, compute_action_layout, decode_action
 )
 from core.actions import get_valid_action_mask
-from core.data cimport GamePhases, GameConstants, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_GAME_OVER, PHASE_WRAP_UP, PHASE_ACQUISITION, PHASE_CLOSING, PHASE_INCOME, PHASE_TEMP_END_TURN, PHASE_DIVIDENDS, PHASE_END_CARD
+from core.data cimport GamePhases, GameConstants, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_GAME_OVER, PHASE_WRAP_UP, PHASE_ACQUISITION, PHASE_CLOSING, PHASE_INCOME, PHASE_TEMP_END_TURN, PHASE_DIVIDENDS, PHASE_END_CARD, PHASE_ISSUE_SHARES
 from core.driver cimport ActionStatus, STATUS_OK, STATUS_INVALID, STATUS_GAME_OVER, ForcedActionResult
 from phases.invest cimport apply_invest_action
 from phases.bid cimport apply_bid_action
@@ -28,6 +28,7 @@ from phases.income cimport apply_income
 from phases.temp_end_turn cimport apply_temp_end_turn
 from phases.dividends cimport apply_dividend_action
 from phases.end_card cimport apply_end_card
+from phases.issue cimport apply_issue_action
 from entities import turn as turn_module
 from entities import company as company_module
 from entities import corp as corp_module
@@ -249,6 +250,8 @@ cdef class GameDriver:
             result = apply_closing_action(state, &info)
         elif phase == PHASE_DIVIDENDS:
             result = apply_dividend_action(state, &info)
+        elif phase == PHASE_ISSUE_SHARES:
+            result = apply_issue_action(state, &info)
         else:
             # Other phases not yet implemented (stubs for Phase 3+)
             return STATUS_INVALID
