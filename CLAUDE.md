@@ -352,6 +352,31 @@ When working on any task, create beads issues (`bd create`) for:
 
 **No insights or work should be lost.** When in doubt, create an issue.
 
+## Using Subtasks
+
+When breaking down a feature into multiple steps, **use subtasks instead of independent issues**. Subtasks keep related work grouped and make progress easier to track.
+
+**Subtask IDs** use dot notation: `parent.1`, `parent.2`, etc. Nesting is supported up to two levels (`parent.1.1`).
+
+```bash
+# Create subtasks for a feature (e.g., rss-az-cython2-abc)
+bd create --parent=rss-az-cython2-abc --title="Create phase handler" --type=task
+bd create --parent=rss-az-cython2-abc --title="Integrate into driver" --type=task
+bd create --parent=rss-az-cython2-abc --title="Add tests" --type=task
+
+# Results in: abc.1, abc.2, abc.3
+```
+
+**When to use subtasks:**
+- Implementation steps for a feature (handler, integration, tests)
+- Bug fix with multiple related changes
+- Any work that logically belongs to a parent issue
+
+**When to use independent issues:**
+- Unrelated bugs discovered during work
+- Cross-cutting concerns affecting multiple features
+- Work that should be tracked separately for prioritization
+
 ## Ad-hoc Test Scripts
 
 When writing ad-hoc Python scripts to test or debug code, **write them to the scratchpad directory** instead of inlining them in Bash commands. This is more token-efficient when iterating:
