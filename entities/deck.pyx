@@ -16,6 +16,7 @@ Deck setup rules (from RULES.md):
 from libc.stdlib cimport rand, srand
 from core.state cimport GameState, StateLayout
 from core.data cimport GameConstants, get_company_stars
+from entities import company as company_module
 
 
 # Company index ranges by color (star tier)
@@ -72,7 +73,10 @@ cdef class Deck:
 
     cpdef int draw(self, GameState state):
         """
-        Draw the top card from the deck.
+        Draw the top card from the deck and mark it as revealed.
+
+        Drawn companies are always marked as revealed (unavailable for auction)
+        until they are explicitly made available at the end of WRAP_UP phase.
 
         Returns the company_id of the drawn card, or -1 if deck is empty.
         """
@@ -86,6 +90,9 @@ cdef class Deck:
 
         # Move top pointer down
         state._data[self._deck_top_offset] = <float>(top - 1)
+
+        # Mark drawn company as revealed (unavailable for auction this turn)
+        company_module.COMPANIES[company_id].set_revealed(state, True)
 
         return company_id
 

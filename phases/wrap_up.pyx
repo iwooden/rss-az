@@ -45,22 +45,20 @@ cdef void _fi_purchase_company(GameState state, int company_id) noexcept:
     Steps:
     1. Deduct face value from FI cash
     2. Transfer company to FI
-    3. Draw replacement card from deck
-    4. Mark replacement as revealed (unavailable)
+    3. Draw replacement card from deck (auto-marked revealed)
 
     Args:
         state: Game state
         company_id: Company to purchase (0-35)
     """
-    cdef int face_value, new_company
+    cdef int face_value
 
     face_value = get_company_face_value(company_id)
     fi_module.FI.add_cash(state, -face_value)
     company_module.COMPANIES[company_id].transfer_to_fi(state)
 
-    new_company = deck_module.DECK.draw(state)
-    if new_company >= 0:
-        company_module.COMPANIES[new_company].set_revealed(state, True)
+    # Draw replacement - automatically marked revealed by DECK.draw()
+    deck_module.DECK.draw(state)
 
 
 cdef void _process_fi_purchases(GameState state) noexcept:

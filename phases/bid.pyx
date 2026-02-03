@@ -44,10 +44,8 @@ cdef void _resolve_auction(GameState state) noexcept:
     # Update winner's net worth (BID-12)
     player_module.PLAYERS[winner_id].update_net_worth(state)
 
-    # Draw new company - revealed but unavailable this phase (BID-09)
-    new_company = deck_module.DECK.draw(state)
-    if new_company >= 0:
-        company_module.COMPANIES[new_company].set_revealed(state, True)
+    # Draw new company - automatically marked revealed by DECK.draw() (BID-09)
+    deck_module.DECK.draw(state)
 
     # Clear auction state (BID-08)
     turn_module.TURN.clear_auction_company(state)

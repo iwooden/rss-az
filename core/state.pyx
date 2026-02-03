@@ -836,10 +836,10 @@ cdef class GameState:
             actual_seed = seed
         deck_module.DECK.setup(self, self._num_players, actual_seed)
 
-        # 7. Draw initial companies
+        # 7. Draw initial companies (move_to_auction clears the revealed flag set by draw)
         for i in range(self._num_players):
             company_id = deck_module.DECK.draw(self)
-            self.set_company_for_auction(company_id, True)
+            company_module.COMPANIES[company_id].move_to_auction(self)
 
         # 8. Set turn state
         turn_module.TURN.set_phase(self, GamePhases.PHASE_INVEST)
