@@ -198,3 +198,4 @@ cdef class TurnState:
     cdef inline int _get_issue_corp_nogil(self, float* data) noexcept nogil
     cdef inline int _get_ipo_company_nogil(self, float* data) noexcept nogil
     cdef inline int _get_closing_company_nogil(self, float* data) noexcept nogil
+    cdef inline int _get_auction_price_nogil(self, float* data) noexcept nogil

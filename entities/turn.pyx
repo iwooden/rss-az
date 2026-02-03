@@ -537,6 +537,13 @@ cdef class TurnState:
         """Get company being offered for closing from hidden state. O(1) access."""
         return <int>data[self._hidden_closing_company_offset]
 
+    cdef inline int _get_auction_price_nogil(self, float* data) noexcept nogil:
+        """Get current auction price from cached offset. O(1) access."""
+        cdef float val = data[self._auction_price_offset]
+        if val < 0:
+            return -1
+        return <int>(val * CASH_DIVISOR + 0.5)
+
     # =========================================================================
     # ACQUISITION STATE
     # =========================================================================

@@ -17,7 +17,7 @@ import numpy as np
 cimport numpy as cnp
 from libc.string cimport memset, memcpy
 
-from core.state cimport GameState, TurnStateOffsets, compute_turn_offsets
+from core.state cimport GameState
 from core.data cimport (
     GameConstants, GamePhases, CASH_DIVISOR,
     get_company_face_value, get_company_low_price, get_company_high_price,
@@ -261,13 +261,6 @@ cdef inline int get_auction_company_nogil(GameState state) noexcept nogil:
     return <int>state._data[state._layout.hidden_auction_company_offset]
 
 
-cdef inline int get_auction_price_nogil(GameState state) noexcept nogil:
-    """Get auction price from turn state without GIL."""
-    cdef float* turn = state._turn_ptr()
-    cdef TurnStateOffsets tso = compute_turn_offsets(state._num_players)
-    return <int>(turn[tso.auction_price] * CASH_DIVISOR + 0.5)
-
-
 cdef inline bint is_market_space_available_nogil(GameState state, int index) noexcept nogil:
     """Check if market space is available without GIL."""
     return state._data[state._layout.market_offset + index] == 1.0
@@ -341,11 +334,11 @@ cdef void _fill_invest_mask(GameState state, ActionLayout* layout, float* mask, 
                 mask[layout.sell_share_base + corp_id] = 1.0
 
 
-cdef void _fill_bid_mask(GameState state, ActionLayout* layout, float* mask, Player active_player) noexcept nogil:
+cdef void _fill_bid_mask(GameState state, ActionLayout* layout, float* mask, Player active_player, TurnState turn) noexcept nogil:
     """Fill mask for BID_IN_AUCTION phase actions."""
     cdef int player_cash = active_player._get_cash_nogil(state._data)
     cdef int company_id = get_auction_company_nogil(state)
-    cdef int current_bid = get_auction_price_nogil(state)
+    cdef int current_bid = turn._get_auction_price_nogil(state._data)
     cdef int face_value, bid_offset, new_bid
 
     # Leave auction is always valid
@@ -506,7 +499,7 @@ cdef void _fill_mask_for_phase(GameState state, int phase, ActionLayout* layout,
     if phase == GamePhases.PHASE_INVEST:
         _fill_invest_mask(state, layout, mask, active_player)
     elif phase == GamePhases.PHASE_BID_IN_AUCTION:
-        _fill_bid_mask(state, layout, mask, active_player)
+        _fill_bid_mask(state, layout, mask, active_player, turn)
     elif phase == GamePhases.PHASE_ACQUISITION:
         _fill_acquisition_mask(state, layout, mask, turn)
     elif phase == GamePhases.PHASE_CLOSING:
