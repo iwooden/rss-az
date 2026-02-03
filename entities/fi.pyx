@@ -7,9 +7,10 @@ state vector. The FI is a special entity that buys companies at high price
 and holds them until corporations acquire them.
 """
 
+from libc.math cimport lround
+
 from core.state cimport GameState, StateLayout
-from core.data cimport CASH_DIVISOR, sum_adjusted_income_from_flags
-from entities import turn as turn_module
+from core.data cimport GameConstants, CASH_DIVISOR
 
 
 cdef class ForeignInvestor:
@@ -74,16 +75,18 @@ cdef class ForeignInvestor:
         """
         Calculate total income for Foreign Investor.
 
-        Formula: sum(printed_income - CoO) + 5
+        Uses the cached company_incomes array (updated when CoO changes).
         FI always receives +5 base income bonus.
 
         Returns:
             Total income (always positive due to CLOSING phase)
         """
-        cdef int coo_level = turn_module.TURN.get_coo_level(state)
-        cdef int total = sum_adjusted_income_from_flags(
-            &state._data[self._owned_companies_offset], coo_level
-        )
+        cdef int total = 0
+        cdef int company_id
+        cdef int company_incomes_offset = state._layout.company_incomes_offset
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
+            if state._data[self._owned_companies_offset + company_id] == 1.0:
+                total += <int>lround(state._data[company_incomes_offset + company_id] * CASH_DIVISOR)
         # FI always gets +5 bonus (RULES.md line 354)
         return total + 5
 

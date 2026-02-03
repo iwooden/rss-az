@@ -9,15 +9,14 @@ Provides both:
 The class methods are thin wrappers around the cdef functions to avoid duplication.
 """
 
-from libc.math cimport round
+from libc.math cimport lround
 
 from core.state cimport GameState, StateLayout, PlayerFieldOffsets
 from core.data cimport (
     GameConstants, CASH_DIVISOR, SHARE_DIVISOR, MAX_ROUNDTRIPS,
-    get_company_face_value, sum_adjusted_income_from_flags
+    get_company_face_value
 )
 from entities.encoding cimport set_one_hot, get_one_hot_index
-from entities import turn as turn_module
 
 # Use constants from GameConstants (imported above)
 
@@ -471,14 +470,17 @@ cdef class Player:
         """
         Calculate total income from player's private companies.
 
-        Income = sum of (base_income - CoO) for each owned private company.
+        Uses the cached company_incomes array (updated when CoO changes).
         Note: Only player-owned privates, NOT corp subsidiaries.
         Used by mandatory close to check if player income + cash < 0.
         """
-        cdef int coo_level = turn_module.TURN.get_coo_level(state)
-        return sum_adjusted_income_from_flags(
-            &state._data[self._owned_companies_offset], coo_level
-        )
+        cdef int total = 0
+        cdef int company_id
+        cdef int company_incomes_offset = state._layout.company_incomes_offset
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
+            if state._data[self._owned_companies_offset + company_id] == 1.0:
+                total += <int>lround(state._data[company_incomes_offset + company_id] * CASH_DIVISOR)
+        return total
 
 
 # =============================================================================
