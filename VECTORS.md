@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | 2943         | 859         | 3802       |
-| 3       | 3023         | 859         | 3882       |
-| 4       | 3105         | 859         | 3964       |
-| 5       | 3189         | 859         | 4048       |
-| 6       | 3275         | 859         | 4134       |
+| 2       | 2943         | 862         | 3805       |
+| 3       | 3023         | 862         | 3885       |
+| 4       | 3105         | 862         | 3967       |
+| 5       | 3189         | 862         | 4051       |
+| 6       | 3275         | 862         | 4137       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 
@@ -212,7 +212,7 @@ Per company (40 floats):
 
 ## Hidden State Layout
 
-Hidden state starts at `visible_size` offset. Total hidden size = 859.
+Hidden state starts at `visible_size` offset. Total hidden size = 862.
 
 The hidden state serves several purposes:
 - **Information hiding**: Data the NN shouldn't see (deck order, active player before rotation)
@@ -240,6 +240,9 @@ The hidden state serves several purposes:
 | `acq_active_corp` | 856 | 1 | Compact storage for O(1) access |
 | `acq_target_company` | 857 | 1 | Compact storage for O(1) access |
 | `closing_company` | 858 | 1 | Compact storage for O(1) access |
+| `dividend_corp` | 859 | 1 | Compact storage for O(1) access |
+| `issue_corp` | 860 | 1 | Compact storage for O(1) access |
+| `ipo_company` | 861 | 1 | Compact storage for O(1) access |
 
 ---
 

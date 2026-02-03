@@ -89,9 +89,9 @@ Central data structure: single contiguous float32 numpy array.
 **Sizes by player count:**
 | Players | Visible | Hidden | Total |
 |---------|---------|--------|-------|
-| 2 | 2943 | 859 | 3802 |
-| 3 | 3023 | 859 | 3882 |
-| 6 | 3275 | 859 | 4134 |
+| 2 | 2943 | 862 | 3805 |
+| 3 | 3023 | 862 | 3885 |
+| 6 | 3275 | 862 | 4137 |
 
 ### Actions (`core/actions.pyx`)
 
