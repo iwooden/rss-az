@@ -249,8 +249,8 @@ class TestHighestFaceValueProtection:
         assert not COMPANIES[red_company].is_removed(state)
 
 
-class TestVintageMachineryReduction:
-    """VM (corp_id 6) reduces CoO by up to $10."""
+class TestVintageMachineryInReceivership:
+    """VM in receivership follows normal receivership rules - no special ability."""
 
     def _setup_receivership_corp(self, state, corp_id, company_ids):
         """Helper to set up receivership corp with companies."""
@@ -260,90 +260,32 @@ class TestVintageMachineryReduction:
         for cid in company_ids:
             COMPANIES[cid].transfer_to_corp(state, corp_id)
 
-    def test_vm_reduction_prevents_close(self):
-        """VM's CoO reduction can prevent company from closing."""
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
+    def test_vm_no_special_treatment_in_receivership(self):
+        """VM's CoO reduction does NOT apply in receivership auto-close.
 
-        # Red company at CoO 7 ($10) would normally close (>= $4)
-        # But VM reduces by 10, so effective CoO = $0 < $4
-        red_company = 0
-        other_company = 14  # Higher FV yellow (protected regardless)
-
-        # Use VM (corp_id 6)
-        self._setup_receivership_corp(state, 6, [red_company, other_company])
-        TURN.set_coo_level(state, 7)
-
-        apply_closing_auto_py(state)
-
-        # Red company should NOT be closed (VM reduction makes CoO $0)
-        assert not COMPANIES[red_company].is_removed(state)
-
-    def test_vm_total_reduction_not_per_company(self):
-        """VM's $10 reduction is TOTAL, not per-company.
-
-        Per RULES.md: "reduce total Cost of Ownership by up to 10"
-
-        With 3 red companies at CoO level 7:
-        - Company 5 (FV=8): protected as highest FV
-        - Company 0 (FV=1): CoO=10, effective_coo = 10 * 10/20 = 5 >= 4 → closes
-        - Company 1 (FV=2): CoO=10, effective_coo = 10 * 10/20 = 5 >= 4 → closes
-
-        Total non-protected CoO = 20, VM reduces by 10, effective = 10
-        Each company's effective CoO = coo * (effective/total) = 10 * 10/20 = 5
-        Red threshold is 4, so 5 >= 4 means they close.
+        Per RULES.md, VM's ability is for income calculation only.
+        Receivership corps follow simple deterministic rules without
+        special ability considerations.
         """
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
-        # 3 red companies at CoO level 7 (each has CoO=10)
-        # FV: company 0=1, company 1=2, company 5=8
-        # Company 5 is protected (highest FV)
-        red_low_fv = 0   # FV=1, will close
-        red_mid_fv = 1   # FV=2, will close
-        red_high_fv = 5  # FV=8, protected
-
-        self._setup_receivership_corp(state, 6, [red_low_fv, red_mid_fv, red_high_fv])
-        TURN.set_coo_level(state, 7)
-
-        apply_closing_auto_py(state)
-
-        # Non-protected red companies SHOULD close (total reduction is only 10)
-        # effective_coo = 10 * (20-10)/20 = 5 >= 4
-        assert COMPANIES[red_low_fv].is_removed(state), \
-            "Company 0 should close: effective CoO = 5 >= 4"
-        assert COMPANIES[red_mid_fv].is_removed(state), \
-            "Company 1 should close: effective CoO = 5 >= 4"
-        # Protected company survives
-        assert not COMPANIES[red_high_fv].is_removed(state), \
-            "Company 5 should survive: highest FV protected"
-
-    def test_vm_reduction_with_two_companies(self):
-        """VM with 2 companies: total CoO <= 10 means full reduction.
-
-        With total CoO = 10+10 = 20 for 2 non-protected red companies,
-        effective_total = 20 - 10 = 10, each gets effective_coo = 5 >= 4.
-        Both should close.
-
-        But with total CoO = 10 for 1 non-protected red company (other protected),
-        effective_total = 0, so effective_coo = 0 < 4. Company survives.
-        """
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-
-        # VM with 1 red (to close check) + 1 yellow (protected as higher FV)
-        # Total non-protected CoO = 10, VM reduces by 10, effective = 0
+        # Red company at CoO level 7 has CoO=$10 >= $4 threshold
+        # VM's ability does NOT prevent closing in receivership
         red_company = 0   # FV=1, CoO=10
         yellow_company = 14  # FV=20 (higher), will be protected
 
+        # Use VM (corp_id 6) in receivership
         self._setup_receivership_corp(state, 6, [red_company, yellow_company])
         TURN.set_coo_level(state, 7)
 
         apply_closing_auto_py(state)
 
-        # Single non-protected red with CoO=10, VM reduces total by 10 → effective = 0
-        assert not COMPANIES[red_company].is_removed(state), \
-            "Red company should survive: total CoO reduction makes effective CoO = 0"
+        # Red company SHOULD be closed (VM ability doesn't apply to receivership)
+        assert COMPANIES[red_company].is_removed(state), \
+            "Red company should close: CoO $10 >= $4 threshold, VM ability doesn't apply"
+        # Yellow is protected as highest FV
+        assert not COMPANIES[yellow_company].is_removed(state)
 
 
 class TestJunkyardScrappersBonus:

@@ -466,16 +466,16 @@ cdef void _process_receivership_auto_close(GameState state) noexcept:
     - Yellow/Green/Blue (3-5 stars): NEVER auto-close
 
     Protection: Highest face value company in each receivership corp is protected.
-    Vintage Machinery (corp 6): Apply up to $10 TOTAL CoO reduction before threshold
-    check, distributed proportionally across all non-protected companies.
+
+    Note: Corporation special abilities (like VM's CoO reduction) do NOT apply here.
+    Per RULES.md, VM's ability is for income calculation only. Receivership corps
+    follow simple deterministic rules without special ability considerations.
     """
-    cdef int corp_id, company_id, stars, coo_value, effective_coo
+    cdef int corp_id, company_id, stars, coo_value
     cdef int coo_level = turn_module.TURN.get_coo_level(state)
-    cdef bint is_vm
     cdef int protected_company, max_face_value, face_value
     cdef int num_to_close
     cdef int[36] companies_to_close
-    cdef int total_coo, effective_total
 
     for corp_id in range(GameConstants.NUM_CORPS):
         # Skip inactive corps and non-receivership corps
@@ -483,9 +483,6 @@ cdef void _process_receivership_auto_close(GameState state) noexcept:
             continue
         if not corp_module.CORPS[corp_id].is_in_receivership(state):
             continue
-
-        # Check if this is Vintage Machinery
-        is_vm = (corp_id == CorpIndices.CORP_VM)
 
         # Find highest face value company (protected)
         protected_company = -1
@@ -496,20 +493,6 @@ cdef void _process_receivership_auto_close(GameState state) noexcept:
                 if face_value > max_face_value:
                     max_face_value = face_value
                     protected_company = company_id
-
-        # For VM, calculate total CoO of non-protected companies first
-        # VM's ability reduces TOTAL CoO by up to 10, not per-company
-        total_coo = 0
-        effective_total = 0
-        if is_vm:
-            for company_id in range(GameConstants.NUM_COMPANIES):
-                if not corp_module.CORPS[corp_id].owns_company(state, company_id):
-                    continue
-                if company_id == protected_company:
-                    continue
-                stars = get_company_stars(company_id)
-                total_coo += get_cost_of_ownership(coo_level, stars)
-            effective_total = max(0, total_coo - 10)
 
         # Identify companies to close
         num_to_close = 0
@@ -522,26 +505,14 @@ cdef void _process_receivership_auto_close(GameState state) noexcept:
             if company_id == protected_company:
                 continue
 
-            # Get CoO value
+            # Get CoO value and check thresholds
             stars = get_company_stars(company_id)
             coo_value = get_cost_of_ownership(coo_level, stars)
 
-            # Apply Vintage Machinery reduction (proportional to total)
-            # Per RULES.md: "reduce total Cost of Ownership by up to 10"
-            if is_vm:
-                if total_coo > 0:
-                    # Proportionally reduce: effective_coo = coo * (effective_total / total_coo)
-                    effective_coo = (coo_value * effective_total) // total_coo
-                else:
-                    effective_coo = 0
-            else:
-                effective_coo = coo_value
-
-            # Check thresholds
-            if stars == 1 and effective_coo >= 4:  # Red
+            if stars == 1 and coo_value >= 4:  # Red
                 companies_to_close[num_to_close] = company_id
                 num_to_close += 1
-            elif stars == 2 and effective_coo >= 7:  # Orange
+            elif stars == 2 and coo_value >= 7:  # Orange
                 companies_to_close[num_to_close] = company_id
                 num_to_close += 1
             # Yellow (3), Green (4), Blue (5): never auto-close
