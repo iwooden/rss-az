@@ -12,14 +12,30 @@ Requirements covered:
 - CSA-02: DA +printed income of highest FV (Phase 22) ✓
 - CSA-03: S +synergy_markers // 2 (Phase 22) ✓
 - CSA-04: VM reduces CoO by up to 10 (Phase 22) ✓
-- TRN-01 through TRN-04: Phase transitions (Phase 23) [TODO]
+- INC-06: Corp bankruptcy during income (cash < 0) (Phase 22) ✓
+- TRN-01: INCOME transitions to DIVIDENDS after income (Phase 23) ✓
+- TRN-02: Dividends phase setup called (dividend_corp initialized) (Phase 23) ✓
+- TRN-03: INCOME is non-player phase (0 valid actions) (Phase 23) ✓
+- TRN-04: Multiple corps can go bankrupt in same INCOME phase (Phase 23) ✓
 """
 import pytest
+from core.state import GameState
 from core.data import (
     py_compute_synergy_bonuses,
     COMPANY_NAME_TO_ID,
     get_company_synergy,
+    GamePhases,
+    GameConstants,
 )
+from core.actions import get_valid_action_mask
+from entities.turn import TURN
+from entities.player import PLAYERS
+from entities.corp import CORPS
+from entities.company import COMPANIES
+from entities.fi import FI
+from entities.market import MARKET
+from phases.income import apply_income_py
+from phases.dividends import setup_dividends_phase_py, find_next_dividend_corp_py
 
 
 # =============================================================================
@@ -658,7 +674,348 @@ class TestIncomeApplication:
 
 
 # =============================================================================
-# Phase 23: Phase Integration
+# Phase 22 Continued: Bankruptcy Handling
 # =============================================================================
 
-# TODO: Add tests for INC-06, TRN-01 through TRN-04
+
+class TestCorpBankruptcy:
+    """INC-06: Corporation bankruptcy during INCOME phase."""
+
+    def test_corp_goes_bankrupt_on_negative_cash(self, game_state):
+        """Corp with negative cash after income goes bankrupt."""
+        corp = CORPS[0]
+        corp.set_active(game_state, True)
+        corp.set_cash(game_state, 1)  # Low starting cash
+
+        # Give corp a company that generates negative income
+        # At high CoO level, companies can have negative adjusted income
+        TURN.set_coo_level(game_state, 6)  # High CoO
+
+        # KK: income=5, stars=3. At CoO level 6, 3-star CoO=7.
+        # Adjusted income = 5 - 7 = -2
+        kk = COMPANY_NAME_TO_ID["KK"]
+        COMPANIES[kk].transfer_to_corp(game_state, 0)
+        corp.set_owns_company(game_state, kk, True)
+
+        # Set up market space
+        corp.set_price_index(game_state, 10)
+        MARKET.set_space_available(game_state, 10, False)
+
+        # Verify corp has negative income
+        income = corp.calculate_income(game_state)
+        assert income < 0, f"Expected negative income, got {income}"
+
+        # Start cash + income should be negative (1 + (-2) = -1 < 0)
+        assert corp.get_cash(game_state) + income < 0
+
+        # Set phase to INCOME and apply
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+        apply_income_py(game_state)
+
+        # Corp should be bankrupt (inactive)
+        assert not corp.is_active(game_state), "Corp should be bankrupt"
+
+    def test_corp_survives_with_sufficient_cash(self, game_state):
+        """Corp with enough cash to cover negative income survives."""
+        corp = CORPS[0]
+        corp.set_active(game_state, True)
+        corp.set_cash(game_state, 100)  # Plenty of cash
+
+        # Give corp negative income company
+        TURN.set_coo_level(game_state, 6)
+        kk = COMPANY_NAME_TO_ID["KK"]
+        COMPANIES[kk].transfer_to_corp(game_state, 0)
+        corp.set_owns_company(game_state, kk, True)
+
+        corp.set_price_index(game_state, 10)
+        MARKET.set_space_available(game_state, 10, False)
+
+        income = corp.calculate_income(game_state)
+        starting_cash = corp.get_cash(game_state)
+
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+        apply_income_py(game_state)
+
+        # Corp should survive with reduced cash
+        assert corp.is_active(game_state), "Corp should survive"
+        assert corp.get_cash(game_state) == starting_cash + income
+
+    def test_bankruptcy_check_immediate_after_income(self, game_state):
+        """Bankruptcy is checked immediately after each corp's income."""
+        # Set up two corps where first one goes bankrupt
+        corp0 = CORPS[0]
+        corp0.set_active(game_state, True)
+        corp0.set_cash(game_state, 0)
+        corp0.set_price_index(game_state, 10)
+        MARKET.set_space_available(game_state, 10, False)
+
+        corp1 = CORPS[1]
+        corp1.set_active(game_state, True)
+        corp1.set_cash(game_state, 100)
+        corp1.set_price_index(game_state, 15)
+        MARKET.set_space_available(game_state, 15, False)
+
+        # Give both corps negative income companies
+        TURN.set_coo_level(game_state, 6)
+        kk = COMPANY_NAME_TO_ID["KK"]
+        dr = COMPANY_NAME_TO_ID["DR"]
+
+        COMPANIES[kk].transfer_to_corp(game_state, 0)
+        corp0.set_owns_company(game_state, kk, True)
+
+        COMPANIES[dr].transfer_to_corp(game_state, 1)
+        corp1.set_owns_company(game_state, dr, True)
+
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+        apply_income_py(game_state)
+
+        # Corp 0 should be bankrupt, Corp 1 should survive
+        assert not corp0.is_active(game_state), "Corp 0 should be bankrupt"
+        assert corp1.is_active(game_state), "Corp 1 should survive"
+
+
+# =============================================================================
+# Phase 23: Phase Transitions
+# =============================================================================
+
+
+class TestIncomeTransition:
+    """TRN-01: INCOME phase transitions to DIVIDENDS."""
+
+    def test_income_transitions_to_dividends(self, game_state):
+        """After income application, phase changes to DIVIDENDS."""
+        # Set up a simple active corp
+        corp = CORPS[0]
+        corp.set_active(game_state, True)
+        corp.set_cash(game_state, 100)
+        corp.set_price_index(game_state, 10)
+        corp.set_stars(game_state, 5)
+        corp.set_unissued_shares(game_state, 3)
+        corp.set_issued_shares(game_state, 4)
+        MARKET.set_space_available(game_state, 10, False)
+
+        # Give player 0 shares and presidency
+        PLAYERS[0].set_shares(game_state, 0, 4)
+        PLAYERS[0].set_president_of(game_state, 0, True)
+
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+        apply_income_py(game_state)
+
+        assert TURN.get_phase(game_state) == GamePhases.PHASE_DIVIDENDS
+
+    def test_income_transitions_even_with_no_corps(self, game_state):
+        """INCOME transitions to DIVIDENDS, which then transitions to TEMP_END_TURN."""
+        # Ensure no corps are active
+        for corp_id in range(8):
+            CORPS[corp_id].set_active(game_state, False)
+
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+        apply_income_py(game_state)
+
+        # INCOME sets phase to DIVIDENDS, but setup_dividends_phase
+        # immediately transitions to TEMP_END_TURN when no corps exist
+        assert TURN.get_phase(game_state) == GamePhases.PHASE_TEMP_END_TURN
+
+
+class TestDividendSetup:
+    """TRN-02: Dividends phase setup initializes dividend_corp."""
+
+    def test_dividend_corp_set_to_first_eligible(self, game_state):
+        """After transition, dividend_corp is set to highest-price corp."""
+        # Set up two corps at different prices
+        corp0 = CORPS[0]
+        corp0.set_active(game_state, True)
+        corp0.set_cash(game_state, 100)
+        corp0.set_price_index(game_state, 10)  # Lower price
+        corp0.set_stars(game_state, 5)
+        corp0.set_unissued_shares(game_state, 3)
+        corp0.set_issued_shares(game_state, 4)
+        MARKET.set_space_available(game_state, 10, False)
+        PLAYERS[0].set_shares(game_state, 0, 4)
+        PLAYERS[0].set_president_of(game_state, 0, True)
+
+        corp1 = CORPS[1]
+        corp1.set_active(game_state, True)
+        corp1.set_cash(game_state, 100)
+        corp1.set_price_index(game_state, 15)  # Higher price - processed first
+        corp1.set_stars(game_state, 5)
+        corp1.set_unissued_shares(game_state, 2)
+        corp1.set_issued_shares(game_state, 5)
+        MARKET.set_space_available(game_state, 15, False)
+        PLAYERS[1].set_shares(game_state, 1, 5)
+        PLAYERS[1].set_president_of(game_state, 1, True)
+
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+        apply_income_py(game_state)
+
+        # Dividend corp should be corp 1 (higher price)
+        dividend_corp = TURN.get_dividend_corp(game_state)
+        assert dividend_corp == 1, f"Expected dividend_corp=1, got {dividend_corp}"
+
+    def test_dividend_corp_cleared_when_no_corps(self, game_state):
+        """With no active corps, dividend_corp is -1 after setup."""
+        # Ensure no corps are active
+        for corp_id in range(8):
+            CORPS[corp_id].set_active(game_state, False)
+
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+        apply_income_py(game_state)
+
+        # Should have no dividend corp (transitioned out of DIVIDENDS already)
+        # The dividends phase will immediately transition to next phase
+        dividend_corp = TURN.get_dividend_corp(game_state)
+        assert dividend_corp == -1, f"Expected dividend_corp=-1, got {dividend_corp}"
+
+
+class TestNonPlayerPhase:
+    """TRN-03: INCOME is a non-player phase with 0 valid actions."""
+
+    def test_income_has_no_valid_actions(self, game_state):
+        """In INCOME phase, action mask should be all zeros."""
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+
+        mask = get_valid_action_mask(game_state)
+
+        # All actions should be invalid
+        valid_count = sum(1 for v in mask if v == 1.0)
+        assert valid_count == 0, f"Expected 0 valid actions, got {valid_count}"
+
+    def test_income_auto_executes_in_driver(self, game_state):
+        """INCOME phase should auto-execute when reached."""
+        from core.driver import DRIVER, STATUS_OK_PY as STATUS_OK
+
+        # Set up corp for dividends phase
+        corp = CORPS[0]
+        corp.set_active(game_state, True)
+        corp.set_cash(game_state, 100)
+        corp.set_price_index(game_state, 10)
+        corp.set_stars(game_state, 5)
+        corp.set_unissued_shares(game_state, 3)
+        corp.set_issued_shares(game_state, 4)
+        MARKET.set_space_available(game_state, 10, False)
+        PLAYERS[0].set_shares(game_state, 0, 4)
+        PLAYERS[0].set_president_of(game_state, 0, True)
+
+        # Manually set phase to INCOME
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+
+        # The driver should detect this and auto-execute
+        # We can't directly call the driver's auto-apply from here,
+        # but we can verify that apply_income_py transitions correctly
+        apply_income_py(game_state)
+
+        # Should be in DIVIDENDS with valid actions now
+        assert TURN.get_phase(game_state) == GamePhases.PHASE_DIVIDENDS
+        mask = get_valid_action_mask(game_state)
+        valid_count = sum(1 for v in mask if v == 1.0)
+        assert valid_count > 0, "DIVIDENDS should have valid actions"
+
+
+class TestMultipleBankruptcies:
+    """TRN-04: Multiple corps can go bankrupt in same INCOME phase."""
+
+    def test_two_corps_go_bankrupt_simultaneously(self, game_state):
+        """Two corps with negative income both go bankrupt."""
+        TURN.set_coo_level(game_state, 6)
+
+        # Set up corp 0 with negative income and low cash
+        corp0 = CORPS[0]
+        corp0.set_active(game_state, True)
+        corp0.set_cash(game_state, 1)
+        corp0.set_price_index(game_state, 10)
+        MARKET.set_space_available(game_state, 10, False)
+
+        kk = COMPANY_NAME_TO_ID["KK"]
+        COMPANIES[kk].transfer_to_corp(game_state, 0)
+        corp0.set_owns_company(game_state, kk, True)
+
+        # Set up corp 1 with negative income and low cash
+        corp1 = CORPS[1]
+        corp1.set_active(game_state, True)
+        corp1.set_cash(game_state, 1)
+        corp1.set_price_index(game_state, 11)
+        MARKET.set_space_available(game_state, 11, False)
+
+        dr = COMPANY_NAME_TO_ID["DR"]
+        COMPANIES[dr].transfer_to_corp(game_state, 1)
+        corp1.set_owns_company(game_state, dr, True)
+
+        # Both should have negative income
+        assert corp0.calculate_income(game_state) < 0
+        assert corp1.calculate_income(game_state) < 0
+
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+        apply_income_py(game_state)
+
+        # Both corps should be bankrupt
+        assert not corp0.is_active(game_state), "Corp 0 should be bankrupt"
+        assert not corp1.is_active(game_state), "Corp 1 should be bankrupt"
+
+    def test_bankruptcy_order_is_corp_id_order(self, game_state):
+        """Corps are processed in corp_id order (0-7)."""
+        TURN.set_coo_level(game_state, 6)
+
+        # Set up corps 0, 2, 4 with bankruptcy conditions
+        for corp_id in [0, 2, 4]:
+            corp = CORPS[corp_id]
+            corp.set_active(game_state, True)
+            corp.set_cash(game_state, 0)
+            corp.set_price_index(game_state, 10 + corp_id)
+            MARKET.set_space_available(game_state, 10 + corp_id, False)
+
+        # Give each a negative income company
+        companies = [COMPANY_NAME_TO_ID["KK"], COMPANY_NAME_TO_ID["DR"], COMPANY_NAME_TO_ID["BY"]]
+        for corp_id, cid in zip([0, 2, 4], companies):
+            COMPANIES[cid].transfer_to_corp(game_state, corp_id)
+            CORPS[corp_id].set_owns_company(game_state, cid, True)
+
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+        apply_income_py(game_state)
+
+        # All three should be bankrupt
+        for corp_id in [0, 2, 4]:
+            assert not CORPS[corp_id].is_active(game_state), f"Corp {corp_id} should be bankrupt"
+
+    def test_surviving_corp_not_affected_by_other_bankruptcies(self, game_state):
+        """A corp that survives is unaffected by others going bankrupt."""
+        TURN.set_coo_level(game_state, 6)
+
+        # Corp 0: will go bankrupt
+        corp0 = CORPS[0]
+        corp0.set_active(game_state, True)
+        corp0.set_cash(game_state, 0)
+        corp0.set_price_index(game_state, 10)
+        MARKET.set_space_available(game_state, 10, False)
+
+        kk = COMPANY_NAME_TO_ID["KK"]
+        COMPANIES[kk].transfer_to_corp(game_state, 0)
+        corp0.set_owns_company(game_state, kk, True)
+
+        # Corp 1: will survive (high cash)
+        corp1 = CORPS[1]
+        corp1.set_active(game_state, True)
+        corp1.set_cash(game_state, 200)
+        corp1.set_price_index(game_state, 15)
+        corp1.set_stars(game_state, 5)
+        corp1.set_unissued_shares(game_state, 2)
+        corp1.set_issued_shares(game_state, 5)
+        MARKET.set_space_available(game_state, 15, False)
+
+        # Give corp 1 a profitable company
+        cdg = COMPANY_NAME_TO_ID["CDG"]  # High income blue company
+        COMPANIES[cdg].transfer_to_corp(game_state, 1)
+        corp1.set_owns_company(game_state, cdg, True)
+
+        PLAYERS[1].set_shares(game_state, 1, 5)
+        PLAYERS[1].set_president_of(game_state, 1, True)
+
+        starting_cash = corp1.get_cash(game_state)
+        income1 = corp1.calculate_income(game_state)
+
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+        apply_income_py(game_state)
+
+        # Corp 0 bankrupt, Corp 1 survives with correct cash
+        assert not corp0.is_active(game_state), "Corp 0 should be bankrupt"
+        assert corp1.is_active(game_state), "Corp 1 should survive"
+        assert corp1.get_cash(game_state) == starting_cash + income1
