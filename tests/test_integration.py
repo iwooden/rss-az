@@ -1227,3 +1227,503 @@ class TestClosingIntegration:
         assert not PLAYERS[0].owns_company(state, 1), "Company 1 should be closed"
 
         assert_invariants(state, "After both acquisition and closing accepts")
+
+
+# =============================================================================
+# DIVIDENDS PHASE INTEGRATION
+# =============================================================================
+
+class TestDividendsIntegration:
+    """Integration tests verifying DIVIDENDS phase maintains invariants throughout."""
+
+    def test_income_to_dividends_maintains_invariants(self):
+        """INCOME -> DIVIDENDS phase transition maintains invariants."""
+        from tests.phases.conftest import assert_invariants
+        from entities.player import PLAYERS
+        from entities.corp import CORPS
+        from entities.market import MARKET
+        from phases.income import apply_income_py
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set up active corp for dividends
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_cash(state, 100)
+        corp.set_price_index(state, 10)
+        corp.set_stars(state, 8)
+        corp.set_unissued_shares(state, 3)
+        corp.set_issued_shares(state, 4)
+        MARKET.set_space_available(state, 10, False)
+
+        PLAYERS[0].set_shares(state, 0, 4)
+        PLAYERS[0].set_president_of(state, 0, True)
+
+        assert_invariants(state, "Initial state")
+
+        # Enter INCOME phase
+        TURN.set_phase(state, GamePhases.PHASE_INCOME)
+        apply_income_py(state)
+
+        # Should be in DIVIDENDS
+        assert state.get_phase() == GamePhases.PHASE_DIVIDENDS
+        assert TURN.get_dividend_corp(state) == 0
+        assert_invariants(state, "After INCOME -> DIVIDENDS")
+
+    def test_dividend_action_maintains_invariants(self):
+        """Dividend payment action maintains invariants."""
+        from tests.phases.conftest import apply_action_and_verify, assert_invariants
+        from entities.player import PLAYERS
+        from entities.corp import CORPS
+        from entities.market import MARKET
+        from phases.dividends import setup_dividends_phase_py
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set up active corp
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_cash(state, 100)
+        corp.set_price_index(state, 10)
+        corp.set_stars(state, 10)
+        corp.set_unissued_shares(state, 3)
+        corp.set_issued_shares(state, 4)
+        MARKET.set_space_available(state, 10, False)
+
+        PLAYERS[0].set_shares(state, 0, 2)
+        PLAYERS[1].set_shares(state, 0, 2)
+        PLAYERS[0].set_president_of(state, 0, True)
+
+        # Enter DIVIDENDS phase
+        TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
+        setup_dividends_phase_py(state)
+
+        assert_invariants(state, "Before dividend action")
+
+        # Apply dividend action through driver
+        layout = get_action_layout(3)
+        mask = get_valid_action_mask(state)
+
+        # Find valid dividend action
+        dividend_idx = None
+        for i in range(layout['dividend_base'], layout['dividend_base'] + 26):
+            if mask[i] == 1.0:
+                dividend_idx = i
+                break
+
+        assert dividend_idx is not None, "Should have valid dividend action"
+        apply_action_and_verify(state, dividend_idx, "Dividend action")
+
+        assert_invariants(state, "After dividend action")
+
+    def test_multiple_corps_maintain_invariants(self):
+        """Processing multiple corps maintains invariants throughout."""
+        from tests.phases.conftest import apply_action_and_verify, assert_invariants
+        from entities.player import PLAYERS
+        from entities.corp import CORPS
+        from entities.market import MARKET
+        from phases.dividends import setup_dividends_phase_py
+        from core.data import get_corp_share_count
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set up three active corps at different prices
+        # Corp 0, 1 have 7 shares; Corp 2 has 6 shares
+        for corp_id in range(3):
+            corp = CORPS[corp_id]
+            total_shares = get_corp_share_count(corp_id)
+            corp.set_active(state, True)
+            corp.set_cash(state, 100)
+            corp.set_price_index(state, 15 - corp_id * 5)  # 15, 10, 5
+            corp.set_stars(state, 10)
+            corp.set_unissued_shares(state, total_shares - 4)  # Leave 4 for player
+            corp.set_bank_shares(state, 0)
+            corp.set_issued_shares(state, 4)
+            MARKET.set_space_available(state, 15 - corp_id * 5, False)
+
+            PLAYERS[corp_id].set_shares(state, corp_id, 4)
+            PLAYERS[corp_id].set_president_of(state, corp_id, True)
+
+        # Enter DIVIDENDS phase
+        TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
+        setup_dividends_phase_py(state)
+
+        assert_invariants(state, "Before dividend cycle")
+
+        layout = get_action_layout(3)
+
+        # Process all three corps (highest price first: corp 0, then 1, then 2)
+        corps_processed = []
+        max_iterations = 10
+        iterations = 0
+
+        while state.get_phase() == GamePhases.PHASE_DIVIDENDS and iterations < max_iterations:
+            current_corp = TURN.get_dividend_corp(state)
+            corps_processed.append(current_corp)
+
+            # Pay dividend
+            mask = get_valid_action_mask(state)
+            for i in range(layout['dividend_base'], layout['dividend_base'] + 26):
+                if mask[i] == 1.0:
+                    apply_action_and_verify(state, i, f"Dividend for corp {current_corp}")
+                    break
+
+            assert_invariants(state, f"After corp {current_corp} dividend")
+            iterations += 1
+
+        # Should have processed all three corps in price order
+        assert corps_processed == [0, 1, 2], f"Expected [0, 1, 2], got {corps_processed}"
+        # TEMP_END_TURN is auto-processed by driver -> returns to INVEST
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        assert TURN.get_turn_number(state) == 2
+
+    def test_receivership_auto_process_maintains_invariants(self):
+        """Receivership corps auto-process while maintaining invariants."""
+        from tests.phases.conftest import apply_action_and_verify, assert_invariants
+        from entities.player import PLAYERS
+        from entities.corp import CORPS
+        from entities.market import MARKET
+        from phases.dividends import setup_dividends_phase_py
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set up receivership corp at highest price (corp 0 has 7 shares)
+        recv_corp = CORPS[0]
+        recv_corp.set_active(state, True)
+        recv_corp.set_in_receivership(state, True)
+        recv_corp.set_cash(state, 100)
+        recv_corp.set_price_index(state, 15)
+        recv_corp.set_stars(state, 10)
+        recv_corp.set_unissued_shares(state, 3)
+        recv_corp.set_bank_shares(state, 4)  # All issued shares in bank
+        recv_corp.set_issued_shares(state, 4)
+        MARKET.set_space_available(state, 15, False)
+
+        # Set up player-controlled corp at lower price (corp 1 has 7 shares)
+        player_corp = CORPS[1]
+        player_corp.set_active(state, True)
+        player_corp.set_cash(state, 100)
+        player_corp.set_price_index(state, 10)
+        player_corp.set_stars(state, 8)
+        player_corp.set_unissued_shares(state, 3)
+        player_corp.set_bank_shares(state, 0)
+        player_corp.set_issued_shares(state, 4)
+        MARKET.set_space_available(state, 10, False)
+
+        PLAYERS[0].set_shares(state, 1, 4)
+        PLAYERS[0].set_president_of(state, 1, True)
+
+        initial_recv_cash = recv_corp.get_cash(state)
+
+        # Enter DIVIDENDS phase
+        TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
+        setup_dividends_phase_py(state)
+
+        assert_invariants(state, "After setup with receivership auto-process")
+
+        # Receivership corp should have been auto-processed (skipped)
+        # Active corp should be the player-controlled one
+        assert TURN.get_dividend_corp(state) == 1, "Should skip receivership corp"
+
+        # Receivership corp cash unchanged (paid $0)
+        assert recv_corp.get_cash(state) == initial_recv_cash
+
+        # Process player corp
+        layout = get_action_layout(3)
+        mask = get_valid_action_mask(state)
+        for i in range(layout['dividend_base'], layout['dividend_base'] + 26):
+            if mask[i] == 1.0:
+                apply_action_and_verify(state, i, "Player corp dividend")
+                break
+
+        assert_invariants(state, "After all corps processed")
+        # TEMP_END_TURN is auto-processed by driver -> returns to INVEST
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        assert TURN.get_turn_number(state) == 2
+
+    def test_bankruptcy_during_dividends_maintains_invariants(self):
+        """Corp bankruptcy during price adjustment maintains invariants."""
+        from tests.phases.conftest import assert_invariants
+        from entities.player import PLAYERS
+        from entities.corp import CORPS
+        from entities.company import COMPANIES
+        from entities.market import MARKET
+        from phases.dividends import setup_dividends_phase_py, apply_dividend_action_py
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set up corp that will go bankrupt (low price, no stars)
+        # Corp 0 has 7 total shares
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_price_index(state, 1)  # Very low, will drop to 0
+        corp.set_stars(state, 0)  # No stars -> will drop
+        corp.set_cash(state, 10)
+        corp.set_unissued_shares(state, 4)
+        corp.set_bank_shares(state, 0)
+        corp.set_issued_shares(state, 3)
+        MARKET.set_space_available(state, 1, False)
+
+        # Give corp a company (bankruptcy needs to liquidate)
+        COMPANIES[0].transfer_to_corp(state, 0)
+        corp.set_owns_company(state, 0, True)
+
+        PLAYERS[0].set_shares(state, 0, 3)
+        PLAYERS[0].set_president_of(state, 0, True)
+
+        # Enter DIVIDENDS phase
+        TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
+        setup_dividends_phase_py(state)
+
+        assert_invariants(state, "Before bankruptcy")
+
+        # Pay $0 dividend (triggers price adjustment -> bankruptcy)
+        apply_dividend_action_py(state, 0)
+
+        # Corp should be bankrupt
+        assert not corp.is_active(state), "Corp should be bankrupt"
+        assert_invariants(state, "After bankruptcy")
+
+    def test_full_turn_cycle_through_dividends(self):
+        """Full turn cycle: INVEST->WRAP_UP->ACQUISITION->CLOSING->INCOME->DIVIDENDS->TEMP_END_TURN."""
+        from tests.phases.conftest import apply_action_and_verify, assert_invariants
+        from entities.player import PLAYERS
+        from entities.corp import CORPS
+        from entities.market import MARKET
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set up active corp for full cycle (corp 0 has 7 total shares)
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_cash(state, 100)
+        corp.set_price_index(state, 10)
+        corp.set_stars(state, 10)
+        corp.set_unissued_shares(state, 3)
+        corp.set_bank_shares(state, 0)
+        corp.set_issued_shares(state, 4)
+        MARKET.set_space_available(state, 10, False)
+
+        PLAYERS[0].set_shares(state, 0, 4)
+        PLAYERS[0].set_president_of(state, 0, True)
+
+        assert_invariants(state, "Initial state")
+        assert TURN.get_turn_number(state) == 1
+
+        layout = get_action_layout(3)
+
+        # INVEST: all players pass
+        for i in range(3):
+            apply_action_and_verify(state, layout['pass_invest'], f"Pass {i+1}")
+
+        # Pass through any ACQUISITION offers
+        max_iterations = 20
+        iterations = 0
+        while state.get_phase() == GamePhases.PHASE_ACQUISITION and iterations < max_iterations:
+            apply_action_and_verify(state, layout['acq_pass'], f"Acq pass {iterations+1}")
+            iterations += 1
+
+        # Should reach DIVIDENDS (CLOSING auto-transitions through INCOME)
+        assert state.get_phase() == GamePhases.PHASE_DIVIDENDS, f"Expected DIVIDENDS, got {state.get_phase()}"
+        assert_invariants(state, "At DIVIDENDS phase")
+
+        # Pay dividend
+        mask = get_valid_action_mask(state)
+        for i in range(layout['dividend_base'], layout['dividend_base'] + 26):
+            if mask[i] == 1.0:
+                apply_action_and_verify(state, i, "Dividend action")
+                break
+
+        # TEMP_END_TURN is auto-processed by driver -> returns to INVEST with turn incremented
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        assert TURN.get_turn_number(state) == 2
+        assert_invariants(state, "After full turn cycle through DIVIDENDS")
+
+    def test_dividend_payments_correct(self):
+        """Dividend payments are correctly distributed to shareholders."""
+        from tests.phases.conftest import assert_invariants
+        from entities.player import PLAYERS
+        from entities.corp import CORPS
+        from entities.market import MARKET
+        from phases.dividends import setup_dividends_phase_py, apply_dividend_action_py
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set up corp with known share distribution (corp 0 has 7 total shares)
+        # unissued=2, bank=1, P0=2, P1=1, P2=1 = 7
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_cash(state, 100)
+        corp.set_price_index(state, 15)  # Higher price for larger max dividend
+        corp.set_stars(state, 15)
+        corp.set_unissued_shares(state, 2)
+        corp.set_bank_shares(state, 1)
+        corp.set_issued_shares(state, 5)
+        MARKET.set_space_available(state, 15, False)
+
+        # P0: 2 shares, P1: 1 share, P2: 1 share, bank: 1 share
+        PLAYERS[0].set_shares(state, 0, 2)
+        PLAYERS[1].set_shares(state, 0, 1)
+        PLAYERS[2].set_shares(state, 0, 1)
+        PLAYERS[0].set_president_of(state, 0, True)
+
+        initial_cash = [PLAYERS[i].get_cash(state) for i in range(3)]
+        initial_corp_cash = corp.get_cash(state)
+
+        # Enter DIVIDENDS phase
+        TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
+        setup_dividends_phase_py(state)
+
+        assert_invariants(state, "Before dividend")
+
+        # Pay $3 per share
+        dividend_amount = 3
+        apply_dividend_action_py(state, dividend_amount)
+
+        # Verify payments
+        assert PLAYERS[0].get_cash(state) == initial_cash[0] + (2 * dividend_amount)  # 2 shares
+        assert PLAYERS[1].get_cash(state) == initial_cash[1] + (1 * dividend_amount)  # 1 share
+        assert PLAYERS[2].get_cash(state) == initial_cash[2] + (1 * dividend_amount)  # 1 share
+
+        # Corp pays for all issued shares (including bank)
+        total_payout = 5 * dividend_amount
+        assert corp.get_cash(state) == initial_corp_cash - total_payout
+
+        assert_invariants(state, "After dividend payment")
+
+    def test_price_adjustment_maintains_invariants(self):
+        """Share price adjustment during dividends maintains invariants."""
+        from tests.phases.conftest import assert_invariants
+        from entities.player import PLAYERS
+        from entities.corp import CORPS
+        from entities.market import MARKET
+        from phases.dividends import setup_dividends_phase_py, apply_dividend_action_py
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set up corp with stars that will cause price increase (corp 0 has 7 shares)
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_cash(state, 100)
+        corp.set_price_index(state, 10)
+        corp.set_stars(state, 20)  # Many stars -> price should rise
+        corp.set_unissued_shares(state, 3)
+        corp.set_bank_shares(state, 0)
+        corp.set_issued_shares(state, 4)
+        MARKET.set_space_available(state, 10, False)
+        MARKET.set_space_available(state, 11, True)
+        MARKET.set_space_available(state, 12, True)
+
+        PLAYERS[0].set_shares(state, 0, 4)
+        PLAYERS[0].set_president_of(state, 0, True)
+
+        initial_price = corp.get_price_index(state)
+
+        # Enter DIVIDENDS phase
+        TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
+        setup_dividends_phase_py(state)
+
+        assert_invariants(state, "Before price adjustment")
+
+        # Pay $0 (to not affect cash bonus stars)
+        apply_dividend_action_py(state, 0)
+
+        # Price should have increased
+        new_price = corp.get_price_index(state)
+        assert new_price > initial_price, f"Price should increase: {new_price} > {initial_price}"
+
+        # Old space freed, new space occupied
+        assert MARKET.is_space_available(state, initial_price)
+        assert not MARKET.is_space_available(state, new_price)
+
+        assert_invariants(state, "After price adjustment")
+
+    def test_dividends_to_game_over_when_end_card(self):
+        """DIVIDENDS -> GAME_OVER when end card is flipped."""
+        from tests.phases.conftest import assert_invariants
+        from entities.player import PLAYERS
+        from entities.corp import CORPS
+        from entities.market import MARKET
+        from phases.dividends import setup_dividends_phase_py, apply_dividend_action_py
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set up active corp (corp 0 has 7 shares)
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_cash(state, 100)
+        corp.set_price_index(state, 10)
+        corp.set_stars(state, 10)
+        corp.set_unissued_shares(state, 3)
+        corp.set_bank_shares(state, 0)
+        corp.set_issued_shares(state, 4)
+        MARKET.set_space_available(state, 10, False)
+
+        PLAYERS[0].set_shares(state, 0, 4)
+        PLAYERS[0].set_president_of(state, 0, True)
+
+        # Set end card as flipped
+        TURN.set_end_card_flipped(state, True)
+
+        # Enter DIVIDENDS phase
+        TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
+        setup_dividends_phase_py(state)
+
+        assert_invariants(state, "Before final dividend")
+
+        # Pay dividend
+        apply_dividend_action_py(state, 0)
+
+        # Should transition to GAME_OVER
+        assert state.get_phase() == GamePhases.PHASE_GAME_OVER
+        assert_invariants(state, "After DIVIDENDS -> GAME_OVER")
+
+    @pytest.mark.parametrize("num_players", [3, 6])
+    def test_dividends_integration_player_counts(self, num_players):
+        """DIVIDENDS phase works correctly for all player counts."""
+        from tests.phases.conftest import assert_invariants
+        from entities.player import PLAYERS
+        from entities.corp import CORPS
+        from entities.market import MARKET
+        from phases.dividends import setup_dividends_phase_py, apply_dividend_action_py
+
+        state = GameState(num_players=num_players)
+        state.initialize_game(seed=42)
+
+        # Set up active corp (corp 0 has 7 shares)
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_cash(state, 100)
+        corp.set_price_index(state, 10)
+        corp.set_stars(state, 10)
+        corp.set_unissued_shares(state, 3)
+        corp.set_bank_shares(state, 0)
+        corp.set_issued_shares(state, 4)
+        MARKET.set_space_available(state, 10, False)
+
+        PLAYERS[0].set_shares(state, 0, 4)
+        PLAYERS[0].set_president_of(state, 0, True)
+
+        assert_invariants(state, f"Before DIVIDENDS ({num_players}p)")
+
+        # Enter DIVIDENDS phase
+        TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
+        setup_dividends_phase_py(state)
+
+        assert state.get_phase() == GamePhases.PHASE_DIVIDENDS
+        assert_invariants(state, f"In DIVIDENDS ({num_players}p)")
+
+        # Pay dividend
+        apply_dividend_action_py(state, 2)
+
+        assert state.get_phase() == GamePhases.PHASE_TEMP_END_TURN
+        assert_invariants(state, f"After DIVIDENDS ({num_players}p)")
