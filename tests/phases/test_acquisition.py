@@ -415,14 +415,6 @@ class TestPhaseFlow:
         assert TURN.get_acq_active_corp(gs) == -1
         assert get_offer_count(gs) == 0
 
-    def test_acquisition_with_fi_company(self):
-        """Offers generated when FI has company and corp has cash."""
-        # TODO: This test requires setting up complex game state with:
-        # - FI owning companies
-        # - Active corps with cash
-        # Full implementation deferred until integration testing
-        pass
-
     def test_empty_offers_detected(self):
         """Empty offer buffer is detected."""
         gs = GameState(3)
