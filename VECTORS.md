@@ -29,11 +29,10 @@ Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact 
 
 | Constant | Value | Used For |
 |----------|-------|----------|
-| `CASH_DIVISOR` | 200.0 | Cash, prices, net worth |
+| `CASH_DIVISOR` | 200.0 | Cash, prices, net worth, company adjusted incomes |
 | `SHARE_DIVISOR` | 7.0 | Share counts |
 | `STAR_DIVISOR` | 20.0 | Star ratings |
 | `MAX_ROUNDTRIPS` | 2.0 | Round-trip limit (divisor = MAX_ROUNDTRIPS * 2 = 4.0) |
-| `INCOME_DIVISOR` | 10.0 | Company adjusted incomes |
 
 ---
 
@@ -111,7 +110,7 @@ Player stride = `4 + num_players + 36 + 32` = `72 + num_players`
 
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
-| `company_incomes` | 36 | normalized | / INCOME_DIVISOR, updated when CoO changes |
+| `company_incomes` | 36 | normalized | / CASH_DIVISOR, updated when CoO changes |
 
 These are the companies' adjusted incomes (base income minus cost of ownership). They are automatically updated whenever the CoO level changes via `set_coo_level()`.
 

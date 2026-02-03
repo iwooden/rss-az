@@ -15,8 +15,9 @@ Deck setup rules (from RULES.md):
 
 from libc.stdlib cimport rand, srand
 from core.state cimport GameState, StateLayout
-from core.data cimport GameConstants, get_company_stars
+from core.data cimport GameConstants, get_company_stars, is_last_in_group
 from entities import company as company_module
+from entities import turn as turn_module
 
 
 # Company index ranges by color (star tier)
@@ -78,10 +79,15 @@ cdef class Deck:
         Drawn companies are always marked as revealed (unavailable for auction)
         until they are explicitly made available at the end of WRAP_UP phase.
 
+        If the drawn company is the last in its color group (MHE, PR, DR, E, CDG),
+        the Cost of Ownership level is incremented, as the next color is now
+        on top of the deck.
+
         Returns the company_id of the drawn card, or -1 if deck is empty.
         """
         cdef int top = <int>state._data[self._deck_top_offset]
         cdef int company_id
+        cdef int current_coo
 
         if top < 0:
             return -1  # Deck is empty
@@ -93,6 +99,12 @@ cdef class Deck:
 
         # Mark drawn company as revealed (unavailable for auction this turn)
         company_module.COMPANIES[company_id].set_revealed(state, True)
+
+        # If this was the last company in its color group, increment CoO level
+        # (the next color is now on top of the deck)
+        if is_last_in_group(company_id):
+            current_coo = turn_module.TURN.get_coo_level(state)
+            turn_module.TURN.set_coo_level(state, current_coo + 1)
 
         return company_id
 
