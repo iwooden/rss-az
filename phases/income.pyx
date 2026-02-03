@@ -4,6 +4,7 @@
 from core.state cimport GameState
 from core.data cimport GamePhases, GameConstants
 from entities import turn as turn_module
+from phases.dividends cimport setup_dividends_phase
 from entities import player as player_module
 from entities import corp as corp_module
 from entities import fi as fi_module
@@ -77,7 +78,7 @@ cdef int apply_income(GameState state) noexcept:
     1. Apply income to all corporations (with bankruptcy handling)
     2. Apply income to Foreign Investor
     3. Apply income to all players
-    4. Transition to TEMP_END_TURN
+    4. Transition to DIVIDENDS (and set up dividend processing)
 
     Per CONTEXT.md: Entity processing order doesn't matter (independent).
     Per CONTEXT.md: Check bankruptcy immediately per-corp after income.
@@ -89,8 +90,9 @@ cdef int apply_income(GameState state) noexcept:
     _apply_income_to_fi(state)
     _apply_income_to_players(state)
 
-    # Transition to TEMP_END_TURN phase
-    turn_module.TURN.set_phase(state, GamePhases.PHASE_TEMP_END_TURN)
+    # Transition to DIVIDENDS phase
+    turn_module.TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
+    setup_dividends_phase(state)
     return 0
 
 
