@@ -8,7 +8,7 @@ Requirements covered:
 - ISS-05: Receivership handling (must issue vs auto-pass)
 - ISS-06: Bankruptcy (price drops to 0)
 - ISS-07: Action mask validation
-- ISS-08: Phase transitions (END_CARD -> ISSUE_SHARES -> TEMP_END_TURN)
+- ISS-08: Phase transitions (END_CARD -> ISSUE_SHARES -> IPO -> INVEST)
 - ISS-09: Integration tests
 """
 import pytest
@@ -38,7 +38,7 @@ def issue_state(game_state):
     3-player game state set up at PHASE_ISSUE_SHARES.
 
     By default:
-    - No active corps (phase will auto-transition to TEMP_END_TURN)
+    - No active corps (phase will auto-transition to IPO then INVEST)
     """
     TURN.set_phase(game_state, GamePhases.PHASE_ISSUE_SHARES)
     return game_state
@@ -658,7 +658,7 @@ class TestActionMaskValidation:
         """No valid actions when no corps remain to process."""
         state = issue_state
 
-        # No active corps -> setup transitions to TEMP_END_TURN
+        # No active corps -> setup transitions to IPO then INVEST
         setup_issue_phase_py(state)
 
         # Phase should have transitioned
@@ -673,17 +673,17 @@ class TestActionMaskValidation:
 class TestPhaseTransitions:
     """ISS-08: Phase transitions for ISSUE_SHARES."""
 
-    def test_transitions_to_temp_end_turn_when_done(self, issue_state):
-        """Transitions to TEMP_END_TURN when all corps processed."""
+    def test_transitions_to_invest_when_done(self, issue_state):
+        """Transitions to INVEST (via IPO) when all corps processed."""
         state = issue_state
 
         # No active corps
         setup_issue_phase_py(state)
 
-        assert TURN.get_phase(state) == GamePhases.PHASE_TEMP_END_TURN
+        assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
 
     def test_single_corp_transitions_after_action(self, issue_state_with_corp):
-        """Single corp transitions to TEMP_END_TURN after action."""
+        """Single corp transitions to INVEST (via IPO) after action."""
         state = issue_state_with_corp
 
         setup_issue_phase_py(state)
@@ -691,7 +691,7 @@ class TestPhaseTransitions:
 
         apply_issue_action_py(state, issue=True)
 
-        assert TURN.get_phase(state) == GamePhases.PHASE_TEMP_END_TURN
+        assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
 
     def test_multiple_corps_process_all_before_transition(self, game_state):
         """Multiple corps all processed before transitioning."""
@@ -730,8 +730,8 @@ class TestPhaseTransitions:
         assert TURN.get_phase(state) == GamePhases.PHASE_ISSUE_SHARES
         apply_issue_action_py(state, issue=False)  # Pass
 
-        # Now should transition
-        assert TURN.get_phase(state) == GamePhases.PHASE_TEMP_END_TURN
+        # Now should transition to INVEST (via IPO)
+        assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
 
     def test_setup_from_end_card(self, game_state):
         """Issue phase can be set up from END_CARD transition."""
@@ -835,8 +835,8 @@ class TestIntegration:
 
         apply_issue_action_py(state, issue=False)  # Pass on corp 2
 
-        # Should transition
-        assert TURN.get_phase(state) == GamePhases.PHASE_TEMP_END_TURN
+        # Should transition to INVEST (via IPO)
+        assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
 
     def test_all_corps_pass_no_share_changes(self, game_state):
         """All corps passing results in no share changes."""

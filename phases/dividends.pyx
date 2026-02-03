@@ -17,7 +17,7 @@ Receivership corporations:
 - Price adjusts normally based on stars
 
 Phase transitions:
-- After all corps processed → TEMP_END_TURN (or GAME_OVER if terminal)
+- After all corps processed → END_CARD (which routes to ISSUE_SHARES/IPO/INVEST or GAME_OVER)
 
 Action space: 26 actions (dividend amounts 0-25 per share)
 """

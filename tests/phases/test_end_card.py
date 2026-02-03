@@ -104,8 +104,8 @@ class Test75PriceCheck:
 
         apply_end_card_py(end_card_state)
 
-        # Should not trigger game over
-        assert TURN.get_phase(end_card_state) == GamePhases.PHASE_TEMP_END_TURN
+        # Should not trigger game over - transitions to INVEST for new turn
+        assert TURN.get_phase(end_card_state) == GamePhases.PHASE_INVEST
 
 
 # =============================================================================
@@ -154,9 +154,9 @@ class TestNoUnownedCompanies:
 
         apply_end_card_py(end_card_state)
 
-        # End card should NOT flip
+        # End card should NOT flip - continues to next turn
         assert not TURN.is_end_card_flipped(end_card_state)
-        assert TURN.get_phase(end_card_state) == GamePhases.PHASE_TEMP_END_TURN
+        assert TURN.get_phase(end_card_state) == GamePhases.PHASE_INVEST
 
     def test_company_in_auction_prevents_flip(self, end_card_state):
         """Company in auction slot prevents end card flip."""
@@ -246,12 +246,12 @@ class TestNormalTransition:
         # - No corp at 75 price
         # - Companies still in deck
         # - End card not flipped
-        # Note: With no active corps, issue phase auto-transitions to TEMP_END_TURN
+        # Note: With no active corps, issue phase auto-transitions to INVEST
 
         apply_end_card_py(end_card_state)
 
-        # No active corps -> issue phase transitions directly to TEMP_END_TURN
-        assert TURN.get_phase(end_card_state) == GamePhases.PHASE_TEMP_END_TURN
+        # No active corps -> issue phase transitions directly to INVEST
+        assert TURN.get_phase(end_card_state) == GamePhases.PHASE_INVEST
 
     def test_active_corps_below_75_continue(self, end_card_state):
         """Active corps below 75 price continue to issue phase."""

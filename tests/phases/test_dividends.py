@@ -8,7 +8,7 @@ Requirements covered:
 - DIV-05: Processing order (descending price)
 - DIV-06: Receivership auto-handling (pay $0, adjust price)
 - DIV-07: Bankruptcy (price drops to 0)
-- DIV-08: Phase transitions (to TEMP_END_TURN or GAME_OVER)
+- DIV-08: Phase transitions (to IPO/INVEST or GAME_OVER)
 """
 import pytest
 from core.state import GameState

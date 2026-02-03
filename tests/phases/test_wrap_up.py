@@ -220,7 +220,7 @@ class TestFICashPreservation:
         """FI with 0 cash cannot purchase companies during WRAP_UP.
 
         Note: trigger_wrap_up goes through the full cycle (WRAP_UP -> ACQUISITION ->
-        CLOSING -> INCOME -> TEMP_END_TURN -> INVEST). FI receives income during
+        CLOSING -> INCOME -> IPO -> INVEST). FI receives income during
         INCOME phase, so final cash will include income from owned companies.
         This test verifies FI had 0 cash going into WRAP_UP (unable to buy).
         """

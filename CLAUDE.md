@@ -89,9 +89,9 @@ Central data structure: single contiguous float32 numpy array.
 **Sizes by player count:**
 | Players | Visible | Hidden | Total |
 |---------|---------|--------|-------|
-| 2 | 2943 | 862 | 3805 |
-| 3 | 3023 | 862 | 3885 |
-| 6 | 3275 | 862 | 4137 |
+| 2 | 2942 | 862 | 3804 |
+| 3 | 3022 | 862 | 3884 |
+| 6 | 3274 | 862 | 4136 |
 
 ### Actions (`core/actions.pyx`)
 
@@ -167,7 +167,7 @@ See `VECTORS.md` for exact offsets.
 | 9 | IPO | Company → Corporation conversion |
 | 10 | GAME_OVER | Terminal state |
 
-**Automated phases** (no player input): WRAP_UP, INCOME, TEMP_END_TURN
+**Automated phases** (no player input): WRAP_UP, INCOME, END_CARD
 
 ### Offer Buffer Pattern (acquisition.pyx, closing.pyx)
 

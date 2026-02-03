@@ -315,7 +315,7 @@ class TestAcquisitionIntegration:
         apply_closing_auto_py(state)
 
         # Should now be in INCOME (CLOSING transitions to INCOME now)
-        # Turn number incremented in TEMP_END_TURN phase (not reached yet)
+        # Turn number incremented in IPO phase at end of turn
         assert state.get_phase() == GamePhases.PHASE_INCOME
         assert TURN.get_turn_number(state) == initial_turn  # Not incremented yet
         assert_invariants(state, "After CLOSING to INCOME")
@@ -994,7 +994,7 @@ class TestClosingIntegration:
 
         # Should transition to INCOME (no more offers after closing the only one)
         # Note: CLOSING now transitions to INCOME, not directly to INVEST
-        # Turn number is incremented in TEMP_END_TURN phase (not reached yet)
+        # Turn number is incremented in IPO phase at end of turn
         assert state.get_phase() == GamePhases.PHASE_INCOME
         assert TURN.get_turn_number(state) == initial_turn  # Not incremented yet
 
@@ -1054,7 +1054,7 @@ class TestClosingIntegration:
 
         # Should transition to INCOME after mandatory close
         # Note: CLOSING now transitions to INCOME, not directly to INVEST
-        # Turn number is incremented in TEMP_END_TURN phase (not reached yet)
+        # Turn number is incremented in IPO phase at end of turn
         assert state.get_phase() == GamePhases.PHASE_INCOME
         assert TURN.get_turn_number(state) == initial_turn  # Not incremented yet
 
@@ -1398,7 +1398,7 @@ class TestDividendsIntegration:
             assert_invariants(state, f"After issue pass {iterations+1}")
             iterations += 1
 
-        # TEMP_END_TURN is auto-processed by driver -> returns to INVEST
+        # IPO phase completes turn -> returns to INVEST
         assert state.get_phase() == GamePhases.PHASE_INVEST
         assert TURN.get_turn_number(state) == 2
 
@@ -1473,7 +1473,7 @@ class TestDividendsIntegration:
             assert_invariants(state, f"After issue pass {iterations+1}")
             iterations += 1
 
-        # TEMP_END_TURN is auto-processed by driver -> returns to INVEST
+        # IPO phase completes turn -> returns to INVEST
         assert state.get_phase() == GamePhases.PHASE_INVEST
         assert TURN.get_turn_number(state) == 2
 
@@ -1522,7 +1522,7 @@ class TestDividendsIntegration:
         assert_invariants(state, "After bankruptcy")
 
     def test_full_turn_cycle_through_dividends(self):
-        """Full turn cycle: INVEST->WRAP_UP->ACQUISITION->CLOSING->INCOME->DIVIDENDS->TEMP_END_TURN."""
+        """Full turn cycle: INVEST->WRAP_UP->ACQUISITION->CLOSING->INCOME->DIVIDENDS->IPO->INVEST."""
         from tests.phases.conftest import apply_action_and_verify, assert_invariants
         from entities.player import PLAYERS
         from entities.corp import CORPS
@@ -1580,7 +1580,7 @@ class TestDividendsIntegration:
             assert_invariants(state, f"After issue pass {iterations+1}")
             iterations += 1
 
-        # TEMP_END_TURN is auto-processed by driver -> returns to INVEST with turn incremented
+        # IPO phase completes turn -> returns to INVEST with turn incremented
         assert state.get_phase() == GamePhases.PHASE_INVEST
         assert TURN.get_turn_number(state) == 2
         assert_invariants(state, "After full turn cycle through DIVIDENDS")

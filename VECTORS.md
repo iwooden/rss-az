@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | 2943         | 862         | 3805       |
-| 3       | 3023         | 862         | 3885       |
-| 4       | 3105         | 862         | 3967       |
-| 5       | 3189         | 862         | 4051       |
-| 6       | 3275         | 862         | 4137       |
+| 2       | 2942         | 862         | 3804       |
+| 3       | 3022         | 862         | 3884       |
+| 4       | 3104         | 862         | 3966       |
+| 5       | 3188         | 862         | 4050       |
+| 6       | 3274         | 862         | 4136       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 

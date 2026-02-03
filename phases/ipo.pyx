@@ -19,13 +19,13 @@ Form Corporation procedure:
 5. Company becomes subsidiary of new corporation
 
 Phase transitions:
-- After all companies processed -> TEMP_END_TURN
+- After all companies processed -> INVEST (new turn)
 """
 
 from core.state cimport GameState
 from core.data cimport (
     GameConstants, GamePhases,
-    PHASE_TEMP_END_TURN,
+    PHASE_INVEST,
     get_company_face_value, get_company_stars,
     get_par_price, get_par_index_for_slot, get_market_index,
     get_corp_share_count
@@ -169,13 +169,21 @@ cdef void _transition_out_of_ipo(GameState state) noexcept:
     """
     Transition out of IPO phase.
 
-    Transitions to TEMP_END_TURN to complete the turn cycle.
+    Completes the turn cycle by incrementing turn number and transitioning to INVEST.
+
+    NOTE: Roundtrip clearing happens in INVEST phase (before WRAP_UP transition),
+    NOT here. Per CONTEXT.md: "Roundtrip info only relevant in INVEST phase -
+    clearing it elsewhere pollutes state vector for model."
     """
     # Clear IPO company
     turn_module.TURN.clear_ipo_company(state)
 
-    # Transition to TEMP_END_TURN
-    turn_module.TURN.set_phase(state, PHASE_TEMP_END_TURN)
+    # Increment turn number (end of turn bookkeeping)
+    cdef int current_turn = turn_module.TURN.get_turn_number(state)
+    turn_module.TURN.set_turn_number(state, current_turn + 1)
+
+    # Transition to INVEST phase (start new turn)
+    turn_module.TURN.set_phase(state, PHASE_INVEST)
 
 
 cdef void _advance_to_next_company(GameState state) noexcept:

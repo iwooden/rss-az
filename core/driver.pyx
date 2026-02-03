@@ -17,7 +17,7 @@ from core.actions cimport (
     ActionLayout, ActionInfo, compute_action_layout, decode_action
 )
 from core.actions import get_valid_action_mask
-from core.data cimport GamePhases, GameConstants, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_GAME_OVER, PHASE_WRAP_UP, PHASE_ACQUISITION, PHASE_CLOSING, PHASE_INCOME, PHASE_TEMP_END_TURN, PHASE_DIVIDENDS, PHASE_END_CARD, PHASE_ISSUE_SHARES, PHASE_IPO
+from core.data cimport GamePhases, GameConstants, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_GAME_OVER, PHASE_WRAP_UP, PHASE_ACQUISITION, PHASE_CLOSING, PHASE_INCOME, PHASE_DIVIDENDS, PHASE_END_CARD, PHASE_ISSUE_SHARES, PHASE_IPO
 from core.driver cimport ActionStatus, STATUS_OK, STATUS_INVALID, STATUS_GAME_OVER, ForcedActionResult
 from phases.invest cimport apply_invest_action
 from phases.bid cimport apply_bid_action
@@ -25,7 +25,6 @@ from phases.wrap_up cimport apply_wrap_up
 from phases.acquisition cimport apply_acquisition_action, _transition_to_closing
 from phases.closing cimport apply_closing_auto, apply_closing_action
 from phases.income cimport apply_income
-from phases.temp_end_turn cimport apply_temp_end_turn
 from phases.dividends cimport apply_dividend_action
 from phases.end_card cimport apply_end_card
 from phases.issue cimport apply_issue_action
@@ -53,7 +52,6 @@ DEF ACTION_WRAP_UP_SENTINEL = -100
 DEF ACTION_ACQUISITION_SENTINEL = -101
 DEF ACTION_CLOSING_SENTINEL = -102
 DEF ACTION_INCOME_SENTINEL = -103
-DEF ACTION_TEMP_END_TURN_SENTINEL = -104
 DEF ACTION_END_CARD_SENTINEL = -105
 
 
@@ -110,9 +108,6 @@ cdef bint _is_non_player_phase_check(GameState state, int phase) noexcept:
     if phase == PHASE_INCOME:
         return True
 
-    if phase == PHASE_TEMP_END_TURN:
-        return True
-
     if phase == PHASE_END_CARD:
         return True
 
@@ -132,8 +127,6 @@ cdef void _execute_non_player_phase(GameState state, object history):
         sentinel = ACTION_CLOSING_SENTINEL
     elif phase == PHASE_INCOME:
         sentinel = ACTION_INCOME_SENTINEL
-    elif phase == PHASE_TEMP_END_TURN:
-        sentinel = ACTION_TEMP_END_TURN_SENTINEL
     elif phase == PHASE_END_CARD:
         sentinel = ACTION_END_CARD_SENTINEL
     else:
@@ -152,8 +145,6 @@ cdef void _execute_non_player_phase(GameState state, object history):
         apply_closing_auto(state)
     elif phase == PHASE_INCOME:
         apply_income(state)
-    elif phase == PHASE_TEMP_END_TURN:
-        apply_temp_end_turn(state)
     elif phase == PHASE_END_CARD:
         apply_end_card(state)
 

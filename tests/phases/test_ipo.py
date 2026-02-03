@@ -8,7 +8,7 @@ Requirements covered:
 - IPO-05: Market space availability (can't use occupied space)
 - IPO-06: Cost validation (player must afford payment)
 - IPO-07: Pass action (skip IPO for this company)
-- IPO-08: Phase transitions (ISSUE_SHARES -> IPO -> TEMP_END_TURN)
+- IPO-08: Phase transitions (ISSUE_SHARES -> IPO -> INVEST)
 - IPO-09: Action mask validation
 - IPO-10: Active player setting (company owner becomes active)
 """
@@ -46,7 +46,7 @@ def ipo_state(game_state):
     3-player game state set up at PHASE_IPO.
 
     By default:
-    - No player-owned companies (phase will auto-transition to TEMP_END_TURN)
+    - No player-owned companies (phase will auto-transition to INVEST)
     """
     TURN.set_phase(game_state, GamePhases.PHASE_IPO)
     return game_state
@@ -384,8 +384,8 @@ class TestProcessingOrder:
         assert TURN.get_ipo_company(state) == 14
         apply_ipo_pass_py(state)
 
-        # Phase should end
-        assert TURN.get_phase(state) == GamePhases.PHASE_TEMP_END_TURN
+        # Phase should end - transitions to INVEST for new turn
+        assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
 
 
 # =============================================================================
@@ -522,31 +522,31 @@ class TestPassAction:
 
 
 class TestPhaseTransitions:
-    """IPO-08: Phase transitions (ISSUE_SHARES -> IPO -> TEMP_END_TURN)."""
+    """IPO-08: Phase transitions (ISSUE_SHARES -> IPO -> INVEST)."""
 
-    def test_empty_ipo_transitions_to_temp_end_turn(self, ipo_state):
-        """IPO with no player-owned companies transitions to TEMP_END_TURN."""
+    def test_empty_ipo_transitions_to_invest(self, ipo_state):
+        """IPO with no player-owned companies transitions to INVEST."""
         state = ipo_state
 
         setup_ipo_phase_py(state)
 
-        assert TURN.get_phase(state) == GamePhases.PHASE_TEMP_END_TURN
+        assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
 
-    def test_all_passed_transitions_to_temp_end_turn(self, ipo_state_with_company):
-        """After passing on all companies, transitions to TEMP_END_TURN."""
+    def test_all_passed_transitions_to_invest(self, ipo_state_with_company):
+        """After passing on all companies, transitions to INVEST."""
         state = ipo_state_with_company
 
         apply_ipo_pass_py(state)
 
-        assert TURN.get_phase(state) == GamePhases.PHASE_TEMP_END_TURN
+        assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
 
-    def test_all_ipo_transitions_to_temp_end_turn(self, ipo_state_with_company):
-        """After IPO-ing all companies, transitions to TEMP_END_TURN."""
+    def test_all_ipo_transitions_to_invest(self, ipo_state_with_company):
+        """After IPO-ing all companies, transitions to INVEST."""
         state = ipo_state_with_company
 
         apply_ipo_action_py(state, 0, 0)
 
-        assert TURN.get_phase(state) == GamePhases.PHASE_TEMP_END_TURN
+        assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
 
 
 # =============================================================================
@@ -687,5 +687,5 @@ class TestIPOIntegration:
         assert_invariants(state, "After second IPO")
         assert CORPS[1].is_active(state)
 
-        # Should be in TEMP_END_TURN now
-        assert TURN.get_phase(state) == GamePhases.PHASE_TEMP_END_TURN
+        # Should be in INVEST now (new turn)
+        assert TURN.get_phase(state) == GamePhases.PHASE_INVEST

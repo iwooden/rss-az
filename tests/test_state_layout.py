@@ -9,7 +9,7 @@ from core.data import GameConstants
 
 
 # Constants from data.pxd (duplicated here for documentation verification)
-NUM_PHASES = 12  # Includes TEMP_END_TURN slot (internal, but still allocated)
+NUM_PHASES = 11  # Phases 0-10 (INVEST through GAME_OVER)
 NUM_COO_LEVELS = 7
 NUM_COMPANIES = 36
 NUM_CORPS = 8
@@ -162,11 +162,11 @@ class TestStateLayoutSizes:
     # Expected sizes - these MUST match VECTORS.md and CLAUDE.md
     # If these tests fail, update the documentation to match!
     EXPECTED_SIZES = {
-        2: {'visible': 2943, 'hidden': 862, 'total': 3805},
-        3: {'visible': 3023, 'hidden': 862, 'total': 3885},
-        4: {'visible': 3105, 'hidden': 862, 'total': 3967},
-        5: {'visible': 3189, 'hidden': 862, 'total': 4051},
-        6: {'visible': 3275, 'hidden': 862, 'total': 4137},
+        2: {'visible': 2942, 'hidden': 862, 'total': 3804},
+        3: {'visible': 3022, 'hidden': 862, 'total': 3884},
+        4: {'visible': 3104, 'hidden': 862, 'total': 3966},
+        5: {'visible': 3188, 'hidden': 862, 'total': 4050},
+        6: {'visible': 3274, 'hidden': 862, 'total': 4136},
     }
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])

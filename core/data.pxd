@@ -11,7 +11,7 @@ cpdef enum GameConstants:
     NUM_COMPANIES = 36
     NUM_CORPS = 8
     NUM_MARKET_SPACES = 27
-    NUM_PHASES = 12
+    NUM_PHASES = 11
     NUM_COO_LEVELS = 7
     MAX_PLAYERS = 6
     MAX_STAR_TIERS = 5
@@ -33,7 +33,6 @@ cpdef enum GamePhases:
     PHASE_ISSUE_SHARES = 8
     PHASE_IPO = 9
     PHASE_GAME_OVER = 10
-    PHASE_TEMP_END_TURN = 11
 
 # Corp indices for special ability checks
 cpdef enum CorpIndices:
