@@ -9,7 +9,7 @@ Covers:
 """
 import pytest
 from core.state import GameState
-from core.data import GamePhases, GameConstants, COMPANY_NAMES
+from core.data import GamePhases, GameConstants, COMPANY_NAMES, get_adjusted_company_income
 from entities.deck import DECK
 from entities.turn import TURN
 from entities.company import COMPANIES
@@ -396,3 +396,124 @@ class TestDeckEdgeCases:
         drawn = DECK.draw(game_state)
         assert drawn == 15
         assert DECK.is_empty(game_state)
+
+
+# =============================================================================
+# COMPANY INCOMES ARRAY TESTS
+# =============================================================================
+
+class TestCompanyIncomesArray:
+    """Tests for the company_incomes state array being properly populated."""
+
+    def test_company_incomes_initialized_at_game_start(self, game_state):
+        """Company incomes should be populated during initialize_game()."""
+        # At CoO level 1, all adjusted incomes equal base incomes (no cost)
+        for company_id in range(GameConstants.NUM_COMPANIES):
+            company = COMPANIES[company_id]
+            expected = get_adjusted_company_income(company_id, 1)
+            actual = company.get_adjusted_income(game_state)
+            assert actual == expected, f"Company {company_id} income: expected {expected}, got {actual}"
+
+    def test_company_incomes_updated_when_coo_changes(self, game_state):
+        """Changing CoO level should update all company incomes."""
+        # Change CoO to level 4 (red companies get -2 income)
+        TURN.set_coo_level(game_state, 4)
+
+        for company_id in range(GameConstants.NUM_COMPANIES):
+            company = COMPANIES[company_id]
+            expected = get_adjusted_company_income(company_id, 4)
+            actual = company.get_adjusted_income(game_state)
+            assert actual == expected, f"Company {company_id} at CoO 4: expected {expected}, got {actual}"
+
+    def test_company_incomes_at_coo_level_5(self, game_state):
+        """At CoO 5, red and orange companies get -4 income."""
+        TURN.set_coo_level(game_state, 5)
+
+        # Red company (1★) - base income 1-2, adjusted should be -3 to -2
+        bme = COMPANIES[BME_ID]  # Base income 1
+        assert bme.get_adjusted_income(game_state) == 1 - 4  # -3
+
+        # Orange company (2★) - base income 3, adjusted should be -1
+        wt = COMPANIES[WT_ID]  # Base income 3
+        assert wt.get_adjusted_income(game_state) == 3 - 4  # -1
+
+        # Yellow company (3★) - no cost at level 5
+        dsb = COMPANIES[DSB_ID]  # Base income 5
+        assert dsb.get_adjusted_income(game_state) == 5  # No change
+
+    def test_company_incomes_at_coo_level_7(self, game_state):
+        """At CoO 7 (end card flipped), only blue is unaffected."""
+        TURN.set_coo_level(game_state, 7)
+
+        # Red company - gets -10
+        bme = COMPANIES[BME_ID]  # Base income 1
+        assert bme.get_adjusted_income(game_state) == 1 - 10  # -9
+
+        # Green company - gets -10
+        szd = COMPANIES[SZD_ID]  # Base income 7
+        assert szd.get_adjusted_income(game_state) == 7 - 10  # -3
+
+        # Blue company - no cost
+        hh = COMPANIES[HH_ID]  # Base income 10
+        assert hh.get_adjusted_income(game_state) == 10  # No change
+
+    def test_company_incomes_updated_when_drawing_last_in_group(self, game_state):
+        """Drawing last-in-group should increment CoO AND update all incomes."""
+        # Set up deck with MHE on top
+        DECK.set_order(game_state, [MHE_ID])
+        TURN.set_coo_level(game_state, 1)
+
+        # Verify initial state at CoO 1
+        bme = COMPANIES[BME_ID]
+        assert bme.get_adjusted_income(game_state) == 1  # Base income, no cost
+
+        # Draw MHE - should trigger CoO 1->2
+        DECK.draw(game_state)
+
+        # Verify CoO changed
+        assert TURN.get_coo_level(game_state) == 2
+
+        # Verify incomes still correct (CoO 2 has no costs, same as 1)
+        assert bme.get_adjusted_income(game_state) == get_adjusted_company_income(BME_ID, 2)
+
+    def test_company_incomes_progression_through_draws(self, controlled_deck_state):
+        """Full progression of company incomes as CoO increases through draws."""
+        state = controlled_deck_state
+        # Deck: CDG, E, DR, PR, MHE (bottom to top)
+
+        bme = COMPANIES[BME_ID]  # Red, base income 1
+
+        # CoO 1 - no cost
+        assert bme.get_adjusted_income(state) == 1
+
+        # Draw MHE -> CoO 2 - no cost
+        DECK.draw(state)
+        assert bme.get_adjusted_income(state) == 1
+
+        # Draw PR -> CoO 3 - no cost
+        DECK.draw(state)
+        assert bme.get_adjusted_income(state) == 1
+
+        # Draw DR -> CoO 4 - red gets -2
+        DECK.draw(state)
+        assert bme.get_adjusted_income(state) == 1 - 2  # -1
+
+        # Draw E -> CoO 5 - red gets -4
+        DECK.draw(state)
+        assert bme.get_adjusted_income(state) == 1 - 4  # -3
+
+        # Draw CDG -> CoO 6 - red gets -7
+        DECK.draw(state)
+        assert bme.get_adjusted_income(state) == 1 - 7  # -6
+
+    def test_all_36_companies_have_valid_incomes(self, game_state):
+        """All companies should have valid (non-zero or explicitly calculated) incomes."""
+        for coo_level in range(1, 8):
+            TURN.set_coo_level(game_state, coo_level)
+
+            for company_id in range(GameConstants.NUM_COMPANIES):
+                company = COMPANIES[company_id]
+                expected = get_adjusted_company_income(company_id, coo_level)
+                actual = company.get_adjusted_income(game_state)
+                assert actual == expected, \
+                    f"Company {company_id} at CoO {coo_level}: expected {expected}, got {actual}"

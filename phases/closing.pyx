@@ -34,8 +34,7 @@ from core.state cimport GameState
 from core.driver cimport _is_game_terminal
 from core.data cimport (
     GameConstants, GamePhases, CorpIndices, PHASE_GAME_OVER, PHASE_INCOME,
-    get_cost_of_ownership, get_company_income, get_company_stars, get_company_face_value,
-    get_adjusted_company_income
+    get_cost_of_ownership, get_company_income, get_company_stars, get_company_face_value
 )
 from core.actions cimport ActionInfo, ACTION_CLOSE, ACTION_PASS
 from entities.company cimport LOC_FI, LOC_CORP
@@ -143,7 +142,7 @@ cdef void _process_mandatory_close(GameState state) noexcept:
                     continue
 
                 # Check if negative income (CLO-14 targets negative-income companies)
-                if get_adjusted_company_income(company_id, coo_level) >= 0:
+                if company_module.COMPANIES[company_id].get_adjusted_income(state) >= 0:
                     continue
 
                 fv = get_company_face_value(company_id)
@@ -162,11 +161,7 @@ cdef void _process_mandatory_close(GameState state) noexcept:
 
 cdef bint _has_negative_adjusted_income(GameState state, int company_id) noexcept:
     """Check if company has negative adjusted income (eligible for close offer)."""
-    cdef int coo_level = turn_module.TURN.get_coo_level(state)
-    cdef int base_income = get_company_income(company_id)
-    cdef int stars = get_company_stars(company_id)
-    cdef int coo_value = get_cost_of_ownership(coo_level, stars)
-    return (base_income - coo_value) < 0  # NEGATIVE only, not zero
+    return company_module.COMPANIES[company_id].get_adjusted_income(state) < 0
 
 
 cdef int _collect_player_close_offers(
@@ -437,20 +432,14 @@ cdef void _process_fi_auto_close(GameState state) noexcept:
     """
     cdef int coo_level = turn_module.TURN.get_coo_level(state)
     cdef int company_id
-    cdef int base_income, stars, coo_value, adjusted_income
     cdef int num_to_close = 0
     cdef int[36] companies_to_close  # Track which companies to close
 
     # First pass: identify companies to close
     for company_id in range(<int>GameConstants.NUM_COMPANIES):
         if fi_module.FI.owns_company(state, company_id):
-            base_income = get_company_income(company_id)
-            stars = get_company_stars(company_id)
-            coo_value = get_cost_of_ownership(coo_level, stars)
-            adjusted_income = base_income - coo_value
-
-            # Close if NEGATIVE (not zero)
-            if adjusted_income < 0:
+            # Close if NEGATIVE adjusted income (not zero)
+            if company_module.COMPANIES[company_id].get_adjusted_income(state) < 0:
                 companies_to_close[num_to_close] = company_id
                 num_to_close += 1
 

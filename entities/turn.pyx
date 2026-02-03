@@ -9,8 +9,9 @@ Provides clean getter/setter access to turn-specific state including:
 """
 
 from core.state cimport GameState, StateLayout, TurnStateOffsets
-from core.data cimport GameConstants, GamePhases, CASH_DIVISOR
+from core.data cimport GameConstants, GamePhases, CASH_DIVISOR, get_adjusted_company_income
 from entities import player as player_module
+from entities import company as company_module
 from entities.encoding cimport set_one_hot, get_one_hot_index, clear_one_hot
 
 # Use constants from GameConstants (imported above)
@@ -279,10 +280,29 @@ cdef class TurnState:
         return <int>state._data[self._hidden_coo_level_offset]
 
     cpdef void set_coo_level(self, GameState state, int level):
-        """Set cost of ownership level (1-7 in game terms). Updates both one-hot and hidden compact storage."""
+        """
+        Set cost of ownership level (1-7 in game terms).
+
+        Updates both one-hot and hidden compact storage, and recalculates
+        all company adjusted incomes based on the new CoO level.
+        """
         set_one_hot(state._data, self._coo_offset, GameConstants.NUM_COO_LEVELS, level - 1)
         if 1 <= level <= GameConstants.NUM_COO_LEVELS:
             state._data[self._hidden_coo_level_offset] = <float>level
+            # Update all company adjusted incomes for the new CoO level
+            self._update_all_company_incomes(state, level)
+
+    cdef void _update_all_company_incomes(self, GameState state, int coo_level):
+        """
+        Update all 36 company adjusted incomes based on current CoO level.
+
+        This is called automatically when CoO level changes, ensuring the
+        company_incomes state array always reflects the current CoO.
+        """
+        cdef int company_id, adjusted_income
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
+            adjusted_income = get_adjusted_company_income(company_id, coo_level)
+            company_module.COMPANIES[company_id].set_adjusted_income(state, adjusted_income)
 
     # =========================================================================
     # TURN NUMBER

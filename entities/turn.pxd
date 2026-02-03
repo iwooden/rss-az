@@ -106,6 +106,7 @@ cdef class TurnState:
     # Cost of ownership level (one-hot, 7 values, 1-indexed in game terms)
     cpdef int get_coo_level(self, GameState state)
     cpdef void set_coo_level(self, GameState state, int level)
+    cdef void _update_all_company_incomes(self, GameState state, int coo_level)
 
     # Turn number
     cpdef int get_turn_number(self, GameState state)

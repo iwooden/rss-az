@@ -7,6 +7,7 @@ operations. Each Company instance tracks where it exists in the state vector
 for O(1) location queries and atomic transfers.
 """
 
+from libc.math cimport lround
 from core.state cimport GameState, StateLayout, PlayerFieldOffsets, CorpFieldOffsets
 from core.data cimport (
     GameConstants, CASH_DIVISOR,
@@ -365,8 +366,11 @@ cdef class Company:
     # =========================================================================
 
     cpdef int get_adjusted_income(self, GameState state):
-        """Get company's adjusted income (after cost of ownership)."""
-        return <int>(state._data[self._income_offset] * CASH_DIVISOR + 0.5)
+        """Get company's adjusted income (after cost of ownership).
+
+        Uses lround for proper rounding of negative values (high CoO can make income negative).
+        """
+        return <int>lround(state._data[self._income_offset] * CASH_DIVISOR)
 
     cpdef void set_adjusted_income(self, GameState state, int income):
         """Set company's adjusted income."""
