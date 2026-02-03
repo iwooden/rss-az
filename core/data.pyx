@@ -239,28 +239,6 @@ cpdef inline int get_adjusted_company_income(int company_id, int coo_level) noex
     return base_income - cost
 
 
-cdef int sum_adjusted_income_from_flags(float* company_flags, int coo_level) noexcept nogil:
-    """
-    Sum adjusted income for all companies where ownership flag == 1.0.
-
-    This is the common income calculation pattern used by Player and FI entities.
-    Corps have additional logic (synergies, special abilities) and don't use this.
-
-    Args:
-        company_flags: Pointer to array of 36 floats (1.0 = owned, 0.0 = not owned)
-        coo_level: Current cost of ownership level (1-7)
-
-    Returns:
-        Total adjusted income (can be negative at high CoO levels)
-    """
-    cdef int company_id
-    cdef int total = 0
-    for company_id in range(36):
-        if company_flags[company_id] == 1.0:
-            total += get_adjusted_company_income(company_id, coo_level)
-    return total
-
-
 cpdef inline bint is_valid_par_price(int star_tier, int par_index) noexcept nogil:
     """Check if par price at index is valid for given star tier."""
     if star_tier < 1 or star_tier > 5 or par_index < 0 or par_index >= 14:
