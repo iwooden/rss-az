@@ -240,8 +240,8 @@ class TestShareDistribution:
 
         # Player gets 2 shares
         assert PLAYERS[0].get_shares(state, 0) == 2
-        # Corp has 2 issued (player holds) and 2 bank shares
-        assert corp.get_issued_shares(state) == 2
+        # issued_shares = player_shares + bank_shares = 2 + 2 = 4
+        assert corp.get_issued_shares(state) == 4
         assert corp.get_bank_shares(state) == 2
         # Unissued = total - player - bank
         total = get_corp_share_count(0)
@@ -260,7 +260,8 @@ class TestShareDistribution:
         apply_ipo_action_py(state, 0, 2)
 
         assert PLAYERS[0].get_shares(state, 0) == 1
-        assert corp.get_issued_shares(state) == 1
+        # issued_shares = player_shares + bank_shares = 1 + 1 = 2
+        assert corp.get_issued_shares(state) == 2
         assert corp.get_bank_shares(state) == 1
         total = get_corp_share_count(0)
         assert corp.get_unissued_shares(state) == total - 2
@@ -278,7 +279,8 @@ class TestShareDistribution:
         apply_ipo_action_py(state, 0, 5)
 
         assert PLAYERS[0].get_shares(state, 0) == 1
-        assert corp.get_issued_shares(state) == 1
+        # issued_shares = player_shares + bank_shares = 1 + 1 = 2
+        assert corp.get_issued_shares(state) == 2
         assert corp.get_bank_shares(state) == 1
 
 

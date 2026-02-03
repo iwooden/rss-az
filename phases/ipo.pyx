@@ -148,7 +148,7 @@ cdef void _process_ipo(GameState state, int corp_id, int par_slot) noexcept:
     corp_module.CORPS[corp_id].set_active(state, True)
     corp_module.CORPS[corp_id].set_cash(state, corp_cash)
     corp_module.CORPS[corp_id].set_unissued_shares(state, unissued_shares)
-    corp_module.CORPS[corp_id].set_issued_shares(state, player_shares)
+    corp_module.CORPS[corp_id].set_issued_shares(state, player_shares + bank_shares)
     corp_module.CORPS[corp_id].set_bank_shares(state, bank_shares)
     corp_module.CORPS[corp_id].set_stars(state, star_tier)
 
