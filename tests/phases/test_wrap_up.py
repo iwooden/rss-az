@@ -8,6 +8,8 @@ from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.fi import FI
 from entities.company import COMPANIES
+from entities.deck import DECK
+from phases.wrap_up import apply_wrap_up_py
 from tests.phases.conftest import STATUS_OK
 
 
@@ -299,3 +301,99 @@ class TestPlayerReordering:
             actual_position = PLAYERS[player_id].get_turn_order(state)
             assert actual_position == expected_position, \
                 f"Player {player_id} should be at position {expected_position}, got {actual_position}"
+
+
+# =============================================================================
+# FI PURCHASE BEHAVIOR TESTS
+# =============================================================================
+
+class TestFIPurchaseBehavior:
+    """Test FI company purchase rules during WRAP_UP.
+
+    Per RULES.md line 611: 'Foreign Investor cannot buy them in Phase 2 of same turn'
+    - newly drawn companies should be unavailable for purchase in the same WRAP_UP cycle.
+    """
+
+    def test_fi_cannot_buy_revealed_company_same_wrap_up(self):
+        """WRAP-FI-01: FI cannot purchase newly-drawn company in same WRAP_UP cycle.
+
+        When FI buys a company and a replacement is drawn from the deck,
+        that replacement is marked as revealed and cannot be purchased
+        until the next turn's WRAP_UP phase.
+        """
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Clear all companies first
+        for cid in range(36):
+            COMPANIES[cid].remove_from_game(state)
+
+        # Set up controlled scenario:
+        # - Company 0 (face value $1) is for auction
+        # - Company 1 (face value $1) is in deck (will be drawn as replacement)
+        # - FI has cash = $2 (can afford two $1 companies)
+        COMPANIES[0].move_to_auction(state)
+        DECK.set_order(state, [1])  # Only company 1 in deck
+        FI.set_cash(state, 2)
+
+        # Verify initial state
+        assert COMPANIES[0].is_for_auction(state)
+        assert FI.get_cash(state) == 2
+
+        # Set phase to WRAP_UP and apply directly
+        TURN.set_phase(state, GamePhases.PHASE_WRAP_UP)
+        apply_wrap_up_py(state)
+
+        # Verify:
+        # - Company 0 should be owned by FI (purchased for $1)
+        # - Company 1 should NOT be owned by FI (was revealed, not purchased)
+        # - FI should have $1 remaining (only spent $1)
+        assert COMPANIES[0].is_owned_by_fi(state), \
+            "FI should have purchased company 0"
+        assert not COMPANIES[1].is_owned_by_fi(state), \
+            "FI should NOT have purchased newly-drawn company 1"
+        assert FI.get_cash(state) == 1, \
+            "FI should have $1 remaining (started with $2, spent $1)"
+
+        # Company 1 should now be for_auction (revealed -> available at end of WRAP_UP)
+        assert COMPANIES[1].is_for_auction(state), \
+            "Company 1 should be available for auction after WRAP_UP"
+
+    def test_fi_multiple_purchases_revealed_excluded(self):
+        """WRAP-FI-02: Multiple FI purchases still exclude revealed companies.
+
+        When FI makes multiple purchases in one WRAP_UP, each replacement
+        drawn is marked revealed and excluded from subsequent purchases.
+        """
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Clear all companies
+        for cid in range(36):
+            COMPANIES[cid].remove_from_game(state)
+
+        # Face values: company 0=$1, company 1=$2, company 2=$5, company 3=$6
+        # Set up:
+        # - Companies 0 ($1) and 1 ($2) are for auction
+        # - Companies 2 ($5) and 3 ($6) are in deck (replacements)
+        # - FI has $15 (can buy 0+1 for $3, would have $12 left which could buy 2 if not revealed)
+        COMPANIES[0].move_to_auction(state)
+        COMPANIES[1].move_to_auction(state)
+        DECK.set_order(state, [3, 2])  # Company 2 drawn first, then 3
+        FI.set_cash(state, 15)
+
+        TURN.set_phase(state, GamePhases.PHASE_WRAP_UP)
+        apply_wrap_up_py(state)
+
+        # FI should only own the two originally-available companies
+        assert COMPANIES[0].is_owned_by_fi(state), "FI should own company 0 ($1)"
+        assert COMPANIES[1].is_owned_by_fi(state), "FI should own company 1 ($2)"
+        assert not COMPANIES[2].is_owned_by_fi(state), "FI should NOT own revealed company 2"
+        assert not COMPANIES[3].is_owned_by_fi(state), "FI should NOT own revealed company 3"
+
+        # FI spent $3 (company 0 for $1 + company 1 for $2), should have $12 remaining
+        assert FI.get_cash(state) == 12, "FI should have $12 remaining"
+
+        # Both revealed companies should now be for auction
+        assert COMPANIES[2].is_for_auction(state)
+        assert COMPANIES[3].is_for_auction(state)
