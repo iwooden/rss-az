@@ -351,7 +351,7 @@ cdef int apply_dividend_action(GameState state, ActionInfo* info) noexcept:
         return 1  # Wrong action type
 
     # Validate amount (should already be constrained by mask, but double-check)
-    if amount < 0 or amount > <int>GameConstants.MAX_DIVIDEND:
+    if amount < 0 or amount >= <int>GameConstants.MAX_DIVIDEND:
         return 1
 
     # Pay dividends

@@ -15,7 +15,7 @@ NUM_COMPANIES = 36
 NUM_CORPS = 8
 NUM_MARKET_SPACES = 27
 MAX_DECK_SIZE = 36
-MAX_DIVIDEND = 25
+MAX_DIVIDEND = 26
 OFFER_BUFFER_SIZE = 250
 CLOSE_OFFER_BUFFER_SIZE = 100
 
@@ -67,7 +67,7 @@ def compute_turn_size(num_players: int) -> int:
         num_players +       # auction_starter
         num_players +       # auction_passed
         NUM_CORPS +         # dividend_corp (8)
-        MAX_DIVIDEND +      # dividend_impact (25)
+        MAX_DIVIDEND +      # dividend_impact (26)
         NUM_CORPS +         # dividend_remaining (8)
         NUM_CORPS +         # issue_corp (8)
         NUM_CORPS +         # issue_remaining (8)
@@ -162,11 +162,11 @@ class TestStateLayoutSizes:
     # Expected sizes - these MUST match VECTORS.md and CLAUDE.md
     # If these tests fail, update the documentation to match!
     EXPECTED_SIZES = {
-        2: {'visible': 2942, 'hidden': 862, 'total': 3804},
-        3: {'visible': 3022, 'hidden': 862, 'total': 3884},
-        4: {'visible': 3104, 'hidden': 862, 'total': 3966},
-        5: {'visible': 3188, 'hidden': 862, 'total': 4050},
-        6: {'visible': 3274, 'hidden': 862, 'total': 4136},
+        2: {'visible': 2943, 'hidden': 862, 'total': 3805},
+        3: {'visible': 3023, 'hidden': 862, 'total': 3885},
+        4: {'visible': 3105, 'hidden': 862, 'total': 3967},
+        5: {'visible': 3189, 'hidden': 862, 'total': 4051},
+        6: {'visible': 3275, 'hidden': 862, 'total': 4137},
     }
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
@@ -219,10 +219,10 @@ class TestComponentSizes:
         assert compute_corp_stride() == 109
 
     def test_turn_size_formula(self):
-        """Turn size = 250 + 3*num_players."""
+        """Turn size = 251 + 3*num_players."""
         for num_players in [2, 3, 4, 5, 6]:
             size = compute_turn_size(num_players)
-            expected = 250 + 3 * num_players
+            expected = 251 + 3 * num_players
             assert size == expected, (
                 f"{num_players} players: turn size {size} != {expected}"
             )

@@ -17,7 +17,7 @@ cpdef enum GameConstants:
     MAX_STAR_TIERS = 5
     MAX_DECK_SIZE = 36
     NUM_PAR_PRICES = 14
-    MAX_DIVIDEND = 25
+    MAX_DIVIDEND = 26
     MAX_SHARE_PRICE = 75
     COO_LEVEL_END_CARD_FLIPPED = 7
 
