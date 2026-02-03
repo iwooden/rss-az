@@ -926,7 +926,7 @@ class TestClosingPhaseTransition:
         """CLO-16: Phase transitions to INCOME (INVEST) when no offers and mandatory close complete."""
         # Simulate state where CLOSING has no offers and mandatory close has nothing to do
         # All players have positive income + cash (default state)
-        game_state.set_phase(GamePhases.PHASE_CLOSING)
+        TURN.set_phase(game_state, GamePhases.PHASE_CLOSING)
 
         # Run auto-close (which includes offer generation, mandatory close, and transition)
         apply_closing_auto_py(game_state)
@@ -948,7 +948,7 @@ class TestClosingPhaseTransition:
         PLAYERS[0].set_cash(game_state, 5)
 
         # Enter CLOSING phase and run auto-close
-        game_state.set_phase(GamePhases.PHASE_CLOSING)
+        TURN.set_phase(game_state, GamePhases.PHASE_CLOSING)
         apply_closing_auto_py(game_state)
 
         # There should be a close offer for company 0

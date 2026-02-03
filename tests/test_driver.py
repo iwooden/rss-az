@@ -6,6 +6,7 @@ from core.state import GameState
 from core.driver import DRIVER, GameDriver, STATUS_OK_PY as STATUS_OK, STATUS_INVALID_PY as STATUS_INVALID, STATUS_GAME_OVER_PY as STATUS_GAME_OVER
 from core.actions import get_valid_action_mask, get_action_layout, decode_action_py
 from core.data import GamePhases
+from entities.turn import TURN
 
 
 class TestGameDriverBasics:
@@ -143,13 +144,13 @@ class TestApplyActionBidPhase:
         state.initialize_game(seed=42)
         # Manually set phase to BID_IN_AUCTION for testing
         # (In real game, this happens via start auction action)
-        state.set_phase(GamePhases.PHASE_BID_IN_AUCTION)
+        TURN.set_phase(state, GamePhases.PHASE_BID_IN_AUCTION)
         # Set up minimal auction state so mask has valid actions
         # Get first available company
         for company_id in range(36):
             if state.is_company_for_auction(company_id):
-                state.set_auction_company(company_id)
-                state.set_auction_price(1)  # Face value
+                TURN.set_auction_company(state, company_id)
+                TURN.set_auction_price(state, 1)  # Face value
                 break
         return state
 
@@ -193,13 +194,13 @@ class TestPhaseDispatch:
         """BID phase actions should dispatch to bid handler."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
-        state.set_phase(GamePhases.PHASE_BID_IN_AUCTION)
+        TURN.set_phase(state, GamePhases.PHASE_BID_IN_AUCTION)
 
         # Set up auction state
         for company_id in range(36):
             if state.is_company_for_auction(company_id):
-                state.set_auction_company(company_id)
-                state.set_auction_price(1)
+                TURN.set_auction_company(state, company_id)
+                TURN.set_auction_price(state, 1)
                 break
 
         # Leave auction is always valid

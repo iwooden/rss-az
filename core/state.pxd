@@ -142,9 +142,8 @@ cdef class GameState:
     cpdef int get_active_player(self)
     cpdef int get_num_players(self)
 
-    # Phase access
+    # Phase access (setter via TurnState entity to avoid duplication)
     cpdef int get_phase(self)
-    cpdef void set_phase(self, int phase)
 
     # Player access
     cpdef int get_player_cash(self, int player_id)
@@ -187,41 +186,32 @@ cdef class GameState:
     cpdef bint is_company_for_auction(self, int company_id)
     cpdef void set_company_for_auction(self, int company_id, bint for_auction)
 
-    # Auction state access
+    # Auction state access (setters via TurnState entity to avoid duplication)
     cpdef int get_auction_company(self)
-    cpdef void set_auction_company(self, int company_id)
     cpdef int get_auction_price(self)
-    cpdef void set_auction_price(self, int price)
 
-    # Acquisition state access
+    # Acquisition state access (setters via TurnState entity to avoid duplication)
     cdef int _get_acq_active_corp(self) noexcept nogil
     cpdef int get_acq_active_corp(self)
-    cpdef void set_acq_active_corp(self, int corp_id)
     cdef int _get_acq_target_company(self) noexcept nogil
     cpdef int get_acq_target_company(self)
-    cpdef void set_acq_target_company(self, int company_id)
     cpdef bint is_acq_fi_offer(self)
-    cpdef void set_acq_fi_offer(self, bint is_fi)
 
-    # Dividend state access
+    # Dividend state access (setter via TurnState entity to avoid duplication)
     cdef int _get_dividend_corp(self) noexcept nogil
     cpdef int get_dividend_corp(self)
-    cpdef void set_dividend_corp(self, int corp_id)
 
-    # Issue state access
+    # Issue state access (setter via TurnState entity to avoid duplication)
     cdef int _get_issue_corp(self) noexcept nogil
     cpdef int get_issue_corp(self)
-    cpdef void set_issue_corp(self, int corp_id)
 
-    # IPO state access
+    # IPO state access (setter via TurnState entity to avoid duplication)
     cdef int _get_ipo_company(self) noexcept nogil
     cpdef int get_ipo_company(self)
-    cpdef void set_ipo_company(self, int company_id)
 
-    # Closing state access
+    # Closing state access (setter via TurnState entity to avoid duplication)
     cdef int _get_current_closing_company(self) noexcept nogil
     cpdef int get_current_closing_company(self)
-    cpdef void set_current_closing_company(self, int company_id)
 
     # Game initialization
     cpdef void initialize_game(self, int seed=*)

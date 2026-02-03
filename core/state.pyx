@@ -468,14 +468,7 @@ cdef class GameState:
         """Get current phase from hidden state."""
         return <int>self._data[self._layout.hidden_phase_offset]
 
-    cpdef void set_phase(self, int phase):
-        """Set current phase in both hidden and one-hot."""
-        cdef int i
-        # Update hidden compact value
-        self._data[self._layout.hidden_phase_offset] = <float>phase
-        # Update one-hot encoding
-        for i in range(GameConstants.NUM_PHASES):
-            self._data[self._layout.phase_offset + i] = 1.0 if i == phase else 0.0
+    # Note: set_phase() removed - use TurnState.set_phase() to avoid duplication
 
     # =========================================================================
     # PLAYER ACCESS
@@ -661,25 +654,14 @@ cdef class GameState:
         """Get current auction company from hidden state."""
         return <int>self._data[self._layout.hidden_auction_company_offset]
 
-    cpdef void set_auction_company(self, int company_id):
-        """Set auction company in hidden and one-hot."""
-        cdef float* turn = self._turn_ptr()
-        cdef int i
-        # Update hidden compact value
-        self._data[self._layout.hidden_auction_company_offset] = <float>company_id
-        # Update one-hot encoding
-        for i in range(GameConstants.NUM_COMPANIES):
-            turn[self._turn_offsets.auction_company + i] = 1.0 if i == company_id else 0.0
+    # Note: set_auction_company() removed - use TurnState.set_auction_company()
 
     cpdef int get_auction_price(self):
         """Get current auction price."""
         cdef float* turn = self._turn_ptr()
         return <int>(turn[self._turn_offsets.auction_price] * CASH_DIVISOR + 0.5)
 
-    cpdef void set_auction_price(self, int price):
-        """Set auction price."""
-        cdef float* turn = self._turn_ptr()
-        turn[self._turn_offsets.auction_price] = <float>price / CASH_DIVISOR
+    # Note: set_auction_price() removed - use TurnState.set_auction_price()
 
     # =========================================================================
     # ACQUISITION STATE ACCESS
@@ -693,15 +675,7 @@ cdef class GameState:
         """Get active corp in acquisition phase."""
         return self._get_acq_active_corp()
 
-    cpdef void set_acq_active_corp(self, int corp_id):
-        """Set active corp in acquisition phase."""
-        cdef float* turn = self._turn_ptr()
-        cdef int i
-        # Update hidden compact value
-        self._data[self._layout.hidden_acq_active_corp_offset] = <float>corp_id
-        # Update one-hot encoding
-        for i in range(GameConstants.NUM_CORPS):
-            turn[self._turn_offsets.acq_active_corp + i] = 1.0 if i == corp_id else 0.0
+    # Note: set_acq_active_corp() removed - use TurnState.set_acq_active_corp()
 
     cdef int _get_acq_target_company(self) noexcept nogil:
         """Get target company in acquisition phase (nogil version)."""
@@ -711,25 +685,14 @@ cdef class GameState:
         """Get target company in acquisition phase."""
         return self._get_acq_target_company()
 
-    cpdef void set_acq_target_company(self, int company_id):
-        """Set target company in acquisition phase."""
-        cdef float* turn = self._turn_ptr()
-        cdef int i
-        # Update hidden compact value
-        self._data[self._layout.hidden_acq_target_company_offset] = <float>company_id
-        # Update one-hot encoding
-        for i in range(GameConstants.NUM_COMPANIES):
-            turn[self._turn_offsets.acq_target_company + i] = 1.0 if i == company_id else 0.0
+    # Note: set_acq_target_company() removed - use TurnState.set_acq_target_company()
 
     cpdef bint is_acq_fi_offer(self):
         """Check if acquisition is an FI offer."""
         cdef float* turn = self._turn_ptr()
         return turn[self._turn_offsets.acq_is_fi_offer] == 1.0
 
-    cpdef void set_acq_fi_offer(self, bint is_fi):
-        """Set acquisition FI offer flag."""
-        cdef float* turn = self._turn_ptr()
-        turn[self._turn_offsets.acq_is_fi_offer] = 1.0 if is_fi else 0.0
+    # Note: set_acq_fi_offer() removed - use TurnState.set_acq_fi_offer()
 
     # =========================================================================
     # DIVIDEND STATE ACCESS
@@ -743,15 +706,7 @@ cdef class GameState:
         """Get current dividend corp."""
         return self._get_dividend_corp()
 
-    cpdef void set_dividend_corp(self, int corp_id):
-        """Set current dividend corp."""
-        cdef float* turn = self._turn_ptr()
-        cdef int i
-        # Update hidden compact value
-        self._data[self._layout.hidden_dividend_corp_offset] = <float>corp_id
-        # Update one-hot encoding
-        for i in range(GameConstants.NUM_CORPS):
-            turn[self._turn_offsets.dividend_corp + i] = 1.0 if i == corp_id else 0.0
+    # Note: set_dividend_corp() removed - use TurnState.set_dividend_corp()
 
     # =========================================================================
     # ISSUE STATE ACCESS
@@ -765,15 +720,7 @@ cdef class GameState:
         """Get current issue corp."""
         return self._get_issue_corp()
 
-    cpdef void set_issue_corp(self, int corp_id):
-        """Set current issue corp."""
-        cdef float* turn = self._turn_ptr()
-        cdef int i
-        # Update hidden compact value
-        self._data[self._layout.hidden_issue_corp_offset] = <float>corp_id
-        # Update one-hot encoding
-        for i in range(GameConstants.NUM_CORPS):
-            turn[self._turn_offsets.issue_corp + i] = 1.0 if i == corp_id else 0.0
+    # Note: set_issue_corp() removed - use TurnState.set_issue_corp()
 
     # =========================================================================
     # IPO STATE ACCESS
@@ -787,15 +734,7 @@ cdef class GameState:
         """Get current IPO company."""
         return self._get_ipo_company()
 
-    cpdef void set_ipo_company(self, int company_id):
-        """Set current IPO company."""
-        cdef float* turn = self._turn_ptr()
-        cdef int i
-        # Update hidden compact value
-        self._data[self._layout.hidden_ipo_company_offset] = <float>company_id
-        # Update one-hot encoding
-        for i in range(GameConstants.NUM_COMPANIES):
-            turn[self._turn_offsets.ipo_company + i] = 1.0 if i == company_id else 0.0
+    # Note: set_ipo_company() removed - use TurnState.set_ipo_company()
 
     # =========================================================================
     # CLOSING STATE ACCESS
@@ -809,15 +748,7 @@ cdef class GameState:
         """Get current company being closed."""
         return self._get_current_closing_company()
 
-    cpdef void set_current_closing_company(self, int company_id):
-        """Set current closing company."""
-        cdef float* turn = self._turn_ptr()
-        cdef int i
-        # Update hidden compact value
-        self._data[self._layout.hidden_closing_company_offset] = <float>company_id
-        # Update one-hot encoding
-        for i in range(GameConstants.NUM_COMPANIES):
-            turn[self._turn_offsets.closing_company + i] = 1.0 if i == company_id else 0.0
+    # Note: set_current_closing_company() removed - use TurnState.set_closing_company()
 
     # =========================================================================
     # GAME INITIALIZATION
