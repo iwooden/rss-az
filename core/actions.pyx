@@ -52,6 +52,9 @@ from entities.turn import TURN
 DEF MAX_ACTION_COUNT = 306
 
 # Module-level mask buffer (pre-allocated, cleared before each use)
+# NOTE: Not thread-safe. For parallel execution, use multiprocessing (separate
+# address spaces) rather than threading. If threading is required, replace with
+# thread-local storage (__thread) or per-call allocation.
 cdef float _mask_buffer[MAX_ACTION_COUNT]
 
 
