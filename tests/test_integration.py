@@ -532,6 +532,373 @@ class TestAcquisitionIntegration:
 
 
 # =============================================================================
+# INCOME PHASE INTEGRATION
+# =============================================================================
+
+class TestIncomeIntegration:
+    """Integration tests verifying INCOME phase maintains invariants throughout."""
+
+    def test_closing_to_income_transition_maintains_invariants(self):
+        """CLOSING -> INCOME phase transition maintains invariants."""
+        from tests.phases.conftest import assert_invariants
+        from phases.acquisition import transition_to_closing_py
+        from phases.closing import apply_closing_auto_py
+        from phases.income import apply_income_py
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        assert_invariants(state, "Initial state")
+
+        # Enter ACQUISITION phase, then transition to CLOSING
+        TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
+        transition_to_closing_py(state)
+
+        assert state.get_phase() == GamePhases.PHASE_CLOSING
+        assert_invariants(state, "After transition to CLOSING")
+
+        # Execute auto-close (transitions to INCOME in fresh game with no negative-income companies)
+        apply_closing_auto_py(state)
+
+        assert state.get_phase() == GamePhases.PHASE_INCOME
+        assert_invariants(state, "After CLOSING -> INCOME")
+
+        # Apply income (transitions to DIVIDENDS, then TEMP_END_TURN since no active corps)
+        apply_income_py(state)
+
+        # No active corps -> DIVIDENDS -> TEMP_END_TURN immediately
+        assert state.get_phase() == GamePhases.PHASE_TEMP_END_TURN
+        assert_invariants(state, "After INCOME -> DIVIDENDS -> TEMP_END_TURN")
+
+    def test_income_with_active_corp_maintains_invariants(self):
+        """INCOME with active corps maintains invariants through DIVIDENDS."""
+        from tests.phases.conftest import assert_invariants
+        from entities.player import PLAYERS
+        from entities.corp import CORPS
+        from entities.market import MARKET
+        from phases.income import apply_income_py
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set up active corp
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_cash(state, 100)
+        corp.set_price_index(state, 10)
+        corp.set_stars(state, 5)
+        corp.set_unissued_shares(state, 3)
+        corp.set_issued_shares(state, 4)
+        MARKET.set_space_available(state, 10, False)
+
+        PLAYERS[0].set_shares(state, 0, 4)
+        PLAYERS[0].set_president_of(state, 0, True)
+
+        assert_invariants(state, "Before INCOME")
+
+        # Enter INCOME phase
+        TURN.set_phase(state, GamePhases.PHASE_INCOME)
+        apply_income_py(state)
+
+        # Should be in DIVIDENDS with active corp
+        assert state.get_phase() == GamePhases.PHASE_DIVIDENDS
+        assert TURN.get_dividend_corp(state) == 0
+        assert_invariants(state, "After INCOME -> DIVIDENDS")
+
+    def test_income_bankruptcy_maintains_invariants(self):
+        """Corp bankruptcy during INCOME maintains invariants."""
+        from tests.phases.conftest import assert_invariants
+        from entities.player import PLAYERS
+        from entities.corp import CORPS
+        from entities.company import COMPANIES
+        from entities.market import MARKET
+        from phases.income import apply_income_py
+        from core.data import COMPANY_NAME_TO_ID
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set high CoO for negative income
+        TURN.set_coo_level(state, 6)
+
+        # Set up corp with negative income (will go bankrupt)
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_cash(state, 1)  # Not enough to cover negative income
+        corp.set_price_index(state, 10)
+        MARKET.set_space_available(state, 10, False)
+
+        # KK: income=5, stars=3. At CoO level 6, 3-star CoO=7. Adjusted = -2
+        kk = COMPANY_NAME_TO_ID["KK"]
+        COMPANIES[kk].transfer_to_corp(state, 0)
+        corp.set_owns_company(state, kk, True)
+
+        assert_invariants(state, "Before INCOME with bankruptcy setup")
+
+        # Enter INCOME phase
+        TURN.set_phase(state, GamePhases.PHASE_INCOME)
+        apply_income_py(state)
+
+        # Corp should be bankrupt
+        assert not corp.is_active(state), "Corp should be bankrupt"
+        assert_invariants(state, "After INCOME with bankruptcy")
+
+    def test_income_multiple_bankruptcies_maintain_invariants(self):
+        """Multiple corp bankruptcies during INCOME maintains invariants."""
+        from tests.phases.conftest import assert_invariants
+        from entities.corp import CORPS
+        from entities.company import COMPANIES
+        from entities.market import MARKET
+        from phases.income import apply_income_py
+        from core.data import COMPANY_NAME_TO_ID
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set high CoO for negative income
+        TURN.set_coo_level(state, 6)
+
+        # Set up multiple corps with negative income
+        companies = [COMPANY_NAME_TO_ID["KK"], COMPANY_NAME_TO_ID["DR"], COMPANY_NAME_TO_ID["BY"]]
+        for corp_id, cid in zip([0, 1, 2], companies):
+            corp = CORPS[corp_id]
+            corp.set_active(state, True)
+            corp.set_cash(state, 0)  # Will go bankrupt
+            corp.set_price_index(state, 10 + corp_id)
+            MARKET.set_space_available(state, 10 + corp_id, False)
+
+            COMPANIES[cid].transfer_to_corp(state, corp_id)
+            corp.set_owns_company(state, cid, True)
+
+        assert_invariants(state, "Before INCOME with multiple bankruptcies")
+
+        # Enter INCOME phase
+        TURN.set_phase(state, GamePhases.PHASE_INCOME)
+        apply_income_py(state)
+
+        # All corps should be bankrupt
+        for corp_id in [0, 1, 2]:
+            assert not CORPS[corp_id].is_active(state), f"Corp {corp_id} should be bankrupt"
+
+        assert_invariants(state, "After INCOME with multiple bankruptcies")
+
+    def test_full_turn_cycle_through_income(self):
+        """Full turn cycle: INVEST -> WRAP_UP -> ACQUISITION -> CLOSING -> INCOME -> DIVIDENDS."""
+        from tests.phases.conftest import apply_action_and_verify, assert_invariants
+        from entities.player import PLAYERS
+        from entities.corp import CORPS
+        from entities.market import MARKET
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set up active corp for full dividend cycle
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_cash(state, 100)
+        corp.set_price_index(state, 10)
+        corp.set_stars(state, 5)
+        corp.set_unissued_shares(state, 3)
+        corp.set_issued_shares(state, 4)
+        MARKET.set_space_available(state, 10, False)
+
+        PLAYERS[0].set_shares(state, 0, 4)
+        PLAYERS[0].set_president_of(state, 0, True)
+
+        assert_invariants(state, "Initial state")
+        assert TURN.get_turn_number(state) == 1
+
+        layout = get_action_layout(3)
+
+        # INVEST: all players pass to trigger WRAP_UP
+        for i in range(3):
+            apply_action_and_verify(state, layout['pass_invest'], f"Pass {i+1}")
+            assert_invariants(state, f"After pass {i+1}")
+
+        # After all passes: WRAP_UP -> ACQUISITION
+        # With active corp, ACQUISITION may have offers to process
+        # Pass through any ACQUISITION offers
+        max_iterations = 20
+        iterations = 0
+        while state.get_phase() == GamePhases.PHASE_ACQUISITION and iterations < max_iterations:
+            apply_action_and_verify(state, layout['acq_pass'], f"Pass acquisition {iterations+1}")
+            assert_invariants(state, f"After acquisition pass {iterations+1}")
+            iterations += 1
+
+        # After ACQUISITION completes: CLOSING (auto-executes) -> INCOME (auto-executes) -> DIVIDENDS
+        # Since no negative-income companies: CLOSING has no offers and auto-transitions
+        # INCOME is non-player phase that auto-executes
+        # With active corp, should stop at DIVIDENDS waiting for dividend decision
+        assert state.get_phase() == GamePhases.PHASE_DIVIDENDS, f"Expected DIVIDENDS, got phase {state.get_phase()}"
+        assert TURN.get_dividend_corp(state) == 0
+        assert_invariants(state, "After full turn cycle to DIVIDENDS")
+
+    def test_income_applies_to_all_entities(self):
+        """INCOME applies income to corps, FI, and players; maintains invariants."""
+        from tests.phases.conftest import assert_invariants
+        from entities.player import PLAYERS
+        from entities.corp import CORPS
+        from entities.company import COMPANIES
+        from entities.fi import FI
+        from entities.market import MARKET
+        from phases.income import apply_income_py
+        from core.data import COMPANY_NAME_TO_ID
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set up corp with company
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_cash(state, 100)
+        corp.set_price_index(state, 10)
+        corp.set_stars(state, 5)
+        corp.set_unissued_shares(state, 3)
+        corp.set_issued_shares(state, 4)
+        MARKET.set_space_available(state, 10, False)
+
+        cdg = COMPANY_NAME_TO_ID["CDG"]
+        COMPANIES[cdg].transfer_to_corp(state, 0)
+        corp.set_owns_company(state, cdg, True)
+
+        PLAYERS[0].set_shares(state, 0, 4)
+        PLAYERS[0].set_president_of(state, 0, True)
+
+        # Set up player with company
+        mad = COMPANY_NAME_TO_ID["MAD"]
+        COMPANIES[mad].transfer_to_player(state, 1)
+        PLAYERS[1].set_owns_company(state, mad, True)
+
+        # Set up FI with company
+        fra = COMPANY_NAME_TO_ID["FRA"]
+        COMPANIES[fra].transfer_to_fi(state)
+        FI.set_owns_company(state, fra, True)
+
+        # Record starting values
+        corp_cash_before = corp.get_cash(state)
+        corp_income = corp.calculate_income(state)
+        player_cash_before = PLAYERS[1].get_cash(state)
+        player_income = PLAYERS[1].get_income(state)
+        fi_cash_before = FI.get_cash(state)
+        fi_income = FI.calculate_income(state)
+
+        assert_invariants(state, "Before INCOME")
+
+        # Enter INCOME phase
+        TURN.set_phase(state, GamePhases.PHASE_INCOME)
+        apply_income_py(state)
+
+        # Verify income was applied
+        assert corp.get_cash(state) == corp_cash_before + corp_income, "Corp income not applied"
+        assert PLAYERS[1].get_cash(state) == player_cash_before + player_income, "Player income not applied"
+        assert FI.get_cash(state) == fi_cash_before + fi_income, "FI income not applied"
+
+        assert_invariants(state, "After INCOME")
+
+    @pytest.mark.parametrize("num_players", [3, 6])
+    def test_income_integration_player_counts(self, num_players):
+        """INCOME phase works correctly for all player counts."""
+        from tests.phases.conftest import assert_invariants
+        from entities.player import PLAYERS
+        from entities.corp import CORPS
+        from entities.market import MARKET
+        from phases.income import apply_income_py
+
+        state = GameState(num_players=num_players)
+        state.initialize_game(seed=42)
+
+        # Set up active corp
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_cash(state, 100)
+        corp.set_price_index(state, 10)
+        corp.set_stars(state, 5)
+        corp.set_unissued_shares(state, 3)
+        corp.set_issued_shares(state, 4)
+        MARKET.set_space_available(state, 10, False)
+
+        PLAYERS[0].set_shares(state, 0, 4)
+        PLAYERS[0].set_president_of(state, 0, True)
+
+        assert_invariants(state, f"Before INCOME ({num_players}p)")
+
+        # Enter INCOME phase
+        TURN.set_phase(state, GamePhases.PHASE_INCOME)
+        apply_income_py(state)
+
+        assert state.get_phase() == GamePhases.PHASE_DIVIDENDS
+        assert_invariants(state, f"After INCOME ({num_players}p)")
+
+    def test_income_after_closing_with_offers_maintains_invariants(self):
+        """CLOSING with offers -> INCOME transition maintains invariants."""
+        from tests.phases.conftest import assert_invariants
+        from entities.player import PLAYERS
+        from entities.corp import CORPS
+        from entities.company import COMPANIES
+        from entities.market import MARKET
+        from phases.acquisition import transition_to_closing_py
+        from phases.closing import apply_closing_auto_py, apply_closing_action_py, get_close_offer_count_py
+        from phases.income import apply_income_py
+        from core.actions import ACTION_CLOSE_PY
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set high CoO for negative income companies
+        TURN.set_coo_level(state, 6)
+
+        # Give player 0 a negative income company
+        PLAYERS[0].set_owns_company(state, 0, True)  # Company 0: 1 star, negative adjusted income
+
+        # Set up active corp for DIVIDENDS phase
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_cash(state, 100)
+        corp.set_price_index(state, 10)
+        corp.set_stars(state, 5)
+        corp.set_unissued_shares(state, 3)
+        corp.set_issued_shares(state, 4)
+        MARKET.set_space_available(state, 10, False)
+
+        PLAYERS[0].set_shares(state, 0, 4)
+        PLAYERS[0].set_president_of(state, 0, True)
+
+        assert_invariants(state, "Initial setup")
+
+        # Enter ACQUISITION phase
+        TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
+
+        # Transition to CLOSING
+        transition_to_closing_py(state)
+        assert state.get_phase() == GamePhases.PHASE_CLOSING
+        assert_invariants(state, "After transition to CLOSING")
+
+        # Execute auto-close (generates offers for player's negative-income company)
+        apply_closing_auto_py(state)
+
+        # Should have close offers
+        offer_count = get_close_offer_count_py(state)
+        assert offer_count > 0, "Should have close offers"
+        assert_invariants(state, "In CLOSING with offers")
+
+        # Accept close offer
+        result = apply_closing_action_py(state, ACTION_CLOSE_PY)
+        assert result == 0, "Close action should succeed"
+
+        # Should be in INCOME phase
+        assert state.get_phase() == GamePhases.PHASE_INCOME
+        assert_invariants(state, "After CLOSING -> INCOME")
+
+        # Apply income
+        apply_income_py(state)
+
+        # Should be in DIVIDENDS with active corp
+        assert state.get_phase() == GamePhases.PHASE_DIVIDENDS
+        assert TURN.get_dividend_corp(state) == 0
+        assert_invariants(state, "After INCOME -> DIVIDENDS")
+
+
+# =============================================================================
 # CLOSING PHASE INTEGRATION
 # =============================================================================
 
