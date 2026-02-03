@@ -208,23 +208,8 @@ class TestStartAuction:
         auction_starter = TURN.get_auction_starter(game_state)
         assert auction_starter == starter_id
 
-    def test_start_auction_clears_passed_flags(self, game_state):
-        """INV-05: Start auction clears all auction passed flags."""
-        # Manually set some passed flags for testing
-        TURN.set_player_passed_auction(game_state, 0, True)
-        TURN.set_player_passed_auction(game_state, 1, True)
-
-        # Find valid auction action
-        auction_idx = get_first_valid_auction_action(game_state)
-        assert auction_idx is not None
-
-        # Apply auction action
-        result = DRIVER.apply_action(game_state, auction_idx)
-        assert result == STATUS_OK
-
-        # Verify all passed flags cleared
-        for player_id in range(3):
-            assert not TURN.has_player_passed_auction(game_state, player_id)
+    # Note: auction passed flags are cleared at auction END (see test_bid_in_auction.py),
+    # not at start - they're initialized cleared and stay cleared between auctions
 
     def test_start_auction_transitions_to_bid_phase(self, game_state):
         """INV-06: Start auction transitions to BID_IN_AUCTION phase."""

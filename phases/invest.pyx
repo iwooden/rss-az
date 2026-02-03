@@ -325,7 +325,8 @@ cdef int apply_invest_action(GameState state, ActionInfo* info) noexcept:
         turn_module.TURN.set_auction_price(state, bid_price)
         turn_module.TURN.set_auction_high_bidder(state, player_id)
         turn_module.TURN.set_auction_starter(state, player_id)
-        turn_module.TURN.clear_auction_passed(state)
+        # Note: auction_passed flags are cleared at auction END (bid.pyx),
+        # not at start - they're initialized cleared and stay cleared between auctions
 
         # Clear consecutive passes (INV-02)
         turn_module.TURN.clear_consecutive_passes(state)
