@@ -25,18 +25,19 @@ Normal corporations:
 - If price drops to 0: Go Bankrupt
 
 Phase transitions:
-- After all corps processed -> TEMP_END_TURN (later: IPO when implemented)
+- After all corps processed -> IPO phase
 """
 
 from core.state cimport GameState
 from core.data cimport (
     GameConstants, GamePhases, CorpIndices,
-    PHASE_TEMP_END_TURN, get_market_price
+    PHASE_IPO, get_market_price
 )
 from core.actions cimport ActionInfo, ACTION_PASS, ACTION_ISSUE
 from entities import turn as turn_module
 from entities import corp as corp_module
 from entities import market as market_module
+from phases.ipo cimport setup_ipo_phase
 
 
 # =============================================================================
@@ -172,14 +173,14 @@ cdef void _transition_out_of_issue(GameState state) noexcept:
     """
     Transition out of ISSUE_SHARES phase.
 
-    Currently transitions to TEMP_END_TURN.
-    When IPO is implemented, change to PHASE_IPO.
+    Transitions to IPO phase for player-owned companies to form corporations.
     """
     # Clear issue corp
     turn_module.TURN.clear_issue_corp(state)
 
-    # Transition to next phase (TEMP_END_TURN for now, later IPO)
-    turn_module.TURN.set_phase(state, PHASE_TEMP_END_TURN)
+    # Transition to IPO phase
+    turn_module.TURN.set_phase(state, PHASE_IPO)
+    setup_ipo_phase(state)
 
 
 cdef void _advance_to_next_corp(GameState state) noexcept:

@@ -177,7 +177,8 @@ class TestNoUnownedCompanies:
 
         # End card should NOT flip (company 0 is in auction)
         assert not TURN.is_end_card_flipped(end_card_state)
-        assert TURN.get_phase(end_card_state) == GamePhases.PHASE_TEMP_END_TURN
+        # Flow is now END_CARD -> ISSUE_SHARES -> IPO (since players own companies)
+        assert TURN.get_phase(end_card_state) == GamePhases.PHASE_IPO
 
     def test_company_revealed_prevents_flip(self, end_card_state):
         """Revealed company prevents end card flip."""
@@ -198,7 +199,8 @@ class TestNoUnownedCompanies:
 
         # End card should NOT flip
         assert not TURN.is_end_card_flipped(end_card_state)
-        assert TURN.get_phase(end_card_state) == GamePhases.PHASE_TEMP_END_TURN
+        # Flow is now END_CARD -> ISSUE_SHARES -> IPO (since players own companies)
+        assert TURN.get_phase(end_card_state) == GamePhases.PHASE_IPO
 
 
 # =============================================================================

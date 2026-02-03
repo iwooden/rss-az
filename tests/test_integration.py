@@ -479,6 +479,13 @@ class TestAcquisitionIntegration:
             assert_invariants(state, f"After issue pass {iterations+1}")
             iterations += 1
 
+        # Process through IPO phase (pass on all player-owned companies)
+        iterations = 0
+        while state.get_phase() == GamePhases.PHASE_IPO and iterations < max_iterations:
+            apply_action_and_verify(state, layout['ipo_pass'], f"IPO pass {iterations+1}")
+            assert_invariants(state, f"After IPO pass {iterations+1}")
+            iterations += 1
+
         # Should eventually complete and transition
         assert state.get_phase() == GamePhases.PHASE_INVEST
 
