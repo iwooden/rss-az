@@ -265,7 +265,8 @@ set_one_hot(array, offset, index, size)
 
 ```bash
 # Build Cython extensions (required before running any Python code)
-python setup.py build_ext --inplace
+# Pipe to grep to avoid 200+ lines of output consuming context
+python setup.py build_ext --inplace 2>&1 | grep -E "(warning|error)" || true
 
 # Run all tests
 pytest tests/
@@ -276,6 +277,8 @@ pytest tests/test_invest.py -v
 # Clean build artifacts (.c, .so, .html, build/, *.egg-info)
 python setup.py clean
 ```
+
+**Warning-free builds:** The build should produce no compiler warnings. If warnings appear, create a beads issue to fix them.
 
 ## Testing Approach
 
@@ -348,6 +351,27 @@ When working on any task, create beads issues (`bd create`) for:
 - Anything that needs follow-up but is out of scope for current task
 
 **No insights or work should be lost.** When in doubt, create an issue.
+
+## Ad-hoc Test Scripts
+
+When writing ad-hoc Python scripts to test or debug code, **write them to the scratchpad directory** instead of inlining them in Bash commands. This is more token-efficient when iterating:
+
+```bash
+# Write script to scratchpad
+Write scratchpad/test_something.py
+
+# Run it
+python /path/to/scratchpad/test_something.py
+
+# If it fails, use Edit to make small changes instead of rewriting
+```
+
+Benefits:
+- Small edits are cheaper than rewriting 50+ line scripts inline
+- Script persists for re-running after fixes
+- Easier to read and debug
+
+The scratchpad path is provided in the system prompt at session start.
 
 ## Landing the Plane (Session Completion)
 
