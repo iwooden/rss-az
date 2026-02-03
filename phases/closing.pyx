@@ -116,7 +116,9 @@ cdef void _process_mandatory_close(GameState state) noexcept:
 
     Per CONTEXT.md: CoO is fixed at phase start, no re-evaluation during loop.
     Per CONTEXT.md: Players CAN end up with zero companies (no minimum retention).
-    Per CONTEXT.md: Junkyard Scrappers bonus applies to mandatory closes.
+
+    Note: JS bonus does NOT apply here - mandatory close only affects player-owned
+    private companies, and JS bonus only triggers when JS closes its own subsidiaries.
     """
     cdef int player_id, company_id, income, cash
     cdef int cheapest_company, cheapest_fv, fv
