@@ -32,7 +32,7 @@ Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact 
 | `CASH_DIVISOR` | 200.0 | Cash, prices, net worth |
 | `SHARE_DIVISOR` | 7.0 | Share counts |
 | `STAR_DIVISOR` | 20.0 | Star ratings |
-| `MAX_ROUNDTRIPS` | 2.0 | Buy/sell tracking |
+| `MAX_ROUNDTRIPS` | 2.0 | Round-trip limit (divisor = MAX_ROUNDTRIPS * 2 = 4.0) |
 | `INCOME_DIVISOR` | 10.0 | Company adjusted incomes |
 
 ---
@@ -74,8 +74,8 @@ Player stride = `4 + num_players + 36 + 32` = `72 + num_players`
 | `owned_companies` | 36 | flags | 1 per company |
 | `owned_shares` | 8 | normalized | / SHARE_DIVISOR |
 | `is_president` | 8 | flags | 1 per corp |
-| `share_buys` | 8 | normalized | Round-trip tracking |
-| `share_sells` | 8 | normalized | Round-trip tracking |
+| `share_buys` | 8 | normalized | / (MAX_ROUNDTRIPS * 2) |
+| `share_sells` | 8 | normalized | / (MAX_ROUNDTRIPS * 2) |
 | `acquisition_proceeds` | 1 | normalized | Cash from selling companies this phase |
 
 **Player Field Offsets (within player stride):**
