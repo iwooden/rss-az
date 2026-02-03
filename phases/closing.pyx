@@ -79,7 +79,7 @@ cdef void _close_company(GameState state, int company_id, int owner_type, int ow
 
     # Junkyard Scrappers bonus: 2x printed income only when JS closes its own company
     if owner_type == 5 and owner_id == CorpIndices.CORP_JS:  # LOC_CORP and JS
-        corp_module.CORPS[0].add_cash(state, printed_income * 2)
+        corp_module.CORPS[owner_id].add_cash(state, printed_income * 2)
 
     # Remove company from game
     company_module.COMPANIES[company_id].remove_from_game(state)
