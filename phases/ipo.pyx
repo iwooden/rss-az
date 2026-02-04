@@ -233,6 +233,12 @@ cdef int apply_ipo_action(GameState state, ActionInfo* info) noexcept:
         if corp_module.CORPS[info.corp_id].is_active(state):
             return 1  # Corp already in use
 
+        # Validate par_index bounds (memory safety)
+        cdef int star_tier = get_company_stars(company_id)
+        cdef int par_index = get_par_index_for_slot(star_tier, info.slot)
+        if par_index < 0 or par_index >= <int>GameConstants.NUM_PAR_PRICES:
+            return 1  # Invalid par slot
+
         # Process the IPO
         _process_ipo(state, info.corp_id, info.slot)
     elif info.action_type == ACTION_PASS:

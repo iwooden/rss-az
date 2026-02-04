@@ -600,8 +600,9 @@ class TestActionMask:
             # Check slots beyond valid range
             for slot in range(6, 8):
                 action_idx = layout['ipo_base'] + corp_id * 8 + slot
-                # These might not exist (slot index beyond valid par prices)
-                # The mask should have 0 for invalid slots
+                assert mask[action_idx] == 0.0, (
+                    f"Invalid slot {slot} for corp {corp_id} should be masked"
+                )
 
 
 # =============================================================================
