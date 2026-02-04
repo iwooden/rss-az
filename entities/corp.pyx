@@ -359,6 +359,9 @@ cdef class Corporation:
         - S (Synergistic): +1 per 2 synergy markers (rounded down)
         - VM (Vintage Machinery): reduce total Cost of Ownership by up to 10 (minimum 0)
 
+        NOTE: Junkyard Scrappers (JS) bonus is applied in CLOSING phase, not here.
+        See closing.pyx - JS receives 2x printed income when closing its own company.
+
         Args:
             data: Pointer to state data array
             coo_level: Current cost of ownership level (1-7)
