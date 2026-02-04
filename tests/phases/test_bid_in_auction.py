@@ -237,6 +237,69 @@ class TestRaiseBid:
             new_position = PLAYERS[new_player].get_turn_order(bid_state)
             assert new_position == (initial_position + 1) % 3
 
+    def test_raise_bid_masked_when_player_cannot_afford(self, bid_state):
+        """BID-AFFORD-01: Raise options masked when player has insufficient cash.
+
+        RULES.md line 334-335: 'Raise bid (must have enough money)'
+        """
+        from core.data import get_company_face_value
+
+        company_id = TURN.get_auction_company(bid_state)
+        face_value = get_company_face_value(company_id)
+        current_bid = TURN.get_auction_price(bid_state)
+        layout = get_action_layout(3)
+
+        # Set cash so only a few raises above current bid are affordable
+        active_player_id = bid_state.get_active_player()
+        affordable_limit = current_bid + 2
+        PLAYERS[active_player_id].set_cash(bid_state, affordable_limit)
+
+        mask = get_valid_action_mask(bid_state)
+
+        # Leave auction must always be valid
+        assert mask[layout['leave_auction']] == 1.0
+
+        # Check each raise bid offset
+        any_valid = False
+        any_invalid = False
+        for bid_offset in range(19):  # AUCTION_CAP - 1
+            new_bid = face_value + bid_offset + 1
+            action_idx = layout['raise_bid_base'] + bid_offset
+            if new_bid > current_bid and new_bid <= affordable_limit:
+                assert mask[action_idx] == 1.0, \
+                    f"Raise to {new_bid} should be valid (cash={affordable_limit}, current_bid={current_bid})"
+                any_valid = True
+            elif new_bid > affordable_limit:
+                assert mask[action_idx] == 0.0, \
+                    f"Raise to {new_bid} should be masked (cash={affordable_limit})"
+                any_invalid = True
+
+        # Verify we tested both valid and invalid raises
+        assert any_valid, "Test setup: no valid raises found"
+        assert any_invalid, "Test setup: no invalid raises (cash too high)"
+
+    def test_only_leave_available_when_cash_below_minimum_raise(self, bid_state):
+        """BID-AFFORD-02: Only leave auction is available when cash < all raise amounts.
+
+        RULES.md line 334-335: 'Raise bid (must have enough money)'
+        """
+        layout = get_action_layout(3)
+
+        # Set cash to 0 so no raise is affordable
+        active_player_id = bid_state.get_active_player()
+        PLAYERS[active_player_id].set_cash(bid_state, 0)
+
+        mask = get_valid_action_mask(bid_state)
+
+        # Leave auction must always be valid
+        assert mask[layout['leave_auction']] == 1.0
+
+        # All raise options must be masked out
+        for bid_offset in range(19):
+            action_idx = layout['raise_bid_base'] + bid_offset
+            assert mask[action_idx] == 0.0, \
+                f"Raise at offset {bid_offset} should be masked (player has no cash)"
+
     def test_raise_bid_values_correct(self, bid_state):
         """Verify raise bid calculates price correctly (face + amount + 1)."""
         from core.data import get_company_face_value
