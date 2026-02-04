@@ -192,6 +192,7 @@ cdef void _advance_to_next_company(GameState state) noexcept:
     or transitions to next phase if no companies remain.
     """
     cdef int company_id = _find_next_ipo_company(state)
+    cdef int player_id
 
     if company_id < 0:
         # No more companies to process
@@ -200,7 +201,7 @@ cdef void _advance_to_next_company(GameState state) noexcept:
 
     # Set up for company owner's decision
     turn_module.TURN.set_ipo_company(state, company_id)
-    cdef int player_id = company_module.COMPANIES[company_id].get_owner_id(state)
+    player_id = company_module.COMPANIES[company_id].get_owner_id(state)
     state._set_active_player(player_id)
 
 
@@ -224,6 +225,8 @@ cdef int apply_ipo_action(GameState state, ActionInfo* info) noexcept:
     Returns: 0=success, 1=invalid
     """
     cdef int company_id = turn_module.TURN.get_ipo_company(state)
+    cdef int star_tier
+    cdef int par_index
 
     if company_id < 0:
         return 1  # No active company
@@ -234,8 +237,8 @@ cdef int apply_ipo_action(GameState state, ActionInfo* info) noexcept:
             return 1  # Corp already in use
 
         # Validate par_index bounds (memory safety)
-        cdef int star_tier = get_company_stars(company_id)
-        cdef int par_index = get_par_index_for_slot(star_tier, info.slot)
+        star_tier = get_company_stars(company_id)
+        par_index = get_par_index_for_slot(star_tier, info.slot)
         if par_index < 0 or par_index >= <int>GameConstants.NUM_PAR_PRICES:
             return 1  # Invalid par slot
 

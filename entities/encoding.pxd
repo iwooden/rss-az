@@ -35,7 +35,12 @@ cdef inline void set_one_hot(float* data, int offset, int size, int value) noexc
 
 cdef inline int get_one_hot_index(float* data, int offset, int size) noexcept nogil:
     """
-    Get index of 1.0 in one-hot encoding.
+    Get index of 1.0 in one-hot encoding via O(n) scan.
+
+    NOTE: For one-hot values with hidden compact mirrors, use the compact value
+    directly for O(1) access. This function is only appropriate for permutation
+    vectors (like turn_order) where each element is independently one-hot encoded
+    and no single compact mirror exists.
 
     Args:
         data: Pointer to float array
@@ -64,3 +69,46 @@ cdef inline void clear_one_hot(float* data, int offset, int size) noexcept nogil
     cdef int i
     for i in range(size):
         data[offset + i] = 0.0
+
+
+cdef inline void set_one_hot_with_compact(
+    float* data, int one_hot_offset, int size, int compact_offset, int value
+) noexcept nogil:
+    """
+    Set one-hot encoding and update hidden compact storage atomically.
+
+    This is the canonical way to update one-hot encoded state values that have
+    hidden compact mirrors. Using this function ensures visible and hidden state
+    stay synchronized and enforces the invariant that all one-hot values must
+    have a compact mirror.
+
+    Args:
+        data: Pointer to float array
+        one_hot_offset: Starting position of one-hot encoding in array
+        size: Number of slots in one-hot encoding
+        compact_offset: Position of hidden compact value in array
+        value: Index to set (0-indexed, must be in [0, size))
+
+    If value is out of bounds, one-hot is cleared and compact is set to -1.0.
+    """
+    set_one_hot(data, one_hot_offset, size, value)
+    if 0 <= value < size:
+        data[compact_offset] = <float>value
+    else:
+        data[compact_offset] = -1.0
+
+
+cdef inline void clear_one_hot_with_compact(
+    float* data, int one_hot_offset, int size, int compact_offset
+) noexcept nogil:
+    """
+    Clear one-hot encoding and set hidden compact storage to -1.0.
+
+    Args:
+        data: Pointer to float array
+        one_hot_offset: Starting position of one-hot encoding in array
+        size: Number of slots in one-hot encoding
+        compact_offset: Position of hidden compact value in array
+    """
+    clear_one_hot(data, one_hot_offset, size)
+    data[compact_offset] = -1.0

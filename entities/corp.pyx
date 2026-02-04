@@ -16,7 +16,7 @@ from core.data cimport (
     get_company_face_value, compute_synergy_bonuses, CorpIndices, get_corp_share_count
 )
 from core.data import CORP_NAMES
-from entities.encoding cimport set_one_hot
+from entities.encoding cimport set_one_hot, set_one_hot_with_compact
 from entities import turn as turn_module
 from entities import company as company_module
 from entities import market as market_module
@@ -271,10 +271,12 @@ cdef class Corporation:
 
     cpdef void set_price_index(self, GameState state, int index):
         """Set market price index. Updates both one-hot and hidden compact storage."""
-        set_one_hot(state._data, self._price_index_offset, GameConstants.NUM_MARKET_SPACES, index)
+        set_one_hot_with_compact(
+            state._data, self._price_index_offset, GameConstants.NUM_MARKET_SPACES,
+            self._hidden_price_index_offset, index
+        )
+        # Also update the denormalized share_price field
         if 0 <= index < GameConstants.NUM_MARKET_SPACES:
-            state._data[self._hidden_price_index_offset] = <float>index
-            # Also update the denormalized share_price field
             self.set_share_price(state, MARKET_PRICES[index])
 
     # =========================================================================

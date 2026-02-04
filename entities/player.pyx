@@ -356,11 +356,23 @@ cdef class Player:
     # =========================================================================
 
     cpdef int get_turn_order(self, GameState state):
-        """Get player's position in turn order (0 = first)."""
+        """
+        Get player's position in turn order (0 = first).
+
+        Note: Turn order is stored as a permutation vector where each player has
+        their own one-hot encoded position. This is O(n) lookup since there's no
+        single compact mirror - use find_player_at_position() to go the other way.
+        """
         return get_one_hot_index(state._data, self._turn_order_offset, self._num_players)
 
     cpdef void set_turn_order(self, GameState state, int order):
-        """Set player's position in turn order (one-hot encoded)."""
+        """
+        Set player's position in turn order.
+
+        Note: Turn order is stored as a permutation vector where each player has
+        their own one-hot encoded position. Unlike other one-hot fields, there is
+        no hidden compact mirror since the full permutation requires N values.
+        """
         set_one_hot(state._data, self._turn_order_offset, self._num_players, order)
 
     # =========================================================================

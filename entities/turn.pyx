@@ -12,7 +12,10 @@ from core.state cimport GameState, StateLayout, TurnStateOffsets
 from core.data cimport GameConstants, GamePhases, CASH_DIVISOR, get_adjusted_company_income
 from entities import player as player_module
 from entities import company as company_module
-from entities.encoding cimport set_one_hot, get_one_hot_index, clear_one_hot
+from entities.encoding cimport (
+    set_one_hot, clear_one_hot,
+    set_one_hot_with_compact, clear_one_hot_with_compact,
+)
 
 # Use constants from GameConstants (imported above)
 
@@ -267,9 +270,10 @@ cdef class TurnState:
 
     cpdef void set_phase(self, GameState state, int phase):
         """Set current game phase. Updates both one-hot and hidden compact storage."""
-        set_one_hot(state._data, self._phase_offset, GameConstants.NUM_PHASES, phase)
-        if 0 <= phase < GameConstants.NUM_PHASES:
-            state._data[self._hidden_phase_offset] = <float>phase
+        set_one_hot_with_compact(
+            state._data, self._phase_offset, GameConstants.NUM_PHASES,
+            self._hidden_phase_offset, phase
+        )
 
     # =========================================================================
     # COST OF OWNERSHIP LEVEL (one-hot, 7 values: 1-7 in game terms)
@@ -285,6 +289,10 @@ cdef class TurnState:
 
         Updates both one-hot and hidden compact storage, and recalculates
         all company adjusted incomes based on the new CoO level.
+
+        Note: This method doesn't use set_one_hot_with_compact because coo_level
+        uses 1-indexed game values (1-7) while the one-hot is 0-indexed (0-6).
+        The hidden compact stores the 1-indexed value for direct use in game logic.
         """
         set_one_hot(state._data, self._coo_offset, GameConstants.NUM_COO_LEVELS, level - 1)
         if 1 <= level <= GameConstants.NUM_COO_LEVELS:
@@ -359,13 +367,17 @@ cdef class TurnState:
 
     cpdef void set_auction_company(self, GameState state, int company_id):
         """Set company being auctioned. Updates both one-hot and hidden compact storage."""
-        set_one_hot(state._data, self._auction_company_offset, GameConstants.NUM_COMPANIES, company_id)
-        state._data[self._hidden_auction_company_offset] = <float>company_id
+        set_one_hot_with_compact(
+            state._data, self._auction_company_offset, GameConstants.NUM_COMPANIES,
+            self._hidden_auction_company_offset, company_id
+        )
 
     cpdef void clear_auction_company(self, GameState state):
         """Clear auction company (no active auction). Updates both one-hot and hidden storage."""
-        clear_one_hot(state._data, self._auction_company_offset, GameConstants.NUM_COMPANIES)
-        state._data[self._hidden_auction_company_offset] = -1.0
+        clear_one_hot_with_compact(
+            state._data, self._auction_company_offset, GameConstants.NUM_COMPANIES,
+            self._hidden_auction_company_offset
+        )
 
     cpdef int get_auction_price(self, GameState state):
         """Get current auction price."""
@@ -387,13 +399,17 @@ cdef class TurnState:
 
     cpdef void set_auction_high_bidder(self, GameState state, int player_id):
         """Set current high bidder. Updates both one-hot and hidden compact storage."""
-        set_one_hot(state._data, self._auction_high_bidder_offset, self._num_players, player_id)
-        state._data[self._hidden_auction_high_bidder_offset] = <float>player_id
+        set_one_hot_with_compact(
+            state._data, self._auction_high_bidder_offset, self._num_players,
+            self._hidden_auction_high_bidder_offset, player_id
+        )
 
     cpdef void clear_auction_high_bidder(self, GameState state):
         """Clear high bidder. Updates both one-hot and hidden storage."""
-        clear_one_hot(state._data, self._auction_high_bidder_offset, self._num_players)
-        state._data[self._hidden_auction_high_bidder_offset] = -1.0
+        clear_one_hot_with_compact(
+            state._data, self._auction_high_bidder_offset, self._num_players,
+            self._hidden_auction_high_bidder_offset
+        )
 
     cpdef int get_auction_starter(self, GameState state):
         """Get auction starter. Uses hidden compact storage for O(1) access. Returns -1 if none."""
@@ -401,13 +417,17 @@ cdef class TurnState:
 
     cpdef void set_auction_starter(self, GameState state, int player_id):
         """Set auction starter. Updates both one-hot and hidden compact storage."""
-        set_one_hot(state._data, self._auction_starter_offset, self._num_players, player_id)
-        state._data[self._hidden_auction_starter_offset] = <float>player_id
+        set_one_hot_with_compact(
+            state._data, self._auction_starter_offset, self._num_players,
+            self._hidden_auction_starter_offset, player_id
+        )
 
     cpdef void clear_auction_starter(self, GameState state):
         """Clear auction starter. Updates both one-hot and hidden storage."""
-        clear_one_hot(state._data, self._auction_starter_offset, self._num_players)
-        state._data[self._hidden_auction_starter_offset] = -1.0
+        clear_one_hot_with_compact(
+            state._data, self._auction_starter_offset, self._num_players,
+            self._hidden_auction_starter_offset
+        )
 
     cpdef bint has_player_passed_auction(self, GameState state, int player_id):
         """Check if player has passed (left) the auction."""
@@ -431,18 +451,22 @@ cdef class TurnState:
     # =========================================================================
 
     cpdef int get_dividend_corp(self, GameState state):
-        """Get current dividend corp (one-hot, returns -1 if none)."""
-        return get_one_hot_index(state._data, self._dividend_corp_offset, GameConstants.NUM_CORPS)
+        """Get current dividend corp. Uses hidden compact storage for O(1) access. Returns -1 if none."""
+        return <int>state._data[self._hidden_dividend_corp_offset]
 
     cpdef void set_dividend_corp(self, GameState state, int corp_id):
         """Set current dividend corp. Updates both one-hot and hidden compact storage."""
-        set_one_hot(state._data, self._dividend_corp_offset, GameConstants.NUM_CORPS, corp_id)
-        state._data[self._hidden_dividend_corp_offset] = <float>corp_id
+        set_one_hot_with_compact(
+            state._data, self._dividend_corp_offset, GameConstants.NUM_CORPS,
+            self._hidden_dividend_corp_offset, corp_id
+        )
 
     cpdef void clear_dividend_corp(self, GameState state):
         """Clear dividend corp. Updates both one-hot and hidden compact storage."""
-        clear_one_hot(state._data, self._dividend_corp_offset, GameConstants.NUM_CORPS)
-        state._data[self._hidden_dividend_corp_offset] = -1.0
+        clear_one_hot_with_compact(
+            state._data, self._dividend_corp_offset, GameConstants.NUM_CORPS,
+            self._hidden_dividend_corp_offset
+        )
 
     cpdef int get_dividend_impact(self, GameState state, int level):
         """Get dividend impact at given level (0-25)."""
@@ -471,18 +495,22 @@ cdef class TurnState:
     # =========================================================================
 
     cpdef int get_issue_corp(self, GameState state):
-        """Get current issue corp (one-hot, returns -1 if none)."""
-        return get_one_hot_index(state._data, self._issue_corp_offset, GameConstants.NUM_CORPS)
+        """Get current issue corp. Uses hidden compact storage for O(1) access. Returns -1 if none."""
+        return <int>state._data[self._hidden_issue_corp_offset]
 
     cpdef void set_issue_corp(self, GameState state, int corp_id):
         """Set current issue corp. Updates both one-hot and hidden compact storage."""
-        set_one_hot(state._data, self._issue_corp_offset, GameConstants.NUM_CORPS, corp_id)
-        state._data[self._hidden_issue_corp_offset] = <float>corp_id
+        set_one_hot_with_compact(
+            state._data, self._issue_corp_offset, GameConstants.NUM_CORPS,
+            self._hidden_issue_corp_offset, corp_id
+        )
 
     cpdef void clear_issue_corp(self, GameState state):
         """Clear issue corp. Updates both one-hot and hidden compact storage."""
-        clear_one_hot(state._data, self._issue_corp_offset, GameConstants.NUM_CORPS)
-        state._data[self._hidden_issue_corp_offset] = -1.0
+        clear_one_hot_with_compact(
+            state._data, self._issue_corp_offset, GameConstants.NUM_CORPS,
+            self._hidden_issue_corp_offset
+        )
 
     cpdef bint is_issue_remaining(self, GameState state, int corp_id):
         """Check if corp still needs issue processing."""
@@ -500,18 +528,22 @@ cdef class TurnState:
     # =========================================================================
 
     cpdef int get_ipo_company(self, GameState state):
-        """Get current IPO company (one-hot, returns -1 if none)."""
-        return get_one_hot_index(state._data, self._ipo_company_offset, GameConstants.NUM_COMPANIES)
+        """Get current IPO company. Uses hidden compact storage for O(1) access. Returns -1 if none."""
+        return <int>state._data[self._hidden_ipo_company_offset]
 
     cpdef void set_ipo_company(self, GameState state, int company_id):
         """Set current IPO company. Updates both one-hot and hidden compact storage."""
-        set_one_hot(state._data, self._ipo_company_offset, GameConstants.NUM_COMPANIES, company_id)
-        state._data[self._hidden_ipo_company_offset] = <float>company_id
+        set_one_hot_with_compact(
+            state._data, self._ipo_company_offset, GameConstants.NUM_COMPANIES,
+            self._hidden_ipo_company_offset, company_id
+        )
 
     cpdef void clear_ipo_company(self, GameState state):
         """Clear IPO company. Updates both one-hot and hidden compact storage."""
-        clear_one_hot(state._data, self._ipo_company_offset, GameConstants.NUM_COMPANIES)
-        state._data[self._hidden_ipo_company_offset] = -1.0
+        clear_one_hot_with_compact(
+            state._data, self._ipo_company_offset, GameConstants.NUM_COMPANIES,
+            self._hidden_ipo_company_offset
+        )
 
     cpdef bint is_ipo_remaining(self, GameState state, int company_id):
         """Check if company still needs IPO processing."""
@@ -573,32 +605,40 @@ cdef class TurnState:
     # =========================================================================
 
     cpdef int get_acq_active_corp(self, GameState state):
-        """Get active acquiring corp (one-hot, returns -1 if none)."""
-        return get_one_hot_index(state._data, self._acq_active_corp_offset, GameConstants.NUM_CORPS)
+        """Get active acquiring corp. Uses hidden compact storage for O(1) access. Returns -1 if none."""
+        return <int>state._data[self._hidden_acq_active_corp_offset]
 
     cpdef void set_acq_active_corp(self, GameState state, int corp_id):
         """Set active acquiring corp. Updates both one-hot and hidden compact storage."""
-        set_one_hot(state._data, self._acq_active_corp_offset, GameConstants.NUM_CORPS, corp_id)
-        state._data[self._hidden_acq_active_corp_offset] = <float>corp_id
+        set_one_hot_with_compact(
+            state._data, self._acq_active_corp_offset, GameConstants.NUM_CORPS,
+            self._hidden_acq_active_corp_offset, corp_id
+        )
 
     cpdef void clear_acq_active_corp(self, GameState state):
         """Clear active acquiring corp. Updates both one-hot and hidden compact storage."""
-        clear_one_hot(state._data, self._acq_active_corp_offset, GameConstants.NUM_CORPS)
-        state._data[self._hidden_acq_active_corp_offset] = -1.0
+        clear_one_hot_with_compact(
+            state._data, self._acq_active_corp_offset, GameConstants.NUM_CORPS,
+            self._hidden_acq_active_corp_offset
+        )
 
     cpdef int get_acq_target_company(self, GameState state):
-        """Get target company for acquisition (one-hot, returns -1 if none)."""
-        return get_one_hot_index(state._data, self._acq_target_company_offset, GameConstants.NUM_COMPANIES)
+        """Get target company for acquisition. Uses hidden compact storage for O(1) access. Returns -1 if none."""
+        return <int>state._data[self._hidden_acq_target_company_offset]
 
     cpdef void set_acq_target_company(self, GameState state, int company_id):
         """Set target company for acquisition. Updates both one-hot and hidden compact storage."""
-        set_one_hot(state._data, self._acq_target_company_offset, GameConstants.NUM_COMPANIES, company_id)
-        state._data[self._hidden_acq_target_company_offset] = <float>company_id
+        set_one_hot_with_compact(
+            state._data, self._acq_target_company_offset, GameConstants.NUM_COMPANIES,
+            self._hidden_acq_target_company_offset, company_id
+        )
 
     cpdef void clear_acq_target_company(self, GameState state):
         """Clear target company. Updates both one-hot and hidden compact storage."""
-        clear_one_hot(state._data, self._acq_target_company_offset, GameConstants.NUM_COMPANIES)
-        state._data[self._hidden_acq_target_company_offset] = -1.0
+        clear_one_hot_with_compact(
+            state._data, self._acq_target_company_offset, GameConstants.NUM_COMPANIES,
+            self._hidden_acq_target_company_offset
+        )
 
     cpdef bint is_acq_fi_offer(self, GameState state):
         """Check if current acquisition is from Foreign Investor."""
@@ -613,18 +653,22 @@ cdef class TurnState:
     # =========================================================================
 
     cpdef int get_closing_company(self, GameState state):
-        """Get company being offered for closing (one-hot, returns -1 if none)."""
-        return get_one_hot_index(state._data, self._closing_company_offset, GameConstants.NUM_COMPANIES)
+        """Get company being offered for closing. Uses hidden compact storage for O(1) access. Returns -1 if none."""
+        return <int>state._data[self._hidden_closing_company_offset]
 
     cpdef void set_closing_company(self, GameState state, int company_id):
         """Set company being offered for closing. Updates both one-hot and hidden compact storage."""
-        set_one_hot(state._data, self._closing_company_offset, GameConstants.NUM_COMPANIES, company_id)
-        state._data[self._hidden_closing_company_offset] = <float>company_id
+        set_one_hot_with_compact(
+            state._data, self._closing_company_offset, GameConstants.NUM_COMPANIES,
+            self._hidden_closing_company_offset, company_id
+        )
 
     cpdef void clear_closing_company(self, GameState state):
         """Clear closing company. Updates both one-hot and hidden compact storage."""
-        clear_one_hot(state._data, self._closing_company_offset, GameConstants.NUM_COMPANIES)
-        state._data[self._hidden_closing_company_offset] = -1.0
+        clear_one_hot_with_compact(
+            state._data, self._closing_company_offset, GameConstants.NUM_COMPANIES,
+            self._hidden_closing_company_offset
+        )
 
     # =========================================================================
     # TURN ORDER NAVIGATION
