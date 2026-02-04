@@ -37,7 +37,7 @@ from core.data cimport (
     get_cost_of_ownership, get_company_income, get_company_stars, get_company_face_value
 )
 from core.actions cimport ActionInfo, ACTION_CLOSE, ACTION_PASS
-from entities.company cimport LOC_FI, LOC_CORP
+from entities.company cimport LOC_PLAYER, LOC_FI, LOC_CORP
 from entities import turn as turn_module
 from entities import company as company_module
 from entities import corp as corp_module
@@ -46,8 +46,6 @@ from entities import player as player_module
 
 # Buffer size constant (DEF required for static array sizing - cannot be imported)
 DEF CLOSE_OFFER_BUFFER_SIZE = 100
-DEF OWNER_PLAYER = 0  # Owner type for player-owned companies
-DEF OWNER_CORP = 1    # Owner type for corp-owned companies
 
 
 # =============================================================================
@@ -187,7 +185,7 @@ cdef int _collect_player_close_offers(
             if idx >= CLOSE_OFFER_BUFFER_SIZE:
                 return count
 
-            owner_types[idx] = OWNER_PLAYER
+            owner_types[idx] = LOC_PLAYER
             owner_ids[idx] = player_id
             company_ids[idx] = company_id
             face_values[idx] = get_company_face_value(company_id)
@@ -228,7 +226,7 @@ cdef int _collect_corp_close_offers(
             if idx >= CLOSE_OFFER_BUFFER_SIZE:
                 return count
 
-            owner_types[idx] = OWNER_CORP
+            owner_types[idx] = LOC_CORP
             owner_ids[idx] = corp_id
             company_ids[idx] = company_id
             face_values[idx] = get_company_face_value(company_id)
@@ -354,10 +352,10 @@ cdef bint _is_close_offer_valid(GameState state, int owner_type, int owner_id, i
         return False
 
     # Check ownership unchanged
-    if owner_type == OWNER_PLAYER:
+    if owner_type == LOC_PLAYER:
         if not player_module.PLAYERS[owner_id].owns_company(state, company_id):
             return False
-    elif owner_type == OWNER_CORP:
+    elif owner_type == LOC_CORP:
         if not corp_module.CORPS[owner_id].owns_company(state, company_id):
             return False
 
@@ -410,9 +408,9 @@ cdef void _present_next_close_offer(GameState state) noexcept:
         turn_module.TURN.set_closing_company(state, company_id)
 
         # Determine active player (owner for player, president for corp)
-        if owner_type == OWNER_PLAYER:
+        if owner_type == LOC_PLAYER:
             state._set_active_player(owner_id)
-        elif owner_type == OWNER_CORP:
+        elif owner_type == LOC_CORP:
             president = corp_module.CORPS[owner_id].get_president_id(state)
             state._set_active_player(president if president >= 0 else 0)
         return
@@ -539,15 +537,14 @@ cdef void _handle_close_accept(GameState state) noexcept:
     owner_type = <int>state._data[base]
     owner_id = <int>state._data[base + 1]
 
-    # Close the company (reuses Phase 16 helper)
-    # Map OWNER_PLAYER (0) -> LOC_PLAYER (3), OWNER_CORP (1) -> LOC_CORP (5)
-    if owner_type == OWNER_PLAYER:
+    # Close the company
+    if owner_type == LOC_PLAYER:
         # For player-owned companies, manually clear ownership
         player_module.PLAYERS[owner_id].set_owns_company(state, company_id, False)
 
         # Remove from game
         company_module.COMPANIES[company_id].remove_from_game(state)
-    elif owner_type == OWNER_CORP:
+    elif owner_type == LOC_CORP:
         _close_company(state, company_id, LOC_CORP, owner_id)
 
     # Advance to next offer

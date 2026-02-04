@@ -33,14 +33,10 @@ from entities import company as company_module
 from entities import corp as corp_module
 from entities import fi as fi_module
 from core.data import CORP_NAMES, CORP_NAME_TO_ID
+from entities.company cimport LOC_PLAYER, LOC_FI, LOC_CORP
 
 # Buffer size constant (DEF required for static array sizing - cannot be imported)
 DEF OFFER_BUFFER_SIZE = 250
-
-# Company location constants (from entities/company.pxd)
-DEF LOC_PLAYER = 3
-DEF LOC_FI = 4
-DEF LOC_CORP = 5
 
 
 # =============================================================================

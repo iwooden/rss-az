@@ -7,7 +7,7 @@ from core.data import (
     get_cost_of_ownership
 )
 from entities.turn import TURN
-from entities.company import COMPANIES
+from entities.company import COMPANIES, CompanyLocation
 from entities.corp import CORPS
 from entities.fi import FI
 from entities.player import PLAYERS
@@ -457,7 +457,7 @@ class TestOfferGeneration:
 
         assert get_close_offer_count_py(gs) >= 1
         owner_type, owner_id, company_id = get_close_offer_py(gs, 0)
-        assert owner_type == 0  # OWNER_PLAYER
+        assert owner_type == CompanyLocation.LOC_PLAYER
         assert owner_id == 1
         assert company_id == 1
 
@@ -479,7 +479,7 @@ class TestOfferGeneration:
 
         assert get_close_offer_count_py(gs) >= 1
         owner_type, owner_id, company_id = get_close_offer_py(gs, 0)
-        assert owner_type == 1  # OWNER_CORP
+        assert owner_type == CompanyLocation.LOC_CORP
         assert owner_id == 1
         assert company_id == 2
 
