@@ -406,6 +406,80 @@ class TestAuctionResolution:
         expected_change = face_value - bid_price
         assert final_net_worth == initial_net_worth + expected_change
 
+    def test_auction_resolution_with_empty_deck(self):
+        """BID-09: Auction resolves correctly when deck is empty (no replacement drawn).
+
+        Near game end, the deck may be empty. Auction resolution should:
+        1. Complete without errors
+        2. Transfer company to winner
+        3. Not draw a replacement (deck empty)
+        4. Auction row decreases by 1 with no replacement
+        """
+        from tests.phases.conftest import assert_invariants
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Empty the deck
+        DECK.set_order(state, [])
+        assert DECK.is_empty(state)
+
+        # Count initial auction row
+        initial_auction_count = sum(
+            1 for cid in range(36)
+            if state.is_company_for_auction(cid)
+        )
+        assert initial_auction_count == 3
+
+        # Count initial revealed companies
+        initial_revealed_count = sum(
+            1 for cid in range(36)
+            if COMPANIES[cid].is_revealed(state)
+        )
+
+        # Start auction
+        layout = get_action_layout(3)
+        mask = get_valid_action_mask(state)
+        for i in range(layout['auction_base'], layout['buy_share_base']):
+            if mask[i] == 1.0:
+                DRIVER.apply_action(state, i)
+                break
+
+        assert state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
+        auctioned_company = TURN.get_auction_company(state)
+
+        # Resolve auction (all others leave)
+        for _ in range(2):
+            if state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
+                DRIVER.apply_action(state, layout['leave_auction'])
+
+        # Verify auction resolved
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+
+        # Verify auctioned company transferred (no longer for auction)
+        assert not state.is_company_for_auction(auctioned_company)
+
+        # Verify auction row decreased by 1 with NO replacement
+        final_auction_count = sum(
+            1 for cid in range(36)
+            if state.is_company_for_auction(cid)
+        )
+        assert final_auction_count == initial_auction_count - 1, \
+            "Auction row should decrease by 1 with no replacement from empty deck"
+
+        # Verify no new revealed companies (deck was empty)
+        final_revealed_count = sum(
+            1 for cid in range(36)
+            if COMPANIES[cid].is_revealed(state)
+        )
+        assert final_revealed_count == initial_revealed_count, \
+            "No new company should be revealed when deck is empty"
+
+        # Verify deck is still empty
+        assert DECK.is_empty(state)
+
+        assert_invariants(state, "After auction resolution with empty deck")
+
     def test_winner_is_high_bidder_after_raises(self):
         """Winner is correctly identified after multiple raises."""
         from tests.phases.conftest import assert_invariants
