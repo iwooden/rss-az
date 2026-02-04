@@ -248,6 +248,91 @@ class TestStartAuction:
         new_position = PLAYERS[new_player].get_turn_order(game_state)
         assert new_position == (starter_position + 1) % 3
 
+    def test_auction_masked_when_player_cannot_afford_any_company(self):
+        """INV-AFFORD-01: All auction actions masked when cash < cheapest face value.
+
+        RULES.md line 331: Starting player 'bids >= Face Value' — player must
+        be able to afford at least face value to start an auction.
+        """
+        from core.data import get_company_face_value
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set active player cash to 0
+        active_player_id = state.get_active_player()
+        PLAYERS[active_player_id].set_cash(state, 0)
+
+        mask = get_valid_action_mask(state)
+        layout = get_action_layout(3)
+
+        # Pass must still be valid
+        assert mask[layout['pass_invest']] == 1.0
+
+        # All auction actions must be masked out
+        for i in range(layout['auction_base'], layout['buy_share_base']):
+            assert mask[i] == 0.0, \
+                f"Auction action {i} should be masked (player has no cash)"
+
+    def test_auction_partially_masked_at_exact_face_value(self):
+        """INV-AFFORD-02: Only offset 0 available when cash equals face value exactly.
+
+        Player with cash == face value can start auction at face value (offset 0)
+        but cannot bid higher (offset >= 1).
+        """
+        from core.data import get_company_face_value
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        layout = get_action_layout(3)
+
+        # Find cheapest available auction company
+        cheapest_face = None
+        cheapest_slot = None
+        for slot in range(3):  # num_players auction slots
+            action_base = layout['auction_base'] + slot * 20  # AUCTION_CAP = 20
+            # Check if slot has a company by looking at an initial mask
+            initial_mask = get_valid_action_mask(state)
+            if initial_mask[action_base] == 1.0:
+                # Decode company from slot
+                # We need the face value — find it via the action system
+                # Apply action to peek at company, then restore
+                # Instead, iterate auction row directly
+                pass
+
+        # Simpler approach: find face values of auction row companies
+        auction_companies = []
+        for cid in range(36):
+            if state.is_company_for_auction(cid):
+                auction_companies.append((cid, get_company_face_value(cid)))
+        auction_companies.sort(key=lambda x: x[1])  # Ascending face value
+        assert len(auction_companies) > 0
+
+        cheapest_face = auction_companies[0][1]
+
+        # Set cash to exactly the cheapest face value
+        active_player_id = state.get_active_player()
+        PLAYERS[active_player_id].set_cash(state, cheapest_face)
+
+        mask = get_valid_action_mask(state)
+
+        # Slot 0 (cheapest) offset 0 should be valid (face + 0 == cash)
+        assert mask[layout['auction_base']] == 1.0, \
+            "Offset 0 for cheapest company should be valid at exact face value"
+
+        # Slot 0 offset 1 should be masked (face + 1 > cash)
+        assert mask[layout['auction_base'] + 1] == 0.0, \
+            "Offset 1 for cheapest company should be masked at exact face value"
+
+        # Any company with higher face value should be fully masked
+        for idx, (cid, fv) in enumerate(auction_companies):
+            if fv > cheapest_face:
+                slot_base = layout['auction_base'] + idx * 20
+                for offset in range(20):
+                    assert mask[slot_base + offset] == 0.0, \
+                        f"Company {cid} (face={fv}) should be fully masked (cash={cheapest_face})"
+
     def test_start_auction_resets_consecutive_passes(self, game_state):
         """INV-02: Start auction resets consecutive_passes counter."""
         # Apply pass to increment counter
