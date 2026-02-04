@@ -245,6 +245,32 @@ class TestReceivershipAutoClose:
         assert COMPANIES[orange_company].is_removed(state)
         assert not COMPANIES[other_company].is_removed(state)
 
+    def test_receivership_keeps_orange_below_coo_7(self):
+        """Receivership keeps orange company when CoO < $7 (boundary test).
+
+        At CoO level 5, orange CoO = $4 which is below the $7 threshold.
+        This tests the boundary just below the close threshold.
+        """
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Orange company (stars=2): CoO at level 5 = $4 < $7
+        orange_company = 6
+        other_company = 14  # Yellow, higher FV
+
+        self._setup_receivership_corp(state, 1, [orange_company, other_company])
+        TURN.set_coo_level(state, 5)  # Orange CoO = $4
+
+        # Verify CoO is below threshold
+        coo = get_cost_of_ownership(5, 2)  # level 5, stars=2 (orange)
+        assert coo == 4, f"Expected orange CoO=4 at level 5, got {coo}"
+        assert coo < 7, "CoO should be below $7 threshold"
+
+        apply_closing_auto_py(state)
+
+        # Orange company should NOT be closed (CoO $4 < $7)
+        assert not COMPANIES[orange_company].is_removed(state)
+
     def test_receivership_never_closes_yellow_green_blue(self):
         """Receivership never auto-closes yellow/green/blue companies."""
         state = GameState(num_players=3)
