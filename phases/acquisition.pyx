@@ -601,30 +601,6 @@ cdef bint _is_target_already_acquired(GameState state, int company_id) noexcept:
     return False
 
 
-cdef int _count_seller_companies(GameState state, int seller_corp_id, int target_company_id) noexcept:
-    """
-    Count companies seller retains after selling target.
-
-    Counts:
-    - Companies in seller's owned_companies (excluding target)
-    - Companies in seller's acquisition_companies (excluding target)
-
-    Returns total count.
-    """
-    cdef int count = 0
-    cdef int company_id
-
-    for company_id in range(<int>GameConstants.NUM_COMPANIES):
-        if company_id == target_company_id:
-            continue
-        if corp_module.CORPS[seller_corp_id].owns_company(state, company_id):
-            count += 1
-        if corp_module.CORPS[seller_corp_id].has_acquisition_company(state, company_id):
-            count += 1
-
-    return count
-
-
 cdef bint _validate_price_action(GameState state, int price) noexcept:
     """
     Validate price-based acquisition action.
@@ -667,11 +643,12 @@ cdef bint _validate_price_action(GameState state, int price) noexcept:
         return False
 
     # VALID-03: Seller retains >= 1 company (only for corp sellers, not FI or players)
+    # Check count >= 2 since selling one would leave at least 1
     if not is_fi:
         location = company_module.COMPANIES[company_id].get_location(state)
         if location == LOC_CORP:
             seller_corp_id = company_module.COMPANIES[company_id].get_owner_id(state)
-            if _count_seller_companies(state, seller_corp_id, company_id) < 1:
+            if corp_module.CORPS[seller_corp_id].count_companies(state, include_acquisition=True) < 2:
                 return False
 
     return True

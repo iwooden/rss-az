@@ -108,6 +108,7 @@ cdef class Corporation:
     cpdef bint owns_company(self, GameState state, int company_id)
     cpdef void set_owns_company(self, GameState state, int company_id, bint owns)
     cdef inline bint _owns_company_nogil(self, float* data, int company_id) noexcept nogil
+    cpdef int count_companies(self, GameState state, bint include_acquisition=*)
 
     # Income calculation
     cdef int _calculate_income_nogil(self, float* data, int coo_level) noexcept nogil

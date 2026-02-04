@@ -317,6 +317,31 @@ cdef class Corporation:
         """Check if corporation owns a company (nogil version)."""
         return data[self._owned_companies_offset + company_id] == 1.0
 
+    cpdef int count_companies(self, GameState state, bint include_acquisition=False):
+        """
+        Count companies owned by this corp.
+
+        Used for last-company rule validation. During acquisition phase,
+        include_acquisition=True counts companies in the acquisition zone
+        (which will become owned after the phase ends).
+
+        Args:
+            state: Game state
+            include_acquisition: If True, also count acquisition zone companies
+
+        Returns: Total count of companies
+        """
+        cdef int count = 0
+        cdef int company_id
+
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
+            if state._data[self._owned_companies_offset + company_id] == 1.0:
+                count += 1
+            elif include_acquisition and state._data[self._acquisition_companies_offset + company_id] == 1.0:
+                count += 1
+
+        return count
+
     # =========================================================================
     # INCOME CALCULATION
     # =========================================================================

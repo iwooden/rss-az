@@ -318,24 +318,6 @@ cdef void _generate_close_offers(GameState state) noexcept:
     state._data[state._layout.hidden_close_offer_count_offset] = <float>offer_count
 
 
-cdef int _count_corp_companies(GameState state, int corp_id, int exclude_company_id) noexcept:
-    """
-    Count companies corp retains after excluding target.
-    Used to enforce last-company rule.
-    Returns count of companies excluding the specified company_id.
-    """
-    cdef int count = 0
-    cdef int company_id
-
-    for company_id in range(<int>GameConstants.NUM_COMPANIES):
-        if company_id == exclude_company_id:
-            continue
-        if corp_module.CORPS[corp_id].owns_company(state, company_id):
-            count += 1
-
-    return count
-
-
 cdef bint _is_close_offer_valid(GameState state, int owner_type, int owner_id, int company_id) noexcept:
     """
     Check if close offer is still valid for presentation.
@@ -360,7 +342,8 @@ cdef bint _is_close_offer_valid(GameState state, int owner_type, int owner_id, i
             return False
 
         # Corp last-company rule: can't close if corp would have 0 companies
-        if _count_corp_companies(state, owner_id, company_id) < 1:
+        # Check count >= 2 since closing one would leave at least 1
+        if corp_module.CORPS[owner_id].count_companies(state) < 2:
             return False
 
     return True
