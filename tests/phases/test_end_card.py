@@ -186,7 +186,7 @@ class TestNoUnownedCompanies:
             company.initialize(end_card_state)
             if company_id == 0:
                 # Keep company 0 as revealed
-                company.set_revealed(end_card_state, True)
+                company.mark_revealed(end_card_state)
             else:
                 company.transfer_to_player(end_card_state, 0)
 

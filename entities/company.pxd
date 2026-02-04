@@ -84,7 +84,7 @@ cdef class Company:
     cpdef void transfer_to_corp(self, GameState state, int corp_id)
     cpdef void transfer_to_corp_acquisition(self, GameState state, int corp_id)
     cpdef void move_to_auction(self, GameState state)
-    cpdef void set_revealed(self, GameState state, bint revealed)
+    cpdef void mark_revealed(self, GameState state)
     cpdef void remove_from_game(self, GameState state)
 
     # Static company data (from data.pyx)

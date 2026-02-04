@@ -40,8 +40,8 @@ class TestAvailabilityTransition:
             COMPANIES[company_id].remove_from_game(state)
 
         # Set some companies to REVEALED state (unavailable)
-        COMPANIES[0].set_revealed(state, True)
-        COMPANIES[1].set_revealed(state, True)
+        COMPANIES[0].mark_revealed(state)
+        COMPANIES[1].mark_revealed(state)
         # Set one to FOR_AUCTION (already available)
         COMPANIES[2].move_to_auction(state)
 

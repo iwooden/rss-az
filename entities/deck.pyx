@@ -98,7 +98,7 @@ cdef class Deck:
         state._data[self._deck_top_offset] = <float>(top - 1)
 
         # Mark drawn company as revealed (unavailable for auction this turn)
-        company_module.COMPANIES[company_id].set_revealed(state, True)
+        company_module.COMPANIES[company_id].mark_revealed(state)
 
         # If this was the last company in its color group, increment CoO level
         # (the next color is now on top of the deck)

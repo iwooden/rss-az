@@ -236,18 +236,11 @@ cdef class Company:
         state._data[self._auction_offset] = 1.0
         self._set_hidden_location(state, LOC_AUCTION, -1)
 
-    cpdef void set_revealed(self, GameState state, bint revealed):
-        """Set whether company is revealed this turn (drawn but not auctionable)."""
-        if revealed:
-            self._clear_visible_flag(state)
-            state._data[self._revealed_offset] = 1.0
-            self._set_hidden_location(state, LOC_REVEALED, -1)
-        else:
-            # Just clear the revealed flag without changing location
-            state._data[self._revealed_offset] = 0.0
-            # If was revealed, it's now in deck (no visible flag)
-            if self._get_hidden_location(state) == LOC_REVEALED:
-                self._set_hidden_location(state, LOC_DECK, -1)
+    cpdef void mark_revealed(self, GameState state):
+        """Mark company as revealed this turn (drawn but not auctionable)."""
+        self._clear_visible_flag(state)
+        state._data[self._revealed_offset] = 1.0
+        self._set_hidden_location(state, LOC_REVEALED, -1)
 
     cpdef void remove_from_game(self, GameState state):
         """Remove company from the game (closed)."""
