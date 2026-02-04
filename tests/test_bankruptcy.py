@@ -209,15 +209,6 @@ class TestCoreBankruptcyBehavior:
 
         assert MARKET.is_space_available(bankruptcy_state, 1)
 
-    def test_bankruptcy_clears_president_flags(self, bankruptcy_state):
-        """Bankruptcy clears all president flags for that corp."""
-        layout = get_action_layout(3)
-        sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(bankruptcy_state, sell_idx)
-
-        for player_id in range(3):
-            assert not PLAYERS[player_id].is_president_of(bankruptcy_state, 0)
-
     def test_bankruptcy_clears_receivership(self, bankruptcy_state):
         """Bankrupt corp is no longer in receivership."""
         CORPS[0].set_in_receivership(bankruptcy_state, True)

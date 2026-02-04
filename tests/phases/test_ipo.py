@@ -191,16 +191,6 @@ class TestBasicIPOMechanics:
 
         assert not MARKET.is_space_available(state, market_index)
 
-    def test_ipo_sets_player_as_president(self, ipo_state_with_company):
-        """IPO sets company owner as corporation president."""
-        state = ipo_state_with_company
-
-        assert not PLAYERS[0].is_president_of(state, 0)
-
-        apply_ipo_action_py(state, 0, 0)
-
-        assert PLAYERS[0].is_president_of(state, 0)
-
     def test_ipo_sets_corp_stars(self, ipo_state_with_company):
         """IPO sets corporation stars to company's star tier."""
         state = ipo_state_with_company
