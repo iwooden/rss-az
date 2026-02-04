@@ -179,8 +179,9 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     # Buyer becomes president simply by having the most shares (the only player with shares)
     _check_receivership(state, corp_id)
 
-    # Check presidency (INV-18, INV-19)
-    _check_presidency(state, corp_id)
+    # Check presidency (INV-18, INV-19) - only if not in receivership
+    if not corp.is_in_receivership(state):
+        _check_presidency(state, corp_id)
 
     # Round-trip tracking (INV-16)
     player_module.PLAYERS[player_id].increment_share_buys(state, corp_id)
