@@ -17,12 +17,13 @@ TEST-01 (Offer Generation Priority):
   - test_player_private_sorted_similarly: OFFER-05 (detailed)
 
 TEST-02 (Action Types):
-- TestActionIntegration class (5 tests)
+- TestActionIntegration class (6 tests)
   - test_accept_price_action: Price-based acquisition
   - test_fi_buy_high_action: Non-OS buys from FI at high price
   - test_fi_buy_face_action: OS buys from FI at face value
   - test_os_pays_face_value_not_high_price: OS privilege verification (face != high)
   - test_pass_action: Skip offer, advance to next
+  - test_fi_intervention_equivalent_higher_price_gets_company: Intervention mechanism E2E
 
 TEST-03 (Validation Rules):
 - TestValidation class (20 tests)
@@ -1110,6 +1111,82 @@ class TestActionIntegration:
             else:
                 # Should clear (no more offers)
                 assert second_target == -1
+
+    def test_fi_intervention_equivalent_higher_price_gets_company(self):
+        """Higher-priced corp accepting FI offer prevents lower-priced corp from getting it.
+
+        RULES.md intervention mechanism: 'Any corporation with higher share price
+        and enough money may intervene and buy instead.'
+
+        Implementation: Offers are sorted by descending share price, so higher-priced
+        corps are offered each FI company first. When they accept, the company is
+        transferred and unavailable to lower-priced corps. The lower-priced corp's
+        offer for that company is automatically skipped via dynamic validation.
+
+        This test verifies the end-to-end behavior of this intervention-equivalent
+        mechanism.
+        """
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give company 0 to FI
+        COMPANIES[0].transfer_to_fi(gs)
+
+        # Corp 0: higher price (index 20), has cash
+        high_corp = CORPS[0]
+        high_corp.set_active(gs, True)
+        high_corp.set_price_index(gs, 20)
+        high_corp.set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 0, True)
+
+        # Corp 1: lower price (index 10), has cash
+        low_corp = CORPS[1]
+        low_corp.set_active(gs, True)
+        low_corp.set_price_index(gs, 10)
+        low_corp.set_cash(gs, 50000)
+        PLAYERS[1].set_president_of(gs, 1, True)
+
+        # Generate offers
+        setup_acquisition_phase_py(gs)
+
+        # Verify higher-priced corp (0) is offered first via visible state
+        assert TURN.get_acq_active_corp(gs) == 0, "Higher-priced corp should be active"
+        assert TURN.get_acq_target_company(gs) == 0, "Company 0 should be the target"
+
+        # Verify offer buffer contains both corps' offers for company 0
+        assert get_offer_count(gs) >= 2, "Should have offers for both corps"
+        first_corp, first_company = get_offer_at(gs, 0)
+        second_corp, second_company = get_offer_at(gs, 1)
+        assert first_corp == 0 and first_company == 0, "First offer: corp 0 for company 0"
+        assert second_corp == 1 and second_company == 0, "Second offer: corp 1 for company 0"
+
+        # Higher-priced corp accepts
+        fi_cash_before = FI.get_cash(gs)
+        high_corp_cash_before = high_corp.get_cash(gs)
+
+        result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_HIGH, 0)
+        assert result == 0, "Accept action should succeed"
+
+        # Verify company transferred to higher-priced corp
+        assert high_corp.has_acquisition_company(gs, 0), "High corp should have company in acquisition zone"
+        assert not FI.owns_company(gs, 0), "FI should no longer own company"
+
+        # Verify money transferred at high price
+        high_price = COMPANIES[0].get_high_price()
+        assert high_corp.get_cash(gs) == high_corp_cash_before - high_price
+        assert FI.get_cash(gs) == fi_cash_before + high_price
+
+        # KEY ASSERTION: Lower-priced corp's offer for company 0 was automatically
+        # skipped because the company is no longer owned by FI. The current offer
+        # presented (if any) should NOT be for company 0.
+        current_target = TURN.get_acq_target_company(gs)
+        if current_target != -1:
+            # If there's still an active offer, it must not be for company 0
+            assert current_target != 0, (
+                f"Lower-priced corp should not be offered company 0 "
+                f"(got target company {current_target})"
+            )
+        # If current_target == -1, phase has ended (no more valid offers) - also correct
 
 
 class TestZoneMerging:
