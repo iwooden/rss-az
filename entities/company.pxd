@@ -19,7 +19,6 @@ cdef int get_auction_company_for_slot(GameState state, int slot) noexcept nogil
 
 # Location type enum (cpdef for Python access in tests)
 cpdef enum CompanyLocation:
-    LOC_UNKNOWN = -1    # Not yet initialized or invalid
     LOC_DECK = 0        # In the draw deck (not visible in any flag)
     LOC_AUCTION = 1     # Available for auction
     LOC_REVEALED = 2    # Drawn this turn but not auctionable
