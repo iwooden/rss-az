@@ -498,10 +498,9 @@ cdef class Corporation:
         self.set_income(state, 0)
         self.set_stars(state, 0)
         self.set_acquisition_proceeds(state, 0)
-
-        # Step 7: Clear acquisition company flags
-        for company_id in range(<int>GameConstants.NUM_COMPANIES):
-            self.set_acquisition_company(state, company_id, False)
+        # Note: No need to clear acquisition_company flags - bankruptcy only happens
+        # during INVEST, INCOME, DIVIDENDS, or ISSUE phases, after ACQUISITION phase
+        # has already merged all acquisition companies into owned_companies.
 
     # =========================================================================
     # PRESIDENT
@@ -522,10 +521,7 @@ cdef class Corporation:
     cpdef bint has_acquisition_company(self, GameState state, int company_id):
         """Check if company is in corporation's acquisition pile (pending integration)."""
         return state._data[self._acquisition_companies_offset + company_id] == 1.0
-
-    cpdef void set_acquisition_company(self, GameState state, int company_id, bint has):
-        """Set whether company is in acquisition pile."""
-        state._data[self._acquisition_companies_offset + company_id] = 1.0 if has else 0.0
+    # Note: No set_acquisition_company() - use Company.transfer_to_corp_acquisition()
 
 
 # =============================================================================

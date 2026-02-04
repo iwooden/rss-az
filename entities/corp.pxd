@@ -120,6 +120,5 @@ cdef class Corporation:
     # President
     cpdef int get_president_id(self, GameState state)
 
-    # Acquisition pile (companies pending integration)
+    # Acquisition pile (use Company.transfer_to_corp_acquisition() to set)
     cpdef bint has_acquisition_company(self, GameState state, int company_id)
-    cpdef void set_acquisition_company(self, GameState state, int company_id, bint has)
