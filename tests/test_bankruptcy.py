@@ -35,6 +35,7 @@ from entities.market import MARKET
 from phases.dividends import setup_dividends_phase_py, apply_dividend_action_py
 from phases.income import apply_income_py
 from phases.issue import setup_issue_phase_py, apply_issue_action_py
+from tests.phases.conftest import float_corp_for_test
 
 
 # =============================================================================
@@ -47,19 +48,11 @@ def bankruptcy_state():
     state = GameState(num_players=3)
     state.initialize_game(seed=42)
 
-    corp = CORPS[0]
-    corp.set_active(state, True)
-    corp.set_price_index(state, 1)  # One sell -> index 0 -> bankruptcy
-    corp.set_bank_shares(state, 2)
-    corp.set_issued_shares(state, 4)  # bank(2) + player(2) = 4
+    # Float corp 0 and then move to bankruptcy-prone position
+    float_corp_for_test(state, corp_id=0, par_index=1, float_shares=2)
+    # float_shares=2 gives: player=2, bank=2, issued=4
 
-    COMPANIES[0].transfer_to_corp(state, 0)
-
-    PLAYERS[0].set_shares(state, 0, 2)
-    PLAYERS[0].set_president_of(state, 0, True)
     PLAYERS[0].set_cash(state, 100)
-
-    MARKET.set_space_available(state, 1, False)
 
     return state
 
@@ -70,22 +63,19 @@ def dividend_bankruptcy_state():
     state = GameState(num_players=3)
     state.initialize_game(seed=42)
 
+    # Float corp 0 at low price
+    float_corp_for_test(state, corp_id=0, par_index=1)
+
     corp = CORPS[0]
-    corp.set_active(state, True)
-    corp.set_price_index(state, 1)  # Very low, will drop to 0
-    corp.set_in_receivership(state, False)
-    corp.set_stars(state, 0)  # No stars, will drop
+    corp.set_stars(state, 0)  # No stars, will drop on $0 dividend
     corp.set_cash(state, 0)  # No cash bonus
+    # Adjust shares for test scenario: player=3, bank=0
     corp.set_issued_shares(state, 3)
     corp.set_bank_shares(state, 0)
     corp.set_unissued_shares(state, 4)
-
     PLAYERS[0].set_shares(state, 0, 3)
-    PLAYERS[0].set_president_of(state, 0, True)
-    MARKET.set_space_available(state, 1, False)
-    MARKET.set_space_available(state, 0, True)
 
-    COMPANIES[0].transfer_to_corp(state, 0)
+    MARKET.set_space_available(state, 0, True)  # Ensure space 0 is open
 
     return state
 
@@ -99,12 +89,11 @@ def income_bankruptcy_state():
     # High CoO for negative income
     TURN.set_coo_level(state, 6)
 
-    corp = CORPS[0]
-    corp.set_active(state, True)
-    corp.set_cash(state, 1)  # Not enough to cover negative income
-    corp.set_price_index(state, 10)
-    MARKET.set_space_available(state, 10, False)
+    # Float corp 0
+    float_corp_for_test(state, corp_id=0, par_index=10)
+    CORPS[0].set_cash(state, 1)  # Not enough to cover negative income
 
+    # Give corp a negative-income company
     # KK: income=5, stars=3. At CoO level 6, 3-star CoO=7. Adjusted = -2
     kk = COMPANY_NAME_TO_ID["KK"]
     COMPANIES[kk].transfer_to_corp(state, 0)
@@ -118,22 +107,17 @@ def issue_bankruptcy_state():
     state = GameState(num_players=3)
     state.initialize_game(seed=42)
 
+    # Float corp 0 at price index 1 (one above bankruptcy)
+    float_corp_for_test(state, corp_id=0, par_index=1, float_shares=2)
+    # float_shares=2 gives: player=2, bank=2, issued=4, unissued=3
+
     corp = CORPS[0]
-    corp.initialize(state)
-    corp.set_active(state, True)
-    corp.set_price_index(state, 1)  # One above bankruptcy
-    corp.set_unissued_shares(state, 3)
-    corp.set_issued_shares(state, 4)
-    corp.set_bank_shares(state, 0)
+    corp.set_bank_shares(state, 0)  # Test expects bank=0
     corp.set_cash(state, 50)
-    corp.set_in_receivership(state, False)
 
-    MARKET.initialize(state)
-    MARKET.set_space_available(state, 1, False)
-
-    PLAYERS[0].set_shares(state, 0, 2)
-    PLAYERS[0].set_president_of(state, 0, True)
+    # Give player 1 some shares too
     PLAYERS[1].set_shares(state, 0, 1)
+    corp.set_issued_shares(state, 3)  # player0=2 + player1=1
 
     return state
 
@@ -289,25 +273,15 @@ class TestCoreBankruptcyBehavior:
         state = GameState(num_players=num_players)
         state.initialize_game(seed=42)
 
-        corp = CORPS[0]
-        corp.set_active(state, True)
-        corp.set_price_index(state, 1)
-        corp.set_bank_shares(state, 2)
-        corp.set_issued_shares(state, 4)
-
-        COMPANIES[0].transfer_to_corp(state, 0)
-
-        PLAYERS[0].set_shares(state, 0, 2)
-        PLAYERS[0].set_president_of(state, 0, True)
+        # Float corp 0 at bankruptcy-prone price
+        float_corp_for_test(state, corp_id=0, par_index=1, float_shares=2)
         PLAYERS[0].set_cash(state, 100)
-
-        MARKET.set_space_available(state, 1, False)
 
         layout = get_action_layout(num_players)
         sell_idx = layout['sell_share_base'] + 0
         DRIVER.apply_action(state, sell_idx)
 
-        assert not corp.is_active(state)
+        assert not CORPS[0].is_active(state)
 
 
 # =============================================================================
@@ -371,21 +345,17 @@ class TestBankruptcyFromDividend:
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
+        # Float corp 0 at price index 2
+        float_corp_for_test(state, corp_id=0, par_index=2)
+
         corp = CORPS[0]
-        corp.set_active(state, True)
-        corp.set_price_index(state, 2)  # At index 2
-        corp.set_in_receivership(state, False)
         corp.set_stars(state, 0)  # Very low stars -> move will be -2 or worse
         corp.set_cash(state, 0)
+        # Adjust shares: player=3, bank=0
         corp.set_issued_shares(state, 3)
         corp.set_bank_shares(state, 0)
         corp.set_unissued_shares(state, 4)
-
         PLAYERS[0].set_shares(state, 0, 3)
-        PLAYERS[0].set_president_of(state, 0, True)
-        MARKET.set_space_available(state, 2, False)
-
-        COMPANIES[0].transfer_to_corp(state, 0)
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
@@ -446,18 +416,12 @@ class TestBankruptcyFromIncome:
         TURN.set_coo_level(state, 6)
 
         # Corp 0: will go bankrupt (low cash)
-        corp0 = CORPS[0]
-        corp0.set_active(state, True)
-        corp0.set_cash(state, 0)
-        corp0.set_price_index(state, 10)
-        MARKET.set_space_available(state, 10, False)
+        float_corp_for_test(state, corp_id=0, par_index=10)
+        CORPS[0].set_cash(state, 0)
 
         # Corp 1: will survive (high cash)
-        corp1 = CORPS[1]
-        corp1.set_active(state, True)
-        corp1.set_cash(state, 100)
-        corp1.set_price_index(state, 15)
-        MARKET.set_space_available(state, 15, False)
+        float_corp_for_test(state, corp_id=1, player_id=1, par_index=15)
+        CORPS[1].set_cash(state, 100)
 
         # Give both negative income companies
         kk = COMPANY_NAME_TO_ID["KK"]
@@ -468,8 +432,8 @@ class TestBankruptcyFromIncome:
         TURN.set_phase(state, GamePhases.PHASE_INCOME)
         apply_income_py(state)
 
-        assert not corp0.is_active(state), "Corp 0 should be bankrupt"
-        assert corp1.is_active(state), "Corp 1 should survive"
+        assert not CORPS[0].is_active(state), "Corp 0 should be bankrupt"
+        assert CORPS[1].is_active(state), "Corp 1 should survive"
 
     def test_two_corps_go_bankrupt_simultaneously(self):
         """Two corps with negative income both go bankrupt."""
@@ -479,12 +443,10 @@ class TestBankruptcyFromIncome:
         TURN.set_coo_level(state, 6)
 
         # Set up two corps that will both go bankrupt
-        for corp_id, company_name in [(0, "KK"), (1, "DR")]:
-            corp = CORPS[corp_id]
-            corp.set_active(state, True)
-            corp.set_cash(state, 1)
-            corp.set_price_index(state, 10 + corp_id)
-            MARKET.set_space_available(state, 10 + corp_id, False)
+        companies = ["KK", "DR"]
+        for corp_id, company_name in enumerate(companies):
+            float_corp_for_test(state, corp_id=corp_id, player_id=corp_id, par_index=10 + corp_id)
+            CORPS[corp_id].set_cash(state, 1)  # Not enough for negative income
 
             cid = COMPANY_NAME_TO_ID[company_name]
             COMPANIES[cid].transfer_to_corp(state, corp_id)
@@ -503,19 +465,18 @@ class TestBankruptcyFromIncome:
         TURN.set_coo_level(state, 6)
 
         # Set up corps 0, 2, 4 with bankruptcy conditions
-        companies = [COMPANY_NAME_TO_ID["KK"], COMPANY_NAME_TO_ID["DR"], COMPANY_NAME_TO_ID["BY"]]
-        for corp_id, cid in zip([0, 2, 4], companies):
-            corp = CORPS[corp_id]
-            corp.set_active(state, True)
-            corp.set_cash(state, 0)
-            corp.set_price_index(state, 10 + corp_id)
-            MARKET.set_space_available(state, 10 + corp_id, False)
+        companies = ["KK", "DR", "BY"]
+        corp_ids = [0, 2, 4]
+        for corp_id, company_name in zip(corp_ids, companies):
+            float_corp_for_test(state, corp_id=corp_id, player_id=corp_id % 3, par_index=10 + corp_id)
+            CORPS[corp_id].set_cash(state, 0)  # No cash for negative income
+            cid = COMPANY_NAME_TO_ID[company_name]
             COMPANIES[cid].transfer_to_corp(state, corp_id)
 
         TURN.set_phase(state, GamePhases.PHASE_INCOME)
         apply_income_py(state)
 
-        for corp_id in [0, 2, 4]:
+        for corp_id in corp_ids:
             assert not CORPS[corp_id].is_active(state), f"Corp {corp_id} should be bankrupt"
 
 
@@ -561,20 +522,12 @@ class TestBankruptcyEdgeCases:
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
+        # Float corp 0 at low price
+        float_corp_for_test(state, corp_id=0, par_index=1)
+
         corp = CORPS[0]
-        corp.set_active(state, True)
-        corp.set_price_index(state, 1)
         corp.set_stars(state, 10)  # High stars - won't drop
         corp.set_cash(state, 100)
-        corp.set_issued_shares(state, 3)
-        corp.set_bank_shares(state, 0)
-        corp.set_unissued_shares(state, 4)
-
-        PLAYERS[0].set_shares(state, 0, 3)
-        PLAYERS[0].set_president_of(state, 0, True)
-        MARKET.set_space_available(state, 1, False)
-
-        COMPANIES[0].transfer_to_corp(state, 0)
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
@@ -590,19 +543,18 @@ class TestBankruptcyEdgeCases:
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
+        # Float corp 0 at low price
+        float_corp_for_test(state, corp_id=0, par_index=1)
+
         corp = CORPS[0]
-        corp.set_active(state, True)
-        corp.set_price_index(state, 1)
-        corp.set_in_receivership(state, True)  # No president
+        corp.set_in_receivership(state, True)  # Put into receivership
+        PLAYERS[0].set_shares(state, 0, 0)  # Remove player shares
         corp.set_stars(state, 0)
         corp.set_cash(state, 0)
+        # Adjust shares: all in bank
         corp.set_issued_shares(state, 3)
-        corp.set_bank_shares(state, 3)  # All in bank
+        corp.set_bank_shares(state, 3)
         corp.set_unissued_shares(state, 1)
-
-        MARKET.set_space_available(state, 1, False)
-
-        COMPANIES[0].transfer_to_corp(state, 0)
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)

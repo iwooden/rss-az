@@ -121,45 +121,25 @@ cdef void _process_ipo(GameState state, int corp_id, int par_slot) noexcept:
     cdef int par_price = get_par_price(par_index)
     cdef int market_index = get_market_index(par_price)
 
-    # Calculate share distribution
-    cdef int player_shares, bank_shares, unissued_shares
-    cdef int total_shares = get_corp_share_count(corp_id)
-
+    # Calculate share distribution (player and bank each get float_shares)
+    cdef int float_shares
     if face_value > par_price:
-        player_shares = 2
-        bank_shares = 2
+        float_shares = 2
     else:
-        player_shares = 1
-        bank_shares = 1
+        float_shares = 1
 
-    unissued_shares = total_shares - player_shares - bank_shares
+    # Float the corporation (transfers company, sets up corp, gives player shares)
+    corp_module.CORPS[corp_id].float_corp(state, player_id, company_id, market_index, float_shares)
 
-    # Calculate payments
-    cdef int player_payment = (player_shares * par_price) - face_value
-    cdef int bank_payment = bank_shares * par_price
+    # Phase-specific: calculate and apply payments
+    cdef int player_payment = (float_shares * par_price) - face_value
+    cdef int bank_payment = float_shares * par_price
     cdef int corp_cash = player_payment + bank_payment
 
-    # 1. Transfer company to corporation
-    company_module.COMPANIES[company_id].transfer_to_corp(state, corp_id)
-
-    # 2. Set corporation state
-    corp_module.CORPS[corp_id].set_active(state, True)
     corp_module.CORPS[corp_id].set_cash(state, corp_cash)
-    corp_module.CORPS[corp_id].set_unissued_shares(state, unissued_shares)
-    corp_module.CORPS[corp_id].set_issued_shares(state, player_shares + bank_shares)
-    corp_module.CORPS[corp_id].set_bank_shares(state, bank_shares)
-    corp_module.CORPS[corp_id].set_stars(state, star_tier)
-
-    # 3. Claim market space and set price
-    market_module.MARKET.set_space_available(state, market_index, False)
-    corp_module.CORPS[corp_id].set_price_index(state, market_index)
-
-    # 4. Update player: deduct payment, grant shares, set as president
     player_module.PLAYERS[player_id].add_cash(state, -player_payment)
-    player_module.PLAYERS[player_id].set_shares(state, corp_id, player_shares)
-    player_module.PLAYERS[player_id].set_president_of(state, corp_id, True)
 
-    # 5. Clear from remaining
+    # Clear from remaining
     turn_module.TURN.set_ipo_remaining(state, company_id, False)
 
 

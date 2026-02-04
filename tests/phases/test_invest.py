@@ -545,12 +545,11 @@ class TestRoundTripLimits:
             player.increment_share_buys(trade_state, 0)
             player.increment_share_sells(trade_state, 0)
 
-        # Set up corp 1 as active with shares
+        # Float corp 1 using a different company
+        COMPANIES[1].transfer_to_player(trade_state, 0)
         corp1 = CORPS[1]
-        corp1.set_active(trade_state, True)
-        corp1.set_price_index(trade_state, 8)
+        corp1.float_corp(trade_state, 0, 1, 8, 1)
         corp1.set_bank_shares(trade_state, 2)
-        MARKET.set_space_available(trade_state, 8, False)
 
         # Give player shares of corp 1
         player.set_shares(trade_state, 1, 1)
@@ -636,22 +635,25 @@ class TestPresidency:
 
         corp = CORPS[0]
 
-        # Player 0 is president with 2 shares
-        # Give player 1 more shares so they have majority
+        # Player 0 starts as president with 2 shares (from trade_state fixture)
+        # Give player 1 more shares - this triggers automatic presidency recalculation
+        # P1 with 3 shares becomes president (3 > 2)
         PLAYERS[1].set_shares(trade_state, 0, 3)
-        # Update issued shares to match
+        # Update issued shares to match total
         corp.set_issued_shares(trade_state, 5)  # bank(2) + P0(2) + P1(3) - but only 7 total shares
         # So we need: unissued(0) + bank(2) + P0(2) + P1(3) = 7
         corp.set_unissued_shares(trade_state, 0)
 
+        # At this point P1 is president (automatic recalculation when set_shares was called)
+        assert PLAYERS[1].is_president_of(trade_state, 0), "P1 should be president after getting 3 shares"
+
         # Player 0 buys, now has 3 shares - tie with player 1
-        # Since player 1 had more before, check presidency rules
         layout = get_action_layout(3)
         buy_idx = layout['buy_share_base'] + 0
         DRIVER.apply_action(trade_state, buy_idx)
 
-        # After buy: P0 has 3, P1 has 3 - incumbent (P0) keeps
-        assert PLAYERS[0].is_president_of(trade_state, 0)
+        # After buy: P0 has 3, P1 has 3 - tie, incumbent (P1) keeps
+        assert PLAYERS[1].is_president_of(trade_state, 0), "On tie, incumbent P1 keeps presidency"
         assert_invariants(trade_state, "After buy with tie")
 
     def test_presidency_three_way_competition(self, trade_state):
@@ -743,11 +745,10 @@ class TestPresidency:
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
-        # Set up corp 0 as active
+        # Float corp 0 with P0 as initial president
+        COMPANIES[0].transfer_to_player(state, 0)
         corp = CORPS[0]
-        corp.set_active(state, True)
-        corp.set_price_index(state, 15)
-        MARKET.set_space_available(state, 15, False)
+        corp.float_corp(state, 0, 0, 15, 1)
 
         # Modify turn order: P0->pos2, P1->pos0, P2->pos1
         # This way when P0 (the president and active player) sells,
@@ -756,9 +757,8 @@ class TestPresidency:
         PLAYERS[1].set_turn_order(state, 0)  # P1 at position 0
         PLAYERS[2].set_turn_order(state, 1)  # P2 at position 1
 
-        # P0 is president with 1 share, P1 and P2 both have 3 shares
+        # Set up shares: P0=1 (president), P1=3, P2=3, all 7 issued
         PLAYERS[0].set_shares(state, 0, 1)
-        PLAYERS[0].set_president_of(state, 0, True)
         PLAYERS[1].set_shares(state, 0, 3)
         PLAYERS[2].set_shares(state, 0, 3)
         corp.set_unissued_shares(state, 0)
@@ -814,7 +814,6 @@ class TestReceivership:
         # Put corp in receivership
         corp.set_in_receivership(trade_state, True)
         PLAYERS[0].set_shares(trade_state, 0, 0)
-        PLAYERS[0].set_president_of(trade_state, 0, False)
         corp.set_bank_shares(trade_state, 5)
 
         # Buy a share
@@ -855,7 +854,6 @@ class TestReceivership:
         corp.set_bank_shares(trade_state, 4)
         corp.set_issued_shares(trade_state, 0)
         PLAYERS[0].set_shares(trade_state, 0, 0)
-        PLAYERS[0].set_president_of(trade_state, 0, False)
 
         # Verify corp is in receivership
         assert corp.is_in_receivership(trade_state)
@@ -881,19 +879,17 @@ class TestReceivership:
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
+        # Float corp with P0 as president (1 share each to player and bank)
+        COMPANIES[0].transfer_to_player(state, 0)
         corp = CORPS[0]
-        corp.set_active(state, True)
-        corp.set_price_index(state, 15)
+        corp.float_corp(state, 0, 0, 15, 1)
+
+        # Adjust to have only P0 with 1 share, bank has 0
         corp.set_unissued_shares(state, 6)
         corp.set_bank_shares(state, 0)
         corp.set_issued_shares(state, 1)
-
-        # Only P0 owns 1 share (is president)
         PLAYERS[0].set_shares(state, 0, 1)
-        PLAYERS[0].set_president_of(state, 0, True)
         PLAYERS[0].set_cash(state, 100)
-
-        MARKET.set_space_available(state, 15, False)
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
@@ -965,12 +961,11 @@ class TestMultiplePlayerCounts:
         state = GameState(num_players=num_players)
         state.initialize_game(seed=42)
 
-        # Set up tradeable corp
+        # Float corp with bank shares available for buying
+        COMPANIES[0].transfer_to_player(state, 0)
         corp = CORPS[0]
-        corp.set_active(state, True)
-        corp.set_price_index(state, 10)
+        corp.float_corp(state, 0, 0, 10, 1)
         corp.set_bank_shares(state, 3)
-        MARKET.set_space_available(state, 10, False)
         PLAYERS[0].set_cash(state, 100)
 
         layout = get_action_layout(num_players)
@@ -987,12 +982,10 @@ class TestMultiplePlayerCounts:
         state = GameState(num_players=num_players)
         state.initialize_game(seed=42)
 
-        # Set up corp with player shares
+        # Float corp with player shares for selling
+        COMPANIES[0].transfer_to_player(state, 0)
         corp = CORPS[0]
-        corp.set_active(state, True)
-        corp.set_price_index(state, 10)
-        MARKET.set_space_available(state, 10, False)
-        PLAYERS[0].set_shares(state, 0, 2)
+        corp.float_corp(state, 0, 0, 10, 2)  # Player gets 2 shares
 
         layout = get_action_layout(num_players)
         sell_idx = layout['sell_share_base'] + 0
@@ -1083,22 +1076,18 @@ class TestGameEndAt75:
 
     def test_buy_share_at_75_ends_game_immediately(self):
         """Buying a share that moves price to $75 ends game immediately."""
+        from tests.phases.conftest import float_corp_for_test
+
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
+        # Float corp at price index 25 ($68 - one step below $75)
+        float_corp_for_test(state, corp_id=0, par_index=25)
         corp = CORPS[0]
-        corp.set_active(state, True)
-        corp.set_price_index(state, 25)  # $68 - one step below $75
-        corp.set_unissued_shares(state, 3)
+
+        # Ensure bank has shares to buy
         corp.set_bank_shares(state, 2)
-        corp.set_issued_shares(state, 2)
-
-        PLAYERS[0].set_shares(state, 0, 2)
-        PLAYERS[0].set_president_of(state, 0, True)
         PLAYERS[0].set_cash(state, 100)  # Enough to afford $75
-
-        MARKET.set_space_available(state, 25, False)
-        # Index 26 ($75) is always available - no need to mark it
 
         # Buy action should move price from index 25 to 26
         layout = get_action_layout(3)
@@ -1112,25 +1101,22 @@ class TestGameEndAt75:
 
         # Verify the buy was actually processed
         assert corp.get_price_index(state) == 26  # $75
-        assert PLAYERS[0].get_shares(state, 0) == 3  # Got the share
+        assert PLAYERS[0].get_shares(state, 0) == 2  # Got the share (started with 1)
 
     def test_buy_share_below_75_does_not_end_game(self):
         """Buying a share that doesn't reach $75 continues normally."""
+        from tests.phases.conftest import float_corp_for_test
+
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
+        # Float corp at price index 20 ($41 - well below $75)
+        float_corp_for_test(state, corp_id=0, par_index=20)
         corp = CORPS[0]
-        corp.set_active(state, True)
-        corp.set_price_index(state, 20)  # $41 - well below $75
-        corp.set_unissued_shares(state, 3)
+
+        # Ensure bank has shares to buy
         corp.set_bank_shares(state, 2)
-        corp.set_issued_shares(state, 2)
-
-        PLAYERS[0].set_shares(state, 0, 2)
-        PLAYERS[0].set_president_of(state, 0, True)
         PLAYERS[0].set_cash(state, 100)
-
-        MARKET.set_space_available(state, 20, False)
 
         layout = get_action_layout(3)
         buy_idx = layout['buy_share_base'] + 0
@@ -1144,22 +1130,21 @@ class TestGameEndAt75:
 
     def test_buy_share_skipping_to_75_ends_game(self):
         """Buying when intermediate spaces are occupied still ends game at $75."""
+        from tests.phases.conftest import float_corp_for_test
+
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
+        # Float corp at price index 24 ($61)
+        float_corp_for_test(state, corp_id=0, par_index=24)
         corp = CORPS[0]
-        corp.set_active(state, True)
-        corp.set_price_index(state, 24)  # $61
-        corp.set_unissued_shares(state, 3)
-        corp.set_bank_shares(state, 2)
-        corp.set_issued_shares(state, 2)
 
-        PLAYERS[0].set_shares(state, 0, 2)
-        PLAYERS[0].set_president_of(state, 0, True)
+        # Ensure bank has shares to buy
+        corp.set_bank_shares(state, 2)
         PLAYERS[0].set_cash(state, 100)
 
-        MARKET.set_space_available(state, 24, False)
-        MARKET.set_space_available(state, 25, False)  # $68 occupied - skip to $75
+        # Mark space 25 as occupied - buy will skip to $75
+        MARKET.set_space_available(state, 25, False)
 
         layout = get_action_layout(3)
         buy_idx = layout['buy_share_base'] + 0

@@ -74,9 +74,8 @@ cdef class Player:
     cpdef int get_shares(self, GameState state, int corp_id)
     cpdef void set_shares(self, GameState state, int corp_id, int shares)
 
-    # President status
+    # President status (read-only - presidency is derived from share ownership)
     cpdef bint is_president_of(self, GameState state, int corp_id)
-    cpdef void set_president_of(self, GameState state, int corp_id, bint is_pres)
 
     # Round-trip tracking
     cpdef int get_share_buys(self, GameState state, int corp_id)

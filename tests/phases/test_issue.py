@@ -25,6 +25,7 @@ from phases.issue import (
     find_next_issue_corp_py,
     process_issue_share_py,
 )
+from tests.phases.conftest import float_corp_for_test
 
 
 # =============================================================================
@@ -51,32 +52,14 @@ def issue_state_with_corp(game_state):
 
     Corp 0 (JS) is active with:
     - price_index = 15 (price $24)
-    - unissued_shares = 3
-    - issued_shares = 4
-    - bank_shares = 0
+    - unissued_shares = 3, issued = 4, player = 2, bank = 2
     - cash = 50
-    - Player 0 is president with 2 shares
+    - Player 0 is president
     """
-    # Set up corp 0
-    corp = CORPS[0]
-    corp.initialize(game_state)
-    corp.set_active(game_state, True)
-    corp.set_price_index(game_state, 15)  # $24
-    corp.set_unissued_shares(game_state, 3)
-    corp.set_issued_shares(game_state, 4)
-    corp.set_bank_shares(game_state, 0)
-    corp.set_cash(game_state, 50)
-    corp.set_in_receivership(game_state, False)
+    # Float corp 0 at price index 15 with 2 shares each to player/bank
+    float_corp_for_test(game_state, corp_id=0, par_index=15, float_shares=2)
+    CORPS[0].set_cash(game_state, 50)
 
-    # Set up market - occupy space 15
-    MARKET.initialize(game_state)
-    MARKET.set_space_available(game_state, 15, False)
-
-    # Set up player 0 as president
-    PLAYERS[0].set_shares(game_state, 0, 2)
-    PLAYERS[0].set_president_of(game_state, 0, True)
-
-    # Set phase
     TURN.set_phase(game_state, GamePhases.PHASE_ISSUE_SHARES)
 
     return game_state
@@ -238,21 +221,8 @@ class TestStockMastersSpecial:
         state = game_state
         corp = CORPS[CorpIndices.CORP_SM]  # Corp 3
 
-        # Set up Stock Masters
-        corp.initialize(state)
-        corp.set_active(state, True)
-        corp.set_price_index(state, 15)  # $24
-        corp.set_unissued_shares(state, 3)
-        corp.set_issued_shares(state, 3)
-        corp.set_bank_shares(state, 0)
+        float_corp_for_test(state, corp_id=CorpIndices.CORP_SM, par_index=15)
         corp.set_cash(state, 50)
-        corp.set_in_receivership(state, False)
-
-        MARKET.initialize(state)
-        MARKET.set_space_available(state, 15, False)
-
-        PLAYERS[0].set_shares(state, CorpIndices.CORP_SM, 2)
-        PLAYERS[0].set_president_of(state, CorpIndices.CORP_SM, True)
 
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
@@ -268,20 +238,8 @@ class TestStockMastersSpecial:
         state = game_state
         corp = CORPS[CorpIndices.CORP_SM]
 
-        corp.initialize(state)
-        corp.set_active(state, True)
-        corp.set_price_index(state, 15)  # $24
-        corp.set_unissued_shares(state, 3)
-        corp.set_issued_shares(state, 3)
-        corp.set_bank_shares(state, 0)
+        float_corp_for_test(state, corp_id=CorpIndices.CORP_SM, par_index=15)
         corp.set_cash(state, 50)
-        corp.set_in_receivership(state, False)
-
-        MARKET.initialize(state)
-        MARKET.set_space_available(state, 15, False)
-
-        PLAYERS[0].set_shares(state, CorpIndices.CORP_SM, 2)
-        PLAYERS[0].set_president_of(state, CorpIndices.CORP_SM, True)
 
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
@@ -298,20 +256,8 @@ class TestStockMastersSpecial:
         state = game_state
         corp = CORPS[CorpIndices.CORP_SM]
 
-        corp.initialize(state)
-        corp.set_active(state, True)
-        corp.set_price_index(state, 15)
-        corp.set_unissued_shares(state, 3)
-        corp.set_issued_shares(state, 3)
-        corp.set_bank_shares(state, 0)
+        float_corp_for_test(state, corp_id=CorpIndices.CORP_SM, par_index=15)
         corp.set_cash(state, 50)
-        corp.set_in_receivership(state, False)
-
-        MARKET.initialize(state)
-        MARKET.set_space_available(state, 15, False)
-
-        PLAYERS[0].set_shares(state, CorpIndices.CORP_SM, 2)
-        PLAYERS[0].set_president_of(state, CorpIndices.CORP_SM, True)
 
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
@@ -335,33 +281,8 @@ class TestProcessingOrder:
         state = game_state
 
         # Set up two corps at different prices
-        corp0 = CORPS[0]
-        corp0.initialize(state)
-        corp0.set_active(state, True)
-        corp0.set_price_index(state, 10)  # Lower price
-        corp0.set_unissued_shares(state, 3)
-        corp0.set_issued_shares(state, 4)
-        corp0.set_cash(state, 50)
-        corp0.set_in_receivership(state, False)
-
-        corp1 = CORPS[1]
-        corp1.initialize(state)
-        corp1.set_active(state, True)
-        corp1.set_price_index(state, 15)  # Higher price
-        corp1.set_unissued_shares(state, 3)
-        corp1.set_issued_shares(state, 4)
-        corp1.set_cash(state, 50)
-        corp1.set_in_receivership(state, False)
-
-        MARKET.initialize(state)
-        MARKET.set_space_available(state, 10, False)
-        MARKET.set_space_available(state, 15, False)
-
-        # Both have presidents
-        PLAYERS[0].set_shares(state, 0, 2)
-        PLAYERS[0].set_president_of(state, 0, True)
-        PLAYERS[1].set_shares(state, 1, 2)
-        PLAYERS[1].set_president_of(state, 1, True)
+        float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)  # Lower price
+        float_corp_for_test(state, corp_id=1, player_id=1, par_index=15)  # Higher price
 
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
@@ -378,27 +299,10 @@ class TestProcessingOrder:
         state = game_state
 
         # Set up three corps at different prices
-        prices = {0: 8, 1: 20, 2: 12}  # Expected order: 1, 2, 0
-
-        for corp_id, price_idx in prices.items():
-            corp = CORPS[corp_id]
-            corp.initialize(state)
-            corp.set_active(state, True)
-            corp.set_price_index(state, price_idx)
-            corp.set_unissued_shares(state, 3)
-            corp.set_issued_shares(state, 4)
-            corp.set_cash(state, 50)
-            corp.set_in_receivership(state, False)
-            MARKET.set_space_available(state, price_idx, False)
-
-        MARKET.initialize(state)
-        for price_idx in prices.values():
-            MARKET.set_space_available(state, price_idx, False)
-
-        # All have presidents
-        for corp_id in range(3):
-            PLAYERS[corp_id % 3].set_shares(state, corp_id, 2)
-            PLAYERS[corp_id % 3].set_president_of(state, corp_id, True)
+        # Expected order: 1, 2, 0 (prices: 20, 12, 8)
+        float_corp_for_test(state, corp_id=0, player_id=0, par_index=8)
+        float_corp_for_test(state, corp_id=1, player_id=1, par_index=20)
+        float_corp_for_test(state, corp_id=2, player_id=2, par_index=12)
 
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
@@ -428,17 +332,11 @@ class TestReceivershipHandling:
         state = game_state
         corp = CORPS[0]
 
-        corp.initialize(state)
-        corp.set_active(state, True)
-        corp.set_price_index(state, 15)
-        corp.set_unissued_shares(state, 3)
-        corp.set_issued_shares(state, 4)
-        corp.set_bank_shares(state, 0)
-        corp.set_cash(state, 50)
-        corp.set_in_receivership(state, True)  # In receivership
+        float_corp_for_test(state, corp_id=0, par_index=15)
 
-        MARKET.initialize(state)
-        MARKET.set_space_available(state, 15, False)
+        # Put into receivership
+        corp.set_in_receivership(state, True)
+        PLAYERS[0].set_shares(state, 0, 0)  # Remove player shares
 
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
@@ -455,17 +353,16 @@ class TestReceivershipHandling:
         state = game_state
         corp = CORPS[0]
 
-        corp.initialize(state)
-        corp.set_active(state, True)
-        corp.set_price_index(state, 15)
-        corp.set_unissued_shares(state, 0)  # No unissued shares
-        corp.set_issued_shares(state, 7)
-        corp.set_bank_shares(state, 0)
-        corp.set_cash(state, 50)
-        corp.set_in_receivership(state, True)
+        float_corp_for_test(state, corp_id=0, par_index=15)
 
-        MARKET.initialize(state)
-        MARKET.set_space_available(state, 15, False)
+        # All shares issued (no unissued)
+        corp.set_unissued_shares(state, 0)
+        corp.set_issued_shares(state, 7)
+        corp.set_cash(state, 50)
+
+        # Put into receivership
+        corp.set_in_receivership(state, True)
+        PLAYERS[0].set_shares(state, 0, 0)
 
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
@@ -481,19 +378,7 @@ class TestReceivershipHandling:
         state = game_state
         corp = CORPS[0]
 
-        corp.initialize(state)
-        corp.set_active(state, True)
-        corp.set_price_index(state, 15)
-        corp.set_unissued_shares(state, 3)
-        corp.set_issued_shares(state, 4)
-        corp.set_cash(state, 50)
-        corp.set_in_receivership(state, False)  # Has president
-
-        MARKET.initialize(state)
-        MARKET.set_space_available(state, 15, False)
-
-        PLAYERS[0].set_shares(state, 0, 2)
-        PLAYERS[0].set_president_of(state, 0, True)
+        float_corp_for_test(state, corp_id=0, par_index=15)
 
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
@@ -532,20 +417,11 @@ class TestActionMaskValidation:
         state = game_state
         corp = CORPS[0]
 
-        corp.initialize(state)
-        corp.set_active(state, True)
-        corp.set_price_index(state, 15)
-        corp.set_unissued_shares(state, 0)  # No unissued
+        float_corp_for_test(state, corp_id=0, par_index=15)
+
+        # All shares issued (no unissued)
+        corp.set_unissued_shares(state, 0)
         corp.set_issued_shares(state, 7)
-        corp.set_bank_shares(state, 0)
-        corp.set_cash(state, 50)
-        corp.set_in_receivership(state, False)
-
-        MARKET.initialize(state)
-        MARKET.set_space_available(state, 15, False)
-
-        PLAYERS[0].set_shares(state, 0, 2)
-        PLAYERS[0].set_president_of(state, 0, True)
 
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
@@ -600,26 +476,9 @@ class TestPhaseTransitions:
         """Multiple corps all processed before transitioning."""
         state = game_state
 
-        # Set up two corps
-        for corp_id in range(2):
-            corp = CORPS[corp_id]
-            corp.initialize(state)
-            corp.set_active(state, True)
-            corp.set_price_index(state, 10 + corp_id * 5)
-            corp.set_unissued_shares(state, 3)
-            corp.set_issued_shares(state, 4)
-            corp.set_cash(state, 50)
-            corp.set_in_receivership(state, False)
-            MARKET.set_space_available(state, 10 + corp_id * 5, False)
-
-        MARKET.initialize(state)
-        for corp_id in range(2):
-            MARKET.set_space_available(state, 10 + corp_id * 5, False)
-
-        PLAYERS[0].set_shares(state, 0, 2)
-        PLAYERS[0].set_president_of(state, 0, True)
-        PLAYERS[1].set_shares(state, 1, 2)
-        PLAYERS[1].set_president_of(state, 1, True)
+        # Set up two corps at different prices
+        float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
+        float_corp_for_test(state, corp_id=1, player_id=1, par_index=15)
 
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
@@ -639,21 +498,8 @@ class TestPhaseTransitions:
     def test_setup_from_end_card(self, game_state):
         """Issue phase can be set up from END_CARD transition."""
         state = game_state
-        corp = CORPS[0]
 
-        corp.initialize(state)
-        corp.set_active(state, True)
-        corp.set_price_index(state, 15)
-        corp.set_unissued_shares(state, 3)
-        corp.set_issued_shares(state, 4)
-        corp.set_cash(state, 50)
-        corp.set_in_receivership(state, False)
-
-        MARKET.initialize(state)
-        MARKET.set_space_available(state, 15, False)
-
-        PLAYERS[0].set_shares(state, 0, 2)
-        PLAYERS[0].set_president_of(state, 0, True)
+        float_corp_for_test(state, corp_id=0, par_index=15)
 
         # Simulate END_CARD -> ISSUE_SHARES transition
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
@@ -677,54 +523,25 @@ class TestIntegration:
         state = game_state
 
         # Corp 0: Player-controlled, highest price
-        corp0 = CORPS[0]
-        corp0.initialize(state)
-        corp0.set_active(state, True)
-        corp0.set_price_index(state, 20)
-        corp0.set_unissued_shares(state, 3)
-        corp0.set_issued_shares(state, 4)
-        corp0.set_cash(state, 50)
-        corp0.set_in_receivership(state, False)
+        float_corp_for_test(state, corp_id=0, player_id=0, par_index=20)
 
         # Corp 1: Receivership, middle price
-        corp1 = CORPS[1]
-        corp1.initialize(state)
-        corp1.set_active(state, True)
-        corp1.set_price_index(state, 15)
-        corp1.set_unissued_shares(state, 3)
-        corp1.set_issued_shares(state, 4)
-        corp1.set_cash(state, 50)
-        corp1.set_in_receivership(state, True)
+        float_corp_for_test(state, corp_id=1, player_id=1, par_index=15)
+        CORPS[1].set_in_receivership(state, True)
+        PLAYERS[1].set_shares(state, 1, 0)  # Remove player shares for receivership
 
         # Corp 2: Player-controlled, lowest price
-        corp2 = CORPS[2]
-        corp2.initialize(state)
-        corp2.set_active(state, True)
-        corp2.set_price_index(state, 10)
-        corp2.set_unissued_shares(state, 3)
-        corp2.set_issued_shares(state, 3)
-        corp2.set_cash(state, 50)
-        corp2.set_in_receivership(state, False)
-
-        MARKET.initialize(state)
-        MARKET.set_space_available(state, 20, False)
-        MARKET.set_space_available(state, 15, False)
-        MARKET.set_space_available(state, 10, False)
-
-        PLAYERS[0].set_shares(state, 0, 2)
-        PLAYERS[0].set_president_of(state, 0, True)
-        PLAYERS[1].set_shares(state, 2, 2)
-        PLAYERS[1].set_president_of(state, 2, True)
+        float_corp_for_test(state, corp_id=2, player_id=2, par_index=10)
 
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
-        corp1_initial_unissued = corp1.get_unissued_shares(state)
+        corp1_initial_unissued = CORPS[1].get_unissued_shares(state)
 
         # Setup finds highest-price corp first
         setup_issue_phase_py(state)
 
         # Corp 1 (receivership) NOT yet processed - Corp 0 (highest price) is first
-        assert corp1.get_unissued_shares(state) == corp1_initial_unissued
+        assert CORPS[1].get_unissued_shares(state) == corp1_initial_unissued
 
         # Should be waiting on corp 0 (highest price player-controlled)
         assert TURN.get_issue_corp(state) == 0
@@ -733,7 +550,7 @@ class TestIntegration:
 
         # Now corp 1 (receivership) should have auto-issued during advance
         # And we should be on corp 2
-        assert corp1.get_unissued_shares(state) == corp1_initial_unissued - 1
+        assert CORPS[1].get_unissued_shares(state) == corp1_initial_unissued - 1
         assert TURN.get_issue_corp(state) == 2
 
         apply_issue_action_py(state, issue=False)  # Pass on corp 2
@@ -745,32 +562,18 @@ class TestIntegration:
         """All corps passing results in no share changes."""
         state = game_state
 
-        initial_shares = {}
+        # Set up two corps at different prices
+        float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
+        float_corp_for_test(state, corp_id=1, player_id=1, par_index=15)
 
+        initial_shares = {}
         for corp_id in range(2):
             corp = CORPS[corp_id]
-            corp.initialize(state)
-            corp.set_active(state, True)
-            corp.set_price_index(state, 10 + corp_id * 5)
-            corp.set_unissued_shares(state, 3)
-            corp.set_issued_shares(state, 4)
-            corp.set_cash(state, 50)
-            corp.set_in_receivership(state, False)
-
             initial_shares[corp_id] = {
                 'unissued': corp.get_unissued_shares(state),
                 'issued': corp.get_issued_shares(state),
                 'bank': corp.get_bank_shares(state),
             }
-
-        MARKET.initialize(state)
-        for corp_id in range(2):
-            MARKET.set_space_available(state, 10 + corp_id * 5, False)
-
-        PLAYERS[0].set_shares(state, 0, 2)
-        PLAYERS[0].set_president_of(state, 0, True)
-        PLAYERS[1].set_shares(state, 1, 2)
-        PLAYERS[1].set_president_of(state, 1, True)
 
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
@@ -791,25 +594,15 @@ class TestIntegration:
         """All corps issuing results in correct share counts."""
         state = game_state
 
-        for corp_id in range(2):
-            corp = CORPS[corp_id]
-            corp.initialize(state)
-            corp.set_active(state, True)
-            corp.set_price_index(state, 10 + corp_id * 5)
-            corp.set_unissued_shares(state, 3)
-            corp.set_issued_shares(state, 4)
-            corp.set_bank_shares(state, 0)
-            corp.set_cash(state, 50)
-            corp.set_in_receivership(state, False)
+        # Set up two corps at different prices with specific share counts
+        # float_shares=2 gives: player=2, bank=2, issued=4, unissued=total-4
+        # Corp 0 (JS) has 7 total shares -> unissued=3, issued=4
+        float_corp_for_test(state, corp_id=0, player_id=0, par_index=10, float_shares=2)
+        float_corp_for_test(state, corp_id=1, player_id=1, par_index=15, float_shares=2)
 
-        MARKET.initialize(state)
+        # Adjust bank shares to 0 for both (test expects starting bank=0)
         for corp_id in range(2):
-            MARKET.set_space_available(state, 10 + corp_id * 5, False)
-
-        PLAYERS[0].set_shares(state, 0, 2)
-        PLAYERS[0].set_president_of(state, 0, True)
-        PLAYERS[1].set_shares(state, 1, 2)
-        PLAYERS[1].set_president_of(state, 1, True)
+            CORPS[corp_id].set_bank_shares(state, 0)
 
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
@@ -819,9 +612,10 @@ class TestIntegration:
         apply_issue_action_py(state, issue=True)
         apply_issue_action_py(state, issue=True)
 
-        # Verify share changes
+        # Verify share changes (unissued -1, issued +1, bank +1)
         for corp_id in range(2):
             corp = CORPS[corp_id]
+            # Both corps have 7 shares: float_shares=2 gives issued=4, unissued=3
             assert corp.get_unissued_shares(state) == 2  # 3 - 1
             assert corp.get_issued_shares(state) == 5    # 4 + 1
             assert corp.get_bank_shares(state) == 1      # 0 + 1

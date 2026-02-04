@@ -184,6 +184,54 @@ cdef class Corporation:
         """Set whether corporation is active."""
         state._data[self._active_offset] = 1.0 if active else 0.0
 
+    cpdef void float_corp(self, GameState state, int player_id, int company_id,
+                          int par_index, int float_shares=1):
+        """
+        Float corporation via IPO.
+
+        This encapsulates the full IPO procedure for the corporation:
+        1. Transfer company to corp (enforces "corp must own >= 1 company")
+        2. Set corp active
+        3. Set stars from founding company
+        4. Claim market space and set price
+        5. Set share distribution (unissued, issued, bank)
+        6. Give player their shares (triggers automatic presidency)
+
+        Player payment is NOT handled here - that's phase-specific.
+
+        Args:
+            state: Game state
+            player_id: Founding player who becomes president
+            company_id: Company being converted to corp
+            par_index: Market price index for starting share price
+            float_shares: Shares per entity (player and bank each get this many, default 1)
+        """
+        cdef int star_tier = get_company_stars(company_id)
+        cdef int total_shares = get_corp_share_count(self.corp_id)
+        cdef int issued = float_shares * 2  # Player + bank each get float_shares
+        cdef int unissued_shares = total_shares - issued
+
+        # 1. Transfer company to corporation
+        company_module.COMPANIES[company_id].transfer_to_corp(state, self.corp_id)
+
+        # 2. Set corp active
+        self.set_active(state, True)
+
+        # 3. Set stars from founding company
+        self.set_stars(state, star_tier)
+
+        # 4. Claim market space and set price
+        market_module.MARKET.set_space_available(state, par_index, False)
+        self.set_price_index(state, par_index)
+
+        # 5. Set share distribution
+        self.set_unissued_shares(state, unissued_shares)
+        self.set_issued_shares(state, issued)
+        self.set_bank_shares(state, float_shares)
+
+        # 6. Give player their shares (triggers automatic presidency via set_shares)
+        player_module.PLAYERS[player_id].set_shares(state, self.corp_id, float_shares)
+
     # =========================================================================
     # CASH OPERATIONS
     # =========================================================================
@@ -473,10 +521,10 @@ cdef class Corporation:
             if self.owns_company(state, company_id):
                 company_module.COMPANIES[company_id].remove_from_game(state)
 
-        # Step 2: Return all shares to unissued - clear player shares first
+        # Step 2: Return all shares to unissued - clear player shares
+        # Note: set_shares() automatically updates presidency/receivership
         for player_id in range(state._num_players):
             player_module.PLAYERS[player_id].set_shares(state, self.corp_id, 0)
-            player_module.PLAYERS[player_id].set_president_of(state, self.corp_id, False)
 
         # Step 3: Reset corp share counts
         self.set_unissued_shares(state, get_corp_share_count(self.corp_id))

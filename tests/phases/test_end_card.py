@@ -19,6 +19,7 @@ from entities.company import COMPANIES
 from entities.fi import FI
 from entities.market import MARKET
 from phases.end_card import apply_end_card_py
+from tests.phases.conftest import float_corp_for_test
 
 
 # =============================================================================
@@ -52,12 +53,8 @@ class Test75PriceCheck:
 
     def test_corp_at_75_price_triggers_game_over(self, end_card_state):
         """Corp with price_index 26 ($75) ends the game immediately."""
-        # Activate corp 0 and set to max price
-        corp = CORPS[0]
-        corp.set_active(end_card_state, True)
-        corp.set_price_index(end_card_state, 26)  # $75 price
-        corp.set_cash(end_card_state, 100)
-        MARKET.set_space_available(end_card_state, 26, False)
+        # Float corp 0 at max price ($75)
+        float_corp_for_test(end_card_state, corp_id=0, par_index=26)
 
         apply_end_card_py(end_card_state)
 
@@ -65,11 +62,8 @@ class Test75PriceCheck:
 
     def test_corp_at_74_price_does_not_trigger(self, end_card_state):
         """Corp at price_index 25 ($74) does NOT trigger game over."""
-        corp = CORPS[0]
-        corp.set_active(end_card_state, True)
-        corp.set_price_index(end_card_state, 25)  # One below max
-        corp.set_cash(end_card_state, 100)
-        MARKET.set_space_available(end_card_state, 25, False)
+        # Float corp 0 one below max price
+        float_corp_for_test(end_card_state, corp_id=0, par_index=25)
 
         apply_end_card_py(end_card_state)
 
@@ -79,18 +73,10 @@ class Test75PriceCheck:
     def test_multiple_corps_one_at_75(self, end_card_state):
         """If any corp is at 75, game ends regardless of others."""
         # Corp 0 at low price
-        corp0 = CORPS[0]
-        corp0.set_active(end_card_state, True)
-        corp0.set_price_index(end_card_state, 10)
-        corp0.set_cash(end_card_state, 100)
-        MARKET.set_space_available(end_card_state, 10, False)
+        float_corp_for_test(end_card_state, corp_id=0, par_index=10)
 
         # Corp 1 at 75 price
-        corp1 = CORPS[1]
-        corp1.set_active(end_card_state, True)
-        corp1.set_price_index(end_card_state, 26)
-        corp1.set_cash(end_card_state, 100)
-        MARKET.set_space_available(end_card_state, 26, False)
+        float_corp_for_test(end_card_state, corp_id=1, player_id=1, par_index=26)
 
         apply_end_card_py(end_card_state)
 
@@ -98,8 +84,8 @@ class Test75PriceCheck:
 
     def test_inactive_corp_at_75_ignored(self, end_card_state):
         """Inactive corps at 75 price do not trigger game over."""
+        # Corp 0 starts inactive after initialize_game() - just set its price
         corp = CORPS[0]
-        corp.set_active(end_card_state, False)  # Inactive
         corp.set_price_index(end_card_state, 26)
 
         apply_end_card_py(end_card_state)
@@ -219,10 +205,7 @@ class TestEndCardFlipped:
     def test_preflipped_without_75_price_still_ends(self, end_card_state):
         """Game ends on flipped card even without 75 price corp."""
         TURN.set_end_card_flipped(end_card_state, True)
-
-        # Ensure no corp at 75
-        for corp_id in range(8):
-            CORPS[corp_id].set_active(end_card_state, False)
+        # All corps start inactive after initialize_game() - no 75-price check can trigger
 
         apply_end_card_py(end_card_state)
 
@@ -254,11 +237,7 @@ class TestNormalTransition:
         """Active corps below 75 price continue to issue phase."""
         # Set up some active corps at various prices
         for corp_id in range(3):
-            corp = CORPS[corp_id]
-            corp.set_active(end_card_state, True)
-            corp.set_price_index(end_card_state, 10 + corp_id)
-            corp.set_cash(end_card_state, 100)
-            MARKET.set_space_available(end_card_state, 10 + corp_id, False)
+            float_corp_for_test(end_card_state, corp_id=corp_id, player_id=corp_id, par_index=10 + corp_id)
 
         apply_end_card_py(end_card_state)
 
@@ -333,11 +312,7 @@ class TestCoOLevelUpdate:
         """Game ending via 75 price does not change CoO level."""
         TURN.set_coo_level(end_card_state, 4)
 
-        corp = CORPS[0]
-        corp.set_active(end_card_state, True)
-        corp.set_price_index(end_card_state, 26)
-        corp.set_cash(end_card_state, 100)
-        MARKET.set_space_available(end_card_state, 26, False)
+        float_corp_for_test(end_card_state, corp_id=0, par_index=26)
 
         apply_end_card_py(end_card_state)
 
@@ -359,11 +334,7 @@ class TestCheckPriority:
         # Set both conditions
         TURN.set_end_card_flipped(end_card_state, True)
 
-        corp = CORPS[0]
-        corp.set_active(end_card_state, True)
-        corp.set_price_index(end_card_state, 26)
-        corp.set_cash(end_card_state, 100)
-        MARKET.set_space_available(end_card_state, 26, False)
+        float_corp_for_test(end_card_state, corp_id=0, par_index=26)
 
         apply_end_card_py(end_card_state)
 

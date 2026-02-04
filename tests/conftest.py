@@ -15,6 +15,7 @@ from tests.phases.conftest import (
     bid_state,
     trade_state,
     apply_and_track,
+    float_corp_for_test,
 )
 
 # Add closing_offer_state fixture
@@ -28,4 +29,5 @@ __all__ = [
     'trade_state',
     'apply_and_track',
     'closing_offer_state',
+    'float_corp_for_test',
 ]

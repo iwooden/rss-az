@@ -20,103 +20,9 @@ from core.data import CORP_NAMES
 # HELPER FUNCTIONS
 # =============================================================================
 
-cdef void _check_receivership(GameState state, int corp_id) noexcept:
-    """
-    Check if corporation enters or exits receivership.
-
-    Receivership = all player-owned shares are 0 (bank owns all issued shares).
-    """
-    cdef int player_id, total_player_shares
-    cdef object corp
-
-    corp = corp_module.CORPS[corp_id]
-    total_player_shares = 0
-
-    for player_id in range(state._num_players):
-        total_player_shares += player_module.PLAYERS[player_id].get_shares(state, corp_id)
-
-    if total_player_shares == 0:
-        corp.set_in_receivership(state, True)
-        # Clear all president flags - no president in receivership
-        for player_id in range(state._num_players):
-            player_module.PLAYERS[player_id].set_president_of(state, corp_id, False)
-    else:
-        corp.set_in_receivership(state, False)
-
-
-cdef void _check_presidency(GameState state, int corp_id) noexcept:
-    """
-    Check if presidency should transfer.
-
-    Per RULES.md:
-    - If any player owns MORE shares than current president, presidency transfers
-    - Among players with more shares, the one NEXT in player order after current president wins
-    - If no one has MORE shares, current president keeps it (ties go to incumbent)
-    """
-    cdef int player_id, shares, max_shares, president_id, current_president, incumbent_shares
-    cdef int incumbent_position, position, checked, candidate
-    cdef object corp
-
-    corp = corp_module.CORPS[corp_id]
-
-    # Skip if in receivership (no president)
-    if corp.is_in_receivership(state):
-        return
-
-    # Find current president
-    current_president = -1
-    for player_id in range(state._num_players):
-        if player_module.PLAYERS[player_id].is_president_of(state, corp_id):
-            current_president = player_id
-            break
-
-    # Find maximum share count across all players
-    max_shares = 0
-    for player_id in range(state._num_players):
-        shares = player_module.PLAYERS[player_id].get_shares(state, corp_id)
-        if shares > max_shares:
-            max_shares = shares
-
-    president_id = -1
-
-    if max_shares > 0:
-        if current_president >= 0:
-            incumbent_shares = player_module.PLAYERS[current_president].get_shares(state, corp_id)
-
-            if max_shares <= incumbent_shares:
-                # No one has MORE shares than incumbent - incumbent keeps it
-                president_id = current_president
-            else:
-                # Someone has more shares than incumbent
-                # Find first player in turn order (starting after incumbent) with max shares
-                incumbent_position = player_module.PLAYERS[current_president].get_turn_order(state)
-
-                checked = 0
-                position = incumbent_position
-                while checked < state._num_players:
-                    position = (position + 1) % state._num_players
-                    candidate = turn_module.TURN.find_player_at_position(state, position)
-                    if player_module.PLAYERS[candidate].get_shares(state, corp_id) == max_shares:
-                        president_id = candidate
-                        break
-                    checked += 1
-        else:
-            # No current president - first player by turn order with max shares
-            for position in range(state._num_players):
-                candidate = turn_module.TURN.find_player_at_position(state, position)
-                if player_module.PLAYERS[candidate].get_shares(state, corp_id) == max_shares:
-                    president_id = candidate
-                    break
-
-    # Update if changed (and someone has shares)
-    if president_id >= 0 and president_id != current_president:
-        if current_president >= 0:
-            player_module.PLAYERS[current_president].set_president_of(state, corp_id, False)
-        player_module.PLAYERS[president_id].set_president_of(state, corp_id, True)
-    elif president_id < 0 and current_president >= 0:
-        # No one has shares but there was a president - clear (shouldn't happen if receivership check ran first)
-        player_module.PLAYERS[current_president].set_president_of(state, corp_id, False)
-
+# Note: Presidency and receivership are now automatically recalculated
+# whenever shares change via player.set_shares(). See entities/player.pyx
+# _recalculate_presidency() for the implementation.
 
 cdef void _advance_active_player(GameState state) noexcept:
     """Advance to next player in turn order."""
@@ -173,15 +79,7 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     corp.set_bank_shares(state, bank_shares - 1)
     player_shares = player_module.PLAYERS[player_id].get_shares(state, corp_id)
     player_module.PLAYERS[player_id].set_shares(state, corp_id, player_shares + 1)
-
-    # Check receivership exit (INV-21 - buying from receivership clears it)
-    # Per CONTEXT.md: shares are fungible, no special "president share" handling
-    # Buyer becomes president simply by having the most shares (the only player with shares)
-    _check_receivership(state, corp_id)
-
-    # Check presidency (INV-18, INV-19) - only if not in receivership
-    if not corp.is_in_receivership(state):
-        _check_presidency(state, corp_id)
+    # Note: set_shares() automatically updates receivership and presidency
 
     # Round-trip tracking (INV-16)
     player_module.PLAYERS[player_id].increment_share_buys(state, corp_id)
@@ -256,13 +154,7 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
 
     # Occupy new space (non-bankruptcy case)
     market_module.MARKET.set_space_available(state, new_index, False)
-
-    # Check receivership (INV-20) - must check before presidency
-    _check_receivership(state, corp_id)
-
-    # Check presidency (INV-18, INV-19) - only if not in receivership
-    if not corp.is_in_receivership(state):
-        _check_presidency(state, corp_id)
+    # Note: set_shares() above already updated receivership and presidency
 
     # Round-trip tracking (INV-16)
     player_module.PLAYERS[player_id].increment_share_sells(state, corp_id)

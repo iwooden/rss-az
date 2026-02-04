@@ -14,8 +14,8 @@ from entities.player import PLAYERS
 from phases.closing import apply_closing_auto_py, process_mandatory_close_py
 from core.actions import ACTION_CLOSE_PY, ACTION_PASS_PY
 
-# Import status codes from conftest
-from tests.phases.conftest import STATUS_OK
+# Import status codes and utility from conftest
+from tests.phases.conftest import STATUS_OK, float_corp_for_test
 
 # Phase constants for tests
 PHASE_CLOSING_PY = GamePhases.PHASE_CLOSING
@@ -184,10 +184,16 @@ class TestReceivershipAutoClose:
 
     def _setup_receivership_corp(self, state, corp_id, company_ids):
         """Helper to set up receivership corp with companies."""
+        # Float corp with the first company
+        float_corp_for_test(state, corp_id=corp_id, company_id=company_ids[0])
+
+        # Set in receivership and remove player shares
         corp = CORPS[corp_id]
-        corp.set_active(state, True)
         corp.set_in_receivership(state, True)
-        for cid in company_ids:
+        PLAYERS[0].set_shares(state, corp_id, 0)
+
+        # Transfer any additional companies
+        for cid in company_ids[1:]:
             COMPANIES[cid].transfer_to_corp(state, corp_id)
 
     def test_receivership_closes_red_at_coo_4(self):
@@ -297,10 +303,16 @@ class TestHighestFaceValueProtection:
 
     def _setup_receivership_corp(self, state, corp_id, company_ids):
         """Helper to set up receivership corp with companies."""
+        # Float corp with the first company
+        float_corp_for_test(state, corp_id=corp_id, company_id=company_ids[0])
+
+        # Set in receivership and remove player shares
         corp = CORPS[corp_id]
-        corp.set_active(state, True)
         corp.set_in_receivership(state, True)
-        for cid in company_ids:
+        PLAYERS[0].set_shares(state, corp_id, 0)
+
+        # Transfer any additional companies
+        for cid in company_ids[1:]:
             COMPANIES[cid].transfer_to_corp(state, corp_id)
 
     def test_highest_face_value_protected_even_if_red(self):
@@ -344,10 +356,16 @@ class TestVintageMachineryInReceivership:
 
     def _setup_receivership_corp(self, state, corp_id, company_ids):
         """Helper to set up receivership corp with companies."""
+        # Float corp with the first company
+        float_corp_for_test(state, corp_id=corp_id, company_id=company_ids[0])
+
+        # Set in receivership and remove player shares
         corp = CORPS[corp_id]
-        corp.set_active(state, True)
         corp.set_in_receivership(state, True)
-        for cid in company_ids:
+        PLAYERS[0].set_shares(state, corp_id, 0)
+
+        # Transfer any additional companies
+        for cid in company_ids[1:]:
             COMPANIES[cid].transfer_to_corp(state, corp_id)
 
     def test_vm_no_special_treatment_in_receivership(self):
@@ -383,16 +401,17 @@ class TestJunkyardScrappersBonus:
 
     def test_js_no_bonus_on_fi_close(self):
         """JS does NOT get bonus when FI closes company."""
+
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
-        # Activate JS
+        # Activate JS (needs a company to float)
+        float_corp_for_test(state, corp_id=0)
         js = CORPS[0]
-        js.set_active(state, True)
         js.set_cash(state, 0)
 
-        # FI closes a red company
-        red_company = 0
+        # FI closes a red company (use company 1 since 0 is used by JS)
+        red_company = 1
         COMPANIES[red_company].transfer_to_fi(state)
         TURN.set_coo_level(state, 7)
 
@@ -403,22 +422,24 @@ class TestJunkyardScrappersBonus:
 
     def test_js_no_bonus_on_receivership_close(self):
         """JS does NOT get bonus when receivership corp closes company."""
+
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
-        # Activate JS
+        # Activate JS (needs a company to float)
+        float_corp_for_test(state, corp_id=0)
         js = CORPS[0]
-        js.set_active(state, True)
         js.set_cash(state, 0)
 
         # Non-JS corp in receivership closes red
-        red_company = 0
+        red_company = 1  # Use company 1 since 0 is used by JS
         other_company = 14  # Higher FV yellow
 
+        # Float corp 1, then set in receivership
+        float_corp_for_test(state, corp_id=1, company_id=red_company)
         corp = CORPS[1]
-        corp.set_active(state, True)
         corp.set_in_receivership(state, True)
-        COMPANIES[red_company].transfer_to_corp(state, 1)
+        PLAYERS[0].set_shares(state, 1, 0)  # Remove player shares for receivership
         COMPANIES[other_company].transfer_to_corp(state, 1)
         TURN.set_coo_level(state, 7)
 
@@ -431,10 +452,8 @@ class TestJunkyardScrappersBonus:
         """No bonus when JS is not active."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
-
-        # JS not active
+        # JS (corp 0) starts inactive after initialize_game()
         js = CORPS[0]
-        js.set_active(state, False)
 
         # FI closes company
         COMPANIES[0].transfer_to_fi(state)
@@ -447,20 +466,22 @@ class TestJunkyardScrappersBonus:
 
     def test_js_gets_bonus_when_js_in_receivership_closes(self):
         """JS DOES get bonus when JS (in receivership) closes its own company."""
+
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
-
-        # Activate JS in receivership
-        js = CORPS[0]
-        js.set_active(state, True)
-        js.set_in_receivership(state, True)
-        js.set_cash(state, 0)
 
         # JS owns red company that will be auto-closed by receivership rules
         red_company = 0
         other_company = 14  # Higher FV yellow (protected)
         income = get_company_income(red_company)
-        COMPANIES[red_company].transfer_to_corp(state, 0)
+
+        # Float JS with the red company, then set in receivership
+        float_corp_for_test(state, corp_id=0, company_id=red_company)
+        js = CORPS[0]
+        js.set_in_receivership(state, True)
+        PLAYERS[0].set_shares(state, 0, 0)  # Remove player shares for receivership
+        js.set_cash(state, 0)
+
         COMPANIES[other_company].transfer_to_corp(state, 0)
         TURN.set_coo_level(state, 7)
 
@@ -553,16 +574,11 @@ class TestOfferGeneration:
 
     def test_corp_subsidiaries_included(self, closing_offer_state):
         """CLO-08: Corp subsidiaries (same-president) included in offers."""
+
         gs = closing_offer_state
 
-        # Activate corp 1 and make player 0 president
-        CORPS[1].set_active(gs, True)
-        CORPS[1].set_in_receivership(gs, False)
-        PLAYERS[0].set_president_of(gs, 1, True)
-        PLAYERS[0].set_shares(gs, 1, 3)  # 3 shares to be president
-
-        # Corp owns company 2
-        COMPANIES[2].transfer_to_corp(gs, 1)
+        # Float corp 1 with company 2 and player 0 as president
+        float_corp_for_test(gs, corp_id=1, company_id=2, player_id=0)
 
         from phases.closing import generate_close_offers_py, get_close_offer_count_py, get_close_offer_py
         generate_close_offers_py(gs)
@@ -575,14 +591,13 @@ class TestOfferGeneration:
 
     def test_receivership_corp_excluded(self, closing_offer_state):
         """Receivership corps excluded from offers (no president)."""
+
         gs = closing_offer_state
 
-        # Activate corp 2 in receivership
-        CORPS[2].set_active(gs, True)
+        # Float corp 2 with company 4, then set in receivership
+        float_corp_for_test(gs, corp_id=2, company_id=4)
         CORPS[2].set_in_receivership(gs, True)
-
-        # Corp owns company 4
-        COMPANIES[4].transfer_to_corp(gs, 2)
+        PLAYERS[0].set_shares(gs, 2, 0)  # Remove player shares for receivership
 
         from phases.closing import generate_close_offers_py, get_close_offer_count_py
         generate_close_offers_py(gs)
@@ -609,15 +624,11 @@ class TestOfferValidation:
 
     def test_corp_last_company_rule(self, closing_offer_state):
         """CLO-09: Corp closing offer invalid if corp would have 0 companies."""
+
         gs = closing_offer_state
 
-        # Activate corp 1 with player 0 as president
-        CORPS[1].set_active(gs, True)
-        CORPS[1].set_in_receivership(gs, False)
-        PLAYERS[0].set_president_of(gs, 1, True)
-
-        # Corp owns ONLY company 3 (last company)
-        COMPANIES[3].transfer_to_corp(gs, 1)
+        # Float corp 1 with company 3 (last company)
+        float_corp_for_test(gs, corp_id=1, company_id=3, player_id=0)
 
         from phases.closing import generate_close_offers_py, get_close_offer_count_py
         generate_close_offers_py(gs)
@@ -630,15 +641,11 @@ class TestOfferValidation:
 
     def test_corp_with_multiple_companies_can_close(self, closing_offer_state):
         """Corp with multiple companies CAN close one."""
+
         gs = closing_offer_state
 
-        # Activate corp 1 with player 0 as president
-        CORPS[1].set_active(gs, True)
-        CORPS[1].set_in_receivership(gs, False)
-        PLAYERS[0].set_president_of(gs, 1, True)
-
-        # Corp owns companies 3 AND 4 (not last company)
-        COMPANIES[3].transfer_to_corp(gs, 1)
+        # Float corp 1 with company 3, then add company 4
+        float_corp_for_test(gs, corp_id=1, company_id=3, player_id=0)
         COMPANIES[4].transfer_to_corp(gs, 1)
 
         from phases.closing import generate_close_offers_py, get_close_offer_count_py
@@ -649,14 +656,12 @@ class TestOfferValidation:
 
     def test_prior_acceptance_invalidates_later_offer(self, closing_offer_state):
         """CLO-10: Prior acceptance can invalidate later offers (corp down to 1 company)."""
+
         gs = closing_offer_state
 
-        # Setup: Corp 1 has 2 companies, player 0 is president
-        CORPS[1].set_active(gs, True)
-        CORPS[1].set_in_receivership(gs, False)
-        PLAYERS[0].set_president_of(gs, 1, True)
-        COMPANIES[0].transfer_to_corp(gs, 1)  # FV $1
-        COMPANIES[3].transfer_to_corp(gs, 1)  # FV $3
+        # Float corp 1 with company 0, then add company 3
+        float_corp_for_test(gs, corp_id=1, company_id=0, player_id=0)
+        COMPANIES[3].transfer_to_corp(gs, 1)
 
         # Set phase to CLOSING and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
@@ -729,10 +734,11 @@ class TestCloseActions:
 
     def test_junkyard_scrappers_no_bonus_on_player_close(self, closing_offer_state):
         """JS does NOT receive bonus when player closes their own company."""
+
         gs = closing_offer_state
 
-        # Activate Junkyard Scrappers (corp 0) with some starting cash
-        CORPS[0].set_active(gs, True)
+        # Float Junkyard Scrappers (corp 0) with some starting cash
+        float_corp_for_test(gs, corp_id=0)
         CORPS[0].set_cash(gs, 100)
 
         # Player owns company 1 (printed income = $1)
@@ -754,16 +760,13 @@ class TestCloseActions:
         """JS does NOT receive bonus when another corp closes their company."""
         gs = closing_offer_state
 
-        # Activate Junkyard Scrappers (corp 0)
-        CORPS[0].set_active(gs, True)
+        # Float Junkyard Scrappers (corp 0)
+        float_corp_for_test(gs, corp_id=0)
         CORPS[0].set_cash(gs, 50)
 
-        # Activate corp 1 with player 0 as president, owns 2 companies
-        CORPS[1].set_active(gs, True)
-        CORPS[1].set_in_receivership(gs, False)
-        PLAYERS[0].set_president_of(gs, 1, True)
-        COMPANIES[0].transfer_to_corp(gs, 1)  # Income $1
-        COMPANIES[3].transfer_to_corp(gs, 1)  # Keep one
+        # Float corp 1 with company 0, then add company 3
+        float_corp_for_test(gs, corp_id=1, company_id=0, player_id=0)
+        COMPANIES[3].transfer_to_corp(gs, 1)
 
         # Set phase and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
@@ -781,15 +784,9 @@ class TestCloseActions:
         """JS receives 2x printed income bonus ONLY when JS closes its own company."""
         gs = closing_offer_state
 
-        # Activate Junkyard Scrappers (corp 0) with starting cash and president
-        CORPS[0].set_active(gs, True)
+        # Float JS with company 0, then add company 3
+        float_corp_for_test(gs, corp_id=0, company_id=0, player_id=0)
         CORPS[0].set_cash(gs, 100)
-        CORPS[0].set_in_receivership(gs, False)
-        PLAYERS[0].set_president_of(gs, 0, True)
-        PLAYERS[0].set_shares(gs, 0, 3)  # 3 shares to be president
-
-        # JS owns 2 companies
-        COMPANIES[0].transfer_to_corp(gs, 0)  # Income $1
         COMPANIES[3].transfer_to_corp(gs, 0)  # Keep one
 
         # Set phase and run auto-close
@@ -859,14 +856,8 @@ class TestPlayerIncome:
 
     def test_get_income_excludes_corp_subsidiaries(self, game_state):
         """Player income excludes companies owned by corps (even if player is president)."""
-        # Make player 0 president of corp 0
-        CORPS[0].set_active(game_state, True)
-        CORPS[0].set_price_index(game_state, 5)  # Some price
-        PLAYERS[0].set_shares(game_state, 0, 3)
-        PLAYERS[0].set_president_of(game_state, 0, True)
-
-        # Give corp 0 a company
-        COMPANIES[0].transfer_to_corp(game_state, 0)
+        # Float corp 0 with company 0, player 0 as president
+        float_corp_for_test(game_state, corp_id=0, company_id=0, player_id=0)
 
         # Player income should be 0 (corp's company doesn't count)
         income = PLAYERS[0].get_income(game_state)
@@ -958,14 +949,12 @@ class TestMandatoryClose:
         """Junkyard Scrappers does NOT receive bonus on mandatory player close."""
         TURN.set_coo_level(game_state, 7)
 
-        # Activate Junkyard Scrappers (corp 0)
-        CORPS[0].set_active(game_state, True)
-        CORPS[0].set_price_index(game_state, 5)
+        # Float Junkyard Scrappers (corp 0) - uses a company from deck
+        float_corp_for_test(game_state, corp_id=0)
         initial_js_cash = CORPS[0].get_cash(game_state)
 
-        # Give player a negative-income company
-        # Company 0: $1 printed income, 1 star
-        COMPANIES[0].transfer_to_player(game_state, 0)
+        # Give player a negative-income company (company 1 since 0 may be used by JS)
+        COMPANIES[1].transfer_to_player(game_state, 0)
         PLAYERS[0].set_cash(game_state, 5)  # Will trigger mandatory close
 
         process_mandatory_close_py(game_state)
@@ -1212,8 +1201,9 @@ class TestClosingEdgeCases:
         # Set high CoO level to create negative-income companies
         TURN.set_coo_level(game_state, 7)
 
-        # Activate Junkyard Scrappers (corp 0) with starting cash
-        CORPS[0].set_active(game_state, True)
+        # Float Junkyard Scrappers (corp 0) with starting cash
+        # Uses company from deck (not 0, 1, 3 which player needs)
+        float_corp_for_test(game_state, corp_id=0, company_id=10)  # Use company 10 for JS
         CORPS[0].set_cash(game_state, 50)
         initial_js_cash = 50
 
@@ -1258,16 +1248,8 @@ class TestClosingEdgeCases:
         from phases.closing import apply_closing_action_py
         gs = closing_offer_state
 
-        # Activate corp 1 with player 0 as president
-        CORPS[1].set_active(gs, True)
-        CORPS[1].set_in_receivership(gs, False)
-        PLAYERS[0].set_president_of(gs, 1, True)
-        PLAYERS[0].set_shares(gs, 1, 3)  # 3 shares to be president
-
-        # Corp owns exactly 2 negative-income companies
-        # Company 0: FV $1 (offered first, lower FV)
-        # Company 3: FV $3 (offered second, higher FV)
-        COMPANIES[0].transfer_to_corp(gs, 1)
+        # Float corp 1 with company 0, then add company 3
+        float_corp_for_test(gs, corp_id=1, company_id=0, player_id=0)
         COMPANIES[3].transfer_to_corp(gs, 1)
 
         # Enter CLOSING phase

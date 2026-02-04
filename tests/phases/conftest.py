@@ -37,9 +37,51 @@ from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.market import MARKET
-from entities.company import COMPANIES
+from entities.company import COMPANIES, CompanyLocation
 
 from core.driver import STATUS_OK_PY as STATUS_OK, STATUS_INVALID_PY as STATUS_INVALID, STATUS_GAME_OVER_PY as STATUS_GAME_OVER
+
+
+# =============================================================================
+# TEST UTILITIES
+# =============================================================================
+
+def float_corp_for_test(state, corp_id, company_id=None, player_id=0, par_index=10, float_shares=1):
+    """
+    Float a corporation for testing purposes.
+
+    This is a convenience function that handles the common pattern of:
+    1. Finding/assigning a company to a player
+    2. Calling Corp.float_corp() to activate the corporation
+
+    Args:
+        state: GameState instance
+        corp_id: Corporation ID to float (required)
+        company_id: Company ID to use for floating. If None, scans for first
+                   company with LOC_DECK location (unused from game init).
+        player_id: Player who becomes president (default 0)
+        par_index: Market price index for starting share price (default 10)
+        float_shares: Shares each for player and bank (default 1)
+
+    Returns:
+        The company_id that was used (useful when company_id was None)
+    """
+    from core.data import GameConstants
+
+    # Find an unused company if none specified
+    if company_id is None:
+        for cid in range(int(GameConstants.NUM_COMPANIES)):
+            if COMPANIES[cid].get_location(state) == CompanyLocation.LOC_DECK:
+                company_id = cid
+                break
+        if company_id is None:
+            raise ValueError("No unused company found in deck")
+
+    # Transfer company to player and float the corp
+    COMPANIES[company_id].transfer_to_player(state, player_id)
+    CORPS[corp_id].float_corp(state, player_id, company_id, par_index, float_shares)
+
+    return company_id
 
 
 # =============================================================================
@@ -206,20 +248,12 @@ def trade_state():
     state = GameState(num_players=3)
     state.initialize_game(seed=42)
 
-    # Manually activate corp 0 (JS) with tradeable shares
-    # Corp 0 has 7 total shares: unissued(3) + bank(2) + player(2) = 7
-    corp = CORPS[0]
-    corp.set_active(state, True)
-    corp.set_price_index(state, 10)
-    corp.set_unissued_shares(state, 3)
-    corp.set_bank_shares(state, 2)
-    corp.set_issued_shares(state, 4)
+    # Float corp 0 (JS) with 2 shares each to player and bank
+    # This sets up: unissued(3), bank(2), issued(4), player 0 has 2 shares, price index 10
+    float_corp_for_test(state, corp_id=0, par_index=10, float_shares=2)
 
-    PLAYERS[0].set_shares(state, 0, 2)
+    # Set up player cash for trading
     PLAYERS[0].set_cash(state, 100)
-    PLAYERS[0].set_president_of(state, 0, True)
-
-    MARKET.set_space_available(state, 10, False)
 
     return state
 

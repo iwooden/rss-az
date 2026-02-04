@@ -768,8 +768,6 @@ class TestStress:
             if result == STATUS_GAME_OVER_PY:
                 break
 
-            # Check invariants periodically
-            if actions_taken % 10 == 0:
-                check_invariants(state, f"After {actions_taken} actions")
+            check_invariants(state, f"After {actions_taken} actions")
 
         check_invariants(state, f"Final state after {actions_taken} actions")

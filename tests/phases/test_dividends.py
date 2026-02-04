@@ -24,6 +24,7 @@ from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.company import COMPANIES
 from entities.market import MARKET
+from tests.phases.conftest import float_corp_for_test
 from phases.dividends import (
     setup_dividends_phase_py,
     apply_dividend_action_py,
@@ -45,23 +46,16 @@ def dividend_state():
     state = GameState(num_players=3)
     state.initialize_game(seed=42)
 
-    # Activate corp 0 (JS) with reasonable setup
-    corp = CORPS[0]
-    corp.set_active(state, True)
-    corp.set_price_index(state, 10)  # Price ~$15
-    corp.set_unissued_shares(state, 3)
-    corp.set_bank_shares(state, 1)
-    corp.set_issued_shares(state, 4)  # bank(1) + player(3) + player(1) = 5 issued? No: issued=4 means 4 issued
-    corp.set_cash(state, 100)
-    corp.set_stars(state, 5)
+    # Float corp 0 with 2 shares each to player and bank
+    float_corp_for_test(state, corp_id=0, float_shares=2)
 
-    # Give 2 shares to player 0, 2 to player 1
-    PLAYERS[0].set_shares(state, 0, 2)
+    # Adjust share distribution: give 1 share from bank to player 1
+    CORPS[0].set_bank_shares(state, 1)
     PLAYERS[1].set_shares(state, 0, 2)
-    PLAYERS[0].set_president_of(state, 0, True)
 
-    # Mark market space as occupied
-    MARKET.set_space_available(state, 10, False)
+    # Set cash and stars for the test
+    CORPS[0].set_cash(state, 100)
+    CORPS[0].set_stars(state, 5)
 
     # Transition to DIVIDENDS phase
     TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
@@ -76,42 +70,32 @@ def multi_corp_dividend_state():
     state = GameState(num_players=3)
     state.initialize_game(seed=42)
 
-    # Set up 3 corps at different prices
-    # Corp 0 at price index 10 (~$15)
-    CORPS[0].set_active(state, True)
-    CORPS[0].set_price_index(state, 10)
-    CORPS[0].set_unissued_shares(state, 3)
+    # Float 3 corps at different prices (price order matters for this test)
+    # Corp 0 at price index 10
+    float_corp_for_test(state, corp_id=0, player_id=0, par_index=10, float_shares=2)
     CORPS[0].set_bank_shares(state, 0)
-    CORPS[0].set_issued_shares(state, 4)
+    PLAYERS[0].set_shares(state, 0, 4)
+    CORPS[0].set_unissued_shares(state, 3)
     CORPS[0].set_cash(state, 100)
     CORPS[0].set_stars(state, 10)
-    PLAYERS[0].set_shares(state, 0, 4)
-    PLAYERS[0].set_president_of(state, 0, True)
-    MARKET.set_space_available(state, 10, False)
 
-    # Corp 1 at price index 15 (~$23 - higher, processed first)
-    CORPS[1].set_active(state, True)
-    CORPS[1].set_price_index(state, 15)
-    CORPS[1].set_unissued_shares(state, 2)
+    # Corp 1 at price index 15 (higher, processed first)
+    float_corp_for_test(state, corp_id=1, player_id=1, par_index=15, float_shares=2)
     CORPS[1].set_bank_shares(state, 0)
+    PLAYERS[1].set_shares(state, 1, 5)
+    CORPS[1].set_unissued_shares(state, 2)
     CORPS[1].set_issued_shares(state, 5)
     CORPS[1].set_cash(state, 150)
     CORPS[1].set_stars(state, 12)
-    PLAYERS[1].set_shares(state, 1, 5)
-    PLAYERS[1].set_president_of(state, 1, True)
-    MARKET.set_space_available(state, 15, False)
 
-    # Corp 2 at price index 5 (~$8 - lowest, processed last)
-    CORPS[2].set_active(state, True)
-    CORPS[2].set_price_index(state, 5)
-    CORPS[2].set_unissued_shares(state, 4)
+    # Corp 2 at price index 5 (lowest, processed last)
+    float_corp_for_test(state, corp_id=2, player_id=2, par_index=5)
     CORPS[2].set_bank_shares(state, 0)
+    PLAYERS[2].set_shares(state, 2, 3)
+    CORPS[2].set_unissued_shares(state, 4)
     CORPS[2].set_issued_shares(state, 3)
     CORPS[2].set_cash(state, 50)
     CORPS[2].set_stars(state, 3)
-    PLAYERS[2].set_shares(state, 2, 3)
-    PLAYERS[2].set_president_of(state, 2, True)
-    MARKET.set_space_available(state, 5, False)
 
     return state
 
@@ -256,16 +240,16 @@ class TestMaxDividendConstraint:
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
+        # Float corp 0 at price index 20 (price matters: max = 45 // 3 = 15)
+        # With float_shares=1: issued=2, but we need issued=3 for affordability test
+        float_corp_for_test(state, corp_id=0, par_index=20)
         corp = CORPS[0]
-        corp.set_active(state, True)
-        corp.set_price_index(state, 20)  # Price = $45, max = 45 // 3 = 15
-        corp.set_issued_shares(state, 3)
-        corp.set_cash(state, 12)  # Affordability = 12 // 3 = 4
 
-        # Minimum of 15 and 4 = 4
+        # Adjust shares: need 3 issued for affordability calc (12 // 3 = 4)
+        corp.set_issued_shares(state, 3)
+        corp.set_bank_shares(state, 0)
         PLAYERS[0].set_shares(state, 0, 3)
-        PLAYERS[0].set_president_of(state, 0, True)
-        MARKET.set_space_available(state, 20, False)
+        corp.set_cash(state, 12)  # Affordability = 12 // 3 = 4 (less than price max of 15)
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
@@ -283,16 +267,12 @@ class TestMaxDividendConstraint:
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
+        # Float corp 0 at price index 26 (max price - this is what we're testing)
+        float_corp_for_test(state, corp_id=0, par_index=26)
         corp = CORPS[0]
-        corp.set_active(state, True)
-        corp.set_price_index(state, 26)  # Price = $75, max = 75 // 3 = 25
-        corp.set_issued_shares(state, 2)
-        corp.set_cash(state, 100)  # Plenty to afford max dividend (2 * 25 = 50)
 
-        PLAYERS[0].set_shares(state, 0, 2)
-        PLAYERS[0].set_president_of(state, 0, True)
-        # Price index 26 is shared space, mark it occupied
-        MARKET.set_space_available(state, 26, False)
+        # Need enough cash to afford max dividend (2 shares * 25 = 50)
+        corp.set_cash(state, 100)
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
@@ -359,9 +339,11 @@ class TestStarCalculation:
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
-        # Set up SI (corp index 7)
+        # Float SI (corp index 7) - the SI ability is what we're testing
+        float_corp_for_test(state, corp_id=CorpIndices.CORP_SI)
         si = CORPS[CorpIndices.CORP_SI]
-        si.set_active(state, True)
+
+        # Set stars and cash for the test
         si.set_stars(state, 5)
         si.set_cash(state, 20)  # 2 bonus stars
 
@@ -529,27 +511,25 @@ class TestReceivershipHandling:
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
-        # Set up receivership corp at highest price
+        # Float corp 0 at highest price, then put in receivership
+        COMPANIES[0].transfer_to_player(state, 0)
         corp = CORPS[0]
-        corp.set_active(state, True)
-        corp.set_price_index(state, 15)
+        corp.float_corp(state, 0, 0, 15, 2)
         corp.set_in_receivership(state, True)
+        PLAYERS[0].set_shares(state, 0, 0)  # Remove player shares
+        corp.set_bank_shares(state, 4)  # All issued shares in bank
         corp.set_stars(state, 10)
         corp.set_cash(state, 100)
-        corp.set_issued_shares(state, 4)
-        corp.set_bank_shares(state, 4)  # All issued shares in bank
-        MARKET.set_space_available(state, 15, False)
 
-        # Set up player-controlled corp at lower price
+        # Float corp 1 at lower price, player-controlled
+        COMPANIES[1].transfer_to_player(state, 0)
         corp1 = CORPS[1]
-        corp1.set_active(state, True)
-        corp1.set_price_index(state, 10)
+        corp1.float_corp(state, 0, 1, 10, 1)
+        corp1.set_bank_shares(state, 0)
+        PLAYERS[0].set_shares(state, 1, 3)
+        corp1.set_issued_shares(state, 3)
         corp1.set_stars(state, 5)
         corp1.set_cash(state, 50)
-        corp1.set_issued_shares(state, 3)
-        PLAYERS[0].set_shares(state, 1, 3)
-        PLAYERS[0].set_president_of(state, 1, True)
-        MARKET.set_space_available(state, 10, False)
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
@@ -563,15 +543,15 @@ class TestReceivershipHandling:
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
+        # Float corp 0, then put in receivership
+        COMPANIES[0].transfer_to_player(state, 0)
         corp = CORPS[0]
-        corp.set_active(state, True)
-        corp.set_price_index(state, 10)
+        corp.float_corp(state, 0, 0, 10, 2)
         corp.set_in_receivership(state, True)
+        PLAYERS[0].set_shares(state, 0, 0)  # Remove player shares
+        corp.set_bank_shares(state, 4)
         corp.set_stars(state, 10)  # Plenty of stars, should rise
         corp.set_cash(state, 100)
-        corp.set_issued_shares(state, 4)
-        corp.set_bank_shares(state, 4)
-        MARKET.set_space_available(state, 10, False)
         MARKET.set_space_available(state, 11, True)
         MARKET.set_space_available(state, 12, True)
 
@@ -588,16 +568,18 @@ class TestReceivershipHandling:
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
+        # Float corp 0, then put in receivership
+        COMPANIES[0].transfer_to_player(state, 0)
         corp = CORPS[0]
-        corp.set_active(state, True)
-        corp.set_price_index(state, 10)
+        corp.float_corp(state, 0, 0, 10, 1)
         corp.set_in_receivership(state, True)
+        PLAYERS[0].set_shares(state, 0, 0)  # Remove player shares
+        corp.set_bank_shares(state, 3)
+        corp.set_issued_shares(state, 3)
         corp.set_stars(state, 50)  # Way more than needed, should rise 2
         corp.set_cash(state, 100)
-        corp.set_issued_shares(state, 3)
-        corp.set_bank_shares(state, 3)
 
-        # Make spaces available
+        # Make spaces available (except current position)
         for i in range(27):
             MARKET.set_space_available(state, i, True)
         MARKET.set_space_available(state, 10, False)
@@ -643,10 +625,7 @@ class TestPhaseTransitions:
         """If no active corps, immediately transitions to END_CARD."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
-
-        # No corps are active
-        for i in range(8):
-            CORPS[i].set_active(state, False)
+        # All corps start inactive after initialize_game()
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)

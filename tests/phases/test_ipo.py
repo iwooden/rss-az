@@ -396,10 +396,11 @@ class TestCorpAvailability:
         """Cannot select a corporation that's already active."""
         state = ipo_state_with_company
 
-        # Activate corp 0
-        CORPS[0].set_active(state, True)
+        # Float corp 0 using a different company so company 14 remains available
+        COMPANIES[0].transfer_to_player(state, 1)  # Different player to avoid conflict
+        CORPS[0].float_corp(state, 1, 0, 10, 1)
 
-        # Try to IPO to corp 0 - should fail
+        # Try to IPO to corp 0 - should fail (corp already active)
         result = apply_ipo_action_py(state, 0, 0)
         assert result == 1  # Invalid
 
@@ -407,8 +408,9 @@ class TestCorpAvailability:
         """Action mask excludes IPO actions for active corps."""
         state = ipo_state_with_company
 
-        # Activate corp 0
-        CORPS[0].set_active(state, True)
+        # Float corp 0 using a different company
+        COMPANIES[0].transfer_to_player(state, 1)
+        CORPS[0].float_corp(state, 1, 0, 10, 1)
 
         mask = get_valid_action_mask(state)
         layout = get_action_layout(3)
