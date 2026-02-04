@@ -39,11 +39,13 @@ TEST-03 (Validation Rules):
   - VALID-06 (OS constraints): test_fi_buy_high_rejects_os_corp, test_fi_buy_face_rejects_non_os_corp
 
 TEST-04 (Receivership Auto-Buy):
-- TestReceivershipAutoBuy class (4 tests)
-  - test_receivership_auto_buys_affordable_fi: RECV-01, RECV-03 (auto-buy at face)
+- TestReceivershipAutoBuy class (6 tests)
+  - test_receivership_auto_buys_affordable_fi: RECV-01, RECV-03 (auto-buy at high)
   - test_receivership_skips_unaffordable_fi: RECV-03 (skip when can't afford)
   - test_receivership_skips_non_fi_offers: RECV-03 (only from FI)
   - test_receivership_cannot_sell: RECV-02 (no offers as seller)
+  - test_receivership_buys_most_expensive_affordable: RECV-01 (most expensive first)
+  - test_receivership_insufficient_for_high_but_enough_for_face: RECV-03 (high only)
 
 TEST-05 (Phase Flow):
 - TestPhaseFlow class (7 tests)
@@ -72,7 +74,7 @@ TEST-07 (Edge Cases):
   - test_single_corp_no_corp_corp_offers: Configuration edge (single corp)
   - test_same_president_constraint_explicit: Same-president as sole blocker
 
-Total: 54 tests covering TEST-01 through TEST-05, TEST-07
+Total: 56 tests covering TEST-01 through TEST-05, TEST-07
 """
 
 import pytest
@@ -1310,6 +1312,97 @@ class TestReceivershipAutoBuy:
         # - Corp 0 has company but is in receivership (can't sell)
         # - get_president_id returns -1 for receivership, never matches any player_id
         assert get_offer_count(gs) == 0, "No offers should exist for receivership seller"
+
+    def test_receivership_buys_most_expensive_affordable(self):
+        """Receivership picks most expensive affordable FI company.
+
+        Per RULES.md: 'Highest share price corporation in receivership tries
+        to buy most expensive affordable company.'
+
+        This test verifies the corp picks the expensive company over the cheap one
+        when it can only afford one.
+        """
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give two companies to FI with different high prices
+        # Company 0: face=1, high=2
+        # Company 5: face=8, high=10
+        cheap_company = 0
+        expensive_company = 5
+        COMPANIES[cheap_company].transfer_to_fi(gs)
+        COMPANIES[expensive_company].transfer_to_fi(gs)
+
+        cheap_high = get_company_high_price(cheap_company)  # 2
+        expensive_high = get_company_high_price(expensive_company)  # 10
+
+        # Make corp active with exactly enough for expensive but not both
+        # (can afford 10 but not 10+2=12)
+        corp = CORPS[0]
+        corp.set_active(gs, True)
+        corp.set_cash(gs, expensive_high)  # Exactly enough for expensive, not both
+        corp.set_in_receivership(gs, True)
+
+        corp_cash_before = corp.get_cash(gs)
+        fi_cash_before = FI.get_cash(gs)
+
+        # Trigger auto-buy
+        setup_acquisition_phase_py(gs)
+
+        # Should have bought the MORE expensive company (not the cheap one)
+        assert corp.has_acquisition_company(gs, expensive_company), \
+            "Receivership should buy most expensive affordable company"
+        assert not corp.has_acquisition_company(gs, cheap_company), \
+            "Should not have bought cheap company (no cash left after expensive)"
+
+        # Verify paid high price for the expensive company
+        assert corp.get_cash(gs) == 0, \
+            "Corp should have spent all cash on expensive company"
+        assert FI.get_cash(gs) == fi_cash_before + expensive_high, \
+            f"FI should receive high price ({expensive_high})"
+        assert FI.owns_company(gs, cheap_company), \
+            "Cheap company should still be owned by FI"
+
+    def test_receivership_insufficient_for_high_but_enough_for_face(self):
+        """Receivership can only buy at HIGH price - passes if can only afford face.
+
+        Per RULES.md: FI 'Only sells at maximum allowed price'.
+        If corp has cash between face_value and high_price, it cannot buy.
+        """
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Use company 0: face=1, high=2
+        company_id = 0
+        COMPANIES[company_id].transfer_to_fi(gs)
+
+        face_value = get_company_face_value(company_id)  # 1
+        high_price = get_company_high_price(company_id)  # 2
+
+        # Sanity check: face < high for this test to be meaningful
+        assert face_value < high_price, "Test requires face_value < high_price"
+
+        # Make corp active with cash between face and high (can afford face, not high)
+        corp = CORPS[0]
+        corp.set_active(gs, True)
+        corp.set_cash(gs, face_value)  # Exactly face_value, less than high_price
+        corp.set_in_receivership(gs, True)
+
+        corp_cash_before = corp.get_cash(gs)
+        fi_cash_before = FI.get_cash(gs)
+
+        # Trigger auto-buy attempt
+        setup_acquisition_phase_py(gs)
+
+        # Should NOT have bought - can't afford high price
+        assert not corp.has_acquisition_company(gs, company_id), \
+            "Receivership should not buy when can only afford face value (not high price)"
+        assert corp.get_cash(gs) == corp_cash_before, \
+            "Corp cash should be unchanged"
+        assert FI.get_cash(gs) == fi_cash_before, \
+            "FI cash should be unchanged"
+        assert FI.owns_company(gs, company_id), \
+            "Company should still be owned by FI"
 
 
 class TestQuicksortHelpers:
