@@ -81,6 +81,70 @@ class TestFIAutoClose:
         assert FI.owns_company(state, company_id)
         assert not COMPANIES[company_id].is_removed(state)
 
+    def test_fi_closes_at_exactly_negative_one(self):
+        """FI closes company when adjusted income is exactly -1 (boundary).
+
+        Verifies FI close logic triggers at the boundary, not just for deeply
+        negative values. Uses company 0 (income=$1, red/1-star) at CoO level 4
+        where red CoO=$2, giving adjusted income = $1 - $2 = -1.
+        """
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Company 0: income=$1, stars=1 (red)
+        # At CoO level 4, red CoO=$2, so adjusted = $1 - $2 = -1
+        company_id = 0
+        TURN.set_coo_level(state, 4)
+
+        COMPANIES[company_id].transfer_to_fi(state)
+
+        # Verify setup: adjusted income is exactly -1
+        income = get_company_income(company_id)
+        stars = get_company_stars(company_id)
+        coo = get_cost_of_ownership(4, stars)
+        assert income == 1, f"Expected income=1, got {income}"
+        assert coo == 2, f"Expected CoO=2, got {coo}"
+        assert income - coo == -1, f"Expected adjusted=-1, got {income - coo}"
+
+        # Execute auto-close
+        apply_closing_auto_py(state)
+
+        # Company should be closed (adjusted income < 0)
+        assert not FI.owns_company(state, company_id)
+        assert COMPANIES[company_id].is_removed(state)
+
+    def test_fi_boundary_coo_equals_income_exactly(self):
+        """FI does NOT close when CoO exactly equals income (adjusted = 0).
+
+        This is the boundary test: FI closes if adjusted < 0, keeps if >= 0.
+        Uses company 2 (income=$2, red/1-star) at CoO level 4 where red CoO=$2,
+        giving adjusted income = $2 - $2 = 0 (exactly at boundary).
+        """
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Company 2: income=$2, stars=1 (red)
+        # At CoO level 4, red CoO=$2, so adjusted = $2 - $2 = 0
+        company_id = 2
+        TURN.set_coo_level(state, 4)
+
+        COMPANIES[company_id].transfer_to_fi(state)
+
+        # Verify setup: adjusted income is exactly 0
+        income = get_company_income(company_id)
+        stars = get_company_stars(company_id)
+        coo = get_cost_of_ownership(4, stars)
+        assert income == 2, f"Expected income=2, got {income}"
+        assert coo == 2, f"Expected CoO=2, got {coo}"
+        assert income - coo == 0, f"Expected adjusted=0, got {income - coo}"
+
+        # Execute auto-close
+        apply_closing_auto_py(state)
+
+        # Company should NOT be closed (adjusted income == 0, not < 0)
+        assert FI.owns_company(state, company_id)
+        assert not COMPANIES[company_id].is_removed(state)
+
     def test_fi_keeps_positive_income_company(self):
         """FI keeps company with positive adjusted income."""
         state = GameState(num_players=3)
