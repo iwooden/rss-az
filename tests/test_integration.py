@@ -489,6 +489,117 @@ class TestAcquisitionIntegration:
         # Should eventually complete and transition
         assert state.get_phase() == GamePhases.PHASE_INVEST
 
+    def test_multiple_offers_accepted_in_sequence(self):
+        """Accept multiple acquisition offers in sequence with state validation.
+
+        Verifies:
+        - Multiple offers can be accepted sequentially
+        - Companies move to acquisition zone after each accept
+        - Zone merge happens correctly at phase transition
+        - Player receives correct proceeds
+        - Invariants hold throughout
+
+        Note: Corp cash verification is tricky because after the last offer,
+        the driver transitions through INCOME phase where the corp receives
+        income from acquired companies (including synergy bonuses).
+        """
+        from tests.phases.conftest import assert_invariants
+        from entities.player import PLAYERS
+        from entities.company import COMPANIES
+        from entities.corp import CORPS
+        from phases.acquisition import (
+            setup_acquisition_phase_py, get_offer_count,
+            apply_acquisition_action_py, transition_to_closing_py
+        )
+        from core.data import get_company_low_price
+        from core.actions import ACTION_ACQ_PRICE_PY
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Set up multiple offers: Player 0's companies -> Corp 0
+        company_ids = [0, 1, 2]  # Three companies
+        for cid in company_ids:
+            COMPANIES[cid].transfer_to_player(state, 0)
+
+        CORPS[0].set_active(state, True)
+        CORPS[0].set_cash(state, 100000)
+        PLAYERS[0].set_president_of(state, 0, True)
+
+        initial_player_cash = PLAYERS[0].get_cash(state)
+
+        # Enter ACQUISITION phase
+        TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
+        setup_acquisition_phase_py(state)
+
+        offer_count = get_offer_count(state)
+        assert offer_count >= 3, f"Expected at least 3 offers, got {offer_count}"
+        assert_invariants(state, "Before acquisitions")
+
+        companies_acquired = []
+        total_paid = 0
+
+        # Accept all offers using low-level handler (no auto phase transitions)
+        for accept_num in range(3):
+            target = TURN.get_acq_target_company(state)
+            if target < 0:
+                break
+
+            low_price = get_company_low_price(target)
+            corp_cash_before = CORPS[0].get_cash(state)
+
+            # Accept at low price (offset 0)
+            result = apply_acquisition_action_py(state, ACTION_ACQ_PRICE_PY, 0)
+            assert result == 0, f"Accept action {accept_num + 1} should succeed"
+
+            # Verify payment
+            corp_cash_after = CORPS[0].get_cash(state)
+            assert corp_cash_after == corp_cash_before - low_price, \
+                f"Corp should pay low_price ({low_price}), paid {corp_cash_before - corp_cash_after}"
+
+            # Verify company in acquisition zone
+            assert CORPS[0].has_acquisition_company(state, target), \
+                f"Company {target} should be in acquisition zone"
+
+            companies_acquired.append(target)
+            total_paid += low_price
+
+            assert_invariants(state, f"After accept {accept_num + 1}")
+
+        # Should have acquired all 3 companies
+        assert len(companies_acquired) == 3, \
+            f"Expected 3 acquisitions, got {len(companies_acquired)}"
+
+        # Verify player proceeds accumulated correctly
+        player_proceeds = PLAYERS[0].get_acquisition_proceeds(state)
+        assert player_proceeds == total_paid, \
+            f"Player proceeds ({player_proceeds}) should equal total paid ({total_paid})"
+
+        # Verify companies in acquisition zone (not yet merged)
+        for cid in companies_acquired:
+            assert CORPS[0].has_acquisition_company(state, cid), \
+                f"Company {cid} should be in acquisition zone before merge"
+            assert not CORPS[0].owns_company(state, cid), \
+                f"Company {cid} should not be in owned before merge"
+
+        # Trigger zone merge via phase transition
+        transition_to_closing_py(state)
+
+        # Verify zone merge happened
+        assert PLAYERS[0].get_acquisition_proceeds(state) == 0, \
+            "Player proceeds should be cleared after merge"
+        assert PLAYERS[0].get_cash(state) == initial_player_cash + total_paid, \
+            "Player cash should include merged proceeds"
+
+        # Companies should now be in corp's owned (not acquisition zone)
+        for cid in companies_acquired:
+            assert CORPS[0].owns_company(state, cid), \
+                f"Company {cid} should be in corp's owned after merge"
+            assert not CORPS[0].has_acquisition_company(state, cid), \
+                f"Company {cid} should not be in acquisition zone after merge"
+
+        assert_invariants(state, "After all acquisitions and zone merge")
+
     def test_zone_merge_at_phase_transition(self):
         """Zone merging happens correctly at ACQUISITION phase transition."""
         from tests.phases.conftest import assert_invariants
