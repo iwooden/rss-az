@@ -25,10 +25,11 @@ TEST-02 (Action Types):
   - test_pass_action: Skip offer, advance to next
 
 TEST-03 (Validation Rules):
-- TestValidation class (18 tests)
+- TestValidation class (20 tests)
   - VALID-01 (price range): test_price_in_range_succeeds, test_price_below_low_rejected,
     test_price_above_high_rejected, test_price_at_low_boundary, test_price_at_high_boundary,
-    test_price_one_below_low_fails, test_price_one_above_high_fails
+    test_price_one_below_low_fails, test_price_one_above_high_fails,
+    test_price_span_varies_by_company, test_price_offset_maps_to_correct_price
   - VALID-02 (sufficient cash): test_insufficient_cash_filters_offers,
     test_exact_cash_for_price_succeeds, test_one_dollar_short_fails
   - VALID-03 (seller keeps >=1): test_seller_with_two_companies_can_sell_one,
@@ -74,7 +75,7 @@ TEST-07 (Edge Cases):
   - test_single_corp_no_corp_corp_offers: Configuration edge (single corp)
   - test_same_president_constraint_explicit: Same-president as sole blocker
 
-Total: 56 tests covering TEST-01 through TEST-05, TEST-07
+Total: 58 tests covering TEST-01 through TEST-05, TEST-07
 """
 
 import pytest
@@ -696,6 +697,114 @@ class TestValidation:
 
         result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, offset)
         assert result == 1, "Price above high_price should fail"
+
+    def test_price_span_varies_by_company(self):
+        """VALID-01: Different companies have different valid price spans.
+
+        Verifies that the same offset can be valid for one company but
+        invalid for another, based on their unique price ranges.
+        """
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Company 0: low=1, high=2, span=1 (only offsets 0,1 valid)
+        # Company 35 (CDG): low=30, high=80, span=50 (offsets 0-50 valid)
+        narrow_company = 0
+        wide_company = 35
+
+        narrow_low = get_company_low_price(narrow_company)  # 1
+        narrow_high = get_company_high_price(narrow_company)  # 2
+        narrow_span = narrow_high - narrow_low  # 1
+
+        wide_low = get_company_low_price(wide_company)  # 30
+        wide_high = get_company_high_price(wide_company)  # 80
+        wide_span = wide_high - wide_low  # 50
+
+        # Verify spans are different
+        assert narrow_span < wide_span, "Test requires different span sizes"
+
+        # Test offset that's valid for wide but not narrow (e.g., offset=10)
+        test_offset = 10
+        assert test_offset > narrow_span, "Test offset must exceed narrow span"
+        assert test_offset <= wide_span, "Test offset must be within wide span"
+
+        # Setup for narrow company - offset 10 should fail
+        self._setup_player_private_offer(gs, 0, narrow_company, 0, 50000)
+        if get_offer_count(gs) > 0:
+            result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, test_offset)
+            assert result == 1, f"Offset {test_offset} should fail for narrow company (span={narrow_span})"
+
+        # Setup for wide company - offset 10 should succeed
+        gs2 = GameState(3)
+        gs2.initialize_game()
+        self._setup_player_private_offer(gs2, 0, wide_company, 0, 50000)
+        if get_offer_count(gs2) > 0:
+            result = apply_acquisition_action_py(gs2, ACTION_ACQ_PRICE, test_offset)
+            assert result == 0, f"Offset {test_offset} should succeed for wide company (span={wide_span})"
+
+    def test_price_offset_maps_to_correct_price(self):
+        """Verify price offset correctly maps to low_price + offset.
+
+        Tests that offset 0 = low_price, offset N = low_price + N,
+        up to max valid offset = high_price - low_price.
+        """
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Use company 35 (CDG) which has widest span: low=30, high=80
+        company_id = 35
+        low_price = get_company_low_price(company_id)  # 30
+        high_price = get_company_high_price(company_id)  # 80
+        max_offset = high_price - low_price  # 50
+
+        # Give company to player, corp has plenty of cash
+        COMPANIES[company_id].transfer_to_player(gs, 0)
+        CORPS[0].set_active(gs, True)
+        CORPS[0].set_cash(gs, 50000)
+        PLAYERS[0].set_president_of(gs, 0, True)
+        setup_acquisition_phase_py(gs)
+
+        assert get_offer_count(gs) > 0, "Should have offer for wide-span company"
+
+        # Test offset 0 = low_price
+        player_cash_before = PLAYERS[0].get_cash(gs)
+        corp_cash_before = CORPS[0].get_cash(gs)
+        result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 0)
+        assert result == 0, "Offset 0 should succeed"
+        payment = corp_cash_before - CORPS[0].get_cash(gs)
+        assert payment == low_price, f"Offset 0 should pay low_price ({low_price}), got {payment}"
+
+        # Reset and test max offset = high_price
+        gs2 = GameState(3)
+        gs2.initialize_game()
+        COMPANIES[company_id].transfer_to_player(gs2, 0)
+        CORPS[0].set_active(gs2, True)
+        CORPS[0].set_cash(gs2, 50000)
+        PLAYERS[0].set_president_of(gs2, 0, True)
+        setup_acquisition_phase_py(gs2)
+
+        corp_cash_before = CORPS[0].get_cash(gs2)
+        result = apply_acquisition_action_py(gs2, ACTION_ACQ_PRICE, max_offset)
+        assert result == 0, f"Offset {max_offset} should succeed"
+        payment = corp_cash_before - CORPS[0].get_cash(gs2)
+        assert payment == high_price, f"Offset {max_offset} should pay high_price ({high_price}), got {payment}"
+
+        # Reset and test middle offset
+        gs3 = GameState(3)
+        gs3.initialize_game()
+        COMPANIES[company_id].transfer_to_player(gs3, 0)
+        CORPS[0].set_active(gs3, True)
+        CORPS[0].set_cash(gs3, 50000)
+        PLAYERS[0].set_president_of(gs3, 0, True)
+        setup_acquisition_phase_py(gs3)
+
+        mid_offset = max_offset // 2  # 25
+        expected_price = low_price + mid_offset  # 30 + 25 = 55
+        corp_cash_before = CORPS[0].get_cash(gs3)
+        result = apply_acquisition_action_py(gs3, ACTION_ACQ_PRICE, mid_offset)
+        assert result == 0, f"Offset {mid_offset} should succeed"
+        payment = corp_cash_before - CORPS[0].get_cash(gs3)
+        assert payment == expected_price, f"Offset {mid_offset} should pay {expected_price}, got {payment}"
 
     # VALID-02 boundary tests
     def test_exact_cash_for_price_succeeds(self):
