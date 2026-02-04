@@ -241,6 +241,13 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     offset += 1
     layout.hidden_ipo_company_offset = offset
     offset += 1
+    # Company location tracking (O(1) clearing without scanning visible state)
+    # [862..897] company_locations (36 floats: CompanyLocation enum per company)
+    # [898..933] company_owner_ids (36 floats: player_id or corp_id, -1 when N/A)
+    layout.hidden_company_locations_offset = offset
+    offset += GameConstants.NUM_COMPANIES
+    layout.hidden_company_owner_ids_offset = offset
+    offset += GameConstants.NUM_COMPANIES
     layout.hidden_size = offset - layout.visible_size
 
     layout.total_size = layout.visible_size + layout.hidden_size
@@ -409,6 +416,12 @@ cdef class GameState:
 
         # Initialize constant hidden state fields
         self._data[self._layout.hidden_num_players_offset] = <float>num_players
+
+        # Initialize company owner_ids to -1 (no owner when in deck)
+        # Company locations are already 0 (LOC_DECK) from zero-initialization
+        cdef int i
+        for i in range(<int>GameConstants.NUM_COMPANIES):
+            self._data[self._layout.hidden_company_owner_ids_offset + i] = -1.0
 
         # Store turn offsets for convenience
         self._turn = self._turn_offsets

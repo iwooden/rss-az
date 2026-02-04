@@ -153,6 +153,10 @@ def compute_hidden_size() -> int:
     offset += 1  # issue_corp (compact)
     offset += 1  # ipo_company (compact)
 
+    # Company location tracking (O(1) clearing without scanning)
+    offset += NUM_COMPANIES  # company_locations (36)
+    offset += NUM_COMPANIES  # company_owner_ids (36)
+
     return offset
 
 
@@ -162,11 +166,11 @@ class TestStateLayoutSizes:
     # Expected sizes - these MUST match VECTORS.md and CLAUDE.md
     # If these tests fail, update the documentation to match!
     EXPECTED_SIZES = {
-        2: {'visible': 2943, 'hidden': 862, 'total': 3805},
-        3: {'visible': 3023, 'hidden': 862, 'total': 3885},
-        4: {'visible': 3105, 'hidden': 862, 'total': 3967},
-        5: {'visible': 3189, 'hidden': 862, 'total': 4051},
-        6: {'visible': 3275, 'hidden': 862, 'total': 4137},
+        2: {'visible': 2943, 'hidden': 934, 'total': 3877},
+        3: {'visible': 3023, 'hidden': 934, 'total': 3957},
+        4: {'visible': 3105, 'hidden': 934, 'total': 4039},
+        5: {'visible': 3189, 'hidden': 934, 'total': 4123},
+        6: {'visible': 3275, 'hidden': 934, 'total': 4209},
     }
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
@@ -228,8 +232,8 @@ class TestComponentSizes:
             )
 
     def test_hidden_size_fixed(self):
-        """Hidden size = 862 (fixed for all player counts)."""
-        assert compute_hidden_size() == 862
+        """Hidden size = 934 (fixed for all player counts)."""
+        assert compute_hidden_size() == 934
 
     def test_static_size(self):
         """Static company data = 36 * 40 = 1440."""

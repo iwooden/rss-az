@@ -53,9 +53,9 @@ cdef class Company:
 
     cdef int _num_players
 
-    # Tracking current location (cached for O(1) access)
-    cdef CompanyLocation _location
-    cdef int _owner_id                # Player or corp ID when location is LOC_PLAYER/LOC_CORP/LOC_CORP_ACQ
+    # Hidden state offsets for O(1) location access
+    cdef int _hidden_location_offset  # Offset to this company's location in hidden state
+    cdef int _hidden_owner_id_offset  # Offset to this company's owner_id in hidden state
 
     # Initialization
     cpdef void initialize(self, GameState state)
@@ -72,8 +72,10 @@ cdef class Company:
     cpdef bint is_in_corp_acquisition(self, GameState state, int corp_id)
     cpdef bint is_removed(self, GameState state)
 
-    # Internal helper to scan for current location
-    cdef void _scan_location(self, GameState state)
+    # Internal helpers for hidden state location access
+    cdef int _get_hidden_location(self, GameState state) noexcept nogil
+    cdef int _get_hidden_owner_id(self, GameState state) noexcept nogil
+    cdef void _set_hidden_location(self, GameState state, int location, int owner_id) noexcept nogil
 
     # Transfer operations (zero old location, set new location, update cache)
     cpdef void transfer_to_player(self, GameState state, int player_id)

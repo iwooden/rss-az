@@ -62,6 +62,9 @@ cdef struct StateLayout:
     int hidden_dividend_corp_offset
     int hidden_issue_corp_offset
     int hidden_ipo_company_offset
+    # Company location tracking (O(1) clearing without scanning visible state)
+    int hidden_company_locations_offset
+    int hidden_company_owner_ids_offset
 
 cdef struct TurnStateOffsets:
     int turn_number

@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | 2943         | 862         | 3805       |
-| 3       | 3023         | 862         | 3885       |
-| 4       | 3105         | 862         | 3967       |
-| 5       | 3189         | 862         | 4051       |
-| 6       | 3275         | 862         | 4137       |
+| 2       | 2943         | 934         | 3877       |
+| 3       | 3023         | 934         | 3957       |
+| 4       | 3105         | 934         | 4039       |
+| 5       | 3189         | 934         | 4123       |
+| 6       | 3275         | 934         | 4209       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 
@@ -211,12 +211,12 @@ Per company (40 floats):
 
 ## Hidden State Layout
 
-Hidden state starts at `visible_size` offset. Total hidden size = 862.
+Hidden state starts at `visible_size` offset. Total hidden size = 934.
 
 The hidden state serves several purposes:
 - **Information hiding**: Data the NN shouldn't see (deck order, active player before rotation)
 - **Bookkeeping**: Offer buffers for acquisition/closing phases
-- **Performance**: Compact storage for O(1) access to one-hot values
+- **Performance**: Compact storage for O(1) access to one-hot values and company locations
 
 | Field | Offset | Size | Notes |
 |-------|--------|------|-------|
@@ -242,6 +242,20 @@ The hidden state serves several purposes:
 | `dividend_corp` | 859 | 1 | Compact storage for O(1) access |
 | `issue_corp` | 860 | 1 | Compact storage for O(1) access |
 | `ipo_company` | 861 | 1 | Compact storage for O(1) access |
+| `company_locations` | 862 | 36 | CompanyLocation enum per company (O(1) clearing) |
+| `company_owner_ids` | 898 | 36 | Owner ID per company (-1 if N/A, player_id or corp_id) |
+
+**CompanyLocation Enum:**
+| Value | Location | Notes |
+|-------|----------|-------|
+| 0 | LOC_DECK | In draw deck (default) |
+| 1 | LOC_AUCTION | Available for auction |
+| 2 | LOC_REVEALED | Drawn this turn but not auctionable |
+| 3 | LOC_PLAYER | Owned by player (owner_id = player_id) |
+| 4 | LOC_FI | Owned by Foreign Investor |
+| 5 | LOC_CORP | Owned by corporation (owner_id = corp_id) |
+| 6 | LOC_CORP_ACQ | In corporation's acquisition pile (owner_id = corp_id) |
+| 7 | LOC_REMOVED | Closed/removed from game |
 
 ---
 
