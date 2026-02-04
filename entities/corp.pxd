@@ -62,6 +62,7 @@ cdef class Corporation:
     cdef int _price_index_offset
     cdef int _owned_companies_offset
     cdef int _acquisition_companies_offset
+    cdef int _company_incomes_offset  # Global company_incomes array offset
 
     # Initialization
     cpdef void initialize(self, GameState state)

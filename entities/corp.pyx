@@ -7,6 +7,8 @@ Each Corporation instance is bound to a specific corp_id and caches offsets
 for fast repeated access.
 """
 
+from libc.math cimport lround
+
 from core.state cimport GameState, StateLayout, CorpFieldOffsets
 from core.data cimport (
     GameConstants, CASH_DIVISOR, SHARE_DIVISOR, STAR_DIVISOR, MARKET_PRICES,
@@ -168,6 +170,7 @@ cdef class Corporation:
         self._price_index_offset = self._base_offset + fields.price_index
         self._owned_companies_offset = self._base_offset + fields.owned_companies
         self._acquisition_companies_offset = self._base_offset + fields.acquisition_companies
+        self._company_incomes_offset = layout.company_incomes_offset
 
     # =========================================================================
     # ACTIVE STATUS
@@ -322,7 +325,8 @@ cdef class Corporation:
         """
         Calculate total income for corporation (nogil version).
 
-        Formula per RULES.md: (sum_printed_income - adjusted_coo) + synergy + ability_bonus
+        Uses cached company_incomes array for base calculation, then applies
+        synergy bonuses and special abilities.
 
         Special abilities per RULES.md:
         - PR (Prussian Railway): +1 per company owned
@@ -338,7 +342,7 @@ cdef class Corporation:
             Total income (can be negative)
         """
         cdef int company_id, base_income, stars, coo_value, fv
-        cdef int gross_printed_income = 0
+        cdef int adjusted_income_sum = 0
         cdef int total_coo = 0
         cdef int company_count = 0
         cdef int highest_fv = 0
@@ -347,42 +351,45 @@ cdef class Corporation:
         cdef int synergy_income = 0
         cdef int synergy_markers = 0
         cdef int total_income
+        cdef bint is_vm = (self.corp_id == CorpIndices.CORP_VM)
 
-        # First pass: collect companies, sum printed income, sum CoO, track highest FV
+        # First pass: collect companies, sum cached adjusted incomes, track highest FV
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if self._owns_company_nogil(data, company_id):
                 company_ids[company_count] = company_id
                 company_count += 1
 
+                # Sum cached adjusted income (base - CoO already applied)
+                adjusted_income_sum += <int>lround(data[self._company_incomes_offset + company_id] * CASH_DIVISOR)
+
+                # Track highest FV for DA ability (need base income)
                 base_income = get_company_income(company_id)
-                gross_printed_income += base_income
-
-                stars = get_company_stars(company_id)
-                coo_value = get_cost_of_ownership(coo_level, stars)
-                total_coo += coo_value
-
-                # Track highest FV for DA ability (doubles highest FV company's income)
                 fv = get_company_face_value(company_id)
                 if fv > highest_fv:
                     highest_fv = fv
                     highest_fv_income = base_income
                 elif fv == highest_fv and base_income > highest_fv_income:
-                    # If tied FV, take the one with higher income
                     highest_fv_income = base_income
+
+                # Only VM needs total_coo (to add back up to 10)
+                if is_vm:
+                    stars = get_company_stars(company_id)
+                    coo_value = get_cost_of_ownership(coo_level, stars)
+                    total_coo += coo_value
 
         # Compute synergy bonuses (corporations only per RULES.md)
         if company_count > 1:
             (synergy_income, synergy_markers) = compute_synergy_bonuses(company_ids, company_count)
 
-        # Apply VM ability FIRST (reduces CoO before subtraction, minimum 0)
-        if self.corp_id == CorpIndices.CORP_VM:
-            if total_coo > 10:
-                total_coo = total_coo - 10
-            else:
-                total_coo = 0
+        # Base calculation: cached adjusted incomes + synergy
+        total_income = adjusted_income_sum + synergy_income
 
-        # Base calculation: printed - CoO + synergy
-        total_income = gross_printed_income - total_coo + synergy_income
+        # VM ability: add back up to 10 of the CoO that was already subtracted
+        if is_vm:
+            if total_coo > 10:
+                total_income = total_income + 10
+            else:
+                total_income = total_income + total_coo
 
         # Apply other special abilities
         if self.corp_id == CorpIndices.CORP_PR:
