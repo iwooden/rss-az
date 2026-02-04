@@ -348,6 +348,164 @@ class TestDeckSetup:
 # EDGE CASES
 # =============================================================================
 
+class TestDeckComposition:
+    """Tests for deck composition rules by player count.
+
+    Verifies RULES.md Setup section:
+    - Add companies to each stack equal to player count
+    - 4 players: add 5 orange (not 4)
+    - 5 players: add 7 orange (not 5)
+    - 6 players: use ALL companies of all colors
+    """
+
+    # Company ranges by color
+    RED_IDS = set(range(0, 6))      # 6 companies
+    ORANGE_IDS = set(range(6, 14))  # 8 companies
+    YELLOW_IDS = set(range(14, 22)) # 8 companies
+    GREEN_IDS = set(range(22, 29))  # 7 companies
+    BLUE_IDS = set(range(29, 36))   # 7 companies
+
+    def _get_all_game_cards(self, state):
+        """Get all cards in play: deck + auction + revealed."""
+        all_cards = set(DECK.get_order(state))
+        for company_id in range(GameConstants.NUM_COMPANIES):
+            company = COMPANIES[company_id]
+            if company.is_for_auction(state) or company.is_revealed(state):
+                all_cards.add(company_id)
+        return all_cards
+
+    def _count_by_color(self, cards):
+        """Count cards by color."""
+        return {
+            'red': len(cards & self.RED_IDS),
+            'orange': len(cards & self.ORANGE_IDS),
+            'yellow': len(cards & self.YELLOW_IDS),
+            'green': len(cards & self.GREEN_IDS),
+            'blue': len(cards & self.BLUE_IDS),
+        }
+
+    def test_deck_composition_2_players(self):
+        """2-player game: 3 cards per color (2+1 for last card)."""
+        state = GameState(num_players=2)
+        state.initialize_game(seed=42)
+
+        all_cards = self._get_all_game_cards(state)
+        counts = self._count_by_color(all_cards)
+
+        assert counts['red'] == 3, f"Expected 3 red, got {counts['red']}"
+        assert counts['orange'] == 3, f"Expected 3 orange, got {counts['orange']}"
+        assert counts['yellow'] == 3, f"Expected 3 yellow, got {counts['yellow']}"
+        assert counts['green'] == 3, f"Expected 3 green, got {counts['green']}"
+        assert counts['blue'] == 3, f"Expected 3 blue, got {counts['blue']}"
+        assert len(all_cards) == 15, f"Expected 15 total, got {len(all_cards)}"
+
+    def test_deck_composition_3_players(self):
+        """3-player game: 4 cards per color (3+1 for last card)."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        all_cards = self._get_all_game_cards(state)
+        counts = self._count_by_color(all_cards)
+
+        assert counts['red'] == 4, f"Expected 4 red, got {counts['red']}"
+        assert counts['orange'] == 4, f"Expected 4 orange, got {counts['orange']}"
+        assert counts['yellow'] == 4, f"Expected 4 yellow, got {counts['yellow']}"
+        assert counts['green'] == 4, f"Expected 4 green, got {counts['green']}"
+        assert counts['blue'] == 4, f"Expected 4 blue, got {counts['blue']}"
+        assert len(all_cards) == 20, f"Expected 20 total, got {len(all_cards)}"
+
+    def test_deck_composition_4_players_orange_exception(self):
+        """4-player game: 5 per color, but 6 orange (RULES.md exception: add 5 orange not 4)."""
+        state = GameState(num_players=4)
+        state.initialize_game(seed=42)
+
+        all_cards = self._get_all_game_cards(state)
+        counts = self._count_by_color(all_cards)
+
+        assert counts['red'] == 5, f"Expected 5 red, got {counts['red']}"
+        assert counts['orange'] == 6, f"Expected 6 orange (exception), got {counts['orange']}"
+        assert counts['yellow'] == 5, f"Expected 5 yellow, got {counts['yellow']}"
+        assert counts['green'] == 5, f"Expected 5 green, got {counts['green']}"
+        assert counts['blue'] == 5, f"Expected 5 blue, got {counts['blue']}"
+        assert len(all_cards) == 26, f"Expected 26 total, got {len(all_cards)}"
+
+    def test_deck_composition_5_players_orange_exception(self):
+        """5-player game: 6 per color, but all 8 orange (RULES.md exception: add 7 orange not 5)."""
+        state = GameState(num_players=5)
+        state.initialize_game(seed=42)
+
+        all_cards = self._get_all_game_cards(state)
+        counts = self._count_by_color(all_cards)
+
+        # 5+1=6 per color, but red only has 6 total (so all reds used)
+        assert counts['red'] == 6, f"Expected 6 red (all), got {counts['red']}"
+        # Orange exception: 7+1=8 (all oranges used)
+        assert counts['orange'] == 8, f"Expected 8 orange (all, exception), got {counts['orange']}"
+        assert counts['yellow'] == 6, f"Expected 6 yellow, got {counts['yellow']}"
+        assert counts['green'] == 6, f"Expected 6 green, got {counts['green']}"
+        assert counts['blue'] == 6, f"Expected 6 blue, got {counts['blue']}"
+        assert len(all_cards) == 32, f"Expected 32 total, got {len(all_cards)}"
+
+    def test_deck_composition_6_players_all_cards(self):
+        """6-player game: ALL 36 companies used."""
+        state = GameState(num_players=6)
+        state.initialize_game(seed=42)
+
+        all_cards = self._get_all_game_cards(state)
+        counts = self._count_by_color(all_cards)
+
+        assert counts['red'] == 6, f"Expected 6 red (all), got {counts['red']}"
+        assert counts['orange'] == 8, f"Expected 8 orange (all), got {counts['orange']}"
+        assert counts['yellow'] == 8, f"Expected 8 yellow (all), got {counts['yellow']}"
+        assert counts['green'] == 7, f"Expected 7 green (all), got {counts['green']}"
+        assert counts['blue'] == 7, f"Expected 7 blue (all), got {counts['blue']}"
+        assert len(all_cards) == 36, f"Expected 36 total, got {len(all_cards)}"
+
+    def test_game_end_card_not_in_deck(self):
+        """Game end card is implied at bottom, not stored in deck array."""
+        # The game end card is not a company - it's a special card not tracked in the deck
+        # Verify that all cards in deck are valid company IDs (0-35)
+        for num_players in [2, 3, 4, 5, 6]:
+            state = GameState(num_players=num_players)
+            state.initialize_game(seed=42)
+
+            deck_order = DECK.get_order(state)
+            for company_id in deck_order:
+                assert 0 <= company_id < 36, f"Invalid company ID {company_id} in {num_players}p deck"
+
+    def test_last_in_group_always_included(self):
+        """Highest face value of each color always included (MHE, PR, DR, E, CDG)."""
+        last_in_group = {MHE_ID, PR_ID, DR_ID, E_ID, CDG_ID}
+
+        for num_players in [2, 3, 4, 5, 6]:
+            for seed in [1, 42, 100, 999]:
+                state = GameState(num_players=num_players)
+                state.initialize_game(seed=seed)
+
+                all_cards = self._get_all_game_cards(state)
+
+                assert last_in_group.issubset(all_cards), \
+                    f"Missing last-in-group cards in {num_players}p game with seed {seed}"
+
+    def test_composition_consistent_across_seeds(self):
+        """Card counts should be consistent regardless of shuffle seed."""
+        for num_players in [2, 3, 4, 5, 6]:
+            expected_counts = None
+
+            for seed in [1, 42, 100, 999, 12345]:
+                state = GameState(num_players=num_players)
+                state.initialize_game(seed=seed)
+
+                all_cards = self._get_all_game_cards(state)
+                counts = self._count_by_color(all_cards)
+
+                if expected_counts is None:
+                    expected_counts = counts
+                else:
+                    assert counts == expected_counts, \
+                        f"{num_players}p game: inconsistent counts with seed {seed}"
+
+
 class TestDeckEdgeCases:
     """Edge case tests for deck operations."""
 
