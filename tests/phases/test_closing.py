@@ -982,6 +982,49 @@ class TestMandatoryClose:
         assert not PLAYERS[1].owns_company(game_state, 5)
         assert COMPANIES[5].is_removed(game_state)
 
+    def test_mandatory_close_multiple_players_same_turn(self, game_state):
+        """Multiple players can have mandatory close triggered in the same turn.
+
+        Tests that when multiple players would have negative cash after INCOME,
+        each player's companies are closed independently in player ID order.
+        """
+        TURN.set_coo_level(game_state, 7)
+
+        # Player 0: negative-income company, low cash -> will trigger mandatory close
+        # Company 0: income=$1, CoO=$10, adjusted=-$9
+        COMPANIES[0].transfer_to_player(game_state, 0)
+        PLAYERS[0].set_cash(game_state, 5)  # income + cash = -9 + 5 = -4 < 0
+
+        # Player 1: negative-income company, low cash -> will trigger mandatory close
+        # Company 1: income=$1, CoO=$10, adjusted=-$9
+        COMPANIES[1].transfer_to_player(game_state, 1)
+        PLAYERS[1].set_cash(game_state, 3)  # income + cash = -9 + 3 = -6 < 0
+
+        # Player 2: negative-income company, HIGH cash -> will NOT trigger
+        # Company 2: income=$2, CoO=$10, adjusted=-$8
+        COMPANIES[2].transfer_to_player(game_state, 2)
+        PLAYERS[2].set_cash(game_state, 100)  # income + cash = -8 + 100 = 92 >= 0
+
+        process_mandatory_close_py(game_state)
+
+        # Player 0's company should be closed (would have negative cash)
+        assert not PLAYERS[0].owns_company(game_state, 0)
+        assert COMPANIES[0].is_removed(game_state)
+
+        # Player 1's company should be closed (would have negative cash)
+        assert not PLAYERS[1].owns_company(game_state, 1)
+        assert COMPANIES[1].is_removed(game_state)
+
+        # Player 2's company should NOT be closed (has enough cash)
+        assert PLAYERS[2].owns_company(game_state, 2)
+        assert not COMPANIES[2].is_removed(game_state)
+
+        # Verify all players now have non-negative projected cash after INCOME
+        for player_id in range(3):
+            income = PLAYERS[player_id].get_income(game_state)
+            cash = PLAYERS[player_id].get_cash(game_state)
+            assert income + cash >= 0, f"Player {player_id} would have negative cash: {income} + {cash}"
+
 
 class TestClosingPhaseTransition:
     """Tests for CLOSING phase transition (CLO-16)."""
