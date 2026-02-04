@@ -2,11 +2,9 @@
 """
 Player entity implementation.
 
-Provides both:
-1. Low-level cdef functions for nogil performance-critical code (used by actions.pyx)
-2. High-level Player class for Python-accessible API
-
-The class methods are thin wrappers around the cdef functions to avoid duplication.
+Provides the Player class for accessing player state in the game vector.
+The class uses cached offsets for efficient nogil access in performance-critical
+code paths (e.g., action mask generation in actions.pyx).
 """
 
 from libc.math cimport lround
@@ -18,211 +16,18 @@ from core.data cimport (
 )
 from entities.encoding cimport set_one_hot, get_one_hot_index
 
-# Use constants from GameConstants (imported above)
-
 
 # =============================================================================
-# LOW-LEVEL OFFSET COMPUTATION
+# NET WORTH UPDATE (uses Player class methods)
 # =============================================================================
-
-cdef PlayerOffsets get_player_offsets(int num_players) noexcept nogil:
-    """
-    Compute field offsets within player data block.
-
-    The player state is stored as a contiguous float array with the following layout:
-    - cash (1)
-    - net_worth (1)
-    - turn_order (num_players) - one-hot encoding
-    - is_auction_high_bidder (1)
-    - owned_companies (NUM_COMPANIES) - binary flags
-    - owned_shares (NUM_CORPS) - normalized share counts
-    - is_president (NUM_CORPS) - binary flags
-    - share_buys (NUM_CORPS) - buy count per corp (training loop prevention)
-    - share_sells (NUM_CORPS) - sell count per corp (training loop prevention)
-    """
-    cdef PlayerOffsets p
-    cdef int offset = 0
-
-    p.cash = offset
-    offset += 1
-
-    p.net_worth = offset
-    offset += 1
-
-    p.turn_order = offset
-    offset += num_players
-
-    p.is_auction_high_bidder = offset
-    offset += 1
-
-    p.owned_companies = offset
-    offset += GameConstants.NUM_COMPANIES
-
-    p.owned_shares = offset
-    offset += GameConstants.NUM_CORPS
-
-    p.is_president = offset
-    offset += GameConstants.NUM_CORPS
-
-    p.share_buys = offset
-    offset += GameConstants.NUM_CORPS
-
-    p.share_sells = offset
-    offset += GameConstants.NUM_CORPS
-
-    p.acquisition_proceeds = offset
-
-    return p
-
-
-# =============================================================================
-# LOW-LEVEL CASH OPERATIONS (nogil)
-# =============================================================================
-
-cdef inline int get_player_cash(float* player, PlayerOffsets* p) noexcept nogil:
-    """Get player's cash (integer dollars)."""
-    return <int>(player[p.cash] * CASH_DIVISOR + 0.5)
-
-
-cdef inline void set_player_cash(float* player, PlayerOffsets* p, int cash) noexcept nogil:
-    """Set player's cash (integer dollars)."""
-    player[p.cash] = <float>cash / CASH_DIVISOR
-
-
-cdef inline void add_player_cash(float* player, PlayerOffsets* p, int amount) noexcept nogil:
-    """Add to player's cash (can be negative to subtract)."""
-    cdef int current = get_player_cash(player, p)
-    set_player_cash(player, p, current + amount)
-
-
-# =============================================================================
-# LOW-LEVEL SHARE OPERATIONS (nogil)
-# =============================================================================
-
-cdef inline int get_player_shares(float* player, PlayerOffsets* p, int corp_id) noexcept nogil:
-    """Get player's shares of a corporation."""
-    return <int>(player[p.owned_shares + corp_id] * SHARE_DIVISOR + 0.5)
-
-
-cdef inline void set_player_shares(float* player, PlayerOffsets* p, int corp_id, int shares) noexcept nogil:
-    """Set player's shares of a corporation."""
-    player[p.owned_shares + corp_id] = <float>shares / SHARE_DIVISOR
-
-
-# =============================================================================
-# LOW-LEVEL COMPANY OWNERSHIP (nogil)
-# =============================================================================
-
-cdef inline bint player_owns_company(float* player, PlayerOffsets* p, int company_id) noexcept nogil:
-    """Check if player owns a private company."""
-    return player[p.owned_companies + company_id] == 1.0
-
-
-cdef inline void set_player_owns_company(float* player, PlayerOffsets* p, int company_id, bint owns) noexcept nogil:
-    """Set whether player owns a private company."""
-    player[p.owned_companies + company_id] = 1.0 if owns else 0.0
-
-
-# =============================================================================
-# LOW-LEVEL PRESIDENT STATUS (nogil)
-# =============================================================================
-
-cdef inline bint is_player_president(float* player, PlayerOffsets* p, int corp_id) noexcept nogil:
-    """Check if player is president of a corporation."""
-    return player[p.is_president + corp_id] == 1.0
-
-
-cdef inline void set_player_president(float* player, PlayerOffsets* p, int corp_id, bint is_pres) noexcept nogil:
-    """Set whether player is president of a corporation."""
-    player[p.is_president + corp_id] = 1.0 if is_pres else 0.0
-
-
-# =============================================================================
-# LOW-LEVEL ROUND-TRIP TRACKING (nogil)
-# =============================================================================
-
-cdef inline int get_share_buys(float* player, PlayerOffsets* p, int corp_id) noexcept nogil:
-    """Get share buy count for this corp this turn."""
-    return <int>(player[p.share_buys + corp_id] * MAX_ROUNDTRIPS * 2 + 0.5)
-
-
-cdef inline void increment_share_buys(float* player, PlayerOffsets* p, int corp_id) noexcept nogil:
-    """Increment share buy count."""
-    cdef int current = get_share_buys(player, p, corp_id)
-    player[p.share_buys + corp_id] = <float>(current + 1) / (MAX_ROUNDTRIPS * 2)
-
-
-cdef inline int get_share_sells(float* player, PlayerOffsets* p, int corp_id) noexcept nogil:
-    """Get share sell count for this corp this turn."""
-    return <int>(player[p.share_sells + corp_id] * MAX_ROUNDTRIPS * 2 + 0.5)
-
-
-cdef inline void increment_share_sells(float* player, PlayerOffsets* p, int corp_id) noexcept nogil:
-    """Increment share sell count."""
-    cdef int current = get_share_sells(player, p, corp_id)
-    player[p.share_sells + corp_id] = <float>(current + 1) / (MAX_ROUNDTRIPS * 2)
-
-
-cdef inline int get_roundtrips(float* player, PlayerOffsets* p, int corp_id) noexcept nogil:
-    """
-    Get number of completed round-trips for a corp.
-
-    A round-trip is a paired buy+sell (or sell+buy). Limiting round-trips prevents
-    models from getting stuck in unprofitable buy/sell loops during training.
-    Uses min(buys, sells) so multiple buys or multiple sells alone don't trigger
-    the limit - only actual round-trips (paired operations) count.
-    """
-    cdef int buys = get_share_buys(player, p, corp_id)
-    cdef int sells = get_share_sells(player, p, corp_id)
-    return buys if buys < sells else sells
-
-
-cdef inline void clear_roundtrip_tracking(float* player, PlayerOffsets* p) noexcept nogil:
-    """Clear buy/sell tracking for all corps. Called at end of INVEST phase."""
-    cdef int i
-    for i in range(<int>GameConstants.NUM_CORPS):
-        player[p.share_buys + i] = 0.0
-        player[p.share_sells + i] = 0.0
-
-
-# =============================================================================
-# LOW-LEVEL NET WORTH CALCULATION
-# =============================================================================
-
-cdef int calculate_player_net_worth(GameState state, int player_id, int num_players) noexcept nogil:
-    """
-    Calculate player's total net worth.
-
-    net_worth = cash + sum(company face values) + sum(shares * share_price)
-    """
-    cdef PlayerOffsets po = get_player_offsets(num_players)
-    cdef float* player = state._player_ptr(player_id)
-    cdef int total = get_player_cash(player, &po)
-    cdef int company_id, corp_id
-    cdef int shares, share_price
-
-    # Add face value of owned private companies
-    for company_id in range(<int>GameConstants.NUM_COMPANIES):
-        if player_owns_company(player, &po, company_id):
-            total += get_company_face_value(company_id)
-
-    # Add value of corporation shares
-    for corp_id in range(<int>GameConstants.NUM_CORPS):
-        shares = get_player_shares(player, &po, corp_id)
-        if shares > 0:
-            if state._is_corp_active(corp_id):
-                share_price = state._get_corp_share_price(corp_id)
-                total += shares * share_price
-
-    return total
-
 
 cdef void update_all_player_net_worths(GameState state, int num_players) noexcept:
-    """Update net worth for all players."""
-    cdef int player_id, net_worth
+    """Update net worth for all players using Player class methods."""
+    cdef int player_id
+    cdef Player player
     for player_id in range(num_players):
-        net_worth = calculate_player_net_worth(state, player_id, num_players)
-        state.set_player_net_worth(player_id, net_worth)
+        player = <Player>PLAYERS[player_id]
+        player.update_net_worth(state)
 
 
 def update_all_net_worths(GameState state):
