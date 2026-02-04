@@ -14,7 +14,6 @@ from tests.phases.conftest import (
     invest_state,
     bid_state,
     trade_state,
-    bankruptcy_state,
     apply_and_track,
 )
 
@@ -27,7 +26,6 @@ __all__ = [
     'invest_state',
     'bid_state',
     'trade_state',
-    'bankruptcy_state',
     'apply_and_track',
     'closing_offer_state',
 ]

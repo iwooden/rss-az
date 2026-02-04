@@ -225,29 +225,6 @@ def trade_state():
 
 
 @pytest.fixture
-def bankruptcy_state():
-    """State where one sell triggers bankruptcy."""
-    state = GameState(num_players=3)
-    state.initialize_game(seed=42)
-
-    corp = CORPS[0]
-    corp.set_active(state, True)
-    corp.set_price_index(state, 1)  # One sell -> index 0 -> bankruptcy
-    corp.set_bank_shares(state, 2)
-    corp.set_issued_shares(state, 4)  # bank(2) + player(2) = 4
-
-    COMPANIES[0].transfer_to_corp(state, 0)
-
-    PLAYERS[0].set_shares(state, 0, 2)
-    PLAYERS[0].set_president_of(state, 0, True)
-    PLAYERS[0].set_cash(state, 100)
-
-    MARKET.set_space_available(state, 1, False)
-
-    return state
-
-
-@pytest.fixture
 def apply_and_track():
     """Fixture providing action application with full history tracking.
 
