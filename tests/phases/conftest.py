@@ -112,6 +112,12 @@ def assert_invariants(state, msg=""):
     )
     assert auction_count <= num_players, f"{msg}\nAuction row size {auction_count} > {num_players}"
 
+    # Market boundary spaces must always be available
+    # - Index 0 ($0): Bankruptcy space - corps that land here go bankrupt and leave
+    # - Index 26 ($75): Maximum price - multiple corps can share ("no card" state)
+    assert MARKET.is_space_available(state, 0), f"{msg}\nMarket space 0 ($0 bankruptcy) must always be available"
+    assert MARKET.is_space_available(state, 26), f"{msg}\nMarket space 26 ($75 max) must always be available"
+
 
 def apply_action_and_verify(state, action_idx, msg=""):
     """
