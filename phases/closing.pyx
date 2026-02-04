@@ -57,9 +57,8 @@ cdef void _close_company(GameState state, int company_id, int owner_type, int ow
     Close a company and handle cleanup.
 
     Steps:
-    1. Clear ownership from previous owner (FI or corp)
-    2. Apply Junkyard Scrappers bonus (2x printed income to JS cash)
-    3. Remove company from game
+    1. Apply Junkyard Scrappers bonus (2x printed income to JS cash)
+    2. Remove company from game (clears ownership automatically)
 
     Args:
         state: Game state
@@ -69,17 +68,11 @@ cdef void _close_company(GameState state, int company_id, int owner_type, int ow
     """
     cdef int printed_income = get_company_income(company_id)
 
-    # Clear ownership before removal
-    if owner_type == LOC_FI:
-        fi_module.FI.set_owns_company(state, company_id, False)
-    elif owner_type == LOC_CORP:
-        corp_module.CORPS[owner_id].set_owns_company(state, company_id, False)
-
     # Junkyard Scrappers bonus: 2x printed income only when JS closes its own company
     if owner_type == LOC_CORP and owner_id == CorpIndices.CORP_JS:
         corp_module.CORPS[owner_id].add_cash(state, printed_income * 2)
 
-    # Remove company from game
+    # Remove company from game (clear_location handles ownership)
     company_module.COMPANIES[company_id].remove_from_game(state)
 
 
@@ -87,16 +80,8 @@ cdef void _close_player_company(GameState state, int company_id, int player_id) 
     """
     Close a player-owned private company during mandatory close.
 
-    Steps:
-    1. Clear player ownership
-    2. Remove company from game
-
-    Similar to _close_company but handles player ownership (LOC_PLAYER).
+    remove_from_game handles clearing ownership automatically.
     """
-    # Clear ownership
-    player_module.PLAYERS[player_id].set_owns_company(state, company_id, False)
-
-    # Remove company from game
     company_module.COMPANIES[company_id].remove_from_game(state)
 
 
@@ -520,12 +505,8 @@ cdef void _handle_close_accept(GameState state) noexcept:
     owner_type = <int>state._data[base]
     owner_id = <int>state._data[base + 1]
 
-    # Close the company
+    # Close the company (remove_from_game handles clearing ownership)
     if owner_type == LOC_PLAYER:
-        # For player-owned companies, manually clear ownership
-        player_module.PLAYERS[owner_id].set_owns_company(state, company_id, False)
-
-        # Remove from game
         company_module.COMPANIES[company_id].remove_from_game(state)
     elif owner_type == LOC_CORP:
         _close_company(state, company_id, LOC_CORP, owner_id)

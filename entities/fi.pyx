@@ -63,10 +63,6 @@ cdef class ForeignInvestor:
         """Check if FI owns a company."""
         return state._data[self._owned_companies_offset + company_id] == 1.0
 
-    cpdef void set_owns_company(self, GameState state, int company_id, bint owns):
-        """Set whether FI owns a company."""
-        state._data[self._owned_companies_offset + company_id] = 1.0 if owns else 0.0
-
     # =========================================================================
     # INCOME CALCULATION
     # =========================================================================

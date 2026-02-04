@@ -604,7 +604,6 @@ class TestBankruptcy:
 
         # Give corp a company so bankruptcy has something to liquidate
         COMPANIES[0].transfer_to_corp(state, 0)
-        corp.set_owns_company(state, 0, True)
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
@@ -633,7 +632,6 @@ class TestBankruptcy:
         MARKET.set_space_available(state, 1, False)
 
         COMPANIES[0].transfer_to_corp(state, 0)
-        corp.set_owns_company(state, 0, True)
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)

@@ -168,7 +168,6 @@ class TestCorpBaseIncome:
 
         # Give corp company 0 (BME: income=18, 3 stars)
         COMPANIES[0].transfer_to_corp(game_state, 0)
-        corp.set_owns_company(game_state, 0, True)
 
         # CoO at level 1 (start of game)
         coo_level = TURN.get_coo_level(game_state)
@@ -200,9 +199,7 @@ class TestCorpBaseIncome:
         mad = COMPANY_NAME_TO_ID["MAD"]
 
         COMPANIES[cdg].transfer_to_corp(game_state, 0)
-        corp.set_owns_company(game_state, cdg, True)
         COMPANIES[mad].transfer_to_corp(game_state, 0)
-        corp.set_owns_company(game_state, mad, True)
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -234,7 +231,6 @@ class TestCorpBaseIncome:
 
         # Give corp a 3-star company (BME)
         COMPANIES[0].transfer_to_corp(game_state, 0)
-        corp.set_owns_company(game_state, 0, True)
 
         base_income = get_company_income(0)
         stars = get_company_stars(0)
@@ -264,7 +260,6 @@ class TestFIIncome:
 
         # Transfer company 0 to FI
         COMPANIES[0].transfer_to_fi(game_state)
-        FI.set_owns_company(game_state, 0, True)
 
         coo_level = TURN.get_coo_level(game_state)
         base_income = get_company_income(0)
@@ -286,7 +281,6 @@ class TestFIIncome:
         # Transfer companies 0, 1, 2 to FI
         for cid in [0, 1, 2]:
             COMPANIES[cid].transfer_to_fi(game_state)
-            FI.set_owns_company(game_state, cid, True)
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -333,7 +327,6 @@ class TestCorpSpecialAbilities:
         companies = [0, 1, 2]
         for cid in companies:
             COMPANIES[cid].transfer_to_corp(game_state, 4)
-            pr.set_owns_company(game_state, cid, True)
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -379,7 +372,6 @@ class TestCorpSpecialAbilities:
 
         for cid in companies:
             COMPANIES[cid].transfer_to_corp(game_state, 5)
-            da.set_owns_company(game_state, cid, True)
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -429,7 +421,6 @@ class TestCorpSpecialAbilities:
 
         for cid in companies:
             COMPANIES[cid].transfer_to_corp(game_state, 1)
-            s.set_owns_company(game_state, cid, True)
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -472,7 +463,6 @@ class TestCorpSpecialAbilities:
 
         for cid in companies:
             COMPANIES[cid].transfer_to_corp(game_state, 1)
-            s.set_owns_company(game_state, cid, True)
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -506,7 +496,6 @@ class TestCorpSpecialAbilities:
 
         for cid in [1, 2]:  # Two 2-star companies
             COMPANIES[cid].transfer_to_corp(game_state, 6)
-            vm.set_owns_company(game_state, cid, True)
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -542,7 +531,6 @@ class TestCorpSpecialAbilities:
         companies = [0, 1]  # 3-star and 2-star
         for cid in companies:
             COMPANIES[cid].transfer_to_corp(game_state, 6)
-            vm.set_owns_company(game_state, cid, True)
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -572,7 +560,6 @@ class TestCorpSpecialAbilities:
 
         # Give JS one company
         COMPANIES[0].transfer_to_corp(game_state, 0)
-        js.set_owns_company(game_state, 0, True)
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -600,7 +587,6 @@ class TestIncomeApplication:
         # Give corp a company (CDG: income=32, stars=4, CoO_level1=8 -> net=24)
         cdg = COMPANY_NAME_TO_ID["CDG"]
         COMPANIES[cdg].transfer_to_corp(game_state, 0)
-        corp.set_owns_company(game_state, cdg, True)
 
         income = corp.calculate_income(game_state)
         assert income > 0  # Should be 24
@@ -663,7 +649,6 @@ class TestIncomeApplication:
         # Give player a company (CDG: income=32, stars=4, CoO_level1=8 -> net=24)
         cdg = COMPANY_NAME_TO_ID["CDG"]
         COMPANIES[cdg].transfer_to_player(game_state, 0)
-        player.set_owns_company(game_state, cdg, True)
 
         income = player.get_income(game_state)
         assert income > 0  # Should be 24
@@ -695,7 +680,6 @@ class TestCorpBankruptcy:
         # Adjusted income = 5 - 7 = -2
         kk = COMPANY_NAME_TO_ID["KK"]
         COMPANIES[kk].transfer_to_corp(game_state, 0)
-        corp.set_owns_company(game_state, kk, True)
 
         # Set up market space
         corp.set_price_index(game_state, 10)
@@ -725,7 +709,6 @@ class TestCorpBankruptcy:
         TURN.set_coo_level(game_state, 6)
         kk = COMPANY_NAME_TO_ID["KK"]
         COMPANIES[kk].transfer_to_corp(game_state, 0)
-        corp.set_owns_company(game_state, kk, True)
 
         corp.set_price_index(game_state, 10)
         MARKET.set_space_available(game_state, 10, False)
@@ -761,10 +744,8 @@ class TestCorpBankruptcy:
         dr = COMPANY_NAME_TO_ID["DR"]
 
         COMPANIES[kk].transfer_to_corp(game_state, 0)
-        corp0.set_owns_company(game_state, kk, True)
 
         COMPANIES[dr].transfer_to_corp(game_state, 1)
-        corp1.set_owns_company(game_state, dr, True)
 
         TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
         apply_income_py(game_state)
@@ -927,7 +908,6 @@ class TestMultipleBankruptcies:
 
         kk = COMPANY_NAME_TO_ID["KK"]
         COMPANIES[kk].transfer_to_corp(game_state, 0)
-        corp0.set_owns_company(game_state, kk, True)
 
         # Set up corp 1 with negative income and low cash
         corp1 = CORPS[1]
@@ -938,7 +918,6 @@ class TestMultipleBankruptcies:
 
         dr = COMPANY_NAME_TO_ID["DR"]
         COMPANIES[dr].transfer_to_corp(game_state, 1)
-        corp1.set_owns_company(game_state, dr, True)
 
         # Both should have negative income
         assert corp0.calculate_income(game_state) < 0
@@ -967,7 +946,6 @@ class TestMultipleBankruptcies:
         companies = [COMPANY_NAME_TO_ID["KK"], COMPANY_NAME_TO_ID["DR"], COMPANY_NAME_TO_ID["BY"]]
         for corp_id, cid in zip([0, 2, 4], companies):
             COMPANIES[cid].transfer_to_corp(game_state, corp_id)
-            CORPS[corp_id].set_owns_company(game_state, cid, True)
 
         TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
         apply_income_py(game_state)
@@ -989,7 +967,6 @@ class TestMultipleBankruptcies:
 
         kk = COMPANY_NAME_TO_ID["KK"]
         COMPANIES[kk].transfer_to_corp(game_state, 0)
-        corp0.set_owns_company(game_state, kk, True)
 
         # Corp 1: will survive (high cash)
         corp1 = CORPS[1]
@@ -1004,7 +981,6 @@ class TestMultipleBankruptcies:
         # Give corp 1 a profitable company
         cdg = COMPANY_NAME_TO_ID["CDG"]  # High income blue company
         COMPANIES[cdg].transfer_to_corp(game_state, 1)
-        corp1.set_owns_company(game_state, cdg, True)
 
         PLAYERS[1].set_shares(game_state, 1, 5)
         PLAYERS[1].set_president_of(game_state, 1, True)

@@ -785,45 +785,19 @@ cdef class GameState:
         turn_module.TURN.initialize(self)
         deck_module.DECK.initialize(self)
 
-        # 2. Set player starting state
+        # 2. Set player starting state (array starts as zeros, only set non-zero values)
         starting_cash = 25 if self._num_players == 6 else 30
         for i in range(self._num_players):
             player_module.PLAYERS[i].set_cash(self, starting_cash)
             player_module.PLAYERS[i].set_turn_order(self, i)
             player_module.PLAYERS[i].set_net_worth(self, starting_cash)
 
-            # Clear all owned companies
-            for company_id in range(<int>GameConstants.NUM_COMPANIES):
-                player_module.PLAYERS[i].set_owns_company(self, company_id, False)
-
-            # Clear all shares
-            for corp_id in range(<int>GameConstants.NUM_CORPS):
-                player_module.PLAYERS[i].set_shares(self, corp_id, 0)
-                player_module.PLAYERS[i].set_president_of(self, corp_id, False)
-
         # 3. Set Foreign Investor state
         fi_module.FI.set_cash(self, 4)
-        for company_id in range(<int>GameConstants.NUM_COMPANIES):
-            fi_module.FI.set_owns_company(self, company_id, False)
 
-        # 4. Reset all corporations
+        # 4. Initialize corporations (only non-zero: unissued shares)
         for corp in corp_module.CORPS:
-            corp.set_active(self, False)
-            corp.set_cash(self, 0)
-            corp.set_in_receivership(self, False)
             corp.set_unissued_shares(self, get_corp_share_count(corp.corp_id))
-            corp.set_issued_shares(self, 0)
-            corp.set_bank_shares(self, 0)
-            corp.set_income(self, 0)
-            corp.set_stars(self, 0)
-            corp.set_share_price(self, 0)
-            corp.set_price_index(self, 0)
-            corp.set_acquisition_proceeds(self, 0)
-
-            # Clear all owned companies
-            for company_id in range(<int>GameConstants.NUM_COMPANIES):
-                corp.set_owns_company(self, company_id, False)
-                corp.set_acquisition_company(self, company_id, False)
 
         # 5. Initialize market - all spaces available
         for i in range(<int>GameConstants.NUM_MARKET_SPACES):
@@ -841,34 +815,20 @@ cdef class GameState:
             company_id = deck_module.DECK.draw(self)
             company_module.COMPANIES[company_id].move_to_auction(self)
 
-        # 8. Set turn state
+        # 8. Set turn state (non-zero values only)
         turn_module.TURN.set_phase(self, GamePhases.PHASE_INVEST)
         turn_module.TURN.set_coo_level(self, 1)
         turn_module.TURN.set_turn_number(self, 1)
-        turn_module.TURN.set_end_card_flipped(self, False)
-        turn_module.TURN.clear_consecutive_passes(self)
 
-        # Clear all auction state
+        # Clear one-hot encodings (sets compact storage to -1.0 for "no selection")
         turn_module.TURN.clear_auction_company(self)
         turn_module.TURN.clear_auction_high_bidder(self)
         turn_module.TURN.clear_auction_starter(self)
-        turn_module.TURN.clear_auction_passed(self)
-
-        # Clear dividend state
         turn_module.TURN.clear_dividend_corp(self)
-
-        # Clear issue state
         turn_module.TURN.clear_issue_corp(self)
-
-        # Clear IPO state
         turn_module.TURN.clear_ipo_company(self)
-
-        # Clear acquisition state
         turn_module.TURN.clear_acq_active_corp(self)
         turn_module.TURN.clear_acq_target_company(self)
-        turn_module.TURN.set_acq_fi_offer(self, False)
-
-        # Clear closing state
         turn_module.TURN.clear_closing_company(self)
 
         # Set active player

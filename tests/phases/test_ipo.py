@@ -70,7 +70,6 @@ def ipo_state_with_company(game_state):
     company = COMPANIES[14]
     company.initialize(state)
     company.transfer_to_player(state, 0)
-    PLAYERS[0].set_owns_company(state, 14, True)
 
     # Player 0 has plenty of cash
     PLAYERS[0].set_cash(state, 100)
@@ -109,13 +108,8 @@ def ipo_state_multiple_companies(game_state):
 
     # Transfer companies to players
     COMPANIES[30].transfer_to_player(state, 0)
-    PLAYERS[0].set_owns_company(state, 30, True)
-
     COMPANIES[22].transfer_to_player(state, 1)
-    PLAYERS[1].set_owns_company(state, 22, True)
-
     COMPANIES[14].transfer_to_player(state, 0)
-    PLAYERS[0].set_owns_company(state, 14, True)
 
     # Give players cash
     PLAYERS[0].set_cash(state, 200)

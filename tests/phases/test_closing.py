@@ -389,11 +389,11 @@ class TestOfferGeneration:
 
         # Give player company 0 (income $1, red/1-star)
         # At CoO level 6, CoO = $6, adjusted = $1 - $6 = -$5 (negative - should be offered)
-        PLAYERS[0].set_owns_company(gs, 0, True)
+        COMPANIES[0].transfer_to_player(gs, 0)
 
         # Give player company 29 (income $10, blue/5-star)
         # At CoO level 6, CoO = $0, adjusted = $10 - $0 = $10 (positive - should NOT be offered)
-        PLAYERS[0].set_owns_company(gs, 29, True)
+        COMPANIES[29].transfer_to_player(gs, 0)
 
         # Generate offers
         from phases.closing import generate_close_offers_py, get_close_offer_count_py, get_close_offer_py
@@ -412,7 +412,7 @@ class TestOfferGeneration:
         # Company 2 has income $2 (red/1-star)
         # At CoO level 4, CoO = $2, adjusted = $2 - $2 = $0 (zero - NOT offered)
         TURN.set_coo_level(gs, 4)
-        PLAYERS[0].set_owns_company(gs, 2, True)
+        COMPANIES[2].transfer_to_player(gs, 0)
 
         from phases.closing import generate_close_offers_py, get_close_offer_count_py
         generate_close_offers_py(gs)
@@ -428,9 +428,9 @@ class TestOfferGeneration:
         # Company 6: face value $5 (orange)
         # Company 3: face value $3 (red)
         # All should have negative income at high CoO
-        PLAYERS[0].set_owns_company(gs, 0, True)  # FV $1
-        PLAYERS[0].set_owns_company(gs, 6, True)  # FV $5
-        PLAYERS[0].set_owns_company(gs, 3, True)  # FV $3
+        COMPANIES[0].transfer_to_player(gs, 0)  # FV $1
+        COMPANIES[6].transfer_to_player(gs, 0)  # FV $5
+        COMPANIES[3].transfer_to_player(gs, 0)  # FV $3
 
         from phases.closing import generate_close_offers_py, get_close_offer_count_py, get_close_offer_py
         generate_close_offers_py(gs)
@@ -450,7 +450,7 @@ class TestOfferGeneration:
         gs = closing_offer_state
 
         # Player 1 owns company 1 directly (private)
-        PLAYERS[1].set_owns_company(gs, 1, True)
+        COMPANIES[1].transfer_to_player(gs, 1)
 
         from phases.closing import generate_close_offers_py, get_close_offer_count_py, get_close_offer_py
         generate_close_offers_py(gs)
@@ -472,7 +472,7 @@ class TestOfferGeneration:
         PLAYERS[0].set_shares(gs, 1, 3)  # 3 shares to be president
 
         # Corp owns company 2
-        CORPS[1].set_owns_company(gs, 2, True)
+        COMPANIES[2].transfer_to_corp(gs, 1)
 
         from phases.closing import generate_close_offers_py, get_close_offer_count_py, get_close_offer_py
         generate_close_offers_py(gs)
@@ -492,7 +492,7 @@ class TestOfferGeneration:
         CORPS[2].set_in_receivership(gs, True)
 
         # Corp owns company 4
-        CORPS[2].set_owns_company(gs, 4, True)
+        COMPANIES[4].transfer_to_corp(gs, 2)
 
         from phases.closing import generate_close_offers_py, get_close_offer_count_py
         generate_close_offers_py(gs)
@@ -505,7 +505,7 @@ class TestOfferGeneration:
         gs = closing_offer_state
 
         # FI owns company 5
-        FI.set_owns_company(gs, 5, True)
+        COMPANIES[5].transfer_to_fi(gs)
 
         from phases.closing import generate_close_offers_py, get_close_offer_count_py
         generate_close_offers_py(gs)
@@ -527,7 +527,7 @@ class TestOfferValidation:
         PLAYERS[0].set_president_of(gs, 1, True)
 
         # Corp owns ONLY company 3 (last company)
-        CORPS[1].set_owns_company(gs, 3, True)
+        COMPANIES[3].transfer_to_corp(gs, 1)
 
         from phases.closing import generate_close_offers_py, get_close_offer_count_py
         generate_close_offers_py(gs)
@@ -548,8 +548,8 @@ class TestOfferValidation:
         PLAYERS[0].set_president_of(gs, 1, True)
 
         # Corp owns companies 3 AND 4 (not last company)
-        CORPS[1].set_owns_company(gs, 3, True)
-        CORPS[1].set_owns_company(gs, 4, True)
+        COMPANIES[3].transfer_to_corp(gs, 1)
+        COMPANIES[4].transfer_to_corp(gs, 1)
 
         from phases.closing import generate_close_offers_py, get_close_offer_count_py
         generate_close_offers_py(gs)
@@ -565,8 +565,8 @@ class TestOfferValidation:
         CORPS[1].set_active(gs, True)
         CORPS[1].set_in_receivership(gs, False)
         PLAYERS[0].set_president_of(gs, 1, True)
-        CORPS[1].set_owns_company(gs, 0, True)  # FV $1
-        CORPS[1].set_owns_company(gs, 3, True)  # FV $3
+        COMPANIES[0].transfer_to_corp(gs, 1)  # FV $1
+        COMPANIES[3].transfer_to_corp(gs, 1)  # FV $3
 
         # Set phase to CLOSING and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
@@ -594,7 +594,7 @@ class TestCloseActions:
         gs = closing_offer_state
 
         # Player 0 owns company 1
-        PLAYERS[0].set_owns_company(gs, 1, True)
+        COMPANIES[1].transfer_to_player(gs, 0)
 
         # Set phase and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
@@ -618,7 +618,7 @@ class TestCloseActions:
         gs = closing_offer_state
 
         # Player 0 owns company 2
-        PLAYERS[0].set_owns_company(gs, 2, True)
+        COMPANIES[2].transfer_to_player(gs, 0)
 
         # Set phase and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
@@ -646,7 +646,7 @@ class TestCloseActions:
         CORPS[0].set_cash(gs, 100)
 
         # Player owns company 1 (printed income = $1)
-        PLAYERS[0].set_owns_company(gs, 1, True)
+        COMPANIES[1].transfer_to_player(gs, 0)
 
         # Set phase and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
@@ -672,8 +672,8 @@ class TestCloseActions:
         CORPS[1].set_active(gs, True)
         CORPS[1].set_in_receivership(gs, False)
         PLAYERS[0].set_president_of(gs, 1, True)
-        CORPS[1].set_owns_company(gs, 0, True)  # Income $1
-        CORPS[1].set_owns_company(gs, 3, True)  # Keep one
+        COMPANIES[0].transfer_to_corp(gs, 1)  # Income $1
+        COMPANIES[3].transfer_to_corp(gs, 1)  # Keep one
 
         # Set phase and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
@@ -733,7 +733,7 @@ class TestPlayerIncome:
     def test_get_income_single_company(self, game_state):
         """Player income equals adjusted income of owned company."""
         # Give player 0 a company (company 0: $1 income, 1 star)
-        PLAYERS[0].set_owns_company(game_state, 0, True)
+        COMPANIES[0].transfer_to_player(game_state, 0)
 
         # At CoO level 1, 1-star company has $0 CoO
         # Adjusted income = $1 - $0 = $1
@@ -747,8 +747,8 @@ class TestPlayerIncome:
         # Give player 0 two companies
         # Company 0: $1 income, 1 star -> adjusted = $1 - $0 = $1 at CoO 1
         # Company 8: $3 income, 2 stars -> adjusted = $3 - $0 = $3 at CoO 1
-        PLAYERS[0].set_owns_company(game_state, 0, True)
-        PLAYERS[0].set_owns_company(game_state, 8, True)
+        COMPANIES[0].transfer_to_player(game_state, 0)
+        COMPANIES[8].transfer_to_player(game_state, 0)
 
         income = PLAYERS[0].get_income(game_state)
         # $1 + $3 = $4
@@ -762,7 +762,7 @@ class TestPlayerIncome:
         # Give player a 1-star company at CoO 7
         # Company 0: $1 income, 1 star -> CoO at level 7 is $10
         # Adjusted = $1 - $10 = -$9
-        PLAYERS[0].set_owns_company(game_state, 0, True)
+        COMPANIES[0].transfer_to_player(game_state, 0)
 
         income = PLAYERS[0].get_income(game_state)
         assert income == -9  # $1 - $10 = -$9
@@ -776,7 +776,7 @@ class TestPlayerIncome:
         PLAYERS[0].set_president_of(game_state, 0, True)
 
         # Give corp 0 a company
-        CORPS[0].set_owns_company(game_state, 0, True)
+        COMPANIES[0].transfer_to_corp(game_state, 0)
 
         # Player income should be 0 (corp's company doesn't count)
         income = PLAYERS[0].get_income(game_state)
@@ -806,7 +806,7 @@ class TestMandatoryClose:
 
         # Give player a 1-star company with negative adjusted income
         # Company 0: $1 income, 1 star, CoO 7 = $10 -> adjusted = -$9
-        PLAYERS[0].set_owns_company(game_state, 0, True)
+        COMPANIES[0].transfer_to_player(game_state, 0)
 
         # Reduce player cash to trigger mandatory close
         # Cash = $5, income = -$9, total = -$4 < 0
@@ -825,8 +825,8 @@ class TestMandatoryClose:
         # Give player two negative-income companies with different face values
         # Company 0: face value $1, 1 star (cheapest), adjusted = $1 - $10 = -$9
         # Company 8: face value $3, 2 stars, adjusted = $3 - $10 = -$7
-        PLAYERS[0].set_owns_company(game_state, 0, True)
-        PLAYERS[0].set_owns_company(game_state, 8, True)
+        COMPANIES[0].transfer_to_player(game_state, 0)
+        COMPANIES[8].transfer_to_player(game_state, 0)
 
         # Set cash so closing ONE company makes total >= 0
         # Income = -$9 + -$7 = -$16
@@ -849,9 +849,9 @@ class TestMandatoryClose:
         TURN.set_coo_level(game_state, 7)
 
         # Give player multiple negative-income companies
-        PLAYERS[0].set_owns_company(game_state, 0, True)  # $1 FV, -$9 adj
-        PLAYERS[0].set_owns_company(game_state, 1, True)  # $1 FV, -$9 adj
-        PLAYERS[0].set_owns_company(game_state, 2, True)  # $2 FV, -$8 adj
+        COMPANIES[0].transfer_to_player(game_state, 0)  # $1 FV, -$9 adj
+        COMPANIES[1].transfer_to_player(game_state, 0)  # $1 FV, -$9 adj
+        COMPANIES[2].transfer_to_player(game_state, 0)  # $2 FV, -$8 adj
 
         # Income = -$9 + -$9 + -$8 = -$26, cash = 10, total = -$16 < 0
         # Need to close multiple companies
@@ -875,7 +875,7 @@ class TestMandatoryClose:
 
         # Give player a negative-income company
         # Company 0: $1 printed income, 1 star
-        PLAYERS[0].set_owns_company(game_state, 0, True)
+        COMPANIES[0].transfer_to_player(game_state, 0)
         PLAYERS[0].set_cash(game_state, 5)  # Will trigger mandatory close
 
         process_mandatory_close_py(game_state)
@@ -889,10 +889,10 @@ class TestMandatoryClose:
 
         # Give player one positive and one negative income company
         # Company 29: $10 income, blue/5-star, CoO 7 = $0 -> adj = +$10
-        PLAYERS[0].set_owns_company(game_state, 29, True)
+        COMPANIES[29].transfer_to_player(game_state, 0)
 
         # Company 0: $1 income, 1 star, CoO 7 = $10 -> adj = -$9
-        PLAYERS[0].set_owns_company(game_state, 0, True)
+        COMPANIES[0].transfer_to_player(game_state, 0)
 
         # Total income = +$10 + -$9 = +$1
         # Cash = $0, total = $1 >= 0, no close needed
@@ -909,7 +909,7 @@ class TestMandatoryClose:
         TURN.set_coo_level(game_state, 7)
 
         # Give player 1 a negative-income company (test non-zero player)
-        PLAYERS[1].set_owns_company(game_state, 5, True)  # $2 FV, -$8 adj
+        COMPANIES[5].transfer_to_player(game_state, 1)  # $2 FV, -$8 adj
         PLAYERS[1].set_cash(game_state, 5)  # Will trigger close
 
         process_mandatory_close_py(game_state)
@@ -942,7 +942,7 @@ class TestClosingPhaseTransition:
         TURN.set_coo_level(game_state, 7)
 
         # Give player 0 a negative-income company
-        PLAYERS[0].set_owns_company(game_state, 0, True)
+        COMPANIES[0].transfer_to_player(game_state, 0)
 
         # Low cash to trigger mandatory close after offer processing
         PLAYERS[0].set_cash(game_state, 5)
@@ -1009,7 +1009,7 @@ class TestClosingEdgeCases:
 
         # Give player 0 a negative-income company
         # Company 0: $1 income, 1 star, CoO 7 = $10 -> adjusted = -$9
-        PLAYERS[0].set_owns_company(game_state, 0, True)
+        COMPANIES[0].transfer_to_player(game_state, 0)
 
         # Low cash to trigger mandatory close after passing
         # Cash = $5, income = -$9, total = -$4 < 0
@@ -1044,7 +1044,7 @@ class TestClosingEdgeCases:
 
         # Give player 0 a negative-income company
         # Company 0: $1 income, 1 star, CoO 7 = $10 -> adjusted = -$9
-        PLAYERS[0].set_owns_company(game_state, 0, True)
+        COMPANIES[0].transfer_to_player(game_state, 0)
 
         # High cash so no mandatory close needed
         # Cash = $100, income = -$9, total = $91 >= 0
@@ -1088,9 +1088,9 @@ class TestClosingEdgeCases:
         # Company 0: $1 income, FV $1
         # Company 1: $1 income, FV $1
         # Company 3: $2 income, FV $3
-        PLAYERS[0].set_owns_company(game_state, 0, True)  # income $1
-        PLAYERS[0].set_owns_company(game_state, 1, True)  # income $1
-        PLAYERS[0].set_owns_company(game_state, 3, True)  # income $2
+        COMPANIES[0].transfer_to_player(game_state, 0)  # income $1
+        COMPANIES[1].transfer_to_player(game_state, 0)  # income $1
+        COMPANIES[3].transfer_to_player(game_state, 0)  # income $2
 
         # High cash so no mandatory close needed
         PLAYERS[0].set_cash(game_state, 1000)
@@ -1134,8 +1134,8 @@ class TestClosingEdgeCases:
         # Corp owns exactly 2 negative-income companies
         # Company 0: FV $1 (offered first, lower FV)
         # Company 3: FV $3 (offered second, higher FV)
-        CORPS[1].set_owns_company(gs, 0, True)
-        CORPS[1].set_owns_company(gs, 3, True)
+        COMPANIES[0].transfer_to_corp(gs, 1)
+        COMPANIES[3].transfer_to_corp(gs, 1)
 
         # Enter CLOSING phase
         TURN.set_phase(gs, PHASE_CLOSING_PY)
@@ -1174,16 +1174,16 @@ class TestClosingEdgeCases:
 
         # Give negative-income companies to multiple players
         # Player 0: company 0 (income $1, CoO $10 -> adj = -$9)
-        PLAYERS[0].set_owns_company(state, 0, True)
+        COMPANIES[0].transfer_to_player(state, 0)
         PLAYERS[0].set_cash(state, 100)
 
         # Player 1: company 2 (income $2, CoO $10 -> adj = -$8)
-        PLAYERS[1].set_owns_company(state, 2, True)
+        COMPANIES[2].transfer_to_player(state, 1)
         PLAYERS[1].set_cash(state, 5)  # Low cash for mandatory close test
 
         # For 6-player game, also give company to player 5
         if num_players == 6:
-            PLAYERS[5].set_owns_company(state, 4, True)
+            COMPANIES[4].transfer_to_player(state, 5)
             PLAYERS[5].set_cash(state, 100)
 
         assert_invariants(state, f"Before CLOSING ({num_players} players)")

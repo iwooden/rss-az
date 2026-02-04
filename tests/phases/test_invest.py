@@ -688,7 +688,6 @@ class TestBankruptcy:
 
         # Add second company to corp
         COMPANIES[1].transfer_to_corp(bankruptcy_state, 0)
-        corp.set_owns_company(bankruptcy_state, 1, True)
 
         # Trigger bankruptcy
         layout = get_action_layout(3)
@@ -779,7 +778,6 @@ class TestBankruptcy:
         corp.set_issued_shares(state, 2)
 
         COMPANIES[0].transfer_to_corp(state, 0)
-        corp.set_owns_company(state, 0, True)
 
         PLAYERS[0].set_shares(state, 0, 2)
         PLAYERS[0].set_president_of(state, 0, True)

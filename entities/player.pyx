@@ -383,10 +383,6 @@ cdef class Player:
         """Check if player owns a private company."""
         return state._data[self._owned_companies_offset + company_id] == 1.0
 
-    cpdef void set_owns_company(self, GameState state, int company_id, bint owns):
-        """Set whether player owns a private company."""
-        state._data[self._owned_companies_offset + company_id] = 1.0 if owns else 0.0
-
     # =========================================================================
     # CORPORATION SHARES
     # =========================================================================

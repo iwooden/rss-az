@@ -237,7 +237,6 @@ def bankruptcy_state():
     corp.set_issued_shares(state, 4)  # bank(2) + player(2) = 4
 
     COMPANIES[0].transfer_to_corp(state, 0)
-    corp.set_owns_company(state, 0, True)
 
     PLAYERS[0].set_shares(state, 0, 2)
     PLAYERS[0].set_president_of(state, 0, True)

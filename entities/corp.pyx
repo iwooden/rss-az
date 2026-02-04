@@ -311,10 +311,6 @@ cdef class Corporation:
         """Check if corporation owns a company."""
         return state._data[self._owned_companies_offset + company_id] == 1.0
 
-    cpdef void set_owns_company(self, GameState state, int company_id, bint owns):
-        """Set whether corporation owns a company."""
-        state._data[self._owned_companies_offset + company_id] = 1.0 if owns else 0.0
-
     cdef inline bint _owns_company_nogil(self, float* data, int company_id) noexcept nogil:
         """Check if corporation owns a company (nogil version)."""
         return data[self._owned_companies_offset + company_id] == 1.0
@@ -472,11 +468,10 @@ cdef class Corporation:
         """
         cdef int company_id, player_id, current_index
 
-        # Step 1: Remove all owned companies from game
+        # Step 1: Remove all owned companies from game (remove_from_game clears ownership)
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if self.owns_company(state, company_id):
                 company_module.COMPANIES[company_id].remove_from_game(state)
-                self.set_owns_company(state, company_id, False)
 
         # Step 2: Return all shares to unissued - clear player shares first
         for player_id in range(state._num_players):

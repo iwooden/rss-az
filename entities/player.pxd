@@ -109,9 +109,8 @@ cdef class Player:
     cpdef int get_turn_order(self, GameState state)
     cpdef void set_turn_order(self, GameState state, int order)
 
-    # Company ownership
+    # Company ownership (use Company.transfer_to_player() to set)
     cpdef bint owns_company(self, GameState state, int company_id)
-    cpdef void set_owns_company(self, GameState state, int company_id, bint owns)
 
     # Corporation shares
     cpdef int get_shares(self, GameState state, int corp_id)

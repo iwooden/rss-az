@@ -645,7 +645,6 @@ class TestIncomeIntegration:
         # KK: income=5, stars=3. At CoO level 6, 3-star CoO=7. Adjusted = -2
         kk = COMPANY_NAME_TO_ID["KK"]
         COMPANIES[kk].transfer_to_corp(state, 0)
-        corp.set_owns_company(state, kk, True)
 
         assert_invariants(state, "Before INCOME with bankruptcy setup")
 
@@ -682,7 +681,6 @@ class TestIncomeIntegration:
             MARKET.set_space_available(state, 10 + corp_id, False)
 
             COMPANIES[cid].transfer_to_corp(state, corp_id)
-            corp.set_owns_company(state, cid, True)
 
         assert_invariants(state, "Before INCOME with multiple bankruptcies")
 
@@ -773,7 +771,6 @@ class TestIncomeIntegration:
 
         cdg = COMPANY_NAME_TO_ID["CDG"]
         COMPANIES[cdg].transfer_to_corp(state, 0)
-        corp.set_owns_company(state, cdg, True)
 
         PLAYERS[0].set_shares(state, 0, 4)
         PLAYERS[0].set_president_of(state, 0, True)
@@ -781,12 +778,10 @@ class TestIncomeIntegration:
         # Set up player with company
         mad = COMPANY_NAME_TO_ID["MAD"]
         COMPANIES[mad].transfer_to_player(state, 1)
-        PLAYERS[1].set_owns_company(state, mad, True)
 
         # Set up FI with company
         fra = COMPANY_NAME_TO_ID["FRA"]
         COMPANIES[fra].transfer_to_fi(state)
-        FI.set_owns_company(state, fra, True)
 
         # Record starting values
         corp_cash_before = corp.get_cash(state)
@@ -862,7 +857,7 @@ class TestIncomeIntegration:
         TURN.set_coo_level(state, 6)
 
         # Give player 0 a negative income company
-        PLAYERS[0].set_owns_company(state, 0, True)  # Company 0: 1 star, negative adjusted income
+        COMPANIES[0].transfer_to_player(state, 0)  # Company 0: 1 star, negative adjusted income
 
         # Set up active corp for DIVIDENDS phase
         corp = CORPS[0]
@@ -962,7 +957,7 @@ class TestClosingIntegration:
         # Give player 0 a red company (company 0 has 1 star = red)
         # Company 0: income $2, stars 1 (red), face value $1
         # At CoO level 6: Red CoO = $6, so adjusted = $2 - $6 = -$4
-        PLAYERS[0].set_owns_company(state, 0, True)
+        COMPANIES[0].transfer_to_player(state, 0)
 
         # Set up corp 0 (Junkyard Scrappers) as active to test JS bonus
         CORPS[0].set_active(state, True)
@@ -1025,7 +1020,7 @@ class TestClosingIntegration:
 
         # Give player 0 a red company with negative adjusted income
         # Company 0: income $2, stars 1 (red) -> adjusted = $2 - $6 = -$4
-        PLAYERS[0].set_owns_company(state, 0, True)
+        COMPANIES[0].transfer_to_player(state, 0)
 
         # Set player cash low enough that income + cash < 0
         # Player income from company 0: -$4 (negative), so need cash < $4 for mandatory close
@@ -1127,7 +1122,7 @@ class TestClosingIntegration:
 
         # Set up negative-income scenario
         TURN.set_coo_level(state, 6)  # Level 6: Red=$6 CoO
-        PLAYERS[0].set_owns_company(state, 0, True)  # Company 0: 1 star, $1 income
+        COMPANIES[0].transfer_to_player(state, 0)  # Company 0: 1 star, $1 income
 
         # Enter ACQUISITION phase
         TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
@@ -1179,7 +1174,7 @@ class TestClosingIntegration:
         # 3. Corp 0 is active with president player 0 (to make acquisition offer)
 
         COMPANIES[0].transfer_to_player(state, 0)  # Company 0 for acquisition
-        PLAYERS[0].set_owns_company(state, 1, True)  # Company 1 for close offer
+        COMPANIES[1].transfer_to_player(state, 0)  # Company 1 for close offer
 
         CORPS[0].set_active(state, True)
         CORPS[0].set_cash(state, 50000)
@@ -1503,7 +1498,6 @@ class TestDividendsIntegration:
 
         # Give corp a company (bankruptcy needs to liquidate)
         COMPANIES[0].transfer_to_corp(state, 0)
-        corp.set_owns_company(state, 0, True)
 
         PLAYERS[0].set_shares(state, 0, 3)
         PLAYERS[0].set_president_of(state, 0, True)

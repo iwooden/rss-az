@@ -125,7 +125,6 @@ class TestNoUnownedCompanies:
             company.initialize(end_card_state)
             # Transfer to player 0 (simplest way to get them out of deck)
             company.transfer_to_player(end_card_state, 0)
-            PLAYERS[0].set_owns_company(end_card_state, company_id, True)
 
         # Verify end card was not flipped before
         assert not TURN.is_end_card_flipped(end_card_state)
@@ -169,7 +168,6 @@ class TestNoUnownedCompanies:
                 company.move_to_auction(end_card_state)
             else:
                 company.transfer_to_player(end_card_state, 0)
-                PLAYERS[0].set_owns_company(end_card_state, company_id, True)
 
         assert not TURN.is_end_card_flipped(end_card_state)
 
@@ -191,7 +189,6 @@ class TestNoUnownedCompanies:
                 company.set_revealed(end_card_state, True)
             else:
                 company.transfer_to_player(end_card_state, 0)
-                PLAYERS[0].set_owns_company(end_card_state, company_id, True)
 
         assert not TURN.is_end_card_flipped(end_card_state)
 
@@ -312,7 +309,6 @@ class TestCoOLevelUpdate:
             company = COMPANIES[company_id]
             company.initialize(end_card_state)
             company.transfer_to_player(end_card_state, 0)
-            PLAYERS[0].set_owns_company(end_card_state, company_id, True)
 
         # Verify starting CoO level
         starting_coo = TURN.get_coo_level(end_card_state)
@@ -381,7 +377,6 @@ class TestCheckPriority:
             company = COMPANIES[company_id]
             company.initialize(end_card_state)
             company.transfer_to_player(end_card_state, 0)
-            PLAYERS[0].set_owns_company(end_card_state, company_id, True)
 
         assert not TURN.is_end_card_flipped(end_card_state)
 

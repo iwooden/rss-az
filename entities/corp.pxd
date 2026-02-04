@@ -104,9 +104,8 @@ cdef class Corporation:
     cpdef bint is_in_receivership(self, GameState state)
     cpdef void set_in_receivership(self, GameState state, bint in_recv)
 
-    # Company ownership
+    # Company ownership (use Company.transfer_to_corp() to set)
     cpdef bint owns_company(self, GameState state, int company_id)
-    cpdef void set_owns_company(self, GameState state, int company_id, bint owns)
     cdef inline bint _owns_company_nogil(self, float* data, int company_id) noexcept nogil
     cpdef int count_companies(self, GameState state, bint include_acquisition=*)
 
