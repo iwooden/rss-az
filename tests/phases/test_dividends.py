@@ -278,6 +278,39 @@ class TestMaxDividendConstraint:
         for amount in range(5, 26):
             assert mask[layout['dividend_base'] + amount] == 0.0
 
+    def test_max_dividend_at_highest_price(self):
+        """At price_index 26 ($75), max dividend is 25 (highest in action space)."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        corp = CORPS[0]
+        corp.set_active(state, True)
+        corp.set_price_index(state, 26)  # Price = $75, max = 75 // 3 = 25
+        corp.set_issued_shares(state, 2)
+        corp.set_cash(state, 100)  # Plenty to afford max dividend (2 * 25 = 50)
+
+        PLAYERS[0].set_shares(state, 0, 2)
+        PLAYERS[0].set_president_of(state, 0, True)
+        # Price index 26 is shared space, mark it occupied
+        MARKET.set_space_available(state, 26, False)
+
+        TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
+        setup_dividends_phase_py(state)
+
+        # Verify the formula
+        assert get_max_dividend(26) == 25
+
+        mask = get_valid_action_mask(state)
+        layout = get_action_layout(3)
+
+        # All 26 dividend actions (0-25) should be valid
+        for amount in range(26):
+            assert mask[layout['dividend_base'] + amount] == 1.0, f"Dividend {amount} should be valid"
+
+        # Verify action 25 is the last dividend action (26 total: 0-25)
+        # There is no dividend action 26 - it would be in the ISSUE phase space
+        assert layout['dividend_base'] + 25 < layout['issue_start']
+
 
 # =============================================================================
 # DIV-03: Star Calculation Tests
