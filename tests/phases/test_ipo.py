@@ -24,7 +24,7 @@ from core.actions import get_valid_action_mask, get_action_layout
 from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.corp import CORPS
-from entities.company import COMPANIES
+from entities.company import COMPANIES, CompanyLocation
 from entities.market import MARKET
 from phases.ipo import (
     setup_ipo_phase_py,
@@ -146,7 +146,7 @@ class TestBasicIPOMechanics:
         corp = CORPS[0]
 
         # Verify company is player-owned before
-        assert company.get_location(state) == 3  # LOC_PLAYER
+        assert company.get_location(state) == CompanyLocation.LOC_PLAYER
         assert company.get_owner_id(state) == 0
 
         # Execute IPO: corp 0, par slot 0 (par price 16 for star=3)
@@ -154,7 +154,7 @@ class TestBasicIPOMechanics:
         assert result == 0
 
         # Company now belongs to corp
-        assert company.get_location(state) == 5  # LOC_CORP
+        assert company.get_location(state) == CompanyLocation.LOC_CORP
         assert company.get_owner_id(state) == 0  # corp 0
 
     def test_ipo_activates_corporation(self, ipo_state_with_company):
@@ -660,7 +660,7 @@ class TestIPOIntegration:
         # Verify end state
         assert CORPS[0].is_active(state)
         assert PLAYERS[0].is_president_of(state, 0)
-        assert COMPANIES[14].get_location(state) == 5  # LOC_CORP
+        assert COMPANIES[14].get_location(state) == CompanyLocation.LOC_CORP
 
     def test_mixed_ipo_and_pass(self, ipo_state_multiple_companies):
         """Mixed IPO and pass actions work correctly."""

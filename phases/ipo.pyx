@@ -36,9 +36,7 @@ from entities import corp as corp_module
 from entities import company as company_module
 from entities import player as player_module
 from entities import market as market_module
-
-# Company location constants (from entities/company.pxd)
-DEF LOC_PLAYER = 3
+from entities.company cimport LOC_PLAYER
 
 
 # =============================================================================
