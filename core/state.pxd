@@ -153,9 +153,6 @@ cdef class GameState:
     cpdef void set_player_cash(self, int player_id, int cash)
     cpdef int get_player_net_worth(self, int player_id)
     cpdef void set_player_net_worth(self, int player_id, int net_worth)
-    cdef bint _is_player_president(self, int player_id, int corp_id) noexcept nogil
-    cpdef bint is_player_president(self, int player_id, int corp_id)
-    cpdef void set_player_president(self, int player_id, int corp_id, bint is_pres)
 
     # Corporation access
     cdef bint _is_corp_active(self, int corp_id) noexcept nogil

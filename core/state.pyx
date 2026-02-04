@@ -507,20 +507,6 @@ cdef class GameState:
         cdef float* player = self._player_ptr(player_id)
         player[self._player_fields.net_worth] = <float>net_worth / CASH_DIVISOR
 
-    cdef bint _is_player_president(self, int player_id, int corp_id) noexcept nogil:
-        """Check if player is president of corp (nogil version)."""
-        cdef float* player = self._player_ptr(player_id)
-        return player[self._player_fields.is_president + corp_id] == 1.0
-
-    cpdef bint is_player_president(self, int player_id, int corp_id):
-        """Check if player is president of corp."""
-        return self._is_player_president(player_id, corp_id)
-
-    cpdef void set_player_president(self, int player_id, int corp_id, bint is_pres):
-        """Set player president status."""
-        cdef float* player = self._player_ptr(player_id)
-        player[self._player_fields.is_president + corp_id] = 1.0 if is_pres else 0.0
-
     # =========================================================================
     # CORPORATION ACCESS
     # =========================================================================
