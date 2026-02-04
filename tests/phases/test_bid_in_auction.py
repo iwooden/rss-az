@@ -382,43 +382,6 @@ class TestAuctionResolution:
         for player_id in range(3):
             assert not TURN.has_player_passed_auction(bid_state, player_id)
 
-    def test_new_company_drawn(self, bid_state):
-        """BID-09: New company drawn after auction - revealed but unavailable."""
-        # At start of game, num_players companies are in auction row
-        # When auction starts, one company is still marked "for auction" but is being bid on
-        # After resolution: that company is transferred (cleared from auction)
-        # and a new company is drawn and marked REVEALED (unavailable this phase)
-        # Net effect: auction row size decreases by 1, revealed count increases by 1
-
-        # Record the company being auctioned
-        auctioned_company = TURN.get_auction_company(bid_state)
-
-        # Verify company is marked for auction initially
-        assert bid_state.is_company_for_auction(auctioned_company)
-
-        # Make all others leave to trigger resolution
-        layout = get_action_layout(3)
-        for _ in range(2):
-            if bid_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-                DRIVER.apply_action(bid_state, layout['leave_auction'])
-
-        # Verify the auctioned company is no longer for auction (transferred to player)
-        assert not bid_state.is_company_for_auction(auctioned_company)
-
-        # Verify auction row decreased by 1 (replacement is revealed, not available)
-        auction_count = sum(
-            1 for cid in range(36)
-            if bid_state.is_company_for_auction(cid)
-        )
-        assert auction_count == 2  # One sold, replacement is revealed not auctionable
-
-        # Verify a new company was drawn and marked as revealed
-        revealed_count = sum(
-            1 for cid in range(36)
-            if COMPANIES[cid].is_revealed(bid_state)
-        )
-        assert revealed_count == 1  # Newly drawn card is revealed (unavailable)
-
     def test_returns_to_invest_phase(self, bid_state):
         """BID-10: Auction resolution returns to INVEST phase."""
         # Make all others leave to trigger resolution
@@ -606,8 +569,14 @@ class TestAuctionResolution:
                 DRIVER.apply_action(state, i)
                 break
 
+        auctioned_company = TURN.get_auction_company(state)
+        assert state.is_company_for_auction(auctioned_company)
+
         while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
             DRIVER.apply_action(state, layout['leave_auction'])
+
+        # Auctioned company transferred to winner (no longer for auction)
+        assert not state.is_company_for_auction(auctioned_company)
 
         # Auction row decreases by 1 (replacement is revealed, not available)
         final_auction_count = sum(
