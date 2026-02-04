@@ -19,10 +19,10 @@ from libc.string cimport memset, memcpy
 
 from core.state cimport GameState
 from core.data cimport (
-    GameConstants, GamePhases, CASH_DIVISOR,
+    GameConstants, GamePhases, CASH_DIVISOR, MAX_DIVIDEND, NUM_PAR_PRICES,
     get_company_face_value, get_company_low_price, get_company_high_price,
     get_company_stars, get_par_price, get_market_index, get_market_price,
-    get_max_dividend, is_valid_par_price, get_par_index_for_slot, NUM_PAR_PRICES, CORP_OS
+    get_max_dividend, is_valid_par_price, get_par_index_for_slot, CORP_OS
 )
 
 # Import types and functions from our own pxd
@@ -31,7 +31,7 @@ from core.actions cimport (
     ACTION_PASS, ACTION_AUCTION, ACTION_BUY_SHARE, ACTION_SELL_SHARE,
     ACTION_LEAVE_AUCTION, ACTION_RAISE_BID, ACTION_ACQ_PRICE, ACTION_ACQ_FI_HIGH,
     ACTION_ACQ_FI_FACE, ACTION_CLOSE, ACTION_DIVIDEND, ACTION_ISSUE, ACTION_IPO,
-    AUCTION_CAP, MAX_PAR_SLOTS, ACQ_PRICE_RANGE, MAX_DIVIDEND, NUM_PAR_PRICES
+    AUCTION_CAP, MAX_PAR_SLOTS, ACQ_PRICE_RANGE
 )
 
 # Use constants from data module (imported above as GameConstants and GamePhases)
