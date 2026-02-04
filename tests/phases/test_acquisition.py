@@ -17,10 +17,11 @@ TEST-01 (Offer Generation Priority):
   - test_player_private_sorted_similarly: OFFER-05 (detailed)
 
 TEST-02 (Action Types):
-- TestActionIntegration class (4 tests)
+- TestActionIntegration class (5 tests)
   - test_accept_price_action: Price-based acquisition
   - test_fi_buy_high_action: Non-OS buys from FI at high price
   - test_fi_buy_face_action: OS buys from FI at face value
+  - test_os_pays_face_value_not_high_price: OS privilege verification (face != high)
   - test_pass_action: Skip offer, advance to next
 
 TEST-03 (Validation Rules):
@@ -71,7 +72,7 @@ TEST-07 (Edge Cases):
   - test_single_corp_no_corp_corp_offers: Configuration edge (single corp)
   - test_same_president_constraint_explicit: Same-president as sole blocker
 
-Total: 53 tests covering TEST-01 through TEST-05, TEST-07
+Total: 54 tests covering TEST-01 through TEST-05, TEST-07
 """
 
 import pytest
@@ -914,6 +915,58 @@ class TestActionIntegration:
 
             # Verify company in acquisition zone
             assert CORPS[2].has_acquisition_company(gs, 0)
+
+    def test_os_pays_face_value_not_high_price(self):
+        """Verify OS pays face_value (not high_price) when buying from FI.
+
+        This test verifies the RULES.md OS privilege: 'Always considered highest
+        share price; pays only Face Value to Foreign Investor.'
+        """
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Use company 0 which has face_value=1, high_price=2
+        company_id = 0
+        face_value = get_company_face_value(company_id)
+        high_price = get_company_high_price(company_id)
+
+        # Precondition: face_value and high_price must be different
+        # to prove OS is getting a discount
+        assert face_value != high_price, \
+            f"Test requires face_value ({face_value}) != high_price ({high_price})"
+
+        # Give company to FI, make OS (corp 2) active
+        COMPANIES[company_id].transfer_to_fi(gs)
+        CORPS[2].set_active(gs, True)
+        CORPS[2].set_cash(gs, 50000)
+
+        setup_acquisition_phase_py(gs)
+
+        assert get_offer_count(gs) > 0, "Should have FI offer for OS"
+
+        corp_cash_before = CORPS[2].get_cash(gs)
+        fi_cash_before = FI.get_cash(gs)
+
+        # OS uses FI_BUY_FACE action
+        result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_FACE, 0)
+        assert result == 0, "FI_BUY_FACE should succeed for OS"
+
+        # Verify OS paid face_value, NOT high_price
+        corp_cash_after = CORPS[2].get_cash(gs)
+        fi_cash_after = FI.get_cash(gs)
+
+        amount_paid = corp_cash_before - corp_cash_after
+        amount_received = fi_cash_after - fi_cash_before
+
+        assert amount_paid == face_value, \
+            f"OS should pay face_value ({face_value}), not {amount_paid}"
+        assert amount_paid != high_price, \
+            f"OS should NOT pay high_price ({high_price})"
+        assert amount_received == face_value, \
+            f"FI should receive face_value ({face_value}), got {amount_received}"
+
+        # Verify company in acquisition zone
+        assert CORPS[2].has_acquisition_company(gs, company_id)
 
     def test_pass_action(self):
         """Offer index advances, next offer presented."""
