@@ -179,12 +179,11 @@ cdef class Company:
     # TRANSFER OPERATIONS
     # =========================================================================
 
-    cpdef void clear_location(self, GameState state):
-        """Clear company from its current location without setting a new one."""
+    cdef void _clear_visible_flag(self, GameState state) noexcept nogil:
+        """Clear company's current visible state flag based on hidden location."""
         cdef int location = self._get_hidden_location(state)
         cdef int owner_id = self._get_hidden_owner_id(state)
 
-        # Clear based on current location (O(1) lookup from hidden state)
         if location == LOC_AUCTION:
             state._data[self._auction_offset] = 0.0
         elif location == LOC_REVEALED:
@@ -201,75 +200,47 @@ cdef class Company:
             state._data[self._corps_offset + owner_id * self._corp_stride + self._corp_acq_field + self.company_id] = 0.0
         # LOC_DECK has no flag to clear
 
-        # Update hidden state to deck (default after clearing)
-        self._set_hidden_location(state, LOC_DECK, -1)
-
     cpdef void transfer_to_player(self, GameState state, int player_id):
         """Transfer company to player ownership."""
         if player_id < 0 or player_id >= self._num_players:
             return
-
-        # Clear old location (visible state flag)
-        self.clear_location(state)
-
-        # Set new location (visible state flag)
+        self._clear_visible_flag(state)
         state._data[self._players_offset + player_id * self._player_stride + self._player_companies_field + self.company_id] = 1.0
-        # Update hidden state
         self._set_hidden_location(state, LOC_PLAYER, player_id)
 
     cpdef void transfer_to_fi(self, GameState state):
         """Transfer company to Foreign Investor ownership."""
-        # Clear old location (visible state flag)
-        self.clear_location(state)
-
-        # Set new location (visible state flag)
+        self._clear_visible_flag(state)
         state._data[self._fi_offset] = 1.0
-        # Update hidden state
         self._set_hidden_location(state, LOC_FI, -1)
 
     cpdef void transfer_to_corp(self, GameState state, int corp_id):
         """Transfer company to corporation ownership."""
         if corp_id < 0 or corp_id >= GameConstants.NUM_CORPS:
             return
-
-        # Clear old location (visible state flag)
-        self.clear_location(state)
-
-        # Set new location (visible state flag)
+        self._clear_visible_flag(state)
         state._data[self._corps_offset + corp_id * self._corp_stride + self._corp_companies_field + self.company_id] = 1.0
-        # Update hidden state
         self._set_hidden_location(state, LOC_CORP, corp_id)
 
     cpdef void transfer_to_corp_acquisition(self, GameState state, int corp_id):
         """Transfer company to corporation's acquisition pile."""
         if corp_id < 0 or corp_id >= GameConstants.NUM_CORPS:
             return
-
-        # Clear old location (visible state flag)
-        self.clear_location(state)
-
-        # Set new location (visible state flag)
+        self._clear_visible_flag(state)
         state._data[self._corps_offset + corp_id * self._corp_stride + self._corp_acq_field + self.company_id] = 1.0
-        # Update hidden state
         self._set_hidden_location(state, LOC_CORP_ACQ, corp_id)
 
     cpdef void move_to_auction(self, GameState state):
         """Make company available for auction."""
-        # Clear old location (visible state flag)
-        self.clear_location(state)
-
-        # Set new location (visible state flag)
+        self._clear_visible_flag(state)
         state._data[self._auction_offset] = 1.0
-        # Update hidden state
         self._set_hidden_location(state, LOC_AUCTION, -1)
 
     cpdef void set_revealed(self, GameState state, bint revealed):
         """Set whether company is revealed this turn (drawn but not auctionable)."""
         if revealed:
-            # Clear old location first (visible state flag)
-            self.clear_location(state)
+            self._clear_visible_flag(state)
             state._data[self._revealed_offset] = 1.0
-            # Update hidden state
             self._set_hidden_location(state, LOC_REVEALED, -1)
         else:
             # Just clear the revealed flag without changing location
@@ -280,12 +251,8 @@ cdef class Company:
 
     cpdef void remove_from_game(self, GameState state):
         """Remove company from the game (closed)."""
-        # Clear old location (visible state flag)
-        self.clear_location(state)
-
-        # Set removed flag (visible state flag)
+        self._clear_visible_flag(state)
         state._data[self._removed_offset] = 1.0
-        # Update hidden state
         self._set_hidden_location(state, LOC_REMOVED, -1)
 
     # =========================================================================
