@@ -13,10 +13,9 @@ Requirements covered:
 - IPO-10: Active player setting (company owner becomes active)
 """
 import pytest
-from core.state import GameState
 from core.data import (
     GamePhases, GameConstants,
-    get_company_face_value, get_company_stars,
+    get_company_face_value,
     get_par_price, get_par_index_for_slot, get_market_index,
     get_corp_share_count,
 )
@@ -30,8 +29,6 @@ from phases.ipo import (
     setup_ipo_phase_py,
     apply_ipo_action_py,
     apply_ipo_pass_py,
-    find_next_ipo_company_py,
-    process_ipo_py,
 )
 
 
@@ -137,7 +134,6 @@ class TestBasicIPOMechanics:
         """IPO transfers company from player to corporation."""
         state = ipo_state_with_company
         company = COMPANIES[14]
-        corp = CORPS[0]
 
         # Verify company is player-owned before
         assert company.get_location(state) == CompanyLocation.LOC_PLAYER
@@ -541,16 +537,16 @@ class TestActionMask:
         layout = get_action_layout(3)
 
         # Company 14 is star=3 (yellow), valid par slots 0-5
-        # At least one corp should have valid actions for each slot
+        # Check that at least one affordable slot has a valid corp action
+        found_any = False
         for slot in range(6):
-            found_valid = False
             for corp_id in range(int(GameConstants.NUM_CORPS)):
                 if mask[layout['ipo_base'] + corp_id * 8 + slot] == 1.0:
-                    found_valid = True
+                    found_any = True
                     break
-            # If player can afford and space available, should be valid
-            # For affordable slots, at least one should be valid
-            # (not all slots may be affordable)
+            if found_any:
+                break
+        assert found_any, "At least one par slot should have a valid IPO action"
 
     def test_invalid_par_prices_not_in_mask(self, ipo_state_with_company):
         """Invalid par prices for company's color are not in mask."""
