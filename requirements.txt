@@ -1,0 +1,6 @@
+# Core dependencies for building and running the game engine
+numpy>=2.0
+Cython>=3.0
+
+# Testing
+pytest>=8.0

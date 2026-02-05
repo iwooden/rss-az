@@ -15,36 +15,38 @@ High-performance Cython game engine for "Rolling Stock Stars" board game, optimi
 ## Directory Structure
 
 ```
-/home/icebreaker/rss-az-cython2/
-├── core/                  # Low-level game engine and action handling
-│   ├── state.pyx/pxd     # GameState class - central float32 array
-│   ├── data.pyx/pxd      # Static game data (companies, corps, market)
-│   ├── actions.pyx/pxd   # Action space layout and decoding
-│   └── driver.pyx        # GameDriver for action dispatch
-├── entities/              # Entity handles for clean state access
-│   ├── player.pyx        # Player entity (cash, shares, companies)
-│   ├── corp.pyx          # Corporation entity (IPO'd companies)
-│   ├── turn.pyx          # Turn state entity (phase tracking)
-│   ├── company.pyx       # Company entity (auction deck)
-│   ├── deck.pyx          # Company deck management
-│   ├── market.pyx        # Share price market spaces
-│   ├── fi.pyx            # Foreign investor entity
-│   └── encoding.pyx      # One-hot encoding utilities
-├── phases/                # Game phase handlers
-│   ├── invest.pyx        # Investment phase (buy/sell/auction)
-│   ├── bid.pyx           # Bid in auction phase
-│   ├── acquisition.pyx   # Acquisition offers phase
-│   ├── closing.pyx       # Company closing phase
-│   ├── income.pyx        # Income payment phase
-│   ├── wrap_up.pyx       # Turn wrap-up (FI buying)
-│   └── temp_end_turn.pyx # End turn transition
-├── tests/                 # Test suite organized by phase
-│   ├── conftest.py       # Pytest fixtures
-│   └── phases/           # Phase-specific tests
-├── setup.py              # Cython build configuration
-├── RULES.md              # Complete game rules (24KB)
-├── VECTORS.md            # State/action vector documentation
-└── RSS.pdf               # Original board game rulebook
+rss-az-cython2/
+├── core/              # Low-level game engine
+│   ├── state.pyx      # GameState: the central float32 array
+│   ├── driver.pyx     # GameDriver: action dispatch and game loop
+│   ├── actions.pyx    # Action space layout and decoding
+│   └── data.pyx       # Static game constants (companies, corps, prices)
+├── entities/          # Entity handles for state access
+│   ├── player.pyx     # Player cash, shares, companies
+│   ├── corp.pyx       # Corporation state (IPO'd companies)
+│   ├── company.pyx    # Company state (auction deck items)
+│   ├── deck.pyx       # Company deck management
+│   ├── turn.pyx       # Turn and phase tracking
+│   ├── market.pyx     # Share price market spaces
+│   ├── fi.pyx         # Foreign Investor entity
+│   └── encoding.pyx   # One-hot encoding utilities
+├── phases/            # Game phase handlers
+│   ├── invest.pyx     # Investment phase (buy/sell/auction)
+│   ├── bid.pyx        # Auction bidding
+│   ├── acquisition.pyx # Company acquisition offers
+│   ├── closing.pyx    # Company closure logic
+│   ├── dividends.pyx  # Dividend calculations
+│   ├── income.pyx     # Income distribution
+│   ├── issue.pyx      # Share issuance
+│   ├── ipo.pyx        # IPO conversions
+│   ├── wrap_up.pyx    # Turn wrap-up (FI buying)
+│   └── end_card.pyx   # Game-end handling
+├── tests/             # Test suite
+│   ├── phases/        # Phase-specific tests
+│   └── conftest.py    # Pytest fixtures
+├── RULES.md           # Complete game rules (authoritative)
+├── VECTORS.md         # State/action vector documentation
+└── RSS.pdf            # Original board game rulebook
 ```
 
 ## Architecture Overview
