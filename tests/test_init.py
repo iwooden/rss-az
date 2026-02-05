@@ -221,12 +221,10 @@ class TestTurnState:
         assert TURN.get_turn_number(gs) == 1
 
     def test_active_player_is_zero(self):
-        """TURN-04: Active player set to player 0."""
+        """Active player set to player 0 after initialization."""
         gs = GameState(4)
         gs.initialize_game()
-        # Active player is in hidden state - check via phase state
-        # We can verify indirectly by checking that turn state is properly initialized
-        assert TURN.get_phase(gs) == GamePhases.PHASE_INVEST
+        assert gs.get_active_player() == 0
 
     def test_auction_state_cleared(self):
         """TURN-05: All auction/dividend/IPO state cleared."""
