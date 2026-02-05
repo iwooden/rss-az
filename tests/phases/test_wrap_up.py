@@ -397,17 +397,20 @@ class TestFIPurchaseBehavior:
         assert COMPANIES[2].is_for_auction(state)
         assert COMPANIES[3].is_for_auction(state)
 
-    def test_fi_buys_until_cannot_afford(self):
-        """WRAP-FI-03: FI keeps buying until cash insufficient for next cheapest company.
+    def test_fi_buys_in_ascending_order_until_broke(self):
+        """WRAP-FI-03: FI buys cheapest first and stops when cash runs out.
 
-        Unlike WRAP-FI-01/02 which test revealed-company exclusion,
-        this tests the cash-exhaustion loop termination: FI buys multiple
-        companies and stops because it can't afford the next one.
-        No replacements are drawn (empty deck), so revealed exclusion
-        doesn't come into play.
+        Tests both ascending face value ordering AND cash-exhaustion loop
+        termination. Unlike WRAP-FI-01/02 which test revealed-company
+        exclusion, this uses an empty deck so only cash matters.
 
-        Face values: company 0=$1, company 1=$2, company 2=$5, company 3=$6
-        FI cash = $8: buys 0 ($1, cash=7), 1 ($2, cash=5), 2 ($5, cash=0), stops (can't afford 3 at $6)
+        Per RULES.md: 'In ascending Face Value order, Foreign Investor buys
+        as many available companies as possible at Face Value.'
+
+        Companies at $1/$2/$5/$6, FI cash=$8. Ascending order buys $1+$2+$5
+        (3 companies for $8). Descending order would buy $6 then $2 then
+        can't afford $5 (only 2 companies). Owning all three cheapest is
+        only possible with ascending ordering.
         """
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
@@ -428,47 +431,11 @@ class TestFIPurchaseBehavior:
         TURN.set_phase(state, GamePhases.PHASE_WRAP_UP)
         apply_wrap_up_py(state)
 
-        # FI buys 0,1,2 (total $8) and can't afford 3 ($6)
+        # Ascending: buy 0($1,cash=7), 1($2,cash=5), 2($5,cash=0), can't afford 3($6)
+        # This 3-company result is ONLY possible with ascending ordering
         assert COMPANIES[0].is_owned_by_fi(state), "FI should own company 0 ($1)"
         assert COMPANIES[1].is_owned_by_fi(state), "FI should own company 1 ($2)"
         assert COMPANIES[2].is_owned_by_fi(state), "FI should own company 2 ($5)"
         assert not COMPANIES[3].is_owned_by_fi(state), "FI should NOT own company 3 ($6, unaffordable)"
         assert COMPANIES[3].is_for_auction(state), "Company 3 should remain for auction"
         assert FI.get_cash(state) == 0, "FI should have $0 remaining (1+2+5=8)"
-
-    def test_fi_buys_in_ascending_face_value_order(self):
-        """WRAP-FI-04: FI buys cheapest available company first.
-
-        Per RULES.md: 'In ascending Face Value order, Foreign Investor buys
-        as many available companies as possible at Face Value.'
-
-        This test proves ordering matters: with companies at $1, $5, $6 and
-        FI cash=$6, ascending order buys $1 then $5 (total $6, 2 companies).
-        Any other order would buy at most 1 company ($6 alone, or $5 then
-        can't afford $6, etc). Owning both $1 and $5 is only possible if
-        cheapest-first ordering is followed.
-        """
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-
-        # Clear all companies
-        for cid in range(36):
-            COMPANIES[cid].remove_from_game(state)
-
-        # Face values: company 0=$1, company 2=$5, company 3=$6
-        COMPANIES[0].move_to_auction(state)  # $1
-        COMPANIES[2].move_to_auction(state)  # $5
-        COMPANIES[3].move_to_auction(state)  # $6
-        DECK.set_order(state, [])  # Empty deck
-
-        FI.set_cash(state, 6)
-
-        TURN.set_phase(state, GamePhases.PHASE_WRAP_UP)
-        apply_wrap_up_py(state)
-
-        # Ascending order: buy 0 ($1, cash=5), buy 2 ($5, cash=0), can't afford 3 ($6)
-        # This result is ONLY possible with ascending face value ordering
-        assert COMPANIES[0].is_owned_by_fi(state), "FI should own company 0 ($1)"
-        assert COMPANIES[2].is_owned_by_fi(state), "FI should own company 2 ($5)"
-        assert not COMPANIES[3].is_owned_by_fi(state), "FI should NOT own company 3 ($6)"
-        assert FI.get_cash(state) == 0, "FI should have $0 remaining (1+5=6)"
