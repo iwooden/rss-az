@@ -511,15 +511,19 @@ class TestDefaultSeedUniqueness:
 
     def test_successive_unseeded_calls_differ(self):
         """Two consecutive unseeded initialize_game() calls must produce different decks."""
-        state1 = GameState(num_players=3)
-        state1.initialize_game()
+        # Different seeds can theoretically produce the same shuffle (though
+        # with 17!+ permutations the odds are ~1 in 10^14).  Retry a few
+        # times so a freak collision doesn't cause a false failure.
+        for _ in range(5):
+            state1 = GameState(num_players=3)
+            state1.initialize_game()
 
-        state2 = GameState(num_players=3)
-        state2.initialize_game()
+            state2 = GameState(num_players=3)
+            state2.initialize_game()
 
-        order1 = DECK.get_order(state1)
-        order2 = DECK.get_order(state2)
-        assert order1 != order2, "Two unseeded games produced identical deck orders"
+            if DECK.get_order(state1) != DECK.get_order(state2):
+                return  # success — seeds differ
+        pytest.fail("5 consecutive unseeded game pairs all produced identical deck orders")
 
 
 class TestDeckEdgeCases:
