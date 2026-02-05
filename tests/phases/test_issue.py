@@ -12,8 +12,7 @@ Requirements covered:
 - ISS-09: Integration tests
 """
 import pytest
-from core.state import GameState
-from core.data import GamePhases, GameConstants, CorpIndices, get_market_price
+from core.data import GamePhases, CorpIndices, get_market_price
 from core.actions import get_valid_action_mask, get_action_layout
 from entities.turn import TURN
 from entities.player import PLAYERS
@@ -23,7 +22,6 @@ from phases.issue import (
     setup_issue_phase_py,
     apply_issue_action_py,
     find_next_issue_corp_py,
-    process_issue_share_py,
 )
 from tests.phases.conftest import float_corp_for_test
 
@@ -158,12 +156,10 @@ class TestPriceMovement:
         MARKET.set_space_available(state, 14, False)  # Occupied
         MARKET.set_space_available(state, 13, True)   # Available
 
-        initial_index = corp.get_price_index(state)  # 15
-
         setup_issue_phase_py(state)
         apply_issue_action_py(state, issue=True)
 
-        # Should drop to 13 (skipping occupied 14)
+        # Should drop to 13 (skipping occupied 14, from 15)
         assert corp.get_price_index(state) == 13
 
     def test_old_space_freed_after_issue(self, issue_state_with_corp):
@@ -266,6 +262,34 @@ class TestStockMastersSpecial:
 
         # Space 15 should still be occupied
         assert not MARKET.is_space_available(state, 15)
+
+    def test_sm_at_price_1_does_not_go_bankrupt(self, game_state):
+        """Stock Masters at price index 1 survives issuing (no bankruptcy).
+
+        A normal corp at price index 1 would drop to 0 and go bankrupt.
+        SM's special ability prevents the price change, so it stays at
+        index 1 ($5), remains active, and receives $5 proceeds.
+        """
+        state = game_state
+        corp = CORPS[CorpIndices.CORP_SM]
+
+        # Float SM then manually drop price to index 1
+        float_corp_for_test(state, corp_id=CorpIndices.CORP_SM, par_index=10)
+        MARKET.set_space_available(state, 10, True)   # Free old space
+        MARKET.set_space_available(state, 1, False)    # Occupy new space
+        corp.set_price_index(state, 1)
+        corp.set_cash(state, 0)
+
+        TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
+
+        setup_issue_phase_py(state)
+        apply_issue_action_py(state, issue=True)
+
+        # SM should survive — still active, price unchanged, received $5
+        assert corp.is_active(state), "SM should NOT go bankrupt at price index 1"
+        assert corp.get_price_index(state) == 1, "SM price should stay at index 1"
+        assert corp.get_cash(state) == get_market_price(1), \
+            f"SM should receive ${get_market_price(1)} proceeds"
 
 
 # =============================================================================
