@@ -280,7 +280,7 @@ python setup.py clean
 
 **Warning-free builds:** The build should produce no compiler warnings. If warnings appear, create a beads issue to fix them.
 
-**Pyright errors:** When Pyright diagnostics appear after reading or editing a file, fix them before moving on. Unused imports, unused variables, and type errors should be resolved immediately rather than left for later.
+**Pyright errors:** When Pyright diagnostics appear after reading or editing a file, fix them before moving on. Unused imports, unused variables, and type errors should be resolved immediately rather than left for later. The auto-injected diagnostics can be stale after edits — run `pyright <file>` via Bash to get definitive results.
 
 ## Testing Approach
 
