@@ -310,27 +310,6 @@ class TestPaymentCalculation:
 
         assert corp.get_cash(state) == expected_corp_cash
 
-    def test_negative_player_payment_handled(self, game_state):
-        """Player can receive money if FV > total share cost (rare edge case)."""
-        state = game_state
-
-        # Use a high FV red company: company 5 (FV=8, stars=1)
-        # Par prices for star=1: 10-14
-        # At par=10, FV=8, 1 share: payment = 1*10 - 8 = 2 (positive)
-        # But with FV > par * shares, player receives money
-
-        # Actually, for star=1, par prices are 10-14, and FV is 1-8
-        # So FV is always < par for reds, meaning 1 share each
-        # payment = 1*10 - 8 = 2 (player pays $2)
-        # This test needs a different scenario
-
-        # Let's use a yellow company with high par
-        # Company 14: FV=20, par=27 -> payment = 1*27 - 20 = 7
-        # No negative payment possible with current rules
-
-        # Skipping this test as negative payment isn't possible
-        pass
-
 
 # =============================================================================
 # IPO-03: Processing Order
