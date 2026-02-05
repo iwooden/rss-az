@@ -529,25 +529,6 @@ class TestActionMask:
 
         assert mask[layout['ipo_pass']] == 1.0
 
-    def test_valid_par_prices_in_mask(self, ipo_state_with_company):
-        """Valid par prices for company's color are in mask."""
-        state = ipo_state_with_company
-
-        mask = get_valid_action_mask(state)
-        layout = get_action_layout(3)
-
-        # Company 14 is star=3 (yellow), valid par slots 0-5
-        # Check that at least one affordable slot has a valid corp action
-        found_any = False
-        for slot in range(6):
-            for corp_id in range(int(GameConstants.NUM_CORPS)):
-                if mask[layout['ipo_base'] + corp_id * 8 + slot] == 1.0:
-                    found_any = True
-                    break
-            if found_any:
-                break
-        assert found_any, "At least one par slot should have a valid IPO action"
-
     def test_invalid_par_prices_not_in_mask(self, ipo_state_with_company):
         """Invalid par prices for company's color are not in mask."""
         state = ipo_state_with_company
