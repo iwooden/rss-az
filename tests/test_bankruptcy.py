@@ -184,9 +184,7 @@ class TestCoreBankruptcyBehavior:
 
     def test_bankruptcy_clears_player_shares(self, bankruptcy_state):
         """All players' shares in bankrupt corp are zeroed."""
-        # Give player 1 shares too
-        PLAYERS[1].set_shares(bankruptcy_state, 0, 1)
-        CORPS[0].set_issued_shares(bankruptcy_state, 5)
+        # bankruptcy_state already has player0=2, player1=1, bank=0, issued=3
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0

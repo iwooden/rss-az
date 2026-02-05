@@ -129,6 +129,13 @@ def assert_invariants(state, msg=""):
             expected = get_corp_share_count(corp_id)
             assert total == expected, f"{msg}\nCorp {corp_id} share count: {total} != {expected}"
 
+            # issued_shares == bank_shares + sum(player_shares)
+            issued = corp.get_issued_shares(state)
+            bank = corp.get_bank_shares(state)
+            player_held = sum(PLAYERS[p].get_shares(state, corp_id) for p in range(num_players))
+            assert issued == bank + player_held, \
+                f"{msg}\nCorp {corp_id} issued_shares: {issued} != bank({bank}) + players({player_held})"
+
     # Player cash non-negative
     for p in range(num_players):
         cash = PLAYERS[p].get_cash(state)
