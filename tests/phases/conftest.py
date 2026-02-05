@@ -359,17 +359,9 @@ def apply_and_track():
 def apply_and_verify_all(state, action_idx, msg=""):
     """Apply action and verify invariants on every intermediate state.
 
-    Combines history tracking (like apply_and_track) with invariant checking
-    on ALL intermediate states produced by the driver's auto-apply loop.
-
-    The history captures state snapshots BEFORE each action. This function
-    checks invariants on each of those snapshots plus the final state after
-    all actions complete.
-
-    Usage:
-        result = apply_and_verify_all(state, action_idx)
-        assert result.applied_count >= 1
-        assert result.status == STATUS_OK
+    Like apply_action_and_verify but also checks invariants on all
+    intermediate states from the driver's auto-apply loop, not just the
+    final state. Returns ApplyTrackResult for history inspection.
     """
     # Verify action is valid before applying
     mask = get_valid_action_mask(state)
@@ -377,6 +369,7 @@ def apply_and_verify_all(state, action_idx, msg=""):
 
     history = []
     status = DRIVER.apply_action(state, action_idx, history=history)
+    assert status == STATUS_OK, f"{msg}\nAction {action_idx} failed with status {status}"
 
     # Check invariants on every intermediate state (captured BEFORE each action)
     for i, (state_array, action_id) in enumerate(history):
@@ -387,6 +380,11 @@ def apply_and_verify_all(state, action_idx, msg=""):
 
     # Check invariants on final state (AFTER all actions)
     assert_invariants(state, f"{msg}\nFinal state after action chain")
+
+    # Verify valid actions exist in non-terminal phases
+    phase = state.get_phase()
+    if phase not in [GamePhases.PHASE_WRAP_UP, GamePhases.PHASE_GAME_OVER]:
+        assert np.sum(get_valid_action_mask(state)) > 0, f"{msg}\nNo valid actions after {action_idx}"
 
     return ApplyTrackResult(state, history, status, state.get_num_players())
 
