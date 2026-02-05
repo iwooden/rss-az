@@ -10,7 +10,6 @@ from entities.fi import FI
 from entities.company import COMPANIES
 from entities.deck import DECK
 from phases.wrap_up import apply_wrap_up_py
-from tests.phases.conftest import STATUS_OK
 
 
 def trigger_wrap_up(state):
@@ -19,7 +18,7 @@ def trigger_wrap_up(state):
     layout = get_action_layout(num_players)
     pass_idx = layout['pass_invest']
 
-    for i in range(num_players):
+    for _ in range(num_players):
         DRIVER.apply_action(state, pass_idx)
 
 
@@ -76,7 +75,7 @@ class TestWrapUpHistory:
         pass_idx = layout['pass_invest']
 
         # Pass all but last player
-        for i in range(2):
+        for _ in range(2):
             DRIVER.apply_action(state, pass_idx)
 
         # Last pass triggers WRAP_UP auto-apply
@@ -107,7 +106,7 @@ class TestPhaseTransitions:
         # All players pass
         layout = get_action_layout(3)
         pass_idx = layout['pass_invest']
-        for i in range(3):
+        for _ in range(3):
             DRIVER.apply_action(state, pass_idx)
 
         # Verify final phase is INVEST (turn 2)
