@@ -357,6 +357,44 @@ def apply_and_track():
 
 
 @pytest.fixture
+def apply_and_verify_all():
+    """Apply action and verify invariants on every intermediate state.
+
+    Combines history tracking (like apply_and_track) with invariant checking
+    on ALL intermediate states produced by the driver's auto-apply loop.
+
+    The history captures state snapshots BEFORE each action. This fixture
+    checks invariants on each of those snapshots plus the final state after
+    all actions complete.
+
+    Usage:
+        result = apply_and_verify_all(state, action_idx)
+        assert result.applied_count >= 1
+        assert result.status == STATUS_OK
+    """
+    def _apply(state, action_idx, msg=""):
+        # Verify action is valid before applying
+        mask = get_valid_action_mask(state)
+        assert mask[action_idx] == 1.0, f"{msg}\nAction {action_idx} not valid in current mask"
+
+        history = []
+        status = DRIVER.apply_action(state, action_idx, history=history)
+
+        # Check invariants on every intermediate state (captured BEFORE each action)
+        for i, (state_array, action_id) in enumerate(history):
+            intermediate = GameState.from_array(state_array, state.get_num_players())
+            assert_invariants(intermediate,
+                f"{msg}\nIntermediate state {i}/{len(history)}, "
+                f"before action {action_id}")
+
+        # Check invariants on final state (AFTER all actions)
+        assert_invariants(state, f"{msg}\nFinal state after action chain")
+
+        return ApplyTrackResult(state, history, status, state.get_num_players())
+    return _apply
+
+
+@pytest.fixture
 def closing_offer_state():
     """Create game state with companies ready for close offers."""
     gs = GameState(num_players=3)

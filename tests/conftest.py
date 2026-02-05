@@ -15,6 +15,7 @@ from tests.phases.conftest import (
     bid_state,
     trade_state,
     apply_and_track,
+    apply_and_verify_all,
     float_corp_for_test,
 )
 
@@ -28,6 +29,7 @@ __all__ = [
     'bid_state',
     'trade_state',
     'apply_and_track',
+    'apply_and_verify_all',
     'closing_offer_state',
     'float_corp_for_test',
 ]
