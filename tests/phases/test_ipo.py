@@ -76,11 +76,6 @@ def ipo_state_with_company(game_state):
     return state
 
 
-def _transfer_company_to_player(state, company_id, player_id):
-    """Transfer a company to a player, properly updating deck if needed."""
-    COMPANIES[company_id].transfer_to_player(state, player_id)
-
-
 @pytest.fixture
 def ipo_state_multiple_companies(game_state):
     """
@@ -95,10 +90,10 @@ def ipo_state_multiple_companies(game_state):
     """
     state = game_state
 
-    # Transfer companies to players (handles deck adjustment if needed)
-    _transfer_company_to_player(state, 30, 0)
-    _transfer_company_to_player(state, 22, 1)
-    _transfer_company_to_player(state, 14, 0)
+    # Transfer companies to players
+    COMPANIES[30].transfer_to_player(state, 0)
+    COMPANIES[22].transfer_to_player(state, 1)
+    COMPANIES[14].transfer_to_player(state, 0)
 
     # Give players cash
     PLAYERS[0].set_cash(state, 200)
