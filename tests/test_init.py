@@ -183,17 +183,21 @@ class TestDeckAndDraw:
         ]
         assert len(auction_companies) == 4
 
-    def test_deck_built_correctly(self):
-        """DECK-01 through DECK-05: Deck structure is correct."""
-        gs = GameState(4)
+    @pytest.mark.parametrize("num_players,expected_remaining", [
+        # Deck total = red + orange + yellow + green + blue, minus N drawn
+        # Non-orange colors: N+1 each (includes "last" card)
+        # Orange special: 4p=6, 5p=8(all), 6p=8(all)
+        # 6p uses ALL: red=6, orange=8, yellow=8, green=7, blue=7 = 36
+        (3, 17),   # 4+4+4+4+4=20, minus 3 drawn
+        (4, 22),   # 5+6+5+5+5=26, minus 4 drawn
+        (5, 27),   # 6+8+6+6+6=32, minus 5 drawn
+        (6, 30),   # 6+8+8+7+7=36, minus 6 drawn
+    ])
+    def test_deck_size_correct(self, num_players, expected_remaining):
+        """Deck has correct number of cards after initial draw."""
+        gs = GameState(num_players)
         gs.initialize_game()
-        DECK.initialize(gs)
-
-        # After drawing 4, deck should have remaining cards
-        remaining = DECK.get_remaining_count(gs)
-        # 4 players: 5 per color, 5 colors = 25 total, minus 4 drawn = 21
-        # Actually: red=5, orange=6, yellow=5, green=5, blue=5 = 26, minus 4 = 22
-        assert remaining > 0
+        assert DECK.get_remaining_count(gs) == expected_remaining
 
 
 class TestTurnState:
