@@ -130,11 +130,6 @@ cdef class Deck:
         """Check if the deck is empty."""
         return <int>state._data[self._deck_top_offset] < 0
 
-    cpdef void adjust_count(self, GameState state, int delta):
-        """Adjust deck count by delta (for test fixtures that move cards without drawing)."""
-        cdef int top = <int>state._data[self._deck_top_offset]
-        state._data[self._deck_top_offset] = <float>(top + delta)
-
     cpdef void remove(self, GameState state, int company_id):
         """Remove a specific company from the live deck order array.
 
