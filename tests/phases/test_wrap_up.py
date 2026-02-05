@@ -397,3 +397,42 @@ class TestFIPurchaseBehavior:
         # Both revealed companies should now be for auction
         assert COMPANIES[2].is_for_auction(state)
         assert COMPANIES[3].is_for_auction(state)
+
+    def test_fi_buys_until_cannot_afford(self):
+        """WRAP-FI-03: FI keeps buying until cash insufficient for next cheapest company.
+
+        Unlike WRAP-FI-01/02 which test revealed-company exclusion,
+        this tests the cash-exhaustion loop termination: FI buys multiple
+        companies and stops because it can't afford the next one.
+        No replacements are drawn (empty deck), so revealed exclusion
+        doesn't come into play.
+
+        Face values: company 0=$1, company 1=$2, company 2=$5, company 3=$6
+        FI cash = $8: buys 0 ($1, cash=7), 1 ($2, cash=5), 2 ($5, cash=0), stops (can't afford 3 at $6)
+        """
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Clear all companies
+        for cid in range(36):
+            COMPANIES[cid].remove_from_game(state)
+
+        # Place 4 companies for auction with no deck replacements
+        COMPANIES[0].move_to_auction(state)  # $1
+        COMPANIES[1].move_to_auction(state)  # $2
+        COMPANIES[2].move_to_auction(state)  # $5
+        COMPANIES[3].move_to_auction(state)  # $6
+        DECK.set_order(state, [])  # Empty deck - no replacements
+
+        FI.set_cash(state, 8)
+
+        TURN.set_phase(state, GamePhases.PHASE_WRAP_UP)
+        apply_wrap_up_py(state)
+
+        # FI buys 0,1,2 (total $8) and can't afford 3 ($6)
+        assert COMPANIES[0].is_owned_by_fi(state), "FI should own company 0 ($1)"
+        assert COMPANIES[1].is_owned_by_fi(state), "FI should own company 1 ($2)"
+        assert COMPANIES[2].is_owned_by_fi(state), "FI should own company 2 ($5)"
+        assert not COMPANIES[3].is_owned_by_fi(state), "FI should NOT own company 3 ($6, unaffordable)"
+        assert COMPANIES[3].is_for_auction(state), "Company 3 should remain for auction"
+        assert FI.get_cash(state) == 0, "FI should have $0 remaining (1+2+5=8)"
