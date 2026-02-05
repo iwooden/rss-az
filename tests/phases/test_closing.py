@@ -11,11 +11,15 @@ from entities.company import COMPANIES, CompanyLocation
 from entities.corp import CORPS
 from entities.fi import FI
 from entities.player import PLAYERS
-from phases.closing import apply_closing_auto_py, process_mandatory_close_py
+from phases.closing import (
+    apply_closing_auto_py, process_mandatory_close_py,
+    apply_closing_action_py,
+    generate_close_offers_py, get_close_offer_count_py, get_close_offer_py,
+)
 from core.actions import ACTION_CLOSE_PY, ACTION_PASS_PY
 
 # Import status codes and utility from conftest
-from tests.phases.conftest import STATUS_OK, float_corp_for_test
+from tests.phases.conftest import STATUS_OK, float_corp_for_test, assert_invariants
 
 # Phase constants for tests
 PHASE_CLOSING_PY = GamePhases.PHASE_CLOSING
@@ -507,7 +511,6 @@ class TestOfferGeneration:
         COMPANIES[29].transfer_to_player(gs, 0)
 
         # Generate offers
-        from phases.closing import generate_close_offers_py, get_close_offer_count_py, get_close_offer_py
         generate_close_offers_py(gs)
 
         # Should only have 1 offer (company 0)
@@ -525,7 +528,6 @@ class TestOfferGeneration:
         TURN.set_coo_level(gs, 4)
         COMPANIES[2].transfer_to_player(gs, 0)
 
-        from phases.closing import generate_close_offers_py, get_close_offer_count_py
         generate_close_offers_py(gs)
 
         assert get_close_offer_count_py(gs) == 0
@@ -543,7 +545,6 @@ class TestOfferGeneration:
         COMPANIES[6].transfer_to_player(gs, 0)  # FV $5
         COMPANIES[3].transfer_to_player(gs, 0)  # FV $3
 
-        from phases.closing import generate_close_offers_py, get_close_offer_count_py, get_close_offer_py
         generate_close_offers_py(gs)
 
         assert get_close_offer_count_py(gs) == 3
@@ -563,7 +564,6 @@ class TestOfferGeneration:
         # Player 1 owns company 1 directly (private)
         COMPANIES[1].transfer_to_player(gs, 1)
 
-        from phases.closing import generate_close_offers_py, get_close_offer_count_py, get_close_offer_py
         generate_close_offers_py(gs)
 
         assert get_close_offer_count_py(gs) >= 1
@@ -580,7 +580,6 @@ class TestOfferGeneration:
         # Float corp 1 with company 2 and player 0 as president
         float_corp_for_test(gs, corp_id=1, company_id=2, player_id=0)
 
-        from phases.closing import generate_close_offers_py, get_close_offer_count_py, get_close_offer_py
         generate_close_offers_py(gs)
 
         assert get_close_offer_count_py(gs) >= 1
@@ -599,7 +598,6 @@ class TestOfferGeneration:
         CORPS[2].set_in_receivership(gs, True)
         PLAYERS[0].set_shares(gs, 2, 0)  # Remove player shares for receivership
 
-        from phases.closing import generate_close_offers_py, get_close_offer_count_py
         generate_close_offers_py(gs)
 
         # No offers (receivership excluded)
@@ -612,7 +610,6 @@ class TestOfferGeneration:
         # FI owns company 5
         COMPANIES[5].transfer_to_fi(gs)
 
-        from phases.closing import generate_close_offers_py, get_close_offer_count_py
         generate_close_offers_py(gs)
 
         # No offers (FI excluded - handled by auto-close)
@@ -630,7 +627,6 @@ class TestOfferValidation:
         # Float corp 1 with company 3 (last company)
         float_corp_for_test(gs, corp_id=1, company_id=3, player_id=0)
 
-        from phases.closing import generate_close_offers_py, get_close_offer_count_py
         generate_close_offers_py(gs)
 
         # Offer should be generated (validation happens at presentation time)
@@ -648,7 +644,6 @@ class TestOfferValidation:
         float_corp_for_test(gs, corp_id=1, company_id=3, player_id=0)
         COMPANIES[4].transfer_to_corp(gs, 1)
 
-        from phases.closing import generate_close_offers_py, get_close_offer_count_py
         generate_close_offers_py(gs)
 
         # Both companies should be offered
@@ -665,14 +660,12 @@ class TestOfferValidation:
 
         # Set phase to CLOSING and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
-        from phases.closing import apply_closing_auto_py
         apply_closing_auto_py(gs)
 
         # First offer should be company 0 (lowest FV)
         assert TURN.get_closing_company(gs) == 0
 
         # Accept first offer (closes company 0)
-        from phases.closing import apply_closing_action_py
         apply_closing_action_py(gs, ACTION_CLOSE_PY)
 
         # Second offer (company 3) should be SKIPPED because corp now has only 1 company
@@ -693,14 +686,12 @@ class TestCloseActions:
 
         # Set phase and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
-        from phases.closing import apply_closing_auto_py
         apply_closing_auto_py(gs)
 
         # Offer should be active
         assert TURN.get_closing_company(gs) == 1
 
         # Accept the offer
-        from phases.closing import apply_closing_action_py
         apply_closing_action_py(gs, ACTION_CLOSE_PY)
 
         # Company should be removed
@@ -717,14 +708,12 @@ class TestCloseActions:
 
         # Set phase and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
-        from phases.closing import apply_closing_auto_py
         apply_closing_auto_py(gs)
 
         # Offer should be active
         assert TURN.get_closing_company(gs) == 2
 
         # Pass on the offer
-        from phases.closing import apply_closing_action_py
         apply_closing_action_py(gs, ACTION_PASS_PY)
 
         # Company should NOT be removed
@@ -746,11 +735,9 @@ class TestCloseActions:
 
         # Set phase and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
-        from phases.closing import apply_closing_auto_py
         apply_closing_auto_py(gs)
 
         # Accept the close offer
-        from phases.closing import apply_closing_action_py
         apply_closing_action_py(gs, ACTION_CLOSE_PY)
 
         # JS should NOT have received bonus (player closed, not JS)
@@ -770,11 +757,9 @@ class TestCloseActions:
 
         # Set phase and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
-        from phases.closing import apply_closing_auto_py
         apply_closing_auto_py(gs)
 
         # Accept the close offer for company 0
-        from phases.closing import apply_closing_action_py
         apply_closing_action_py(gs, ACTION_CLOSE_PY)
 
         # JS should NOT have received bonus (corp 1 closed, not JS)
@@ -791,11 +776,9 @@ class TestCloseActions:
 
         # Set phase and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
-        from phases.closing import apply_closing_auto_py
         apply_closing_auto_py(gs)
 
         # Accept the close offer for company 0
-        from phases.closing import apply_closing_action_py
         apply_closing_action_py(gs, ACTION_CLOSE_PY)
 
         # JS should have received 2x printed income bonus ($1 * 2 = $2)
@@ -1058,8 +1041,6 @@ class TestClosingPhaseTransition:
 
     def test_closing_flow_with_mandatory_close_triggered(self, game_state):
         """Integration test: Mandatory close triggers after offers are declined."""
-        from phases.closing import apply_closing_action_py
-
         # Set up: high CoO to create negative-income companies
         TURN.set_coo_level(game_state, 7)
 
@@ -1099,8 +1080,6 @@ class TestClosingEdgeCases:
         Requirement: When no close offers exist, CLOSING phase transitions
         directly to INVEST without presenting any offers.
         """
-        from tests.phases.conftest import assert_invariants
-
         # Default game state has CoO level 1 (low)
         # At low CoO, no companies have negative adjusted income
         assert TURN.get_coo_level(game_state) == 1
@@ -1124,8 +1103,6 @@ class TestClosingEdgeCases:
         Requirement: When player passes on close offers but income + cash < 0,
         mandatory close automatically closes the cheapest negative-income company.
         """
-        from phases.closing import apply_closing_action_py
-
         # Set high CoO level to create negative-income companies
         TURN.set_coo_level(game_state, 7)
 
@@ -1159,8 +1136,6 @@ class TestClosingEdgeCases:
         Requirement: When player passes on close offers but income + cash >= 0,
         no mandatory close happens and company remains.
         """
-        from phases.closing import apply_closing_action_py
-
         # Set high CoO level to create negative-income company
         TURN.set_coo_level(game_state, 7)
 
@@ -1196,8 +1171,6 @@ class TestClosingEdgeCases:
         Requirement: When player closes multiple companies, JS does NOT receive
         bonus because player is closing their own companies, not JS closing.
         """
-        from phases.closing import apply_closing_action_py
-
         # Set high CoO level to create negative-income companies
         TURN.set_coo_level(game_state, 7)
 
@@ -1245,7 +1218,6 @@ class TestClosingEdgeCases:
         Requirement: When corp has 2 companies and player closes the first,
         the second offer should be automatically skipped (corp last-company rule).
         """
-        from phases.closing import apply_closing_action_py
         gs = closing_offer_state
 
         # Float corp 1 with company 0, then add company 3
@@ -1278,9 +1250,6 @@ class TestClosingEdgeCases:
         Requirement: CLOSING phase handles 3 and 6 player games correctly
         with proper offer generation and mandatory close processing.
         """
-        from tests.phases.conftest import assert_invariants
-        from phases.closing import apply_closing_action_py
-
         state = GameState(num_players=num_players)
         state.initialize_game(seed=42)
 

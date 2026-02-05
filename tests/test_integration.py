@@ -16,6 +16,9 @@ from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.company import COMPANIES
 from entities.market import MARKET
+from tests.phases.conftest import apply_action_and_verify, assert_invariants
+from core.driver import STATUS_GAME_OVER_PY
+import random
 
 
 # =============================================================================
@@ -24,13 +27,11 @@ from entities.market import MARKET
 
 def apply_action(state, action_idx, msg=""):
     """Apply action through driver and verify success."""
-    from tests.phases.conftest import apply_action_and_verify
     apply_action_and_verify(state, action_idx, msg)
 
 
 def check_invariants(state, msg=""):
     """Verify game invariants hold."""
-    from tests.phases.conftest import assert_invariants
     assert_invariants(state, msg)
 
 
@@ -668,8 +669,6 @@ class TestGameEnd:
 
     def test_extended_play_eventually_ends_or_continues(self):
         """Play many turns - game should either end or continue stably."""
-        from core.driver import STATUS_GAME_OVER_PY
-
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -708,8 +707,6 @@ class TestStress:
 
     def test_many_turns_no_crash(self):
         """Run many turns without crashing."""
-        from core.driver import STATUS_GAME_OVER_PY
-
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -741,8 +738,6 @@ class TestStress:
 
     def test_random_valid_actions(self):
         """Play random valid actions for several turns."""
-        from core.driver import STATUS_GAME_OVER_PY
-        import random
         random.seed(12345)
 
         state = GameState(num_players=3)

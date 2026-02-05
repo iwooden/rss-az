@@ -4,12 +4,12 @@ import numpy as np
 from core.state import GameState
 from core.driver import DRIVER
 from core.actions import get_valid_action_mask, get_action_layout
-from core.data import GamePhases
+from core.data import GamePhases, get_company_face_value
 from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.company import COMPANIES
 from entities.deck import DECK
-from tests.phases.conftest import STATUS_OK
+from tests.phases.conftest import STATUS_OK, assert_invariants
 
 # Fixtures come from conftest.py automatically (bid_state is same as auction_state)
 # Helper functions also available: assert_valid_mask, assert_invariants, apply_action_and_verify
@@ -84,8 +84,6 @@ class TestLeaveAuction:
 
     def test_last_leaver_triggers_resolution(self, bid_state):
         """BID-05: Auction resolves when only one bidder remains."""
-        from tests.phases.conftest import assert_invariants
-
         # Make all but one player leave
         layout = get_action_layout(3)
 
@@ -102,8 +100,6 @@ class TestLeaveAuction:
 
     def test_bidder_rotation_wraps_around(self):
         """Bidder rotation correctly wraps from last player to first."""
-        from tests.phases.conftest import assert_invariants
-
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -219,8 +215,6 @@ class TestRaiseBid:
 
         RULES.md line 334-335: 'Raise bid (must have enough money)'
         """
-        from core.data import get_company_face_value
-
         company_id = TURN.get_auction_company(bid_state)
         face_value = get_company_face_value(company_id)
         current_bid = TURN.get_auction_price(bid_state)
@@ -279,8 +273,6 @@ class TestRaiseBid:
 
     def test_raise_bid_values_correct(self, bid_state):
         """Verify raise bid calculates price correctly (face + amount + 1)."""
-        from core.data import get_company_face_value
-
         company_id = TURN.get_auction_company(bid_state)
         face_value = get_company_face_value(company_id)
 
@@ -389,8 +381,6 @@ class TestAuctionResolution:
 
     def test_winner_net_worth_updated(self, bid_state):
         """BID-12: Winner's net worth updated after receiving company."""
-        from core.data import get_company_face_value
-
         winner_id = TURN.get_auction_high_bidder(bid_state)
         company_id = TURN.get_auction_company(bid_state)
         bid_price = TURN.get_auction_price(bid_state)
@@ -418,8 +408,6 @@ class TestAuctionResolution:
         3. Not draw a replacement (deck empty)
         4. Auction row decreases by 1 with no replacement
         """
-        from tests.phases.conftest import assert_invariants
-
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -485,8 +473,6 @@ class TestAuctionResolution:
 
     def test_auction_draws_new_company_marked_unavailable(self):
         """BID-09: New company drawn is revealed (unavailable) for this phase."""
-        from tests.phases.conftest import assert_invariants
-
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -542,8 +528,6 @@ class TestAuctionResolution:
 
     def test_return_to_player_after_starter_not_winner(self):
         """BID-11: Turn returns to player after starter, even if winner differs."""
-        from tests.phases.conftest import assert_invariants
-
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -724,9 +708,6 @@ class TestAuctionMechanics:
 
     def test_auction_slot_maps_to_company_by_face_value_order(self):
         """Slot index maps to correct company by ascending face value order."""
-        from core.data import get_company_face_value
-        from tests.phases.conftest import assert_invariants
-
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -764,9 +745,6 @@ class TestAuctionMechanics:
 
     def test_starting_bid_equals_face_value_plus_offset(self):
         """Starting bid = company face value + price offset."""
-        from core.data import get_company_face_value
-        from tests.phases.conftest import assert_invariants
-
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -797,8 +775,6 @@ class TestAuctionMechanics:
 
     def test_higher_offset_gives_higher_starting_bid(self):
         """Higher auction offset results in higher starting bid."""
-        from core.data import get_company_face_value
-
         # Test with fresh state twice - once with low offset, once with higher
         prices = []
 

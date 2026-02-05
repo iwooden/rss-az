@@ -8,6 +8,9 @@ from core.actions import get_valid_action_mask, get_action_layout
 from core.data import GamePhases
 from entities.turn import TURN
 from entities.company import COMPANIES
+from entities.corp import CORPS
+from entities.player import PLAYERS
+from tests.phases.conftest import float_corp_for_test
 
 
 class TestGetLegalMoves:
@@ -272,10 +275,6 @@ class TestForcedActionAutoApply:
         The corp is put in receivership so DIVIDENDS auto-processes (at $0)
         without needing player input, allowing the phase chain to reach END_CARD.
         """
-        from tests.phases.conftest import float_corp_for_test
-        from entities.corp import CORPS
-        from entities.player import PLAYERS
-
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 

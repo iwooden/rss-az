@@ -68,8 +68,6 @@ def float_corp_for_test(state, corp_id, company_id=None, player_id=0, par_index=
     Returns:
         The company_id that was used (useful when company_id was None)
     """
-    from entities.deck import DECK
-
     # Draw a company from the deck if none specified
     if company_id is None:
         company_id = DECK.draw(state)

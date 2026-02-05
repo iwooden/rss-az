@@ -2,16 +2,16 @@
 import pytest
 import numpy as np
 from core.state import GameState
-from core.driver import DRIVER
+from core.driver import DRIVER, ZeroLegalActionsError, ForcedActionLoopError
 from core.actions import get_valid_action_mask, get_action_layout
-from core.data import GamePhases, CORP_NAMES
+from core.data import GamePhases, CORP_NAMES, get_company_face_value
 from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.market import MARKET
 from entities.company import COMPANIES
 from core.data import GameConstants
-from tests.phases.conftest import STATUS_OK, STATUS_GAME_OVER
+from tests.phases.conftest import STATUS_OK, STATUS_GAME_OVER, float_corp_for_test
 
 # Fixtures come from conftest.py automatically
 # Helper functions also available: assert_valid_mask, assert_invariants, apply_action_and_verify
@@ -254,8 +254,6 @@ class TestStartAuction:
         RULES.md line 331: Starting player 'bids >= Face Value' — player must
         be able to afford at least face value to start an auction.
         """
-        from core.data import get_company_face_value
-
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -280,8 +278,6 @@ class TestStartAuction:
         Player with cash == face value can start auction at face value (offset 0)
         but cannot bid higher (offset >= 1).
         """
-        from core.data import get_company_face_value
-
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -751,8 +747,6 @@ class TestAutoApplyEdgeCases:
         Note: This is a defensive test. In normal gameplay, there should always
         be at least one legal action in non-terminal states.
         """
-        from core.driver import ZeroLegalActionsError
-
         # This scenario is hard to create naturally since game rules ensure
         # at least pass is always available in INVEST. We test that the
         # exception exists and is importable.
@@ -767,8 +761,6 @@ class TestAutoApplyEdgeCases:
         Note: Triggering this error requires a bug that creates infinite forced
         actions. We test the exception is importable for documentation.
         """
-        from core.driver import ForcedActionLoopError
-
         assert ForcedActionLoopError is not None
 
         # The driver has MAX_FORCED_ITERATIONS = 100 guard.
@@ -820,8 +812,6 @@ class TestGameEndAt75:
 
     def test_buy_share_at_75_ends_game_immediately(self):
         """Buying a share that moves price to $75 ends game immediately."""
-        from tests.phases.conftest import float_corp_for_test
-
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -849,8 +839,6 @@ class TestGameEndAt75:
 
     def test_buy_share_below_75_does_not_end_game(self):
         """Buying a share that doesn't reach $75 continues normally."""
-        from tests.phases.conftest import float_corp_for_test
-
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -874,8 +862,6 @@ class TestGameEndAt75:
 
     def test_buy_share_skipping_to_75_ends_game(self):
         """Buying when intermediate spaces are occupied still ends game at $75."""
-        from tests.phases.conftest import float_corp_for_test
-
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 

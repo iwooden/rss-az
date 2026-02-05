@@ -30,6 +30,7 @@ from phases.ipo import (
     apply_ipo_action_py,
     apply_ipo_pass_py,
 )
+from tests.phases.conftest import assert_invariants
 
 
 # =============================================================================
@@ -569,8 +570,6 @@ class TestIPOIntegration:
 
     def test_full_ipo_flow(self, ipo_state_with_company):
         """Complete IPO flow maintains game invariants."""
-        from tests.phases.conftest import assert_invariants
-
         state = ipo_state_with_company
 
         assert_invariants(state, "Before IPO")
@@ -587,8 +586,6 @@ class TestIPOIntegration:
 
     def test_mixed_ipo_and_pass(self, ipo_state_multiple_companies):
         """Mixed IPO and pass actions work correctly."""
-        from tests.phases.conftest import assert_invariants
-
         state = ipo_state_multiple_companies
 
         TURN.set_phase(state, GamePhases.PHASE_IPO)

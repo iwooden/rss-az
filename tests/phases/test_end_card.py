@@ -20,6 +20,7 @@ from entities.fi import FI
 from entities.market import MARKET
 from phases.end_card import apply_end_card_py
 from tests.phases.conftest import float_corp_for_test
+from core.driver import DRIVER, STATUS_OK_PY as STATUS_OK
 
 
 # =============================================================================
@@ -253,8 +254,6 @@ class TestNonPlayerPhase:
 
     def test_end_card_auto_executes_in_driver(self, end_card_state):
         """END_CARD phase should auto-execute when reached."""
-        from core.driver import DRIVER, STATUS_OK_PY as STATUS_OK
-
         # The driver should detect this is a non-player phase
         # Verify by applying and checking transition
         apply_end_card_py(end_card_state)
