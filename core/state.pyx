@@ -814,7 +814,19 @@ cdef class GameState:
             company_id = deck_module.DECK.draw(self)
             company_module.COMPANIES[company_id].move_to_auction(self)
 
-        # 8. Set turn state (non-zero values only)
+        # 8. Mark excluded companies
+        # In games with < 6 players, some companies aren't included in the deck.
+        # Their hidden location defaults to LOC_DECK (0) from the zero-initialized
+        # array, but they're not actually in the deck. Mark them as excluded in
+        # hidden state only (visible state stays untouched to avoid leaking deck
+        # composition to the NN).
+        deck_companies = set(deck_module.DECK.get_order(self))
+        for i in range(<int>GameConstants.NUM_COMPANIES):
+            if (company_module.COMPANIES[i].get_location(self) == 0  # LOC_DECK
+                    and i not in deck_companies):
+                company_module.COMPANIES[i].exclude_from_game(self)
+
+        # 9. Set turn state (non-zero values only)
         turn_module.TURN.set_phase(self, GamePhases.PHASE_INVEST)
         turn_module.TURN.set_coo_level(self, 1)
         turn_module.TURN.set_turn_number(self, 1)

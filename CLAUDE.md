@@ -297,6 +297,8 @@ python setup.py clean
 - Verify phase transitions
 - Assert game invariants (cash conservation, share counts)
 
+**When a test fails, assume the implementation is broken** until proven otherwise. Investigate the root cause thoroughly before concluding that a test is wrong. Only "fix" a test to make it pass after confirming the implementation is correct and the test setup was invalid.
+
 **Status codes:** STATUS_OK (0), STATUS_INVALID (1), STATUS_GAME_OVER (2)
 
 ## Key Files by Task

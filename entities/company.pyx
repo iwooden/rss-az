@@ -248,6 +248,16 @@ cdef class Company:
         state._data[self._removed_offset] = 1.0
         self._set_hidden_location(state, LOC_REMOVED, -1)
 
+    cpdef void exclude_from_game(self, GameState state):
+        """Mark company as excluded during game init (hidden state only).
+
+        Used for companies not included in the deck for this player count.
+        Only updates the hidden location — visible state is left untouched
+        so the NN cannot infer which companies were excluded (and therefore
+        which are in the hidden deck).
+        """
+        self._set_hidden_location(state, LOC_REMOVED, -1)
+
     # =========================================================================
     # STATIC COMPANY DATA
     # =========================================================================

@@ -169,9 +169,8 @@ class TestPresidencyRecalculation:
         # Give player 1 more shares - this triggers automatic presidency recalculation
         # P1 with 3 shares becomes president (3 > 2)
         PLAYERS[1].set_shares(trade_state, 0, 3)
-        # Update issued shares to match total
-        corp.set_issued_shares(trade_state, 5)  # bank(2) + P0(2) + P1(3) - but only 7 total shares
-        # So we need: unissued(0) + bank(2) + P0(2) + P1(3) = 7
+        # Update share accounting: bank(2) + P0(2) + P1(3) = 7 issued, 0 unissued
+        corp.set_issued_shares(trade_state, 7)
         corp.set_unissued_shares(trade_state, 0)
 
         # At this point P1 is president (automatic recalculation when set_shares was called)
@@ -216,13 +215,12 @@ class TestPresidencyRecalculation:
         PLAYERS[1].set_shares(trade_state, 0, 3)
         PLAYERS[2].set_shares(trade_state, 0, 3)
         # Total: P0(2) + P1(3) + P2(3) + bank(2) = 10, but corp has 7 total
-        # Adjust: unissued(0) + bank(0) + P0(2) + P1(3) + P2(2) = 7
-        # Actually let's use: unissued(0) + bank(1) + P0(1) + P1(3) + P2(2) = 7
+        # Adjust: unissued(0) + bank(1) + P0(1) + P1(3) + P2(2) = 7
         PLAYERS[0].set_shares(trade_state, 0, 1)
         PLAYERS[2].set_shares(trade_state, 0, 2)
         corp.set_unissued_shares(trade_state, 0)
         corp.set_bank_shares(trade_state, 1)
-        corp.set_issued_shares(trade_state, 6)
+        corp.set_issued_shares(trade_state, 7)
 
         # P0 sells their only share - triggers presidency check
         # After: P0=0, P1=3, P2=2 -> P1 wins (most shares)

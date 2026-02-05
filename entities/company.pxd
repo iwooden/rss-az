@@ -85,6 +85,7 @@ cdef class Company:
     cpdef void move_to_auction(self, GameState state)
     cpdef void mark_revealed(self, GameState state)
     cpdef void remove_from_game(self, GameState state)
+    cpdef void exclude_from_game(self, GameState state)
 
     # Static company data (from data.pyx)
     cpdef int get_face_value(self)

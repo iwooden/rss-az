@@ -286,9 +286,19 @@ cdef class Deck:
         Set the deck order from a Python list (for testing).
 
         Order should be from bottom to top (index 0 = bottom, last = top).
+        Companies removed from the deck have their hidden location updated
+        via exclude_from_game (no visible state change).
         """
-        cdef int i
+        cdef int i, cid
         cdef int size = len(order)
+
+        # Find companies being removed from the deck
+        new_order = set(order)
+        cdef int old_top = <int>state._data[self._deck_top_offset]
+        for i in range(old_top + 1):
+            cid = <int>state._data[self._deck_order_offset + i]
+            if cid not in new_order:
+                company_module.COMPANIES[cid].exclude_from_game(state)
 
         state._data[self._deck_top_offset] = <float>(size - 1)
 

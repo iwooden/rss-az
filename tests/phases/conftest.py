@@ -38,6 +38,8 @@ from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.market import MARKET
 from entities.company import COMPANIES, CompanyLocation
+from entities.fi import FI
+from entities.deck import DECK
 
 from core.driver import STATUS_OK_PY as STATUS_OK, STATUS_INVALID_PY as STATUS_INVALID, STATUS_GAME_OVER_PY as STATUS_GAME_OVER
 
@@ -57,8 +59,8 @@ def float_corp_for_test(state, corp_id, company_id=None, player_id=0, par_index=
     Args:
         state: GameState instance
         corp_id: Corporation ID to float (required)
-        company_id: Company ID to use for floating. If None, scans for first
-                   company with LOC_DECK location (unused from game init).
+        company_id: Company ID to use for floating. If None, draws from
+                   the deck (properly updating deck tracking).
         player_id: Player who becomes president (default 0)
         par_index: Market price index for starting share price (default 10)
         float_shares: Shares each for player and bank (default 1)
@@ -66,16 +68,13 @@ def float_corp_for_test(state, corp_id, company_id=None, player_id=0, par_index=
     Returns:
         The company_id that was used (useful when company_id was None)
     """
-    from core.data import GameConstants
+    from entities.deck import DECK
 
-    # Find an unused company if none specified
+    # Draw a company from the deck if none specified
     if company_id is None:
-        for cid in range(int(GameConstants.NUM_COMPANIES)):
-            if COMPANIES[cid].get_location(state) == CompanyLocation.LOC_DECK:
-                company_id = cid
-                break
-        if company_id is None:
-            raise ValueError("No unused company found in deck")
+        company_id = DECK.draw(state)
+        if company_id < 0:
+            raise ValueError("Deck is empty, cannot draw company for floating")
 
     # Transfer company to player and float the corp
     COMPANIES[company_id].transfer_to_player(state, player_id)
@@ -159,6 +158,79 @@ def assert_invariants(state, msg=""):
     # - Index 26 ($75): Maximum price - multiple corps can share ("no card" state)
     assert MARKET.is_space_available(state, 0), f"{msg}\nMarket space 0 ($0 bankruptcy) must always be available"
     assert MARKET.is_space_available(state, 26), f"{msg}\nMarket space 26 ($75 max) must always be available"
+
+    # FI cash non-negative
+    fi_cash = FI.get_cash(state)
+    assert fi_cash >= 0, f"{msg}\nForeign Investor cash negative: {fi_cash}"
+
+    # Company location validity - every company has a known location
+    for cid in range(36):
+        loc = COMPANIES[cid].get_location(state)
+        assert 0 <= loc <= 7, f"{msg}\nCompany {cid} has invalid location: {loc}"
+
+    # Deck count matches companies with LOC_DECK location
+    deck_remaining = DECK.get_remaining_count(state)
+    deck_loc_count = sum(
+        1 for cid in range(36)
+        if COMPANIES[cid].get_location(state) == CompanyLocation.LOC_DECK
+    )
+    assert deck_remaining == deck_loc_count, (
+        f"{msg}\nDeck count mismatch: deck entity says {deck_remaining} "
+        f"but {deck_loc_count} companies have LOC_DECK"
+    )
+
+    # Issued shares = bank + player shares (for active corps)
+    for corp_id in range(8):
+        corp = CORPS[corp_id]
+        if corp.is_active(state):
+            issued = corp.get_issued_shares(state)
+            bank = corp.get_bank_shares(state)
+            player_held = sum(PLAYERS[p].get_shares(state, corp_id) for p in range(num_players))
+            assert issued == bank + player_held, (
+                f"{msg}\nCorp {corp_id} issued shares mismatch: "
+                f"issued({issued}) != bank({bank}) + players({player_held})"
+            )
+
+    # President invariants for active, non-receivership corps
+    for corp_id in range(8):
+        corp = CORPS[corp_id]
+        if corp.is_active(state) and not corp.is_in_receivership(state):
+            pres_id = corp.get_president_id(state)
+            assert pres_id >= 0, (
+                f"{msg}\nCorp {corp_id} active and not in receivership but has no president"
+            )
+            pres_shares = PLAYERS[pres_id].get_shares(state, corp_id)
+            assert pres_shares >= 1, (
+                f"{msg}\nCorp {corp_id} president (player {pres_id}) holds "
+                f"{pres_shares} shares (must be >= 1)"
+            )
+
+    # Receivership means no president
+    for corp_id in range(8):
+        corp = CORPS[corp_id]
+        if corp.is_active(state) and corp.is_in_receivership(state):
+            pres_id = corp.get_president_id(state)
+            assert pres_id == -1, (
+                f"{msg}\nCorp {corp_id} in receivership but has president: player {pres_id}"
+            )
+
+    # Active corp must have >= 1 company
+    for corp_id in range(8):
+        corp = CORPS[corp_id]
+        if corp.is_active(state):
+            company_count = corp.count_companies(state, include_acquisition=True)
+            assert company_count >= 1, (
+                f"{msg}\nCorp {corp_id} is active but has {company_count} companies"
+            )
+
+    # Corp price index in valid range for active corps
+    for corp_id in range(8):
+        corp = CORPS[corp_id]
+        if corp.is_active(state):
+            price_idx = corp.get_price_index(state)
+            assert 0 <= price_idx <= 26, (
+                f"{msg}\nCorp {corp_id} price index out of range: {price_idx}"
+            )
 
 
 def apply_action_and_verify(state, action_idx, msg=""):
