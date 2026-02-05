@@ -268,14 +268,24 @@ class TestForcedActionAutoApply:
         If the end card has already been flipped, the END_CARD non-player phase
         sets PHASE_GAME_OVER. The driver should detect this and return
         STATUS_GAME_OVER immediately.
+
+        The corp is put in receivership so DIVIDENDS auto-processes (at $0)
+        without needing player input, allowing the phase chain to reach END_CARD.
         """
         from tests.phases.conftest import float_corp_for_test
+        from entities.corp import CORPS
+        from entities.player import PLAYERS
 
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
         # Float a corp so the game doesn't end from _is_game_terminal
         float_corp_for_test(state, corp_id=0, par_index=10)
+
+        # Put corp in receivership so DIVIDENDS auto-processes at $0
+        # (otherwise DIVIDENDS needs player input for dividend amount)
+        CORPS[0].set_in_receivership(state, True)
+        PLAYERS[0].set_shares(state, 0, 0)  # Remove player shares for receivership
 
         # Flip the end card - next time END_CARD phase executes, game ends
         TURN.set_end_card_flipped(state, True)

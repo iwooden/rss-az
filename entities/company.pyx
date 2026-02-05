@@ -18,6 +18,7 @@ from core.data cimport (
 
 # Use constants from GameConstants (imported above)
 from core.data import COMPANY_NAMES
+from entities import deck as deck_module
 
 
 # =============================================================================
@@ -200,16 +201,23 @@ cdef class Company:
             state._data[self._corps_offset + owner_id * self._corp_stride + self._corp_acq_field + self.company_id] = 0.0
         # LOC_DECK has no flag to clear
 
+    cdef void _remove_from_deck_if_needed(self, GameState state):
+        """If company is currently in the deck, remove it from the deck order array."""
+        if self._get_hidden_location(state) == LOC_DECK:
+            deck_module.DECK.remove(state, self.company_id)
+
     cpdef void transfer_to_player(self, GameState state, int player_id):
         """Transfer company to player ownership."""
         if player_id < 0 or player_id >= self._num_players:
             return
+        self._remove_from_deck_if_needed(state)
         self._clear_visible_flag(state)
         state._data[self._players_offset + player_id * self._player_stride + self._player_companies_field + self.company_id] = 1.0
         self._set_hidden_location(state, LOC_PLAYER, player_id)
 
     cpdef void transfer_to_fi(self, GameState state):
         """Transfer company to Foreign Investor ownership."""
+        self._remove_from_deck_if_needed(state)
         self._clear_visible_flag(state)
         state._data[self._fi_offset] = 1.0
         self._set_hidden_location(state, LOC_FI, -1)
@@ -218,6 +226,7 @@ cdef class Company:
         """Transfer company to corporation ownership."""
         if corp_id < 0 or corp_id >= GameConstants.NUM_CORPS:
             return
+        self._remove_from_deck_if_needed(state)
         self._clear_visible_flag(state)
         state._data[self._corps_offset + corp_id * self._corp_stride + self._corp_companies_field + self.company_id] = 1.0
         self._set_hidden_location(state, LOC_CORP, corp_id)
@@ -226,18 +235,21 @@ cdef class Company:
         """Transfer company to corporation's acquisition pile."""
         if corp_id < 0 or corp_id >= GameConstants.NUM_CORPS:
             return
+        self._remove_from_deck_if_needed(state)
         self._clear_visible_flag(state)
         state._data[self._corps_offset + corp_id * self._corp_stride + self._corp_acq_field + self.company_id] = 1.0
         self._set_hidden_location(state, LOC_CORP_ACQ, corp_id)
 
     cpdef void move_to_auction(self, GameState state):
         """Make company available for auction."""
+        self._remove_from_deck_if_needed(state)
         self._clear_visible_flag(state)
         state._data[self._auction_offset] = 1.0
         self._set_hidden_location(state, LOC_AUCTION, -1)
 
     cpdef void mark_revealed(self, GameState state):
         """Mark company as revealed this turn (drawn but not auctionable)."""
+        self._remove_from_deck_if_needed(state)
         self._clear_visible_flag(state)
         state._data[self._revealed_offset] = 1.0
         self._set_hidden_location(state, LOC_REVEALED, -1)

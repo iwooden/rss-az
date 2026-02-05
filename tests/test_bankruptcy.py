@@ -44,12 +44,15 @@ from tests.phases.conftest import float_corp_for_test
 
 @pytest.fixture
 def bankruptcy_state():
-    """State where one sell triggers bankruptcy (price index 1 -> 0)."""
+    """State where one sell triggers bankruptcy (price index 1 -> 0).
+
+    Uses company_id=3 explicitly because company 0 is excluded from 3-player games.
+    """
     state = GameState(num_players=3)
     state.initialize_game(seed=42)
 
-    # Float corp 0 and then move to bankruptcy-prone position
-    float_corp_for_test(state, corp_id=0, par_index=1, float_shares=2)
+    # Float corp 0 with company 3 (company 0 is excluded from 3-player games)
+    float_corp_for_test(state, corp_id=0, company_id=3, par_index=1, float_shares=2)
     # float_shares=2 gives: player=2, bank=2, issued=4
 
     PLAYERS[0].set_cash(state, 100)
@@ -151,19 +154,21 @@ class TestCoreBankruptcyBehavior:
         sell_idx = layout['sell_share_base'] + 0
         DRIVER.apply_action(bankruptcy_state, sell_idx)
 
-        assert COMPANIES[0].is_removed(bankruptcy_state)
+        # Corp 0 was floated with company 3 (see bankruptcy_state fixture)
+        assert COMPANIES[3].is_removed(bankruptcy_state)
 
     def test_bankruptcy_removes_multiple_companies(self, bankruptcy_state):
         """Bankruptcy removes ALL companies owned by corp."""
-        # Add second company to corp
-        COMPANIES[1].transfer_to_corp(bankruptcy_state, 0)
+        # Add second company to corp (company 6 is in the deck for 3-player games)
+        COMPANIES[6].transfer_to_corp(bankruptcy_state, 0)
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
         DRIVER.apply_action(bankruptcy_state, sell_idx)
 
-        assert COMPANIES[0].is_removed(bankruptcy_state)
-        assert COMPANIES[1].is_removed(bankruptcy_state)
+        # Corp 0 was floated with company 3, and we added company 6
+        assert COMPANIES[3].is_removed(bankruptcy_state)
+        assert COMPANIES[6].is_removed(bankruptcy_state)
 
     def test_bankruptcy_returns_shares_to_unissued(self, bankruptcy_state):
         """All shares return to unissued pool."""

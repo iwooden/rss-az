@@ -232,6 +232,16 @@ def assert_invariants(state, msg=""):
                 f"{msg}\nCorp {corp_id} price index out of range: {price_idx}"
             )
 
+    # Ghost deck entries must not have LOC_DECK location
+    # Slots past deck_top are already-drawn or removed cards; their companies
+    # should have been moved to another location (LOC_PLAYER, LOC_FI, etc.)
+    for slot_idx, cid in DECK.get_ghost_entries(state):
+        loc = COMPANIES[cid].get_location(state)
+        assert loc != CompanyLocation.LOC_DECK, (
+            f"{msg}\nCompany {cid} in ghost deck slot {slot_idx} "
+            f"still has LOC_DECK location"
+        )
+
 
 def apply_action_and_verify(state, action_idx, msg=""):
     """

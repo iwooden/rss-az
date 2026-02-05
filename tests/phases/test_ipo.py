@@ -25,7 +25,6 @@ from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.company import COMPANIES, CompanyLocation
 from entities.market import MARKET
-from entities.deck import DECK
 from phases.ipo import (
     setup_ipo_phase_py,
     apply_ipo_action_py,
@@ -79,12 +78,7 @@ def ipo_state_with_company(game_state):
 
 def _transfer_company_to_player(state, company_id, player_id):
     """Transfer a company to a player, properly updating deck if needed."""
-    company = COMPANIES[company_id]
-    was_in_deck = company.get_location(state) == CompanyLocation.LOC_DECK
-    company.transfer_to_player(state, player_id)
-    if was_in_deck:
-        # Decrement deck count to keep it consistent with actual LOC_DECK companies
-        DECK.adjust_count(state, -1)
+    COMPANIES[company_id].transfer_to_player(state, player_id)
 
 
 @pytest.fixture

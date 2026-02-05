@@ -76,6 +76,7 @@ cdef class Company:
     cdef int _get_hidden_owner_id(self, GameState state) noexcept nogil
     cdef void _set_hidden_location(self, GameState state, int location, int owner_id) noexcept nogil
     cdef void _clear_visible_flag(self, GameState state) noexcept nogil
+    cdef void _remove_from_deck_if_needed(self, GameState state)
 
     # Transfer operations (clear old flag, set new flag, update hidden state)
     cpdef void transfer_to_player(self, GameState state, int player_id)

@@ -24,6 +24,7 @@ cdef class Deck:
     cpdef int get_remaining_count(self, GameState state)
     cpdef bint is_empty(self, GameState state)
     cpdef void adjust_count(self, GameState state, int delta)
+    cpdef void remove(self, GameState state, int company_id)
 
     # Setup - builds deck according to rules based on player count
     cpdef void setup(self, GameState state, int num_players, int seed)
@@ -34,3 +35,4 @@ cdef class Deck:
     # Debug/testing helpers
     cpdef list get_order(self, GameState state)
     cpdef void set_order(self, GameState state, list order)
+    cpdef list get_ghost_entries(self, GameState state)
