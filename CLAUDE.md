@@ -280,6 +280,8 @@ python setup.py clean
 
 **Warning-free builds:** The build should produce no compiler warnings. If warnings appear, create a beads issue to fix them.
 
+**Pyright errors:** When Pyright diagnostics appear after reading or editing a file, fix them before moving on. Unused imports, unused variables, and type errors should be resolved immediately rather than left for later.
+
 ## Testing Approach
 
 **Organization:** Tests in `tests/`, phase tests in `tests/phases/`
@@ -385,8 +387,8 @@ When writing ad-hoc Python scripts to test or debug code, **write them to the sc
 # Write script to scratchpad
 Write scratchpad/test_something.py
 
-# Run it
-python /path/to/scratchpad/test_something.py
+# Run it (PYTHONPATH required since script runs outside the project directory)
+PYTHONPATH=/home/icebreaker/rss-az-cython2 python /path/to/scratchpad/test_something.py
 
 # If it fails, use Edit to make small changes instead of rewriting
 ```
@@ -396,7 +398,20 @@ Benefits:
 - Script persists for re-running after fixes
 - Easier to read and debug
 
+**PYTHONPATH:** Always prepend `PYTHONPATH=/home/icebreaker/rss-az-cython2` when running scratchpad scripts, since they live outside the project tree and won't find `core/`, `entities/`, `phases/` etc. without it.
+
 The scratchpad path is provided in the system prompt at session start.
+
+## Verification Before Closing
+
+Before closing a task, run a **full clean rebuild** to catch stale artifacts:
+
+```bash
+python setup.py clean && python setup.py build_ext --inplace 2>&1 | grep -E "(warning|error)" || true
+pytest tests/
+```
+
+A regular `build_ext --inplace` is incremental and may miss issues caused by changed `.pxd` headers or removed symbols. Always clean first when verifying.
 
 ## Landing the Plane (Session Completion)
 
