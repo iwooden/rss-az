@@ -1743,3 +1743,30 @@ class TestQuicksortHelpers:
         assert sorted_fvs == [5, 30, 12, 8]
         assert sorted_corps == [0, 1, 2, 1]
         assert sorted_companies == [20, 30, 40, 10]
+
+
+class TestNoOfferBoundsCheck:
+    """Verify actions return STATUS_INVALID (not segfault) when no offer is active."""
+
+    def test_price_action_no_offer_returns_invalid(self):
+        """ACTION_ACQ_PRICE with no active offer returns 1, not segfault."""
+        gs = GameState(3)
+        gs.initialize_game()
+        # No offers generated — acq_target_company defaults to -1
+        setup_acquisition_phase_py(gs)
+        assert get_offer_count(gs) == 0
+        assert apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 0) == 1
+
+    def test_fi_high_action_no_offer_returns_invalid(self):
+        """ACTION_ACQ_FI_HIGH with no active offer returns 1, not segfault."""
+        gs = GameState(3)
+        gs.initialize_game()
+        setup_acquisition_phase_py(gs)
+        assert apply_acquisition_action_py(gs, ACTION_ACQ_FI_HIGH) == 1
+
+    def test_fi_face_action_no_offer_returns_invalid(self):
+        """ACTION_ACQ_FI_FACE with no active offer returns 1, not segfault."""
+        gs = GameState(3)
+        gs.initialize_game()
+        setup_acquisition_phase_py(gs)
+        assert apply_acquisition_action_py(gs, ACTION_ACQ_FI_FACE) == 1

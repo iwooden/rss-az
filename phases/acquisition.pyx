@@ -1003,6 +1003,12 @@ cdef int apply_acquisition_action(GameState state, ActionInfo* info) noexcept:
     """
     cdef int company_id, low_price, price
 
+    # Guard: non-pass actions require a valid current offer
+    if info.action_type != ACTION_PASS:
+        if turn_module.TURN.get_acq_active_corp(state) < 0 or \
+           turn_module.TURN.get_acq_target_company(state) < 0:
+            return 1
+
     if info.action_type == ACTION_ACQ_PRICE:
         # Calculate actual price from offset
         company_id = turn_module.TURN.get_acq_target_company(state)
