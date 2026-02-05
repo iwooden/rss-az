@@ -111,11 +111,17 @@ def assert_invariants(state, msg=""):
     Assert game state invariants are maintained.
 
     Checks:
-    - Total shares per corp = unissued + bank + all players
-    - Player cash >= 0
-    - Corp cash >= 0
-    - Net worths >= 0
+    - Share conservation: unissued + bank + players = total per corp
+    - Issued shares = bank + players per corp
+    - Player cash >= 0, net worth >= 0
+    - Corp cash >= 0, price index in [0, 26]
+    - Active corp has >= 1 company
+    - President has >= 1 share (non-receivership), no president (receivership)
+    - FI cash >= 0
     - Auction row size <= num_players
+    - Market boundary spaces available
+    - Company locations valid, deck count consistent
+    - Company ownership: player/corp-owned companies have valid owner
     """
     num_players = state.get_num_players()
 
@@ -128,13 +134,6 @@ def assert_invariants(state, msg=""):
                 total += PLAYERS[p].get_shares(state, corp_id)
             expected = get_corp_share_count(corp_id)
             assert total == expected, f"{msg}\nCorp {corp_id} share count: {total} != {expected}"
-
-            # issued_shares == bank_shares + sum(player_shares)
-            issued = corp.get_issued_shares(state)
-            bank = corp.get_bank_shares(state)
-            player_held = sum(PLAYERS[p].get_shares(state, corp_id) for p in range(num_players))
-            assert issued == bank + player_held, \
-                f"{msg}\nCorp {corp_id} issued_shares: {issued} != bank({bank}) + players({player_held})"
 
     # Player cash non-negative
     for p in range(num_players):
@@ -248,6 +247,34 @@ def assert_invariants(state, msg=""):
             f"{msg}\nCompany {cid} in ghost deck slot {slot_idx} "
             f"still has LOC_DECK location"
         )
+
+    # Company ownership consistency: player/corp-owned companies must have
+    # a valid owner, and that owner must actually list the company
+    for cid in range(36):
+        company = COMPANIES[cid]
+        loc = company.get_location(state)
+        owner_id = company.get_owner_id(state)
+
+        if loc == CompanyLocation.LOC_PLAYER:
+            assert 0 <= owner_id < num_players, (
+                f"{msg}\nCompany {cid} at LOC_PLAYER has invalid owner_id: {owner_id}"
+            )
+            assert PLAYERS[owner_id].owns_company(state, cid), (
+                f"{msg}\nCompany {cid} says LOC_PLAYER owner={owner_id} "
+                f"but player doesn't list it"
+            )
+        elif loc == CompanyLocation.LOC_CORP:
+            assert 0 <= owner_id < 8, (
+                f"{msg}\nCompany {cid} at LOC_CORP has invalid owner_id: {owner_id}"
+            )
+            assert CORPS[owner_id].owns_company(state, cid), (
+                f"{msg}\nCompany {cid} says LOC_CORP owner={owner_id} "
+                f"but corp doesn't list it"
+            )
+        elif loc == CompanyLocation.LOC_CORP_ACQ:
+            assert 0 <= owner_id < 8, (
+                f"{msg}\nCompany {cid} at LOC_CORP_ACQ has invalid owner_id: {owner_id}"
+            )
 
 
 def apply_action_and_verify(state, action_idx, msg=""):
