@@ -107,10 +107,8 @@ class TestNoUnownedCompanies:
         # Move all companies out of deck/auction/revealed
         # Transfer all to players/corps/FI or remove from game
         for company_id in range(int(GameConstants.NUM_COMPANIES)):
-            company = COMPANIES[company_id]
-            company.initialize(end_card_state)
             # Transfer to player 0 (simplest way to get them out of deck)
-            company.transfer_to_player(end_card_state, 0)
+            COMPANIES[company_id].transfer_to_player(end_card_state, 0)
 
         # Verify end card was not flipped before
         assert not TURN.is_end_card_flipped(end_card_state)
@@ -126,13 +124,10 @@ class TestNoUnownedCompanies:
         """Company remaining in deck prevents end card flip."""
         # Default state has companies in deck
         # Verify at least one company is in deck
-        found_in_deck = False
-        for company_id in range(int(GameConstants.NUM_COMPANIES)):
-            company = COMPANIES[company_id]
-            company.initialize(end_card_state)
-            if company.is_in_deck(end_card_state):
-                found_in_deck = True
-                break
+        found_in_deck = any(
+            COMPANIES[cid].is_in_deck(end_card_state)
+            for cid in range(int(GameConstants.NUM_COMPANIES))
+        )
 
         assert found_in_deck, "Test setup: expected companies in deck"
         assert not TURN.is_end_card_flipped(end_card_state)
@@ -147,13 +142,11 @@ class TestNoUnownedCompanies:
         """Company in auction slot prevents end card flip."""
         # Move all but one company to players
         for company_id in range(int(GameConstants.NUM_COMPANIES)):
-            company = COMPANIES[company_id]
-            company.initialize(end_card_state)
             if company_id == 0:
                 # Keep company 0 in auction
-                company.move_to_auction(end_card_state)
+                COMPANIES[0].move_to_auction(end_card_state)
             else:
-                company.transfer_to_player(end_card_state, 0)
+                COMPANIES[company_id].transfer_to_player(end_card_state, 0)
 
         assert not TURN.is_end_card_flipped(end_card_state)
 
@@ -168,13 +161,11 @@ class TestNoUnownedCompanies:
         """Revealed company prevents end card flip."""
         # Move all but one company to players
         for company_id in range(int(GameConstants.NUM_COMPANIES)):
-            company = COMPANIES[company_id]
-            company.initialize(end_card_state)
             if company_id == 0:
                 # Keep company 0 as revealed
-                company.mark_revealed(end_card_state)
+                COMPANIES[0].mark_revealed(end_card_state)
             else:
-                company.transfer_to_player(end_card_state, 0)
+                COMPANIES[company_id].transfer_to_player(end_card_state, 0)
 
         assert not TURN.is_end_card_flipped(end_card_state)
 
@@ -285,9 +276,7 @@ class TestCoOLevelUpdate:
         """When end card flips, CoO level becomes 7."""
         # Move all companies out of deck/auction/revealed to trigger flip
         for company_id in range(int(GameConstants.NUM_COMPANIES)):
-            company = COMPANIES[company_id]
-            company.initialize(end_card_state)
-            company.transfer_to_player(end_card_state, 0)
+            COMPANIES[company_id].transfer_to_player(end_card_state, 0)
 
         # Verify starting CoO level
         starting_coo = TURN.get_coo_level(end_card_state)
@@ -345,9 +334,7 @@ class TestCheckPriority:
         """No unowned companies flips card, then card-flipped check ends game."""
         # Move all companies out
         for company_id in range(int(GameConstants.NUM_COMPANIES)):
-            company = COMPANIES[company_id]
-            company.initialize(end_card_state)
-            company.transfer_to_player(end_card_state, 0)
+            COMPANIES[company_id].transfer_to_player(end_card_state, 0)
 
         assert not TURN.is_end_card_flipped(end_card_state)
 

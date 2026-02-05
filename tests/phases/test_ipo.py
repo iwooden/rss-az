@@ -25,6 +25,7 @@ from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.company import COMPANIES, CompanyLocation
 from entities.market import MARKET
+from entities.deck import DECK
 from phases.ipo import (
     setup_ipo_phase_py,
     apply_ipo_action_py,
@@ -63,26 +64,27 @@ def ipo_state_with_company(game_state):
     """
     state = game_state
 
-    # Initialize and transfer company 14 (FV=20, stars=3) to player 0
-    company = COMPANIES[14]
-    company.initialize(state)
-    company.transfer_to_player(state, 0)
+    # Transfer company 14 (FV=20, stars=3) to player 0
+    COMPANIES[14].transfer_to_player(state, 0)
 
     # Player 0 has plenty of cash
     PLAYERS[0].set_cash(state, 100)
-
-    # Initialize market (all spaces available)
-    MARKET.initialize(state)
-
-    # Initialize corps (all inactive)
-    for corp_id in range(int(GameConstants.NUM_CORPS)):
-        CORPS[corp_id].initialize(state)
 
     # Set up IPO phase
     TURN.set_phase(state, GamePhases.PHASE_IPO)
     setup_ipo_phase_py(state)
 
     return state
+
+
+def _transfer_company_to_player(state, company_id, player_id):
+    """Transfer a company to a player, properly updating deck if needed."""
+    company = COMPANIES[company_id]
+    was_in_deck = company.get_location(state) == CompanyLocation.LOC_DECK
+    company.transfer_to_player(state, player_id)
+    if was_in_deck:
+        # Decrement deck count to keep it consistent with actual LOC_DECK companies
+        DECK.adjust_count(state, -1)
 
 
 @pytest.fixture
@@ -99,25 +101,14 @@ def ipo_state_multiple_companies(game_state):
     """
     state = game_state
 
-    # Initialize companies
-    for cid in [30, 22, 14]:
-        COMPANIES[cid].initialize(state)
-
-    # Transfer companies to players
-    COMPANIES[30].transfer_to_player(state, 0)
-    COMPANIES[22].transfer_to_player(state, 1)
-    COMPANIES[14].transfer_to_player(state, 0)
+    # Transfer companies to players (handles deck adjustment if needed)
+    _transfer_company_to_player(state, 30, 0)
+    _transfer_company_to_player(state, 22, 1)
+    _transfer_company_to_player(state, 14, 0)
 
     # Give players cash
     PLAYERS[0].set_cash(state, 200)
     PLAYERS[1].set_cash(state, 200)
-
-    # Initialize market
-    MARKET.initialize(state)
-
-    # Initialize corps
-    for corp_id in range(int(GameConstants.NUM_CORPS)):
-        CORPS[corp_id].initialize(state)
 
     return state
 

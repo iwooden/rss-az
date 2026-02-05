@@ -60,20 +60,11 @@ def ipo_state_with_company(game_state):
     """3-player game with one player-owned company ready for IPO."""
     state = game_state
 
-    # Initialize and transfer company 14 (FV=20, stars=3) to player 0
-    company = COMPANIES[14]
-    company.initialize(state)
-    company.transfer_to_player(state, 0)
+    # Transfer company 14 (FV=20, stars=3) to player 0
+    COMPANIES[14].transfer_to_player(state, 0)
 
     # Player 0 has plenty of cash
     PLAYERS[0].set_cash(state, 100)
-
-    # Initialize market (all spaces available)
-    MARKET.initialize(state)
-
-    # Initialize corps (all inactive)
-    for corp_id in range(int(GameConstants.NUM_CORPS)):
-        CORPS[corp_id].initialize(state)
 
     # Set up IPO phase
     TURN.set_phase(state, GamePhases.PHASE_IPO)
@@ -362,10 +353,11 @@ class TestReceivership:
         corp = CORPS[0]
 
         # Put corp in receivership - adjust shares to maintain invariant
-        # Corp 0 has 7 total: unissued(3) + bank(4) + all_players(0) = 7
+        # Corp 0 has 7 total: unissued(3) + issued(4) = 7
+        # issued = bank(4) + players(0)
         corp.set_in_receivership(trade_state, True)
         corp.set_bank_shares(trade_state, 4)
-        corp.set_issued_shares(trade_state, 0)
+        corp.set_issued_shares(trade_state, 4)
         PLAYERS[0].set_shares(trade_state, 0, 0)
 
         # Verify corp is in receivership

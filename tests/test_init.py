@@ -28,8 +28,6 @@ class TestInitSignature:
         gs2.initialize_game(12345)
 
         # Deck order should match
-        DECK.initialize(gs1)
-        DECK.initialize(gs2)
         assert DECK.get_order(gs1) == DECK.get_order(gs2)
 
     def test_can_reinitialize(self):
@@ -54,7 +52,6 @@ class TestPlayerSetup:
         gs = GameState(num_players)
         gs.initialize_game()
         for i in range(num_players):
-            PLAYERS[i].initialize(gs)
             assert PLAYERS[i].get_cash(gs) == expected_cash
 
     def test_turn_order_linear(self):
@@ -62,7 +59,6 @@ class TestPlayerSetup:
         gs = GameState(4)
         gs.initialize_game()
         for i in range(4):
-            PLAYERS[i].initialize(gs)
             assert PLAYERS[i].get_turn_order(gs) == i
 
     def test_no_owned_companies(self):
@@ -70,7 +66,6 @@ class TestPlayerSetup:
         gs = GameState(4)
         gs.initialize_game()
         for i in range(4):
-            PLAYERS[i].initialize(gs)
             for company_id in range(GameConstants.NUM_COMPANIES):
                 assert not PLAYERS[i].owns_company(gs, company_id)
 
@@ -79,7 +74,6 @@ class TestPlayerSetup:
         gs = GameState(4)
         gs.initialize_game()
         for i in range(4):
-            PLAYERS[i].initialize(gs)
             for corp_id in range(GameConstants.NUM_CORPS):
                 assert PLAYERS[i].get_shares(gs, corp_id) == 0
 
@@ -91,14 +85,12 @@ class TestForeignInvestor:
         """FI-01: FI receives 4 starting cash."""
         gs = GameState(4)
         gs.initialize_game()
-        FI.initialize(gs)
         assert FI.get_cash(gs) == 4
 
     def test_fi_no_companies(self):
         """FI-02: FI owns no companies at start."""
         gs = GameState(4)
         gs.initialize_game()
-        FI.initialize(gs)
         for company_id in range(GameConstants.NUM_COMPANIES):
             assert not FI.owns_company(gs, company_id)
 
@@ -111,7 +103,6 @@ class TestCorporations:
         gs = GameState(4)
         gs.initialize_game()
         for corp in CORPS:
-            corp.initialize(gs)
             assert not corp.is_active(gs)
 
     def test_shares_reset(self):
@@ -119,7 +110,6 @@ class TestCorporations:
         gs = GameState(4)
         gs.initialize_game()
         for corp in CORPS:
-            corp.initialize(gs)
             expected_shares = get_corp_share_count(corp.corp_id)
             assert corp.get_unissued_shares(gs) == expected_shares
             assert corp.get_issued_shares(gs) == 0
@@ -130,7 +120,6 @@ class TestCorporations:
         gs = GameState(4)
         gs.initialize_game()
         for corp in CORPS:
-            corp.initialize(gs)
             for company_id in range(GameConstants.NUM_COMPANIES):
                 assert not corp.owns_company(gs, company_id)
 
@@ -139,7 +128,6 @@ class TestCorporations:
         gs = GameState(4)
         gs.initialize_game()
         for corp in CORPS:
-            corp.initialize(gs)
             # Inactive corps have no meaningful price index
             assert not corp.is_active(gs)
 
@@ -151,7 +139,6 @@ class TestMarket:
         """MKT-01: All 27 share price slots marked available."""
         gs = GameState(4)
         gs.initialize_game()
-        MARKET.initialize(gs)
         for i in range(GameConstants.NUM_MARKET_SPACES):
             assert MARKET.is_space_available(gs, i)
 
@@ -207,21 +194,18 @@ class TestTurnState:
         """TURN-01: Phase set to 1 (Investment)."""
         gs = GameState(4)
         gs.initialize_game()
-        TURN.initialize(gs)
         assert TURN.get_phase(gs) == GamePhases.PHASE_INVEST
 
     def test_coo_level_is_one(self):
         """TURN-02: CoO level set to 1."""
         gs = GameState(4)
         gs.initialize_game()
-        TURN.initialize(gs)
         assert TURN.get_coo_level(gs) == 1
 
     def test_turn_number_is_one(self):
         """TURN-03: Turn number set to 1."""
         gs = GameState(4)
         gs.initialize_game()
-        TURN.initialize(gs)
         assert TURN.get_turn_number(gs) == 1
 
     def test_active_player_is_zero(self):
@@ -234,7 +218,6 @@ class TestTurnState:
         """TURN-05: All auction/dividend/IPO state cleared."""
         gs = GameState(4)
         gs.initialize_game()
-        TURN.initialize(gs)
 
         assert TURN.get_auction_company(gs) == -1
         assert TURN.get_auction_high_bidder(gs) == -1

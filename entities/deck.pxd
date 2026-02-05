@@ -23,6 +23,7 @@ cdef class Deck:
     cpdef int peek(self, GameState state)
     cpdef int get_remaining_count(self, GameState state)
     cpdef bint is_empty(self, GameState state)
+    cpdef void adjust_count(self, GameState state, int delta)
 
     # Setup - builds deck according to rules based on player count
     cpdef void setup(self, GameState state, int num_players, int seed)
