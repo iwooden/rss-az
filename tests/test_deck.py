@@ -506,6 +506,22 @@ class TestDeckComposition:
                         f"{num_players}p game: inconsistent counts with seed {seed}"
 
 
+class TestDefaultSeedUniqueness:
+    """Tests that unseeded initialize_game() calls produce unique deck orders."""
+
+    def test_successive_unseeded_calls_differ(self):
+        """Two consecutive unseeded initialize_game() calls must produce different decks."""
+        state1 = GameState(num_players=3)
+        state1.initialize_game()
+
+        state2 = GameState(num_players=3)
+        state2.initialize_game()
+
+        order1 = DECK.get_order(state1)
+        order2 = DECK.get_order(state2)
+        assert order1 != order2, "Two unseeded games produced identical deck orders"
+
+
 class TestDeckEdgeCases:
     """Edge case tests for deck operations."""
 

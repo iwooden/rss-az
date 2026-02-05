@@ -11,7 +11,7 @@ The visible state is presented to the NN with player rotation (active player fir
 
 cimport cython
 from libc.string cimport memcpy, memset
-from libc.time cimport time
+from posix.time cimport clock_gettime, timespec, CLOCK_MONOTONIC
 cimport numpy as cnp
 import numpy as np
 
@@ -771,6 +771,7 @@ cdef class GameState:
         cdef int i, corp_id, company_id
         cdef int actual_seed
         cdef int starting_cash
+        cdef timespec ts
 
         # 1. Initialize all entity handles FIRST
         for i in range(self._num_players):
@@ -804,7 +805,8 @@ cdef class GameState:
 
         # 6. Build and shuffle deck
         if seed < 0:
-            actual_seed = <int>time(NULL)
+            clock_gettime(CLOCK_MONOTONIC, &ts)
+            actual_seed = <int>(ts.tv_sec ^ ts.tv_nsec)
         else:
             actual_seed = seed
         deck_module.DECK.setup(self, self._num_players, actual_seed)
