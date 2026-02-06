@@ -167,7 +167,7 @@ class TestCorpBaseIncome:
     def test_corp_single_company_no_synergy(self, game_state):
         """Corporation with 1 company -> income - CoO (no synergy bonus)."""
 
-        # Float corp 0 with company 0 (BME: income=18, 3 stars)
+        # Float corp 0 with company 0 (BME: income=1, 1 star)
         float_corp_for_test(game_state, corp_id=0, company_id=0)
         corp = CORPS[0]
 
@@ -216,7 +216,7 @@ class TestCorpBaseIncome:
         # Set high CoO level before floating
         TURN.set_coo_level(game_state, 6)
 
-        # Float corp 0 with company 0 (BME, 3-star)
+        # Float corp 0 with company 0 (BME, 1-star)
         float_corp_for_test(game_state, corp_id=0, company_id=0)
         corp = CORPS[0]
 
@@ -323,7 +323,7 @@ class TestCorpSpecialAbilities:
 
         # CORP_DA = 5
         # Give DA companies with different FVs
-        # KK (FV=1), BME (FV=3), CDG (FV=5)
+        # SZD (FV=30), BME (FV=1), AKE (FV=6)
         companies = [23, 0, 3]
 
         # Float DA with first company, then add the rest
@@ -426,10 +426,10 @@ class TestCorpSpecialAbilities:
         assert income == expected
 
     def test_vm_with_coo_below_ten(self, game_state):
-        """CSA-04: VM with total_coo=8 -> CoO reduced to 0."""
+        """CSA-04: VM with total_coo <= 10 -> CoO reduced to 0."""
 
         # CORP_VM = 6 (Vintage Machinery)
-        # Give VM companies that total ~8 CoO
+        # Give VM companies at CoO level 1 (all CoO = 0 at this level)
         TURN.set_coo_level(game_state, 1)
 
         # Float VM with company 1, then add company 2
@@ -455,13 +455,13 @@ class TestCorpSpecialAbilities:
         assert income == expected
 
     def test_vm_with_coo_above_ten(self, game_state):
-        """CSA-04: VM with total_coo=15 -> CoO reduced by 10, leaving 5."""
+        """CSA-04: VM with total_coo > 10 -> CoO reduced by 10."""
 
         # CORP_VM = 6
-        # Give VM companies that total 15 CoO (3-star + 2-star at CoO level 2)
+        # Give VM companies at CoO level 2 (all CoO = 0 at this level)
         TURN.set_coo_level(game_state, 2)
 
-        # Float VM with company 0 (3-star), then add company 1 (2-star)
+        # Float VM with company 0 (BME, 1-star), then add company 1 (BSE, 1-star)
         companies = [0, 1]
         float_corp_for_test(game_state, corp_id=6, company_id=0)
         COMPANIES[1].transfer_to_corp(game_state, 6)
@@ -508,7 +508,7 @@ class TestIncomeApplication:
     def test_corp_positive_income_adds_cash(self, game_state):
         """Corporation positive income increases cash."""
 
-        # Float corp 0 with CDG (income=32, stars=4, CoO_level1=8 -> net=24)
+        # Float corp 0 with CDG (income=10, stars=5, CoO at level 1 = 0)
         cdg = COMPANY_NAME_TO_ID["CDG"]
         float_corp_for_test(game_state, corp_id=0, company_id=cdg)
 
@@ -516,7 +516,7 @@ class TestIncomeApplication:
         corp.set_cash(game_state, 10)
 
         income = corp.calculate_income(game_state)
-        assert income > 0  # Should be 24
+        assert income > 0  # Should be 10
 
         corp.apply_income(game_state, income)
 
@@ -563,12 +563,12 @@ class TestIncomeApplication:
         player = PLAYERS[0]
         player.set_cash(game_state, 20)
 
-        # Give player a company (CDG: income=32, stars=4, CoO_level1=8 -> net=24)
+        # Give player a company (CDG: income=10, stars=5, CoO at level 1 = 0)
         cdg = COMPANY_NAME_TO_ID["CDG"]
         COMPANIES[cdg].transfer_to_player(game_state, 0)
 
         income = player.get_income(game_state)
-        assert income > 0  # Should be 24
+        assert income > 0  # Should be 10
 
         player.add_cash(game_state, income)
 
