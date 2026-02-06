@@ -4,8 +4,6 @@ Fixture Usage Guide:
 -------------------
 - apply_and_verify_all(state, action): Apply action, check invariants on all
   intermediate states (auto-applied forced actions). Returns ApplyTrackResult.
-- apply_and_track(state, action): Returns ApplyTrackResult with history access
-  but no invariant checking. Use when you need history inspection only.
 - assert_invariants(state, msg): Check state invariants directly (for tests
   that call phase-internal _py functions instead of the driver).
 """
@@ -329,22 +327,6 @@ def trade_state():
     PLAYERS[0].set_cash(state, 100)
 
     return state
-
-
-@pytest.fixture
-def apply_and_track():
-    """Fixture providing action application with full history tracking.
-
-    Usage:
-        result = apply_and_track(state, action_idx)
-        assert result.applied_count >= 1
-        intermediate = result.get_state_at(0)  # State before first action
-    """
-    def _apply(state, action_idx):
-        history = []
-        status = DRIVER.apply_action(state, action_idx, history=history)
-        return ApplyTrackResult(state, history, status, state.get_num_players())
-    return _apply
 
 
 def apply_and_verify_all(state, action_idx, msg="", expected_status=STATUS_OK):

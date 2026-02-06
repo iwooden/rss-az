@@ -168,7 +168,7 @@ class TestForcedActionAutoApply:
     0 legal actions exist. These tests verify the mechanism itself.
     """
 
-    def test_no_auto_apply_when_choice_exists(self, apply_and_track):
+    def test_no_auto_apply_when_choice_exists(self):
         """History has exactly 1 entry when multiple legal actions remain.
 
         A single pass in a 3-player game doesn't exhaust all players, so
@@ -178,15 +178,14 @@ class TestForcedActionAutoApply:
         state.initialize_game(seed=42)
         layout = get_action_layout(3)
 
-        result = apply_and_track(state, layout['pass_invest'])
-        assert result.status == STATUS_OK
+        result = apply_and_verify_all(state, layout['pass_invest'])
         assert result.applied_count == 1, (
             f"Expected 1 history entry (no auto-apply), got {result.applied_count}"
         )
         assert result.get_action_at(0) == layout['pass_invest']
 
     @pytest.mark.parametrize("num_players", [3, 6])
-    def test_non_player_phase_chain_produces_sentinels(self, num_players, apply_and_track):
+    def test_non_player_phase_chain_produces_sentinels(self, num_players):
         """All players passing triggers WRAP_UP/ACQUISITION sentinels in history.
 
         When the last player passes, the driver auto-executes non-player phases
@@ -201,8 +200,7 @@ class TestForcedActionAutoApply:
         for _ in range(num_players - 1):
             apply_and_verify_all(state, pass_idx)
 
-        result = apply_and_track(state, pass_idx)
-        assert result.status == STATUS_OK
+        result = apply_and_verify_all(state, pass_idx)
         assert state.get_phase() == GamePhases.PHASE_INVEST
 
         assert result.applied_count >= 3
@@ -211,7 +209,7 @@ class TestForcedActionAutoApply:
         assert -100 in action_values, "WRAP_UP sentinel (-100) missing from history"
         assert -101 in action_values, "ACQUISITION sentinel (-101) missing from history"
 
-    def test_history_structure_and_progression(self, apply_and_track):
+    def test_history_structure_and_progression(self):
         """History entries have correct types, valid sentinels, and progressing state.
 
         Verifies the complete history contract for a forced action chain:
@@ -228,7 +226,7 @@ class TestForcedActionAutoApply:
 
         for _ in range(2):
             apply_and_verify_all(state, pass_idx)
-        result = apply_and_track(state, pass_idx)
+        result = apply_and_verify_all(state, pass_idx)
 
         # Entry types: (float32 ndarray, int)
         for i in range(result.applied_count):
@@ -257,10 +255,9 @@ class TestForcedActionAutoApply:
         )
 
         # Turn advanced
-        assert result.status == STATUS_OK
         assert TURN.get_turn_number(state) == 2
 
-    def test_game_over_during_non_player_phase(self, apply_and_track):
+    def test_game_over_during_non_player_phase(self):
         """STATUS_GAME_OVER returned when END_CARD phase triggers game end.
 
         If the end card has already been flipped, the END_CARD non-player phase
@@ -305,7 +302,7 @@ class TestForcedActionAutoApply:
         action_values = [entry[1] for entry in history]
         assert -105 in action_values, "END_CARD sentinel (-105) should be in history"
 
-    def test_game_over_from_terminal_state_during_chain(self, apply_and_track):
+    def test_game_over_from_terminal_state_during_chain(self):
         """STATUS_GAME_OVER returned when _is_game_terminal triggers during chain.
 
         If no auction companies and no active corps exist, closing/acquisition

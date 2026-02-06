@@ -71,7 +71,7 @@ class TestAvailabilityTransition:
 class TestWrapUpHistory:
     """Test sentinel action history verification."""
 
-    def test_wrap_up_records_sentinel_in_history(self, apply_and_track):
+    def test_wrap_up_records_sentinel_in_history(self):
         """WRAP_UP execution records sentinel action (-100) in history."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
@@ -85,7 +85,7 @@ class TestWrapUpHistory:
             apply_and_verify_all(state, pass_idx)
 
         # Last pass triggers WRAP_UP auto-apply
-        result = apply_and_track(state, pass_idx)
+        result = apply_and_verify_all(state, pass_idx)
 
         # Verify history contains sentinel -100 for WRAP_UP
         action_values = [entry[1] for entry in result.history]

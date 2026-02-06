@@ -60,7 +60,7 @@ class TestPassAction:
         new_passes = TURN.get_consecutive_passes(game_state)
         assert new_passes == initial_passes + 1
 
-    def test_pass_advances_active_player(self, game_state, apply_and_track):
+    def test_pass_advances_active_player(self, game_state):
         """Pass action advances active player in turn order."""
         # Get initial active player
         initial_player = game_state.get_active_player()
@@ -68,11 +68,10 @@ class TestPassAction:
 
         # Apply pass action
         layout = get_action_layout(3)
-        result = apply_and_track(game_state, layout['pass_invest'])
+        result = apply_and_verify_all(game_state, layout['pass_invest'])
 
         # No auto-apply - multiple valid actions after pass
         assert len(result.history) == 1, "Expected no forced actions after pass"
-        assert result.status == STATUS_OK
 
         # Verify active player advanced
         new_player = game_state.get_active_player()
@@ -218,7 +217,7 @@ class TestStartAuction:
         # Verify phase transition
         assert game_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
 
-    def test_start_auction_advances_to_next_bidder(self, game_state, apply_and_track):
+    def test_start_auction_advances_to_next_bidder(self, game_state):
         """Start auction advances active player to next in turn order."""
         starter_id = game_state.get_active_player()
         starter_position = PLAYERS[starter_id].get_turn_order(game_state)
@@ -228,11 +227,10 @@ class TestStartAuction:
         assert auction_idx is not None
 
         # Apply auction action
-        result = apply_and_track(game_state, auction_idx)
+        result = apply_and_verify_all(game_state, auction_idx)
 
         # No auto-apply - bidders have choice to raise or leave
         assert len(result.history) == 1, "Expected no forced actions after starting auction"
-        assert result.status == STATUS_OK
 
         # Verify active player advanced
         new_player = game_state.get_active_player()
@@ -343,7 +341,7 @@ class TestStartAuction:
 class TestBuyShare:
     """Test buy share action behavior."""
 
-    def test_buy_share_pays_to_bank(self, trade_state, apply_and_track):
+    def test_buy_share_pays_to_bank(self, trade_state):
         """Buy share moves cash from player to bank (not corp)."""
         corp = CORPS[0]
         player = PLAYERS[0]
@@ -356,11 +354,10 @@ class TestBuyShare:
         buy_idx = layout['buy_share_base'] + 0  # Corp 0
 
         # Apply buy action
-        result = apply_and_track(trade_state, buy_idx)
+        result = apply_and_verify_all(trade_state, buy_idx)
 
         # No auto-apply - player can still buy/sell/pass after
         assert len(result.history) == 1, "Expected no forced actions after buy"
-        assert result.status == STATUS_OK
 
         new_corp_cash = corp.get_cash(trade_state)
         new_player_cash = player.get_cash(trade_state)
@@ -751,7 +748,7 @@ class TestAutoApplyEdgeCases:
         (3, 42),
         (6, 123),
     ])
-    def test_consecutive_passes_wrap_up_chain(self, num_players, seed, apply_and_track):
+    def test_consecutive_passes_wrap_up_chain(self, num_players, seed):
         """All players passing triggers WRAP_UP -> ACQUISITION -> INVEST with sentinel actions in history.
 
         When player N passes (completing the consecutive pass requirement),
@@ -769,8 +766,7 @@ class TestAutoApplyEdgeCases:
             apply_and_verify_all(state, pass_idx)
 
         # Last pass triggers WRAP_UP auto-apply chain
-        result = apply_and_track(state, pass_idx)
-        assert result.status == STATUS_OK
+        result = apply_and_verify_all(state, pass_idx)
         assert state.get_phase() == GamePhases.PHASE_INVEST
         assert TURN.get_turn_number(state) == 2
 
