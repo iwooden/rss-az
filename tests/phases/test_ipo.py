@@ -1,17 +1,4 @@
-"""Tests for IPO phase (Phase 9).
-
-Requirements covered:
-- IPO-01: Basic IPO mechanics (share distribution, cash flow, company transfer)
-- IPO-02: Share distribution rules (FV > par vs FV <= par)
-- IPO-03: Processing order (descending face value)
-- IPO-04: Corp charter availability (can't use active corp)
-- IPO-05: Market space availability (can't use occupied space)
-- IPO-06: Cost validation (player must afford payment)
-- IPO-07: Pass action (skip IPO for this company)
-- IPO-08: Phase transitions (ISSUE_SHARES -> IPO -> INVEST)
-- IPO-09: Action mask validation
-- IPO-10: Active player setting (company owner becomes active)
-"""
+"""Tests for IPO phase (Phase 9)."""
 import pytest
 from core.data import (
     GamePhases, GameConstants,
@@ -105,12 +92,12 @@ def ipo_state_multiple_companies(game_state):
 
 
 # =============================================================================
-# IPO-01: Basic IPO Mechanics
+# Basic IPO Mechanics
 # =============================================================================
 
 
 class TestBasicIPOMechanics:
-    """IPO-01: Basic IPO mechanics (share distribution, cash flow, company transfer)."""
+    """Basic IPO mechanics (share distribution, cash flow, company transfer)."""
 
     def test_ipo_transfers_company_to_corp(self, ipo_state_with_company):
         """IPO transfers company from player to corporation."""
@@ -186,12 +173,12 @@ class TestBasicIPOMechanics:
 
 
 # =============================================================================
-# IPO-02: Share Distribution Rules
+# Share Distribution Rules
 # =============================================================================
 
 
 class TestShareDistribution:
-    """IPO-02: Share distribution rules (FV > par vs FV <= par)."""
+    """Share distribution rules (FV > par vs FV <= par)."""
 
     def test_fv_greater_than_par_gives_2_shares_each(self, ipo_state_with_company):
         """When FV > par, player and bank each get 2 shares."""
@@ -255,7 +242,7 @@ class TestShareDistribution:
 
 
 class TestPaymentCalculation:
-    """IPO-02b: Payment calculations."""
+    """Payment calculations."""
 
     def test_player_payment_formula(self, ipo_state_with_company):
         """Player pays (shares * par) - face_value."""
@@ -300,12 +287,12 @@ class TestPaymentCalculation:
 
 
 # =============================================================================
-# IPO-03: Processing Order
+# Processing Order
 # =============================================================================
 
 
 class TestProcessingOrder:
-    """IPO-03: Processing order (descending face value)."""
+    """Processing order (descending face value)."""
 
     def test_highest_fv_processed_first(self, ipo_state_multiple_companies):
         """Highest face value company is processed first."""
@@ -347,12 +334,12 @@ class TestProcessingOrder:
 
 
 # =============================================================================
-# IPO-04 & IPO-05: Corp and Market Space Availability
+# Corp and Market Space Availability
 # =============================================================================
 
 
 class TestCorpAvailability:
-    """IPO-04: Corp charter availability (can't use active corp)."""
+    """Corp charter availability (can't use active corp)."""
 
     def test_cannot_ipo_to_active_corp(self, ipo_state_with_company):
         """Cannot select a corporation that's already active."""
@@ -384,7 +371,7 @@ class TestCorpAvailability:
 
 
 class TestMarketSpaceAvailability:
-    """IPO-05: Market space availability (can't use occupied space)."""
+    """Market space availability (can't use occupied space)."""
 
     def test_mask_excludes_occupied_spaces(self, ipo_state_with_company):
         """Action mask excludes IPO actions for occupied market spaces."""
@@ -406,12 +393,12 @@ class TestMarketSpaceAvailability:
 
 
 # =============================================================================
-# IPO-06: Cost Validation
+# Cost Validation
 # =============================================================================
 
 
 class TestCostValidation:
-    """IPO-06: Cost validation (player must afford payment)."""
+    """Cost validation (player must afford payment)."""
 
     def test_mask_excludes_unaffordable_options(self, ipo_state_with_company):
         """Action mask excludes IPO actions player can't afford."""
@@ -436,12 +423,12 @@ class TestCostValidation:
 
 
 # =============================================================================
-# IPO-07: Pass Action
+# Pass Action
 # =============================================================================
 
 
 class TestPassAction:
-    """IPO-07: Pass action (skip IPO for this company)."""
+    """Pass action (skip IPO for this company)."""
 
     def test_pass_advances_to_next_company(self, ipo_state_multiple_companies):
         """Pass action advances to next company in processing order."""
@@ -481,12 +468,12 @@ class TestPassAction:
 
 
 # =============================================================================
-# IPO-08: Phase Transitions
+# Phase Transitions
 # =============================================================================
 
 
 class TestPhaseTransitions:
-    """IPO-08: Phase transitions (ISSUE_SHARES -> IPO -> INVEST)."""
+    """Phase transitions (ISSUE_SHARES -> IPO -> INVEST)."""
 
     def test_empty_ipo_transitions_to_invest(self, ipo_state):
         """IPO with no player-owned companies transitions to INVEST."""
@@ -517,12 +504,12 @@ class TestPhaseTransitions:
 
 
 # =============================================================================
-# IPO-09: Action Mask Validation
+# Action Mask Validation
 # =============================================================================
 
 
 class TestActionMask:
-    """IPO-09: Action mask validation."""
+    """Action mask validation."""
 
     def test_pass_always_valid(self, ipo_state_with_company):
         """Pass action is always valid in IPO phase."""
@@ -552,12 +539,12 @@ class TestActionMask:
 
 
 # =============================================================================
-# IPO-10: Active Player Setting
+# Active Player Setting
 # =============================================================================
 
 
 class TestActivePlayer:
-    """IPO-10: Active player setting (company owner becomes active)."""
+    """Active player setting (company owner becomes active)."""
 
     def test_company_owner_becomes_active(self, ipo_state_multiple_companies):
         """The owner of the current IPO company is the active player."""

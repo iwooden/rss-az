@@ -1,23 +1,4 @@
-"""Tests for INCOME phase (v6.0).
-
-Requirements covered:
-- SYN-01, SYN-02: Synergy pair calculation (Phase 21) ✓
-- SYN-03: Synergy income added to entity income (Phase 21) ✓
-- INC-01: Entity sums income from owned companies (Phase 22) ✓
-- INC-02: CoO deducted from income (Phase 22) ✓
-- INC-03: FI +5 bonus (Phase 22) ✓
-- INC-04: Positive income adds to cash (Phase 22) ✓
-- INC-05: Negative income subtracts from cash (Phase 22) ✓
-- CSA-01: PR +1 per company (Phase 22) ✓
-- CSA-02: DA +printed income of highest FV (Phase 22) ✓
-- CSA-03: S +synergy_markers // 2 (Phase 22) ✓
-- CSA-04: VM reduces CoO by up to 10 (Phase 22) ✓
-- INC-06: Corp bankruptcy during income (cash < 0) (Phase 22) ✓
-- TRN-01: INCOME transitions to DIVIDENDS after income (Phase 23) ✓
-- TRN-02: Dividends phase setup called (dividend_corp initialized) (Phase 23) ✓
-- TRN-03: INCOME is non-player phase (0 valid actions) (Phase 23) ✓
-- TRN-04: Multiple corps can go bankrupt in same INCOME phase (Phase 23) ✓
-"""
+"""Tests for INCOME phase."""
 import pytest
 from core.state import GameState
 from core.data import (
@@ -50,7 +31,7 @@ from tests.phases.conftest import float_corp_for_test, assert_invariants
 
 
 class TestSynergyCalculation:
-    """SYN-01, SYN-02: Synergy pair identification and counting."""
+    """Synergy pair identification and counting."""
 
     def test_no_companies_returns_zero(self):
         """No companies -> (0, 0)."""
@@ -151,7 +132,7 @@ class TestSynergyCalculation:
 
 
 class TestCorpBaseIncome:
-    """INC-01, INC-02: Corporation base income calculation."""
+    """Corporation base income calculation."""
 
     def test_corp_no_companies_returns_zero(self, game_state):
         """Corporation with no companies -> 0 income."""
@@ -230,7 +211,7 @@ class TestCorpBaseIncome:
 
 
 class TestFIIncome:
-    """INC-03: Foreign Investor income calculation."""
+    """Foreign Investor income calculation."""
 
     def test_fi_no_companies_returns_five(self, game_state):
         """FI with no companies -> 5 (base bonus only)."""
@@ -275,10 +256,10 @@ class TestFIIncome:
 
 
 class TestCorpSpecialAbilities:
-    """CSA-01 through CSA-04: Corporation special ability modifiers to income."""
+    """Corporation special ability modifiers to income."""
 
     def test_pr_with_zero_companies(self, game_state):
-        """CSA-01: PR with 0 companies -> +0 bonus (but still works)."""
+        """PR with 0 companies -> +0 bonus (but still works)."""
 
         # CORP_PR = 4 (Prussian Railway)
         # Float PR and then remove its company to test zero-company edge case
@@ -290,7 +271,7 @@ class TestCorpSpecialAbilities:
         assert income == 0  # No companies, no bonus
 
     def test_pr_with_multiple_companies(self, game_state):
-        """CSA-01: PR with 3 companies -> +3 bonus."""
+        """PR with 3 companies -> +3 bonus."""
 
         # CORP_PR = 4
         # Float PR with company 0, then add companies 1 and 2
@@ -319,7 +300,7 @@ class TestCorpSpecialAbilities:
         assert income == expected
 
     def test_da_with_multiple_companies(self, game_state):
-        """CSA-02: DA with companies of different FVs -> bonus = printed income of highest FV."""
+        """DA with companies of different FVs -> bonus = printed income of highest FV."""
 
         # CORP_DA = 5
         # Give DA companies with different FVs
@@ -357,7 +338,7 @@ class TestCorpSpecialAbilities:
         assert income == expected
 
     def test_s_with_four_synergy_markers(self, game_state):
-        """CSA-03: S with 4 synergy markers -> +2 bonus (4 // 2)."""
+        """S with 4 synergy markers -> +2 bonus (4 // 2)."""
 
         # CORP_S = 1 (Synergistic)
         # Give S companies that form 4 synergy pairs (4 markers)
@@ -392,7 +373,7 @@ class TestCorpSpecialAbilities:
         assert income == expected
 
     def test_s_with_five_synergy_markers(self, game_state):
-        """CSA-03: S with 5 synergy markers -> +2 bonus (5 // 2 = 2, rounds down)."""
+        """S with 5 synergy markers -> +2 bonus (5 // 2 = 2, rounds down)."""
 
         # CORP_S = 1
         # Give S companies that form 5 synergy pairs (5 markers)
@@ -426,7 +407,7 @@ class TestCorpSpecialAbilities:
         assert income == expected
 
     def test_vm_with_coo_below_ten(self, game_state):
-        """CSA-04: VM with total_coo <= 10 -> CoO reduced to 0."""
+        """VM with total_coo <= 10 -> CoO reduced to 0."""
 
         # CORP_VM = 6 (Vintage Machinery)
         # Give VM companies at CoO level 1 (all CoO = 0 at this level)
@@ -455,7 +436,7 @@ class TestCorpSpecialAbilities:
         assert income == expected
 
     def test_vm_with_coo_above_ten(self, game_state):
-        """CSA-04: VM with total_coo > 10 -> CoO reduced by 10."""
+        """VM with total_coo > 10 -> CoO reduced by 10."""
 
         # CORP_VM = 6
         # Give VM companies at CoO level 2 (all CoO = 0 at this level)
@@ -503,7 +484,7 @@ class TestCorpSpecialAbilities:
 
 
 class TestIncomeApplication:
-    """INC-04, INC-05: Income application to entity cash."""
+    """Income application to entity cash."""
 
     def test_corp_positive_income_adds_cash(self, game_state):
         """Corporation positive income increases cash."""
@@ -581,7 +562,7 @@ class TestIncomeApplication:
 
 
 class TestIncomeTransition:
-    """TRN-01: INCOME phase transitions to DIVIDENDS."""
+    """INCOME phase transitions to DIVIDENDS."""
 
     def test_income_transitions_to_dividends(self, game_state):
         """After income application, phase changes to DIVIDENDS."""
@@ -609,7 +590,7 @@ class TestIncomeTransition:
 
 
 class TestDividendSetup:
-    """TRN-02: Dividends phase setup initializes dividend_corp."""
+    """Dividends phase setup initializes dividend_corp."""
 
     def test_dividend_corp_set_to_first_eligible(self, game_state):
         """After transition, dividend_corp is set to highest-price corp."""
@@ -642,7 +623,7 @@ class TestDividendSetup:
 
 
 class TestNonPlayerPhase:
-    """TRN-03: INCOME is a non-player phase with 0 valid actions."""
+    """INCOME is a non-player phase with 0 valid actions."""
 
     def test_income_has_no_valid_actions(self, game_state):
         """In INCOME phase, action mask should be all zeros."""

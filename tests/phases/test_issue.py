@@ -1,16 +1,4 @@
-"""Tests for ISSUE_SHARES phase (Phase 8).
-
-Requirements covered:
-- ISS-01: Basic issue mechanics (shares transfer, cash flow)
-- ISS-02: Price movement (normal corps)
-- ISS-03: Stock Masters special (no price change)
-- ISS-04: Processing order (descending price)
-- ISS-05: Receivership handling (must issue vs auto-pass)
-- ISS-06: Bankruptcy (price drops to 0)
-- ISS-07: Action mask validation
-- ISS-08: Phase transitions (END_CARD -> ISSUE_SHARES -> IPO -> INVEST)
-- ISS-09: Integration tests
-"""
+"""Tests for ISSUE_SHARES phase (Phase 8)."""
 import pytest
 from core.data import GamePhases, CorpIndices, get_market_price
 from core.actions import get_valid_action_mask, get_action_layout
@@ -64,12 +52,12 @@ def issue_state_with_corp(game_state):
 
 
 # =============================================================================
-# ISS-01: Basic Issue Mechanics
+# Basic Issue Mechanics
 # =============================================================================
 
 
 class TestBasicIssueMechanics:
-    """ISS-01: Basic issue mechanics (shares transfer, cash flow)."""
+    """Basic issue mechanics (shares transfer, cash flow)."""
 
     def test_issue_transfers_one_share(self, issue_state_with_corp):
         """Issuing transfers one share from unissued to issued and bank."""
@@ -133,12 +121,12 @@ class TestBasicIssueMechanics:
 
 
 # =============================================================================
-# ISS-02: Price Movement (Normal Corps)
+# Price Movement (Normal Corps)
 # =============================================================================
 
 
 class TestPriceMovement:
-    """ISS-02: Price movement for normal corporations."""
+    """Price movement for normal corporations."""
 
     def test_price_drops_on_issue(self, issue_state_with_corp):
         """Normal corp price drops when issuing."""
@@ -221,12 +209,12 @@ class TestPriceMovement:
 
 
 # =============================================================================
-# ISS-03: Stock Masters Special
+# Stock Masters Special
 # =============================================================================
 
 
 class TestStockMastersSpecial:
-    """ISS-03: Stock Masters (CORP_SM) price does not change."""
+    """Stock Masters (CORP_SM) price does not change."""
 
     def test_sm_price_unchanged_on_issue(self, game_state):
         """Stock Masters price stays the same when issuing."""
@@ -317,12 +305,12 @@ class TestStockMastersSpecial:
 
 
 # =============================================================================
-# ISS-04: Processing Order
+# Processing Order
 # =============================================================================
 
 
 class TestProcessingOrder:
-    """ISS-04: Corps processed in descending share price order."""
+    """Corps processed in descending share price order."""
 
     def test_higher_price_corp_processed_first(self, game_state):
         """Corp with higher price index is processed before lower."""
@@ -368,12 +356,12 @@ class TestProcessingOrder:
 
 
 # =============================================================================
-# ISS-05: Receivership Handling
+# Receivership Handling
 # =============================================================================
 
 
 class TestReceivershipHandling:
-    """ISS-05: Receivership corps must issue if they have unissued shares."""
+    """Receivership corps must issue if they have unissued shares."""
 
     def test_receivership_with_unissued_auto_issues(self, game_state):
         """Receivership corp with unissued shares auto-issues."""
@@ -444,12 +432,12 @@ class TestReceivershipHandling:
 
 
 # =============================================================================
-# ISS-07: Action Mask Validation
+# Action Mask Validation
 # =============================================================================
 
 
 class TestActionMaskValidation:
-    """ISS-07: Action mask validation for ISSUE_SHARES phase."""
+    """Action mask validation for ISSUE_SHARES phase."""
 
     def test_mask_has_issue_and_pass_with_unissued(self, issue_state_with_corp):
         """Mask includes both ISSUE and PASS when corp has unissued shares."""
@@ -500,12 +488,12 @@ class TestActionMaskValidation:
 
 
 # =============================================================================
-# ISS-08: Phase Transitions
+# Phase Transitions
 # =============================================================================
 
 
 class TestPhaseTransitions:
-    """ISS-08: Phase transitions for ISSUE_SHARES."""
+    """Phase transitions for ISSUE_SHARES."""
 
     def test_transitions_to_invest_when_done(self, issue_state):
         """Transitions to INVEST (via IPO) when all corps processed."""
@@ -573,12 +561,12 @@ class TestPhaseTransitions:
 
 
 # =============================================================================
-# ISS-09: Integration Tests
+# Integration Tests
 # =============================================================================
 
 
 class TestIntegration:
-    """ISS-09: Integration tests for ISSUE_SHARES phase."""
+    """Integration tests for ISSUE_SHARES phase."""
 
     def test_mixed_receivership_and_player_corps(self, game_state):
         """Mix of receivership and player-controlled corps processed correctly."""

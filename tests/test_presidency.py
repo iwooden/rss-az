@@ -91,10 +91,10 @@ def bankruptcy_state():
 # =============================================================================
 
 class TestPresidencyRecalculation:
-    """Test presidency transfer via share changes (INV-18, INV-19, INV-20)."""
+    """Test presidency transfer via share changes."""
 
     def test_presidency_transfers_to_most_shares(self, trade_state):
-        """INV-18: Player with most shares becomes president."""
+        """Player with most shares becomes president."""
         # Player 0 has 2 shares, is president
         # Give player 1 more shares - fix share accounting
         # trade_state: unissued(3), bank(2), P0(2), issued(4), total=7
@@ -117,7 +117,7 @@ class TestPresidencyRecalculation:
         assert not PLAYERS[0].is_president_of(trade_state, 0)
 
     def test_presidency_incumbent_keeps_on_tie(self, trade_state):
-        """INV-19: Incumbent keeps presidency when shares are equal."""
+        """Incumbent keeps presidency when shares are equal."""
         # Player 0 has 2 shares, is president
         # Give player 1 1 share so after P0 sell both have 1 -> tie
         # trade_state: unissued(3), bank(2), P0(2), issued(4), total=7
@@ -157,7 +157,7 @@ class TestPresidencyRecalculation:
         assert PLAYERS[0].get_shares(trade_state, 0) == 3
 
     def test_presidency_transfer_on_buy(self, trade_state):
-        """INV-18: Buying shares can trigger presidency transfer."""
+        """Buying shares can trigger presidency transfer."""
         corp = CORPS[0]
 
         # Player 0 starts as president with 2 shares (from trade_state fixture)
@@ -203,7 +203,7 @@ class TestPresidencyRecalculation:
         assert PLAYERS[0].is_president_of(trade_state, 0)
 
     def test_presidency_turn_order_tiebreaker(self, trade_state):
-        """INV-20: When multiple players have more shares, use turn order from incumbent."""
+        """When multiple players have more shares, use turn order from incumbent."""
         # Turn order with seed=42: P0=pos0, P1=pos1, P2=pos2
         # Set up: P0=2 (president), P1=3, P2=3
         # Both P1 and P2 have more than incumbent P0
@@ -312,10 +312,10 @@ class TestPresidencyRecalculation:
 # =============================================================================
 
 class TestReceivership:
-    """Test receivership mechanics (INV-20, INV-21)."""
+    """Test receivership mechanics."""
 
     def test_receivership_when_all_shares_sold(self, trade_state):
-        """INV-20: Corp enters receivership when all player shares = 0."""
+        """Corp enters receivership when all player shares = 0."""
         corp = CORPS[0]
 
         # Set up: only player 0 has 1 share
@@ -336,7 +336,7 @@ class TestReceivership:
             assert not PLAYERS[player_id].is_president_of(trade_state, 0)
 
     def test_receivership_exit_on_buy(self, trade_state):
-        """INV-21: Buying share from receivership corp exits receivership and makes buyer president."""
+        """Buying share from receivership corp exits receivership and makes buyer president."""
         corp = CORPS[0]
 
         # Put corp in receivership

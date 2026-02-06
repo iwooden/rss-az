@@ -1,83 +1,4 @@
-"""Tests for ACQUISITION phase offer generation.
-
-TEST REQUIREMENT COVERAGE:
-==========================
-
-TEST-01 (Offer Generation Priority):
-- TestOfferGeneration class (10 tests)
-  - test_no_offers_fresh_game: OFFER-01 (empty buffer)
-  - test_fi_offers_generated: OFFER-02, OFFER-03 (FI offers)
-  - test_os_fi_offers_first: OFFER-02 (OS priority)
-  - test_corp_fi_sorted_by_price: OFFER-03 (non-OS sorting)
-  - test_corp_corp_offers_same_president: OFFER-04 (same-president)
-  - test_different_president_no_offers: OFFER-04 (negative)
-  - test_player_private_offers: OFFER-05 (private offers)
-  - test_fi_offers_sorted_by_corp_share_price: OFFER-03 (detailed sorting)
-  - test_corp_corp_sorted_by_buyer_price_then_face_value: OFFER-04 (detailed)
-  - test_player_private_sorted_similarly: OFFER-05 (detailed)
-
-TEST-02 (Action Types):
-- TestActionIntegration class (6 tests)
-  - test_accept_price_action: Price-based acquisition
-  - test_fi_buy_high_action: Non-OS buys from FI at high price
-  - test_fi_buy_face_action: OS buys from FI at face value
-  - test_os_pays_face_value_not_high_price: OS privilege verification (face != high)
-  - test_pass_action: Skip offer, advance to next
-  - test_fi_intervention_equivalent_higher_price_gets_company: Intervention mechanism E2E
-
-TEST-03 (Validation Rules):
-- TestValidation class (20 tests)
-  - VALID-01 (price range): test_price_in_range_succeeds, test_price_below_low_rejected,
-    test_price_above_high_rejected, test_price_at_low_boundary, test_price_at_high_boundary,
-    test_price_one_below_low_fails, test_price_one_above_high_fails,
-    test_price_span_varies_by_company, test_price_offset_maps_to_correct_price
-  - VALID-02 (sufficient cash): test_insufficient_cash_filters_offers,
-    test_exact_cash_for_price_succeeds, test_one_dollar_short_fails
-  - VALID-03 (seller keeps >=1): test_seller_with_two_companies_can_sell_one,
-    test_seller_with_one_company_action_rejected, test_seller_with_one_owned_one_acquisition_can_sell
-  - VALID-04 (not in acquisition zone): test_target_already_acquired_rejected,
-    test_company_in_acquisition_zone_blocks_offer
-  - VALID-05 (not in owned): test_target_already_owned_rejected
-  - VALID-06 (OS constraints): test_fi_buy_high_rejects_os_corp, test_fi_buy_face_rejects_non_os_corp
-
-TEST-04 (Receivership Auto-Buy):
-- TestReceivershipAutoBuy class (6 tests)
-  - test_receivership_auto_buys_affordable_fi: RECV-01, RECV-03 (auto-buy at high)
-  - test_receivership_skips_unaffordable_fi: RECV-03 (skip when can't afford)
-  - test_receivership_skips_non_fi_offers: RECV-03 (only from FI)
-  - test_receivership_cannot_sell: RECV-02 (no offers as seller)
-  - test_receivership_buys_most_expensive_affordable: RECV-01 (most expensive first)
-  - test_receivership_insufficient_for_high_but_enough_for_face: RECV-03 (high only)
-
-TEST-05 (Phase Flow):
-- TestPhaseFlow class (7 tests)
-  - test_wrap_up_sets_up_acquisition: WRAP_UP transition
-  - test_acquisition_with_fi_company: Offer-driven flow
-  - test_empty_offers_detected: Empty buffer detection
-  - test_transition_to_closing: Phase transition (to INVEST as workaround)
-  - test_transition_merges_player_proceeds: FLOW-03 (player proceeds)
-  - test_transition_merges_corp_proceeds: FLOW-03 (corp proceeds)
-  - test_transition_merges_acquisition_companies: FLOW-04 (company merging)
-- TestZoneMerging class (4 tests)
-  - test_player_proceeds_merge_to_cash: FLOW-03 (player)
-  - test_corp_proceeds_merge_to_cash: FLOW-03 (corp)
-  - test_acquisition_companies_merge_to_owned: FLOW-04 (companies)
-  - test_zones_cleared_after_merge: FLOW-03, FLOW-04 (cleanup)
-
-TEST-06 (Integration):
-- Deferred to Plan 15-03 (cross-phase flow tests)
-
-TEST-07 (Edge Cases):
-- TestEdgeCases class (6 tests)
-  - test_no_active_corps_no_offers: Empty state (no corps)
-  - test_empty_fi_no_fi_offers: Empty state (no FI companies)
-  - test_no_player_privates_no_private_offers: Empty state (no player companies)
-  - test_no_corp_companies_no_corp_corp_offers: Empty state (no corp companies)
-  - test_single_corp_no_corp_corp_offers: Configuration edge (single corp)
-  - test_same_president_constraint_explicit: Same-president as sole blocker
-
-Total: 58 tests covering TEST-01 through TEST-05, TEST-07
-"""
+"""Tests for ACQUISITION phase."""
 
 import pytest
 from core.state import GameState
@@ -112,7 +33,7 @@ from tests.phases.conftest import float_corp_for_test, assert_invariants
 
 
 class TestOfferGeneration:
-    """OFFER-01 through OFFER-05: Offer generation and priority."""
+    """Offer generation and priority."""
 
     def test_no_offers_fresh_game(self):
         """No offers when no corps active and FI has no companies."""
@@ -123,7 +44,7 @@ class TestOfferGeneration:
         assert get_offer_count(gs) == 0
 
     def test_fi_offers_generated(self):
-        """OFFER-02, OFFER-03: FI offers generated when corps active."""
+        """FI offers generated when corps active."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -145,7 +66,7 @@ class TestOfferGeneration:
         assert corp_id == 0     # Corp 0 buying
 
     def test_os_fi_offers_first(self):
-        """OFFER-02: OS->FI offers come before other corp->FI offers."""
+        """OS->FI offers come before other corp->FI offers."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -172,7 +93,7 @@ class TestOfferGeneration:
         assert company_id == 0
 
     def test_corp_fi_sorted_by_price(self):
-        """OFFER-03: Non-OS corp->FI offers sorted by descending share price."""
+        """Non-OS corp->FI offers sorted by descending share price."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -201,7 +122,7 @@ class TestOfferGeneration:
         assert corp_id_second == 1, f"Expected corp 1 second, got {corp_id_second}"
 
     def test_corp_corp_offers_same_president(self):
-        """OFFER-04: Corp->Corp offers only for same president."""
+        """Corp->Corp offers only for same president."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -223,7 +144,7 @@ class TestOfferGeneration:
         assert company_id == 0  # Company 0 from corp 0
 
     def test_different_president_no_offers(self):
-        """OFFER-04: Different presidents prevents corp-to-corp offers."""
+        """Different presidents prevents corp-to-corp offers."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -242,7 +163,7 @@ class TestOfferGeneration:
         assert get_offer_count(gs) == 0
 
     def test_player_private_offers(self):
-        """OFFER-05: Corp->Player private offers generated."""
+        """Corp->Player private offers generated."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -264,7 +185,7 @@ class TestOfferGeneration:
         assert company_id == 0  # Company 0 from player 0
 
     def test_fi_offers_sorted_by_corp_share_price(self):
-        """OFFER-03 detail: FI offers sorted by buyer corp share price descending."""
+        """FI offers sorted by buyer corp share price descending."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -303,7 +224,7 @@ class TestOfferGeneration:
         assert corp_id_3 == 1
 
     def test_corp_corp_sorted_by_buyer_price_then_face_value(self):
-        """OFFER-04 detail: Corp-corp sorted by buyer price DESC, then face value DESC."""
+        """Corp-corp sorted by buyer price DESC, then face value DESC."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -345,7 +266,7 @@ class TestOfferGeneration:
                 assert corp_id_third == 2
 
     def test_player_private_sorted_similarly(self):
-        """OFFER-05 detail: Player-private sorted by buyer price DESC, face value DESC."""
+        """Player-private sorted by buyer price DESC, face value DESC."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -603,7 +524,7 @@ class TestValidation:
             assert result == 1  # Invalid
 
     def test_target_already_acquired_rejected(self):
-        """Cannot buy company already in acquisition_companies (VALID-04)."""
+        """Cannot buy company already in acquisition_companies."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -617,7 +538,7 @@ class TestValidation:
         assert result == 1  # Invalid
 
     def test_target_already_owned_rejected(self):
-        """Cannot buy company already in buyer's owned_companies (VALID-05)."""
+        """Cannot buy company already in buyer's owned_companies."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -637,9 +558,9 @@ class TestValidation:
             result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 0)
             assert result == 1  # Invalid
 
-    # VALID-01 boundary tests
+    # Boundary tests
     def test_price_at_low_boundary(self):
-        """VALID-01: Price exactly at low_price succeeds."""
+        """Price exactly at low_price succeeds."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -653,7 +574,7 @@ class TestValidation:
         assert_invariants(gs, "After acquisition action at low boundary")
 
     def test_price_at_high_boundary(self):
-        """VALID-01: Price exactly at high_price succeeds."""
+        """Price exactly at high_price succeeds."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -670,7 +591,7 @@ class TestValidation:
         assert_invariants(gs, "After acquisition action at high boundary")
 
     def test_price_one_below_low_fails(self):
-        """VALID-01: Price = low_price - 1 fails."""
+        """Price = low_price - 1 fails."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -682,7 +603,7 @@ class TestValidation:
         assert result == 1, "Price below low_price should fail"
 
     def test_price_one_above_high_fails(self):
-        """VALID-01: Price = high_price + 1 fails."""
+        """Price = high_price + 1 fails."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -698,7 +619,7 @@ class TestValidation:
         assert result == 1, "Price above high_price should fail"
 
     def test_price_span_varies_by_company(self):
-        """VALID-01: Different companies have different valid price spans.
+        """Different companies have different valid price spans.
 
         Verifies that the same offset can be valid for one company but
         invalid for another, based on their unique price ranges.
@@ -809,9 +730,9 @@ class TestValidation:
         payment = corp_cash_before - CORPS[0].get_cash(gs3)
         assert payment == expected_price, f"Offset {mid_offset} should pay {expected_price}, got {payment}"
 
-    # VALID-02 boundary tests
+    # Boundary tests
     def test_exact_cash_for_price_succeeds(self):
-        """VALID-02: Corp has exactly the price amount, action succeeds."""
+        """Corp has exactly the price amount, action succeeds."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -834,7 +755,7 @@ class TestValidation:
             pass
 
     def test_one_dollar_short_fails(self):
-        """VALID-02: Corp has price - 1, no offer generated."""
+        """Corp has price - 1, no offer generated."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -847,9 +768,9 @@ class TestValidation:
         # No offer should be generated (insufficient cash filtered at generation)
         assert get_offer_count(gs) == 0, "No offer should be generated with insufficient cash"
 
-    # VALID-03 boundary tests (seller keeps >= 1 company)
+    # Boundary tests (seller keeps >= 1 company)
     def test_seller_with_two_companies_can_sell_one(self):
-        """VALID-03: Seller has 2 companies, sell 1 succeeds."""
+        """Seller has 2 companies, sell 1 succeeds."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -868,7 +789,7 @@ class TestValidation:
         assert get_offer_count(gs) > 0, "Seller with 2 companies should have offers"
 
     def test_seller_with_one_company_action_rejected(self):
-        """VALID-03: Seller with 1 company - offer generated but action rejected."""
+        """Seller with 1 company - offer generated but action rejected."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -882,16 +803,16 @@ class TestValidation:
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py seller with one company")
 
-        # VALID-03 is checked at ACTION time, not offer generation time
+        # Seller-keeps-1 is checked at ACTION time, not offer generation time
         # Offer IS generated, but action should be rejected
         assert get_offer_count(gs) > 0, "Offer should be generated"
 
-        # Try to execute - should fail VALID-03 check (seller would have 0 after)
+        # Try to execute - should fail seller-keeps-1 check (seller would have 0 after)
         result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 0)
         assert result == 1, "Action should be rejected (seller would have 0 companies)"
 
     def test_seller_with_one_owned_one_acquisition_can_sell(self):
-        """VALID-03: Seller has 1 owned + 1 in acquisition zone, can sell the owned one."""
+        """Seller has 1 owned + 1 in acquisition zone, can sell the owned one."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -910,9 +831,9 @@ class TestValidation:
         # With 1 owned + 1 acquisition, selling owned leaves 1 (in acquisition) - valid
         assert get_offer_count(gs) > 0, "Seller with 1 owned + 1 acquisition can sell owned"
 
-    # VALID-04/VALID-05 boundary test
+    # Acquisition zone / already-owned boundary test
     def test_company_in_acquisition_zone_blocks_offer(self):
-        """VALID-04: Company in acquisition zone blocks offer generation."""
+        """Company in acquisition zone blocks offer generation."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -1193,7 +1114,7 @@ class TestActionIntegration:
 
 
 class TestZoneMerging:
-    """Tests for acquisition zone merging at phase end (FLOW-03, FLOW-04)."""
+    """Tests for acquisition zone merging at phase end."""
 
     def test_player_proceeds_merge_to_cash(self):
         """Player acquisition_proceeds merge to cash at phase end."""
@@ -1284,7 +1205,7 @@ class TestZoneMerging:
 
 
 class TestEdgeCases:
-    """TEST-07: Edge case tests for empty states and unusual configurations."""
+    """Edge case tests for empty states and unusual configurations."""
 
     def test_no_active_corps_no_offers(self):
         """No corps active, verify 0 offers."""
@@ -1353,7 +1274,7 @@ class TestEdgeCases:
         assert get_offer_count(gs) > 0, "Two corps with same president and companies should have offers"
 
     def test_single_corp_no_corp_corp_offers(self):
-        """TEST-07: Only one corp active, can't have corp-to-corp offers."""
+        """Only one corp active, can't have corp-to-corp offers."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -1368,7 +1289,7 @@ class TestEdgeCases:
         assert get_offer_count(gs) == 0, "Single corp cannot have corp-to-corp offers"
 
     def test_same_president_constraint_explicit(self):
-        """TEST-07: Same-president logic is the ONLY thing blocking an offer."""
+        """Same-president logic is the ONLY thing blocking an offer."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -1404,10 +1325,10 @@ class TestEdgeCases:
 
 
 class TestReceivershipAutoBuy:
-    """Tests for receivership auto-buy behavior (RECV-01, RECV-02, RECV-03)."""
+    """Tests for receivership auto-buy behavior."""
 
     def test_receivership_auto_buys_affordable_fi(self):
-        """RECV-01, RECV-03: Receivership corp auto-buys affordable FI company at HIGH price.
+        """Receivership corp auto-buys affordable FI company at HIGH price.
 
         Per RULES.md: FI 'Only sells at maximum allowed price'.
         Only OS has the special ability to pay face value - receivership corps pay full price.
@@ -1443,7 +1364,7 @@ class TestReceivershipAutoBuy:
         assert get_offer_count(gs) == 0 or TURN.get_acq_active_corp(gs) == -1
 
     def test_receivership_skips_unaffordable_fi(self):
-        """RECV-03: Receivership corp auto-passes when can't afford FI company."""
+        """Receivership corp auto-passes when can't afford FI company."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -1472,7 +1393,7 @@ class TestReceivershipAutoBuy:
         assert FI.owns_company(gs, 0), "Company should still be owned by FI"
 
     def test_receivership_skips_non_fi_offers(self):
-        """RECV-03: Receivership corp auto-passes on non-FI offers."""
+        """Receivership corp auto-passes on non-FI offers."""
         gs = GameState(3)
         gs.initialize_game()
 
@@ -1498,7 +1419,7 @@ class TestReceivershipAutoBuy:
         assert get_offer_count(gs) == 0 or TURN.get_acq_active_corp(gs) == -1
 
     def test_receivership_cannot_sell(self):
-        """RECV-02: Receivership corp cannot sell companies."""
+        """Receivership corp cannot sell companies."""
         gs = GameState(3)
         gs.initialize_game()
 

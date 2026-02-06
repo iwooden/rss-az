@@ -47,7 +47,7 @@ class TestPassAction:
     """Test INVEST phase pass action behavior."""
 
     def test_pass_increments_consecutive_passes(self, game_state):
-        """INV-01: Pass action increments consecutive_passes counter."""
+        """Pass action increments consecutive_passes counter."""
         # Get initial consecutive_passes count
         initial_passes = TURN.get_consecutive_passes(game_state)
         assert initial_passes == 0
@@ -61,7 +61,7 @@ class TestPassAction:
         assert new_passes == initial_passes + 1
 
     def test_pass_advances_active_player(self, game_state, apply_and_track):
-        """INV-04: Pass action advances active player in turn order."""
+        """Pass action advances active player in turn order."""
         # Get initial active player
         initial_player = game_state.get_active_player()
         initial_position = PLAYERS[initial_player].get_turn_order(game_state)
@@ -80,7 +80,7 @@ class TestPassAction:
         assert new_position == (initial_position + 1) % 3
 
     def test_pass_follows_turn_order(self, game_state):
-        """INV-04a: Pass uses turn order (one-hot vectors), not player_id."""
+        """Pass uses turn order (one-hot vectors), not player_id."""
         # Record all players in turn order (only 2 passes to avoid WRAP_UP)
         turn_sequence = []
         layout = get_action_layout(3)
@@ -106,7 +106,7 @@ class TestPassAction:
             assert position in [0, 1, 2]
 
     def test_all_players_pass_triggers_wrap_up_cycle(self, game_state):
-        """INV-03: All players passing triggers WRAP_UP -> ACQUISITION -> new INVEST turn."""
+        """All players passing triggers WRAP_UP -> ACQUISITION -> new INVEST turn."""
         # Apply pass for all 3 players
         apply_pass_to_all_players(game_state, 3)
 
@@ -118,7 +118,7 @@ class TestPassAction:
         assert TURN.get_consecutive_passes(game_state) == 0
 
     def test_non_pass_resets_consecutive_passes(self, game_state):
-        """INV-02: Non-pass action (auction) resets consecutive_passes."""
+        """Non-pass action (auction) resets consecutive_passes."""
         # Apply pass to increment counter
         layout = get_action_layout(3)
         apply_and_verify_all(game_state, layout['pass_invest'])
@@ -141,7 +141,7 @@ class TestStartAuction:
     """Test INVEST phase start auction action behavior."""
 
     def test_start_auction_sets_company(self, game_state):
-        """INV-05: Start auction sets auction_company."""
+        """Start auction sets auction_company."""
         # Find valid auction action
         auction_idx = get_first_valid_auction_action(game_state)
         assert auction_idx is not None
@@ -158,7 +158,7 @@ class TestStartAuction:
         assert auction_company >= 0 and auction_company < 36
 
     def test_start_auction_sets_price(self, game_state):
-        """INV-05: Start auction sets auction_price."""
+        """Start auction sets auction_price."""
         # Find valid auction action
         auction_idx = get_first_valid_auction_action(game_state)
         assert auction_idx is not None
@@ -171,7 +171,7 @@ class TestStartAuction:
         assert auction_price > 0
 
     def test_start_auction_sets_high_bidder(self, game_state):
-        """INV-05: Start auction sets auction_high_bidder to starter."""
+        """Start auction sets auction_high_bidder to starter."""
         starter_id = game_state.get_active_player()
 
         # Find valid auction action
@@ -186,7 +186,7 @@ class TestStartAuction:
         assert high_bidder == starter_id
 
     def test_start_auction_sets_starter(self, game_state):
-        """INV-05: Start auction sets auction_starter."""
+        """Start auction sets auction_starter."""
         starter_id = game_state.get_active_player()
 
         # Find valid auction action
@@ -204,7 +204,7 @@ class TestStartAuction:
     # not at start - they're initialized cleared and stay cleared between auctions
 
     def test_start_auction_transitions_to_bid_phase(self, game_state):
-        """INV-06: Start auction transitions to BID_IN_AUCTION phase."""
+        """Start auction transitions to BID_IN_AUCTION phase."""
         # Verify initial phase is INVEST
         assert game_state.get_phase() == GamePhases.PHASE_INVEST
 
@@ -240,7 +240,7 @@ class TestStartAuction:
         assert new_position == (starter_position + 1) % 3
 
     def test_auction_masked_when_player_cannot_afford_any_company(self):
-        """INV-AFFORD-01: All auction actions masked when cash < cheapest face value.
+        """All auction actions masked when cash < cheapest face value.
 
         RULES.md line 331: Starting player 'bids >= Face Value' — player must
         be able to afford at least face value to start an auction.
@@ -264,7 +264,7 @@ class TestStartAuction:
                 f"Auction action {i} should be masked (player has no cash)"
 
     def test_auction_partially_masked_at_exact_face_value(self):
-        """INV-AFFORD-02: Only offset 0 available when cash equals face value exactly.
+        """Only offset 0 available when cash equals face value exactly.
 
         Player with cash == face value can start auction at face value (offset 0)
         but cannot bid higher (offset >= 1).
@@ -321,7 +321,7 @@ class TestStartAuction:
                         f"Company {cid} (face={fv}) should be fully masked (cash={cheapest_face})"
 
     def test_start_auction_resets_consecutive_passes(self, game_state):
-        """INV-02: Start auction resets consecutive_passes counter."""
+        """Start auction resets consecutive_passes counter."""
         # Apply pass to increment counter
         layout = get_action_layout(3)
         apply_and_verify_all(game_state, layout['pass_invest'])
@@ -344,7 +344,7 @@ class TestBuyShare:
     """Test buy share action behavior."""
 
     def test_buy_share_pays_to_bank(self, trade_state, apply_and_track):
-        """INV-07: Buy share moves cash from player to bank (not corp)."""
+        """Buy share moves cash from player to bank (not corp)."""
         corp = CORPS[0]
         player = PLAYERS[0]
 
@@ -371,7 +371,7 @@ class TestBuyShare:
         assert new_corp_cash == initial_corp_cash  # Corp doesn't receive payment
 
     def test_buy_share_transfers_share(self, trade_state):
-        """INV-09: Buy share moves 1 share from bank to player."""
+        """Buy share moves 1 share from bank to player."""
         corp = CORPS[0]
         player = PLAYERS[0]
 
@@ -387,7 +387,7 @@ class TestBuyShare:
         assert player.get_shares(trade_state, 0) == initial_player_shares + 1
 
     def test_buy_share_moves_price_up(self, trade_state):
-        """INV-10: Buy share moves corp price to next higher available space."""
+        """Buy share moves corp price to next higher available space."""
         corp = CORPS[0]
 
         initial_index = corp.get_price_index(trade_state)
@@ -400,7 +400,7 @@ class TestBuyShare:
         assert new_index > initial_index
 
     def test_buy_share_updates_net_worth(self, trade_state):
-        """INV-15: Buy share updates player net worth."""
+        """Buy share updates player net worth."""
         player = PLAYERS[0]
 
         # Net worth before (may need recalculation)
@@ -417,7 +417,7 @@ class TestBuyShare:
         assert isinstance(new_net_worth, int)
 
     def test_buy_share_increments_round_trip_counter(self, trade_state):
-        """INV-16: Buy share increments share_buys counter."""
+        """Buy share increments share_buys counter."""
         player = PLAYERS[0]
 
         initial_buys = player.get_share_buys(trade_state, 0)
@@ -464,7 +464,7 @@ class TestSellShare:
     """Test sell share action behavior."""
 
     def test_sell_share_adds_cash_to_player(self, trade_state):
-        """INV-11: Sell share pays NEW (lower) price per RULES.md."""
+        """Sell share pays NEW (lower) price per RULES.md."""
         corp = CORPS[0]
         player = PLAYERS[0]
 
@@ -481,7 +481,7 @@ class TestSellShare:
         assert new_player_cash == initial_player_cash + new_price
 
     def test_sell_share_transfers_share_to_bank(self, trade_state):
-        """INV-12: Sell share moves 1 share from player to bank."""
+        """Sell share moves 1 share from player to bank."""
         corp = CORPS[0]
         player = PLAYERS[0]
 
@@ -496,7 +496,7 @@ class TestSellShare:
         assert player.get_shares(trade_state, 0) == initial_player_shares - 1
 
     def test_sell_share_moves_price_down(self, trade_state):
-        """INV-13: Sell share moves corp price to next lower available space."""
+        """Sell share moves corp price to next lower available space."""
         corp = CORPS[0]
 
         initial_index = corp.get_price_index(trade_state)
@@ -509,7 +509,7 @@ class TestSellShare:
         assert new_index < initial_index
 
     def test_sell_share_increments_round_trip_counter(self, trade_state):
-        """INV-16: Sell share increments share_sells counter."""
+        """Sell share increments share_sells counter."""
         player = PLAYERS[0]
 
         initial_sells = player.get_share_sells(trade_state, 0)
@@ -530,7 +530,7 @@ class TestPriceMovement:
     """Test price movement skips occupied spaces."""
 
     def test_buy_skips_occupied_space(self, trade_state):
-        """INV-14: Price movement skips occupied market spaces."""
+        """Price movement skips occupied market spaces."""
         corp = CORPS[0]
 
         # Mark the next space (11) as occupied
@@ -547,7 +547,7 @@ class TestPriceMovement:
         assert new_index > 11
 
     def test_sell_skips_occupied_space(self, trade_state):
-        """INV-14: Sell price movement skips occupied spaces."""
+        """Sell price movement skips occupied spaces."""
         corp = CORPS[0]
 
         # Mark the next lower space (9) as occupied
@@ -572,7 +572,7 @@ class TestRoundTripLimits:
     """Test round-trip limit enforcement."""
 
     def test_buy_blocked_after_two_roundtrips(self, trade_state):
-        """INV-17: Buy blocked when round-trips >= 2."""
+        """Buy blocked when round-trips >= 2."""
         player = PLAYERS[0]
 
         # Simulate 2 complete round-trips (4 buys + 4 sells would be 4 roundtrips)
@@ -592,7 +592,7 @@ class TestRoundTripLimits:
         assert mask[buy_idx] == 0.0  # Buy blocked
 
     def test_sell_blocked_after_two_roundtrips(self, trade_state):
-        """INV-17: Sell blocked when round-trips >= 2."""
+        """Sell blocked when round-trips >= 2."""
         player = PLAYERS[0]
 
         # Simulate 2 complete round-trips

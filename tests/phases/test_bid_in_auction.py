@@ -21,7 +21,7 @@ class TestLeaveAuction:
     """Test BID phase leave auction action behavior."""
 
     def test_leave_sets_passed_flag(self, bid_state):
-        """BID-01: Leave auction sets passed flag for player."""
+        """Leave auction sets passed flag for player."""
         player_id = bid_state.get_active_player()
 
         # Verify not passed initially
@@ -35,7 +35,7 @@ class TestLeaveAuction:
         assert TURN.has_player_passed_auction(bid_state, player_id)
 
     def test_leave_advances_to_next_bidder(self, bid_state, apply_and_track):
-        """BID-02: Leave auction advances to next non-passed bidder."""
+        """Leave auction advances to next non-passed bidder."""
         initial_player = bid_state.get_active_player()
         initial_position = PLAYERS[initial_player].get_turn_order(bid_state)
 
@@ -55,7 +55,7 @@ class TestLeaveAuction:
             assert new_position == (initial_position + 1) % 3
 
     def test_leave_skips_passed_players(self, bid_state):
-        """BID-02: Rotation skips players who have already left."""
+        """Rotation skips players who have already left."""
         # Get current player and mark next player as passed
         current_player = bid_state.get_active_player()
         current_position = PLAYERS[current_player].get_turn_order(bid_state)
@@ -79,7 +79,7 @@ class TestLeaveAuction:
             assert new_position == (current_position + 2) % 3
 
     def test_last_leaver_triggers_resolution(self, bid_state):
-        """BID-05: Auction resolves when only one bidder remains."""
+        """Auction resolves when only one bidder remains."""
         # Make all but one player leave
         layout = get_action_layout(3)
 
@@ -137,7 +137,7 @@ class TestRaiseBid:
     """Test BID phase raise bid action behavior."""
 
     def test_raise_updates_price(self, bid_state):
-        """BID-03: Raise bid updates auction price."""
+        """Raise bid updates auction price."""
         initial_price = TURN.get_auction_price(bid_state)
 
         # Find valid raise bid action
@@ -157,7 +157,7 @@ class TestRaiseBid:
             assert new_price > initial_price
 
     def test_raise_updates_high_bidder(self, bid_state):
-        """BID-03: Raise bid updates high bidder."""
+        """Raise bid updates high bidder."""
         current_player = bid_state.get_active_player()
 
         # Find valid raise bid action
@@ -203,7 +203,7 @@ class TestRaiseBid:
             assert new_position == (initial_position + 1) % 3
 
     def test_raise_bid_masked_when_player_cannot_afford(self, bid_state):
-        """BID-AFFORD-01: Raise options masked when player has insufficient cash.
+        """Raise options masked when player has insufficient cash.
 
         RULES.md line 334-335: 'Raise bid (must have enough money)'
         """
@@ -242,7 +242,7 @@ class TestRaiseBid:
         assert any_invalid, "Test setup: no invalid raises (cash too high)"
 
     def test_only_leave_available_when_cash_below_minimum_raise(self, bid_state):
-        """BID-AFFORD-02: Only leave auction is available when cash < all raise amounts.
+        """Only leave auction is available when cash < all raise amounts.
 
         RULES.md line 334-335: 'Raise bid (must have enough money)'
         """
@@ -290,7 +290,7 @@ class TestAuctionResolution:
     """Test auction resolution behavior."""
 
     def test_winner_pays_bid_price(self, bid_state):
-        """BID-06: Winner pays bid price to bank."""
+        """Winner pays bid price to bank."""
         # Record winner and price before resolution
         winner_id = TURN.get_auction_high_bidder(bid_state)
         bid_price = TURN.get_auction_price(bid_state)
@@ -307,7 +307,7 @@ class TestAuctionResolution:
         assert final_cash == initial_cash - bid_price
 
     def test_winner_receives_company(self, bid_state):
-        """BID-07: Winner receives company ownership."""
+        """Winner receives company ownership."""
         winner_id = TURN.get_auction_high_bidder(bid_state)
         company_id = TURN.get_auction_company(bid_state)
 
@@ -326,7 +326,7 @@ class TestAuctionResolution:
         assert final_owner == winner_id
 
     def test_auction_state_cleared(self, bid_state):
-        """BID-08: Auction resolution clears all auction state."""
+        """Auction resolution clears all auction state."""
         # Make all others leave to trigger resolution
         layout = get_action_layout(3)
         for _ in range(2):
@@ -343,7 +343,7 @@ class TestAuctionResolution:
             assert not TURN.has_player_passed_auction(bid_state, player_id)
 
     def test_returns_to_invest_phase(self, bid_state):
-        """BID-10: Auction resolution returns to INVEST phase."""
+        """Auction resolution returns to INVEST phase."""
         # Make all others leave to trigger resolution
         layout = get_action_layout(3)
         for _ in range(2):
@@ -354,7 +354,7 @@ class TestAuctionResolution:
         assert bid_state.get_phase() == GamePhases.PHASE_INVEST
 
     def test_turn_goes_to_player_after_starter(self, bid_state):
-        """BID-11: Next turn goes to player after auction starter."""
+        """Next turn goes to player after auction starter."""
         starter_id = TURN.get_auction_starter(bid_state)
         starter_position = PLAYERS[starter_id].get_turn_order(bid_state)
         expected_next_position = (starter_position + 1) % 3
@@ -371,7 +371,7 @@ class TestAuctionResolution:
         assert active_position == expected_next_position
 
     def test_winner_net_worth_updated(self, bid_state):
-        """BID-12: Winner's net worth updated after receiving company."""
+        """Winner's net worth updated after receiving company."""
         winner_id = TURN.get_auction_high_bidder(bid_state)
         company_id = TURN.get_auction_company(bid_state)
         bid_price = TURN.get_auction_price(bid_state)
@@ -391,7 +391,7 @@ class TestAuctionResolution:
         assert final_net_worth == initial_net_worth + expected_change
 
     def test_auction_resolution_with_empty_deck(self):
-        """BID-09: Auction resolves correctly when deck is empty (no replacement drawn).
+        """Auction resolves correctly when deck is empty (no replacement drawn).
 
         Near game end, the deck may be empty. Auction resolution should:
         1. Complete without errors
@@ -461,7 +461,7 @@ class TestAuctionResolution:
         assert DECK.is_empty(state)
 
     def test_auction_draws_new_company_marked_unavailable(self):
-        """BID-09: New company drawn is revealed (unavailable) for this phase."""
+        """New company drawn is revealed (unavailable) for this phase."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -514,7 +514,7 @@ class TestAuctionResolution:
             "Newly drawn company should be marked as revealed (unavailable)"
 
     def test_return_to_player_after_starter_not_winner(self):
-        """BID-11: Turn returns to player after starter, even if winner differs."""
+        """Turn returns to player after starter, even if winner differs."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 

@@ -30,7 +30,7 @@ class TestAvailabilityTransition:
     """Test company availability state transitions."""
 
     def test_unavailable_companies_become_available(self):
-        """AVAIL-01: After FI purchases complete, all unavailable companies become available."""
+        """After FI purchases complete, all unavailable companies become available."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -72,7 +72,7 @@ class TestWrapUpHistory:
     """Test sentinel action history verification."""
 
     def test_wrap_up_records_sentinel_in_history(self, apply_and_track):
-        """PHASE-04: WRAP_UP execution records sentinel action (-100) in history."""
+        """WRAP_UP execution records sentinel action (-100) in history."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -101,7 +101,7 @@ class TestPhaseTransitions:
     """Test phase flow verification."""
 
     def test_invest_to_wrap_up_to_acquisition_to_invest(self):
-        """PHASE-01, PHASE-02: Complete phase cycle: INVEST -> WRAP_UP -> ACQUISITION -> INVEST."""
+        """Complete phase cycle: INVEST -> WRAP_UP -> ACQUISITION -> INVEST."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -260,7 +260,6 @@ class TestFICashPreservation:
 class TestPlayerReordering:
     """Test player reordering by cash with tie-breaking.
 
-    These tests verify REORDER-01, REORDER-02, REORDER-03.
     They WILL FAIL until Bug 2 is fixed (player cash becomes 0).
     """
 
@@ -326,7 +325,7 @@ class TestFIPurchaseBehavior:
     """
 
     def test_fi_cannot_buy_revealed_company_same_wrap_up(self):
-        """WRAP-FI-01: FI cannot purchase newly-drawn company in same WRAP_UP cycle.
+        """FI cannot purchase newly-drawn company in same WRAP_UP cycle.
 
         When FI buys a company and a replacement is drawn from the deck,
         that replacement is marked as revealed and cannot be purchased
@@ -372,7 +371,7 @@ class TestFIPurchaseBehavior:
             "Company 1 should be available for auction after WRAP_UP"
 
     def test_fi_multiple_purchases_revealed_excluded(self):
-        """WRAP-FI-02: Multiple FI purchases still exclude revealed companies.
+        """Multiple FI purchases still exclude revealed companies.
 
         When FI makes multiple purchases in one WRAP_UP, each replacement
         drawn is marked revealed and excluded from subsequent purchases.
@@ -412,10 +411,10 @@ class TestFIPurchaseBehavior:
         assert COMPANIES[3].is_for_auction(state)
 
     def test_fi_buys_in_ascending_order_until_broke(self):
-        """WRAP-FI-03: FI buys cheapest first and stops when cash runs out.
+        """FI buys cheapest first and stops when cash runs out.
 
         Tests both ascending face value ordering AND cash-exhaustion loop
-        termination. Unlike WRAP-FI-01/02 which test revealed-company
+        termination. Unlike the previous two tests which test revealed-company
         exclusion, this uses an empty deck so only cash matters.
 
         Per RULES.md: 'In ascending Face Value order, Foreign Investor buys

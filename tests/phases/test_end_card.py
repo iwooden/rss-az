@@ -1,13 +1,4 @@
-"""Tests for END_CARD phase (Phase 7).
-
-Requirements covered:
-- END-01: Corp at price_index 26 (75 price) triggers GAME_OVER
-- END-02: No unowned companies (deck/auction/revealed empty) flips end card
-- END-03: Pre-flipped end card triggers GAME_OVER
-- END-04: Normal transition (none of above) goes to ISSUE_SHARES
-- END-05: END_CARD is non-player phase (0 valid actions, auto-executes)
-- END-06: Flipping end card sets CoO level to 7
-"""
+"""Tests for END_CARD phase (Phase 7)."""
 import pytest
 from core.state import GameState
 from core.data import GamePhases, GameConstants
@@ -45,12 +36,12 @@ def end_card_state(game_state):
 
 
 # =============================================================================
-# END-01: 75 Price Check
+# 75 Price Check
 # =============================================================================
 
 
 class Test75PriceCheck:
-    """END-01: Corp at price_index 26 triggers GAME_OVER."""
+    """Corp at price_index 26 triggers GAME_OVER."""
 
     def test_corp_at_75_price_triggers_game_over(self, end_card_state):
         """Corp with price_index 26 ($75) ends the game immediately."""
@@ -102,12 +93,12 @@ class Test75PriceCheck:
 
 
 # =============================================================================
-# END-02: No Unowned Companies Check
+# No Unowned Companies Check
 # =============================================================================
 
 
 class TestNoUnownedCompanies:
-    """END-02: Empty deck + no auction/revealed companies flips end card."""
+    """Empty deck + no auction/revealed companies flips end card."""
 
     def test_all_companies_owned_flips_end_card(self, end_card_state):
         """When no companies in deck/auction/revealed, end card flips."""
@@ -189,12 +180,12 @@ class TestNoUnownedCompanies:
 
 
 # =============================================================================
-# END-03: End Card Already Flipped
+# End Card Already Flipped
 # =============================================================================
 
 
 class TestEndCardFlipped:
-    """END-03: Pre-flipped card triggers GAME_OVER."""
+    """Pre-flipped card triggers GAME_OVER."""
 
     def test_preflipped_end_card_triggers_game_over(self, end_card_state):
         """If end card already flipped, game ends."""
@@ -217,12 +208,12 @@ class TestEndCardFlipped:
 
 
 # =============================================================================
-# END-04: Normal Transition
+# Normal Transition
 # =============================================================================
 
 
 class TestNormalTransition:
-    """END-04: Normal case transitions to ISSUE_SHARES."""
+    """Normal case transitions to ISSUE_SHARES."""
 
     def test_normal_state_transitions_to_issue_shares(self, end_card_state):
         """Default state (no end conditions) goes to ISSUE_SHARES."""
@@ -252,12 +243,12 @@ class TestNormalTransition:
 
 
 # =============================================================================
-# END-05: Non-Player Phase
+# Non-Player Phase
 # =============================================================================
 
 
 class TestNonPlayerPhase:
-    """END-05: END_CARD is non-player phase (0 valid actions, auto-executes)."""
+    """END_CARD is non-player phase (0 valid actions, auto-executes)."""
 
     def test_end_card_has_no_valid_actions(self, end_card_state):
         """In END_CARD phase, action mask should be all zeros."""
@@ -279,12 +270,12 @@ class TestNonPlayerPhase:
 
 
 # =============================================================================
-# END-06: CoO Level Update
+# CoO Level Update
 # =============================================================================
 
 
 class TestCoOLevelUpdate:
-    """END-06: Flip sets CoO level to 7."""
+    """Flip sets CoO level to 7."""
 
     def test_flip_sets_coo_to_seven(self, end_card_state):
         """When end card flips, CoO level becomes 7."""

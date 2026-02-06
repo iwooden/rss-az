@@ -1,4 +1,4 @@
-"""Tests for CLOSING phase auto-close logic (CLO-01 through CLO-04)."""
+"""Tests for CLOSING phase auto-close logic."""
 import pytest
 from core.state import GameState
 from core.data import (
@@ -28,7 +28,7 @@ PHASE_INCOME_PY = GamePhases.PHASE_INCOME
 
 
 class TestFIAutoClose:
-    """CLO-01: FI closes companies where income - CoO < 0."""
+    """FI closes companies where income - CoO < 0."""
 
     def test_fi_closes_negative_income_company(self):
         """FI closes company with negative adjusted income."""
@@ -190,7 +190,7 @@ class TestFIAutoClose:
 
 
 class TestReceivershipAutoClose:
-    """CLO-02, CLO-03: Receivership corps close red >= $4, orange >= $7."""
+    """Receivership corps close red >= $4, orange >= $7."""
 
     def _setup_receivership_corp(self, state, corp_id, company_ids):
         """Helper to set up receivership corp with companies."""
@@ -205,7 +205,7 @@ class TestReceivershipAutoClose:
             COMPANIES[cid].transfer_to_corp(state, corp_id)
 
     def test_receivership_closes_red_at_coo_4(self):
-        """CLO-02: Receivership closes red company when CoO >= $4."""
+        """Receivership closes red company when CoO >= $4."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -243,7 +243,7 @@ class TestReceivershipAutoClose:
         assert not COMPANIES[red_company].is_removed(state)
 
     def test_receivership_closes_orange_at_coo_7(self):
-        """CLO-03: Receivership closes orange company when CoO >= $7."""
+        """Receivership closes orange company when CoO >= $7."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -312,7 +312,7 @@ class TestReceivershipAutoClose:
 
 
 class TestHighestFaceValueProtection:
-    """CLO-04: Receivership always keeps highest face value company."""
+    """Receivership always keeps highest face value company."""
 
     def _setup_receivership_corp(self, state, corp_id, company_ids):
         """Helper to set up receivership corp with companies."""
@@ -505,10 +505,10 @@ class TestJunkyardScrappersBonus:
 
 
 class TestOfferGeneration:
-    """Tests for close offer generation (CLO-05 through CLO-08)."""
+    """Tests for close offer generation."""
 
     def test_only_negative_income_offered(self, closing_offer_state):
-        """CLO-05: Only companies with negative adjusted income are offered."""
+        """Only companies with negative adjusted income are offered."""
         gs = closing_offer_state
 
         # Give player company 0 (income $1, red/1-star)
@@ -528,7 +528,7 @@ class TestOfferGeneration:
         assert company_id == 0
 
     def test_zero_income_not_offered(self, closing_offer_state):
-        """CLO-05: Companies with exactly zero adjusted income are NOT offered."""
+        """Companies with exactly zero adjusted income are NOT offered."""
         gs = closing_offer_state
 
         # Find a company where income exactly equals CoO
@@ -542,7 +542,7 @@ class TestOfferGeneration:
         assert get_close_offer_count_py(gs) == 0
 
     def test_offers_sorted_by_face_value_ascending(self, closing_offer_state):
-        """CLO-06: Offers sorted by face value ascending (lowest first)."""
+        """Offers sorted by face value ascending (lowest first)."""
         gs = closing_offer_state
 
         # Give player multiple negative-income companies with different face values
@@ -567,7 +567,7 @@ class TestOfferGeneration:
         assert get_company_face_value(cid1) < get_company_face_value(cid2)
 
     def test_player_privates_included(self, closing_offer_state):
-        """CLO-07: Player-owned private companies are included in offers."""
+        """Player-owned private companies are included in offers."""
         gs = closing_offer_state
 
         # Player 1 owns company 1 directly (private)
@@ -582,7 +582,7 @@ class TestOfferGeneration:
         assert company_id == 1
 
     def test_corp_subsidiaries_included(self, closing_offer_state):
-        """CLO-08: Corp subsidiaries (same-president) included in offers."""
+        """Corp subsidiaries (same-president) included in offers."""
 
         gs = closing_offer_state
 
@@ -625,10 +625,10 @@ class TestOfferGeneration:
 
 
 class TestOfferValidation:
-    """Tests for offer validation (CLO-09, CLO-10)."""
+    """Tests for offer validation."""
 
     def test_corp_last_company_rule(self, closing_offer_state):
-        """CLO-09: Corp closing offer invalid if corp would have 0 companies."""
+        """Corp closing offer invalid if corp would have 0 companies."""
 
         gs = closing_offer_state
 
@@ -658,7 +658,7 @@ class TestOfferValidation:
         assert get_close_offer_count_py(gs) == 2
 
     def test_prior_acceptance_invalidates_later_offer(self, closing_offer_state):
-        """CLO-10: Prior acceptance can invalidate later offers (corp down to 1 company)."""
+        """Prior acceptance can invalidate later offers (corp down to 1 company)."""
 
         gs = closing_offer_state
 
@@ -685,10 +685,10 @@ class TestOfferValidation:
 
 
 class TestCloseActions:
-    """Tests for close actions (CLO-11, CLO-12, CLO-13)."""
+    """Tests for close actions."""
 
     def test_accept_closes_company(self, closing_offer_state):
-        """CLO-11: Accept action closes the company (removes from game)."""
+        """Accept action closes the company (removes from game)."""
         gs = closing_offer_state
 
         # Player 0 owns company 1
@@ -712,7 +712,7 @@ class TestCloseActions:
         assert not PLAYERS[0].owns_company(gs, 1)
 
     def test_pass_keeps_company(self, closing_offer_state):
-        """CLO-12: Pass action keeps the company."""
+        """Pass action keeps the company."""
         gs = closing_offer_state
 
         # Player 0 owns company 2
@@ -807,12 +807,12 @@ class TestCloseActions:
 
 
 # =============================================================================
-# MANDATORY CLOSE TESTS (CLO-14, CLO-15, CLO-16)
+# MANDATORY CLOSE TESTS
 # =============================================================================
 
 
 class TestPlayerIncome:
-    """Tests for Player.get_income() method (CLO-14 support)."""
+    """Tests for Player.get_income() method."""
 
     def test_get_income_no_companies(self, game_state):
         """Player with no private companies has 0 income."""
@@ -868,7 +868,7 @@ class TestPlayerIncome:
 
 
 class TestMandatoryClose:
-    """Tests for mandatory close logic (CLO-14, CLO-15)."""
+    """Tests for mandatory close logic."""
 
     def test_mandatory_close_not_triggered_positive_total(self, game_state):
         """Mandatory close does nothing when income + cash >= 0."""
@@ -884,7 +884,7 @@ class TestMandatoryClose:
         assert PLAYERS[0].get_cash(game_state) == 30
 
     def test_mandatory_close_triggered_negative_total(self, game_state):
-        """CLO-14: Mandatory close triggers when income + cash < 0."""
+        """Mandatory close triggers when income + cash < 0."""
         # Set up: player with negative income that exceeds cash
         # Set CoO level high
         TURN.set_coo_level(game_state, 7)
@@ -905,7 +905,7 @@ class TestMandatoryClose:
         assert COMPANIES[0].is_removed(game_state)
 
     def test_mandatory_close_cheapest_first(self, game_state):
-        """CLO-15: Cheapest (lowest face value) negative-income company closed first."""
+        """Cheapest (lowest face value) negative-income company closed first."""
         TURN.set_coo_level(game_state, 7)
 
         # Give player two negative-income companies with different face values
@@ -932,7 +932,7 @@ class TestMandatoryClose:
         assert not COMPANIES[8].is_removed(game_state)
 
     def test_mandatory_close_multiple_companies(self, game_state):
-        """CLO-14: Closes multiple companies if needed until income + cash >= 0."""
+        """Closes multiple companies if needed until income + cash >= 0."""
         TURN.set_coo_level(game_state, 7)
 
         # Give player multiple negative-income companies
@@ -1053,10 +1053,10 @@ class TestMandatoryClose:
 
 
 class TestClosingPhaseTransition:
-    """Tests for CLOSING phase transition (CLO-16)."""
+    """Tests for CLOSING phase transition."""
 
     def test_phase_transitions_after_mandatory_close(self, game_state):
-        """CLO-16: Phase transitions to INCOME (INVEST) when no offers and mandatory close complete."""
+        """Phase transitions to INCOME (INVEST) when no offers and mandatory close complete."""
         # Simulate state where CLOSING has no offers and mandatory close has nothing to do
         # All players have positive income + cash (default state)
         TURN.set_phase(game_state, GamePhases.PHASE_CLOSING)
@@ -1098,7 +1098,7 @@ class TestClosingPhaseTransition:
 
 
 # =============================================================================
-# EDGE CASE TESTS (CLO-01 through CLO-16)
+# EDGE CASE TESTS
 # =============================================================================
 
 

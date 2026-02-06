@@ -1,15 +1,4 @@
-"""Tests for DIVIDENDS phase (Phase 6).
-
-Requirements covered:
-- DIV-01: Dividend payment to shareholders (single/multiple players, bank shares)
-- DIV-02: Max dividend constraint (price card limit AND affordability)
-- DIV-03: Star calculation (companies, cash bonus, SI ability)
-- DIV-04: Price movement (up 1/2, stay, down 1/2, skip occupied)
-- DIV-05: Processing order (descending price)
-- DIV-06: Receivership auto-handling (pay $0, adjust price)
-- DIV-07: Bankruptcy (price drops to 0)
-- DIV-08: Phase transitions (to IPO/INVEST or GAME_OVER)
-"""
+"""Tests for DIVIDENDS phase (Phase 6)."""
 import pytest
 from core.state import GameState
 from core.data import (
@@ -111,12 +100,12 @@ def multi_corp_dividend_state():
 
 
 # =============================================================================
-# DIV-01: Dividend Payment Tests
+# Dividend Payment Tests
 # =============================================================================
 
 
 class TestDividendPayment:
-    """DIV-01: Dividend payment to shareholders."""
+    """Dividend payment to shareholders."""
 
     def test_single_player_receives_dividend(self, dividend_state):
         """Single shareholder receives dividend × shares."""
@@ -206,12 +195,12 @@ class TestDividendPayment:
 
 
 # =============================================================================
-# DIV-02: Max Dividend Constraint Tests
+# Max Dividend Constraint Tests
 # =============================================================================
 
 
 class TestMaxDividendConstraint:
-    """DIV-02: Max dividend is min(price_card_max, affordability)."""
+    """Max dividend is min(price_card_max, affordability)."""
 
     def test_max_dividend_from_price_card(self, dividend_state):
         """Max dividend limited by price card (price // 3)."""
@@ -326,12 +315,12 @@ class TestMaxDividendConstraint:
 
 
 # =============================================================================
-# DIV-03: Star Calculation Tests
+# Star Calculation Tests
 # =============================================================================
 
 
 class TestStarCalculation:
-    """DIV-03: Owned stars = company_stars + cash/10 + SI_bonus."""
+    """Owned stars = company_stars + cash/10 + SI_bonus."""
 
     def test_company_stars_counted(self, dividend_state):
         """Stars from owned companies are counted."""
@@ -397,12 +386,12 @@ class TestStarCalculation:
 
 
 # =============================================================================
-# DIV-04: Price Movement Tests
+# Price Movement Tests
 # =============================================================================
 
 
 class TestPriceMovement:
-    """DIV-04: Price moves based on owned vs required stars."""
+    """Price moves based on owned vs required stars."""
 
     def test_move_up_two_when_diff_ge_2(self):
         """Stars >= required + 2: move up 2 tiers."""
@@ -479,12 +468,12 @@ class TestPriceMovement:
 
 
 # =============================================================================
-# DIV-05: Processing Order Tests
+# Processing Order Tests
 # =============================================================================
 
 
 class TestProcessingOrder:
-    """DIV-05: Corps processed in descending share price order."""
+    """Corps processed in descending share price order."""
 
     def test_highest_price_first(self, multi_corp_dividend_state):
         """Corp with highest price processes first."""
@@ -534,12 +523,12 @@ class TestProcessingOrder:
 
 
 # =============================================================================
-# DIV-06: Receivership Auto-Handling Tests
+# Receivership Auto-Handling Tests
 # =============================================================================
 
 
 class TestReceivershipHandling:
-    """DIV-06: Receivership corps pay $0 and auto-process."""
+    """Receivership corps pay $0 and auto-process."""
 
     def test_receivership_auto_processed(self):
         """Corp in receivership is auto-processed without player input."""
@@ -637,12 +626,12 @@ class TestReceivershipHandling:
 
 
 # =============================================================================
-# DIV-08: Phase Transition Tests
+# Phase Transition Tests
 # =============================================================================
 
 
 class TestPhaseTransitions:
-    """DIV-08: Phase transitions after all corps processed."""
+    """Phase transitions after all corps processed."""
 
     def test_transition_to_end_card(self, dividend_state):
         """After all corps processed, transitions to END_CARD."""
