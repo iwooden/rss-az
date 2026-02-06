@@ -45,7 +45,7 @@ class TestPlayerSetup:
     """PLYR-01 through PLYR-04: Player initialization."""
 
     @pytest.mark.parametrize("num_players,expected_cash", [
-        (3, 30), (4, 30), (5, 30), (6, 25)
+        (2, 30), (3, 30), (4, 30), (5, 30), (6, 25)
     ])
     def test_starting_cash(self, num_players, expected_cash):
         """PLYR-01: Correct starting cash by player count."""
