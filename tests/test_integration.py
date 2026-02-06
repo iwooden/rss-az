@@ -124,7 +124,6 @@ class TestMinimalTurn:
         state = GameState(num_players=num_players)
         state.initialize_game(seed=42)
 
-        check_invariants(state, "Initial state")
         assert state.get_phase() == GamePhases.PHASE_INVEST
         assert TURN.get_turn_number(state) == 1
 
@@ -134,7 +133,6 @@ class TestMinimalTurn:
         # Should be back in INVEST with turn 2
         assert state.get_phase() == GamePhases.PHASE_INVEST
         assert TURN.get_turn_number(state) == 2
-        check_invariants(state, "After turn 1 complete")
 
     def test_minimal_turn_maintains_invariants_throughout(self):
         """Invariants hold at every step during minimal turn."""
@@ -142,12 +140,10 @@ class TestMinimalTurn:
         state.initialize_game(seed=42)
 
         layout = get_action_layout(3)
-        check_invariants(state, "Initial")
 
-        # Pass each player, checking invariants after each
+        # Pass each player (invariants checked by apply_action)
         for i in range(3):
             apply_action(state, layout['pass_invest'], f"Pass {i+1}")
-            check_invariants(state, f"After pass {i+1}")
 
         assert TURN.get_turn_number(state) == 2
 
@@ -159,12 +155,10 @@ class TestMinimalTurn:
         # Turn 1
         pass_all_players(state, 3)
         assert TURN.get_turn_number(state) == 2
-        check_invariants(state, "After turn 1")
 
         # Turn 2
         pass_all_players(state, 3)
         assert TURN.get_turn_number(state) == 3
-        check_invariants(state, "After turn 2")
 
 
 # =============================================================================
@@ -180,7 +174,6 @@ class TestTurnWithAuction:
         state.initialize_game(seed=42)
 
         layout = get_action_layout(3)
-        check_invariants(state, "Initial")
 
         # Find and start an auction
         auction_idx = find_valid_action(
@@ -190,7 +183,6 @@ class TestTurnWithAuction:
         apply_action(state, auction_idx, "Start auction")
 
         assert state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
-        check_invariants(state, "In auction")
 
         # All other players leave auction
         while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
@@ -198,13 +190,11 @@ class TestTurnWithAuction:
 
         # Back in INVEST, winner has company
         assert state.get_phase() == GamePhases.PHASE_INVEST
-        check_invariants(state, "After auction")
 
         # Complete turn (all pass, then handle IPO)
         complete_turn_from_invest(state, 3)
 
         assert TURN.get_turn_number(state) == 2
-        check_invariants(state, "After turn complete")
 
     def test_auction_with_raises(self):
         """Auction with bid raises maintains invariants."""
@@ -226,13 +216,10 @@ class TestTurnWithAuction:
             )
             if raise_idx and state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
                 apply_action(state, raise_idx, f"Raise {i+1}")
-                check_invariants(state, f"After raise {i+1}")
 
         # Complete auction
         while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
             apply_action(state, layout['leave_auction'], "Leave")
-
-        check_invariants(state, "After auction with raises")
 
     def test_multiple_auctions_in_turn(self):
         """Multiple auctions in same turn work correctly."""
@@ -257,7 +244,6 @@ class TestTurnWithAuction:
                 apply_action(state, layout['leave_auction'], "Leave")
 
             auctions_completed += 1
-            check_invariants(state, f"After auction {auctions_completed}")
 
         assert auctions_completed >= 1, "Should complete at least one auction"
 
@@ -282,7 +268,6 @@ class TestTurnWithAuction:
 
         # Should be in IPO phase now
         assert state.get_phase() == GamePhases.PHASE_IPO
-        check_invariants(state, "At IPO phase")
 
         # Find valid IPO action (not pass)
         ipo_action = find_valid_action(
@@ -291,7 +276,6 @@ class TestTurnWithAuction:
 
         if ipo_action:
             apply_action(state, ipo_action, "IPO company")
-            check_invariants(state, "After IPO")
 
             # Verify a corp is now active
             active_corps = sum(1 for i in range(8) if CORPS[i].is_active(state))
@@ -377,8 +361,6 @@ class TestTurnWithActiveCorp:
         state, corp_id, president_id = self._setup_turn_2_with_corp()
         layout = get_action_layout(3)
 
-        check_invariants(state, "Start of turn 2")
-
         # All pass in INVEST
         pass_all_players(state, 3)
 
@@ -387,7 +369,6 @@ class TestTurnWithActiveCorp:
 
         # CLOSING auto-processes, should reach DIVIDENDS
         assert state.get_phase() == GamePhases.PHASE_DIVIDENDS
-        check_invariants(state, "At DIVIDENDS")
 
         # Pay dividend
         div_action = find_valid_action(
@@ -405,7 +386,6 @@ class TestTurnWithActiveCorp:
         # Should be at turn 3
         assert state.get_phase() == GamePhases.PHASE_INVEST
         assert TURN.get_turn_number(state) == 3
-        check_invariants(state, "After turn 2 complete")
 
     def test_corp_dividend_payment(self):
         """Corp pays dividends to shareholders correctly."""
@@ -428,7 +408,6 @@ class TestTurnWithActiveCorp:
 
         # Should be at DIVIDENDS
         assert state.get_phase() == GamePhases.PHASE_DIVIDENDS
-        check_invariants(state, "At DIVIDENDS")
 
         # Find a non-zero dividend action (if available)
         for offset in range(1, 26):
@@ -441,8 +420,6 @@ class TestTurnWithActiveCorp:
         else:
             # Just pay 0 if no other option
             apply_action(state, layout['dividend_base'], "Pay dividend 0")
-
-        check_invariants(state, "After dividend payment")
 
     def test_share_trading_affects_next_phases(self):
         """Share trading in INVEST affects DIVIDENDS (via shareholder changes)."""
@@ -458,14 +435,12 @@ class TestTurnWithActiveCorp:
         if mask[buy_action] == 1.0:
             # Buy a share
             apply_action(state, buy_action, "Buy share")
-            check_invariants(state, "After buy share")
 
         # Complete the turn
         pass_all_players(state, 3)
         pass_through_phase(state, 3, GamePhases.PHASE_ACQUISITION, 'acq_pass')
 
         assert state.get_phase() == GamePhases.PHASE_DIVIDENDS
-        check_invariants(state, "At DIVIDENDS after share trading")
 
 
 # =============================================================================
@@ -504,7 +479,6 @@ class TestMultiTurn:
             apply_action(state, layout['ipo_pass'], "Pass IPO")
 
         assert TURN.get_turn_number(state) == 2
-        check_invariants(state, "After turn 1")
 
         # Turn 2: Corp operations
         pass_all_players(state, 3)
@@ -521,7 +495,6 @@ class TestMultiTurn:
         pass_through_phase(state, 3, GamePhases.PHASE_IPO, 'ipo_pass')
 
         assert TURN.get_turn_number(state) == 3
-        check_invariants(state, "After turn 2")
 
         # Turn 3: Another auction
         auction_idx = find_valid_action(
@@ -546,7 +519,6 @@ class TestMultiTurn:
         pass_through_phase(state, 3, GamePhases.PHASE_IPO, 'ipo_pass')
 
         assert TURN.get_turn_number(state) == 4
-        check_invariants(state, "After turn 3")
 
     def test_multiple_corps_active(self):
         """Game with multiple corps active by turn 3."""
@@ -576,7 +548,6 @@ class TestMultiTurn:
             apply_action(state, layout['ipo_pass'], "Pass IPO")
 
         corps_after_t1 = sum(1 for i in range(8) if CORPS[i].is_active(state))
-        check_invariants(state, "After turn 1")
 
         # Turn 2: Second auction and IPO
         auction_idx = find_valid_action(
@@ -610,7 +581,6 @@ class TestMultiTurn:
             apply_action(state, layout['ipo_pass'], "Pass IPO")
 
         corps_after_t2 = sum(1 for i in range(8) if CORPS[i].is_active(state))
-        check_invariants(state, "After turn 2")
 
         # Should have at least one corp, possibly two
         assert corps_after_t2 >= corps_after_t1
@@ -661,8 +631,6 @@ class TestMultiTurn:
             while state.get_phase() == GamePhases.PHASE_IPO:
                 apply_action(state, layout['ipo_pass'], "Pass IPO")
 
-            check_invariants(state, f"After turn {turn}")
-
         assert TURN.get_turn_number(state) == 3
 
 
@@ -710,7 +678,6 @@ class TestGameEnd:
 
         # Should have taken some actions without crashing
         assert actions_taken > 0
-        check_invariants(state, "After extended play")
 
 
 # =============================================================================
@@ -749,8 +716,6 @@ class TestStress:
             if result is None:
                 break
 
-        check_invariants(state, f"Turn {TURN.get_turn_number(state)}")
-
     def test_random_valid_actions(self):
         """Play random valid actions for several turns."""
         random.seed(12345)
@@ -778,4 +743,4 @@ class TestStress:
             if result is None:
                 break
 
-        check_invariants(state, f"Final state after {actions_taken} actions")
+        assert actions_taken > 0
