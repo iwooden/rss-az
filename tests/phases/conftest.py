@@ -306,7 +306,7 @@ def bid_state(game_state):
     layout = get_action_layout(3)
     for i in range(layout['auction_base'], layout['buy_share_base']):
         if mask[i] == 1.0:
-            DRIVER.apply_action(game_state, i)
+            apply_and_verify_all(game_state, i)
             break
     assert game_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
     assert TURN.get_auction_company(game_state) >= 0
