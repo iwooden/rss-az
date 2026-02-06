@@ -108,7 +108,7 @@ from phases.acquisition import (
     qsort_price_fv_4_py
 )
 from phases.wrap_up import apply_wrap_up_py
-from tests.phases.conftest import float_corp_for_test
+from tests.phases.conftest import float_corp_for_test, assert_invariants
 
 
 class TestOfferGeneration:
@@ -119,6 +119,7 @@ class TestOfferGeneration:
         gs = GameState(3)
         gs.initialize_game()
         generate_offers_py(gs)
+        assert_invariants(gs, "After generate_offers_py fresh game")
         assert get_offer_count(gs) == 0
 
     def test_fi_offers_generated(self):
@@ -135,6 +136,7 @@ class TestOfferGeneration:
 
         # Generate offers
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py FI offers")
 
         # Should have at least one FI offer
         assert get_offer_count(gs) > 0
@@ -159,6 +161,7 @@ class TestOfferGeneration:
 
         # Generate offers
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py OS FI first")
 
         # Should have offers
         assert get_offer_count(gs) >= 2
@@ -186,6 +189,7 @@ class TestOfferGeneration:
 
         # Generate offers (skip OS so we test non-OS sorting)
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py corp FI sorted by price")
 
         # Should have at least 2 offers
         assert get_offer_count(gs) >= 2
@@ -210,6 +214,7 @@ class TestOfferGeneration:
 
         # Generate offers
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py corp-corp same president")
 
         # Should have at least one offer (corp 1 buying from corp 0)
         assert get_offer_count(gs) > 0
@@ -231,6 +236,7 @@ class TestOfferGeneration:
 
         # Generate offers
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py different president")
 
         # Should have NO offers (different presidents)
         assert get_offer_count(gs) == 0
@@ -249,6 +255,7 @@ class TestOfferGeneration:
 
         # Generate offers
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py player private offers")
 
         # Should have at least one offer (corp 0 buying from player 0)
         assert get_offer_count(gs) > 0
@@ -276,6 +283,7 @@ class TestOfferGeneration:
 
         # Generate offers
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py FI sorted by corp share price")
 
         # Should have 4 FI offers total (2 companies × 2 corps)
         # No corp-to-corp offers because different presidents
@@ -315,6 +323,7 @@ class TestOfferGeneration:
 
         # Generate offers
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py corp-corp sorted by buyer price")
 
         # Should have offers: corp 1 and corp 2 buying from corp 0
         # Expected order: Higher-priced buyer (corp 1) before lower-priced (corp 2)
@@ -356,6 +365,7 @@ class TestOfferGeneration:
 
         # Generate offers
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py player private sorted")
 
         # Should have 6 offers:
         # - 2 corp-to-corp offers (each corp has a company from float, same president)
@@ -389,6 +399,7 @@ class TestPhaseFlow:
         # Transition through WRAP_UP
         TURN.set_phase(gs, GamePhases.PHASE_WRAP_UP)
         apply_wrap_up_py(gs)
+        assert_invariants(gs, "After apply_wrap_up_py transition to acquisition")
 
         # Should be in ACQUISITION
         assert TURN.get_phase(gs) == GamePhases.PHASE_ACQUISITION
@@ -402,6 +413,7 @@ class TestPhaseFlow:
         gs = GameState(3)
         gs.initialize_game()
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py empty offers")
         assert get_offer_count(gs) == 0
 
     def test_transition_to_closing(self):
@@ -416,6 +428,7 @@ class TestPhaseFlow:
 
         # Call transition
         transition_to_closing_py(gs)
+        assert_invariants(gs, "After transition_to_closing_py")
 
         # Should now be CLOSING (auto-close executes, then Phase 17 offers)
         assert gs.get_phase() == GamePhases.PHASE_CLOSING
@@ -435,6 +448,7 @@ class TestPhaseFlow:
         TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
 
         transition_to_closing_py(gs)
+        assert_invariants(gs, "After transition_to_closing_py merges player proceeds")
 
         # Proceeds merged to cash
         assert player.get_cash(gs) == initial_cash + proceeds
@@ -455,6 +469,7 @@ class TestPhaseFlow:
         TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
 
         transition_to_closing_py(gs)
+        assert_invariants(gs, "After transition_to_closing_py merges corp proceeds")
 
         assert corp.get_cash(gs) == initial_cash + proceeds
         assert corp.get_acquisition_proceeds(gs) == 0
@@ -477,6 +492,7 @@ class TestPhaseFlow:
 
         TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         transition_to_closing_py(gs)
+        assert_invariants(gs, "After transition_to_closing_py merges acquisition companies")
 
         # Company moved from acquisition to owned
         assert not corp.has_acquisition_company(gs, 0)
@@ -497,6 +513,7 @@ class TestValidation:
 
         # Generate offers and present
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After _setup_player_private_offer")
 
     def test_price_in_range_succeeds(self):
         """Price within [low, high] is valid - action executes."""
@@ -513,6 +530,7 @@ class TestValidation:
         # Price in range (offset 0 = low_price)
         result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 0)
         assert result == 0  # Success
+        assert_invariants(gs, "After acquisition action price in range")
 
     def test_price_below_low_rejected(self):
         """Price below low_price returns invalid (1)."""
@@ -559,6 +577,7 @@ class TestValidation:
         CORPS[2].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py OS FI Buy High test")
 
         # OS tries FI Buy High - should reject
         if get_offer_count(gs) > 0:
@@ -576,6 +595,7 @@ class TestValidation:
         CORPS[0].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py non-OS FI Buy Face test")
 
         # Non-OS tries FI Buy Face - should reject
         if get_offer_count(gs) > 0:
@@ -610,6 +630,7 @@ class TestValidation:
         COMPANIES[0].transfer_to_corp(gs, 0)
 
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py target already owned test")
 
         # Try to buy company corp already owns - should reject
         if get_offer_count(gs) > 0:
@@ -629,6 +650,7 @@ class TestValidation:
         low_price = get_company_low_price(company_id)
         result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 0)
         assert result == 0, f"Action at low_price ({low_price}) should succeed"
+        assert_invariants(gs, "After acquisition action at low boundary")
 
     def test_price_at_high_boundary(self):
         """VALID-01: Price exactly at high_price succeeds."""
@@ -645,6 +667,7 @@ class TestValidation:
 
         result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, offset)
         assert result == 0, f"Action at high_price ({high_price}) should succeed"
+        assert_invariants(gs, "After acquisition action at high boundary")
 
     def test_price_one_below_low_fails(self):
         """VALID-01: Price = low_price - 1 fails."""
@@ -717,6 +740,7 @@ class TestValidation:
         if get_offer_count(gs2) > 0:
             result = apply_acquisition_action_py(gs2, ACTION_ACQ_PRICE, test_offset)
             assert result == 0, f"Offset {test_offset} should succeed for wide company (span={wide_span})"
+            assert_invariants(gs2, "After acquisition action wide company span")
 
     def test_price_offset_maps_to_correct_price(self):
         """Verify price offset correctly maps to low_price + offset.
@@ -738,6 +762,7 @@ class TestValidation:
         float_corp_for_test(gs, 0)
         CORPS[0].set_cash(gs, 50000)
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py price offset test")
 
         assert get_offer_count(gs) > 0, "Should have offer for wide-span company"
 
@@ -746,6 +771,7 @@ class TestValidation:
         corp_cash_before = CORPS[0].get_cash(gs)
         result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 0)
         assert result == 0, "Offset 0 should succeed"
+        assert_invariants(gs, "After acquisition action offset 0")
         payment = corp_cash_before - CORPS[0].get_cash(gs)
         assert payment == low_price, f"Offset 0 should pay low_price ({low_price}), got {payment}"
 
@@ -756,10 +782,12 @@ class TestValidation:
         float_corp_for_test(gs2, 0)
         CORPS[0].set_cash(gs2, 50000)
         setup_acquisition_phase_py(gs2)
+        assert_invariants(gs2, "After setup_acquisition_phase_py price offset max test")
 
         corp_cash_before = CORPS[0].get_cash(gs2)
         result = apply_acquisition_action_py(gs2, ACTION_ACQ_PRICE, max_offset)
         assert result == 0, f"Offset {max_offset} should succeed"
+        assert_invariants(gs2, "After acquisition action max offset")
         payment = corp_cash_before - CORPS[0].get_cash(gs2)
         assert payment == high_price, f"Offset {max_offset} should pay high_price ({high_price}), got {payment}"
 
@@ -770,12 +798,14 @@ class TestValidation:
         float_corp_for_test(gs3, 0)
         CORPS[0].set_cash(gs3, 50000)
         setup_acquisition_phase_py(gs3)
+        assert_invariants(gs3, "After setup_acquisition_phase_py price offset mid test")
 
         mid_offset = max_offset // 2  # 25
         expected_price = low_price + mid_offset  # 30 + 25 = 55
         corp_cash_before = CORPS[0].get_cash(gs3)
         result = apply_acquisition_action_py(gs3, ACTION_ACQ_PRICE, mid_offset)
         assert result == 0, f"Offset {mid_offset} should succeed"
+        assert_invariants(gs3, "After acquisition action mid offset")
         payment = corp_cash_before - CORPS[0].get_cash(gs3)
         assert payment == expected_price, f"Offset {mid_offset} should pay {expected_price}, got {payment}"
 
@@ -797,6 +827,7 @@ class TestValidation:
             # Action should succeed
             result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 0)
             assert result == 0, "Action with exact cash should succeed"
+            assert_invariants(gs, "After acquisition action exact cash")
         else:
             # If no offer generated, that's also acceptable boundary behavior
             # (implementation may require cash > price rather than >= price)
@@ -831,6 +862,7 @@ class TestValidation:
         CORPS[1].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py seller with two companies")
 
         # Should have offers (seller has 2 companies, can sell 1)
         assert get_offer_count(gs) > 0, "Seller with 2 companies should have offers"
@@ -848,6 +880,7 @@ class TestValidation:
         CORPS[1].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py seller with one company")
 
         # VALID-03 is checked at ACTION time, not offer generation time
         # Offer IS generated, but action should be rejected
@@ -871,6 +904,7 @@ class TestValidation:
         CORPS[1].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py seller with one owned one acquisition")
 
         # _count_seller_companies counts BOTH owned and acquisition_companies
         # With 1 owned + 1 acquisition, selling owned leaves 1 (in acquisition) - valid
@@ -891,6 +925,7 @@ class TestValidation:
         CORPS[0].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py company in acquisition zone")
 
         # No offer should be generated (company already in acquisition zone)
         assert get_offer_count(gs) == 0, "Company in acquisition zone should block offer"
@@ -905,6 +940,7 @@ class TestActionIntegration:
         float_corp_for_test(gs, corp_id, player_id=player_id)
         CORPS[corp_id].set_cash(gs, corp_cash)
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After TestActionIntegration._setup_player_private_offer")
 
     def test_accept_price_action(self):
         """Full flow - money transfers, company moves to acquisition zone."""
@@ -922,6 +958,7 @@ class TestActionIntegration:
         # Execute action (offset 0 = low_price, always valid)
         result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 0)
         assert result == 0
+        assert_invariants(gs, "After accept price action")
 
         # Verify money transfer
         corp_cash_after = CORPS[0].get_cash(gs)
@@ -943,6 +980,7 @@ class TestActionIntegration:
         CORPS[0].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py FI buy high")
 
         if get_offer_count(gs) > 0:
             corp_cash_before = CORPS[0].get_cash(gs)
@@ -950,6 +988,7 @@ class TestActionIntegration:
 
             result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_HIGH, 0)
             assert result == 0
+            assert_invariants(gs, "After FI buy high action")
 
             # Verify money transfer to FI
             corp_cash_after = CORPS[0].get_cash(gs)
@@ -971,6 +1010,7 @@ class TestActionIntegration:
         CORPS[2].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py FI buy face")
 
         if get_offer_count(gs) > 0:
             corp_cash_before = CORPS[2].get_cash(gs)
@@ -978,6 +1018,7 @@ class TestActionIntegration:
 
             result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_FACE, 0)
             assert result == 0
+            assert_invariants(gs, "After FI buy face action")
 
             # Verify money transfer at face value
             corp_cash_after = CORPS[2].get_cash(gs)
@@ -1014,6 +1055,7 @@ class TestActionIntegration:
         CORPS[2].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py OS face value test")
 
         assert get_offer_count(gs) > 0, "Should have FI offer for OS"
 
@@ -1023,6 +1065,7 @@ class TestActionIntegration:
         # OS uses FI_BUY_FACE action
         result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_FACE, 0)
         assert result == 0, "FI_BUY_FACE should succeed for OS"
+        assert_invariants(gs, "After OS FI buy face action")
 
         # Verify OS paid face_value, NOT high_price
         corp_cash_after = CORPS[2].get_cash(gs)
@@ -1053,6 +1096,7 @@ class TestActionIntegration:
         CORPS[0].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py pass action test")
 
         # Should have offers
         offer_count = get_offer_count(gs)
@@ -1062,6 +1106,7 @@ class TestActionIntegration:
             # Pass on first offer
             result = apply_acquisition_action_py(gs, ACTION_PASS, 0)
             assert result == 0
+            assert_invariants(gs, "After pass action")
 
             # Check if moved to next offer or cleared
             second_target = TURN.get_acq_target_company(gs)
@@ -1104,6 +1149,7 @@ class TestActionIntegration:
 
         # Generate offers
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py intervention test")
 
         # Verify higher-priced corp (0) is offered first via visible state
         assert TURN.get_acq_active_corp(gs) == 0, "Higher-priced corp should be active"
@@ -1122,6 +1168,7 @@ class TestActionIntegration:
 
         result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_HIGH, 0)
         assert result == 0, "Accept action should succeed"
+        assert_invariants(gs, "After FI intervention accept action")
 
         # Verify company transferred to higher-priced corp
         assert high_corp.has_acquisition_company(gs, 0), "High corp should have company in acquisition zone"
@@ -1163,6 +1210,7 @@ class TestZoneMerging:
 
         # Trigger merge
         merge_acquisition_zones_py(gs)
+        assert_invariants(gs, "After merge_acquisition_zones_py player proceeds")
 
         # Proceeds merged to cash
         assert player.get_cash(gs) == initial_cash + proceeds
@@ -1184,6 +1232,7 @@ class TestZoneMerging:
 
         # Trigger merge
         merge_acquisition_zones_py(gs)
+        assert_invariants(gs, "After merge_acquisition_zones_py corp proceeds")
 
         # Proceeds merged to cash
         assert corp.get_cash(gs) == initial_cash + proceeds
@@ -1207,6 +1256,7 @@ class TestZoneMerging:
 
         # Trigger merge
         merge_acquisition_zones_py(gs)
+        assert_invariants(gs, "After merge_acquisition_zones_py companies to owned")
 
         # Company moved from acquisition to owned
         assert not corp.has_acquisition_company(gs, 0)
@@ -1226,6 +1276,7 @@ class TestZoneMerging:
 
         # Trigger merge
         merge_acquisition_zones_py(gs)
+        assert_invariants(gs, "After merge_acquisition_zones_py zones cleared")
 
         # All zones cleared
         assert player.get_acquisition_proceeds(gs) == 0
@@ -1242,6 +1293,7 @@ class TestEdgeCases:
 
         # No corps activated
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py no active corps")
 
         assert get_offer_count(gs) == 0, "No active corps should mean no offers"
 
@@ -1255,6 +1307,7 @@ class TestEdgeCases:
         CORPS[0].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py empty FI")
 
         # No offers (FI empty)
         assert get_offer_count(gs) == 0, "Empty FI should generate no offers"
@@ -1269,6 +1322,7 @@ class TestEdgeCases:
         CORPS[0].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py no player privates")
 
         # No offers (no player companies)
         assert get_offer_count(gs) == 0, "No player companies should generate no private offers"
@@ -1291,6 +1345,7 @@ class TestEdgeCases:
         CORPS[1].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py two corps same president")
 
         # Now both corps have companies and same president, so offers WILL be generated
         # This is expected behavior - the original test was checking an impossible state
@@ -1307,6 +1362,7 @@ class TestEdgeCases:
         CORPS[0].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py single corp")
 
         # No corp-to-corp offers (need buyer AND seller)
         assert get_offer_count(gs) == 0, "Single corp cannot have corp-to-corp offers"
@@ -1324,6 +1380,7 @@ class TestEdgeCases:
         CORPS[1].set_cash(gs, 50000)
 
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py same president")
 
         # Same president should allow corp-to-corp offers
         assert get_offer_count(gs) > 0, "Same president should allow corp-to-corp offers"
@@ -1340,6 +1397,7 @@ class TestEdgeCases:
         CORPS[1].set_cash(gs2, 50000)
 
         setup_acquisition_phase_py(gs2)
+        assert_invariants(gs2, "After setup_acquisition_phase_py different presidents")
 
         # Different presidents should block corp-to-corp offers
         assert get_offer_count(gs2) == 0, "Different presidents should block corp-to-corp offers"
@@ -1360,13 +1418,13 @@ class TestReceivershipAutoBuy:
         # Transfer company 0 to FI
         COMPANIES[0].transfer_to_fi(gs)
 
-        # Float corp 0, then put in receivership
+        # Float corp 0, then put in receivership by selling all shares
         float_corp_for_test(gs, 0)
         corp = CORPS[0]
         corp.set_cash(gs, 50000)
 
-        # Put corp 0 in receivership
-        corp.set_in_receivership(gs, True)
+        # Put corp 0 in receivership (set_shares auto-adjusts bank shares and presidency)
+        PLAYERS[0].set_shares(gs, 0, 0)
 
         # Record initial values - receivership pays HIGH price, not face value
         high_price = COMPANIES[0].get_high_price()
@@ -1375,6 +1433,7 @@ class TestReceivershipAutoBuy:
 
         # Call setup_acquisition_phase_py to generate offers and trigger auto-buy
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py receivership auto-buy")
 
         # Verify auto-buy executed at HIGH price
         assert corp.has_acquisition_company(gs, 0), "Receivership corp should auto-buy FI company"
@@ -1396,14 +1455,15 @@ class TestReceivershipAutoBuy:
         corp = CORPS[0]
         corp.set_cash(gs, 1)
 
-        # Put corp 0 in receivership
-        corp.set_in_receivership(gs, True)
+        # Put corp 0 in receivership (set_shares auto-adjusts bank shares and presidency)
+        PLAYERS[0].set_shares(gs, 0, 0)
 
         # Record initial FI cash
         fi_cash_before = FI.get_cash(gs)
 
         # Call setup_acquisition_phase_py
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py receivership skip unaffordable")
 
         # Verify auto-pass: no buy happened
         assert not corp.has_acquisition_company(gs, 0), "Receivership corp should not buy unaffordable company"
@@ -1424,11 +1484,12 @@ class TestReceivershipAutoBuy:
         corp = CORPS[0]
         corp.set_cash(gs, 50000)
 
-        # Put corp 0 in receivership
-        corp.set_in_receivership(gs, True)
+        # Put corp 0 in receivership (set_shares auto-adjusts bank shares and presidency)
+        PLAYERS[0].set_shares(gs, 0, 0)
 
         # Call setup_acquisition_phase_py
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py receivership skip non-FI")
 
         # Verify: Receivership corp cannot buy from player
         # (no offers should be generated or they should be auto-passed)
@@ -1444,7 +1505,8 @@ class TestReceivershipAutoBuy:
         # Float corp 0 with company (player 0), then put in receivership
         float_corp_for_test(gs, 0)
         corp0 = CORPS[0]
-        corp0.set_in_receivership(gs, True)
+        # Put corp 0 in receivership (set_shares auto-adjusts bank shares and presidency)
+        PLAYERS[0].set_shares(gs, 0, 0)
 
         # Float corp 1 with cash and DIFFERENT president (player 1)
         # This ensures no same-president corp-to-corp offers regardless of
@@ -1455,6 +1517,7 @@ class TestReceivershipAutoBuy:
 
         # Call setup_acquisition_phase_py
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py receivership cannot sell")
 
         # Verify: No offers should exist because:
         # - Corp 0 has company but is in receivership (can't sell)
@@ -1489,13 +1552,15 @@ class TestReceivershipAutoBuy:
         float_corp_for_test(gs, 0)
         corp = CORPS[0]
         corp.set_cash(gs, expensive_high)  # Exactly enough for expensive, not both
-        corp.set_in_receivership(gs, True)
+        # Put corp 0 in receivership (set_shares auto-adjusts bank shares and presidency)
+        PLAYERS[0].set_shares(gs, 0, 0)
 
         corp_cash_before = corp.get_cash(gs)
         fi_cash_before = FI.get_cash(gs)
 
         # Trigger auto-buy
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py receivership most expensive")
 
         # Should have bought the MORE expensive company (not the cheap one)
         assert corp.has_acquisition_company(gs, expensive_company), \
@@ -1534,13 +1599,15 @@ class TestReceivershipAutoBuy:
         float_corp_for_test(gs, 0)
         corp = CORPS[0]
         corp.set_cash(gs, face_value)  # Exactly face_value, less than high_price
-        corp.set_in_receivership(gs, True)
+        # Put corp 0 in receivership (set_shares auto-adjusts bank shares and presidency)
+        PLAYERS[0].set_shares(gs, 0, 0)
 
         corp_cash_before = corp.get_cash(gs)
         fi_cash_before = FI.get_cash(gs)
 
         # Trigger auto-buy attempt
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py receivership insufficient for high")
 
         # Should NOT have bought - can't afford high price
         assert not corp.has_acquisition_company(gs, company_id), \
@@ -1754,6 +1821,7 @@ class TestNoOfferBoundsCheck:
         gs.initialize_game()
         # No offers generated — acq_target_company defaults to -1
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py no offer price check")
         assert get_offer_count(gs) == 0
         assert apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 0) == 1
 
@@ -1762,6 +1830,7 @@ class TestNoOfferBoundsCheck:
         gs = GameState(3)
         gs.initialize_game()
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py no offer FI high check")
         assert apply_acquisition_action_py(gs, ACTION_ACQ_FI_HIGH) == 1
 
     def test_fi_face_action_no_offer_returns_invalid(self):
@@ -1769,4 +1838,5 @@ class TestNoOfferBoundsCheck:
         gs = GameState(3)
         gs.initialize_game()
         setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py no offer FI face check")
         assert apply_acquisition_action_py(gs, ACTION_ACQ_FI_FACE) == 1

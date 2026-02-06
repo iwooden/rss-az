@@ -227,9 +227,10 @@ cdef class Corporation:
         # 5. Set share distribution
         self.set_unissued_shares(state, unissued_shares)
         self.set_issued_shares(state, issued)
-        self.set_bank_shares(state, float_shares)
+        # Bank starts with all issued shares; set_shares() will move float_shares to player
+        self.set_bank_shares(state, issued)
 
-        # 6. Give player their shares (triggers automatic presidency via set_shares)
+        # 6. Give player their shares (auto-adjusts bank shares and presidency)
         player_module.PLAYERS[player_id].set_shares(state, self.corp_id, float_shares)
 
     # =========================================================================
@@ -522,14 +523,14 @@ cdef class Corporation:
                 company_module.COMPANIES[company_id].remove_from_game(state)
 
         # Step 2: Return all shares to unissued - clear player shares
-        # Note: set_shares() automatically updates presidency/receivership
+        # set_shares(0) auto-moves each player's shares to bank
         for player_id in range(state._num_players):
             player_module.PLAYERS[player_id].set_shares(state, self.corp_id, 0)
 
-        # Step 3: Reset corp share counts
+        # Step 3: Reset corp share counts (bank accumulated player shares above)
         self.set_unissued_shares(state, get_corp_share_count(self.corp_id))
         self.set_issued_shares(state, 0)
-        self.set_bank_shares(state, 0)
+        self.set_bank_shares(state, 0)  # Return bank shares to unissued
 
         # Step 4: Return money to bank - clear corp cash
         self.set_cash(state, 0)

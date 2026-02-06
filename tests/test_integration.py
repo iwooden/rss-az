@@ -8,16 +8,12 @@ Key insight: Corps can't be active until turn 2+ (IPO happens at end of turn 1).
 """
 import pytest
 from core.state import GameState
-from core.driver import DRIVER
 from core.actions import get_valid_action_mask, get_action_layout
 from core.data import GamePhases
 from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.corp import CORPS
-from entities.company import COMPANIES
-from entities.market import MARKET
-from tests.phases.conftest import apply_action_and_verify, assert_invariants
-from core.driver import STATUS_GAME_OVER_PY
+from tests.phases.conftest import apply_and_verify_all, assert_invariants
 import random
 
 
@@ -27,7 +23,7 @@ import random
 
 def apply_action(state, action_idx, msg=""):
     """Apply action through driver and verify success."""
-    apply_action_and_verify(state, action_idx, msg)
+    apply_and_verify_all(state, action_idx, msg)
 
 
 def check_invariants(state, msg=""):
@@ -92,6 +88,25 @@ def pass_through_phase(state, num_players, phase, pass_action_key, max_iteration
     return iterations
 
 
+def apply_action_or_game_over(state, action_idx, msg=""):
+    """Apply action via apply_and_verify_all, accepting OK or GAME_OVER.
+
+    Returns the ApplyTrackResult, or None if the game ended.
+    Used in stress tests where game-over is an acceptable outcome.
+    """
+    try:
+        return apply_and_verify_all(state, action_idx, msg=msg)
+    except AssertionError:
+        # If game ended, that's acceptable in stress tests.
+        # The action was already applied; invariant checks ran before
+        # the status assertion in apply_and_verify_all only when status
+        # matched. Verify invariants now for the game-over state.
+        if state.get_phase() == GamePhases.PHASE_GAME_OVER:
+            check_invariants(state, f"{msg} [game over]")
+            return None
+        raise  # Re-raise if it's a real failure
+
+
 # =============================================================================
 # MINIMAL TURN TESTS (Turn 1, no corps)
 # =============================================================================
@@ -99,8 +114,8 @@ def pass_through_phase(state, num_players, phase, pass_action_key, max_iteration
 class TestMinimalTurn:
     """Turn 1: Fresh game, all pass, no corps active.
 
-    Flow: INVEST (all pass) → WRAP_UP → ACQUISITION (no offers) → CLOSING (no offers)
-          → INCOME → DIVIDENDS (skipped) → END_CARD → ISSUE (skipped) → IPO → INVEST
+    Flow: INVEST (all pass) -> WRAP_UP -> ACQUISITION (no offers) -> CLOSING (no offers)
+          -> INCOME -> DIVIDENDS (skipped) -> END_CARD -> ISSUE (skipped) -> IPO -> INVEST
     """
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
@@ -298,7 +313,7 @@ class TestTurnWithActiveCorp:
     """Turn 2+: With active corp, full phase sequence.
 
     Must be turn 2+ since corp can't exist until after turn 1 IPO.
-    Tests: INVEST → ACQUISITION → CLOSING → INCOME → DIVIDENDS → ISSUE → IPO → INVEST
+    Tests: INVEST -> ACQUISITION -> CLOSING -> INCOME -> DIVIDENDS -> ISSUE -> IPO -> INVEST
     """
 
     def _setup_turn_2_with_corp(self, num_players=3, seed=42):
@@ -687,10 +702,10 @@ class TestGameEnd:
 
             # Take first valid action (deterministic)
             action = valid_actions[0]
-            result = DRIVER.apply_action(state, action)
+            result = apply_action_or_game_over(state, action)
             actions_taken += 1
 
-            if result == STATUS_GAME_OVER_PY:
+            if result is None:
                 break
 
         # Should have taken some actions without crashing
@@ -729,12 +744,12 @@ class TestStress:
             if action is None:
                 break
 
-            result = DRIVER.apply_action(state, action)
+            result = apply_action_or_game_over(state, action)
 
-            if result == STATUS_GAME_OVER_PY:
+            if result is None:
                 break
 
-            check_invariants(state, f"Turn {TURN.get_turn_number(state)}")
+        check_invariants(state, f"Turn {TURN.get_turn_number(state)}")
 
     def test_random_valid_actions(self):
         """Play random valid actions for several turns."""
@@ -757,12 +772,10 @@ class TestStress:
                 break
 
             action = random.choice(valid_actions)
-            result = DRIVER.apply_action(state, action)
+            result = apply_action_or_game_over(state, action)
             actions_taken += 1
 
-            if result == STATUS_GAME_OVER_PY:
+            if result is None:
                 break
-
-            check_invariants(state, f"After {actions_taken} actions")
 
         check_invariants(state, f"Final state after {actions_taken} actions")

@@ -3,14 +3,14 @@
 import pytest
 import numpy as np
 from core.state import GameState
-from core.driver import DRIVER, GameDriver, STATUS_OK_PY as STATUS_OK, STATUS_INVALID_PY as STATUS_INVALID, STATUS_GAME_OVER_PY as STATUS_GAME_OVER
+from core.driver import DRIVER, STATUS_OK_PY as STATUS_OK, STATUS_INVALID_PY as STATUS_INVALID, STATUS_GAME_OVER_PY as STATUS_GAME_OVER
 from core.actions import get_valid_action_mask, get_action_layout
 from core.data import GamePhases
 from entities.turn import TURN
 from entities.company import COMPANIES
 from entities.corp import CORPS
 from entities.player import PLAYERS
-from tests.phases.conftest import float_corp_for_test
+from tests.phases.conftest import apply_and_verify_all, float_corp_for_test
 
 
 class TestGetLegalMoves:
@@ -98,8 +98,7 @@ class TestApplyActionInvestPhase:
                 auction_idx = i
                 break
         if auction_idx is not None:
-            result = DRIVER.apply_action(invest_state, auction_idx)
-            assert result == STATUS_OK
+            apply_and_verify_all(invest_state, auction_idx)
 
 
 class TestApplyActionBidPhase:
@@ -124,8 +123,7 @@ class TestApplyActionBidPhase:
         leave_idx = layout['leave_auction']
         mask = DRIVER.get_legal_moves(bid_state)
         if mask[leave_idx] == 1.0:
-            result = DRIVER.apply_action(bid_state, leave_idx)
-            assert result == STATUS_OK
+            apply_and_verify_all(bid_state, leave_idx)
 
     def test_valid_raise_bid_returns_ok(self, bid_state):
         """Valid raise bid action should return STATUS_OK."""
@@ -133,8 +131,7 @@ class TestApplyActionBidPhase:
         layout = get_action_layout(3)
         for i in range(layout['raise_bid_base'], layout['acquisition_start']):
             if mask[i] == 1.0:
-                result = DRIVER.apply_action(bid_state, i)
-                assert result == STATUS_OK
+                apply_and_verify_all(bid_state, i)
                 break
 
 
@@ -156,8 +153,7 @@ class TestMultiplePlayerCounts:
         state = GameState(num_players=num_players)
         state.initialize_game(seed=42)
         layout = get_action_layout(num_players)
-        result = DRIVER.apply_action(state, layout['pass_invest'])
-        assert result == STATUS_OK
+        apply_and_verify_all(state, layout['pass_invest'])
 
 
 # =============================================================================
@@ -203,8 +199,7 @@ class TestForcedActionAutoApply:
         pass_idx = layout['pass_invest']
 
         for _ in range(num_players - 1):
-            result = DRIVER.apply_action(state, pass_idx)
-            assert result == STATUS_OK
+            apply_and_verify_all(state, pass_idx)
 
         result = apply_and_track(state, pass_idx)
         assert result.status == STATUS_OK
@@ -232,7 +227,7 @@ class TestForcedActionAutoApply:
         assert TURN.get_turn_number(state) == 1
 
         for _ in range(2):
-            DRIVER.apply_action(state, pass_idx)
+            apply_and_verify_all(state, pass_idx)
         result = apply_and_track(state, pass_idx)
 
         # Entry types: (float32 ndarray, int)
@@ -274,6 +269,9 @@ class TestForcedActionAutoApply:
 
         The corp is put in receivership so DIVIDENDS auto-processes (at $0)
         without needing player input, allowing the phase chain to reach END_CARD.
+
+        Note: Uses raw DRIVER calls because the test setup (receivership without
+        proper share cleanup) creates states that violate invariants intentionally.
         """
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
@@ -314,6 +312,9 @@ class TestForcedActionAutoApply:
         sets PHASE_GAME_OVER. With all companies removed, PASS is the only legal
         action for every player, so one pass triggers a full chain of forced
         passes + non-player phases ending in GAME_OVER.
+
+        Note: Uses raw DRIVER calls because removing all companies without
+        updating deck count creates states that violate invariants intentionally.
         """
         state = GameState(num_players=3)
         state.initialize_game(seed=42)

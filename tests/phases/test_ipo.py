@@ -73,6 +73,7 @@ def ipo_state_with_company(game_state):
     # Set up IPO phase
     TURN.set_phase(state, GamePhases.PHASE_IPO)
     setup_ipo_phase_py(state)
+    assert_invariants(state, "After setup_ipo_phase fixture")
 
     return state
 
@@ -123,6 +124,7 @@ class TestBasicIPOMechanics:
         # Execute IPO: corp 0, par slot 0 (par price 16 for star=3)
         result = apply_ipo_action_py(state, 0, 0)
         assert result == 0
+        assert_invariants(state, "After IPO transfers company to corp")
 
         # Company now belongs to corp
         assert company.get_location(state) == CompanyLocation.LOC_CORP
@@ -136,6 +138,7 @@ class TestBasicIPOMechanics:
         assert not corp.is_active(state)
 
         apply_ipo_action_py(state, 0, 0)
+        assert_invariants(state, "After IPO activates corporation")
 
         assert corp.is_active(state)
 
@@ -150,6 +153,7 @@ class TestBasicIPOMechanics:
         market_index = get_market_index(par_price)
 
         apply_ipo_action_py(state, 0, 2)
+        assert_invariants(state, "After IPO sets corp price index")
 
         assert corp.get_price_index(state) == market_index
         assert corp.get_share_price(state) == par_price
@@ -165,6 +169,7 @@ class TestBasicIPOMechanics:
         assert MARKET.is_space_available(state, market_index)
 
         apply_ipo_action_py(state, 0, 0)
+        assert_invariants(state, "After IPO claims market space")
 
         assert not MARKET.is_space_available(state, market_index)
 
@@ -175,6 +180,7 @@ class TestBasicIPOMechanics:
 
         # Company 14 has 3 stars (yellow)
         apply_ipo_action_py(state, 0, 0)
+        assert_invariants(state, "After IPO sets corp stars")
 
         assert corp.get_stars(state) == 3
 
@@ -198,6 +204,7 @@ class TestShareDistribution:
         assert get_company_face_value(14) > par_price
 
         apply_ipo_action_py(state, 0, 0)
+        assert_invariants(state, "After IPO FV > par")
 
         # Player gets 2 shares
         assert PLAYERS[0].get_shares(state, 0) == 2
@@ -219,6 +226,7 @@ class TestShareDistribution:
         assert get_company_face_value(14) == par_price
 
         apply_ipo_action_py(state, 0, 2)
+        assert_invariants(state, "After IPO FV == par")
 
         assert PLAYERS[0].get_shares(state, 0) == 1
         # issued_shares = player_shares + bank_shares = 1 + 1 = 2
@@ -238,6 +246,7 @@ class TestShareDistribution:
         assert get_company_face_value(14) < par_price
 
         apply_ipo_action_py(state, 0, 5)
+        assert_invariants(state, "After IPO FV < par")
 
         assert PLAYERS[0].get_shares(state, 0) == 1
         # issued_shares = player_shares + bank_shares = 1 + 1 = 2
@@ -263,6 +272,7 @@ class TestPaymentCalculation:
         expected_payment = (player_shares * par_price) - face_value
 
         apply_ipo_action_py(state, 0, 0)
+        assert_invariants(state, "After IPO player payment")
 
         assert PLAYERS[0].get_cash(state) == initial_cash - expected_payment
 
@@ -284,6 +294,7 @@ class TestPaymentCalculation:
         expected_corp_cash = player_payment + bank_payment
 
         apply_ipo_action_py(state, 0, 0)
+        assert_invariants(state, "After IPO corp receives payment")
 
         assert corp.get_cash(state) == expected_corp_cash
 
@@ -302,6 +313,7 @@ class TestProcessingOrder:
 
         TURN.set_phase(state, GamePhases.PHASE_IPO)
         setup_ipo_phase_py(state)
+        assert_invariants(state, "After setup_ipo_phase highest FV")
 
         # Company 30 has highest FV (45)
         ipo_company = TURN.get_ipo_company(state)
@@ -313,18 +325,22 @@ class TestProcessingOrder:
 
         TURN.set_phase(state, GamePhases.PHASE_IPO)
         setup_ipo_phase_py(state)
+        assert_invariants(state, "After setup_ipo_phase descending FV")
 
         # First: company 30 (FV=45)
         assert TURN.get_ipo_company(state) == 30
         apply_ipo_pass_py(state)
+        assert_invariants(state, "After pass on company 30")
 
         # Second: company 22 (FV=30)
         assert TURN.get_ipo_company(state) == 22
         apply_ipo_pass_py(state)
+        assert_invariants(state, "After pass on company 22")
 
         # Third: company 14 (FV=20)
         assert TURN.get_ipo_company(state) == 14
         apply_ipo_pass_py(state)
+        assert_invariants(state, "After pass on company 14")
 
         # Phase should end - transitions to INVEST for new turn
         assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
@@ -433,10 +449,12 @@ class TestPassAction:
 
         TURN.set_phase(state, GamePhases.PHASE_IPO)
         setup_ipo_phase_py(state)
+        assert_invariants(state, "After setup_ipo_phase pass advances")
 
         assert TURN.get_ipo_company(state) == 30
 
         apply_ipo_pass_py(state)
+        assert_invariants(state, "After pass advances to next company")
 
         assert TURN.get_ipo_company(state) == 22
 
@@ -447,6 +465,7 @@ class TestPassAction:
         assert TURN.is_ipo_remaining(state, 14)
 
         apply_ipo_pass_py(state)
+        assert_invariants(state, "After pass clears remaining flag")
 
         assert not TURN.is_ipo_remaining(state, 14)
 
@@ -455,6 +474,7 @@ class TestPassAction:
         state = ipo_state_with_company
 
         apply_ipo_pass_py(state)
+        assert_invariants(state, "After pass does not activate corp")
 
         for corp_id in range(int(GameConstants.NUM_CORPS)):
             assert not CORPS[corp_id].is_active(state)
@@ -473,6 +493,7 @@ class TestPhaseTransitions:
         state = ipo_state
 
         setup_ipo_phase_py(state)
+        assert_invariants(state, "After setup_ipo_phase empty transitions to invest")
 
         assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
 
@@ -481,6 +502,7 @@ class TestPhaseTransitions:
         state = ipo_state_with_company
 
         apply_ipo_pass_py(state)
+        assert_invariants(state, "After all passed transitions to invest")
 
         assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
 
@@ -489,6 +511,7 @@ class TestPhaseTransitions:
         state = ipo_state_with_company
 
         apply_ipo_action_py(state, 0, 0)
+        assert_invariants(state, "After all IPO transitions to invest")
 
         assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
 
@@ -542,18 +565,21 @@ class TestActivePlayer:
 
         TURN.set_phase(state, GamePhases.PHASE_IPO)
         setup_ipo_phase_py(state)
+        assert_invariants(state, "After setup_ipo_phase active player")
 
         # Company 30 owned by player 0
         assert TURN.get_ipo_company(state) == 30
         assert state.get_active_player() == 0
 
         apply_ipo_pass_py(state)
+        assert_invariants(state, "After pass on company 30 active player")
 
         # Company 22 owned by player 1
         assert TURN.get_ipo_company(state) == 22
         assert state.get_active_player() == 1
 
         apply_ipo_pass_py(state)
+        assert_invariants(state, "After pass on company 22 active player")
 
         # Company 14 owned by player 0
         assert TURN.get_ipo_company(state) == 14

@@ -1,18 +1,16 @@
 """Tests for BID_IN_AUCTION phase actions."""
 import pytest
-import numpy as np
 from core.state import GameState
-from core.driver import DRIVER
 from core.actions import get_valid_action_mask, get_action_layout
 from core.data import GamePhases, get_company_face_value
 from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.company import COMPANIES
 from entities.deck import DECK
-from tests.phases.conftest import STATUS_OK, assert_invariants
+from tests.phases.conftest import STATUS_OK, apply_and_verify_all
 
 # Fixtures come from conftest.py automatically (bid_state is same as auction_state)
-# Helper functions also available: assert_valid_mask, assert_invariants, apply_action_and_verify
+# Helper functions also available: assert_valid_mask, assert_invariants
 
 
 # =============================================================================
@@ -31,8 +29,7 @@ class TestLeaveAuction:
 
         # Apply leave auction
         layout = get_action_layout(3)
-        result = DRIVER.apply_action(bid_state, layout['leave_auction'])
-        assert result == STATUS_OK
+        apply_and_verify_all(bid_state, layout['leave_auction'])
 
         # Verify passed flag set
         assert TURN.has_player_passed_auction(bid_state, player_id)
@@ -72,8 +69,7 @@ class TestLeaveAuction:
 
         # Current player leaves
         layout = get_action_layout(3)
-        result = DRIVER.apply_action(bid_state, layout['leave_auction'])
-        assert result == STATUS_OK
+        apply_and_verify_all(bid_state, layout['leave_auction'])
 
         # Verify active player skipped the passed player (if auction didn't resolve)
         if bid_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
@@ -88,15 +84,14 @@ class TestLeaveAuction:
         layout = get_action_layout(3)
 
         # First player leaves
-        DRIVER.apply_action(bid_state, layout['leave_auction'])
+        apply_and_verify_all(bid_state, layout['leave_auction'])
         assert bid_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
 
         # Second player leaves - should trigger resolution
-        DRIVER.apply_action(bid_state, layout['leave_auction'])
+        apply_and_verify_all(bid_state, layout['leave_auction'])
 
         # Verify auction resolved and returned to INVEST phase
         assert bid_state.get_phase() == GamePhases.PHASE_INVEST
-        assert_invariants(bid_state, "After last leaver auction resolution")
 
     def test_bidder_rotation_wraps_around(self):
         """Bidder rotation correctly wraps from last player to first."""
@@ -108,7 +103,7 @@ class TestLeaveAuction:
         layout = get_action_layout(3)
         for i in range(layout['auction_base'], layout['buy_share_base']):
             if mask[i] == 1.0:
-                DRIVER.apply_action(state, i)
+                apply_and_verify_all(state, i)
                 break
 
         # Track rotation through all players
@@ -123,16 +118,15 @@ class TestLeaveAuction:
                 raised = False
                 for i in range(layout['raise_bid_base'], layout['acquisition_start']):
                     if mask[i] == 1.0:
-                        DRIVER.apply_action(state, i)
+                        apply_and_verify_all(state, i)
                         raised = True
                         break
 
                 if not raised:
-                    DRIVER.apply_action(state, layout['leave_auction'])
+                    apply_and_verify_all(state, layout['leave_auction'])
 
         # Should have seen all 3 players (rotation works)
         assert len(seen_players) >= 2, "Should rotate through multiple players"
-        assert_invariants(state, "After rotation test")
 
 
 # =============================================================================
@@ -156,8 +150,7 @@ class TestRaiseBid:
                 break
 
         if raise_idx is not None:
-            result = DRIVER.apply_action(bid_state, raise_idx)
-            assert result == STATUS_OK
+            apply_and_verify_all(bid_state, raise_idx)
 
             # Verify price increased
             new_price = TURN.get_auction_price(bid_state)
@@ -177,8 +170,7 @@ class TestRaiseBid:
                 break
 
         if raise_idx is not None:
-            result = DRIVER.apply_action(bid_state, raise_idx)
-            assert result == STATUS_OK
+            apply_and_verify_all(bid_state, raise_idx)
 
             # Verify high bidder updated to current player
             high_bidder = TURN.get_auction_high_bidder(bid_state)
@@ -283,8 +275,7 @@ class TestRaiseBid:
         # The first raise bid action should be face + 0 + 1 = face + 1
         raise_idx = layout['raise_bid_base']
         if mask[raise_idx] == 1.0:
-            result = DRIVER.apply_action(bid_state, raise_idx)
-            assert result == STATUS_OK
+            apply_and_verify_all(bid_state, raise_idx)
 
             # Verify price is face + 1 (since amount=0 for first raise bid slot)
             new_price = TURN.get_auction_price(bid_state)
@@ -309,7 +300,7 @@ class TestAuctionResolution:
         layout = get_action_layout(3)
         for _ in range(2):  # Leave twice (2 of 3 players)
             if bid_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-                DRIVER.apply_action(bid_state, layout['leave_auction'])
+                apply_and_verify_all(bid_state, layout['leave_auction'])
 
         # Verify winner paid
         final_cash = PLAYERS[winner_id].get_cash(bid_state)
@@ -328,7 +319,7 @@ class TestAuctionResolution:
         layout = get_action_layout(3)
         for _ in range(2):
             if bid_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-                DRIVER.apply_action(bid_state, layout['leave_auction'])
+                apply_and_verify_all(bid_state, layout['leave_auction'])
 
         # Verify winner owns company
         final_owner = COMPANIES[company_id].get_owner_id(bid_state)
@@ -340,7 +331,7 @@ class TestAuctionResolution:
         layout = get_action_layout(3)
         for _ in range(2):
             if bid_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-                DRIVER.apply_action(bid_state, layout['leave_auction'])
+                apply_and_verify_all(bid_state, layout['leave_auction'])
 
         # Verify auction state cleared
         assert TURN.get_auction_company(bid_state) == -1
@@ -357,7 +348,7 @@ class TestAuctionResolution:
         layout = get_action_layout(3)
         for _ in range(2):
             if bid_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-                DRIVER.apply_action(bid_state, layout['leave_auction'])
+                apply_and_verify_all(bid_state, layout['leave_auction'])
 
         # Verify phase transition
         assert bid_state.get_phase() == GamePhases.PHASE_INVEST
@@ -372,7 +363,7 @@ class TestAuctionResolution:
         layout = get_action_layout(3)
         for _ in range(2):
             if bid_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-                DRIVER.apply_action(bid_state, layout['leave_auction'])
+                apply_and_verify_all(bid_state, layout['leave_auction'])
 
         # Verify active player is after starter
         active_player = bid_state.get_active_player()
@@ -391,7 +382,7 @@ class TestAuctionResolution:
         layout = get_action_layout(3)
         for _ in range(2):
             if bid_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-                DRIVER.apply_action(bid_state, layout['leave_auction'])
+                apply_and_verify_all(bid_state, layout['leave_auction'])
 
         # Verify net worth updated: lost cash, gained company
         # Net worth change = -bid_price + face_value
@@ -433,7 +424,7 @@ class TestAuctionResolution:
         mask = get_valid_action_mask(state)
         for i in range(layout['auction_base'], layout['buy_share_base']):
             if mask[i] == 1.0:
-                DRIVER.apply_action(state, i)
+                apply_and_verify_all(state, i)
                 break
 
         assert state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
@@ -442,7 +433,7 @@ class TestAuctionResolution:
         # Resolve auction (all others leave)
         for _ in range(2):
             if state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-                DRIVER.apply_action(state, layout['leave_auction'])
+                apply_and_verify_all(state, layout['leave_auction'])
 
         # Verify auction resolved
         assert state.get_phase() == GamePhases.PHASE_INVEST
@@ -469,8 +460,6 @@ class TestAuctionResolution:
         # Verify deck is still empty
         assert DECK.is_empty(state)
 
-        assert_invariants(state, "After auction resolution with empty deck")
-
     def test_auction_draws_new_company_marked_unavailable(self):
         """BID-09: New company drawn is revealed (unavailable) for this phase."""
         state = GameState(num_players=3)
@@ -496,14 +485,14 @@ class TestAuctionResolution:
         mask = get_valid_action_mask(state)
         for i in range(layout['auction_base'], layout['buy_share_base']):
             if mask[i] == 1.0:
-                DRIVER.apply_action(state, i)
+                apply_and_verify_all(state, i)
                 break
 
         auctioned_company = TURN.get_auction_company(state)
         assert state.is_company_for_auction(auctioned_company)
 
         while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-            DRIVER.apply_action(state, layout['leave_auction'])
+            apply_and_verify_all(state, layout['leave_auction'])
 
         # Auctioned company transferred to winner (no longer for auction)
         assert not state.is_company_for_auction(auctioned_company)
@@ -524,8 +513,6 @@ class TestAuctionResolution:
         assert final_revealed_count == 1, \
             "Newly drawn company should be marked as revealed (unavailable)"
 
-        assert_invariants(state, "After new company drawn")
-
     def test_return_to_player_after_starter_not_winner(self):
         """BID-11: Turn returns to player after starter, even if winner differs."""
         state = GameState(num_players=3)
@@ -540,7 +527,7 @@ class TestAuctionResolution:
         mask = get_valid_action_mask(state)
         for i in range(layout['auction_base'], layout['buy_share_base']):
             if mask[i] == 1.0:
-                DRIVER.apply_action(state, i)
+                apply_and_verify_all(state, i)
                 break
 
         recorded_starter = TURN.get_auction_starter(state)
@@ -550,12 +537,12 @@ class TestAuctionResolution:
         mask = get_valid_action_mask(state)
         for i in range(layout['raise_bid_base'], layout['acquisition_start']):
             if mask[i] == 1.0:
-                DRIVER.apply_action(state, i)
+                apply_and_verify_all(state, i)
                 break
 
         # Others leave
         while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-            DRIVER.apply_action(state, layout['leave_auction'])
+            apply_and_verify_all(state, layout['leave_auction'])
 
         # Active player should be after starter
         active_player = state.get_active_player()
@@ -564,8 +551,6 @@ class TestAuctionResolution:
 
         assert active_position == expected_position, \
             f"Turn should go to position {expected_position} (after starter), not {active_position}"
-
-        assert_invariants(state, "After return to player after starter")
 
 
 # =============================================================================
@@ -588,7 +573,7 @@ class TestFullAuctionCycle:
         layout = get_action_layout(3)
         for i in range(layout['auction_base'], layout['buy_share_base']):
             if mask[i] == 1.0:
-                DRIVER.apply_action(state, i)
+                apply_and_verify_all(state, i)
                 break
 
         # Now in BID phase
@@ -597,7 +582,7 @@ class TestFullAuctionCycle:
         # Two players leave
         for _ in range(2):
             if state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-                DRIVER.apply_action(state, layout['leave_auction'])
+                apply_and_verify_all(state, layout['leave_auction'])
 
         # Back to INVEST
         assert state.get_phase() == GamePhases.PHASE_INVEST
@@ -612,7 +597,7 @@ class TestFullAuctionCycle:
         layout = get_action_layout(3)
         for i in range(layout['auction_base'], layout['buy_share_base']):
             if mask[i] == 1.0:
-                DRIVER.apply_action(state, i)
+                apply_and_verify_all(state, i)
                 break
 
         initial_price = TURN.get_auction_price(state)
@@ -621,7 +606,7 @@ class TestFullAuctionCycle:
         mask = get_valid_action_mask(state)
         for i in range(layout['raise_bid_base'], layout['acquisition_start']):
             if mask[i] == 1.0:
-                DRIVER.apply_action(state, i)
+                apply_and_verify_all(state, i)
                 break
 
         # Verify price increased
@@ -631,13 +616,13 @@ class TestFullAuctionCycle:
         mask = get_valid_action_mask(state)
         for i in range(layout['raise_bid_base'], layout['acquisition_start']):
             if mask[i] == 1.0:
-                DRIVER.apply_action(state, i)
+                apply_and_verify_all(state, i)
                 break
 
         # Others leave to resolve
         for _ in range(2):
             if state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-                DRIVER.apply_action(state, layout['leave_auction'])
+                apply_and_verify_all(state, layout['leave_auction'])
 
         # Verify back to INVEST
         assert state.get_phase() == GamePhases.PHASE_INVEST
@@ -661,7 +646,7 @@ class TestMultiplePlayerCounts:
         layout = get_action_layout(num_players)
         for i in range(layout['auction_base'], layout['buy_share_base']):
             if mask[i] == 1.0:
-                DRIVER.apply_action(state, i)
+                apply_and_verify_all(state, i)
                 break
 
         assert state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
@@ -669,7 +654,7 @@ class TestMultiplePlayerCounts:
         # All but one leave
         for _ in range(num_players - 1):
             if state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-                DRIVER.apply_action(state, layout['leave_auction'])
+                apply_and_verify_all(state, layout['leave_auction'])
 
         # Verify resolved
         assert state.get_phase() == GamePhases.PHASE_INVEST
@@ -685,7 +670,7 @@ class TestMultiplePlayerCounts:
         layout = get_action_layout(num_players)
         for i in range(layout['auction_base'], layout['buy_share_base']):
             if mask[i] == 1.0:
-                DRIVER.apply_action(state, i)
+                apply_and_verify_all(state, i)
                 break
 
         # Track active players through leaves
@@ -693,7 +678,7 @@ class TestMultiplePlayerCounts:
         for _ in range(num_players - 1):
             if state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
                 active_players.append(state.get_active_player())
-                DRIVER.apply_action(state, layout['leave_auction'])
+                apply_and_verify_all(state, layout['leave_auction'])
 
         # Verify we cycled through different players
         assert len(set(active_players)) >= 2  # At least 2 different players
@@ -732,7 +717,7 @@ class TestAuctionMechanics:
         mask = get_valid_action_mask(state)
 
         if mask[first_slot_action] == 1.0:
-            DRIVER.apply_action(state, first_slot_action)
+            apply_and_verify_all(state, first_slot_action)
 
             # Verify auctioned company is the one with lowest face value
             auctioned_cid = TURN.get_auction_company(state)
@@ -741,7 +726,6 @@ class TestAuctionMechanics:
             # Note: Due to how the mask works, the first valid slot
             # should correspond to the first available company
             assert auctioned_cid >= 0
-            assert_invariants(state, "After slot mapping test")
 
     def test_starting_bid_equals_face_value_plus_offset(self):
         """Starting bid = company face value + price offset."""
@@ -760,7 +744,7 @@ class TestAuctionMechanics:
                 # slot_index = relative_idx // MAX_AUCTION_OFFSET
                 # offset = relative_idx % MAX_AUCTION_OFFSET
 
-                DRIVER.apply_action(state, i)
+                apply_and_verify_all(state, i)
 
                 company_id = TURN.get_auction_company(state)
                 auction_price = TURN.get_auction_price(state)
@@ -770,7 +754,6 @@ class TestAuctionMechanics:
                 assert auction_price >= face_value, \
                     f"Starting price {auction_price} < face value {face_value}"
 
-                assert_invariants(state, "After price calculation test")
                 break
 
     def test_higher_offset_gives_higher_starting_bid(self):
@@ -791,7 +774,7 @@ class TestAuctionMechanics:
             target_action = layout['auction_base'] + offset_target
 
             if mask[target_action] == 1.0:
-                DRIVER.apply_action(state, target_action)
+                apply_and_verify_all(state, target_action)
                 prices.append(TURN.get_auction_price(state))
 
         if len(prices) == 2:
@@ -819,7 +802,7 @@ class TestAutoApplyBehavior:
         layout = get_action_layout(3)
         for i in range(layout['auction_base'], layout['buy_share_base']):
             if mask[i] == 1.0:
-                DRIVER.apply_action(state, i)
+                apply_and_verify_all(state, i)
                 break
 
         # First leave - should NOT resolve (2 bidders remain)
@@ -832,4 +815,3 @@ class TestAutoApplyBehavior:
         assert state.get_phase() == GamePhases.PHASE_INVEST
         # History should include at least the leave action
         assert result.applied_count >= 1
-

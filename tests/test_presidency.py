@@ -12,17 +12,15 @@ Tests organized by trigger mechanism:
 """
 import pytest
 from core.state import GameState
-from core.data import GamePhases, GameConstants
-from core.driver import DRIVER
+from core.data import GamePhases
 from core.actions import get_valid_action_mask, get_action_layout
 from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.company import COMPANIES
 from entities.turn import TURN
-from entities.market import MARKET
 from phases.ipo import setup_ipo_phase_py, apply_ipo_action_py
 from tests.phases.conftest import (
-    STATUS_OK, float_corp_for_test, assert_invariants,
+    float_corp_for_test, assert_invariants, apply_and_verify_all,
 )
 
 
@@ -98,13 +96,21 @@ class TestPresidencyRecalculation:
     def test_presidency_transfers_to_most_shares(self, trade_state):
         """INV-18: Player with most shares becomes president."""
         # Player 0 has 2 shares, is president
-        # Give player 1 more shares
+        # Give player 1 more shares - fix share accounting
+        # trade_state: unissued(3), bank(2), P0(2), issued(4), total=7
+        # After: unissued(0), bank(2), P0(2), P1(3), issued(7), total=7
+        corp = CORPS[0]
+        # Set issued/unissued first, then bank to account for set_shares auto-adjust
+        corp.set_issued_shares(trade_state, 7)
+        corp.set_unissued_shares(trade_state, 0)
+        # bank = issued - P0 - P1_current = 7 - 2 - 0 = 5; set_shares(P1,3) will auto-adjust to 2
+        corp.set_bank_shares(trade_state, 5)
         PLAYERS[1].set_shares(trade_state, 0, 3)
 
         # Sell a share (triggers presidency check)
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(trade_state, sell_idx)
+        apply_and_verify_all(trade_state, sell_idx)
 
         # Player 1 should now be president (3 shares > 1 share)
         assert PLAYERS[1].is_president_of(trade_state, 0)
@@ -113,17 +119,19 @@ class TestPresidencyRecalculation:
     def test_presidency_incumbent_keeps_on_tie(self, trade_state):
         """INV-19: Incumbent keeps presidency when shares are equal."""
         # Player 0 has 2 shares, is president
-        # Give player 1 same shares
-        PLAYERS[1].set_shares(trade_state, 0, 2)
-
-        # Sell a share (triggers presidency check)
-        # After sell: P0 has 1, P1 has 2 -> P1 wins
-        # But if we set P1 to 1 share, then after sell both have 1
+        # Give player 1 1 share so after P0 sell both have 1 -> tie
+        # trade_state: unissued(3), bank(2), P0(2), issued(4), total=7
+        # After: unissued(2), bank(2), P0(2), P1(1), issued(5), total=7
+        corp = CORPS[0]
+        corp.set_issued_shares(trade_state, 5)
+        corp.set_unissued_shares(trade_state, 2)
+        # bank = issued - P0 - P1_current = 5 - 2 - 0 = 3; set_shares(P1,1) will auto-adjust to 2
+        corp.set_bank_shares(trade_state, 3)
         PLAYERS[1].set_shares(trade_state, 0, 1)
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(trade_state, sell_idx)
+        apply_and_verify_all(trade_state, sell_idx)
 
         # P0 now has 1 share, P1 has 1 share -> tie, incumbent (P0) keeps it
         assert PLAYERS[0].is_president_of(trade_state, 0)
@@ -134,19 +142,15 @@ class TestPresidencyRecalculation:
 
         # Player 0 is president with 2 shares
         # Buy increases shares to 3, should maintain presidency
-        # Adjust unissued to allow more bank shares (7 total = 3 unissued + 4 bank + 0 player)
+        # Set up: unissued(3), bank(2), P0(2), issued(4), total=7
         corp.set_unissued_shares(trade_state, 3)
-        corp.set_bank_shares(trade_state, 4)
-        corp.set_issued_shares(trade_state, 0)  # No shares issued yet
-        PLAYERS[0].set_shares(trade_state, 0, 0)
-        # After this setup, we need to actually give player 0 shares
-        corp.set_issued_shares(trade_state, 2)
         corp.set_bank_shares(trade_state, 2)
+        corp.set_issued_shares(trade_state, 4)
         PLAYERS[0].set_shares(trade_state, 0, 2)
 
         layout = get_action_layout(3)
         buy_idx = layout['buy_share_base'] + 0
-        DRIVER.apply_action(trade_state, buy_idx)
+        apply_and_verify_all(trade_state, buy_idx)
 
         # Player 0 should still be president (now with 3 shares)
         assert PLAYERS[0].is_president_of(trade_state, 0)
@@ -157,12 +161,13 @@ class TestPresidencyRecalculation:
         corp = CORPS[0]
 
         # Player 0 starts as president with 2 shares (from trade_state fixture)
-        # Give player 1 more shares - this triggers automatic presidency recalculation
-        # P1 with 3 shares becomes president (3 > 2)
-        PLAYERS[1].set_shares(trade_state, 0, 3)
-        # Update share accounting: bank(2) + P0(2) + P1(3) = 7 issued, 0 unissued
+        # trade_state: unissued(3), bank(2), P0(2), issued(4), total=7
+        # Desired before buy: unissued(0), bank(2), P0(2), P1(3), issued(7)
         corp.set_issued_shares(trade_state, 7)
         corp.set_unissued_shares(trade_state, 0)
+        # bank = issued - P0 - P1_current = 7 - 2 - 0 = 5; set_shares(P1,3) auto-adjusts to 2
+        corp.set_bank_shares(trade_state, 5)
+        PLAYERS[1].set_shares(trade_state, 0, 3)
 
         # At this point P1 is president (automatic recalculation when set_shares was called)
         assert PLAYERS[1].is_president_of(trade_state, 0), "P1 should be president after getting 3 shares"
@@ -170,31 +175,32 @@ class TestPresidencyRecalculation:
         # Player 0 buys, now has 3 shares - tie with player 1
         layout = get_action_layout(3)
         buy_idx = layout['buy_share_base'] + 0
-        DRIVER.apply_action(trade_state, buy_idx)
+        apply_and_verify_all(trade_state, buy_idx)
 
         # After buy: P0 has 3, P1 has 3 - tie, incumbent (P1) keeps
         assert PLAYERS[1].is_president_of(trade_state, 0), "On tie, incumbent P1 keeps presidency"
-        assert_invariants(trade_state, "After buy with tie")
 
     def test_presidency_three_way_competition(self, trade_state):
         """Presidency goes to player with most shares among three shareholders."""
         # Set up: P0=2 (president), P1=1, P2=1
+        # trade_state: unissued(3), bank(2), P0(2), issued(4), total=7
+        # Desired: unissued(1), bank(2), P0(2), P1(1), P2(1), issued(6)
+        corp = CORPS[0]
+        corp.set_issued_shares(trade_state, 6)
+        corp.set_unissued_shares(trade_state, 1)
+        # bank = issued - P0 - P1_current - P2_current = 6 - 2 - 0 - 0 = 4
+        # set_shares(P1,1) auto-adjusts bank to 3, set_shares(P2,1) auto-adjusts to 2
+        corp.set_bank_shares(trade_state, 4)
         PLAYERS[1].set_shares(trade_state, 0, 1)
         PLAYERS[2].set_shares(trade_state, 0, 1)
-        # Update issued shares: bank(2) + P0(2) + P1(1) + P2(1) = 6, but corp has 7 total
-        # So: unissued(1) + bank(2) + P0(2) + P1(1) + P2(1) = 7
-        corp = CORPS[0]
-        corp.set_unissued_shares(trade_state, 1)
-        corp.set_issued_shares(trade_state, 6)
 
         # P0 sells, now has 1 share - three-way tie
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(trade_state, sell_idx)
+        apply_and_verify_all(trade_state, sell_idx)
 
         # All have 1 share - incumbent keeps presidency
         assert PLAYERS[0].is_president_of(trade_state, 0)
-        assert_invariants(trade_state, "After three-way tie")
 
     def test_presidency_turn_order_tiebreaker(self, trade_state):
         """INV-20: When multiple players have more shares, use turn order from incumbent."""
@@ -217,12 +223,11 @@ class TestPresidencyRecalculation:
         # After: P0=0, P1=3, P2=2 -> P1 wins (most shares)
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(trade_state, sell_idx)
+        apply_and_verify_all(trade_state, sell_idx)
 
         assert PLAYERS[1].is_president_of(trade_state, 0)
         assert not PLAYERS[0].is_president_of(trade_state, 0)
         assert not PLAYERS[2].is_president_of(trade_state, 0)
-        assert_invariants(trade_state, "After turn order tiebreak")
 
     def test_presidency_turn_order_tiebreaker_tie_at_max(self, trade_state):
         """When multiple players tie for max shares (more than incumbent), use turn order."""
@@ -242,13 +247,12 @@ class TestPresidencyRecalculation:
         # Sell P0's share to trigger presidency check
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(trade_state, sell_idx)
+        apply_and_verify_all(trade_state, sell_idx)
 
         # P1 should be president (next in turn order after P0 with max shares)
         assert PLAYERS[1].is_president_of(trade_state, 0)
         assert not PLAYERS[0].is_president_of(trade_state, 0)
         assert not PLAYERS[2].is_president_of(trade_state, 0)
-        assert_invariants(trade_state, "After turn order tiebreak with tie at max")
 
     def test_presidency_turn_order_wraps_around(self):
         """Turn order wraps around when checking for new president."""
@@ -284,13 +288,12 @@ class TestPresidencyRecalculation:
         # Position 0 is P1 with 3 shares -> P1 becomes president
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(state, sell_idx)
+        apply_and_verify_all(state, sell_idx)
 
         # P1 should be president (at position 0, first after position 2 wrapping)
         assert PLAYERS[1].is_president_of(state, 0)
         assert not PLAYERS[0].is_president_of(state, 0)
         assert not PLAYERS[2].is_president_of(state, 0)
-        assert_invariants(state, "After turn order wrap-around")
 
     def test_ipo_sets_player_as_president(self, ipo_state_with_company):
         """IPO sets company owner as corporation president."""
@@ -299,6 +302,7 @@ class TestPresidencyRecalculation:
         assert not PLAYERS[0].is_president_of(state, 0)
 
         apply_ipo_action_py(state, 0, 0)
+        assert_invariants(state, "After IPO action")
 
         assert PLAYERS[0].is_president_of(state, 0)
 
@@ -315,12 +319,15 @@ class TestReceivership:
         corp = CORPS[0]
 
         # Set up: only player 0 has 1 share
+        # trade_state: unissued(3), bank(2), P0(2), issued(4), total=7
+        # After: unissued(3), bank(3), P0(1), issued(4), total=7
         PLAYERS[0].set_shares(trade_state, 0, 1)
+        corp.set_bank_shares(trade_state, 3)
 
         # Sell the last share
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(trade_state, sell_idx)
+        apply_and_verify_all(trade_state, sell_idx)
 
         # Corp should be in receivership (all player shares = 0)
         assert corp.is_in_receivership(trade_state)
@@ -333,14 +340,18 @@ class TestReceivership:
         corp = CORPS[0]
 
         # Put corp in receivership
+        # trade_state: unissued(3), bank(2), P0(2), issued(4), total=7
+        # After: unissued(2), bank(5), P0(0), issued(5), total=7
         corp.set_in_receivership(trade_state, True)
         PLAYERS[0].set_shares(trade_state, 0, 0)
         corp.set_bank_shares(trade_state, 5)
+        corp.set_unissued_shares(trade_state, 2)
+        corp.set_issued_shares(trade_state, 5)
 
         # Buy a share
         layout = get_action_layout(3)
         buy_idx = layout['buy_share_base'] + 0
-        DRIVER.apply_action(trade_state, buy_idx)
+        apply_and_verify_all(trade_state, buy_idx)
 
         # Corp exits receivership
         assert not corp.is_in_receivership(trade_state)
@@ -353,12 +364,11 @@ class TestReceivership:
         corp = CORPS[0]
 
         # Put corp in receivership - adjust shares to maintain invariant
-        # Corp 0 has 7 total: unissued(3) + issued(4) = 7
-        # issued = bank(4) + players(0)
-        corp.set_in_receivership(trade_state, True)
-        corp.set_bank_shares(trade_state, 4)
-        corp.set_issued_shares(trade_state, 4)
+        # trade_state: unissued(3), bank(2), P0(2), issued(4), total=7
+        # Desired: unissued(3), bank(4), P0(0), issued(4), receivership=True
+        # set_shares(P0, 0, 0) auto-adjusts bank: 2 + 2 = 4
         PLAYERS[0].set_shares(trade_state, 0, 0)
+        corp.set_in_receivership(trade_state, True)
 
         # Verify corp is in receivership
         assert corp.is_in_receivership(trade_state)
@@ -370,12 +380,11 @@ class TestReceivership:
 
         assert mask[buy_idx] == 1.0, "Buy should be valid for receivership corp"
 
-        DRIVER.apply_action(trade_state, buy_idx)
+        apply_and_verify_all(trade_state, buy_idx)
 
         # No longer in receivership
         assert not corp.is_in_receivership(trade_state)
         assert PLAYERS[0].is_president_of(trade_state, 0)
-        assert_invariants(trade_state, "After exit receivership")
 
     def test_receivership_sell_all_shares_from_multiple_players(self):
         """Multiple players selling down eventually leads to receivership."""
@@ -398,15 +407,13 @@ class TestReceivership:
         sell_idx = layout['sell_share_base'] + 0
 
         # P0 sells their only share - corp should enter receivership
-        DRIVER.apply_action(state, sell_idx)
+        apply_and_verify_all(state, sell_idx)
 
         # Corp should be in receivership (all player shares = 0)
         assert corp.is_in_receivership(state)
         # No one should be president
         for player_id in range(3):
             assert not PLAYERS[player_id].is_president_of(state, 0)
-
-        assert_invariants(state, "After entering receivership")
 
 
 # =============================================================================
@@ -420,7 +427,7 @@ class TestPresidencyOnBankruptcy:
         """Bankruptcy clears all president flags for that corp."""
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(bankruptcy_state, sell_idx)
+        apply_and_verify_all(bankruptcy_state, sell_idx)
 
         for player_id in range(3):
             assert not PLAYERS[player_id].is_president_of(bankruptcy_state, 0)

@@ -1,7 +1,6 @@
 """Tests for WRAP_UP phase behavior."""
 import pytest
 from core.state import GameState
-from core.driver import DRIVER
 from core.actions import get_action_layout
 from core.data import GamePhases
 from entities.turn import TURN
@@ -10,6 +9,7 @@ from entities.fi import FI
 from entities.company import COMPANIES
 from entities.deck import DECK
 from phases.wrap_up import apply_wrap_up_py
+from tests.phases.conftest import apply_and_verify_all, assert_invariants
 
 
 def trigger_wrap_up(state):
@@ -19,7 +19,7 @@ def trigger_wrap_up(state):
     pass_idx = layout['pass_invest']
 
     for _ in range(num_players):
-        DRIVER.apply_action(state, pass_idx)
+        apply_and_verify_all(state, pass_idx)
 
 
 # =============================================================================
@@ -34,7 +34,10 @@ class TestAvailabilityTransition:
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
-        # Clear all companies first
+        # Clear deck first so remove_from_game doesn't leave stale deck count
+        DECK.set_order(state, [])
+
+        # Clear all companies
         for company_id in range(36):
             COMPANIES[company_id].remove_from_game(state)
 
@@ -49,8 +52,11 @@ class TestAvailabilityTransition:
         assert COMPANIES[1].is_revealed(state), "Company 1 should be revealed"
         assert COMPANIES[2].is_for_auction(state), "Company 2 should be for auction"
 
-        # Trigger WRAP_UP
-        trigger_wrap_up(state)
+        # Apply WRAP_UP directly (bypasses full cycle that would trigger
+        # GAME_OVER due to no companies remaining for auction)
+        TURN.set_phase(state, GamePhases.PHASE_WRAP_UP)
+        apply_wrap_up_py(state)
+        assert_invariants(state, "After wrap up")
 
         # Verify all REVEALED companies are now FOR_AUCTION
         assert COMPANIES[0].is_for_auction(state), "Company 0 should be FOR_AUCTION"
@@ -76,7 +82,7 @@ class TestWrapUpHistory:
 
         # Pass all but last player
         for _ in range(2):
-            DRIVER.apply_action(state, pass_idx)
+            apply_and_verify_all(state, pass_idx)
 
         # Last pass triggers WRAP_UP auto-apply
         result = apply_and_track(state, pass_idx)
@@ -107,7 +113,7 @@ class TestPhaseTransitions:
         layout = get_action_layout(3)
         pass_idx = layout['pass_invest']
         for _ in range(3):
-            DRIVER.apply_action(state, pass_idx)
+            apply_and_verify_all(state, pass_idx)
 
         # Verify final phase is INVEST (turn 2)
         assert state.get_phase() == GamePhases.PHASE_INVEST
@@ -202,6 +208,9 @@ class TestFICashPreservation:
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
+        # Clear deck first so remove_from_game doesn't leave stale deck count
+        DECK.set_order(state, [])
+
         # Clear all companies from auction (nothing to buy)
         for company_id in range(36):
             COMPANIES[company_id].remove_from_game(state)
@@ -210,8 +219,11 @@ class TestFICashPreservation:
         FI.set_cash(state, 50)
         fi_cash_before = FI.get_cash(state)
 
-        # Trigger WRAP_UP
-        trigger_wrap_up(state)
+        # Apply WRAP_UP directly (bypasses full cycle that would trigger
+        # GAME_OVER due to no companies remaining for auction)
+        TURN.set_phase(state, GamePhases.PHASE_WRAP_UP)
+        apply_wrap_up_py(state)
+        assert_invariants(state, "After wrap up")
 
         # FI should retain all cash (nothing to buy)
         assert FI.get_cash(state) == fi_cash_before, \
@@ -342,6 +354,7 @@ class TestFIPurchaseBehavior:
         # Set phase to WRAP_UP and apply directly
         TURN.set_phase(state, GamePhases.PHASE_WRAP_UP)
         apply_wrap_up_py(state)
+        assert_invariants(state, "After wrap up")
 
         # Verify:
         # - Company 0 should be owned by FI (purchased for $1)
@@ -383,6 +396,7 @@ class TestFIPurchaseBehavior:
 
         TURN.set_phase(state, GamePhases.PHASE_WRAP_UP)
         apply_wrap_up_py(state)
+        assert_invariants(state, "After wrap up")
 
         # FI should only own the two originally-available companies
         assert COMPANIES[0].is_owned_by_fi(state), "FI should own company 0 ($1)"
@@ -430,6 +444,7 @@ class TestFIPurchaseBehavior:
 
         TURN.set_phase(state, GamePhases.PHASE_WRAP_UP)
         apply_wrap_up_py(state)
+        assert_invariants(state, "After wrap up")
 
         # Ascending: buy 0($1,cash=7), 1($2,cash=5), 2($5,cash=0), can't afford 3($6)
         # This 3-company result is ONLY possible with ascending ordering

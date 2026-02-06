@@ -23,7 +23,7 @@ from phases.issue import (
     apply_issue_action_py,
     find_next_issue_corp_py,
 )
-from tests.phases.conftest import float_corp_for_test
+from tests.phases.conftest import float_corp_for_test, assert_invariants
 
 
 # =============================================================================
@@ -82,7 +82,9 @@ class TestBasicIssueMechanics:
 
         # Set up phase and apply issue
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
         apply_issue_action_py(state, issue=True)
+        assert_invariants(state, "After issue action")
 
         assert corp.get_unissued_shares(state) == initial_unissued - 1
         assert corp.get_issued_shares(state) == initial_issued + 1
@@ -97,6 +99,7 @@ class TestBasicIssueMechanics:
 
         # Set up phase and apply issue
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
 
         # Get the expected new price after drop
         current_index = corp.get_price_index(state)
@@ -104,6 +107,7 @@ class TestBasicIssueMechanics:
         expected_proceeds = get_market_price(new_index)
 
         apply_issue_action_py(state, issue=True)
+        assert_invariants(state, "After issue action")
 
         assert corp.get_cash(state) == initial_cash + expected_proceeds
 
@@ -118,7 +122,9 @@ class TestBasicIssueMechanics:
         initial_cash = corp.get_cash(state)
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
         apply_issue_action_py(state, issue=False)  # Pass
+        assert_invariants(state, "After issue pass action")
 
         assert corp.get_unissued_shares(state) == initial_unissued
         assert corp.get_issued_shares(state) == initial_issued
@@ -142,7 +148,9 @@ class TestPriceMovement:
         initial_index = corp.get_price_index(state)
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
         apply_issue_action_py(state, issue=True)
+        assert_invariants(state, "After issue action")
 
         final_index = corp.get_price_index(state)
         assert final_index < initial_index
@@ -157,7 +165,9 @@ class TestPriceMovement:
         MARKET.set_space_available(state, 13, True)   # Available
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
         apply_issue_action_py(state, issue=True)
+        assert_invariants(state, "After issue action")
 
         # Should drop to 13 (skipping occupied 14, from 15)
         assert corp.get_price_index(state) == 13
@@ -171,7 +181,9 @@ class TestPriceMovement:
         assert not MARKET.is_space_available(state, initial_index)
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
         apply_issue_action_py(state, issue=True)
+        assert_invariants(state, "After issue action")
 
         assert MARKET.is_space_available(state, initial_index)
 
@@ -184,7 +196,9 @@ class TestPriceMovement:
         new_index = MARKET.find_next_lower_space(state, initial_index)
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
         apply_issue_action_py(state, issue=True)
+        assert_invariants(state, "After issue action")
 
         assert not MARKET.is_space_available(state, new_index)
 
@@ -199,7 +213,9 @@ class TestPriceMovement:
         new_price = get_market_price(new_index)
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
         apply_issue_action_py(state, issue=True)
+        assert_invariants(state, "After issue action")
 
         assert corp.get_cash(state) == initial_cash + new_price
 
@@ -225,7 +241,9 @@ class TestStockMastersSpecial:
         initial_index = corp.get_price_index(state)
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
         apply_issue_action_py(state, issue=True)
+        assert_invariants(state, "After issue action")
 
         assert corp.get_price_index(state) == initial_index
 
@@ -243,7 +261,9 @@ class TestStockMastersSpecial:
         current_price = get_market_price(15)  # $24
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
         apply_issue_action_py(state, issue=True)
+        assert_invariants(state, "After issue action")
 
         assert corp.get_cash(state) == initial_cash + current_price
 
@@ -258,7 +278,9 @@ class TestStockMastersSpecial:
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
         apply_issue_action_py(state, issue=True)
+        assert_invariants(state, "After issue action")
 
         # Space 15 should still be occupied
         assert not MARKET.is_space_available(state, 15)
@@ -283,7 +305,9 @@ class TestStockMastersSpecial:
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
         apply_issue_action_py(state, issue=True)
+        assert_invariants(state, "After issue action")
 
         # SM should survive — still active, price unchanged, received $5
         assert corp.is_active(state), "SM should NOT go bankrupt at price index 1"
@@ -358,9 +382,8 @@ class TestReceivershipHandling:
 
         float_corp_for_test(state, corp_id=0, par_index=15)
 
-        # Put into receivership
-        corp.set_in_receivership(state, True)
-        PLAYERS[0].set_shares(state, 0, 0)  # Remove player shares
+        # Put into receivership: set_shares auto-adjusts bank shares and triggers receivership
+        PLAYERS[0].set_shares(state, 0, 0)
 
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
@@ -368,6 +391,7 @@ class TestReceivershipHandling:
 
         # Setup should auto-process receivership corps
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase (receivership auto-issue)")
 
         # Should have auto-issued (one less unissued)
         assert corp.get_unissued_shares(state) == initial_unissued - 1
@@ -379,13 +403,14 @@ class TestReceivershipHandling:
 
         float_corp_for_test(state, corp_id=0, par_index=15)
 
-        # All shares issued (no unissued)
+        # All shares issued (no unissued): total=7, all in bank for receivership
+        # Set issued/bank first, then set_shares auto-adjusts bank by +1 (player 1->0)
         corp.set_unissued_shares(state, 0)
         corp.set_issued_shares(state, 7)
+        corp.set_bank_shares(state, 6)
         corp.set_cash(state, 50)
 
-        # Put into receivership
-        corp.set_in_receivership(state, True)
+        # Put into receivership: set_shares auto-adjusts bank shares and triggers receivership
         PLAYERS[0].set_shares(state, 0, 0)
 
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
@@ -393,6 +418,7 @@ class TestReceivershipHandling:
         initial_cash = corp.get_cash(state)
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase (receivership auto-pass)")
 
         # Should have auto-passed (cash unchanged)
         assert corp.get_cash(state) == initial_cash
@@ -409,6 +435,7 @@ class TestReceivershipHandling:
         initial_unissued = corp.get_unissued_shares(state)
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase (player decision)")
 
         # Should NOT auto-issue (waiting for player decision)
         assert corp.get_unissued_shares(state) == initial_unissued
@@ -429,6 +456,7 @@ class TestActionMaskValidation:
         state = issue_state_with_corp
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
 
         mask = get_valid_action_mask(state)
         layout = get_action_layout(3)
@@ -443,13 +471,15 @@ class TestActionMaskValidation:
 
         float_corp_for_test(state, corp_id=0, par_index=15)
 
-        # All shares issued (no unissued)
+        # All shares issued (no unissued): total=7, player has 1, bank has 6
         corp.set_unissued_shares(state, 0)
         corp.set_issued_shares(state, 7)
+        corp.set_bank_shares(state, 6)
 
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
 
         mask = get_valid_action_mask(state)
         layout = get_action_layout(3)
@@ -463,6 +493,7 @@ class TestActionMaskValidation:
 
         # No active corps -> setup transitions to IPO then INVEST
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase (no active corps)")
 
         # Phase should have transitioned
         assert TURN.get_phase(state) != GamePhases.PHASE_ISSUE_SHARES
@@ -482,6 +513,7 @@ class TestPhaseTransitions:
 
         # No active corps
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase (transitions to INVEST)")
 
         assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
 
@@ -490,9 +522,11 @@ class TestPhaseTransitions:
         state = issue_state_with_corp
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
         assert TURN.get_phase(state) == GamePhases.PHASE_ISSUE_SHARES
 
         apply_issue_action_py(state, issue=True)
+        assert_invariants(state, "After issue action")
 
         assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
 
@@ -507,14 +541,17 @@ class TestPhaseTransitions:
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
 
         # First corp (higher price index = 15)
         assert TURN.get_phase(state) == GamePhases.PHASE_ISSUE_SHARES
         apply_issue_action_py(state, issue=False)  # Pass
+        assert_invariants(state, "After first corp pass")
 
         # Second corp
         assert TURN.get_phase(state) == GamePhases.PHASE_ISSUE_SHARES
         apply_issue_action_py(state, issue=False)  # Pass
+        assert_invariants(state, "After second corp pass")
 
         # Now should transition to INVEST (via IPO)
         assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
@@ -528,6 +565,7 @@ class TestPhaseTransitions:
         # Simulate END_CARD -> ISSUE_SHARES transition
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase (from END_CARD)")
 
         # Should be ready for player action
         assert TURN.get_phase(state) == GamePhases.PHASE_ISSUE_SHARES
@@ -549,10 +587,9 @@ class TestIntegration:
         # Corp 0: Player-controlled, highest price
         float_corp_for_test(state, corp_id=0, player_id=0, par_index=20)
 
-        # Corp 1: Receivership, middle price
+        # Corp 1: Receivership, middle price (set_shares auto-adjusts bank and triggers receivership)
         float_corp_for_test(state, corp_id=1, player_id=1, par_index=15)
-        CORPS[1].set_in_receivership(state, True)
-        PLAYERS[1].set_shares(state, 1, 0)  # Remove player shares for receivership
+        PLAYERS[1].set_shares(state, 1, 0)
 
         # Corp 2: Player-controlled, lowest price
         float_corp_for_test(state, corp_id=2, player_id=2, par_index=10)
@@ -563,6 +600,7 @@ class TestIntegration:
 
         # Setup finds highest-price corp first
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase (mixed corps)")
 
         # Corp 1 (receivership) NOT yet processed - Corp 0 (highest price) is first
         assert CORPS[1].get_unissued_shares(state) == corp1_initial_unissued
@@ -571,6 +609,7 @@ class TestIntegration:
         assert TURN.get_issue_corp(state) == 0
 
         apply_issue_action_py(state, issue=False)  # Pass on corp 0
+        assert_invariants(state, "After pass on corp 0")
 
         # Now corp 1 (receivership) should have auto-issued during advance
         # And we should be on corp 2
@@ -578,6 +617,7 @@ class TestIntegration:
         assert TURN.get_issue_corp(state) == 2
 
         apply_issue_action_py(state, issue=False)  # Pass on corp 2
+        assert_invariants(state, "After pass on corp 2")
 
         # Should transition to INVEST (via IPO)
         assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
@@ -602,10 +642,13 @@ class TestIntegration:
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
 
         # Pass on both
         apply_issue_action_py(state, issue=False)
+        assert_invariants(state, "After first corp pass")
         apply_issue_action_py(state, issue=False)
+        assert_invariants(state, "After second corp pass")
 
         # Verify no share changes
         for corp_id in range(2):
@@ -619,27 +662,25 @@ class TestIntegration:
         state = game_state
 
         # Set up two corps at different prices with specific share counts
-        # float_shares=2 gives: player=2, bank=2, issued=4, unissued=total-4
-        # Corp 0 (JS) has 7 total shares -> unissued=3, issued=4
+        # float_shares=2 gives: player=2, bank=2, issued=4, unissued=3 (total=7)
         float_corp_for_test(state, corp_id=0, player_id=0, par_index=10, float_shares=2)
         float_corp_for_test(state, corp_id=1, player_id=1, par_index=15, float_shares=2)
-
-        # Adjust bank shares to 0 for both (test expects starting bank=0)
-        for corp_id in range(2):
-            CORPS[corp_id].set_bank_shares(state, 0)
 
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
 
         setup_issue_phase_py(state)
+        assert_invariants(state, "After setup_issue_phase")
 
         # Issue on both
         apply_issue_action_py(state, issue=True)
+        assert_invariants(state, "After first corp issue")
         apply_issue_action_py(state, issue=True)
+        assert_invariants(state, "After second corp issue")
 
         # Verify share changes (unissued -1, issued +1, bank +1)
         for corp_id in range(2):
             corp = CORPS[corp_id]
-            # Both corps have 7 shares: float_shares=2 gives issued=4, unissued=3
+            # Both corps have 7 shares: float_shares=2 gives issued=4, unissued=3, bank=2
             assert corp.get_unissued_shares(state) == 2  # 3 - 1
             assert corp.get_issued_shares(state) == 5    # 4 + 1
-            assert corp.get_bank_shares(state) == 1      # 0 + 1
+            assert corp.get_bank_shares(state) == 3      # 2 + 1

@@ -298,10 +298,17 @@ cdef class Player:
         """
         Set player's shares of a corporation.
 
-        Automatically recalculates presidency for the corporation after updating
-        share count. This ensures presidency is always consistent with share ownership.
+        Automatically adjusts bank shares by the inverse delta (shares moving
+        to/from bank) and recalculates presidency. This mirrors the in-game
+        mechanic where shares always transfer between player and bank.
         """
+        cdef int old_shares = <int>(state._data[self._owned_shares_offset + corp_id] * SHARE_DIVISOR + 0.5)
+        cdef int delta = shares - old_shares
         state._data[self._owned_shares_offset + corp_id] = <float>shares / SHARE_DIVISOR
+        # Adjust bank shares by inverse delta
+        if delta != 0:
+            corp_module.CORPS[corp_id].set_bank_shares(
+                state, corp_module.CORPS[corp_id].get_bank_shares(state) - delta)
         _recalculate_presidency(state, corp_id)
 
     # =========================================================================

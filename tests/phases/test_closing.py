@@ -52,6 +52,7 @@ class TestFIAutoClose:
 
         # Execute auto-close
         apply_closing_auto_py(state)
+        assert_invariants(state, "After FI auto-close negative income")
 
         # Company should be removed
         assert not FI.owns_company(state, red_company_id)
@@ -80,6 +81,7 @@ class TestFIAutoClose:
 
         # Execute auto-close
         apply_closing_auto_py(state)
+        assert_invariants(state, "After FI auto-close zero income")
 
         # Company should NOT be removed (zero income, not negative)
         assert FI.owns_company(state, company_id)
@@ -112,6 +114,7 @@ class TestFIAutoClose:
 
         # Execute auto-close
         apply_closing_auto_py(state)
+        assert_invariants(state, "After FI auto-close exactly -1")
 
         # Company should be closed (adjusted income < 0)
         assert not FI.owns_company(state, company_id)
@@ -144,6 +147,7 @@ class TestFIAutoClose:
 
         # Execute auto-close
         apply_closing_auto_py(state)
+        assert_invariants(state, "After FI auto-close boundary zero")
 
         # Company should NOT be closed (adjusted income == 0, not < 0)
         assert FI.owns_company(state, company_id)
@@ -161,6 +165,7 @@ class TestFIAutoClose:
         COMPANIES[company_id].transfer_to_fi(state)
 
         apply_closing_auto_py(state)
+        assert_invariants(state, "After FI auto-close positive income")
 
         # Company should remain
         assert FI.owns_company(state, company_id)
@@ -177,6 +182,7 @@ class TestFIAutoClose:
         COMPANIES[1].transfer_to_fi(state)
 
         apply_closing_auto_py(state)
+        assert_invariants(state, "After FI auto-close all companies")
 
         # Both should be closed
         assert not FI.owns_company(state, 0)
@@ -191,9 +197,7 @@ class TestReceivershipAutoClose:
         # Float corp with the first company
         float_corp_for_test(state, corp_id=corp_id, company_id=company_ids[0])
 
-        # Set in receivership and remove player shares
-        corp = CORPS[corp_id]
-        corp.set_in_receivership(state, True)
+        # Remove player shares (triggers receivership automatically)
         PLAYERS[0].set_shares(state, corp_id, 0)
 
         # Transfer any additional companies
@@ -214,6 +218,7 @@ class TestReceivershipAutoClose:
         TURN.set_coo_level(state, 5)  # Red CoO = $4
 
         apply_closing_auto_py(state)
+        assert_invariants(state, "After receivership auto-close red at CoO 4")
 
         # Red company should be closed
         assert COMPANIES[red_company].is_removed(state)
@@ -232,6 +237,7 @@ class TestReceivershipAutoClose:
         TURN.set_coo_level(state, 4)  # Red CoO = $2 < $4
 
         apply_closing_auto_py(state)
+        assert_invariants(state, "After receivership keeps red below CoO 4")
 
         # Red company should remain
         assert not COMPANIES[red_company].is_removed(state)
@@ -250,6 +256,7 @@ class TestReceivershipAutoClose:
         TURN.set_coo_level(state, 6)  # Orange CoO = $7
 
         apply_closing_auto_py(state)
+        assert_invariants(state, "After receivership auto-close orange at CoO 7")
 
         # Orange company should be closed
         assert COMPANIES[orange_company].is_removed(state)
@@ -277,6 +284,7 @@ class TestReceivershipAutoClose:
         assert coo < 7, "CoO should be below $7 threshold"
 
         apply_closing_auto_py(state)
+        assert_invariants(state, "After receivership keeps orange below CoO 7")
 
         # Orange company should NOT be closed (CoO $4 < $7)
         assert not COMPANIES[orange_company].is_removed(state)
@@ -295,6 +303,7 @@ class TestReceivershipAutoClose:
         TURN.set_coo_level(state, 7)  # Max CoO
 
         apply_closing_auto_py(state)
+        assert_invariants(state, "After receivership keeps yellow/green/blue")
 
         # None should be closed (yellow/green/blue exempt)
         assert not COMPANIES[yellow_company].is_removed(state)
@@ -310,9 +319,7 @@ class TestHighestFaceValueProtection:
         # Float corp with the first company
         float_corp_for_test(state, corp_id=corp_id, company_id=company_ids[0])
 
-        # Set in receivership and remove player shares
-        corp = CORPS[corp_id]
-        corp.set_in_receivership(state, True)
+        # Remove player shares (triggers receivership automatically)
         PLAYERS[0].set_shares(state, corp_id, 0)
 
         # Transfer any additional companies
@@ -332,6 +339,7 @@ class TestHighestFaceValueProtection:
         TURN.set_coo_level(state, 7)  # All reds would normally close
 
         apply_closing_auto_py(state)
+        assert_invariants(state, "After receivership highest FV protected")
 
         # Only highest FV should survive
         assert not COMPANIES[highest_fv].is_removed(state)
@@ -350,6 +358,7 @@ class TestHighestFaceValueProtection:
         TURN.set_coo_level(state, 7)
 
         apply_closing_auto_py(state)
+        assert_invariants(state, "After receivership single company protected")
 
         # Single company must survive (it's both the only AND highest FV)
         assert not COMPANIES[red_company].is_removed(state)
@@ -363,9 +372,7 @@ class TestVintageMachineryInReceivership:
         # Float corp with the first company
         float_corp_for_test(state, corp_id=corp_id, company_id=company_ids[0])
 
-        # Set in receivership and remove player shares
-        corp = CORPS[corp_id]
-        corp.set_in_receivership(state, True)
+        # Remove player shares (triggers receivership automatically)
         PLAYERS[0].set_shares(state, corp_id, 0)
 
         # Transfer any additional companies
@@ -392,6 +399,7 @@ class TestVintageMachineryInReceivership:
         TURN.set_coo_level(state, 7)
 
         apply_closing_auto_py(state)
+        assert_invariants(state, "After VM receivership auto-close")
 
         # Red company SHOULD be closed (VM ability doesn't apply to receivership)
         assert COMPANIES[red_company].is_removed(state), \
@@ -420,6 +428,7 @@ class TestJunkyardScrappersBonus:
         TURN.set_coo_level(state, 7)
 
         apply_closing_auto_py(state)
+        assert_invariants(state, "After FI close no JS bonus")
 
         # JS should NOT have received bonus (FI closed, not JS)
         assert js.get_cash(state) == 0
@@ -439,15 +448,14 @@ class TestJunkyardScrappersBonus:
         red_company = 1  # Use company 1 since 0 is used by JS
         other_company = 14  # Higher FV yellow
 
-        # Float corp 1, then set in receivership
+        # Float corp 1, then put in receivership by removing player shares
         float_corp_for_test(state, corp_id=1, company_id=red_company)
-        corp = CORPS[1]
-        corp.set_in_receivership(state, True)
-        PLAYERS[0].set_shares(state, 1, 0)  # Remove player shares for receivership
+        PLAYERS[0].set_shares(state, 1, 0)  # Triggers receivership automatically
         COMPANIES[other_company].transfer_to_corp(state, 1)
         TURN.set_coo_level(state, 7)
 
         apply_closing_auto_py(state)
+        assert_invariants(state, "After receivership close no JS bonus")
 
         # JS should NOT have received bonus (corp 1 closed, not JS)
         assert js.get_cash(state) == 0
@@ -464,6 +472,7 @@ class TestJunkyardScrappersBonus:
         TURN.set_coo_level(state, 7)
 
         apply_closing_auto_py(state)
+        assert_invariants(state, "After FI close JS inactive")
 
         # JS should have no cash
         assert js.get_cash(state) == 0
@@ -479,17 +488,17 @@ class TestJunkyardScrappersBonus:
         other_company = 14  # Higher FV yellow (protected)
         income = get_company_income(red_company)
 
-        # Float JS with the red company, then set in receivership
+        # Float JS with the red company, then put in receivership
         float_corp_for_test(state, corp_id=0, company_id=red_company)
         js = CORPS[0]
-        js.set_in_receivership(state, True)
-        PLAYERS[0].set_shares(state, 0, 0)  # Remove player shares for receivership
+        PLAYERS[0].set_shares(state, 0, 0)  # Triggers receivership automatically
         js.set_cash(state, 0)
 
         COMPANIES[other_company].transfer_to_corp(state, 0)
         TURN.set_coo_level(state, 7)
 
         apply_closing_auto_py(state)
+        assert_invariants(state, "After JS receivership auto-close with bonus")
 
         # JS should have received 2x income (JS closed its own company)
         assert js.get_cash(state) == income * 2
@@ -593,10 +602,9 @@ class TestOfferGeneration:
 
         gs = closing_offer_state
 
-        # Float corp 2 with company 4, then set in receivership
+        # Float corp 2 with company 4, then put in receivership
         float_corp_for_test(gs, corp_id=2, company_id=4)
-        CORPS[2].set_in_receivership(gs, True)
-        PLAYERS[0].set_shares(gs, 2, 0)  # Remove player shares for receivership
+        PLAYERS[0].set_shares(gs, 2, 0)  # Triggers receivership automatically
 
         generate_close_offers_py(gs)
 
@@ -661,12 +669,14 @@ class TestOfferValidation:
         # Set phase to CLOSING and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
         apply_closing_auto_py(gs)
+        assert_invariants(gs, "After auto-close prior acceptance test")
 
         # First offer should be company 0 (lowest FV)
         assert TURN.get_closing_company(gs) == 0
 
         # Accept first offer (closes company 0)
         apply_closing_action_py(gs, ACTION_CLOSE_PY)
+        assert_invariants(gs, "After closing first offer in invalidation test")
 
         # Second offer (company 3) should be SKIPPED because corp now has only 1 company
         # Phase should transition to INCOME (no more valid offers)
@@ -687,12 +697,14 @@ class TestCloseActions:
         # Set phase and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
         apply_closing_auto_py(gs)
+        assert_invariants(gs, "After auto-close accept test")
 
         # Offer should be active
         assert TURN.get_closing_company(gs) == 1
 
         # Accept the offer
         apply_closing_action_py(gs, ACTION_CLOSE_PY)
+        assert_invariants(gs, "After accepting close offer")
 
         # Company should be removed
         assert COMPANIES[1].is_removed(gs)
@@ -709,12 +721,14 @@ class TestCloseActions:
         # Set phase and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
         apply_closing_auto_py(gs)
+        assert_invariants(gs, "After auto-close pass test")
 
         # Offer should be active
         assert TURN.get_closing_company(gs) == 2
 
         # Pass on the offer
         apply_closing_action_py(gs, ACTION_PASS_PY)
+        assert_invariants(gs, "After passing close offer")
 
         # Company should NOT be removed
         assert not COMPANIES[2].is_removed(gs)
@@ -736,9 +750,11 @@ class TestCloseActions:
         # Set phase and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
         apply_closing_auto_py(gs)
+        assert_invariants(gs, "After auto-close JS no bonus player close")
 
         # Accept the close offer
         apply_closing_action_py(gs, ACTION_CLOSE_PY)
+        assert_invariants(gs, "After player close no JS bonus")
 
         # JS should NOT have received bonus (player closed, not JS)
         assert CORPS[0].get_cash(gs) == 100
@@ -747,8 +763,8 @@ class TestCloseActions:
         """JS does NOT receive bonus when another corp closes their company."""
         gs = closing_offer_state
 
-        # Float Junkyard Scrappers (corp 0)
-        float_corp_for_test(gs, corp_id=0)
+        # Float Junkyard Scrappers (corp 0) with a yellow company (won't be auto-closed)
+        float_corp_for_test(gs, corp_id=0, company_id=14)
         CORPS[0].set_cash(gs, 50)
 
         # Float corp 1 with company 0, then add company 3
@@ -758,9 +774,11 @@ class TestCloseActions:
         # Set phase and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
         apply_closing_auto_py(gs)
+        assert_invariants(gs, "After auto-close JS no bonus other corp")
 
         # Accept the close offer for company 0
         apply_closing_action_py(gs, ACTION_CLOSE_PY)
+        assert_invariants(gs, "After other corp close no JS bonus")
 
         # JS should NOT have received bonus (corp 1 closed, not JS)
         assert CORPS[0].get_cash(gs) == 50
@@ -777,9 +795,11 @@ class TestCloseActions:
         # Set phase and run auto-close
         TURN.set_phase(gs, PHASE_CLOSING_PY)
         apply_closing_auto_py(gs)
+        assert_invariants(gs, "After auto-close JS bonus test")
 
         # Accept the close offer for company 0
         apply_closing_action_py(gs, ACTION_CLOSE_PY)
+        assert_invariants(gs, "After JS closes own company with bonus")
 
         # JS should have received 2x printed income bonus ($1 * 2 = $2)
         expected_bonus = get_company_income(0) * 2
@@ -858,6 +878,7 @@ class TestMandatoryClose:
         assert PLAYERS[0].get_income(game_state) == 0
 
         process_mandatory_close_py(game_state)
+        assert_invariants(game_state, "After mandatory close no-op")
 
         # Nothing changed
         assert PLAYERS[0].get_cash(game_state) == 30
@@ -877,6 +898,7 @@ class TestMandatoryClose:
         PLAYERS[0].set_cash(game_state, 5)
 
         process_mandatory_close_py(game_state)
+        assert_invariants(game_state, "After mandatory close triggered")
 
         # Company should be closed
         assert not PLAYERS[0].owns_company(game_state, 0)
@@ -899,6 +921,7 @@ class TestMandatoryClose:
         PLAYERS[0].set_cash(game_state, 10)
 
         process_mandatory_close_py(game_state)
+        assert_invariants(game_state, "After mandatory close cheapest first")
 
         # Cheapest (company 0, face value $1) should be closed
         assert not PLAYERS[0].owns_company(game_state, 0)
@@ -922,6 +945,7 @@ class TestMandatoryClose:
         PLAYERS[0].set_cash(game_state, 10)
 
         process_mandatory_close_py(game_state)
+        assert_invariants(game_state, "After mandatory close multiple companies")
 
         # Should have closed enough to make total >= 0
         income = PLAYERS[0].get_income(game_state)
@@ -941,6 +965,7 @@ class TestMandatoryClose:
         PLAYERS[0].set_cash(game_state, 5)  # Will trigger mandatory close
 
         process_mandatory_close_py(game_state)
+        assert_invariants(game_state, "After mandatory close no JS bonus")
 
         # JS should NOT have received bonus (player mandatory close, not JS close)
         assert CORPS[0].get_cash(game_state) == initial_js_cash
@@ -961,6 +986,7 @@ class TestMandatoryClose:
         PLAYERS[0].set_cash(game_state, 0)
 
         process_mandatory_close_py(game_state)
+        assert_invariants(game_state, "After mandatory close only negative income")
 
         # No companies should be closed (total is positive)
         assert PLAYERS[0].owns_company(game_state, 29)
@@ -975,6 +1001,7 @@ class TestMandatoryClose:
         PLAYERS[1].set_cash(game_state, 5)  # Will trigger close
 
         process_mandatory_close_py(game_state)
+        assert_invariants(game_state, "After mandatory close player order")
 
         # Player 1's company should be closed
         assert not PLAYERS[1].owns_company(game_state, 5)
@@ -1004,6 +1031,7 @@ class TestMandatoryClose:
         PLAYERS[2].set_cash(game_state, 100)  # income + cash = -8 + 100 = 92 >= 0
 
         process_mandatory_close_py(game_state)
+        assert_invariants(game_state, "After mandatory close multiple players")
 
         # Player 0's company should be closed (would have negative cash)
         assert not PLAYERS[0].owns_company(game_state, 0)
@@ -1035,6 +1063,7 @@ class TestClosingPhaseTransition:
 
         # Run auto-close (which includes offer generation, mandatory close, and transition)
         apply_closing_auto_py(game_state)
+        assert_invariants(game_state, "After auto-close phase transition")
 
         # Should have transitioned to INCOME
         assert game_state.get_phase() == GamePhases.PHASE_INCOME
@@ -1053,12 +1082,14 @@ class TestClosingPhaseTransition:
         # Enter CLOSING phase and run auto-close
         TURN.set_phase(game_state, GamePhases.PHASE_CLOSING)
         apply_closing_auto_py(game_state)
+        assert_invariants(game_state, "After auto-close with mandatory close flow")
 
         # There should be a close offer for company 0
         assert TURN.get_closing_company(game_state) == 0
 
         # Pass on the offer (should trigger mandatory close after all offers processed)
         apply_closing_action_py(game_state, ACTION_PASS_PY)
+        assert_invariants(game_state, "After pass triggering mandatory close")
 
         # After passing, mandatory close should have kicked in and closed the company
         # Phase should transition to INCOME
@@ -1117,12 +1148,14 @@ class TestClosingEdgeCases:
         # Enter CLOSING phase and generate offers
         TURN.set_phase(game_state, PHASE_CLOSING_PY)
         apply_closing_auto_py(game_state)
+        assert_invariants(game_state, "After auto-close all pass mandatory trigger")
 
         # Should have an offer for company 0
         assert TURN.get_closing_company(game_state) == 0
 
         # Pass on the offer
         apply_closing_action_py(game_state, ACTION_PASS_PY)
+        assert_invariants(game_state, "After pass triggers mandatory close")
 
         # After passing, mandatory close should trigger and close company
         # Phase should transition to INCOME
@@ -1150,12 +1183,14 @@ class TestClosingEdgeCases:
         # Enter CLOSING phase and generate offers
         TURN.set_phase(game_state, PHASE_CLOSING_PY)
         apply_closing_auto_py(game_state)
+        assert_invariants(game_state, "After auto-close all pass no mandatory")
 
         # Should have an offer for company 0
         assert TURN.get_closing_company(game_state) == 0
 
         # Pass on the offer
         apply_closing_action_py(game_state, ACTION_PASS_PY)
+        assert_invariants(game_state, "After pass no mandatory close needed")
 
         # After passing, NO mandatory close (player has enough cash)
         # Phase should transition to INCOME
@@ -1194,19 +1229,23 @@ class TestClosingEdgeCases:
         # Enter CLOSING phase
         TURN.set_phase(game_state, PHASE_CLOSING_PY)
         apply_closing_auto_py(game_state)
+        assert_invariants(game_state, "After auto-close multi cascade")
 
         # Accept all three close offers
         # Offers are sorted by face value, so order is: company 0, company 1, company 3
         assert TURN.get_closing_company(game_state) in [0, 1]
         apply_closing_action_py(game_state, ACTION_CLOSE_PY)
+        assert_invariants(game_state, "After first cascade close")
 
         # Continue closing
         assert TURN.get_closing_company(game_state) in [0, 1, 3]
         apply_closing_action_py(game_state, ACTION_CLOSE_PY)
+        assert_invariants(game_state, "After second cascade close")
 
         # Third close
         assert TURN.get_closing_company(game_state) == 3
         apply_closing_action_py(game_state, ACTION_CLOSE_PY)
+        assert_invariants(game_state, "After third cascade close")
 
         # JS should NOT have received any bonus (player closes, not JS)
         assert CORPS[0].get_cash(game_state) == initial_js_cash
@@ -1227,12 +1266,14 @@ class TestClosingEdgeCases:
         # Enter CLOSING phase
         TURN.set_phase(gs, PHASE_CLOSING_PY)
         apply_closing_auto_py(gs)
+        assert_invariants(gs, "After auto-close dynamic invalidation")
 
         # First offer should be company 0 (lowest FV)
         assert TURN.get_closing_company(gs) == 0
 
         # Accept first offer (closes company 0, corp now has 1 company)
         apply_closing_action_py(gs, ACTION_CLOSE_PY)
+        assert_invariants(gs, "After close triggering last-company skip")
 
         # Second offer (company 3) should be SKIPPED because corp now has only 1 company
         # Phase should transition directly to INCOME
@@ -1275,10 +1316,12 @@ class TestClosingEdgeCases:
         # Enter CLOSING phase
         TURN.set_phase(state, PHASE_CLOSING_PY)
         apply_closing_auto_py(state)
+        assert_invariants(state, f"After auto-close ({num_players} players)")
 
         # Process all offers (pass on all)
         while TURN.get_closing_company(state) >= 0:
             apply_closing_action_py(state, ACTION_PASS_PY)
+            assert_invariants(state, f"After pass on close offer ({num_players} players)")
 
         # Phase should transition to INCOME
         assert state.get_phase() == PHASE_INCOME_PY

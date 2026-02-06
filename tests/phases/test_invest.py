@@ -2,7 +2,7 @@
 import pytest
 import numpy as np
 from core.state import GameState
-from core.driver import DRIVER, ZeroLegalActionsError, ForcedActionLoopError
+from core.driver import ZeroLegalActionsError, ForcedActionLoopError
 from core.actions import get_valid_action_mask, get_action_layout
 from core.data import GamePhases, CORP_NAMES, get_company_face_value
 from entities.turn import TURN
@@ -11,10 +11,10 @@ from entities.corp import CORPS
 from entities.market import MARKET
 from entities.company import COMPANIES
 from core.data import GameConstants
-from tests.phases.conftest import STATUS_OK, STATUS_GAME_OVER, float_corp_for_test
+from tests.phases.conftest import STATUS_OK, STATUS_GAME_OVER, float_corp_for_test, apply_and_verify_all
 
 # Fixtures come from conftest.py automatically
-# Helper functions also available: assert_valid_mask, assert_invariants, apply_action_and_verify
+# Helper functions also available: assert_valid_mask, assert_invariants
 
 
 # =============================================================================
@@ -36,9 +36,7 @@ def apply_pass_to_all_players(state, num_players):
     layout = get_action_layout(num_players)
     pass_idx = layout['pass_invest']
     for i in range(num_players):
-        result = DRIVER.apply_action(state, pass_idx)
-        # All passes return STATUS_OK now (WRAP_UP auto-applies and returns to INVEST)
-        assert result == STATUS_OK
+        apply_and_verify_all(state, pass_idx)
 
 
 # =============================================================================
@@ -56,8 +54,7 @@ class TestPassAction:
 
         # Apply pass action
         layout = get_action_layout(3)
-        result = DRIVER.apply_action(game_state, layout['pass_invest'])
-        assert result == STATUS_OK
+        apply_and_verify_all(game_state, layout['pass_invest'])
 
         # Verify consecutive_passes incremented
         new_passes = TURN.get_consecutive_passes(game_state)
@@ -91,7 +88,7 @@ class TestPassAction:
         for i in range(2):
             current_player = game_state.get_active_player()
             turn_sequence.append(current_player)
-            DRIVER.apply_action(game_state, layout['pass_invest'])
+            apply_and_verify_all(game_state, layout['pass_invest'])
 
         # Get third player
         third_player = game_state.get_active_player()
@@ -124,14 +121,13 @@ class TestPassAction:
         """INV-02: Non-pass action (auction) resets consecutive_passes."""
         # Apply pass to increment counter
         layout = get_action_layout(3)
-        DRIVER.apply_action(game_state, layout['pass_invest'])
+        apply_and_verify_all(game_state, layout['pass_invest'])
         assert TURN.get_consecutive_passes(game_state) >= 1
 
         # Find and apply auction action
         auction_idx = get_first_valid_auction_action(game_state)
         if auction_idx is not None:
-            result = DRIVER.apply_action(game_state, auction_idx)
-            assert result == STATUS_OK
+            apply_and_verify_all(game_state, auction_idx)
 
             # Verify consecutive_passes was reset to 0
             assert TURN.get_consecutive_passes(game_state) == 0
@@ -155,8 +151,7 @@ class TestStartAuction:
         assert initial_company == -1
 
         # Apply auction action
-        result = DRIVER.apply_action(game_state, auction_idx)
-        assert result == STATUS_OK
+        apply_and_verify_all(game_state, auction_idx)
 
         # Verify auction company was set
         auction_company = TURN.get_auction_company(game_state)
@@ -169,8 +164,7 @@ class TestStartAuction:
         assert auction_idx is not None
 
         # Apply auction action
-        result = DRIVER.apply_action(game_state, auction_idx)
-        assert result == STATUS_OK
+        apply_and_verify_all(game_state, auction_idx)
 
         # Verify auction price was set (should be >= face value)
         auction_price = TURN.get_auction_price(game_state)
@@ -185,8 +179,7 @@ class TestStartAuction:
         assert auction_idx is not None
 
         # Apply auction action
-        result = DRIVER.apply_action(game_state, auction_idx)
-        assert result == STATUS_OK
+        apply_and_verify_all(game_state, auction_idx)
 
         # Verify high bidder is the starter
         high_bidder = TURN.get_auction_high_bidder(game_state)
@@ -201,8 +194,7 @@ class TestStartAuction:
         assert auction_idx is not None
 
         # Apply auction action
-        result = DRIVER.apply_action(game_state, auction_idx)
-        assert result == STATUS_OK
+        apply_and_verify_all(game_state, auction_idx)
 
         # Verify auction starter was recorded
         auction_starter = TURN.get_auction_starter(game_state)
@@ -221,8 +213,7 @@ class TestStartAuction:
         assert auction_idx is not None
 
         # Apply auction action
-        result = DRIVER.apply_action(game_state, auction_idx)
-        assert result == STATUS_OK
+        apply_and_verify_all(game_state, auction_idx)
 
         # Verify phase transition
         assert game_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
@@ -333,14 +324,13 @@ class TestStartAuction:
         """INV-02: Start auction resets consecutive_passes counter."""
         # Apply pass to increment counter
         layout = get_action_layout(3)
-        DRIVER.apply_action(game_state, layout['pass_invest'])
+        apply_and_verify_all(game_state, layout['pass_invest'])
         assert TURN.get_consecutive_passes(game_state) >= 1
 
         # Find and apply auction action
         auction_idx = get_first_valid_auction_action(game_state)
         assert auction_idx is not None
-        result = DRIVER.apply_action(game_state, auction_idx)
-        assert result == STATUS_OK
+        apply_and_verify_all(game_state, auction_idx)
 
         # Verify consecutive_passes was reset
         assert TURN.get_consecutive_passes(game_state) == 0
@@ -390,7 +380,7 @@ class TestBuyShare:
 
         layout = get_action_layout(3)
         buy_idx = layout['buy_share_base'] + 0
-        DRIVER.apply_action(trade_state, buy_idx)
+        apply_and_verify_all(trade_state, buy_idx)
 
         # Share transferred
         assert corp.get_bank_shares(trade_state) == initial_bank_shares - 1
@@ -404,7 +394,7 @@ class TestBuyShare:
 
         layout = get_action_layout(3)
         buy_idx = layout['buy_share_base'] + 0
-        DRIVER.apply_action(trade_state, buy_idx)
+        apply_and_verify_all(trade_state, buy_idx)
 
         new_index = corp.get_price_index(trade_state)
         assert new_index > initial_index
@@ -419,7 +409,7 @@ class TestBuyShare:
 
         layout = get_action_layout(3)
         buy_idx = layout['buy_share_base'] + 0
-        DRIVER.apply_action(trade_state, buy_idx)
+        apply_and_verify_all(trade_state, buy_idx)
 
         # Net worth was updated (value may differ due to price change)
         new_net_worth = player.get_net_worth(trade_state)
@@ -434,7 +424,7 @@ class TestBuyShare:
 
         layout = get_action_layout(3)
         buy_idx = layout['buy_share_base'] + 0
-        DRIVER.apply_action(trade_state, buy_idx)
+        apply_and_verify_all(trade_state, buy_idx)
 
         new_buys = player.get_share_buys(trade_state, 0)
         assert new_buys == initial_buys + 1
@@ -443,8 +433,8 @@ class TestBuyShare:
         """Price movement affects all shareholders' net worth."""
         corp = CORPS[0]
 
-        # Give player 1 some shares of the same corp
-        PLAYERS[1].set_shares(trade_state, 0, 2)
+        # Give player 1 a share of the same corp (set_shares auto-adjusts bank)
+        PLAYERS[1].set_shares(trade_state, 0, 1)
         PLAYERS[1].set_cash(trade_state, 50)
 
         # Calculate expected net worth for player 1 before buy
@@ -455,7 +445,7 @@ class TestBuyShare:
         # Player 0 buys, which moves price up
         layout = get_action_layout(3)
         buy_idx = layout['buy_share_base'] + 0
-        DRIVER.apply_action(trade_state, buy_idx)
+        apply_and_verify_all(trade_state, buy_idx)
 
         # Player 1's net worth should reflect the new higher price
         new_price = corp.get_share_price(trade_state)
@@ -482,7 +472,7 @@ class TestSellShare:
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(trade_state, sell_idx)
+        apply_and_verify_all(trade_state, sell_idx)
 
         # Per RULES.md: "Bank pays **new** share price to player"
         # The price drops first, then player receives the new lower price
@@ -500,7 +490,7 @@ class TestSellShare:
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(trade_state, sell_idx)
+        apply_and_verify_all(trade_state, sell_idx)
 
         assert corp.get_bank_shares(trade_state) == initial_bank_shares + 1
         assert player.get_shares(trade_state, 0) == initial_player_shares - 1
@@ -513,7 +503,7 @@ class TestSellShare:
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(trade_state, sell_idx)
+        apply_and_verify_all(trade_state, sell_idx)
 
         new_index = corp.get_price_index(trade_state)
         assert new_index < initial_index
@@ -526,7 +516,7 @@ class TestSellShare:
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(trade_state, sell_idx)
+        apply_and_verify_all(trade_state, sell_idx)
 
         new_sells = player.get_share_sells(trade_state, 0)
         assert new_sells == initial_sells + 1
@@ -550,7 +540,7 @@ class TestPriceMovement:
 
         layout = get_action_layout(3)
         buy_idx = layout['buy_share_base'] + 0
-        DRIVER.apply_action(trade_state, buy_idx)
+        apply_and_verify_all(trade_state, buy_idx)
 
         new_index = corp.get_price_index(trade_state)
         # Should have skipped 11 and gone to 12 (or next available)
@@ -567,7 +557,7 @@ class TestPriceMovement:
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(trade_state, sell_idx)
+        apply_and_verify_all(trade_state, sell_idx)
 
         new_index = corp.get_price_index(trade_state)
         # Should have skipped 9 and gone to 8 (or next available)
@@ -630,10 +620,6 @@ class TestRoundTripLimits:
         COMPANIES[1].transfer_to_player(trade_state, 0)
         corp1 = CORPS[1]
         corp1.float_corp(trade_state, 0, 1, 8, 1)
-        corp1.set_bank_shares(trade_state, 2)
-
-        # Give player shares of corp 1
-        player.set_shares(trade_state, 1, 1)
 
         # Corp 1 should still be tradeable
         mask = get_valid_action_mask(trade_state)
@@ -660,8 +646,7 @@ class TestMultiplePlayerCounts:
         state.initialize_game(seed=42)
 
         layout = get_action_layout(num_players)
-        result = DRIVER.apply_action(state, layout['pass_invest'])
-        assert result == STATUS_OK
+        apply_and_verify_all(state, layout['pass_invest'])
 
         # Verify consecutive_passes incremented
         assert TURN.get_consecutive_passes(state) == 1
@@ -675,8 +660,7 @@ class TestMultiplePlayerCounts:
         # Find valid auction action
         auction_idx = get_first_valid_auction_action(state)
         if auction_idx is not None:
-            result = DRIVER.apply_action(state, auction_idx)
-            assert result == STATUS_OK
+            apply_and_verify_all(state, auction_idx)
 
             # Verify transition to BID phase
             assert state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
@@ -704,8 +688,7 @@ class TestMultiplePlayerCounts:
         # Float corp with bank shares available for buying
         COMPANIES[0].transfer_to_player(state, 0)
         corp = CORPS[0]
-        corp.float_corp(state, 0, 0, 10, 1)
-        corp.set_bank_shares(state, 3)
+        corp.float_corp(state, 0, 0, 10, 3)  # 3 shares each to player and bank
         PLAYERS[0].set_cash(state, 100)
 
         layout = get_action_layout(num_players)
@@ -713,8 +696,7 @@ class TestMultiplePlayerCounts:
 
         buy_idx = layout['buy_share_base'] + 0
         if mask[buy_idx] == 1.0:
-            result = DRIVER.apply_action(state, buy_idx)
-            assert result == STATUS_OK
+            apply_and_verify_all(state, buy_idx)
 
     @pytest.mark.parametrize("num_players", [3, 4, 5, 6])
     def test_sell_works_all_player_counts(self, num_players):
@@ -730,8 +712,7 @@ class TestMultiplePlayerCounts:
         layout = get_action_layout(num_players)
         sell_idx = layout['sell_share_base'] + 0
 
-        result = DRIVER.apply_action(state, sell_idx)
-        assert result == STATUS_OK
+        apply_and_verify_all(state, sell_idx)
 
 
 # =============================================================================
@@ -783,10 +764,9 @@ class TestAutoApplyEdgeCases:
         layout = get_action_layout(num_players)
         pass_idx = layout['pass_invest']
 
-        # Pass for all but last player using direct apply
+        # Pass for all but last player
         for i in range(num_players - 1):
-            result = DRIVER.apply_action(state, pass_idx)
-            assert result == STATUS_OK
+            apply_and_verify_all(state, pass_idx)
 
         # Last pass triggers WRAP_UP auto-apply chain
         result = apply_and_track(state, pass_idx)
@@ -816,26 +796,24 @@ class TestGameEndAt75:
         state.initialize_game(seed=42)
 
         # Float corp at price index 25 ($68 - one step below $75)
-        float_corp_for_test(state, corp_id=0, par_index=25)
+        # float_shares=2 gives player 2 shares, bank 2 shares, unissued 3
+        float_corp_for_test(state, corp_id=0, par_index=25, float_shares=2)
         corp = CORPS[0]
 
-        # Ensure bank has shares to buy
-        corp.set_bank_shares(state, 2)
         PLAYERS[0].set_cash(state, 100)  # Enough to afford $75
 
         # Buy action should move price from index 25 to 26
         layout = get_action_layout(3)
         buy_idx = layout['buy_share_base'] + 0
 
-        result = DRIVER.apply_action(state, buy_idx)
+        apply_and_verify_all(state, buy_idx, expected_status=STATUS_GAME_OVER)
 
         # Game should end immediately
-        assert result == STATUS_GAME_OVER
         assert state.get_phase() == GamePhases.PHASE_GAME_OVER
 
         # Verify the buy was actually processed
         assert corp.get_price_index(state) == 26  # $75
-        assert PLAYERS[0].get_shares(state, 0) == 2  # Got the share (started with 1)
+        assert PLAYERS[0].get_shares(state, 0) == 3  # Got the share (started with 2)
 
     def test_buy_share_below_75_does_not_end_game(self):
         """Buying a share that doesn't reach $75 continues normally."""
@@ -843,20 +821,18 @@ class TestGameEndAt75:
         state.initialize_game(seed=42)
 
         # Float corp at price index 20 ($41 - well below $75)
-        float_corp_for_test(state, corp_id=0, par_index=20)
+        # float_shares=2 gives player 2 shares, bank 2 shares, unissued 3
+        float_corp_for_test(state, corp_id=0, par_index=20, float_shares=2)
         corp = CORPS[0]
 
-        # Ensure bank has shares to buy
-        corp.set_bank_shares(state, 2)
         PLAYERS[0].set_cash(state, 100)
 
         layout = get_action_layout(3)
         buy_idx = layout['buy_share_base'] + 0
 
-        result = DRIVER.apply_action(state, buy_idx)
+        apply_and_verify_all(state, buy_idx)
 
         # Game continues
-        assert result == STATUS_OK
         assert state.get_phase() == GamePhases.PHASE_INVEST
         assert corp.get_price_index(state) == 21  # Moved up one space
 
@@ -866,11 +842,10 @@ class TestGameEndAt75:
         state.initialize_game(seed=42)
 
         # Float corp at price index 24 ($61)
-        float_corp_for_test(state, corp_id=0, par_index=24)
+        # float_shares=2 gives player 2 shares, bank 2 shares, unissued 3
+        float_corp_for_test(state, corp_id=0, par_index=24, float_shares=2)
         corp = CORPS[0]
 
-        # Ensure bank has shares to buy
-        corp.set_bank_shares(state, 2)
         PLAYERS[0].set_cash(state, 100)
 
         # Mark space 25 as occupied - buy will skip to $75
@@ -879,9 +854,8 @@ class TestGameEndAt75:
         layout = get_action_layout(3)
         buy_idx = layout['buy_share_base'] + 0
 
-        result = DRIVER.apply_action(state, buy_idx)
+        apply_and_verify_all(state, buy_idx, expected_status=STATUS_GAME_OVER)
 
         # Game ends because we reached $75
-        assert result == STATUS_GAME_OVER
         assert state.get_phase() == GamePhases.PHASE_GAME_OVER
         assert corp.get_price_index(state) == 26

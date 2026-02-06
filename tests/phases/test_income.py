@@ -41,7 +41,7 @@ from entities.market import MARKET
 from phases.income import apply_income_py
 from core.driver import DRIVER, STATUS_OK_PY as STATUS_OK
 from phases.dividends import setup_dividends_phase_py, find_next_dividend_corp_py
-from tests.phases.conftest import float_corp_for_test
+from tests.phases.conftest import float_corp_for_test, assert_invariants
 
 
 # =============================================================================
@@ -592,6 +592,7 @@ class TestIncomeTransition:
 
         TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
         apply_income_py(game_state)
+        assert_invariants(game_state, "After income")
 
         assert TURN.get_phase(game_state) == GamePhases.PHASE_DIVIDENDS
 
@@ -600,6 +601,7 @@ class TestIncomeTransition:
         # All corps start inactive after initialize_game()
         TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
         apply_income_py(game_state)
+        assert_invariants(game_state, "After income")
 
         # INCOME sets phase to DIVIDENDS, but setup_dividends_phase
         # immediately transitions to END_CARD when no corps exist
@@ -620,6 +622,7 @@ class TestDividendSetup:
 
         TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
         apply_income_py(game_state)
+        assert_invariants(game_state, "After income")
 
         # Dividend corp should be corp 1 (higher price)
         dividend_corp = TURN.get_dividend_corp(game_state)
@@ -630,6 +633,7 @@ class TestDividendSetup:
         # All corps start inactive after initialize_game()
         TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
         apply_income_py(game_state)
+        assert_invariants(game_state, "After income")
 
         # Should have no dividend corp (transitioned out of DIVIDENDS already)
         # The dividends phase will immediately transition to next phase
@@ -665,6 +669,7 @@ class TestNonPlayerPhase:
         # We can't directly call the driver's auto-apply from here,
         # but we can verify that apply_income_py transitions correctly
         apply_income_py(game_state)
+        assert_invariants(game_state, "After income")
 
         # Should be in DIVIDENDS with valid actions now
         assert TURN.get_phase(game_state) == GamePhases.PHASE_DIVIDENDS

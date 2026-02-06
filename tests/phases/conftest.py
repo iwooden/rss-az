@@ -1,31 +1,13 @@
 """Shared fixtures and assertion helpers for phase tests.
 
-Test Categorization for Auto-Apply (v2.1):
-=========================================
-
-Category 1: No Changes Needed
-- Tests that only check final state outcomes
-- Tests using apply_action_and_verify (already handles status)
-- Examples: most buy/sell/bankruptcy tests
-
-Category 2: Updated with Explicit Assertions
-- Tests checking intermediate states now use apply_and_track()
-- Assert `len(result.history) == 1` when no auto-apply expected
-- Documents intent and catches regressions
-
-Category 3: New Edge Case Tests
-- TestAutoApplyEdgeCases in test_invest.py
-- TestAutoApplyBehavior in test_bid_in_auction.py
-- Cover: phase transitions, forced chains, error guards
-
 Fixture Usage Guide:
 -------------------
-- apply_action_and_verify(state, action): Standard action with invariant checks
+- apply_and_verify_all(state, action): Apply action, check invariants on all
+  intermediate states (auto-applied forced actions). Returns ApplyTrackResult.
 - apply_and_track(state, action): Returns ApplyTrackResult with history access
-- Use apply_and_track when you need to:
-  - Verify no auto-apply occurred (history length == 1)
-  - Inspect intermediate states in a forced action chain
-  - Verify specific action sequence in history
+  but no invariant checking. Use when you need history inspection only.
+- assert_invariants(state, msg): Check state invariants directly (for tests
+  that call phase-internal _py functions instead of the driver).
 """
 import pytest
 import numpy as np
@@ -275,29 +257,6 @@ def assert_invariants(state, msg=""):
             )
 
 
-def apply_action_and_verify(state, action_idx, msg=""):
-    """
-    Apply action and verify invariants + mask validity.
-
-    Returns the result status from DRIVER.apply_action.
-    """
-    # Verify action is valid before applying
-    mask = get_valid_action_mask(state)
-    assert mask[action_idx] == 1.0, f"{msg}\nAction {action_idx} not valid in current mask"
-
-    result = DRIVER.apply_action(state, action_idx)
-    assert result == STATUS_OK, f"{msg}\nAction {action_idx} failed with status {result}"
-
-    assert_invariants(state, f"{msg}\nAfter action {action_idx}")
-
-    # Don't check for valid actions in terminal phases (WRAP_UP, GAME_OVER have no actions)
-    phase = state.get_phase()
-    if phase not in [GamePhases.PHASE_WRAP_UP, GamePhases.PHASE_GAME_OVER]:
-        assert np.sum(get_valid_action_mask(state)) > 0, f"{msg}\nNo valid actions after {action_idx}"
-
-    return result
-
-
 class ApplyTrackResult:
     """Result wrapper for apply_and_track() fixture."""
 
@@ -388,12 +347,16 @@ def apply_and_track():
     return _apply
 
 
-def apply_and_verify_all(state, action_idx, msg=""):
+def apply_and_verify_all(state, action_idx, msg="", expected_status=STATUS_OK):
     """Apply action and verify invariants on every intermediate state.
 
-    Like apply_action_and_verify but also checks invariants on all
-    intermediate states from the driver's auto-apply loop, not just the
-    final state. Returns ApplyTrackResult for history inspection.
+    Checks invariants on all intermediate states from the driver's
+    auto-apply loop, not just the final state. Returns ApplyTrackResult
+    for history inspection.
+
+    Args:
+        expected_status: Expected return status (default STATUS_OK).
+            Use STATUS_GAME_OVER for game-ending actions.
     """
     # Verify action is valid before applying
     mask = get_valid_action_mask(state)
@@ -401,7 +364,7 @@ def apply_and_verify_all(state, action_idx, msg=""):
 
     history = []
     status = DRIVER.apply_action(state, action_idx, history=history)
-    assert status == STATUS_OK, f"{msg}\nAction {action_idx} failed with status {status}"
+    assert status == expected_status, f"{msg}\nAction {action_idx} returned status {status}, expected {expected_status}"
 
     # Check invariants on every intermediate state (captured BEFORE each action)
     for i, (state_array, action_id) in enumerate(history):

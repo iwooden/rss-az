@@ -24,7 +24,7 @@ from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.company import COMPANIES
 from entities.market import MARKET
-from tests.phases.conftest import float_corp_for_test
+from tests.phases.conftest import float_corp_for_test, assert_invariants
 from phases.dividends import (
     setup_dividends_phase_py,
     apply_dividend_action_py,
@@ -49,9 +49,13 @@ def dividend_state():
     # Float corp 0 with 2 shares each to player and bank
     float_corp_for_test(state, corp_id=0, float_shares=2)
 
-    # Adjust share distribution: give 1 share from bank to player 1
-    CORPS[0].set_bank_shares(state, 1)
-    PLAYERS[1].set_shares(state, 0, 2)
+    # Adjust share distribution: give shares to player 1
+    # float_corp gave: unissued=3, issued=4, bank=2, player0=2
+    # We want: bank=1, player0=2, player1=2 -> issued=5, unissued=2
+    CORPS[0].set_issued_shares(state, 5)
+    CORPS[0].set_unissued_shares(state, 2)
+    CORPS[0].set_bank_shares(state, 3)  # set_shares below will subtract 2
+    PLAYERS[1].set_shares(state, 0, 2)  # bank: 3 - 2 = 1
 
     # Set cash and stars for the test
     CORPS[0].set_cash(state, 100)
@@ -60,6 +64,7 @@ def dividend_state():
     # Transition to DIVIDENDS phase
     TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
     setup_dividends_phase_py(state)
+    assert_invariants(state, "After setup_dividends_phase_py in dividend_state fixture")
 
     return state
 
@@ -71,29 +76,34 @@ def multi_corp_dividend_state():
     state.initialize_game(seed=42)
 
     # Float 3 corps at different prices (price order matters for this test)
-    # Corp 0 at price index 10
+    # Corp 0 at price index 10 (total=7)
+    # After float(float_shares=2): player0=2, bank=2, issued=4, unissued=3
+    # Want: player0=4, bank=0, issued=4, unissued=3
     float_corp_for_test(state, corp_id=0, player_id=0, par_index=10, float_shares=2)
-    CORPS[0].set_bank_shares(state, 0)
-    PLAYERS[0].set_shares(state, 0, 4)
+    PLAYERS[0].set_shares(state, 0, 4)  # delta=+2, bank: 2-2=0
     CORPS[0].set_unissued_shares(state, 3)
     CORPS[0].set_cash(state, 100)
     CORPS[0].set_stars(state, 10)
 
-    # Corp 1 at price index 15 (higher, processed first)
+    # Corp 1 at price index 15 (higher, processed first, total=7)
+    # After float(float_shares=2): player1=2, bank=2, issued=4, unissued=3
+    # Want: player1=5, bank=0, issued=5, unissued=2
     float_corp_for_test(state, corp_id=1, player_id=1, par_index=15, float_shares=2)
-    CORPS[1].set_bank_shares(state, 0)
-    PLAYERS[1].set_shares(state, 1, 5)
-    CORPS[1].set_unissued_shares(state, 2)
     CORPS[1].set_issued_shares(state, 5)
+    CORPS[1].set_unissued_shares(state, 2)
+    CORPS[1].set_bank_shares(state, 3)  # set_shares below will subtract 3
+    PLAYERS[1].set_shares(state, 1, 5)  # delta=+3, bank: 3-3=0
     CORPS[1].set_cash(state, 150)
     CORPS[1].set_stars(state, 12)
 
-    # Corp 2 at price index 5 (lowest, processed last)
+    # Corp 2 at price index 5 (lowest, processed last, total=6)
+    # After float(float_shares=1): player2=1, bank=1, issued=2, unissued=4
+    # Want: player2=3, bank=0, issued=3, unissued=3
     float_corp_for_test(state, corp_id=2, player_id=2, par_index=5)
-    CORPS[2].set_bank_shares(state, 0)
-    PLAYERS[2].set_shares(state, 2, 3)
-    CORPS[2].set_unissued_shares(state, 4)
     CORPS[2].set_issued_shares(state, 3)
+    CORPS[2].set_unissued_shares(state, 3)
+    CORPS[2].set_bank_shares(state, 2)  # set_shares below will subtract 2
+    PLAYERS[2].set_shares(state, 2, 3)  # delta=+2, bank: 2-2=0
     CORPS[2].set_cash(state, 50)
     CORPS[2].set_stars(state, 3)
 
@@ -121,6 +131,7 @@ class TestDividendPayment:
         # Pay $5 per share
         dividend_amount = 5
         apply_dividend_action_py(state, dividend_amount)
+        assert_invariants(state, "After dividend action")
 
         # Player 0 receives 2 × $5 = $10
         assert PLAYERS[0].get_cash(state) == initial_cash_p0 + (2 * dividend_amount)
@@ -132,16 +143,21 @@ class TestDividendPayment:
         state = dividend_state
         corp = CORPS[0]
 
-        # Set up: P0 has 1 share, P1 has 2 shares, P2 has 1 share
-        PLAYERS[0].set_shares(state, 0, 1)
-        PLAYERS[1].set_shares(state, 0, 2)
-        PLAYERS[2].set_shares(state, 0, 1)
+        # Set up: P0 has 1 share, P1 has 2 shares, P2 has 1 share, bank=0
+        # Fixture state: P0=2, P1=2, bank=1, issued=5, unissued=2
+        # Want: P0=1, P1=2, P2=1, bank=0, issued=4, unissued=3
         corp.set_issued_shares(state, 4)
+        corp.set_unissued_shares(state, 3)
+        corp.set_bank_shares(state, 0)  # pre-set; set_shares deltas net to 0
+        PLAYERS[0].set_shares(state, 0, 1)  # delta=-1, bank: 0+1=1
+        PLAYERS[1].set_shares(state, 0, 2)  # delta=0, bank stays 1
+        PLAYERS[2].set_shares(state, 0, 1)  # delta=+1, bank: 1-1=0
 
         initial_cash = [PLAYERS[i].get_cash(state) for i in range(3)]
 
         dividend_amount = 3
         apply_dividend_action_py(state, dividend_amount)
+        assert_invariants(state, "After dividend action")
 
         assert PLAYERS[0].get_cash(state) == initial_cash[0] + 3  # 1 × $3
         assert PLAYERS[1].get_cash(state) == initial_cash[1] + 6  # 2 × $3
@@ -153,16 +169,20 @@ class TestDividendPayment:
         corp = CORPS[0]
 
         # Set up: P0 has 2 shares, bank has 2 shares, issued = 4
-        PLAYERS[0].set_shares(state, 0, 2)
-        PLAYERS[1].set_shares(state, 0, 0)
-        corp.set_bank_shares(state, 2)
+        # Fixture state: P0=2, P1=2, bank=1, issued=5, unissued=2
+        # Want: P0=2, P1=0, bank=2, issued=4, unissued=3
         corp.set_issued_shares(state, 4)
+        corp.set_unissued_shares(state, 3)
+        corp.set_bank_shares(state, 0)  # set_shares(P1,0) will add 2
+        PLAYERS[0].set_shares(state, 0, 2)  # delta=0, bank stays 0
+        PLAYERS[1].set_shares(state, 0, 0)  # delta=-2, bank: 0+2=2
         corp.set_cash(state, 100)
 
         initial_corp_cash = corp.get_cash(state)
 
         dividend_amount = 5
         apply_dividend_action_py(state, dividend_amount)
+        assert_invariants(state, "After dividend action")
 
         # Corp pays 4 × $5 = $20 total (including bank shares)
         expected_corp_cash = initial_corp_cash - (4 * dividend_amount)
@@ -178,6 +198,7 @@ class TestDividendPayment:
         initial_corp_cash = corp.get_cash(state)
 
         apply_dividend_action_py(state, 0)
+        assert_invariants(state, "After dividend action")
 
         assert PLAYERS[0].get_cash(state) == initial_cash_p0
         assert PLAYERS[1].get_cash(state) == initial_cash_p1
@@ -219,12 +240,16 @@ class TestMaxDividendConstraint:
 
         # Corp has only $8, with 4 issued shares
         # Affordability max = 8 // 4 = 2
+        # Total = 7: unissued=3, issued=4 (0 bank + 2 p0 + 2 p1)
         corp.set_cash(state, 8)
+        corp.set_bank_shares(state, 0)
         corp.set_issued_shares(state, 4)
+        corp.set_unissued_shares(state, 3)
 
         # Need to re-setup since we changed state
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
+        assert_invariants(state, "After setup_dividends_phase_py")
 
         mask = get_valid_action_mask(state)
         layout = get_action_layout(3)
@@ -246,13 +271,17 @@ class TestMaxDividendConstraint:
         corp = CORPS[0]
 
         # Adjust shares: need 3 issued for affordability calc (12 // 3 = 4)
+        # After float: player0=1, bank=1, issued=2, unissued=5
+        # Want: player0=3, bank=0, issued=3, unissued=4
         corp.set_issued_shares(state, 3)
-        corp.set_bank_shares(state, 0)
-        PLAYERS[0].set_shares(state, 0, 3)
+        corp.set_unissued_shares(state, 4)
+        corp.set_bank_shares(state, 2)  # set_shares below will subtract 2
+        PLAYERS[0].set_shares(state, 0, 3)  # delta=+2, bank: 2-2=0
         corp.set_cash(state, 12)  # Affordability = 12 // 3 = 4 (less than price max of 15)
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
+        assert_invariants(state, "After setup_dividends_phase_py")
 
         mask = get_valid_action_mask(state)
         layout = get_action_layout(3)
@@ -271,11 +300,15 @@ class TestMaxDividendConstraint:
         float_corp_for_test(state, corp_id=0, par_index=26)
         corp = CORPS[0]
 
+        # Index 26 is a shared space (multiple corps can occupy it), re-mark available
+        MARKET.set_space_available(state, 26, True)
+
         # Need enough cash to afford max dividend (2 shares * 25 = 50)
         corp.set_cash(state, 100)
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
+        assert_invariants(state, "After setup_dividends_phase_py")
 
         # Verify the formula
         assert get_max_dividend(26) == 25
@@ -459,6 +492,7 @@ class TestProcessingOrder:
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
+        assert_invariants(state, "After setup_dividends_phase_py")
 
         # Corp 1 has highest price (index 15), should be first
         current_corp = TURN.get_dividend_corp(state)
@@ -470,6 +504,7 @@ class TestProcessingOrder:
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
+        assert_invariants(state, "After setup_dividends_phase_py")
 
         # Verify processing order by checking find_next_dividend_corp
         order = []
@@ -512,27 +547,31 @@ class TestReceivershipHandling:
         state.initialize_game(seed=42)
 
         # Float corp 0 at highest price, then put in receivership
+        # After float(float_shares=2): player0=2, bank=2, issued=4, unissued=3
         COMPANIES[0].transfer_to_player(state, 0)
         corp = CORPS[0]
         corp.float_corp(state, 0, 0, 15, 2)
         corp.set_in_receivership(state, True)
-        PLAYERS[0].set_shares(state, 0, 0)  # Remove player shares
-        corp.set_bank_shares(state, 4)  # All issued shares in bank
+        PLAYERS[0].set_shares(state, 0, 0)  # delta=-2, bank: 2+2=4
         corp.set_stars(state, 10)
         corp.set_cash(state, 100)
 
         # Float corp 1 at lower price, player-controlled
+        # After float(float_shares=1): player0=1, bank=1, issued=2, unissued=5
+        # Want: player0=3, bank=0, issued=3, unissued=4
         COMPANIES[1].transfer_to_player(state, 0)
         corp1 = CORPS[1]
         corp1.float_corp(state, 0, 1, 10, 1)
-        corp1.set_bank_shares(state, 0)
-        PLAYERS[0].set_shares(state, 1, 3)
         corp1.set_issued_shares(state, 3)
+        corp1.set_unissued_shares(state, 4)
+        corp1.set_bank_shares(state, 2)  # set_shares below will subtract 2
+        PLAYERS[0].set_shares(state, 1, 3)  # delta=+2, bank: 2-2=0
         corp1.set_stars(state, 5)
         corp1.set_cash(state, 50)
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
+        assert_invariants(state, "After setup_dividends_phase_py")
 
         # Should skip receivership corp and go to player-controlled corp
         current_corp = TURN.get_dividend_corp(state)
@@ -544,12 +583,12 @@ class TestReceivershipHandling:
         state.initialize_game(seed=42)
 
         # Float corp 0, then put in receivership
+        # After float(float_shares=2): player0=2, bank=2, issued=4, unissued=3
         COMPANIES[0].transfer_to_player(state, 0)
         corp = CORPS[0]
         corp.float_corp(state, 0, 0, 10, 2)
         corp.set_in_receivership(state, True)
-        PLAYERS[0].set_shares(state, 0, 0)  # Remove player shares
-        corp.set_bank_shares(state, 4)
+        PLAYERS[0].set_shares(state, 0, 0)  # delta=-2, bank: 2+2=4
         corp.set_stars(state, 10)  # Plenty of stars, should rise
         corp.set_cash(state, 100)
         MARKET.set_space_available(state, 11, True)
@@ -559,6 +598,7 @@ class TestReceivershipHandling:
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
+        assert_invariants(state, "After setup_dividends_phase_py")
 
         # Cash should be unchanged (no dividend paid)
         assert corp.get_cash(state) == initial_cash
@@ -569,13 +609,16 @@ class TestReceivershipHandling:
         state.initialize_game(seed=42)
 
         # Float corp 0, then put in receivership
+        # After float(float_shares=1): player0=1, bank=1, issued=2, unissued=5
+        # Want: player0=0, bank=3, issued=3, unissued=4
         COMPANIES[0].transfer_to_player(state, 0)
         corp = CORPS[0]
         corp.float_corp(state, 0, 0, 10, 1)
         corp.set_in_receivership(state, True)
-        PLAYERS[0].set_shares(state, 0, 0)  # Remove player shares
-        corp.set_bank_shares(state, 3)
         corp.set_issued_shares(state, 3)
+        corp.set_unissued_shares(state, 4)
+        corp.set_bank_shares(state, 2)  # set_shares below will add 1
+        PLAYERS[0].set_shares(state, 0, 0)  # delta=-1, bank: 2+1=3
         corp.set_stars(state, 50)  # Way more than needed, should rise 2
         corp.set_cash(state, 100)
 
@@ -586,6 +629,7 @@ class TestReceivershipHandling:
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
+        assert_invariants(state, "After setup_dividends_phase_py")
 
         # Price should have risen
         new_price_index = corp.get_price_index(state)
@@ -606,6 +650,7 @@ class TestPhaseTransitions:
 
         # Only one corp, pay dividend and phase should transition
         apply_dividend_action_py(state, 0)
+        assert_invariants(state, "After dividend action")
 
         assert state.get_phase() == GamePhases.PHASE_END_CARD
 
@@ -617,6 +662,7 @@ class TestPhaseTransitions:
         TURN.set_end_card_flipped(state, True)
 
         apply_dividend_action_py(state, 0)
+        assert_invariants(state, "After dividend action")
 
         # DIVIDENDS always transitions to END_CARD; END_CARD handles the GAME_OVER logic
         assert state.get_phase() == GamePhases.PHASE_END_CARD
@@ -629,6 +675,7 @@ class TestPhaseTransitions:
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
+        assert_invariants(state, "After setup_dividends_phase_py")
 
         # Should immediately transition to END_CARD
         assert state.get_phase() == GamePhases.PHASE_END_CARD
@@ -648,16 +695,20 @@ class TestDividendsIntegration:
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
+        assert_invariants(state, "After setup_dividends_phase_py")
 
         # Process all three corps
         assert TURN.get_dividend_corp(state) == 1  # Highest price first
         apply_dividend_action_py(state, 2)
+        assert_invariants(state, "After dividend action for corp 1")
 
         assert TURN.get_dividend_corp(state) == 0
         apply_dividend_action_py(state, 3)
+        assert_invariants(state, "After dividend action for corp 0")
 
         assert TURN.get_dividend_corp(state) == 2
         apply_dividend_action_py(state, 1)
+        assert_invariants(state, "After dividend action for corp 2")
 
         # Should transition to END_CARD
         assert state.get_phase() == GamePhases.PHASE_END_CARD
@@ -682,11 +733,13 @@ class TestDividendsIntegration:
         # Re-setup to recalculate
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
+        assert_invariants(state, "After setup_dividends_phase_py")
 
         # Pay $3 per share × 4 shares = $12 total
         # After payment: cash = 15 - 12 = 3, only 0 bonus stars
         # Stars = 5 + 0 = 5, required = 6, diff = -1 -> down 1
         apply_dividend_action_py(state, 3)
+        assert_invariants(state, "After dividend action")
 
         # Price should have dropped
         new_price = corp.get_price_index(state)

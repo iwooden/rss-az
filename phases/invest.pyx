@@ -75,11 +75,9 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     player_module.PLAYERS[player_id].add_cash(state, -new_price)
 
     # Transfer share (INV-09)
-    bank_shares = corp.get_bank_shares(state)
-    corp.set_bank_shares(state, bank_shares - 1)
+    # set_shares() automatically adjusts bank shares, presidency, and receivership
     player_shares = player_module.PLAYERS[player_id].get_shares(state, corp_id)
     player_module.PLAYERS[player_id].set_shares(state, corp_id, player_shares + 1)
-    # Note: set_shares() automatically updates receivership and presidency
 
     # Round-trip tracking (INV-16)
     player_module.PLAYERS[player_id].increment_share_buys(state, corp_id)
@@ -126,10 +124,9 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     corp = corp_module.CORPS[corp_id]
 
     # Transfer share first (INV-12)
+    # set_shares() automatically adjusts bank shares, presidency, and receivership
     player_shares = player_module.PLAYERS[player_id].get_shares(state, corp_id)
     player_module.PLAYERS[player_id].set_shares(state, corp_id, player_shares - 1)
-    bank_shares = corp.get_bank_shares(state)
-    corp.set_bank_shares(state, bank_shares + 1)
 
     # Move price down (INV-13) - BEFORE paying player
     current_index = corp.get_price_index(state)

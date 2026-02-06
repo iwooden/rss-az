@@ -24,8 +24,7 @@ This file consolidates bankruptcy tests from:
 """
 import pytest
 from core.state import GameState
-from core.data import GamePhases, GameConstants, get_corp_share_count, COMPANY_NAME_TO_ID
-from core.driver import DRIVER
+from core.data import GamePhases, get_corp_share_count, COMPANY_NAME_TO_ID
 from core.actions import get_action_layout
 from entities.player import PLAYERS
 from entities.corp import CORPS
@@ -35,7 +34,7 @@ from entities.market import MARKET
 from phases.dividends import setup_dividends_phase_py, apply_dividend_action_py
 from phases.income import apply_income_py
 from phases.issue import setup_issue_phase_py, apply_issue_action_py
-from tests.phases.conftest import float_corp_for_test
+from tests.phases.conftest import apply_and_verify_all, assert_invariants, float_corp_for_test
 
 
 # =============================================================================
@@ -72,11 +71,12 @@ def dividend_bankruptcy_state():
     corp = CORPS[0]
     corp.set_stars(state, 0)  # No stars, will drop on $0 dividend
     corp.set_cash(state, 0)  # No cash bonus
-    # Adjust shares for test scenario: player=3, bank=0
+    # Adjust shares for test scenario: player=3, bank=0, issued=3, unissued=4
+    # set_shares auto-adjusts bank by -(3-1)=-2, so start bank at 2
     corp.set_issued_shares(state, 3)
-    corp.set_bank_shares(state, 0)
     corp.set_unissued_shares(state, 4)
-    PLAYERS[0].set_shares(state, 0, 3)
+    corp.set_bank_shares(state, 2)
+    PLAYERS[0].set_shares(state, 0, 3)  # bank: 2-2=0
 
     MARKET.set_space_available(state, 0, True)  # Ensure space 0 is open
 
@@ -115,12 +115,14 @@ def issue_bankruptcy_state():
     # float_shares=2 gives: player=2, bank=2, issued=4, unissued=3
 
     corp = CORPS[0]
-    corp.set_bank_shares(state, 0)  # Test expects bank=0
     corp.set_cash(state, 50)
 
-    # Give player 1 some shares too
+    # Give player 1 some shares too (auto-adjusts bank: 2-1=1)
     PLAYERS[1].set_shares(state, 0, 1)
-    corp.set_issued_shares(state, 3)  # player0=2 + player1=1
+    # Final: player0=2, player1=1, bank=0, issued=3, unissued=4
+    corp.set_issued_shares(state, 3)
+    corp.set_unissued_shares(state, 4)
+    corp.set_bank_shares(state, 0)
 
     return state
 
@@ -143,7 +145,7 @@ class TestCoreBankruptcyBehavior:
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(bankruptcy_state, sell_idx)
+        apply_and_verify_all(bankruptcy_state, sell_idx)
 
         assert not corp.is_active(bankruptcy_state)
         assert corp.get_price_index(bankruptcy_state) == 0
@@ -152,7 +154,7 @@ class TestCoreBankruptcyBehavior:
         """Bankruptcy removes all corp's companies from game."""
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(bankruptcy_state, sell_idx)
+        apply_and_verify_all(bankruptcy_state, sell_idx)
 
         # Corp 0 was floated with company 3 (see bankruptcy_state fixture)
         assert COMPANIES[3].is_removed(bankruptcy_state)
@@ -164,7 +166,7 @@ class TestCoreBankruptcyBehavior:
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(bankruptcy_state, sell_idx)
+        apply_and_verify_all(bankruptcy_state, sell_idx)
 
         # Corp 0 was floated with company 3, and we added company 6
         assert COMPANIES[3].is_removed(bankruptcy_state)
@@ -176,7 +178,7 @@ class TestCoreBankruptcyBehavior:
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(bankruptcy_state, sell_idx)
+        apply_and_verify_all(bankruptcy_state, sell_idx)
 
         assert corp.get_unissued_shares(bankruptcy_state) == get_corp_share_count(0)
         assert corp.get_issued_shares(bankruptcy_state) == 0
@@ -184,11 +186,11 @@ class TestCoreBankruptcyBehavior:
 
     def test_bankruptcy_clears_player_shares(self, bankruptcy_state):
         """All players' shares in bankrupt corp are zeroed."""
-        # bankruptcy_state already has player0=2, player1=1, bank=0, issued=3
+        # bankruptcy_state has player0=2, bank=2, issued=4 (float_shares=2)
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(bankruptcy_state, sell_idx)
+        apply_and_verify_all(bankruptcy_state, sell_idx)
 
         assert PLAYERS[0].get_shares(bankruptcy_state, 0) == 0
         assert PLAYERS[1].get_shares(bankruptcy_state, 0) == 0
@@ -200,7 +202,7 @@ class TestCoreBankruptcyBehavior:
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(bankruptcy_state, sell_idx)
+        apply_and_verify_all(bankruptcy_state, sell_idx)
 
         assert corp.get_cash(bankruptcy_state) == 0
 
@@ -208,19 +210,27 @@ class TestCoreBankruptcyBehavior:
         """Market space freed for future use."""
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(bankruptcy_state, sell_idx)
+        apply_and_verify_all(bankruptcy_state, sell_idx)
 
         assert MARKET.is_space_available(bankruptcy_state, 1)
 
     def test_bankruptcy_clears_receivership(self, bankruptcy_state):
         """Bankrupt corp is no longer in receivership."""
-        CORPS[0].set_in_receivership(bankruptcy_state, True)
+        corp = CORPS[0]
+        # Move player shares to bank, triggering auto-receivership via _recalculate_presidency
+        # set_shares auto-adjusts bank shares by inverse delta
+        PLAYERS[0].set_shares(bankruptcy_state, 0, 0)
+        assert corp.is_in_receivership(bankruptcy_state)
 
-        layout = get_action_layout(3)
-        sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(bankruptcy_state, sell_idx)
+        # Trigger bankruptcy through dividends (sell requires player shares)
+        TURN.set_phase(bankruptcy_state, GamePhases.PHASE_DIVIDENDS)
+        corp.set_stars(bankruptcy_state, 0)
+        corp.set_cash(bankruptcy_state, 0)
+        setup_dividends_phase_py(bankruptcy_state)
+        apply_dividend_action_py(bankruptcy_state, 0)
+        assert_invariants(bankruptcy_state, "After dividend-triggered bankruptcy (receivership)")
 
-        assert not CORPS[0].is_in_receivership(bankruptcy_state)
+        assert not corp.is_in_receivership(bankruptcy_state)
 
     def test_bankruptcy_corp_available_for_ipo(self, bankruptcy_state):
         """Bankrupt corp can be IPO'd again."""
@@ -228,7 +238,7 @@ class TestCoreBankruptcyBehavior:
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(bankruptcy_state, sell_idx)
+        apply_and_verify_all(bankruptcy_state, sell_idx)
 
         assert not corp.is_active(bankruptcy_state)
         assert corp.get_unissued_shares(bankruptcy_state) > 0
@@ -239,10 +249,11 @@ class TestCoreBankruptcyBehavior:
         corp = CORPS[0]
 
         # Give multiple players shares
+        # bankruptcy_state starts with player0=2, bank=2, issued=4
+        # set_shares auto-adjusts bank: 2->1->0
         PLAYERS[1].set_shares(bankruptcy_state, 0, 1)
         PLAYERS[2].set_shares(bankruptcy_state, 0, 1)
-        corp.set_issued_shares(bankruptcy_state, 6)
-        corp.set_bank_shares(bankruptcy_state, 0)
+        # player0=2 + player1=1 + player2=1 + bank=0 = issued=4
 
         PLAYERS[1].set_cash(bankruptcy_state, 50)
         PLAYERS[2].set_cash(bankruptcy_state, 50)
@@ -254,7 +265,7 @@ class TestCoreBankruptcyBehavior:
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(bankruptcy_state, sell_idx)
+        apply_and_verify_all(bankruptcy_state, sell_idx)
 
         # Player 1 lost their shares
         assert PLAYERS[1].get_shares(bankruptcy_state, 0) == 0
@@ -273,7 +284,7 @@ class TestCoreBankruptcyBehavior:
 
         layout = get_action_layout(num_players)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(state, sell_idx)
+        apply_and_verify_all(state, sell_idx)
 
         assert not CORPS[0].is_active(state)
 
@@ -292,7 +303,7 @@ class TestBankruptcyFromSell:
 
         layout = get_action_layout(3)
         sell_idx = layout['sell_share_base'] + 0
-        DRIVER.apply_action(bankruptcy_state, sell_idx)
+        apply_and_verify_all(bankruptcy_state, sell_idx)
 
         assert not corp.is_active(bankruptcy_state)
         assert corp.get_price_index(bankruptcy_state) == 0
@@ -315,6 +326,7 @@ class TestBankruptcyFromDividend:
 
         # Pay $0 dividend to trigger price adjustment
         apply_dividend_action_py(state, 0)
+        assert_invariants(state, "After apply_dividend_action_py($0)")
 
         assert not corp.is_active(state)
 
@@ -323,13 +335,18 @@ class TestBankruptcyFromDividend:
         state = dividend_bankruptcy_state
 
         # Add another shareholder
-        PLAYERS[1].set_shares(state, 0, 2)
-        CORPS[0].set_issued_shares(state, 4)
-        CORPS[0].set_bank_shares(state, 1)
+        # dividend_bankruptcy_state: player0=3, bank=0, issued=3, unissued=4
+        # Increase issued/bank to make room, then set_shares auto-adjusts bank
+        CORPS[0].set_issued_shares(state, 5)
+        CORPS[0].set_unissued_shares(state, 2)
+        CORPS[0].set_bank_shares(state, 2)
+        PLAYERS[1].set_shares(state, 0, 2)  # bank: 2-2=0
+        # Final: player0=3, player1=2, bank=0, issued=5, unissued=2
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
         apply_dividend_action_py(state, 0)
+        assert_invariants(state, "After apply_dividend_action_py($0)")
 
         assert PLAYERS[0].get_shares(state, 0) == 0
         assert PLAYERS[1].get_shares(state, 0) == 0
@@ -345,17 +362,19 @@ class TestBankruptcyFromDividend:
         corp = CORPS[0]
         corp.set_stars(state, 0)  # Very low stars -> move will be -2 or worse
         corp.set_cash(state, 0)
-        # Adjust shares: player=3, bank=0
+        # Adjust shares: player=3, bank=0, issued=3, unissued=4
+        # set_shares auto-adjusts bank by -(3-1)=-2, so start bank at 2
         corp.set_issued_shares(state, 3)
-        corp.set_bank_shares(state, 0)
         corp.set_unissued_shares(state, 4)
-        PLAYERS[0].set_shares(state, 0, 3)
+        corp.set_bank_shares(state, 2)
+        PLAYERS[0].set_shares(state, 0, 3)  # bank: 2-2=0
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
 
         # Pay $0 dividend - with 0 stars and 0 cash, move should be negative
         apply_dividend_action_py(state, 0)
+        assert_invariants(state, "After apply_dividend_action_py($0)")
 
         # Corp should be bankrupt (price dropped to 0)
         assert not corp.is_active(state)
@@ -384,6 +403,7 @@ class TestBankruptcyFromIncome:
 
         TURN.set_phase(state, GamePhases.PHASE_INCOME)
         apply_income_py(state)
+        assert_invariants(state, "After apply_income_py")
 
         assert not corp.is_active(state)
 
@@ -398,6 +418,7 @@ class TestBankruptcyFromIncome:
 
         TURN.set_phase(state, GamePhases.PHASE_INCOME)
         apply_income_py(state)
+        assert_invariants(state, "After apply_income_py (survives)")
 
         assert corp.is_active(state)
         assert corp.get_cash(state) == starting_cash + income
@@ -425,6 +446,7 @@ class TestBankruptcyFromIncome:
 
         TURN.set_phase(state, GamePhases.PHASE_INCOME)
         apply_income_py(state)
+        assert_invariants(state, "After apply_income_py (immediate check)")
 
         assert not CORPS[0].is_active(state), "Corp 0 should be bankrupt"
         assert CORPS[1].is_active(state), "Corp 1 should survive"
@@ -447,6 +469,7 @@ class TestBankruptcyFromIncome:
 
         TURN.set_phase(state, GamePhases.PHASE_INCOME)
         apply_income_py(state)
+        assert_invariants(state, "After apply_income_py (two bankruptcies)")
 
         assert not CORPS[0].is_active(state)
         assert not CORPS[1].is_active(state)
@@ -469,6 +492,7 @@ class TestBankruptcyFromIncome:
 
         TURN.set_phase(state, GamePhases.PHASE_INCOME)
         apply_income_py(state)
+        assert_invariants(state, "After apply_income_py (corp_id order)")
 
         for corp_id in corp_ids:
             assert not CORPS[corp_id].is_active(state), f"Corp {corp_id} should be bankrupt"
@@ -489,6 +513,7 @@ class TestBankruptcyFromIssue:
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
         setup_issue_phase_py(state)
         apply_issue_action_py(state, issue=True)
+        assert_invariants(state, "After apply_issue_action_py (bankruptcy)")
 
         assert not corp.is_active(state)
 
@@ -499,6 +524,7 @@ class TestBankruptcyFromIssue:
         TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
         setup_issue_phase_py(state)
         apply_issue_action_py(state, issue=True)
+        assert_invariants(state, "After apply_issue_action_py (clears shares)")
 
         assert PLAYERS[0].get_shares(state, 0) == 0
         assert PLAYERS[1].get_shares(state, 0) == 0
@@ -528,6 +554,7 @@ class TestBankruptcyEdgeCases:
 
         # Pay max dividend - with high stars, should move up or stay
         apply_dividend_action_py(state, 25)
+        assert_invariants(state, "After apply_dividend_action_py($25)")
 
         # Corp should still be active
         assert corp.is_active(state)
@@ -542,19 +569,20 @@ class TestBankruptcyEdgeCases:
 
         corp = CORPS[0]
         corp.set_in_receivership(state, True)  # Put into receivership
-        PLAYERS[0].set_shares(state, 0, 0)  # Remove player shares
+        PLAYERS[0].set_shares(state, 0, 0)  # Remove player shares (auto-adjusts bank: 1+1=2)
         corp.set_stars(state, 0)
         corp.set_cash(state, 0)
-        # Adjust shares: all in bank
+        # Adjust shares: all in bank. player0=0, bank=3, issued=3, unissued=4
         corp.set_issued_shares(state, 3)
         corp.set_bank_shares(state, 3)
-        corp.set_unissued_shares(state, 1)
+        corp.set_unissued_shares(state, 4)
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
 
         # Receivership pays $0 automatically
         apply_dividend_action_py(state, 0)
+        assert_invariants(state, "After apply_dividend_action_py($0 receivership)")
 
         assert not corp.is_active(state)
         assert not corp.is_in_receivership(state)

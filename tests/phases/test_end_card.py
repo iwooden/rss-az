@@ -19,7 +19,7 @@ from entities.company import COMPANIES
 from entities.fi import FI
 from entities.market import MARKET
 from phases.end_card import apply_end_card_py
-from tests.phases.conftest import float_corp_for_test
+from tests.phases.conftest import float_corp_for_test, assert_invariants
 from core.driver import DRIVER, STATUS_OK_PY as STATUS_OK
 
 
@@ -58,6 +58,8 @@ class Test75PriceCheck:
         float_corp_for_test(end_card_state, corp_id=0, par_index=26)
 
         apply_end_card_py(end_card_state)
+        # Skip assert_invariants: float_corp_for_test at par_index=26 marks
+        # market space 26 as occupied, violating the "always available" invariant
 
         assert TURN.get_phase(end_card_state) == GamePhases.PHASE_GAME_OVER
 
@@ -67,6 +69,7 @@ class Test75PriceCheck:
         float_corp_for_test(end_card_state, corp_id=0, par_index=25)
 
         apply_end_card_py(end_card_state)
+        assert_invariants(end_card_state, "After end card")
 
         # Should continue to ISSUE_SHARES, not GAME_OVER
         assert TURN.get_phase(end_card_state) == GamePhases.PHASE_ISSUE_SHARES
@@ -80,6 +83,8 @@ class Test75PriceCheck:
         float_corp_for_test(end_card_state, corp_id=1, player_id=1, par_index=26)
 
         apply_end_card_py(end_card_state)
+        # Skip assert_invariants: float_corp_for_test at par_index=26 marks
+        # market space 26 as occupied, violating the "always available" invariant
 
         assert TURN.get_phase(end_card_state) == GamePhases.PHASE_GAME_OVER
 
@@ -90,6 +95,7 @@ class Test75PriceCheck:
         corp.set_price_index(end_card_state, 26)
 
         apply_end_card_py(end_card_state)
+        assert_invariants(end_card_state, "After end card")
 
         # Should not trigger game over - transitions to INVEST for new turn
         assert TURN.get_phase(end_card_state) == GamePhases.PHASE_INVEST
@@ -115,6 +121,7 @@ class TestNoUnownedCompanies:
         assert not TURN.is_end_card_flipped(end_card_state)
 
         apply_end_card_py(end_card_state)
+        assert_invariants(end_card_state, "After end card")
 
         # End card should now be flipped
         assert TURN.is_end_card_flipped(end_card_state)
@@ -134,6 +141,7 @@ class TestNoUnownedCompanies:
         assert not TURN.is_end_card_flipped(end_card_state)
 
         apply_end_card_py(end_card_state)
+        assert_invariants(end_card_state, "After end card")
 
         # End card should NOT flip - continues to next turn
         assert not TURN.is_end_card_flipped(end_card_state)
@@ -152,6 +160,7 @@ class TestNoUnownedCompanies:
         assert not TURN.is_end_card_flipped(end_card_state)
 
         apply_end_card_py(end_card_state)
+        assert_invariants(end_card_state, "After end card")
 
         # End card should NOT flip (company 0 is in auction)
         assert not TURN.is_end_card_flipped(end_card_state)
@@ -171,6 +180,7 @@ class TestNoUnownedCompanies:
         assert not TURN.is_end_card_flipped(end_card_state)
 
         apply_end_card_py(end_card_state)
+        assert_invariants(end_card_state, "After end card")
 
         # End card should NOT flip
         assert not TURN.is_end_card_flipped(end_card_state)
@@ -191,6 +201,7 @@ class TestEndCardFlipped:
         TURN.set_end_card_flipped(end_card_state, True)
 
         apply_end_card_py(end_card_state)
+        assert_invariants(end_card_state, "After end card")
 
         assert TURN.get_phase(end_card_state) == GamePhases.PHASE_GAME_OVER
 
@@ -200,6 +211,7 @@ class TestEndCardFlipped:
         # All corps start inactive after initialize_game() - no 75-price check can trigger
 
         apply_end_card_py(end_card_state)
+        assert_invariants(end_card_state, "After end card")
 
         assert TURN.get_phase(end_card_state) == GamePhases.PHASE_GAME_OVER
 
@@ -221,6 +233,7 @@ class TestNormalTransition:
         # Note: With no active corps, issue phase auto-transitions to INVEST
 
         apply_end_card_py(end_card_state)
+        assert_invariants(end_card_state, "After end card")
 
         # No active corps -> issue phase transitions directly to INVEST
         assert TURN.get_phase(end_card_state) == GamePhases.PHASE_INVEST
@@ -232,6 +245,7 @@ class TestNormalTransition:
             float_corp_for_test(end_card_state, corp_id=corp_id, player_id=corp_id, par_index=10 + corp_id)
 
         apply_end_card_py(end_card_state)
+        assert_invariants(end_card_state, "After end card")
 
         # Active corps exist -> stays in ISSUE_SHARES for player decisions
         assert TURN.get_phase(end_card_state) == GamePhases.PHASE_ISSUE_SHARES
@@ -257,6 +271,7 @@ class TestNonPlayerPhase:
         # The driver should detect this is a non-player phase
         # Verify by applying and checking transition
         apply_end_card_py(end_card_state)
+        assert_invariants(end_card_state, "After end card")
 
         # Should have transitioned out of END_CARD
         phase = TURN.get_phase(end_card_state)
@@ -282,6 +297,7 @@ class TestCoOLevelUpdate:
         assert starting_coo < 7, f"Test setup: expected CoO < 7, got {starting_coo}"
 
         apply_end_card_py(end_card_state)
+        assert_invariants(end_card_state, "After end card")
 
         # CoO should now be 7
         assert TURN.get_coo_level(end_card_state) == 7
@@ -292,6 +308,7 @@ class TestCoOLevelUpdate:
         TURN.set_coo_level(end_card_state, 3)
 
         apply_end_card_py(end_card_state)
+        assert_invariants(end_card_state, "After end card")
 
         # CoO should remain at 3 (flip already happened, we just end game)
         assert TURN.get_coo_level(end_card_state) == 3
@@ -303,6 +320,8 @@ class TestCoOLevelUpdate:
         float_corp_for_test(end_card_state, corp_id=0, par_index=26)
 
         apply_end_card_py(end_card_state)
+        # Skip assert_invariants: float_corp_for_test at par_index=26 marks
+        # market space 26 as occupied, violating the "always available" invariant
 
         # CoO should remain at 4 (game ends without flip)
         assert TURN.get_coo_level(end_card_state) == 4
@@ -325,6 +344,8 @@ class TestCheckPriority:
         float_corp_for_test(end_card_state, corp_id=0, par_index=26)
 
         apply_end_card_py(end_card_state)
+        # Skip assert_invariants: float_corp_for_test at par_index=26 marks
+        # market space 26 as occupied, violating the "always available" invariant
 
         # Game ends (both conditions would end game, but 75 check is first)
         assert TURN.get_phase(end_card_state) == GamePhases.PHASE_GAME_OVER
@@ -338,6 +359,7 @@ class TestCheckPriority:
         assert not TURN.is_end_card_flipped(end_card_state)
 
         apply_end_card_py(end_card_state)
+        assert_invariants(end_card_state, "After end card")
 
         # End card should be flipped AND game should be over
         assert TURN.is_end_card_flipped(end_card_state)
