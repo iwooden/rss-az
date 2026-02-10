@@ -101,7 +101,7 @@ class TestNoUnownedCompanies:
     """Empty deck + no auction/revealed companies flips end card."""
 
     def test_all_companies_owned_flips_end_card(self, end_card_state):
-        """When no companies in deck/auction/revealed, end card flips."""
+        """When no companies in deck/auction/revealed, end card flips but game continues."""
         # Move all companies out of deck/auction/revealed
         # Transfer all to players/corps/FI or remove from game
         for company_id in range(int(GameConstants.NUM_COMPANIES)):
@@ -116,8 +116,8 @@ class TestNoUnownedCompanies:
 
         # End card should now be flipped
         assert TURN.is_end_card_flipped(end_card_state)
-        # And game should end because end card is now flipped
-        assert TURN.get_phase(end_card_state) == GamePhases.PHASE_GAME_OVER
+        # Game continues this turn — ends at NEXT END_CARD phase
+        assert TURN.get_phase(end_card_state) != GamePhases.PHASE_GAME_OVER
 
     def test_company_in_deck_prevents_flip(self, end_card_state):
         """Company remaining in deck prevents end card flip."""
@@ -341,18 +341,25 @@ class TestCheckPriority:
         # Game ends (both conditions would end game, but 75 check is first)
         assert TURN.get_phase(end_card_state) == GamePhases.PHASE_GAME_OVER
 
-    def test_no_companies_flips_then_ends(self, end_card_state):
-        """No unowned companies flips card, then card-flipped check ends game."""
-        # Move all companies out
+    def test_flip_then_next_end_card_ends_game(self, end_card_state):
+        """First END_CARD flips the card, second END_CARD ends the game."""
+        # Move all companies out to trigger flip
         for company_id in range(int(GameConstants.NUM_COMPANIES)):
             COMPANIES[company_id].transfer_to_player(end_card_state, 0)
 
         assert not TURN.is_end_card_flipped(end_card_state)
 
+        # First END_CARD: flips the card, game continues
         apply_end_card_py(end_card_state)
-        assert_invariants(end_card_state, "After end card")
+        assert_invariants(end_card_state, "After first end card")
 
-        # End card should be flipped AND game should be over
         assert TURN.is_end_card_flipped(end_card_state)
-        assert TURN.get_phase(end_card_state) == GamePhases.PHASE_GAME_OVER
         assert TURN.get_coo_level(end_card_state) == 7
+        assert TURN.get_phase(end_card_state) != GamePhases.PHASE_GAME_OVER
+
+        # Second END_CARD: card already flipped → GAME_OVER
+        TURN.set_phase(end_card_state, GamePhases.PHASE_END_CARD)
+        apply_end_card_py(end_card_state)
+        assert_invariants(end_card_state, "After second end card")
+
+        assert TURN.get_phase(end_card_state) == GamePhases.PHASE_GAME_OVER

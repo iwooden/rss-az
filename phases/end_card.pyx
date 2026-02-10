@@ -6,8 +6,8 @@ conditions and handles the end card flip mechanic.
 
 Checks executed in order:
 1. If 75 share price reached by any corp → GAME_OVER
-2. If no unowned companies left → flip end card, set CoO to 7
-3. If end card already flipped → GAME_OVER
+2. If end card already flipped → GAME_OVER
+3. If no unowned companies left → flip end card, set CoO to 7, continue
 4. Otherwise → transition to ISSUE_SHARES
 """
 
@@ -80,8 +80,8 @@ cdef int apply_end_card(GameState state) noexcept:
     Checks are executed in order per RULES.md:
 
     1. If 75 share price reached → GAME_OVER
-    2. If no unowned companies → flip end card, set CoO to 7
-    3. If end card already flipped → GAME_OVER
+    2. If end card already flipped → GAME_OVER
+    3. If no unowned companies → flip end card, set CoO to 7, continue
     4. Otherwise → ISSUE_SHARES
 
     Returns: 0 always (deterministic, no failure modes)
@@ -91,14 +91,14 @@ cdef int apply_end_card(GameState state) noexcept:
         turn_module.TURN.set_phase(state, GamePhases.PHASE_GAME_OVER)
         return 0
 
-    # Check 2: No unowned companies → flip end card
-    if _check_no_unowned_companies(state):
-        _flip_end_card(state)
-
-    # Check 3: End card already flipped → game over
+    # Check 2: End card already flipped → game over
     if turn_module.TURN.is_end_card_flipped(state):
         turn_module.TURN.set_phase(state, GamePhases.PHASE_GAME_OVER)
         return 0
+
+    # Check 3: No unowned companies → flip end card (game ends NEXT time)
+    if _check_no_unowned_companies(state):
+        _flip_end_card(state)
 
     # Check 4: Normal transition to ISSUE_SHARES phase
     turn_module.TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
