@@ -1541,6 +1541,84 @@ class TestReceivershipAutoBuy:
             "Company should still be owned by FI"
 
 
+class TestOSReceivershipFaceValue:
+    """Tests for OS paying face value to FI even in receivership."""
+
+    def test_os_receivership_buys_at_face_value(self):
+        """OS in receivership auto-buys FI company at face value, not high price.
+
+        Per RULES.md line 174: OS 'Always pays face value to Foreign Investor.'
+        The word 'always' means this applies regardless of receivership status.
+        """
+        gs = GameState(3)
+        gs.initialize_game()
+
+        company_id = 0  # face=1, high=2
+        COMPANIES[company_id].transfer_to_fi(gs)
+
+        face_value = get_company_face_value(company_id)
+        high_price = get_company_high_price(company_id)
+        assert face_value < high_price, "Test requires face_value < high_price"
+
+        # Float OS (corp 2) with enough cash for high price
+        float_corp_for_test(gs, 2)
+        corp = CORPS[2]
+        corp.set_cash(gs, 50000)
+
+        # Put OS in receivership
+        PLAYERS[0].set_shares(gs, 2, 0)
+
+        corp_cash_before = corp.get_cash(gs)
+        fi_cash_before = FI.get_cash(gs)
+
+        setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py OS receivership face-value buy")
+
+        # OS should auto-buy at face value
+        assert corp.has_acquisition_company(gs, company_id), \
+            "OS in receivership should auto-buy FI company"
+        assert FI.get_cash(gs) == fi_cash_before + face_value, \
+            "FI should receive face value (not high price)"
+        assert corp.get_cash(gs) == corp_cash_before - face_value, \
+            "OS should pay face value (not high price)"
+
+    def test_os_receivership_buys_when_only_affordable_at_face(self):
+        """OS in receivership buys when it can afford face value but NOT high price.
+
+        This is the key scenario: without the OS special ability, this purchase
+        would be skipped because high_price > cash >= face_value.
+        """
+        gs = GameState(3)
+        gs.initialize_game()
+
+        company_id = 0  # face=1, high=2
+        COMPANIES[company_id].transfer_to_fi(gs)
+
+        face_value = get_company_face_value(company_id)
+        high_price = get_company_high_price(company_id)
+        assert face_value < high_price
+
+        # Float OS with cash exactly equal to face value (can't afford high)
+        float_corp_for_test(gs, 2)
+        corp = CORPS[2]
+        corp.set_cash(gs, face_value)
+
+        # Put OS in receivership
+        PLAYERS[0].set_shares(gs, 2, 0)
+
+        corp_cash_before = corp.get_cash(gs)
+        fi_cash_before = FI.get_cash(gs)
+
+        setup_acquisition_phase_py(gs)
+        assert_invariants(gs, "After setup_acquisition_phase_py OS receivership face-only affordable")
+
+        # OS should still buy at face value
+        assert corp.has_acquisition_company(gs, company_id), \
+            "OS in receivership should buy when affordable at face value"
+        assert FI.get_cash(gs) == fi_cash_before + face_value
+        assert corp.get_cash(gs) == corp_cash_before - face_value
+
+
 class TestQuicksortHelpers:
     """Tests for quicksort helper functions used in offer sorting."""
 

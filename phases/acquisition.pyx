@@ -17,7 +17,7 @@ This keeps the action space constant (51 prices + 2 FI actions + pass = 54 actio
 regardless of how many potential acquisitions exist in a given game state.
 
 Receivership corps (no president) are handled automatically:
-- Auto-buy from FI at face value if affordable (RECV-01)
+- Auto-buy from FI if affordable: OS at face value, others at high price (RECV-01)
 - Auto-pass on non-FI offers (RECV-02: can only buy from FI)
 
 See CLAUDE.md "Offer Buffer Pattern" for full documentation.
@@ -194,10 +194,11 @@ cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) no
         if fi_module.FI.owns_company(state, company_id):
             high_price = company_module.COMPANIES[company_id].get_high_price()
 
-            # Check if OS can afford (OS always first if affordable)
+            # Check if OS can afford (OS pays face value, not high price)
             if corp_module.CORPS[CorpIndices.CORP_OS].is_active(state):
                 corp_cash = corp_module.CORPS[CorpIndices.CORP_OS].get_cash(state)
-                if corp_cash >= high_price and count < OFFER_BUFFER_SIZE:
+                face_value = get_company_face_value(company_id)
+                if corp_cash >= face_value and count < OFFER_BUFFER_SIZE:
                     corp_ids[count] = CorpIndices.CORP_OS
                     company_ids[count] = company_id
                     count += 1
@@ -507,7 +508,7 @@ cdef void _present_current_offer(GameState state) noexcept:
     cdef int count = <int>state._data[state._layout.hidden_offer_count_offset]
     cdef int index = <int>state._data[state._layout.hidden_offer_index_offset]
     cdef int corp_id, company_id, president, base
-    cdef int high_price, corp_cash
+    cdef int price, corp_cash
     cdef bint is_fi_offer
 
     while index < count:
@@ -527,14 +528,15 @@ cdef void _present_current_offer(GameState state) noexcept:
 
             # Receivership corps only buy from FI (per RULES.md)
             if is_fi_offer:
-                # Per RULES.md: FI "Only sells at maximum allowed price"
-                # Only OS can pay face value - receivership pays high price
-                high_price = company_module.COMPANIES[company_id].get_high_price()
+                # OS always pays face value to FI (RULES.md line 174), others pay high price
+                if corp_id == CorpIndices.CORP_OS:
+                    price = get_company_face_value(company_id)
+                else:
+                    price = company_module.COMPANIES[company_id].get_high_price()
                 corp_cash = corp_module.CORPS[corp_id].get_cash(state)
 
-                if corp_cash >= high_price:
-                    # Auto-execute: buy at high price
-                    _execute_receivership_fi_buy(state, corp_id, company_id)
+                if corp_cash >= price:
+                    _execute_receivership_fi_buy(state, corp_id, company_id, price)
             # else: auto-pass by falling through
 
             # Advance to next offer (auto-pass for both unaffordable FI and non-FI)
@@ -828,20 +830,17 @@ cdef void _handle_pass(GameState state) noexcept:
     _advance_to_next_offer(state)
 
 
-cdef void _execute_receivership_fi_buy(GameState state, int corp_id, int company_id) noexcept:
+cdef void _execute_receivership_fi_buy(GameState state, int corp_id, int company_id, int price) noexcept:
     """
-    Execute FI purchase for receivership corp at HIGH price.
+    Execute FI purchase for receivership corp at the given price.
 
-    Per RULES.md: FI "Only sells at maximum allowed price".
-    Only OS has the special ability to pay face value - receivership corps pay full price.
-    This is called from _present_current_offer for receivership auto-buy.
+    OS pays face value (RULES.md line 174), others pay high price.
+    Caller determines the correct price and passes it in.
     Does NOT advance offer index - caller handles that.
     """
-    cdef int high_price = company_module.COMPANIES[company_id].get_high_price()
-
     # Transfer money: corp -> FI
-    corp_module.CORPS[corp_id].add_cash(state, -high_price)
-    fi_module.FI.add_cash(state, high_price)
+    corp_module.CORPS[corp_id].add_cash(state, -price)
+    fi_module.FI.add_cash(state, price)
 
     # Transfer company to corp's acquisition zone
     company_module.COMPANIES[company_id].transfer_to_corp_acquisition(state, corp_id)
