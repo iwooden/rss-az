@@ -2,71 +2,29 @@
 """
 Player entity declarations.
 
-Includes both the high-level Player class and low-level cdef functions
-for nogil performance-critical code paths.
+Provides the Player class for accessing player state in the game vector.
+The class uses cached offsets for efficient nogil access in performance-critical
+code paths (e.g., action mask generation in actions.pyx).
 """
 
 from core.state cimport GameState
 
 
 # =============================================================================
-# LOW-LEVEL STRUCTS AND FUNCTIONS (for nogil performance)
+# NET WORTH UPDATE
 # =============================================================================
 
-cdef struct PlayerOffsets:
-    # Offsets within a player's data block in the state vector
-    int cash
-    int net_worth
-    int turn_order
-    int is_auction_high_bidder
-    int owned_companies
-    int owned_shares
-    int is_president
-    int share_buys
-    int share_sells
-    int acquisition_proceeds
-
-# Offset computation
-cdef PlayerOffsets get_player_offsets(int num_players) noexcept nogil
-
-# Cash operations (raw pointer, nogil)
-cdef int get_player_cash(float* player, PlayerOffsets* p) noexcept nogil
-cdef void set_player_cash(float* player, PlayerOffsets* p, int cash) noexcept nogil
-cdef void add_player_cash(float* player, PlayerOffsets* p, int amount) noexcept nogil
-
-# Share operations (raw pointer, nogil)
-cdef int get_player_shares(float* player, PlayerOffsets* p, int corp_id) noexcept nogil
-cdef void set_player_shares(float* player, PlayerOffsets* p, int corp_id, int shares) noexcept nogil
-
-# Company ownership (raw pointer, nogil)
-cdef bint player_owns_company(float* player, PlayerOffsets* p, int company_id) noexcept nogil
-cdef void set_player_owns_company(float* player, PlayerOffsets* p, int company_id, bint owns) noexcept nogil
-
-# President status (raw pointer, nogil)
-cdef bint is_player_president(float* player, PlayerOffsets* p, int corp_id) noexcept nogil
-cdef void set_player_president(float* player, PlayerOffsets* p, int corp_id, bint is_pres) noexcept nogil
-
-# Round-trip tracking (raw pointer, nogil)
-cdef int get_share_buys(float* player, PlayerOffsets* p, int corp_id) noexcept nogil
-cdef void increment_share_buys(float* player, PlayerOffsets* p, int corp_id) noexcept nogil
-cdef int get_share_sells(float* player, PlayerOffsets* p, int corp_id) noexcept nogil
-cdef void increment_share_sells(float* player, PlayerOffsets* p, int corp_id) noexcept nogil
-cdef int get_roundtrips(float* player, PlayerOffsets* p, int corp_id) noexcept nogil
-cdef void clear_roundtrip_tracking(float* player, PlayerOffsets* p) noexcept nogil
-
-# Net worth calculation (requires GameState)
-cdef int calculate_player_net_worth(GameState state, int player_id, int num_players) noexcept nogil
 cdef void update_all_player_net_worths(GameState state, int num_players) noexcept
 
 
 # =============================================================================
-# HIGH-LEVEL PLAYER CLASS
+# PLAYER CLASS
 # =============================================================================
 
 cdef class Player:
     """
     Entity handle for accessing player state.
-    Provides Python-accessible methods that wrap the low-level cdef functions.
+    Uses cached offsets for efficient nogil access in performance-critical paths.
     """
     cdef readonly int player_id
     cdef int _base_offset
@@ -87,6 +45,13 @@ cdef class Player:
     # Initialization
     cpdef void initialize(self, GameState state)
 
+    # Nogil methods (use cached offsets for performance)
+    cdef inline int _get_cash_nogil(self, float* data) noexcept nogil
+    cdef inline int _get_shares_nogil(self, float* data, int corp_id) noexcept nogil
+    cdef inline int _get_share_buys_nogil(self, float* data, int corp_id) noexcept nogil
+    cdef inline int _get_share_sells_nogil(self, float* data, int corp_id) noexcept nogil
+    cdef inline bint _owns_company_nogil(self, float* data, int company_id) noexcept nogil
+
     # Cash
     cpdef int get_cash(self, GameState state)
     cpdef void set_cash(self, GameState state, int cash)
@@ -102,17 +67,15 @@ cdef class Player:
     cpdef int get_turn_order(self, GameState state)
     cpdef void set_turn_order(self, GameState state, int order)
 
-    # Company ownership
+    # Company ownership (use Company.transfer_to_player() to set)
     cpdef bint owns_company(self, GameState state, int company_id)
-    cpdef void set_owns_company(self, GameState state, int company_id, bint owns)
 
     # Corporation shares
     cpdef int get_shares(self, GameState state, int corp_id)
     cpdef void set_shares(self, GameState state, int corp_id, int shares)
 
-    # President status
+    # President status (read-only - presidency is derived from share ownership)
     cpdef bint is_president_of(self, GameState state, int corp_id)
-    cpdef void set_president_of(self, GameState state, int corp_id, bint is_pres)
 
     # Round-trip tracking
     cpdef int get_share_buys(self, GameState state, int corp_id)

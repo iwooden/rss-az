@@ -18,9 +18,8 @@ cdef class ForeignInvestor:
     cpdef void set_cash(self, GameState state, int cash)
     cpdef void add_cash(self, GameState state, int amount)
 
-    # Company ownership
+    # Company ownership (use Company.transfer_to_fi() to set)
     cpdef bint owns_company(self, GameState state, int company_id)
-    cpdef void set_owns_company(self, GameState state, int company_id, bint owns)
 
     # Income calculation
     cpdef int calculate_income(self, GameState state)

@@ -15,7 +15,9 @@ Deck setup rules (from RULES.md):
 
 from libc.stdlib cimport rand, srand
 from core.state cimport GameState, StateLayout
-from core.data cimport GameConstants, get_company_stars
+from core.data cimport GameConstants, get_company_stars, is_last_in_group
+from entities import company as company_module
+from entities import turn as turn_module
 
 
 # Company index ranges by color (star tier)
@@ -72,12 +74,20 @@ cdef class Deck:
 
     cpdef int draw(self, GameState state):
         """
-        Draw the top card from the deck.
+        Draw the top card from the deck and mark it as revealed.
+
+        Drawn companies are always marked as revealed (unavailable for auction)
+        until they are explicitly made available at the end of WRAP_UP phase.
+
+        If the drawn company is the last in its color group (MHE, PR, DR, E, CDG),
+        the Cost of Ownership level is incremented, as the next color is now
+        on top of the deck.
 
         Returns the company_id of the drawn card, or -1 if deck is empty.
         """
         cdef int top = <int>state._data[self._deck_top_offset]
         cdef int company_id
+        cdef int current_coo
 
         if top < 0:
             return -1  # Deck is empty
@@ -86,6 +96,15 @@ cdef class Deck:
 
         # Move top pointer down
         state._data[self._deck_top_offset] = <float>(top - 1)
+
+        # Mark drawn company as revealed (unavailable for auction this turn)
+        company_module.COMPANIES[company_id].mark_revealed(state)
+
+        # If this was the last company in its color group, increment CoO level
+        # (the next color is now on top of the deck)
+        if is_last_in_group(company_id):
+            current_coo = turn_module.TURN.get_coo_level(state)
+            turn_module.TURN.set_coo_level(state, current_coo + 1)
 
         return company_id
 
@@ -110,6 +129,33 @@ cdef class Deck:
     cpdef bint is_empty(self, GameState state):
         """Check if the deck is empty."""
         return <int>state._data[self._deck_top_offset] < 0
+
+    cpdef void remove(self, GameState state, int company_id):
+        """Remove a specific company from the live deck order array.
+
+        Finds the company in deck_order[0..deck_top], shifts remaining cards
+        left to fill the gap, clears the vacated top slot, and decrements
+        deck_top. No-op if the company is not found in the live deck.
+        """
+        cdef int top = <int>state._data[self._deck_top_offset]
+        cdef int i, found = -1
+
+        # Find the company in the live portion of the deck
+        for i in range(top + 1):
+            if <int>state._data[self._deck_order_offset + i] == company_id:
+                found = i
+                break
+
+        if found < 0:
+            return  # Not in live deck
+
+        # Shift remaining cards left to fill the hole
+        for i in range(found, top):
+            state._data[self._deck_order_offset + i] = state._data[self._deck_order_offset + i + 1]
+
+        # Clear the vacated top slot and decrement deck_top
+        state._data[self._deck_order_offset + top] = -1.0
+        state._data[self._deck_top_offset] = <float>(top - 1)
 
     # =========================================================================
     # SETUP
@@ -267,9 +313,19 @@ cdef class Deck:
         Set the deck order from a Python list (for testing).
 
         Order should be from bottom to top (index 0 = bottom, last = top).
+        Companies removed from the deck have their hidden location updated
+        via exclude_from_game (no visible state change).
         """
-        cdef int i
+        cdef int i, cid
         cdef int size = len(order)
+
+        # Find companies being removed from the deck
+        new_order = set(order)
+        cdef int old_top = <int>state._data[self._deck_top_offset]
+        for i in range(old_top + 1):
+            cid = <int>state._data[self._deck_order_offset + i]
+            if cid not in new_order:
+                company_module.COMPANIES[cid].exclude_from_game(state)
 
         state._data[self._deck_top_offset] = <float>(size - 1)
 
@@ -279,6 +335,26 @@ cdef class Deck:
         # Clear remaining
         for i in range(size, 36):
             state._data[self._deck_order_offset + i] = -1.0
+
+    cpdef list get_ghost_entries(self, GameState state):
+        """
+        Get company IDs in deck slots past deck_top (for invariant testing).
+
+        These are slots that held companies before they were drawn. They should
+        never contain a company that still has LOC_DECK as its hidden location.
+
+        Returns list of (slot_index, company_id) for valid entries past deck_top.
+        """
+        cdef int top = <int>state._data[self._deck_top_offset]
+        cdef list result = []
+        cdef int i, val
+
+        for i in range(top + 1, 36):
+            val = <int>state._data[self._deck_order_offset + i]
+            if val >= 0:
+                result.append((i, val))
+
+        return result
 
 
 # =============================================================================

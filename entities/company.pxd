@@ -17,9 +17,8 @@ from core.state cimport GameState
 cdef int get_auction_company_for_slot(GameState state, int slot) noexcept nogil
 
 
-# Location type enum
-cdef enum CompanyLocation:
-    LOC_UNKNOWN = -1    # Not yet initialized or invalid
+# Location type enum (cpdef for Python access in tests)
+cpdef enum CompanyLocation:
     LOC_DECK = 0        # In the draw deck (not visible in any flag)
     LOC_AUCTION = 1     # Available for auction
     LOC_REVEALED = 2    # Drawn this turn but not auctionable
@@ -53,9 +52,9 @@ cdef class Company:
 
     cdef int _num_players
 
-    # Tracking current location (cached for O(1) access)
-    cdef CompanyLocation _location
-    cdef int _owner_id                # Player or corp ID when location is LOC_PLAYER/LOC_CORP/LOC_CORP_ACQ
+    # Hidden state offsets for O(1) location access
+    cdef int _hidden_location_offset  # Offset to this company's location in hidden state
+    cdef int _hidden_owner_id_offset  # Offset to this company's owner_id in hidden state
 
     # Initialization
     cpdef void initialize(self, GameState state)
@@ -72,18 +71,22 @@ cdef class Company:
     cpdef bint is_in_corp_acquisition(self, GameState state, int corp_id)
     cpdef bint is_removed(self, GameState state)
 
-    # Internal helper to scan for current location
-    cdef void _scan_location(self, GameState state)
+    # Internal helpers for hidden state location access
+    cdef int _get_hidden_location(self, GameState state) noexcept nogil
+    cdef int _get_hidden_owner_id(self, GameState state) noexcept nogil
+    cdef void _set_hidden_location(self, GameState state, int location, int owner_id) noexcept nogil
+    cdef void _clear_visible_flag(self, GameState state) noexcept nogil
+    cdef void _remove_from_deck_if_needed(self, GameState state)
 
-    # Transfer operations (zero old location, set new location, update cache)
+    # Transfer operations (clear old flag, set new flag, update hidden state)
     cpdef void transfer_to_player(self, GameState state, int player_id)
     cpdef void transfer_to_fi(self, GameState state)
     cpdef void transfer_to_corp(self, GameState state, int corp_id)
     cpdef void transfer_to_corp_acquisition(self, GameState state, int corp_id)
     cpdef void move_to_auction(self, GameState state)
-    cpdef void set_revealed(self, GameState state, bint revealed)
+    cpdef void mark_revealed(self, GameState state)
     cpdef void remove_from_game(self, GameState state)
-    cpdef void clear_location(self, GameState state)  # Remove from current location only
+    cpdef void exclude_from_game(self, GameState state)
 
     # Static company data (from data.pyx)
     cpdef int get_face_value(self)

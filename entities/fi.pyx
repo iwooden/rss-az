@@ -7,12 +7,10 @@ state vector. The FI is a special entity that buys companies at high price
 and holds them until corporations acquire them.
 """
 
+from libc.math cimport lround
+
 from core.state cimport GameState, StateLayout
-from core.data cimport (
-    CASH_DIVISOR, GameConstants,
-    get_company_income, get_company_stars, get_cost_of_ownership
-)
-from entities import turn as turn_module
+from core.data cimport GameConstants, CASH_DIVISOR
 
 
 cdef class ForeignInvestor:
@@ -65,10 +63,6 @@ cdef class ForeignInvestor:
         """Check if FI owns a company."""
         return state._data[self._owned_companies_offset + company_id] == 1.0
 
-    cpdef void set_owns_company(self, GameState state, int company_id, bint owns):
-        """Set whether FI owns a company."""
-        state._data[self._owned_companies_offset + company_id] = 1.0 if owns else 0.0
-
     # =========================================================================
     # INCOME CALCULATION
     # =========================================================================
@@ -77,27 +71,20 @@ cdef class ForeignInvestor:
         """
         Calculate total income for Foreign Investor.
 
-        Formula: sum(printed_income - CoO) + 5
+        Uses the cached company_incomes array (updated when CoO changes).
         FI always receives +5 base income bonus.
 
         Returns:
             Total income (always positive due to CLOSING phase)
         """
-        cdef int company_id, base_income, stars, coo_value
-        cdef int coo_level = turn_module.TURN.get_coo_level(state)
         cdef int total = 0
-
-        for company_id in range(GameConstants.NUM_COMPANIES):
-            if self.owns_company(state, company_id):
-                base_income = get_company_income(company_id)
-                stars = get_company_stars(company_id)
-                coo_value = get_cost_of_ownership(coo_level, stars)
-                total += base_income - coo_value
-
+        cdef int company_id
+        cdef int company_incomes_offset = state._layout.company_incomes_offset
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
+            if state._data[self._owned_companies_offset + company_id] == 1.0:
+                total += <int>lround(state._data[company_incomes_offset + company_id] * CASH_DIVISOR)
         # FI always gets +5 bonus (RULES.md line 354)
-        total += 5
-
-        return total
+        return total + 5
 
     # =========================================================================
     # INCOME APPLICATION

@@ -2,6 +2,7 @@
 **/.venv
 **/*.pth
 **/*.txt
+!requirements.txt
 **/*.so
 **/*.o
 **/*.c

@@ -11,7 +11,7 @@ The visible state is presented to the NN with player rotation (active player fir
 
 cimport cython
 from libc.string cimport memcpy, memset
-from libc.time cimport time
+from posix.time cimport clock_gettime, timespec, CLOCK_MONOTONIC
 cimport numpy as cnp
 import numpy as np
 
@@ -38,7 +38,10 @@ from entities import deck as deck_module
 
 cnp.import_array()
 
-# Constants
+# Buffer size constants for hidden state offer buffers
+# Note: These are duplicated in phases/acquisition.pyx and phases/closing.pyx
+# because DEF (compile-time constant) is required for static array sizing and
+# cannot be imported across Cython modules.
 DEF OFFER_BUFFER_SIZE = 250
 DEF CLOSE_OFFER_BUFFER_SIZE = 100
 
@@ -185,6 +188,12 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     # [554] close_offer_count (number of close offers)
     # [555] close_offer_index (current close offer being processed)
     # [556..855] close_offer_buffer (100 offers * 3 floats: owner_type, owner_id, company_id)
+    # [856] acq_active_corp (compact, for O(1) access)
+    # [857] acq_target_company (compact, for O(1) access)
+    # [858] closing_company (compact, for O(1) access)
+    # [859] dividend_corp (compact, for O(1) access)
+    # [860] issue_corp (compact, for O(1) access)
+    # [861] ipo_company (compact, for O(1) access)
     layout.hidden_active_player_offset = offset
     offset += 1
     layout.hidden_num_players_offset = offset
@@ -219,6 +228,26 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     offset += 1
     layout.hidden_close_offer_buffer_offset = offset
     offset += CLOSE_OFFER_BUFFER_SIZE * 3  # 100 offers * 3 floats per offer
+    # O(1) access for one-hot fields (avoids scanning visible one-hot arrays)
+    layout.hidden_acq_active_corp_offset = offset
+    offset += 1
+    layout.hidden_acq_target_company_offset = offset
+    offset += 1
+    layout.hidden_closing_company_offset = offset
+    offset += 1
+    layout.hidden_dividend_corp_offset = offset
+    offset += 1
+    layout.hidden_issue_corp_offset = offset
+    offset += 1
+    layout.hidden_ipo_company_offset = offset
+    offset += 1
+    # Company location tracking (O(1) clearing without scanning visible state)
+    # [862..897] company_locations (36 floats: CompanyLocation enum per company)
+    # [898..933] company_owner_ids (36 floats: player_id or corp_id, -1 when N/A)
+    layout.hidden_company_locations_offset = offset
+    offset += GameConstants.NUM_COMPANIES
+    layout.hidden_company_owner_ids_offset = offset
+    offset += GameConstants.NUM_COMPANIES
     layout.hidden_size = offset - layout.visible_size
 
     layout.total_size = layout.visible_size + layout.hidden_size
@@ -388,6 +417,12 @@ cdef class GameState:
         # Initialize constant hidden state fields
         self._data[self._layout.hidden_num_players_offset] = <float>num_players
 
+        # Initialize company owner_ids to -1 (no owner when in deck)
+        # Company locations are already 0 (LOC_DECK) from zero-initialization
+        cdef int i
+        for i in range(<int>GameConstants.NUM_COMPANIES):
+            self._data[self._layout.hidden_company_owner_ids_offset + i] = -1.0
+
         # Store turn offsets for convenience
         self._turn = self._turn_offsets
 
@@ -446,14 +481,7 @@ cdef class GameState:
         """Get current phase from hidden state."""
         return <int>self._data[self._layout.hidden_phase_offset]
 
-    cpdef void set_phase(self, int phase):
-        """Set current phase in both hidden and one-hot."""
-        cdef int i
-        # Update hidden compact value
-        self._data[self._layout.hidden_phase_offset] = <float>phase
-        # Update one-hot encoding
-        for i in range(GameConstants.NUM_PHASES):
-            self._data[self._layout.phase_offset + i] = 1.0 if i == phase else 0.0
+    # Note: set_phase() removed - use TurnState.set_phase() to avoid duplication
 
     # =========================================================================
     # PLAYER ACCESS
@@ -478,20 +506,6 @@ cdef class GameState:
         """Set player's net worth."""
         cdef float* player = self._player_ptr(player_id)
         player[self._player_fields.net_worth] = <float>net_worth / CASH_DIVISOR
-
-    cdef bint _is_player_president(self, int player_id, int corp_id) noexcept nogil:
-        """Check if player is president of corp (nogil version)."""
-        cdef float* player = self._player_ptr(player_id)
-        return player[self._player_fields.is_president + corp_id] == 1.0
-
-    cpdef bint is_player_president(self, int player_id, int corp_id):
-        """Check if player is president of corp."""
-        return self._is_player_president(player_id, corp_id)
-
-    cpdef void set_player_president(self, int player_id, int corp_id, bint is_pres):
-        """Set player president status."""
-        cdef float* player = self._player_ptr(player_id)
-        player[self._player_fields.is_president + corp_id] = 1.0 if is_pres else 0.0
 
     # =========================================================================
     # CORPORATION ACCESS
@@ -576,7 +590,7 @@ cdef class GameState:
         # Update hidden compact value
         self._data[self._layout.hidden_corp_price_indices_offset + corp_id] = <float>index
         # Update one-hot encoding
-        for i in range(GameConstants.NUM_MARKET_SPACES):
+        for i in range(<int>GameConstants.NUM_MARKET_SPACES):
             corp[self._corp_fields.price_index + i] = 1.0 if i == index else 0.0
 
     cpdef bint is_corp_in_receivership(self, int corp_id):
@@ -639,91 +653,101 @@ cdef class GameState:
         """Get current auction company from hidden state."""
         return <int>self._data[self._layout.hidden_auction_company_offset]
 
-    cpdef void set_auction_company(self, int company_id):
-        """Set auction company in hidden and one-hot."""
-        cdef float* turn = self._turn_ptr()
-        cdef int i
-        # Update hidden compact value
-        self._data[self._layout.hidden_auction_company_offset] = <float>company_id
-        # Update one-hot encoding
-        for i in range(GameConstants.NUM_COMPANIES):
-            turn[self._turn_offsets.auction_company + i] = 1.0 if i == company_id else 0.0
+    # Note: set_auction_company() removed - use TurnState.set_auction_company()
 
     cpdef int get_auction_price(self):
         """Get current auction price."""
         cdef float* turn = self._turn_ptr()
         return <int>(turn[self._turn_offsets.auction_price] * CASH_DIVISOR + 0.5)
 
-    cpdef void set_auction_price(self, int price):
-        """Set auction price."""
-        cdef float* turn = self._turn_ptr()
-        turn[self._turn_offsets.auction_price] = <float>price / CASH_DIVISOR
+    # Note: set_auction_price() removed - use TurnState.set_auction_price()
 
     # =========================================================================
     # ACQUISITION STATE ACCESS
     # =========================================================================
 
+    cdef int _get_acq_active_corp(self) noexcept nogil:
+        """Get active corp in acquisition phase (nogil version)."""
+        return <int>self._data[self._layout.hidden_acq_active_corp_offset]
+
     cpdef int get_acq_active_corp(self):
         """Get active corp in acquisition phase."""
-        cdef float* turn = self._turn_ptr()
-        cdef int corp_id
-        for corp_id in range(GameConstants.NUM_CORPS):
-            if turn[self._turn_offsets.acq_active_corp + corp_id] == 1.0:
-                return corp_id
-        return -1
+        return self._get_acq_active_corp()
 
-    cpdef void set_acq_active_corp(self, int corp_id):
-        """Set active corp in acquisition phase."""
-        cdef float* turn = self._turn_ptr()
-        cdef int i
-        for i in range(GameConstants.NUM_CORPS):
-            turn[self._turn_offsets.acq_active_corp + i] = 1.0 if i == corp_id else 0.0
+    # Note: set_acq_active_corp() removed - use TurnState.set_acq_active_corp()
+
+    cdef int _get_acq_target_company(self) noexcept nogil:
+        """Get target company in acquisition phase (nogil version)."""
+        return <int>self._data[self._layout.hidden_acq_target_company_offset]
 
     cpdef int get_acq_target_company(self):
         """Get target company in acquisition phase."""
-        cdef float* turn = self._turn_ptr()
-        cdef int company_id
-        for company_id in range(GameConstants.NUM_COMPANIES):
-            if turn[self._turn_offsets.acq_target_company + company_id] == 1.0:
-                return company_id
-        return -1
+        return self._get_acq_target_company()
 
-    cpdef void set_acq_target_company(self, int company_id):
-        """Set target company in acquisition phase."""
-        cdef float* turn = self._turn_ptr()
-        cdef int i
-        for i in range(GameConstants.NUM_COMPANIES):
-            turn[self._turn_offsets.acq_target_company + i] = 1.0 if i == company_id else 0.0
+    # Note: set_acq_target_company() removed - use TurnState.set_acq_target_company()
 
     cpdef bint is_acq_fi_offer(self):
         """Check if acquisition is an FI offer."""
         cdef float* turn = self._turn_ptr()
         return turn[self._turn_offsets.acq_is_fi_offer] == 1.0
 
-    cpdef void set_acq_fi_offer(self, bint is_fi):
-        """Set acquisition FI offer flag."""
-        cdef float* turn = self._turn_ptr()
-        turn[self._turn_offsets.acq_is_fi_offer] = 1.0 if is_fi else 0.0
+    # Note: set_acq_fi_offer() removed - use TurnState.set_acq_fi_offer()
+
+    # =========================================================================
+    # DIVIDEND STATE ACCESS
+    # =========================================================================
+
+    cdef int _get_dividend_corp(self) noexcept nogil:
+        """Get current dividend corp (nogil version)."""
+        return <int>self._data[self._layout.hidden_dividend_corp_offset]
+
+    cpdef int get_dividend_corp(self):
+        """Get current dividend corp."""
+        return self._get_dividend_corp()
+
+    # Note: set_dividend_corp() removed - use TurnState.set_dividend_corp()
+
+    # =========================================================================
+    # ISSUE STATE ACCESS
+    # =========================================================================
+
+    cdef int _get_issue_corp(self) noexcept nogil:
+        """Get current issue corp (nogil version)."""
+        return <int>self._data[self._layout.hidden_issue_corp_offset]
+
+    cpdef int get_issue_corp(self):
+        """Get current issue corp."""
+        return self._get_issue_corp()
+
+    # Note: set_issue_corp() removed - use TurnState.set_issue_corp()
+
+    # =========================================================================
+    # IPO STATE ACCESS
+    # =========================================================================
+
+    cdef int _get_ipo_company(self) noexcept nogil:
+        """Get current IPO company (nogil version)."""
+        return <int>self._data[self._layout.hidden_ipo_company_offset]
+
+    cpdef int get_ipo_company(self):
+        """Get current IPO company."""
+        return self._get_ipo_company()
+
+    # Note: set_ipo_company() removed - use TurnState.set_ipo_company()
 
     # =========================================================================
     # CLOSING STATE ACCESS
     # =========================================================================
 
+    cdef int _get_current_closing_company(self) noexcept nogil:
+        """Get current company being closed (nogil version)."""
+        return <int>self._data[self._layout.hidden_closing_company_offset]
+
     cpdef int get_current_closing_company(self):
         """Get current company being closed."""
-        cdef float* turn = self._turn_ptr()
-        cdef int company_id
-        for company_id in range(GameConstants.NUM_COMPANIES):
-            if turn[self._turn_offsets.closing_company + company_id] == 1.0:
-                return company_id
-        return -1
+        return self._get_current_closing_company()
 
-    cpdef void set_current_closing_company(self, int company_id):
-        """Set current closing company."""
-        cdef float* turn = self._turn_ptr()
-        cdef int i
-        for i in range(GameConstants.NUM_COMPANIES):
-            turn[self._turn_offsets.closing_company + i] = 1.0 if i == company_id else 0.0
+    # Note: set_current_closing_company() removed - use TurnState.set_closing_company()
 
     # =========================================================================
     # GAME INITIALIZATION
@@ -747,6 +771,7 @@ cdef class GameState:
         cdef int i, corp_id, company_id
         cdef int actual_seed
         cdef int starting_cash
+        cdef timespec ts
 
         # 1. Initialize all entity handles FIRST
         for i in range(self._num_players):
@@ -760,90 +785,63 @@ cdef class GameState:
         turn_module.TURN.initialize(self)
         deck_module.DECK.initialize(self)
 
-        # 2. Set player starting state
+        # 2. Set player starting state (array starts as zeros, only set non-zero values)
         starting_cash = 25 if self._num_players == 6 else 30
         for i in range(self._num_players):
             player_module.PLAYERS[i].set_cash(self, starting_cash)
             player_module.PLAYERS[i].set_turn_order(self, i)
             player_module.PLAYERS[i].set_net_worth(self, starting_cash)
 
-            # Clear all owned companies
-            for company_id in range(GameConstants.NUM_COMPANIES):
-                player_module.PLAYERS[i].set_owns_company(self, company_id, False)
-
-            # Clear all shares
-            for corp_id in range(GameConstants.NUM_CORPS):
-                player_module.PLAYERS[i].set_shares(self, corp_id, 0)
-                player_module.PLAYERS[i].set_president_of(self, corp_id, False)
-
         # 3. Set Foreign Investor state
         fi_module.FI.set_cash(self, 4)
-        for company_id in range(GameConstants.NUM_COMPANIES):
-            fi_module.FI.set_owns_company(self, company_id, False)
 
-        # 4. Reset all corporations
+        # 4. Initialize corporations (only non-zero: unissued shares)
         for corp in corp_module.CORPS:
-            corp.set_active(self, False)
-            corp.set_cash(self, 0)
-            corp.set_in_receivership(self, False)
             corp.set_unissued_shares(self, get_corp_share_count(corp.corp_id))
-            corp.set_issued_shares(self, 0)
-            corp.set_bank_shares(self, 0)
-            corp.set_income(self, 0)
-            corp.set_stars(self, 0)
-            corp.set_share_price(self, 0)
-            corp.set_price_index(self, 0)
-            corp.set_acquisition_proceeds(self, 0)
-
-            # Clear all owned companies
-            for company_id in range(GameConstants.NUM_COMPANIES):
-                corp.set_owns_company(self, company_id, False)
-                corp.set_acquisition_company(self, company_id, False)
 
         # 5. Initialize market - all spaces available
-        for i in range(GameConstants.NUM_MARKET_SPACES):
+        for i in range(<int>GameConstants.NUM_MARKET_SPACES):
             market_module.MARKET.set_space_available(self, i, True)
 
         # 6. Build and shuffle deck
         if seed < 0:
-            actual_seed = <int>time(NULL)
+            clock_gettime(CLOCK_MONOTONIC, &ts)
+            actual_seed = <int>(ts.tv_sec ^ ts.tv_nsec)
         else:
             actual_seed = seed
         deck_module.DECK.setup(self, self._num_players, actual_seed)
 
-        # 7. Draw initial companies
+        # 7. Draw initial companies (move_to_auction clears the revealed flag set by draw)
         for i in range(self._num_players):
             company_id = deck_module.DECK.draw(self)
-            self.set_company_for_auction(company_id, True)
+            company_module.COMPANIES[company_id].move_to_auction(self)
 
-        # 8. Set turn state
+        # 8. Mark excluded companies
+        # In games with < 6 players, some companies aren't included in the deck.
+        # Their hidden location defaults to LOC_DECK (0) from the zero-initialized
+        # array, but they're not actually in the deck. Mark them as excluded in
+        # hidden state only (visible state stays untouched to avoid leaking deck
+        # composition to the NN).
+        deck_companies = set(deck_module.DECK.get_order(self))
+        for i in range(<int>GameConstants.NUM_COMPANIES):
+            if (company_module.COMPANIES[i].get_location(self) == 0  # LOC_DECK
+                    and i not in deck_companies):
+                company_module.COMPANIES[i].exclude_from_game(self)
+
+        # 9. Set turn state (non-zero values only)
         turn_module.TURN.set_phase(self, GamePhases.PHASE_INVEST)
         turn_module.TURN.set_coo_level(self, 1)
         turn_module.TURN.set_turn_number(self, 1)
-        turn_module.TURN.set_end_card_flipped(self, False)
-        turn_module.TURN.clear_consecutive_passes(self)
 
-        # Clear all auction state
+        # Clear one-hot encodings (sets compact storage to -1.0 for "no selection")
         turn_module.TURN.clear_auction_company(self)
         turn_module.TURN.clear_auction_high_bidder(self)
         turn_module.TURN.clear_auction_starter(self)
-        turn_module.TURN.clear_auction_passed(self)
-
-        # Clear dividend state
         turn_module.TURN.clear_dividend_corp(self)
-
-        # Clear issue state
         turn_module.TURN.clear_issue_corp(self)
-
-        # Clear IPO state
         turn_module.TURN.clear_ipo_company(self)
-
-        # Clear acquisition state
         turn_module.TURN.clear_acq_active_corp(self)
         turn_module.TURN.clear_acq_target_company(self)
-        turn_module.TURN.set_acq_fi_offer(self, False)
-
-        # Clear closing state
         turn_module.TURN.clear_closing_company(self)
 
         # Set active player

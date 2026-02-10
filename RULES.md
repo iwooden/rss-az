@@ -158,6 +158,8 @@ In **Any Order**, corporations buy companies from:
 - If multiple intervene, highest share price has priority
 - If no intervention, announcing corporation **must** buy
 
+> **Implementation Note (FI Intervention):** The game engine eliminates the announce/intervene mechanism by presenting FI purchase offers in **descending share price order** (OS first due to its special ability, then other corps by share price). This produces identical outcomes: the highest share price corp that wants a company always gets it, since they receive the offer before any lower-priced corp can "announce." This optimization removes the need for intervention actions while preserving game-theoretic equivalence.
+
 **Corporations in Receivership:**
 - Never sell companies
 - Only buy from Foreign Investor
@@ -166,6 +168,8 @@ In **Any Order**, corporations buy companies from:
   - Non-receivership corporations may intervene as usual
   - Repeat until cannot afford more
   - Then next highest receivership corporation, etc.
+
+> **Implementation Note (Receivership):** Receivership FI purchases are handled automatically during offer presentation. Since offers are sorted by descending share price, any non-receivership corp with higher share price will have already been offered (and accepted/passed) each FI company before the receivership corp's turn. Receivership corps auto-buy at high price if affordable, auto-pass otherwise. This preserves the intervention priority without explicit intervention actions.
 
 **Overseas Trading special:** Always considered highest share price; pays only Face Value to Foreign Investor.
 
@@ -345,7 +349,8 @@ Bonus income for corporations only. For each pair of companies with each other's
 
 If any player owns more shares of a corporation than current president:
 - Next player in Player Order (after current president) with more shares becomes president
-- Exchange one of their shares for President's Share
+
+*Note: In the physical game, players exchange share cards to transfer the "President's Share" marker. This is purely a tracking mechanism—share counts do not change. In our digital model, shares are fungible and presidency is tracked separately.*
 
 ### Collect Income
 
@@ -399,12 +404,13 @@ Same as **Sell One Share** except:
 ### Sell One Share
 
 1. Player gives one share to Bank
-2. May only sell President's Share if it's player's **last share** of that corporation
-3. Corporation returns share price card, takes **next lower available**
-4. Bank pays **new** share price to player
-5. If new price = 0● → **Go Bankrupt**
-6. If sold share was last player-owned share → corporation enters **Receivership**
-7. Otherwise: check **Change of Presidency** (treat seller as current president if President's Share sold)
+2. Corporation returns share price card, takes **next lower available**
+3. Bank pays **new** share price to player
+4. If new price = 0● → **Go Bankrupt**
+5. If sold share was last player-owned share → corporation enters **Receivership**
+6. Otherwise: check **Change of Presidency**
+
+*Note: Players may sell shares freely. If selling causes the player to no longer have the most shares, presidency transfers per "Change of Presidency" rules. The physical game's "President's Share" card is just a marker—in our model, shares are fungible.*
 
 ---
 
@@ -532,6 +538,20 @@ Blue (5★):   HH(45), HA(46), HR(47), MAD(50), FRA(56), LHR(58), CDG(60)
 ### All Unique Par Prices
 10, 11, 12, 13, 14, 16, 18, 20, 22, 24, 27, 30, 33, 37
 
+### Target Stars (for Share Price Adjustment)
+Formula: `round(issued_shares × price / 10)`
+
+Used in Phase 6 (Dividends) to determine share price movement. A corporation's actual star count is compared against target stars to determine if price moves up, down, or stays.
+
+Implementation: `core/data.pyx::get_required_stars(price_index, issued_shares)`
+
+### Maximum Dividend Per Share
+Formula: `price // 3` (integer division)
+
+The maximum dividend a corporation can pay per share, based on its current share price.
+
+Implementation: `core/data.pyx::get_max_dividend(price_index)`
+
 ---
 
 ## Cost of Ownership
@@ -543,13 +563,13 @@ Cost of Ownership is determined by the back of the top card of the company deck 
 | CoO Level | Trigger | Red (1★) | Orange (2★) | Yellow (3★) | Green (4★) | Blue (5★) |
 |-----------|---------|----------|-------------|-------------|------------|-----------|
 | 1-3 | — | 0 | 0 | 0 | 0 | 0 |
-| 4 | Green cards revealed | 2 | 0 | 0 | 0 | 0 |
-| 5 | Blue cards revealed | 4 | 4 | 0 | 0 | 0 |
+| 4 | Green cards on top of deck | 2 | 0 | 0 | 0 | 0 |
+| 5 | Blue cards on top of deck | 4 | 4 | 0 | 0 | 0 |
 | 6 | Game end card (7● side) | 7 | 7 | 7 | 0 | 0 |
 | 7 | Game end card flipped (10● side) | 10 | 10 | 10 | 10 | 0 |
 
 **Notes:**
-- CoO level increases as higher-tier companies are revealed from the deck
+- CoO level increases as higher-tier cards reach the top of the deck
 - When the back of the top deck card shows a cost rectangle with certain colors, those colored companies suffer the indicated cost
 - Game end card (7● side) affects red, orange, and yellow companies
 - Game end card flipped (10● side) affects all companies except blue

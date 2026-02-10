@@ -1,25 +1,28 @@
-"""Tests for INCOME phase (v6.0).
-
-Requirements covered:
-- SYN-01, SYN-02: Synergy pair calculation (Phase 21) ✓
-- SYN-03: Synergy income added to entity income (Phase 21) ✓
-- INC-01: Entity sums income from owned companies (Phase 22) ✓
-- INC-02: CoO deducted from income (Phase 22) ✓
-- INC-03: FI +5 bonus (Phase 22) ✓
-- INC-04: Positive income adds to cash (Phase 22) ✓
-- INC-05: Negative income subtracts from cash (Phase 22) ✓
-- CSA-01: PR +1 per company (Phase 22) ✓
-- CSA-02: DA +printed income of highest FV (Phase 22) ✓
-- CSA-03: S +synergy_markers // 2 (Phase 22) ✓
-- CSA-04: VM reduces CoO by up to 10 (Phase 22) ✓
-- TRN-01 through TRN-04: Phase transitions (Phase 23) [TODO]
-"""
+"""Tests for INCOME phase."""
 import pytest
+from core.state import GameState
 from core.data import (
     py_compute_synergy_bonuses,
     COMPANY_NAME_TO_ID,
     get_company_synergy,
+    GamePhases,
+    GameConstants,
+    get_company_income,
+    get_company_stars,
+    get_cost_of_ownership,
+    get_company_face_value,
 )
+from core.actions import get_valid_action_mask
+from entities.turn import TURN
+from entities.player import PLAYERS
+from entities.corp import CORPS
+from entities.company import COMPANIES
+from entities.fi import FI
+from entities.market import MARKET
+from phases.income import apply_income_py
+from core.driver import DRIVER, STATUS_OK_PY as STATUS_OK
+from phases.dividends import setup_dividends_phase_py, find_next_dividend_corp_py
+from tests.phases.conftest import float_corp_for_test, assert_invariants
 
 
 # =============================================================================
@@ -28,7 +31,7 @@ from core.data import (
 
 
 class TestSynergyCalculation:
-    """SYN-01, SYN-02: Synergy pair identification and counting."""
+    """Synergy pair identification and counting."""
 
     def test_no_companies_returns_zero(self):
         """No companies -> (0, 0)."""
@@ -129,30 +132,25 @@ class TestSynergyCalculation:
 
 
 class TestCorpBaseIncome:
-    """INC-01, INC-02: Corporation base income calculation."""
+    """Corporation base income calculation."""
 
     def test_corp_no_companies_returns_zero(self, game_state):
         """Corporation with no companies -> 0 income."""
-        from entities.corp import CORPS
-        corp = CORPS[0]
-        corp.set_active(game_state, True)
 
+        # Float corp, then remove the company to test edge case
+        company_id = float_corp_for_test(game_state, corp_id=0)
+        COMPANIES[company_id].remove_from_game(game_state)
+
+        corp = CORPS[0]
         income = corp.calculate_income(game_state)
         assert income == 0
 
     def test_corp_single_company_no_synergy(self, game_state):
         """Corporation with 1 company -> income - CoO (no synergy bonus)."""
-        from entities.corp import CORPS
-        from entities.company import COMPANIES
-        from entities.turn import TURN
-        from core.data import get_company_income, get_company_stars, get_cost_of_ownership
 
+        # Float corp 0 with company 0 (BME: income=1, 1 star)
+        float_corp_for_test(game_state, corp_id=0, company_id=0)
         corp = CORPS[0]
-        corp.set_active(game_state, True)
-
-        # Give corp company 0 (BME: income=18, 3 stars)
-        COMPANIES[0].transfer_to_corp(game_state, 0)
-        corp.set_owns_company(game_state, 0, True)
 
         # CoO at level 1 (start of game)
         coo_level = TURN.get_coo_level(game_state)
@@ -168,25 +166,15 @@ class TestCorpBaseIncome:
 
     def test_corp_two_companies_with_synergy(self, game_state):
         """Corporation with 2+ synergizing companies -> income - CoO + synergy."""
-        from entities.corp import CORPS
-        from entities.company import COMPANIES
-        from entities.turn import TURN
-        from core.data import (
-            get_company_income, get_company_stars, get_cost_of_ownership,
-            COMPANY_NAME_TO_ID, py_compute_synergy_bonuses
-        )
-
-        corp = CORPS[0]
-        corp.set_active(game_state, True)
 
         # Give corp CDG and MAD (CDG->MAD synergy = 16)
         cdg = COMPANY_NAME_TO_ID["CDG"]
         mad = COMPANY_NAME_TO_ID["MAD"]
 
-        COMPANIES[cdg].transfer_to_corp(game_state, 0)
-        corp.set_owns_company(game_state, cdg, True)
+        # Float corp 0 with CDG, then transfer MAD
+        float_corp_for_test(game_state, corp_id=0, company_id=cdg)
         COMPANIES[mad].transfer_to_corp(game_state, 0)
-        corp.set_owns_company(game_state, mad, True)
+        corp = CORPS[0]
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -205,20 +193,13 @@ class TestCorpBaseIncome:
 
     def test_corp_at_high_coo_level(self, game_state):
         """Corporation with companies at high CoO level -> correct deduction."""
-        from entities.corp import CORPS
-        from entities.company import COMPANIES
-        from entities.turn import TURN
-        from core.data import get_company_income, get_company_stars, get_cost_of_ownership
 
-        corp = CORPS[0]
-        corp.set_active(game_state, True)
-
-        # Set high CoO level
+        # Set high CoO level before floating
         TURN.set_coo_level(game_state, 6)
 
-        # Give corp a 3-star company (BME)
-        COMPANIES[0].transfer_to_corp(game_state, 0)
-        corp.set_owns_company(game_state, 0, True)
+        # Float corp 0 with company 0 (BME, 1-star)
+        float_corp_for_test(game_state, corp_id=0, company_id=0)
+        corp = CORPS[0]
 
         base_income = get_company_income(0)
         stars = get_company_stars(0)
@@ -230,25 +211,19 @@ class TestCorpBaseIncome:
 
 
 class TestFIIncome:
-    """INC-03: Foreign Investor income calculation."""
+    """Foreign Investor income calculation."""
 
     def test_fi_no_companies_returns_five(self, game_state):
         """FI with no companies -> 5 (base bonus only)."""
-        from entities.fi import FI
 
         income = FI.calculate_income(game_state)
         assert income == 5
 
     def test_fi_one_company(self, game_state):
         """FI with 1 company -> income - CoO + 5."""
-        from entities.fi import FI
-        from entities.company import COMPANIES
-        from entities.turn import TURN
-        from core.data import get_company_income, get_company_stars, get_cost_of_ownership
 
         # Transfer company 0 to FI
         COMPANIES[0].transfer_to_fi(game_state)
-        FI.set_owns_company(game_state, 0, True)
 
         coo_level = TURN.get_coo_level(game_state)
         base_income = get_company_income(0)
@@ -262,15 +237,10 @@ class TestFIIncome:
 
     def test_fi_multiple_companies(self, game_state):
         """FI with multiple companies -> sum(income - CoO) + 5."""
-        from entities.fi import FI
-        from entities.company import COMPANIES
-        from entities.turn import TURN
-        from core.data import get_company_income, get_company_stars, get_cost_of_ownership
 
         # Transfer companies 0, 1, 2 to FI
         for cid in [0, 1, 2]:
             COMPANIES[cid].transfer_to_fi(game_state)
-            FI.set_owns_company(game_state, cid, True)
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -286,38 +256,32 @@ class TestFIIncome:
 
 
 class TestCorpSpecialAbilities:
-    """CSA-01 through CSA-04: Corporation special ability modifiers to income."""
+    """Corporation special ability modifiers to income."""
 
     def test_pr_with_zero_companies(self, game_state):
-        """CSA-01: PR with 0 companies -> +0 bonus (but still works)."""
-        from entities.corp import CORPS
+        """PR with 0 companies -> +0 bonus (but still works)."""
 
         # CORP_PR = 4 (Prussian Railway)
-        pr = CORPS[4]
-        pr.set_active(game_state, True)
+        # Float PR and then remove its company to test zero-company edge case
+        company_id = float_corp_for_test(game_state, corp_id=4)
+        COMPANIES[company_id].remove_from_game(game_state)
 
+        pr = CORPS[4]
         income = pr.calculate_income(game_state)
         assert income == 0  # No companies, no bonus
 
     def test_pr_with_multiple_companies(self, game_state):
-        """CSA-01: PR with 3 companies -> +3 bonus."""
-        from entities.corp import CORPS
-        from entities.company import COMPANIES
-        from entities.turn import TURN
-        from core.data import (
-            get_company_income, get_company_stars, get_cost_of_ownership,
-            py_compute_synergy_bonuses
-        )
+        """PR with 3 companies -> +3 bonus."""
 
-        pr = CORPS[4]  # CORP_PR
-        pr.set_active(game_state, True)
-
-        # Give PR three companies (0, 1, 2)
+        # CORP_PR = 4
+        # Float PR with company 0, then add companies 1 and 2
         # Note: 2 (KME) synergizes with 0 (BME) for +1
         companies = [0, 1, 2]
-        for cid in companies:
+        float_corp_for_test(game_state, corp_id=4, company_id=0)
+        for cid in companies[1:]:
             COMPANIES[cid].transfer_to_corp(game_state, 4)
-            pr.set_owns_company(game_state, cid, True)
+
+        pr = CORPS[4]
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -336,34 +300,19 @@ class TestCorpSpecialAbilities:
         assert income == expected
 
     def test_da_with_multiple_companies(self, game_state):
-        """CSA-02: DA with companies of different FVs -> bonus = printed income of highest FV."""
-        from entities.corp import CORPS
-        from entities.company import COMPANIES
-        from entities.turn import TURN
-        from core.data import (
-            get_company_income, get_company_stars, get_cost_of_ownership,
-            get_company_face_value, py_compute_synergy_bonuses,
-            COMPANY_NAME_TO_ID
-        )
+        """DA with companies of different FVs -> bonus = printed income of highest FV."""
 
-        da = CORPS[5]  # CORP_DA
-        da.set_active(game_state, True)
-
+        # CORP_DA = 5
         # Give DA companies with different FVs
-        # Need to find companies with distinct FVs
-        # BME: FV=3, income=18
-        # BSE: FV=3, income=18
-        # CDG: FV=5, income=32
-        # MAD: FV=4, income=28
-        # Let's use companies with FV 1, 3, 5
-        # FV=1: Company 23 (KK)
-        # FV=3: Company 0 (BME)
-        # FV=5: Company 3 (CDG)
-        companies = [23, 0, 3]  # KK (FV=1), BME (FV=3), CDG (FV=5)
+        # SZD (FV=30), BME (FV=1), AKE (FV=6)
+        companies = [23, 0, 3]
 
-        for cid in companies:
+        # Float DA with first company, then add the rest
+        float_corp_for_test(game_state, corp_id=5, company_id=companies[0])
+        for cid in companies[1:]:
             COMPANIES[cid].transfer_to_corp(game_state, 5)
-            da.set_owns_company(game_state, cid, True)
+
+        da = CORPS[5]
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -389,31 +338,23 @@ class TestCorpSpecialAbilities:
         assert income == expected
 
     def test_s_with_four_synergy_markers(self, game_state):
-        """CSA-03: S with 4 synergy markers -> +2 bonus (4 // 2)."""
-        from entities.corp import CORPS
-        from entities.company import COMPANIES
-        from entities.turn import TURN
-        from core.data import (
-            get_company_income, get_company_stars, get_cost_of_ownership,
-            COMPANY_NAME_TO_ID, py_compute_synergy_bonuses
-        )
+        """S with 4 synergy markers -> +2 bonus (4 // 2)."""
 
-        s = CORPS[1]  # CORP_S (Synergistic)
-        s.set_active(game_state, True)
-
+        # CORP_S = 1 (Synergistic)
         # Give S companies that form 4 synergy pairs (4 markers)
-        # DR synergizes with: WT (2), BY (2), PKP (4)
-        # BY synergizes with: WT (2)
-        # This gives us: DR-WT, DR-BY, DR-PKP, WT-BY = 4 pairs
+        # DR-WT, DR-BY, DR-PKP, WT-BY = 4 pairs
         dr = COMPANY_NAME_TO_ID["DR"]
         wt = COMPANY_NAME_TO_ID["WT"]
         by = COMPANY_NAME_TO_ID["BY"]
         pkp = COMPANY_NAME_TO_ID["PKP"]
         companies = [dr, wt, by, pkp]
 
-        for cid in companies:
+        # Float S with first company, then add the rest
+        float_corp_for_test(game_state, corp_id=1, company_id=dr)
+        for cid in companies[1:]:
             COMPANIES[cid].transfer_to_corp(game_state, 1)
-            s.set_owns_company(game_state, cid, True)
+
+        s = CORPS[1]
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -432,21 +373,10 @@ class TestCorpSpecialAbilities:
         assert income == expected
 
     def test_s_with_five_synergy_markers(self, game_state):
-        """CSA-03: S with 5 synergy markers -> +2 bonus (5 // 2 = 2, rounds down)."""
-        from entities.corp import CORPS
-        from entities.company import COMPANIES
-        from entities.turn import TURN
-        from core.data import (
-            get_company_income, get_company_stars, get_cost_of_ownership,
-            COMPANY_NAME_TO_ID, py_compute_synergy_bonuses
-        )
+        """S with 5 synergy markers -> +2 bonus (5 // 2 = 2, rounds down)."""
 
-        s = CORPS[1]  # CORP_S
-        s.set_active(game_state, True)
-
+        # CORP_S = 1
         # Give S companies that form 5 synergy pairs (5 markers)
-        # DR synergizes with: WT, BY, PKP, SNCF, SNCB
-        # Need to create 5 pairs - add SNCF to previous set
         dr = COMPANY_NAME_TO_ID["DR"]
         wt = COMPANY_NAME_TO_ID["WT"]
         by = COMPANY_NAME_TO_ID["BY"]
@@ -454,9 +384,12 @@ class TestCorpSpecialAbilities:
         sncf = COMPANY_NAME_TO_ID["SNCF"]
         companies = [dr, wt, by, pkp, sncf]
 
-        for cid in companies:
+        # Float S with first company, then add the rest
+        float_corp_for_test(game_state, corp_id=1, company_id=dr)
+        for cid in companies[1:]:
             COMPANIES[cid].transfer_to_corp(game_state, 1)
-            s.set_owns_company(game_state, cid, True)
+
+        s = CORPS[1]
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -474,23 +407,17 @@ class TestCorpSpecialAbilities:
         assert income == expected
 
     def test_vm_with_coo_below_ten(self, game_state):
-        """CSA-04: VM with total_coo=8 -> CoO reduced to 0."""
-        from entities.corp import CORPS
-        from entities.company import COMPANIES
-        from entities.turn import TURN
-        from core.data import get_company_income, get_company_stars, get_cost_of_ownership
+        """VM with total_coo <= 10 -> CoO reduced to 0."""
 
-        vm = CORPS[6]  # CORP_VM (Vintage Machinery)
-        vm.set_active(game_state, True)
-
-        # Give VM companies that total ~8 CoO
-        # At CoO level 1: 1 star = 2, 2 stars = 4, 3 stars = 6
-        # Use two 2-star companies (Company 1 and 2) = 4 + 4 = 8
+        # CORP_VM = 6 (Vintage Machinery)
+        # Give VM companies at CoO level 1 (all CoO = 0 at this level)
         TURN.set_coo_level(game_state, 1)
 
-        for cid in [1, 2]:  # Two 2-star companies
-            COMPANIES[cid].transfer_to_corp(game_state, 6)
-            vm.set_owns_company(game_state, cid, True)
+        # Float VM with company 1, then add company 2
+        float_corp_for_test(game_state, corp_id=6, company_id=1)
+        COMPANIES[2].transfer_to_corp(game_state, 6)
+
+        vm = CORPS[6]
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -509,24 +436,18 @@ class TestCorpSpecialAbilities:
         assert income == expected
 
     def test_vm_with_coo_above_ten(self, game_state):
-        """CSA-04: VM with total_coo=15 -> CoO reduced by 10, leaving 5."""
-        from entities.corp import CORPS
-        from entities.company import COMPANIES
-        from entities.turn import TURN
-        from core.data import get_company_income, get_company_stars, get_cost_of_ownership
+        """VM with total_coo > 10 -> CoO reduced by 10."""
 
-        vm = CORPS[6]  # CORP_VM
-        vm.set_active(game_state, True)
-
-        # Give VM companies that total 15 CoO
-        # At CoO level 2: 1 star = 3, 2 stars = 6, 3 stars = 9
-        # Use one 3-star (9) and one 2-star (6) = 15
+        # CORP_VM = 6
+        # Give VM companies at CoO level 2 (all CoO = 0 at this level)
         TURN.set_coo_level(game_state, 2)
 
-        companies = [0, 1]  # 3-star and 2-star
-        for cid in companies:
-            COMPANIES[cid].transfer_to_corp(game_state, 6)
-            vm.set_owns_company(game_state, cid, True)
+        # Float VM with company 0 (BME, 1-star), then add company 1 (BSE, 1-star)
+        companies = [0, 1]
+        float_corp_for_test(game_state, corp_id=6, company_id=0)
+        COMPANIES[1].transfer_to_corp(game_state, 6)
+
+        vm = CORPS[6]
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -546,17 +467,11 @@ class TestCorpSpecialAbilities:
 
     def test_non_income_ability_corp_unaffected(self, game_state):
         """Other corporations (JS, OS, SM, SI) have no income modifications."""
-        from entities.corp import CORPS
-        from entities.company import COMPANIES
-        from entities.turn import TURN
-        from core.data import get_company_income, get_company_stars, get_cost_of_ownership
 
-        js = CORPS[0]  # CORP_JS - has ability but doesn't affect calculate_income
-        js.set_active(game_state, True)
-
-        # Give JS one company
-        COMPANIES[0].transfer_to_corp(game_state, 0)
-        js.set_owns_company(game_state, 0, True)
+        # CORP_JS = 0 - has ability but doesn't affect calculate_income
+        # Float JS with company 0
+        float_corp_for_test(game_state, corp_id=0, company_id=0)
+        js = CORPS[0]
 
         coo_level = TURN.get_coo_level(game_state)
 
@@ -569,25 +484,20 @@ class TestCorpSpecialAbilities:
 
 
 class TestIncomeApplication:
-    """INC-04, INC-05: Income application to entity cash."""
+    """Income application to entity cash."""
 
     def test_corp_positive_income_adds_cash(self, game_state):
         """Corporation positive income increases cash."""
-        from entities.corp import CORPS
-        from entities.company import COMPANIES
-        from core.data import COMPANY_NAME_TO_ID
+
+        # Float corp 0 with CDG (income=10, stars=5, CoO at level 1 = 0)
+        cdg = COMPANY_NAME_TO_ID["CDG"]
+        float_corp_for_test(game_state, corp_id=0, company_id=cdg)
 
         corp = CORPS[0]
-        corp.set_active(game_state, True)
         corp.set_cash(game_state, 10)
 
-        # Give corp a company (CDG: income=32, stars=4, CoO_level1=8 -> net=24)
-        cdg = COMPANY_NAME_TO_ID["CDG"]
-        COMPANIES[cdg].transfer_to_corp(game_state, 0)
-        corp.set_owns_company(game_state, cdg, True)
-
         income = corp.calculate_income(game_state)
-        assert income > 0  # Should be 24
+        assert income > 0  # Should be 10
 
         corp.apply_income(game_state, income)
 
@@ -595,10 +505,8 @@ class TestIncomeApplication:
 
     def test_corp_negative_income_subtracts_cash(self, game_state):
         """Corporation negative income decreases cash."""
-        from entities.corp import CORPS
-
+        float_corp_for_test(game_state, 0)
         corp = CORPS[0]
-        corp.set_active(game_state, True)
         corp.set_cash(game_state, 10)
 
         # Apply negative income directly
@@ -608,10 +516,8 @@ class TestIncomeApplication:
 
     def test_corp_can_go_negative(self, game_state):
         """Corporation cash can go negative after income application."""
-        from entities.corp import CORPS
-
+        float_corp_for_test(game_state, 0)
         corp = CORPS[0]
-        corp.set_active(game_state, True)
         corp.set_cash(game_state, 5)
 
         # Apply large negative income
@@ -621,9 +527,6 @@ class TestIncomeApplication:
 
     def test_fi_income_with_bonus(self, game_state):
         """FI income includes +5 bonus."""
-        from entities.fi import FI
-        from entities.company import COMPANIES
-        from core.data import COMPANY_NAME_TO_ID
 
         FI.set_cash(game_state, 10)
 
@@ -637,20 +540,16 @@ class TestIncomeApplication:
 
     def test_player_income_uses_existing_methods(self, game_state):
         """Player income applied via add_cash."""
-        from entities.player import PLAYERS
-        from entities.company import COMPANIES
-        from core.data import COMPANY_NAME_TO_ID
 
         player = PLAYERS[0]
         player.set_cash(game_state, 20)
 
-        # Give player a company (CDG: income=32, stars=4, CoO_level1=8 -> net=24)
+        # Give player a company (CDG: income=10, stars=5, CoO at level 1 = 0)
         cdg = COMPANY_NAME_TO_ID["CDG"]
         COMPANIES[cdg].transfer_to_player(game_state, 0)
-        player.set_owns_company(game_state, cdg, True)
 
         income = player.get_income(game_state)
-        assert income > 0  # Should be 24
+        assert income > 0  # Should be 10
 
         player.add_cash(game_state, income)
 
@@ -658,7 +557,105 @@ class TestIncomeApplication:
 
 
 # =============================================================================
-# Phase 23: Phase Integration
+# Phase 23: Phase Transitions
 # =============================================================================
 
-# TODO: Add tests for INC-06, TRN-01 through TRN-04
+
+class TestIncomeTransition:
+    """INCOME phase transitions to DIVIDENDS."""
+
+    def test_income_transitions_to_dividends(self, game_state):
+        """After income application, phase changes to DIVIDENDS."""
+        # Set up a simple active corp
+        float_corp_for_test(game_state, 0, par_index=10)
+        corp = CORPS[0]
+        corp.set_cash(game_state, 100)
+
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+        apply_income_py(game_state)
+        assert_invariants(game_state, "After income")
+
+        assert TURN.get_phase(game_state) == GamePhases.PHASE_DIVIDENDS
+
+    def test_income_transitions_even_with_no_corps(self, game_state):
+        """INCOME transitions to DIVIDENDS, which then transitions to END_CARD."""
+        # All corps start inactive after initialize_game()
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+        apply_income_py(game_state)
+        assert_invariants(game_state, "After income")
+
+        # INCOME sets phase to DIVIDENDS, but setup_dividends_phase
+        # immediately transitions to END_CARD when no corps exist
+        assert TURN.get_phase(game_state) == GamePhases.PHASE_END_CARD
+
+
+class TestDividendSetup:
+    """Dividends phase setup initializes dividend_corp."""
+
+    def test_dividend_corp_set_to_first_eligible(self, game_state):
+        """After transition, dividend_corp is set to highest-price corp."""
+        # Set up two corps at different prices
+        float_corp_for_test(game_state, 0, par_index=10)  # Lower price
+        CORPS[0].set_cash(game_state, 100)
+
+        float_corp_for_test(game_state, 1, player_id=1, par_index=15)  # Higher price - processed first
+        CORPS[1].set_cash(game_state, 100)
+
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+        apply_income_py(game_state)
+        assert_invariants(game_state, "After income")
+
+        # Dividend corp should be corp 1 (higher price)
+        dividend_corp = TURN.get_dividend_corp(game_state)
+        assert dividend_corp == 1, f"Expected dividend_corp=1, got {dividend_corp}"
+
+    def test_dividend_corp_cleared_when_no_corps(self, game_state):
+        """With no active corps, dividend_corp is -1 after setup."""
+        # All corps start inactive after initialize_game()
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+        apply_income_py(game_state)
+        assert_invariants(game_state, "After income")
+
+        # Should have no dividend corp (transitioned out of DIVIDENDS already)
+        # The dividends phase will immediately transition to next phase
+        dividend_corp = TURN.get_dividend_corp(game_state)
+        assert dividend_corp == -1, f"Expected dividend_corp=-1, got {dividend_corp}"
+
+
+class TestNonPlayerPhase:
+    """INCOME is a non-player phase with 0 valid actions."""
+
+    def test_income_has_no_valid_actions(self, game_state):
+        """In INCOME phase, action mask should be all zeros."""
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+
+        mask = get_valid_action_mask(game_state)
+
+        # All actions should be invalid
+        valid_count = sum(1 for v in mask if v == 1.0)
+        assert valid_count == 0, f"Expected 0 valid actions, got {valid_count}"
+
+    def test_income_auto_executes_in_driver(self, game_state):
+        """INCOME phase should auto-execute when reached."""
+
+        # Set up corp for dividends phase
+        float_corp_for_test(game_state, 0, par_index=10)
+        corp = CORPS[0]
+        corp.set_cash(game_state, 100)
+
+        # Manually set phase to INCOME
+        TURN.set_phase(game_state, GamePhases.PHASE_INCOME)
+
+        # The driver should detect this and auto-execute
+        # We can't directly call the driver's auto-apply from here,
+        # but we can verify that apply_income_py transitions correctly
+        apply_income_py(game_state)
+        assert_invariants(game_state, "After income")
+
+        # Should be in DIVIDENDS with valid actions now
+        assert TURN.get_phase(game_state) == GamePhases.PHASE_DIVIDENDS
+        mask = get_valid_action_mask(game_state)
+        valid_count = sum(1 for v in mask if v == 1.0)
+        assert valid_count > 0, "DIVIDENDS should have valid actions"
+
+

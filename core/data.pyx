@@ -238,6 +238,7 @@ cpdef inline int get_adjusted_company_income(int company_id, int coo_level) noex
     cdef int cost = get_cost_of_ownership(coo_level, stars)
     return base_income - cost
 
+
 cpdef inline bint is_valid_par_price(int star_tier, int par_index) noexcept nogil:
     """Check if par price at index is valid for given star tier."""
     if star_tier < 1 or star_tier > 5 or par_index < 0 or par_index >= 14:
@@ -259,13 +260,55 @@ cpdef inline int get_par_index_for_slot(int star_tier, int par_slot) noexcept no
     then slot 0 maps to index 2, slot 1 to index 3, etc.
     """
     cdef int count = 0
-    cdef unsigned int par_index
-    for par_index in range(GameConstants.NUM_PAR_PRICES):
+    cdef int par_index
+    for par_index in range(<int>GameConstants.NUM_PAR_PRICES):
         if is_valid_par_price(star_tier, <int>par_index):
             if count == par_slot:
                 return par_index
             count += 1
     return -1
+
+cpdef inline int get_required_stars(int price_index, int issued_shares) noexcept nogil:
+    """
+    Get required star count for a corporation to maintain its share price.
+
+    Formula: round(issued_shares * price / 10)
+    Source: 18xx.games RSS implementation (target_stars function)
+
+    Args:
+        price_index: Market price index (0-26)
+        issued_shares: Number of issued shares (2-7)
+
+    Returns:
+        Required star count, or 0 for invalid inputs
+    """
+    cdef int price
+    if price_index < 1 or price_index > 26:
+        return 0
+    if issued_shares < 2 or issued_shares > 7:
+        return 0
+    price = MARKET_PRICES[price_index]
+    # Round to nearest integer: (x + 0.5) truncated
+    return <int>(issued_shares * price / 10.0 + 0.5)
+
+cpdef inline int get_max_dividend(int price_index) noexcept nogil:
+    """
+    Get maximum dividend per share for a given share price.
+
+    Formula: price // 3
+    Source: 18xx.games Rolling Stock implementation (max_dividend_per_share function)
+
+    Args:
+        price_index: Market price index (0-26)
+
+    Returns:
+        Maximum dividend per share, or 0 for invalid/bankrupt price
+    """
+    cdef int price
+    if price_index < 1 or price_index > 26:
+        return 0
+    price = MARKET_PRICES[price_index]
+    return price // 3
 
 cdef inline (int, int) compute_synergy_bonuses(
     int* company_ids,

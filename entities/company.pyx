@@ -7,6 +7,7 @@ operations. Each Company instance tracks where it exists in the state vector
 for O(1) location queries and atomic transfers.
 """
 
+from libc.math cimport lround
 from core.state cimport GameState, StateLayout, PlayerFieldOffsets, CorpFieldOffsets
 from core.data cimport (
     GameConstants, CASH_DIVISOR,
@@ -15,9 +16,9 @@ from core.data cimport (
     is_last_in_group as data_is_last_in_group
 )
 
-# Local constants from enum for nogil usage
-DEF NUM_COMPANIES = 36
+# Use constants from GameConstants (imported above)
 from core.data import COMPANY_NAMES
+from entities import deck as deck_module
 
 
 # =============================================================================
@@ -40,7 +41,7 @@ cdef inline int get_auction_company_for_slot(GameState state, int slot) noexcept
     """
     cdef int count = 0
     cdef int company_id
-    for company_id in range(NUM_COMPANIES):
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
         if state._is_company_for_auction(company_id):
             if count == slot:
                 return company_id
@@ -60,17 +61,19 @@ cdef class Company:
     Offsets are computed on first access to a GameState via initialize().
     All methods take GameState as first argument for stateless operation.
 
-    The company tracks its current location in the game state for efficient
-    transfers. When transferring, the old location is cleared and the new
-    location is set atomically.
+    Company location is stored in hidden state for O(1) access across multiple
+    GameState instances (essential for MCTS). The hidden state stores both
+    location type (CompanyLocation enum) and owner_id (player_id or corp_id).
+    When transferring, the old visible flag is cleared and the new visible
+    flag and hidden state are updated atomically.
     """
 
     def __cinit__(self, int company_id, str name):
         self.company_id = company_id
         self.name = name
-        self._location = LOC_UNKNOWN
-        self._owner_id = -1
         self._num_players = 0
+        self._hidden_location_offset = -1
+        self._hidden_owner_id_offset = -1
 
     cpdef void initialize(self, GameState state):
         """
@@ -102,81 +105,42 @@ cdef class Company:
         self._corp_companies_field = corp_fields.owned_companies
         self._corp_acq_field = corp_fields.acquisition_companies
 
-        # Scan to find initial location
-        self._scan_location(state)
+        # Hidden state offsets for O(1) location access
+        self._hidden_location_offset = layout.hidden_company_locations_offset + self.company_id
+        self._hidden_owner_id_offset = layout.hidden_company_owner_ids_offset + self.company_id
+
+    # =========================================================================
+    # HIDDEN STATE LOCATION ACCESS
+    # =========================================================================
+
+    cdef int _get_hidden_location(self, GameState state) noexcept nogil:
+        """Get company location from hidden state. O(1) access."""
+        return <int>state._data[self._hidden_location_offset]
+
+    cdef int _get_hidden_owner_id(self, GameState state) noexcept nogil:
+        """Get company owner ID from hidden state. O(1) access."""
+        return <int>state._data[self._hidden_owner_id_offset]
+
+    cdef void _set_hidden_location(self, GameState state, int location, int owner_id) noexcept nogil:
+        """Set company location and owner in hidden state."""
+        state._data[self._hidden_location_offset] = <float>location
+        state._data[self._hidden_owner_id_offset] = <float>owner_id
 
     # =========================================================================
     # LOCATION QUERIES
     # =========================================================================
 
-    cdef void _scan_location(self, GameState state):
-        """Scan state to find where this company currently exists."""
-        cdef int i
-
-        # Check auction
-        if state._data[self._auction_offset] == 1.0:
-            self._location = LOC_AUCTION
-            self._owner_id = -1
-            return
-
-        # Check revealed
-        if state._data[self._revealed_offset] == 1.0:
-            self._location = LOC_REVEALED
-            self._owner_id = -1
-            return
-
-        # Check removed
-        if state._data[self._removed_offset] == 1.0:
-            self._location = LOC_REMOVED
-            self._owner_id = -1
-            return
-
-        # Check FI ownership
-        if state._data[self._fi_offset] == 1.0:
-            self._location = LOC_FI
-            self._owner_id = -1
-            return
-
-        # Check player ownership
-        for i in range(self._num_players):
-            if state._data[self._players_offset + i * self._player_stride + self._player_companies_field + self.company_id] == 1.0:
-                self._location = LOC_PLAYER
-                self._owner_id = i
-                return
-
-        # Check corp ownership and acquisition piles
-        for i in range(GameConstants.NUM_CORPS):
-            if state._data[self._corps_offset + i * self._corp_stride + self._corp_companies_field + self.company_id] == 1.0:
-                self._location = LOC_CORP
-                self._owner_id = i
-                return
-            if state._data[self._corps_offset + i * self._corp_stride + self._corp_acq_field + self.company_id] == 1.0:
-                self._location = LOC_CORP_ACQ
-                self._owner_id = i
-                return
-
-        # Not found in any visible location - must be in deck
-        self._location = LOC_DECK
-        self._owner_id = -1
-
     cpdef int get_location(self, GameState state):
         """Get current location type. Returns CompanyLocation enum value."""
-        # Re-scan if unknown (shouldn't happen after initialize)
-        if self._location == LOC_UNKNOWN:
-            self._scan_location(state)
-        return <int>self._location
+        return self._get_hidden_location(state)
 
     cpdef int get_owner_id(self, GameState state):
         """Get owner ID (player or corp) if applicable, -1 otherwise."""
-        if self._location == LOC_UNKNOWN:
-            self._scan_location(state)
-        return self._owner_id
+        return self._get_hidden_owner_id(state)
 
     cpdef bint is_in_deck(self, GameState state):
         """Check if company is in the draw deck."""
-        if self._location == LOC_UNKNOWN:
-            self._scan_location(state)
-        return self._location == LOC_DECK
+        return self._get_hidden_location(state) == LOC_DECK
 
     cpdef bint is_for_auction(self, GameState state):
         """Check if company is available for auction."""
@@ -216,116 +180,95 @@ cdef class Company:
     # TRANSFER OPERATIONS
     # =========================================================================
 
-    cpdef void clear_location(self, GameState state):
-        """Clear company from its current location without setting a new one."""
-        cdef int i
+    cdef void _clear_visible_flag(self, GameState state) noexcept nogil:
+        """Clear company's current visible state flag based on hidden location."""
+        cdef int location = self._get_hidden_location(state)
+        cdef int owner_id = self._get_hidden_owner_id(state)
 
-        # Re-scan to get current location (don't trust stale cache)
-        self._scan_location(state)
-
-        # Clear based on current location
-        if self._location == LOC_AUCTION:
+        if location == LOC_AUCTION:
             state._data[self._auction_offset] = 0.0
-        elif self._location == LOC_REVEALED:
+        elif location == LOC_REVEALED:
             state._data[self._revealed_offset] = 0.0
-        elif self._location == LOC_REMOVED:
+        elif location == LOC_REMOVED:
             state._data[self._removed_offset] = 0.0
-        elif self._location == LOC_FI:
+        elif location == LOC_FI:
             state._data[self._fi_offset] = 0.0
-        elif self._location == LOC_PLAYER:
-            state._data[self._players_offset + self._owner_id * self._player_stride + self._player_companies_field + self.company_id] = 0.0
-        elif self._location == LOC_CORP:
-            state._data[self._corps_offset + self._owner_id * self._corp_stride + self._corp_companies_field + self.company_id] = 0.0
-        elif self._location == LOC_CORP_ACQ:
-            state._data[self._corps_offset + self._owner_id * self._corp_stride + self._corp_acq_field + self.company_id] = 0.0
+        elif location == LOC_PLAYER:
+            state._data[self._players_offset + owner_id * self._player_stride + self._player_companies_field + self.company_id] = 0.0
+        elif location == LOC_CORP:
+            state._data[self._corps_offset + owner_id * self._corp_stride + self._corp_companies_field + self.company_id] = 0.0
+        elif location == LOC_CORP_ACQ:
+            state._data[self._corps_offset + owner_id * self._corp_stride + self._corp_acq_field + self.company_id] = 0.0
         # LOC_DECK has no flag to clear
 
-        self._location = LOC_DECK  # Default to deck after clearing
-        self._owner_id = -1
+    cdef void _remove_from_deck_if_needed(self, GameState state):
+        """If company is currently in the deck, remove it from the deck order array."""
+        if self._get_hidden_location(state) == LOC_DECK:
+            deck_module.DECK.remove(state, self.company_id)
 
     cpdef void transfer_to_player(self, GameState state, int player_id):
         """Transfer company to player ownership."""
         if player_id < 0 or player_id >= self._num_players:
             return
-
-        # Clear old location
-        self.clear_location(state)
-
-        # Set new location
+        self._remove_from_deck_if_needed(state)
+        self._clear_visible_flag(state)
         state._data[self._players_offset + player_id * self._player_stride + self._player_companies_field + self.company_id] = 1.0
-        self._location = LOC_PLAYER
-        self._owner_id = player_id
+        self._set_hidden_location(state, LOC_PLAYER, player_id)
 
     cpdef void transfer_to_fi(self, GameState state):
         """Transfer company to Foreign Investor ownership."""
-        # Clear old location
-        self.clear_location(state)
-
-        # Set new location
+        self._remove_from_deck_if_needed(state)
+        self._clear_visible_flag(state)
         state._data[self._fi_offset] = 1.0
-        self._location = LOC_FI
-        self._owner_id = -1
+        self._set_hidden_location(state, LOC_FI, -1)
 
     cpdef void transfer_to_corp(self, GameState state, int corp_id):
         """Transfer company to corporation ownership."""
         if corp_id < 0 or corp_id >= GameConstants.NUM_CORPS:
             return
-
-        # Clear old location
-        self.clear_location(state)
-
-        # Set new location
+        self._remove_from_deck_if_needed(state)
+        self._clear_visible_flag(state)
         state._data[self._corps_offset + corp_id * self._corp_stride + self._corp_companies_field + self.company_id] = 1.0
-        self._location = LOC_CORP
-        self._owner_id = corp_id
+        self._set_hidden_location(state, LOC_CORP, corp_id)
 
     cpdef void transfer_to_corp_acquisition(self, GameState state, int corp_id):
         """Transfer company to corporation's acquisition pile."""
         if corp_id < 0 or corp_id >= GameConstants.NUM_CORPS:
             return
-
-        # Clear old location
-        self.clear_location(state)
-
-        # Set new location
+        self._remove_from_deck_if_needed(state)
+        self._clear_visible_flag(state)
         state._data[self._corps_offset + corp_id * self._corp_stride + self._corp_acq_field + self.company_id] = 1.0
-        self._location = LOC_CORP_ACQ
-        self._owner_id = corp_id
+        self._set_hidden_location(state, LOC_CORP_ACQ, corp_id)
 
     cpdef void move_to_auction(self, GameState state):
         """Make company available for auction."""
-        # Clear old location
-        self.clear_location(state)
-
-        # Set new location
+        self._remove_from_deck_if_needed(state)
+        self._clear_visible_flag(state)
         state._data[self._auction_offset] = 1.0
-        self._location = LOC_AUCTION
-        self._owner_id = -1
+        self._set_hidden_location(state, LOC_AUCTION, -1)
 
-    cpdef void set_revealed(self, GameState state, bint revealed):
-        """Set whether company is revealed this turn (drawn but not auctionable)."""
-        if revealed:
-            # Clear old location first
-            self.clear_location(state)
-            state._data[self._revealed_offset] = 1.0
-            self._location = LOC_REVEALED
-            self._owner_id = -1
-        else:
-            # Just clear the revealed flag without changing location
-            state._data[self._revealed_offset] = 0.0
-            if self._location == LOC_REVEALED:
-                # Need to rescan since we don't know where it went
-                self._scan_location(state)
+    cpdef void mark_revealed(self, GameState state):
+        """Mark company as revealed this turn (drawn but not auctionable)."""
+        self._remove_from_deck_if_needed(state)
+        self._clear_visible_flag(state)
+        state._data[self._revealed_offset] = 1.0
+        self._set_hidden_location(state, LOC_REVEALED, -1)
 
     cpdef void remove_from_game(self, GameState state):
         """Remove company from the game (closed)."""
-        # Clear old location
-        self.clear_location(state)
-
-        # Set removed flag
+        self._clear_visible_flag(state)
         state._data[self._removed_offset] = 1.0
-        self._location = LOC_REMOVED
-        self._owner_id = -1
+        self._set_hidden_location(state, LOC_REMOVED, -1)
+
+    cpdef void exclude_from_game(self, GameState state):
+        """Mark company as excluded during game init (hidden state only).
+
+        Used for companies not included in the deck for this player count.
+        Only updates the hidden location — visible state is left untouched
+        so the NN cannot infer which companies were excluded (and therefore
+        which are in the hidden deck).
+        """
+        self._set_hidden_location(state, LOC_REMOVED, -1)
 
     # =========================================================================
     # STATIC COMPANY DATA
@@ -366,8 +309,11 @@ cdef class Company:
     # =========================================================================
 
     cpdef int get_adjusted_income(self, GameState state):
-        """Get company's adjusted income (after cost of ownership)."""
-        return <int>(state._data[self._income_offset] * CASH_DIVISOR + 0.5)
+        """Get company's adjusted income (after cost of ownership).
+
+        Uses lround for proper rounding of negative values (high CoO can make income negative).
+        """
+        return <int>lround(state._data[self._income_offset] * CASH_DIVISOR)
 
     cpdef void set_adjusted_income(self, GameState state, int income):
         """Set company's adjusted income."""

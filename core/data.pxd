@@ -11,13 +11,13 @@ cpdef enum GameConstants:
     NUM_COMPANIES = 36
     NUM_CORPS = 8
     NUM_MARKET_SPACES = 27
-    NUM_PHASES = 12
+    NUM_PHASES = 11
     NUM_COO_LEVELS = 7
     MAX_PLAYERS = 6
     MAX_STAR_TIERS = 5
     MAX_DECK_SIZE = 36
     NUM_PAR_PRICES = 14
-    MAX_DIVIDEND = 25
+    MAX_DIVIDEND = 26
     MAX_SHARE_PRICE = 75
     COO_LEVEL_END_CARD_FLIPPED = 7
 
@@ -33,7 +33,6 @@ cpdef enum GamePhases:
     PHASE_ISSUE_SHARES = 8
     PHASE_IPO = 9
     PHASE_GAME_OVER = 10
-    PHASE_TEMP_END_TURN = 11
 
 # Corp indices for special ability checks
 cpdef enum CorpIndices:
@@ -87,6 +86,8 @@ cpdef int get_corp_share_count(int corp_id) noexcept nogil
 
 cpdef int get_market_price(int index) noexcept nogil
 cpdef int get_market_index(int price) noexcept nogil
+cpdef int get_max_dividend(int price_index) noexcept nogil
+cpdef int get_required_stars(int price_index, int issued_shares) noexcept nogil
 
 cpdef int get_cost_of_ownership(int coo_level, int star_tier) noexcept nogil
 cpdef int get_adjusted_company_income(int company_id, int coo_level) noexcept nogil

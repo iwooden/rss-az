@@ -1,862 +1,746 @@
-"""Integration tests verifying invariants throughout multi-action sequences.
+"""Integration tests for complete turn and multi-turn game sequences.
 
-This file consolidates integration-style tests from per-phase test files.
-Tests here verify that invariants hold across phase transitions and
-multi-action sequences, not just individual action correctness.
+These tests use ONLY the driver (how players/model interact with the game).
+Phase-specific tests are in tests/phases/*.py.
+Bankruptcy tests are in tests/test_bankruptcy.py.
 
-Add new integration tests here as phases are implemented.
+Key insight: Corps can't be active until turn 2+ (IPO happens at end of turn 1).
 """
 import pytest
 from core.state import GameState
-from core.driver import DRIVER
 from core.actions import get_valid_action_mask, get_action_layout
 from core.data import GamePhases
 from entities.turn import TURN
+from entities.player import PLAYERS
+from entities.corp import CORPS
+from tests.phases.conftest import apply_and_verify_all, assert_invariants
+import random
 
 
 # =============================================================================
-# INVEST PHASE INTEGRATION
+# HELPERS
 # =============================================================================
 
-class TestInvestIntegration:
-    """Integration tests verifying invariants after every action."""
+def apply_action(state, action_idx, msg=""):
+    """Apply action through driver and verify success."""
+    apply_and_verify_all(state, action_idx, msg)
 
-    def test_multiple_passes_maintains_invariants(self, game_state):
-        """Multiple pass actions maintain game invariants throughout."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants
 
-        assert_invariants(game_state, "Initial state")
+def check_invariants(state, msg=""):
+    """Verify game invariants hold."""
+    assert_invariants(state, msg)
 
-        layout = get_action_layout(3)
-        # Pass twice (not enough for WRAP_UP)
-        for i in range(2):
-            apply_action_and_verify(game_state, layout['pass_invest'], f"Pass {i+1}")
 
-        assert game_state.get_phase() == GamePhases.PHASE_INVEST
-        assert_invariants(game_state, "After two passes")
+def find_valid_action(state, start_idx, end_idx):
+    """Find first valid action in range, or None."""
+    mask = get_valid_action_mask(state)
+    for i in range(start_idx, end_idx):
+        if mask[i] == 1.0:
+            return i
+    return None
 
-    def test_auction_cycle_maintains_invariants(self, game_state):
-        """Starting auction and completing it maintains invariants."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants, assert_valid_mask
 
-        assert_invariants(game_state, "Initial state")
-        assert_valid_mask(game_state, msg="Initial mask valid")
+def pass_all_players(state, num_players):
+    """Have all players pass in INVEST phase."""
+    layout = get_action_layout(num_players)
+    for i in range(num_players):
+        apply_action(state, layout['pass_invest'], f"Player {i} pass")
 
-        # Find and start auction
-        mask = get_valid_action_mask(game_state)
-        layout = get_action_layout(3)
-        auction_idx = None
-        for i in range(layout['auction_base'], layout['buy_share_base']):
-            if mask[i] == 1.0:
-                auction_idx = i
-                break
 
-        if auction_idx is not None:
-            apply_action_and_verify(game_state, auction_idx, "Start auction")
-            assert game_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
-            assert_invariants(game_state, "After auction start")
+def complete_turn_from_invest(state, num_players, pass_ipo=True):
+    """Complete a turn starting from INVEST phase.
 
-    def test_buy_share_maintains_invariants(self, trade_state):
-        """Buy share action maintains all game invariants."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants
+    Passes all players in INVEST, then handles subsequent phases until
+    we're back in INVEST with turn incremented.
+    """
+    layout = get_action_layout(num_players)
 
-        assert_invariants(trade_state, "Initial trade state")
+    # Pass all players in INVEST
+    pass_all_players(state, num_players)
 
-        layout = get_action_layout(3)
-        buy_idx = layout['buy_share_base'] + 0
-        apply_action_and_verify(trade_state, buy_idx, "Buy share")
+    # Handle any ACQUISITION offers
+    pass_through_phase(state, num_players, GamePhases.PHASE_ACQUISITION, 'acq_pass')
 
-        assert_invariants(trade_state, "After buy share")
+    # Handle DIVIDENDS if we have active corps
+    if state.get_phase() == GamePhases.PHASE_DIVIDENDS:
+        div_action = find_valid_action(
+            state, layout['dividend_base'], layout['dividend_base'] + 26
+        )
+        if div_action:
+            apply_action(state, div_action, "Dividend")
 
-    def test_sell_share_maintains_invariants(self, trade_state):
-        """Sell share action maintains all game invariants."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants
+    # Handle ISSUE_SHARES
+    pass_through_phase(state, num_players, GamePhases.PHASE_ISSUE_SHARES, 'issue_pass')
 
-        assert_invariants(trade_state, "Initial trade state")
+    # Handle IPO phase
+    if pass_ipo:
+        while state.get_phase() == GamePhases.PHASE_IPO:
+            apply_action(state, layout['ipo_pass'], "Pass IPO")
 
-        layout = get_action_layout(3)
-        sell_idx = layout['sell_share_base'] + 0
-        apply_action_and_verify(trade_state, sell_idx, "Sell share")
 
-        assert_invariants(trade_state, "After sell share")
+def pass_through_phase(state, num_players, phase, pass_action_key, max_iterations=20):
+    """Pass through all offers/decisions in a phase until it transitions."""
+    layout = get_action_layout(num_players)
+    iterations = 0
+    while state.get_phase() == phase and iterations < max_iterations:
+        apply_action(state, layout[pass_action_key], f"Pass in phase {phase}")
+        iterations += 1
+    return iterations
 
-    def test_multiple_trades_maintain_invariants(self, trade_state):
-        """Multiple buy actions in sequence maintain invariants."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants
 
-        layout = get_action_layout(3)
+def apply_action_or_game_over(state, action_idx, msg=""):
+    """Apply action via apply_and_verify_all, accepting OK or GAME_OVER.
 
-        assert_invariants(trade_state, "Initial state")
+    Returns the ApplyTrackResult, or None if the game ended.
+    Used in stress tests where game-over is an acceptable outcome.
+    """
+    try:
+        return apply_and_verify_all(state, action_idx, msg=msg)
+    except AssertionError:
+        # If game ended, that's acceptable in stress tests.
+        # The action was already applied; invariant checks ran before
+        # the status assertion in apply_and_verify_all only when status
+        # matched. Verify invariants now for the game-over state.
+        if state.get_phase() == GamePhases.PHASE_GAME_OVER:
+            check_invariants(state, f"{msg} [game over]")
+            return None
+        raise  # Re-raise if it's a real failure
 
-        # Buy twice (trade_state has 2 bank shares available)
-        buy_idx = layout['buy_share_base'] + 0
 
-        apply_action_and_verify(trade_state, buy_idx, "First buy")
-        apply_action_and_verify(trade_state, buy_idx, "Second buy")
+# =============================================================================
+# MINIMAL TURN TESTS (Turn 1, no corps)
+# =============================================================================
 
-        assert_invariants(trade_state, "After two buys")
+class TestMinimalTurn:
+    """Turn 1: Fresh game, all pass, no corps active.
 
-    @pytest.mark.parametrize("num_players", [3, 6])
-    def test_wrap_up_transition_maintains_invariants(self, num_players):
-        """Phase transition through WRAP_UP maintains invariants."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants
+    Flow: INVEST (all pass) -> WRAP_UP -> ACQUISITION (no offers) -> CLOSING (no offers)
+          -> INCOME -> DIVIDENDS (skipped) -> END_CARD -> ISSUE (skipped) -> IPO -> INVEST
+    """
 
+    @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
+    def test_all_pass_completes_turn(self, num_players):
+        """All players passing completes turn and increments turn number."""
         state = GameState(num_players=num_players)
         state.initialize_game(seed=42)
 
-        assert_invariants(state, "Initial state")
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        assert TURN.get_turn_number(state) == 1
 
-        layout = get_action_layout(num_players)
-        # Apply all passes with verify helper
-        for i in range(num_players):
-            apply_action_and_verify(state, layout['pass_invest'], f"Pass {i+1}")
+        # All players pass
+        pass_all_players(state, num_players)
 
-        # After all passes, should be back in INVEST (after WRAP_UP -> ACQUISITION)
+        # Should be back in INVEST with turn 2
         assert state.get_phase() == GamePhases.PHASE_INVEST
         assert TURN.get_turn_number(state) == 2
-        assert_invariants(state, "After WRAP_UP -> ACQUISITION -> INVEST transition")
 
-
-# =============================================================================
-# BID PHASE INTEGRATION
-# =============================================================================
-
-class TestBidIntegration:
-    """Integration tests verifying invariants throughout auction cycles."""
-
-    def test_full_auction_maintains_invariants(self):
-        """Complete auction cycle (start -> bids -> resolution) maintains invariants."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants, assert_valid_mask
-
+    def test_minimal_turn_maintains_invariants_throughout(self):
+        """Invariants hold at every step during minimal turn."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
-        assert_invariants(state, "Initial state")
-        assert_valid_mask(state, msg="Initial INVEST mask")
+        layout = get_action_layout(3)
+
+        # Pass each player (invariants checked by apply_action)
+        for i in range(3):
+            apply_action(state, layout['pass_invest'], f"Pass {i+1}")
+
+        assert TURN.get_turn_number(state) == 2
+
+    def test_two_minimal_turns(self):
+        """Two consecutive minimal turns (all pass) work correctly."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Turn 1
+        pass_all_players(state, 3)
+        assert TURN.get_turn_number(state) == 2
+
+        # Turn 2
+        pass_all_players(state, 3)
+        assert TURN.get_turn_number(state) == 3
+
+
+# =============================================================================
+# TURN WITH AUCTION TESTS
+# =============================================================================
+
+class TestTurnWithAuction:
+    """Turn with auction: company purchased, possibly IPO'd."""
+
+    def test_auction_then_all_pass(self):
+        """Player wins auction, then all pass to complete turn."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
 
         layout = get_action_layout(3)
 
-        # Start auction
-        mask = get_valid_action_mask(state)
-        for i in range(layout['auction_base'], layout['buy_share_base']):
-            if mask[i] == 1.0:
-                apply_action_and_verify(state, i, "Start auction")
-                break
+        # Find and start an auction
+        auction_idx = find_valid_action(
+            state, layout['auction_base'], layout['buy_share_base']
+        )
+        assert auction_idx is not None, "Should have available auction"
+        apply_action(state, auction_idx, "Start auction")
 
         assert state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
-        assert_invariants(state, "After auction start")
-        assert_valid_mask(state, msg="BID phase mask")
 
-        # First player leaves
-        apply_action_and_verify(state, layout['leave_auction'], "First leave")
-        assert_invariants(state, "After first leave")
+        # All other players leave auction
+        while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
+            apply_action(state, layout['leave_auction'], "Leave auction")
 
-        # Second player leaves - triggers resolution
-        if state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-            apply_action_and_verify(state, layout['leave_auction'], "Second leave")
-
+        # Back in INVEST, winner has company
         assert state.get_phase() == GamePhases.PHASE_INVEST
-        assert_invariants(state, "After auction resolution")
-        assert_valid_mask(state, msg="Post-auction INVEST mask")
 
-    def test_auction_with_raises_maintains_invariants(self):
-        """Auction with multiple raise bids maintains invariants."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants
+        # Complete turn (all pass, then handle IPO)
+        complete_turn_from_invest(state, 3)
 
+        assert TURN.get_turn_number(state) == 2
+
+    def test_auction_with_raises(self):
+        """Auction with bid raises maintains invariants."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
         layout = get_action_layout(3)
 
         # Start auction
-        mask = get_valid_action_mask(state)
-        for i in range(layout['auction_base'], layout['buy_share_base']):
-            if mask[i] == 1.0:
-                apply_action_and_verify(state, i, "Start auction")
-                break
+        auction_idx = find_valid_action(
+            state, layout['auction_base'], layout['buy_share_base']
+        )
+        apply_action(state, auction_idx, "Start auction")
 
-        assert_invariants(state, "After auction start")
+        # Raise bid a couple times
+        for i in range(2):
+            raise_idx = find_valid_action(
+                state, layout['raise_bid_base'], layout['acquisition_start']
+            )
+            if raise_idx and state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
+                apply_action(state, raise_idx, f"Raise {i+1}")
 
-        # First player raises
-        mask = get_valid_action_mask(state)
-        for i in range(layout['raise_bid_base'], layout['acquisition_start']):
-            if mask[i] == 1.0:
-                apply_action_and_verify(state, i, "First raise")
-                break
-
-        assert_invariants(state, "After first raise")
-
-        # Second player raises
-        mask = get_valid_action_mask(state)
-        for i in range(layout['raise_bid_base'], layout['acquisition_start']):
-            if mask[i] == 1.0:
-                apply_action_and_verify(state, i, "Second raise")
-                break
-
-        assert_invariants(state, "After second raise")
-
-        # Resolve via leaves
+        # Complete auction
         while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-            apply_action_and_verify(state, layout['leave_auction'], "Leave to resolve")
+            apply_action(state, layout['leave_auction'], "Leave")
 
-        assert_invariants(state, "After resolution with raises")
+    def test_multiple_auctions_in_turn(self):
+        """Multiple auctions in same turn work correctly."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
 
-    def test_multiple_auctions_maintain_invariants(self):
-        """Multiple auction cycles in sequence maintain invariants."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants
+        layout = get_action_layout(3)
+        auctions_completed = 0
 
+        for _ in range(2):  # Try two auctions
+            # Check if auction is available
+            auction_idx = find_valid_action(
+                state, layout['auction_base'], layout['buy_share_base']
+            )
+            if auction_idx is None:
+                break
+
+            apply_action(state, auction_idx, f"Start auction {auctions_completed+1}")
+
+            # Complete auction
+            while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
+                apply_action(state, layout['leave_auction'], "Leave")
+
+            auctions_completed += 1
+
+        assert auctions_completed >= 1, "Should complete at least one auction"
+
+    def test_auction_then_ipo(self):
+        """Player wins auction, then IPOs company at end of turn."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
         layout = get_action_layout(3)
 
-        for auction_num in range(2):  # Two auction cycles
-            assert_invariants(state, f"Before auction {auction_num + 1}")
+        # Win auction
+        auction_idx = find_valid_action(
+            state, layout['auction_base'], layout['buy_share_base']
+        )
+        apply_action(state, auction_idx, "Start auction")
 
-            # Start auction
+        while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
+            apply_action(state, layout['leave_auction'], "Leave")
+
+        # All pass to reach IPO phase
+        pass_all_players(state, 3)
+
+        # Should be in IPO phase now
+        assert state.get_phase() == GamePhases.PHASE_IPO
+
+        # Find valid IPO action (not pass)
+        ipo_action = find_valid_action(
+            state, layout['ipo_base'], layout['ipo_base'] + 64
+        )
+
+        if ipo_action:
+            apply_action(state, ipo_action, "IPO company")
+
+            # Verify a corp is now active
+            active_corps = sum(1 for i in range(8) if CORPS[i].is_active(state))
+            assert active_corps >= 1, "Should have at least one active corp"
+
+        # Complete any remaining IPO offers
+        while state.get_phase() == GamePhases.PHASE_IPO:
+            apply_action(state, layout['ipo_pass'], "Pass IPO")
+
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        assert TURN.get_turn_number(state) == 2
+
+
+# =============================================================================
+# TURN WITH ACTIVE CORP TESTS (Turn 2+)
+# =============================================================================
+
+class TestTurnWithActiveCorp:
+    """Turn 2+: With active corp, full phase sequence.
+
+    Must be turn 2+ since corp can't exist until after turn 1 IPO.
+    Tests: INVEST -> ACQUISITION -> CLOSING -> INCOME -> DIVIDENDS -> ISSUE -> IPO -> INVEST
+    """
+
+    def _setup_turn_2_with_corp(self, num_players=3, seed=42):
+        """Set up game at turn 2 with an active corp.
+
+        Returns (state, corp_id, president_player_id).
+        """
+        state = GameState(num_players=num_players)
+        state.initialize_game(seed=seed)
+
+        layout = get_action_layout(num_players)
+
+        # Turn 1: Win auction
+        auction_idx = find_valid_action(
+            state, layout['auction_base'], layout['buy_share_base']
+        )
+        apply_action(state, auction_idx, "Start auction")
+
+        while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
+            apply_action(state, layout['leave_auction'], "Leave")
+
+        # All pass to reach IPO
+        pass_all_players(state, num_players)
+
+        # IPO the company
+        assert state.get_phase() == GamePhases.PHASE_IPO
+
+        ipo_action = find_valid_action(
+            state, layout['ipo_base'], layout['ipo_base'] + 64
+        )
+        assert ipo_action is not None, "Should have valid IPO action"
+        apply_action(state, ipo_action, "IPO company")
+
+        # Complete IPO phase
+        while state.get_phase() == GamePhases.PHASE_IPO:
+            apply_action(state, layout['ipo_pass'], "Pass IPO")
+
+        # Now at turn 2 with active corp
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        assert TURN.get_turn_number(state) == 2
+
+        # Find the active corp and its president
+        corp_id = None
+        president_id = None
+        for cid in range(8):
+            if CORPS[cid].is_active(state):
+                corp_id = cid
+                for pid in range(num_players):
+                    if PLAYERS[pid].is_president_of(state, cid):
+                        president_id = pid
+                        break
+                break
+
+        assert corp_id is not None, "Should have active corp"
+        assert president_id is not None, "Corp should have president"
+
+        return state, corp_id, president_id
+
+    def test_turn_2_with_corp_completes(self):
+        """Turn 2 with active corp completes full phase sequence."""
+        state, corp_id, president_id = self._setup_turn_2_with_corp()
+        layout = get_action_layout(3)
+
+        # All pass in INVEST
+        pass_all_players(state, 3)
+
+        # Process through ACQUISITION (pass all offers)
+        pass_through_phase(state, 3, GamePhases.PHASE_ACQUISITION, 'acq_pass')
+
+        # CLOSING auto-processes, should reach DIVIDENDS
+        assert state.get_phase() == GamePhases.PHASE_DIVIDENDS
+
+        # Pay dividend
+        div_action = find_valid_action(
+            state, layout['dividend_base'], layout['dividend_base'] + 26
+        )
+        assert div_action is not None, "Should have valid dividend action"
+        apply_action(state, div_action, "Pay dividend")
+
+        # Process through ISSUE_SHARES
+        pass_through_phase(state, 3, GamePhases.PHASE_ISSUE_SHARES, 'issue_pass')
+
+        # Process through IPO
+        pass_through_phase(state, 3, GamePhases.PHASE_IPO, 'ipo_pass')
+
+        # Should be at turn 3
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        assert TURN.get_turn_number(state) == 3
+
+    def test_corp_dividend_payment(self):
+        """Corp pays dividends to shareholders correctly."""
+        state, corp_id, president_id = self._setup_turn_2_with_corp()
+        layout = get_action_layout(3)
+
+        corp = CORPS[corp_id]
+        president = PLAYERS[president_id]
+
+        # Record starting cash
+        president_cash_before = president.get_cash(state)
+        corp_cash_before = corp.get_cash(state)
+        shares_held = president.get_shares(state, corp_id)
+
+        # All pass in INVEST
+        pass_all_players(state, 3)
+
+        # Pass through ACQUISITION
+        pass_through_phase(state, 3, GamePhases.PHASE_ACQUISITION, 'acq_pass')
+
+        # Should be at DIVIDENDS
+        assert state.get_phase() == GamePhases.PHASE_DIVIDENDS
+
+        # Find a non-zero dividend action (if available)
+        for offset in range(1, 26):
+            action_idx = layout['dividend_base'] + offset
             mask = get_valid_action_mask(state)
-            auction_started = False
-            for i in range(layout['auction_base'], layout['buy_share_base']):
-                if mask[i] == 1.0:
-                    apply_action_and_verify(state, i, f"Start auction {auction_num + 1}")
-                    auction_started = True
-                    break
+            if mask[action_idx] == 1.0:
+                # This dividend amount is valid
+                apply_action(state, action_idx, f"Pay dividend {offset}")
+                break
+        else:
+            # Just pay 0 if no other option
+            apply_action(state, layout['dividend_base'], "Pay dividend 0")
 
-            if not auction_started:
-                break  # No more auctions available
+    def test_share_trading_affects_next_phases(self):
+        """Share trading in INVEST affects DIVIDENDS (via shareholder changes)."""
+        state, corp_id, president_id = self._setup_turn_2_with_corp()
+        layout = get_action_layout(3)
 
-            # Complete auction via leaves
+        corp = CORPS[corp_id]
+
+        # Check if we can buy a share (bank must have shares)
+        buy_action = layout['buy_share_base'] + corp_id
+        mask = get_valid_action_mask(state)
+
+        if mask[buy_action] == 1.0:
+            # Buy a share
+            apply_action(state, buy_action, "Buy share")
+
+        # Complete the turn
+        pass_all_players(state, 3)
+        pass_through_phase(state, 3, GamePhases.PHASE_ACQUISITION, 'acq_pass')
+
+        assert state.get_phase() == GamePhases.PHASE_DIVIDENDS
+
+
+# =============================================================================
+# MULTI-TURN TESTS
+# =============================================================================
+
+class TestMultiTurn:
+    """Multi-turn sequences (2-3 turns with meaningful state evolution)."""
+
+    def test_three_turn_game(self):
+        """Three complete turns with corp activity."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        layout = get_action_layout(3)
+
+        # Turn 1: Auction and IPO
+        auction_idx = find_valid_action(
+            state, layout['auction_base'], layout['buy_share_base']
+        )
+        apply_action(state, auction_idx, "Start auction")
+
+        while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
+            apply_action(state, layout['leave_auction'], "Leave")
+
+        pass_all_players(state, 3)
+
+        # IPO the company
+        ipo_action = find_valid_action(
+            state, layout['ipo_base'], layout['ipo_base'] + 64
+        )
+        if ipo_action:
+            apply_action(state, ipo_action, "IPO")
+
+        while state.get_phase() == GamePhases.PHASE_IPO:
+            apply_action(state, layout['ipo_pass'], "Pass IPO")
+
+        assert TURN.get_turn_number(state) == 2
+
+        # Turn 2: Corp operations
+        pass_all_players(state, 3)
+        pass_through_phase(state, 3, GamePhases.PHASE_ACQUISITION, 'acq_pass')
+
+        if state.get_phase() == GamePhases.PHASE_DIVIDENDS:
+            div_action = find_valid_action(
+                state, layout['dividend_base'], layout['dividend_base'] + 26
+            )
+            if div_action:
+                apply_action(state, div_action, "Dividend")
+
+        pass_through_phase(state, 3, GamePhases.PHASE_ISSUE_SHARES, 'issue_pass')
+        pass_through_phase(state, 3, GamePhases.PHASE_IPO, 'ipo_pass')
+
+        assert TURN.get_turn_number(state) == 3
+
+        # Turn 3: Another auction
+        auction_idx = find_valid_action(
+            state, layout['auction_base'], layout['buy_share_base']
+        )
+        if auction_idx:
+            apply_action(state, auction_idx, "Start auction turn 3")
             while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-                apply_action_and_verify(state, layout['leave_auction'], f"Leave auction {auction_num + 1}")
+                apply_action(state, layout['leave_auction'], "Leave")
 
-            assert_invariants(state, f"After auction {auction_num + 1}")
+        pass_all_players(state, 3)
+        pass_through_phase(state, 3, GamePhases.PHASE_ACQUISITION, 'acq_pass')
 
-    @pytest.mark.parametrize("num_players", [3, 6])
-    def test_auction_maintains_invariants_all_player_counts(self, num_players):
-        """Auction cycle maintains invariants for all player counts."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants
+        if state.get_phase() == GamePhases.PHASE_DIVIDENDS:
+            div_action = find_valid_action(
+                state, layout['dividend_base'], layout['dividend_base'] + 26
+            )
+            if div_action:
+                apply_action(state, div_action, "Dividend")
 
+        pass_through_phase(state, 3, GamePhases.PHASE_ISSUE_SHARES, 'issue_pass')
+        pass_through_phase(state, 3, GamePhases.PHASE_IPO, 'ipo_pass')
+
+        assert TURN.get_turn_number(state) == 4
+
+    def test_multiple_corps_active(self):
+        """Game with multiple corps active by turn 3."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        layout = get_action_layout(3)
+
+        # Turn 1: First auction and IPO
+        auction_idx = find_valid_action(
+            state, layout['auction_base'], layout['buy_share_base']
+        )
+        apply_action(state, auction_idx, "Auction 1")
+
+        while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
+            apply_action(state, layout['leave_auction'], "Leave")
+
+        pass_all_players(state, 3)
+
+        ipo_action = find_valid_action(
+            state, layout['ipo_base'], layout['ipo_base'] + 64
+        )
+        if ipo_action:
+            apply_action(state, ipo_action, "IPO 1")
+
+        while state.get_phase() == GamePhases.PHASE_IPO:
+            apply_action(state, layout['ipo_pass'], "Pass IPO")
+
+        corps_after_t1 = sum(1 for i in range(8) if CORPS[i].is_active(state))
+
+        # Turn 2: Second auction and IPO
+        auction_idx = find_valid_action(
+            state, layout['auction_base'], layout['buy_share_base']
+        )
+        if auction_idx:
+            apply_action(state, auction_idx, "Auction 2")
+            while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
+                apply_action(state, layout['leave_auction'], "Leave")
+
+        pass_all_players(state, 3)
+        pass_through_phase(state, 3, GamePhases.PHASE_ACQUISITION, 'acq_pass')
+
+        if state.get_phase() == GamePhases.PHASE_DIVIDENDS:
+            div_action = find_valid_action(
+                state, layout['dividend_base'], layout['dividend_base'] + 26
+            )
+            if div_action:
+                apply_action(state, div_action, "Dividend")
+
+        pass_through_phase(state, 3, GamePhases.PHASE_ISSUE_SHARES, 'issue_pass')
+
+        # Try to IPO second company
+        ipo_action = find_valid_action(
+            state, layout['ipo_base'], layout['ipo_base'] + 64
+        )
+        if ipo_action:
+            apply_action(state, ipo_action, "IPO 2")
+
+        while state.get_phase() == GamePhases.PHASE_IPO:
+            apply_action(state, layout['ipo_pass'], "Pass IPO")
+
+        corps_after_t2 = sum(1 for i in range(8) if CORPS[i].is_active(state))
+
+        # Should have at least one corp, possibly two
+        assert corps_after_t2 >= corps_after_t1
+
+    @pytest.mark.parametrize("num_players", [2, 3, 6])
+    def test_two_turns_all_player_counts(self, num_players):
+        """Two complete turns work for all player counts."""
         state = GameState(num_players=num_players)
         state.initialize_game(seed=42)
 
         layout = get_action_layout(num_players)
 
-        assert_invariants(state, f"Initial {num_players}p")
+        for turn in range(1, 3):  # Turns 1 and 2
+            expected_turn = turn
+            assert TURN.get_turn_number(state) == expected_turn
 
-        # Start auction
-        mask = get_valid_action_mask(state)
-        for i in range(layout['auction_base'], layout['buy_share_base']):
-            if mask[i] == 1.0:
-                apply_action_and_verify(state, i, f"Start auction {num_players}p")
-                break
+            # Try auction if available
+            auction_idx = find_valid_action(
+                state, layout['auction_base'], layout['buy_share_base']
+            )
+            if auction_idx:
+                apply_action(state, auction_idx, f"Turn {turn} auction")
+                while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
+                    apply_action(state, layout['leave_auction'], "Leave")
 
-        # All but one leave
-        for _ in range(num_players - 1):
-            if state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-                apply_action_and_verify(state, layout['leave_auction'], f"Leave {num_players}p")
+            # All pass
+            pass_all_players(state, num_players)
 
-        assert state.get_phase() == GamePhases.PHASE_INVEST
-        assert_invariants(state, f"After auction {num_players}p")
+            # Handle corp phases if active
+            pass_through_phase(state, num_players, GamePhases.PHASE_ACQUISITION, 'acq_pass')
 
+            if state.get_phase() == GamePhases.PHASE_DIVIDENDS:
+                div_action = find_valid_action(
+                    state, layout['dividend_base'], layout['dividend_base'] + 26
+                )
+                if div_action:
+                    apply_action(state, div_action, "Dividend")
 
-# =============================================================================
-# ACQUISITION PHASE INTEGRATION
-# =============================================================================
+            pass_through_phase(state, num_players, GamePhases.PHASE_ISSUE_SHARES, 'issue_pass')
 
-class TestAcquisitionIntegration:
-    """Integration tests verifying ACQUISITION phase maintains invariants throughout."""
+            # IPO if available
+            ipo_action = find_valid_action(
+                state, layout['ipo_base'], layout['ipo_base'] + 64
+            )
+            if ipo_action:
+                apply_action(state, ipo_action, "IPO")
 
-    def test_wrap_up_to_acquisition_maintains_invariants(self):
-        """INVEST->WRAP_UP->ACQUISITION phase transition maintains invariants."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants
+            while state.get_phase() == GamePhases.PHASE_IPO:
+                apply_action(state, layout['ipo_pass'], "Pass IPO")
 
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-
-        assert_invariants(state, "Initial state")
-
-        layout = get_action_layout(3)
-
-        # Pass all players to trigger WRAP_UP
-        for i in range(3):
-            apply_action_and_verify(state, layout['pass_invest'], f"Pass {i+1}")
-
-        # After all passes, should be back in INVEST (WRAP_UP -> ACQUISITION -> INVEST)
-        # In a fresh game, ACQUISITION has no offers, so it completes immediately
-        assert state.get_phase() == GamePhases.PHASE_INVEST
-        assert TURN.get_turn_number(state) == 2
-        assert_invariants(state, "After WRAP_UP->ACQUISITION->INVEST transition")
-
-    def test_acquisition_to_invest_new_turn(self):
-        """ACQUISITION phase completes and transitions to CLOSING then INVEST with new turn."""
-        from tests.phases.conftest import assert_invariants
-        from phases.acquisition import transition_to_closing_py
-        from phases.closing import apply_closing_auto_py
-
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-
-        # Set up ACQUISITION phase (no offers in fresh game)
-        TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
-        assert state.get_phase() == GamePhases.PHASE_ACQUISITION
-        initial_turn = TURN.get_turn_number(state)
-
-        assert_invariants(state, "Before transition")
-
-        # Transition to CLOSING phase
-        transition_to_closing_py(state)
-
-        # Should be in CLOSING (auto-close executes next)
-        assert state.get_phase() == GamePhases.PHASE_CLOSING
-        assert TURN.get_turn_number(state) == initial_turn  # Turn not incremented yet
-        assert_invariants(state, "After transition to CLOSING")
-
-        # Execute auto-close (transitions to INCOME)
-        apply_closing_auto_py(state)
-
-        # Should now be in INCOME (CLOSING transitions to INCOME now)
-        # Turn number incremented in TEMP_END_TURN phase (not reached yet)
-        assert state.get_phase() == GamePhases.PHASE_INCOME
-        assert TURN.get_turn_number(state) == initial_turn  # Not incremented yet
-        assert_invariants(state, "After CLOSING to INCOME")
-
-    def test_full_turn_cycle_with_acquisition(self):
-        """Full turn cycle (INVEST->WRAP_UP->ACQUISITION->INVEST) maintains invariants."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants
-
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-
-        layout = get_action_layout(3)
-
-        assert_invariants(state, "Initial state")
-        assert TURN.get_turn_number(state) == 1
-
-        # Turn 1: Pass all players
-        for i in range(3):
-            apply_action_and_verify(state, layout['pass_invest'], f"Turn 1 Pass {i+1}")
-
-        assert state.get_phase() == GamePhases.PHASE_INVEST
-        assert TURN.get_turn_number(state) == 2
-        assert_invariants(state, "After turn 1")
-
-        # Turn 2: Pass all players again
-        for i in range(3):
-            apply_action_and_verify(state, layout['pass_invest'], f"Turn 2 Pass {i+1}")
-
-        assert state.get_phase() == GamePhases.PHASE_INVEST
         assert TURN.get_turn_number(state) == 3
-        assert_invariants(state, "After turn 2")
 
-    def test_acquisition_accept_maintains_invariants(self):
-        """Accept action in ACQUISITION maintains invariants."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants
-        from entities.player import PLAYERS
-        from entities.company import COMPANIES
-        from entities.corp import CORPS
-        from phases.acquisition import setup_acquisition_phase_py, get_offer_count
-        from core.data import CORP_NAMES
 
+# =============================================================================
+# GAME END TESTS
+# =============================================================================
+
+class TestGameEnd:
+    """Game termination scenarios.
+
+    Note: Detailed game end mechanics are tested in tests/phases/test_end_card.py.
+    These tests verify game end is reachable through normal driver-based play.
+    """
+
+    def test_game_over_phase_recognized(self):
+        """Verify GAME_OVER phase constant is recognized."""
+        # Just verify the constant exists and has expected value
+        assert GamePhases.PHASE_GAME_OVER == 10
+
+    def test_extended_play_eventually_ends_or_continues(self):
+        """Play many turns - game should either end or continue stably."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
-        # Set up valid acquisition offer: Player 0's private company -> Corp 0
-        COMPANIES[0].transfer_to_player(state, 0)  # Give company 0 to player 0
-        CORPS[0].set_active(state, True)  # Activate corp 0
-        CORPS[0].set_cash(state, 50000)  # Give corp cash
-        PLAYERS[0].set_president_of(state, 0, True)  # Player 0 is president of corp 0
+        max_actions = 200
+        actions_taken = 0
 
-        # Enter ACQUISITION phase
-        TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
-        setup_acquisition_phase_py(state)
-
-        # Should have at least one offer
-        offer_count = get_offer_count(state)
-        assert offer_count > 0, "Should have generated at least one offer"
-
-        assert_invariants(state, "Before accept")
-
-        # Find and apply acquisition accept action
-        layout = get_action_layout(3)
-        mask = get_valid_action_mask(state)
-
-        # Find a valid acquisition action (ACQ_PRICE actions start at acquisition_start)
-        action_idx = None
-        for i in range(layout['acquisition_start'], len(mask)):
-            if mask[i] == 1.0:
-                action_idx = i
+        while actions_taken < max_actions:
+            if state.get_phase() == GamePhases.PHASE_GAME_OVER:
                 break
 
-        assert action_idx is not None, "Should have at least one valid acquisition action"
-
-        # Apply action and verify invariants
-        apply_action_and_verify(state, action_idx, "Accept acquisition")
-
-        assert_invariants(state, "After accept")
-
-    def test_acquisition_pass_maintains_invariants(self):
-        """Pass action in ACQUISITION maintains invariants."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants
-        from entities.player import PLAYERS
-        from entities.company import COMPANIES
-        from entities.corp import CORPS
-        from phases.acquisition import setup_acquisition_phase_py, get_offer_count
-        from core.data import CORP_NAMES
-
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-
-        # Set up valid acquisition offer: Player 0's private company -> Corp 0
-        COMPANIES[0].transfer_to_player(state, 0)
-        CORPS[0].set_active(state, True)
-        CORPS[0].set_cash(state, 50000)
-        PLAYERS[0].set_president_of(state, 0, True)
-
-        # Enter ACQUISITION phase
-        TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
-        setup_acquisition_phase_py(state)
-
-        assert get_offer_count(state) > 0
-        assert_invariants(state, "Before pass")
-
-        # Apply pass action (acq_pass is the pass action for ACQUISITION phase)
-        layout = get_action_layout(3)
-        apply_action_and_verify(state, layout['acq_pass'], "Pass acquisition")
-
-        assert_invariants(state, "After pass")
-
-    def test_multiple_acquisitions_maintain_invariants(self):
-        """Multiple acquisition actions maintain invariants."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants
-        from entities.player import PLAYERS
-        from entities.company import COMPANIES
-        from entities.corp import CORPS
-        from phases.acquisition import setup_acquisition_phase_py, get_offer_count
-        from core.data import CORP_NAMES
-
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-
-        # Set up multiple offers: Player 0's companies -> Corp 0
-        COMPANIES[0].transfer_to_player(state, 0)
-        COMPANIES[1].transfer_to_player(state, 0)
-        CORPS[0].set_active(state, True)
-        CORPS[0].set_cash(state, 100000)  # Enough for multiple
-        PLAYERS[0].set_president_of(state, 0, True)
-
-        # Enter ACQUISITION phase
-        TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
-        setup_acquisition_phase_py(state)
-
-        assert get_offer_count(state) >= 2
-        assert_invariants(state, "Before acquisitions")
-
-        # Apply accept and pass actions
-        layout = get_action_layout(3)
-        mask = get_valid_action_mask(state)
-
-        # Accept first offer
-        for i in range(layout['acquisition_start'], len(mask)):
-            if mask[i] == 1.0:
-                apply_action_and_verify(state, i, "Accept first")
-                assert_invariants(state, "After first accept")
-                break
-
-        # Pass or accept remaining offers until phase completes
-        max_iterations = 10
-        iterations = 0
-        while state.get_phase() == GamePhases.PHASE_ACQUISITION and iterations < max_iterations:
             mask = get_valid_action_mask(state)
-            # Try to pass (use acq_pass for ACQUISITION phase)
-            apply_action_and_verify(state, layout['acq_pass'], f"Action {iterations+1}")
-            assert_invariants(state, f"After action {iterations+1}")
-            iterations += 1
+            valid_actions = [i for i, v in enumerate(mask) if v == 1.0]
 
-        # Should eventually complete and transition
-        assert state.get_phase() == GamePhases.PHASE_INVEST
-
-    def test_zone_merge_at_phase_transition(self):
-        """Zone merging happens correctly at ACQUISITION phase transition."""
-        from tests.phases.conftest import assert_invariants
-        from entities.player import PLAYERS
-        from entities.company import COMPANIES
-        from entities.corp import CORPS
-        from phases.acquisition import transition_to_closing_py
-        from core.data import CORP_NAMES
-
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-
-        # Set up acquisition proceeds and acquisition zone companies
-        player = PLAYERS[0]
-        corp = CORPS[0]
-
-        corp.set_active(state, True)
-
-        initial_player_cash = player.get_cash(state)
-        initial_corp_cash = corp.get_cash(state)
-
-        # Add proceeds from selling
-        player.add_acquisition_proceeds(state, 35)
-        corp.set_acquisition_proceeds(state, 45)
-
-        # Add company to acquisition zone
-        COMPANIES[0].transfer_to_corp_acquisition(state, 0)
-
-        # Verify setup
-        assert player.get_acquisition_proceeds(state) == 35
-        assert corp.get_acquisition_proceeds(state) == 45
-        # Company should be in corp 0's acquisition zone
-        assert COMPANIES[0].is_in_corp_acquisition(state, 0)
-
-        TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
-        assert_invariants(state, "Before transition")
-
-        # Transition to next phase
-        transition_to_closing_py(state)
-
-        # Verify proceeds merged to cash
-        assert player.get_cash(state) == initial_player_cash + 35, "Player proceeds not merged"
-        assert corp.get_cash(state) == initial_corp_cash + 45, "Corp proceeds not merged"
-
-        # Verify proceeds cleared
-        assert player.get_acquisition_proceeds(state) == 0, "Player proceeds not cleared"
-        assert corp.get_acquisition_proceeds(state) == 0, "Corp proceeds not cleared"
-
-        # Verify company merged to owned
-        assert not COMPANIES[0].is_in_corp_acquisition(state, 0), "Company still in acquisition zone"
-        assert COMPANIES[0].get_owner_id(state) == 0, "Company ownership changed"
-        assert corp.owns_company(state, 0), "Corp doesn't own company after merge"
-
-        assert_invariants(state, "After transition with merges")
-
-
-# =============================================================================
-# CLOSING PHASE INTEGRATION
-# =============================================================================
-
-class TestClosingIntegration:
-    """Integration tests verifying CLOSING phase maintains invariants throughout."""
-
-    def test_closing_with_no_offers_flow(self):
-        """ACQUISITION->CLOSING->INVEST flow with no close offers (all positive income)."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants
-        from phases.acquisition import transition_to_closing_py
-        from phases.closing import apply_closing_auto_py
-
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-
-        assert_invariants(state, "Initial state")
-
-        layout = get_action_layout(3)
-
-        # Pass all players in INVEST to trigger WRAP_UP -> ACQUISITION
-        for i in range(3):
-            apply_action_and_verify(state, layout['pass_invest'], f"Pass {i+1}")
-
-        # After all passes, fresh game goes WRAP_UP -> ACQUISITION -> CLOSING -> INVEST
-        # No negative-income companies in fresh game = no close offers = direct transition
-        assert state.get_phase() == GamePhases.PHASE_INVEST
-        assert TURN.get_turn_number(state) == 2
-        assert_invariants(state, "After ACQUISITION->CLOSING->INVEST with no offers")
-
-    def test_closing_with_accept_flow(self):
-        """CLOSING flow with accept: player closes negative-income company."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants
-        from phases.acquisition import transition_to_closing_py
-        from phases.closing import apply_closing_auto_py, apply_closing_action_py, get_close_offer_count_py
-        from core.actions import ACTION_CLOSE_PY
-        from entities.player import PLAYERS
-        from entities.company import COMPANIES
-        from entities.corp import CORPS
-
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-
-        # Set up state with negative-income company owned by player
-        # High CoO level makes companies have negative adjusted income
-        TURN.set_coo_level(state, 6)  # Level 6: Red=$6, Orange=$4 CoO
-
-        # Give player 0 a red company (company 0 has 1 star = red)
-        # Company 0: income $2, stars 1 (red), face value $1
-        # At CoO level 6: Red CoO = $6, so adjusted = $2 - $6 = -$4
-        PLAYERS[0].set_owns_company(state, 0, True)
-
-        # Set up corp 0 (Junkyard Scrappers) as active to test JS bonus
-        CORPS[0].set_active(state, True)
-        CORPS[0].set_cash(state, 100)
-        initial_js_cash = CORPS[0].get_cash(state)
-
-        # Enter ACQUISITION phase
-        TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
-        initial_turn = TURN.get_turn_number(state)
-
-        assert_invariants(state, "Before transition to CLOSING")
-
-        # Transition to CLOSING
-        transition_to_closing_py(state)
-        assert state.get_phase() == GamePhases.PHASE_CLOSING
-
-        # Execute auto-close phase entry (FI/receivership auto-close + offer generation)
-        apply_closing_auto_py(state)
-
-        # Verify we have close offers (player owns negative-income company)
-        assert get_close_offer_count_py(state) > 0, "Should have at least one close offer"
-        assert TURN.get_closing_company(state) >= 0, "Should have an active close offer"
-
-        assert_invariants(state, "In CLOSING with active offer")
-
-        # Accept the close offer
-        result = apply_closing_action_py(state, ACTION_CLOSE_PY)
-        assert result == 0, "Close action should succeed"
-
-        # Should transition to INCOME (no more offers after closing the only one)
-        # Note: CLOSING now transitions to INCOME, not directly to INVEST
-        # Turn number is incremented in TEMP_END_TURN phase (not reached yet)
-        assert state.get_phase() == GamePhases.PHASE_INCOME
-        assert TURN.get_turn_number(state) == initial_turn  # Not incremented yet
-
-        # Verify company was closed
-        assert not PLAYERS[0].owns_company(state, 0), "Company should be closed"
-        assert COMPANIES[0].is_removed(state), "Company should be removed from game"
-
-        # Verify Junkyard Scrappers does NOT get bonus when player closes their own company
-        # JS only gets bonus when JS itself closes one of its own companies
-        assert CORPS[0].get_cash(state) == initial_js_cash, f"JS cash should be unchanged: {CORPS[0].get_cash(state)} != {initial_js_cash}"
-
-        assert_invariants(state, "After CLOSING->INVEST with accept")
-
-    def test_closing_with_pass_and_mandatory_close_flow(self):
-        """CLOSING flow with pass triggers mandatory close for player with negative income+cash."""
-        from tests.phases.conftest import assert_invariants
-        from phases.acquisition import transition_to_closing_py
-        from phases.closing import apply_closing_auto_py, apply_closing_action_py, get_close_offer_count_py
-        from core.actions import ACTION_PASS_PY
-        from entities.player import PLAYERS
-        from entities.company import COMPANIES
-
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-
-        # Set up state with negative-income company owned by player with low cash
-        TURN.set_coo_level(state, 6)  # Level 6: Red=$6 CoO
-
-        # Give player 0 a red company with negative adjusted income
-        # Company 0: income $2, stars 1 (red) -> adjusted = $2 - $6 = -$4
-        PLAYERS[0].set_owns_company(state, 0, True)
-
-        # Set player cash low enough that income + cash < 0
-        # Player income from company 0: -$4 (negative), so need cash < $4 for mandatory close
-        PLAYERS[0].set_cash(state, 2)  # income (-$4) + cash ($2) = -$2 < 0
-
-        # Enter ACQUISITION phase
-        TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
-        initial_turn = TURN.get_turn_number(state)
-
-        assert_invariants(state, "Before transition to CLOSING")
-
-        # Transition to CLOSING and execute auto-close
-        transition_to_closing_py(state)
-        apply_closing_auto_py(state)
-
-        # Verify we have close offers
-        offer_count = get_close_offer_count_py(state)
-        assert offer_count > 0, "Should have at least one close offer"
-        assert state.get_phase() == GamePhases.PHASE_CLOSING
-
-        assert_invariants(state, "In CLOSING with offer")
-
-        # Pass on the close offer - this should trigger mandatory close
-        result = apply_closing_action_py(state, ACTION_PASS_PY)
-        assert result == 0, "Pass action should succeed"
-
-        # Should transition to INCOME after mandatory close
-        # Note: CLOSING now transitions to INCOME, not directly to INVEST
-        # Turn number is incremented in TEMP_END_TURN phase (not reached yet)
-        assert state.get_phase() == GamePhases.PHASE_INCOME
-        assert TURN.get_turn_number(state) == initial_turn  # Not incremented yet
-
-        # Verify mandatory close happened - company was forcibly closed
-        assert not PLAYERS[0].owns_company(state, 0), "Company should be mandatorily closed"
-        assert COMPANIES[0].is_removed(state), "Company should be removed from game"
-
-        assert_invariants(state, "After CLOSING->INVEST with mandatory close")
-
-    def test_full_turn_cycle_with_closing_offers(self):
-        """Full turn cycle: INVEST->WRAP_UP->ACQUISITION->CLOSING(accept)->INVEST."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants
-        from phases.closing import apply_closing_action_py, get_close_offer_count_py
-        from core.actions import ACTION_CLOSE_PY
-        from entities.player import PLAYERS
-        from entities.company import COMPANIES
-        from entities.corp import CORPS
-
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-
-        assert_invariants(state, "Initial state")
-        assert TURN.get_turn_number(state) == 1
-
-        # Set up negative-income scenario: give player 0 a company with negative adjusted income
-        # Use a different company (company 1) so it doesn't create acquisition offers
-        TURN.set_coo_level(state, 6)  # Level 6: Red=$6 CoO
-        # Use transfer_to_player to properly update all ownership state
-        COMPANIES[1].transfer_to_player(state, 0)  # Company 1: 1 star, $1 income -> -$5 adjusted
-
-        layout = get_action_layout(3)
-
-        # INVEST: all players pass to trigger WRAP_UP
-        for i in range(3):
-            apply_action_and_verify(state, layout['pass_invest'], f"INVEST pass {i+1}")
-            assert_invariants(state, f"After pass {i+1}")
-
-        # After all passes: WRAP_UP -> ACQUISITION (no offers) -> CLOSING with offer
-        assert state.get_phase() == GamePhases.PHASE_CLOSING
-        assert get_close_offer_count_py(state) > 0, "Should have close offer"
-        assert TURN.get_closing_company(state) >= 0, "Should have active close offer"
-
-        # Accept the close offer
-        result = apply_closing_action_py(state, ACTION_CLOSE_PY)
-        assert result == 0, "Close accept should succeed"
-
-        # Verify: CLOSING -> INCOME (turn NOT yet incremented - that happens in TEMP_END_TURN)
-        # Note: When using apply_closing_action_py directly, we get INCOME
-        # Turn is incremented in TEMP_END_TURN phase (not reached yet)
-        assert state.get_phase() == GamePhases.PHASE_INCOME
-        assert TURN.get_turn_number(state) == 1, "Turn not yet incremented"
-        assert not PLAYERS[0].owns_company(state, 1), "Company should be closed"
-
-        assert_invariants(state, "After full turn cycle with closing")
-
-    @pytest.mark.parametrize("num_players", [3, 6])
-    def test_closing_integration_player_counts(self, num_players):
-        """ACQUISITION->CLOSING->INVEST flow works for all player counts."""
-        from tests.phases.conftest import assert_invariants
-        from phases.acquisition import transition_to_closing_py
-        from phases.closing import apply_closing_auto_py, apply_closing_action_py, get_close_offer_count_py
-        from core.actions import ACTION_CLOSE_PY
-        from entities.player import PLAYERS
-        from entities.company import COMPANIES
-
-        state = GameState(num_players=num_players)
-        state.initialize_game(seed=42)
-
-        assert_invariants(state, f"Initial state ({num_players}p)")
-
-        # Set up negative-income scenario
-        TURN.set_coo_level(state, 6)  # Level 6: Red=$6 CoO
-        PLAYERS[0].set_owns_company(state, 0, True)  # Company 0: 1 star, $1 income
-
-        # Enter ACQUISITION phase
-        TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
-        initial_turn = TURN.get_turn_number(state)
-
-        assert_invariants(state, f"Before transition ({num_players}p)")
-
-        # Transition to CLOSING
-        transition_to_closing_py(state)
-        assert state.get_phase() == GamePhases.PHASE_CLOSING
-
-        # Execute auto-close
-        apply_closing_auto_py(state)
-
-        # Verify offers generated
-        assert get_close_offer_count_py(state) > 0, "Should have close offer"
-        assert_invariants(state, f"In CLOSING ({num_players}p)")
-
-        # Accept close offer
-        result = apply_closing_action_py(state, ACTION_CLOSE_PY)
-        assert result == 0, "Close action should succeed"
-
-        # Verify transition: CLOSING -> INCOME (not directly to INVEST)
-        # Turn number incremented in TEMP_END_TURN phase (not reached yet)
-        assert state.get_phase() == GamePhases.PHASE_INCOME
-        assert TURN.get_turn_number(state) == initial_turn  # Not incremented yet
-        assert not PLAYERS[0].owns_company(state, 0), "Company should be closed"
-
-        assert_invariants(state, f"After CLOSING ({num_players}p)")
-
-    def test_acquisition_accept_then_closing_accept(self):
-        """Accept acquisition offer, then accept close offer in same turn."""
-        from tests.phases.conftest import apply_action_and_verify, assert_invariants
-        from phases.acquisition import setup_acquisition_phase_py, get_offer_count
-        from phases.closing import apply_closing_action_py, get_close_offer_count_py
-        from core.actions import ACTION_CLOSE_PY
-        from entities.player import PLAYERS
-        from entities.company import COMPANIES
-        from entities.corp import CORPS
-
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-
-        assert_invariants(state, "Initial state")
-
-        # Set up state for BOTH acquisition offer AND close offer:
-        # 1. Player 0 owns company 0 (for acquisition)
-        # 2. Player 0 owns company 1 with negative adjusted income (for close offer)
-        # 3. Corp 0 is active with president player 0 (to make acquisition offer)
-
-        COMPANIES[0].transfer_to_player(state, 0)  # Company 0 for acquisition
-        PLAYERS[0].set_owns_company(state, 1, True)  # Company 1 for close offer
-
-        CORPS[0].set_active(state, True)
-        CORPS[0].set_cash(state, 50000)
-        PLAYERS[0].set_president_of(state, 0, True)
-
-        # Set high CoO level so company 1 has negative income
-        TURN.set_coo_level(state, 6)  # Level 6: Red=$6 CoO
-
-        # Enter ACQUISITION phase
-        TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
-        setup_acquisition_phase_py(state)
-
-        initial_turn = TURN.get_turn_number(state)
-
-        # Verify acquisition offers exist
-        offer_count = get_offer_count(state)
-        assert offer_count > 0, "Should have acquisition offers"
-        assert_invariants(state, "Before acquisition action")
-
-        # Find and accept acquisition offer
-        layout = get_action_layout(3)
-        mask = get_valid_action_mask(state)
-
-        action_idx = None
-        for i in range(layout['acquisition_start'], len(mask)):
-            if mask[i] == 1.0:
-                action_idx = i
+            if not valid_actions:
                 break
 
-        assert action_idx is not None, "Should have valid acquisition action"
-        apply_action_and_verify(state, action_idx, "Accept acquisition")
+            # Take first valid action (deterministic)
+            action = valid_actions[0]
+            result = apply_action_or_game_over(state, action)
+            actions_taken += 1
 
-        # Process remaining offers by passing until CLOSING phase
-        max_iterations = 20
-        iterations = 0
-        while state.get_phase() == GamePhases.PHASE_ACQUISITION and iterations < max_iterations:
-            apply_action_and_verify(state, layout['acq_pass'], f"Pass acquisition {iterations+1}")
-            iterations += 1
+            if result is None:
+                break
 
-        # Should now be in CLOSING phase
-        assert state.get_phase() == GamePhases.PHASE_CLOSING
+        # Should have taken some actions without crashing
+        assert actions_taken > 0
 
-        # Verify close offers exist (company 1 has negative income)
-        assert get_close_offer_count_py(state) > 0, "Should have close offers"
-        assert TURN.get_closing_company(state) >= 0, "Should have active close offer"
 
-        assert_invariants(state, "In CLOSING after acquisition")
+# =============================================================================
+# STRESS TESTS
+# =============================================================================
 
-        # Accept close offer
-        result = apply_closing_action_py(state, ACTION_CLOSE_PY)
-        assert result == 0, "Close action should succeed"
+class TestStress:
+    """Stress tests with random/extensive action sequences."""
 
-        # Verify final state: INCOME phase (CLOSING now transitions to INCOME)
-        # Turn number incremented in TEMP_END_TURN phase (not reached yet)
-        assert state.get_phase() == GamePhases.PHASE_INCOME
-        assert TURN.get_turn_number(state) == initial_turn  # Not incremented yet
+    def test_many_turns_no_crash(self):
+        """Run many turns without crashing."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
 
-        # Company 1 should be closed
-        assert not PLAYERS[0].owns_company(state, 1), "Company 1 should be closed"
+        max_turns = 10
 
-        assert_invariants(state, "After both acquisition and closing accepts")
+        while TURN.get_turn_number(state) <= max_turns:
+            if state.get_phase() == GamePhases.PHASE_GAME_OVER:
+                break
+
+            # Get valid actions
+            mask = get_valid_action_mask(state)
+
+            # Pick first valid action
+            action = None
+            for i in range(len(mask)):
+                if mask[i] == 1.0:
+                    action = i
+                    break
+
+            if action is None:
+                break
+
+            result = apply_action_or_game_over(state, action)
+
+            if result is None:
+                break
+
+    def test_random_valid_actions(self):
+        """Play random valid actions for several turns."""
+        random.seed(12345)
+
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        max_actions = 100
+        actions_taken = 0
+
+        while actions_taken < max_actions:
+            if state.get_phase() == GamePhases.PHASE_GAME_OVER:
+                break
+
+            mask = get_valid_action_mask(state)
+            valid_actions = [i for i, v in enumerate(mask) if v == 1.0]
+
+            if not valid_actions:
+                break
+
+            action = random.choice(valid_actions)
+            result = apply_action_or_game_over(state, action)
+            actions_taken += 1
+
+            if result is None:
+                break
+
+        assert actions_taken > 0

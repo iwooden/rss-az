@@ -11,16 +11,16 @@ from entities.deck import DECK
 
 
 class TestInitSignature:
-    """INIT-01, INIT-02: Method signature and reinitialization."""
+    """Method signature and reinitialization."""
 
     def test_accepts_optional_seed(self):
-        """INIT-01: Method accepts optional seed parameter."""
+        """Method accepts optional seed parameter."""
         gs = GameState(4)
         gs.initialize_game()  # No seed - should work
         gs.initialize_game(42)  # With seed - should work
 
     def test_same_seed_produces_same_state(self):
-        """INIT-01: Same seed produces reproducible results."""
+        """Same seed produces reproducible results."""
         gs1 = GameState(4)
         gs1.initialize_game(12345)
 
@@ -28,12 +28,10 @@ class TestInitSignature:
         gs2.initialize_game(12345)
 
         # Deck order should match
-        DECK.initialize(gs1)
-        DECK.initialize(gs2)
         assert DECK.get_order(gs1) == DECK.get_order(gs2)
 
     def test_can_reinitialize(self):
-        """INIT-02: Can reinitialize existing GameState."""
+        """Can reinitialize existing GameState."""
         gs = GameState(4)
         gs.initialize_game(42)
         # Modify state
@@ -44,124 +42,113 @@ class TestInitSignature:
 
 
 class TestPlayerSetup:
-    """PLYR-01 through PLYR-04: Player initialization."""
+    """Player initialization."""
 
     @pytest.mark.parametrize("num_players,expected_cash", [
-        (3, 30), (4, 30), (5, 30), (6, 25)
+        (2, 30), (3, 30), (4, 30), (5, 30), (6, 25)
     ])
     def test_starting_cash(self, num_players, expected_cash):
-        """PLYR-01: Correct starting cash by player count."""
+        """Correct starting cash by player count."""
         gs = GameState(num_players)
         gs.initialize_game()
         for i in range(num_players):
-            PLAYERS[i].initialize(gs)
             assert PLAYERS[i].get_cash(gs) == expected_cash
 
     def test_turn_order_linear(self):
-        """PLYR-02: Players assigned linear turn order."""
+        """Players assigned linear turn order."""
         gs = GameState(4)
         gs.initialize_game()
         for i in range(4):
-            PLAYERS[i].initialize(gs)
             assert PLAYERS[i].get_turn_order(gs) == i
 
     def test_no_owned_companies(self):
-        """PLYR-03: All player-owned companies cleared."""
+        """All player-owned companies cleared."""
         gs = GameState(4)
         gs.initialize_game()
         for i in range(4):
-            PLAYERS[i].initialize(gs)
             for company_id in range(GameConstants.NUM_COMPANIES):
                 assert not PLAYERS[i].owns_company(gs, company_id)
 
     def test_no_owned_shares(self):
-        """PLYR-04: All player-owned shares cleared."""
+        """All player-owned shares cleared."""
         gs = GameState(4)
         gs.initialize_game()
         for i in range(4):
-            PLAYERS[i].initialize(gs)
             for corp_id in range(GameConstants.NUM_CORPS):
                 assert PLAYERS[i].get_shares(gs, corp_id) == 0
 
 
 class TestForeignInvestor:
-    """FI-01, FI-02: Foreign Investor initialization."""
+    """Foreign Investor initialization."""
 
     def test_fi_starting_cash(self):
-        """FI-01: FI receives 4 starting cash."""
+        """FI receives 4 starting cash."""
         gs = GameState(4)
         gs.initialize_game()
-        FI.initialize(gs)
         assert FI.get_cash(gs) == 4
 
     def test_fi_no_companies(self):
-        """FI-02: FI owns no companies at start."""
+        """FI owns no companies at start."""
         gs = GameState(4)
         gs.initialize_game()
-        FI.initialize(gs)
         for company_id in range(GameConstants.NUM_COMPANIES):
             assert not FI.owns_company(gs, company_id)
 
 
 class TestCorporations:
-    """CORP-01 through CORP-04: Corporation initialization."""
+    """Corporation initialization."""
 
     def test_all_corps_inactive(self):
-        """CORP-01: All 8 corporations inactive."""
+        """All 8 corporations inactive."""
         gs = GameState(4)
         gs.initialize_game()
         for corp in CORPS:
-            corp.initialize(gs)
             assert not corp.is_active(gs)
 
     def test_shares_reset(self):
-        """CORP-02: Each corporation's shares reset."""
+        """Each corporation's shares reset."""
         gs = GameState(4)
         gs.initialize_game()
         for corp in CORPS:
-            corp.initialize(gs)
             expected_shares = get_corp_share_count(corp.corp_id)
             assert corp.get_unissued_shares(gs) == expected_shares
             assert corp.get_issued_shares(gs) == 0
             assert corp.get_bank_shares(gs) == 0
 
     def test_corp_no_companies(self):
-        """CORP-03: No corporation owns any companies."""
+        """No corporation owns any companies."""
         gs = GameState(4)
         gs.initialize_game()
         for corp in CORPS:
-            corp.initialize(gs)
             for company_id in range(GameConstants.NUM_COMPANIES):
                 assert not corp.owns_company(gs, company_id)
 
     def test_corp_no_price_card(self):
-        """CORP-04: No corporation has a share price card."""
+        """No corporation has a share price card."""
         gs = GameState(4)
         gs.initialize_game()
         for corp in CORPS:
-            corp.initialize(gs)
             # Inactive corps have no meaningful price index
             assert not corp.is_active(gs)
 
 
 class TestMarket:
-    """MKT-01: Market initialization."""
+    """Market initialization."""
 
     def test_all_spaces_available(self):
-        """MKT-01: All 27 share price slots marked available."""
+        """All 27 share price slots marked available."""
         gs = GameState(4)
         gs.initialize_game()
-        MARKET.initialize(gs)
         for i in range(GameConstants.NUM_MARKET_SPACES):
             assert MARKET.is_space_available(gs, i)
 
 
 class TestDeckAndDraw:
-    """DECK-01 through DECK-05, DRAW-01, DRAW-02: Deck building and initial draw."""
+    """Deck building and initial draw."""
 
     @pytest.mark.parametrize("num_players", [3, 4, 5, 6])
     def test_correct_companies_drawn(self, num_players):
-        """DRAW-01: N companies drawn (N = player count)."""
+        """N companies drawn (N = player count)."""
         gs = GameState(num_players)
         gs.initialize_game()
 
@@ -172,7 +159,7 @@ class TestDeckAndDraw:
         assert auction_count == num_players
 
     def test_drawn_companies_for_auction(self):
-        """DRAW-02: Drawn companies marked as available for auction."""
+        """Drawn companies marked as available for auction."""
         gs = GameState(4)
         gs.initialize_game()
 
@@ -183,56 +170,54 @@ class TestDeckAndDraw:
         ]
         assert len(auction_companies) == 4
 
-    def test_deck_built_correctly(self):
-        """DECK-01 through DECK-05: Deck structure is correct."""
-        gs = GameState(4)
+    @pytest.mark.parametrize("num_players,expected_remaining", [
+        # Deck total = red + orange + yellow + green + blue, minus N drawn
+        # Non-orange colors: N+1 each (includes "last" card)
+        # Orange special: 4p=6, 5p=8(all), 6p=8(all)
+        # 6p uses ALL: red=6, orange=8, yellow=8, green=7, blue=7 = 36
+        (3, 17),   # 4+4+4+4+4=20, minus 3 drawn
+        (4, 22),   # 5+6+5+5+5=26, minus 4 drawn
+        (5, 27),   # 6+8+6+6+6=32, minus 5 drawn
+        (6, 30),   # 6+8+8+7+7=36, minus 6 drawn
+    ])
+    def test_deck_size_correct(self, num_players, expected_remaining):
+        """Deck has correct number of cards after initial draw."""
+        gs = GameState(num_players)
         gs.initialize_game()
-        DECK.initialize(gs)
-
-        # After drawing 4, deck should have remaining cards
-        remaining = DECK.get_remaining_count(gs)
-        # 4 players: 5 per color, 5 colors = 25 total, minus 4 drawn = 21
-        # Actually: red=5, orange=6, yellow=5, green=5, blue=5 = 26, minus 4 = 22
-        assert remaining > 0
+        assert DECK.get_remaining_count(gs) == expected_remaining
 
 
 class TestTurnState:
-    """TURN-01 through TURN-05: Turn state initialization."""
+    """Turn state initialization."""
 
     def test_phase_is_invest(self):
-        """TURN-01: Phase set to 1 (Investment)."""
+        """Phase set to 1 (Investment)."""
         gs = GameState(4)
         gs.initialize_game()
-        TURN.initialize(gs)
         assert TURN.get_phase(gs) == GamePhases.PHASE_INVEST
 
     def test_coo_level_is_one(self):
-        """TURN-02: CoO level set to 1."""
+        """CoO level set to 1."""
         gs = GameState(4)
         gs.initialize_game()
-        TURN.initialize(gs)
         assert TURN.get_coo_level(gs) == 1
 
     def test_turn_number_is_one(self):
-        """TURN-03: Turn number set to 1."""
+        """Turn number set to 1."""
         gs = GameState(4)
         gs.initialize_game()
-        TURN.initialize(gs)
         assert TURN.get_turn_number(gs) == 1
 
     def test_active_player_is_zero(self):
-        """TURN-04: Active player set to player 0."""
+        """Active player set to player 0 after initialization."""
         gs = GameState(4)
         gs.initialize_game()
-        # Active player is in hidden state - check via phase state
-        # We can verify indirectly by checking that turn state is properly initialized
-        assert TURN.get_phase(gs) == GamePhases.PHASE_INVEST
+        assert gs.get_active_player() == 0
 
     def test_auction_state_cleared(self):
-        """TURN-05: All auction/dividend/IPO state cleared."""
+        """All auction/dividend/IPO state cleared."""
         gs = GameState(4)
         gs.initialize_game()
-        TURN.initialize(gs)
 
         assert TURN.get_auction_company(gs) == -1
         assert TURN.get_auction_high_bidder(gs) == -1

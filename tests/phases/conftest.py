@@ -1,31 +1,11 @@
 """Shared fixtures and assertion helpers for phase tests.
 
-Test Categorization for Auto-Apply (v2.1):
-=========================================
-
-Category 1: No Changes Needed
-- Tests that only check final state outcomes
-- Tests using apply_action_and_verify (already handles status)
-- Examples: most buy/sell/bankruptcy tests
-
-Category 2: Updated with Explicit Assertions
-- Tests checking intermediate states now use apply_and_track()
-- Assert `len(result.history) == 1` when no auto-apply expected
-- Documents intent and catches regressions
-
-Category 3: New Edge Case Tests
-- TestAutoApplyEdgeCases in test_invest.py
-- TestAutoApplyBehavior in test_bid_in_auction.py
-- Cover: phase transitions, forced chains, error guards
-
 Fixture Usage Guide:
 -------------------
-- apply_action_and_verify(state, action): Standard action with invariant checks
-- apply_and_track(state, action): Returns ApplyTrackResult with history access
-- Use apply_and_track when you need to:
-  - Verify no auto-apply occurred (history length == 1)
-  - Inspect intermediate states in a forced action chain
-  - Verify specific action sequence in history
+- apply_and_verify_all(state, action): Apply action, check invariants on all
+  intermediate states (auto-applied forced actions). Returns ApplyTrackResult.
+- assert_invariants(state, msg): Check state invariants directly (for tests
+  that call phase-internal _py functions instead of the driver).
 """
 import pytest
 import numpy as np
@@ -37,9 +17,48 @@ from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.market import MARKET
-from entities.company import COMPANIES
+from entities.company import COMPANIES, CompanyLocation
+from entities.fi import FI
+from entities.deck import DECK
 
 from core.driver import STATUS_OK_PY as STATUS_OK, STATUS_INVALID_PY as STATUS_INVALID, STATUS_GAME_OVER_PY as STATUS_GAME_OVER
+
+
+# =============================================================================
+# TEST UTILITIES
+# =============================================================================
+
+def float_corp_for_test(state, corp_id, company_id=None, player_id=0, par_index=10, float_shares=1):
+    """
+    Float a corporation for testing purposes.
+
+    This is a convenience function that handles the common pattern of:
+    1. Finding/assigning a company to a player
+    2. Calling Corp.float_corp() to activate the corporation
+
+    Args:
+        state: GameState instance
+        corp_id: Corporation ID to float (required)
+        company_id: Company ID to use for floating. If None, draws from
+                   the deck (properly updating deck tracking).
+        player_id: Player who becomes president (default 0)
+        par_index: Market price index for starting share price (default 10)
+        float_shares: Shares each for player and bank (default 1)
+
+    Returns:
+        The company_id that was used (useful when company_id was None)
+    """
+    # Draw a company from the deck if none specified
+    if company_id is None:
+        company_id = DECK.draw(state)
+        if company_id < 0:
+            raise ValueError("Deck is empty, cannot draw company for floating")
+
+    # Transfer company to player and float the corp
+    COMPANIES[company_id].transfer_to_player(state, player_id)
+    CORPS[corp_id].float_corp(state, player_id, company_id, par_index, float_shares)
+
+    return company_id
 
 
 # =============================================================================
@@ -70,11 +89,17 @@ def assert_invariants(state, msg=""):
     Assert game state invariants are maintained.
 
     Checks:
-    - Total shares per corp = unissued + bank + all players
-    - Player cash >= 0
-    - Corp cash >= 0
-    - Net worths >= 0
+    - Share conservation: unissued + bank + players = total per corp
+    - Issued shares = bank + players per corp
+    - Player cash >= 0, net worth >= 0
+    - Corp cash >= 0, price index in [0, 26]
+    - Active corp has >= 1 company
+    - President has >= 1 share (non-receivership), no president (receivership)
+    - FI cash >= 0
     - Auction row size <= num_players
+    - Market boundary spaces available
+    - Company locations valid, deck count consistent
+    - Company ownership: player/corp-owned companies have valid owner
     """
     num_players = state.get_num_players()
 
@@ -112,28 +137,122 @@ def assert_invariants(state, msg=""):
     )
     assert auction_count <= num_players, f"{msg}\nAuction row size {auction_count} > {num_players}"
 
+    # Market boundary spaces must always be available
+    # - Index 0 ($0): Bankruptcy space - corps that land here go bankrupt and leave
+    # - Index 26 ($75): Maximum price - multiple corps can share ("no card" state)
+    assert MARKET.is_space_available(state, 0), f"{msg}\nMarket space 0 ($0 bankruptcy) must always be available"
+    assert MARKET.is_space_available(state, 26), f"{msg}\nMarket space 26 ($75 max) must always be available"
 
-def apply_action_and_verify(state, action_idx, msg=""):
-    """
-    Apply action and verify invariants + mask validity.
+    # FI cash non-negative
+    fi_cash = FI.get_cash(state)
+    assert fi_cash >= 0, f"{msg}\nForeign Investor cash negative: {fi_cash}"
 
-    Returns the result status from DRIVER.apply_action.
-    """
-    # Verify action is valid before applying
-    mask = get_valid_action_mask(state)
-    assert mask[action_idx] == 1.0, f"{msg}\nAction {action_idx} not valid in current mask"
+    # Company location validity - every company has a known location
+    for cid in range(36):
+        loc = COMPANIES[cid].get_location(state)
+        assert 0 <= loc <= 7, f"{msg}\nCompany {cid} has invalid location: {loc}"
 
-    result = DRIVER.apply_action(state, action_idx)
-    assert result == STATUS_OK, f"{msg}\nAction {action_idx} failed with status {result}"
+    # Deck count matches companies with LOC_DECK location
+    deck_remaining = DECK.get_remaining_count(state)
+    deck_loc_count = sum(
+        1 for cid in range(36)
+        if COMPANIES[cid].get_location(state) == CompanyLocation.LOC_DECK
+    )
+    assert deck_remaining == deck_loc_count, (
+        f"{msg}\nDeck count mismatch: deck entity says {deck_remaining} "
+        f"but {deck_loc_count} companies have LOC_DECK"
+    )
 
-    assert_invariants(state, f"{msg}\nAfter action {action_idx}")
+    # Issued shares = bank + player shares (for active corps)
+    for corp_id in range(8):
+        corp = CORPS[corp_id]
+        if corp.is_active(state):
+            issued = corp.get_issued_shares(state)
+            bank = corp.get_bank_shares(state)
+            player_held = sum(PLAYERS[p].get_shares(state, corp_id) for p in range(num_players))
+            assert issued == bank + player_held, (
+                f"{msg}\nCorp {corp_id} issued shares mismatch: "
+                f"issued({issued}) != bank({bank}) + players({player_held})"
+            )
 
-    # Don't check for valid actions in terminal phases (WRAP_UP, GAME_OVER have no actions)
-    phase = state.get_phase()
-    if phase not in [GamePhases.PHASE_WRAP_UP, GamePhases.PHASE_GAME_OVER]:
-        assert np.sum(get_valid_action_mask(state)) > 0, f"{msg}\nNo valid actions after {action_idx}"
+    # President invariants for active, non-receivership corps
+    for corp_id in range(8):
+        corp = CORPS[corp_id]
+        if corp.is_active(state) and not corp.is_in_receivership(state):
+            pres_id = corp.get_president_id(state)
+            assert pres_id >= 0, (
+                f"{msg}\nCorp {corp_id} active and not in receivership but has no president"
+            )
+            pres_shares = PLAYERS[pres_id].get_shares(state, corp_id)
+            assert pres_shares >= 1, (
+                f"{msg}\nCorp {corp_id} president (player {pres_id}) holds "
+                f"{pres_shares} shares (must be >= 1)"
+            )
 
-    return result
+    # Receivership means no president
+    for corp_id in range(8):
+        corp = CORPS[corp_id]
+        if corp.is_active(state) and corp.is_in_receivership(state):
+            pres_id = corp.get_president_id(state)
+            assert pres_id == -1, (
+                f"{msg}\nCorp {corp_id} in receivership but has president: player {pres_id}"
+            )
+
+    # Active corp must have >= 1 company
+    for corp_id in range(8):
+        corp = CORPS[corp_id]
+        if corp.is_active(state):
+            company_count = corp.count_companies(state, include_acquisition=True)
+            assert company_count >= 1, (
+                f"{msg}\nCorp {corp_id} is active but has {company_count} companies"
+            )
+
+    # Corp price index in valid range for active corps
+    for corp_id in range(8):
+        corp = CORPS[corp_id]
+        if corp.is_active(state):
+            price_idx = corp.get_price_index(state)
+            assert 0 <= price_idx <= 26, (
+                f"{msg}\nCorp {corp_id} price index out of range: {price_idx}"
+            )
+
+    # Ghost deck entries must not have LOC_DECK location
+    # Slots past deck_top are already-drawn or removed cards; their companies
+    # should have been moved to another location (LOC_PLAYER, LOC_FI, etc.)
+    for slot_idx, cid in DECK.get_ghost_entries(state):
+        loc = COMPANIES[cid].get_location(state)
+        assert loc != CompanyLocation.LOC_DECK, (
+            f"{msg}\nCompany {cid} in ghost deck slot {slot_idx} "
+            f"still has LOC_DECK location"
+        )
+
+    # Company ownership consistency: player/corp-owned companies must have
+    # a valid owner, and that owner must actually list the company
+    for cid in range(36):
+        company = COMPANIES[cid]
+        loc = company.get_location(state)
+        owner_id = company.get_owner_id(state)
+
+        if loc == CompanyLocation.LOC_PLAYER:
+            assert 0 <= owner_id < num_players, (
+                f"{msg}\nCompany {cid} at LOC_PLAYER has invalid owner_id: {owner_id}"
+            )
+            assert PLAYERS[owner_id].owns_company(state, cid), (
+                f"{msg}\nCompany {cid} says LOC_PLAYER owner={owner_id} "
+                f"but player doesn't list it"
+            )
+        elif loc == CompanyLocation.LOC_CORP:
+            assert 0 <= owner_id < 8, (
+                f"{msg}\nCompany {cid} at LOC_CORP has invalid owner_id: {owner_id}"
+            )
+            assert CORPS[owner_id].owns_company(state, cid), (
+                f"{msg}\nCompany {cid} says LOC_CORP owner={owner_id} "
+                f"but corp doesn't list it"
+            )
+        elif loc == CompanyLocation.LOC_CORP_ACQ:
+            assert 0 <= owner_id < 8, (
+                f"{msg}\nCompany {cid} at LOC_CORP_ACQ has invalid owner_id: {owner_id}"
+            )
 
 
 class ApplyTrackResult:
@@ -187,7 +306,7 @@ def bid_state(game_state):
     layout = get_action_layout(3)
     for i in range(layout['auction_base'], layout['buy_share_base']):
         if mask[i] == 1.0:
-            DRIVER.apply_action(game_state, i)
+            apply_and_verify_all(game_state, i)
             break
     assert game_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
     assert TURN.get_auction_company(game_state) >= 0
@@ -200,62 +319,51 @@ def trade_state():
     state = GameState(num_players=3)
     state.initialize_game(seed=42)
 
-    # Manually activate corp 0 (JS) with tradeable shares
-    # Corp 0 has 7 total shares: unissued(3) + bank(2) + player(2) = 7
-    corp = CORPS[0]
-    corp.set_active(state, True)
-    corp.set_price_index(state, 10)
-    corp.set_unissued_shares(state, 3)
-    corp.set_bank_shares(state, 2)
-    corp.set_issued_shares(state, 4)
+    # Float corp 0 (JS) with 2 shares each to player and bank
+    # This sets up: unissued(3), bank(2), issued(4), player 0 has 2 shares, price index 10
+    float_corp_for_test(state, corp_id=0, par_index=10, float_shares=2)
 
-    PLAYERS[0].set_shares(state, 0, 2)
+    # Set up player cash for trading
     PLAYERS[0].set_cash(state, 100)
-    PLAYERS[0].set_president_of(state, 0, True)
-
-    MARKET.set_space_available(state, 10, False)
 
     return state
 
 
-@pytest.fixture
-def bankruptcy_state():
-    """State where one sell triggers bankruptcy."""
-    state = GameState(num_players=3)
-    state.initialize_game(seed=42)
+def apply_and_verify_all(state, action_idx, msg="", expected_status=STATUS_OK):
+    """Apply action and verify invariants on every intermediate state.
 
-    corp = CORPS[0]
-    corp.set_active(state, True)
-    corp.set_price_index(state, 1)  # One sell -> index 0 -> bankruptcy
-    corp.set_bank_shares(state, 2)
-    corp.set_issued_shares(state, 4)  # bank(2) + player(2) = 4
+    Checks invariants on all intermediate states from the driver's
+    auto-apply loop, not just the final state. Returns ApplyTrackResult
+    for history inspection.
 
-    COMPANIES[0].transfer_to_corp(state, 0)
-    corp.set_owns_company(state, 0, True)
-
-    PLAYERS[0].set_shares(state, 0, 2)
-    PLAYERS[0].set_president_of(state, 0, True)
-    PLAYERS[0].set_cash(state, 100)
-
-    MARKET.set_space_available(state, 1, False)
-
-    return state
-
-
-@pytest.fixture
-def apply_and_track():
-    """Fixture providing action application with full history tracking.
-
-    Usage:
-        result = apply_and_track(state, action_idx)
-        assert result.applied_count >= 1
-        intermediate = result.get_state_at(0)  # State before first action
+    Args:
+        expected_status: Expected return status (default STATUS_OK).
+            Use STATUS_GAME_OVER for game-ending actions.
     """
-    def _apply(state, action_idx):
-        history = []
-        status = DRIVER.apply_action(state, action_idx, history=history)
-        return ApplyTrackResult(state, history, status, state.get_num_players())
-    return _apply
+    # Verify action is valid before applying
+    mask = get_valid_action_mask(state)
+    assert mask[action_idx] == 1.0, f"{msg}\nAction {action_idx} not valid in current mask"
+
+    history = []
+    status = DRIVER.apply_action(state, action_idx, history=history)
+    assert status == expected_status, f"{msg}\nAction {action_idx} returned status {status}, expected {expected_status}"
+
+    # Check invariants on every intermediate state (captured BEFORE each action)
+    for i, (state_array, action_id) in enumerate(history):
+        intermediate = GameState.from_array(state_array, state.get_num_players())
+        assert_invariants(intermediate,
+            f"{msg}\nIntermediate state {i}/{len(history)}, "
+            f"before action {action_id}")
+
+    # Check invariants on final state (AFTER all actions)
+    assert_invariants(state, f"{msg}\nFinal state after action chain")
+
+    # Verify valid actions exist in non-terminal phases
+    phase = state.get_phase()
+    if phase not in [GamePhases.PHASE_WRAP_UP, GamePhases.PHASE_GAME_OVER]:
+        assert np.sum(get_valid_action_mask(state)) > 0, f"{msg}\nNo valid actions after {action_idx}"
+
+    return ApplyTrackResult(state, history, status, state.get_num_players())
 
 
 @pytest.fixture

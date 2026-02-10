@@ -1,67 +1,64 @@
 # cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
-"""CLOSING phase handler implementation."""
+"""
+CLOSING phase: Companies with negative adjusted income can be closed.
+
+DESIGN: Two-Stage Close with One-by-One Offers
+==============================================
+Stage 1 - Auto-close (deterministic, no player input):
+  - FI closes companies with negative adjusted income (income - CoO < 0)
+  - Receivership corps close red/orange companies above CoO thresholds:
+    * Red (1 star): close if CoO >= $4
+    * Orange (2 stars): close if CoO >= $7
+    * Yellow/Green/Blue: never auto-close
+  - Highest face value company in each receivership corp is protected
+
+Stage 2 - Offer-based close (player decisions):
+  - Only for player-owned privates and player-presided corps
+  - Uses same one-by-one pattern as acquisition.pyx:
+    1. Generate offers into hidden buffer (_generate_close_offers)
+    2. Sort by face value ascending (cheapest first)
+    3. Present one at a time via closing_company state
+    4. Player chooses CLOSE or PASS for each
+  - Dynamic re-validation: skip offers where company already closed
+
+Mandatory close (after all offers processed):
+  - If player would have negative income+cash, force-close their cheapest
+    negative-income private company, repeating until safe
+
+Action space: just 2 actions (CLOSE, PASS) - offers presented sequentially.
+
+See CLAUDE.md "Offer Buffer Pattern" for full documentation.
+"""
 
 from core.state cimport GameState
+from core.driver cimport _is_game_terminal
 from core.data cimport (
-    GameConstants, GamePhases, PHASE_GAME_OVER, PHASE_INCOME,
-    get_cost_of_ownership, get_company_income, get_company_stars, get_company_face_value,
-    get_adjusted_company_income
+    GameConstants, GamePhases, CorpIndices, PHASE_GAME_OVER, PHASE_INCOME,
+    get_cost_of_ownership, get_company_income, get_company_stars, get_company_face_value
 )
 from core.actions cimport ActionInfo, ACTION_CLOSE, ACTION_PASS
+from entities.company cimport LOC_PLAYER, LOC_FI, LOC_CORP
 from entities import turn as turn_module
 from entities import company as company_module
 from entities import corp as corp_module
 from entities import fi as fi_module
 from entities import player as player_module
 
-# Constants
+# Buffer size constant (DEF required for static array sizing - cannot be imported)
 DEF CLOSE_OFFER_BUFFER_SIZE = 100
-DEF OWNER_PLAYER = 0  # Owner type for player-owned companies
-DEF OWNER_CORP = 1    # Owner type for corp-owned companies
 
 
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
 
-cdef bint _is_game_terminal(GameState state) noexcept:
-    """
-    Check if the game has reached a terminal state.
-
-    Terminal state occurs when:
-    1. No companies are available for auction, AND
-    2. No corporations are active
-
-    This prevents infinite INVEST->WRAP_UP->ACQUISITION->CLOSING loops when
-    all companies are removed from the game.
-    """
-    cdef int company_id, corp_id
-    cdef bint has_auction_companies = False
-    cdef bint has_active_corps = False
-
-    # Check for any companies available for auction
-    for company_id in range(GameConstants.NUM_COMPANIES):
-        if company_module.COMPANIES[company_id].is_for_auction(state):
-            has_auction_companies = True
-            break
-
-    # Check for any active corporations
-    for corp_id in range(GameConstants.NUM_CORPS):
-        if corp_module.CORPS[corp_id].is_active(state):
-            has_active_corps = True
-            break
-
-    # Terminal if no auction companies AND no active corps
-    return not has_auction_companies and not has_active_corps
-
 cdef void _close_company(GameState state, int company_id, int owner_type, int owner_id) noexcept:
     """
     Close a company and handle cleanup.
 
     Steps:
-    1. Clear ownership from previous owner (FI or corp)
-    2. Apply Junkyard Scrappers bonus (2x printed income to JS cash)
-    3. Remove company from game
+    1. Apply Junkyard Scrappers bonus (2x printed income to JS cash)
+    2. Remove company from game (clears ownership automatically)
 
     Args:
         state: Game state
@@ -71,17 +68,11 @@ cdef void _close_company(GameState state, int company_id, int owner_type, int ow
     """
     cdef int printed_income = get_company_income(company_id)
 
-    # Clear ownership before removal
-    if owner_type == 4:  # LOC_FI
-        fi_module.FI.set_owns_company(state, company_id, False)
-    elif owner_type == 5:  # LOC_CORP
-        corp_module.CORPS[owner_id].set_owns_company(state, company_id, False)
+    # Junkyard Scrappers bonus: 2x printed income only when JS closes its own company
+    if owner_type == LOC_CORP and owner_id == CorpIndices.CORP_JS:
+        corp_module.CORPS[owner_id].add_cash(state, printed_income * 2)
 
-    # Junkyard Scrappers (corp_id 0) bonus: 2x printed income only when JS closes its own company
-    if owner_type == 5 and owner_id == 0:  # LOC_CORP and JS
-        corp_module.CORPS[0].add_cash(state, printed_income * 2)
-
-    # Remove company from game
+    # Remove company from game (clear_location handles ownership)
     company_module.COMPANIES[company_id].remove_from_game(state)
 
 
@@ -89,16 +80,8 @@ cdef void _close_player_company(GameState state, int company_id, int player_id) 
     """
     Close a player-owned private company during mandatory close.
 
-    Steps:
-    1. Clear player ownership
-    2. Remove company from game
-
-    Similar to _close_company but handles player ownership (LOC_PLAYER).
+    remove_from_game handles clearing ownership automatically.
     """
-    # Clear ownership
-    player_module.PLAYERS[player_id].set_owns_company(state, company_id, False)
-
-    # Remove company from game
     company_module.COMPANIES[company_id].remove_from_game(state)
 
 
@@ -115,7 +98,9 @@ cdef void _process_mandatory_close(GameState state) noexcept:
 
     Per CONTEXT.md: CoO is fixed at phase start, no re-evaluation during loop.
     Per CONTEXT.md: Players CAN end up with zero companies (no minimum retention).
-    Per CONTEXT.md: Junkyard Scrappers bonus applies to mandatory closes.
+
+    Note: JS bonus does NOT apply here - mandatory close only affects player-owned
+    private companies, and JS bonus only triggers when JS closes its own subsidiaries.
     """
     cdef int player_id, company_id, income, cash
     cdef int cheapest_company, cheapest_fv, fv
@@ -135,12 +120,12 @@ cdef void _process_mandatory_close(GameState state) noexcept:
             cheapest_company = -1
             cheapest_fv = 999999  # Large sentinel
 
-            for company_id in range(GameConstants.NUM_COMPANIES):
+            for company_id in range(<int>GameConstants.NUM_COMPANIES):
                 if not player_module.PLAYERS[player_id].owns_company(state, company_id):
                     continue
 
                 # Check if negative income (CLO-14 targets negative-income companies)
-                if get_adjusted_company_income(company_id, coo_level) >= 0:
+                if company_module.COMPANIES[company_id].get_adjusted_income(state) >= 0:
                     continue
 
                 fv = get_company_face_value(company_id)
@@ -159,20 +144,7 @@ cdef void _process_mandatory_close(GameState state) noexcept:
 
 cdef bint _has_negative_adjusted_income(GameState state, int company_id) noexcept:
     """Check if company has negative adjusted income (eligible for close offer)."""
-    cdef int coo_level = turn_module.TURN.get_coo_level(state)
-    cdef int base_income = get_company_income(company_id)
-    cdef int stars = get_company_stars(company_id)
-    cdef int coo_value = get_cost_of_ownership(coo_level, stars)
-    return (base_income - coo_value) < 0  # NEGATIVE only, not zero
-
-
-cdef int _get_corp_president(GameState state, int corp_id) noexcept:
-    """Get player_id of corp president, or -1 if in receivership."""
-    cdef int player_id
-    for player_id in range(state._num_players):
-        if player_module.PLAYERS[player_id].is_president_of(state, corp_id):
-            return player_id
-    return -1
+    return company_module.COMPANIES[company_id].get_adjusted_income(state) < 0
 
 
 cdef int _collect_player_close_offers(
@@ -188,7 +160,7 @@ cdef int _collect_player_close_offers(
     cdef int player_id, company_id, idx
 
     for player_id in range(state._num_players):
-        for company_id in range(GameConstants.NUM_COMPANIES):
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if not player_module.PLAYERS[player_id].owns_company(state, company_id):
                 continue
             if not _has_negative_adjusted_income(state, company_id):
@@ -198,7 +170,7 @@ cdef int _collect_player_close_offers(
             if idx >= CLOSE_OFFER_BUFFER_SIZE:
                 return count
 
-            owner_types[idx] = OWNER_PLAYER
+            owner_types[idx] = LOC_PLAYER
             owner_ids[idx] = player_id
             company_ids[idx] = company_id
             face_values[idx] = get_company_face_value(company_id)
@@ -220,16 +192,16 @@ cdef int _collect_corp_close_offers(
     cdef int count = 0
     cdef int corp_id, company_id, president, idx
 
-    for corp_id in range(GameConstants.NUM_CORPS):
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
         if not corp_module.CORPS[corp_id].is_active(state):
             continue
 
         # Skip receivership corps (no president = excluded from offers)
-        president = _get_corp_president(state, corp_id)
+        president = corp_module.CORPS[corp_id].get_president_id(state)
         if president < 0:
             continue
 
-        for company_id in range(GameConstants.NUM_COMPANIES):
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if not corp_module.CORPS[corp_id].owns_company(state, company_id):
                 continue
             if not _has_negative_adjusted_income(state, company_id):
@@ -239,7 +211,7 @@ cdef int _collect_corp_close_offers(
             if idx >= CLOSE_OFFER_BUFFER_SIZE:
                 return count
 
-            owner_types[idx] = OWNER_CORP
+            owner_types[idx] = LOC_CORP
             owner_ids[idx] = corp_id
             company_ids[idx] = company_id
             face_values[idx] = get_company_face_value(company_id)
@@ -331,24 +303,6 @@ cdef void _generate_close_offers(GameState state) noexcept:
     state._data[state._layout.hidden_close_offer_count_offset] = <float>offer_count
 
 
-cdef int _count_corp_companies(GameState state, int corp_id, int exclude_company_id) noexcept:
-    """
-    Count companies corp retains after excluding target.
-    Used to enforce last-company rule.
-    Returns count of companies excluding the specified company_id.
-    """
-    cdef int count = 0
-    cdef int company_id
-
-    for company_id in range(GameConstants.NUM_COMPANIES):
-        if company_id == exclude_company_id:
-            continue
-        if corp_module.CORPS[corp_id].owns_company(state, company_id):
-            count += 1
-
-    return count
-
-
 cdef bint _is_close_offer_valid(GameState state, int owner_type, int owner_id, int company_id) noexcept:
     """
     Check if close offer is still valid for presentation.
@@ -365,15 +319,16 @@ cdef bint _is_close_offer_valid(GameState state, int owner_type, int owner_id, i
         return False
 
     # Check ownership unchanged
-    if owner_type == OWNER_PLAYER:
+    if owner_type == LOC_PLAYER:
         if not player_module.PLAYERS[owner_id].owns_company(state, company_id):
             return False
-    elif owner_type == OWNER_CORP:
+    elif owner_type == LOC_CORP:
         if not corp_module.CORPS[owner_id].owns_company(state, company_id):
             return False
 
         # Corp last-company rule: can't close if corp would have 0 companies
-        if _count_corp_companies(state, owner_id, company_id) < 1:
+        # Check count >= 2 since closing one would leave at least 1
+        if corp_module.CORPS[owner_id].count_companies(state) < 2:
             return False
 
     return True
@@ -421,10 +376,10 @@ cdef void _present_next_close_offer(GameState state) noexcept:
         turn_module.TURN.set_closing_company(state, company_id)
 
         # Determine active player (owner for player, president for corp)
-        if owner_type == OWNER_PLAYER:
+        if owner_type == LOC_PLAYER:
             state._set_active_player(owner_id)
-        elif owner_type == OWNER_CORP:
-            president = _get_corp_president(state, owner_id)
+        elif owner_type == LOC_CORP:
+            president = corp_module.CORPS[owner_id].get_president_id(state)
             state._set_active_player(president if president >= 0 else 0)
         return
 
@@ -443,26 +398,20 @@ cdef void _process_fi_auto_close(GameState state) noexcept:
     """
     cdef int coo_level = turn_module.TURN.get_coo_level(state)
     cdef int company_id
-    cdef int base_income, stars, coo_value, adjusted_income
     cdef int num_to_close = 0
     cdef int[36] companies_to_close  # Track which companies to close
 
     # First pass: identify companies to close
-    for company_id in range(GameConstants.NUM_COMPANIES):
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
         if fi_module.FI.owns_company(state, company_id):
-            base_income = get_company_income(company_id)
-            stars = get_company_stars(company_id)
-            coo_value = get_cost_of_ownership(coo_level, stars)
-            adjusted_income = base_income - coo_value
-
-            # Close if NEGATIVE (not zero)
-            if adjusted_income < 0:
+            # Close if NEGATIVE adjusted income (not zero)
+            if company_module.COMPANIES[company_id].get_adjusted_income(state) < 0:
                 companies_to_close[num_to_close] = company_id
                 num_to_close += 1
 
     # Second pass: close identified companies
     for company_id in range(num_to_close):
-        _close_company(state, companies_to_close[company_id], 4, -1)  # LOC_FI = 4
+        _close_company(state, companies_to_close[company_id], LOC_FI, -1)
 
 
 cdef void _process_receivership_auto_close(GameState state) noexcept:
@@ -475,29 +424,28 @@ cdef void _process_receivership_auto_close(GameState state) noexcept:
     - Yellow/Green/Blue (3-5 stars): NEVER auto-close
 
     Protection: Highest face value company in each receivership corp is protected.
-    Vintage Machinery (corp 6): Apply $10 CoO reduction before threshold check.
+
+    Note: Corporation special abilities (like VM's CoO reduction) do NOT apply here.
+    Per RULES.md, VM's ability is for income calculation only. Receivership corps
+    follow simple deterministic rules without special ability considerations.
     """
     cdef int corp_id, company_id, stars, coo_value
     cdef int coo_level = turn_module.TURN.get_coo_level(state)
-    cdef bint is_vm
     cdef int protected_company, max_face_value, face_value
     cdef int num_to_close
     cdef int[36] companies_to_close
 
-    for corp_id in range(GameConstants.NUM_CORPS):
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
         # Skip inactive corps and non-receivership corps
         if not corp_module.CORPS[corp_id].is_active(state):
             continue
         if not corp_module.CORPS[corp_id].is_in_receivership(state):
             continue
 
-        # Check if this is Vintage Machinery (corp_id 6)
-        is_vm = (corp_id == 6)
-
         # Find highest face value company (protected)
         protected_company = -1
         max_face_value = -1
-        for company_id in range(GameConstants.NUM_COMPANIES):
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if corp_module.CORPS[corp_id].owns_company(state, company_id):
                 face_value = get_company_face_value(company_id)
                 if face_value > max_face_value:
@@ -506,7 +454,7 @@ cdef void _process_receivership_auto_close(GameState state) noexcept:
 
         # Identify companies to close
         num_to_close = 0
-        for company_id in range(GameConstants.NUM_COMPANIES):
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
             # Skip if not owned by this corp
             if not corp_module.CORPS[corp_id].owns_company(state, company_id):
                 continue
@@ -515,15 +463,10 @@ cdef void _process_receivership_auto_close(GameState state) noexcept:
             if company_id == protected_company:
                 continue
 
-            # Get CoO value
+            # Get CoO value and check thresholds
             stars = get_company_stars(company_id)
             coo_value = get_cost_of_ownership(coo_level, stars)
 
-            # Apply Vintage Machinery reduction
-            if is_vm:
-                coo_value = max(0, coo_value - 10)
-
-            # Check thresholds
             if stars == 1 and coo_value >= 4:  # Red
                 companies_to_close[num_to_close] = company_id
                 num_to_close += 1
@@ -534,7 +477,7 @@ cdef void _process_receivership_auto_close(GameState state) noexcept:
 
         # Close identified companies
         for company_id in range(num_to_close):
-            _close_company(state, companies_to_close[company_id], 5, corp_id)  # LOC_CORP = 5
+            _close_company(state, companies_to_close[company_id], LOC_CORP, corp_id)
 
 
 # =============================================================================
@@ -562,16 +505,11 @@ cdef void _handle_close_accept(GameState state) noexcept:
     owner_type = <int>state._data[base]
     owner_id = <int>state._data[base + 1]
 
-    # Close the company (reuses Phase 16 helper)
-    # Map OWNER_PLAYER (0) -> LOC_PLAYER (3), OWNER_CORP (1) -> LOC_CORP (5)
-    if owner_type == OWNER_PLAYER:
-        # For player-owned companies, manually clear ownership
-        player_module.PLAYERS[owner_id].set_owns_company(state, company_id, False)
-
-        # Remove from game
+    # Close the company (remove_from_game handles clearing ownership)
+    if owner_type == LOC_PLAYER:
         company_module.COMPANIES[company_id].remove_from_game(state)
-    elif owner_type == OWNER_CORP:
-        _close_company(state, company_id, 5, owner_id)  # LOC_CORP = 5
+    elif owner_type == LOC_CORP:
+        _close_company(state, company_id, LOC_CORP, owner_id)
 
     # Advance to next offer
     state._data[state._layout.hidden_close_offer_index_offset] = <float>(index + 1)

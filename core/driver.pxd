@@ -17,6 +17,9 @@ cdef struct ForcedActionResult:
 # Helper function for forced action detection
 cdef ForcedActionResult _check_forced_action(GameState state) noexcept
 
+# Terminal state detection (shared by acquisition and closing phases)
+cdef bint _is_game_terminal(GameState state) noexcept
+
 cdef class GameDriver:
     cdef int _apply_single_action(self, GameState state, int action_idx, object history)
     cpdef int apply_action(self, GameState state, int action_idx, object history=*)

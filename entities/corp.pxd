@@ -62,6 +62,7 @@ cdef class Corporation:
     cdef int _price_index_offset
     cdef int _owned_companies_offset
     cdef int _acquisition_companies_offset
+    cdef int _company_incomes_offset  # Global company_incomes array offset
 
     # Initialization
     cpdef void initialize(self, GameState state)
@@ -69,6 +70,8 @@ cdef class Corporation:
     # Active status
     cpdef bint is_active(self, GameState state)
     cpdef void set_active(self, GameState state, bint active)
+    cpdef void float_corp(self, GameState state, int player_id, int company_id,
+                          int par_index, int float_shares=*)
 
     # Cash
     cpdef int get_cash(self, GameState state)
@@ -103,17 +106,21 @@ cdef class Corporation:
     cpdef bint is_in_receivership(self, GameState state)
     cpdef void set_in_receivership(self, GameState state, bint in_recv)
 
-    # Company ownership
+    # Company ownership (use Company.transfer_to_corp() to set)
     cpdef bint owns_company(self, GameState state, int company_id)
-    cpdef void set_owns_company(self, GameState state, int company_id, bint owns)
+    cdef inline bint _owns_company_nogil(self, float* data, int company_id) noexcept nogil
+    cpdef int count_companies(self, GameState state, bint include_acquisition=*)
 
     # Income calculation
+    cdef int _calculate_income_nogil(self, float* data, int coo_level) noexcept nogil
     cpdef int calculate_income(self, GameState state)
     cpdef void apply_income(self, GameState state, int income)
 
     # Bankruptcy
     cpdef void go_bankrupt(self, GameState state)
 
-    # Acquisition pile (companies pending integration)
+    # President
+    cpdef int get_president_id(self, GameState state)
+
+    # Acquisition pile (use Company.transfer_to_corp_acquisition() to set)
     cpdef bint has_acquisition_company(self, GameState state, int company_id)
-    cpdef void set_acquisition_company(self, GameState state, int company_id, bint has)

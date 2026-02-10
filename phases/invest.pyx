@@ -20,92 +20,9 @@ from core.data import CORP_NAMES
 # HELPER FUNCTIONS
 # =============================================================================
 
-cdef void _check_receivership(GameState state, int corp_id) noexcept:
-    """
-    Check if corporation enters or exits receivership.
-
-    Receivership = all player-owned shares are 0 (bank owns all issued shares).
-    """
-    cdef int player_id, total_player_shares
-    cdef object corp
-
-    corp = corp_module.CORPS[corp_id]
-    total_player_shares = 0
-
-    for player_id in range(state._num_players):
-        total_player_shares += player_module.PLAYERS[player_id].get_shares(state, corp_id)
-
-    if total_player_shares == 0:
-        corp.set_in_receivership(state, True)
-        # Clear all president flags - no president in receivership
-        for player_id in range(state._num_players):
-            player_module.PLAYERS[player_id].set_president_of(state, corp_id, False)
-    else:
-        corp.set_in_receivership(state, False)
-
-
-cdef void _check_presidency(GameState state, int corp_id) noexcept:
-    """
-    Check if presidency should transfer.
-
-    President = player with most shares. Tie-breaking: incumbent keeps it.
-    Per CONTEXT.md: "current president keeps it when shares are equal"
-    """
-    cdef int player_id, shares, max_shares, president_id, current_president, incumbent_shares
-    cdef object corp
-
-    corp = corp_module.CORPS[corp_id]
-
-    # Skip if in receivership (no president)
-    if corp.is_in_receivership(state):
-        return
-
-    # Find current president
-    current_president = -1
-    for player_id in range(state._num_players):
-        if player_module.PLAYERS[player_id].is_president_of(state, corp_id):
-            current_president = player_id
-            break
-
-    # Find player with most shares
-    # Incumbent advantage: on ties, incumbent keeps presidency
-    # We handle this by initializing with incumbent's shares if they exist
-    max_shares = 0
-    president_id = -1
-
-    # First pass: find the maximum share count
-    for player_id in range(state._num_players):
-        shares = player_module.PLAYERS[player_id].get_shares(state, corp_id)
-        if shares > max_shares:
-            max_shares = shares
-
-    # Second pass: find winner (incumbent wins ties)
-    # If incumbent has max_shares, they keep it
-    # Otherwise, first player with max_shares wins
-    if max_shares > 0:
-        if current_president >= 0:
-            incumbent_shares = player_module.PLAYERS[current_president].get_shares(state, corp_id)
-            if incumbent_shares == max_shares:
-                # Incumbent ties for max - they keep presidency
-                president_id = current_president
-
-        # If incumbent doesn't have max shares, find first player who does
-        if president_id < 0:
-            for player_id in range(state._num_players):
-                shares = player_module.PLAYERS[player_id].get_shares(state, corp_id)
-                if shares == max_shares:
-                    president_id = player_id
-                    break
-
-    # Update if changed (and someone has shares)
-    if president_id >= 0 and president_id != current_president:
-        if current_president >= 0:
-            player_module.PLAYERS[current_president].set_president_of(state, corp_id, False)
-        player_module.PLAYERS[president_id].set_president_of(state, corp_id, True)
-    elif president_id < 0 and current_president >= 0:
-        # No one has shares but there was a president - clear (shouldn't happen if receivership check ran first)
-        player_module.PLAYERS[current_president].set_president_of(state, corp_id, False)
-
+# Note: Presidency and receivership are now automatically recalculated
+# whenever shares change via player.set_shares(). See entities/player.pyx
+# _recalculate_presidency() for the implementation.
 
 cdef void _advance_active_player(GameState state) noexcept:
     """Advance to next player in turn order."""
@@ -127,7 +44,7 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     2. Update market space availability
     3. Transfer money (player pays new price to corp)
     4. Transfer share (bank to player)
-    5. Track round-trip
+    5. Track buy (for training loop prevention)
     6. Update net worth
     7. Reset consecutive passes
     8. Advance to next player
@@ -153,23 +70,14 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     if new_index != 26:  # Price 75 is always available, don't mark occupied
         market_module.MARKET.set_space_available(state, new_index, False)
 
-    # Transfer money (INV-07, INV-08)
+    # Transfer money: player pays to bank (INV-07)
+    # Per RULES.md: "Player pays new share price to Bank" - money leaves circulation
     player_module.PLAYERS[player_id].add_cash(state, -new_price)
-    corp.add_cash(state, new_price)
 
     # Transfer share (INV-09)
-    bank_shares = corp.get_bank_shares(state)
-    corp.set_bank_shares(state, bank_shares - 1)
+    # set_shares() automatically adjusts bank shares, presidency, and receivership
     player_shares = player_module.PLAYERS[player_id].get_shares(state, corp_id)
     player_module.PLAYERS[player_id].set_shares(state, corp_id, player_shares + 1)
-
-    # Check receivership exit (INV-21 - buying from receivership clears it)
-    # Per CONTEXT.md: shares are fungible, no special "president share" handling
-    # Buyer becomes president simply by having the most shares (the only player with shares)
-    _check_receivership(state, corp_id)
-
-    # Check presidency (INV-18, INV-19)
-    _check_presidency(state, corp_id)
 
     # Round-trip tracking (INV-16)
     player_module.PLAYERS[player_id].increment_share_buys(state, corp_id)
@@ -180,6 +88,11 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     # Reset consecutive passes (INV-02)
     turn_module.TURN.clear_consecutive_passes(state)
 
+    # Check for $75 game end - immediate after buy completes (RULES.md line 346)
+    if new_index == 26:
+        turn_module.TURN.set_phase(state, PHASE_GAME_OVER)
+        return
+
     # Advance active player
     _advance_active_player(state)
 
@@ -188,18 +101,17 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     """
     Handle sell share action.
 
-    Per CONTEXT.md: Sell receives current price, then price moves down
+    Per RULES.md: Price moves down FIRST, then player receives NEW (lower) price.
 
     Sequence:
-    1. Get current price (before movement)
-    2. Transfer money (corp pays sell price to player)
-    3. Transfer share (player to bank)
-    4. Move price down (skipping occupied spaces)
-    5. If price reaches 0, execute bankruptcy and return
-    6. Track round-trip
-    7. Update net worth
-    8. Reset consecutive passes
-    9. Advance to next player
+    1. Transfer share (player to bank)
+    2. Move price down (skipping occupied spaces)
+    3. Pay player the NEW (lower) price
+    4. If price reaches 0, execute bankruptcy and return
+    5. Track sell (for training loop prevention)
+    6. Update net worth
+    7. Reset consecutive passes
+    8. Advance to next player
     """
     cdef int player_id, current_index, new_index, sell_price
     cdef int bank_shares, player_shares
@@ -211,23 +123,20 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     # Get corp by name lookup
     corp = corp_module.CORPS[corp_id]
 
-    # Get current price BEFORE movement (INV-11)
-    current_index = corp.get_price_index(state)
-    sell_price = get_market_price(current_index)
-
-    # Transfer money (INV-11)
-    player_module.PLAYERS[player_id].add_cash(state, sell_price)
-
-    # Transfer share (INV-12)
+    # Transfer share first (INV-12)
+    # set_shares() automatically adjusts bank shares, presidency, and receivership
     player_shares = player_module.PLAYERS[player_id].get_shares(state, corp_id)
     player_module.PLAYERS[player_id].set_shares(state, corp_id, player_shares - 1)
-    bank_shares = corp.get_bank_shares(state)
-    corp.set_bank_shares(state, bank_shares + 1)
 
-    # Move price down (INV-13)
+    # Move price down (INV-13) - BEFORE paying player
+    current_index = corp.get_price_index(state)
     new_index = market_module.MARKET.find_next_lower_space(state, current_index)
     market_module.MARKET.set_space_available(state, current_index, True)  # Free old
     corp.set_price_index(state, new_index)  # Updates price
+
+    # Pay player the NEW (lower) price (INV-11)
+    sell_price = get_market_price(new_index)
+    player_module.PLAYERS[player_id].add_cash(state, sell_price)
 
     # Check for bankruptcy (INV-22)
     if new_index == 0:
@@ -242,13 +151,7 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
 
     # Occupy new space (non-bankruptcy case)
     market_module.MARKET.set_space_available(state, new_index, False)
-
-    # Check receivership (INV-20) - must check before presidency
-    _check_receivership(state, corp_id)
-
-    # Check presidency (INV-18, INV-19) - only if not in receivership
-    if not corp.is_in_receivership(state):
-        _check_presidency(state, corp_id)
+    # Note: set_shares() above already updated receivership and presidency
 
     # Round-trip tracking (INV-16)
     player_module.PLAYERS[player_id].increment_share_sells(state, corp_id)
@@ -281,8 +184,8 @@ cdef int apply_invest_action(GameState state, ActionInfo* info) noexcept:
 
         # Check if all players have passed
         if turn_module.TURN.get_consecutive_passes(state) >= state._num_players:
-            # Clear per-turn tracking for all players (before leaving INVEST)
-            # Per CONTEXT.md: Roundtrip clear should happen at end of INVEST phase
+            # Clear buy/sell tracking at end of INVEST phase (bookkeeping only,
+            # avoids exposing stale data to model in subsequent phases)
             for i in range(state._num_players):
                 player_module.PLAYERS[i].clear_roundtrip_tracking(state)
 
@@ -312,7 +215,8 @@ cdef int apply_invest_action(GameState state, ActionInfo* info) noexcept:
         turn_module.TURN.set_auction_price(state, bid_price)
         turn_module.TURN.set_auction_high_bidder(state, player_id)
         turn_module.TURN.set_auction_starter(state, player_id)
-        turn_module.TURN.clear_auction_passed(state)
+        # Note: auction_passed flags are cleared at auction END (bid.pyx),
+        # not at start - they're initialized cleared and stay cleared between auctions
 
         # Clear consecutive passes (INV-02)
         turn_module.TURN.clear_consecutive_passes(state)

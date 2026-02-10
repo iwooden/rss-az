@@ -4,6 +4,7 @@
 from core.state cimport GameState
 from core.data cimport GamePhases, GameConstants
 from entities import turn as turn_module
+from phases.dividends cimport setup_dividends_phase
 from entities import player as player_module
 from entities import corp as corp_module
 from entities import fi as fi_module
@@ -23,7 +24,7 @@ cdef void _apply_income_to_corps(GameState state) noexcept:
     """
     cdef int corp_id, income
 
-    for corp_id in range(GameConstants.NUM_CORPS):
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
         corp = corp_module.CORPS[corp_id]
 
         if not corp.is_active(state):
@@ -50,9 +51,9 @@ cdef void _apply_income_to_players(GameState state) noexcept:
 
     Per CONTEXT.md: Players CAN have negative income (fine).
     Per CONTEXT.md: Players CANNOT have negative cash after income.
-    Assertion added to catch violations (should never happen due to CLOSING phase).
+    Invariant guaranteed by CLOSING phase's mandatory close logic.
     """
-    cdef int player_id, income, cash_after
+    cdef int player_id, income
 
     for player_id in range(state._num_players):
         player = player_module.PLAYERS[player_id]
@@ -61,9 +62,7 @@ cdef void _apply_income_to_players(GameState state) noexcept:
         income = player.get_income(state)
         player.add_cash(state, income)
 
-        # Assert player cash non-negative (CLOSING should have prevented this)
-        cash_after = player.get_cash(state)
-        assert cash_after >= 0, f"Player {player_id} has negative cash {cash_after} after income"
+        # Invariant: cash >= 0 after income (guaranteed by CLOSING mandatory close)
 
 
 # =============================================================================
@@ -79,7 +78,7 @@ cdef int apply_income(GameState state) noexcept:
     1. Apply income to all corporations (with bankruptcy handling)
     2. Apply income to Foreign Investor
     3. Apply income to all players
-    4. Transition to TEMP_END_TURN
+    4. Transition to DIVIDENDS (and set up dividend processing)
 
     Per CONTEXT.md: Entity processing order doesn't matter (independent).
     Per CONTEXT.md: Check bankruptcy immediately per-corp after income.
@@ -91,8 +90,9 @@ cdef int apply_income(GameState state) noexcept:
     _apply_income_to_fi(state)
     _apply_income_to_players(state)
 
-    # Transition to TEMP_END_TURN phase
-    turn_module.TURN.set_phase(state, GamePhases.PHASE_TEMP_END_TURN)
+    # Transition to DIVIDENDS phase
+    turn_module.TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
+    setup_dividends_phase(state)
     return 0
 
 

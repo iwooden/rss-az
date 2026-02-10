@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | 2943         | 554         | 3497       |
-| 3       | 3023         | 554         | 3577       |
-| 4       | 3105         | 554         | 3659       |
-| 5       | 3189         | 554         | 3743       |
-| 6       | 3275         | 554         | 3829       |
+| 2       | 2943         | 934         | 3877       |
+| 3       | 3023         | 934         | 3957       |
+| 4       | 3105         | 934         | 4039       |
+| 5       | 3189         | 934         | 4123       |
+| 6       | 3275         | 934         | 4209       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 
@@ -29,11 +29,10 @@ Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact 
 
 | Constant | Value | Used For |
 |----------|-------|----------|
-| `CASH_DIVISOR` | 200.0 | Cash, prices, net worth |
+| `CASH_DIVISOR` | 200.0 | Cash, prices, net worth, company adjusted incomes |
 | `SHARE_DIVISOR` | 7.0 | Share counts |
 | `STAR_DIVISOR` | 20.0 | Star ratings |
-| `MAX_ROUNDTRIPS` | 2.0 | Buy/sell tracking |
-| `INCOME_DIVISOR` | 10.0 | Company adjusted incomes |
+| `MAX_ROUNDTRIPS` | 2.0 | Round-trip limit (divisor = MAX_ROUNDTRIPS * 2 = 4.0) |
 
 ---
 
@@ -74,8 +73,8 @@ Player stride = `4 + num_players + 36 + 32` = `72 + num_players`
 | `owned_companies` | 36 | flags | 1 per company |
 | `owned_shares` | 8 | normalized | / SHARE_DIVISOR |
 | `is_president` | 8 | flags | 1 per corp |
-| `share_buys` | 8 | normalized | Round-trip tracking |
-| `share_sells` | 8 | normalized | Round-trip tracking |
+| `share_buys` | 8 | normalized | / (MAX_ROUNDTRIPS * 2) |
+| `share_sells` | 8 | normalized | / (MAX_ROUNDTRIPS * 2) |
 | `acquisition_proceeds` | 1 | normalized | Cash from selling companies this phase |
 
 **Player Field Offsets (within player stride):**
@@ -111,7 +110,7 @@ Player stride = `4 + num_players + 36 + 32` = `72 + num_players`
 
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
-| `company_incomes` | 36 | normalized | / INCOME_DIVISOR, updated when CoO changes |
+| `company_incomes` | 36 | normalized | / CASH_DIVISOR, updated when CoO changes |
 
 These are the companies' adjusted incomes (base income minus cost of ownership). They are automatically updated whenever the CoO level changes via `set_coo_level()`.
 
@@ -212,7 +211,12 @@ Per company (40 floats):
 
 ## Hidden State Layout
 
-Hidden state starts at `visible_size` offset. Total hidden size = 554.
+Hidden state starts at `visible_size` offset. Total hidden size = 934.
+
+The hidden state serves several purposes:
+- **Information hiding**: Data the NN shouldn't see (deck order, active player before rotation)
+- **Bookkeeping**: Offer buffers for acquisition/closing phases
+- **Performance**: Compact storage for O(1) access to one-hot values and company locations
 
 | Field | Offset | Size | Notes |
 |-------|--------|------|-------|
@@ -226,9 +230,32 @@ Hidden state starts at `visible_size` offset. Total hidden size = 554.
 | `auction_high_bidder` | 42 | 1 | Compact high bidder |
 | `auction_starter` | 43 | 1 | Compact auction starter |
 | `corp_price_indices` | 44 | 8 | Compact price indices per corp |
-| `offer_count` | 52 | 1 | Number of offers in buffer |
-| `offer_index` | 53 | 1 | Current offer being processed |
-| `offer_buffer` | 54 | 500 | Offer tuples (corp_id, company_id) - 250 offers × 2 floats |
+| `offer_count` | 52 | 1 | Number of acquisition offers |
+| `offer_index` | 53 | 1 | Current acquisition offer |
+| `offer_buffer` | 54 | 500 | Acquisition offers (corp_id, company_id) - 250 offers × 2 floats |
+| `close_offer_count` | 554 | 1 | Number of close offers |
+| `close_offer_index` | 555 | 1 | Current close offer |
+| `close_offer_buffer` | 556 | 300 | Close offers (owner_type, owner_id, company_id) - 100 offers × 3 floats |
+| `acq_active_corp` | 856 | 1 | Compact storage for O(1) access |
+| `acq_target_company` | 857 | 1 | Compact storage for O(1) access |
+| `closing_company` | 858 | 1 | Compact storage for O(1) access |
+| `dividend_corp` | 859 | 1 | Compact storage for O(1) access |
+| `issue_corp` | 860 | 1 | Compact storage for O(1) access |
+| `ipo_company` | 861 | 1 | Compact storage for O(1) access |
+| `company_locations` | 862 | 36 | CompanyLocation enum per company (O(1) clearing) |
+| `company_owner_ids` | 898 | 36 | Owner ID per company (-1 if N/A, player_id or corp_id) |
+
+**CompanyLocation Enum:**
+| Value | Location | Notes |
+|-------|----------|-------|
+| 0 | LOC_DECK | In draw deck (default) |
+| 1 | LOC_AUCTION | Available for auction |
+| 2 | LOC_REVEALED | Drawn this turn but not auctionable |
+| 3 | LOC_PLAYER | Owned by player (owner_id = player_id) |
+| 4 | LOC_FI | Owned by Foreign Investor |
+| 5 | LOC_CORP | Owned by corporation (owner_id = corp_id) |
+| 6 | LOC_CORP_ACQ | In corporation's acquisition pile (owner_id = corp_id) |
+| 7 | LOC_REMOVED | Closed/removed from game |
 
 ---
 

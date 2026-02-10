@@ -17,7 +17,7 @@ from core.actions cimport (
     ActionLayout, ActionInfo, compute_action_layout, decode_action
 )
 from core.actions import get_valid_action_mask
-from core.data cimport GamePhases, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_GAME_OVER, PHASE_WRAP_UP, PHASE_ACQUISITION, PHASE_CLOSING, PHASE_INCOME, PHASE_TEMP_END_TURN
+from core.data cimport GamePhases, GameConstants, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_GAME_OVER, PHASE_WRAP_UP, PHASE_ACQUISITION, PHASE_CLOSING, PHASE_INCOME, PHASE_DIVIDENDS, PHASE_END_CARD, PHASE_ISSUE_SHARES, PHASE_IPO
 from core.driver cimport ActionStatus, STATUS_OK, STATUS_INVALID, STATUS_GAME_OVER, ForcedActionResult
 from phases.invest cimport apply_invest_action
 from phases.bid cimport apply_bid_action
@@ -25,8 +25,13 @@ from phases.wrap_up cimport apply_wrap_up
 from phases.acquisition cimport apply_acquisition_action, _transition_to_closing
 from phases.closing cimport apply_closing_auto, apply_closing_action
 from phases.income cimport apply_income
-from phases.temp_end_turn cimport apply_temp_end_turn
+from phases.dividends cimport apply_dividend_action
+from phases.end_card cimport apply_end_card
+from phases.issue cimport apply_issue_action
+from phases.ipo cimport apply_ipo_action
 from entities import turn as turn_module
+from entities import company as company_module
+from entities import corp as corp_module
 
 
 class ForcedActionLoopError(RuntimeError):
@@ -47,7 +52,38 @@ DEF ACTION_WRAP_UP_SENTINEL = -100
 DEF ACTION_ACQUISITION_SENTINEL = -101
 DEF ACTION_CLOSING_SENTINEL = -102
 DEF ACTION_INCOME_SENTINEL = -103
-DEF ACTION_TEMP_END_TURN_SENTINEL = -104
+DEF ACTION_END_CARD_SENTINEL = -105
+
+
+cdef bint _is_game_terminal(GameState state) noexcept:
+    """
+    Check if the game has reached a terminal state.
+
+    Terminal state occurs when:
+    1. No companies are available for auction, AND
+    2. No corporations are active
+
+    This prevents infinite INVEST->WRAP_UP->ACQUISITION->CLOSING loops when
+    all companies are removed from the game.
+    """
+    cdef int company_id, corp_id
+    cdef bint has_auction_companies = False
+    cdef bint has_active_corps = False
+
+    # Check for any companies available for auction
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
+        if company_module.COMPANIES[company_id].is_for_auction(state):
+            has_auction_companies = True
+            break
+
+    # Check for any active corporations
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
+        if corp_module.CORPS[corp_id].is_active(state):
+            has_active_corps = True
+            break
+
+    # Terminal if no auction companies AND no active corps
+    return not has_auction_companies and not has_active_corps
 
 
 cdef bint _is_non_player_phase_check(GameState state, int phase) noexcept:
@@ -72,7 +108,7 @@ cdef bint _is_non_player_phase_check(GameState state, int phase) noexcept:
     if phase == PHASE_INCOME:
         return True
 
-    if phase == PHASE_TEMP_END_TURN:
+    if phase == PHASE_END_CARD:
         return True
 
     return False
@@ -91,8 +127,8 @@ cdef void _execute_non_player_phase(GameState state, object history):
         sentinel = ACTION_CLOSING_SENTINEL
     elif phase == PHASE_INCOME:
         sentinel = ACTION_INCOME_SENTINEL
-    elif phase == PHASE_TEMP_END_TURN:
-        sentinel = ACTION_TEMP_END_TURN_SENTINEL
+    elif phase == PHASE_END_CARD:
+        sentinel = ACTION_END_CARD_SENTINEL
     else:
         return  # Unknown non-player phase
 
@@ -109,8 +145,8 @@ cdef void _execute_non_player_phase(GameState state, object history):
         apply_closing_auto(state)
     elif phase == PHASE_INCOME:
         apply_income(state)
-    elif phase == PHASE_TEMP_END_TURN:
-        apply_temp_end_turn(state)
+    elif phase == PHASE_END_CARD:
+        apply_end_card(state)
 
 
 cdef ForcedActionResult _check_forced_action(GameState state) noexcept:
@@ -204,6 +240,12 @@ cdef class GameDriver:
             result = apply_acquisition_action(state, &info)
         elif phase == PHASE_CLOSING:
             result = apply_closing_action(state, &info)
+        elif phase == PHASE_DIVIDENDS:
+            result = apply_dividend_action(state, &info)
+        elif phase == PHASE_ISSUE_SHARES:
+            result = apply_issue_action(state, &info)
+        elif phase == PHASE_IPO:
+            result = apply_ipo_action(state, &info)
         else:
             # Other phases not yet implemented (stubs for Phase 3+)
             return STATUS_INVALID

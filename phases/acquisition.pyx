@@ -1,8 +1,31 @@
 # cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
-"""ACQUISITION phase stub - transitions immediately to INVEST."""
+"""
+ACQUISITION phase: Corps acquire companies from FI, other corps, and players.
+
+DESIGN: One-by-One Offer Presentation
+=====================================
+Instead of exposing all acquisition opportunities simultaneously (which would
+create a huge action space of corp × company × price combinations), offers are:
+
+1. Generated once at phase entry into a hidden buffer (_generate_offers)
+2. Sorted by priority: OS→FI, Corp→FI by price, Corp→Corp, Corp→Player
+3. Presented one at a time via visible state (acq_active_corp, acq_target_company)
+4. Advanced sequentially after accept/pass (_advance_to_next_offer)
+5. Re-validated dynamically since earlier buys may invalidate later offers
+
+This keeps the action space constant (51 prices + 2 FI actions + pass = 54 actions)
+regardless of how many potential acquisitions exist in a given game state.
+
+Receivership corps (no president) are handled automatically:
+- Auto-buy from FI at face value if affordable (RECV-01)
+- Auto-pass on non-FI offers (RECV-02: can only buy from FI)
+
+See CLAUDE.md "Offer Buffer Pattern" for full documentation.
+"""
 
 from core.state cimport GameState
-from core.data cimport GamePhases, GameConstants, get_company_face_value, get_company_low_price
+from core.driver cimport _is_game_terminal
+from core.data cimport GamePhases, GameConstants, CorpIndices, get_company_face_value, get_company_low_price
 from core.actions cimport ActionInfo, ACTION_PASS, ACTION_ACQ_PRICE, ACTION_ACQ_FI_HIGH, ACTION_ACQ_FI_FACE
 from entities import turn as turn_module
 from entities import player as player_module
@@ -10,29 +33,149 @@ from entities import company as company_module
 from entities import corp as corp_module
 from entities import fi as fi_module
 from core.data import CORP_NAMES, CORP_NAME_TO_ID
+from entities.company cimport LOC_PLAYER, LOC_FI, LOC_CORP
 
-# Constants
+# Buffer size constant (DEF required for static array sizing - cannot be imported)
 DEF OFFER_BUFFER_SIZE = 250
-DEF OS_CORP_ID = 2  # OS is index 2 in CORP_NAMES
+
+
+# =============================================================================
+# QUICKSORT HELPERS
+# =============================================================================
+
+cdef void _qsort_desc_3(int* keys, int* arr1, int* arr2, int lo, int hi) noexcept nogil:
+    """
+    Quicksort 3 parallel arrays by keys in descending order.
+
+    Used for FI offers sorted by corp share price (descending).
+    Arrays: keys=prices, arr1=corp_ids, arr2=company_ids
+    """
+    if lo >= hi:
+        return
+
+    cdef int pivot = keys[(lo + hi) // 2]
+    cdef int i = lo
+    cdef int j = hi
+    cdef int tmp
+
+    while i <= j:
+        while keys[i] > pivot:
+            i += 1
+        while keys[j] < pivot:
+            j -= 1
+        if i <= j:
+            # Swap all three arrays
+            tmp = keys[i]; keys[i] = keys[j]; keys[j] = tmp
+            tmp = arr1[i]; arr1[i] = arr1[j]; arr1[j] = tmp
+            tmp = arr2[i]; arr2[i] = arr2[j]; arr2[j] = tmp
+            i += 1
+            j -= 1
+
+    _qsort_desc_3(keys, arr1, arr2, lo, j)
+    _qsort_desc_3(keys, arr1, arr2, i, hi)
+
+
+cdef void _qsort_price_fv_4(int* prices, int* fvs, int* arr1, int* arr2, int lo, int hi) noexcept nogil:
+    """
+    Quicksort 4 parallel arrays by (price DESC, face_value DESC).
+
+    Used for corp-corp and corp-player offers.
+    Arrays: prices=sort key 1, fvs=sort key 2, arr1=corp_ids, arr2=company_ids
+
+    Comparison: (price_a, fv_a) < (price_b, fv_b) if:
+      - price_a < price_b, OR
+      - price_a == price_b AND fv_a < fv_b
+    (We want higher prices first, then higher face values)
+    """
+    if lo >= hi:
+        return
+
+    cdef int pivot_price = prices[(lo + hi) // 2]
+    cdef int pivot_fv = fvs[(lo + hi) // 2]
+    cdef int i = lo
+    cdef int j = hi
+    cdef int tmp
+
+    while i <= j:
+        # Move i right while element should come before pivot
+        while prices[i] > pivot_price or (prices[i] == pivot_price and fvs[i] > pivot_fv):
+            i += 1
+        # Move j left while element should come after pivot
+        while prices[j] < pivot_price or (prices[j] == pivot_price and fvs[j] < pivot_fv):
+            j -= 1
+        if i <= j:
+            # Swap all four arrays
+            tmp = prices[i]; prices[i] = prices[j]; prices[j] = tmp
+            tmp = fvs[i]; fvs[i] = fvs[j]; fvs[j] = tmp
+            tmp = arr1[i]; arr1[i] = arr1[j]; arr1[j] = tmp
+            tmp = arr2[i]; arr2[i] = arr2[j]; arr2[j] = tmp
+            i += 1
+            j -= 1
+
+    _qsort_price_fv_4(prices, fvs, arr1, arr2, lo, j)
+    _qsort_price_fv_4(prices, fvs, arr1, arr2, i, hi)
+
+
+def qsort_desc_3_py(list keys, list arr1, list arr2):
+    """Python wrapper for testing _qsort_desc_3."""
+    cdef int n = len(keys)
+    if n == 0:
+        return keys, arr1, arr2
+
+    cdef int c_keys[256]
+    cdef int c_arr1[256]
+    cdef int c_arr2[256]
+    cdef int i
+
+    for i in range(n):
+        c_keys[i] = keys[i]
+        c_arr1[i] = arr1[i]
+        c_arr2[i] = arr2[i]
+
+    if n > 1:
+        _qsort_desc_3(c_keys, c_arr1, c_arr2, 0, n - 1)
+
+    return ([c_keys[i] for i in range(n)],
+            [c_arr1[i] for i in range(n)],
+            [c_arr2[i] for i in range(n)])
+
+
+def qsort_price_fv_4_py(list prices, list fvs, list arr1, list arr2):
+    """Python wrapper for testing _qsort_price_fv_4."""
+    cdef int n = len(prices)
+    if n == 0:
+        return prices, fvs, arr1, arr2
+
+    cdef int c_prices[256]
+    cdef int c_fvs[256]
+    cdef int c_arr1[256]
+    cdef int c_arr2[256]
+    cdef int i
+
+    for i in range(n):
+        c_prices[i] = prices[i]
+        c_fvs[i] = fvs[i]
+        c_arr1[i] = arr1[i]
+        c_arr2[i] = arr2[i]
+
+    if n > 1:
+        _qsort_price_fv_4(c_prices, c_fvs, c_arr1, c_arr2, 0, n - 1)
+
+    return ([c_prices[i] for i in range(n)],
+            [c_fvs[i] for i in range(n)],
+            [c_arr1[i] for i in range(n)],
+            [c_arr2[i] for i in range(n)])
 
 
 # =============================================================================
 # OFFER GENERATION HELPERS
 # =============================================================================
 
-cdef int _get_corp_president(GameState state, int corp_id) noexcept:
-    """Get player_id of corp president, or -1 if in receivership."""
-    cdef int player_id
-    for player_id in range(state._num_players):
-        if player_module.PLAYERS[player_id].is_president_of(state, corp_id):
-            return player_id
-    return -1
-
-
 cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) noexcept:
     """
     Collect Corp->FI offers. Returns count.
-    OS->FI offers come first, then other corps by descending share price.
+    OS->FI offers come first (by face value DESC), then other corps by descending share price.
+    Within each corp's offers, companies are sorted by face value DESC (most expensive first).
     Only active corps that can afford at least one FI company are included.
     """
     cdef int count = 0
@@ -42,31 +185,33 @@ cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) no
     cdef int temp_corp_ids[OFFER_BUFFER_SIZE]
     cdef int temp_company_ids[OFFER_BUFFER_SIZE]
     cdef int temp_prices[OFFER_BUFFER_SIZE]
-    cdef int i, j, best_idx
-    cdef int best_price, curr_price
-    cdef int swap_corp, swap_company, swap_price
+    cdef int temp_fvs[OFFER_BUFFER_SIZE]
+    cdef int i, face_value
 
     # First pass: OS->FI offers (OS always first if can afford)
-    for company_id in range(GameConstants.NUM_COMPANIES):
+    # Iterate in descending face value order (most expensive first)
+    for company_id in range(<int>GameConstants.NUM_COMPANIES - 1, -1, -1):
         if fi_module.FI.owns_company(state, company_id):
             high_price = company_module.COMPANIES[company_id].get_high_price()
 
             # Check if OS can afford (OS always first if affordable)
-            if corp_module.CORPS[OS_CORP_ID].is_active(state):
-                corp_cash = corp_module.CORPS[OS_CORP_ID].get_cash(state)
+            if corp_module.CORPS[CorpIndices.CORP_OS].is_active(state):
+                corp_cash = corp_module.CORPS[CorpIndices.CORP_OS].get_cash(state)
                 if corp_cash >= high_price and count < OFFER_BUFFER_SIZE:
-                    corp_ids[count] = OS_CORP_ID
+                    corp_ids[count] = CorpIndices.CORP_OS
                     company_ids[count] = company_id
                     count += 1
 
     # Second pass: collect other corps (not OS) into temp arrays
-    for company_id in range(GameConstants.NUM_COMPANIES):
+    # Iterate in descending face value order
+    for company_id in range(<int>GameConstants.NUM_COMPANIES - 1, -1, -1):
         if fi_module.FI.owns_company(state, company_id):
             high_price = company_module.COMPANIES[company_id].get_high_price()
+            face_value = get_company_face_value(company_id)
 
             # Check all other corps (skip OS)
-            for corp_id in range(GameConstants.NUM_CORPS):
-                if corp_id == OS_CORP_ID:
+            for corp_id in range(<int>GameConstants.NUM_CORPS):
+                if corp_id == CorpIndices.CORP_OS:
                     continue
 
                 if corp_module.CORPS[corp_id].is_active(state):
@@ -75,32 +220,12 @@ cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) no
                         temp_corp_ids[temp_count] = corp_id
                         temp_company_ids[temp_count] = company_id
                         temp_prices[temp_count] = corp_module.CORPS[corp_id].get_share_price(state)
+                        temp_fvs[temp_count] = face_value
                         temp_count += 1
 
-    # Selection sort by descending share price (like wrap_up.pyx)
-    for i in range(temp_count):
-        best_idx = i
-        best_price = temp_prices[i]
-
-        for j in range(i + 1, temp_count):
-            curr_price = temp_prices[j]
-            if curr_price > best_price:
-                best_idx = j
-                best_price = curr_price
-
-        # Swap to front
-        if best_idx != i:
-            swap_corp = temp_corp_ids[i]
-            temp_corp_ids[i] = temp_corp_ids[best_idx]
-            temp_corp_ids[best_idx] = swap_corp
-
-            swap_company = temp_company_ids[i]
-            temp_company_ids[i] = temp_company_ids[best_idx]
-            temp_company_ids[best_idx] = swap_company
-
-            swap_price = temp_prices[i]
-            temp_prices[i] = temp_prices[best_idx]
-            temp_prices[best_idx] = swap_price
+    # Quicksort by (share price DESC, face value DESC)
+    if temp_count > 1:
+        _qsort_price_fv_4(temp_prices, temp_fvs, temp_corp_ids, temp_company_ids, 0, temp_count - 1)
 
     # Append sorted non-OS offers to output
     for i in range(temp_count):
@@ -115,10 +240,10 @@ cdef int _collect_fi_offers(GameState state, int* corp_ids, int* company_ids) no
 cdef int _collect_corp_corp_offers(GameState state, int* corp_ids, int* company_ids) noexcept:
     """
     Collect Corp->Corp offers where same player is president of both.
-    Sorted by (buyer share price DESC, target face value ASC).
+    Sorted by (buyer share price DESC, target face value DESC).
 
     Note: Receivership corps are automatically excluded as sellers because
-    _get_corp_president returns -1 for receivership, which never matches
+    get_president_id returns -1 for receivership, which never matches
     any player_id (0 to num_players-1). This implements RECV-02.
     """
     cdef int count = 0
@@ -129,33 +254,31 @@ cdef int _collect_corp_corp_offers(GameState state, int* corp_ids, int* company_
     cdef int temp_company_ids[OFFER_BUFFER_SIZE]
     cdef int temp_buyer_prices[OFFER_BUFFER_SIZE]
     cdef int temp_face_values[OFFER_BUFFER_SIZE]
-    cdef int i, j, best_idx
-    cdef int best_price, best_fv, curr_price, curr_fv
-    cdef int swap_buyer, swap_company, swap_price, swap_fv
+    cdef int i
 
     # For each player, find corps they control and generate offers
     for player_id in range(state._num_players):
         # Find all corps this player is president of
-        for buyer_corp in range(GameConstants.NUM_CORPS):
+        for buyer_corp in range(<int>GameConstants.NUM_CORPS):
             if not corp_module.CORPS[buyer_corp].is_active(state):
                 continue
-            if _get_corp_president(state, buyer_corp) != player_id:
+            if corp_module.CORPS[buyer_corp].get_president_id(state) != player_id:
                 continue
 
             buyer_cash = corp_module.CORPS[buyer_corp].get_cash(state)
             buyer_price = corp_module.CORPS[buyer_corp].get_share_price(state)
 
             # Find all other corps this player is president of
-            for seller_corp in range(GameConstants.NUM_CORPS):
+            for seller_corp in range(<int>GameConstants.NUM_CORPS):
                 if seller_corp == buyer_corp:
                     continue
                 if not corp_module.CORPS[seller_corp].is_active(state):
                     continue
-                if _get_corp_president(state, seller_corp) != player_id:
+                if corp_module.CORPS[seller_corp].get_president_id(state) != player_id:
                     continue
 
                 # Find companies owned by seller corp
-                for company_id in range(GameConstants.NUM_COMPANIES):
+                for company_id in range(<int>GameConstants.NUM_COMPANIES):
                     if corp_module.CORPS[seller_corp].owns_company(state, company_id):
                         high_price = company_module.COMPANIES[company_id].get_high_price()
                         face_value = get_company_face_value(company_id)
@@ -167,40 +290,9 @@ cdef int _collect_corp_corp_offers(GameState state, int* corp_ids, int* company_
                             temp_face_values[temp_count] = face_value
                             temp_count += 1
 
-    # Selection sort by (buyer price DESC, face value ASC)
-    for i in range(temp_count):
-        best_idx = i
-        best_price = temp_buyer_prices[i]
-        best_fv = temp_face_values[i]
-
-        for j in range(i + 1, temp_count):
-            curr_price = temp_buyer_prices[j]
-            curr_fv = temp_face_values[j]
-
-            # Higher buyer price wins, or if equal, lower face value wins
-            if (curr_price > best_price or
-                (curr_price == best_price and curr_fv < best_fv)):
-                best_idx = j
-                best_price = curr_price
-                best_fv = curr_fv
-
-        # Swap to front
-        if best_idx != i:
-            swap_buyer = temp_buyer_corps[i]
-            temp_buyer_corps[i] = temp_buyer_corps[best_idx]
-            temp_buyer_corps[best_idx] = swap_buyer
-
-            swap_company = temp_company_ids[i]
-            temp_company_ids[i] = temp_company_ids[best_idx]
-            temp_company_ids[best_idx] = swap_company
-
-            swap_price = temp_buyer_prices[i]
-            temp_buyer_prices[i] = temp_buyer_prices[best_idx]
-            temp_buyer_prices[best_idx] = swap_price
-
-            swap_fv = temp_face_values[i]
-            temp_face_values[i] = temp_face_values[best_idx]
-            temp_face_values[best_idx] = swap_fv
+    # Quicksort by (buyer price DESC, face value DESC)
+    if temp_count > 1:
+        _qsort_price_fv_4(temp_buyer_prices, temp_face_values, temp_buyer_corps, temp_company_ids, 0, temp_count - 1)
 
     # Copy sorted results to output
     for i in range(temp_count):
@@ -216,7 +308,7 @@ cdef int _collect_player_private_offers(GameState state, int* corp_ids, int* com
     """
     Collect Corp->Player private company offers.
     All corps controlled by a player can bid on each private company owned by that player.
-    Sorted by (buyer share price DESC, target face value ASC).
+    Sorted by (buyer share price DESC, target face value DESC).
     """
     cdef int count = 0
     cdef int player_id, corp_id, company_id
@@ -226,23 +318,21 @@ cdef int _collect_player_private_offers(GameState state, int* corp_ids, int* com
     cdef int temp_company_ids[OFFER_BUFFER_SIZE]
     cdef int temp_corp_prices[OFFER_BUFFER_SIZE]
     cdef int temp_face_values[OFFER_BUFFER_SIZE]
-    cdef int i, j, best_idx
-    cdef int best_price, best_fv, curr_price, curr_fv
-    cdef int swap_corp, swap_company, swap_price, swap_fv
+    cdef int i
 
     # For each player, find their private companies and corps they control
     for player_id in range(state._num_players):
         # Find all private companies owned by this player
-        for company_id in range(GameConstants.NUM_COMPANIES):
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if player_module.PLAYERS[player_id].owns_company(state, company_id):
                 high_price = company_module.COMPANIES[company_id].get_high_price()
                 face_value = get_company_face_value(company_id)
 
                 # Find all corps this player is president of
-                for corp_id in range(GameConstants.NUM_CORPS):
+                for corp_id in range(<int>GameConstants.NUM_CORPS):
                     if not corp_module.CORPS[corp_id].is_active(state):
                         continue
-                    if _get_corp_president(state, corp_id) != player_id:
+                    if corp_module.CORPS[corp_id].get_president_id(state) != player_id:
                         continue
 
                     corp_cash = corp_module.CORPS[corp_id].get_cash(state)
@@ -255,40 +345,9 @@ cdef int _collect_player_private_offers(GameState state, int* corp_ids, int* com
                         temp_face_values[temp_count] = face_value
                         temp_count += 1
 
-    # Selection sort by (corp price DESC, face value ASC)
-    for i in range(temp_count):
-        best_idx = i
-        best_price = temp_corp_prices[i]
-        best_fv = temp_face_values[i]
-
-        for j in range(i + 1, temp_count):
-            curr_price = temp_corp_prices[j]
-            curr_fv = temp_face_values[j]
-
-            # Higher corp price wins, or if equal, lower face value wins
-            if (curr_price > best_price or
-                (curr_price == best_price and curr_fv < best_fv)):
-                best_idx = j
-                best_price = curr_price
-                best_fv = curr_fv
-
-        # Swap to front
-        if best_idx != i:
-            swap_corp = temp_corp_ids[i]
-            temp_corp_ids[i] = temp_corp_ids[best_idx]
-            temp_corp_ids[best_idx] = swap_corp
-
-            swap_company = temp_company_ids[i]
-            temp_company_ids[i] = temp_company_ids[best_idx]
-            temp_company_ids[best_idx] = swap_company
-
-            swap_price = temp_corp_prices[i]
-            temp_corp_prices[i] = temp_corp_prices[best_idx]
-            temp_corp_prices[best_idx] = swap_price
-
-            swap_fv = temp_face_values[i]
-            temp_face_values[i] = temp_face_values[best_idx]
-            temp_face_values[best_idx] = swap_fv
+    # Quicksort by (corp price DESC, face value DESC)
+    if temp_count > 1:
+        _qsort_price_fv_4(temp_corp_prices, temp_face_values, temp_corp_ids, temp_company_ids, 0, temp_count - 1)
 
     # Copy sorted results to output
     for i in range(temp_count):
@@ -309,10 +368,10 @@ cdef void _generate_offers(GameState state) noexcept:
     Generate all valid acquisition offers and store in hidden buffer.
 
     Priority order:
-    1. OS->FI offers (OFFER-02)
-    2. Other Corp->FI offers by descending share price (OFFER-03)
-    3. Corp->Corp offers by (buyer price DESC, face value ASC) (OFFER-04)
-    4. Corp->Player private offers by (buyer price DESC, face value ASC) (OFFER-05)
+    1. OS->FI offers by face value DESC (OFFER-02)
+    2. Other Corp->FI offers by (share price DESC, face value DESC) (OFFER-03)
+    3. Corp->Corp offers by (buyer price DESC, face value DESC) (OFFER-04)
+    4. Corp->Player private offers by (buyer price DESC, face value DESC) (OFFER-05)
 
     Stores in hidden state buffer: [offer_count][offer_index][buffer...]
     """
@@ -384,40 +443,48 @@ cdef bint _is_offer_valid(GameState state, int corp_id, int company_id) noexcept
     Check if offer is still valid for presentation.
 
     Invalid if:
-    - Company already acquired this phase (in any corp's acquisition_companies)
-    - Corp doesn't have enough cash for minimum price (low_price or face for FI)
-    - Target company no longer exists at expected location
+    - Seller no longer owns the company (was acquired earlier this phase)
+    - Corp doesn't have enough cash for minimum price
+    - Ownership relationship no longer valid (president changed)
 
     Returns True if offer is valid.
     """
-    cdef int price, corp_cash, check_corp
-    cdef bint is_fi_company = fi_module.FI.owns_company(state, company_id)
+    cdef int price, corp_cash
+    cdef int location, owner_id, buyer_president, seller_president
 
-    # Check if company already acquired this phase
-    for check_corp in range(GameConstants.NUM_CORPS):
-        if corp_module.CORPS[check_corp].has_acquisition_company(state, company_id):
-            return False
+    # Check if FI still owns it (for FI offers)
+    if fi_module.FI.owns_company(state, company_id):
+        # FI offer: check cash (OS pays face, others pay high)
+        corp_cash = corp_module.CORPS[corp_id].get_cash(state)
+        if corp_id == CorpIndices.CORP_OS:
+            price = get_company_face_value(company_id)
+        else:
+            price = company_module.COMPANIES[company_id].get_high_price()
+        return corp_cash >= price
 
-    # Check if corp can afford minimum price
+    # Non-FI: check current location and ownership relationship
+    location = company_module.COMPANIES[company_id].get_location(state)
+    owner_id = company_module.COMPANIES[company_id].get_owner_id(state)
+    buyer_president = corp_module.CORPS[corp_id].get_president_id(state)
+
+    # Check buyer can afford minimum price (low_price for non-FI)
     corp_cash = corp_module.CORPS[corp_id].get_cash(state)
-    if is_fi_company:
-        # FI companies bought at face or high price
-        price = get_company_face_value(company_id)
-    else:
-        # Private/corp companies bought at low to high price
-        price = get_company_low_price(company_id)
-
+    price = get_company_low_price(company_id)
     if corp_cash < price:
         return False
 
-    # Check company still owned by expected seller
-    if is_fi_company:
-        if not fi_module.FI.owns_company(state, company_id):
+    if location == LOC_CORP:
+        # Corp-corp: seller corp's president must match buyer's president
+        seller_president = corp_module.CORPS[owner_id].get_president_id(state)
+        if seller_president != buyer_president or seller_president < 0:
+            return False
+    elif location == LOC_PLAYER:
+        # Player-corp: player must be buyer corp's president
+        if owner_id != buyer_president:
             return False
     else:
-        # For non-FI, company should be owned by player or corp
-        # (validation logic depends on seller type - simplified for now)
-        pass
+        # Company not owned by corp or player (acquired, removed, etc.)
+        return False
 
     return True
 
@@ -427,20 +494,20 @@ cdef void _present_current_offer(GameState state) noexcept:
     Update visible state to reflect current offer in buffer.
 
     For receivership corps:
-    - FI offers: auto-execute buy if affordable, else auto-pass
+    - FI offers: auto-execute buy if affordable at HIGH price, else auto-pass
     - Non-FI offers: auto-pass (receivership can only buy from FI per RULES.md)
 
     Loops until a player-president offer is found or offers exhausted.
 
     STATE-01: Sets visible acquisition state for current offer.
     STATE-04: Clears acq_active_corp when no more offers.
-    RECV-01: Receivership corps auto-buy FI offers if affordable.
+    RECV-01: Receivership corps auto-buy FI offers if affordable at HIGH price.
     RECV-03: Auto-buy executes within this loop (no player action).
     """
     cdef int count = <int>state._data[state._layout.hidden_offer_count_offset]
     cdef int index = <int>state._data[state._layout.hidden_offer_index_offset]
     cdef int corp_id, company_id, president, base
-    cdef int face_value, corp_cash
+    cdef int high_price, corp_cash
     cdef bint is_fi_offer
 
     while index < count:
@@ -460,11 +527,13 @@ cdef void _present_current_offer(GameState state) noexcept:
 
             # Receivership corps only buy from FI (per RULES.md)
             if is_fi_offer:
-                face_value = get_company_face_value(company_id)
+                # Per RULES.md: FI "Only sells at maximum allowed price"
+                # Only OS can pay face value - receivership pays high price
+                high_price = company_module.COMPANIES[company_id].get_high_price()
                 corp_cash = corp_module.CORPS[corp_id].get_cash(state)
 
-                if corp_cash >= face_value:
-                    # Auto-execute: buy at face value
+                if corp_cash >= high_price:
+                    # Auto-execute: buy at high price
                     _execute_receivership_fi_buy(state, corp_id, company_id)
             # else: auto-pass by falling through
 
@@ -478,7 +547,7 @@ cdef void _present_current_offer(GameState state) noexcept:
         turn_module.TURN.set_acq_target_company(state, company_id)
         turn_module.TURN.set_acq_fi_offer(state, fi_module.FI.owns_company(state, company_id))
 
-        president = _get_corp_president(state, corp_id)
+        president = corp_module.CORPS[corp_id].get_president_id(state)
         state._set_active_player(president if president >= 0 else 0)
         return
 
@@ -518,12 +587,6 @@ cpdef int get_offer_index(GameState state):
 # VALIDATION HELPERS
 # =============================================================================
 
-# Company location constants (from entities/company.pxd)
-DEF LOC_PLAYER = 3
-DEF LOC_FI = 4
-DEF LOC_CORP = 5
-
-
 cdef bint _is_target_already_acquired(GameState state, int company_id) noexcept:
     """
     Check if target company is already in any corp's acquisition_companies.
@@ -532,34 +595,10 @@ cdef bint _is_target_already_acquired(GameState state, int company_id) noexcept:
     Returns True if already acquired, False otherwise.
     """
     cdef int check_corp
-    for check_corp in range(GameConstants.NUM_CORPS):
+    for check_corp in range(<int>GameConstants.NUM_CORPS):
         if corp_module.CORPS[check_corp].has_acquisition_company(state, company_id):
             return True
     return False
-
-
-cdef int _count_seller_companies(GameState state, int seller_corp_id, int target_company_id) noexcept:
-    """
-    Count companies seller retains after selling target.
-
-    Counts:
-    - Companies in seller's owned_companies (excluding target)
-    - Companies in seller's acquisition_companies (excluding target)
-
-    Returns total count.
-    """
-    cdef int count = 0
-    cdef int company_id
-
-    for company_id in range(GameConstants.NUM_COMPANIES):
-        if company_id == target_company_id:
-            continue
-        if corp_module.CORPS[seller_corp_id].owns_company(state, company_id):
-            count += 1
-        if corp_module.CORPS[seller_corp_id].has_acquisition_company(state, company_id):
-            count += 1
-
-    return count
 
 
 cdef bint _validate_price_action(GameState state, int price) noexcept:
@@ -604,11 +643,12 @@ cdef bint _validate_price_action(GameState state, int price) noexcept:
         return False
 
     # VALID-03: Seller retains >= 1 company (only for corp sellers, not FI or players)
+    # Check count >= 2 since selling one would leave at least 1
     if not is_fi:
         location = company_module.COMPANIES[company_id].get_location(state)
         if location == LOC_CORP:
             seller_corp_id = company_module.COMPANIES[company_id].get_owner_id(state)
-            if _count_seller_companies(state, seller_corp_id, company_id) < 1:
+            if corp_module.CORPS[seller_corp_id].count_companies(state, include_acquisition=True) < 2:
                 return False
 
     return True
@@ -635,7 +675,7 @@ cdef bint _validate_fi_buy_high(GameState state) noexcept:
         return False
 
     # OS cannot use FI Buy High
-    if corp_id == OS_CORP_ID:
+    if corp_id == CorpIndices.CORP_OS:
         return False
 
     # VALID-02: Corp can afford high price
@@ -672,7 +712,7 @@ cdef bint _validate_fi_buy_face(GameState state) noexcept:
         return False
 
     # Only OS can use FI Buy Face
-    if corp_id != OS_CORP_ID:
+    if corp_id != CorpIndices.CORP_OS:
         return False
 
     # VALID-02: Corp can afford face value
@@ -790,17 +830,18 @@ cdef void _handle_pass(GameState state) noexcept:
 
 cdef void _execute_receivership_fi_buy(GameState state, int corp_id, int company_id) noexcept:
     """
-    Execute FI purchase for receivership corp at face value.
+    Execute FI purchase for receivership corp at HIGH price.
 
-    Receivership corps always buy from FI at face value (same as OS special ability).
+    Per RULES.md: FI "Only sells at maximum allowed price".
+    Only OS has the special ability to pay face value - receivership corps pay full price.
     This is called from _present_current_offer for receivership auto-buy.
     Does NOT advance offer index - caller handles that.
     """
-    cdef int face_value = get_company_face_value(company_id)
+    cdef int high_price = company_module.COMPANIES[company_id].get_high_price()
 
     # Transfer money: corp -> FI
-    corp_module.CORPS[corp_id].add_cash(state, -face_value)
-    fi_module.FI.add_cash(state, face_value)
+    corp_module.CORPS[corp_id].add_cash(state, -high_price)
+    fi_module.FI.add_cash(state, high_price)
 
     # Transfer company to corp's acquisition zone
     company_module.COMPANIES[company_id].transfer_to_corp_acquisition(state, corp_id)
@@ -859,41 +900,6 @@ def transition_to_closing_py(GameState state):
 
 
 # =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-cdef bint _is_game_terminal(GameState state) noexcept:
-    """
-    Check if the game has reached a terminal state.
-
-    Terminal state occurs when:
-    1. No companies are available for auction, AND
-    2. No corporations are active
-
-    This prevents infinite INVEST->WRAP_UP->ACQUISITION loops when
-    all companies are removed from the game.
-    """
-    cdef int company_id, corp_id
-    cdef bint has_auction_companies = False
-    cdef bint has_active_corps = False
-
-    # Check for any companies available for auction
-    for company_id in range(GameConstants.NUM_COMPANIES):
-        if company_module.COMPANIES[company_id].is_for_auction(state):
-            has_auction_companies = True
-            break
-
-    # Check for any active corporations
-    for corp_id in range(GameConstants.NUM_CORPS):
-        if corp_module.CORPS[corp_id].is_active(state):
-            has_active_corps = True
-            break
-
-    # Terminal if no auction companies AND no active corps
-    return not has_auction_companies and not has_active_corps
-
-
-# =============================================================================
 # ZONE MERGING (Phase 14)
 # =============================================================================
 
@@ -918,7 +924,7 @@ cdef void _merge_corp_proceeds(GameState state) noexcept:
     FLOW-04: Corp proceeds merge at phase end.
     """
     cdef int corp_id, proceeds
-    for corp_id in range(GameConstants.NUM_CORPS):
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
         if corp_module.CORPS[corp_id].is_active(state):
             proceeds = corp_module.CORPS[corp_id].get_acquisition_proceeds(state)
             if proceeds > 0:
@@ -938,9 +944,9 @@ cdef void _merge_corp_companies(GameState state) noexcept:
     - Updates company location and owner
     """
     cdef int corp_id, company_id
-    for corp_id in range(GameConstants.NUM_CORPS):
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
         if corp_module.CORPS[corp_id].is_active(state):
-            for company_id in range(GameConstants.NUM_COMPANIES):
+            for company_id in range(<int>GameConstants.NUM_COMPANIES):
                 if corp_module.CORPS[corp_id].has_acquisition_company(state, company_id):
                     # transfer_to_corp handles all state updates:
                     # - clears acquisition flag (via clear_location)
@@ -996,6 +1002,12 @@ cdef int apply_acquisition_action(GameState state, ActionInfo* info) noexcept:
     Returns: 0=success, 1=invalid
     """
     cdef int company_id, low_price, price
+
+    # Guard: non-pass actions require a valid current offer
+    if info.action_type != ACTION_PASS:
+        if turn_module.TURN.get_acq_active_corp(state) < 0 or \
+           turn_module.TURN.get_acq_target_company(state) < 0:
+            return 1
 
     if info.action_type == ACTION_ACQ_PRICE:
         # Calculate actual price from offset
@@ -1056,10 +1068,6 @@ cdef int apply_acquisition_stub(GameState state) noexcept:
 
     # Increment turn number
     turn_module.TURN.set_turn_number(state, current_turn + 1)
-
-    # Clear per-turn tracking for all players
-    for i in range(state._num_players):
-        player_module.PLAYERS[i].clear_roundtrip_tracking(state)
 
     # Transition to new INVEST phase
     turn_module.TURN.set_phase(state, GamePhases.PHASE_INVEST)

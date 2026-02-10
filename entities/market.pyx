@@ -75,47 +75,50 @@ cdef class Market:
         """
         Find next available higher market space for price movement.
 
-        Starting from current_index + 1, finds first space where
-        state._data[market_offset + index] == 1.0 (available).
+        Searches from current_index + 1 upward for the first available space.
 
-        Index 26 (price $75) is always available as fallback since
-        multiple corps can share it.
+        INVARIANT: Index 26 ($75) is always available. Per RULES.md, when no
+        higher card is available, the corp takes no card and has price $75.
+        Multiple corps can share this "no card" state, so it's never occupied.
 
         Args:
             state: Game state
             current_index: Current price index (0-26)
 
         Returns:
-            Index of next available higher space (always returns valid index)
+            Index of next available higher space (guaranteed valid)
         """
         cdef int index
-        for index in range(current_index + 1, GameConstants.NUM_MARKET_SPACES - 1):
+        cdef int max_index = GameConstants.NUM_MARKET_SPACES - 1  # 26
+        # Check indices up to (but not including) max_index
+        for index in range(current_index + 1, max_index):
             if state._data[self._market_offset + index] == 1.0:
                 return index
-        # No available space found before 26, return 26 (price $75 always valid)
-        return 26
+        # Index 26 ($75) is always available per game rules
+        return max_index
 
     cpdef int find_next_lower_space(self, GameState state, int current_index):
         """
         Find next available lower market space for price movement.
 
-        Starting from current_index - 1, finds first space where
-        state._data[market_offset + index] == 1.0 (available).
+        Searches from current_index - 1 downward for the first available space.
 
-        If no available space found (all occupied), returns 0 (bankruptcy).
+        INVARIANT: Index 0 ($0, bankruptcy) is always available. When a corp
+        lands on index 0, it goes bankrupt and is removed from the market,
+        immediately freeing the space.
 
         Args:
             state: Game state
             current_index: Current price index (0-26)
 
         Returns:
-            Index of next available lower space, or 0 if none found
+            Index of next available lower space (guaranteed valid)
         """
         cdef int index
         for index in range(current_index - 1, -1, -1):
             if state._data[self._market_offset + index] == 1.0:
                 return index
-        # No available space found, return 0 (bankruptcy)
+        # Index 0 ($0) is always available per game rules
         return 0
 
 
