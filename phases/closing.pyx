@@ -372,7 +372,11 @@ cdef void _present_next_close_offer(GameState state) noexcept:
             state._data[state._layout.hidden_close_offer_index_offset] = <float>index
             continue
 
-        # Found valid offer - set visible state
+        # Found valid offer - update net worths before presenting decision
+        # (catches auto-close changes and prior close decisions)
+        player_module.update_all_net_worths(state)
+
+        # Set visible state
         turn_module.TURN.set_closing_company(state, company_id)
 
         # Determine active player (owner for player, president for corp)

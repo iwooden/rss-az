@@ -140,9 +140,7 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
 
     # Check for bankruptcy (INV-22)
     if new_index == 0:
-        corp.go_bankrupt(state)
-        # Update net worth for all players (bankruptcy affects all shareholders)
-        player_module.update_all_net_worths(state)
+        corp.go_bankrupt(state)  # go_bankrupt updates all net worths
         # Reset consecutive passes (INV-02)
         turn_module.TURN.clear_consecutive_passes(state)
         # Advance active player

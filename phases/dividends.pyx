@@ -315,7 +315,11 @@ cdef void _advance_to_next_corp(GameState state) noexcept:
             _process_receivership_corp(state, corp_id)
             continue  # Loop to find next
 
-        # Player-controlled corp - set up for player decision
+        # Player-controlled corp - update net worths before presenting decision
+        # (catches INCOME cash changes, receivership price adjustments, prior dividends)
+        player_module.update_all_net_worths(state)
+
+        # Set up for player decision
         turn_module.TURN.set_dividend_corp(state, corp_id)
         president_id = corp_module.CORPS[corp_id].get_president_id(state)
         state._set_active_player(president_id)

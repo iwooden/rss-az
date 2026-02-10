@@ -551,6 +551,9 @@ cdef class Corporation:
         # during INVEST, INCOME, DIVIDENDS, or ISSUE phases, after ACQUISITION phase
         # has already merged all acquisition companies into owned_companies.
 
+        # Update net worth for all players (shares wiped, price gone)
+        player_module.update_all_net_worths(state)
+
     # =========================================================================
     # PRESIDENT
     # =========================================================================

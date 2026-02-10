@@ -36,6 +36,7 @@ from core.data cimport (
 from core.actions cimport ActionInfo, ACTION_PASS, ACTION_ISSUE
 from entities import turn as turn_module
 from entities import corp as corp_module
+from entities import player as player_module
 from entities import market as market_module
 from phases.ipo cimport setup_ipo_phase
 
@@ -205,7 +206,11 @@ cdef void _advance_to_next_corp(GameState state) noexcept:
             _process_receivership_corp(state, corp_id)
             continue  # Loop to find next
 
-        # Player-controlled corp - set up for player decision
+        # Player-controlled corp - update net worths before presenting decision
+        # (catches prior issue price drops and receivership auto-issues)
+        player_module.update_all_net_worths(state)
+
+        # Set up for player decision
         turn_module.TURN.set_issue_corp(state, corp_id)
         president_id = corp_module.CORPS[corp_id].get_president_id(state)
         state._set_active_player(president_id)

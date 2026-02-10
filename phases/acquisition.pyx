@@ -539,7 +539,11 @@ cdef void _present_current_offer(GameState state) noexcept:
             state._data[state._layout.hidden_offer_index_offset] = <float>index
             continue
 
-        # Found player-president offer - set visible state and return
+        # Found player-president offer - update net worths before presenting decision
+        # (catches receivership auto-buys and prior accepted offers)
+        player_module.update_all_net_worths(state)
+
+        # Set visible state and return
         turn_module.TURN.set_acq_active_corp(state, corp_id)
         turn_module.TURN.set_acq_target_company(state, company_id)
         turn_module.TURN.set_acq_fi_offer(state, fi_module.FI.owns_company(state, company_id))
