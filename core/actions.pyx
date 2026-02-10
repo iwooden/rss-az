@@ -526,6 +526,38 @@ cdef void _fill_mask_for_phase(GameState state, int phase, ActionLayout* layout,
 
 
 # =============================================================================
+# INTERNAL HELPERS (no numpy allocation)
+# =============================================================================
+
+cdef void _fill_action_mask(GameState state):
+    """
+    Fill _mask_buffer for current state without numpy allocation.
+
+    Used by driver.pyx for forced-action detection and validation to avoid
+    redundant numpy array creation in the hot loop.
+    """
+    cdef int num_players = state._num_players
+    cdef ActionLayout layout = compute_action_layout(num_players)
+    cdef int total_actions = layout.total_size
+
+    memset(_mask_buffer, 0, total_actions * sizeof(float))
+
+    cdef int player_id = state._get_active_player()
+    cdef Player active_player = <Player>PLAYERS[player_id]
+    cdef TurnState turn = <TurnState>TURN
+
+    cdef int phase = state.get_phase()
+    _fill_mask_for_phase(state, phase, &layout, _mask_buffer, active_player, turn)
+
+
+cdef bint _is_action_valid_in_buffer(int action_idx, int total_actions) noexcept nogil:
+    """Check if action is valid in the current _mask_buffer contents."""
+    if action_idx < 0 or action_idx >= total_actions:
+        return False
+    return _mask_buffer[action_idx] == 1.0
+
+
+# =============================================================================
 # PUBLIC FUNCTIONS
 # =============================================================================
 
@@ -544,20 +576,9 @@ cpdef object get_valid_action_mask(GameState state):
 
     Size depends on player count: 186 + (num_players * 20)
     """
-    cdef int num_players = state._num_players
-    cdef ActionLayout layout = compute_action_layout(num_players)
-    cdef int total_actions = layout.total_size
+    _fill_action_mask(state)
 
-    # Clear buffer (faster than np.zeros allocation)
-    memset(_mask_buffer, 0, total_actions * sizeof(float))
-
-    # Get active player and turn entities (use cached offsets for efficient access)
-    cdef int player_id = state._get_active_player()
-    cdef Player active_player = <Player>PLAYERS[player_id]
-    cdef TurnState turn = <TurnState>TURN
-
-    cdef int phase = state.get_phase()
-    _fill_mask_for_phase(state, phase, &layout, _mask_buffer, active_player, turn)
+    cdef int total_actions = get_total_actions_for_players(state._num_players)
 
     # Copy to numpy array for return (required for Python interface)
     cdef cnp.ndarray mask = np.empty(total_actions, dtype=np.float32)
@@ -575,24 +596,11 @@ cpdef tuple get_forced_action(GameState state):
         (action_idx, True) if exactly one valid action (forced)
         (-1, False) if zero or multiple valid actions
     """
-    cdef int num_players = state._num_players
-    cdef ActionLayout layout = compute_action_layout(num_players)
-    cdef int total_actions = layout.total_size
-    cdef int phase = state.get_phase()
+    _fill_action_mask(state)
+
+    cdef int total_actions = get_total_actions_for_players(state._num_players)
     cdef int i, count, single_action
 
-    # Clear buffer (faster than np.zeros allocation)
-    memset(_mask_buffer, 0, total_actions * sizeof(float))
-
-    # Get active player and turn entities (use cached offsets for efficient access)
-    cdef int player_id = state._get_active_player()
-    cdef Player active_player = <Player>PLAYERS[player_id]
-    cdef TurnState turn = <TurnState>TURN
-
-    # Fill the mask based on phase
-    _fill_mask_for_phase(state, phase, &layout, _mask_buffer, active_player, turn)
-
-    # Count valid actions
     count = 0
     single_action = -1
     for i in range(total_actions):

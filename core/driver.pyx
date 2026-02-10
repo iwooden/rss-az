@@ -9,12 +9,11 @@ Auto-applies forced actions iteratively until a choice is needed (2+ legal
 actions) or the game ends. Ensures neural network only sees decision states.
 """
 
-import numpy as np
-cimport numpy as cnp
-
 from core.state cimport GameState
 from core.actions cimport (
-    ActionLayout, ActionInfo, compute_action_layout, decode_action
+    ActionLayout, ActionInfo, compute_action_layout, decode_action,
+    get_total_actions_for_players, _fill_action_mask, _is_action_valid_in_buffer,
+    _mask_buffer
 )
 from core.actions import get_valid_action_mask
 from core.data cimport GamePhases, GameConstants, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_GAME_OVER, PHASE_WRAP_UP, PHASE_ACQUISITION, PHASE_CLOSING, PHASE_INCOME, PHASE_DIVIDENDS, PHASE_END_CARD, PHASE_ISSUE_SHARES, PHASE_IPO
@@ -153,6 +152,8 @@ cdef ForcedActionResult _check_forced_action(GameState state) noexcept:
     """
     Check legal action count and find single action if forced.
 
+    Fills the static _mask_buffer directly without numpy allocation.
+
     Returns:
         ForcedActionResult with count (0, 1, or 2+) and action_idx
         - count=0: no legal actions (error condition)
@@ -160,16 +161,16 @@ cdef ForcedActionResult _check_forced_action(GameState state) noexcept:
         - count=2+: multiple actions (choice needed), action_idx=-1
     """
     cdef ForcedActionResult result
-    cdef object mask = get_valid_action_mask(state)
-    cdef int total = mask.shape[0]
-    cdef float* mask_ptr = <float*>cnp.PyArray_DATA(mask)
+    cdef int total = get_total_actions_for_players(state._num_players)
     cdef int i
+
+    _fill_action_mask(state)
 
     result.action_idx = -1
     result.count = 0
 
     for i in range(total):
-        if mask_ptr[i] == 1.0:
+        if _mask_buffer[i] == 1.0:
             result.count += 1
             if result.count == 1:
                 result.action_idx = i
@@ -192,35 +193,25 @@ cdef class GameDriver:
         """Initialize driver (no state needed - stateless pattern)."""
         pass
 
-    cdef int _apply_single_action(self, GameState state, int action_idx, object history):
+    cdef int _dispatch_action(self, GameState state, int action_idx, object history):
         """
-        Apply one action without auto-continuation.
+        Decode and dispatch action without validation.
 
-        Internal helper for apply_action(). Validates, dispatches, and optionally
-        records to history.
+        Internal helper for pre-validated actions (e.g. forced actions found by
+        _check_forced_action). Skips mask generation entirely.
 
         Args:
             state: GameState object to modify
-            action_idx: Index into action vector (0 to total_actions-1)
+            action_idx: Index into action vector (already validated)
             history: Optional list to append (state.copy(), action) tuple
 
         Returns:
             STATUS_OK (0) if action applied successfully
-            STATUS_INVALID (1) if action is invalid for current state
+            STATUS_INVALID (1) if dispatch fails
         """
-        cdef int num_players = state._num_players
-        cdef ActionLayout layout = compute_action_layout(num_players)
+        cdef ActionLayout layout = compute_action_layout(state._num_players)
         cdef ActionInfo info
         cdef int result
-
-        # Validate action index is in bounds
-        if action_idx < 0 or action_idx >= layout.total_size:
-            return STATUS_INVALID
-
-        # Get valid action mask and check if this action is legal
-        cdef object mask = get_valid_action_mask(state)
-        if mask[action_idx] != 1.0:
-            return STATUS_INVALID
 
         # Append to history if provided (before applying action)
         if history is not None:
@@ -247,10 +238,38 @@ cdef class GameDriver:
         elif phase == PHASE_IPO:
             result = apply_ipo_action(state, &info)
         else:
-            # Other phases not yet implemented (stubs for Phase 3+)
             return STATUS_INVALID
 
         return result
+
+    cdef int _apply_single_action(self, GameState state, int action_idx, object history):
+        """
+        Apply one action without auto-continuation.
+
+        Validates action legality via _fill_action_mask (no numpy allocation),
+        then dispatches. Used for the initial user action in apply_action().
+
+        Args:
+            state: GameState object to modify
+            action_idx: Index into action vector (0 to total_actions-1)
+            history: Optional list to append (state.copy(), action) tuple
+
+        Returns:
+            STATUS_OK (0) if action applied successfully
+            STATUS_INVALID (1) if action is invalid for current state
+        """
+        cdef int total_actions = get_total_actions_for_players(state._num_players)
+
+        # Validate action index is in bounds
+        if action_idx < 0 or action_idx >= total_actions:
+            return STATUS_INVALID
+
+        # Fill mask buffer and check legality (no numpy allocation)
+        _fill_action_mask(state)
+        if not _is_action_valid_in_buffer(action_idx, total_actions):
+            return STATUS_INVALID
+
+        return self._dispatch_action(state, action_idx, history)
 
     cpdef int apply_action(self, GameState state, int action_idx, object history=None):
         """
@@ -302,8 +321,8 @@ cdef class GameDriver:
             if forced.count >= 2:
                 return STATUS_OK  # Choice needed - return to caller
 
-            # Exactly 1 action - auto-apply it
-            result = self._apply_single_action(state, forced.action_idx, history)
+            # Exactly 1 action - auto-apply (already validated by _check_forced_action)
+            result = self._dispatch_action(state, forced.action_idx, history)
             if result != STATUS_OK:
                 return result
             if state.get_phase() == PHASE_GAME_OVER:

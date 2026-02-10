@@ -109,3 +109,7 @@ cpdef tuple get_forced_action(GameState state)
 
 # Pre-allocated mask buffer (max size for 6 players = 306)
 cdef float _mask_buffer[306]
+
+# Internal mask helpers (no numpy allocation)
+cdef void _fill_action_mask(GameState state)
+cdef bint _is_action_valid_in_buffer(int action_idx, int total_actions) noexcept nogil
