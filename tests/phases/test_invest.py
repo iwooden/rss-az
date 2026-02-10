@@ -396,23 +396,6 @@ class TestBuyShare:
         new_index = corp.get_price_index(trade_state)
         assert new_index > initial_index
 
-    def test_buy_share_updates_net_worth(self, trade_state):
-        """Buy share updates player net worth."""
-        player = PLAYERS[0]
-
-        # Net worth before (may need recalculation)
-        player.update_net_worth(trade_state)
-        initial_net_worth = player.get_net_worth(trade_state)
-
-        layout = get_action_layout(3)
-        buy_idx = layout['buy_share_base'] + 0
-        apply_and_verify_all(trade_state, buy_idx)
-
-        # Net worth was updated (value may differ due to price change)
-        new_net_worth = player.get_net_worth(trade_state)
-        # Just verify it was recalculated - exact value depends on price
-        assert isinstance(new_net_worth, int)
-
     def test_buy_share_increments_round_trip_counter(self, trade_state):
         """Buy share increments share_buys counter."""
         player = PLAYERS[0]
@@ -426,31 +409,6 @@ class TestBuyShare:
         new_buys = player.get_share_buys(trade_state, 0)
         assert new_buys == initial_buys + 1
 
-    def test_buy_share_updates_all_players_net_worth(self, trade_state):
-        """Price movement affects all shareholders' net worth."""
-        corp = CORPS[0]
-
-        # Give player 1 a share of the same corp (set_shares auto-adjusts bank)
-        PLAYERS[1].set_shares(trade_state, 0, 1)
-        PLAYERS[1].set_cash(trade_state, 50)
-
-        # Calculate expected net worth for player 1 before buy
-        PLAYERS[1].update_net_worth(trade_state)
-        initial_net_worth_p1 = PLAYERS[1].get_net_worth(trade_state)
-        initial_price = corp.get_share_price(trade_state)
-
-        # Player 0 buys, which moves price up
-        layout = get_action_layout(3)
-        buy_idx = layout['buy_share_base'] + 0
-        apply_and_verify_all(trade_state, buy_idx)
-
-        # Player 1's net worth should reflect the new higher price
-        new_price = corp.get_share_price(trade_state)
-        new_net_worth_p1 = PLAYERS[1].get_net_worth(trade_state)
-
-        # Price went up, so player 1's net worth should have increased
-        assert new_price > initial_price
-        assert new_net_worth_p1 > initial_net_worth_p1
 
 
 # =============================================================================

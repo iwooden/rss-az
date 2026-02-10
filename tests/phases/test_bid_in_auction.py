@@ -368,26 +368,6 @@ class TestAuctionResolution:
         active_position = PLAYERS[active_player].get_turn_order(bid_state)
         assert active_position == expected_next_position
 
-    def test_winner_net_worth_updated(self, bid_state):
-        """Winner's net worth updated after receiving company."""
-        winner_id = TURN.get_auction_high_bidder(bid_state)
-        company_id = TURN.get_auction_company(bid_state)
-        bid_price = TURN.get_auction_price(bid_state)
-        initial_net_worth = PLAYERS[winner_id].get_net_worth(bid_state)
-        face_value = get_company_face_value(company_id)
-
-        # Make all others leave to trigger resolution
-        layout = get_action_layout(3)
-        for _ in range(2):
-            if bid_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
-                apply_and_verify_all(bid_state, layout['leave_auction'])
-
-        # Verify net worth updated: lost cash, gained company
-        # Net worth change = -bid_price + face_value
-        final_net_worth = PLAYERS[winner_id].get_net_worth(bid_state)
-        expected_change = face_value - bid_price
-        assert final_net_worth == initial_net_worth + expected_change
-
     def test_auction_resolution_with_empty_deck(self):
         """Auction resolves correctly when deck is empty (no replacement drawn).
 

@@ -244,34 +244,6 @@ class TestCoreBankruptcyBehavior:
         assert corp.get_unissued_shares(bankruptcy_state) > 0
         assert not corp.is_in_receivership(bankruptcy_state)
 
-    def test_bankruptcy_updates_all_shareholders_net_worth(self, bankruptcy_state):
-        """Bankruptcy updates net worth for all players who held shares."""
-        corp = CORPS[0]
-
-        # Give multiple players shares
-        # bankruptcy_state starts with player0=2, bank=2, issued=4
-        # set_shares auto-adjusts bank: 2->1->0
-        PLAYERS[1].set_shares(bankruptcy_state, 0, 1)
-        PLAYERS[2].set_shares(bankruptcy_state, 0, 1)
-        # player0=2 + player1=1 + player2=1 + bank=0 = issued=4
-
-        PLAYERS[1].set_cash(bankruptcy_state, 50)
-        PLAYERS[2].set_cash(bankruptcy_state, 50)
-
-        # Update net worth before
-        PLAYERS[1].update_net_worth(bankruptcy_state)
-        initial_net_worth_p1 = PLAYERS[1].get_net_worth(bankruptcy_state)
-        share_value = corp.get_share_price(bankruptcy_state)
-
-        layout = get_action_layout(3)
-        sell_idx = layout['sell_share_base'] + 0
-        apply_and_verify_all(bankruptcy_state, sell_idx)
-
-        # Player 1 lost their shares
-        assert PLAYERS[1].get_shares(bankruptcy_state, 0) == 0
-        new_net_worth_p1 = PLAYERS[1].get_net_worth(bankruptcy_state)
-        assert new_net_worth_p1 == initial_net_worth_p1 - share_value
-
     @pytest.mark.parametrize("num_players", [3, 6])
     def test_bankruptcy_different_player_counts(self, num_players):
         """Bankruptcy procedure works for all player counts."""

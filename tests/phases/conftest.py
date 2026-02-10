@@ -14,7 +14,7 @@ from core.driver import DRIVER
 from core.actions import get_valid_action_mask, get_action_layout
 from core.data import GamePhases, CORP_NAMES, get_corp_share_count
 from entities.turn import TURN
-from entities.player import PLAYERS
+from entities.player import PLAYERS, update_all_net_worths
 from entities.corp import CORPS
 from entities.market import MARKET
 from entities.company import COMPANIES, CompanyLocation
@@ -57,6 +57,9 @@ def float_corp_for_test(state, corp_id, company_id=None, player_id=0, par_index=
     # Transfer company to player and float the corp
     COMPANIES[company_id].transfer_to_player(state, player_id)
     CORPS[corp_id].float_corp(state, player_id, company_id, par_index, float_shares)
+
+    # Keep net worth fresh for invariant checks
+    update_all_net_worths(state)
 
     return company_id
 
@@ -325,6 +328,7 @@ def trade_state():
 
     # Set up player cash for trading
     PLAYERS[0].set_cash(state, 100)
+    update_all_net_worths(state)
 
     return state
 
