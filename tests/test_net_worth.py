@@ -21,11 +21,16 @@ from entities.corp import CORPS
 from entities.company import COMPANIES
 from entities.turn import TURN
 from entities.deck import DECK
-from phases.dividends import setup_dividends_phase_py
-from phases.issue import setup_issue_phase_py
-from phases.acquisition import setup_acquisition_phase_py
-from phases.closing import apply_closing_auto_py
+from phases.dividends import setup_dividends_phase_py, apply_dividend_action_py
+from phases.issue import setup_issue_phase_py, apply_issue_action_py
+from phases.acquisition import (
+    setup_acquisition_phase_py, apply_acquisition_action_py,
+)
+from phases.closing import apply_closing_auto_py, apply_closing_action_py
 from phases.ipo import setup_ipo_phase_py, process_ipo_py
+from core.actions import (
+    ACTION_PASS_PY, ACTION_CLOSE_PY, ACTION_ACQ_FI_HIGH_PY,
+)
 from tests.phases.conftest import (
     apply_and_verify_all, float_corp_for_test,
 )
@@ -468,7 +473,193 @@ class TestNetWorthFreshBeforeClosingOffer:
 
 
 # =============================================================================
-# 9. ACQUISITION PROCEEDS IN NET WORTH
+# 9. NET WORTH FRESH AFTER DIVIDEND ACTION
+# =============================================================================
+
+class TestNetWorthFreshAfterDividendAction:
+    """After choosing a dividend, _advance_to_next_corp refreshes NW for next decision."""
+
+    def test_fresh_after_dividend_before_next_corp(self):
+        """Two corps active -> inject stale -> pay dividend -> NW fresh for next corp."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Float two corps so dividends phase has two decisions
+        float_corp_for_test(state, corp_id=0, par_index=15, float_shares=1)
+        float_corp_for_test(state, corp_id=1, par_index=10, float_shares=1)
+        CORPS[0].set_cash(state, 100)
+        CORPS[1].set_cash(state, 100)
+
+        TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
+        setup_dividends_phase_py(state)
+
+        assert state.get_phase() == GamePhases.PHASE_DIVIDENDS
+
+        # Inject stale NW, then apply dividend action
+        # _advance_to_next_corp should call update_all_net_worths before next decision
+        inject_stale_net_worth(state)
+        apply_dividend_action_py(state, 5)
+
+        if state.get_phase() == GamePhases.PHASE_DIVIDENDS:
+            assert_net_worth_fresh(state, "After dividend action, before next corp")
+
+
+# =============================================================================
+# 10. NET WORTH FRESH AFTER ISSUE ACTION
+# =============================================================================
+
+class TestNetWorthFreshAfterIssueAction:
+    """After issuing a share, _advance_to_next_corp refreshes NW for next decision."""
+
+    def test_fresh_after_issue_before_next_corp(self):
+        """Two corps active -> issue on first -> NW fresh for second."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        float_corp_for_test(state, corp_id=0, par_index=15, float_shares=1)
+        float_corp_for_test(state, corp_id=1, par_index=10, float_shares=1)
+
+        TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
+        setup_issue_phase_py(state)
+
+        assert state.get_phase() == GamePhases.PHASE_ISSUE_SHARES
+        inject_stale_net_worth(state)
+
+        # Issue a share (True = issue, not pass)
+        apply_issue_action_py(state, True)
+
+        if state.get_phase() == GamePhases.PHASE_ISSUE_SHARES:
+            assert_net_worth_fresh(state, "After issue action, before next corp")
+
+
+# =============================================================================
+# 11. NET WORTH FRESH AFTER ACQUISITION ACTION
+# =============================================================================
+
+class TestNetWorthFreshAfterAcquisitionAction:
+    """After accepting/passing an acquisition offer, NW refreshed for next offer."""
+
+    def test_fresh_after_acquisition_pass_before_next_offer(self):
+        """Two FI offers -> pass on first -> NW fresh for second."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Float corp with lots of cash
+        float_corp_for_test(state, corp_id=0, par_index=15, float_shares=1)
+        CORPS[0].set_cash(state, 500)
+
+        # Give FI two companies so we get two offers
+        fi_cid1 = DECK.draw(state)
+        fi_cid2 = DECK.draw(state)
+        COMPANIES[fi_cid1].transfer_to_fi(state)
+        COMPANIES[fi_cid2].transfer_to_fi(state)
+
+        TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
+        setup_acquisition_phase_py(state)
+
+        if state.get_phase() != GamePhases.PHASE_ACQUISITION:
+            pytest.skip("No acquisition offers generated")
+
+        inject_stale_net_worth(state)
+
+        # Pass on first offer
+        apply_acquisition_action_py(state, ACTION_PASS_PY)
+
+        if state.get_phase() == GamePhases.PHASE_ACQUISITION:
+            assert_net_worth_fresh(state, "After acq pass, before next offer")
+
+    def test_fresh_after_acquisition_accept_before_next_offer(self):
+        """Two FI offers -> accept first (FI high) -> NW fresh for second."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        float_corp_for_test(state, corp_id=0, par_index=15, float_shares=1)
+        CORPS[0].set_cash(state, 500)
+
+        fi_cid1 = DECK.draw(state)
+        fi_cid2 = DECK.draw(state)
+        COMPANIES[fi_cid1].transfer_to_fi(state)
+        COMPANIES[fi_cid2].transfer_to_fi(state)
+
+        TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
+        setup_acquisition_phase_py(state)
+
+        if state.get_phase() != GamePhases.PHASE_ACQUISITION:
+            pytest.skip("No acquisition offers generated")
+
+        inject_stale_net_worth(state)
+
+        # Accept first offer at high price
+        apply_acquisition_action_py(state, ACTION_ACQ_FI_HIGH_PY)
+
+        if state.get_phase() == GamePhases.PHASE_ACQUISITION:
+            assert_net_worth_fresh(state, "After acq accept, before next offer")
+
+
+# =============================================================================
+# 12. NET WORTH FRESH AFTER CLOSING ACTION
+# =============================================================================
+
+class TestNetWorthFreshAfterClosingAction:
+    """After closing/passing a company, NW refreshed for next offer."""
+
+    def test_fresh_after_closing_pass_before_next_offer(self):
+        """Two close offers -> pass on first -> NW fresh for second."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # High CoO so red companies have negative income (income 1-2, CoO 7)
+        TURN.set_coo_level(state, 6)
+
+        # Give player two red companies that will generate close offers
+        bme = COMPANY_NAME_TO_ID["BME"]
+        bse = COMPANY_NAME_TO_ID["BSE"]
+        COMPANIES[bme].transfer_to_player(state, 0)
+        COMPANIES[bse].transfer_to_player(state, 0)
+
+        TURN.set_phase(state, GamePhases.PHASE_CLOSING)
+        apply_closing_auto_py(state)
+
+        if state.get_phase() != GamePhases.PHASE_CLOSING:
+            pytest.skip("No closing offers generated")
+
+        inject_stale_net_worth(state)
+
+        # Pass on first close offer
+        apply_closing_action_py(state, ACTION_PASS_PY)
+
+        if state.get_phase() == GamePhases.PHASE_CLOSING:
+            assert_net_worth_fresh(state, "After closing pass, before next offer")
+
+    def test_fresh_after_closing_accept_before_next_offer(self):
+        """Two close offers -> accept first -> NW fresh for second."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        TURN.set_coo_level(state, 6)
+
+        bme = COMPANY_NAME_TO_ID["BME"]
+        bse = COMPANY_NAME_TO_ID["BSE"]
+        COMPANIES[bme].transfer_to_player(state, 0)
+        COMPANIES[bse].transfer_to_player(state, 0)
+
+        TURN.set_phase(state, GamePhases.PHASE_CLOSING)
+        apply_closing_auto_py(state)
+
+        if state.get_phase() != GamePhases.PHASE_CLOSING:
+            pytest.skip("No closing offers generated")
+
+        inject_stale_net_worth(state)
+
+        # Accept (close) first company
+        apply_closing_action_py(state, ACTION_CLOSE_PY)
+
+        if state.get_phase() == GamePhases.PHASE_CLOSING:
+            assert_net_worth_fresh(state, "After closing accept, before next offer")
+
+
+# =============================================================================
+# ACQUISITION PROCEEDS IN NET WORTH
 # =============================================================================
 
 class TestAcquisitionProceedsInNetWorth:
@@ -501,7 +692,7 @@ class TestAcquisitionProceedsInNetWorth:
 
 
 # =============================================================================
-# 10. IPO NET WORTH NEUTRAL
+# IPO NET WORTH NEUTRAL
 # =============================================================================
 
 class TestIpoNetWorthNeutral:
