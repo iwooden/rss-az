@@ -231,9 +231,9 @@ cdef class Player:
         """
         Calculate player's total net worth.
 
-        Net worth = cash + sum(company face values) + sum(shares * share_price)
+        Net worth = cash + acquisition_proceeds + sum(company face values) + sum(shares * share_price)
         """
-        cdef int total = self.get_cash(state)
+        cdef int total = self.get_cash(state) + self.get_acquisition_proceeds(state)
         cdef int company_id, corp_id
         cdef int shares
 
