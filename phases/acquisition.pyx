@@ -17,8 +17,8 @@ This keeps the action space constant (51 prices + 2 FI actions + pass = 54 actio
 regardless of how many potential acquisitions exist in a given game state.
 
 Receivership corps (no president) are handled automatically:
-- Auto-buy from FI if affordable: OS at face value, others at high price (RECV-01)
-- Auto-pass on non-FI offers (RECV-02: can only buy from FI)
+- Auto-buy from FI if affordable: OS at face value, others at high price
+- Auto-pass on non-FI offers (can only buy from FI)
 
 See CLAUDE.md "Offer Buffer Pattern" for full documentation.
 """
@@ -245,7 +245,7 @@ cdef int _collect_corp_corp_offers(GameState state, int* corp_ids, int* company_
 
     Note: Receivership corps are automatically excluded as sellers because
     get_president_id returns -1 for receivership, which never matches
-    any player_id (0 to num_players-1). This implements RECV-02.
+    any player_id (0 to num_players-1).
     """
     cdef int count = 0
     cdef int player_id, buyer_corp, seller_corp, company_id
@@ -369,10 +369,10 @@ cdef void _generate_offers(GameState state) noexcept:
     Generate all valid acquisition offers and store in hidden buffer.
 
     Priority order:
-    1. OS->FI offers by face value DESC (OFFER-02)
-    2. Other Corp->FI offers by (share price DESC, face value DESC) (OFFER-03)
-    3. Corp->Corp offers by (buyer price DESC, face value DESC) (OFFER-04)
-    4. Corp->Player private offers by (buyer price DESC, face value DESC) (OFFER-05)
+    1. OS->FI offers by face value DESC
+    2. Other Corp->FI offers by (share price DESC, face value DESC)
+    3. Corp->Corp offers by (buyer price DESC, face value DESC)
+    4. Corp->Player private offers by (buyer price DESC, face value DESC)
 
     Stores in hidden state buffer: [offer_count][offer_index][buffer...]
     """
@@ -499,11 +499,6 @@ cdef void _present_current_offer(GameState state) noexcept:
     - Non-FI offers: auto-pass (receivership can only buy from FI per RULES.md)
 
     Loops until a player-president offer is found or offers exhausted.
-
-    STATE-01: Sets visible acquisition state for current offer.
-    STATE-04: Clears acq_active_corp when no more offers.
-    RECV-01: Receivership corps auto-buy FI offers if affordable at HIGH price.
-    RECV-03: Auto-buy executes within this loop (no player action).
     """
     cdef int count = <int>state._data[state._layout.hidden_offer_count_offset]
     cdef int index = <int>state._data[state._layout.hidden_offer_index_offset]
@@ -553,7 +548,7 @@ cdef void _present_current_offer(GameState state) noexcept:
         state._set_active_player(president if president >= 0 else 0)
         return
 
-    # No more valid offers (STATE-04)
+    # No more valid offers
     turn_module.TURN.clear_acq_active_corp(state)
     turn_module.TURN.clear_acq_target_company(state)
     turn_module.TURN.set_acq_fi_offer(state, False)
@@ -593,7 +588,7 @@ cdef bint _is_target_already_acquired(GameState state, int company_id) noexcept:
     """
     Check if target company is already in any corp's acquisition_companies.
 
-    VALID-04: Defensive check - offer generation filters this, but re-verify at action time.
+    Defensive check - offer generation filters this, but re-verify at action time.
     Returns True if already acquired, False otherwise.
     """
     cdef int check_corp
@@ -608,12 +603,12 @@ cdef bint _validate_price_action(GameState state, int price) noexcept:
     Validate price-based acquisition action.
 
     Checks:
-    - VALID-01: Price in [low_price, high_price] range
-    - VALID-02: Corp has sufficient cash
-    - VALID-03: Corp seller retains >= 1 company after sale
-    - VALID-04: Target not already acquired
-    - VALID-05: Target not already in buyer's owned_companies
-    - VALID-06: Same-president (guaranteed by offer generation, no runtime check)
+    - Price in [low_price, high_price] range
+    - Corp has sufficient cash
+    - Corp seller retains >= 1 company after sale
+    - Target not already acquired
+    - Target not already in buyer's owned_companies
+    - Same-president (guaranteed by offer generation, no runtime check)
 
     Returns True if valid, False otherwise.
     """
@@ -627,24 +622,24 @@ cdef bint _validate_price_action(GameState state, int price) noexcept:
     low_price = get_company_low_price(company_id)
     high_price = company_module.COMPANIES[company_id].get_high_price()
 
-    # VALID-01: Price in range
+    # Price in range
     if price < low_price or price > high_price:
         return False
 
-    # VALID-02: Corp can afford
+    # Corp can afford
     corp_cash = corp_module.CORPS[corp_id].get_cash(state)
     if corp_cash < price:
         return False
 
-    # VALID-04: Target not already acquired
+    # Target not already acquired
     if _is_target_already_acquired(state, company_id):
         return False
 
-    # VALID-05: Target not already in buyer's owned_companies
+    # Target not already in buyer's owned_companies
     if corp_module.CORPS[corp_id].owns_company(state, company_id):
         return False
 
-    # VALID-03: Seller retains >= 1 company (only for corp sellers, not FI or players)
+    # Seller retains >= 1 company (only for corp sellers, not FI or players)
     # Check count >= 2 since selling one would leave at least 1
     if not is_fi:
         location = company_module.COMPANIES[company_id].get_location(state)
@@ -663,8 +658,8 @@ cdef bint _validate_fi_buy_high(GameState state) noexcept:
     Checks:
     - Defensive: is_acq_fi_offer is True
     - Corp is not OS (OS must use face value)
-    - VALID-02: Corp has sufficient cash for high_price
-    - VALID-04: Target not already acquired
+    - Corp has sufficient cash for high_price
+    - Target not already acquired
 
     Returns True if valid, False otherwise.
     """
@@ -680,13 +675,13 @@ cdef bint _validate_fi_buy_high(GameState state) noexcept:
     if corp_id == CorpIndices.CORP_OS:
         return False
 
-    # VALID-02: Corp can afford high price
+    # Corp can afford high price
     cdef int high_price = company_module.COMPANIES[company_id].get_high_price()
     cdef int corp_cash = corp_module.CORPS[corp_id].get_cash(state)
     if corp_cash < high_price:
         return False
 
-    # VALID-04: Target not already acquired
+    # Target not already acquired
     if _is_target_already_acquired(state, company_id):
         return False
 
@@ -700,8 +695,8 @@ cdef bint _validate_fi_buy_face(GameState state) noexcept:
     Checks:
     - Defensive: is_acq_fi_offer is True
     - Corp is OS (only OS uses face value)
-    - VALID-02: Corp has sufficient cash for face_value
-    - VALID-04: Target not already acquired
+    - Corp has sufficient cash for face_value
+    - Target not already acquired
 
     Returns True if valid, False otherwise.
     """
@@ -717,13 +712,13 @@ cdef bint _validate_fi_buy_face(GameState state) noexcept:
     if corp_id != CorpIndices.CORP_OS:
         return False
 
-    # VALID-02: Corp can afford face value
+    # Corp can afford face value
     cdef int face_value = get_company_face_value(company_id)
     cdef int corp_cash = corp_module.CORPS[corp_id].get_cash(state)
     if corp_cash < face_value:
         return False
 
-    # VALID-04: Target not already acquired
+    # Target not already acquired
     if _is_target_already_acquired(state, company_id):
         return False
 
@@ -859,7 +854,7 @@ cpdef void setup_acquisition_phase(GameState state):
 
     Steps:
     1. Clear offer buffer index to 0
-    2. Generate all offers into buffer (OFFER-01)
+    2. Generate all offers into buffer
     3. Present first valid offer (or clear state if none)
 
     Does NOT clear acquisition zones - that happens at phase EXIT (after merge).
@@ -906,7 +901,6 @@ cdef void _merge_player_proceeds(GameState state) noexcept:
     """
     Merge player acquisition_proceeds into cash, then clear.
 
-    FLOW-04: Player proceeds merge at phase end.
     """
     cdef int player_id, proceeds
     for player_id in range(state._num_players):
@@ -920,7 +914,6 @@ cdef void _merge_corp_proceeds(GameState state) noexcept:
     """
     Merge corp acquisition_proceeds into cash, then clear.
 
-    FLOW-04: Corp proceeds merge at phase end.
     """
     cdef int corp_id, proceeds
     for corp_id in range(<int>GameConstants.NUM_CORPS):
@@ -934,8 +927,6 @@ cdef void _merge_corp_proceeds(GameState state) noexcept:
 cdef void _merge_corp_companies(GameState state) noexcept:
     """
     Transfer acquisition_companies to owned_companies, then clear.
-
-    FLOW-03: Companies in acquisition zone merge to owned at phase end.
 
     Uses Company.transfer_to_corp() which:
     - Clears acquisition_company flag (via clear_location)
@@ -969,9 +960,6 @@ cdef void _merge_acquisition_zones(GameState state) noexcept:
 cdef void _transition_to_closing(GameState state) noexcept:
     """
     Complete ACQUISITION phase and transition to CLOSING.
-
-    FLOW-02: Transition when no more valid offers.
-    DRIVER-03: Phase handler transitions internally.
 
     Steps:
     1. Merge all acquisition zones (proceeds + companies)
