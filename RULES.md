@@ -627,6 +627,27 @@ A company's effective income can become negative if Cost of Ownership exceeds it
 
 ---
 
+## Training-Variant Constraints (Intentional Engine Deviations)
+
+The Cython self-play engine intentionally applies the following constraints to reduce degenerate loops and keep the policy focused during training/MCTS. These are deliberate deviations from unconstrained human play.
+
+### 1) Acquisition Offer Scope Constraint
+- Corporation-to-corporation and corporation-to-player private acquisitions are constrained to cases where the same player is president of the buying corporation (and selling corporation for corp↔corp transfers).
+- Acquisition offers are presented **one-by-one** from a hidden offer buffer rather than as simultaneous open negotiation.
+- Rationale: avoids repeated low-signal offer/decline sequences, keeps action space compact, and improves training stability.
+
+### 2) Closing Offer Scope Constraint
+- Optional close offers are generated only for companies with **negative adjusted income**.
+- Close decisions are presented **one-by-one** from a hidden close-offer buffer.
+- Rationale: in practice, closing non-negative-income companies is rarely strategic; constraining this branch removes low-value actions and improves model focus.
+
+### 3) INVEST Share Round-Trip Constraint
+- During INVEST, buy/sell legality is constrained per player+corporation by round-trip count:
+  `roundtrips = min(share_buys, share_sells)`, and actions are blocked once roundtrips reach 2.
+- Rationale: prevents pathological buy/sell oscillation loops observed in training (models repeatedly cycling trades while bleeding cash due to price movement timing), improving convergence and throughput quality.
+
+---
+
 ## Variants
 
 ### Open Companies Variant
