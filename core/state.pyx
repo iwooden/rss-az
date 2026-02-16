@@ -184,16 +184,16 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     # [44..51] corp_price_indices (8 slots)
     # [52] offer_count (number of offers in buffer)
     # [53] offer_index (current offer being processed)
-    # [54..553] offer_buffer (250 offers * 2 floats: corp_id, company_id)
-    # [554] close_offer_count (number of close offers)
-    # [555] close_offer_index (current close offer being processed)
-    # [556..855] close_offer_buffer (100 offers * 3 floats: owner_type, owner_id, company_id)
-    # [856] acq_active_corp (compact, for O(1) access)
-    # [857] acq_target_company (compact, for O(1) access)
-    # [858] closing_company (compact, for O(1) access)
-    # [859] dividend_corp (compact, for O(1) access)
-    # [860] issue_corp (compact, for O(1) access)
-    # [861] ipo_company (compact, for O(1) access)
+    # [54..803] offer_buffer (250 offers * 3 floats: owner_type, corp_id, company_id)
+    # [804] close_offer_count (number of close offers)
+    # [805] close_offer_index (current close offer being processed)
+    # [806..1105] close_offer_buffer (100 offers * 3 floats: owner_type, owner_id, company_id)
+    # [1106] acq_active_corp (compact, for O(1) access)
+    # [1107] acq_target_company (compact, for O(1) access)
+    # [1108] closing_company (compact, for O(1) access)
+    # [1109] dividend_corp (compact, for O(1) access)
+    # [1110] issue_corp (compact, for O(1) access)
+    # [1111] ipo_company (compact, for O(1) access)
     layout.hidden_active_player_offset = offset
     offset += 1
     layout.hidden_num_players_offset = offset
@@ -219,7 +219,7 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     layout.hidden_offer_index_offset = offset
     offset += 1
     layout.hidden_offer_buffer_offset = offset
-    offset += OFFER_BUFFER_SIZE * 2  # 250 offers * 2 floats per offer (corp_id, company_id)
+    offset += OFFER_BUFFER_SIZE * 3  # 250 offers * 3 floats per offer (owner_type, corp_id, company_id)
     # Close offer buffer (100 offers max)
     # Each offer: owner_type (0=player, 1=corp), owner_id, company_id
     layout.hidden_close_offer_count_offset = offset

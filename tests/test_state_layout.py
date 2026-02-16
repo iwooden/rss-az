@@ -138,7 +138,7 @@ def compute_hidden_size() -> int:
     # Acquisition offer buffer
     offset += 1  # offer_count
     offset += 1  # offer_index
-    offset += OFFER_BUFFER_SIZE * 2  # offer_buffer (250 * 2 = 500)
+    offset += OFFER_BUFFER_SIZE * 3  # offer_buffer (250 * 3 = 750)
 
     # Close offer buffer
     offset += 1  # close_offer_count
@@ -166,11 +166,11 @@ class TestStateLayoutSizes:
     # Expected sizes - these MUST match VECTORS.md and CLAUDE.md
     # If these tests fail, update the documentation to match!
     EXPECTED_SIZES = {
-        2: {'visible': 2943, 'hidden': 934, 'total': 3877},
-        3: {'visible': 3023, 'hidden': 934, 'total': 3957},
-        4: {'visible': 3105, 'hidden': 934, 'total': 4039},
-        5: {'visible': 3189, 'hidden': 934, 'total': 4123},
-        6: {'visible': 3275, 'hidden': 934, 'total': 4209},
+        2: {'visible': 2943, 'hidden': 1184, 'total': 4127},
+        3: {'visible': 3023, 'hidden': 1184, 'total': 4207},
+        4: {'visible': 3105, 'hidden': 1184, 'total': 4289},
+        5: {'visible': 3189, 'hidden': 1184, 'total': 4373},
+        6: {'visible': 3275, 'hidden': 1184, 'total': 4459},
     }
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
@@ -232,8 +232,8 @@ class TestComponentSizes:
             )
 
     def test_hidden_size_fixed(self):
-        """Hidden size = 934 (fixed for all player counts)."""
-        assert compute_hidden_size() == 934
+        """Hidden size = 1184 (fixed for all player counts)."""
+        assert compute_hidden_size() == 1184
 
     def test_static_size(self):
         """Static company data = 36 * 40 = 1440."""

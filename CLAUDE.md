@@ -10,7 +10,7 @@ High-performance Cython game engine for "Rolling Stock Stars" board game, optimi
 
 **Key characteristics:**
 - 2-6 player support with dynamic state sizing
-- ~3500-3800 floats per game state (varies by player count)
+- ~4100-4500 floats per game state (varies by player count)
 - No Python object overhead in hot paths (nogil execution)
 - Benchmark target: thousands of games per minute
 
@@ -93,9 +93,9 @@ Central data structure: single contiguous float32 numpy array.
 **Sizes by player count:**
 | Players | Visible | Hidden | Total |
 |---------|---------|--------|-------|
-| 2 | 2943 | 934 | 3877 |
-| 3 | 3023 | 934 | 3957 |
-| 6 | 3275 | 934 | 4209 |
+| 2 | 2943 | 1184 | 4127 |
+| 3 | 3023 | 1184 | 4207 |
+| 6 | 3275 | 1184 | 4459 |
 
 ### Actions (`core/actions.pyx`)
 
@@ -199,7 +199,7 @@ Both ACQUISITION and CLOSING phases use a **one-by-one offer presentation** patt
 
 **Hidden buffer layout:**
 ```
-[offer_count][offer_index][corp_id₀, company_id₀][corp_id₁, company_id₁]...
+[offer_count][offer_index][owner_type₀, corp_id₀, company_id₀][owner_type₁, corp_id₁, company_id₁]...
 ```
 
 **Receivership handling**: Corps without a president (in receivership) have automated behavior:

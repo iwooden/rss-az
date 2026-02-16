@@ -61,7 +61,7 @@ class TestOfferGeneration:
 
         # Should have at least one FI offer
         assert get_offer_count(gs) > 0
-        corp_id, company_id = get_offer_at(gs, 0)
+        _, corp_id, company_id = get_offer_at(gs, 0)
         assert company_id == 0  # Company 0 from FI
         assert corp_id == 0     # Corp 0 buying
 
@@ -88,7 +88,7 @@ class TestOfferGeneration:
         assert get_offer_count(gs) >= 2
 
         # First offer should be from OS (corp 2)
-        corp_id, company_id = get_offer_at(gs, 0)
+        _, corp_id, company_id = get_offer_at(gs, 0)
         assert corp_id == 2, f"Expected OS (corp 2) first, got corp {corp_id}"
         assert company_id == 0
 
@@ -116,8 +116,8 @@ class TestOfferGeneration:
         assert get_offer_count(gs) >= 2
 
         # Higher-priced corp (0) should appear before lower-priced corp (1)
-        corp_id_first, _ = get_offer_at(gs, 0)
-        corp_id_second, _ = get_offer_at(gs, 1)
+        _, corp_id_first, _ = get_offer_at(gs, 0)
+        _, corp_id_second, _ = get_offer_at(gs, 1)
         assert corp_id_first == 0, f"Expected corp 0 first, got {corp_id_first}"
         assert corp_id_second == 1, f"Expected corp 1 second, got {corp_id_second}"
 
@@ -139,7 +139,7 @@ class TestOfferGeneration:
 
         # Should have at least one offer (corp 1 buying from corp 0)
         assert get_offer_count(gs) > 0
-        corp_id, company_id = get_offer_at(gs, 0)
+        _, corp_id, company_id = get_offer_at(gs, 0)
         assert corp_id == 1  # Corp 1 buying
         assert company_id == 0  # Company 0 from corp 0
 
@@ -180,7 +180,7 @@ class TestOfferGeneration:
 
         # Should have at least one offer (corp 0 buying from player 0)
         assert get_offer_count(gs) > 0
-        corp_id, company_id = get_offer_at(gs, 0)
+        _, corp_id, company_id = get_offer_at(gs, 0)
         assert corp_id == 0  # Corp 0 buying
         assert company_id == 0  # Company 0 from player 0
 
@@ -211,10 +211,10 @@ class TestOfferGeneration:
         # Corp 0 offers for both companies should come before Corp 1 offers
         assert get_offer_count(gs) == 4
 
-        corp_id_0, _ = get_offer_at(gs, 0)
-        corp_id_1, _ = get_offer_at(gs, 1)
-        corp_id_2, _ = get_offer_at(gs, 2)
-        corp_id_3, _ = get_offer_at(gs, 3)
+        _, corp_id_0, _ = get_offer_at(gs, 0)
+        _, corp_id_1, _ = get_offer_at(gs, 1)
+        _, corp_id_2, _ = get_offer_at(gs, 2)
+        _, corp_id_3, _ = get_offer_at(gs, 3)
 
         # First two should be corp 0 (higher price)
         assert corp_id_0 == 0
@@ -252,15 +252,15 @@ class TestOfferGeneration:
         assert get_offer_count(gs) >= 2
 
         # First offers should be from higher-priced buyer (corp 1)
-        corp_id_first, _ = get_offer_at(gs, 0)
-        corp_id_second, _ = get_offer_at(gs, 1)
+        _, corp_id_first, _ = get_offer_at(gs, 0)
+        _, corp_id_second, _ = get_offer_at(gs, 1)
 
         # Both should be corp 1 (or at least first should be)
         assert corp_id_first == 1, f"Expected corp 1 (higher price) first, got {corp_id_first}"
 
         # If more offers, verify sorting continues
         if get_offer_count(gs) >= 3:
-            corp_id_third, _ = get_offer_at(gs, 2)
+            _, corp_id_third, _ = get_offer_at(gs, 2)
             # After corp 1's offers, corp 2's offers should appear
             if corp_id_third != 1:
                 assert corp_id_third == 2
@@ -295,7 +295,7 @@ class TestOfferGeneration:
         assert get_offer_count(gs) == 6
 
         # Collect corp IDs from all offers
-        corp_ids = [get_offer_at(gs, i)[0] for i in range(6)]
+        corp_ids = [get_offer_at(gs, i)[1] for i in range(6)]
 
         # Corp 0 (higher price) should have 3 offers total (1 corp-corp + 2 private)
         # Corp 1 (lower price) should have 3 offers total (1 corp-corp + 2 private)
@@ -1078,8 +1078,8 @@ class TestActionIntegration:
 
         # Verify offer buffer contains both corps' offers for company 0
         assert get_offer_count(gs) >= 2, "Should have offers for both corps"
-        first_corp, first_company = get_offer_at(gs, 0)
-        second_corp, second_company = get_offer_at(gs, 1)
+        _, first_corp, first_company = get_offer_at(gs, 0)
+        _, second_corp, second_company = get_offer_at(gs, 1)
         assert first_corp == 0 and first_company == 0, "First offer: corp 0 for company 0"
         assert second_corp == 1 and second_company == 0, "Second offer: corp 1 for company 0"
 

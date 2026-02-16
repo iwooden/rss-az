@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | 2943         | 934         | 3877       |
-| 3       | 3023         | 934         | 3957       |
-| 4       | 3105         | 934         | 4039       |
-| 5       | 3189         | 934         | 4123       |
-| 6       | 3275         | 934         | 4209       |
+| 2       | 2943         | 1184        | 4127       |
+| 3       | 3023         | 1184        | 4207       |
+| 4       | 3105         | 1184        | 4289       |
+| 5       | 3189         | 1184        | 4373       |
+| 6       | 3275         | 1184        | 4459       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 
@@ -211,7 +211,7 @@ Per company (40 floats):
 
 ## Hidden State Layout
 
-Hidden state starts at `visible_size` offset. Total hidden size = 934.
+Hidden state starts at `visible_size` offset. Total hidden size = 1184.
 
 The hidden state serves several purposes:
 - **Information hiding**: Data the NN shouldn't see (deck order, active player before rotation)
@@ -232,18 +232,18 @@ The hidden state serves several purposes:
 | `corp_price_indices` | 44 | 8 | Compact price indices per corp |
 | `offer_count` | 52 | 1 | Number of acquisition offers |
 | `offer_index` | 53 | 1 | Current acquisition offer |
-| `offer_buffer` | 54 | 500 | Acquisition offers (corp_id, company_id) - 250 offers × 2 floats |
-| `close_offer_count` | 554 | 1 | Number of close offers |
-| `close_offer_index` | 555 | 1 | Current close offer |
-| `close_offer_buffer` | 556 | 300 | Close offers (owner_type, owner_id, company_id) - 100 offers × 3 floats |
-| `acq_active_corp` | 856 | 1 | Compact storage for O(1) access |
-| `acq_target_company` | 857 | 1 | Compact storage for O(1) access |
-| `closing_company` | 858 | 1 | Compact storage for O(1) access |
-| `dividend_corp` | 859 | 1 | Compact storage for O(1) access |
-| `issue_corp` | 860 | 1 | Compact storage for O(1) access |
-| `ipo_company` | 861 | 1 | Compact storage for O(1) access |
-| `company_locations` | 862 | 36 | CompanyLocation enum per company (O(1) clearing) |
-| `company_owner_ids` | 898 | 36 | Owner ID per company (-1 if N/A, player_id or corp_id) |
+| `offer_buffer` | 54 | 750 | Acquisition offers (owner_type, corp_id, company_id) - 250 offers × 3 floats |
+| `close_offer_count` | 804 | 1 | Number of close offers |
+| `close_offer_index` | 805 | 1 | Current close offer |
+| `close_offer_buffer` | 806 | 300 | Close offers (owner_type, owner_id, company_id) - 100 offers × 3 floats |
+| `acq_active_corp` | 1106 | 1 | Compact storage for O(1) access |
+| `acq_target_company` | 1107 | 1 | Compact storage for O(1) access |
+| `closing_company` | 1108 | 1 | Compact storage for O(1) access |
+| `dividend_corp` | 1109 | 1 | Compact storage for O(1) access |
+| `issue_corp` | 1110 | 1 | Compact storage for O(1) access |
+| `ipo_company` | 1111 | 1 | Compact storage for O(1) access |
+| `company_locations` | 1112 | 36 | CompanyLocation enum per company (O(1) clearing) |
+| `company_owner_ids` | 1148 | 36 | Owner ID per company (-1 if N/A, player_id or corp_id) |
 
 **CompanyLocation Enum:**
 | Value | Location | Notes |
