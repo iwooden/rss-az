@@ -34,6 +34,8 @@ from entities import corp as corp_module
 from entities import fi as fi_module
 from core.data import CORP_NAMES, CORP_NAME_TO_ID
 from entities.company cimport LOC_PLAYER, LOC_FI, LOC_CORP
+from entities.offer cimport (offer_buf_reset, offer_buf_set_count, offer_buf_set_index,
+                              offer_buf_advance, offer_buf_append)
 
 # Buffer size constant (DEF required for static array sizing - cannot be imported)
 DEF OFFER_BUFFER_SIZE = 250
@@ -387,44 +389,39 @@ cdef void _generate_offers(GameState state) noexcept:
     cdef int temp_corp_ids[OFFER_BUFFER_SIZE]
     cdef int temp_company_ids[OFFER_BUFFER_SIZE]
     cdef int offer_count = 0
-    cdef int count, i, base
+    cdef int count, i
+    cdef float* data = state._data
+    cdef int cnt_off = state._layout.hidden_offer_count_offset
+    cdef int idx_off = state._layout.hidden_offer_index_offset
+    cdef int buf_off = state._layout.hidden_offer_buffer_offset
 
-    # Initialize offer count and index to 0
-    state._data[state._layout.hidden_offer_count_offset] = 0.0
-    state._data[state._layout.hidden_offer_index_offset] = 0.0
+    offer_buf_reset(data, cnt_off, idx_off)
 
     # Collect FI offers (OS first, then others by price)
     count = _collect_fi_offers(state, temp_owner_types, temp_corp_ids, temp_company_ids)
     for i in range(count):
         if offer_count < OFFER_BUFFER_SIZE:
-            base = state._layout.hidden_offer_buffer_offset + (offer_count * 3)
-            state._data[base] = <float>temp_owner_types[i]
-            state._data[base + 1] = <float>temp_corp_ids[i]
-            state._data[base + 2] = <float>temp_company_ids[i]
+            offer_buf_append(data, buf_off, offer_count,
+                             temp_owner_types[i], temp_corp_ids[i], temp_company_ids[i])
             offer_count += 1
 
     # Collect Corp->Corp offers
     count = _collect_corp_corp_offers(state, temp_owner_types, temp_corp_ids, temp_company_ids)
     for i in range(count):
         if offer_count < OFFER_BUFFER_SIZE:
-            base = state._layout.hidden_offer_buffer_offset + (offer_count * 3)
-            state._data[base] = <float>temp_owner_types[i]
-            state._data[base + 1] = <float>temp_corp_ids[i]
-            state._data[base + 2] = <float>temp_company_ids[i]
+            offer_buf_append(data, buf_off, offer_count,
+                             temp_owner_types[i], temp_corp_ids[i], temp_company_ids[i])
             offer_count += 1
 
     # Collect Corp->Player private offers
     count = _collect_player_private_offers(state, temp_owner_types, temp_corp_ids, temp_company_ids)
     for i in range(count):
         if offer_count < OFFER_BUFFER_SIZE:
-            base = state._layout.hidden_offer_buffer_offset + (offer_count * 3)
-            state._data[base] = <float>temp_owner_types[i]
-            state._data[base + 1] = <float>temp_corp_ids[i]
-            state._data[base + 2] = <float>temp_company_ids[i]
+            offer_buf_append(data, buf_off, offer_count,
+                             temp_owner_types[i], temp_corp_ids[i], temp_company_ids[i])
             offer_count += 1
 
-    # Write final offer count
-    state._data[state._layout.hidden_offer_count_offset] = <float>offer_count
+    offer_buf_set_count(data, cnt_off, offer_count)
 
 
 def generate_offers_py(GameState state):
@@ -536,7 +533,7 @@ cdef void _present_current_offer(GameState state) noexcept:
         # Skip invalid offers (already acquired, insufficient cash, etc.)
         if not _is_offer_valid(state, owner_type, corp_id, company_id):
             index += 1
-            state._data[state._layout.hidden_offer_index_offset] = <float>index
+            offer_buf_set_index(state._data, state._layout.hidden_offer_index_offset, index)
             continue
 
         # Check if buying corp is in receivership
@@ -556,7 +553,7 @@ cdef void _present_current_offer(GameState state) noexcept:
 
             # Advance to next offer (auto-pass for both unaffordable FI and non-FI)
             index += 1
-            state._data[state._layout.hidden_offer_index_offset] = <float>index
+            offer_buf_set_index(state._data, state._layout.hidden_offer_index_offset, index)
             continue
 
         # Found player-president offer - update net worths before presenting decision
@@ -584,8 +581,7 @@ cdef void _advance_to_next_offer(GameState state) noexcept:
 
     Called after accept or pass on current offer.
     """
-    cdef int index = <int>state._data[state._layout.hidden_offer_index_offset]
-    state._data[state._layout.hidden_offer_index_offset] = <float>(index + 1)
+    offer_buf_advance(state._data, state._layout.hidden_offer_index_offset)
     _present_current_offer(state)
 
 
@@ -639,7 +635,7 @@ cdef bint _validate_price_action(GameState state, int price) noexcept:
     cdef int corp_id = turn_module.TURN.get_acq_active_corp(state)
     cdef int company_id = turn_module.TURN.get_acq_target_company(state)
     cdef int low_price, high_price, corp_cash
-    cdef int seller_corp_id, index, base, owner_type
+    cdef int seller_corp_id, index, owner_type
 
     # Get price bounds
     low_price = get_company_low_price(company_id)
@@ -665,8 +661,7 @@ cdef bint _validate_price_action(GameState state, int price) noexcept:
     # Seller retains >= 1 company (only for corp sellers, not FI or players)
     # Read owner_type from current offer in buffer
     index = <int>state._data[state._layout.hidden_offer_index_offset]
-    base = state._layout.hidden_offer_buffer_offset + (index * 3)
-    owner_type = <int>state._data[base]
+    owner_type = <int>state._data[state._layout.hidden_offer_buffer_offset + (index * 3)]
     if owner_type == LOC_CORP:
         seller_corp_id = company_module.COMPANIES[company_id].get_owner_id(state)
         if corp_module.CORPS[seller_corp_id].count_companies(state, include_acquisition=True) < 2:
@@ -766,12 +761,11 @@ cdef void _handle_accept_price(GameState state, int price) noexcept:
     cdef int corp_id = turn_module.TURN.get_acq_active_corp(state)
     cdef int company_id = turn_module.TURN.get_acq_target_company(state)
     cdef int seller_id, current_proceeds
-    cdef int index, base, owner_type
+    cdef int index, owner_type
 
     # Read owner_type from current offer in buffer
     index = <int>state._data[state._layout.hidden_offer_index_offset]
-    base = state._layout.hidden_offer_buffer_offset + (index * 3)
-    owner_type = <int>state._data[base]
+    owner_type = <int>state._data[state._layout.hidden_offer_buffer_offset + (index * 3)]
 
     seller_id = company_module.COMPANIES[company_id].get_owner_id(state)
 
@@ -888,8 +882,8 @@ cpdef void setup_acquisition_phase(GameState state):
     Does NOT clear acquisition zones - that happens at phase EXIT (after merge).
     """
     # Reset offer tracking
-    state._data[state._layout.hidden_offer_index_offset] = 0.0
-    state._data[state._layout.hidden_offer_count_offset] = 0.0
+    offer_buf_reset(state._data, state._layout.hidden_offer_count_offset,
+                    state._layout.hidden_offer_index_offset)
 
     # Generate offers (populates buffer)
     _generate_offers(state)
