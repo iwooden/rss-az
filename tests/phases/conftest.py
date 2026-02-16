@@ -140,7 +140,7 @@ def assert_invariants(state, msg=""):
             stored = corp.get_stars(state)
             computed = sum(
                 get_company_stars(cid) for cid in range(36)
-                if corp.owns_company(state, cid)
+                if corp.owns_company(state, cid) or corp.has_acquisition_company(state, cid)
             )
             cash = corp.get_cash(state)
             if cash > 0:

@@ -260,10 +260,12 @@ cdef class Company:
         self._clear_visible_flag(state)
         state._data[self._corps_offset + corp_id * self._corp_stride + self._corp_acq_field + self.company_id] = 1.0
         self._set_hidden_location(state, LOC_CORP_ACQ, corp_id)
-        # Acq zone companies aren't counted in stars or income, but old corp owner lost a company
-        if old_loc == LOC_CORP and corp_module.CORPS[old_owner].is_active(state):
+        if old_loc == LOC_CORP and old_owner != corp_id and corp_module.CORPS[old_owner].is_active(state):
             corp_module.CORPS[old_owner].recalculate_stars(state)
             corp_module.CORPS[old_owner].calculate_income(state)
+        if corp_module.CORPS[corp_id].is_active(state):
+            corp_module.CORPS[corp_id].recalculate_stars(state)
+            corp_module.CORPS[corp_id].calculate_income(state)
 
     cpdef void move_to_auction(self, GameState state):
         """Make company available for auction."""

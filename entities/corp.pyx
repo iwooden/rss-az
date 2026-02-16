@@ -308,13 +308,16 @@ cdef class Corporation:
         Recompute and store total owned stars from current state.
 
         Full owned stars = sum(company star ratings) + floor(cash / 10) + SI bonus.
+        Includes both owned and acquisition zone companies so the NN sees
+        accurate values during the ACQUISITION phase.
         Call this after any change to company ownership or corporation cash.
         """
         cdef int total = 0
         cdef int company_id, cash
 
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
-            if self._owns_company_nogil(state._data, company_id):
+            if self._owns_company_nogil(state._data, company_id) or \
+               state._data[self._acquisition_companies_offset + company_id] == 1.0:
                 total += get_company_stars(company_id)
 
         cash = self.get_cash(state)
@@ -452,9 +455,10 @@ cdef class Corporation:
         cdef int total_income
         cdef bint is_vm = (self.corp_id == CorpIndices.CORP_VM)
 
-        # First pass: collect companies, sum cached adjusted incomes, track highest FV
+        # First pass: collect companies (owned + acquisition zone), sum cached adjusted incomes, track highest FV
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
-            if self._owns_company_nogil(data, company_id):
+            if self._owns_company_nogil(data, company_id) or \
+               data[self._acquisition_companies_offset + company_id] == 1.0:
                 company_ids[company_count] = company_id
                 company_count += 1
 
