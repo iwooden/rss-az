@@ -219,6 +219,7 @@ cdef class Company:
         self._set_hidden_location(state, LOC_PLAYER, player_id)
         if old_loc == LOC_CORP and corp_module.CORPS[old_owner].is_active(state):
             corp_module.CORPS[old_owner].recalculate_stars(state)
+            corp_module.CORPS[old_owner].calculate_income(state)
 
     cpdef void transfer_to_fi(self, GameState state):
         """Transfer company to Foreign Investor ownership."""
@@ -230,6 +231,7 @@ cdef class Company:
         self._set_hidden_location(state, LOC_FI, -1)
         if old_loc == LOC_CORP and corp_module.CORPS[old_owner].is_active(state):
             corp_module.CORPS[old_owner].recalculate_stars(state)
+            corp_module.CORPS[old_owner].calculate_income(state)
 
     cpdef void transfer_to_corp(self, GameState state, int corp_id):
         """Transfer company to corporation ownership."""
@@ -243,8 +245,10 @@ cdef class Company:
         self._set_hidden_location(state, LOC_CORP, corp_id)
         if old_loc == LOC_CORP and old_owner != corp_id and corp_module.CORPS[old_owner].is_active(state):
             corp_module.CORPS[old_owner].recalculate_stars(state)
+            corp_module.CORPS[old_owner].calculate_income(state)
         if corp_module.CORPS[corp_id].is_active(state):
             corp_module.CORPS[corp_id].recalculate_stars(state)
+            corp_module.CORPS[corp_id].calculate_income(state)
 
     cpdef void transfer_to_corp_acquisition(self, GameState state, int corp_id):
         """Transfer company to corporation's acquisition pile."""
@@ -256,9 +260,10 @@ cdef class Company:
         self._clear_visible_flag(state)
         state._data[self._corps_offset + corp_id * self._corp_stride + self._corp_acq_field + self.company_id] = 1.0
         self._set_hidden_location(state, LOC_CORP_ACQ, corp_id)
-        # Acq zone companies aren't counted in stars, but old corp owner lost a company
+        # Acq zone companies aren't counted in stars or income, but old corp owner lost a company
         if old_loc == LOC_CORP and corp_module.CORPS[old_owner].is_active(state):
             corp_module.CORPS[old_owner].recalculate_stars(state)
+            corp_module.CORPS[old_owner].calculate_income(state)
 
     cpdef void move_to_auction(self, GameState state):
         """Make company available for auction."""
@@ -283,6 +288,7 @@ cdef class Company:
         self._set_hidden_location(state, LOC_REMOVED, -1)
         if old_loc == LOC_CORP and corp_module.CORPS[old_owner].is_active(state):
             corp_module.CORPS[old_owner].recalculate_stars(state)
+            corp_module.CORPS[old_owner].calculate_income(state)
 
     cpdef void exclude_from_game(self, GameState state):
         """Mark company as excluded during game init (hidden state only).

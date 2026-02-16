@@ -152,6 +152,17 @@ def assert_invariants(state, msg=""):
                 f"stored={stored} != computed={computed}"
             )
 
+    # Corp income consistency: stored income must match calculated value
+    for corp_id in range(8):
+        corp = CORPS[corp_id]
+        if corp.is_active(state):
+            stored = corp.get_income(state)
+            computed = corp.calculate_income(state)
+            assert stored == computed, (
+                f"{msg}\nCorp {corp_id} income mismatch: "
+                f"stored={stored} != computed={computed}"
+            )
+
     # Auction row size check
     auction_count = sum(
         1 for cid in range(36)

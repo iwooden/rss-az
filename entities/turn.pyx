@@ -12,6 +12,7 @@ from core.state cimport GameState, StateLayout, TurnStateOffsets
 from core.data cimport GameConstants, GamePhases, CASH_DIVISOR, get_adjusted_company_income
 from entities import player as player_module
 from entities import company as company_module
+from entities import corp as corp_module
 from entities.encoding cimport (
     set_one_hot, clear_one_hot,
     set_one_hot_with_compact, clear_one_hot_with_compact,
@@ -299,6 +300,8 @@ cdef class TurnState:
             state._data[self._hidden_coo_level_offset] = <float>level
             # Update all company adjusted incomes for the new CoO level
             self._update_all_company_incomes(state, level)
+            # Recalculate all active corp incomes (they depend on adjusted company incomes)
+            self._update_all_corp_incomes(state)
 
     cdef void _update_all_company_incomes(self, GameState state, int coo_level):
         """
@@ -311,6 +314,13 @@ cdef class TurnState:
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
             adjusted_income = get_adjusted_company_income(company_id, coo_level)
             company_module.COMPANIES[company_id].set_adjusted_income(state, adjusted_income)
+
+    cdef void _update_all_corp_incomes(self, GameState state):
+        """Recalculate income for all active corporations."""
+        cdef int corp_id
+        for corp_id in range(<int>GameConstants.NUM_CORPS):
+            if corp_module.CORPS[corp_id].is_active(state):
+                corp_module.CORPS[corp_id].calculate_income(state)
 
     # =========================================================================
     # TURN NUMBER

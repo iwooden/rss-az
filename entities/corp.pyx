@@ -213,10 +213,11 @@ cdef class Corporation:
         # 1. Transfer company to corporation
         company_module.COMPANIES[company_id].transfer_to_corp(state, self.corp_id)
 
-        # 2. Set corp active, then compute initial stars (corp wasn't active
-        #    during transfer_to_corp, so the auto-recalculate was skipped)
+        # 2. Set corp active, then compute initial stars and income (corp wasn't
+        #    active during transfer_to_corp, so the auto-recalculates were skipped)
         self.set_active(state, True)
         self.recalculate_stars(state)
+        self.calculate_income(state)
 
         # 3. Claim market space and set price
         market_module.MARKET.set_space_available(state, par_index, False)
@@ -288,7 +289,7 @@ cdef class Corporation:
 
     cpdef int get_income(self, GameState state):
         """Get corporation's total income (from owned companies)."""
-        return <int>(state._data[self._income_offset] * CASH_DIVISOR + 0.5)
+        return <int>lround(state._data[self._income_offset] * CASH_DIVISOR)
 
     cpdef void set_income(self, GameState state, int income):
         """Set corporation's income."""
@@ -509,11 +510,16 @@ cdef class Corporation:
         This is a Python-accessible wrapper around _calculate_income_nogil.
         See _calculate_income_nogil for formula details and RULES.md compliance.
 
+        Eagerly stores the result in the visible income field so the NN always
+        sees fresh data.
+
         Returns:
             Total income (can be negative)
         """
         cdef int coo_level = turn_module.TURN.get_coo_level(state)
-        return self._calculate_income_nogil(state._data, coo_level)
+        cdef int income = self._calculate_income_nogil(state._data, coo_level)
+        self.set_income(state, income)
+        return income
 
     # =========================================================================
     # INCOME APPLICATION
