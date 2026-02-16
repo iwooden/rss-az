@@ -24,7 +24,7 @@ Action space: 26 actions (dividend amounts 0-25 per share)
 
 from core.state cimport GameState
 from core.data cimport (
-    GameConstants, GamePhases, CorpIndices,
+    GameConstants, GamePhases,
     PHASE_END_CARD,
     get_required_stars, MARKET_PRICES
 )
@@ -80,35 +80,6 @@ cdef int _find_next_dividend_corp(GameState state) noexcept:
             best_corp = corp_id
 
     return best_corp
-
-
-cdef int _calculate_owned_stars(GameState state, int corp_id) noexcept:
-    """
-    Calculate owned stars for share price adjustment.
-
-    Per RULES.md lines 314-317:
-    - Sum stars on all owned companies (already stored in corp.stars)
-    - Add 1 star per 10 cash owned
-    - Stars, Inc. (SI): add 2 additional stars
-
-    Args:
-        state: Game state
-        corp_id: Corporation to calculate for
-
-    Returns:
-        Total owned stars
-    """
-    cdef int owned_stars = corp_module.CORPS[corp_id].get_stars(state)
-    cdef int cash = corp_module.CORPS[corp_id].get_cash(state)
-
-    # +1 star per $10 cash
-    owned_stars += cash // 10
-
-    # Stars, Inc. special ability: +2 additional stars
-    if corp_id == CorpIndices.CORP_SI:
-        owned_stars += 2
-
-    return owned_stars
 
 
 cdef void _pay_dividends(GameState state, int corp_id, int amount_per_share) noexcept:
@@ -231,7 +202,7 @@ cdef void _adjust_share_price(GameState state, int corp_id) noexcept:
     """
     cdef int current_index = corp_module.CORPS[corp_id].get_price_index(state)
     cdef int issued_shares = corp_module.CORPS[corp_id].get_issued_shares(state)
-    cdef int owned_stars = _calculate_owned_stars(state, corp_id)
+    cdef int owned_stars = corp_module.CORPS[corp_id].get_stars(state)
     cdef int required_stars = get_required_stars(current_index, issued_shares)
     cdef int move = _calculate_price_move(owned_stars, required_stars)
     cdef int target_index
@@ -358,7 +329,7 @@ cdef int apply_dividend_action(GameState state, ActionInfo* info) noexcept:
     if amount < 0 or amount >= <int>GameConstants.MAX_DIVIDEND:
         return 1
 
-    # Pay dividends
+    # Pay dividends (stars auto-updated via set_cash)
     _pay_dividends(state, corp_id, amount)
 
     # Adjust share price
@@ -409,11 +380,6 @@ def apply_dividend_action_py(GameState state, int amount):
     info.action_type = ACTION_DIVIDEND
     info.amount = amount
     return apply_dividend_action(state, &info)
-
-
-def calculate_owned_stars_py(GameState state, int corp_id):
-    """Python wrapper for _calculate_owned_stars."""
-    return _calculate_owned_stars(state, corp_id)
 
 
 def find_next_dividend_corp_py(GameState state):

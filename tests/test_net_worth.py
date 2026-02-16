@@ -380,7 +380,6 @@ class TestNetWorthFreshBeforeDividendDecision:
 
         float_corp_for_test(state, corp_id=0, par_index=10, float_shares=1)
         CORPS[0].set_cash(state, 50)
-        CORPS[0].set_stars(state, 5)
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
 

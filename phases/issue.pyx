@@ -145,7 +145,7 @@ cdef void _process_issue_share(GameState state, int corp_id) noexcept:
     corp_module.CORPS[corp_id].set_issued_shares(state, issued + 1)
     corp_module.CORPS[corp_id].set_bank_shares(state, bank_shares + 1)
 
-    # Pay the corporation
+    # Pay the corporation (stars auto-updated via set_cash)
     corp_module.CORPS[corp_id].add_cash(state, proceeds)
 
 

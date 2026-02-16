@@ -479,6 +479,9 @@ cdef bint _is_offer_valid(GameState state, int corp_id, int company_id) noexcept
         seller_president = corp_module.CORPS[owner_id].get_president_id(state)
         if seller_president != buyer_president or seller_president < 0:
             return False
+        # Last-company rule: seller must retain >= 1 company after sale
+        if corp_module.CORPS[owner_id].count_companies(state, include_acquisition=True) < 2:
+            return False
     elif location == LOC_PLAYER:
         # Player-corp: player must be buyer corp's president
         if owner_id != buyer_president:
@@ -955,6 +958,7 @@ cdef void _merge_acquisition_zones(GameState state) noexcept:
 
     Called before transitioning to CLOSING phase.
     Order: proceeds first (both player and corp), then companies.
+    Stars auto-update via set_cash and transfer_to_corp.
     """
     _merge_player_proceeds(state)
     _merge_corp_proceeds(state)

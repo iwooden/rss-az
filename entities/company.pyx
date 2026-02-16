@@ -19,6 +19,7 @@ from core.data cimport (
 # Use constants from GameConstants (imported above)
 from core.data import COMPANY_NAMES
 from entities import deck as deck_module
+from entities import corp as corp_module
 
 
 # =============================================================================
@@ -210,35 +211,54 @@ cdef class Company:
         """Transfer company to player ownership."""
         if player_id < 0 or player_id >= self._num_players:
             return
+        cdef int old_loc = self._get_hidden_location(state)
+        cdef int old_owner = self._get_hidden_owner_id(state)
         self._remove_from_deck_if_needed(state)
         self._clear_visible_flag(state)
         state._data[self._players_offset + player_id * self._player_stride + self._player_companies_field + self.company_id] = 1.0
         self._set_hidden_location(state, LOC_PLAYER, player_id)
+        if old_loc == LOC_CORP and corp_module.CORPS[old_owner].is_active(state):
+            corp_module.CORPS[old_owner].recalculate_stars(state)
 
     cpdef void transfer_to_fi(self, GameState state):
         """Transfer company to Foreign Investor ownership."""
+        cdef int old_loc = self._get_hidden_location(state)
+        cdef int old_owner = self._get_hidden_owner_id(state)
         self._remove_from_deck_if_needed(state)
         self._clear_visible_flag(state)
         state._data[self._fi_offset] = 1.0
         self._set_hidden_location(state, LOC_FI, -1)
+        if old_loc == LOC_CORP and corp_module.CORPS[old_owner].is_active(state):
+            corp_module.CORPS[old_owner].recalculate_stars(state)
 
     cpdef void transfer_to_corp(self, GameState state, int corp_id):
         """Transfer company to corporation ownership."""
         if corp_id < 0 or corp_id >= GameConstants.NUM_CORPS:
             return
+        cdef int old_loc = self._get_hidden_location(state)
+        cdef int old_owner = self._get_hidden_owner_id(state)
         self._remove_from_deck_if_needed(state)
         self._clear_visible_flag(state)
         state._data[self._corps_offset + corp_id * self._corp_stride + self._corp_companies_field + self.company_id] = 1.0
         self._set_hidden_location(state, LOC_CORP, corp_id)
+        if old_loc == LOC_CORP and old_owner != corp_id and corp_module.CORPS[old_owner].is_active(state):
+            corp_module.CORPS[old_owner].recalculate_stars(state)
+        if corp_module.CORPS[corp_id].is_active(state):
+            corp_module.CORPS[corp_id].recalculate_stars(state)
 
     cpdef void transfer_to_corp_acquisition(self, GameState state, int corp_id):
         """Transfer company to corporation's acquisition pile."""
         if corp_id < 0 or corp_id >= GameConstants.NUM_CORPS:
             return
+        cdef int old_loc = self._get_hidden_location(state)
+        cdef int old_owner = self._get_hidden_owner_id(state)
         self._remove_from_deck_if_needed(state)
         self._clear_visible_flag(state)
         state._data[self._corps_offset + corp_id * self._corp_stride + self._corp_acq_field + self.company_id] = 1.0
         self._set_hidden_location(state, LOC_CORP_ACQ, corp_id)
+        # Acq zone companies aren't counted in stars, but old corp owner lost a company
+        if old_loc == LOC_CORP and corp_module.CORPS[old_owner].is_active(state):
+            corp_module.CORPS[old_owner].recalculate_stars(state)
 
     cpdef void move_to_auction(self, GameState state):
         """Make company available for auction."""
@@ -256,9 +276,13 @@ cdef class Company:
 
     cpdef void remove_from_game(self, GameState state):
         """Remove company from the game (closed)."""
+        cdef int old_loc = self._get_hidden_location(state)
+        cdef int old_owner = self._get_hidden_owner_id(state)
         self._clear_visible_flag(state)
         state._data[self._removed_offset] = 1.0
         self._set_hidden_location(state, LOC_REMOVED, -1)
+        if old_loc == LOC_CORP and corp_module.CORPS[old_owner].is_active(state):
+            corp_module.CORPS[old_owner].recalculate_stars(state)
 
     cpdef void exclude_from_game(self, GameState state):
         """Mark company as excluded during game init (hidden state only).

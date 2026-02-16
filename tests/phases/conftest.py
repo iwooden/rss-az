@@ -12,7 +12,7 @@ import numpy as np
 from core.state import GameState
 from core.driver import DRIVER
 from core.actions import get_valid_action_mask, get_action_layout
-from core.data import GamePhases, CORP_NAMES, get_corp_share_count
+from core.data import GamePhases, CORP_NAMES, CorpIndices, get_corp_share_count, get_company_stars
 from entities.turn import TURN
 from entities.player import PLAYERS, update_all_net_worths
 from entities.corp import CORPS
@@ -95,7 +95,7 @@ def assert_invariants(state, msg=""):
     - Share conservation: unissued + bank + players = total per corp
     - Issued shares = bank + players per corp
     - Player cash >= 0, net worth >= 0
-    - Corp cash >= 0, price index in [0, 26]
+    - Corp cash >= 0, stars consistent, price index in [0, 26]
     - Active corp has >= 1 company
     - President has >= 1 share (non-receivership), no president (receivership)
     - FI cash >= 0
@@ -132,6 +132,25 @@ def assert_invariants(state, msg=""):
         if corp.is_active(state):
             cash = corp.get_cash(state)
             assert cash >= 0, f"{msg}\nCorp {corp_id} cash negative: {cash}"
+
+    # Corp stars consistency: stored stars must match computed value
+    for corp_id in range(8):
+        corp = CORPS[corp_id]
+        if corp.is_active(state):
+            stored = corp.get_stars(state)
+            computed = sum(
+                get_company_stars(cid) for cid in range(36)
+                if corp.owns_company(state, cid)
+            )
+            cash = corp.get_cash(state)
+            if cash > 0:
+                computed += cash // 10
+            if corp_id == CorpIndices.CORP_SI:
+                computed += 2
+            assert stored == computed, (
+                f"{msg}\nCorp {corp_id} stars mismatch: "
+                f"stored={stored} != computed={computed}"
+            )
 
     # Auction row size check
     auction_count = sum(

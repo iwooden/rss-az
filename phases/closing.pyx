@@ -59,6 +59,7 @@ cdef void _close_company(GameState state, int company_id, int owner_type, int ow
     Steps:
     1. Apply Junkyard Scrappers bonus (2x printed income to JS cash)
     2. Remove company from game (clears ownership automatically)
+    3. Recalculate stars if owned by a corp (company removed, cash may have changed)
 
     Args:
         state: Game state
@@ -72,7 +73,7 @@ cdef void _close_company(GameState state, int company_id, int owner_type, int ow
     if owner_type == LOC_CORP and owner_id == CorpIndices.CORP_JS:
         corp_module.CORPS[owner_id].add_cash(state, printed_income * 2)
 
-    # Remove company from game (clear_location handles ownership)
+    # Remove company from game (stars auto-updated via remove_from_game and set_cash)
     company_module.COMPANIES[company_id].remove_from_game(state)
 
 

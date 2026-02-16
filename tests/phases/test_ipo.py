@@ -2,7 +2,7 @@
 import pytest
 from core.data import (
     GamePhases, GameConstants,
-    get_company_face_value,
+    get_company_face_value, get_company_stars,
     get_par_price, get_par_index_for_slot, get_market_index,
     get_corp_share_count,
 )
@@ -161,15 +161,20 @@ class TestBasicIPOMechanics:
         assert not MARKET.is_space_available(state, market_index)
 
     def test_ipo_sets_corp_stars(self, ipo_state_with_company):
-        """IPO sets corporation stars to company's star tier."""
+        """IPO sets full owned stars (companies + cash/10 + SI bonus)."""
         state = ipo_state_with_company
         corp = CORPS[0]
 
-        # Company 14 has 3 stars (yellow)
+        # Company 14 has 3 stars (yellow), par slot 0 -> par=16, FV=20 > par
+        # 2 shares each -> corp cash = (2*16-20) + (2*16) = 44
+        # Owned stars = 3 (company) + 44//10 (cash) = 7
         apply_ipo_action_py(state, 0, 0)
         assert_invariants(state, "After IPO sets corp stars")
 
-        assert corp.get_stars(state) == 3
+        company_stars = get_company_stars(14)  # 3
+        corp_cash = corp.get_cash(state)       # 44
+        expected = company_stars + corp_cash // 10
+        assert corp.get_stars(state) == expected
 
 
 # =============================================================================

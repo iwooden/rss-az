@@ -17,7 +17,6 @@ from tests.phases.conftest import float_corp_for_test, assert_invariants
 from phases.dividends import (
     setup_dividends_phase_py,
     apply_dividend_action_py,
-    calculate_owned_stars_py,
     find_next_dividend_corp_py,
     calculate_price_move_py,
     find_target_index_py,
@@ -46,9 +45,8 @@ def dividend_state():
     CORPS[0].set_bank_shares(state, 3)  # set_shares below will subtract 2
     PLAYERS[1].set_shares(state, 0, 2)  # bank: 3 - 2 = 1
 
-    # Set cash and stars for the test
+    # Set cash (stars auto-calculated: 1★ AKE + 100//10 = 11)
     CORPS[0].set_cash(state, 100)
-    CORPS[0].set_stars(state, 5)
 
     # Transition to DIVIDENDS phase
     TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
@@ -72,7 +70,6 @@ def multi_corp_dividend_state():
     PLAYERS[0].set_shares(state, 0, 4)  # delta=+2, bank: 2-2=0
     CORPS[0].set_unissued_shares(state, 3)
     CORPS[0].set_cash(state, 100)
-    CORPS[0].set_stars(state, 10)
 
     # Corp 1 at price index 15 (higher, processed first, total=7)
     # After float(float_shares=2): player1=2, bank=2, issued=4, unissued=3
@@ -83,7 +80,6 @@ def multi_corp_dividend_state():
     CORPS[1].set_bank_shares(state, 3)  # set_shares below will subtract 3
     PLAYERS[1].set_shares(state, 1, 5)  # delta=+3, bank: 3-3=0
     CORPS[1].set_cash(state, 150)
-    CORPS[1].set_stars(state, 12)
 
     # Corp 2 at price index 5 (lowest, processed last, total=6)
     # After float(float_shares=1): player2=1, bank=1, issued=2, unissued=4
@@ -94,7 +90,6 @@ def multi_corp_dividend_state():
     CORPS[2].set_bank_shares(state, 2)  # set_shares below will subtract 2
     PLAYERS[2].set_shares(state, 2, 3)  # delta=+2, bank: 2-2=0
     CORPS[2].set_cash(state, 50)
-    CORPS[2].set_stars(state, 3)
 
     return state
 
@@ -320,69 +315,63 @@ class TestMaxDividendConstraint:
 
 
 class TestStarCalculation:
-    """Owned stars = company_stars + cash/10 + SI_bonus."""
+    """Owned stars = company_stars + cash/10 + SI_bonus (eagerly maintained)."""
 
     def test_company_stars_counted(self, dividend_state):
-        """Stars from owned companies are counted."""
+        """Stars from owned companies are counted via recalculate_stars."""
         state = dividend_state
-        corp = CORPS[0]
+        corp = CORPS[0]  # JS, owns company 3 (AKE, 1★)
 
-        # Corp has 5 stars from companies
-        corp.set_stars(state, 5)
         corp.set_cash(state, 0)  # No cash bonus
+        corp.recalculate_stars(state)
 
-        owned_stars = calculate_owned_stars_py(state, 0)
-        assert owned_stars == 5
+        assert corp.get_stars(state) == 1  # AKE = 1★
 
     def test_cash_bonus_stars(self, dividend_state):
         """1 star per $10 cash."""
         state = dividend_state
-        corp = CORPS[0]
+        corp = CORPS[0]  # Owns AKE (1★)
 
-        corp.set_stars(state, 0)  # No company stars
         corp.set_cash(state, 45)  # 45 // 10 = 4 bonus stars
+        corp.recalculate_stars(state)
 
-        owned_stars = calculate_owned_stars_py(state, 0)
-        assert owned_stars == 4
+        assert corp.get_stars(state) == 5  # 1 company + 4 cash
 
     def test_combined_stars(self, dividend_state):
         """Company stars + cash bonus combined."""
         state = dividend_state
-        corp = CORPS[0]
+        corp = CORPS[0]  # Owns AKE (1★)
 
-        corp.set_stars(state, 7)
         corp.set_cash(state, 33)  # 3 bonus stars
+        corp.recalculate_stars(state)
 
-        owned_stars = calculate_owned_stars_py(state, 0)
-        assert owned_stars == 10  # 7 + 3
+        assert corp.get_stars(state) == 4  # 1 company + 3 cash
 
     def test_si_bonus_stars(self):
         """Stars, Inc. (SI) gets +2 additional stars."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
-        # Float SI (corp index 7) - the SI ability is what we're testing
-        float_corp_for_test(state, corp_id=CorpIndices.CORP_SI)
+        # Float SI (corp index 7) — draws company 3 (AKE, 1★)
+        cid = float_corp_for_test(state, corp_id=CorpIndices.CORP_SI)
         si = CORPS[CorpIndices.CORP_SI]
+        company_stars = get_company_stars(cid)
 
-        # Set stars and cash for the test
-        si.set_stars(state, 5)
         si.set_cash(state, 20)  # 2 bonus stars
+        si.recalculate_stars(state)
 
-        # SI should have 5 + 2 + 2 = 9 stars
-        owned_stars = calculate_owned_stars_py(state, CorpIndices.CORP_SI)
-        assert owned_stars == 9  # 5 company + 2 cash + 2 SI bonus
+        # company_stars + 2 cash + 2 SI bonus
+        assert si.get_stars(state) == company_stars + 2 + 2
 
     def test_non_si_no_bonus(self, dividend_state):
         """Non-SI corps don't get the +2 bonus."""
         state = dividend_state
-        corp = CORPS[0]  # JS, not SI
+        corp = CORPS[0]  # JS (not SI), owns AKE (1★)
 
-        corp.set_stars(state, 5)
-        corp.set_cash(state, 20)
+        corp.set_cash(state, 20)  # 2 cash bonus
+        corp.recalculate_stars(state)
 
-        owned_stars = calculate_owned_stars_py(state, 0)
-        assert owned_stars == 7  # 5 + 2, no SI bonus
+        assert corp.get_stars(state) == 3  # 1 company + 2 cash, no SI bonus
 
 
 # =============================================================================
@@ -542,7 +531,6 @@ class TestReceivershipHandling:
         corp.float_corp(state, 0, 0, 15, 2)
         corp.set_in_receivership(state, True)
         PLAYERS[0].set_shares(state, 0, 0)  # delta=-2, bank: 2+2=4
-        corp.set_stars(state, 10)
         corp.set_cash(state, 100)
 
         # Float corp 1 at lower price, player-controlled
@@ -555,7 +543,6 @@ class TestReceivershipHandling:
         corp1.set_unissued_shares(state, 4)
         corp1.set_bank_shares(state, 2)  # set_shares below will subtract 2
         PLAYERS[0].set_shares(state, 1, 3)  # delta=+2, bank: 2-2=0
-        corp1.set_stars(state, 5)
         corp1.set_cash(state, 50)
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
@@ -578,8 +565,7 @@ class TestReceivershipHandling:
         corp.float_corp(state, 0, 0, 10, 2)
         corp.set_in_receivership(state, True)
         PLAYERS[0].set_shares(state, 0, 0)  # delta=-2, bank: 2+2=4
-        corp.set_stars(state, 10)  # Plenty of stars, should rise
-        corp.set_cash(state, 100)
+        corp.set_cash(state, 100)  # Stars = 1★ + 100//10 = 11, plenty to rise
         MARKET.set_space_available(state, 11, True)
         MARKET.set_space_available(state, 12, True)
 
@@ -608,8 +594,7 @@ class TestReceivershipHandling:
         corp.set_unissued_shares(state, 4)
         corp.set_bank_shares(state, 2)  # set_shares below will add 1
         PLAYERS[0].set_shares(state, 0, 0)  # delta=-1, bank: 2+1=3
-        corp.set_stars(state, 50)  # Way more than needed, should rise 2
-        corp.set_cash(state, 100)
+        corp.set_cash(state, 100)  # Stars = 1★ + 100//10 = 11, way more than required
 
         # Make spaces available (except current position)
         for i in range(27):
@@ -707,10 +692,10 @@ class TestDividendsIntegration:
         state = dividend_state
         corp = CORPS[0]
 
-        # Set up corp with stars exactly meeting requirement
-        # Price index 10, issued 4 -> required = round(4 * 15 / 10) = 6
-        corp.set_stars(state, 5)  # Need 1 more star from cash
-        corp.set_cash(state, 15)  # 1 bonus star -> total 6, exactly meets
+        # Corp owns AKE (1★), price_index=10 ($14), issued=5
+        # Required = round(5 * 14 / 10) = 7
+        # Set cash=65: stars = 1 + 65//10 = 7, exactly meets requirement
+        corp.set_cash(state, 65)
 
         # Make spaces available
         for i in range(27):
@@ -724,10 +709,9 @@ class TestDividendsIntegration:
         setup_dividends_phase_py(state)
         assert_invariants(state, "After setup_dividends_phase_py")
 
-        # Pay $3 per share × 4 shares = $12 total
-        # After payment: cash = 15 - 12 = 3, only 0 bonus stars
-        # Stars = 5 + 0 = 5, required = 6, diff = -1 -> down 1
-        apply_dividend_action_py(state, 3)
+        # Pay $2/share × 5 issued = $10 total
+        # After: cash = 55, bonus = 5, total = 1+5 = 6, required = 7, diff = -1 -> down 1
+        apply_dividend_action_py(state, 2)
         assert_invariants(state, "After dividend action")
 
         # Price should have dropped

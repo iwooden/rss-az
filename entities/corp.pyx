@@ -13,7 +13,7 @@ from core.state cimport GameState, StateLayout, CorpFieldOffsets
 from core.data cimport (
     GameConstants, CASH_DIVISOR, SHARE_DIVISOR, STAR_DIVISOR, MARKET_PRICES,
     get_company_income, get_company_stars, get_cost_of_ownership,
-    get_company_face_value, compute_synergy_bonuses, CorpIndices, get_corp_share_count
+    get_company_face_value, compute_synergy_bonuses, CorpIndices, get_corp_share_count,
 )
 from core.data import CORP_NAMES
 from entities.encoding cimport set_one_hot, set_one_hot_with_compact
@@ -206,7 +206,6 @@ cdef class Corporation:
             par_index: Market price index for starting share price
             float_shares: Shares per entity (player and bank each get this many, default 1)
         """
-        cdef int star_tier = get_company_stars(company_id)
         cdef int total_shares = get_corp_share_count(self.corp_id)
         cdef int issued = float_shares * 2  # Player + bank each get float_shares
         cdef int unissued_shares = total_shares - issued
@@ -214,13 +213,12 @@ cdef class Corporation:
         # 1. Transfer company to corporation
         company_module.COMPANIES[company_id].transfer_to_corp(state, self.corp_id)
 
-        # 2. Set corp active
+        # 2. Set corp active, then compute initial stars (corp wasn't active
+        #    during transfer_to_corp, so the auto-recalculate was skipped)
         self.set_active(state, True)
+        self.recalculate_stars(state)
 
-        # 3. Set stars from founding company
-        self.set_stars(state, star_tier)
-
-        # 4. Claim market space and set price
+        # 3. Claim market space and set price
         market_module.MARKET.set_space_available(state, par_index, False)
         self.set_price_index(state, par_index)
 
@@ -246,8 +244,10 @@ cdef class Corporation:
             return <int>(val - 0.5)
 
     cpdef void set_cash(self, GameState state, int cash):
-        """Set corporation's cash (integer dollars)."""
+        """Set corporation's cash (integer dollars). Auto-recalculates stars."""
         state._data[self._cash_offset] = <float>cash / CASH_DIVISOR
+        if self.is_active(state):
+            self.recalculate_stars(state)
 
     cpdef void add_cash(self, GameState state, int amount):
         """Add to corporation's cash (can be negative to subtract)."""
@@ -301,6 +301,29 @@ cdef class Corporation:
     cpdef void set_stars(self, GameState state, int stars):
         """Set corporation's stars."""
         state._data[self._stars_offset] = <float>stars / STAR_DIVISOR
+
+    cpdef void recalculate_stars(self, GameState state):
+        """
+        Recompute and store total owned stars from current state.
+
+        Full owned stars = sum(company star ratings) + floor(cash / 10) + SI bonus.
+        Call this after any change to company ownership or corporation cash.
+        """
+        cdef int total = 0
+        cdef int company_id, cash
+
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
+            if self._owns_company_nogil(state._data, company_id):
+                total += get_company_stars(company_id)
+
+        cash = self.get_cash(state)
+        if cash > 0:
+            total += cash // 10
+
+        if self.corp_id == CorpIndices.CORP_SI:
+            total += 2
+
+        self.set_stars(state, total)
 
     # =========================================================================
     # SHARE PRICE
@@ -497,7 +520,7 @@ cdef class Corporation:
     # =========================================================================
 
     cpdef void apply_income(self, GameState state, int income):
-        """Apply calculated income to corporation cash."""
+        """Apply calculated income to corporation cash (stars auto-updated via set_cash)."""
         self.add_cash(state, income)
 
     # =========================================================================

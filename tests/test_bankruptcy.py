@@ -69,8 +69,7 @@ def dividend_bankruptcy_state():
     float_corp_for_test(state, corp_id=0, par_index=1)
 
     corp = CORPS[0]
-    corp.set_stars(state, 0)  # No stars, will drop on $0 dividend
-    corp.set_cash(state, 0)  # No cash bonus
+    corp.set_cash(state, 0)  # Stars = 1★ AKE, required=2 at price 1 → drops to 0
     # Adjust shares for test scenario: player=3, bank=0, issued=3, unissued=4
     # set_shares auto-adjusts bank by -(3-1)=-2, so start bank at 2
     corp.set_issued_shares(state, 3)
@@ -224,7 +223,6 @@ class TestCoreBankruptcyBehavior:
 
         # Trigger bankruptcy through dividends (sell requires player shares)
         TURN.set_phase(bankruptcy_state, GamePhases.PHASE_DIVIDENDS)
-        corp.set_stars(bankruptcy_state, 0)
         corp.set_cash(bankruptcy_state, 0)
         setup_dividends_phase_py(bankruptcy_state)
         apply_dividend_action_py(bankruptcy_state, 0)
@@ -324,7 +322,11 @@ class TestBankruptcyFromDividend:
         assert PLAYERS[1].get_shares(state, 0) == 0
 
     def test_bankruptcy_from_price_2_with_minus_2_move(self):
-        """Corp at price index 2 with -2 move goes bankrupt (issue l4g)."""
+        """Corp at price index 2 with -2 move goes bankrupt (issue l4g).
+
+        Stars are now eagerly maintained: corp owns 1-star company (AKE),
+        so owned_stars=1. With issued=5 at price 2, required=3, diff=-2.
+        """
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
@@ -332,19 +334,20 @@ class TestBankruptcyFromDividend:
         float_corp_for_test(state, corp_id=0, par_index=2)
 
         corp = CORPS[0]
-        corp.set_stars(state, 0)  # Very low stars -> move will be -2 or worse
         corp.set_cash(state, 0)
-        # Adjust shares: player=3, bank=0, issued=3, unissued=4
-        # set_shares auto-adjusts bank by -(3-1)=-2, so start bank at 2
-        corp.set_issued_shares(state, 3)
-        corp.set_unissued_shares(state, 4)
-        corp.set_bank_shares(state, 2)
-        PLAYERS[0].set_shares(state, 0, 3)  # bank: 2-2=0
+        # Adjust shares: player=5, bank=0, issued=5, unissued=2
+        # Need issued=5 so required_stars=3 at price_index=2: round(5*6/10)=3
+        # Corp owns 1-star company, diff = 1-3 = -2 -> bankrupt
+        corp.set_issued_shares(state, 5)
+        corp.set_unissued_shares(state, 2)
+        corp.set_bank_shares(state, 4)
+        PLAYERS[0].set_shares(state, 0, 5)  # bank: 4-4=0
+        corp.recalculate_stars(state)
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
 
-        # Pay $0 dividend - with 0 stars and 0 cash, move should be negative
+        # Pay $0 dividend - owned=1 star, required=3, diff=-2 -> bankrupt
         apply_dividend_action_py(state, 0)
         assert_invariants(state, "After apply_dividend_action_py($0)")
 
@@ -518,8 +521,7 @@ class TestBankruptcyEdgeCases:
         float_corp_for_test(state, corp_id=0, par_index=1)
 
         corp = CORPS[0]
-        corp.set_stars(state, 10)  # High stars - won't drop
-        corp.set_cash(state, 100)
+        corp.set_cash(state, 100)  # Stars = 1★ + 10 = 11, won't drop
 
         TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
         setup_dividends_phase_py(state)
@@ -542,8 +544,7 @@ class TestBankruptcyEdgeCases:
         corp = CORPS[0]
         corp.set_in_receivership(state, True)  # Put into receivership
         PLAYERS[0].set_shares(state, 0, 0)  # Remove player shares (auto-adjusts bank: 1+1=2)
-        corp.set_stars(state, 0)
-        corp.set_cash(state, 0)
+        corp.set_cash(state, 0)  # Stars = 1★ AKE, required=2 at price 1 → drops to 0
         # Adjust shares: all in bank. player0=0, bank=3, issued=3, unissued=4
         corp.set_issued_shares(state, 3)
         corp.set_bank_shares(state, 3)
