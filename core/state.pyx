@@ -35,6 +35,7 @@ from entities import company as company_module
 from entities import market as market_module
 from entities import turn as turn_module
 from entities import deck as deck_module
+from entities import offer as offer_module
 
 cnp.import_array()
 
@@ -784,6 +785,8 @@ cdef class GameState:
         market_module.MARKET.initialize(self)
         turn_module.TURN.initialize(self)
         deck_module.DECK.initialize(self)
+        offer_module.ACQ_OFFERS.initialize(self)
+        offer_module.CLOSE_OFFERS.initialize(self)
 
         # 2. Set player starting state (array starts as zeros, only set non-zero values)
         starting_cash = 25 if self._num_players == 6 else 30

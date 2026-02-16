@@ -38,8 +38,9 @@ from core.data cimport (
 )
 from core.actions cimport ActionInfo, ACTION_CLOSE, ACTION_PASS
 from entities.company cimport LOC_PLAYER, LOC_FI, LOC_CORP
-from entities.offer cimport (offer_buf_reset, offer_buf_set_count, offer_buf_set_index,
-                              offer_buf_advance, offer_buf_append)
+from entities.offer cimport OfferBuffer
+from entities.offer import CLOSE_OFFERS as _close_offers_py
+cdef OfferBuffer _buf = _close_offers_py
 from entities import turn as turn_module
 from entities import company as company_module
 from entities import corp as corp_module
@@ -277,11 +278,8 @@ cdef void _generate_close_offers(GameState state) noexcept:
     cdef int offer_count = 0
     cdef int i
     cdef float* data = state._data
-    cdef int cnt_off = state._layout.hidden_close_offer_count_offset
-    cdef int idx_off = state._layout.hidden_close_offer_index_offset
-    cdef int buf_off = state._layout.hidden_close_offer_buffer_offset
 
-    offer_buf_reset(data, cnt_off, idx_off)
+    _buf.reset(data)
 
     # Collect offers from players (private companies)
     offer_count = _collect_player_close_offers(
@@ -300,10 +298,10 @@ cdef void _generate_close_offers(GameState state) noexcept:
 
     # Write to buffer
     for i in range(offer_count):
-        offer_buf_append(data, buf_off, i,
-                         temp_owner_types[i], temp_owner_ids[i], temp_company_ids[i])
+        _buf.append(data, i,
+                   temp_owner_types[i], temp_owner_ids[i], temp_company_ids[i])
 
-    offer_buf_set_count(data, cnt_off, offer_count)
+    _buf.set_count(data, offer_count)
 
 
 cdef bint _is_close_offer_valid(GameState state, int owner_type, int owner_id, int company_id) noexcept:
@@ -359,20 +357,21 @@ cdef void _present_next_close_offer(GameState state) noexcept:
     Loops until valid offer found or offers exhausted.
     When no more offers, clears closing_company and transitions to INCOME.
     """
-    cdef int count = <int>state._data[state._layout.hidden_close_offer_count_offset]
-    cdef int index = <int>state._data[state._layout.hidden_close_offer_index_offset]
+    cdef float* data = state._data
+    cdef int count = _buf.get_count(data)
+    cdef int index = _buf.get_index(data)
     cdef int owner_type, owner_id, company_id, president, base
 
     while index < count:
-        base = state._layout.hidden_close_offer_buffer_offset + (index * 3)
-        owner_type = <int>state._data[base]
-        owner_id = <int>state._data[base + 1]
-        company_id = <int>state._data[base + 2]
+        base = _buf.offer_base(index)
+        owner_type = <int>data[base]
+        owner_id = <int>data[base + 1]
+        company_id = <int>data[base + 2]
 
         # Check if offer still valid (dynamic re-validation)
         if not _is_close_offer_valid(state, owner_type, owner_id, company_id):
             index += 1
-            offer_buf_set_index(state._data, state._layout.hidden_close_offer_index_offset, index)
+            _buf.set_index(data, index)
             continue
 
         # Found valid offer - update net worths before presenting decision
@@ -500,17 +499,18 @@ cdef void _handle_close_accept(GameState state) noexcept:
     - Junkyard Scrappers bonus (2x printed income)
     - Removing company from game
     """
+    cdef float* data = state._data
     cdef int company_id = turn_module.TURN.get_closing_company(state)
-    cdef int index = <int>state._data[state._layout.hidden_close_offer_index_offset]
+    cdef int index = _buf.get_index(data)
     cdef int base, owner_type, owner_id
 
     if company_id < 0:
         return  # No active offer
 
     # Get current offer details
-    base = state._layout.hidden_close_offer_buffer_offset + (index * 3)
-    owner_type = <int>state._data[base]
-    owner_id = <int>state._data[base + 1]
+    base = _buf.offer_base(index)
+    owner_type = <int>data[base]
+    owner_id = <int>data[base + 1]
 
     # Close the company (remove_from_game handles clearing ownership)
     if owner_type == LOC_PLAYER:
@@ -519,7 +519,7 @@ cdef void _handle_close_accept(GameState state) noexcept:
         _close_company(state, company_id, LOC_CORP, owner_id)
 
     # Advance to next offer
-    offer_buf_advance(state._data, state._layout.hidden_close_offer_index_offset)
+    _buf.advance(data)
     _present_next_close_offer(state)
 
 
@@ -527,7 +527,7 @@ cdef void _handle_close_pass(GameState state) noexcept:
     """
     Pass on current close offer: keep company, advance to next offer.
     """
-    offer_buf_advance(state._data, state._layout.hidden_close_offer_index_offset)
+    _buf.advance(state._data)
     _present_next_close_offer(state)
 
 
@@ -611,17 +611,17 @@ def apply_closing_action_py(GameState state, int action_type):
 
 def get_close_offer_count_py(GameState state):
     """Get number of close offers in buffer."""
-    return <int>state._data[state._layout.hidden_close_offer_count_offset]
+    return _buf.get_count(state._data)
 
 
 def get_close_offer_index_py(GameState state):
     """Get current close offer index."""
-    return <int>state._data[state._layout.hidden_close_offer_index_offset]
+    return _buf.get_index(state._data)
 
 
 def get_close_offer_py(GameState state, int index):
     """Get close offer at index as (owner_type, owner_id, company_id) tuple."""
-    cdef int base = state._layout.hidden_close_offer_buffer_offset + (index * 3)
+    cdef int base = _buf.offer_base(index)
     return (
         <int>state._data[base],
         <int>state._data[base + 1],
