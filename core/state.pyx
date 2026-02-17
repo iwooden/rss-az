@@ -10,6 +10,7 @@ The visible state is presented to the NN with player rotation (active player fir
 """
 
 cimport cython
+from libc.math cimport lround
 from libc.string cimport memcpy, memset
 from posix.time cimport clock_gettime, timespec, CLOCK_MONOTONIC
 cimport numpy as cnp
@@ -529,7 +530,7 @@ cdef class GameState:
     cpdef int get_corp_cash(self, int corp_id):
         """Get corporation's cash."""
         cdef float* corp = self._corp_ptr(corp_id)
-        return <int>(corp[self._corp_fields.cash] * CASH_DIVISOR + 0.5)
+        return <int>lround(corp[self._corp_fields.cash] * CASH_DIVISOR)
 
     cpdef void set_corp_cash(self, int corp_id, int cash):
         """Set corporation's cash."""

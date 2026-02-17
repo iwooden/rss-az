@@ -9,6 +9,7 @@ Provides clean getter/setter access to turn-specific state including:
 """
 
 from core.state cimport GameState, StateLayout, TurnStateOffsets
+from libc.math cimport lround
 from core.data cimport GameConstants, GamePhases, CASH_DIVISOR, get_adjusted_company_income
 from entities import player as player_module
 from entities import company as company_module
@@ -482,7 +483,7 @@ cdef class TurnState:
         """Get dividend impact at given level (0-25)."""
         if level < 0 or level >= GameConstants.MAX_DIVIDEND:
             return 0
-        return <int>(state._data[self._dividend_impact_offset + level] + 0.5)
+        return <int>lround(state._data[self._dividend_impact_offset + level])
 
     cpdef void set_dividend_impact(self, GameState state, int level, int impact):
         """Set dividend impact at given level."""
