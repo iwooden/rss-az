@@ -325,7 +325,7 @@ def assert_invariants(state, msg=""):
 
 
 class ApplyTrackResult:
-    """Result wrapper for apply_and_track() fixture."""
+    """Result wrapper for apply_and_verify_all()."""
 
     def __init__(self, state, history, status, num_players):
         self.state = state              # Final state after all actions
