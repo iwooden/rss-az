@@ -5,6 +5,39 @@ import os
 import shutil
 import glob
 
+class TraceGameCommand(Command):
+    """Trace a random game with human-readable output."""
+    description = 'Play a random game and output a human-readable trace'
+    user_options = [
+        ('num-players=', 'p', 'Number of players (2-6, default 3)'),
+        ('seed=', 's', 'Random seed (default 42)'),
+        ('verbose', 'v', 'Full state dump every step'),
+        ('output=', 'o', 'Output file (default: stdout)'),
+    ]
+    boolean_options = ['verbose']
+
+    def initialize_options(self):
+        self.num_players = 3
+        self.seed = 42
+        self.verbose = False
+        self.output = None
+
+    def finalize_options(self):
+        self.num_players = int(self.num_players)
+        self.seed = int(self.seed)
+
+    def run(self):
+        from tests.debug_trace import trace_random_game
+        result = trace_random_game(self.num_players, self.seed, self.verbose)
+        if self.output:
+            with open(self.output, 'w') as f:
+                f.write(result)
+                f.write('\n')
+            print(f'Trace written to {self.output}')
+        else:
+            print(result)
+
+
 class CleanCommand(Command):
     """Custom clean command to remove Cython build artifacts."""
     description = 'Remove Cython build artifacts (.c, .so, .html, build/)'
@@ -101,6 +134,7 @@ setup(
     ),
     cmdclass={
         'clean': CleanCommand,
+        'trace_game': TraceGameCommand,
     },
     include_package_data=True,
     zip_safe=False,
