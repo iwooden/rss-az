@@ -744,3 +744,160 @@ class TestStress:
                 break
 
         assert actions_taken > 0
+
+
+# =============================================================================
+# ACQUISITION / CLOSING DRIVER INTEGRATION
+# =============================================================================
+
+class TestAcquisitionClosingDriver:
+    """Driver-level tests for acquisition/closing decisions and phase sentinels.
+
+    Phase-level tests (test_acquisition.py, test_closing.py) call handlers
+    directly for internal logic. These tests verify the same phases work
+    correctly through the driver's auto-apply chain.
+    """
+
+    def _setup_turn_2(self, num_players=3, seed=42):
+        """Advance to turn 2 with one active corp.
+
+        Returns (state, corp_id, president_id).
+        """
+        state = GameState(num_players=num_players)
+        state.initialize_game(seed=seed)
+
+        layout = get_action_layout(num_players)
+
+        # Turn 1: Win auction
+        auction_idx = find_valid_action(
+            state, layout['auction_base'], layout['buy_share_base']
+        )
+        assert auction_idx is not None
+        apply_action(state, auction_idx, "Start auction")
+
+        while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
+            apply_action(state, layout['leave_auction'], "Leave")
+
+        pass_all_players(state, num_players)
+
+        # IPO the company
+        ipo_action = find_valid_action(
+            state, layout['ipo_base'], layout['ipo_base'] + 64
+        )
+        assert ipo_action is not None
+        apply_action(state, ipo_action, "IPO")
+
+        while state.get_phase() == GamePhases.PHASE_IPO:
+            apply_action(state, layout['ipo_pass'], "Pass IPO")
+
+        assert TURN.get_turn_number(state) == 2
+
+        corp_id = president_id = None
+        for cid in range(8):
+            if CORPS[cid].is_active(state):
+                corp_id = cid
+                for pid in range(num_players):
+                    if PLAYERS[pid].is_president_of(state, cid):
+                        president_id = pid
+                        break
+                break
+
+        assert corp_id is not None and president_id is not None
+        return state, corp_id, president_id
+
+    def test_acquisition_accept_through_driver(self):
+        """Corp buying from FI propagates correctly through driver."""
+        state, corp_id, _ = self._setup_turn_2()
+        layout = get_action_layout(3)
+
+        pass_all_players(state, 3)
+        assert state.get_phase() == GamePhases.PHASE_ACQUISITION
+
+        # Find non-pass buy action (price offsets or FI_HIGH/FI_FACE)
+        buy_action = find_valid_action(
+            state, layout['acq_price_base'], layout['acq_pass']
+        )
+        if buy_action is None:
+            pytest.skip("No affordable acquisition actions")
+
+        corp = CORPS[corp_id]
+        companies_before = corp.count_companies(state, include_acquisition=True)
+
+        # Accept through driver (invariants checked on all intermediates)
+        apply_and_verify_all(state, buy_action, "Accept acquisition")
+
+        # Corp should have gained a company (in acquisition zone)
+        companies_after = corp.count_companies(state, include_acquisition=True)
+        assert companies_after == companies_before + 1
+
+        # Complete remaining offers
+        pass_through_phase(state, 3, GamePhases.PHASE_ACQUISITION, 'acq_pass')
+
+    def test_closing_close_through_driver(self):
+        """Player closing a private company via driver."""
+        state, _, _ = self._setup_turn_2()
+        layout = get_action_layout(3)
+
+        # Win second auction (gives player a private company)
+        auction_idx = find_valid_action(
+            state, layout['auction_base'], layout['buy_share_base']
+        )
+        if auction_idx is None:
+            pytest.skip("No auction available for second company")
+        apply_action(state, auction_idx, "Second auction")
+
+        while state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION:
+            apply_action(state, layout['leave_auction'], "Leave")
+
+        # High CoO creates negative-income conditions for close offers
+        TURN.set_coo_level(state, 6)
+
+        pass_all_players(state, 3)
+        pass_through_phase(state, 3, GamePhases.PHASE_ACQUISITION, 'acq_pass')
+
+        if state.get_phase() != GamePhases.PHASE_CLOSING:
+            pytest.skip("No player close offers generated")
+
+        # Close the offered company through driver
+        apply_and_verify_all(state, layout['close_action'], "Close company")
+
+        # Finish any remaining offers
+        pass_through_phase(state, 3, GamePhases.PHASE_CLOSING, 'close_pass')
+
+    def test_full_turn_history_sentinels(self):
+        """Non-player phase sentinels recorded in history during full turn."""
+        state, _, _ = self._setup_turn_2()
+        layout = get_action_layout(3)
+
+        all_history = []
+
+        # Pass INVEST (collecting history)
+        for i in range(3):
+            result = apply_and_verify_all(
+                state, layout['pass_invest'], f"Pass {i}"
+            )
+            all_history.extend(result.history)
+
+        # Pass ACQUISITION (collecting history)
+        while state.get_phase() == GamePhases.PHASE_ACQUISITION:
+            result = apply_and_verify_all(
+                state, layout['acq_pass'], "Pass acq"
+            )
+            all_history.extend(result.history)
+
+        # Handle DIVIDENDS (collecting history)
+        if state.get_phase() == GamePhases.PHASE_DIVIDENDS:
+            div_action = find_valid_action(
+                state, layout['dividend_base'], layout['dividend_base'] + 26
+            )
+            if div_action:
+                result = apply_and_verify_all(state, div_action, "Dividend")
+                all_history.extend(result.history)
+
+        sentinels = {action for (_, action) in all_history if action < 0}
+
+        # All non-player phases between INVEST and DIVIDENDS must have sentinels
+        assert -100 in sentinels, "Missing WRAP_UP sentinel (-100)"
+        assert -102 in sentinels, "Missing CLOSING sentinel (-102)"
+        assert -103 in sentinels, "Missing INCOME sentinel (-103)"
+        assert -105 in sentinels, "Missing END_CARD sentinel (-105)"
