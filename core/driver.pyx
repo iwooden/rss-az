@@ -44,7 +44,7 @@ class ZeroLegalActionsError(RuntimeError):
 
 
 # Maximum iterations for auto-apply loop (prevents infinite loops from bugs)
-DEF MAX_FORCED_ITERATIONS = 100
+DEF MAX_FORCED_ITERATIONS = 1000
 
 # Sentinel action values for non-player phases (negative to distinguish from real actions)
 DEF ACTION_WRAP_UP_SENTINEL = -100
