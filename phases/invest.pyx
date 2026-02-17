@@ -37,7 +37,7 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     """
     Handle buy share action.
 
-    Per CONTEXT.md: Price moves BEFORE payment (player pays new price)
+    Per RULES.md: Price moves BEFORE payment (player pays new price)
 
     Sequence:
     1. Find new price after price movement (skipping occupied spaces)

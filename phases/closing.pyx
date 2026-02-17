@@ -100,8 +100,8 @@ cdef void _process_mandatory_close(GameState state) noexcept:
     3. Recheck income + cash
     4. Repeat until income + cash >= 0
 
-    Per CONTEXT.md: CoO is fixed at phase start, no re-evaluation during loop.
-    Per CONTEXT.md: Players CAN end up with zero companies (no minimum retention).
+    CoO is fixed at phase start, no re-evaluation during loop.
+    Players CAN end up with zero companies (no minimum retention).
 
     Note: JS bonus does NOT apply here - mandatory close only affects player-owned
     private companies, and JS bonus only triggers when JS closes its own subsidiaries.
@@ -139,7 +139,7 @@ cdef void _process_mandatory_close(GameState state) noexcept:
 
             if cheapest_company < 0:
                 # No more negative-income companies to close
-                # Per CONTEXT.md: impossible to still be negative after closing ALL negative-income privates
+                # Impossible to still be negative after closing ALL negative-income privates
                 break
 
             # Close the company (CLO-15: cheapest first)

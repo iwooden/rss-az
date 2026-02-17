@@ -20,7 +20,7 @@ cdef void _apply_income_to_corps(GameState state) noexcept:
 
     Process order: corp_id 0-7
     Bankruptcy check: immediately after each corp's income application.
-    Per CONTEXT.md: multiple corps can go bankrupt in same INCOME phase.
+    Multiple corps can go bankrupt in same INCOME phase.
     """
     cdef int corp_id, income
 
@@ -49,8 +49,8 @@ cdef void _apply_income_to_players(GameState state) noexcept:
     """
     Apply income to all players.
 
-    Per CONTEXT.md: Players CAN have negative income (fine).
-    Per CONTEXT.md: Players CANNOT have negative cash after income.
+    Per RULES.md: Players CAN have negative income (fine).
+    Players CANNOT have negative cash after income.
     Invariant guaranteed by CLOSING phase's mandatory close logic.
     """
     cdef int player_id, income
@@ -80,8 +80,8 @@ cdef int apply_income(GameState state) noexcept:
     3. Apply income to all players
     4. Transition to DIVIDENDS (and set up dividend processing)
 
-    Per CONTEXT.md: Entity processing order doesn't matter (independent).
-    Per CONTEXT.md: Check bankruptcy immediately per-corp after income.
+    Entity processing order doesn't matter (independent).
+    Per RULES.md: Check bankruptcy immediately per-corp after income.
 
     Returns: 0 always (deterministic, no failure modes)
     """

@@ -871,7 +871,7 @@ cpdef void setup_acquisition_phase(GameState state):
     Set up ACQUISITION phase at entry.
 
     Called from WRAP_UP before transitioning to ACQUISITION.
-    Per CONTEXT.md: "Offer buffer populated at phase entry (not lazily)"
+    Offer buffer populated at phase entry (not lazily).
 
     Steps:
     1. Clear offer buffer index to 0

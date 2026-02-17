@@ -150,8 +150,8 @@ cdef void _transition_out_of_ipo(GameState state) noexcept:
     Completes the turn cycle by incrementing turn number and transitioning to INVEST.
 
     NOTE: Roundtrip clearing happens in INVEST phase (before WRAP_UP transition),
-    NOT here. Per CONTEXT.md: "Roundtrip info only relevant in INVEST phase -
-    clearing it elsewhere pollutes state vector for model."
+    NOT here. Per RULES.md: Roundtrip info only relevant in INVEST phase -
+    clearing it elsewhere pollutes state vector for model.
     """
     # Clear IPO company
     turn_module.TURN.clear_ipo_company(state)

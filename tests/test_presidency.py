@@ -356,7 +356,7 @@ class TestReceivership:
         # Corp exits receivership
         assert not corp.is_in_receivership(trade_state)
         # Buyer becomes president (they have the most shares - the only holder)
-        # Per CONTEXT.md: shares are fungible, no special "president share" handling
+        # Per RULES.md: shares are fungible, no special "president share" handling
         assert PLAYERS[0].is_president_of(trade_state, 0)
 
     def test_receivership_corp_still_tradeable(self, trade_state):
