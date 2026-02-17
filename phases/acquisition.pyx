@@ -1048,36 +1048,3 @@ cdef int apply_acquisition_action(GameState state, ActionInfo* info) noexcept:
 
     # Unknown action type
     return 1
-
-
-# =============================================================================
-# MAIN PHASE HANDLER (STUB)
-# =============================================================================
-
-cdef int apply_acquisition_stub(GameState state) noexcept:
-    """
-    Stub: ACQUISITION immediately transitions to new INVEST turn.
-
-    When ACQUISITION is fully implemented, this will be replaced with:
-    - FI purchase logic (Phase 10)
-    - Corp acquisition offers
-    - Company availability updates
-
-    For now, just increment turn number and start new INVEST.
-    Handles terminal state detection to prevent infinite loops.
-    """
-    cdef int current_turn = turn_module.TURN.get_turn_number(state)
-    cdef int i
-
-    # Check for terminal state before transitioning to INVEST
-    if _is_game_terminal(state):
-        turn_module.TURN.set_phase(state, GamePhases.PHASE_GAME_OVER)
-        return 0
-
-    # Increment turn number
-    turn_module.TURN.set_turn_number(state, current_turn + 1)
-
-    # Transition to new INVEST phase
-    turn_module.TURN.set_phase(state, GamePhases.PHASE_INVEST)
-
-    return 0
