@@ -358,7 +358,7 @@ class TestTurnWithActiveCorp:
 
     def test_turn_2_with_corp_completes(self):
         """Turn 2 with active corp completes full phase sequence."""
-        state, corp_id, president_id = self._setup_turn_2_with_corp()
+        state, _, _ = self._setup_turn_2_with_corp()
         layout = get_action_layout(3)
 
         # All pass in INVEST
@@ -389,16 +389,8 @@ class TestTurnWithActiveCorp:
 
     def test_corp_dividend_payment(self):
         """Corp pays dividends to shareholders correctly."""
-        state, corp_id, president_id = self._setup_turn_2_with_corp()
+        state, _, _ = self._setup_turn_2_with_corp()
         layout = get_action_layout(3)
-
-        corp = CORPS[corp_id]
-        president = PLAYERS[president_id]
-
-        # Record starting cash
-        president_cash_before = president.get_cash(state)
-        corp_cash_before = corp.get_cash(state)
-        shares_held = president.get_shares(state, corp_id)
 
         # All pass in INVEST
         pass_all_players(state, 3)
@@ -423,10 +415,8 @@ class TestTurnWithActiveCorp:
 
     def test_share_trading_affects_next_phases(self):
         """Share trading in INVEST affects DIVIDENDS (via shareholder changes)."""
-        state, corp_id, president_id = self._setup_turn_2_with_corp()
+        state, corp_id, _ = self._setup_turn_2_with_corp()
         layout = get_action_layout(3)
-
-        corp = CORPS[corp_id]
 
         # Check if we can buy a share (bank must have shares)
         buy_action = layout['buy_share_base'] + corp_id
