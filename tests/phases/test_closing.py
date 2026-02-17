@@ -19,7 +19,7 @@ from phases.closing import (
 from core.actions import ACTION_CLOSE_PY, ACTION_PASS_PY
 
 # Import status codes and utility from conftest
-from tests.phases.conftest import STATUS_OK, float_corp_for_test, assert_invariants
+from tests.phases.conftest import STATUS_OK, float_corp_for_test, setup_receivership_corp, assert_invariants
 
 # Phase constants for tests
 PHASE_CLOSING_PY = GamePhases.PHASE_CLOSING
@@ -192,18 +192,6 @@ class TestFIAutoClose:
 class TestReceivershipAutoClose:
     """Receivership corps close red >= $4, orange >= $7."""
 
-    def _setup_receivership_corp(self, state, corp_id, company_ids):
-        """Helper to set up receivership corp with companies."""
-        # Float corp with the first company
-        float_corp_for_test(state, corp_id=corp_id, company_id=company_ids[0])
-
-        # Remove player shares (triggers receivership automatically)
-        PLAYERS[0].set_shares(state, corp_id, 0)
-
-        # Transfer any additional companies
-        for cid in company_ids[1:]:
-            COMPANIES[cid].transfer_to_corp(state, corp_id)
-
     def test_receivership_closes_red_at_coo_4(self):
         """Receivership closes red company when CoO >= $4."""
         state = GameState(num_players=3)
@@ -214,7 +202,7 @@ class TestReceivershipAutoClose:
         red_company = 0
         other_company = 14  # Higher face value (yellow, stars=3, protected)
 
-        self._setup_receivership_corp(state, 1, [red_company, other_company])
+        setup_receivership_corp(state, 1, [red_company, other_company])
         TURN.set_coo_level(state, 5)  # Red CoO = $4
 
         apply_closing_auto_py(state)
@@ -233,7 +221,7 @@ class TestReceivershipAutoClose:
         red_company = 0
         other_company = 14  # Yellow, higher FV
 
-        self._setup_receivership_corp(state, 1, [red_company, other_company])
+        setup_receivership_corp(state, 1, [red_company, other_company])
         TURN.set_coo_level(state, 4)  # Red CoO = $2 < $4
 
         apply_closing_auto_py(state)
@@ -252,7 +240,7 @@ class TestReceivershipAutoClose:
         orange_company = 6
         other_company = 14  # Higher face value (yellow, protected)
 
-        self._setup_receivership_corp(state, 1, [orange_company, other_company])
+        setup_receivership_corp(state, 1, [orange_company, other_company])
         TURN.set_coo_level(state, 6)  # Orange CoO = $7
 
         apply_closing_auto_py(state)
@@ -275,7 +263,7 @@ class TestReceivershipAutoClose:
         orange_company = 6
         other_company = 14  # Yellow, higher FV
 
-        self._setup_receivership_corp(state, 1, [orange_company, other_company])
+        setup_receivership_corp(state, 1, [orange_company, other_company])
         TURN.set_coo_level(state, 5)  # Orange CoO = $4
 
         # Verify CoO is below threshold
@@ -299,7 +287,7 @@ class TestReceivershipAutoClose:
         green_company = 22   # Stars=4
         blue_company = 29    # Stars=5
 
-        self._setup_receivership_corp(state, 1, [yellow_company, green_company, blue_company])
+        setup_receivership_corp(state, 1, [yellow_company, green_company, blue_company])
         TURN.set_coo_level(state, 7)  # Max CoO
 
         apply_closing_auto_py(state)
@@ -314,18 +302,6 @@ class TestReceivershipAutoClose:
 class TestHighestFaceValueProtection:
     """Receivership always keeps highest face value company."""
 
-    def _setup_receivership_corp(self, state, corp_id, company_ids):
-        """Helper to set up receivership corp with companies."""
-        # Float corp with the first company
-        float_corp_for_test(state, corp_id=corp_id, company_id=company_ids[0])
-
-        # Remove player shares (triggers receivership automatically)
-        PLAYERS[0].set_shares(state, corp_id, 0)
-
-        # Transfer any additional companies
-        for cid in company_ids[1:]:
-            COMPANIES[cid].transfer_to_corp(state, corp_id)
-
     def test_highest_face_value_protected_even_if_red(self):
         """Highest FV company is protected even if it would otherwise close."""
         state = GameState(num_players=3)
@@ -335,7 +311,7 @@ class TestHighestFaceValueProtection:
         red_companies = [0, 1, 2, 3]  # All red, FV ascending
         highest_fv = 3  # Company 3 has highest FV among reds
 
-        self._setup_receivership_corp(state, 1, red_companies)
+        setup_receivership_corp(state, 1, red_companies)
         TURN.set_coo_level(state, 7)  # All reds would normally close
 
         apply_closing_auto_py(state)
@@ -354,7 +330,7 @@ class TestHighestFaceValueProtection:
         state.initialize_game(seed=42)
 
         red_company = 0
-        self._setup_receivership_corp(state, 1, [red_company])
+        setup_receivership_corp(state, 1, [red_company])
         TURN.set_coo_level(state, 7)
 
         apply_closing_auto_py(state)
@@ -366,18 +342,6 @@ class TestHighestFaceValueProtection:
 
 class TestVintageMachineryInReceivership:
     """VM in receivership follows normal receivership rules - no special ability."""
-
-    def _setup_receivership_corp(self, state, corp_id, company_ids):
-        """Helper to set up receivership corp with companies."""
-        # Float corp with the first company
-        float_corp_for_test(state, corp_id=corp_id, company_id=company_ids[0])
-
-        # Remove player shares (triggers receivership automatically)
-        PLAYERS[0].set_shares(state, corp_id, 0)
-
-        # Transfer any additional companies
-        for cid in company_ids[1:]:
-            COMPANIES[cid].transfer_to_corp(state, corp_id)
 
     def test_vm_no_special_treatment_in_receivership(self):
         """VM's CoO reduction does NOT apply in receivership auto-close.
@@ -395,7 +359,7 @@ class TestVintageMachineryInReceivership:
         yellow_company = 14  # FV=20 (higher), will be protected
 
         # Use VM (corp_id 6) in receivership
-        self._setup_receivership_corp(state, 6, [red_company, yellow_company])
+        setup_receivership_corp(state, 6, [red_company, yellow_company])
         TURN.set_coo_level(state, 7)
 
         apply_closing_auto_py(state)

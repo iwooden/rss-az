@@ -8,10 +8,8 @@ sys.path.insert(0, str(project_root))
 
 # Import fixtures from phases/conftest.py so they're available to test_integration.py
 # (which was moved from tests/phases/ to tests/)
-import pytest
 from tests.phases.conftest import (
     game_state,
-    invest_state,
     bid_state,
     trade_state,
     apply_and_verify_all,
@@ -24,7 +22,6 @@ from tests.phases.conftest import closing_offer_state
 # Re-export fixtures so they're available at root level
 __all__ = [
     'game_state',
-    'invest_state',
     'bid_state',
     'trade_state',
     'apply_and_verify_all',

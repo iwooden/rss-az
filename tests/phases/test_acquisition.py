@@ -29,7 +29,7 @@ from phases.acquisition import (
     qsort_price_fv_4_py
 )
 from phases.wrap_up import apply_wrap_up_py
-from tests.phases.conftest import float_corp_for_test, assert_invariants
+from tests.phases.conftest import float_corp_for_test, setup_player_private_offer, assert_invariants
 
 
 class TestOfferGeneration:
@@ -423,26 +423,13 @@ class TestPhaseFlow:
 class TestValidation:
     """Validation tests - verify through action handler behavior."""
 
-    def _setup_player_private_offer(self, gs, player_id, company_id, corp_id, corp_cash):
-        """Setup player private -> corp offer."""
-        # Give company to player as private
-        COMPANIES[company_id].transfer_to_player(gs, player_id)
-
-        # Float corp (uses different company from deck) with player as president
-        float_corp_for_test(gs, corp_id, player_id=player_id)
-        CORPS[corp_id].set_cash(gs, corp_cash)
-
-        # Generate offers and present
-        setup_acquisition_phase_py(gs)
-        assert_invariants(gs, "After _setup_player_private_offer")
-
     def test_price_in_range_succeeds(self):
         """Price within [low, high] is valid - action executes."""
         gs = GameState(3)
         gs.initialize_game()
 
         # Setup: Player 0 owns company 0, corp 0 (B&O) has cash
-        self._setup_player_private_offer(gs, 0, 0, 0, 50000)
+        setup_player_private_offer(gs, 0, 0, 0, 50000)
 
         # Should have one offer
         assert get_offer_count(gs) > 0
@@ -458,7 +445,7 @@ class TestValidation:
         gs = GameState(3)
         gs.initialize_game()
 
-        self._setup_player_private_offer(gs, 0, 0, 0, 50000)
+        setup_player_private_offer(gs, 0, 0, 0, 50000)
 
         # Negative offset = below low_price
         result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, -10)
@@ -469,7 +456,7 @@ class TestValidation:
         gs = GameState(3)
         gs.initialize_game()
 
-        self._setup_player_private_offer(gs, 0, 0, 0, 50000)
+        setup_player_private_offer(gs, 0, 0, 0, 50000)
 
         # Large offset = above high_price
         result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 100)
@@ -481,7 +468,7 @@ class TestValidation:
         gs.initialize_game()
 
         # Corp has only $1 cash (not enough for any company)
-        self._setup_player_private_offer(gs, 0, 0, 0, 1)
+        setup_player_private_offer(gs, 0, 0, 0, 1)
 
         # Offers should be filtered out during generation - corp can't afford anything
         assert get_offer_count(gs) == 0 or TURN.get_acq_active_corp(gs) == -1, \
@@ -528,7 +515,7 @@ class TestValidation:
         gs = GameState(3)
         gs.initialize_game()
 
-        self._setup_player_private_offer(gs, 0, 0, 0, 50000)
+        setup_player_private_offer(gs, 0, 0, 0, 50000)
 
         # Manually add company to acquisition zone
         COMPANIES[0].transfer_to_corp_acquisition(gs, 0)
@@ -565,7 +552,7 @@ class TestValidation:
         gs.initialize_game()
 
         company_id = 0
-        self._setup_player_private_offer(gs, 0, company_id, 0, 50000)
+        setup_player_private_offer(gs, 0, company_id, 0, 50000)
 
         # Offset 0 = low_price
         low_price = get_company_low_price(company_id)
@@ -579,7 +566,7 @@ class TestValidation:
         gs.initialize_game()
 
         company_id = 0
-        self._setup_player_private_offer(gs, 0, company_id, 0, 50000)
+        setup_player_private_offer(gs, 0, company_id, 0, 50000)
 
         # Calculate offset to reach high_price
         low_price = get_company_low_price(company_id)
@@ -596,7 +583,7 @@ class TestValidation:
         gs.initialize_game()
 
         company_id = 0
-        self._setup_player_private_offer(gs, 0, company_id, 0, 50000)
+        setup_player_private_offer(gs, 0, company_id, 0, 50000)
 
         # Offset -1 = below low_price
         result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, -1)
@@ -608,7 +595,7 @@ class TestValidation:
         gs.initialize_game()
 
         company_id = 0
-        self._setup_player_private_offer(gs, 0, company_id, 0, 50000)
+        setup_player_private_offer(gs, 0, company_id, 0, 50000)
 
         # Calculate offset beyond high_price
         low_price = get_company_low_price(company_id)
@@ -649,7 +636,7 @@ class TestValidation:
         assert test_offset <= wide_span, "Test offset must be within wide span"
 
         # Setup for narrow company - offset 10 should fail
-        self._setup_player_private_offer(gs, 0, narrow_company, 0, 50000)
+        setup_player_private_offer(gs, 0, narrow_company, 0, 50000)
         if get_offer_count(gs) > 0:
             result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, test_offset)
             assert result == 1, f"Offset {test_offset} should fail for narrow company (span={narrow_span})"
@@ -657,7 +644,7 @@ class TestValidation:
         # Setup for wide company - offset 10 should succeed
         gs2 = GameState(3)
         gs2.initialize_game()
-        self._setup_player_private_offer(gs2, 0, wide_company, 0, 50000)
+        setup_player_private_offer(gs2, 0, wide_company, 0, 50000)
         if get_offer_count(gs2) > 0:
             result = apply_acquisition_action_py(gs2, ACTION_ACQ_PRICE, test_offset)
             assert result == 0, f"Offset {test_offset} should succeed for wide company (span={wide_span})"
@@ -742,7 +729,7 @@ class TestValidation:
         # Give corp exactly low_price in cash
         # Note: Offer generation may filter this out if exact match considered insufficient
         # This tests the boundary - if offer is generated, action should succeed
-        self._setup_player_private_offer(gs, 0, company_id, 0, low_price)
+        setup_player_private_offer(gs, 0, company_id, 0, low_price)
 
         if get_offer_count(gs) > 0:
             # Action should succeed
@@ -763,7 +750,7 @@ class TestValidation:
         low_price = get_company_low_price(company_id)
 
         # Give corp one dollar less than low_price
-        self._setup_player_private_offer(gs, 0, company_id, 0, low_price - 1)
+        setup_player_private_offer(gs, 0, company_id, 0, low_price - 1)
 
         # No offer should be generated (insufficient cash filtered at generation)
         assert get_offer_count(gs) == 0, "No offer should be generated with insufficient cash"
@@ -855,21 +842,13 @@ class TestValidation:
 class TestActionIntegration:
     """Integration tests for action execution."""
 
-    def _setup_player_private_offer(self, gs, player_id, company_id, corp_id, corp_cash):
-        """Setup player private -> corp offer."""
-        COMPANIES[company_id].transfer_to_player(gs, player_id)
-        float_corp_for_test(gs, corp_id, player_id=player_id)
-        CORPS[corp_id].set_cash(gs, corp_cash)
-        setup_acquisition_phase_py(gs)
-        assert_invariants(gs, "After TestActionIntegration._setup_player_private_offer")
-
     def test_accept_price_action(self):
         """Full flow - money transfers, company moves to acquisition zone."""
         gs = GameState(3)
         gs.initialize_game()
 
         # Setup: Player 0 owns company 0, corp 0 buys
-        self._setup_player_private_offer(gs, 0, 0, 0, 50000)
+        setup_player_private_offer(gs, 0, 0, 0, 50000)
 
         # Verify setup
         assert get_offer_count(gs) > 0

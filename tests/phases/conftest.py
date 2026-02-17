@@ -64,6 +64,42 @@ def float_corp_for_test(state, corp_id, company_id=None, player_id=0, par_index=
     return company_id
 
 
+def setup_receivership_corp(state, corp_id, company_ids):
+    """Float a corp and put it into receivership with the given companies.
+
+    Args:
+        state: GameState instance
+        corp_id: Corporation ID to float
+        company_ids: List of company IDs to assign. First is used for floating,
+                    rest are transferred after.
+    """
+    float_corp_for_test(state, corp_id=corp_id, company_id=company_ids[0])
+    PLAYERS[0].set_shares(state, corp_id, 0)
+    for cid in company_ids[1:]:
+        COMPANIES[cid].transfer_to_corp(state, corp_id)
+
+
+def setup_player_private_offer(state, player_id, company_id, corp_id, corp_cash):
+    """Set up a player-private -> corp acquisition offer.
+
+    Transfers the company to the player, floats the corp with the player as
+    president, sets corp cash, and generates acquisition offers.
+
+    Args:
+        state: GameState instance
+        player_id: Player who owns the private company
+        company_id: Company to transfer to the player
+        corp_id: Corporation that will buy
+        corp_cash: Cash to give the corp
+    """
+    from phases.acquisition import setup_acquisition_phase_py
+    COMPANIES[company_id].transfer_to_player(state, player_id)
+    float_corp_for_test(state, corp_id, player_id=player_id)
+    CORPS[corp_id].set_cash(state, corp_cash)
+    setup_acquisition_phase_py(state)
+    assert_invariants(state, "After setup_player_private_offer")
+
+
 # =============================================================================
 # ASSERTION HELPERS
 # =============================================================================
@@ -323,12 +359,6 @@ def game_state():
     state.initialize_game(seed=42)
     assert state.get_phase() == GamePhases.PHASE_INVEST
     return state
-
-
-@pytest.fixture
-def invest_state(game_state):
-    """Alias for clarity - game starts in INVEST."""
-    return game_state
 
 
 @pytest.fixture
