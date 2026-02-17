@@ -1,5 +1,5 @@
 # cython: language_level=3
-"""ACQUISITION phase stub declarations."""
+"""ACQUISITION phase declarations."""
 
 from core.state cimport GameState
 from core.actions cimport ActionInfo
