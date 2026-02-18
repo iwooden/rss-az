@@ -306,9 +306,11 @@ class TestCoOLevelUpdate:
 
     def test_75_price_does_not_change_coo(self, end_card_state):
         """Game ending via 75 price does not change CoO level."""
-        TURN.set_coo_level(end_card_state, 4)
-
         float_corp_for_test(end_card_state, corp_id=0, par_index=26)
+
+        # Set CoO after float_corp_for_test (which draws from deck and may
+        # cross a color boundary, bumping CoO as a side effect)
+        TURN.set_coo_level(end_card_state, 4)
 
         apply_end_card_py(end_card_state)
         # Skip assert_invariants: float_corp_for_test at par_index=26 marks

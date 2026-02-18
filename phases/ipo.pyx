@@ -183,6 +183,10 @@ cdef void _advance_to_next_company(GameState state) noexcept:
         _transition_out_of_ipo(state)
         return
 
+    # Update net worths before presenting decision
+    # (catches INCOME cash changes, prior IPO payments, and share acquisitions)
+    player_module.update_all_net_worths(state)
+
     # Set up for company owner's decision
     turn_module.TURN.set_ipo_company(state, company_id)
     player_id = company_module.COMPANIES[company_id].get_owner_id(state)
