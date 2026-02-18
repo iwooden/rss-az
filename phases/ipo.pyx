@@ -160,6 +160,10 @@ cdef void _transition_out_of_ipo(GameState state) noexcept:
     cdef int current_turn = turn_module.TURN.get_turn_number(state)
     turn_module.TURN.set_turn_number(state, current_turn + 1)
 
+    # Set active player to position 0 in turn order (start of new turn)
+    cdef int first_player = turn_module.TURN.find_player_at_position(state, 0)
+    state._set_active_player(first_player)
+
     # Transition to INVEST phase (start new turn)
     turn_module.TURN.set_phase(state, PHASE_INVEST)
 

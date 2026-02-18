@@ -145,9 +145,6 @@ cdef void _reorder_players_by_cash(GameState state) noexcept:
     for i in range(num_players):
         player_module.PLAYERS[player_ids[i]].set_turn_order(state, i)
 
-    # Set active player to new position 0 (REORDER-03)
-    state._set_active_player(player_ids[0])
-
 
 # =============================================================================
 # MAIN PHASE HANDLER
