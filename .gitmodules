@@ -1,0 +1,3 @@
+[submodule "tests/18xx_games/18xx"]
+	path = tests/18xx_games/18xx
+	url = https://github.com/tobymao/18xx.git
