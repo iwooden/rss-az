@@ -238,35 +238,41 @@ class TestCoOIncrementOnDraw:
         assert drawn == CDG_ID
         assert TURN.get_coo_level(state) == 6
 
-    def test_draw_non_last_in_group_does_not_change_coo(self, game_state):
-        """Drawing non-last-in-group companies should not change CoO."""
-        # Set up deck with non-last-in-group cards
-        DECK.set_order(game_state, [BME_ID, WT_ID, DSB_ID, SZD_ID, HH_ID])
+    def test_draw_within_same_color_does_not_change_coo(self, game_state):
+        """Drawing cards that don't cross a color boundary should not change CoO."""
+        # All red cards — no color transition until deck empties
+        DECK.set_order(game_state, [BME_ID, 1, 2, MHE_ID])  # 4 reds
         TURN.set_coo_level(game_state, 1)
 
-        # Draw all 5 cards - none should change CoO
-        for _ in range(5):
+        # Draw 3 cards — still red underneath
+        for _ in range(3):
             DECK.draw(game_state)
             assert TURN.get_coo_level(game_state) == 1
 
-    def test_coo_increment_independent_of_deck_position(self, game_state):
-        """CoO should increment regardless of where in deck the card is."""
-        # Put MHE in the middle of other cards
-        DECK.set_order(game_state, [BME_ID, MHE_ID, WT_ID])
+        # Draw last card — deck empty → CoO bumps
+        DECK.draw(game_state)
+        assert TURN.get_coo_level(game_state) == 2
+
+    def test_coo_increments_at_color_boundary(self, game_state):
+        """CoO should increment when drawing exposes a different color group."""
+        # Bottom-to-top: BME(red), WT(orange), BPM(red=id4)
+        # Drawing BPM(red) exposes WT(orange) → CoO bumps
+        DECK.set_order(game_state, [BME_ID, WT_ID, 4])  # 4 = BPM (red)
         TURN.set_coo_level(game_state, 1)
 
-        # Draw WT (top) - no change
-        DECK.draw(game_state)
-        assert TURN.get_coo_level(game_state) == 1
-
-        # Draw MHE - should increment
+        # Draw BPM(red) — next card is WT(orange), color change → CoO 2
         drawn = DECK.draw(game_state)
-        assert drawn == MHE_ID
+        assert drawn == 4  # BPM
         assert TURN.get_coo_level(game_state) == 2
 
-        # Draw BME - no change
+        # Draw WT(orange) — next card is BME(red), color change → CoO 3
+        drawn = DECK.draw(game_state)
+        assert drawn == WT_ID
+        assert TURN.get_coo_level(game_state) == 3
+
+        # Draw BME(red) — deck empty → CoO 4
         DECK.draw(game_state)
-        assert TURN.get_coo_level(game_state) == 2
+        assert TURN.get_coo_level(game_state) == 4
 
 
 # =============================================================================

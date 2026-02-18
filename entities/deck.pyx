@@ -79,15 +79,18 @@ cdef class Deck:
         Drawn companies are always marked as revealed (unavailable for auction)
         until they are explicitly made available at the end of WRAP_UP phase.
 
-        If the drawn company is the last in its color group (MHE, PR, DR, E, CDG),
-        the Cost of Ownership level is incremented, as the next color is now
-        on top of the deck.
+        Cost of Ownership is determined by the back of the top deck card
+        (RULES.md §10). When drawing causes the new top card to be a different
+        color tier than the drawn card, the CoO level increments — the deck
+        has transitioned to the next color group.
 
         Returns the company_id of the drawn card, or -1 if deck is empty.
         """
         cdef int top = <int>state._data[self._deck_top_offset]
         cdef int company_id
         cdef int current_coo
+        cdef int new_top
+        cdef int next_company_id
 
         if top < 0:
             return -1  # Deck is empty
@@ -95,16 +98,24 @@ cdef class Deck:
         company_id = <int>state._data[self._deck_order_offset + top]
 
         # Move top pointer down
-        state._data[self._deck_top_offset] = <float>(top - 1)
+        new_top = top - 1
+        state._data[self._deck_top_offset] = <float>new_top
 
         # Mark drawn company as revealed (unavailable for auction this turn)
         company_module.COMPANIES[company_id].mark_revealed(state)
 
-        # If this was the last company in its color group, increment CoO level
-        # (the next color is now on top of the deck)
-        if is_last_in_group(company_id):
+        # If the new top card is a different color tier, the deck has crossed
+        # a color boundary — increment CoO level.  Also increment if the deck
+        # is now empty (game-end card exposed).
+        if new_top < 0:
+            # Deck exhausted — game-end card exposed
             current_coo = turn_module.TURN.get_coo_level(state)
             turn_module.TURN.set_coo_level(state, current_coo + 1)
+        else:
+            next_company_id = <int>state._data[self._deck_order_offset + new_top]
+            if get_company_stars(company_id) != get_company_stars(next_company_id):
+                current_coo = turn_module.TURN.get_coo_level(state)
+                turn_module.TURN.set_coo_level(state, current_coo + 1)
 
         return company_id
 
