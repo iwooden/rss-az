@@ -1,0 +1,1996 @@
+{
+  "id": 224885,
+  "description": "",
+  "user": {
+    "id": 391,
+    "name": "multiplan"
+  },
+  "players": [
+    {
+      "id": 9624,
+      "name": "NoChinDeluxe"
+    },
+    {
+      "id": 12555,
+      "name": "yernab"
+    },
+    {
+      "id": 391,
+      "name": "multiplan"
+    }
+  ],
+  "min_players": 3,
+  "max_players": 3,
+  "title": "Rolling Stock Stars",
+  "settings": {
+    "seed": 157502736,
+    "is_async": true,
+    "unlisted": false,
+    "auto_routing": null,
+    "player_order": null,
+    "optional_rules": []
+  },
+  "user_settings": null,
+  "status": "finished",
+  "turn": 11,
+  "round": "Issue Shares",
+  "acting": [
+    9624,
+    12555,
+    391
+  ],
+  "result": {
+    "391": 70,
+    "9624": 117,
+    "12555": 200
+  },
+  "actions": [
+    {
+      "type": "bid",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 1,
+      "created_at": 1758769861,
+      "company": "MHE",
+      "price": 10
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 2,
+      "created_at": 1758777126
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 3,
+      "created_at": 1758777619
+    },
+    {
+      "type": "bid",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 4,
+      "created_at": 1758777699,
+      "company": "KME",
+      "price": 7
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 5,
+      "created_at": 1758780377
+    },
+    {
+      "type": "bid",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 6,
+      "created_at": 1758800120,
+      "company": "KME",
+      "price": 8
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 7,
+      "created_at": 1758815846
+    },
+    {
+      "type": "bid",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 8,
+      "created_at": 1758815960,
+      "company": "BSE",
+      "price": 2
+    },
+    {
+      "type": "bid",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 9,
+      "created_at": 1758819782,
+      "company": "BSE",
+      "price": 3
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 10,
+      "created_at": 1758821342
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 11,
+      "created_at": 1758823101,
+      "auto_actions": [
+        {
+          "type": "pass",
+          "entity": 9624,
+          "entity_type": "player",
+          "created_at": 1758823101
+        }
+      ]
+    },
+    {
+      "type": "par",
+      "entity": "MHE",
+      "entity_type": "company",
+      "id": 12,
+      "created_at": 1758827486,
+      "corporation": "DA",
+      "share_price": "10,0,6"
+    },
+    {
+      "type": "pass",
+      "entity": "KME",
+      "entity_type": "company",
+      "id": 13,
+      "created_at": 1758827493
+    },
+    {
+      "type": "pass",
+      "entity": "BSE",
+      "entity_type": "company",
+      "id": 14,
+      "created_at": 1758827494
+    },
+    {
+      "type": "bid",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 15,
+      "created_at": 1758829332,
+      "company": "MS",
+      "price": 17
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 16,
+      "created_at": 1758852286
+    },
+    {
+      "type": "bid",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 17,
+      "created_at": 1758852289,
+      "company": "PR",
+      "price": 19
+    },
+    {
+      "type": "bid",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 18,
+      "created_at": 1758852985,
+      "company": "BPM",
+      "price": 7
+    },
+    {
+      "type": "bid",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 19,
+      "created_at": 1758854636,
+      "company": "BPM",
+      "price": 9
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 20,
+      "created_at": 1758854716
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 21,
+      "created_at": 1758855142
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 22,
+      "created_at": 1758855700
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 23,
+      "created_at": 1758891315
+    },
+    {
+      "type": "offer",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 24,
+      "created_at": 1758891331,
+      "corporation": "DA",
+      "company": "KME",
+      "price": 7
+    },
+    {
+      "type": "offer",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 25,
+      "created_at": 1758891337,
+      "corporation": "DA",
+      "company": "BSE",
+      "price": 3
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 26,
+      "created_at": 1758891455,
+      "auto_actions": [
+        {
+          "type": "pass",
+          "entity": 391,
+          "entity_type": "player",
+          "created_at": 1758891456
+        },
+        {
+          "type": "pass",
+          "entity": 12555,
+          "entity_type": "player",
+          "created_at": 1758891456
+        },
+        {
+          "type": "pass",
+          "entity": 9624,
+          "entity_type": "player",
+          "created_at": 1758891456
+        }
+      ]
+    },
+    {
+      "type": "dividend",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 27,
+      "created_at": 1758891514,
+      "kind": "variable",
+      "amount": 0
+    },
+    {
+      "type": "pass",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 28,
+      "created_at": 1758891546
+    },
+    {
+      "type": "par",
+      "entity": "PR",
+      "entity_type": "company",
+      "id": 29,
+      "created_at": 1758891884,
+      "corporation": "SI",
+      "share_price": "20,0,13"
+    },
+    {
+      "type": "par",
+      "entity": "MS",
+      "entity_type": "company",
+      "id": 30,
+      "created_at": 1758894577,
+      "corporation": "SM",
+      "share_price": "18,0,12"
+    },
+    {
+      "type": "pass",
+      "entity": "BPM",
+      "entity_type": "company",
+      "id": 31,
+      "created_at": 1758894590
+    },
+    {
+      "type": "bid",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 32,
+      "created_at": 1758894758,
+      "company": "OL",
+      "price": 15
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 33,
+      "created_at": 1758894984
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 34,
+      "created_at": 1758895069
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 35,
+      "created_at": 1758896688
+    },
+    {
+      "type": "offer",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 36,
+      "created_at": 1758896707,
+      "corporation": "DA",
+      "company": "OL",
+      "price": 10
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 37,
+      "created_at": 1758896765
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 38,
+      "created_at": 1758896950
+    },
+    {
+      "type": "offer",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 39,
+      "created_at": 1758897373,
+      "corporation": "SM",
+      "company": "BPM",
+      "price": 9
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 40,
+      "created_at": 1758897384,
+      "auto_actions": [
+        {
+          "type": "pass",
+          "entity": 391,
+          "entity_type": "player",
+          "created_at": 1758897384
+        },
+        {
+          "type": "pass",
+          "entity": 9624,
+          "entity_type": "player",
+          "created_at": 1758897384
+        },
+        {
+          "type": "pass",
+          "entity": 12555,
+          "entity_type": "player",
+          "created_at": 1758897384
+        }
+      ]
+    },
+    {
+      "type": "dividend",
+      "entity": "SI",
+      "entity_type": "corporation",
+      "id": 41,
+      "created_at": 1758914753,
+      "kind": "variable",
+      "amount": 2
+    },
+    {
+      "type": "dividend",
+      "entity": "SM",
+      "entity_type": "corporation",
+      "id": 42,
+      "created_at": 1758916519,
+      "kind": "variable",
+      "amount": 6
+    },
+    {
+      "type": "dividend",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 43,
+      "created_at": 1758932428,
+      "kind": "variable",
+      "amount": 1
+    },
+    {
+      "type": "sell_shares",
+      "entity": "SI",
+      "entity_type": "corporation",
+      "id": 44,
+      "created_at": 1758932613,
+      "shares": [
+        "SI_2"
+      ],
+      "percent": 10,
+      "share_price": 22
+    },
+    {
+      "type": "sell_shares",
+      "entity": "SM",
+      "entity_type": "corporation",
+      "id": 45,
+      "created_at": 1758934051,
+      "shares": [
+        "SM_2"
+      ],
+      "percent": 10
+    },
+    {
+      "type": "pass",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 46,
+      "created_at": 1758934221
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 47,
+      "created_at": 1758953731
+    },
+    {
+      "type": "bid",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 48,
+      "created_at": 1758954387,
+      "company": "SBB",
+      "price": 23
+    },
+    {
+      "type": "buy_shares",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 49,
+      "created_at": 1758984989,
+      "shares": [
+        "DA_1"
+      ],
+      "percent": 10,
+      "share_price": 18
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 50,
+      "created_at": 1758986271
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 51,
+      "created_at": 1758989887
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 52,
+      "created_at": 1758995004
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 53,
+      "created_at": 1758995020
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 54,
+      "created_at": 1758996258
+    },
+    {
+      "type": "offer",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 55,
+      "created_at": 1759021784,
+      "corporation": "SI",
+      "company": "HE",
+      "price": 18
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 56,
+      "created_at": 1759021790,
+      "auto_actions": [
+        {
+          "type": "pass",
+          "entity": 12555,
+          "entity_type": "player",
+          "created_at": 1759021792
+        },
+        {
+          "type": "pass",
+          "entity": 391,
+          "entity_type": "player",
+          "created_at": 1759021792
+        }
+      ]
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 57,
+      "created_at": 1759024333
+    },
+    {
+      "type": "dividend",
+      "entity": "SI",
+      "entity_type": "corporation",
+      "id": 58,
+      "created_at": 1759024541,
+      "kind": "variable",
+      "amount": 0
+    },
+    {
+      "type": "dividend",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 59,
+      "created_at": 1759029904,
+      "kind": "variable",
+      "amount": 5
+    },
+    {
+      "type": "dividend",
+      "entity": "SM",
+      "entity_type": "corporation",
+      "id": 60,
+      "created_at": 1759034140,
+      "kind": "variable",
+      "amount": 5
+    },
+    {
+      "type": "sell_shares",
+      "entity": "SI",
+      "entity_type": "corporation",
+      "id": 61,
+      "created_at": 1759034459,
+      "shares": [
+        "SI_3"
+      ],
+      "percent": 10,
+      "share_price": 24
+    },
+    {
+      "type": "pass",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 62,
+      "created_at": 1759072144
+    },
+    {
+      "type": "pass",
+      "entity": "SM",
+      "entity_type": "corporation",
+      "id": 63,
+      "created_at": 1759080951
+    },
+    {
+      "type": "par",
+      "entity": "SBB",
+      "entity_type": "company",
+      "id": 64,
+      "created_at": 1759081009,
+      "corporation": "OS",
+      "share_price": "16,0,11"
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 65,
+      "created_at": 1759105667
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 66,
+      "created_at": 1759105710
+    },
+    {
+      "type": "sell_shares",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 67,
+      "created_at": 1759107319,
+      "shares": [
+        "DA_1"
+      ],
+      "percent": 10,
+      "share_price": 20
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 68,
+      "created_at": 1759111590
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 69,
+      "created_at": 1759111610
+    },
+    {
+      "type": "bid",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 70,
+      "created_at": 1759117163,
+      "company": "DR",
+      "price": 29
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 71,
+      "created_at": 1759117351
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 72,
+      "created_at": 1759117388
+    },
+    {
+      "type": "program_share_pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 73,
+      "created_at": 1759117609,
+      "unconditional": true,
+      "indefinite": false
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 74,
+      "created_at": 1759118780
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 75,
+      "created_at": 1759118786
+    },
+    {
+      "type": "offer",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 76,
+      "created_at": 1759118885,
+      "corporation": "OS",
+      "company": "NS",
+      "price": 22
+    },
+    {
+      "type": "offer",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 77,
+      "created_at": 1759118890,
+      "corporation": "OS",
+      "company": "MS",
+      "price": 9
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 78,
+      "created_at": 1759118895
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 79,
+      "created_at": 1759118908
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 80,
+      "created_at": 1759118934
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 81,
+      "created_at": 1759118968
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 82,
+      "user": 9624,
+      "created_at": 1759145007
+    },
+    {
+      "type": "undo",
+      "entity": "SI",
+      "entity_type": "corporation",
+      "id": 83,
+      "user": 9624,
+      "created_at": 1759145010
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 84,
+      "created_at": 1759145013
+    },
+    {
+      "type": "dividend",
+      "entity": "SI",
+      "entity_type": "corporation",
+      "id": 85,
+      "created_at": 1759149796,
+      "kind": "variable",
+      "amount": 1
+    },
+    {
+      "type": "dividend",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 86,
+      "created_at": 1759154616,
+      "kind": "variable",
+      "amount": 4
+    },
+    {
+      "type": "dividend",
+      "entity": "OS",
+      "entity_type": "corporation",
+      "id": 87,
+      "created_at": 1759160048,
+      "kind": "variable",
+      "amount": 2
+    },
+    {
+      "type": "dividend",
+      "entity": "SM",
+      "entity_type": "corporation",
+      "id": 88,
+      "created_at": 1759160057,
+      "kind": "variable",
+      "amount": 4
+    },
+    {
+      "type": "sell_shares",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 89,
+      "created_at": 1759166606,
+      "shares": [
+        "DA_2"
+      ],
+      "percent": 10,
+      "share_price": 22
+    },
+    {
+      "type": "sell_shares",
+      "entity": "OS",
+      "entity_type": "corporation",
+      "id": 90,
+      "created_at": 1759166672,
+      "shares": [
+        "OS_4"
+      ],
+      "percent": 10,
+      "share_price": 18
+    },
+    {
+      "type": "pass",
+      "entity": "SM",
+      "entity_type": "corporation",
+      "id": 91,
+      "created_at": 1759166675
+    },
+    {
+      "type": "pass",
+      "entity": "DR",
+      "entity_type": "company",
+      "id": 92,
+      "created_at": 1759168086
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 93,
+      "created_at": 1759182778
+    },
+    {
+      "type": "sell_shares",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 94,
+      "created_at": 1759183415,
+      "shares": [
+        "SM_0"
+      ],
+      "percent": 10,
+      "share_price": 10
+    },
+    {
+      "type": "program_share_pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 95,
+      "created_at": 1759189063,
+      "unconditional": true,
+      "indefinite": false
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 96,
+      "created_at": 1759201585
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 97,
+      "created_at": 1759207958,
+      "auto_actions": [
+        {
+          "type": "pass",
+          "entity": 12555,
+          "entity_type": "player",
+          "created_at": 1759207961
+        }
+      ]
+    },
+    {
+      "type": "offer",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 98,
+      "created_at": 1759207962,
+      "corporation": "SI",
+      "company": "SNCF",
+      "price": 34
+    },
+    {
+      "type": "respond",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 99,
+      "created_at": 1759208220,
+      "corporation": "SI",
+      "company": "SNCF",
+      "accept": "true"
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 100,
+      "created_at": 1759208253
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 101,
+      "created_at": 1759210433
+    },
+    {
+      "type": "offer",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 102,
+      "created_at": 1759231133,
+      "corporation": "DA",
+      "company": "DR",
+      "price": 32
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 103,
+      "created_at": 1759231156,
+      "auto_actions": [
+        {
+          "type": "pass",
+          "entity": 12555,
+          "entity_type": "player",
+          "created_at": 1759231156
+        },
+        {
+          "type": "pass",
+          "entity": 391,
+          "entity_type": "player",
+          "created_at": 1759231156
+        }
+      ]
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 104,
+      "created_at": 1759231163
+    },
+    {
+      "type": "dividend",
+      "entity": "SI",
+      "entity_type": "corporation",
+      "id": 105,
+      "created_at": 1759238637,
+      "kind": "variable",
+      "amount": 2
+    },
+    {
+      "type": "dividend",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 106,
+      "created_at": 1759243471,
+      "kind": "variable",
+      "amount": 0
+    },
+    {
+      "type": "dividend",
+      "entity": "OS",
+      "entity_type": "corporation",
+      "id": 107,
+      "created_at": 1759245543,
+      "kind": "variable",
+      "amount": 3
+    },
+    {
+      "type": "pass",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 108,
+      "created_at": 1759247817
+    },
+    {
+      "type": "sell_shares",
+      "entity": "OS",
+      "entity_type": "corporation",
+      "id": 109,
+      "created_at": 1759247897,
+      "shares": [
+        "OS_5"
+      ],
+      "percent": 10,
+      "share_price": 20
+    },
+    {
+      "type": "buy_shares",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 110,
+      "created_at": 1759247921,
+      "shares": [
+        "OS_2"
+      ],
+      "percent": 10,
+      "share_price": 22
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 111,
+      "created_at": 1759248094
+    },
+    {
+      "type": "bid",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 112,
+      "created_at": 1759248136,
+      "company": "BR",
+      "price": 34
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 113,
+      "created_at": 1759248151
+    },
+    {
+      "type": "sell_shares",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 114,
+      "created_at": 1759248304,
+      "shares": [
+        "SI_0"
+      ],
+      "percent": 10,
+      "share_price": 24
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 115,
+      "created_at": 1759248765
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 116,
+      "created_at": 1759248997
+    },
+    {
+      "type": "bid",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 117,
+      "created_at": 1759249282,
+      "company": "FS",
+      "price": 32
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 118,
+      "created_at": 1759254046
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 119,
+      "created_at": 1759254199
+    },
+    {
+      "type": "program_share_pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 120,
+      "created_at": 1759258905,
+      "unconditional": true,
+      "indefinite": false
+    },
+    {
+      "type": "program_disable",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 121,
+      "created_at": 1759262266,
+      "reason": "user",
+      "original_type": "program_share_pass"
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 122,
+      "created_at": 1759284636
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 123,
+      "created_at": 1759285102
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 124,
+      "created_at": 1759293499
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 125,
+      "created_at": 1759293504
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 126,
+      "created_at": 1759294879
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 127,
+      "created_at": 1759320167
+    },
+    {
+      "type": "dividend",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 128,
+      "created_at": 1759320178,
+      "kind": "variable",
+      "amount": 0
+    },
+    {
+      "type": "dividend",
+      "entity": "OS",
+      "entity_type": "corporation",
+      "id": 129,
+      "created_at": 1759330966,
+      "kind": "variable",
+      "amount": 7
+    },
+    {
+      "type": "sell_shares",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 130,
+      "created_at": 1759331716,
+      "shares": [
+        "DA_3"
+      ],
+      "percent": 10,
+      "share_price": 27
+    },
+    {
+      "type": "pass",
+      "entity": "BR",
+      "entity_type": "company",
+      "id": 131,
+      "created_at": 1759331718
+    },
+    {
+      "type": "par",
+      "entity": "FS",
+      "corporation": "PR",
+      "entity_type": "company",
+      "share_price": "24,0,15",
+      "id": 132,
+      "user": 391,
+      "created_at": 1759334761
+    },
+    {
+      "type": "undo",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 133,
+      "user": 391,
+      "created_at": 1759334770
+    },
+    {
+      "type": "par",
+      "entity": "FS",
+      "entity_type": "company",
+      "id": 134,
+      "created_at": 1759334776,
+      "corporation": "S",
+      "share_price": "24,0,15"
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 135,
+      "created_at": 1759334803
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 136,
+      "created_at": 1759337320
+    },
+    {
+      "type": "sell_shares",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 137,
+      "created_at": 1759338248,
+      "shares": [
+        "OS_1"
+      ],
+      "percent": 10,
+      "share_price": 18
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 138,
+      "created_at": 1759338582
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 139,
+      "created_at": 1759339524
+    },
+    {
+      "type": "bid",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 140,
+      "created_at": 1759340404,
+      "company": "RENFE",
+      "price": 33
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 141,
+      "created_at": 1759340451
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 142,
+      "created_at": 1759342974
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 143,
+      "created_at": 1759343546
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 144,
+      "created_at": 1759343555
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 145,
+      "created_at": 1759343917
+    },
+    {
+      "type": "offer",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 146,
+      "created_at": 1759349963,
+      "corporation": "DA",
+      "company": "BR",
+      "price": 45
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 147,
+      "created_at": 1759350023
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 148,
+      "created_at": 1759350034
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 149,
+      "created_at": 1759352314
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 150,
+      "created_at": 1759365802
+    },
+    {
+      "type": "dividend",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 151,
+      "created_at": 1759368960,
+      "kind": "variable",
+      "amount": 0
+    },
+    {
+      "type": "dividend",
+      "entity": "S",
+      "entity_type": "corporation",
+      "id": 152,
+      "created_at": 1759370309,
+      "kind": "variable",
+      "amount": 8
+    },
+    {
+      "type": "dividend",
+      "entity": "OS",
+      "entity_type": "corporation",
+      "id": 153,
+      "created_at": 1759371407,
+      "kind": "variable",
+      "amount": 4
+    },
+    {
+      "type": "pass",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 154,
+      "created_at": 1759375239
+    },
+    {
+      "type": "pass",
+      "entity": "S",
+      "entity_type": "corporation",
+      "id": 155,
+      "created_at": 1759397384
+    },
+    {
+      "type": "par",
+      "entity": "RENFE",
+      "entity_type": "company",
+      "id": 156,
+      "created_at": 1759421099,
+      "corporation": "VM",
+      "share_price": "37,0,19"
+    },
+    {
+      "type": "bid",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 157,
+      "created_at": 1759437712,
+      "company": "LHR",
+      "price": 58
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 158,
+      "created_at": 1759438261
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 159,
+      "created_at": 1759457239
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 160,
+      "created_at": 1759461922
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 161,
+      "created_at": 1759461936
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 162,
+      "created_at": 1759463764
+    },
+    {
+      "type": "offer",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 163,
+      "created_at": 1759464556,
+      "corporation": "VM",
+      "company": "SNCF",
+      "price": 13
+    },
+    {
+      "type": "offer",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 164,
+      "created_at": 1759464558,
+      "corporation": "VM",
+      "company": "SBB",
+      "price": 12
+    },
+    {
+      "type": "offer",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 165,
+      "created_at": 1759464560,
+      "corporation": "VM",
+      "company": "NS",
+      "price": 11
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 166,
+      "created_at": 1759464589
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 167,
+      "created_at": 1759464593
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 168,
+      "created_at": 1759464762
+    },
+    {
+      "type": "sell_company",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 169,
+      "created_at": 1759491064,
+      "company": "BSE",
+      "price": 0
+    },
+    {
+      "type": "sell_company",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 170,
+      "created_at": 1759491066,
+      "company": "KME",
+      "price": 0
+    },
+    {
+      "type": "sell_company",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 171,
+      "created_at": 1759491078,
+      "company": "MHE",
+      "price": 0
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 172,
+      "created_at": 1759491089
+    },
+    {
+      "type": "dividend",
+      "entity": "VM",
+      "entity_type": "corporation",
+      "id": 173,
+      "created_at": 1759499924,
+      "kind": "variable",
+      "amount": 12
+    },
+    {
+      "type": "dividend",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 174,
+      "created_at": 1759501252,
+      "kind": "variable",
+      "amount": 0
+    },
+    {
+      "type": "dividend",
+      "entity": "S",
+      "entity_type": "corporation",
+      "id": 175,
+      "created_at": 1759511066,
+      "kind": "variable",
+      "amount": 1
+    },
+    {
+      "type": "dividend",
+      "entity": "OS",
+      "entity_type": "corporation",
+      "id": 176,
+      "created_at": 1759511752,
+      "kind": "variable",
+      "amount": 6
+    },
+    {
+      "type": "pass",
+      "entity": "VM",
+      "entity_type": "corporation",
+      "id": 177,
+      "created_at": 1759511753
+    },
+    {
+      "type": "sell_shares",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 178,
+      "created_at": 1759518292,
+      "shares": [
+        "DA_4"
+      ],
+      "percent": 10,
+      "share_price": 27
+    },
+    {
+      "type": "sell_shares",
+      "entity": "S",
+      "entity_type": "corporation",
+      "id": 179,
+      "created_at": 1759533329,
+      "shares": [
+        "S_4"
+      ],
+      "percent": 10,
+      "share_price": 18
+    },
+    {
+      "type": "pass",
+      "entity": "LHR",
+      "entity_type": "company",
+      "id": 180,
+      "created_at": 1759544148
+    },
+    {
+      "type": "sell_shares",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 181,
+      "created_at": 1759544200,
+      "shares": [
+        "OS_2"
+      ],
+      "percent": 10,
+      "share_price": 13
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 182,
+      "created_at": 1759546578
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 183,
+      "created_at": 1759546630
+    },
+    {
+      "type": "buy_shares",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 184,
+      "created_at": 1759546655,
+      "shares": [
+        "VM_1"
+      ],
+      "percent": 10,
+      "share_price": 50
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 185,
+      "created_at": 1759546705
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 186,
+      "created_at": 1759547620
+    },
+    {
+      "type": "sell_shares",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 187,
+      "created_at": 1759547682,
+      "shares": [
+        "OS_0"
+      ],
+      "percent": 10,
+      "share_price": 12
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 188,
+      "created_at": 1759547863
+    },
+    {
+      "type": "program_share_pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 189,
+      "created_at": 1759549171,
+      "unconditional": true,
+      "indefinite": false
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 190,
+      "created_at": 1759584923,
+      "auto_actions": [
+        {
+          "type": "pass",
+          "entity": 12555,
+          "entity_type": "player",
+          "created_at": 1759584923
+        }
+      ]
+    },
+    {
+      "type": "offer",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 191,
+      "created_at": 1759584937,
+      "corporation": "DA",
+      "company": "LHR",
+      "price": 59
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 192,
+      "created_at": 1759584945
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 193,
+      "created_at": 1759584948
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 194,
+      "created_at": 1759596442
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 195,
+      "created_at": 1759596447
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 196,
+      "created_at": 1759596830
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 197,
+      "created_at": 1759602220
+    },
+    {
+      "type": "dividend",
+      "entity": "VM",
+      "entity_type": "corporation",
+      "id": 198,
+      "created_at": 1759602549,
+      "kind": "variable",
+      "amount": 9
+    },
+    {
+      "type": "dividend",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 199,
+      "created_at": 1759605953,
+      "kind": "variable",
+      "amount": 0
+    },
+    {
+      "type": "dividend",
+      "entity": "S",
+      "entity_type": "corporation",
+      "id": 200,
+      "created_at": 1759623544,
+      "kind": "variable",
+      "amount": 1
+    },
+    {
+      "type": "pass",
+      "entity": "VM",
+      "entity_type": "corporation",
+      "id": 201,
+      "created_at": 1759623657
+    },
+    {
+      "type": "sell_shares",
+      "entity": "S",
+      "entity_type": "corporation",
+      "id": 202,
+      "created_at": 1759623994,
+      "shares": [
+        "S_5"
+      ],
+      "percent": 10,
+      "share_price": 18
+    },
+    {
+      "type": "buy_shares",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 203,
+      "created_at": 1759624515,
+      "shares": [
+        "SI_1"
+      ],
+      "percent": 10,
+      "share_price": 24
+    },
+    {
+      "type": "buy_shares",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 204,
+      "created_at": 1759624880,
+      "shares": [
+        "S_2"
+      ],
+      "percent": 10,
+      "share_price": 20
+    },
+    {
+      "type": "buy_shares",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 205,
+      "created_at": 1759629841,
+      "shares": [
+        "DA_1"
+      ],
+      "percent": 10,
+      "share_price": 37
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 206,
+      "created_at": 1759629861
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 207,
+      "created_at": 1759630049
+    },
+    {
+      "type": "buy_shares",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 208,
+      "created_at": 1759630150,
+      "shares": [
+        "S_3"
+      ],
+      "percent": 10,
+      "share_price": 22
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 209,
+      "created_at": 1759630165
+    },
+    {
+      "type": "program_share_pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 210,
+      "created_at": 1759630181,
+      "unconditional": true,
+      "indefinite": false
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 211,
+      "created_at": 1759630827
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 212,
+      "created_at": 1759668551
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 213,
+      "created_at": 1759668565
+    },
+    {
+      "type": "offer",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 214,
+      "created_at": 1759668594,
+      "corporation": "S",
+      "company": "HR",
+      "price": 62
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 215,
+      "created_at": 1759668596
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 216,
+      "created_at": 1759690860
+    },
+    {
+      "type": "pass",
+      "entity": 12555,
+      "entity_type": "player",
+      "id": 217,
+      "created_at": 1759690867
+    },
+    {
+      "type": "pass",
+      "entity": 9624,
+      "entity_type": "player",
+      "id": 218,
+      "created_at": 1759697772
+    },
+    {
+      "type": "pass",
+      "entity": 391,
+      "entity_type": "player",
+      "id": 219,
+      "created_at": 1759715508
+    },
+    {
+      "type": "dividend",
+      "entity": "VM",
+      "entity_type": "corporation",
+      "id": 220,
+      "created_at": 1759715558,
+      "kind": "variable",
+      "amount": 5
+    },
+    {
+      "type": "dividend",
+      "entity": "DA",
+      "entity_type": "corporation",
+      "id": 221,
+      "created_at": 1759716650,
+      "kind": "variable",
+      "amount": 0
+    },
+    {
+      "type": "dividend",
+      "entity": "SI",
+      "entity_type": "corporation",
+      "id": 222,
+      "created_at": 1759716850,
+      "kind": "variable",
+      "amount": 7
+    },
+    {
+      "type": "dividend",
+      "entity": "S",
+      "entity_type": "corporation",
+      "id": 223,
+      "created_at": 1759717081,
+      "kind": "variable",
+      "amount": 5
+    }
+  ],
+  "loaded": true,
+  "created_at": 1758723095,
+  "updated_at": 1759717081,
+  "finished_at": 1759717081
+}
