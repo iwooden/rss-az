@@ -147,10 +147,15 @@ cdef int _calculate_price_move(int owned_stars, int required_stars) noexcept:
 
 cdef int _find_target_index(GameState state, int current_index, int move) noexcept:
     """
-    Find target price index after movement, skipping occupied spaces.
+    Find target price index after movement, sliding past occupied spaces.
 
     Per RULES.md line 324: Take target share price card (skip if in use,
     continue in same direction).
+
+    The target is computed as a fixed offset from the current index. If that
+    target space is occupied, the corp slides further in the same direction
+    until a free space is found. Occupied spaces between current and target
+    are ignored (they don't consume movement steps).
 
     Args:
         state: Game state
@@ -160,26 +165,25 @@ cdef int _find_target_index(GameState state, int current_index, int move) noexce
     Returns:
         Target price index (0 = bankruptcy, 26 = $75 max)
     """
-    cdef int target = current_index
-    cdef int steps_remaining = move if move >= 0 else -move
-    cdef int direction = 1 if move > 0 else -1
-
     if move == 0:
         return current_index
 
-    while steps_remaining > 0:
+    cdef int target = current_index + move
+    cdef int direction = 1 if move > 0 else -1
+
+    # Bounds checking
+    if target <= 0:
+        return 0  # Bankruptcy
+    if target >= 26:
+        return 26  # Max price ($75), multiple corps can share
+
+    # If target is occupied, slide further in the same direction
+    while not market_module.MARKET.is_space_available(state, target):
         target += direction
-
-        # Bounds checking
         if target <= 0:
-            return 0  # Bankruptcy
+            return 0
         if target >= 26:
-            return 26  # Max price ($75), multiple corps can share
-
-        # Check if space is available (or we can skip occupied)
-        if market_module.MARKET.is_space_available(state, target):
-            steps_remaining -= 1
-        # If not available, continue in same direction (skip)
+            return 26
 
     return target
 

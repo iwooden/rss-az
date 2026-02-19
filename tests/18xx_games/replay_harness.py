@@ -59,16 +59,6 @@ PHASE_ISSUE = GamePhases.PHASE_ISSUE_SHARES
 PHASE_IPO = GamePhases.PHASE_IPO
 PHASE_GAME_OVER = GamePhases.PHASE_GAME_OVER
 
-# 18xx round short names -> our phase groupings
-ROUND_TO_PHASES = {
-    'INV': {PHASE_INVEST, PHASE_BID, PHASE_WRAP_UP},
-    'ACQ': {PHASE_ACQ},
-    'CLO': {PHASE_CLOSING},
-    'DIV': {PHASE_DIVIDENDS, PHASE_INCOME, PHASE_END_CARD},
-    'ISS': {PHASE_ISSUE},
-    'IPO': {PHASE_IPO},
-}
-
 
 @dataclass
 class Mismatch:
@@ -130,6 +120,7 @@ class ReplayHarness:
 
         # Verify initial state matches
         self._compare_state(state, initial, "initial")
+        self._last_ref = initial
 
         # Pre-process actions
         raw_actions = game_data.get('actions', [])
@@ -177,9 +168,8 @@ class ReplayHarness:
                 )
 
         # Final comparison at game end
-        if ref_states:
-            last_ref = ref_states[-1]
-            self._compare_state(state, last_ref, "final")
+        if self._last_ref is not None:
+            self._compare_state(state, self._last_ref, "final")
 
         return self.mismatches
 
@@ -234,17 +224,25 @@ class ReplayHarness:
     def _replay_simple_action(self, state, actions, idx, layout, ref_by_action):
         """Replay a single action for simple phases (INVEST, BID, DIVIDENDS, ISSUE, IPO).
 
+        Compares engine state BEFORE applying each action against the reference
+        snapshot from the previous action. This avoids phase-alignment issues
+        caused by the engine auto-advancing through forced phases.
+
         Returns the new index into the actions stream.
         """
         if idx >= len(actions):
             return idx
 
         action = actions[idx]
-        phase = TURN.get_phase(state)
         action_id = action.get('id', -1)
+        has_ref = action_id >= 0 and action_id in ref_by_action
+
+        # Compare BEFORE applying: our state should match the last reference
+        if has_ref and self._last_ref is not None:
+            self._compare_state(state, self._last_ref, f"before action {action_id}")
 
         try:
-            engine_action = self._map_action(state, action, phase, layout)
+            engine_action = self._map_action(state, action, TURN.get_phase(state), layout)
         except (ValueError, KeyError, IndexError) as e:
             self.mismatches.append(Mismatch(
                 action_id=action_id,
@@ -254,12 +252,15 @@ class ReplayHarness:
                 actual=str(e),
                 context=f"18xx_type={action.get('type')}, entity={action.get('entity')}",
             ))
+            if has_ref:
+                self._last_ref = ref_by_action[action_id]
             return idx + 1
 
         if engine_action is None:
-            # Skip actions we can't map (e.g., actions for automated phases)
             if self.verbose:
                 print(f"  Skipping unmappable action {action_id}: {action.get('type')}")
+            if has_ref:
+                self._last_ref = ref_by_action[action_id]
             return idx + 1
 
         result = DRIVER.apply_action(state, engine_action)
@@ -273,21 +274,9 @@ class ReplayHarness:
                 context=f"engine_action={engine_action}, 18xx_type={action.get('type')}",
             ))
 
-        # Compare state if we have a reference for this action_id AND
-        # the engine phase matches the reference round. The engine may
-        # auto-advance past forced phases, making the comparison invalid
-        # when the phases don't align.
-        # Skip comparison if the engine is now in an adapter-handled phase
-        # (ACQ, CLOSING) — the adapter hasn't processed yet, so state is
-        # incomplete for comparison.
-        if action_id in ref_by_action:
-            ref = ref_by_action[action_id]
-            ref_round = ref.get('round', '')
-            engine_phase = TURN.get_phase(state)
-            if engine_phase in (PHASE_ACQ, PHASE_CLOSING):
-                pass  # Adapter will handle this phase
-            elif ref_round and engine_phase in ROUND_TO_PHASES.get(ref_round, set()):
-                self._compare_state(state, ref, f"after action {action_id}")
+        # Update reference for next comparison
+        if has_ref:
+            self._last_ref = ref_by_action[action_id]
 
         return idx + 1
 
@@ -344,22 +333,6 @@ class ReplayHarness:
             return None
 
         return None
-
-    def _is_player_entity(self, entity) -> bool:
-        """Check if entity is a player ID (numeric)."""
-        try:
-            int(entity)
-            return True
-        except (TypeError, ValueError):
-            return False
-
-    def _is_company_entity(self, entity) -> bool:
-        """Check if entity is a company name."""
-        return entity in COMPANY_NAME_TO_ID
-
-    def _is_corp_entity(self, entity) -> bool:
-        """Check if entity is a corporation name."""
-        return entity in CORP_NAME_TO_ID
 
     def _run_acquisition_adapter(self, state, actions, idx, layout, ref_by_action):
         """Walk through acquisition phase, matching 18xx offer/respond actions
@@ -446,11 +419,10 @@ class ReplayHarness:
                     print(f"  ACQ offer: {corp_name} -> {company_name} [PASS]")
                 DRIVER.apply_action(state, layout.acq_pass)
 
-        # NOTE: We do NOT compare state here because DRIVER.apply_action
-        # auto-advances through CLOSING+INCOME after ACQ. The engine state
-        # is at DIVIDENDS while the reference is still at end-of-ACQ.
-        # Comparison happens naturally at the next player-action boundary
-        # (DIVIDENDS) via _replay_simple_action.
+        # Clear _last_ref: our engine auto-advanced through CLOSING+INCOME
+        # after ACQ, but the Ruby ref for the last ACQ action doesn't include
+        # those automated phases. Skip comparison at the next action boundary.
+        self._last_ref = None
 
         return end_idx
 
@@ -579,8 +551,9 @@ class ReplayHarness:
             else:
                 DRIVER.apply_action(state, layout.close_pass)
 
-        # NOTE: Same as ACQ adapter - don't compare here because the engine
-        # may have auto-advanced through INCOME after CLOSING.
+        # Clear _last_ref: our engine auto-advanced through INCOME after
+        # CLOSING, but the Ruby ref doesn't include those automated phases.
+        self._last_ref = None
 
         return end_idx
 
@@ -625,7 +598,7 @@ class ReplayHarness:
 
             # Find our player index
             try:
-                pidx = self._find_player_index(ref, player_id_18xx)
+                pidx = self._find_player_index(player_id_18xx)
             except ValueError:
                 continue
 
@@ -804,7 +777,7 @@ class ReplayHarness:
                 expected=ref_coo, actual=our_coo, context=context,
             ))
 
-    def _find_player_index(self, ref: dict, player_id_18xx: int) -> int:
+    def _find_player_index(self, player_id_18xx: int) -> int:
         """Find our 0-based player index from an 18xx player ID.
 
         Uses the static player_order mapping established at game start.

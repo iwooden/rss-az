@@ -413,32 +413,59 @@ class TestPriceMovement:
         move = calculate_price_move_py(5, 10)  # diff = -5
         assert move == -2
 
-    def test_skip_occupied_spaces_up(self):
-        """Moving up skips occupied spaces."""
+    def test_occupied_between_current_and_target_up(self):
+        """Occupied spaces between current and target don't affect result."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
-        # Current index 10, moving up 2
-        # Space 11 is occupied, 12 is free, 13 is free
+        # Current index 10, moving up 2 → target = 12
+        # Space 11 is occupied (between), 12 is free
         MARKET.set_space_available(state, 11, False)
         MARKET.set_space_available(state, 12, True)
+
+        # Move +2 from 10: target=12 (free) → lands on 12
+        target = find_target_index_py(state, 10, 2)
+        assert target == 12
+
+    def test_slide_past_occupied_target_up(self):
+        """When target space itself is occupied, slide further up."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Current index 10, moving up 2 → target = 12
+        # Space 12 is occupied, 13 is free
+        MARKET.set_space_available(state, 12, False)
         MARKET.set_space_available(state, 13, True)
 
-        # Move +2 from 10 should skip 11 and land on 13
+        # Move +2 from 10: target=12 (occupied) → slide to 13
         target = find_target_index_py(state, 10, 2)
         assert target == 13
 
-    def test_skip_occupied_spaces_down(self):
-        """Moving down skips occupied spaces."""
+    def test_occupied_between_current_and_target_down(self):
+        """Occupied spaces between current and target don't affect result."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
-        # Current index 10, moving down 1
-        # Space 9 is occupied
+        # Current index 10, moving down 2 → target = 8
+        # Space 9 is occupied (between), 8 is free
         MARKET.set_space_available(state, 9, False)
         MARKET.set_space_available(state, 8, True)
 
-        # Move -1 from 10 should skip 9 and land on 8
+        # Move -2 from 10: target=8 (free) → lands on 8
+        target = find_target_index_py(state, 10, -2)
+        assert target == 8
+
+    def test_slide_past_occupied_target_down(self):
+        """When target space itself is occupied, slide further down."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Current index 10, moving down 1 → target = 9
+        # Space 9 is occupied, 8 is free
+        MARKET.set_space_available(state, 9, False)
+        MARKET.set_space_available(state, 8, True)
+
+        # Move -1 from 10: target=9 (occupied) → slide to 8
         target = find_target_index_py(state, 10, -1)
         assert target == 8
 
