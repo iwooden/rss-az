@@ -6,4 +6,5 @@
 **/*.so
 **/*.o
 **/*.c
-**/*.html.planning/intel/
+**/*.html
+scratchpad/
