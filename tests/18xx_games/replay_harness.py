@@ -257,6 +257,16 @@ class ReplayHarness:
             return idx + 1
 
         if engine_action is None:
+            # Check if this unmappable action belongs to ACQ/CLO rounds that the
+            # engine already auto-processed. If so, skip the ref update — using
+            # an ACQ/CLO-round ref for comparison against post-INCOME state would
+            # produce false mismatches.
+            ref_round = ref_by_action.get(action_id, {}).get('round', '') if has_ref else ''
+            if ref_round in ('ACQ', 'CLO'):
+                if self.verbose:
+                    print(f"  Skipping {ref_round}-round action {action_id} (engine already advanced)")
+                self._last_ref = None
+                return idx + 1
             if self.verbose:
                 print(f"  Skipping unmappable action {action_id}: {action.get('type')}")
             if has_ref:
