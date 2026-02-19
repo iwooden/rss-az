@@ -467,8 +467,8 @@ class TestValidation:
         gs = GameState(3)
         gs.initialize_game()
 
-        # Corp has only $1 cash (not enough for any company)
-        setup_player_private_offer(gs, 0, 0, 0, 1)
+        # Corp has $0 cash (not enough for any company at low price)
+        setup_player_private_offer(gs, 0, 0, 0, 0)
 
         # Offers should be filtered out during generation - corp can't afford anything
         assert get_offer_count(gs) == 0 or TURN.get_acq_active_corp(gs) == -1, \

@@ -256,7 +256,7 @@ cdef int _collect_corp_corp_offers(GameState state, int* owner_types, int* corp_
     """
     cdef int count = 0
     cdef int player_id, buyer_corp, seller_corp, company_id
-    cdef int buyer_cash, high_price, buyer_price, face_value
+    cdef int buyer_cash, low_price, buyer_price, face_value
     cdef int temp_count = 0
     cdef int temp_buyer_corps[OFFER_BUFFER_SIZE]
     cdef int temp_company_ids[OFFER_BUFFER_SIZE]
@@ -288,10 +288,10 @@ cdef int _collect_corp_corp_offers(GameState state, int* owner_types, int* corp_
                 # Find companies owned by seller corp
                 for company_id in range(<int>GameConstants.NUM_COMPANIES):
                     if corp_module.CORPS[seller_corp].owns_company(state, company_id):
-                        high_price = company_module.COMPANIES[company_id].get_high_price()
+                        low_price = get_company_low_price(company_id)
                         face_value = get_company_face_value(company_id)
 
-                        if buyer_cash >= high_price and temp_count < OFFER_BUFFER_SIZE:
+                        if buyer_cash >= low_price and temp_count < OFFER_BUFFER_SIZE:
                             temp_buyer_corps[temp_count] = buyer_corp
                             temp_company_ids[temp_count] = company_id
                             temp_buyer_prices[temp_count] = buyer_price
@@ -322,7 +322,7 @@ cdef int _collect_player_private_offers(GameState state, int* owner_types, int* 
     """
     cdef int count = 0
     cdef int player_id, corp_id, company_id
-    cdef int corp_cash, high_price, corp_price, face_value
+    cdef int corp_cash, low_price, corp_price, face_value
     cdef int temp_count = 0
     cdef int temp_corp_ids[OFFER_BUFFER_SIZE]
     cdef int temp_company_ids[OFFER_BUFFER_SIZE]
@@ -335,7 +335,7 @@ cdef int _collect_player_private_offers(GameState state, int* owner_types, int* 
         # Find all private companies owned by this player
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if player_module.PLAYERS[player_id].owns_company(state, company_id):
-                high_price = company_module.COMPANIES[company_id].get_high_price()
+                low_price = get_company_low_price(company_id)
                 face_value = get_company_face_value(company_id)
 
                 # Find all corps this player is president of
@@ -348,7 +348,7 @@ cdef int _collect_player_private_offers(GameState state, int* owner_types, int* 
                     corp_cash = corp_module.CORPS[corp_id].get_cash(state)
                     corp_price = corp_module.CORPS[corp_id].get_share_price(state)
 
-                    if corp_cash >= high_price and temp_count < OFFER_BUFFER_SIZE:
+                    if corp_cash >= low_price and temp_count < OFFER_BUFFER_SIZE:
                         temp_corp_ids[temp_count] = corp_id
                         temp_company_ids[temp_count] = company_id
                         temp_corp_prices[temp_count] = corp_price
