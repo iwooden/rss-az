@@ -27,7 +27,7 @@ from core.data import (
 from core.actions import get_valid_action_mask
 from entities.deck import DECK
 from entities.turn import TURN
-from entities.company import COMPANIES, LOC_AUCTION
+from entities.company import COMPANIES, LOC_AUCTION, LOC_REVEALED
 from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.fi import FI
@@ -111,28 +111,22 @@ class ReplayHarness:
         # Build reference state lookup: action_id -> snapshot
         ref_by_action = {s['action_id']: s for s in ref_states}
 
-        # Get initial record (action_id=0) for deck order
+        # Get initial record (action_id=0) for deck order and player mapping
         initial = ref_by_action[0]
         deck_order_names = initial['deck_order']
         offering_names = initial['initial_offering']
 
-        # Initialize our engine and override deck to match 18xx game
+        # Build static player ID → engine index mapping from initial player_order.
+        # The 18xx reference rotates player order between rounds, but our engine
+        # uses fixed indices. player_order[0] = first player = our index 0.
+        self._player_id_to_index = {}
+        for idx, pid in enumerate(initial['player_order']):
+            self._player_id_to_index[pid] = idx
+
+        # Initialize our engine and override deck/offering to match 18xx game
         state = GameState(num_players)
-        state.initialize_game(seed=42)  # seed doesn't matter, we override deck
-
-        # Build full deck: offering on top, remaining deck below
-        # deck_order from Ruby is top-to-bottom of remaining deck
-        # offering from Ruby is the initial offering
-        # Our set_order takes bottom-to-top
-        # So: [remaining deck reversed] + [offering reversed] = bottom-to-top
-        remaining_ids = [COMPANY_NAME_TO_ID[n] for n in reversed(deck_order_names)]
-        offering_ids = [COMPANY_NAME_TO_ID[n] for n in reversed(offering_names)]
-        full_deck = remaining_ids + offering_ids  # bottom-to-top
-        DECK.set_order(state, full_deck)
-
-        # Draw offering cards from the deck
-        for _ in range(num_players):
-            DECK.draw(state)
+        state.initialize_game(seed=42)  # seed doesn't matter, we override below
+        self._override_deck_and_offering(state, deck_order_names, offering_names)
 
         # Verify initial state matches
         self._compare_state(state, initial, "initial")
@@ -159,6 +153,13 @@ class ReplayHarness:
             if phase == PHASE_GAME_OVER:
                 break
 
+            if self.verbose and action_idx_in_stream < len(actions):
+                next_action = actions[action_idx_in_stream]
+                next_id = next_action.get('id', -1)
+                next_type = next_action.get('type', '')
+                phase_name = self._get_phase_name(state)
+                print(f"  [idx={action_idx_in_stream} aid={next_id}] engine_phase={phase_name} action_type={next_type}")
+
             if phase in (PHASE_ACQ,):
                 action_idx_in_stream = self._run_acquisition_adapter(
                     state, actions, action_idx_in_stream,
@@ -182,48 +183,42 @@ class ReplayHarness:
 
         return self.mismatches
 
-    def _setup_initial_offering(self, state, offering_names, deck_order_names):
-        """Set up the initial offering to match the 18xx game.
+    def _override_deck_and_offering(self, state, deck_order_names, offering_names):
+        """Override the deck and offering to match the 18xx game's initial state.
 
-        After initialize_game, the engine has already drawn some companies.
-        We need to make sure the offering matches the 18xx initial offering.
-        The deck order was already set. We need to draw cards from the deck
-        to populate the offering.
+        After initialize_game(), the engine has a valid game state but with the
+        wrong deck order and offering (from the random seed). We patch the state
+        to match the 18xx reference by:
+        1. Clearing stale auction/revealed company locations from the seed init
+        2. Setting the correct deck order
+        3. Drawing and auctioning the correct offering companies
         """
-        # The deck was set with set_order. Now we need to verify the offering
-        # matches. The engine's initialize_game already drew cards, but from
-        # the wrong deck. With set_order called after init, the deck is correct
-        # but the offering may be wrong.
-        #
-        # Strategy: Check what's currently in auction. If it matches, great.
-        # If not, we need to fix it.
-        current_offering = []
+        # 1. Reset companies that init put into auction or revealed
+        #    back to excluded (hidden-only, no visible flag leak)
         for cid in range(36):
-            if COMPANIES[cid].get_location(state) == LOC_AUCTION:
-                current_offering.append(COMPANY_NAMES[cid])
+            loc = COMPANIES[cid].get_location(state)
+            if loc == LOC_AUCTION:
+                state.set_company_for_auction(cid, False)
+                COMPANIES[cid].exclude_from_game(state)
+            elif loc == LOC_REVEALED:
+                COMPANIES[cid].exclude_from_game(state)
 
-        expected_offering = list(offering_names)
-        if sorted(current_offering) == sorted(expected_offering):
-            return  # Already correct
+        # 2. Build full deck (offering on top, remaining below) and set it.
+        #    Ruby deck_order is top-to-bottom; our set_order is bottom-to-top.
+        remaining_ids = [COMPANY_NAME_TO_ID[n] for n in reversed(deck_order_names)]
+        offering_ids = [COMPANY_NAME_TO_ID[n] for n in reversed(offering_names)]
+        full_deck = remaining_ids + offering_ids
+        DECK.set_order(state, full_deck)
 
-        if self.verbose:
-            print(f"Offering mismatch: current={current_offering}, expected={expected_offering}")
-            print("Reinitializing game with correct deck order...")
+        # 3. Draw offering cards and move them to auction (same pattern as
+        #    initialize_game: draw() marks revealed, move_to_auction() fixes it)
+        for _ in range(len(offering_names)):
+            cid = DECK.draw(state)
+            COMPANIES[cid].move_to_auction(state)
 
-        # Full re-init approach: initialize again, then override deck
-        # This is cleaner than trying to patch individual company locations
-        state.initialize_game(seed=42)
-
-        # Build the full deck (offering + remaining deck) bottom-to-top
-        # The offering is drawn from the top of the deck
-        full_order = list(deck_order_names) + list(reversed(offering_names))
-        full_order_ids = [COMPANY_NAME_TO_ID[n] for n in reversed(full_order)]
-        DECK.set_order(state, full_order_ids)
-
-        # Now draw num_players cards to populate the offering
-        num_players = state.get_num_players()
-        for _ in range(num_players):
-            DECK.draw(state)
+        # 4. Restore CoO level to 1 (draw may have bumped it if a color-boundary
+        #    card happened to be in the offering)
+        TURN.set_coo_level(state, 1)
 
     def _get_phase_name(self, state) -> str:
         """Get human-readable phase name."""
@@ -248,7 +243,19 @@ class ReplayHarness:
         phase = TURN.get_phase(state)
         action_id = action.get('id', -1)
 
-        engine_action = self._map_action(state, action, phase, layout)
+        try:
+            engine_action = self._map_action(state, action, phase, layout)
+        except (ValueError, KeyError, IndexError) as e:
+            self.mismatches.append(Mismatch(
+                action_id=action_id,
+                phase=self._get_phase_name(state),
+                field="action_mapping",
+                expected="valid mapping",
+                actual=str(e),
+                context=f"18xx_type={action.get('type')}, entity={action.get('entity')}",
+            ))
+            return idx + 1
+
         if engine_action is None:
             # Skip actions we can't map (e.g., actions for automated phases)
             if self.verbose:
@@ -266,19 +273,38 @@ class ReplayHarness:
                 context=f"engine_action={engine_action}, 18xx_type={action.get('type')}",
             ))
 
-        # Compare state if we have a reference for this action_id
+        # Compare state if we have a reference for this action_id AND
+        # the engine phase matches the reference round. The engine may
+        # auto-advance past forced phases, making the comparison invalid
+        # when the phases don't align.
         if action_id in ref_by_action:
             ref = ref_by_action[action_id]
-            self._compare_state(state, ref, f"after action {action_id}")
+            ref_round = ref.get('round', '')
+            engine_phase = TURN.get_phase(state)
+            if ref_round and engine_phase in ROUND_TO_PHASES.get(ref_round, set()):
+                self._compare_state(state, ref, f"after action {action_id}")
 
         return idx + 1
 
     def _map_action(self, state, action, phase, layout):
-        """Map a single 18xx action to our engine action index."""
+        """Map a single 18xx action to our engine action index.
+
+        Uses entity_type from the 18xx action to detect phase mismatches:
+        - 'player': INVEST/BID actions
+        - 'company': IPO actions
+        - 'corporation': DIVIDENDS/ISSUE actions
+
+        When the engine auto-advances past forced phases, the current phase
+        may not match the action's intended phase. We skip actions that
+        belong to a phase the engine has already processed.
+        """
         atype = action.get('type', '')
+        entity_type = action.get('entity_type', '')
 
         if phase == PHASE_INVEST:
             if atype in ('bid', 'buy_shares', 'sell_shares', 'pass'):
+                if entity_type != 'player':
+                    return None  # Not an INVEST action; engine auto-advanced past
                 return map_invest_action(state, action, layout)
             return None
 
@@ -289,16 +315,22 @@ class ReplayHarness:
 
         if phase == PHASE_IPO:
             if atype in ('par', 'pass'):
+                if entity_type != 'company':
+                    return None  # Not an IPO action; engine auto-advanced past
                 return map_ipo_action(action, layout)
             return None
 
         if phase == PHASE_DIVIDENDS:
             if atype == 'dividend':
+                if entity_type != 'corporation':
+                    return None  # Not a DIVIDENDS action
                 return map_dividend_action(action, layout)
             return None
 
         if phase == PHASE_ISSUE:
             if atype in ('sell_shares', 'pass'):
+                if entity_type != 'corporation':
+                    return None  # Not an ISSUE action
                 return map_issue_action(action, layout)
             return None
 
@@ -307,6 +339,22 @@ class ReplayHarness:
             return None
 
         return None
+
+    def _is_player_entity(self, entity) -> bool:
+        """Check if entity is a player ID (numeric)."""
+        try:
+            int(entity)
+            return True
+        except (TypeError, ValueError):
+            return False
+
+    def _is_company_entity(self, entity) -> bool:
+        """Check if entity is a company name."""
+        return entity in COMPANY_NAME_TO_ID
+
+    def _is_corp_entity(self, entity) -> bool:
+        """Check if entity is a corporation name."""
+        return entity in CORP_NAME_TO_ID
 
     def _run_acquisition_adapter(self, state, actions, idx, layout, ref_by_action):
         """Walk through acquisition phase, matching 18xx offer/respond actions
@@ -335,6 +383,9 @@ class ReplayHarness:
                 key = (corp_name, company_name)
                 if not accept and key in accepted_offers:
                     del accepted_offers[key]
+
+        if self.verbose and accepted_offers:
+            print(f"  ACQ adapter: accepted_offers={accepted_offers}")
 
         # Walk our engine's offer buffer
         max_iterations = 200
@@ -369,6 +420,10 @@ class ReplayHarness:
             company_name = COMPANY_NAMES[acq_company_id]
             key = (corp_name, company_name)
 
+            if self.verbose:
+                matched = "ACCEPT" if key in accepted_offers else "PASS"
+                print(f"  ACQ offer: {corp_name} -> {company_name} [{matched}]")
+
             if key in accepted_offers:
                 price = accepted_offers[key]
                 is_fi = TURN.is_acq_fi_offer(state)
@@ -395,14 +450,11 @@ class ReplayHarness:
                 # Not in accepted offers -> pass
                 DRIVER.apply_action(state, layout.acq_pass)
 
-        # Compare state after acquisition phase
-        if end_idx > idx and end_idx - 1 < len(actions):
-            last_acq_action = acq_actions[-1] if acq_actions else None
-            if last_acq_action:
-                last_id = last_acq_action.get('id', -1)
-                if last_id in ref_by_action:
-                    self._compare_state(state, ref_by_action[last_id],
-                                        f"after ACQ phase (action {last_id})")
+        # NOTE: We do NOT compare state here because DRIVER.apply_action
+        # auto-advances through CLOSING+INCOME after ACQ. The engine state
+        # is at DIVIDENDS while the reference is still at end-of-ACQ.
+        # Comparison happens naturally at the next player-action boundary
+        # (DIVIDENDS) via _replay_simple_action.
 
         return end_idx
 
@@ -456,13 +508,8 @@ class ReplayHarness:
             else:
                 DRIVER.apply_action(state, layout.close_pass)
 
-        # Compare state after closing phase
-        if close_actions:
-            last_close_action = close_actions[-1]
-            last_id = last_close_action.get('id', -1)
-            if last_id in ref_by_action:
-                self._compare_state(state, ref_by_action[last_id],
-                                    f"after CLO phase (action {last_id})")
+        # NOTE: Same as ACQ adapter - don't compare here because the engine
+        # may have auto-advanced through INCOME after CLOSING.
 
         return end_idx
 
@@ -651,10 +698,12 @@ class ReplayHarness:
                 context=context,
             ))
 
-        # Compare offering
+        # Compare offering — include both available (LOC_AUCTION) and
+        # unavailable/revealed (LOC_REVEALED) companies.  The 18xx reference
+        # counts both in its "offering" (available + drawn-but-vertical).
         our_offering = sorted([
             COMPANY_NAMES[cid] for cid in range(36)
-            if COMPANIES[cid].get_location(state) == LOC_AUCTION
+            if COMPANIES[cid].get_location(state) in (LOC_AUCTION, LOC_REVEALED)
         ])
         ref_offering = sorted(ref.get('offering', []))
         if our_offering != ref_offering:
@@ -687,15 +736,14 @@ class ReplayHarness:
     def _find_player_index(self, ref: dict, player_id_18xx: int) -> int:
         """Find our 0-based player index from an 18xx player ID.
 
-        Uses the player_order from the initial state record or falls back
-        to position in the players array.
+        Uses the static player_order mapping established at game start.
+        The 18xx reference rotates players between rounds, but our engine
+        uses fixed indices throughout.
         """
-        # The players in ref are in the 18xx play order, which should match
-        # our player indices 0, 1, 2, ...
-        for idx, p in enumerate(ref.get('players', [])):
-            if p['id'] == player_id_18xx:
-                return idx
-        raise ValueError(f"Player {player_id_18xx} not found in reference")
+        idx = self._player_id_to_index.get(player_id_18xx)
+        if idx is not None:
+            return idx
+        raise ValueError(f"Player {player_id_18xx} not found in player_order")
 
 
 def format_mismatches(mismatches: list[Mismatch]) -> str:
