@@ -277,11 +277,16 @@ class ReplayHarness:
         # the engine phase matches the reference round. The engine may
         # auto-advance past forced phases, making the comparison invalid
         # when the phases don't align.
+        # Skip comparison if the engine is now in an adapter-handled phase
+        # (ACQ, CLOSING) — the adapter hasn't processed yet, so state is
+        # incomplete for comparison.
         if action_id in ref_by_action:
             ref = ref_by_action[action_id]
             ref_round = ref.get('round', '')
             engine_phase = TURN.get_phase(state)
-            if ref_round and engine_phase in ROUND_TO_PHASES.get(ref_round, set()):
+            if engine_phase in (PHASE_ACQ, PHASE_CLOSING):
+                pass  # Adapter will handle this phase
+            elif ref_round and engine_phase in ROUND_TO_PHASES.get(ref_round, set()):
                 self._compare_state(state, ref, f"after action {action_id}")
 
         return idx + 1
@@ -360,32 +365,25 @@ class ReplayHarness:
         """Walk through acquisition phase, matching 18xx offer/respond actions
         against our engine's offer buffer.
 
+        The 18xx action log records offers as made by the original proposer,
+        but FI purchases may be preempted by higher-priority corps (especially
+        OS which always has highest priority and pays face value). Our engine
+        handles preemption implicitly by offering in priority order.
+
+        We determine the actual outcome by diffing the reference state before
+        and after the ACQ round, then match our engine's offers against that.
+
         Returns new index into actions stream (past all acquisition actions).
         """
         # Collect all 18xx acquisition actions until phase changes
         acq_actions, end_idx = self._collect_phase_actions(actions, idx, 'ACQ', ref_by_action)
 
-        # Build outcome map: (corp_name, company_name) -> price for accepted offers
-        accepted_offers = {}  # (corp_name, company_name) -> price
-        for a in acq_actions:
-            atype = a.get('type', '')
-            if atype == 'offer':
-                corp_name = a.get('corporation', '')
-                company_name = a.get('company', '')
-                price = int(a.get('price', 0))
-                # Default to accepted; a 'respond' with accept=false overrides
-                key = (corp_name, company_name)
-                accepted_offers[key] = price
-            elif atype == 'respond':
-                corp_name = a.get('corporation', '')
-                company_name = a.get('company', '')
-                accept = str(a.get('accept', 'true')).lower() == 'true'
-                key = (corp_name, company_name)
-                if not accept and key in accepted_offers:
-                    del accepted_offers[key]
+        # Build actual outcomes from reference state diff.
+        # Find the first ACQ ref and the first post-ACQ ref to diff.
+        acq_outcomes = self._build_acq_outcomes(acq_actions, ref_by_action)
 
-        if self.verbose and accepted_offers:
-            print(f"  ACQ adapter: accepted_offers={accepted_offers}")
+        if self.verbose and acq_outcomes:
+            print(f"  ACQ adapter: outcomes={acq_outcomes}")
 
         # Walk our engine's offer buffer
         max_iterations = 200
@@ -407,47 +405,45 @@ class ReplayHarness:
                         break
                 continue
 
-            # We have a choice — check if this offer matches an accepted one
+            # We have a choice — check if this offer matches an outcome
             acq_corp_id = TURN.get_acq_active_corp(state)
             acq_company_id = TURN.get_acq_target_company(state)
 
             if acq_corp_id < 0 or acq_company_id < 0:
-                # No offer to process, pass
                 DRIVER.apply_action(state, layout.acq_pass)
                 continue
 
             corp_name = CORP_NAMES[acq_corp_id]
             company_name = COMPANY_NAMES[acq_company_id]
-            key = (corp_name, company_name)
+            is_fi = TURN.is_acq_fi_offer(state)
 
-            if self.verbose:
-                matched = "ACCEPT" if key in accepted_offers else "PASS"
-                print(f"  ACQ offer: {corp_name} -> {company_name} [{matched}]")
-
-            if key in accepted_offers:
-                price = accepted_offers[key]
-                is_fi = TURN.is_acq_fi_offer(state)
+            # Check if this company was acquired by this corp in the reference
+            if company_name in acq_outcomes and acq_outcomes[company_name][0] == corp_name:
+                if self.verbose:
+                    print(f"  ACQ offer: {corp_name} -> {company_name} [ACCEPT]")
 
                 if is_fi:
-                    # FI offer: use fi_high or fi_face
+                    # FI offer: OS pays face value, others pay high price
                     if acq_corp_id == CORP_NAME_TO_ID.get('OS', -1):
                         engine_action = layout.acq_fi_face
                     else:
                         engine_action = layout.acq_fi_high
                 else:
+                    # Non-FI: use the recorded price
+                    price = acq_outcomes[company_name][1]
                     low_price = get_company_low_price(acq_company_id)
                     price_offset = price - low_price
                     engine_action = layout.acq_price_base + price_offset
 
                 result = DRIVER.apply_action(state, engine_action)
                 if result == STATUS_INVALID:
-                    # Try pass as fallback
                     if self.verbose:
-                        print(f"  ACQ: Invalid action for {key} at price {price}, passing")
+                        print(f"  ACQ: Invalid action for {corp_name}->{company_name}, passing")
                     DRIVER.apply_action(state, layout.acq_pass)
-                del accepted_offers[key]
+                del acq_outcomes[company_name]
             else:
-                # Not in accepted offers -> pass
+                if self.verbose:
+                    print(f"  ACQ offer: {corp_name} -> {company_name} [PASS]")
                 DRIVER.apply_action(state, layout.acq_pass)
 
         # NOTE: We do NOT compare state here because DRIVER.apply_action
@@ -457,6 +453,81 @@ class ReplayHarness:
         # (DIVIDENDS) via _replay_simple_action.
 
         return end_idx
+
+    def _build_acq_outcomes(self, acq_actions, ref_by_action):
+        """Build actual acquisition outcomes from reference state diffs.
+
+        Compares corp company ownership BEFORE the ACQ round vs AFTER to
+        determine which companies moved and to whom. The "before" snapshot
+        must be from a non-ACQ round (typically INV) because the 18xx ref
+        includes automated phase results (WRAP_UP, FI buying from offering)
+        in the first ACQ-round snapshot.
+
+        For non-FI purchases, gets the price from the raw action data.
+
+        Returns dict: company_name -> (acquiring_corp_name, price)
+        """
+        # Find the first and last ACQ reference snapshots
+        first_acq_aid = None
+        last_acq_aid = None
+        for a in acq_actions:
+            aid = a.get('id', -1)
+            if aid >= 0 and aid in ref_by_action:
+                ref = ref_by_action[aid]
+                if ref.get('round') == 'ACQ':
+                    if first_acq_aid is None:
+                        first_acq_aid = aid
+                    last_acq_aid = aid
+
+        if first_acq_aid is None:
+            return {}
+
+        # Find the last NON-ACQ reference state before the first ACQ action.
+        # We look back from first_acq_aid to find a ref with round != 'ACQ'.
+        # This captures changes from WRAP_UP (FI buying from offering) that
+        # the 18xx ref folds into the first ACQ snapshot.
+        before_ref = None
+        for aid_candidate in range(first_acq_aid - 1, -1, -1):
+            if aid_candidate in ref_by_action:
+                ref = ref_by_action[aid_candidate]
+                if ref.get('round') != 'ACQ':
+                    before_ref = ref
+                    break
+
+        after_ref = ref_by_action.get(last_acq_aid)
+        if before_ref is None or after_ref is None:
+            return {}
+
+        # Build company -> corp_owner maps for before and after
+        def get_corp_companies(ref):
+            result = {}
+            for corp in ref.get('corporations', []):
+                for comp in corp.get('companies', []):
+                    result[comp] = corp['name']
+            return result
+
+        before_corps = get_corp_companies(before_ref)
+        after_corps = get_corp_companies(after_ref)
+
+        # Build price map from raw actions: company_name -> price
+        # Use the last offer price for each company (handles re-offers)
+        action_prices = {}
+        for a in acq_actions:
+            if a.get('type') == 'offer':
+                company_name = a.get('company', '')
+                price = int(a.get('price', 0))
+                action_prices[company_name] = price
+
+        # Find companies that moved TO a corp (new acquisitions)
+        outcomes = {}
+        for company_name, new_owner in after_corps.items():
+            old_owner = before_corps.get(company_name)
+            if old_owner != new_owner:
+                # This company was acquired by new_owner
+                price = action_prices.get(company_name, 0)
+                outcomes[company_name] = (new_owner, price)
+
+        return outcomes
 
     def _run_closing_adapter(self, state, actions, idx, layout, ref_by_action):
         """Walk through closing phase, matching 18xx sell_company actions
