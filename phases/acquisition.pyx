@@ -461,6 +461,10 @@ cdef bint _is_offer_valid(GameState state, int owner_type, int corp_id, int comp
     cdef int price, corp_cash
     cdef int owner_id, buyer_president, seller_president
 
+    # Skip permanently passed offers (marked with owner_type = -1)
+    if owner_type < 0:
+        return False
+
     if owner_type == LOC_FI:
         # Verify FI still owns it (may have been acquired earlier)
         if not fi_module.FI.owns_company(state, company_id):
@@ -578,9 +582,22 @@ cdef void _advance_to_next_offer(GameState state) noexcept:
     """
     Advance offer index and present next offer.
 
-    Called after accept or pass on current offer.
+    Called after pass on current offer — scans forward only.
     """
     _buf.advance(state._data)
+    _present_current_offer(state)
+
+
+cdef void _rescan_offers(GameState state) noexcept:
+    """
+    Reset offer index to 0 and re-scan all offers from the start.
+
+    Called after an accept, which changes state (cash, company ownership).
+    Previously-skipped offers (e.g. last-company rule failures) may now be
+    valid, so we need to re-check from the beginning.  Player-passed offers
+    (owner_type == -1) are permanently skipped.
+    """
+    _buf.set_index(state._data, 0)
     _present_current_offer(state)
 
 
@@ -783,8 +800,8 @@ cdef void _handle_accept_price(GameState state, int price) noexcept:
     # Transfer company to buyer's acquisition zone
     company_module.COMPANIES[company_id].transfer_to_corp_acquisition(state, corp_id)
 
-    # Advance to next offer
-    _advance_to_next_offer(state)
+    # Rescan from start — state changed, previously-invalid offers may now be valid
+    _rescan_offers(state)
 
 
 cdef void _handle_fi_buy_high(GameState state) noexcept:
@@ -808,8 +825,8 @@ cdef void _handle_fi_buy_high(GameState state) noexcept:
     # Transfer company to buyer's acquisition zone
     company_module.COMPANIES[company_id].transfer_to_corp_acquisition(state, corp_id)
 
-    # Advance to next offer
-    _advance_to_next_offer(state)
+    # Rescan from start — state changed, previously-invalid offers may now be valid
+    _rescan_offers(state)
 
 
 cdef void _handle_fi_buy_face(GameState state) noexcept:
@@ -833,16 +850,20 @@ cdef void _handle_fi_buy_face(GameState state) noexcept:
     # Transfer company to OS's acquisition zone
     company_module.COMPANIES[company_id].transfer_to_corp_acquisition(state, corp_id)
 
-    # Advance to next offer
-    _advance_to_next_offer(state)
+    # Rescan from start — state changed, previously-invalid offers may now be valid
+    _rescan_offers(state)
 
 
 cdef void _handle_pass(GameState state) noexcept:
     """
     Pass on current offer, advance to next.
 
-    Pass permanently skips current offer - index advances and next offer is presented.
+    Pass permanently skips current offer — marks owner_type as -1 so it won't
+    be re-offered on subsequent rescan passes.
     """
+    cdef int index = _buf.get_index(state._data)
+    cdef int base = _buf.offer_base(index)
+    state._data[base] = -1.0  # Mark owner_type as permanently passed
     _advance_to_next_offer(state)
 
 
