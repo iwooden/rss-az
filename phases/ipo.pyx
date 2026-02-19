@@ -164,6 +164,10 @@ cdef void _transition_out_of_ipo(GameState state) noexcept:
     cdef int first_player = turn_module.TURN.find_player_at_position(state, 0)
     state._set_active_player(first_player)
 
+    # Update net worths before INVEST (catches dividend/issue price changes
+    # that happened during the last corp processed in those phases)
+    player_module.update_all_net_worths(state)
+
     # Transition to INVEST phase (start new turn)
     turn_module.TURN.set_phase(state, PHASE_INVEST)
 

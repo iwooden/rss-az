@@ -768,8 +768,18 @@ class ReplayHarness:
             ))
 
         # Compare cost level
+        # The Ruby Stars engine uses levels 1-5, 7, 8 (skipping 6):
+        #   Ruby 7 = END_CARD_FRONT (deck empty, 7● side)
+        #   Ruby 8 = END_CARD_BACK (end card flipped, 10● side)
+        # Our engine uses contiguous 1-7:
+        #   Our 6 = game end card (7● side)
+        #   Our 7 = game end card flipped (10● side)
         our_coo = TURN.get_coo_level(state)
         ref_coo = ref.get('cost_level', 0)
+        if ref_coo == 7:
+            ref_coo = 6  # Ruby END_CARD_FRONT → our level 6
+        elif ref_coo == 8:
+            ref_coo = 7  # Ruby END_CARD_BACK → our level 7
         if our_coo != ref_coo:
             self.mismatches.append(Mismatch(
                 action_id=action_id, phase=phase_name,

@@ -16,6 +16,7 @@ from core.data cimport GamePhases, GameConstants
 from entities import turn as turn_module
 from entities import corp as corp_module
 from entities import company as company_module
+from entities import player as player_module
 from entities.company cimport LOC_DECK, LOC_AUCTION, LOC_REVEALED
 from phases.issue cimport setup_issue_phase
 
@@ -88,11 +89,13 @@ cdef int apply_end_card(GameState state) noexcept:
     """
     # Check 1: 75 share price reached
     if _check_75_price_reached(state):
+        player_module.update_all_net_worths(state)
         turn_module.TURN.set_phase(state, GamePhases.PHASE_GAME_OVER)
         return 0
 
     # Check 2: End card already flipped → game over
     if turn_module.TURN.is_end_card_flipped(state):
+        player_module.update_all_net_worths(state)
         turn_module.TURN.set_phase(state, GamePhases.PHASE_GAME_OVER)
         return 0
 
