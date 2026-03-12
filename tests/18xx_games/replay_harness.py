@@ -600,6 +600,48 @@ class ReplayHarness:
         """Compare our engine state against a reference snapshot."""
         action_id = ref.get('action_id', -1)
         phase_name = self._get_phase_name(state)
+        phase = TURN.get_phase(state)
+
+        # Compare active player / active corp when phases are aligned.
+        # The ref snapshot may be from a different phase than our engine
+        # (e.g. ref is IPO but engine auto-advanced to INVEST), so only
+        # compare when the ref round corresponds to our engine's phase.
+        ref_round = ref.get('round', '')
+        phases_aligned = (
+            (phase == PHASE_INVEST and ref_round == 'INV')
+            or (phase == PHASE_BID and ref_round == 'INV')
+            or (phase == PHASE_IPO and ref_round == 'IPO')
+            or (phase == PHASE_DIVIDENDS and ref_round == 'DIV')
+            or (phase == PHASE_ISSUE and ref_round == 'ISS')
+        )
+
+        if phases_aligned:
+            ref_active_player = ref.get('active_player')
+            if ref_active_player is not None and phase in (PHASE_INVEST, PHASE_BID, PHASE_IPO):
+                our_active = state.get_active_player()
+                expected_idx = self._player_id_to_index.get(ref_active_player)
+                if expected_idx is not None and our_active != expected_idx:
+                    self.mismatches.append(Mismatch(
+                        action_id=action_id, phase=phase_name,
+                        field="active_player",
+                        expected=expected_idx, actual=our_active, context=context,
+                    ))
+
+            ref_active_corp = ref.get('active_corp')
+            if ref_active_corp is not None and phase in (PHASE_DIVIDENDS, PHASE_ISSUE):
+                ref_corp_id = CORP_NAME_TO_ID.get(ref_active_corp)
+                if ref_corp_id is not None:
+                    if phase == PHASE_DIVIDENDS:
+                        our_corp_id = TURN.get_dividend_corp(state)
+                    else:
+                        our_corp_id = TURN.get_issue_corp(state)
+                    if our_corp_id != ref_corp_id:
+                        self.mismatches.append(Mismatch(
+                            action_id=action_id, phase=phase_name,
+                            field="active_corp",
+                            expected=ref_active_corp, actual=CORP_NAMES[our_corp_id] if 0 <= our_corp_id < 8 else our_corp_id,
+                            context=context,
+                        ))
 
         # Compare players
         for ref_player in ref.get('players', []):

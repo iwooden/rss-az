@@ -127,11 +127,26 @@ end
 # Assemble a full state snapshot object.  The action_id and action_type fields
 # are set by the caller since this helper only reads the current game state.
 def build_snapshot(game, action_id:, action_type:)
+  entity = game.round.current_entity
+  active_player_id = nil
+  active_corp_name = nil
+
+  if entity&.player?
+    active_player_id = entity.id
+  elsif entity&.corporation?
+    active_corp_name = entity.name
+  elsif entity&.company?
+    # IPO round: entity is a Company, the acting player is the owner
+    active_player_id = entity.owner.id if entity.owner&.player?
+  end
+
   {
     action_id:        action_id,
     action_type:      action_type,
     round:            game.round.class.short_name,
     turn:             game.turn,
+    active_player:    active_player_id,
+    active_corp:      active_corp_name,
     players:          snapshot_players(game),
     corporations:     snapshot_corporations(game),
     foreign_investor: snapshot_foreign_investor(game),
