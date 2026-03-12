@@ -45,6 +45,13 @@ rss-az-cython2/
 │   └── end_card.pyx   # Game-end handling
 ├── tests/             # Test suite
 │   ├── phases/        # Phase-specific tests
+│   ├── 18xx_games/    # Replay tests against 18xx.games engine
+│   │   ├── 18xx/      # 18xx.games Ruby engine (git submodule)
+│   │   ├── data/      # Game JSON files from 18xx.games
+│   │   ├── extract_states.rb   # Ruby state extractor
+│   │   ├── replay_harness.py   # Python replay + comparison engine
+│   │   ├── action_parser.py    # 18xx action → engine action mapper
+│   │   └── test_replay.py      # Pytest entry point
 │   └── conftest.py    # Pytest fixtures
 ├── RULES.md           # Complete game rules (authoritative)
 ├── VECTORS.md         # State/action vector documentation
@@ -304,6 +311,37 @@ python setup.py clean
 **When a test fails, assume the implementation is broken** until proven otherwise. Investigate the root cause thoroughly before concluding that a test is wrong. Only "fix" a test to make it pass after confirming the implementation is correct and the test setup was invalid.
 
 **Status codes:** STATUS_OK (0), STATUS_INVALID (1), STATUS_GAME_OVER (2)
+
+### 18xx.games Replay Tests
+
+Replay tests validate our engine against real completed games from [18xx.games](https://18xx.games). They replay every action from a game log through our engine and compare state at each action boundary against reference snapshots extracted from the Ruby 18xx.games engine.
+
+**Requires Ruby** — the state extractor (`extract_states.rb`) runs inline as a subprocess during tests. No pre-generated state files are stored; reference states are extracted on-the-fly and held in memory.
+
+**Architecture:**
+- `extract_states.rb` — Loads game JSON into the Ruby 18xx engine (git submodule at `tests/18xx_games/18xx/`), replays all actions, and emits a JSON snapshot after each action
+- `action_parser.py` — Maps 18xx action format (bid, par, sell_shares, etc.) to our engine's integer action indices, handling undo/redo, auto-actions, and program_* auto-pass flattening
+- `replay_harness.py` — Drives the replay loop: initializes our engine with the 18xx deck order, replays actions phase-by-phase, and compares state against reference snapshots
+- `test_replay.py` — Pytest parametrized entry point
+
+**State compared at each action boundary:**
+- **Players**: cash, net worth, companies owned, shares held
+- **Corporations**: active/floated status, share price, cash, companies owned, shares in market
+- **Foreign Investor**: cash, companies owned
+- **Global**: offering (auction + revealed), deck size, cost of ownership level
+- **Active entity**: active player (INVEST/BID/IPO) and active corp (DIVIDENDS/ISSUE), gated on phase alignment
+
+**ACQ and CLOSING phases** use special adapters because our engine structures offers differently (sequential offer buffer vs. the 18xx engine's proposal model). These phases diff the before/after reference state to determine outcomes rather than mapping actions 1:1.
+
+**Adding a new game:**
+1. Export the game JSON from 18xx.games (game data API or browser)
+2. Save to `tests/18xx_games/data/<game_id>.json`
+3. Add the game ID to the `@pytest.mark.parametrize` list in `test_replay.py`
+
+```bash
+# Run replay tests (requires Ruby)
+pytest tests/18xx_games/test_replay.py -v
+```
 
 ## Key Files by Task
 
