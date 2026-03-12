@@ -192,14 +192,14 @@ snapshots = [initial_record]
 # ---------------------------------------------------------------------------
 # 4.  Step through all actions one at a time
 # ---------------------------------------------------------------------------
-# We already have the game object at action 0.  We replay each action from the
-# raw actions array in order.
+# We replay each action from the raw actions array in order.
 #
-# The engine's process_action method handles undo/redo internally by cloning
-# the game object and replaying from scratch, so we never need to detect them
-# ourselves.  After each process_action call we simply read the resulting
-# game state (game is mutated in place; undo/redo return a new object that is
-# reassigned).
+# For normal actions, process_action mutates the game in place and returns self.
+# For undo/redo, the engine's incremental clone mechanism can produce stale
+# state (the cloned game doesn't always match a clean reload).  To guarantee
+# correct snapshots, we detect undo/redo actions and reload the game from
+# scratch with Engine::Game.load(data, at_action: id).  This is slower but
+# ensures the snapshot always reflects the true game state.
 
 actions = data['actions'] || []
 
@@ -207,10 +207,13 @@ actions.each do |raw_action|
   action_id   = raw_action['id']
   action_type = raw_action['type']
 
-  # process_action returns `self` for normal actions, but returns a new game
-  # object for undo/redo (via `clone`).  Reassign to handle both cases.
-  result = game.process_action(raw_action)
-  game = result if result.is_a?(Engine::Game::Base)
+  if action_type == 'undo' || action_type == 'redo'
+    # Reload from scratch to get the correct post-undo/redo state.
+    game = Engine::Game.load(data, at_action: action_id)
+  else
+    result = game.process_action(raw_action)
+    game = result if result.is_a?(Engine::Game::Base)
+  end
 
   snapshots << build_snapshot(game, action_id: action_id, action_type: action_type)
 end

@@ -653,7 +653,16 @@ class ReplayHarness:
 
         if phases_aligned:
             ref_active_player = ref.get('active_player')
-            if ref_active_player is not None and phase in (PHASE_INVEST, PHASE_BID, PHASE_IPO):
+            # After an IPO par, the acting player may no longer afford to par
+            # their remaining companies.  Our driver auto-applies those forced
+            # passes within a single apply_action call, advancing past them.
+            # The 18xx engine records each pass as a separate action (often
+            # visible as gaps in action IDs, e.g. 429 → 431).  The reference
+            # snapshot at the par still shows the *next* company's owner,
+            # while our engine has already advanced further.
+            ref_action_type = ref.get('action_type', '')
+            skip_active_player = (phase == PHASE_IPO and ref_action_type == 'par')
+            if ref_active_player is not None and phase in (PHASE_INVEST, PHASE_BID, PHASE_IPO) and not skip_active_player:
                 our_active = state.get_active_player()
                 expected_idx = self._player_id_to_index.get(ref_active_player)
                 if expected_idx is not None and our_active != expected_idx:

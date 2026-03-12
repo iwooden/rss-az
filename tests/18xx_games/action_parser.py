@@ -74,8 +74,10 @@ def filter_actions(actions: list) -> list:
     Remove skipped, undone, and meta actions from a raw 18xx action list.
 
     Processing rules:
-    - Undo: marks the most recent non-skipped, non-already-undone action as
-      undone (walk backwards through processed actions).
+    - Undo: 18xx undo actions have an 'action_id' field specifying the target
+      action to revert to. All committed actions with id > action_id are undone
+      (moved to the undo stack). If no action_id is present, only the most
+      recent committed action is undone.
     - Redo: unmarks the most recently undone action so it is visible again.
     - All actions whose type appears in SKIP_ACTIONS are removed.
     - All actions flagged as undone are removed.
@@ -92,8 +94,19 @@ def filter_actions(actions: list) -> list:
         atype = action.get('type', '')
 
         if atype == 'undo':
-            # Pop the most recent committed action back to undone
-            if committed:
+            # 18xx undo specifies action_id: revert all actions after that id
+            target_id = action.get('action_id')
+            if target_id is not None:
+                while committed:
+                    top_idx = committed[-1]
+                    top_id = result[top_idx].get('id', -1)
+                    if top_id > target_id:
+                        committed.pop()
+                        undone.append(top_idx)
+                    else:
+                        break
+            elif committed:
+                # Fallback: pop one action (shouldn't happen in practice)
                 idx = committed.pop()
                 undone.append(idx)
             continue
