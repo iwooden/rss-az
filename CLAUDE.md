@@ -333,6 +333,12 @@ Replay tests validate our engine against real completed games from [18xx.games](
 
 **ACQ and CLOSING phases** use special adapters because our engine structures offers differently (sequential offer buffer vs. the 18xx engine's proposal model). These phases diff the before/after reference state to determine outcomes rather than mapping actions 1:1.
 
+**Action space differences from 18xx.games:** Our engine intentionally restricts certain actions that 18xx.games allows, to simplify the model's decision space:
+- **ACQUISITION**: 18xx.games allows player-owned corp-to-corp transfers via an offer/accept system. Our engine does not support these transfers. Game logs containing such offers will need the ACQ adapter to handle them (typically by passing).
+- **CLOSING**: 18xx.games allows players to close companies with positive income. Our engine never offers this since there is no strategic reason to do so. Game logs where a player closes a positive-income company will fail replay.
+
+When adding a new game, verify it doesn't rely on these unsupported actions. If a replay fails, check whether the game log contains corp-to-corp ACQ transfers or positive-income closures before investigating engine bugs.
+
 **Adding a new game:**
 1. Export the game JSON from 18xx.games (game data API or browser)
 2. Save to `tests/18xx_games/data/<game_id>.json`
