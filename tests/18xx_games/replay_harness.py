@@ -404,6 +404,38 @@ class ReplayHarness:
         if self.verbose and acq_outcomes:
             print(f"  ACQ adapter: outcomes={acq_outcomes}")
 
+        # Pre-apply cross-president corp-to-corp transfers that our engine
+        # intentionally excludes from its action space (RULES.md constraint #1).
+        # Must happen BEFORE the while loop because the driver auto-advances
+        # through CLOSING and INCOME after ACQ — patching after would be too late.
+        for company_name, (buyer_name, price) in list(acq_outcomes.items()):
+            company_id = COMPANY_NAME_TO_ID.get(company_name)
+            buyer_corp_id = CORP_NAME_TO_ID.get(buyer_name)
+            if company_id is None or buyer_corp_id is None:
+                continue
+
+            # Check if company is owned by a corp with a different president
+            seller_corp_id = None
+            for cid in range(8):
+                if CORPS[cid].is_active(state) and COMPANIES[company_id].is_owned_by_corp(state, cid):
+                    seller_corp_id = cid
+                    break
+
+            if seller_corp_id is None:
+                continue  # Not a corp-to-corp transfer
+            if CORPS[seller_corp_id].get_president_id(state) == CORPS[buyer_corp_id].get_president_id(state):
+                continue  # Same president — engine handles this
+
+            # Direct state patch: transfer company and cash
+            COMPANIES[company_id].transfer_to_corp(state, buyer_corp_id)
+            CORPS[buyer_corp_id].add_cash(state, -price)
+            CORPS[seller_corp_id].add_cash(state, price)
+            del acq_outcomes[company_name]
+            if self.verbose:
+                print(f"  ACQ adapter: pre-applied cross-president transfer "
+                      f"{CORP_NAMES[seller_corp_id]}->{buyer_name} "
+                      f"for {company_name} at price {price}")
+
         # Walk our engine's offer buffer
         max_iterations = 200
         iterations = 0

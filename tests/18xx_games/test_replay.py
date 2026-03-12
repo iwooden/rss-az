@@ -18,7 +18,7 @@ format_mismatches = _harness.format_mismatches
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 
-@pytest.mark.parametrize("game_id", [224885, 226358, 239448, 244645])
+@pytest.mark.parametrize("game_id", [224885, 226358, 239448, 244526, 244645])
 def test_replay_game(game_id):
     """Replay an 18xx game and verify state matches at phase boundaries."""
     game_json = os.path.join(DATA_DIR, f"{game_id}.json")
