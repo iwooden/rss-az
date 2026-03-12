@@ -77,12 +77,48 @@ class Mismatch:
         return s
 
 
+def extract_ref_states(game_json_path: str) -> list[dict]:
+    """Run the Ruby state extractor and return parsed reference states.
+
+    Executes extract_states.rb as a subprocess, capturing its JSON output
+    directly into memory without writing to disk.
+
+    Args:
+        game_json_path: Path to the 18xx game JSON file.
+
+    Returns:
+        List of reference state snapshot dicts.
+
+    Raises:
+        RuntimeError: If ruby is not available or the extractor fails.
+    """
+    import subprocess
+
+    extractor = str(Path(__file__).parent / "extract_states.rb")
+    try:
+        result = subprocess.run(
+            ["ruby", extractor, game_json_path],
+            capture_output=True, text=True, timeout=120,
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            "Ruby not found. Install Ruby to run 18xx replay tests."
+        )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"State extractor failed (exit {result.returncode}):\n{result.stderr}"
+        )
+
+    return json.loads(result.stdout)
+
+
 @dataclass
 class ReplayHarness:
     """Orchestrates replay of an 18xx game through our Cython engine."""
 
     game_json_path: str
-    states_json_path: str
+    ref_states: list = field(default_factory=list)
     verbose: bool = False
     mismatches: list = field(default_factory=list)
 
@@ -92,7 +128,7 @@ class ReplayHarness:
 
         # Load data
         game_data = json.loads(Path(self.game_json_path).read_text())
-        ref_states = json.loads(Path(self.states_json_path).read_text())
+        ref_states = self.ref_states
 
         num_players = len(game_data['players'])
         players_json = game_data['players']
