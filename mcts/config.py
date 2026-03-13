@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -11,4 +11,7 @@ class MCTSConfig:
     dirichlet_epsilon: float = 0.25
     temperature: float = 1.0
     num_players: int = 3
-    action_dim: int = 246
+    action_dim: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.action_dim = 186 + self.num_players * 20

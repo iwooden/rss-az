@@ -43,6 +43,13 @@ rss-az-cython2/
 │   ├── ipo.pyx        # IPO conversions
 │   ├── wrap_up.pyx    # Turn wrap-up (FI buying)
 │   └── end_card.pyx   # Game-end handling
+├── mcts/              # MCTS search for AlphaZero training
+│   ├── config.py      # Search hyperparameters (MCTSConfig)
+│   ├── node.py        # MCTSNode: tree node with visit stats
+│   ├── evaluator.py   # NN wrapper (state rotation, inference, value un-rotation)
+│   └── search.py      # PUCT selection, search loop, A0GB value targets
+├── nn/                # Neural network models
+│   └── model_3p.py    # Residual MLP with policy + per-player value heads
 ├── tests/             # Test suite
 │   ├── phases/        # Phase-specific tests
 │   ├── 18xx_games/    # Replay tests against 18xx.games engine
@@ -135,6 +142,96 @@ Static game constants:
   - `SHARE_DIVISOR = 7.0` (share counts)
   - `STAR_DIVISOR = 20.0` (star ratings)
   - `MAX_ROUNDTRIPS = 2.0` (buy/sell tracking)
+
+## MCTS Search
+
+Pure-Python AlphaZero-style MCTS for 3-player games with sequential NN evaluation.
+
+### Architecture
+
+```
+mcts/
+├── config.py      # MCTSConfig dataclass (num_simulations, c_puct, dirichlet, temperature)
+├── node.py        # MCTSNode: visit_count, value_sum, prior, children dict
+├── evaluator.py   # State rotation, NN inference, value un-rotation, terminal values
+└── search.py      # PUCT selection, search loop, action probabilities, A0GB targets
+```
+
+### State Rotation
+
+The NN always sees the active player's data at slot 0. Before inference, the visible state is rotated so the active player's block comes first. After inference, the per-player value output is un-rotated back to canonical order.
+
+**What gets rotated:**
+- Player data blocks (contiguous, each `player_stride` floats)
+- Per-player turn state fields: `auction_high_bidder`, `auction_starter`, `auction_passed`
+
+**What does NOT get rotated:** phase, CoO, FI, companies, corporations, market, static data
+
+**Important:** `GameState._layout` is a Cython `cdef` struct — NOT accessible from Python. Use `mcts.evaluator.get_layout(num_players)` to get a Python-accessible `VisibleLayout` with the same offsets.
+
+### Value Representation
+
+The value head outputs 3 scalars in [-1, 1] via tanh, representing per-player expected outcomes: `[v_active, v_next, v_next_next]`. These are un-rotated to canonical order via `np.roll(values, active_player_id)`.
+
+**Terminal values:** Players are ranked by net worth. Rewards are evenly distributed from +1.0 (1st) to -1.0 (last). Ties receive averaged rewards. For 3 players: 1st=1.0, 2nd=0.0, 3rd=-1.0.
+
+### PUCT Selection
+
+```
+UCB(a) = Q(a) + c_puct * P(a) * sqrt(N_parent) / (1 + N(a))
+```
+
+Where Q(a) is the mean value for the **active player** at the parent node. This ensures each player maximizes their own expected outcome.
+
+### A0GB Greedy Backup (Value Targets)
+
+Instead of using the root node's mean value (soft-Z) or the game outcome as training targets, we use **A0GB** (Willemsen et al., "Value targets in off-policy AlphaZero: a new greedy backup", ALA 2020 / Neural Computing and Applications, 2022).
+
+**Algorithm:** Starting from the root, follow the child with the highest visit count at each level until reaching a leaf (unexpanded node) or terminal. Return that node's value as the training target.
+
+**Why A0GB:**
+- At a leaf node visited once, the value equals V_NN (the neural network's evaluation)
+- At a terminal node, the value equals the game outcome
+- Removes exploration bias that contaminates soft-Z targets
+- Converges faster than soft-Z or game-outcome targets in practice
+
+**Implementation:** `get_greedy_leaf_value(root)` in `search.py`. Stops when the best child has `visit_count == 0` (the current node is the tree-edge leaf).
+
+### Search Flow
+
+1. **Root setup:** Evaluate root state with NN, expand, add Dirichlet noise to priors
+2. **Per simulation:**
+   - **Select:** Traverse tree using PUCT until reaching unexpanded or terminal node
+   - **Expand:** Clone root state, replay actions along path, evaluate leaf with NN, create children
+   - **Backup:** Propagate canonical values up the tree
+3. **Output:** `get_action_probabilities(root, temperature)` converts visit counts to policy target
+
+**Memory efficiency:** States are NOT stored in tree nodes. The root state is cloned and actions replayed to reach each leaf.
+
+### NN Model (`nn/model_3p.py`)
+
+Residual MLP (~26M parameters):
+- **Input:** 3023 floats (visible state, active player rotated to slot 0)
+- **Trunk:** LayerNorm → Linear → 10 residual blocks (pre-LN, GELU, expansion=2) → LayerNorm
+- **Policy head:** Linear → 246 logits (masked by legal actions before softmax)
+- **Value head:** Linear(768→384) → GELU → Linear(384→192) → GELU → Linear(192→3) → Tanh
+
+### Key APIs
+
+```python
+from mcts.config import MCTSConfig
+from mcts.evaluator import NNEvaluator
+from mcts.search import run_search, get_action_probabilities, get_greedy_leaf_value
+
+# Setup
+evaluator = NNEvaluator(model, device, num_players=3)
+config = MCTSConfig(num_simulations=800, c_puct=2.5)
+
+# Search
+root = run_search(game_state, evaluator, config)
+policy = get_action_probabilities(root, temperature=1.0, action_dim=config.action_dim)
+value_target = get_greedy_leaf_value(root)                 # shape (3,), A0GB
+```
 
 ## State Representation
 
@@ -359,6 +456,9 @@ pytest tests/18xx_games/test_replay.py -v
 | Optimize performance | Any `.pyx` | Check compiler directives, nogil |
 | Add phase | Create `phases/new.pyx` | `core/driver.pyx`, `core/actions.pyx` |
 | Fix bug | Tests first | Phase/entity files |
+| MCTS / search | `mcts/search.py`, `mcts/node.py` | `mcts/evaluator.py`, `mcts/config.py` |
+| NN model | `nn/model_3p.py` | `mcts/evaluator.py` |
+| Self-play / training | TBD | `mcts/`, `nn/` |
 
 ## Documentation
 

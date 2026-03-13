@@ -194,7 +194,7 @@ def _backup(
 def get_action_probabilities(
     root: MCTSNode,
     temperature: float,
-    action_dim: int = 246,
+    action_dim: int,
 ) -> np.ndarray:
     """Convert root visit counts to action probabilities.
 

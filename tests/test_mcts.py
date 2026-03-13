@@ -317,16 +317,16 @@ class TestMCTSSearch:
     def test_action_probabilities_sum_to_one(self, game_state, evaluator):
         config = MCTSConfig(num_simulations=20)
         root = run_search(game_state, evaluator, config)
-        probs = get_action_probabilities(root, temperature=1.0)
+        probs = get_action_probabilities(root, temperature=1.0, action_dim=config.action_dim)
 
-        assert probs.shape == (246,)
+        assert probs.shape == (config.action_dim,)
         assert probs.sum() == pytest.approx(1.0, abs=1e-5)
         assert (probs >= 0).all()
 
     def test_action_probabilities_greedy(self, game_state, evaluator):
         config = MCTSConfig(num_simulations=20)
         root = run_search(game_state, evaluator, config)
-        probs = get_action_probabilities(root, temperature=0.0)
+        probs = get_action_probabilities(root, temperature=0.0, action_dim=config.action_dim)
 
         # Greedy: exactly one action with probability 1.0
         assert probs.sum() == pytest.approx(1.0)
