@@ -1,9 +1,14 @@
-"""Example AlphaZero-style PyTorch model for Rolling Stock Stars (3 players).
+"""AlphaZero-style PyTorch model for Rolling Stock Stars (3 players).
 
 This module implements a residual MLP architecture sized around ~26M parameters:
 - Input (visible state): 3023 floats
 - Policy output: 246 logits (all actions for 3-player layout)
-- Value output: 3 logits (finishing-position probabilities: 1st/2nd/3rd)
+- Value output: 3 scalars in [-1, 1] (per-player expected outcomes via tanh)
+
+The value head outputs per-player expected outcomes [v_active, v_next, v_next_next],
+where the active player is always at index 0, and subsequent players follow in
+turn order. Values are bounded to [-1, 1] by a tanh activation, where 1.0 maps
+to a first-place finish and -1.0 maps to a last-place finish.
 
 The model expects legal-action masking to be provided by the Cython engine.
 """
@@ -23,7 +28,7 @@ class RSSModelConfig:
 
     input_dim: int = 3023
     action_dim: int = 246
-    value_dim: int = 3  # 3-player ranking distribution: [P(1st), P(2nd), P(3rd)]
+    value_dim: int = 3  # Per-player expected outcomes: [v_active, v_next, v_next_next]
     hidden_dim: int = 768
     num_blocks: int = 10
     expansion: int = 2
@@ -75,6 +80,7 @@ class RSSAlphaZeroNet(nn.Module):
             nn.Linear(cfg.hidden_dim // 2, cfg.hidden_dim // 4),
             nn.GELU(),
             nn.Linear(cfg.hidden_dim // 4, cfg.value_dim),
+            nn.Tanh(),
         )
 
         self._init_weights()
@@ -104,7 +110,8 @@ class RSSAlphaZeroNet(nn.Module):
 
         Returns:
             policy_logits: shape [batch, action_dim], masked if mask provided.
-            value_logits: shape [batch, value_dim], unnormalized rank logits.
+            values: shape [batch, value_dim], per-player expected outcomes in [-1, 1].
+                Index 0 = active player, subsequent indices follow turn order.
         """
         h = self.input_norm(x)
         h = self.input_proj(h)
@@ -123,8 +130,8 @@ class RSSAlphaZeroNet(nn.Module):
             illegal = legal_action_mask <= 0
             policy_logits = policy_logits.masked_fill(illegal, -1e9)
 
-        value_logits = self.value_head(h)
-        return policy_logits, value_logits
+        values = self.value_head(h)
+        return policy_logits, values
 
 
 def count_parameters(model: nn.Module) -> int:
@@ -150,11 +157,12 @@ if __name__ == "__main__":
     legal_mask = torch.ones(batch_size, cfg.action_dim)
     legal_mask[:, -5:] = 0.0
 
-    policy_logits, value_logits = model(x, legal_action_mask=legal_mask)
+    policy_logits, values = model(x, legal_action_mask=legal_mask)
     policy = torch.softmax(policy_logits, dim=-1)
-    value_probs = torch.softmax(value_logits, dim=-1)
 
     print("policy_logits:", tuple(policy_logits.shape))
-    print("value_logits:", tuple(value_logits.shape))
+    print("values:", tuple(values.shape))
     print("policy row sum:", policy[0].sum().item())
-    print("value probs row sum:", value_probs[0].sum().item())
+    print("values (first sample):", values[0].tolist())
+    assert values.min() >= -1.0 and values.max() <= 1.0, "tanh output out of range"
+    print("all values in [-1, 1]: ok")
