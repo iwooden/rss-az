@@ -8,3 +8,5 @@
 **/*.c
 **/*.html
 scratchpad/
+checkpoints/
+runs/
