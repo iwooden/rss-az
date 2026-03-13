@@ -217,21 +217,11 @@ value_loss = F.mse_loss(value_preds, value_targets)
 total_loss = policy_loss_weight * policy_loss + value_loss_weight * value_loss
 ```
 
-**Wait — masking in loss vs model:**
-The model's `forward()` can optionally mask illegal actions. But for training,
-we want to compute loss over ALL logits (the policy target is already zero for
-illegal actions, so those terms vanish naturally). We should NOT mask in the
-model during training — just pass `legal_action_mask=None` and apply masking
-only in the loss via the target distribution (which is zero for illegal actions).
-
-Actually, re-examining: the policy target from MCTS is a proper probability
-distribution over legal actions only (sums to 1.0, zero elsewhere). If we use
-cross-entropy `-(pi * log_softmax(logits))`, the illegal action terms are
-`0 * log_softmax(logit_j)` which is 0, so they don't contribute to the loss.
-However, the softmax denominator includes illegal action logits, which could
-dilute the probability mass. It's better to mask illegal logits to `-inf`
-before the softmax so the model learns to put zero probability there. So we
-SHOULD pass the legal mask during training.
+**Masking during training:**
+Pass `legal_action_mask` to the model during training. The model masks illegal
+logits to `-inf`, so the softmax denominator only includes legal actions. This
+matches how the MCTS policy target is computed (distribution over legal actions
+only) and avoids wasting model capacity learning to suppress illegal actions.
 
 **Optimizer:** AdamW (standard for transformers and MLPs)
 
