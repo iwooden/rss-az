@@ -230,6 +230,8 @@ class TestMCTSNode:
         assert node.active_player_id == 0
         assert not node.is_terminal
         assert not node.expanded()
+        assert node.state is None
+        assert node.terminal_values is None
 
     def test_mean_value_zero_visits(self):
         node = MCTSNode(num_players=3)
@@ -253,7 +255,7 @@ class TestMCTSNode:
         mask[5] = 1.0
         mask[10] = 1.0
 
-        node.expand(priors, mask, active_player_id=1, num_players=3)
+        node.expand(priors, mask, num_players=3)
 
         assert node.expanded()
         assert len(node.children) == 3
@@ -369,6 +371,35 @@ class TestMCTSSearch:
             assert best_child.visit_count == max_visits
 
             node = best_child
+
+    def test_nodes_have_states(self, game_state, evaluator):
+        """Every node in the tree should have a stored game state."""
+        config = MCTSConfig(num_simulations=20)
+        root = run_search(game_state, evaluator, config)
+
+        # Root has state
+        assert root.state is not None
+        assert root.state.shape == game_state._array.shape
+
+        # All children of root have states
+        for child in root.children.values():
+            assert child.state is not None
+            assert child.state.shape == game_state._array.shape
+
+    def test_terminal_children_have_cached_values(self, game_state, evaluator):
+        """Terminal children should have terminal_values cached."""
+        config = MCTSConfig(num_simulations=100)
+        root = run_search(game_state, evaluator, config)
+
+        # Walk tree looking for terminal nodes
+        stack = [root]
+        while stack:
+            node = stack.pop()
+            if node.is_terminal:
+                assert node.terminal_values is not None
+                assert node.terminal_values.shape == (3,)
+            for child in node.children.values():
+                stack.append(child)
 
     def test_terminal_state_search(self, evaluator):
         """Search on a non-terminal state should return a valid root."""

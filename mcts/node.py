@@ -26,6 +26,8 @@ class MCTSNode:
         "active_player_id",
         "children",
         "is_terminal",
+        "state",
+        "terminal_values",
     )
 
     def __init__(
@@ -41,6 +43,8 @@ class MCTSNode:
         self.active_player_id: int = active_player_id
         self.children: dict[int, MCTSNode] = {}
         self.is_terminal: bool = is_terminal
+        self.state: np.ndarray | None = None
+        self.terminal_values: np.ndarray | None = None
 
     def mean_value(self, player_id: int) -> float:
         """Return the mean value estimate for the given player.
@@ -59,24 +63,22 @@ class MCTSNode:
         self,
         policy_priors: np.ndarray,
         legal_mask: np.ndarray,
-        active_player_id: int,
         num_players: int,
     ) -> None:
         """Expand this node by creating a child for each legal action.
+
+        Child nodes are created with placeholder active_player_id=0.
+        The correct value is set when child states are populated.
 
         Args:
             policy_priors: NN policy output, shape (action_dim,). Values for
                 legal actions are used as priors for the corresponding children.
             legal_mask: Binary mask, shape (action_dim,). 1.0 for legal actions.
-            active_player_id: The player who will act at each child node.
-                Note: this is the active player in the child states, which may
-                differ from self.active_player_id.
             num_players: Number of players in the game.
         """
         legal_actions = np.nonzero(legal_mask)[0]
         for action_idx in legal_actions:
             self.children[int(action_idx)] = MCTSNode(
                 prior=float(policy_priors[action_idx]),
-                active_player_id=active_player_id,
                 num_players=num_players,
             )

@@ -4,6 +4,7 @@ Implements AlphaZero-style MCTS for multiplayer games:
 - PUCT selection from the active player's perspective
 - Dirichlet noise at the root for exploration
 - A0GB greedy backup for value targets (Willemsen et al., 2020)
+- Node-local game state storage (no replay from root)
 """
 
 from __future__ import annotations
@@ -61,12 +62,45 @@ def _add_dirichlet_noise(node: MCTSNode, alpha: float, epsilon: float) -> None:
         child.prior = (1 - epsilon) * child.prior + epsilon * noise[i]
 
 
+def _populate_child_states(
+    node: MCTSNode,
+    num_players: int,
+    evaluator: Any,
+) -> None:
+    """Create and store game states for all children of a node.
+
+    For each child, clones the parent state, applies the action, and stores
+    the resulting state on the child node. Terminal children get their
+    terminal values computed and cached.
+
+    Args:
+        node: The parent node whose children need states populated.
+        num_players: Number of players in the game.
+        evaluator: NNEvaluator for computing terminal values.
+    """
+    from core.driver import DRIVER, STATUS_GAME_OVER_PY
+    from core.state import GameState
+
+    parent_state = node.state
+    for action_idx, child in node.children.items():
+        child_gs = GameState.from_array(parent_state, num_players)
+        status = DRIVER.apply_action(child_gs, action_idx)
+        child.state = child_gs._array
+        child.active_player_id = child_gs.get_active_player()
+        if status == STATUS_GAME_OVER_PY:
+            child.is_terminal = True
+            child.terminal_values = evaluator.evaluate_terminal(child_gs)
+
+
 def run_search(
     root_state: Any,
     evaluator: Any,
     config: MCTSConfig,
 ) -> MCTSNode:
     """Run MCTS search from the given root state.
+
+    Each node stores its own game state, eliminating the need to replay
+    actions from the root on every simulation.
 
     Args:
         root_state: GameState object to search from.
@@ -78,7 +112,6 @@ def run_search(
     """
     from core.actions import get_valid_action_mask
     from core.data import GamePhases
-    from core.driver import DRIVER, STATUS_GAME_OVER_PY
     from core.state import GameState
 
     num_players = config.num_players
@@ -92,9 +125,11 @@ def run_search(
         num_players=num_players,
         is_terminal=is_terminal,
     )
+    root.state = root_state._array.copy()
 
     if is_terminal:
         values = evaluator.evaluate_terminal(root_state)
+        root.terminal_values = values
         root.visit_count = 1
         root.value_sum += values
         return root
@@ -103,8 +138,9 @@ def run_search(
     policy_probs, root_values = evaluator.evaluate(root_state)
     mask = get_valid_action_mask(root_state)
 
-    # Expand root
-    root.expand(policy_probs, mask, active_player_id=0, num_players=num_players)
+    # Expand root and populate child states
+    root.expand(policy_probs, mask, num_players=num_players)
+    _populate_child_states(root, num_players, evaluator)
 
     # Add Dirichlet noise at root
     if config.dirichlet_epsilon > 0:
@@ -118,53 +154,33 @@ def run_search(
     for _ in range(config.num_simulations):
         # Selection: traverse tree to find a leaf
         node = root
-        path: list[tuple[MCTSNode, int]] = []  # (parent, action) pairs
+        path: list[tuple[MCTSNode, int]] = []
 
         while node.expanded() and not node.is_terminal:
             action_idx = select_child(node, config.c_puct)
             path.append((node, action_idx))
             node = node.children[action_idx]
 
-        # Terminal node: backup known values
+        # Terminal node: backup cached values
         if node.is_terminal:
-            # Replay to get terminal state
-            leaf_state = GameState.from_array(
-                root_state._array.copy(), num_players
-            )
-            for _, action in path:
-                DRIVER.apply_action(leaf_state, action)
-            values = evaluator.evaluate_terminal(leaf_state)
-            _backup(path, node, values)
+            assert node.terminal_values is not None
+            _backup(path, node, node.terminal_values)
             continue
 
-        # Leaf node: evaluate and expand
-        # Clone root state and replay actions to reach the leaf
-        leaf_state = GameState.from_array(
-            root_state._array.copy(), num_players
-        )
-        for _, action in path:
-            status = DRIVER.apply_action(leaf_state, action)
-            if status == STATUS_GAME_OVER_PY:
-                # Game ended during replay — terminal leaf
-                node.is_terminal = True
-                node.active_player_id = leaf_state.get_active_player()
-                values = evaluator.evaluate_terminal(leaf_state)
-                _backup(path, node, values)
-                break
-        else:
-            # Leaf state is valid non-terminal — evaluate with NN
-            node.active_player_id = leaf_state.get_active_player()
-            policy_probs, values = evaluator.evaluate(leaf_state)
-            leaf_mask = get_valid_action_mask(leaf_state)
+        # Leaf node: state is already stored from parent expansion.
+        # Wrap in GameState for evaluation (read-only, no copy needed).
+        leaf_gs = GameState.from_array(node.state, num_players)
+        node.active_player_id = leaf_gs.get_active_player()
 
-            # Expand the leaf
-            node.expand(
-                policy_probs, leaf_mask,
-                active_player_id=0, num_players=num_players,
-            )
+        policy_probs, values = evaluator.evaluate(leaf_gs)
+        leaf_mask = get_valid_action_mask(leaf_gs)
 
-            # Backup
-            _backup(path, node, values)
+        # Expand the leaf and populate child states
+        node.expand(policy_probs, leaf_mask, num_players=num_players)
+        _populate_child_states(node, num_players, evaluator)
+
+        # Backup
+        _backup(path, node, values)
 
     return root
 
