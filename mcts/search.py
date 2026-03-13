@@ -48,13 +48,15 @@ def select_child(node: MCTSNode, c_puct: float) -> tuple[int, int]:
     return int(node.legal_actions[best_idx]), best_idx
 
 
-def _add_dirichlet_noise(node: MCTSNode, alpha: float, epsilon: float) -> None:
+def _add_dirichlet_noise(
+    node: MCTSNode, alpha: float, epsilon: float, rng: np.random.Generator,
+) -> None:
     """Add Dirichlet noise to the root node's action priors.
 
     Modifies priors in-place:
         P'(a) = (1 - epsilon) * P(a) + epsilon * Dir(alpha)
     """
-    noise = np.random.dirichlet([alpha] * len(node.priors))
+    noise = rng.dirichlet([alpha] * len(node.priors))
     node.priors = (1 - epsilon) * node.priors + epsilon * noise
 
 
@@ -62,6 +64,7 @@ def run_search(
     root_state: Any,
     evaluator: Any,
     config: MCTSConfig,
+    rng: np.random.Generator | None = None,
 ) -> MCTSNode:
     """Run MCTS search from the given root state.
 
@@ -72,6 +75,8 @@ def run_search(
         root_state: GameState object to search from.
         evaluator: NNEvaluator for leaf evaluation.
         config: Search hyperparameters.
+        rng: Optional numpy random Generator for Dirichlet noise.
+            If None, creates an unseeded generator.
 
     Returns:
         The root MCTSNode with search statistics populated.
@@ -110,8 +115,10 @@ def run_search(
                 default_value=root_values)
 
     # Add Dirichlet noise at root
+    if rng is None:
+        rng = np.random.default_rng()
     if config.dirichlet_epsilon > 0:
-        _add_dirichlet_noise(root, config.dirichlet_alpha, config.dirichlet_epsilon)
+        _add_dirichlet_noise(root, config.dirichlet_alpha, config.dirichlet_epsilon, rng)
 
     # Backup root evaluation
     root.visit_count = 1
