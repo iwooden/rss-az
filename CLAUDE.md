@@ -230,7 +230,7 @@ config = MCTSConfig(num_simulations=800, c_puct=2.5)
 # Search
 root = run_search(game_state, evaluator, config)
 policy = get_action_probabilities(root, temperature=1.0, action_dim=config.action_dim)
-value_target = get_greedy_leaf_value(root)                 # shape (3,), A0GB
+value_target = get_greedy_leaf_value(root, num_players=config.num_players)
 ```
 
 ## State Representation

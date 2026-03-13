@@ -17,7 +17,6 @@ class MCTSNode:
         active_player_id: The player who acts at this node.
         children: Mapping from action index to child MCTSNode.
         is_terminal: Whether this node represents a game-over state.
-        num_players: Number of players in the game.
     """
 
     __slots__ = (
@@ -27,7 +26,6 @@ class MCTSNode:
         "active_player_id",
         "children",
         "is_terminal",
-        "num_players",
     )
 
     def __init__(
@@ -43,7 +41,6 @@ class MCTSNode:
         self.active_player_id: int = active_player_id
         self.children: dict[int, MCTSNode] = {}
         self.is_terminal: bool = is_terminal
-        self.num_players: int = num_players
 
     def mean_value(self, player_id: int) -> float:
         """Return the mean value estimate for the given player.

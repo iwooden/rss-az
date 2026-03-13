@@ -335,7 +335,7 @@ class TestMCTSSearch:
     def test_greedy_leaf_value_bounded(self, game_state, evaluator):
         config = MCTSConfig(num_simulations=50)
         root = run_search(game_state, evaluator, config)
-        val = get_greedy_leaf_value(root)
+        val = get_greedy_leaf_value(root, num_players=config.num_players)
 
         assert val.shape == (3,)
         assert (val >= -1.0).all()
@@ -345,7 +345,7 @@ class TestMCTSSearch:
         """With enough simulations, the greedy leaf should have non-trivial values."""
         config = MCTSConfig(num_simulations=50)
         root = run_search(game_state, evaluator, config)
-        val = get_greedy_leaf_value(root)
+        val = get_greedy_leaf_value(root, num_players=config.num_players)
 
         # At least one value should be non-zero (random weights produce non-zero output)
         assert not np.allclose(val, 0.0)

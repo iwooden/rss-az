@@ -230,7 +230,7 @@ def get_action_probabilities(
     return probs
 
 
-def get_greedy_leaf_value(root: MCTSNode) -> np.ndarray:
+def get_greedy_leaf_value(root: MCTSNode, num_players: int) -> np.ndarray:
     """Compute the A0GB greedy backup value target.
 
     Starting from the root, follow the child with the highest visit count
@@ -245,6 +245,7 @@ def get_greedy_leaf_value(root: MCTSNode) -> np.ndarray:
 
     Args:
         root: Root node after search.
+        num_players: Number of players in the game.
 
     Returns:
         Canonical per-player values at the greedy leaf, shape (num_players,).
@@ -263,6 +264,6 @@ def get_greedy_leaf_value(root: MCTSNode) -> np.ndarray:
 
     # Return the mean value at this node
     if node.visit_count == 0:
-        return np.zeros(node.num_players, dtype=np.float32)
+        return np.zeros(num_players, dtype=np.float32)
 
     return node.value_sum / node.visit_count
