@@ -37,6 +37,8 @@ def select_child(node: MCTSNode, c_puct: float) -> tuple[int, int]:
         Tuple of (action_index, array_index) where action_index is the game
         action and array_index is the position in node.legal_actions.
     """
+    assert node.visit_counts is not None and node.value_sums is not None
+    assert node.priors is not None and node.legal_actions is not None
     player = node.active_player_id
     sqrt_parent = math.sqrt(node.visit_count)
     vc = node.visit_counts
@@ -56,6 +58,7 @@ def _add_dirichlet_noise(
     Modifies priors in-place:
         P'(a) = (1 - epsilon) * P(a) + epsilon * Dir(alpha)
     """
+    assert node.priors is not None
     noise = rng.dirichlet([alpha] * len(node.priors))
     node.priors = (1 - epsilon) * node.priors + epsilon * noise
 
@@ -139,6 +142,7 @@ def run_search(
                 node = node.children[action_idx]
             else:
                 # First visit: create child node with state
+                assert node.priors is not None
                 child = MCTSNode(
                     prior=float(node.priors[array_idx]),
                     num_players=num_players,
@@ -197,8 +201,9 @@ def _backup(
     leaf.visit_count += 1
     leaf.value_sum += values
 
-    # Walk back up the path
+    # Walk back up the path (all nodes in path are expanded)
     for node, _, array_idx in reversed(path):
+        assert node.visit_counts is not None and node.value_sums is not None
         node.visit_count += 1
         node.value_sum += values
         node.visit_counts[array_idx] += 1
@@ -226,6 +231,7 @@ def get_action_probabilities(
 
     if root.legal_actions is None:
         return probs
+    assert root.visit_counts is not None
 
     # Real visit counts (subtract virtual FPU visit)
     real_counts = root.visit_counts - 1
@@ -269,6 +275,7 @@ def get_greedy_leaf_value(root: MCTSNode, num_players: int) -> np.ndarray:
     node = root
 
     while node.expanded() and not node.is_terminal:
+        assert node.visit_counts is not None and node.legal_actions is not None
         # Real visit counts (subtract virtual FPU visit)
         real_counts = node.visit_counts - 1
         # Follow the child with the most real visits (greedy)
