@@ -1,0 +1,268 @@
+"""MCTS search algorithm with PUCT selection and A0GB value targets.
+
+Implements AlphaZero-style MCTS for multiplayer games:
+- PUCT selection from the active player's perspective
+- Dirichlet noise at the root for exploration
+- A0GB greedy backup for value targets (Willemsen et al., 2020)
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Any
+
+import numpy as np
+
+from mcts.config import MCTSConfig
+from mcts.node import MCTSNode
+
+
+def select_child(node: MCTSNode, c_puct: float) -> int:
+    """Select the child action with the highest PUCT value.
+
+    Uses the formula:
+        UCB(a) = Q(a) + c_puct * P(a) * sqrt(N_parent) / (1 + N(a))
+
+    where Q(a) is the mean value for the active player at this node.
+
+    Args:
+        node: The parent node to select from. Must be expanded.
+        c_puct: Exploration constant.
+
+    Returns:
+        The action index of the selected child.
+    """
+    player = node.active_player_id
+    sqrt_parent = math.sqrt(node.visit_count)
+
+    best_action = -1
+    best_ucb = -math.inf
+
+    for action_idx, child in node.children.items():
+        q = child.mean_value(player)
+        ucb = q + c_puct * child.prior * sqrt_parent / (1 + child.visit_count)
+        if ucb > best_ucb:
+            best_ucb = ucb
+            best_action = action_idx
+
+    return best_action
+
+
+def _add_dirichlet_noise(node: MCTSNode, alpha: float, epsilon: float) -> None:
+    """Add Dirichlet noise to the root node's children priors.
+
+    Modifies priors in-place:
+        P'(a) = (1 - epsilon) * P(a) + epsilon * Dir(alpha)
+    """
+    actions = list(node.children.keys())
+    noise = np.random.dirichlet([alpha] * len(actions))
+    for i, action_idx in enumerate(actions):
+        child = node.children[action_idx]
+        child.prior = (1 - epsilon) * child.prior + epsilon * noise[i]
+
+
+def run_search(
+    root_state: Any,
+    evaluator: Any,
+    config: MCTSConfig,
+) -> MCTSNode:
+    """Run MCTS search from the given root state.
+
+    Args:
+        root_state: GameState object to search from.
+        evaluator: NNEvaluator for leaf evaluation.
+        config: Search hyperparameters.
+
+    Returns:
+        The root MCTSNode with search statistics populated.
+    """
+    from core.actions import get_valid_action_mask
+    from core.data import GamePhases
+    from core.driver import DRIVER, STATUS_GAME_OVER_PY
+    from core.state import GameState
+
+    num_players = config.num_players
+
+    # Check if root state is terminal
+    is_terminal = root_state.get_phase() == GamePhases.PHASE_GAME_OVER
+
+    root = MCTSNode(
+        prior=0.0,
+        active_player_id=root_state.get_active_player(),
+        num_players=num_players,
+        is_terminal=is_terminal,
+    )
+
+    if is_terminal:
+        values = evaluator.evaluate_terminal(root_state)
+        root.visit_count = 1
+        root.value_sum += values
+        return root
+
+    # Evaluate root with NN
+    policy_probs, root_values = evaluator.evaluate(root_state)
+    mask = get_valid_action_mask(root_state)
+
+    # Expand root
+    root.expand(policy_probs, mask, active_player_id=0, num_players=num_players)
+
+    # Add Dirichlet noise at root
+    if config.dirichlet_epsilon > 0:
+        _add_dirichlet_noise(root, config.dirichlet_alpha, config.dirichlet_epsilon)
+
+    # Backup root evaluation
+    root.visit_count = 1
+    root.value_sum += root_values
+
+    # Run simulations
+    for _ in range(config.num_simulations):
+        # Selection: traverse tree to find a leaf
+        node = root
+        path: list[tuple[MCTSNode, int]] = []  # (parent, action) pairs
+
+        while node.expanded() and not node.is_terminal:
+            action_idx = select_child(node, config.c_puct)
+            path.append((node, action_idx))
+            node = node.children[action_idx]
+
+        # Terminal node: backup known values
+        if node.is_terminal:
+            # Replay to get terminal state
+            leaf_state = GameState.from_array(
+                root_state._array.copy(), num_players
+            )
+            for _, action in path:
+                DRIVER.apply_action(leaf_state, action)
+            values = evaluator.evaluate_terminal(leaf_state)
+            _backup(path, node, values)
+            continue
+
+        # Leaf node: evaluate and expand
+        # Clone root state and replay actions to reach the leaf
+        leaf_state = GameState.from_array(
+            root_state._array.copy(), num_players
+        )
+        for _, action in path:
+            status = DRIVER.apply_action(leaf_state, action)
+            if status == STATUS_GAME_OVER_PY:
+                # Game ended during replay — terminal leaf
+                node.is_terminal = True
+                node.active_player_id = leaf_state.get_active_player()
+                values = evaluator.evaluate_terminal(leaf_state)
+                _backup(path, node, values)
+                break
+        else:
+            # Leaf state is valid non-terminal — evaluate with NN
+            node.active_player_id = leaf_state.get_active_player()
+            policy_probs, values = evaluator.evaluate(leaf_state)
+            leaf_mask = get_valid_action_mask(leaf_state)
+
+            # Expand the leaf
+            node.expand(
+                policy_probs, leaf_mask,
+                active_player_id=0, num_players=num_players,
+            )
+
+            # Backup
+            _backup(path, node, values)
+
+    return root
+
+
+def _backup(
+    path: list[tuple[MCTSNode, int]],
+    leaf: MCTSNode,
+    values: np.ndarray,
+) -> None:
+    """Backpropagate values from a leaf up to the root.
+
+    Args:
+        path: List of (parent_node, action) pairs from root to leaf's parent.
+        leaf: The leaf node that was evaluated.
+        values: Canonical per-player values from the leaf evaluation.
+    """
+    # Update leaf
+    leaf.visit_count += 1
+    leaf.value_sum += values
+
+    # Walk back up the path
+    for node, _ in reversed(path):
+        node.visit_count += 1
+        node.value_sum += values
+
+
+def get_action_probabilities(
+    root: MCTSNode,
+    temperature: float,
+    action_dim: int = 246,
+) -> np.ndarray:
+    """Convert root visit counts to action probabilities.
+
+    Args:
+        root: Root node after search.
+        temperature: Controls exploration.
+            temperature=1.0: proportional to visit counts.
+            temperature->0: deterministic (argmax).
+        action_dim: Size of the action space.
+
+    Returns:
+        Probability distribution over actions, shape (action_dim,).
+    """
+    probs = np.zeros(action_dim, dtype=np.float32)
+
+    if not root.children:
+        return probs
+
+    if temperature < 1e-8:
+        # Greedy: pick the most-visited action
+        best_action = max(root.children, key=lambda a: root.children[a].visit_count)
+        probs[best_action] = 1.0
+        return probs
+
+    # Temperature-scaled visit counts
+    for action_idx, child in root.children.items():
+        probs[action_idx] = child.visit_count ** (1.0 / temperature)
+
+    total = probs.sum()
+    if total > 0:
+        probs /= total
+
+    return probs
+
+
+def get_greedy_leaf_value(root: MCTSNode) -> np.ndarray:
+    """Compute the A0GB greedy backup value target.
+
+    Starting from the root, follow the child with the highest visit count
+    (greedy policy) at each level until reaching a leaf node (no children)
+    or a terminal node. Return that node's value.
+
+    At a leaf node with a single visit, this equals V_NN (the neural network's
+    evaluation). At a terminal node, this equals the game outcome.
+
+    Reference: Willemsen et al., "Value targets in off-policy AlphaZero:
+    a new greedy backup" (ALA 2020 / Neural Computing and Applications, 2022).
+
+    Args:
+        root: Root node after search.
+
+    Returns:
+        Canonical per-player values at the greedy leaf, shape (num_players,).
+    """
+    node = root
+
+    while node.expanded() and not node.is_terminal:
+        # Follow the child with the most visits (greedy)
+        best_action = max(node.children, key=lambda a: node.children[a].visit_count)
+        best_child = node.children[best_action]
+        if best_child.visit_count == 0:
+            # All children are unvisited — this node is the tree-edge leaf.
+            # Its value_sum / visit_count equals V_NN from its single evaluation.
+            break
+        node = best_child
+
+    # Return the mean value at this node
+    if node.visit_count == 0:
+        return np.zeros(node.num_players, dtype=np.float32)
+
+    return node.value_sum / node.visit_count
