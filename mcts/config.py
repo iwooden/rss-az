@@ -1,17 +1,5 @@
-from dataclasses import dataclass, field
+"""Backwards-compatible re-export. Config now lives in train.config."""
 
+from train.config import MCTSConfig
 
-@dataclass
-class MCTSConfig:
-    """Hyperparameters for MCTS search."""
-
-    num_simulations: int = 800
-    c_puct: float = 2.5
-    dirichlet_alpha: float = 0.3
-    dirichlet_epsilon: float = 0.25
-    temperature: float = 1.0
-    num_players: int = 3
-    action_dim: int = field(init=False)
-
-    def __post_init__(self) -> None:
-        self.action_dim = 186 + self.num_players * 20
+__all__ = ["MCTSConfig"]

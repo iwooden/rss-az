@@ -15,7 +15,7 @@ from typing import Any
 
 import numpy as np
 
-from mcts.config import MCTSConfig
+from train.config import MCTSConfig
 from mcts.node import MCTSNode
 
 
