@@ -22,7 +22,6 @@ class GameRecord:
 
     examples: list[TrainingExample]
     total_moves: int  # Decision points (MCTS searches)
-    game_length: int  # Total actions applied including auto-forced
     net_worths: list[int]  # Final net worth per player (canonical order)
     duration_secs: float  # Wall-clock time
 
@@ -48,7 +47,6 @@ def play_game(
 
     examples: list[TrainingExample] = []
     move_count = 0
-    game_length = 0
 
     while True:
         active_player = state.get_active_player()
@@ -80,7 +78,6 @@ def play_game(
         action_idx = int(rng.choice(config.action_dim, p=policy))
         status = DRIVER.apply_action(state, action_idx)
         move_count += 1
-        game_length += 1
 
         if status == STATUS_GAME_OVER_PY:
             break
@@ -92,7 +89,6 @@ def play_game(
     return GameRecord(
         examples=examples,
         total_moves=move_count,
-        game_length=game_length,
         net_worths=net_worths,
         duration_secs=time.perf_counter() - t0,
     )

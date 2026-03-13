@@ -94,6 +94,11 @@ class TrainingConfig:
                 f"buffer_capacity ({self.buffer_capacity}) must exceed "
                 f"min_buffer_size ({self.min_buffer_size})"
             )
+        if self.min_buffer_size < self.batch_size:
+            raise ValueError(
+                f"min_buffer_size ({self.min_buffer_size}) must be >= "
+                f"batch_size ({self.batch_size})"
+            )
 
     def to_mcts_config(self) -> MCTSConfig:
         """Create an MCTSConfig from the relevant training fields."""

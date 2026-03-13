@@ -90,7 +90,14 @@ class ReplayBuffer:
     def sample(
         self, batch_size: int, rng: np.random.Generator
     ) -> dict[str, torch.Tensor]:
-        """Sample a random batch. Returns dict of torch tensors (CPU)."""
+        """Sample a random batch. Returns dict of torch tensors (CPU).
+
+        Raises ValueError if batch_size > current buffer size.
+        """
+        if batch_size > self._size:
+            raise ValueError(
+                f"batch_size ({batch_size}) exceeds buffer size ({self._size})"
+            )
         indices = rng.choice(self._size, size=batch_size, replace=False)
         return {
             "states": torch.from_numpy(self._states[indices].copy()),

@@ -25,6 +25,8 @@ def _format_duration(secs: float) -> str:
         return f"{h}h {m:02d}m {s:02d}s"
     if m > 0:
         return f"{m}m {s:02d}s"
+    if secs < 1.0:
+        return f"{secs:.1f}s"
     return f"{s}s"
 
 

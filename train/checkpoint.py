@@ -34,7 +34,11 @@ def save_checkpoint(
 
 
 def load_checkpoint(path: Path, device: torch.device) -> dict[str, object]:
-    """Load checkpoint from disk with device mapping."""
+    """Load checkpoint from disk with device mapping.
+
+    Uses weights_only=False because optimizer/scheduler state dicts contain
+    non-tensor objects. Only load checkpoints you trust.
+    """
     return torch.load(path, map_location=device, weights_only=False)  # type: ignore[no-any-return]
 
 
