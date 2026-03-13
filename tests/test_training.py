@@ -1,0 +1,417 @@
+"""Tests for the self-play training harness.
+
+Uses tiny configs and small models to keep tests fast (< 30s total).
+All file output uses tmp_path to avoid polluting the project directory.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+import torch
+
+from nn.model_3p import RSSAlphaZeroNet, RSSModelConfig
+from train.checkpoint import (
+    cleanup_checkpoints,
+    find_latest_checkpoint,
+    load_checkpoint,
+    save_checkpoint,
+)
+from train.config import MCTSConfig, TrainingConfig
+from train.logging import TrainingLogger
+from train.replay_buffer import ReplayBuffer, TrainingExample
+from train.self_play import play_game
+from train.trainer import Trainer
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_example(
+    visible_size: int, action_dim: int, num_players: int
+) -> TrainingExample:
+    """Create a random valid TrainingExample."""
+    rng = np.random.default_rng()
+    state = rng.standard_normal(visible_size).astype(np.float32)
+    legal_mask = np.zeros(action_dim, dtype=np.float32)
+    n_legal = max(1, rng.integers(1, min(10, action_dim + 1)))
+    legal_indices = rng.choice(action_dim, n_legal, replace=False)
+    legal_mask[legal_indices] = 1.0
+    policy = np.zeros(action_dim, dtype=np.float32)
+    policy[legal_indices] = rng.dirichlet(np.ones(n_legal)).astype(np.float32)
+    value = rng.uniform(-1, 1, size=num_players).astype(np.float32)
+    return TrainingExample(
+        state=state, legal_mask=legal_mask, policy_target=policy, value_target=value
+    )
+
+
+def _make_batch(
+    batch_size: int, visible_size: int, action_dim: int, num_players: int
+) -> dict[str, torch.Tensor]:
+    """Create a synthetic training batch."""
+    examples = [_make_example(visible_size, action_dim, num_players) for _ in range(batch_size)]
+    return {
+        "states": torch.from_numpy(np.stack([e.state for e in examples])),
+        "legal_masks": torch.from_numpy(np.stack([e.legal_mask for e in examples])),
+        "policy_targets": torch.from_numpy(np.stack([e.policy_target for e in examples])),
+        "value_targets": torch.from_numpy(np.stack([e.value_target for e in examples])),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def tiny_config(tmp_path: Path) -> TrainingConfig:
+    return TrainingConfig(
+        num_players=3,
+        games_per_epoch=1,
+        num_simulations=2,
+        temp_threshold=5,
+        buffer_capacity=1000,
+        min_buffer_size=10,
+        batch_size=4,
+        learning_rate=1e-3,
+        training_steps_per_epoch=2,
+        warmup_steps=1,
+        num_epochs=2,
+        checkpoint_dir=str(tmp_path / "checkpoints"),
+        tensorboard_dir=str(tmp_path / "tb"),
+        seed=42,
+    )
+
+
+@pytest.fixture
+def small_model() -> RSSAlphaZeroNet:
+    cfg = RSSModelConfig(
+        input_dim=3023,
+        action_dim=246,
+        value_dim=3,
+        hidden_dim=32,
+        num_blocks=1,
+        expansion=1,
+    )
+    return RSSAlphaZeroNet(cfg)
+
+
+# ---------------------------------------------------------------------------
+# Config Tests
+# ---------------------------------------------------------------------------
+
+
+class TestConfig:
+    def test_computed_properties(self) -> None:
+        cfg = TrainingConfig(num_players=3)
+        assert cfg.action_dim == 246
+        assert cfg.visible_size == 3023
+
+    def test_json_roundtrip(self) -> None:
+        cfg = TrainingConfig(learning_rate=0.005, num_epochs=50)
+        restored = TrainingConfig.from_json(cfg.to_json())
+        assert restored.learning_rate == cfg.learning_rate
+        assert restored.num_epochs == cfg.num_epochs
+        assert restored.action_dim == cfg.action_dim
+        assert restored.visible_size == cfg.visible_size
+
+    def test_validation_num_players(self) -> None:
+        with pytest.raises(ValueError, match="num_players"):
+            TrainingConfig(num_players=0)
+
+    def test_validation_buffer_capacity(self) -> None:
+        with pytest.raises(ValueError, match="buffer_capacity"):
+            TrainingConfig(buffer_capacity=100, min_buffer_size=200)
+
+    def test_to_mcts_config(self) -> None:
+        cfg = TrainingConfig(num_simulations=100, c_puct=3.0, num_players=3)
+        mcts_cfg = cfg.to_mcts_config()
+        assert isinstance(mcts_cfg, MCTSConfig)
+        assert mcts_cfg.num_simulations == 100
+        assert mcts_cfg.c_puct == 3.0
+        assert mcts_cfg.action_dim == 246
+
+
+# ---------------------------------------------------------------------------
+# Replay Buffer Tests
+# ---------------------------------------------------------------------------
+
+
+class TestReplayBuffer:
+    def test_add_and_len(self) -> None:
+        buf = ReplayBuffer(capacity=100, visible_size=4, action_dim=2, num_players=3)
+        assert len(buf) == 0
+        buf.add_examples([_make_example(4, 2, 3) for _ in range(10)])
+        assert len(buf) == 10
+
+    def test_sample_shapes(self) -> None:
+        buf = ReplayBuffer(capacity=100, visible_size=3023, action_dim=246, num_players=3)
+        buf.add_examples([_make_example(3023, 246, 3) for _ in range(20)])
+        rng = np.random.default_rng(0)
+        batch = buf.sample(batch_size=8, rng=rng)
+        assert batch["states"].shape == (8, 3023)
+        assert batch["legal_masks"].shape == (8, 246)
+        assert batch["policy_targets"].shape == (8, 246)
+        assert batch["value_targets"].shape == (8, 3)
+        assert isinstance(batch["states"], torch.Tensor)
+
+    def test_ring_wrap(self) -> None:
+        buf = ReplayBuffer(capacity=10, visible_size=4, action_dim=2, num_players=3)
+        for i in range(15):
+            ex = TrainingExample(
+                state=np.full(4, float(i), dtype=np.float32),
+                legal_mask=np.ones(2, dtype=np.float32),
+                policy_target=np.array([0.5, 0.5], dtype=np.float32),
+                value_target=np.zeros(3, dtype=np.float32),
+            )
+            buf.add_examples([ex])
+        assert len(buf) == 10
+        rng = np.random.default_rng(0)
+        batch = buf.sample(10, rng)
+        vals = sorted(batch["states"][:, 0].tolist())
+        assert vals == list(range(5, 15))
+
+    def test_sample_only_from_filled(self) -> None:
+        buf = ReplayBuffer(capacity=100, visible_size=4, action_dim=2, num_players=3)
+        buf.add_examples([_make_example(4, 2, 3) for _ in range(5)])
+        rng = np.random.default_rng(0)
+        batch = buf.sample(batch_size=3, rng=rng)
+        assert batch["states"].shape == (3, 4)
+
+
+# ---------------------------------------------------------------------------
+# Trainer Tests
+# ---------------------------------------------------------------------------
+
+
+class TestTrainer:
+    def test_train_step_returns_losses(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        device = torch.device("cpu")
+        trainer = Trainer(small_model, tiny_config, device)
+        batch = _make_batch(4, 3023, 246, 3)
+        losses = trainer.train_step(batch)
+        assert "policy_loss" in losses
+        assert "value_loss" in losses
+        assert "total_loss" in losses
+        assert all(np.isfinite(v) for v in losses.values())
+
+    def test_global_step_increments(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        device = torch.device("cpu")
+        trainer = Trainer(small_model, tiny_config, device)
+        assert trainer.global_step == 0
+        batch = _make_batch(4, 3023, 246, 3)
+        trainer.train_step(batch)
+        assert trainer.global_step == 1
+        trainer.train_step(batch)
+        assert trainer.global_step == 2
+
+    def test_lr_schedule_warmup_and_decay(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        device = torch.device("cpu")
+        tiny_config.warmup_steps = 10
+        tiny_config.training_steps_per_epoch = 100
+        tiny_config.num_epochs = 10
+        trainer = Trainer(small_model, tiny_config, device)
+        batch = _make_batch(4, 3023, 246, 3)
+        lrs = []
+        for _ in range(50):
+            trainer.train_step(batch)
+            lrs.append(trainer.lr)
+        # Warmup: LR should increase over first 10 steps
+        assert lrs[9] > lrs[0]
+        # After warmup: LR should decrease (cosine decay)
+        assert lrs[49] < lrs[10]
+        # Should not go below lr_min (with small tolerance)
+        assert all(lr >= tiny_config.lr_min * 0.99 for lr in lrs)
+
+    def test_parameters_stay_finite(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        device = torch.device("cpu")
+        trainer = Trainer(small_model, tiny_config, device)
+        batch = _make_batch(4, 3023, 246, 3)
+        trainer.train_step(batch)
+        assert all(torch.isfinite(p).all() for p in small_model.parameters())
+
+    def test_state_dict_roundtrip(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        device = torch.device("cpu")
+        trainer = Trainer(small_model, tiny_config, device)
+        batch = _make_batch(4, 3023, 246, 3)
+        trainer.train_step(batch)
+        trainer.train_step(batch)
+        state = trainer.state_dict()
+        assert state["global_step"] == 2
+        trainer2 = Trainer(small_model, tiny_config, device)
+        trainer2.load_state_dict(state)
+        assert trainer2.global_step == 2
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint Tests
+# ---------------------------------------------------------------------------
+
+
+class TestCheckpoint:
+    def test_save_load_roundtrip(
+        self,
+        small_model: RSSAlphaZeroNet,
+        tiny_config: TrainingConfig,
+        tmp_path: Path,
+    ) -> None:
+        device = torch.device("cpu")
+        trainer = Trainer(small_model, tiny_config, device)
+        cp_path = tmp_path / "test_checkpoint.pt"
+        save_checkpoint(
+            cp_path,
+            epoch=5,
+            model=small_model,
+            trainer_state=trainer.state_dict(),
+            config=tiny_config,
+            metrics={"total_loss": 1.23},
+            buffer_stats={"size": 100, "capacity": 1000},
+        )
+        loaded = load_checkpoint(cp_path, device)
+        assert loaded["epoch"] == 5
+        assert loaded["metrics"]["total_loss"] == 1.23  # type: ignore[index]
+        restored = TrainingConfig.from_json(loaded["config_json"])  # type: ignore[arg-type]
+        assert restored.num_epochs == tiny_config.num_epochs
+
+    def test_find_latest(self, tmp_path: Path) -> None:
+        for epoch in [1, 5, 3]:
+            (tmp_path / f"checkpoint_epoch_{epoch:04d}.pt").touch()
+        latest = find_latest_checkpoint(tmp_path)
+        assert latest is not None
+        assert "0005" in latest.name
+
+    def test_find_latest_empty(self, tmp_path: Path) -> None:
+        assert find_latest_checkpoint(tmp_path) is None
+
+    def test_cleanup(self, tmp_path: Path) -> None:
+        for epoch in range(1, 8):
+            (tmp_path / f"checkpoint_epoch_{epoch:04d}.pt").touch()
+        cleanup_checkpoints(tmp_path, keep_last_n=3)
+        remaining = sorted(tmp_path.glob("checkpoint_epoch_*.pt"))
+        assert len(remaining) == 3
+        assert "0005" in remaining[0].name
+
+
+# ---------------------------------------------------------------------------
+# Self-Play Integration Test
+# ---------------------------------------------------------------------------
+
+
+class TestSelfPlay:
+    def test_play_game_produces_valid_record(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        device = torch.device("cpu")
+        small_model.eval()
+        rng = np.random.default_rng(42)
+        record = play_game(small_model, device, tiny_config, game_seed=123, rng=rng)
+
+        assert record.total_moves > 0
+        assert len(record.examples) == record.total_moves
+        assert len(record.net_worths) == tiny_config.num_players
+        assert record.duration_secs > 0
+
+        ex = record.examples[0]
+        assert ex.state.shape == (tiny_config.visible_size,)
+        assert ex.legal_mask.shape == (tiny_config.action_dim,)
+        assert ex.policy_target.shape == (tiny_config.action_dim,)
+        assert ex.value_target.shape == (tiny_config.num_players,)
+
+        for ex in record.examples:
+            assert abs(ex.policy_target.sum() - 1.0) < 1e-5
+            assert (ex.policy_target >= 0).all()
+            assert (ex.value_target >= -1.0 - 1e-5).all()
+            assert (ex.value_target <= 1.0 + 1e-5).all()
+
+
+# ---------------------------------------------------------------------------
+# End-to-End Integration Test
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEnd:
+    def test_game_to_buffer_to_training(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        device = torch.device("cpu")
+
+        # Self-play
+        small_model.eval()
+        rng = np.random.default_rng(42)
+        record = play_game(small_model, device, tiny_config, game_seed=1, rng=rng)
+
+        # Buffer
+        buf = ReplayBuffer(
+            tiny_config.buffer_capacity,
+            tiny_config.visible_size,
+            tiny_config.action_dim,
+            tiny_config.num_players,
+        )
+        buf.add_examples(record.examples)
+        assert len(buf) > 0
+
+        # Training
+        small_model.train()
+        trainer = Trainer(small_model, tiny_config, device)
+        batch = buf.sample(
+            min(tiny_config.batch_size, len(buf)), rng=np.random.default_rng(0)
+        )
+        losses = trainer.train_step(batch)
+        assert np.isfinite(losses["total_loss"])
+
+
+# ---------------------------------------------------------------------------
+# Logging Smoke Test
+# ---------------------------------------------------------------------------
+
+
+class TestLogging:
+    def test_logger_does_not_crash(
+        self, tiny_config: TrainingConfig, tmp_path: Path
+    ) -> None:
+        logger = TrainingLogger(str(tmp_path / "tb"))
+        logger.log_training_start(tiny_config, device="cpu")
+
+        logger.begin_self_play(epoch=1, num_epochs=2, total_games=1)
+        logger.update_self_play(
+            games_done=1, total_examples=50, avg_moves=50.0, current_game_move=0
+        )
+        logger.end_self_play()
+
+        logger.begin_training(epoch=1, num_epochs=2, total_steps=2)
+        logger.update_training(
+            step=1,
+            losses={"policy_loss": 1.0, "value_loss": 0.5, "total_loss": 1.5},
+            lr=1e-3,
+        )
+        logger.end_training()
+
+        logger.log_scalars(1, {"loss/total": 1.5, "lr": 1e-3})
+
+        logger.log_epoch_summary(
+            epoch=1,
+            num_epochs=2,
+            self_play_stats={"games": 1.0, "examples": 50.0, "avg_moves": 50.0, "avg_duration": 1.0},
+            train_stats={"steps": 2.0, "total_loss": 1.5, "policy_loss": 1.0, "value_loss": 0.5, "lr": 1e-3},
+            buffer_size=50,
+            buffer_capacity=1000,
+            epoch_duration=10.0,
+        )
+        logger.close()
+
+        # Tensorboard files should exist
+        assert any((tmp_path / "tb").iterdir())
