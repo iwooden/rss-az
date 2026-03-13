@@ -356,6 +356,54 @@ cdef PlayerFieldOffsets compute_player_field_offsets(int num_players) noexcept n
 # CORP FIELD OFFSETS (within corp stride)
 # =============================================================================
 
+def get_layout(int num_players):
+    """Python-accessible layout offsets. Single source of truth.
+
+    Returns a dict with all sizes, offsets, and strides needed by Python code
+    (MCTS evaluator, tests). Cython code should continue using the cdef structs
+    directly for nogil performance.
+    """
+    cdef StateLayout layout = compute_layout(num_players)
+    cdef TurnStateOffsets turn = compute_turn_offsets(num_players)
+    return {
+        # Sizes
+        'visible_size': layout.visible_size,
+        'hidden_size': layout.hidden_size,
+        'total_size': layout.total_size,
+        'player_stride': layout.player_stride,
+        'players_size': layout.players_size,
+        'fi_size': layout.fi_size,
+        'corp_stride': layout.corp_stride,
+        'corps_size': layout.corps_size,
+        'turn_size': layout.turn_size,
+        'static_size': layout.static_size,
+        'phase_size': layout.phase_size,
+        'coo_size': layout.coo_size,
+        'companies_size': layout.companies_size,
+        'company_incomes_size': layout.company_incomes_size,
+        'market_size': layout.market_size,
+        # Visible offsets
+        'phase_offset': layout.phase_offset,
+        'coo_offset': layout.coo_offset,
+        'players_offset': layout.players_offset,
+        'fi_offset': layout.fi_offset,
+        'auction_companies_offset': layout.auction_companies_offset,
+        'revealed_companies_offset': layout.revealed_companies_offset,
+        'removed_companies_offset': layout.removed_companies_offset,
+        'company_incomes_offset': layout.company_incomes_offset,
+        'market_offset': layout.market_offset,
+        'corps_offset': layout.corps_offset,
+        'turn_offset': layout.turn_offset,
+        'static_offset': layout.static_offset,
+        # Per-player turn field offsets (absolute, for rotation)
+        'auction_high_bidder_offset': layout.turn_offset + turn.auction_high_bidder,
+        'auction_starter_offset': layout.turn_offset + turn.auction_starter,
+        'auction_passed_offset': layout.turn_offset + turn.auction_passed,
+        # Convenience
+        'num_players': num_players,
+    }
+
+
 cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil:
     """Compute field offsets within a corp's data block."""
     cdef CorpFieldOffsets c

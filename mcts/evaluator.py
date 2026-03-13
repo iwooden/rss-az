@@ -6,165 +6,25 @@ neural network inference, and value un-rotation to canonical player order.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import torch
 
-from core.data import GameConstants
+from core.state import get_layout as _get_layout_uncached
 
-NUM_COMPANIES = int(GameConstants.NUM_COMPANIES)
-NUM_CORPS = int(GameConstants.NUM_CORPS)
-NUM_MARKET_SPACES = int(GameConstants.NUM_MARKET_SPACES)
-NUM_PHASES = int(GameConstants.NUM_PHASES)
-NUM_COO_LEVELS = int(GameConstants.NUM_COO_LEVELS)
-MAX_DIVIDEND = int(GameConstants.MAX_DIVIDEND)
-
-# Static company data: stars(1) + low_price(1) + face_value(1) + high_price(1) + synergies(36)
-STATIC_COMPANY_SIZE = 4 + NUM_COMPANIES  # 40
+# Cache layouts per player count (get_layout returns a dict each time)
+_layout_cache: dict[int, dict[str, int]] = {}
 
 
-@dataclass(frozen=True)
-class VisibleLayout:
-    """Python-computed visible state layout offsets (mirrors Cython StateLayout)."""
+def get_layout(num_players: int) -> dict[str, int]:
+    """Get cached layout for a given player count.
 
-    num_players: int
-    player_stride: int
-    players_offset: int
-    players_size: int
-    fi_offset: int
-    fi_size: int
-    turn_offset: int
-    turn_size: int
-    visible_size: int
-    # Per-player turn field offsets (absolute, within visible state)
-    auction_high_bidder_offset: int
-    auction_starter_offset: int
-    auction_passed_offset: int
-
-
-def compute_visible_layout(num_players: int) -> VisibleLayout:
-    """Compute visible state layout offsets for a given player count.
-
-    Mirrors the logic in core/state.pyx compute_layout() and
-    compute_turn_offsets().
+    Wraps core.state.get_layout() with caching since it crosses the
+    Cython/Python boundary each call.
     """
-    offset = 0
-
-    # Phase one-hot
-    offset += NUM_PHASES  # 11
-
-    # CoO one-hot
-    offset += NUM_COO_LEVELS  # 7
-
-    # Players
-    players_offset = offset
-    player_stride = (
-        1  # cash
-        + 1  # net_worth
-        + num_players  # turn_order one-hot
-        + 1  # is_auction_high_bidder
-        + NUM_COMPANIES  # owned_companies
-        + NUM_CORPS  # owned_shares
-        + NUM_CORPS  # is_president
-        + NUM_CORPS  # share_buys
-        + NUM_CORPS  # share_sells
-        + 1  # acquisition_proceeds
-    )
-    players_size = player_stride * num_players
-    offset += players_size
-
-    # Foreign Investor
-    fi_offset = offset
-    fi_size = 1 + NUM_COMPANIES  # cash + owned companies
-    offset += fi_size
-
-    # Company locations (auction, revealed, removed)
-    offset += NUM_COMPANIES * 3
-
-    # Company adjusted incomes
-    offset += NUM_COMPANIES
-
-    # Market availability
-    offset += NUM_MARKET_SPACES
-
-    # Corporations
-    corp_stride = (
-        1  # active
-        + 1  # cash
-        + 1  # unissued_shares
-        + 1  # issued_shares
-        + 1  # bank_shares
-        + 1  # income
-        + 1  # stars
-        + 1  # share_price
-        + 1  # acquisition_proceeds
-        + 1  # in_receivership
-        + NUM_MARKET_SPACES  # price_index one-hot
-        + NUM_COMPANIES  # owned_companies
-        + NUM_COMPANIES  # acquisition_companies
-    )
-    offset += corp_stride * NUM_CORPS
-
-    # Turn state
-    turn_offset = offset
-    turn_inner = 0
-    # turn_number, end_card_flipped, consecutive_passes
-    turn_inner += 3
-    # auction_company (36 one-hot)
-    turn_inner += NUM_COMPANIES
-    # auction_price
-    turn_inner += 1
-    # Per-player turn fields
-    auction_high_bidder_rel = turn_inner
-    turn_inner += num_players
-    auction_starter_rel = turn_inner
-    turn_inner += num_players
-    auction_passed_rel = turn_inner
-    turn_inner += num_players
-    # dividend_corp, dividend_impact, dividend_remaining
-    turn_inner += NUM_CORPS + MAX_DIVIDEND + NUM_CORPS
-    # issue_corp, issue_remaining
-    turn_inner += NUM_CORPS + NUM_CORPS
-    # ipo_company, ipo_remaining
-    turn_inner += NUM_COMPANIES + NUM_COMPANIES
-    # acq_active_corp, acq_target_company, acq_is_fi_offer
-    turn_inner += NUM_CORPS + NUM_COMPANIES + 1
-    # closing_company
-    turn_inner += NUM_COMPANIES
-    turn_size = turn_inner
-    offset += turn_size
-
-    # Static company data
-    offset += STATIC_COMPANY_SIZE * NUM_COMPANIES
-
-    visible_size = offset
-
-    return VisibleLayout(
-        num_players=num_players,
-        player_stride=player_stride,
-        players_offset=players_offset,
-        players_size=players_size,
-        fi_offset=fi_offset,
-        fi_size=fi_size,
-        turn_offset=turn_offset,
-        turn_size=turn_size,
-        visible_size=visible_size,
-        auction_high_bidder_offset=turn_offset + auction_high_bidder_rel,
-        auction_starter_offset=turn_offset + auction_starter_rel,
-        auction_passed_offset=turn_offset + auction_passed_rel,
-    )
-
-
-# Cache layouts per player count
-_layout_cache: dict[int, VisibleLayout] = {}
-
-
-def get_layout(num_players: int) -> VisibleLayout:
-    """Get cached layout for a given player count."""
     if num_players not in _layout_cache:
-        _layout_cache[num_players] = compute_visible_layout(num_players)
+        _layout_cache[num_players] = _get_layout_uncached(num_players)
     return _layout_cache[num_players]
 
 
@@ -188,24 +48,26 @@ def rotate_visible_state(state_array: np.ndarray, active_player_id: int,
         Copy of visible state portion with rotation applied.
     """
     layout = get_layout(num_players)
-    visible = state_array[:layout.visible_size].copy()
+    visible_size = layout['visible_size']
+    visible = state_array[:visible_size].copy()
 
     if active_player_id == 0:
         return visible  # No rotation needed
 
     # Rotate player data blocks
-    p_off = layout.players_offset
-    stride = layout.player_stride
+    p_off = layout['players_offset']
+    stride = layout['player_stride']
+    players_size = layout['players_size']
     # Extract all player blocks, then roll
-    player_data = visible[p_off:p_off + layout.players_size].copy()
+    player_data = visible[p_off:p_off + players_size].copy()
     player_blocks = player_data.reshape(num_players, stride)
     rotated_blocks = np.roll(player_blocks, -active_player_id, axis=0)
-    visible[p_off:p_off + layout.players_size] = rotated_blocks.ravel()
+    visible[p_off:p_off + players_size] = rotated_blocks.ravel()
 
     # Rotate per-player turn state fields
-    for field_offset in (layout.auction_high_bidder_offset,
-                         layout.auction_starter_offset,
-                         layout.auction_passed_offset):
+    for field_offset in (layout['auction_high_bidder_offset'],
+                         layout['auction_starter_offset'],
+                         layout['auction_passed_offset']):
         field = visible[field_offset:field_offset + num_players].copy()
         visible[field_offset:field_offset + num_players] = np.roll(
             field, -active_player_id
