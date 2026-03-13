@@ -280,30 +280,81 @@ Two output channels: Tensorboard (detailed metrics) and CLI (progress + summarie
 - `buffer/size`, `buffer/utilization` — replay buffer stats
 - `epoch` — current epoch number
 
-**CLI output:**
+**CLI output (Rich live display):**
+
+Uses the `rich` library for live-updating terminal UI via `rich.live.Live`.
+During self-play and training, a bordered panel updates in-place showing
+real-time progress. After each phase completes, the live display is replaced
+with a static summary line.
+
+Self-play live display:
 ```
-Epoch 1/100
-  Self-play: 1000 games | 98,432 examples | avg 98.4 moves/game | 8.2 sec/game
-  Buffer: 98,432 / 500,000 (19.7%)
-  Training: 1000 steps | policy=4.821 value=0.332 total=5.153 | lr=1.2e-4
-  Checkpoint saved: checkpoints/checkpoint_epoch_0001.pt
-  Epoch time: 2h 31m 14s
+╭─ Epoch 3/100 ─ Self-Play ──────────────────────────────╮
+│ Games  342/1000  ████████████░░░░░░░░░░░░░░░░░  34.2%  │
+│ Examples: 33,891    Avg moves/game: 99.1                │
+│ Current game: move 47    Elapsed: 12m 34s               │
+╰─────────────────────────────────────────────────────────╯
 ```
 
-Use a simple logger class:
+Training live display:
+```
+╭─ Epoch 3/100 ─ Training ───────────────────────────────╮
+│ Step  450/1000  █████████████░░░░░░░░░░░░░░░░░  45.0%  │
+│ Loss: policy=3.21  value=0.18  total=3.39               │
+│ LR: 8.2e-4    Elapsed: 1m 12s                          │
+╰─────────────────────────────────────────────────────────╯
+```
+
+Static epoch summary (printed after live display closes):
+```
+Epoch 3/100  Self-play: 1000 games, 98,432 examples (99.1 moves/game, 8.2s/game)
+             Training: 1000 steps, loss=4.11 (policy=3.89 value=0.22) lr=8.2e-4
+             Buffer: 98,432/500,000 (19.7%)  Epoch time: 2h 31m 14s
+             Checkpoint: checkpoints/checkpoint_epoch_0003.pt
+```
+
 ```python
 class TrainingLogger:
-    def __init__(self, tensorboard_dir: str, log_interval: int):
-        """Initialize Tensorboard SummaryWriter and CLI formatting."""
+    def __init__(self, tensorboard_dir: str):
+        """Initialize Tensorboard SummaryWriter and Rich console."""
 
-    def log_training_step(self, step: int, losses: dict[str, float], lr: float) -> None:
-        """Log a single training step (Tensorboard + periodic CLI)."""
+    # --- Live display methods (called from main loop) ---
 
-    def log_self_play_epoch(self, epoch: int, records: list[GameRecord]) -> None:
-        """Log self-play statistics for an epoch."""
+    def begin_self_play(self, epoch: int, num_epochs: int, total_games: int) -> None:
+        """Start the self-play live display panel."""
 
-    def log_epoch_summary(self, epoch: int, train_losses: dict, duration: float) -> None:
-        """Print epoch summary to CLI."""
+    def update_self_play(self, games_done: int, total_examples: int,
+                         avg_moves: float, current_game_move: int) -> None:
+        """Update the self-play live display with latest stats."""
+
+    def end_self_play(self) -> None:
+        """Close the self-play live display."""
+
+    def begin_training(self, epoch: int, num_epochs: int, total_steps: int) -> None:
+        """Start the training live display panel."""
+
+    def update_training(self, step: int, losses: dict[str, float], lr: float) -> None:
+        """Update the training live display with latest stats."""
+
+    def end_training(self) -> None:
+        """Close the training live display."""
+
+    # --- Tensorboard logging ---
+
+    def log_scalars(self, step: int, scalars: dict[str, float]) -> None:
+        """Log scalar values to Tensorboard."""
+
+    # --- Static summaries ---
+
+    def log_epoch_summary(self, epoch: int, num_epochs: int,
+                          self_play_stats: dict, train_stats: dict,
+                          buffer_size: int, buffer_capacity: int,
+                          epoch_duration: float,
+                          checkpoint_path: str | None = None) -> None:
+        """Print static epoch summary after live displays close."""
+
+    def log_training_start(self, config) -> None:
+        """Print training configuration summary at startup."""
 
     def close(self) -> None:
         """Flush and close Tensorboard writer."""
@@ -416,6 +467,7 @@ Existing (already in project):
 
 New:
 - `tensorboard` — logging (standard PyTorch companion)
+- `rich` — live-updating terminal UI (panels, progress bars)
 
 ## Issue Breakdown
 
