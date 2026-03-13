@@ -306,6 +306,11 @@ class TestMCTSNode:
 
         assert node.expanded()
         assert len(node.children) == 0  # No children created
+        assert node.legal_actions is not None
+        assert node.priors is not None
+        assert node.default_value is not None
+        assert node.visit_counts is not None
+        assert node.value_sums is not None
         np.testing.assert_array_equal(node.legal_actions, [0, 5, 10])
         assert node.priors[0] == pytest.approx(0.6)
         assert node.priors[1] == pytest.approx(0.3)
