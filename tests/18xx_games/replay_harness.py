@@ -27,7 +27,10 @@ from core.data import (
 from core.actions import get_valid_action_mask
 from entities.deck import DECK
 from entities.turn import TURN
-from entities.company import COMPANIES, LOC_AUCTION, LOC_REVEALED
+from entities.company import COMPANIES, CompanyLocation
+
+LOC_AUCTION = CompanyLocation.LOC_AUCTION
+LOC_REVEALED = CompanyLocation.LOC_REVEALED
 from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.fi import FI

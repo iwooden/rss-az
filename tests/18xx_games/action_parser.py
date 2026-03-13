@@ -15,7 +15,9 @@ from core.data import (
     get_par_price,
 )
 from core.actions import get_action_layout
-from entities.company import COMPANIES, LOC_AUCTION
+from entities.company import COMPANIES, CompanyLocation
+
+LOC_AUCTION = CompanyLocation.LOC_AUCTION
 
 
 # =============================================================================
