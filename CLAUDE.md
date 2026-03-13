@@ -50,6 +50,16 @@ rss-az-cython2/
 │   └── search.py      # PUCT selection, search loop, A0GB value targets
 ├── nn/                # Neural network models
 │   └── model_3p.py    # Residual MLP with policy + per-player value heads
+├── train/             # Self-play training harness
+│   ├── config.py      # TrainingConfig (all hyperparameters)
+│   ├── self_play.py   # Game generation via MCTS
+│   ├── replay_buffer.py # Ring buffer for training examples
+│   ├── trainer.py     # Loss computation, optimizer, LR schedule
+│   ├── checkpoint.py  # Save/load model checkpoints
+│   ├── logging.py     # Rich live UI + Tensorboard integration
+│   ├── main.py        # Training loop orchestration
+│   ├── __main__.py    # python -m train entry point
+│   └── PLAN.md        # Architecture and design details
 ├── tests/             # Test suite
 │   ├── phases/        # Phase-specific tests
 │   ├── 18xx_games/    # Replay tests against 18xx.games engine
@@ -210,11 +220,12 @@ Instead of using the root node's mean value (soft-Z) or the game outcome as trai
 
 ### NN Model (`nn/model_3p.py`)
 
-Residual MLP (~26M parameters):
+Residual MLP (~26.6M parameters):
 - **Input:** 3023 floats (visible state, active player rotated to slot 0)
 - **Trunk:** LayerNorm → Linear → 10 residual blocks (pre-LN, GELU, expansion=2) → LayerNorm
-- **Policy head:** Linear → 246 logits (masked by legal actions before softmax)
+- **Policy head:** Linear(768→256) → GELU → Linear(256→246) logits (masked by legal actions before softmax)
 - **Value head:** Linear(768→384) → GELU → Linear(384→192) → GELU → Linear(192→3) → Tanh
+- **Init:** Xavier uniform for all linear layers; residual block fc2 layers zero-initialized (blocks start as identity)
 
 ### Key APIs
 
@@ -231,6 +242,67 @@ config = MCTSConfig(num_simulations=800, c_puct=2.5)
 root = run_search(game_state, evaluator, config)
 policy = get_action_probabilities(root, temperature=1.0, action_dim=config.action_dim)
 value_target = get_greedy_leaf_value(root, num_players=config.num_players)
+```
+
+## Self-Play Training
+
+AlphaZero-style self-play training loop in `train/`. See `train/PLAN.md` for full architecture.
+
+### Training Loop
+
+Each epoch: (1) play N games via MCTS self-play → (2) store examples in replay buffer → (3) train NN on batched samples → (4) checkpoint and log.
+
+```bash
+# Run training (builds Cython extensions must be done first)
+.venv/bin/python -m train
+
+# With options
+.venv/bin/python -m train --device cuda --games-per-epoch 100 --num-epochs 50
+.venv/bin/python -m train --config config.json --resume latest
+```
+
+### Training Configuration (`train/config.py`)
+
+`TrainingConfig` dataclass holds all hyperparameters. Key defaults:
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `num_simulations` | 800 | MCTS simulations per move |
+| `games_per_epoch` | 1000 | Self-play games per epoch |
+| `learning_rate` | 1e-3 | AdamW, cosine decay to `lr_min` |
+| `lr_min` | 1e-4 | Cosine schedule floor |
+| `warmup_steps` | 500 | Linear warmup from 0 to LR |
+| `temp_threshold` | 60 | Moves before temperature drops |
+| `buffer_capacity` | 500,000 | Replay buffer size (~6.6 GB) |
+| `batch_size` | 256 | Training batch size |
+
+`TrainingConfig.to_mcts_config()` creates an `MCTSConfig` from the relevant fields.
+
+### Training Examples
+
+At each decision point during self-play, a `TrainingExample` is stored:
+- **state**: Visible state rotated so active player is at slot 0 (shape `(3023,)`)
+- **legal_mask**: Binary mask of legal actions (shape `(246,)`)
+- **policy_target**: MCTS visit probabilities (shape `(246,)`)
+- **value_target**: A0GB values rotated to active-player-first (shape `(3,)`)
+
+**Value target rotation:** `get_greedy_leaf_value()` returns canonical order `[p0, p1, p2]`. The NN outputs active-player-first `[active, next, next_next]`. Training targets are rotated to match: `np.roll(canonical_values, -active_player_id)`.
+
+### Loss Functions
+
+- **Policy**: Cross-entropy with MCTS targets: `-(pi * log_softmax(logits)).sum(-1).mean()`. Legal action mask is passed to the model so softmax only covers legal actions.
+- **Value**: MSE between NN output and A0GB target.
+- **Total**: `policy_loss_weight * policy_loss + value_loss_weight * value_loss`
+
+### Key Training APIs
+
+```python
+from train.config import TrainingConfig
+from train.self_play import play_game, GameRecord
+from train.replay_buffer import ReplayBuffer, TrainingExample
+from train.trainer import Trainer
+from train.checkpoint import save_checkpoint, load_checkpoint, find_latest_checkpoint
+from train.logging import TrainingLogger
 ```
 
 ## State Representation
@@ -386,6 +458,13 @@ pytest tests/test_invest.py -v
 
 # Clean build artifacts (.c, .so, .html, build/, *.egg-info)
 .venv/bin/python setup.py clean
+
+# Run self-play training (requires Cython build first)
+.venv/bin/python -m train --device cuda
+.venv/bin/python -m train --config config.json --resume latest
+
+# Run MCTS benchmark
+.venv/bin/python setup.py benchmark --device=cuda
 ```
 
 **Warning-free builds:** The build should produce no compiler warnings. If warnings appear, create a beads issue to fix them.
@@ -460,7 +539,7 @@ pytest tests/18xx_games/test_replay.py -v
 | Fix bug | Tests first | Phase/entity files |
 | MCTS / search | `mcts/search.py`, `mcts/node.py` | `mcts/evaluator.py`, `mcts/config.py` |
 | NN model | `nn/model_3p.py` | `mcts/evaluator.py` |
-| Self-play / training | TBD | `mcts/`, `nn/` |
+| Self-play / training | `train/main.py`, `train/config.py` | `train/self_play.py`, `train/trainer.py`, `train/PLAN.md` |
 
 ## Documentation
 
@@ -468,6 +547,7 @@ pytest tests/18xx_games/test_replay.py -v
 - **RULES.md**: Complete game rules (24KB)
 - **VECTORS.md**: State/action vector layouts with exact offsets
 - **RSS.pdf**: Original board game rulebook
+- **train/PLAN.md**: Training harness architecture and component design
 
 ---
 
