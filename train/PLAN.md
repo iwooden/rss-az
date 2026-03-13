@@ -56,7 +56,7 @@ class TrainingConfig:
 
     # --- Training ---
     batch_size: int = 256
-    learning_rate: float = 2e-4       # AdamW
+    learning_rate: float = 1e-3       # AdamW — higher initial LR for faster convergence
     weight_decay: float = 1e-4
     max_grad_norm: float = 1.0        # Gradient clipping
     training_steps_per_epoch: int = 1000
@@ -64,7 +64,7 @@ class TrainingConfig:
     # --- LR Schedule ---
     # Cosine annealing with linear warmup
     warmup_steps: int = 500
-    lr_min: float = 1e-5              # Floor for cosine schedule
+    lr_min: float = 1e-4              # Higher floor keeps learning productive on a budget
 
     # --- Loss ---
     value_loss_weight: float = 1.0
@@ -412,7 +412,7 @@ if __name__ == "__main__":
 | `dirichlet_alpha=0.3` | ~10/avg_legal_actions | RSS has ~10-30 legal actions |
 | `temp_threshold=60` | ~30% of game | Explore early, exploit late |
 | `batch_size=256` | Standard | Good GPU utilization |
-| `learning_rate=2e-4` | Conservative AdamW | Stable training |
+| `learning_rate=1e-3` | Higher initial LR | Faster convergence on single-GPU budget |
 | `warmup_steps=500` | ~0.5 epochs | Prevents early instability |
 | `training_steps=1000/epoch` | Match games_per_epoch | Each example seen ~2.5x |
 | `buffer_capacity=500K` | ~5 epochs | Prevents overfitting to recent data |
