@@ -72,7 +72,11 @@ class RSSAlphaZeroNet(nn.Module):
         )
         self.trunk_norm = nn.LayerNorm(cfg.hidden_dim)
 
-        self.policy_head = nn.Linear(cfg.hidden_dim, cfg.action_dim)
+        self.policy_head = nn.Sequential(
+            nn.Linear(cfg.hidden_dim, cfg.hidden_dim // 3),
+            nn.GELU(),
+            nn.Linear(cfg.hidden_dim // 3, cfg.action_dim),
+        )
 
         self.value_head = nn.Sequential(
             nn.Linear(cfg.hidden_dim, cfg.hidden_dim // 2),
@@ -86,7 +90,11 @@ class RSSAlphaZeroNet(nn.Module):
         self._init_weights()
 
     def _init_weights(self) -> None:
-        """Xavier init for linear layers; stable defaults for LayerNorm."""
+        """Xavier init for linear layers; stable defaults for LayerNorm.
+
+        Residual block fc2 layers are zero-initialized so blocks start as
+        identity functions, improving training stability.
+        """
         for module in self.modules():
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
@@ -95,6 +103,11 @@ class RSSAlphaZeroNet(nn.Module):
             elif isinstance(module, nn.LayerNorm):
                 nn.init.ones_(module.weight)
                 nn.init.zeros_(module.bias)
+        # Zero-init last linear in each residual block so blocks start as identity
+        for block in self.blocks:
+            assert isinstance(block, ResidualMLPBlock)
+            nn.init.zeros_(block.fc2.weight)
+            nn.init.zeros_(block.fc2.bias)
 
     def forward(
         self,
