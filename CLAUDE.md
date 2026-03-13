@@ -167,7 +167,7 @@ The NN always sees the active player's data at slot 0. Before inference, the vis
 
 **What does NOT get rotated:** phase, CoO, FI, companies, corporations, market, static data
 
-**Important:** `GameState._layout` is a Cython `cdef` struct — NOT accessible from Python. Use `core.state.get_layout(num_players)` to get a Python-accessible dict with the same offsets (cached wrapper also available at `mcts.evaluator.get_layout()`).
+**Important:** `GameState._layout` is a Cython `cdef` struct — NOT accessible from Python. Use `core.state.get_layout(num_players)` to get a Python-accessible `LayoutInfo` namedtuple with the same offsets (cached wrapper also available at `mcts.evaluator.get_layout()`).
 
 ### Value Representation
 

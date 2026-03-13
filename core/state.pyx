@@ -16,6 +16,8 @@ from posix.time cimport clock_gettime, timespec, CLOCK_MONOTONIC
 cimport numpy as cnp
 import numpy as np
 
+from collections import namedtuple
+
 from core.data cimport get_adjusted_company_income
 from core.data cimport (
     get_adjusted_company_income,
@@ -27,6 +29,25 @@ from core.data cimport (
     MARKET_PRICES,
     get_corp_share_count
 )
+
+LayoutInfo = namedtuple('LayoutInfo', [
+    # Sizes
+    'visible_size', 'hidden_size', 'total_size',
+    'player_stride', 'players_size', 'fi_size',
+    'corp_stride', 'corps_size', 'turn_size',
+    'static_size', 'phase_size', 'coo_size',
+    'companies_size', 'company_incomes_size', 'market_size',
+    # Visible offsets
+    'phase_offset', 'coo_offset', 'players_offset', 'fi_offset',
+    'auction_companies_offset', 'revealed_companies_offset',
+    'removed_companies_offset', 'company_incomes_offset',
+    'market_offset', 'corps_offset', 'turn_offset', 'static_offset',
+    # Per-player turn field offsets (absolute, for rotation)
+    'auction_high_bidder_offset', 'auction_starter_offset',
+    'auction_passed_offset',
+    # Convenience
+    'num_players',
+])
 
 # Import entity modules for their global instances
 from entities import player as player_module
@@ -359,49 +380,45 @@ cdef PlayerFieldOffsets compute_player_field_offsets(int num_players) noexcept n
 def get_layout(int num_players):
     """Python-accessible layout offsets. Single source of truth.
 
-    Returns a dict with all sizes, offsets, and strides needed by Python code
-    (MCTS evaluator, tests). Cython code should continue using the cdef structs
-    directly for nogil performance.
+    Returns a LayoutInfo namedtuple with all sizes, offsets, and strides
+    needed by Python code (MCTS evaluator, tests). Cython code should
+    continue using the cdef structs directly for nogil performance.
     """
     cdef StateLayout layout = compute_layout(num_players)
     cdef TurnStateOffsets turn = compute_turn_offsets(num_players)
-    return {
-        # Sizes
-        'visible_size': layout.visible_size,
-        'hidden_size': layout.hidden_size,
-        'total_size': layout.total_size,
-        'player_stride': layout.player_stride,
-        'players_size': layout.players_size,
-        'fi_size': layout.fi_size,
-        'corp_stride': layout.corp_stride,
-        'corps_size': layout.corps_size,
-        'turn_size': layout.turn_size,
-        'static_size': layout.static_size,
-        'phase_size': layout.phase_size,
-        'coo_size': layout.coo_size,
-        'companies_size': layout.companies_size,
-        'company_incomes_size': layout.company_incomes_size,
-        'market_size': layout.market_size,
-        # Visible offsets
-        'phase_offset': layout.phase_offset,
-        'coo_offset': layout.coo_offset,
-        'players_offset': layout.players_offset,
-        'fi_offset': layout.fi_offset,
-        'auction_companies_offset': layout.auction_companies_offset,
-        'revealed_companies_offset': layout.revealed_companies_offset,
-        'removed_companies_offset': layout.removed_companies_offset,
-        'company_incomes_offset': layout.company_incomes_offset,
-        'market_offset': layout.market_offset,
-        'corps_offset': layout.corps_offset,
-        'turn_offset': layout.turn_offset,
-        'static_offset': layout.static_offset,
-        # Per-player turn field offsets (absolute, for rotation)
-        'auction_high_bidder_offset': layout.turn_offset + turn.auction_high_bidder,
-        'auction_starter_offset': layout.turn_offset + turn.auction_starter,
-        'auction_passed_offset': layout.turn_offset + turn.auction_passed,
-        # Convenience
-        'num_players': num_players,
-    }
+    return LayoutInfo(
+        visible_size=layout.visible_size,
+        hidden_size=layout.hidden_size,
+        total_size=layout.total_size,
+        player_stride=layout.player_stride,
+        players_size=layout.players_size,
+        fi_size=layout.fi_size,
+        corp_stride=layout.corp_stride,
+        corps_size=layout.corps_size,
+        turn_size=layout.turn_size,
+        static_size=layout.static_size,
+        phase_size=layout.phase_size,
+        coo_size=layout.coo_size,
+        companies_size=layout.companies_size,
+        company_incomes_size=layout.company_incomes_size,
+        market_size=layout.market_size,
+        phase_offset=layout.phase_offset,
+        coo_offset=layout.coo_offset,
+        players_offset=layout.players_offset,
+        fi_offset=layout.fi_offset,
+        auction_companies_offset=layout.auction_companies_offset,
+        revealed_companies_offset=layout.revealed_companies_offset,
+        removed_companies_offset=layout.removed_companies_offset,
+        company_incomes_offset=layout.company_incomes_offset,
+        market_offset=layout.market_offset,
+        corps_offset=layout.corps_offset,
+        turn_offset=layout.turn_offset,
+        static_offset=layout.static_offset,
+        auction_high_bidder_offset=layout.turn_offset + turn.auction_high_bidder,
+        auction_starter_offset=layout.turn_offset + turn.auction_starter,
+        auction_passed_offset=layout.turn_offset + turn.auction_passed,
+        num_players=num_players,
+    )
 
 
 cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil:

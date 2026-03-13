@@ -27,8 +27,8 @@ class TestStateLayoutSizes:
         actual_total = gs._array.shape[0]
         layout = get_layout(num_players)
 
-        assert layout['total_size'] == actual_total, (
-            f"{num_players} players: computed {layout['total_size']} != actual {actual_total}"
+        assert layout.total_size == actual_total, (
+            f"{num_players} players: computed {layout.total_size} != actual {actual_total}"
         )
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
@@ -37,14 +37,14 @@ class TestStateLayoutSizes:
         expected = self.EXPECTED_SIZES[num_players]
         layout = get_layout(num_players)
 
-        assert layout['visible_size'] == expected['visible'], (
-            f"{num_players} players visible: {layout['visible_size']} != expected {expected['visible']}"
+        assert layout.visible_size == expected['visible'], (
+            f"{num_players} players visible: {layout.visible_size} != expected {expected['visible']}"
         )
-        assert layout['hidden_size'] == expected['hidden'], (
-            f"{num_players} players hidden: {layout['hidden_size']} != expected {expected['hidden']}"
+        assert layout.hidden_size == expected['hidden'], (
+            f"{num_players} players hidden: {layout.hidden_size} != expected {expected['hidden']}"
         )
-        assert layout['total_size'] == expected['total'], (
-            f"{num_players} players total: {layout['total_size']} != expected {expected['total']}"
+        assert layout.total_size == expected['total'], (
+            f"{num_players} players total: {layout.total_size} != expected {expected['total']}"
         )
 
 
@@ -55,30 +55,30 @@ class TestComponentSizes:
         """Player stride = 72 + num_players."""
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
-            assert layout['player_stride'] == 72 + num_players, (
-                f"{num_players} players: stride {layout['player_stride']} != 72 + {num_players}"
+            assert layout.player_stride == 72 + num_players, (
+                f"{num_players} players: stride {layout.player_stride} != 72 + {num_players}"
             )
 
     def test_corp_stride_fixed(self):
         """Corp stride = 109 (fixed for all player counts)."""
         layout = get_layout(3)
-        assert layout['corp_stride'] == 109
+        assert layout.corp_stride == 109
 
     def test_turn_size_formula(self):
         """Turn size = 251 + 3*num_players."""
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
             expected = 251 + 3 * num_players
-            assert layout['turn_size'] == expected, (
-                f"{num_players} players: turn size {layout['turn_size']} != {expected}"
+            assert layout.turn_size == expected, (
+                f"{num_players} players: turn size {layout.turn_size} != {expected}"
             )
 
     def test_hidden_size_fixed(self):
         """Hidden size = 1184 (fixed for all player counts)."""
         layout = get_layout(3)
-        assert layout['hidden_size'] == 1184
+        assert layout.hidden_size == 1184
 
     def test_static_size(self):
         """Static company data = 36 * 40 = 1440."""
         layout = get_layout(3)
-        assert layout['static_size'] == 1440
+        assert layout.static_size == 1440

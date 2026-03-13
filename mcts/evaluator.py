@@ -11,13 +11,13 @@ from typing import Any
 import numpy as np
 import torch
 
-from core.state import get_layout as _get_layout_uncached
+from core.state import LayoutInfo, get_layout as _get_layout_uncached
 
-# Cache layouts per player count (get_layout returns a dict each time)
-_layout_cache: dict[int, dict[str, int]] = {}
+# Cache layouts per player count
+_layout_cache: dict[int, LayoutInfo] = {}
 
 
-def get_layout(num_players: int) -> dict[str, int]:
+def get_layout(num_players: int) -> LayoutInfo:
     """Get cached layout for a given player count.
 
     Wraps core.state.get_layout() with caching since it crosses the
@@ -48,26 +48,24 @@ def rotate_visible_state(state_array: np.ndarray, active_player_id: int,
         Copy of visible state portion with rotation applied.
     """
     layout = get_layout(num_players)
-    visible_size = layout['visible_size']
-    visible = state_array[:visible_size].copy()
+    visible = state_array[:layout.visible_size].copy()
 
     if active_player_id == 0:
         return visible  # No rotation needed
 
     # Rotate player data blocks
-    p_off = layout['players_offset']
-    stride = layout['player_stride']
-    players_size = layout['players_size']
+    p_off = layout.players_offset
+    stride = layout.player_stride
     # Extract all player blocks, then roll
-    player_data = visible[p_off:p_off + players_size].copy()
+    player_data = visible[p_off:p_off + layout.players_size].copy()
     player_blocks = player_data.reshape(num_players, stride)
     rotated_blocks = np.roll(player_blocks, -active_player_id, axis=0)
-    visible[p_off:p_off + players_size] = rotated_blocks.ravel()
+    visible[p_off:p_off + layout.players_size] = rotated_blocks.ravel()
 
     # Rotate per-player turn state fields
-    for field_offset in (layout['auction_high_bidder_offset'],
-                         layout['auction_starter_offset'],
-                         layout['auction_passed_offset']):
+    for field_offset in (layout.auction_high_bidder_offset,
+                         layout.auction_starter_offset,
+                         layout.auction_passed_offset):
         field = visible[field_offset:field_offset + num_players].copy()
         visible[field_offset:field_offset + num_players] = np.roll(
             field, -active_player_id

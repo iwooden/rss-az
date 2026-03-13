@@ -56,19 +56,19 @@ def evaluator(model):
 class TestLayout:
     def test_visible_size_3p(self):
         layout = get_layout(3)
-        assert layout['visible_size'] == 3023
+        assert layout.visible_size == 3023
 
     def test_visible_size_2p(self):
         layout = get_layout(2)
-        assert layout['visible_size'] == 2943
+        assert layout.visible_size == 2943
 
     def test_visible_size_6p(self):
         layout = get_layout(6)
-        assert layout['visible_size'] == 3275
+        assert layout.visible_size == 3275
 
     def test_player_stride_3p(self):
         layout = get_layout(3)
-        assert layout['player_stride'] == 75  # 72 + num_players
+        assert layout.player_stride == 75  # 72 + num_players
 
 
 # ---------------------------------------------------------------------------
@@ -77,14 +77,14 @@ class TestLayout:
 
 class TestStateRotation:
     def test_no_rotation_for_player_0(self, game_state, layout):
-        visible = game_state._array[:layout['visible_size']].copy()
+        visible = game_state._array[:layout.visible_size].copy()
         rotated = rotate_visible_state(game_state._array, 0, 3)
         np.testing.assert_array_equal(visible, rotated)
 
     def test_player_blocks_rotated_by_1(self, game_state, layout):
-        visible = game_state._array[:layout['visible_size']]
-        p_off = layout['players_offset']
-        stride = layout['player_stride']
+        visible = game_state._array[:layout.visible_size]
+        p_off = layout.players_offset
+        stride = layout.player_stride
         p0 = visible[p_off:p_off + stride].copy()
         p1 = visible[p_off + stride:p_off + 2 * stride].copy()
         p2 = visible[p_off + 2 * stride:p_off + 3 * stride].copy()
@@ -103,9 +103,9 @@ class TestStateRotation:
         )
 
     def test_player_blocks_rotated_by_2(self, game_state, layout):
-        visible = game_state._array[:layout['visible_size']]
-        p_off = layout['players_offset']
-        stride = layout['player_stride']
+        visible = game_state._array[:layout.visible_size]
+        p_off = layout.players_offset
+        stride = layout.player_stride
         p0 = visible[p_off:p_off + stride].copy()
         p1 = visible[p_off + stride:p_off + 2 * stride].copy()
         p2 = visible[p_off + 2 * stride:p_off + 3 * stride].copy()
@@ -124,30 +124,30 @@ class TestStateRotation:
         )
 
     def test_non_player_data_unchanged(self, game_state, layout):
-        visible = game_state._array[:layout['visible_size']].copy()
+        visible = game_state._array[:layout.visible_size].copy()
         rotated = rotate_visible_state(game_state._array, 1, 3)
 
         # Phase + CoO (before players)
         np.testing.assert_array_equal(
-            visible[:layout['players_offset']],
-            rotated[:layout['players_offset']],
+            visible[:layout.players_offset],
+            rotated[:layout.players_offset],
         )
 
         # FI and everything after players
-        end_players = layout['players_offset'] + layout['players_size']
+        end_players = layout.players_offset + layout.players_size
         # Exclude turn state per-player fields from comparison
-        fi_to_turn = visible[end_players:layout['turn_offset']]
-        fi_to_turn_rot = rotated[end_players:layout['turn_offset']]
+        fi_to_turn = visible[end_players:layout.turn_offset]
+        fi_to_turn_rot = rotated[end_players:layout.turn_offset]
         np.testing.assert_array_equal(fi_to_turn, fi_to_turn_rot)
 
     def test_turn_per_player_fields_rotated(self, game_state, layout):
         """Verify auction_high_bidder, auction_starter, auction_passed are rotated."""
         # Set some per-player turn state values to make rotation detectable
-        visible = game_state._array[:layout['visible_size']].copy()
+        visible = game_state._array[:layout.visible_size].copy()
 
-        for field_offset in (layout['auction_high_bidder_offset'],
-                             layout['auction_starter_offset'],
-                             layout['auction_passed_offset']):
+        for field_offset in (layout.auction_high_bidder_offset,
+                             layout.auction_starter_offset,
+                             layout.auction_passed_offset):
             orig = visible[field_offset:field_offset + 3].copy()
             rotated = rotate_visible_state(game_state._array, 1, 3)
             rotated_field = rotated[field_offset:field_offset + 3]
