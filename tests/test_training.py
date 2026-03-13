@@ -20,7 +20,8 @@ from train.checkpoint import (
     save_checkpoint,
 )
 from train.config import MCTSConfig, TrainingConfig
-from train.logging import TrainingLogger
+from train.logging import TrainingLogger, _format_duration
+from train.main import _apply_overrides, _build_parser
 from train.replay_buffer import ReplayBuffer, TrainingExample
 from train.self_play import play_game
 from train.trainer import Trainer
@@ -127,6 +128,10 @@ class TestConfig:
         with pytest.raises(ValueError, match="buffer_capacity"):
             TrainingConfig(buffer_capacity=100, min_buffer_size=200)
 
+    def test_validation_min_buffer_vs_batch(self) -> None:
+        with pytest.raises(ValueError, match="min_buffer_size"):
+            TrainingConfig(min_buffer_size=100, batch_size=256)
+
     def test_to_mcts_config(self) -> None:
         cfg = TrainingConfig(num_simulations=100, c_puct=3.0, num_players=3)
         mcts_cfg = cfg.to_mcts_config()
@@ -174,6 +179,40 @@ class TestReplayBuffer:
         batch = buf.sample(10, rng)
         vals = sorted(batch["states"][:, 0].tolist())
         assert vals == list(range(5, 15))
+
+    def test_batch_overflow_keeps_last_capacity(self) -> None:
+        """Adding more examples than capacity should keep only the last `capacity`."""
+        buf = ReplayBuffer(capacity=5, visible_size=4, action_dim=2, num_players=3)
+        examples = [
+            TrainingExample(
+                state=np.full(4, float(i), dtype=np.float32),
+                legal_mask=np.ones(2, dtype=np.float32),
+                policy_target=np.array([0.5, 0.5], dtype=np.float32),
+                value_target=np.zeros(3, dtype=np.float32),
+            )
+            for i in range(10)
+        ]
+        buf.add_examples(examples)
+        assert len(buf) == 5
+        rng = np.random.default_rng(0)
+        batch = buf.sample(5, rng)
+        vals = sorted(batch["states"][:, 0].tolist())
+        assert vals == [5.0, 6.0, 7.0, 8.0, 9.0]
+
+    def test_sample_raises_when_batch_exceeds_size(self) -> None:
+        buf = ReplayBuffer(capacity=100, visible_size=4, action_dim=2, num_players=3)
+        buf.add_examples([_make_example(4, 2, 3) for _ in range(3)])
+        rng = np.random.default_rng(0)
+        with pytest.raises(ValueError, match="batch_size.*exceeds"):
+            buf.sample(batch_size=10, rng=rng)
+
+    def test_sample_exact_size(self) -> None:
+        """Sampling exactly len(buffer) items should work."""
+        buf = ReplayBuffer(capacity=100, visible_size=4, action_dim=2, num_players=3)
+        buf.add_examples([_make_example(4, 2, 3) for _ in range(7)])
+        rng = np.random.default_rng(0)
+        batch = buf.sample(batch_size=7, rng=rng)
+        assert batch["states"].shape == (7, 4)
 
     def test_sample_only_from_filled(self) -> None:
         buf = ReplayBuffer(capacity=100, visible_size=4, action_dim=2, num_players=3)
@@ -297,6 +336,51 @@ class TestCheckpoint:
     def test_find_latest_empty(self, tmp_path: Path) -> None:
         assert find_latest_checkpoint(tmp_path) is None
 
+    def test_resume_continues_training(
+        self,
+        small_model: RSSAlphaZeroNet,
+        tiny_config: TrainingConfig,
+        tmp_path: Path,
+    ) -> None:
+        """After loading a checkpoint, training should continue correctly."""
+        device = torch.device("cpu")
+        trainer = Trainer(small_model, tiny_config, device)
+        batch = _make_batch(4, 3023, 246, 3)
+        trainer.train_step(batch)
+        trainer.train_step(batch)
+        original_step = trainer.global_step
+        original_lr = trainer.lr
+
+        # Save
+        cp_path = tmp_path / "resume_test.pt"
+        save_checkpoint(
+            cp_path,
+            epoch=0,
+            model=small_model,
+            trainer_state=trainer.state_dict(),
+            config=tiny_config,
+            metrics={"total_loss": 1.0},
+            buffer_stats={"size": 10, "capacity": 1000},
+        )
+
+        # Create fresh model and trainer, load checkpoint
+        model2 = RSSAlphaZeroNet(RSSModelConfig(
+            input_dim=3023, action_dim=246, value_dim=3,
+            hidden_dim=32, num_blocks=1, expansion=1,
+        ))
+        trainer2 = Trainer(model2, tiny_config, device)
+        cp = load_checkpoint(cp_path, device)
+        model2.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
+        trainer2.load_state_dict(cp["trainer_state"])  # type: ignore[arg-type]
+
+        assert trainer2.global_step == original_step
+        assert trainer2.lr == pytest.approx(original_lr)
+
+        # Training step after resume should work
+        losses = trainer2.train_step(batch)
+        assert trainer2.global_step == original_step + 1
+        assert np.isfinite(losses["total_loss"])
+
     def test_cleanup(self, tmp_path: Path) -> None:
         for epoch in range(1, 8):
             (tmp_path / f"checkpoint_epoch_{epoch:04d}.pt").touch()
@@ -415,3 +499,55 @@ class TestLogging:
 
         # Tensorboard files should exist
         assert any((tmp_path / "tb").iterdir())
+
+
+# ---------------------------------------------------------------------------
+# CLI Override Tests
+# ---------------------------------------------------------------------------
+
+
+class TestCLIOverrides:
+    def test_apply_overrides(self) -> None:
+        config = TrainingConfig()
+        parser = _build_parser()
+        args = parser.parse_args([
+            "--games-per-epoch", "5",
+            "--num-epochs", "3",
+            "--num-simulations", "10",
+            "--seed", "99",
+        ])
+        _apply_overrides(config, args)
+        assert config.games_per_epoch == 5
+        assert config.num_epochs == 3
+        assert config.num_simulations == 10
+        assert config.seed == 99
+
+    def test_no_overrides_leaves_defaults(self) -> None:
+        config = TrainingConfig()
+        original_games = config.games_per_epoch
+        parser = _build_parser()
+        args = parser.parse_args([])
+        _apply_overrides(config, args)
+        assert config.games_per_epoch == original_games
+
+
+# ---------------------------------------------------------------------------
+# Duration Formatting Tests
+# ---------------------------------------------------------------------------
+
+
+class TestFormatDuration:
+    def test_sub_second(self) -> None:
+        assert _format_duration(0.3) == "0.3s"
+
+    def test_zero(self) -> None:
+        assert _format_duration(0.0) == "0.0s"
+
+    def test_seconds(self) -> None:
+        assert _format_duration(45.0) == "45s"
+
+    def test_minutes_and_seconds(self) -> None:
+        assert _format_duration(125.0) == "2m 05s"
+
+    def test_hours(self) -> None:
+        assert _format_duration(3661.0) == "1h 01m 01s"

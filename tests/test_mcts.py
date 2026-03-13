@@ -65,6 +65,29 @@ def search_root_deep(game_state, evaluator):
 
 
 # ---------------------------------------------------------------------------
+# MCTSConfig
+# ---------------------------------------------------------------------------
+
+class TestMCTSConfig:
+    def test_action_dim_3p(self):
+        cfg = MCTSConfig(num_players=3)
+        assert cfg.action_dim == 246  # 186 + 3*20
+
+    def test_action_dim_6p(self):
+        cfg = MCTSConfig(num_players=6)
+        assert cfg.action_dim == 306  # 186 + 6*20
+
+    def test_defaults(self):
+        cfg = MCTSConfig()
+        assert cfg.num_simulations == 800
+        assert cfg.c_puct == 2.5
+        assert cfg.dirichlet_alpha == 0.3
+        assert cfg.dirichlet_epsilon == 0.25
+        assert cfg.temperature == 1.0
+        assert cfg.num_players == 3
+
+
+# ---------------------------------------------------------------------------
 # Layout computation
 # ---------------------------------------------------------------------------
 
