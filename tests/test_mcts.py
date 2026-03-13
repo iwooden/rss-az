@@ -4,7 +4,11 @@ import numpy as np
 import pytest
 import torch
 
+from core.actions import get_valid_action_mask
+from core.data import GamePhases
 from core.state import GameState
+from entities.company import COMPANIES
+from entities.turn import TURN
 from mcts.config import MCTSConfig
 from mcts.evaluator import (
     NNEvaluator,
@@ -15,6 +19,8 @@ from mcts.evaluator import (
 )
 from mcts.node import MCTSNode
 from mcts.search import (
+    _add_dirichlet_noise,
+    _backup,
     get_action_probabilities,
     get_greedy_leaf_value,
     run_search,
@@ -32,21 +38,30 @@ def layout():
     return get_layout(3)
 
 
-@pytest.fixture
-def game_state():
-    state = GameState(3)
-    state.initialize_game(42)
-    return state
-
-
-@pytest.fixture
+@pytest.fixture(scope="session")
 def model():
     return RSSAlphaZeroNet(RSSModelConfig())
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def evaluator(model):
     return NNEvaluator(model, torch.device("cpu"), num_players=3)
+
+
+@pytest.fixture
+def search_root(game_state, evaluator):
+    """Root node after 20 simulations."""
+    config = MCTSConfig(num_simulations=20)
+    root = run_search(game_state, evaluator, config)
+    return root, config
+
+
+@pytest.fixture
+def search_root_deep(game_state, evaluator):
+    """Root node after 100 simulations for deeper exploration."""
+    config = MCTSConfig(num_simulations=100)
+    root = run_search(game_state, evaluator, config)
+    return root, config
 
 
 # ---------------------------------------------------------------------------
@@ -142,18 +157,20 @@ class TestStateRotation:
 
     def test_turn_per_player_fields_rotated(self, game_state, layout):
         """Verify auction_high_bidder, auction_starter, auction_passed are rotated."""
-        # Set some per-player turn state values to make rotation detectable
-        visible = game_state._array[:layout.visible_size].copy()
+        # Set distinguishable per-player values so rotation is detectable
+        # (default zeros would make np.roll a no-op)
+        for field_offset in (layout.auction_high_bidder_offset,
+                             layout.auction_starter_offset,
+                             layout.auction_passed_offset):
+            game_state._array[field_offset:field_offset + 3] = [1.0, 2.0, 3.0]
 
         for field_offset in (layout.auction_high_bidder_offset,
                              layout.auction_starter_offset,
                              layout.auction_passed_offset):
-            orig = visible[field_offset:field_offset + 3].copy()
             rotated = rotate_visible_state(game_state._array, 1, 3)
             rotated_field = rotated[field_offset:field_offset + 3]
-            # After rotation by 1: [p0, p1, p2] -> [p1, p2, p0]
-            expected = np.roll(orig, -1)
-            np.testing.assert_array_equal(rotated_field, expected)
+            # After rotation by 1: [1, 2, 3] -> [2, 3, 1]
+            np.testing.assert_array_equal(rotated_field, [2.0, 3.0, 1.0])
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +306,7 @@ class TestPUCTSelection:
     def test_selects_highest_prior_when_unvisited(self):
         """With only virtual visits (equal Q), PUCT prefers highest prior."""
         root = MCTSNode(active_player_id=0, num_players=3)
-        root.visit_count = 1
+        root.visit_count = 2  # sum of per-action visit counts (1+1)
         root.legal_actions = np.array([0, 1], dtype=np.int32)
         root.priors = np.array([0.1, 0.9], dtype=np.float32)
         default_val = np.zeros(3, dtype=np.float32)
@@ -304,11 +321,11 @@ class TestPUCTSelection:
     def test_exploits_high_value_with_visits(self):
         """With enough visits, should prefer high-value actions."""
         root = MCTSNode(active_player_id=0, num_players=3)
-        root.visit_count = 100
+        root.visit_count = 102  # sum of per-action visit counts
         root.legal_actions = np.array([0, 1], dtype=np.int32)
         root.priors = np.array([0.8, 0.2], dtype=np.float32)
         root.default_value = np.zeros(3, dtype=np.float32)
-        # 1 virtual + 50 real = 51 total
+        # 1 virtual + 50 real = 51 total per action
         root.visit_counts = np.array([51, 51], dtype=np.int32)
         root.value_sums = np.array([
             [-25.0, 10.0, 15.0],   # action 0: Q(p0) ≈ -0.49
@@ -319,6 +336,37 @@ class TestPUCTSelection:
         action, _ = select_child(root, c_puct=1.0)
         assert action == 1
 
+    def test_single_legal_action(self):
+        """With one legal action, PUCT must always select it."""
+        root = MCTSNode(active_player_id=0, num_players=3)
+        root.visit_count = 1
+        root.legal_actions = np.array([7], dtype=np.int32)
+        root.priors = np.array([1.0], dtype=np.float32)
+        root.default_value = np.zeros(3, dtype=np.float32)
+        root.visit_counts = np.ones(1, dtype=np.int32)
+        root.value_sums = np.zeros((1, 3), dtype=np.float32)
+
+        action, array_idx = select_child(root, c_puct=2.5)
+        assert action == 7
+        assert array_idx == 0
+
+    def test_returns_correct_array_index(self):
+        """The returned array_idx should index into legal_actions/priors/visit_counts."""
+        root = MCTSNode(active_player_id=0, num_players=3)
+        root.visit_count = 3  # sum of per-action visit counts (1+1+1)
+        # Non-contiguous action indices to distinguish action from array index
+        root.legal_actions = np.array([10, 42, 99], dtype=np.int32)
+        root.priors = np.array([0.1, 0.1, 0.8], dtype=np.float32)
+        root.default_value = np.zeros(3, dtype=np.float32)
+        root.visit_counts = np.ones(3, dtype=np.int32)
+        root.value_sums = np.zeros((3, 3), dtype=np.float32)
+
+        action, array_idx = select_child(root, c_puct=2.5)
+        # Highest prior is at array index 2 (action 99)
+        assert action == 99
+        assert array_idx == 2
+        assert root.legal_actions[array_idx] == action
+
     def test_fpu_prefers_visited_over_unvisited_in_losing_position(self):
         """FPU prevents wasting simulations on unvisited actions in bad positions.
 
@@ -327,7 +375,7 @@ class TestPUCTSelection:
         whose FPU defaults to -0.8.
         """
         root = MCTSNode(active_player_id=0, num_players=3)
-        root.visit_count = 10
+        root.visit_count = 11  # sum of per-action visit counts (10+1)
         default_val = np.array([-0.8, 0.3, 0.5], dtype=np.float32)
         root.legal_actions = np.array([0, 1], dtype=np.int32)
         root.priors = np.array([0.5, 0.5], dtype=np.float32)
@@ -348,58 +396,139 @@ class TestPUCTSelection:
 
 
 # ---------------------------------------------------------------------------
+# Dirichlet noise
+# ---------------------------------------------------------------------------
+
+class TestDirichletNoise:
+    def test_zero_epsilon_leaves_priors_unchanged(self):
+        """With epsilon=0, priors should be unmodified."""
+        node = MCTSNode(num_players=3)
+        node.priors = np.array([0.7, 0.2, 0.1], dtype=np.float32)
+        original = node.priors.copy()
+        rng = np.random.default_rng(42)
+
+        _add_dirichlet_noise(node, alpha=0.3, epsilon=0.0, rng=rng)
+
+        np.testing.assert_array_equal(node.priors, original)
+
+    def test_noise_modifies_priors(self):
+        """With epsilon>0, priors should change."""
+        node = MCTSNode(num_players=3)
+        node.priors = np.array([0.7, 0.2, 0.1], dtype=np.float32)
+        original = node.priors.copy()
+        rng = np.random.default_rng(42)
+
+        _add_dirichlet_noise(node, alpha=0.3, epsilon=0.25, rng=rng)
+
+        assert not np.array_equal(node.priors, original)
+        # Priors should still sum to ~1 (convex combination of two distributions)
+        assert node.priors.sum() == pytest.approx(1.0, abs=1e-5)
+        assert (node.priors >= 0).all()
+
+    def test_seeded_rng_is_reproducible(self):
+        """Same seed should produce identical noised priors."""
+        results = []
+        for _ in range(2):
+            node = MCTSNode(num_players=3)
+            node.priors = np.array([0.5, 0.3, 0.2], dtype=np.float32)
+            rng = np.random.default_rng(123)
+            _add_dirichlet_noise(node, alpha=0.3, epsilon=0.25, rng=rng)
+            results.append(node.priors.copy())
+
+        np.testing.assert_array_equal(results[0], results[1])
+
+
+# ---------------------------------------------------------------------------
+# Backup
+# ---------------------------------------------------------------------------
+
+class TestBackup:
+    def test_backup_propagates_values(self):
+        """Values should propagate from leaf through all ancestors."""
+        # Build a 2-level tree: root -> child (via action 5, array_idx 1)
+        root = MCTSNode(active_player_id=0, num_players=3)
+        root.visit_count = 1
+        root.legal_actions = np.array([3, 5], dtype=np.int32)
+        root.priors = np.array([0.4, 0.6], dtype=np.float32)
+        root.default_value = np.zeros(3, dtype=np.float32)
+        root.visit_counts = np.ones(2, dtype=np.int32)
+        root.value_sums = np.zeros((2, 3), dtype=np.float32)
+
+        child = MCTSNode(active_player_id=1, num_players=3)
+        child.visit_count = 0
+        root.children[5] = child
+
+        leaf_values = np.array([0.8, -0.3, -0.5], dtype=np.float32)
+        path = [(root, 5, 1)]  # (parent, action, array_idx)
+
+        _backup(path, child, leaf_values)
+
+        # Leaf: visit_count incremented, value_sum updated
+        assert child.visit_count == 1
+        np.testing.assert_array_almost_equal(child.value_sum, leaf_values)
+
+        # Root: visit_count incremented, value_sum updated
+        assert root.visit_count == 2
+        np.testing.assert_array_almost_equal(root.value_sum, leaf_values)
+
+        # Root per-action: array_idx=1 (action 5) updated, array_idx=0 unchanged
+        assert root.visit_counts[1] == 2  # 1 virtual + 1 real
+        np.testing.assert_array_almost_equal(
+            root.value_sums[1], leaf_values  # FPU zeros + leaf_values
+        )
+        assert root.visit_counts[0] == 1  # Untouched (virtual only)
+        np.testing.assert_array_almost_equal(
+            root.value_sums[0], np.zeros(3)
+        )
+
+
+# ---------------------------------------------------------------------------
 # Full search
 # ---------------------------------------------------------------------------
 
 class TestMCTSSearch:
-    def test_search_basic(self, game_state, evaluator):
-        config = MCTSConfig(num_simulations=20)
-        root = run_search(game_state, evaluator, config)
+    def test_search_basic(self, search_root):
+        root, _ = search_root
 
         assert root.visit_count == 21  # 1 initial + 20 simulations
         assert root.expanded()
         assert len(root.children) > 0
 
-    def test_action_probabilities_sum_to_one(self, game_state, evaluator):
-        config = MCTSConfig(num_simulations=20)
-        root = run_search(game_state, evaluator, config)
+    def test_action_probabilities_sum_to_one(self, search_root):
+        root, config = search_root
         probs = get_action_probabilities(root, temperature=1.0, action_dim=config.action_dim)
 
         assert probs.shape == (config.action_dim,)
         assert probs.sum() == pytest.approx(1.0, abs=1e-5)
         assert (probs >= 0).all()
 
-    def test_action_probabilities_greedy(self, game_state, evaluator):
-        config = MCTSConfig(num_simulations=20)
-        root = run_search(game_state, evaluator, config)
+    def test_action_probabilities_greedy(self, search_root):
+        root, config = search_root
         probs = get_action_probabilities(root, temperature=0.0, action_dim=config.action_dim)
 
         # Greedy: exactly one action with probability 1.0
         assert probs.sum() == pytest.approx(1.0)
         assert (probs == 1.0).sum() == 1
 
-    def test_greedy_leaf_value_bounded(self, game_state, evaluator):
-        config = MCTSConfig(num_simulations=50)
-        root = run_search(game_state, evaluator, config)
+    def test_greedy_leaf_value_bounded(self, search_root_deep):
+        root, config = search_root_deep
         val = get_greedy_leaf_value(root, num_players=config.num_players)
 
         assert val.shape == (3,)
         assert (val >= -1.0).all()
         assert (val <= 1.0).all()
 
-    def test_greedy_leaf_value_nonzero(self, game_state, evaluator):
+    def test_greedy_leaf_value_nonzero(self, search_root_deep):
         """With enough simulations, the greedy leaf should have non-trivial values."""
-        config = MCTSConfig(num_simulations=50)
-        root = run_search(game_state, evaluator, config)
+        root, config = search_root_deep
         val = get_greedy_leaf_value(root, num_players=config.num_players)
 
         # At least one value should be non-zero (random weights produce non-zero output)
         assert not np.allclose(val, 0.0)
 
-    def test_greedy_leaf_follows_max_visits(self, game_state, evaluator):
+    def test_greedy_leaf_follows_max_visits(self, search_root_deep):
         """A0GB traversal should follow the most-visited child at each level."""
-        config = MCTSConfig(num_simulations=100)
-        root = run_search(game_state, evaluator, config)
+        root, config = search_root_deep
 
         # Manually trace the greedy path using real visit counts
         node = root
@@ -411,14 +540,16 @@ class TestMCTSSearch:
             best_action = int(node.legal_actions[best_idx])
             if best_action not in node.children:
                 break
-
-            # Verify this child has the most real visits among visited children
             node = node.children[best_action]
 
-    def test_nodes_have_states(self, game_state, evaluator):
+        # Manual traversal should arrive at the same value as get_greedy_leaf_value
+        expected = node.value_sum / node.visit_count
+        actual = get_greedy_leaf_value(root, num_players=config.num_players)
+        np.testing.assert_array_almost_equal(actual, expected)
+
+    def test_nodes_have_states(self, search_root, game_state):
         """Visited nodes in the tree should have stored game states."""
-        config = MCTSConfig(num_simulations=20)
-        root = run_search(game_state, evaluator, config)
+        root, _ = search_root
 
         # Root has state
         assert root.state is not None
@@ -429,10 +560,9 @@ class TestMCTSSearch:
             assert child.state is not None
             assert child.state.shape == game_state._array.shape
 
-    def test_lazy_expansion_fewer_children(self, game_state, evaluator):
+    def test_lazy_expansion_fewer_children(self, search_root):
         """Lazy expansion creates fewer children than legal actions."""
-        config = MCTSConfig(num_simulations=20)
-        root = run_search(game_state, evaluator, config)
+        root, _ = search_root
 
         # Root has legal_actions array (all legal moves)
         assert root.legal_actions is not None
@@ -441,30 +571,50 @@ class TestMCTSSearch:
         # With 20 sims, not all legal actions can be visited
         assert len(root.children) <= 20
 
-    def test_terminal_children_have_cached_values(self, game_state, evaluator):
-        """Terminal children should have terminal_values cached."""
-        config = MCTSConfig(num_simulations=100)
-        root = run_search(game_state, evaluator, config)
+    def test_terminal_children_have_cached_values(self, evaluator):
+        """Terminal nodes in the search tree should have terminal_values cached."""
+        # Build a state 1 move from GAME_OVER: remove all companies so the
+        # only legal action is PASS, and a full round of passes ends the game.
+        state = GameState(3)
+        state.initialize_game(42)
+        for cid in range(36):
+            COMPANIES[cid].remove_from_game(state)
 
-        # Walk tree looking for terminal nodes
+        config = MCTSConfig(num_simulations=10)
+        root = run_search(state, evaluator, config)
+
+        # Walk tree — must find at least one terminal node
+        terminal_count = 0
         stack = [root]
         while stack:
             node = stack.pop()
             if node.is_terminal:
+                terminal_count += 1
                 assert node.terminal_values is not None
                 assert node.terminal_values.shape == (3,)
             for child in node.children.values():
                 stack.append(child)
+        assert terminal_count > 0, "Search should reach terminal nodes near game end"
 
-    def test_terminal_state_search(self, evaluator):
-        """Search on a non-terminal state should return a valid root."""
+    def test_terminal_root_returns_immediately(self, evaluator):
+        """Search on a game-over state should return without running simulations."""
         state = GameState(3)
         state.initialize_game(42)
+        TURN.set_phase(state, GamePhases.PHASE_GAME_OVER)
+        state.set_player_net_worth(0, 500)
+        state.set_player_net_worth(1, 300)
+        state.set_player_net_worth(2, 100)
 
-        config = MCTSConfig(num_simulations=10)
+        config = MCTSConfig(num_simulations=100)
         root = run_search(state, evaluator, config)
-        # At least verify it runs and returns a valid root
-        assert root.visit_count > 0
+
+        assert root.visit_count == 1  # Only the initial evaluation
+        assert root.is_terminal
+        assert not root.expanded()
+        assert root.terminal_values is not None
+        np.testing.assert_array_almost_equal(
+            root.terminal_values, [1.0, 0.0, -1.0]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +636,15 @@ class TestNNEvaluator:
         _, values = evaluator.evaluate(game_state)
         assert (values >= -1.0).all()
         assert (values <= 1.0).all()
+
+    def test_policy_zero_on_illegal_actions(self, game_state, evaluator):
+        """Policy should have zero probability on illegal actions."""
+        policy, _ = evaluator.evaluate(game_state)
+        mask = get_valid_action_mask(game_state)
+
+        illegal = mask == 0.0
+        assert illegal.any(), "Need at least one illegal action for this test"
+        assert (policy[illegal] == 0.0).all()
 
     def test_evaluate_terminal(self, evaluator):
         state = GameState(3)

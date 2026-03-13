@@ -371,10 +371,12 @@ set_one_hot(array, offset, index, size)
 
 ## Build Commands
 
+**Python binary:** Always use `.venv/bin/python` (not `python` or `python3`). The venv may not be activated in the shell.
+
 ```bash
 # Build Cython extensions (required before running any Python code)
 # Pipe to grep to avoid 200+ lines of output consuming context
-python setup.py build_ext --inplace 2>&1 | grep -E "(warning|error)" || true
+.venv/bin/python setup.py build_ext --inplace 2>&1 | grep -E "(warning|error)" || true
 
 # Run all tests
 pytest tests/
@@ -383,7 +385,7 @@ pytest tests/
 pytest tests/test_invest.py -v
 
 # Clean build artifacts (.c, .so, .html, build/, *.egg-info)
-python setup.py clean
+.venv/bin/python setup.py clean
 ```
 
 **Warning-free builds:** The build should produce no compiler warnings. If warnings appear, create a beads issue to fix them.
@@ -538,7 +540,7 @@ When writing ad-hoc Python scripts to test or debug code, **write them to the sc
 Write scratchpad/test_something.py
 
 # Run it (PYTHONPATH required since script runs outside the project directory)
-PYTHONPATH=/home/icebreaker/rss-az-cython2 python /path/to/scratchpad/test_something.py
+PYTHONPATH=/home/icebreaker/rss-az-cython2 .venv/bin/python /path/to/scratchpad/test_something.py
 
 # If it fails, use Edit to make small changes instead of rewriting
 ```
@@ -557,7 +559,7 @@ The scratchpad path is provided in the system prompt at session start.
 Before closing a task, run a **full clean rebuild** to catch stale artifacts:
 
 ```bash
-python setup.py clean && python setup.py build_ext --inplace 2>&1 | grep -E "(warning|error)" || true
+.venv/bin/python setup.py clean && .venv/bin/python setup.py build_ext --inplace 2>&1 | grep -E "(warning|error)" || true
 pytest tests/
 ```
 
