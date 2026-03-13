@@ -232,6 +232,11 @@ class TestMCTSNode:
         assert not node.expanded()
         assert node.state is None
         assert node.terminal_values is None
+        assert node.legal_actions is None
+        assert node.priors is None
+        assert node.default_value is None
+        assert node.visit_counts is None
+        assert node.value_sums is None
 
     def test_mean_value_zero_visits(self):
         node = MCTSNode(num_players=3)
@@ -244,7 +249,8 @@ class TestMCTSNode:
         assert node.mean_value(0) == pytest.approx(0.5)
         assert node.mean_value(1) == pytest.approx(0.25)
 
-    def test_expand_creates_children(self):
+    def test_expand_sets_up_arrays(self):
+        """expand() creates per-action arrays but no child nodes."""
         node = MCTSNode(num_players=3)
         priors = np.zeros(246, dtype=np.float32)
         mask = np.zeros(246, dtype=np.float32)
@@ -254,16 +260,25 @@ class TestMCTSNode:
         mask[0] = 1.0
         mask[5] = 1.0
         mask[10] = 1.0
+        default_val = np.array([0.2, -0.1, -0.1], dtype=np.float32)
 
-        node.expand(priors, mask, num_players=3)
+        node.expand(priors, mask, num_players=3, default_value=default_val)
 
         assert node.expanded()
-        assert len(node.children) == 3
-        assert 0 in node.children
-        assert 5 in node.children
-        assert 10 in node.children
-        assert node.children[0].prior == pytest.approx(0.6)
-        assert node.children[5].prior == pytest.approx(0.3)
+        assert len(node.children) == 0  # No children created
+        np.testing.assert_array_equal(node.legal_actions, [0, 5, 10])
+        assert node.priors[0] == pytest.approx(0.6)
+        assert node.priors[1] == pytest.approx(0.3)
+        assert node.priors[2] == pytest.approx(0.1)
+        np.testing.assert_array_almost_equal(node.default_value, default_val)
+        # Virtual visits: visit_counts start at 1, value_sums at default_value
+        assert node.visit_counts.shape == (3,)
+        assert (node.visit_counts == 1).all()
+        assert node.value_sums.shape == (3, 3)  # 3 actions x 3 players
+        for i in range(3):
+            np.testing.assert_array_almost_equal(
+                node.value_sums[i], default_val
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -272,34 +287,64 @@ class TestMCTSNode:
 
 class TestPUCTSelection:
     def test_selects_highest_prior_when_unvisited(self):
-        """With no visits, PUCT should prefer the highest prior."""
+        """With only virtual visits (equal Q), PUCT prefers highest prior."""
         root = MCTSNode(active_player_id=0, num_players=3)
         root.visit_count = 1
+        root.legal_actions = np.array([0, 1], dtype=np.int32)
+        root.priors = np.array([0.1, 0.9], dtype=np.float32)
+        default_val = np.zeros(3, dtype=np.float32)
+        root.default_value = default_val
+        # Virtual visits: visit_counts=1, value_sums=default_value
+        root.visit_counts = np.ones(2, dtype=np.int32)
+        root.value_sums = np.zeros((2, 3), dtype=np.float32)
 
-        root.children[0] = MCTSNode(prior=0.1, num_players=3)
-        root.children[1] = MCTSNode(prior=0.9, num_players=3)
-
-        assert select_child(root, c_puct=2.5) == 1
+        action, _ = select_child(root, c_puct=2.5)
+        assert action == 1
 
     def test_exploits_high_value_with_visits(self):
         """With enough visits, should prefer high-value actions."""
         root = MCTSNode(active_player_id=0, num_players=3)
         root.visit_count = 100
+        root.legal_actions = np.array([0, 1], dtype=np.int32)
+        root.priors = np.array([0.8, 0.2], dtype=np.float32)
+        root.default_value = np.zeros(3, dtype=np.float32)
+        # 1 virtual + 50 real = 51 total
+        root.visit_counts = np.array([51, 51], dtype=np.int32)
+        root.value_sums = np.array([
+            [-25.0, 10.0, 15.0],   # action 0: Q(p0) ≈ -0.49
+            [25.0, -10.0, -15.0],  # action 1: Q(p0) ≈ +0.49
+        ], dtype=np.float32)
 
-        # Child 0: high prior, low value
-        c0 = MCTSNode(prior=0.8, num_players=3)
-        c0.visit_count = 50
-        c0.value_sum = np.array([-25.0, 10.0, 15.0], dtype=np.float32)
-        root.children[0] = c0
+        # Player 0 should prefer action 1 (higher Q)
+        action, _ = select_child(root, c_puct=1.0)
+        assert action == 1
 
-        # Child 1: low prior, high value
-        c1 = MCTSNode(prior=0.2, num_players=3)
-        c1.visit_count = 50
-        c1.value_sum = np.array([25.0, -10.0, -15.0], dtype=np.float32)
-        root.children[1] = c1
+    def test_fpu_prefers_visited_over_unvisited_in_losing_position(self):
+        """FPU prevents wasting simulations on unvisited actions in bad positions.
 
-        # Player 0 should prefer child 1 (Q = 0.5 vs -0.5)
-        assert select_child(root, c_puct=1.0) == 1
+        With parent value = -0.8 (losing), a visited child at Q=-0.6
+        (slightly better) should be preferred over an unvisited child
+        whose FPU defaults to -0.8.
+        """
+        root = MCTSNode(active_player_id=0, num_players=3)
+        root.visit_count = 10
+        default_val = np.array([-0.8, 0.3, 0.5], dtype=np.float32)
+        root.legal_actions = np.array([0, 1], dtype=np.int32)
+        root.priors = np.array([0.5, 0.5], dtype=np.float32)
+        root.default_value = default_val
+        # Action 0: 1 virtual + 9 real = 10 visits
+        # Action 1: 1 virtual + 0 real = 1 visit (FPU only)
+        root.visit_counts = np.array([10, 1], dtype=np.int32)
+        root.value_sums = np.array([
+            [-6.2, 2.7, 2.7],       # Q(p0) = -6.2/10 = -0.62
+            [-0.8, 0.3, 0.5],       # Q(p0) = -0.8/1 = -0.8 (FPU)
+        ], dtype=np.float32)
+
+        # Tiny c_puct so exploitation dominates
+        action, _ = select_child(root, c_puct=0.001)
+        # Q(action 0) = -0.62 > Q(action 1) = -0.8 → prefer action 0
+        # Without FPU: Q(unvisited) = 0.0 > -0.62 → would waste a sim on action 1
+        assert action == 0
 
 
 # ---------------------------------------------------------------------------
@@ -356,24 +401,22 @@ class TestMCTSSearch:
         config = MCTSConfig(num_simulations=100)
         root = run_search(game_state, evaluator, config)
 
-        # Manually trace the greedy path
+        # Manually trace the greedy path using real visit counts
         node = root
         while node.expanded() and not node.is_terminal:
-            best_action = max(
-                node.children, key=lambda a: node.children[a].visit_count
-            )
-            best_child = node.children[best_action]
-            if best_child.visit_count == 0:
+            real_counts = node.visit_counts - 1
+            best_idx = int(np.argmax(real_counts))
+            if real_counts[best_idx] == 0:
+                break
+            best_action = int(node.legal_actions[best_idx])
+            if best_action not in node.children:
                 break
 
-            # Verify this is actually the max-visit child
-            max_visits = max(c.visit_count for c in node.children.values())
-            assert best_child.visit_count == max_visits
-
-            node = best_child
+            # Verify this child has the most real visits among visited children
+            node = node.children[best_action]
 
     def test_nodes_have_states(self, game_state, evaluator):
-        """Every node in the tree should have a stored game state."""
+        """Visited nodes in the tree should have stored game states."""
         config = MCTSConfig(num_simulations=20)
         root = run_search(game_state, evaluator, config)
 
@@ -381,10 +424,22 @@ class TestMCTSSearch:
         assert root.state is not None
         assert root.state.shape == game_state._array.shape
 
-        # All children of root have states
+        # All visited children have states
         for child in root.children.values():
             assert child.state is not None
             assert child.state.shape == game_state._array.shape
+
+    def test_lazy_expansion_fewer_children(self, game_state, evaluator):
+        """Lazy expansion creates fewer children than legal actions."""
+        config = MCTSConfig(num_simulations=20)
+        root = run_search(game_state, evaluator, config)
+
+        # Root has legal_actions array (all legal moves)
+        assert root.legal_actions is not None
+        # But children dict only has visited actions
+        assert len(root.children) <= len(root.legal_actions)
+        # With 20 sims, not all legal actions can be visited
+        assert len(root.children) <= 20
 
     def test_terminal_children_have_cached_values(self, game_state, evaluator):
         """Terminal children should have terminal_values cached."""

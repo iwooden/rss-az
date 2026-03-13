@@ -1,7 +1,8 @@
 """MCTS search algorithm with PUCT selection and A0GB value targets.
 
 Implements AlphaZero-style MCTS for multiplayer games:
-- PUCT selection from the active player's perspective
+- Vectorized PUCT selection with FPU parent value initialization
+- Lazy node expansion (children allocated on first visit only)
 - Dirichlet noise at the root for exploration
 - A0GB greedy backup for value targets (Willemsen et al., 2020)
 - Node-local game state storage (no replay from root)
@@ -18,78 +19,43 @@ from mcts.config import MCTSConfig
 from mcts.node import MCTSNode
 
 
-def select_child(node: MCTSNode, c_puct: float) -> int:
+def select_child(node: MCTSNode, c_puct: float) -> tuple[int, int]:
     """Select the child action with the highest PUCT value.
 
-    Uses the formula:
+    Uses vectorized UCB computation over per-action arrays:
         UCB(a) = Q(a) + c_puct * P(a) * sqrt(N_parent) / (1 + N(a))
 
     where Q(a) is the mean value for the active player at this node.
+    Each action starts with a virtual visit at the parent's NN value (FPU),
+    so visit_counts >= 1 and Q = value_sums / visit_counts always.
 
     Args:
         node: The parent node to select from. Must be expanded.
         c_puct: Exploration constant.
 
     Returns:
-        The action index of the selected child.
+        Tuple of (action_index, array_index) where action_index is the game
+        action and array_index is the position in node.legal_actions.
     """
     player = node.active_player_id
     sqrt_parent = math.sqrt(node.visit_count)
+    vc = node.visit_counts
 
-    best_action = -1
-    best_ucb = -math.inf
-
-    for action_idx, child in node.children.items():
-        q = child.mean_value(player)
-        ucb = q + c_puct * child.prior * sqrt_parent / (1 + child.visit_count)
-        if ucb > best_ucb:
-            best_ucb = ucb
-            best_action = action_idx
-
-    return best_action
+    # Q values: visit_counts >= 1 always (FPU virtual visit), no branching
+    q = node.value_sums[:, player] / vc
+    ucb = q + c_puct * node.priors * sqrt_parent / (1 + vc)
+    best_idx = int(np.argmax(ucb))
+    return int(node.legal_actions[best_idx]), best_idx
 
 
 def _add_dirichlet_noise(node: MCTSNode, alpha: float, epsilon: float) -> None:
-    """Add Dirichlet noise to the root node's children priors.
+    """Add Dirichlet noise to the root node's action priors.
 
     Modifies priors in-place:
         P'(a) = (1 - epsilon) * P(a) + epsilon * Dir(alpha)
     """
-    actions = list(node.children.keys())
-    noise = np.random.dirichlet([alpha] * len(actions))
-    for i, action_idx in enumerate(actions):
-        child = node.children[action_idx]
-        child.prior = (1 - epsilon) * child.prior + epsilon * noise[i]
-
-
-def _populate_child_states(
-    node: MCTSNode,
-    num_players: int,
-    evaluator: Any,
-) -> None:
-    """Create and store game states for all children of a node.
-
-    For each child, clones the parent state, applies the action, and stores
-    the resulting state on the child node. Terminal children get their
-    terminal values computed and cached.
-
-    Args:
-        node: The parent node whose children need states populated.
-        num_players: Number of players in the game.
-        evaluator: NNEvaluator for computing terminal values.
-    """
-    from core.driver import DRIVER, STATUS_GAME_OVER_PY
-    from core.state import GameState
-
-    parent_state = node.state
-    for action_idx, child in node.children.items():
-        child_gs = GameState.from_array(parent_state, num_players)
-        status = DRIVER.apply_action(child_gs, action_idx)
-        child.state = child_gs._array
-        child.active_player_id = child_gs.get_active_player()
-        if status == STATUS_GAME_OVER_PY:
-            child.is_terminal = True
-            child.terminal_values = evaluator.evaluate_terminal(child_gs)
+    noise = np.random.dirichlet([alpha] * len(node.priors))
+    node.priors = (1 - epsilon) * node.priors + epsilon * noise
 
 
 def run_search(
@@ -99,8 +65,8 @@ def run_search(
 ) -> MCTSNode:
     """Run MCTS search from the given root state.
 
-    Each node stores its own game state, eliminating the need to replay
-    actions from the root on every simulation.
+    Each node stores its own game state and per-action arrays for vectorized
+    PUCT selection. Child nodes are created lazily on first visit.
 
     Args:
         root_state: GameState object to search from.
@@ -112,6 +78,7 @@ def run_search(
     """
     from core.actions import get_valid_action_mask
     from core.data import GamePhases
+    from core.driver import DRIVER, STATUS_GAME_OVER_PY
     from core.state import GameState
 
     num_players = config.num_players
@@ -138,9 +105,9 @@ def run_search(
     policy_probs, root_values = evaluator.evaluate(root_state)
     mask = get_valid_action_mask(root_state)
 
-    # Expand root and populate child states
-    root.expand(policy_probs, mask, num_players=num_players)
-    _populate_child_states(root, num_players, evaluator)
+    # Expand root (sets up per-action arrays, no children created)
+    root.expand(policy_probs, mask, num_players=num_players,
+                default_value=root_values)
 
     # Add Dirichlet noise at root
     if config.dirichlet_epsilon > 0:
@@ -154,12 +121,31 @@ def run_search(
     for _ in range(config.num_simulations):
         # Selection: traverse tree to find a leaf
         node = root
-        path: list[tuple[MCTSNode, int]] = []
+        path: list[tuple[MCTSNode, int, int]] = []  # (parent, action, array_idx)
 
         while node.expanded() and not node.is_terminal:
-            action_idx = select_child(node, config.c_puct)
-            path.append((node, action_idx))
-            node = node.children[action_idx]
+            action_idx, array_idx = select_child(node, config.c_puct)
+            path.append((node, action_idx, array_idx))
+
+            if action_idx in node.children:
+                # Follow existing child
+                node = node.children[action_idx]
+            else:
+                # First visit: create child node with state
+                child = MCTSNode(
+                    prior=float(node.priors[array_idx]),
+                    num_players=num_players,
+                )
+                child_gs = GameState.from_array(node.state, num_players)
+                status = DRIVER.apply_action(child_gs, action_idx)
+                child.state = child_gs._array
+                child.active_player_id = child_gs.get_active_player()
+                if status == STATUS_GAME_OVER_PY:
+                    child.is_terminal = True
+                    child.terminal_values = evaluator.evaluate_terminal(child_gs)
+                node.children[action_idx] = child
+                node = child
+                break  # New child is unexpanded — it's the leaf
 
         # Terminal node: backup cached values
         if node.is_terminal:
@@ -167,17 +153,16 @@ def run_search(
             _backup(path, node, node.terminal_values)
             continue
 
-        # Leaf node: state is already stored from parent expansion.
-        # Wrap in GameState for evaluation (read-only, no copy needed).
+        # Leaf node: evaluate with NN and expand
         leaf_gs = GameState.from_array(node.state, num_players)
         node.active_player_id = leaf_gs.get_active_player()
 
         policy_probs, values = evaluator.evaluate(leaf_gs)
         leaf_mask = get_valid_action_mask(leaf_gs)
 
-        # Expand the leaf and populate child states
-        node.expand(policy_probs, leaf_mask, num_players=num_players)
-        _populate_child_states(node, num_players, evaluator)
+        # Expand the leaf (sets up arrays for future selection)
+        node.expand(policy_probs, leaf_mask, num_players=num_players,
+                    default_value=values)
 
         # Backup
         _backup(path, node, values)
@@ -186,14 +171,18 @@ def run_search(
 
 
 def _backup(
-    path: list[tuple[MCTSNode, int]],
+    path: list[tuple[MCTSNode, int, int]],
     leaf: MCTSNode,
     values: np.ndarray,
 ) -> None:
     """Backpropagate values from a leaf up to the root.
 
+    Updates both node-level aggregates (visit_count, value_sum) and
+    per-action arrays (visit_counts, value_sums) on each parent.
+
     Args:
-        path: List of (parent_node, action) pairs from root to leaf's parent.
+        path: List of (parent_node, action, array_idx) tuples from root
+            to leaf's parent.
         leaf: The leaf node that was evaluated.
         values: Canonical per-player values from the leaf evaluation.
     """
@@ -202,9 +191,11 @@ def _backup(
     leaf.value_sum += values
 
     # Walk back up the path
-    for node, _ in reversed(path):
+    for node, _, array_idx in reversed(path):
         node.visit_count += 1
         node.value_sum += values
+        node.visit_counts[array_idx] += 1
+        node.value_sums[array_idx] += values
 
 
 def get_action_probabilities(
@@ -226,22 +217,24 @@ def get_action_probabilities(
     """
     probs = np.zeros(action_dim, dtype=np.float32)
 
-    if not root.children:
+    if root.legal_actions is None:
         return probs
+
+    # Real visit counts (subtract virtual FPU visit)
+    real_counts = root.visit_counts - 1
 
     if temperature < 1e-8:
         # Greedy: pick the most-visited action
-        best_action = max(root.children, key=lambda a: root.children[a].visit_count)
-        probs[best_action] = 1.0
+        best_idx = int(np.argmax(real_counts))
+        probs[root.legal_actions[best_idx]] = 1.0
         return probs
 
     # Temperature-scaled visit counts
-    for action_idx, child in root.children.items():
-        probs[action_idx] = child.visit_count ** (1.0 / temperature)
-
-    total = probs.sum()
+    counts = real_counts.astype(np.float32) ** (1.0 / temperature)
+    total = counts.sum()
     if total > 0:
-        probs /= total
+        counts /= total
+    probs[root.legal_actions] = counts
 
     return probs
 
@@ -269,14 +262,18 @@ def get_greedy_leaf_value(root: MCTSNode, num_players: int) -> np.ndarray:
     node = root
 
     while node.expanded() and not node.is_terminal:
-        # Follow the child with the most visits (greedy)
-        best_action = max(node.children, key=lambda a: node.children[a].visit_count)
-        best_child = node.children[best_action]
-        if best_child.visit_count == 0:
+        # Real visit counts (subtract virtual FPU visit)
+        real_counts = node.visit_counts - 1
+        # Follow the child with the most real visits (greedy)
+        best_idx = int(np.argmax(real_counts))
+        if real_counts[best_idx] == 0:
             # All children are unvisited — this node is the tree-edge leaf.
             # Its value_sum / visit_count equals V_NN from its single evaluation.
             break
-        node = best_child
+        best_action = int(node.legal_actions[best_idx])
+        if best_action not in node.children:
+            break
+        node = node.children[best_action]
 
     # Return the mean value at this node
     if node.visit_count == 0:
