@@ -38,6 +38,37 @@ class TraceGameCommand(Command):
             print(result)
 
 
+class BenchmarkCommand(Command):
+    """Run performance benchmarks."""
+    description = 'Run MCTS search benchmark'
+    user_options = [
+        ('num-simulations=', 'n', 'Simulations per search (default 800)'),
+        ('num-runs=', 'r', 'Number of timed runs (default 10)'),
+        ('num-players=', 'p', 'Number of players (default 3)'),
+        ('device=', 'd', 'Torch device (default cpu)'),
+    ]
+
+    def initialize_options(self):
+        self.num_simulations = 800
+        self.num_runs = 10
+        self.num_players = 3
+        self.device = 'cpu'
+
+    def finalize_options(self):
+        self.num_simulations = int(self.num_simulations)
+        self.num_runs = int(self.num_runs)
+        self.num_players = int(self.num_players)
+
+    def run(self):
+        from benchmarks.mcts_bench import run_mcts_benchmark
+        run_mcts_benchmark(
+            num_simulations=self.num_simulations,
+            num_runs=self.num_runs,
+            num_players=self.num_players,
+            device=self.device,
+        )
+
+
 class CleanCommand(Command):
     """Custom clean command to remove Cython build artifacts."""
     description = 'Remove Cython build artifacts (.c, .so, .html, build/)'
@@ -133,6 +164,7 @@ setup(
         annotate=False,  # Generates HTML annotation files showing Python interaction
     ),
     cmdclass={
+        'benchmark': BenchmarkCommand,
         'clean': CleanCommand,
         'trace_game': TraceGameCommand,
     },
