@@ -186,6 +186,50 @@ class NNEvaluator:
 
         return policy_probs, canonical_values
 
+    @torch.no_grad()
+    def evaluate_batch(
+        self, states: list[Any],
+    ) -> list[tuple[np.ndarray, np.ndarray]]:
+        """Evaluate multiple game states in a single NN forward pass.
+
+        Args:
+            states: List of GameState objects.
+
+        Returns:
+            List of (policy_probs, canonical_values) tuples, one per state.
+        """
+        from core.actions import get_valid_action_mask
+
+        n = len(states)
+        if n == 0:
+            return []
+        if n == 1:
+            return [self.evaluate(states[0])]
+
+        active_players = [s.get_active_player() for s in states]
+
+        # Rotate and stack visible states
+        rotated = np.stack([
+            rotate_visible_state(s._array, ap, self.num_players)
+            for s, ap in zip(states, active_players)
+        ])
+        masks = np.stack([get_valid_action_mask(s) for s in states])
+
+        # Single forward pass for the whole batch
+        x = torch.from_numpy(rotated).to(self.device)
+        mask = torch.from_numpy(masks).to(self.device)
+        policy_logits, value_output = self.model(x, legal_action_mask=mask)
+
+        policy_probs = torch.softmax(policy_logits, dim=-1).cpu().numpy()
+        values = value_output.cpu().numpy()
+
+        results: list[tuple[np.ndarray, np.ndarray]] = []
+        for i in range(n):
+            canonical_values = unrotate_values(values[i], active_players[i])
+            results.append((policy_probs[i], canonical_values))
+
+        return results
+
     def evaluate_terminal(self, state: Any) -> np.ndarray:
         """Compute terminal values from a game-over state.
 

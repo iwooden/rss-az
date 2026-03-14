@@ -6,6 +6,7 @@ Implements AlphaZero-style MCTS for multiplayer games:
 - Dirichlet noise at the root for exploration
 - A0GB greedy backup for value targets (Willemsen et al., 2020)
 - Pre-allocated state pool for zero per-node allocation
+- Batched leaf evaluation with virtual loss for GPU throughput
 """
 
 from __future__ import annotations
@@ -100,6 +101,35 @@ def _add_dirichlet_noise(
     node.priors = (1 - epsilon) * node.priors + epsilon * noise
 
 
+# Type alias for a selection path: list of (parent_node, action, array_idx)
+_Path = list[tuple[MCTSNode, int, int]]
+
+
+def _apply_virtual_loss(path: _Path, virtual_loss: np.ndarray) -> None:
+    """Apply virtual loss along a selection path to discourage re-selection.
+
+    Increments visit counts and adds a pessimistic value (all -1) to each
+    node on the path. This makes the selected actions look worse to subsequent
+    PUCT selections within the same batch.
+    """
+    for node, _, array_idx in path:
+        assert node.visit_counts is not None and node.value_sums is not None
+        node.visit_count += 1
+        node.value_sum += virtual_loss
+        node.visit_counts[array_idx] += 1
+        node.value_sums[array_idx] += virtual_loss
+
+
+def _undo_virtual_loss(path: _Path, virtual_loss: np.ndarray) -> None:
+    """Remove virtual loss from a selection path before applying real backup."""
+    for node, _, array_idx in path:
+        assert node.visit_counts is not None and node.value_sums is not None
+        node.visit_count -= 1
+        node.value_sum -= virtual_loss
+        node.visit_counts[array_idx] -= 1
+        node.value_sums[array_idx] -= virtual_loss
+
+
 def run_search(
     root_state: Any,
     evaluator: Any,
@@ -109,13 +139,14 @@ def run_search(
 ) -> MCTSNode:
     """Run MCTS search from the given root state.
 
-    Each node references a row in the state pool and has per-action arrays
-    for vectorized PUCT selection. Child nodes are created lazily on first visit.
+    Supports batched leaf evaluation: multiple leaves are selected per
+    iteration (using virtual loss to avoid path collisions), evaluated
+    in a single NN forward pass, then expanded and backed up.
 
     Args:
         root_state: GameState object to search from.
         evaluator: NNEvaluator for leaf evaluation.
-        config: Search hyperparameters.
+        config: Search hyperparameters (search_batch_size controls batching).
         rng: Optional numpy random Generator for Dirichlet noise.
             If None, creates an unseeded generator.
         state_pool: Optional pre-allocated StatePool for node state storage.
@@ -131,6 +162,7 @@ def run_search(
     from core.state import GameState
 
     num_players = config.num_players
+    batch_size = config.search_batch_size
 
     # Set up state pool
     if state_pool is None:
@@ -175,67 +207,91 @@ def run_search(
     root.visit_count = 1
     root.value_sum += root_values
 
-    # Run simulations
-    for _ in range(config.num_simulations):
-        # Selection: traverse tree to find a leaf
-        node = root
-        path: list[tuple[MCTSNode, int, int]] = []  # (parent, action, array_idx)
+    # Virtual loss vector: pessimistic for all players
+    virtual_loss = np.full(num_players, -1.0, dtype=np.float32)
 
-        while node.expanded() and not node.is_terminal:
-            action_idx, array_idx = select_child(node, config.c_puct)
-            path.append((node, action_idx, array_idx))
+    # Run simulations in batches
+    sim = 0
+    while sim < config.num_simulations:
+        # Collect a batch of leaves for NN evaluation
+        pending: list[tuple[_Path, MCTSNode, GameState]] = []
 
-            if action_idx in node.children:
-                # Follow existing child
-                node = node.children[action_idx]
-            else:
-                # First visit: create child node with state from pool
-                assert node.priors is not None
-                child = MCTSNode(
-                    prior=float(node.priors[array_idx]),
-                    num_players=num_players,
-                )
-                # Copy parent state to new pool row, apply action in-place
-                child.state_idx = state_pool.alloc_from_row(node.state_idx)
-                child_gs = GameState.from_buffer(
-                    state_pool.row(child.state_idx), num_players
-                )
-                status = DRIVER.apply_action(child_gs, action_idx)
-                child.active_player_id = child_gs.get_active_player()
-                if status == STATUS_GAME_OVER_PY:
-                    child.is_terminal = True
-                    child.terminal_values = evaluator.evaluate_terminal(child_gs)
-                node.children[action_idx] = child
-                node = child
-                break  # New child is unexpanded — it's the leaf
+        for _ in range(min(batch_size, config.num_simulations - sim)):
+            sim += 1
 
-        # Terminal node: backup cached values
-        if node.is_terminal:
-            assert node.terminal_values is not None
-            _backup(path, node, node.terminal_values)
+            # Selection: traverse tree to find a leaf
+            node = root
+            path: _Path = []
+
+            while node.expanded() and not node.is_terminal:
+                action_idx, array_idx = select_child(node, config.c_puct)
+                path.append((node, action_idx, array_idx))
+
+                if action_idx in node.children:
+                    # Follow existing child
+                    node = node.children[action_idx]
+                else:
+                    # First visit: create child node with state from pool
+                    assert node.priors is not None
+                    child = MCTSNode(
+                        prior=float(node.priors[array_idx]),
+                        num_players=num_players,
+                    )
+                    # Copy parent state to new pool row, apply action in-place
+                    child.state_idx = state_pool.alloc_from_row(node.state_idx)
+                    child_gs = GameState.from_buffer(
+                        state_pool.row(child.state_idx), num_players
+                    )
+                    status = DRIVER.apply_action(child_gs, action_idx)
+                    child.active_player_id = child_gs.get_active_player()
+                    if status == STATUS_GAME_OVER_PY:
+                        child.is_terminal = True
+                        child.terminal_values = evaluator.evaluate_terminal(child_gs)
+                    node.children[action_idx] = child
+                    node = child
+                    break  # New child is unexpanded — it's the leaf
+
+            # Terminal node: backup immediately (no NN needed)
+            if node.is_terminal:
+                assert node.terminal_values is not None
+                _backup(path, node, node.terminal_values)
+                continue
+
+            # Non-terminal leaf: apply virtual loss and queue for batch eval
+            _apply_virtual_loss(path, virtual_loss)
+
+            leaf_gs = GameState.from_buffer(
+                state_pool.row(node.state_idx), num_players
+            )
+            node.active_player_id = leaf_gs.get_active_player()
+            pending.append((path, node, leaf_gs))
+
+        # Batch evaluate all pending leaves
+        if not pending:
             continue
 
-        # Leaf node: evaluate with NN and expand
-        leaf_gs = GameState.from_buffer(
-            state_pool.row(node.state_idx), num_players
-        )
-        node.active_player_id = leaf_gs.get_active_player()
+        leaf_states = [gs for _, _, gs in pending]
+        results = evaluator.evaluate_batch(leaf_states)
 
-        policy_probs, values = evaluator.evaluate(leaf_gs)
-        leaf_mask = get_valid_action_mask(leaf_gs)
+        for (path, node, _leaf_gs), (policy_probs, values) in zip(
+            pending, results
+        ):
+            # Undo virtual loss before real backup
+            _undo_virtual_loss(path, virtual_loss)
 
-        # Expand the leaf (sets up arrays for future selection)
-        node.expand(policy_probs, leaf_mask, num_players=num_players,
-                    default_value=values)
+            # Expand the leaf (sets up arrays for future selection)
+            leaf_mask = get_valid_action_mask(_leaf_gs)
+            node.expand(policy_probs, leaf_mask, num_players=num_players,
+                        default_value=values)
 
-        # Backup
-        _backup(path, node, values)
+            # Real backup
+            _backup(path, node, values)
 
     return root
 
 
 def _backup(
-    path: list[tuple[MCTSNode, int, int]],
+    path: _Path,
     leaf: MCTSNode,
     values: np.ndarray,
 ) -> None:

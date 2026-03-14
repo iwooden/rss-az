@@ -20,7 +20,9 @@ from mcts.evaluator import (
 from mcts.node import MCTSNode
 from mcts.search import (
     _add_dirichlet_noise,
+    _apply_virtual_loss,
     _backup,
+    _undo_virtual_loss,
     get_action_probabilities,
     get_greedy_leaf_value,
     run_search,
@@ -85,6 +87,7 @@ class TestMCTSConfig:
         assert cfg.dirichlet_epsilon == 0.25
         assert cfg.temperature == 1.0
         assert cfg.num_players == 3
+        assert cfg.search_batch_size == 1
 
 
 # ---------------------------------------------------------------------------
@@ -682,3 +685,183 @@ class TestNNEvaluator:
 
         vals = evaluator.evaluate_terminal(state)
         np.testing.assert_array_almost_equal(vals, [1.0, 0.0, -1.0])
+
+    def test_evaluate_batch_single(self, game_state, evaluator):
+        """Batch of 1 should match single evaluate."""
+        single_policy, single_values = evaluator.evaluate(game_state)
+        batch_results = evaluator.evaluate_batch([game_state])
+
+        assert len(batch_results) == 1
+        np.testing.assert_array_almost_equal(batch_results[0][0], single_policy)
+        np.testing.assert_array_almost_equal(batch_results[0][1], single_values)
+
+    def test_evaluate_batch_multiple(self, game_state, evaluator):
+        """Batch of identical states should produce identical results."""
+        results = evaluator.evaluate_batch([game_state, game_state])
+
+        assert len(results) == 2
+        np.testing.assert_array_almost_equal(results[0][0], results[1][0])
+        np.testing.assert_array_almost_equal(results[0][1], results[1][1])
+
+    def test_evaluate_batch_empty(self, evaluator):
+        """Empty batch should return empty list."""
+        assert evaluator.evaluate_batch([]) == []
+
+    def test_evaluate_batch_shapes(self, game_state, evaluator):
+        """Batch results should have correct shapes."""
+        results = evaluator.evaluate_batch([game_state, game_state, game_state])
+
+        assert len(results) == 3
+        for policy, values in results:
+            assert policy.shape == (246,)
+            assert values.shape == (3,)
+            assert policy.sum() == pytest.approx(1.0, abs=1e-5)
+            assert (values >= -1.0).all()
+            assert (values <= 1.0).all()
+
+
+# ---------------------------------------------------------------------------
+# Virtual loss
+# ---------------------------------------------------------------------------
+
+class TestVirtualLoss:
+    def test_apply_and_undo_is_identity(self):
+        """Applying then undoing virtual loss should restore original state."""
+        node = MCTSNode(active_player_id=0, num_players=3)
+        node.visit_count = 5
+        node.value_sum = np.array([1.0, 0.5, -0.5], dtype=np.float32)
+        node.legal_actions = np.array([0, 1], dtype=np.int32)
+        node.priors = np.array([0.6, 0.4], dtype=np.float32)
+        node.visit_counts = np.array([3, 2], dtype=np.int32)
+        node.value_sums = np.array([
+            [0.6, 0.2, -0.4],
+            [0.4, 0.3, -0.1],
+        ], dtype=np.float32)
+
+        # Save originals
+        orig_vc = node.visit_count
+        orig_vs = node.value_sum.copy()
+        orig_vcs = node.visit_counts.copy()
+        orig_vss = node.value_sums.copy()
+
+        vl = np.full(3, -1.0, dtype=np.float32)
+        path = [(node, 0, 0)]
+
+        _apply_virtual_loss(path, vl)
+        # Should be modified
+        assert node.visit_count == orig_vc + 1
+        assert node.visit_counts[0] == orig_vcs[0] + 1
+
+        _undo_virtual_loss(path, vl)
+        # Should be restored
+        assert node.visit_count == orig_vc
+        np.testing.assert_array_almost_equal(node.value_sum, orig_vs)
+        np.testing.assert_array_equal(node.visit_counts, orig_vcs)
+        np.testing.assert_array_almost_equal(node.value_sums, orig_vss)
+
+    def test_virtual_loss_discourages_reselection(self):
+        """After virtual loss, PUCT should prefer a different action."""
+        node = MCTSNode(active_player_id=0, num_players=3)
+        node.visit_count = 2
+        node.legal_actions = np.array([0, 1], dtype=np.int32)
+        node.priors = np.array([0.5, 0.5], dtype=np.float32)
+        node.default_value = np.zeros(3, dtype=np.float32)
+        node.visit_counts = np.ones(2, dtype=np.int32)
+        node.value_sums = np.zeros((2, 3), dtype=np.float32)
+
+        # Equal priors, equal visits — selection is arbitrary
+        first_action, first_idx = select_child(node, c_puct=2.5)
+
+        # Apply virtual loss on the selected action
+        vl = np.full(3, -1.0, dtype=np.float32)
+        path = [(node, first_action, first_idx)]
+        _apply_virtual_loss(path, vl)
+
+        # Now the other action should be preferred
+        second_action, _ = select_child(node, c_puct=2.5)
+        assert second_action != first_action
+
+        _undo_virtual_loss(path, vl)
+
+
+# ---------------------------------------------------------------------------
+# Batched search
+# ---------------------------------------------------------------------------
+
+class TestBatchedSearch:
+    def test_batched_search_visit_count(self, game_state, evaluator):
+        """Batched search should produce correct total visit count."""
+        config = MCTSConfig(num_simulations=20, search_batch_size=4)
+        root = run_search(game_state, evaluator, config)
+
+        assert root.visit_count == 21  # 1 initial + 20 simulations
+        assert root.expanded()
+        assert len(root.children) > 0
+
+    def test_batched_search_action_probs(self, game_state, evaluator):
+        """Batched search should produce valid action probabilities."""
+        config = MCTSConfig(num_simulations=20, search_batch_size=4)
+        root = run_search(game_state, evaluator, config)
+        probs = get_action_probabilities(root, temperature=1.0, action_dim=config.action_dim)
+
+        assert probs.shape == (config.action_dim,)
+        assert probs.sum() == pytest.approx(1.0, abs=1e-5)
+        assert (probs >= 0).all()
+
+    def test_batched_search_greedy_value(self, game_state, evaluator):
+        """Batched search should produce valid A0GB values."""
+        config = MCTSConfig(num_simulations=50, search_batch_size=4)
+        root = run_search(game_state, evaluator, config)
+        val = get_greedy_leaf_value(root, num_players=config.num_players)
+
+        assert val.shape == (3,)
+        assert (val >= -1.0).all()
+        assert (val <= 1.0).all()
+
+    def test_batch_size_1_matches_unbatched(self, game_state, evaluator):
+        """batch_size=1 should produce identical results to default."""
+        seed = 42
+        config_b1 = MCTSConfig(num_simulations=20, search_batch_size=1)
+        config_default = MCTSConfig(num_simulations=20)
+
+        root_b1 = run_search(
+            game_state, evaluator, config_b1, rng=np.random.default_rng(seed)
+        )
+        root_default = run_search(
+            game_state, evaluator, config_default, rng=np.random.default_rng(seed)
+        )
+
+        assert root_b1.visit_count == root_default.visit_count
+        np.testing.assert_array_almost_equal(
+            root_b1.value_sum, root_default.value_sum
+        )
+
+    def test_large_batch_size_clamped(self, game_state, evaluator):
+        """batch_size > num_simulations should still work correctly."""
+        config = MCTSConfig(num_simulations=5, search_batch_size=16)
+        root = run_search(game_state, evaluator, config)
+
+        assert root.visit_count == 6  # 1 initial + 5 simulations
+        assert root.expanded()
+
+    def test_various_batch_sizes(self, game_state, evaluator):
+        """Search should work with various batch sizes."""
+        for bs in [2, 3, 5, 8]:
+            config = MCTSConfig(num_simulations=20, search_batch_size=bs)
+            root = run_search(game_state, evaluator, config)
+            assert root.visit_count == 21
+
+    def test_terminal_root_with_batching(self, evaluator):
+        """Batched search on game-over state should return immediately."""
+        state = GameState(3)
+        state.initialize_game(42)
+        TURN.set_phase(state, GamePhases.PHASE_GAME_OVER)
+        state.set_player_net_worth(0, 500)
+        state.set_player_net_worth(1, 300)
+        state.set_player_net_worth(2, 100)
+
+        config = MCTSConfig(num_simulations=20, search_batch_size=4)
+        root = run_search(state, evaluator, config)
+
+        assert root.visit_count == 1
+        assert root.is_terminal

@@ -46,6 +46,7 @@ class BenchmarkCommand(Command):
         ('num-runs=', 'r', 'Number of timed runs (default 10)'),
         ('num-players=', 'p', 'Number of players (default 3)'),
         ('device=', 'd', 'Torch device (default cpu)'),
+        ('batch-size=', 'b', 'Search batch size for leaf eval (default 1)'),
     ]
 
     def initialize_options(self):
@@ -53,11 +54,13 @@ class BenchmarkCommand(Command):
         self.num_runs = 10
         self.num_players = 3
         self.device = 'cpu'
+        self.batch_size = 1
 
     def finalize_options(self):
         self.num_simulations = int(self.num_simulations)
         self.num_runs = int(self.num_runs)
         self.num_players = int(self.num_players)
+        self.batch_size = int(self.batch_size)
 
     def run(self):
         from benchmarks.mcts_bench import run_mcts_benchmark
@@ -66,6 +69,7 @@ class BenchmarkCommand(Command):
             num_runs=self.num_runs,
             num_players=self.num_players,
             device=self.device,
+            search_batch_size=self.batch_size,
         )
 
 

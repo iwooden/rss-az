@@ -16,6 +16,7 @@ class MCTSConfig:
     dirichlet_epsilon: float = 0.25
     temperature: float = 1.0
     num_players: int = 3
+    search_batch_size: int = 1
     action_dim: int = field(init=False)
 
     def __post_init__(self) -> None:
@@ -35,6 +36,7 @@ class TrainingConfig:
     c_puct: float = 2.5
     dirichlet_alpha: float = 0.3
     dirichlet_epsilon: float = 0.25
+    search_batch_size: int = 1
 
     # --- Temperature Schedule ---
     # temp_initial for the first `temp_threshold` decision points (MCTS searches),
@@ -109,6 +111,7 @@ class TrainingConfig:
             dirichlet_epsilon=self.dirichlet_epsilon,
             temperature=self.temp_initial,
             num_players=self.num_players,
+            search_batch_size=self.search_batch_size,
         )
 
     def to_json(self) -> str:

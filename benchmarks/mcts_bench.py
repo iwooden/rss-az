@@ -24,6 +24,7 @@ def run_mcts_benchmark(
     num_runs: int = 10,
     num_players: int = 3,
     device: str = "cpu",
+    search_batch_size: int = 1,
 ) -> None:
     """Run MCTS benchmark and print timing results.
 
@@ -38,7 +39,10 @@ def run_mcts_benchmark(
     model.to(torch_device)
 
     evaluator = NNEvaluator(model, torch_device, num_players=num_players)
-    mcts_config = MCTSConfig(num_simulations=num_simulations, num_players=num_players)
+    mcts_config = MCTSConfig(
+        num_simulations=num_simulations, num_players=num_players,
+        search_batch_size=search_batch_size,
+    )
 
     # Create base game state
     base_state = GameState(num_players=num_players)
@@ -46,7 +50,8 @@ def run_mcts_benchmark(
 
     header = (
         f"MCTS Benchmark ({num_simulations} simulations, "
-        f"{num_runs} runs, {num_players} players, device={device})"
+        f"{num_runs} runs, {num_players} players, device={device}, "
+        f"batch={search_batch_size})"
     )
     print(header)
     print("=" * len(header))
