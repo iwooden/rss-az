@@ -197,6 +197,23 @@ def main() -> None:
             model.eval()
             records = []
             total_examples = 0
+            num_players = config.num_players
+            rank_totals = [0.0] * num_players
+
+            def _collect_record(record: object, game_idx: int) -> None:
+                nonlocal total_examples
+                buffer.add_examples(record.examples)  # type: ignore[union-attr]
+                records.append(record)
+                total_examples += len(record.examples)  # type: ignore[union-attr]
+                for rank, nw in enumerate(sorted(record.net_worths, reverse=True)):  # type: ignore[union-attr]
+                    rank_totals[rank] += nw
+                n = game_idx + 1
+                logger.update_self_play(
+                    games_done=n,
+                    total_examples=total_examples,
+                    avg_moves=total_examples / n,
+                    rank_net_worths=[t / n for t in rank_totals],
+                )
 
             logger.begin_self_play(epoch_num, config.num_epochs, config.games_per_epoch)
 
@@ -218,16 +235,7 @@ def main() -> None:
                             f"Timed out waiting for game result "
                             f"({alive}/{config.num_workers} workers alive)"
                         )
-                    buffer.add_examples(record.examples)
-                    records.append(record)
-                    total_examples += len(record.examples)
-
-                    avg_moves = total_examples / (game_idx + 1)
-                    logger.update_self_play(
-                        games_done=game_idx + 1,
-                        total_examples=total_examples,
-                        avg_moves=avg_moves,
-                    )
+                    _collect_record(record, game_idx)
             else:
                 assert evaluator is not None
                 for game_idx in range(config.games_per_epoch):
@@ -238,16 +246,7 @@ def main() -> None:
                         evaluator, config, game_seed, game_rng,
                         state_pool=state_pool,
                     )
-                    buffer.add_examples(record.examples)
-                    records.append(record)
-                    total_examples += len(record.examples)
-
-                    avg_moves = total_examples / (game_idx + 1)
-                    logger.update_self_play(
-                        games_done=game_idx + 1,
-                        total_examples=total_examples,
-                        avg_moves=avg_moves,
-                    )
+                    _collect_record(record, game_idx)
 
             logger.end_self_play()
 
@@ -255,13 +254,8 @@ def main() -> None:
             avg_game_moves = sum(r.total_moves for r in records) / len(records)
             avg_game_dur = sum(r.duration_secs for r in records) / len(records)
 
-            # Net worth by finishing rank (1st, 2nd, ..., last)
+            # Net worth by finishing rank (already accumulated in rank_totals)
             n_games = len(records)
-            num_players = config.num_players
-            rank_totals = [0.0] * num_players
-            for r in records:
-                for rank, nw in enumerate(sorted(r.net_worths, reverse=True)):
-                    rank_totals[rank] += nw
             rank_avgs = [t / n_games for t in rank_totals]
 
             net_worth_scalars = {

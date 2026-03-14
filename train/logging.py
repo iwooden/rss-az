@@ -54,6 +54,7 @@ class TrainingLogger:
         self._sp_games_done = 0
         self._sp_total_examples = 0
         self._sp_avg_moves = 0.0
+        self._sp_rank_net_worths: list[float] = []
 
         # Training state for panel building
         self._tr_epoch = 0
@@ -74,7 +75,7 @@ class TrainingLogger:
         self._sp_games_done = 0
         self._sp_total_examples = 0
         self._sp_avg_moves = 0.0
-        self._sp_current_move = 0
+        self._sp_rank_net_worths = []
         self._phase_start = time.perf_counter()
 
         self._live = Live(
@@ -89,10 +90,13 @@ class TrainingLogger:
         games_done: int,
         total_examples: int,
         avg_moves: float,
+        rank_net_worths: list[float] | None = None,
     ) -> None:
         self._sp_games_done = games_done
         self._sp_total_examples = total_examples
         self._sp_avg_moves = avg_moves
+        if rank_net_worths is not None:
+            self._sp_rank_net_worths = rank_net_worths
         if self._live is not None:
             self._live.update(self._build_self_play_panel())
 
@@ -112,6 +116,13 @@ class TrainingLogger:
             f"Avg moves/game: {self._sp_avg_moves:.1f}    "
             f"Rate: {rate:.1f} games/min\n"
         )
+        if self._sp_rank_net_worths:
+            labels = ["1st", "2nd", "3rd", "4th", "5th", "6th"]
+            parts = [
+                f"{labels[i]}=${v:,.0f}"
+                for i, v in enumerate(self._sp_rank_net_worths)
+            ]
+            lines.append(f"Net worth: {', '.join(parts)}\n")
         lines.append(f"Elapsed: {_format_duration(elapsed)}")
         return Panel(
             lines,
