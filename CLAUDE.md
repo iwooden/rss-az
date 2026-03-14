@@ -46,8 +46,8 @@ rss-az-cython2/
 ├── mcts/              # MCTS search for AlphaZero training
 │   ├── config.py      # Search hyperparameters (MCTSConfig)
 │   ├── node.py        # MCTSNode: tree node with visit stats
-│   ├── evaluator.py   # NN wrapper (state rotation, inference, value un-rotation)
-│   └── search.py      # PUCT selection, search loop, A0GB value targets
+│   ├── evaluator.py   # NN wrapper (state rotation, single/batch inference, value un-rotation)
+│   └── search.py      # PUCT selection, batched search with virtual loss, A0GB value targets
 ├── nn/                # Neural network models
 │   └── model_3p.py    # Residual MLP with policy + per-player value heads
 ├── train/             # Self-play training harness
@@ -210,11 +210,14 @@ Instead of using the root node's mean value (soft-Z) or the game outcome as trai
 ### Search Flow
 
 1. **Root setup:** Evaluate root state with NN, expand, add Dirichlet noise to priors
-2. **Per simulation:**
-   - **Select:** Traverse tree using PUCT until reaching unexpanded or terminal node
-   - **Expand:** Clone root state, replay actions along path, evaluate leaf with NN, create children
-   - **Backup:** Propagate canonical values up the tree
+2. **Per batch of simulations** (`search_batch_size` leaves per batch):
+   - **Select:** Traverse tree using PUCT until reaching unexpanded or terminal node. Apply **virtual loss** (pessimistic -1 values) along the selected path to discourage subsequent selections in the same batch from choosing the same path.
+   - Terminal nodes are backed up immediately without NN evaluation.
+   - **Batch evaluate:** All non-terminal leaves in the batch are evaluated in a single NN forward pass via `evaluate_batch()`.
+   - **Undo virtual loss + Expand + Backup:** Remove virtual loss, expand each leaf, propagate real values up the tree.
 3. **Output:** `get_action_probabilities(root, temperature)` converts visit counts to policy target
+
+**Virtual loss:** Each node on a selected path gets `visit_count += 1` and `value_sum += [-1, -1, ...]`. This makes the path look worse to PUCT, steering subsequent batch selections toward different leaves. Undone before real backup.
 
 **Memory efficiency:** States are NOT stored in tree nodes. The root state is cloned and actions replayed to reach each leaf.
 
@@ -236,9 +239,9 @@ from mcts.search import run_search, get_action_probabilities, get_greedy_leaf_va
 
 # Setup
 evaluator = NNEvaluator(model, device, num_players=3)
-config = MCTSConfig(num_simulations=800, c_puct=2.5)
+config = MCTSConfig(num_simulations=800, c_puct=2.5, search_batch_size=4)
 
-# Search
+# Search (batches 4 leaves per NN call → 200 inference calls instead of 800)
 root = run_search(game_state, evaluator, config)
 policy = get_action_probabilities(root, temperature=1.0, action_dim=config.action_dim)
 value_target = get_greedy_leaf_value(root, num_players=config.num_players)
@@ -268,6 +271,7 @@ Each epoch: (1) play N games via MCTS self-play → (2) store examples in replay
 | Parameter | Default | Notes |
 |-----------|---------|-------|
 | `num_simulations` | 800 | MCTS simulations per move |
+| `search_batch_size` | 1 | Leaves per NN call (virtual loss batching) |
 | `games_per_epoch` | 1000 | Self-play games per epoch |
 | `learning_rate` | 1e-3 | AdamW, cosine decay to `lr_min` |
 | `lr_min` | 1e-4 | Cosine schedule floor |
@@ -465,6 +469,7 @@ pytest tests/test_invest.py -v
 
 # Run MCTS benchmark
 .venv/bin/python setup.py benchmark --device=cuda
+.venv/bin/python setup.py benchmark --device=cuda --batch-size=4
 ```
 
 **Warning-free builds:** The build should produce no compiler warnings. If warnings appear, create a beads issue to fix them.
