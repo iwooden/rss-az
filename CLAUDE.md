@@ -52,14 +52,14 @@ rss-az-cython2/
 │   └── model_3p.py    # Residual MLP with policy + per-player value heads
 ├── train/             # Self-play training harness
 │   ├── config.py      # TrainingConfig (all hyperparameters)
-│   ├── self_play.py   # Game generation via MCTS
+│   ├── eval_server.py # Centralized GPU evaluator + RemoteEvaluator proxy
+│   ├── self_play.py   # Game generation via MCTS + worker process entry point
 │   ├── replay_buffer.py # Ring buffer for training examples
 │   ├── trainer.py     # Loss computation, optimizer, LR schedule
 │   ├── checkpoint.py  # Save/load model checkpoints
 │   ├── logging.py     # Rich live UI + Tensorboard integration
 │   ├── main.py        # Training loop orchestration
-│   ├── __main__.py    # python -m train entry point
-│   └── PLAN.md        # Architecture and design details
+│   └── __main__.py    # python -m train entry point
 ├── tests/             # Test suite
 │   ├── phases/        # Phase-specific tests
 │   ├── 18xx_games/    # Replay tests against 18xx.games engine
@@ -155,7 +155,7 @@ Static game constants:
 
 ## MCTS Search
 
-Pure-Python AlphaZero-style MCTS for 3-player games with sequential NN evaluation.
+Pure-Python AlphaZero-style MCTS for 3-player games.
 
 ### Architecture
 
@@ -249,7 +249,44 @@ value_target = get_greedy_leaf_value(root, num_players=config.num_players)
 
 ## Self-Play Training
 
-AlphaZero-style self-play training loop in `train/`. See `train/PLAN.md` for full architecture.
+AlphaZero-style self-play training loop in `train/`.
+
+### Multi-Process Self-Play Architecture
+
+Self-play uses a centralized evaluation server for GPU throughput:
+
+```
+┌──────────────────────────────────────────────────┐
+│  Main Process                                    │
+│  - Owns model, device, replay buffer, trainer    │
+│  - EvaluationServer thread (batched GPU inference)│
+│  - Spawns N worker processes                     │
+│  - Collects GameRecords, runs training           │
+└────────────────────┬─────────────────────────────┘
+                     │ N Pipe pairs (multiprocessing.Pipe)
+       ┌─────────────┼─────────────┐
+       ▼             ▼             ▼
+┌────────────┐ ┌────────────┐ ┌────────────┐
+│  Worker 0  │ │  Worker 1  │ │  Worker K  │
+│ play_game()│ │ play_game()│ │ play_game()│
+│ RemoteEval │ │ RemoteEval │ │ RemoteEval │
+└────────────┘ └────────────┘ └────────────┘
+```
+
+**Key design decisions:**
+- **Workers are processes** (not threads) because MCTS is CPU-bound — GIL would serialize them
+- **Evaluator is a thread** in the main process — the GIL is released during CUDA kernels, and the model stays in one process
+- **Plain `multiprocessing`** (not `torch.multiprocessing`) — avoids file descriptor exhaustion from shared tensor overhead on small arrays (~12KB per state)
+- **`spawn` context** — avoids CUDA fork issues
+- **Workers are daemon processes** — auto-killed on main process exit for clean Ctrl-C shutdown
+- **`num_workers=0`** falls back to single-process sequential self-play (useful for debugging)
+
+**Communication:** Workers send pre-rotated numpy arrays over `multiprocessing.Pipe`. The `EvaluationServer` thread polls all worker pipes, concatenates pending requests into one GPU batch, runs `model.forward()`, and dispatches results back. With 4 workers each sending batch-8 requests, the GPU sees batches of ~32 states.
+
+**Files:**
+- `train/eval_server.py` — `EvaluationServer` (thread) + `RemoteEvaluator` (worker-side proxy with same interface as `NNEvaluator`)
+- `train/self_play.py` — `play_game()` (takes an evaluator object) + `self_play_worker()` (worker process entry point)
+- `train/main.py` — Orchestration: spawns workers, feeds game seeds via `mp.Queue`, collects `GameRecord`s
 
 ### Training Loop
 
@@ -260,8 +297,11 @@ Each epoch: (1) play N games via MCTS self-play → (2) store examples in replay
 .venv/bin/python -m train
 
 # With options
-.venv/bin/python -m train --device cuda --games-per-epoch 100 --num-epochs 50
+.venv/bin/python -m train --device cuda --games-per-epoch 100 --num-workers 4 --search-batch-size 8
 .venv/bin/python -m train --config config.json --resume latest
+
+# Single-process mode (for debugging)
+.venv/bin/python -m train --num-workers 0 --games-per-epoch 10
 ```
 
 ### Training Configuration (`train/config.py`)
@@ -272,6 +312,7 @@ Each epoch: (1) play N games via MCTS self-play → (2) store examples in replay
 |-----------|---------|-------|
 | `num_simulations` | 800 | MCTS simulations per move |
 | `search_batch_size` | 1 | Leaves per NN call (virtual loss batching) |
+| `num_workers` | 4 | Self-play worker processes (0 = single-process) |
 | `games_per_epoch` | 1000 | Self-play games per epoch |
 | `learning_rate` | 1e-3 | AdamW, cosine decay to `lr_min` |
 | `lr_min` | 1e-4 | Cosine schedule floor |
@@ -281,6 +322,10 @@ Each epoch: (1) play N games via MCTS self-play → (2) store examples in replay
 | `batch_size` | 256 | Training batch size |
 
 `TrainingConfig.to_mcts_config()` creates an `MCTSConfig` from the relevant fields.
+
+**Replay buffer memory** (3 players, 500K capacity): states ~5.7GB + masks ~470MB + policies ~470MB + values ~6MB = **~6.6 GB total**. Reduce `buffer_capacity` if memory is tight.
+
+**Checkpointing:** The replay buffer is NOT checkpointed (too large). On resume, it starts empty and refills during self-play. This is standard AlphaZero practice.
 
 ### Training Examples
 
@@ -303,10 +348,18 @@ At each decision point during self-play, a `TrainingExample` is stored:
 ```python
 from train.config import TrainingConfig
 from train.self_play import play_game, GameRecord
+from train.eval_server import EvaluationServer, RemoteEvaluator
 from train.replay_buffer import ReplayBuffer, TrainingExample
 from train.trainer import Trainer
 from train.checkpoint import save_checkpoint, load_checkpoint, find_latest_checkpoint
 from train.logging import TrainingLogger
+from mcts.evaluator import NNEvaluator
+
+# Single-process usage:
+evaluator = NNEvaluator(model, device, num_players=3)
+record = play_game(evaluator, config, game_seed=42, rng=rng)
+
+# Multi-process: play_game is called inside self_play_worker with a RemoteEvaluator
 ```
 
 ## State Representation
@@ -464,8 +517,9 @@ pytest tests/test_invest.py -v
 .venv/bin/python setup.py clean
 
 # Run self-play training (requires Cython build first)
-.venv/bin/python -m train --device cuda
+.venv/bin/python -m train --device cuda --num-workers 4 --search-batch-size 8
 .venv/bin/python -m train --config config.json --resume latest
+.venv/bin/python -m train --num-workers 0 --games-per-epoch 10  # single-process debug
 
 # Run MCTS benchmark
 .venv/bin/python setup.py benchmark --device=cuda
@@ -544,7 +598,7 @@ pytest tests/18xx_games/test_replay.py -v
 | Fix bug | Tests first | Phase/entity files |
 | MCTS / search | `mcts/search.py`, `mcts/node.py` | `mcts/evaluator.py`, `mcts/config.py` |
 | NN model | `nn/model_3p.py` | `mcts/evaluator.py` |
-| Self-play / training | `train/main.py`, `train/config.py` | `train/self_play.py`, `train/trainer.py`, `train/PLAN.md` |
+| Self-play / training | `train/main.py`, `train/config.py` | `train/self_play.py`, `train/eval_server.py`, `train/trainer.py` |
 
 ## Documentation
 
@@ -552,7 +606,6 @@ pytest tests/18xx_games/test_replay.py -v
 - **RULES.md**: Complete game rules (24KB)
 - **VECTORS.md**: State/action vector layouts with exact offsets
 - **RSS.pdf**: Original board game rulebook
-- **train/PLAN.md**: Training harness architecture and component design
 
 ---
 
