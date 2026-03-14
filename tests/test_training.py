@@ -424,6 +424,194 @@ class TestSelfPlay:
             assert (ex.value_target >= -1.0 - 1e-5).all()
             assert (ex.value_target <= 1.0 + 1e-5).all()
 
+    def test_remote_evaluator_matches_local(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        """RemoteEvaluator through EvaluationServer produces same results as NNEvaluator."""
+        from multiprocessing import Pipe
+
+        from mcts.evaluator import NNEvaluator
+
+        from core.state import GameState
+        from train.eval_server import EvaluationServer, RemoteEvaluator
+
+        device = torch.device("cpu")
+        small_model.eval()
+        num_players = tiny_config.num_players
+
+        # Set up a game state to evaluate
+        state = GameState(num_players)
+        state.initialize_game(seed=42)
+
+        # Local evaluation
+        local_eval = NNEvaluator(small_model, device, num_players=num_players)
+        local_policy, local_values = local_eval.evaluate(state)
+
+        # Remote evaluation through server
+        server_conn, worker_conn = Pipe()
+        server = EvaluationServer(small_model, device, [server_conn])
+        server.start()
+        try:
+            remote_eval = RemoteEvaluator(worker_conn, num_players)
+            remote_policy, remote_values = remote_eval.evaluate(state)
+        finally:
+            server.stop()
+            server_conn.close()
+            worker_conn.close()
+
+        np.testing.assert_allclose(remote_policy, local_policy, atol=1e-6)
+        np.testing.assert_allclose(remote_values, local_values, atol=1e-6)
+
+    def test_remote_evaluator_batch(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        """RemoteEvaluator.evaluate_batch matches NNEvaluator.evaluate_batch."""
+        from multiprocessing import Pipe
+
+        from mcts.evaluator import NNEvaluator
+
+        from core.driver import DRIVER
+        from core.state import GameState
+        from train.eval_server import EvaluationServer, RemoteEvaluator
+
+        device = torch.device("cpu")
+        small_model.eval()
+        num_players = tiny_config.num_players
+
+        # Create a few different game states
+        states = []
+        state = GameState(num_players)
+        state.initialize_game(seed=42)
+        states.append(state)
+        # Advance a few actions to get different states
+        for seed in [99, 77]:
+            s = GameState(num_players)
+            s.initialize_game(seed=seed)
+            legal = DRIVER.get_legal_moves(s)
+            action = int(np.argmax(legal))
+            DRIVER.apply_action(s, action)
+            states.append(s)
+
+        # Local batch evaluation
+        local_eval = NNEvaluator(small_model, device, num_players=num_players)
+        local_results = local_eval.evaluate_batch(states)
+
+        # Remote batch evaluation
+        server_conn, worker_conn = Pipe()
+        server = EvaluationServer(small_model, device, [server_conn])
+        server.start()
+        try:
+            remote_eval = RemoteEvaluator(worker_conn, num_players)
+            remote_results = remote_eval.evaluate_batch(states)
+        finally:
+            server.stop()
+            server_conn.close()
+            worker_conn.close()
+
+        assert len(remote_results) == len(local_results)
+        for (rp, rv), (lp, lv) in zip(remote_results, local_results):
+            np.testing.assert_allclose(rp, lp, atol=1e-6)
+            np.testing.assert_allclose(rv, lv, atol=1e-6)
+
+    def test_play_game_with_remote_evaluator(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        """play_game produces valid results when using RemoteEvaluator."""
+        from multiprocessing import Pipe
+
+        from train.eval_server import EvaluationServer, RemoteEvaluator
+
+        device = torch.device("cpu")
+        small_model.eval()
+
+        server_conn, worker_conn = Pipe()
+        server = EvaluationServer(small_model, device, [server_conn])
+        server.start()
+        try:
+            remote_eval = RemoteEvaluator(worker_conn, tiny_config.num_players)
+            rng = np.random.default_rng(42)
+            record = play_game(remote_eval, tiny_config, game_seed=123, rng=rng)
+        finally:
+            server.stop()
+            server_conn.close()
+            worker_conn.close()
+
+        assert record.total_moves > 0
+        assert len(record.examples) == record.total_moves
+        assert len(record.net_worths) == tiny_config.num_players
+        for ex in record.examples:
+            assert abs(ex.policy_target.sum() - 1.0) < 1e-5
+
+    def test_multiprocess_workers(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        """End-to-end test: spawn actual worker processes, play games, collect results."""
+        import multiprocessing as mp
+
+        from train.eval_server import EvaluationServer
+        from train.self_play import self_play_worker
+
+        device = torch.device("cpu")
+        small_model.eval()
+        num_workers = 2
+        games_per_worker = 1  # 2 games total
+
+        ctx = mp.get_context("spawn")
+        task_queue = ctx.Queue()
+        result_queue = ctx.Queue()
+
+        server_conns = []
+        worker_conns = []
+        for _ in range(num_workers):
+            s_conn, w_conn = ctx.Pipe()
+            server_conns.append(s_conn)
+            worker_conns.append(w_conn)
+
+        server = EvaluationServer(small_model, device, server_conns)
+        server.start()
+
+        workers = []
+        for i in range(num_workers):
+            p = ctx.Process(
+                target=self_play_worker,
+                args=(worker_conns[i], task_queue, result_queue, tiny_config),
+                daemon=True,
+            )
+            p.start()
+            workers.append(p)
+
+        for conn in worker_conns:
+            conn.close()
+
+        try:
+            # Feed game seeds
+            total_games = num_workers * games_per_worker
+            for i in range(total_games):
+                task_queue.put((42 + i, 100 + i))
+
+            # Collect results
+            records = []
+            for _ in range(total_games):
+                record = result_queue.get(timeout=120.0)
+                records.append(record)
+
+            assert len(records) == total_games
+            for record in records:
+                assert record.total_moves > 0
+                assert len(record.examples) == record.total_moves
+                assert len(record.net_worths) == tiny_config.num_players
+        finally:
+            # Clean shutdown
+            for _ in workers:
+                task_queue.put(None)
+            server.stop()
+            for conn in server_conns:
+                conn.close()
+            for w in workers:
+                w.join(timeout=5.0)
+                if w.is_alive():
+                    w.terminate()
+
 
 # ---------------------------------------------------------------------------
 # End-to-End Integration Test
