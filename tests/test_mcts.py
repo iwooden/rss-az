@@ -270,7 +270,7 @@ class TestMCTSNode:
         assert node.active_player_id == 0
         assert not node.is_terminal
         assert not node.expanded()
-        assert node.state is None
+        assert node.state_idx == -1
         assert node.terminal_values is None
         assert node.legal_actions is None
         assert node.priors is None
@@ -575,18 +575,16 @@ class TestMCTSSearch:
         actual = get_greedy_leaf_value(root, num_players=config.num_players)
         np.testing.assert_array_almost_equal(actual, expected)
 
-    def test_nodes_have_states(self, search_root, game_state):
-        """Visited nodes in the tree should have stored game states."""
+    def test_nodes_have_state_indices(self, search_root):
+        """Visited nodes in the tree should have valid state pool indices."""
         root, _ = search_root
 
-        # Root has state
-        assert root.state is not None
-        assert root.state.shape == game_state._array.shape
+        # Root has state index 0 (first allocated)
+        assert root.state_idx == 0
 
-        # All visited children have states
+        # All visited children have valid state indices
         for child in root.children.values():
-            assert child.state is not None
-            assert child.state.shape == game_state._array.shape
+            assert child.state_idx >= 0
 
     def test_lazy_expansion_fewer_children(self, search_root):
         """Lazy expansion creates fewer children than legal actions."""

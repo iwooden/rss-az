@@ -455,27 +455,50 @@ cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil:
     return c
 
 # =============================================================================
+# CACHED LAYOUT TABLES (computed once, reused by all GameState instances)
+# =============================================================================
+
+# Indexed by num_players (slots 0-1 unused, 2-6 valid)
+cdef StateLayout _cached_layouts[7]
+cdef TurnStateOffsets _cached_turns[7]
+cdef PlayerFieldOffsets _cached_player_fields[7]
+cdef CorpFieldOffsets _cached_corp_fields[1]
+
+cdef int _npl_init
+_cached_corp_fields[0] = compute_corp_field_offsets()
+for _npl_init in range(2, 7):
+    _cached_layouts[_npl_init] = compute_layout(_npl_init)
+    _cached_turns[_npl_init] = compute_turn_offsets(_npl_init)
+    _cached_player_fields[_npl_init] = compute_player_field_offsets(_npl_init)
+
+
+# =============================================================================
 # GAME STATE CLASS
 # =============================================================================
 
 cdef class GameState:
     """
     Game state container.
-    
+
     Holds the raw memory buffer and layout information.
     Logic is delegated to Entity handles and Phase classes.
     """
-    def __cinit__(self, unsigned int num_players):
+    def __cinit__(self, unsigned int num_players, bint _alloc=True):
         if num_players < 2 or num_players > GameConstants.MAX_PLAYERS:
             raise ValueError(f"num_players must be 2-{GameConstants.MAX_PLAYERS}")
 
         self._num_players = num_players
-        
-        # Compute layouts
-        self._layout = compute_layout(num_players)
-        self._turn_offsets = compute_turn_offsets(num_players)
-        self._player_fields = compute_player_field_offsets(num_players)
-        self._corp_fields = compute_corp_field_offsets()
+
+        # Look up precomputed layouts (struct copy, ~160 bytes)
+        self._layout = _cached_layouts[num_players]
+        self._turn_offsets = _cached_turns[num_players]
+        self._player_fields = _cached_player_fields[num_players]
+        self._corp_fields = _cached_corp_fields[0]
+        self._turn = self._turn_offsets
+
+        if not _alloc:
+            # Caller will set _array and _data (used by from_buffer)
+            return
 
         # Allocate array (zero-initialized)
         self._array = np.zeros(self._layout.total_size, dtype=np.float32)
@@ -490,9 +513,6 @@ cdef class GameState:
         for i in range(<int>GameConstants.NUM_COMPANIES):
             self._data[self._layout.hidden_company_owner_ids_offset + i] = -1.0
 
-        # Store turn offsets for convenience
-        self._turn = self._turn_offsets
-
     @staticmethod
     def from_array(array, int num_players):
         """Reconstruct GameState from raw numpy array.
@@ -506,6 +526,26 @@ cdef class GameState:
         """
         state = GameState(num_players)
         np.copyto(state._array, array)
+        return state
+
+    @staticmethod
+    def from_buffer(buffer, int num_players):
+        """Wrap an existing numpy array as backing store (zero-copy).
+
+        The GameState will read/write directly into the provided buffer.
+        No array allocation occurs. Caller must ensure the buffer outlives
+        the GameState.
+
+        Args:
+            buffer: numpy float32 array of correct size (not copied)
+            num_players: number of players (required for layout lookup)
+
+        Returns:
+            GameState backed by the provided buffer
+        """
+        state = GameState(num_players, _alloc=False)
+        state._array = buffer
+        state._data = <float*>cnp.PyArray_DATA(buffer)
         return state
 
     # =========================================================================

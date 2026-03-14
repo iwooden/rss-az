@@ -22,7 +22,7 @@ class MCTSNode:
         active_player_id: The player who acts at this node.
         children: Mapping from action index to child MCTSNode (visited only).
         is_terminal: Whether this node represents a game-over state.
-        state: Game state array stored at this node, shape (total_size,).
+        state_idx: Index into the StatePool matrix (-1 if unassigned).
         terminal_values: Cached terminal values for game-over nodes.
         legal_actions: Sorted int array of legal action indices, shape (N,).
         priors: NN policy priors for legal actions, shape (N,).
@@ -40,7 +40,7 @@ class MCTSNode:
         "active_player_id",
         "children",
         "is_terminal",
-        "state",
+        "state_idx",
         "terminal_values",
         "legal_actions",
         "priors",
@@ -62,7 +62,7 @@ class MCTSNode:
         self.active_player_id: int = active_player_id
         self.children: dict[int, MCTSNode] = {}
         self.is_terminal: bool = is_terminal
-        self.state: np.ndarray | None = None
+        self.state_idx: int = -1
         self.terminal_values: np.ndarray | None = None
         self.legal_actions: np.ndarray | None = None
         self.priors: np.ndarray | None = None

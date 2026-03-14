@@ -20,6 +20,7 @@ from train.checkpoint import (
 from train.config import TrainingConfig
 from train.logging import TrainingLogger
 from train.replay_buffer import ReplayBuffer
+from mcts.search import StatePool
 from train.self_play import play_game
 from train.trainer import Trainer
 
@@ -102,6 +103,11 @@ def main() -> None:
     )
     logger = TrainingLogger(config.tensorboard_dir)
 
+    # --- State pool (reused across all MCTS searches) ---
+    from core.state import get_layout
+    total_state_size = get_layout(config.num_players).total_size
+    state_pool = StatePool(config.num_simulations + 1, total_state_size)
+
     # --- Resume ---
     start_epoch = 0
     if args.resume:
@@ -153,7 +159,8 @@ def main() -> None:
                 )
 
             record = play_game(
-                model, device, config, game_seed, game_rng, on_move=_on_move,
+                model, device, config, game_seed, game_rng,
+                on_move=_on_move, state_pool=state_pool,
             )
             buffer.add_examples(record.examples)
             records.append(record)

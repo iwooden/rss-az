@@ -12,7 +12,7 @@ import torch
 from core.driver import DRIVER, STATUS_GAME_OVER_PY
 from core.state import GameState
 from mcts.evaluator import NNEvaluator, rotate_visible_state
-from mcts.search import get_action_probabilities, get_greedy_leaf_value, run_search
+from mcts.search import StatePool, get_action_probabilities, get_greedy_leaf_value, run_search
 from train.config import TrainingConfig
 from train.replay_buffer import TrainingExample
 
@@ -34,6 +34,7 @@ def play_game(
     game_seed: int,
     rng: np.random.Generator,
     on_move: Callable[[int], None] | None = None,
+    state_pool: StatePool | None = None,
 ) -> GameRecord:
     """Play one self-play game, returning training examples.
 
@@ -42,6 +43,8 @@ def play_game(
     Args:
         on_move: Optional callback invoked after each decision point
             with the current move count. Used for live UI updates.
+        state_pool: Optional pre-allocated StatePool for MCTS node states.
+            Reused across searches within the game and across games.
     """
     t0 = time.perf_counter()
 
@@ -59,7 +62,7 @@ def play_game(
         legal_mask = DRIVER.get_legal_moves(state)
 
         # MCTS search
-        root = run_search(state, evaluator, mcts_config, rng)
+        root = run_search(state, evaluator, mcts_config, rng, state_pool=state_pool)
 
         # Temperature schedule
         temp = config.temp_initial if move_count < config.temp_threshold else config.temp_final

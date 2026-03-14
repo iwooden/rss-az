@@ -5,7 +5,7 @@ Implements AlphaZero-style MCTS for multiplayer games:
 - Lazy node expansion (children allocated on first visit only)
 - Dirichlet noise at the root for exploration
 - A0GB greedy backup for value targets (Willemsen et al., 2020)
-- Node-local game state storage (no replay from root)
+- Pre-allocated state pool for zero per-node allocation
 """
 
 from __future__ import annotations
@@ -17,6 +17,43 @@ import numpy as np
 
 from train.config import MCTSConfig
 from mcts.node import MCTSNode
+
+
+class StatePool:
+    """Pre-allocated matrix for MCTS node game states.
+
+    Created once and reused across all MCTS searches for the training
+    lifetime. Each row stores one node's full game state. reset() is
+    called at the start of each run_search to reuse the same memory.
+    """
+
+    __slots__ = ("states", "_next")
+
+    def __init__(self, capacity: int, state_size: int) -> None:
+        self.states = np.zeros((capacity, state_size), dtype=np.float32)
+        self._next = 0
+
+    def reset(self) -> None:
+        """Reset the write cursor for a new search."""
+        self._next = 0
+
+    def alloc(self, source: np.ndarray) -> int:
+        """Copy source array into the next pool row, return its index."""
+        idx = self._next
+        self.states[idx] = source
+        self._next += 1
+        return idx
+
+    def alloc_from_row(self, src_idx: int) -> int:
+        """Copy an existing pool row to the next slot, return the new index."""
+        idx = self._next
+        self.states[idx] = self.states[src_idx]
+        self._next += 1
+        return idx
+
+    def row(self, idx: int) -> np.ndarray:
+        """Return a view (not copy) of the given pool row."""
+        return self.states[idx]
 
 
 def select_child(node: MCTSNode, c_puct: float) -> tuple[int, int]:
@@ -68,11 +105,12 @@ def run_search(
     evaluator: Any,
     config: MCTSConfig,
     rng: np.random.Generator | None = None,
+    state_pool: StatePool | None = None,
 ) -> MCTSNode:
     """Run MCTS search from the given root state.
 
-    Each node stores its own game state and per-action arrays for vectorized
-    PUCT selection. Child nodes are created lazily on first visit.
+    Each node references a row in the state pool and has per-action arrays
+    for vectorized PUCT selection. Child nodes are created lazily on first visit.
 
     Args:
         root_state: GameState object to search from.
@@ -80,6 +118,9 @@ def run_search(
         config: Search hyperparameters.
         rng: Optional numpy random Generator for Dirichlet noise.
             If None, creates an unseeded generator.
+        state_pool: Optional pre-allocated StatePool for node state storage.
+            If None, a temporary pool is created. For training, pass a
+            persistent pool to avoid per-search allocation.
 
     Returns:
         The root MCTSNode with search statistics populated.
@@ -91,6 +132,13 @@ def run_search(
 
     num_players = config.num_players
 
+    # Set up state pool
+    if state_pool is None:
+        from core.state import get_layout
+        total_size = get_layout(num_players).total_size
+        state_pool = StatePool(config.num_simulations + 1, total_size)
+    state_pool.reset()
+
     # Check if root state is terminal
     is_terminal = root_state.get_phase() == GamePhases.PHASE_GAME_OVER
 
@@ -100,7 +148,7 @@ def run_search(
         num_players=num_players,
         is_terminal=is_terminal,
     )
-    root.state = root_state._array.copy()
+    root.state_idx = state_pool.alloc(root_state._array)
 
     if is_terminal:
         values = evaluator.evaluate_terminal(root_state)
@@ -141,15 +189,18 @@ def run_search(
                 # Follow existing child
                 node = node.children[action_idx]
             else:
-                # First visit: create child node with state
+                # First visit: create child node with state from pool
                 assert node.priors is not None
                 child = MCTSNode(
                     prior=float(node.priors[array_idx]),
                     num_players=num_players,
                 )
-                child_gs = GameState.from_array(node.state, num_players)
+                # Copy parent state to new pool row, apply action in-place
+                child.state_idx = state_pool.alloc_from_row(node.state_idx)
+                child_gs = GameState.from_buffer(
+                    state_pool.row(child.state_idx), num_players
+                )
                 status = DRIVER.apply_action(child_gs, action_idx)
-                child.state = child_gs._array
                 child.active_player_id = child_gs.get_active_player()
                 if status == STATUS_GAME_OVER_PY:
                     child.is_terminal = True
@@ -165,7 +216,9 @@ def run_search(
             continue
 
         # Leaf node: evaluate with NN and expand
-        leaf_gs = GameState.from_array(node.state, num_players)
+        leaf_gs = GameState.from_buffer(
+            state_pool.row(node.state_idx), num_players
+        )
         node.active_player_id = leaf_gs.get_active_player()
 
         policy_probs, values = evaluator.evaluate(leaf_gs)
