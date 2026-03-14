@@ -144,7 +144,17 @@ def main() -> None:
             game_seed = int(master_rng.integers(0, 2**31))
             game_rng = np.random.default_rng(master_rng.integers(0, 2**63))
 
-            record = play_game(model, device, config, game_seed, game_rng)
+            def _on_move(move: int) -> None:
+                logger.update_self_play(
+                    games_done=game_idx,
+                    total_examples=total_examples,
+                    avg_moves=total_examples / max(game_idx, 1),
+                    current_game_move=move,
+                )
+
+            record = play_game(
+                model, device, config, game_seed, game_rng, on_move=_on_move,
+            )
             buffer.add_examples(record.examples)
             records.append(record)
             total_examples += len(record.examples)

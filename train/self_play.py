@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -32,10 +33,15 @@ def play_game(
     config: TrainingConfig,
     game_seed: int,
     rng: np.random.Generator,
+    on_move: Callable[[int], None] | None = None,
 ) -> GameRecord:
     """Play one self-play game, returning training examples.
 
     The model must be in eval() mode before calling this function.
+
+    Args:
+        on_move: Optional callback invoked after each decision point
+            with the current move count. Used for live UI updates.
     """
     t0 = time.perf_counter()
 
@@ -78,6 +84,9 @@ def play_game(
         action_idx = int(rng.choice(config.action_dim, p=policy))
         status = DRIVER.apply_action(state, action_idx)
         move_count += 1
+
+        if on_move is not None:
+            on_move(move_count)
 
         if status == STATUS_GAME_OVER_PY:
             break
