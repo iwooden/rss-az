@@ -514,12 +514,14 @@ class TestCLIOverrides:
             "--games-per-epoch", "5",
             "--num-epochs", "3",
             "--num-simulations", "10",
+            "--search-batch-size", "4",
             "--seed", "99",
         ])
         _apply_overrides(config, args)
         assert config.games_per_epoch == 5
         assert config.num_epochs == 3
         assert config.num_simulations == 10
+        assert config.search_batch_size == 4
         assert config.seed == 99
 
     def test_no_overrides_leaves_defaults(self) -> None:

@@ -39,6 +39,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--games-per-epoch", type=int)
     parser.add_argument("--num-epochs", type=int)
     parser.add_argument("--num-simulations", type=int)
+    parser.add_argument("--search-batch-size", type=int)
     parser.add_argument("--checkpoint-dir", type=str)
     parser.add_argument("--tensorboard-dir", type=str)
     parser.add_argument("--seed", type=int)
@@ -53,6 +54,8 @@ def _apply_overrides(config: TrainingConfig, args: argparse.Namespace) -> None:
         config.num_epochs = args.num_epochs
     if args.num_simulations is not None:
         config.num_simulations = args.num_simulations
+    if args.search_batch_size is not None:
+        config.search_batch_size = args.search_batch_size
     if args.checkpoint_dir is not None:
         config.checkpoint_dir = args.checkpoint_dir
     if args.tensorboard_dir is not None:
