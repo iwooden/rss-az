@@ -399,10 +399,13 @@ class TestSelfPlay:
     def test_play_game_produces_valid_record(
         self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
     ) -> None:
+        from mcts.evaluator import NNEvaluator
+
         device = torch.device("cpu")
         small_model.eval()
+        evaluator = NNEvaluator(small_model, device, num_players=tiny_config.num_players)
         rng = np.random.default_rng(42)
-        record = play_game(small_model, device, tiny_config, game_seed=123, rng=rng)
+        record = play_game(evaluator, tiny_config, game_seed=123, rng=rng)
 
         assert record.total_moves > 0
         assert len(record.examples) == record.total_moves
@@ -434,9 +437,12 @@ class TestEndToEnd:
         device = torch.device("cpu")
 
         # Self-play
+        from mcts.evaluator import NNEvaluator
+
         small_model.eval()
+        evaluator = NNEvaluator(small_model, device, num_players=tiny_config.num_players)
         rng = np.random.default_rng(42)
-        record = play_game(small_model, device, tiny_config, game_seed=1, rng=rng)
+        record = play_game(evaluator, tiny_config, game_seed=1, rng=rng)
 
         # Buffer
         buf = ReplayBuffer(
@@ -472,7 +478,7 @@ class TestLogging:
 
         logger.begin_self_play(epoch=1, num_epochs=2, total_games=1)
         logger.update_self_play(
-            games_done=1, total_examples=50, avg_moves=50.0, current_game_move=0
+            games_done=1, total_examples=50, avg_moves=50.0
         )
         logger.end_self_play()
 

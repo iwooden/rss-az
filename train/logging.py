@@ -54,7 +54,6 @@ class TrainingLogger:
         self._sp_games_done = 0
         self._sp_total_examples = 0
         self._sp_avg_moves = 0.0
-        self._sp_current_move = 0
 
         # Training state for panel building
         self._tr_epoch = 0
@@ -90,12 +89,10 @@ class TrainingLogger:
         games_done: int,
         total_examples: int,
         avg_moves: float,
-        current_game_move: int,
     ) -> None:
         self._sp_games_done = games_done
         self._sp_total_examples = total_examples
         self._sp_avg_moves = avg_moves
-        self._sp_current_move = current_game_move
         if self._live is not None:
             self._live.update(self._build_self_play_panel())
 
@@ -107,16 +104,15 @@ class TrainingLogger:
     def _build_self_play_panel(self) -> Panel:
         elapsed = time.perf_counter() - self._phase_start
         bar = _progress_bar(self._sp_games_done, self._sp_total_games)
+        rate = self._sp_games_done / max(elapsed, 0.01) * 60
         lines = Text()
         lines.append(f"Games  {self._sp_games_done}/{self._sp_total_games}  {bar}\n")
         lines.append(
             f"Examples: {self._sp_total_examples:,}    "
-            f"Avg moves/game: {self._sp_avg_moves:.1f}\n"
+            f"Avg moves/game: {self._sp_avg_moves:.1f}    "
+            f"Rate: {rate:.1f} games/min\n"
         )
-        lines.append(
-            f"Current game: move {self._sp_current_move}    "
-            f"Elapsed: {_format_duration(elapsed)}"
-        )
+        lines.append(f"Elapsed: {_format_duration(elapsed)}")
         return Panel(
             lines,
             title=f"Epoch {self._sp_epoch}/{self._sp_num_epochs} \u2014 Self-Play",
@@ -187,6 +183,11 @@ class TrainingLogger:
         table.add_column()
         table.add_row("Players", str(config.num_players))
         table.add_row("MCTS simulations", str(config.num_simulations))
+        table.add_row("Search batch size", str(config.search_batch_size))
+        table.add_row(
+            "Workers",
+            str(config.num_workers) if config.num_workers > 0 else "single-process",
+        )
         table.add_row("Games/epoch", f"{config.games_per_epoch:,}")
         table.add_row("Training steps/epoch", f"{config.training_steps_per_epoch:,}")
         table.add_row("Batch size", str(config.batch_size))

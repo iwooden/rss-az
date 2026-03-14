@@ -37,6 +37,7 @@ class TrainingConfig:
     dirichlet_alpha: float = 0.3
     dirichlet_epsilon: float = 0.25
     search_batch_size: int = 1
+    num_workers: int = 4
 
     # --- Temperature Schedule ---
     # temp_initial for the first `temp_threshold` decision points (MCTS searches),

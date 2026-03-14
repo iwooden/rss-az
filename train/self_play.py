@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+import queue
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
+from multiprocessing.connection import Connection
+from typing import Any
 
 import numpy as np
-import torch
 
 from core.driver import DRIVER, STATUS_GAME_OVER_PY
 from core.state import GameState
-from mcts.evaluator import NNEvaluator, rotate_visible_state
+from mcts.evaluator import rotate_visible_state
 from mcts.search import StatePool, get_action_probabilities, get_greedy_leaf_value, run_search
 from train.config import TrainingConfig
 from train.replay_buffer import TrainingExample
@@ -28,21 +29,16 @@ class GameRecord:
 
 
 def play_game(
-    model: torch.nn.Module,
-    device: torch.device,
+    evaluator: Any,
     config: TrainingConfig,
     game_seed: int,
     rng: np.random.Generator,
-    on_move: Callable[[int], None] | None = None,
     state_pool: StatePool | None = None,
 ) -> GameRecord:
     """Play one self-play game, returning training examples.
 
-    The model must be in eval() mode before calling this function.
-
     Args:
-        on_move: Optional callback invoked after each decision point
-            with the current move count. Used for live UI updates.
+        evaluator: NNEvaluator or RemoteEvaluator for leaf evaluation.
         state_pool: Optional pre-allocated StatePool for MCTS node states.
             Reused across searches within the game and across games.
     """
@@ -51,7 +47,6 @@ def play_game(
     state = GameState(config.num_players)
     state.initialize_game(seed=game_seed)
 
-    evaluator = NNEvaluator(model, device, num_players=config.num_players)
     mcts_config = config.to_mcts_config()
 
     examples: list[TrainingExample] = []
@@ -88,9 +83,6 @@ def play_game(
         status = DRIVER.apply_action(state, action_idx)
         move_count += 1
 
-        if on_move is not None:
-            on_move(move_count)
-
         if status == STATUS_GAME_OVER_PY:
             break
 
@@ -104,3 +96,41 @@ def play_game(
         net_worths=net_worths,
         duration_secs=time.perf_counter() - t0,
     )
+
+
+def self_play_worker(
+    eval_conn: Connection,
+    task_queue: Any,
+    result_queue: Any,
+    config: TrainingConfig,
+) -> None:
+    """Worker process: play games using remote NN evaluation.
+
+    Loops until a None sentinel is received on the task queue
+    or the eval connection breaks (shutdown).
+    """
+    from train.eval_server import RemoteEvaluator
+
+    evaluator = RemoteEvaluator(eval_conn, config.num_players)
+
+    from core.state import get_layout
+
+    total_size = get_layout(config.num_players).total_size
+    state_pool = StatePool(config.num_simulations + 1, total_size)
+
+    try:
+        while True:
+            try:
+                task = task_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if task is None:
+                break
+            game_seed, rng_seed = task
+            rng = np.random.default_rng(rng_seed)
+            record = play_game(evaluator, config, game_seed, rng, state_pool=state_pool)
+            result_queue.put(record)
+    except (KeyboardInterrupt, EOFError, BrokenPipeError, OSError):
+        pass
+    finally:
+        eval_conn.close()
