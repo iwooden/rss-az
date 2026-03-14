@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from rich.console import Console
 from rich.live import Live
@@ -209,7 +209,7 @@ class TrainingLogger:
         self,
         epoch: int,
         num_epochs: int,
-        self_play_stats: dict[str, float],
+        self_play_stats: dict[str, Any],
         train_stats: dict[str, float],
         buffer_size: int,
         buffer_capacity: int,
@@ -230,10 +230,19 @@ class TrainingLogger:
         prefix = f"Epoch {epoch}/{num_epochs}"
         pad = " " * len(prefix)
 
+        rank_nws = self_play_stats.get("rank_net_worths")
+        nw_str = ""
+        if isinstance(rank_nws, list):
+            labels = ["1st", "2nd", "3rd", "4th", "5th", "6th"]
+            parts = [f"{labels[i]}=${v:,.0f}" for i, v in enumerate(rank_nws)]
+            nw_str = f"  Net worth: {', '.join(parts)}"
+
         self.console.print(
             f"{prefix}  Self-play: {games:,} games, {examples:,} examples "
             f"({avg_moves:.1f} moves/game, {avg_dur:.1f}s/game)"
         )
+        if nw_str:
+            self.console.print(f"{pad}{nw_str}")
         if steps > 0:
             self.console.print(
                 f"{pad}  Training: {steps:,} steps, loss={tl:.3f} "

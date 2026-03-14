@@ -182,6 +182,24 @@ def main() -> None:
         # Self-play Tensorboard metrics
         avg_game_moves = sum(r.total_moves for r in records) / len(records)
         avg_game_dur = sum(r.duration_secs for r in records) / len(records)
+
+        # Net worth by finishing rank (1st, 2nd, ..., last)
+        n_games = len(records)
+        num_players = config.num_players
+        rank_totals = [0.0] * num_players
+        for r in records:
+            for rank, nw in enumerate(sorted(r.net_worths, reverse=True)):
+                rank_totals[rank] += nw
+        rank_avgs = [t / n_games for t in rank_totals]
+
+        net_worth_scalars = {
+            f"self_play/net_worth_{k}": v
+            for k, v in zip(
+                ["1st", "2nd", "3rd", "4th", "5th", "6th"][:num_players],
+                rank_avgs,
+            )
+        }
+
         logger.log_scalars(
             epoch_num,
             {
@@ -191,6 +209,7 @@ def main() -> None:
                 "self_play/total_examples": float(total_examples),
                 "buffer/size": float(len(buffer)),
                 "buffer/utilization": len(buffer) / config.buffer_capacity,
+                **net_worth_scalars,
             },
         )
 
@@ -272,6 +291,7 @@ def main() -> None:
                 "examples": float(total_examples),
                 "avg_moves": avg_game_moves,
                 "avg_duration": avg_game_dur,
+                "rank_net_worths": rank_avgs,
             },
             train_stats={
                 "steps": float(config.training_steps_per_epoch),
