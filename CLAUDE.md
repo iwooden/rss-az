@@ -645,6 +645,8 @@ pytest tests/
 
 A regular `build_ext --inplace` is incremental and may miss issues caused by changed `.pxd` headers or removed symbols. Always clean first when verifying.
 
+**IMPORTANT:** Always run the full test suite (`pytest tests/`). Do NOT use `--ignore` to skip the 18xx replay tests or any other test directory. All tests must pass before closing a task.
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
