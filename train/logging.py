@@ -243,10 +243,17 @@ class TrainingLogger:
         pad = " " * len(prefix)
 
         rank_nws = self_play_stats.get("rank_net_worths")
+        rank_mins = self_play_stats.get("rank_net_worths_min")
+        rank_maxs = self_play_stats.get("rank_net_worths_max")
         nw_str = ""
         if isinstance(rank_nws, list):
             labels = ["1st", "2nd", "3rd", "4th", "5th", "6th"]
-            parts = [f"{labels[i]}=${v:,.0f}" for i, v in enumerate(rank_nws)]
+            parts = []
+            for i, v in enumerate(rank_nws):
+                part = f"{labels[i]}=${v:,.0f}"
+                if isinstance(rank_mins, list) and isinstance(rank_maxs, list):
+                    part += f" [{rank_mins[i]:,.0f}\u2013{rank_maxs[i]:,.0f}]"
+                parts.append(part)
             nw_str = f"  Net worth: {', '.join(parts)}"
 
         self.console.print(

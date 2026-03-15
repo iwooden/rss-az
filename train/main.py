@@ -243,6 +243,8 @@ def main() -> None:
             total_duration = 0.0
             num_players = config.num_players
             rank_totals = [0.0] * num_players
+            rank_mins = [float("inf")] * num_players
+            rank_maxs = [float("-inf")] * num_players
 
             def _collect_record(record: object, game_idx: int) -> None:
                 nonlocal total_examples, total_moves, total_duration
@@ -252,6 +254,10 @@ def main() -> None:
                 total_duration += record.duration_secs  # type: ignore[union-attr]
                 for rank, nw in enumerate(sorted(record.net_worths, reverse=True)):  # type: ignore[union-attr]
                     rank_totals[rank] += nw
+                    if nw < rank_mins[rank]:
+                        rank_mins[rank] = nw
+                    if nw > rank_maxs[rank]:
+                        rank_maxs[rank] = nw
                 n = game_idx + 1
                 logger.update_self_play(
                     games_done=n,
@@ -301,13 +307,14 @@ def main() -> None:
             avg_game_dur = total_duration / n_games
             rank_avgs = [t / n_games for t in rank_totals]
 
-            net_worth_scalars = {
-                f"self_play/net_worth_{k}": v
-                for k, v in zip(
-                    ["1st", "2nd", "3rd", "4th", "5th", "6th"][:num_players],
-                    rank_avgs,
-                )
-            }
+            rank_labels = ["1st", "2nd", "3rd", "4th", "5th", "6th"][:num_players]
+            net_worth_scalars = {}
+            for k, avg, mn, mx in zip(
+                rank_labels, rank_avgs, rank_mins, rank_maxs
+            ):
+                net_worth_scalars[f"self_play/net_worth_{k}"] = avg
+                net_worth_scalars[f"self_play/net_worth_{k}_min"] = mn
+                net_worth_scalars[f"self_play/net_worth_{k}_max"] = mx
 
             logger.log_scalars(
                 epoch_num,
@@ -401,6 +408,8 @@ def main() -> None:
                     "avg_moves": avg_game_moves,
                     "avg_duration": avg_game_dur,
                     "rank_net_worths": rank_avgs,
+                    "rank_net_worths_min": rank_mins,
+                    "rank_net_worths_max": rank_maxs,
                 },
                 train_stats={
                     "steps": float(config.training_steps_per_epoch) if avg_losses else 0.0,
