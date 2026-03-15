@@ -2,56 +2,42 @@ Analyze the Tensorboard training logs and produce a structured assessment of how
 
 ## Instructions
 
-Read the Tensorboard event files from the `runs/` directory using Python and the `tensorboard.backend.event_processing.event_accumulator.EventAccumulator` API. Merge data across all event files in the directory (there may be multiple from training restarts).
-
-Extract all scalar time series. The key tags are:
-
-**Loss curves (per training step):**
-- `loss/total`, `loss/policy`, `loss/value` — per-step losses logged every 100 steps
-- `lr` — learning rate
-
-**Loss curves (per epoch):**
-- `epoch/total_loss_avg`, `epoch/policy_loss_avg`, `epoch/value_loss_avg`
-
-**Self-play stats (per epoch):**
-- `self_play/game_length_mean` — average decision points per game
-- `self_play/duration_mean` — average wall-clock seconds per game
-- `self_play/examples_per_game` — training examples generated per game
-- `self_play/total_examples` — total examples generated in the epoch
-- `self_play/net_worth_1st`, `self_play/net_worth_2nd`, `self_play/net_worth_3rd` — average net worth by final rank
-- `self_play/net_worth_*_min`, `self_play/net_worth_*_max` — min/max net worth by rank
-
-**Buffer stats (per epoch):**
-- `buffer/size`, `buffer/utilization`
-
-**Timing (per epoch):**
-- `epoch/duration_secs`
-
-**Profile stats (per epoch, only present if `--profile` was used):**
-- `profile/search_*` — MCTS search time breakdown
-- `profile/eval_client_*` — worker-side eval timing
-- `profile/server_*` — GPU eval server stats
-
-Use the Bash tool to run a Python script that extracts the data. Example pattern:
+Load all Tensorboard scalar data using the helper module at `train/tb_reader.py`. Run a Python script via Bash like:
 
 ```python
-from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
-import glob, os
+from train.tb_reader import read_tb_scalars, latest_value, sample_epochs
+import json
 
-files = sorted(glob.glob('runs/events.out.tfevents.*'), key=os.path.getmtime)
-merged = {}  # tag -> [(step, value), ...]
-for f in files:
-    ea = EventAccumulator(f)
-    ea.Reload()
-    for tag in ea.Tags().get('scalars', []):
-        if tag not in merged:
-            merged[tag] = []
-        merged[tag].extend((s.step, s.value) for s in ea.Scalars(tag))
-# Deduplicate by step (later files win)
-for tag in merged:
-    by_step = dict(merged[tag])
-    merged[tag] = sorted(by_step.items())
+data = read_tb_scalars("runs")
+# data is dict[str, list[tuple[int, float]]] — tag -> sorted (step, value) pairs
+
+# Print all available tags
+print("Tags:", sorted(data.keys()))
+
+# Get sampled epoch-level data (keeps first 3, last 3, evenly spaced middle)
+for tag in ["epoch/total_loss_avg", "epoch/policy_loss_avg", "epoch/value_loss_avg"]:
+    sampled = sample_epochs(data.get(tag, []))
+    print(f"\n{tag}:")
+    for step, val in sampled:
+        print(f"  epoch {step}: {val:.4f}")
+
+# Get latest value for a tag
+print("Current LR:", latest_value(data, "lr"))
 ```
+
+Adapt the script to extract whatever data you need for the analysis below. You may need multiple script invocations to keep output manageable.
+
+The key scalar tags are:
+
+**Loss curves:** `loss/total`, `loss/policy`, `loss/value` (per training step, every 100 steps); `epoch/total_loss_avg`, `epoch/policy_loss_avg`, `epoch/value_loss_avg` (per epoch); `lr` (learning rate)
+
+**Self-play stats (per epoch):** `self_play/game_length_mean`, `self_play/duration_mean`, `self_play/examples_per_game`, `self_play/total_examples`, `self_play/net_worth_{1st,2nd,3rd}`, `self_play/net_worth_{1st,2nd,3rd}_{min,max}`
+
+**Buffer (per epoch):** `buffer/size`, `buffer/utilization`
+
+**Timing (per epoch):** `epoch/duration_secs`
+
+**Profile (per epoch, only if `--profile` used):** `profile/search_*`, `profile/eval_client_*`, `profile/server_*`
 
 ## Analysis to produce
 
