@@ -13,7 +13,11 @@ Implements AlphaZero-style MCTS for multiplayer games:
 from __future__ import annotations
 
 import math
-from typing import Any
+from time import perf_counter
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from train.profile_stats import SearchStats
 
 import numpy as np
 
@@ -129,6 +133,7 @@ def run_search(
     rng: np.random.Generator | None = None,
     state_pool: StatePool | None = None,
     reuse_root: MCTSNode | None = None,
+    profile: SearchStats | None = None,
 ) -> MCTSNode:
     """Run MCTS search from the given root state.
 
@@ -226,9 +231,16 @@ def run_search(
     # Leaf lock sentinel: -inf Q guarantees PUCT never re-selects a locked edge
     neg_inf_row = np.full(num_players, -np.inf, dtype=np.float32)
 
+    if profile is not None:
+        profile.num_searches += 1
+    _t0 = _t1 = _t2 = 0.0  # profile timing scratch vars
+
     # Run simulations in batches
     sim = 0
     while sim < num_sims:
+        if profile is not None:
+            _t0 = perf_counter()
+
         # Collect a batch of leaves for NN evaluation
         pending: list[tuple[_Path, MCTSNode]] = []
         pending_ids: set[int] = set()  # safety net for single-action parents
@@ -305,12 +317,22 @@ def run_search(
 
         # Batch evaluate all pending leaves using raw arrays (no GameState needed)
         if not pending:
+            if profile is not None:
+                profile.selection_secs += perf_counter() - _t0
             continue
+
+        if profile is not None:
+            _t1 = perf_counter()
+            profile.selection_secs += _t1 - _t0
 
         leaf_arrays = [state_pool.row(node.state_idx) for _, node in pending]
         leaf_players = [node.active_player_id for _, node in pending]
         leaf_masks = [node.pending_mask for _, node in pending]
         results = evaluator.evaluate_leaves(leaf_arrays, leaf_players, leaf_masks)
+
+        if profile is not None:
+            _t2 = perf_counter()
+            profile.eval_secs += _t2 - _t1
 
         for i, ((path, node), (policy_probs, values, leaf_mask)) in enumerate(
             zip(pending, results)
@@ -326,6 +348,11 @@ def run_search(
 
             # Backup values (visit counts already incremented at selection time)
             _backup(path, node, values)
+
+        if profile is not None:
+            profile.backup_secs += perf_counter() - _t2
+            profile.num_eval_batches += 1
+            profile.total_leaves += len(pending)
 
     return root
 

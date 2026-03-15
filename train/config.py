@@ -101,6 +101,9 @@ class TrainingConfig:
     num_epochs: int = 100
     seed: int = 42
 
+    # --- Profiling (operational, not checkpointed) ---
+    profile: bool = False
+
     # --- Computed ---
     action_dim: int = field(init=False)
     visible_size: int = field(init=False)
@@ -168,6 +171,7 @@ class TrainingConfig:
         # Remove computed fields — they'll be recomputed on load
         d.pop("action_dim", None)
         d.pop("visible_size", None)
+        d.pop("profile", None)
         return json.dumps(d, indent=2)
 
     @classmethod

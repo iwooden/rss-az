@@ -20,6 +20,7 @@ import ctypes
 import threading
 from multiprocessing import RawArray
 from multiprocessing.connection import Connection, wait
+from time import perf_counter
 from typing import Any, cast
 
 import numpy as np
@@ -31,6 +32,7 @@ from mcts.evaluator import (
     rotate_visible_state,
     unrotate_values,
 )
+from train.profile_stats import EvalClientStats, EvalServerStats
 
 
 class SharedEvalBuffers:
@@ -123,6 +125,8 @@ class EvaluationServer:
         device: torch.device,
         worker_conns: list[Connection],
         shared_bufs: SharedEvalBuffers,
+        *,
+        profile: bool = False,
     ) -> None:
         self._model = model
         self._device = device
@@ -130,6 +134,8 @@ class EvaluationServer:
         self._shared_bufs = shared_bufs
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._profile = profile
+        self._stats: EvalServerStats | None = EvalServerStats() if profile else None
 
     def start(self) -> None:
         """Start the server thread."""
@@ -146,6 +152,15 @@ class EvaluationServer:
             self._thread.join(timeout=5.0)
             self._thread = None
 
+    def get_profile_stats(self) -> EvalServerStats | None:
+        """Return accumulated profile stats (None if profiling disabled)."""
+        return self._stats
+
+    def reset_profile_stats(self) -> None:
+        """Reset profile stats for a new epoch."""
+        if self._stats is not None:
+            self._stats.reset()
+
     def _loop(self) -> None:
         """Main server loop: gather requests, batch evaluate, dispatch."""
         conns = list(self._conns)
@@ -153,14 +168,21 @@ class EvaluationServer:
             c: i for i, c in enumerate(self._conns)
         }
         bufs = self._shared_bufs
+        stats = self._stats
+        _tp = _ti = 0.0  # profile timing scratch vars
 
         while not self._stop.is_set() and conns:
+            if stats is not None:
+                _tp = perf_counter()
+
             try:
                 ready = wait(conns, timeout=0.01)
             except (OSError, ValueError):
                 break
 
             if not ready:
+                if stats is not None:
+                    stats.record_idle(perf_counter() - _tp)
                 continue
 
             # Non-blocking poll for additional connections that became ready
@@ -198,6 +220,11 @@ class EvaluationServer:
             )
 
             # Single GPU forward pass (bfloat16 for throughput)
+            if stats is not None:
+                _ti = perf_counter()
+
+            total_n = sum(n for _, _, n in batch_info)
+
             with torch.no_grad():
                 x = torch.from_numpy(all_states).to(self._device)
                 mask = torch.from_numpy(all_masks).to(self._device)
@@ -208,6 +235,9 @@ class EvaluationServer:
                     policy_logits, values = self._model(x, legal_action_mask=mask)
                 policies = torch.softmax(policy_logits.float(), dim=-1).cpu().numpy()
                 values_np = values.float().cpu().numpy()
+
+            if stats is not None:
+                stats.record_batch(total_n, perf_counter() - _ti)
 
             # Write results to shared memory and signal workers
             offset = 0
@@ -238,6 +268,8 @@ class RemoteEvaluator:
         num_players: int,
         shared_bufs: SharedEvalBuffers,
         worker_idx: int,
+        *,
+        profile: bool = False,
     ) -> None:
         self.conn = conn
         self.num_players = num_players
@@ -246,6 +278,8 @@ class RemoteEvaluator:
         self._in_masks = shared_bufs.get_input_masks(worker_idx)
         self._out_policies = shared_bufs.get_output_policies(worker_idx)
         self._out_values = shared_bufs.get_output_values(worker_idx)
+        self._profile = profile
+        self._stats: EvalClientStats | None = EvalClientStats() if profile else None
 
     def evaluate(self, state: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Evaluate a single state via the remote server."""
@@ -311,15 +345,28 @@ class RemoteEvaluator:
         if n == 0:
             return []
 
+        _stats = self._stats
+        _t0 = _t1 = _t2 = 0.0
+        if _stats is not None:
+            _t0 = perf_counter()
+
         # Write rotated states and masks into shared memory
         for i, (arr, ap) in enumerate(zip(state_arrays, active_player_ids)):
             self._in_states[i] = rotate_visible_state(arr, ap, self.num_players)
         for i, mask in enumerate(legal_masks):
             self._in_masks[i] = mask
 
+        if _stats is not None:
+            _t1 = perf_counter()
+            _stats.prepare_secs += _t1 - _t0
+
         # Signal server (just the count) and wait for completion
         self.conn.send(n)
         self.conn.recv()
+
+        if _stats is not None:
+            _t2 = perf_counter()
+            _stats.wait_secs += _t2 - _t1
 
         # Read results from shared memory (must copy — buffer reused next call)
         results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
@@ -328,7 +375,22 @@ class RemoteEvaluator:
                 self._out_values[i].copy(), active_player_ids[i]
             )
             results.append((self._out_policies[i].copy(), canonical, legal_masks[i]))
+
+        if _stats is not None:
+            _stats.result_secs += perf_counter() - _t2
+            _stats.num_calls += 1
+            _stats.total_states += n
+
         return results
+
+    def reset_profile_stats(self) -> None:
+        """Reset profile stats for a new game."""
+        if self._profile:
+            self._stats = EvalClientStats()
+
+    def get_profile_stats(self) -> EvalClientStats | None:
+        """Return accumulated profile stats (None if profiling disabled)."""
+        return self._stats
 
     def evaluate_terminal(self, state: Any) -> np.ndarray:
         """Compute terminal values locally (no NN needed)."""

@@ -24,6 +24,7 @@ from train.checkpoint import (
 from train.config import TrainingConfig
 from train.eval_server import EvaluationServer, SharedEvalBuffers
 from train.logging import TrainingLogger
+from train.profile_stats import GameProfileData, format_epoch_profile
 from train.replay_buffer import ReplayBuffer
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool
@@ -51,6 +52,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tensorboard-dir", type=str)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--temp-threshold", type=int)
+    parser.add_argument(
+        "--profile", action="store_true", default=None,
+        help="Enable per-epoch self-play performance profiling",
+    )
     return parser
 
 
@@ -119,6 +124,10 @@ def main() -> None:
         config = TrainingConfig()
         _apply_overrides(config, args)
         config.validate()
+
+    # --- Profile flag (operational, not in config JSON) ---
+    if args.profile:
+        config.profile = True
 
     # --- RNG ---
     master_rng = np.random.default_rng(config.seed)
@@ -191,7 +200,9 @@ def main() -> None:
             num_players=config.num_players,
         )
 
-        eval_server = EvaluationServer(model, device, server_conns, shared_bufs)
+        eval_server = EvaluationServer(
+            model, device, server_conns, shared_bufs, profile=config.profile,
+        )
         eval_server.start()
 
         for i in range(config.num_workers):
@@ -235,6 +246,7 @@ def main() -> None:
             rank_totals = [0.0] * num_players
             rank_mins = [float("inf")] * num_players
             rank_maxs = [float("-inf")] * num_players
+            game_profiles: list[GameProfileData] = []
 
             def _collect_record(record: object, game_idx: int) -> None:
                 nonlocal total_examples, total_moves, total_duration
@@ -248,6 +260,8 @@ def main() -> None:
                         rank_mins[rank] = nw
                     if nw > rank_maxs[rank]:
                         rank_maxs[rank] = nw
+                if record.profile is not None:  # type: ignore[union-attr]
+                    game_profiles.append(record.profile)  # type: ignore[union-attr]
                 n = game_idx + 1
                 logger.update_self_play(
                     games_done=n,
@@ -257,6 +271,10 @@ def main() -> None:
                     rank_mins=list(rank_mins),
                     rank_maxs=list(rank_maxs),
                 )
+
+            # Reset eval server profile stats for this epoch
+            if config.profile and eval_server is not None:
+                eval_server.reset_profile_stats()
 
             logger.begin_self_play(epoch_num, config.num_epochs, config.games_per_epoch)
 
@@ -320,6 +338,15 @@ def main() -> None:
                     **net_worth_scalars,
                 },
             )
+
+            # --- Profile summary ---
+            if config.profile and game_profiles:
+                sp_duration = time.perf_counter() - epoch_start
+                server_stats = (
+                    eval_server.get_profile_stats()
+                    if eval_server is not None else None
+                )
+                print(format_epoch_profile(game_profiles, server_stats, sp_duration))
 
             # --- Phase 2: Training ---
             if len(buffer) >= config.min_buffer_size:

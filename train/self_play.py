@@ -15,6 +15,7 @@ from core.state import GameState
 from mcts.evaluator import rotate_visible_state
 from mcts.search import StatePool, get_action_probabilities, get_greedy_leaf_value, prepare_reuse_root, run_search
 from train.config import TrainingConfig
+from train.profile_stats import EvalClientStats, GameProfileData, SearchStats
 from train.replay_buffer import TrainingExample
 
 
@@ -26,6 +27,7 @@ class GameRecord:
     total_moves: int  # Decision points (MCTS searches)
     net_worths: list[int]  # Final net worth per player (canonical order)
     duration_secs: float  # Wall-clock time
+    profile: GameProfileData | None = None
 
 
 def play_game(
@@ -55,6 +57,13 @@ def play_game(
 
     mcts_config = config.to_mcts_config()
 
+    # Profile stats (None when --profile not set → zero overhead)
+    search_stats: SearchStats | None = None
+    if config.profile:
+        search_stats = SearchStats()
+        if hasattr(evaluator, "reset_profile_stats"):
+            evaluator.reset_profile_stats()
+
     examples: list[TrainingExample] = []
     move_count = 0
     reuse_root: Any = None
@@ -67,6 +76,7 @@ def play_game(
         root = run_search(
             state, evaluator, mcts_config, rng,
             state_pool=state_pool, reuse_root=reuse_root,
+            profile=search_stats,
         )
 
         # Temperature schedule
@@ -103,11 +113,23 @@ def play_game(
         state.get_player_net_worth(i) for i in range(config.num_players)
     ]
 
+    game_profile: GameProfileData | None = None
+    if config.profile and search_stats is not None:
+        eval_client: EvalClientStats | None = None
+        if hasattr(evaluator, "get_profile_stats"):
+            eval_client = evaluator.get_profile_stats()
+        game_profile = GameProfileData(
+            search=search_stats,
+            eval_client=eval_client,
+            game_duration=time.perf_counter() - t0,
+        )
+
     return GameRecord(
         examples=examples,
         total_moves=move_count,
         net_worths=net_worths,
         duration_secs=time.perf_counter() - t0,
+        profile=game_profile,
     )
 
 
@@ -127,7 +149,8 @@ def self_play_worker(
     from train.eval_server import RemoteEvaluator
 
     evaluator = RemoteEvaluator(
-        eval_conn, config.num_players, shared_bufs, worker_idx
+        eval_conn, config.num_players, shared_bufs, worker_idx,
+        profile=config.profile,
     )
 
     from core.state import get_layout
