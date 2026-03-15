@@ -14,7 +14,6 @@ class MCTSConfig:
     c_puct: float = 2.5
     dirichlet_alpha: float = 0.3
     dirichlet_epsilon: float = 0.25
-    temperature: float = 1.0
     num_players: int = 3
     search_batch_size: int = 1
     action_dim: int = field(init=False)
@@ -43,8 +42,7 @@ class MCTSConfig:
             raise ValueError(
                 f"dirichlet_epsilon must be in [0, 1], got {self.dirichlet_epsilon}"
             )
-        if self.temperature < 0:
-            raise ValueError(f"temperature must be >= 0, got {self.temperature}")
+
 
 
 @dataclass
@@ -160,7 +158,6 @@ class TrainingConfig:
             c_puct=self.c_puct,
             dirichlet_alpha=self.dirichlet_alpha,
             dirichlet_epsilon=self.dirichlet_epsilon,
-            temperature=self.temp_initial,
             num_players=self.num_players,
             search_batch_size=self.search_batch_size,
         )

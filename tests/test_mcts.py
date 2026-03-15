@@ -83,7 +83,6 @@ class TestMCTSConfig:
         assert cfg.c_puct == 2.5
         assert cfg.dirichlet_alpha == 0.3
         assert cfg.dirichlet_epsilon == 0.25
-        assert cfg.temperature == 1.0
         assert cfg.num_players == 3
         assert cfg.search_batch_size == 1
 
@@ -119,11 +118,6 @@ class TestMCTSConfig:
             MCTSConfig(dirichlet_epsilon=1.5)
         MCTSConfig(dirichlet_epsilon=0)  # boundary valid
         MCTSConfig(dirichlet_epsilon=1)  # boundary valid
-
-    def test_validation_temperature(self):
-        with pytest.raises(ValueError, match="temperature"):
-            MCTSConfig(temperature=-0.1)
-        MCTSConfig(temperature=0)  # zero is valid
 
 
 # ---------------------------------------------------------------------------
