@@ -185,7 +185,7 @@ class NNEvaluator:
         policy_probs = torch.softmax(policy_logits.float(), dim=-1).squeeze(0).cpu().numpy()
 
         # Value: already has tanh applied in the model, un-rotate to canonical
-        values_rotated = value_output.squeeze(0).cpu().numpy()
+        values_rotated = value_output.float().squeeze(0).cpu().numpy()
         canonical_values = unrotate_values(values_rotated, active_player)
 
         return policy_probs, canonical_values, mask_np
