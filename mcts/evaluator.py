@@ -93,10 +93,12 @@ def unrotate_values(values: np.ndarray, active_player_id: int) -> np.ndarray:
 def compute_terminal_values(net_worths: list[int], num_players: int) -> np.ndarray:
     """Compute canonical reward values for a terminal game state.
 
-    Ranks players by net worth. Rewards are evenly distributed from
-    +1.0 (1st place) to -1.0 (last place). Ties receive averaged rewards.
+    Uses net-worth ratio to the winner: reward_i = 2 * (nw_i / max_nw) - 1.
+    The winner always gets +1.0. Other players get a continuous reward
+    proportional to how close they are to the winner, ranging from -1.0
+    (zero net worth) to just under +1.0 (nearly tied with winner).
 
-    For 3 players: 1st=1.0, 2nd=0.0, 3rd=-1.0
+    When all players have zero net worth, all receive 0.0.
 
     Args:
         net_worths: List of net worth values per player (canonical order).
@@ -105,28 +107,14 @@ def compute_terminal_values(net_worths: list[int], num_players: int) -> np.ndarr
     Returns:
         np.ndarray of shape (num_players,) with reward values per player.
     """
-    # Rank rewards: evenly distributed from +1.0 to -1.0
-    rank_rewards = np.linspace(1.0, -1.0, num_players)
+    max_nw = max(net_worths)
 
-    # Sort players by net worth descending, stable sort for tie consistency
-    sorted_indices = np.argsort(net_worths)[::-1]  # descending
+    if max_nw == 0:
+        return np.zeros(num_players, dtype=np.float32)
 
-    values = np.zeros(num_players, dtype=np.float32)
-
-    i = 0
-    while i < num_players:
-        # Find group of tied players
-        j = i + 1
-        while j < num_players and net_worths[sorted_indices[j]] == net_worths[sorted_indices[i]]:
-            j += 1
-
-        # Average reward for tied positions
-        avg_reward = float(np.mean(rank_rewards[i:j]))
-        for k in range(i, j):
-            values[sorted_indices[k]] = avg_reward
-
-        i = j
-
+    values = np.array(
+        [2.0 * nw / max_nw - 1.0 for nw in net_worths], dtype=np.float32
+    )
     return values
 
 

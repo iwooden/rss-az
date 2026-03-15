@@ -270,28 +270,40 @@ class TestValueRotation:
 
 class TestTerminalValues:
     def test_clear_ranking(self):
+        # P1 wins with 300, P0=100 → 2*(100/300)-1=-0.333, P2=200 → 2*(200/300)-1=0.333
         vals = compute_terminal_values([100, 300, 200], 3)
+        np.testing.assert_array_almost_equal(vals, [-1 / 3, 1.0, 1 / 3])
+
+    def test_winner_always_gets_one(self):
+        vals = compute_terminal_values([50, 200, 150], 3)
+        assert vals[1] == 1.0
+
+    def test_zero_net_worth_gets_minus_one(self):
+        vals = compute_terminal_values([0, 100, 50], 3)
         np.testing.assert_array_almost_equal(vals, [-1.0, 1.0, 0.0])
 
-    def test_first_place_tie(self):
+    def test_tied_winners(self):
         vals = compute_terminal_values([200, 200, 100], 3)
-        # P0, P1 tie for 1st: avg(1.0, 0.0) = 0.5
-        np.testing.assert_array_almost_equal(vals, [0.5, 0.5, -1.0])
-
-    def test_last_place_tie(self):
-        vals = compute_terminal_values([200, 100, 100], 3)
-        # P1, P2 tie for 2nd: avg(0.0, -1.0) = -0.5
-        np.testing.assert_array_almost_equal(vals, [1.0, -0.5, -0.5])
+        # Both winners get +1.0, P2 = 2*(100/200)-1 = 0.0
+        np.testing.assert_array_almost_equal(vals, [1.0, 1.0, 0.0])
 
     def test_all_tied(self):
         vals = compute_terminal_values([100, 100, 100], 3)
+        np.testing.assert_array_almost_equal(vals, [1.0, 1.0, 1.0])
+
+    def test_all_zero(self):
+        vals = compute_terminal_values([0, 0, 0], 3)
         np.testing.assert_array_almost_equal(vals, [0.0, 0.0, 0.0])
 
-    def test_values_sum_to_zero(self):
-        """Ranking rewards should always sum to zero."""
-        for nw in ([500, 300, 100], [100, 100, 200], [50, 50, 50]):
-            vals = compute_terminal_values(nw, 3)
-            assert abs(vals.sum()) < 1e-6
+    def test_continuous_gradient(self):
+        """3rd place with higher NW gets a less negative reward."""
+        vals_low = compute_terminal_values([7, 243, 261], 3)
+        vals_high = compute_terminal_values([50, 243, 261], 3)
+        # P0 with $50 should get a better reward than P0 with $7
+        assert vals_high[0] > vals_low[0]
+        # Winner unchanged
+        assert vals_low[2] == 1.0
+        assert vals_high[2] == 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -684,8 +696,9 @@ class TestMCTSSearch:
         assert root.is_terminal
         assert not root.expanded()
         assert root.terminal_values is not None
+        # NW ratio: P0=500/500→+1.0, P1=300/500→+0.2, P2=100/500→-0.6
         np.testing.assert_array_almost_equal(
-            root.terminal_values, [1.0, 0.0, -1.0]
+            root.terminal_values, [1.0, 0.2, -0.6]
         )
 
 
@@ -727,7 +740,8 @@ class TestNNEvaluator:
         state.set_player_net_worth(2, 100)
 
         vals = evaluator.evaluate_terminal(state)
-        np.testing.assert_array_almost_equal(vals, [1.0, 0.0, -1.0])
+        # NW ratio: P0=500/500→+1.0, P1=300/500→+0.2, P2=100/500→-0.6
+        np.testing.assert_array_almost_equal(vals, [1.0, 0.2, -0.6])
 
     def test_evaluate_batch_single(self, game_state, evaluator):
         """Batch of 1 should match single evaluate."""
@@ -1226,7 +1240,7 @@ class TestSubtreeReuse:
 
         # Reuse search
         counter_reuse = EvalCounter(evaluator)
-        root2 = run_search(
+        run_search(
             next_state, counter_reuse, config, state_pool=pool, reuse_root=reuse,
         )
         reuse_evals = counter_reuse.eval_count

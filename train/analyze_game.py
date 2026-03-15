@@ -25,7 +25,7 @@ from core.driver import DRIVER, STATUS_GAME_OVER_PY as STATUS_GAME_OVER
 from core.state import GameState, get_layout
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator
-from mcts.search import StatePool, run_search, get_action_probabilities, get_greedy_leaf_value
+from mcts.search import StatePool, run_search, get_greedy_leaf_value
 from nn.model_3p import RSSAlphaZeroNet, RSSModelConfig
 from tests.debug_trace import (
     format_action,
@@ -122,7 +122,7 @@ def analyze_game(
         num_simulations=num_simulations,
         c_puct=config.c_puct,
         dirichlet_alpha=config.dirichlet_alpha,
-        dirichlet_epsilon=config.dirichlet_epsilon,
+        dirichlet_epsilon=0.0,
         num_players=num_players,
         search_batch_size=search_batch_size,
     )
@@ -152,10 +152,10 @@ def analyze_game(
 
         # MCTS search
         root = run_search(state, evaluator, mcts_config, rng, state_pool=state_pool)
-        policy = get_action_probabilities(root, temperature=0.1, action_dim=config.action_dim)
 
-        # Choose action (low temperature = nearly greedy)
-        action = int(rng.choice(config.action_dim, p=policy))
+        # Choose action (argmax = best play)
+        assert root.legal_actions is not None and root.visit_counts is not None
+        action = int(root.legal_actions[np.argmax(root.visit_counts)])
         action_str = format_action(action, num_players, state)
 
         # Log this decision point
