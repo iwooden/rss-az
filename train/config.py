@@ -12,8 +12,10 @@ class MCTSConfig:
 
     num_simulations: int = 800
     c_puct: float = 2.5
-    dirichlet_alpha: float = 0.3
+    dirichlet_alpha: float = 0.8
     dirichlet_epsilon: float = 0.25
+    dirichlet_dynamic: bool = False
+    dirichlet_alpha_numerator: float = 10.0
     num_players: int = 3
     search_batch_size: int = 1
     action_dim: int = field(init=False)
@@ -42,6 +44,10 @@ class MCTSConfig:
             raise ValueError(
                 f"dirichlet_epsilon must be in [0, 1], got {self.dirichlet_epsilon}"
             )
+        if self.dirichlet_alpha_numerator <= 0:
+            raise ValueError(
+                f"dirichlet_alpha_numerator must be > 0, got {self.dirichlet_alpha_numerator}"
+            )
 
 
 
@@ -56,8 +62,10 @@ class TrainingConfig:
     games_per_epoch: int = 1000
     num_simulations: int = 800
     c_puct: float = 2.5
-    dirichlet_alpha: float = 0.3
+    dirichlet_alpha: float = 0.8
     dirichlet_epsilon: float = 0.25
+    dirichlet_dynamic: bool = False
+    dirichlet_alpha_numerator: float = 10.0
     search_batch_size: int = 1
     num_workers: int = 4
 
@@ -135,6 +143,10 @@ class TrainingConfig:
             raise ValueError(
                 f"dirichlet_epsilon must be in [0, 1], got {self.dirichlet_epsilon}"
             )
+        if self.dirichlet_alpha_numerator <= 0:
+            raise ValueError(
+                f"dirichlet_alpha_numerator must be > 0, got {self.dirichlet_alpha_numerator}"
+            )
 
         # Game fields
         if self.num_players < 2:
@@ -161,6 +173,8 @@ class TrainingConfig:
             c_puct=self.c_puct,
             dirichlet_alpha=self.dirichlet_alpha,
             dirichlet_epsilon=self.dirichlet_epsilon,
+            dirichlet_dynamic=self.dirichlet_dynamic,
+            dirichlet_alpha_numerator=self.dirichlet_alpha_numerator,
             num_players=self.num_players,
             search_batch_size=self.search_batch_size,
         )

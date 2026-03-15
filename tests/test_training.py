@@ -150,6 +150,8 @@ class TestConfig:
             TrainingConfig(dirichlet_alpha=0)
         with pytest.raises(ValueError, match="dirichlet_epsilon"):
             TrainingConfig(dirichlet_epsilon=2.0)
+        with pytest.raises(ValueError, match="dirichlet_alpha_numerator"):
+            TrainingConfig(dirichlet_alpha_numerator=0)
 
     def test_validation_num_workers(self) -> None:
         with pytest.raises(ValueError, match="num_workers"):
@@ -162,6 +164,17 @@ class TestConfig:
         assert mcts_cfg.num_simulations == 100
         assert mcts_cfg.c_puct == 3.0
         assert mcts_cfg.action_dim == 246
+        assert mcts_cfg.dirichlet_dynamic is False
+        assert mcts_cfg.dirichlet_alpha_numerator == 10.0
+
+    def test_to_mcts_config_dynamic_dirichlet(self) -> None:
+        cfg = TrainingConfig(
+            dirichlet_dynamic=True,
+            dirichlet_alpha_numerator=15.0,
+        )
+        mcts_cfg = cfg.to_mcts_config()
+        assert mcts_cfg.dirichlet_dynamic is True
+        assert mcts_cfg.dirichlet_alpha_numerator == 15.0
 
 
 # ---------------------------------------------------------------------------

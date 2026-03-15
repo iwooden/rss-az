@@ -52,6 +52,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tensorboard-dir", type=str)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--temp-threshold", type=int)
+    parser.add_argument("--dirichlet-alpha", type=float)
+    parser.add_argument(
+        "--dirichlet-dynamic", action="store_true", default=None,
+        help="Use dynamic alpha = numerator / n_legal_actions (default: static)",
+    )
+    parser.add_argument(
+        "--dirichlet-alpha-numerator", type=float,
+        help="Numerator for dynamic alpha: alpha = N / n_legal (default: 10.0)",
+    )
     parser.add_argument(
         "--profile", action="store_true", default=None,
         help="Enable per-epoch self-play performance profiling",
@@ -62,6 +71,7 @@ def _build_parser() -> argparse.ArgumentParser:
 _CLI_FIELDS = (
     "games_per_epoch", "num_epochs", "num_simulations", "search_batch_size",
     "num_workers", "checkpoint_dir", "tensorboard_dir", "seed", "temp_threshold",
+    "dirichlet_alpha", "dirichlet_dynamic", "dirichlet_alpha_numerator",
 )
 
 

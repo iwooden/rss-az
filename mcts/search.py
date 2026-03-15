@@ -226,7 +226,12 @@ def run_search(
     if rng is None:
         rng = np.random.default_rng()
     if config.dirichlet_epsilon > 0:
-        _add_dirichlet_noise(root, config.dirichlet_alpha, config.dirichlet_epsilon, rng)
+        assert root.priors is not None
+        if config.dirichlet_dynamic:
+            alpha = config.dirichlet_alpha_numerator / len(root.priors)
+        else:
+            alpha = config.dirichlet_alpha
+        _add_dirichlet_noise(root, alpha, config.dirichlet_epsilon, rng)
 
     # Leaf lock sentinel: -inf Q guarantees PUCT never re-selects a locked edge
     neg_inf_row = np.full(num_players, -np.inf, dtype=np.float32)

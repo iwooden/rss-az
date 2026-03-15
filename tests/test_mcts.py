@@ -84,8 +84,10 @@ class TestMCTSConfig:
         cfg = MCTSConfig()
         assert cfg.num_simulations == 800
         assert cfg.c_puct == 2.5
-        assert cfg.dirichlet_alpha == 0.3
+        assert cfg.dirichlet_alpha == 0.8
         assert cfg.dirichlet_epsilon == 0.25
+        assert cfg.dirichlet_dynamic is False
+        assert cfg.dirichlet_alpha_numerator == 10.0
         assert cfg.num_players == 3
         assert cfg.search_batch_size == 1
 
@@ -121,6 +123,12 @@ class TestMCTSConfig:
             MCTSConfig(dirichlet_epsilon=1.5)
         MCTSConfig(dirichlet_epsilon=0)  # boundary valid
         MCTSConfig(dirichlet_epsilon=1)  # boundary valid
+
+    def test_validation_dirichlet_alpha_numerator(self):
+        with pytest.raises(ValueError, match="dirichlet_alpha_numerator"):
+            MCTSConfig(dirichlet_alpha_numerator=0)
+        with pytest.raises(ValueError, match="dirichlet_alpha_numerator"):
+            MCTSConfig(dirichlet_alpha_numerator=-1)
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +543,31 @@ class TestDirichletNoise:
             results.append(node.priors.copy())
 
         np.testing.assert_array_equal(results[0], results[1])
+
+    def test_dynamic_alpha_varies_with_action_count(self):
+        """Dynamic alpha should produce different noise for different action counts."""
+        rng = np.random.default_rng(42)
+        numerator = 10.0
+
+        # 2 legal actions → alpha = 10/2 = 5.0 (very uniform)
+        node2 = MCTSNode(num_players=3)
+        node2.priors = np.array([0.99, 0.01], dtype=np.float32)
+        alpha2 = numerator / len(node2.priors)
+        assert alpha2 == pytest.approx(5.0)
+        _add_dirichlet_noise(node2, alpha=alpha2, epsilon=0.25, rng=rng)
+        assert node2.priors.sum() == pytest.approx(1.0, abs=1e-5)
+        # With alpha=5.0 and 2 actions, noise is nearly uniform (~0.5 each),
+        # so the rare action (0.01) gets a significant boost
+        assert node2.priors[1] > 0.05
+
+        # 20 legal actions → alpha = 10/20 = 0.5 (more concentrated)
+        node20 = MCTSNode(num_players=3)
+        priors20 = np.full(20, 0.05, dtype=np.float32)
+        node20.priors = priors20
+        alpha20 = numerator / len(node20.priors)
+        assert alpha20 == pytest.approx(0.5)
+        _add_dirichlet_noise(node20, alpha=alpha20, epsilon=0.25, rng=rng)
+        assert node20.priors.sum() == pytest.approx(1.0, abs=1e-5)
 
 
 # ---------------------------------------------------------------------------
