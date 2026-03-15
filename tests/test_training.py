@@ -462,9 +462,9 @@ class TestCheckpoint:
         assert restored.search_batch_size == 4
         assert restored.learning_rate == 5e-4
 
-    def test_resume_overrides_only_operational(self) -> None:
-        """_apply_resume_overrides should only modify operational fields."""
-        from train.main import _apply_resume_overrides
+    def test_resume_overrides_all_cli_fields(self) -> None:
+        """_apply_overrides should apply all CLI fields on resume."""
+        from train.main import _apply_overrides
 
         config = TrainingConfig(
             games_per_epoch=7,
@@ -474,27 +474,53 @@ class TestCheckpoint:
             num_epochs=10,
         )
 
-        # Simulate CLI args with both operational and semantic overrides
         args = argparse.Namespace(
             num_workers=8,
             checkpoint_dir="new_dir",
             tensorboard_dir="new_tb",
             num_epochs=20,
-            # Semantic fields that should be ignored
-            games_per_epoch=999,
-            num_simulations=999,
-            search_batch_size=999,
-            seed=999,
+            games_per_epoch=500,
+            num_simulations=400,
+            search_batch_size=16,
+            seed=123,
         )
-        _apply_resume_overrides(config, args)
+        _apply_overrides(config, args, log_changes=True)
 
-        # Operational overrides applied
+        # All overrides applied
         assert config.num_workers == 8
         assert config.checkpoint_dir == "new_dir"
         assert config.tensorboard_dir == "new_tb"
         assert config.num_epochs == 20
+        assert config.games_per_epoch == 500
+        assert config.num_simulations == 400
+        assert config.search_batch_size == 16
+        assert config.seed == 123
 
-        # Semantic fields unchanged
+    def test_resume_overrides_only_specified(self) -> None:
+        """_apply_overrides should not modify fields not specified on CLI."""
+        from train.main import _apply_overrides
+
+        config = TrainingConfig(
+            games_per_epoch=7,
+            num_simulations=50,
+            num_workers=2,
+        )
+
+        # Only override num_workers, leave everything else as None
+        args = argparse.Namespace(
+            num_workers=8,
+            checkpoint_dir=None,
+            tensorboard_dir=None,
+            num_epochs=None,
+            games_per_epoch=None,
+            num_simulations=None,
+            search_batch_size=None,
+            seed=None,
+        )
+        _apply_overrides(config, args, log_changes=True)
+
+        assert config.num_workers == 8
+        # Unspecified fields unchanged
         assert config.games_per_epoch == 7
         assert config.num_simulations == 50
 
@@ -557,11 +583,20 @@ class TestSelfPlay:
         local_policy, local_values, local_mask = local_eval.evaluate(state)
 
         # Remote evaluation through server
+        from train.eval_server import SharedEvalBuffers
+
+        shared_bufs = SharedEvalBuffers(
+            num_workers=1,
+            batch_size=tiny_config.search_batch_size,
+            visible_size=tiny_config.visible_size,
+            action_dim=tiny_config.action_dim,
+            num_players=num_players,
+        )
         server_conn, worker_conn = Pipe()
-        server = EvaluationServer(small_model, device, [server_conn])
+        server = EvaluationServer(small_model, device, [server_conn], shared_bufs)
         server.start()
         try:
-            remote_eval = RemoteEvaluator(worker_conn, num_players)
+            remote_eval = RemoteEvaluator(worker_conn, num_players, shared_bufs, 0)
             remote_policy, remote_values, remote_mask = remote_eval.evaluate(state)
         finally:
             server.stop()
@@ -582,7 +617,11 @@ class TestSelfPlay:
 
         from core.driver import DRIVER
         from core.state import GameState
-        from train.eval_server import EvaluationServer, RemoteEvaluator
+        from train.eval_server import (
+            EvaluationServer,
+            RemoteEvaluator,
+            SharedEvalBuffers,
+        )
 
         device = torch.device("cpu")
         small_model.eval()
@@ -606,12 +645,19 @@ class TestSelfPlay:
         local_eval = NNEvaluator(small_model, device, num_players=num_players)
         local_results = local_eval.evaluate_batch(states)
 
-        # Remote batch evaluation
+        # Remote batch evaluation (batch_size must fit all states)
+        shared_bufs = SharedEvalBuffers(
+            num_workers=1,
+            batch_size=max(tiny_config.search_batch_size, len(states)),
+            visible_size=tiny_config.visible_size,
+            action_dim=tiny_config.action_dim,
+            num_players=num_players,
+        )
         server_conn, worker_conn = Pipe()
-        server = EvaluationServer(small_model, device, [server_conn])
+        server = EvaluationServer(small_model, device, [server_conn], shared_bufs)
         server.start()
         try:
-            remote_eval = RemoteEvaluator(worker_conn, num_players)
+            remote_eval = RemoteEvaluator(worker_conn, num_players, shared_bufs, 0)
             remote_results = remote_eval.evaluate_batch(states)
         finally:
             server.stop()
@@ -630,16 +676,29 @@ class TestSelfPlay:
         """play_game produces valid results when using RemoteEvaluator."""
         from multiprocessing import Pipe
 
-        from train.eval_server import EvaluationServer, RemoteEvaluator
+        from train.eval_server import (
+            EvaluationServer,
+            RemoteEvaluator,
+            SharedEvalBuffers,
+        )
 
         device = torch.device("cpu")
         small_model.eval()
 
+        shared_bufs = SharedEvalBuffers(
+            num_workers=1,
+            batch_size=tiny_config.search_batch_size,
+            visible_size=tiny_config.visible_size,
+            action_dim=tiny_config.action_dim,
+            num_players=tiny_config.num_players,
+        )
         server_conn, worker_conn = Pipe()
-        server = EvaluationServer(small_model, device, [server_conn])
+        server = EvaluationServer(small_model, device, [server_conn], shared_bufs)
         server.start()
         try:
-            remote_eval = RemoteEvaluator(worker_conn, tiny_config.num_players)
+            remote_eval = RemoteEvaluator(
+                worker_conn, tiny_config.num_players, shared_bufs, 0
+            )
             rng = np.random.default_rng(42)
             record = play_game(remote_eval, tiny_config, game_seed=123, rng=rng)
         finally:
@@ -659,7 +718,7 @@ class TestSelfPlay:
         """End-to-end test: spawn actual worker processes, play games, collect results."""
         import multiprocessing as mp
 
-        from train.eval_server import EvaluationServer
+        from train.eval_server import EvaluationServer, SharedEvalBuffers
         from train.self_play import self_play_worker
 
         device = torch.device("cpu")
@@ -671,6 +730,14 @@ class TestSelfPlay:
         task_queue = ctx.Queue()
         result_queue = ctx.Queue()
 
+        shared_bufs = SharedEvalBuffers(
+            num_workers=num_workers,
+            batch_size=tiny_config.search_batch_size,
+            visible_size=tiny_config.visible_size,
+            action_dim=tiny_config.action_dim,
+            num_players=tiny_config.num_players,
+        )
+
         server_conns = []
         worker_conns = []
         for _ in range(num_workers):
@@ -678,14 +745,17 @@ class TestSelfPlay:
             server_conns.append(s_conn)
             worker_conns.append(w_conn)
 
-        server = EvaluationServer(small_model, device, server_conns)
+        server = EvaluationServer(small_model, device, server_conns, shared_bufs)
         server.start()
 
         workers = []
         for i in range(num_workers):
             p = ctx.Process(
                 target=self_play_worker,
-                args=(worker_conns[i], task_queue, result_queue, tiny_config),
+                args=(
+                    worker_conns[i], task_queue, result_queue, tiny_config,
+                    shared_bufs, i,
+                ),
                 daemon=True,
             )
             p.start()

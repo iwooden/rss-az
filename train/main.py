@@ -22,7 +22,7 @@ from train.checkpoint import (
     save_checkpoint,
 )
 from train.config import TrainingConfig
-from train.eval_server import EvaluationServer
+from train.eval_server import EvaluationServer, SharedEvalBuffers
 from train.logging import TrainingLogger
 from train.replay_buffer import ReplayBuffer
 from mcts.evaluator import NNEvaluator
@@ -50,52 +50,31 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint-dir", type=str)
     parser.add_argument("--tensorboard-dir", type=str)
     parser.add_argument("--seed", type=int)
+    parser.add_argument("--temp-threshold", type=int)
     return parser
 
 
-def _apply_overrides(config: TrainingConfig, args: argparse.Namespace) -> None:
-    """Apply all CLI overrides to config in-place (fresh start)."""
-    if args.games_per_epoch is not None:
-        config.games_per_epoch = args.games_per_epoch
-    if args.num_epochs is not None:
-        config.num_epochs = args.num_epochs
-    if args.num_simulations is not None:
-        config.num_simulations = args.num_simulations
-    if args.search_batch_size is not None:
-        config.search_batch_size = args.search_batch_size
-    if args.num_workers is not None:
-        config.num_workers = args.num_workers
-    if args.checkpoint_dir is not None:
-        config.checkpoint_dir = args.checkpoint_dir
-    if args.tensorboard_dir is not None:
-        config.tensorboard_dir = args.tensorboard_dir
-    if args.seed is not None:
-        config.seed = args.seed
+_CLI_FIELDS = (
+    "games_per_epoch", "num_epochs", "num_simulations", "search_batch_size",
+    "num_workers", "checkpoint_dir", "tensorboard_dir", "seed", "temp_threshold",
+)
 
 
-# Fields safe to override on resume (operational, don't affect training semantics)
-_RESUME_OVERRIDES = ("num_workers", "checkpoint_dir", "tensorboard_dir", "num_epochs")
+def _apply_overrides(
+    config: TrainingConfig, args: argparse.Namespace, *, log_changes: bool = False,
+) -> None:
+    """Apply CLI overrides to config in-place.
 
-
-def _apply_resume_overrides(config: TrainingConfig, args: argparse.Namespace) -> None:
-    """Apply only operational CLI overrides on resume.
-
-    Training-semantic fields (LR, simulations, batch size, etc.) come from
-    the checkpoint config to ensure the resumed run matches the original.
+    When log_changes is True (resume), prints overridden checkpoint values.
     """
-    for field in _RESUME_OVERRIDES:
+    for field in _CLI_FIELDS:
         val = getattr(args, field, None)
         if val is not None:
+            if log_changes:
+                old = getattr(config, field)
+                if old != val:
+                    print(f"  CLI override: {field} = {val} (was {old})")
             setattr(config, field, val)
-
-    # Warn about ignored overrides
-    _SEMANTIC_FIELDS = {
-        "games_per_epoch", "num_simulations", "search_batch_size", "seed",
-    }
-    for field in _SEMANTIC_FIELDS:
-        if getattr(args, field, None) is not None:
-            print(f"  Warning: --{field.replace('_', '-')} ignored on resume "
-                  f"(using checkpointed value: {getattr(config, field)})")
 
 
 def main() -> None:
@@ -128,7 +107,7 @@ def main() -> None:
     if cp is not None:
         # Resume: restore checkpointed config, apply operational overrides only
         config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
-        _apply_resume_overrides(config, args)
+        _apply_overrides(config, args, log_changes=True)
         config.validate()
         if args.config:
             print("  Warning: --config ignored on resume (using checkpointed config)")
@@ -204,13 +183,24 @@ def main() -> None:
             server_conns.append(s_conn)
             worker_conns.append(w_conn)
 
-        eval_server = EvaluationServer(model, device, server_conns)
+        shared_bufs = SharedEvalBuffers(
+            num_workers=config.num_workers,
+            batch_size=config.search_batch_size,
+            visible_size=config.visible_size,
+            action_dim=config.action_dim,
+            num_players=config.num_players,
+        )
+
+        eval_server = EvaluationServer(model, device, server_conns, shared_bufs)
         eval_server.start()
 
         for i in range(config.num_workers):
             p = ctx.Process(
                 target=self_play_worker,
-                args=(worker_conns[i], task_queue, result_queue, config),
+                args=(
+                    worker_conns[i], task_queue, result_queue, config,
+                    shared_bufs, i,
+                ),
                 daemon=True,
             )
             p.start()

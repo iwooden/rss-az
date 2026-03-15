@@ -103,6 +103,8 @@ def self_play_worker(
     task_queue: Any,
     result_queue: Any,
     config: TrainingConfig,
+    shared_bufs: Any = None,
+    worker_idx: int = 0,
 ) -> None:
     """Worker process: play games using remote NN evaluation.
 
@@ -111,7 +113,9 @@ def self_play_worker(
     """
     from train.eval_server import RemoteEvaluator
 
-    evaluator = RemoteEvaluator(eval_conn, config.num_players)
+    evaluator = RemoteEvaluator(
+        eval_conn, config.num_players, shared_bufs, worker_idx
+    )
 
     from core.state import get_layout
 

@@ -64,7 +64,7 @@ class TrainingConfig:
     # --- Temperature Schedule ---
     # temp_initial for the first `temp_threshold` decision points (MCTS searches),
     # then drops to temp_final. Measured in total game decisions, not per-player.
-    temp_threshold: int = 60
+    temp_threshold: int = 30
     temp_initial: float = 1.0
     temp_final: float = 0.1
 
