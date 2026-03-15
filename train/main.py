@@ -53,9 +53,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int)
     parser.add_argument("--temp-threshold", type=int)
     parser.add_argument("--dirichlet-alpha", type=float)
-    parser.add_argument(
+    dyn_group = parser.add_mutually_exclusive_group()
+    dyn_group.add_argument(
         "--dirichlet-dynamic", action="store_true", default=None,
-        help="Use dynamic alpha = numerator / n_legal_actions (default: static)",
+        help="Use dynamic alpha = numerator / n_legal_actions",
+    )
+    dyn_group.add_argument(
+        "--no-dirichlet-dynamic", dest="dirichlet_dynamic",
+        action="store_false",
+        help="Use static alpha (override checkpoint that has dynamic enabled)",
     )
     parser.add_argument(
         "--dirichlet-alpha-numerator", type=float,
