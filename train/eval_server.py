@@ -106,13 +106,17 @@ class EvaluationServer:
             all_states = np.concatenate([r.states for _, r in requests])
             all_masks = np.concatenate([r.masks for _, r in requests])
 
-            # Single GPU forward pass
+            # Single GPU forward pass (bfloat16 for throughput)
             with torch.no_grad():
                 x = torch.from_numpy(all_states).to(self._device)
                 mask = torch.from_numpy(all_masks).to(self._device)
-                policy_logits, values = self._model(x, legal_action_mask=mask)
-                policies = torch.softmax(policy_logits, dim=-1).cpu().numpy()
-                values_np = values.cpu().numpy()
+                with torch.autocast(
+                    self._device.type, dtype=torch.bfloat16,
+                    enabled=self._device.type == "cuda",
+                ):
+                    policy_logits, values = self._model(x, legal_action_mask=mask)
+                policies = torch.softmax(policy_logits.float(), dim=-1).cpu().numpy()
+                values_np = values.float().cpu().numpy()
 
             # Dispatch results back to respective workers
             offset = 0

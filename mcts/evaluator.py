@@ -143,6 +143,7 @@ class NNEvaluator:
         self.device = device
         self.num_players = num_players
         self.layout = get_layout(num_players)
+        self._autocast_dtype = torch.bfloat16 if device.type == "cuda" else None
         self.model.eval()
 
     @torch.no_grad()
@@ -175,11 +176,13 @@ class NNEvaluator:
         x = torch.from_numpy(rotated_visible).unsqueeze(0).to(self.device)
         mask = torch.from_numpy(mask_np).unsqueeze(0).to(self.device)
 
-        # Forward pass
-        policy_logits, value_output = self.model(x, legal_action_mask=mask)
+        # Forward pass (bfloat16 on CUDA for throughput)
+        with torch.autocast(self.device.type, dtype=self._autocast_dtype,
+                            enabled=self._autocast_dtype is not None):
+            policy_logits, value_output = self.model(x, legal_action_mask=mask)
 
-        # Policy: softmax over masked logits
-        policy_probs = torch.softmax(policy_logits, dim=-1).squeeze(0).cpu().numpy()
+        # Policy: softmax over masked logits (full precision)
+        policy_probs = torch.softmax(policy_logits.float(), dim=-1).squeeze(0).cpu().numpy()
 
         # Value: already has tanh applied in the model, un-rotate to canonical
         values_rotated = value_output.squeeze(0).cpu().numpy()
@@ -217,13 +220,15 @@ class NNEvaluator:
         ])
         masks = np.stack([get_valid_action_mask(s) for s in states])
 
-        # Single forward pass for the whole batch
+        # Single forward pass for the whole batch (bfloat16 on CUDA)
         x = torch.from_numpy(rotated).to(self.device)
         mask = torch.from_numpy(masks).to(self.device)
-        policy_logits, value_output = self.model(x, legal_action_mask=mask)
+        with torch.autocast(self.device.type, dtype=self._autocast_dtype,
+                            enabled=self._autocast_dtype is not None):
+            policy_logits, value_output = self.model(x, legal_action_mask=mask)
 
-        policy_probs = torch.softmax(policy_logits, dim=-1).cpu().numpy()
-        values = value_output.cpu().numpy()
+        policy_probs = torch.softmax(policy_logits.float(), dim=-1).cpu().numpy()
+        values = value_output.float().cpu().numpy()
 
         results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for i in range(n):
@@ -263,13 +268,15 @@ class NNEvaluator:
         ])
         masks = np.stack(legal_masks)
 
-        # Single forward pass for the whole batch
+        # Single forward pass for the whole batch (bfloat16 on CUDA)
         x = torch.from_numpy(rotated).to(self.device)
         mask = torch.from_numpy(masks).to(self.device)
-        policy_logits, value_output = self.model(x, legal_action_mask=mask)
+        with torch.autocast(self.device.type, dtype=self._autocast_dtype,
+                            enabled=self._autocast_dtype is not None):
+            policy_logits, value_output = self.model(x, legal_action_mask=mask)
 
-        policy_probs = torch.softmax(policy_logits, dim=-1).cpu().numpy()
-        values = value_output.cpu().numpy()
+        policy_probs = torch.softmax(policy_logits.float(), dim=-1).cpu().numpy()
+        values = value_output.float().cpu().numpy()
 
         results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for i in range(n):
