@@ -235,16 +235,18 @@ def main() -> None:
 
             # --- Phase 1: Self-play ---
             model.eval()
-            records = []
             total_examples = 0
+            total_moves = 0
+            total_duration = 0.0
             num_players = config.num_players
             rank_totals = [0.0] * num_players
 
             def _collect_record(record: object, game_idx: int) -> None:
-                nonlocal total_examples
+                nonlocal total_examples, total_moves, total_duration
                 buffer.add_examples(record.examples)  # type: ignore[union-attr]
-                records.append(record)
                 total_examples += len(record.examples)  # type: ignore[union-attr]
+                total_moves += record.total_moves  # type: ignore[union-attr]
+                total_duration += record.duration_secs  # type: ignore[union-attr]
                 for rank, nw in enumerate(sorted(record.net_worths, reverse=True)):  # type: ignore[union-attr]
                     rank_totals[rank] += nw
                 n = game_idx + 1
@@ -291,11 +293,9 @@ def main() -> None:
             logger.end_self_play()
 
             # Self-play Tensorboard metrics
-            avg_game_moves = sum(r.total_moves for r in records) / len(records)
-            avg_game_dur = sum(r.duration_secs for r in records) / len(records)
-
-            # Net worth by finishing rank (already accumulated in rank_totals)
-            n_games = len(records)
+            n_games = config.games_per_epoch
+            avg_game_moves = total_moves / n_games
+            avg_game_dur = total_duration / n_games
             rank_avgs = [t / n_games for t in rank_totals]
 
             net_worth_scalars = {
@@ -311,7 +311,7 @@ def main() -> None:
                 {
                     "self_play/game_length_mean": avg_game_moves,
                     "self_play/duration_mean": avg_game_dur,
-                    "self_play/examples_per_game": total_examples / len(records),
+                    "self_play/examples_per_game": total_examples / n_games,
                     "self_play/total_examples": float(total_examples),
                     "buffer/size": float(len(buffer)),
                     "buffer/utilization": len(buffer) / config.buffer_capacity,
@@ -393,7 +393,7 @@ def main() -> None:
                 epoch=epoch_num,
                 num_epochs=config.num_epochs,
                 self_play_stats={
-                    "games": float(len(records)),
+                    "games": float(n_games),
                     "examples": float(total_examples),
                     "avg_moves": avg_game_moves,
                     "avg_duration": avg_game_dur,
