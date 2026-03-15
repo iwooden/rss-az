@@ -211,13 +211,13 @@ Instead of using the root node's mean value (soft-Z) or the game outcome as trai
 
 1. **Root setup:** Evaluate root state with NN, expand, add Dirichlet noise to priors
 2. **Per batch of simulations** (`search_batch_size` leaves per batch):
-   - **Select:** Traverse tree using PUCT until reaching unexpanded or terminal node. Apply **virtual loss** (pessimistic -1 values) along the selected path to discourage subsequent selections in the same batch from choosing the same path.
-   - Terminal nodes are backed up immediately without NN evaluation.
+   - **Select:** Traverse tree using PUCT until reaching unexpanded or terminal node. Increment visit counts along the path and **lock** the selected leaf by setting its Q in the parent to -inf (preventing re-selection).
+   - Terminal nodes have visits incremented and values backed up immediately.
    - **Batch evaluate:** All non-terminal leaves in the batch are evaluated in a single NN forward pass via `evaluate_batch()`.
-   - **Undo virtual loss + Expand + Backup:** Remove virtual loss, expand each leaf, propagate real values up the tree.
+   - **Unlock + Expand + Backup:** Restore parent Q, expand each leaf, propagate values up the tree. Visit counts were already incremented at selection time.
 3. **Output:** `get_action_probabilities(root, temperature)` converts visit counts to policy target
 
-**Virtual loss:** Each node on a selected path gets `visit_count += 1` and `value_sum += [-1, -1, ...]`. This makes the path look worse to PUCT, steering subsequent batch selections toward different leaves. Undone before real backup.
+**Leaf lock:** When a leaf is queued for batch evaluation, its Q in the parent edge is set to -inf so PUCT cannot re-select it. This is surgical — only the specific leaf edge is locked, not the entire ancestor path. Subsequent selections can still explore deep into the same subtree via different frontier nodes, avoiding the width bias of traditional virtual loss.
 
 **Memory efficiency:** States are NOT stored in tree nodes. The root state is cloned and actions replayed to reach each leaf.
 

@@ -6,7 +6,7 @@ Implements AlphaZero-style MCTS for multiplayer games:
 - Dirichlet noise at the root for exploration
 - A0GB greedy backup for value targets (Willemsen et al., 2020)
 - Pre-allocated state pool for zero per-node allocation
-- Batched leaf evaluation with virtual loss for GPU throughput
+- Batched leaf evaluation with leaf-lock deduplication for GPU throughput
 """
 
 from __future__ import annotations
@@ -105,31 +105,6 @@ def _add_dirichlet_noise(
 _Path = list[tuple[MCTSNode, int, int]]
 
 
-def _apply_virtual_loss(path: _Path, virtual_loss: np.ndarray) -> None:
-    """Apply virtual loss along a selection path to discourage re-selection.
-
-    Increments visit counts and adds a pessimistic value (all -1) to each
-    node on the path. This makes the selected actions look worse to subsequent
-    PUCT selections within the same batch.
-    """
-    for node, _, array_idx in path:
-        assert node.visit_counts is not None and node.value_sums is not None
-        node.visit_count += 1
-        node.value_sum += virtual_loss
-        node.visit_counts[array_idx] += 1
-        node.value_sums[array_idx] += virtual_loss
-
-
-def _undo_virtual_loss(path: _Path, virtual_loss: np.ndarray) -> None:
-    """Remove virtual loss from a selection path before applying real backup."""
-    for node, _, array_idx in path:
-        assert node.visit_counts is not None and node.value_sums is not None
-        node.visit_count -= 1
-        node.value_sum -= virtual_loss
-        node.visit_counts[array_idx] -= 1
-        node.value_sums[array_idx] -= virtual_loss
-
-
 def run_search(
     root_state: Any,
     evaluator: Any,
@@ -140,8 +115,14 @@ def run_search(
     """Run MCTS search from the given root state.
 
     Supports batched leaf evaluation: multiple leaves are selected per
-    iteration (using virtual loss to avoid path collisions), evaluated
-    in a single NN forward pass, then expanded and backed up.
+    iteration and evaluated in a single NN forward pass for GPU throughput.
+
+    Batching uses a leaf-lock mechanism to prevent duplicate evaluation:
+    when a leaf is queued for evaluation, its Q value in the parent is set
+    to -inf, ensuring PUCT never re-selects the same leaf within a batch.
+    Visit counts along the selection path are incremented at selection time
+    to gently nudge subsequent selections toward less-explored branches.
+    After evaluation, the leaf lock is removed and values are backed up.
 
     Args:
         root_state: GameState object to search from.
@@ -207,19 +188,18 @@ def run_search(
     root.visit_count = 1
     root.value_sum += root_values
 
-    # Virtual loss vector: pessimistic for all players
-    virtual_loss = np.full(num_players, -1.0, dtype=np.float32)
+    # Leaf lock sentinel: -inf Q guarantees PUCT never re-selects a locked edge
+    neg_inf_row = np.full(num_players, -np.inf, dtype=np.float32)
 
     # Run simulations in batches
     sim = 0
     while sim < config.num_simulations:
         # Collect a batch of leaves for NN evaluation
         pending: list[tuple[_Path, MCTSNode, GameState]] = []
-        pending_ids: set[int] = set()  # id(node) for deduplication
+        pending_ids: set[int] = set()  # safety net for single-action parents
+        saved_values: list[np.ndarray] = []  # saved parent Q rows for unlock
 
         for _ in range(min(batch_size, config.num_simulations - sim)):
-            sim += 1
-
             # Selection: traverse tree to find a leaf
             node = root
             path: _Path = []
@@ -252,21 +232,35 @@ def run_search(
                     node = child
                     break  # New child is unexpanded — it's the leaf
 
-            # Terminal node: backup immediately (no NN needed)
+            # Terminal node: increment visits along path and backup values
             if node.is_terminal:
                 assert node.terminal_values is not None
+                sim += 1
+                _increment_visits(path, node)
                 _backup(path, node, node.terminal_values)
                 continue
 
-            # Non-terminal leaf: apply virtual loss and queue for batch eval
-            # Skip if this leaf is already queued in this batch (avoids
-            # duplicate evaluation and corrupted per-action stats from
-            # a second expand() overwriting the first)
+            # Non-terminal leaf: queue for batch evaluation.
+            # If all frontier nodes below a subtree are locked, selection
+            # lands on an already-pending leaf. Stop filling this batch —
+            # once current leaves are evaluated, new frontier opens up.
             nid = id(node)
             if nid in pending_ids:
-                continue
+                break
 
-            _apply_virtual_loss(path, virtual_loss)
+            sim += 1
+
+            # Increment visit counts along path now (before GPU eval returns).
+            # This gently nudges subsequent PUCT selections toward less-visited
+            # branches via the exploration term, without distorting Q values.
+            _increment_visits(path, node)
+
+            # Lock the parent edge: set Q to -inf so PUCT won't re-select
+            # this leaf. Save the original value_sums row for restoration.
+            parent, _, parent_aidx = path[-1]
+            assert parent.value_sums is not None
+            saved_values.append(parent.value_sums[parent_aidx].copy())
+            parent.value_sums[parent_aidx] = neg_inf_row
 
             leaf_gs = GameState.from_buffer(
                 state_pool.row(node.state_idx), num_players
@@ -282,21 +276,41 @@ def run_search(
         leaf_states = [gs for _, _, gs in pending]
         results = evaluator.evaluate_batch(leaf_states)
 
-        for (path, node, _leaf_gs), (policy_probs, values) in zip(
-            pending, results
+        for i, ((path, node, _leaf_gs), (policy_probs, values)) in enumerate(
+            zip(pending, results)
         ):
-            # Undo virtual loss before real backup
-            _undo_virtual_loss(path, virtual_loss)
+            # Unlock parent edge: restore saved Q values
+            parent, _, parent_aidx = path[-1]
+            assert parent.value_sums is not None
+            parent.value_sums[parent_aidx] = saved_values[i]
 
             # Expand the leaf (sets up arrays for future selection)
             leaf_mask = get_valid_action_mask(_leaf_gs)
             node.expand(policy_probs, leaf_mask, num_players=num_players,
                         default_value=values)
 
-            # Real backup
+            # Backup values (visit counts already incremented at selection time)
             _backup(path, node, values)
 
     return root
+
+
+def _increment_visits(path: _Path, leaf: MCTSNode) -> None:
+    """Increment visit counts along a selection path and on the leaf.
+
+    Called at selection time (before evaluation) so that subsequent PUCT
+    selections within the same batch see updated counts. This gently
+    reduces the exploration term for visited edges without distorting Q.
+
+    Args:
+        path: Selection path from root to leaf's parent.
+        leaf: The selected leaf node.
+    """
+    leaf.visit_count += 1
+    for node, _, array_idx in path:
+        assert node.visit_counts is not None
+        node.visit_count += 1
+        node.visit_counts[array_idx] += 1
 
 
 def _backup(
@@ -306,8 +320,9 @@ def _backup(
 ) -> None:
     """Backpropagate values from a leaf up to the root.
 
-    Updates both node-level aggregates (visit_count, value_sum) and
-    per-action arrays (visit_counts, value_sums) on each parent.
+    Updates value_sum on the leaf and value_sums on each parent edge.
+    Visit counts are NOT incremented here — they are incremented at
+    selection time by _increment_visits.
 
     Args:
         path: List of (parent_node, action, array_idx) tuples from root
@@ -315,16 +330,11 @@ def _backup(
         leaf: The leaf node that was evaluated.
         values: Canonical per-player values from the leaf evaluation.
     """
-    # Update leaf
-    leaf.visit_count += 1
     leaf.value_sum += values
 
-    # Walk back up the path (all nodes in path are expanded)
     for node, _, array_idx in reversed(path):
-        assert node.visit_counts is not None and node.value_sums is not None
-        node.visit_count += 1
+        assert node.value_sums is not None
         node.value_sum += values
-        node.visit_counts[array_idx] += 1
         node.value_sums[array_idx] += values
 
 

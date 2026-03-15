@@ -20,9 +20,7 @@ from mcts.evaluator import (
 from mcts.node import MCTSNode
 from mcts.search import (
     _add_dirichlet_noise,
-    _apply_virtual_loss,
     _backup,
-    _undo_virtual_loss,
     get_action_probabilities,
     get_greedy_leaf_value,
     run_search,
@@ -475,7 +473,13 @@ class TestDirichletNoise:
 
 class TestBackup:
     def test_backup_propagates_values(self):
-        """Values should propagate from leaf through all ancestors."""
+        """Values should propagate from leaf through all ancestors.
+
+        _backup only propagates values (value_sum, value_sums).
+        Visit counts are handled separately by _increment_visits.
+        """
+        from mcts.search import _increment_visits
+
         # Build a 2-level tree: root -> child (via action 5, array_idx 1)
         root = MCTSNode(active_player_id=0, num_players=3)
         root.visit_count = 1
@@ -492,25 +496,29 @@ class TestBackup:
         leaf_values = np.array([0.8, -0.3, -0.5], dtype=np.float32)
         path = [(root, 5, 1)]  # (parent, action, array_idx)
 
+        # Increment visits (normally done at selection time)
+        _increment_visits(path, child)
+
+        assert child.visit_count == 1
+        assert root.visit_count == 2
+        assert root.visit_counts[1] == 2  # 1 FPU + 1 real
+        assert root.visit_counts[0] == 1  # untouched
+
+        # Backup values (no visit count changes)
         _backup(path, child, leaf_values)
 
-        # Leaf: visit_count incremented, value_sum updated
-        assert child.visit_count == 1
         np.testing.assert_array_almost_equal(child.value_sum, leaf_values)
-
-        # Root: visit_count incremented, value_sum updated
-        assert root.visit_count == 2
         np.testing.assert_array_almost_equal(root.value_sum, leaf_values)
-
-        # Root per-action: array_idx=1 (action 5) updated, array_idx=0 unchanged
-        assert root.visit_counts[1] == 2  # 1 virtual + 1 real
         np.testing.assert_array_almost_equal(
             root.value_sums[1], leaf_values  # FPU zeros + leaf_values
         )
-        assert root.visit_counts[0] == 1  # Untouched (virtual only)
         np.testing.assert_array_almost_equal(
-            root.value_sums[0], np.zeros(3)
+            root.value_sums[0], np.zeros(3)  # untouched
         )
+        # Visit counts unchanged by backup
+        assert child.visit_count == 1
+        assert root.visit_count == 2
+        assert root.visit_counts[1] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -719,69 +727,6 @@ class TestNNEvaluator:
             assert (values >= -1.0).all()
             assert (values <= 1.0).all()
 
-
-# ---------------------------------------------------------------------------
-# Virtual loss
-# ---------------------------------------------------------------------------
-
-class TestVirtualLoss:
-    def test_apply_and_undo_is_identity(self):
-        """Applying then undoing virtual loss should restore original state."""
-        node = MCTSNode(active_player_id=0, num_players=3)
-        node.visit_count = 5
-        node.value_sum = np.array([1.0, 0.5, -0.5], dtype=np.float32)
-        node.legal_actions = np.array([0, 1], dtype=np.int32)
-        node.priors = np.array([0.6, 0.4], dtype=np.float32)
-        node.visit_counts = np.array([3, 2], dtype=np.int32)
-        node.value_sums = np.array([
-            [0.6, 0.2, -0.4],
-            [0.4, 0.3, -0.1],
-        ], dtype=np.float32)
-
-        # Save originals
-        orig_vc = node.visit_count
-        orig_vs = node.value_sum.copy()
-        orig_vcs = node.visit_counts.copy()
-        orig_vss = node.value_sums.copy()
-
-        vl = np.full(3, -1.0, dtype=np.float32)
-        path = [(node, 0, 0)]
-
-        _apply_virtual_loss(path, vl)
-        # Should be modified
-        assert node.visit_count == orig_vc + 1
-        assert node.visit_counts[0] == orig_vcs[0] + 1
-
-        _undo_virtual_loss(path, vl)
-        # Should be restored
-        assert node.visit_count == orig_vc
-        np.testing.assert_array_almost_equal(node.value_sum, orig_vs)
-        np.testing.assert_array_equal(node.visit_counts, orig_vcs)
-        np.testing.assert_array_almost_equal(node.value_sums, orig_vss)
-
-    def test_virtual_loss_discourages_reselection(self):
-        """After virtual loss, PUCT should prefer a different action."""
-        node = MCTSNode(active_player_id=0, num_players=3)
-        node.visit_count = 2
-        node.legal_actions = np.array([0, 1], dtype=np.int32)
-        node.priors = np.array([0.5, 0.5], dtype=np.float32)
-        node.default_value = np.zeros(3, dtype=np.float32)
-        node.visit_counts = np.ones(2, dtype=np.int32)
-        node.value_sums = np.zeros((2, 3), dtype=np.float32)
-
-        # Equal priors, equal visits — selection is arbitrary
-        first_action, first_idx = select_child(node, c_puct=2.5)
-
-        # Apply virtual loss on the selected action
-        vl = np.full(3, -1.0, dtype=np.float32)
-        path = [(node, first_action, first_idx)]
-        _apply_virtual_loss(path, vl)
-
-        # Now the other action should be preferred
-        second_action, _ = select_child(node, c_puct=2.5)
-        assert second_action != first_action
-
-        _undo_virtual_loss(path, vl)
 
 
 # ---------------------------------------------------------------------------
