@@ -100,10 +100,10 @@ class ReplayBuffer:
             )
         indices = rng.choice(self._size, size=batch_size, replace=False)
         return {
-            "states": torch.from_numpy(self._states[indices].copy()),
-            "legal_masks": torch.from_numpy(self._legal_masks[indices].copy()),
-            "policy_targets": torch.from_numpy(self._policy_targets[indices].copy()),
-            "value_targets": torch.from_numpy(self._value_targets[indices].copy()),
+            "states": torch.from_numpy(self._states[indices]),
+            "legal_masks": torch.from_numpy(self._legal_masks[indices]),
+            "policy_targets": torch.from_numpy(self._policy_targets[indices]),
+            "value_targets": torch.from_numpy(self._value_targets[indices]),
         }
 
     def __len__(self) -> int:
