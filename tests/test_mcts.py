@@ -875,3 +875,84 @@ class TestBatchedSearch:
                 check_invariant(child)
 
         check_invariant(root)
+
+    def test_leaf_lock_caps_batch_to_frontier_size(self, game_state, evaluator):
+        """When batch_size > available frontier nodes, batch should be capped.
+
+        At the root of a fresh search, the frontier is the set of legal
+        actions (each leads to an unexpanded child). With batch_size larger
+        than the number of legal actions, the leaf-lock mechanism should
+        submit a batch equal to the frontier size, not the full batch_size.
+        """
+
+        class BatchSizeTracker:
+            """Wraps evaluator to record batch sizes."""
+
+            def __init__(self, inner):
+                self._inner = inner
+                self.num_players = inner.num_players
+                self.batch_sizes: list[int] = []
+
+            def evaluate(self, state):
+                return self._inner.evaluate(state)
+
+            def evaluate_batch(self, states):
+                self.batch_sizes.append(len(states))
+                return self._inner.evaluate_batch(states)
+
+            def evaluate_terminal(self, state):
+                return self._inner.evaluate_terminal(state)
+
+        # Count legal actions at the root to know the frontier size
+        legal_count = int(get_valid_action_mask(game_state).sum())
+
+        tracker = BatchSizeTracker(evaluator)
+        # batch_size much larger than legal actions at root
+        config = MCTSConfig(
+            num_simulations=legal_count, search_batch_size=legal_count + 10,
+            dirichlet_epsilon=0.0,
+        )
+        run_search(game_state, tracker, config)
+
+        # First batch should be capped at the frontier size (legal actions)
+        assert len(tracker.batch_sizes) >= 1
+        assert tracker.batch_sizes[0] == legal_count, (
+            f"First batch size {tracker.batch_sizes[0]} != "
+            f"frontier size {legal_count}"
+        )
+
+    def test_leaf_lock_no_duplicate_evaluations(self, game_state, evaluator):
+        """No node should appear in the same evaluation batch twice."""
+
+        class DuplicateNodeTracker:
+            """Wraps evaluator to check for duplicate nodes per batch.
+
+            Uses the data pointer address of each state's backing array
+            to distinguish nodes. Same pool row = same data pointer.
+            """
+
+            def __init__(self, inner):
+                self._inner = inner
+                self.num_players = inner.num_players
+                self.found_duplicates = False
+
+            def evaluate(self, state):
+                return self._inner.evaluate(state)
+
+            def evaluate_batch(self, states):
+                addrs = [s._array.ctypes.data for s in states]
+                if len(addrs) != len(set(addrs)):
+                    self.found_duplicates = True
+                return self._inner.evaluate_batch(states)
+
+            def evaluate_terminal(self, state):
+                return self._inner.evaluate_terminal(state)
+
+        tracker = DuplicateNodeTracker(evaluator)
+        config = MCTSConfig(
+            num_simulations=40, search_batch_size=16,
+            dirichlet_epsilon=0.0,
+        )
+        run_search(game_state, tracker, config)
+
+        assert not tracker.found_duplicates, "Same node appeared twice in a batch"
