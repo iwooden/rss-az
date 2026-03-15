@@ -14,7 +14,7 @@ from libc.stdint cimport uint8_t, uint16_t, uint64_t, int8_t
 # NORMALIZATION CONSTANTS
 # =============================================================================
 
-cdef float CASH_DIVISOR = 200.0
+cdef float CASH_DIVISOR = 100.0
 cdef float SHARE_DIVISOR = 7.0
 cdef float STAR_DIVISOR = 20.0
 cdef float MAX_ROUNDTRIPS = 2.0

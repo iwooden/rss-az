@@ -29,7 +29,7 @@ Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact 
 
 | Constant | Value | Used For |
 |----------|-------|----------|
-| `CASH_DIVISOR` | 200.0 | Cash, prices, net worth, company adjusted incomes |
+| `CASH_DIVISOR` | 100.0 | Cash, prices, net worth, company adjusted incomes |
 | `SHARE_DIVISOR` | 7.0 | Share counts |
 | `STAR_DIVISOR` | 20.0 | Star ratings |
 | `MAX_ROUNDTRIPS` | 2.0 | Round-trip limit (divisor = MAX_ROUNDTRIPS * 2 = 4.0) |

@@ -148,7 +148,7 @@ Stateless game loop engine:
 Static game constants:
 - 36 companies, 8 corporations, 27 market prices
 - **Normalization divisors:**
-  - `CASH_DIVISOR = 200.0` (prices, cash)
+  - `CASH_DIVISOR = 100.0` (prices, cash)
   - `SHARE_DIVISOR = 7.0` (share counts)
   - `STAR_DIVISOR = 20.0` (star ratings)
   - `MAX_ROUNDTRIPS = 2.0` (buy/sell tracking)
