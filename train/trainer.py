@@ -40,7 +40,7 @@ class Trainer:
 
         def lr_lambda(step: int) -> float:
             if step < warmup_steps:
-                return step / max(warmup_steps, 1)
+                return (step + 1) / max(warmup_steps, 1)
             progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
             cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
             return lr_min_ratio + (1.0 - lr_min_ratio) * cosine_decay

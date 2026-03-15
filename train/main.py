@@ -403,7 +403,7 @@ def main() -> None:
                     "rank_net_worths": rank_avgs,
                 },
                 train_stats={
-                    "steps": float(config.training_steps_per_epoch),
+                    "steps": float(config.training_steps_per_epoch) if avg_losses else 0.0,
                     "lr": trainer.lr,
                     **avg_losses,
                 },

@@ -275,6 +275,17 @@ class TestTrainer:
         trainer.train_step(batch)
         assert trainer.global_step == 2
 
+    def test_lr_warmup_step_zero_nonzero(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        device = torch.device("cpu")
+        tiny_config.warmup_steps = 10
+        trainer = Trainer(small_model, tiny_config, device)
+        batch = _make_batch(4, 3023, 246, 3)
+        trainer.train_step(batch)
+        # First step LR must be non-zero (step+1)/warmup_steps = 1/10
+        assert trainer.lr > 0, "LR at step 0 must not be zero"
+
     def test_lr_schedule_warmup_and_decay(
         self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
     ) -> None:
