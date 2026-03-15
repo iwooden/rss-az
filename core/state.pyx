@@ -533,10 +533,11 @@ cdef class GameState:
         cdef cnp.ndarray arr = np.asarray(array)
         if arr.dtype != np.float32:
             raise ValueError(f"Expected float32 array, got {arr.dtype}")
-        if arr.ndim != 1 or arr.shape[0] != state._layout.total_size:
+        if arr.ndim != 1 or <int>arr.shape[0] != state._layout.total_size:
+            py_shape = np.PyArray_DIMS(arr)
             raise ValueError(
                 f"Expected 1-D array of length {state._layout.total_size}, "
-                f"got shape {arr.shape}"
+                f"got ndim={arr.ndim} len={<int>arr.shape[0]}"
             )
         np.copyto(state._array, arr)
         return state
@@ -560,10 +561,10 @@ cdef class GameState:
         cdef cnp.ndarray buf = np.asarray(buffer)
         if buf.dtype != np.float32:
             raise ValueError(f"Expected float32 array, got {buf.dtype}")
-        if buf.ndim != 1 or buf.shape[0] != state._layout.total_size:
+        if buf.ndim != 1 or <int>buf.shape[0] != state._layout.total_size:
             raise ValueError(
                 f"Expected 1-D array of length {state._layout.total_size}, "
-                f"got shape {buf.shape}"
+                f"got ndim={buf.ndim} len={<int>buf.shape[0]}"
             )
         if not buf.flags['C_CONTIGUOUS']:
             raise ValueError("Buffer must be C-contiguous")
