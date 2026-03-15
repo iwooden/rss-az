@@ -264,6 +264,8 @@ def main() -> None:
                     total_examples=total_examples,
                     avg_moves=total_examples / n,
                     rank_net_worths=[t / n for t in rank_totals],
+                    rank_mins=list(rank_mins),
+                    rank_maxs=list(rank_maxs),
                 )
 
             logger.begin_self_play(epoch_num, config.num_epochs, config.games_per_epoch)
