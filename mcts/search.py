@@ -215,6 +215,7 @@ def run_search(
     while sim < config.num_simulations:
         # Collect a batch of leaves for NN evaluation
         pending: list[tuple[_Path, MCTSNode, GameState]] = []
+        pending_ids: set[int] = set()  # id(node) for deduplication
 
         for _ in range(min(batch_size, config.num_simulations - sim)):
             sim += 1
@@ -258,6 +259,13 @@ def run_search(
                 continue
 
             # Non-terminal leaf: apply virtual loss and queue for batch eval
+            # Skip if this leaf is already queued in this batch (avoids
+            # duplicate evaluation and corrupted per-action stats from
+            # a second expand() overwriting the first)
+            nid = id(node)
+            if nid in pending_ids:
+                continue
+
             _apply_virtual_loss(path, virtual_loss)
 
             leaf_gs = GameState.from_buffer(
@@ -265,6 +273,7 @@ def run_search(
             )
             node.active_player_id = leaf_gs.get_active_player()
             pending.append((path, node, leaf_gs))
+            pending_ids.add(nid)
 
         # Batch evaluate all pending leaves
         if not pending:

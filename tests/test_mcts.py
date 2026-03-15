@@ -865,3 +865,68 @@ class TestBatchedSearch:
 
         assert root.visit_count == 1
         assert root.is_terminal
+
+    def test_batched_search_no_duplicate_nodes_in_batch(self, game_state, evaluator):
+        """Batched search must not queue the same node for evaluation twice.
+
+        Uses a concentrated-policy evaluator to force narrow frontiers where
+        duplicate selection is likely without the deduplication fix.
+        """
+
+        class ConcentratedEvaluator:
+            """Returns 95% prior on one action to create narrow frontiers."""
+
+            def __init__(self, inner):
+                self._inner = inner
+                self.num_players = inner.num_players
+                self.batch_call_sizes: list[int] = []
+
+            def evaluate(self, state):
+                policy, values = self._inner.evaluate(state)
+                return self._concentrate(policy), values
+
+            def evaluate_batch(self, states):
+                results = self._inner.evaluate_batch(states)
+                self.batch_call_sizes.append(len(states))
+                return [(self._concentrate(p), v) for p, v in results]
+
+            def evaluate_terminal(self, state):
+                return self._inner.evaluate_terminal(state)
+
+            @staticmethod
+            def _concentrate(policy):
+                """Put 95% mass on the highest-prior action."""
+                best = np.argmax(policy)
+                new = np.full_like(policy, 0.05 / max(np.count_nonzero(policy) - 1, 1))
+                new[policy == 0] = 0  # keep illegal actions at 0
+                new[best] = 0.95
+                # renormalize
+                total = new.sum()
+                if total > 0:
+                    new /= total
+                return new
+
+        conc = ConcentratedEvaluator(evaluator)
+        config = MCTSConfig(
+            num_simulations=24, search_batch_size=8,
+            dirichlet_epsilon=0.0,  # disable noise for deterministic priors
+        )
+        root = run_search(game_state, conc, config)
+
+        # Verify visit count invariant on every expanded node.
+        # The duplicate-leaf bug violates this: double expand() overwrites
+        # per-action arrays while node-level visit_count retains both evals.
+        def check_invariant(node: MCTSNode) -> None:
+            if not node.expanded():
+                return
+            assert node.visit_counts is not None
+            real_child_visits = int((node.visit_counts - 1).sum())
+            expected = 1 + real_child_visits
+            assert node.visit_count == expected, (
+                f"visit_count={node.visit_count} != "
+                f"1 + sum(real_child_visits)={expected}"
+            )
+            for child in node.children.values():
+                check_invariant(child)
+
+        check_invariant(root)
