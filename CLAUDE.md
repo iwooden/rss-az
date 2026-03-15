@@ -225,7 +225,7 @@ Instead of using the root node's mean value (soft-Z) or the game outcome as trai
 
 Residual MLP (~26.6M parameters):
 - **Input:** 3023 floats (visible state, active player rotated to slot 0)
-- **Trunk:** LayerNorm → Linear → 10 residual blocks (pre-LN, GELU, expansion=2) → LayerNorm
+- **Trunk:** Linear → 10 residual blocks (pre-LN, GELU, expansion=2) → LayerNorm
 - **Policy head:** Linear(768→256) → GELU → Linear(256→246) logits (masked by legal actions before softmax)
 - **Value head:** Linear(768→384) → GELU → Linear(384→192) → GELU → Linear(192→3) → Tanh
 - **Init:** Xavier uniform for all linear layers; residual block fc2 layers zero-initialized (blocks start as identity)

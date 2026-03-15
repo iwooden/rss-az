@@ -64,7 +64,6 @@ class RSSAlphaZeroNet(nn.Module):
         super().__init__()
         self.cfg = cfg
 
-        self.input_norm = nn.LayerNorm(cfg.input_dim)
         self.input_proj = nn.Linear(cfg.input_dim, cfg.hidden_dim)
 
         self.blocks = nn.ModuleList(
@@ -126,8 +125,7 @@ class RSSAlphaZeroNet(nn.Module):
             values: shape [batch, value_dim], per-player expected outcomes in [-1, 1].
                 Index 0 = active player, subsequent indices follow turn order.
         """
-        h = self.input_norm(x)
-        h = self.input_proj(h)
+        h = self.input_proj(x)
         for block in self.blocks:
             h = block(h)
         h = self.trunk_norm(h)
