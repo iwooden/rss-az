@@ -24,7 +24,7 @@ from train.checkpoint import (
 from train.config import TrainingConfig
 from train.eval_server import EvaluationServer, SharedEvalBuffers
 from train.logging import TrainingLogger
-from train.profile_stats import GameProfileData, format_epoch_profile
+from train.profile_stats import EvalServerStats, GameProfileData, format_epoch_profile
 from train.replay_buffer import ReplayBuffer
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool
@@ -63,6 +63,55 @@ _CLI_FIELDS = (
     "games_per_epoch", "num_epochs", "num_simulations", "search_batch_size",
     "num_workers", "checkpoint_dir", "tensorboard_dir", "seed", "temp_threshold",
 )
+
+
+def _build_profile_scalars(
+    game_profiles: list[GameProfileData],
+    server_stats: EvalServerStats | None,
+    sp_duration: float,
+) -> dict[str, float]:
+    """Build Tensorboard scalars from profile data."""
+    n = len(game_profiles)
+    sel = sum(g.search.selection_secs for g in game_profiles) / n
+    evl = sum(g.search.eval_secs for g in game_profiles) / n
+    bak = sum(g.search.backup_secs for g in game_profiles) / n
+    total = sel + evl + bak
+
+    scalars: dict[str, float] = {}
+    if total > 0:
+        scalars["profile/search_select_pct"] = sel / total * 100
+        scalars["profile/search_eval_pct"] = evl / total * 100
+        scalars["profile/search_backup_pct"] = bak / total * 100
+    scalars["profile/search_select_secs"] = sel
+    scalars["profile/search_eval_secs"] = evl
+    scalars["profile/search_backup_secs"] = bak
+
+    clients = [g.eval_client for g in game_profiles if g.eval_client is not None]
+    if clients:
+        nc = len(clients)
+        prep = sum(c.prepare_secs for c in clients) / nc
+        wt = sum(c.wait_secs for c in clients) / nc
+        res = sum(c.result_secs for c in clients) / nc
+        ct = prep + wt + res
+        if ct > 0:
+            scalars["profile/eval_client_prepare_pct"] = prep / ct * 100
+            scalars["profile/eval_client_wait_pct"] = wt / ct * 100
+            scalars["profile/eval_client_result_pct"] = res / ct * 100
+
+    if server_stats is not None and server_stats.batch_count > 0:
+        s = server_stats
+        scalars["profile/server_batch_avg"] = s.batch_size_sum / s.batch_count
+        scalars["profile/server_batch_max"] = float(s.batch_size_max)
+        scalars["profile/server_infer_ms"] = (
+            s.inference_secs_sum / s.batch_count * 1000
+        )
+        if sp_duration > 0:
+            scalars["profile/server_throughput"] = s.total_states / sp_duration
+        scalars["profile/server_idle_pct"] = (
+            s.idle_secs / sp_duration * 100 if sp_duration > 0 else 0
+        )
+
+    return scalars
 
 
 def _apply_overrides(
@@ -347,6 +396,12 @@ def main() -> None:
                     if eval_server is not None else None
                 )
                 print(format_epoch_profile(game_profiles, server_stats, sp_duration))
+
+                # Tensorboard: profile scalars
+                profile_scalars = _build_profile_scalars(
+                    game_profiles, server_stats, sp_duration,
+                )
+                logger.log_scalars(epoch_num, profile_scalars)
 
             # --- Phase 2: Training ---
             if len(buffer) >= config.min_buffer_size:
