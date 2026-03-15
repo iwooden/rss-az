@@ -19,10 +19,13 @@ from mcts.evaluator import (
 )
 from mcts.node import MCTSNode
 from mcts.search import (
+    StatePool,
     _add_dirichlet_noise,
     _backup,
+    _collect_subtree_nodes,
     get_action_probabilities,
     get_greedy_leaf_value,
+    prepare_reuse_root,
     run_search,
     select_child,
 )
@@ -1011,3 +1014,279 @@ class TestBatchedSearch:
         run_search(game_state, tracker, config)
 
         assert not tracker.found_duplicates, "Same node appeared twice in a batch"
+
+
+# ---------------------------------------------------------------------------
+# Subtree reuse
+# ---------------------------------------------------------------------------
+
+class TestSubtreeReuse:
+    def test_pool_compact_preserves_data(self):
+        """Compaction should copy states to the front and update indices."""
+        pool = StatePool(10, 5)
+        # Allocate 5 rows with distinct data
+        nodes = []
+        for i in range(5):
+            node = MCTSNode(num_players=3)
+            data = np.full(5, float(i), dtype=np.float32)
+            node.state_idx = pool.alloc(data)
+            nodes.append(node)
+
+        # Keep only nodes 1, 3 (originally at indices 1, 3)
+        retained = [nodes[1], nodes[3]]
+        # Sort by state_idx (already sorted)
+        pool.compact(retained)
+
+        assert pool._next == 2
+        assert nodes[1].state_idx == 0
+        assert nodes[3].state_idx == 1
+        np.testing.assert_array_equal(pool.row(0), np.full(5, 1.0))
+        np.testing.assert_array_equal(pool.row(1), np.full(5, 3.0))
+
+    def test_pool_compact_noop_when_contiguous(self):
+        """Compaction should be a no-op when retained nodes are already at front."""
+        pool = StatePool(10, 5)
+        nodes = []
+        for i in range(3):
+            node = MCTSNode(num_players=3)
+            node.state_idx = pool.alloc(np.full(5, float(i), dtype=np.float32))
+            nodes.append(node)
+
+        pool.compact(nodes)
+
+        assert pool._next == 3
+        for i, node in enumerate(nodes):
+            assert node.state_idx == i
+
+    def test_collect_subtree_nodes(self, game_state, evaluator):
+        """Should collect all nodes with valid state_idx in the subtree."""
+        config = MCTSConfig(num_simulations=30)
+        root = run_search(game_state, evaluator, config)
+
+        # Total nodes in tree (root + all descendants)
+        all_nodes = _collect_subtree_nodes(root)
+
+        # All should have valid state indices
+        for node in all_nodes:
+            assert node.state_idx >= 0
+
+        # Should be sorted by state_idx
+        indices = [n.state_idx for n in all_nodes]
+        assert indices == sorted(indices)
+
+        # Root should be in the list
+        assert root in all_nodes
+
+    def test_prepare_reuse_root_returns_child(self, game_state, evaluator):
+        """Should return the chosen child with compacted pool."""
+        from core.state import get_layout
+        total_size = get_layout(3).total_size
+        pool = StatePool(51, total_size)
+        config = MCTSConfig(num_simulations=50)
+        root = run_search(game_state, evaluator, config, state_pool=pool)
+
+        # Find the most-visited action
+        assert root.visit_counts is not None and root.legal_actions is not None
+        best_idx = int(np.argmax(root.visit_counts - 1))
+        best_action = int(root.legal_actions[best_idx])
+
+        reuse = prepare_reuse_root(root, best_action, pool)
+
+        assert reuse is not None
+        assert reuse.expanded()
+        assert reuse.visit_count > 0
+        # Pool should be compacted to just the subtree size
+        subtree_size = len(_collect_subtree_nodes(reuse))
+        assert pool._next == subtree_size
+
+    def test_prepare_reuse_root_none_for_missing_action(self, game_state, evaluator):
+        """Should return None if action wasn't visited during search."""
+        config = MCTSConfig(num_simulations=5)
+        from core.state import get_layout
+        total_size = get_layout(3).total_size
+        pool = StatePool(6, total_size)
+        root = run_search(game_state, evaluator, config, state_pool=pool)
+
+        # Use an action that's definitely not in the tree
+        reuse = prepare_reuse_root(root, 999, pool)
+        assert reuse is None
+
+    def test_prepare_reuse_root_none_for_terminal(self, evaluator):
+        """Should return None if chosen child is terminal."""
+        # Create a near-terminal state
+        state = GameState(3)
+        state.initialize_game(42)
+        for cid in range(36):
+            COMPANIES[cid].remove_from_game(state)
+
+        from core.state import get_layout
+        total_size = get_layout(3).total_size
+        pool = StatePool(21, total_size)
+        config = MCTSConfig(num_simulations=20)
+        root = run_search(state, evaluator, config, state_pool=pool)
+
+        # Find a terminal child if one exists
+        for action_idx, child in root.children.items():
+            if child.is_terminal:
+                reuse = prepare_reuse_root(root, action_idx, pool)
+                assert reuse is None
+                break
+
+    def test_reuse_search_produces_valid_tree(self, game_state, evaluator):
+        """Search with reuse_root should produce a valid tree."""
+        from core.state import get_layout
+        total_size = get_layout(3).total_size
+        pool = StatePool(101, total_size)
+        config = MCTSConfig(num_simulations=100)
+        root = run_search(game_state, evaluator, config, state_pool=pool)
+
+        # Find best action and prepare reuse
+        assert root.visit_counts is not None and root.legal_actions is not None
+        best_idx = int(np.argmax(root.visit_counts - 1))
+        best_action = int(root.legal_actions[best_idx])
+        old_child_visits = root.children[best_action].visit_count
+
+        reuse = prepare_reuse_root(root, best_action, pool)
+        assert reuse is not None
+
+        # Apply action to get next state
+        from core.driver import DRIVER
+        next_state = GameState.from_array(game_state._array, 3)
+        DRIVER.apply_action(next_state, best_action)
+
+        # Run search with reuse
+        root2 = run_search(next_state, evaluator, config, state_pool=pool, reuse_root=reuse)
+
+        # Should be the same node object
+        assert root2 is reuse
+        # Visit count should increase
+        assert root2.visit_count >= old_child_visits
+        # Should reach target sim count
+        assert root2.visit_count >= config.num_simulations
+
+        # Action probabilities should be valid
+        probs = get_action_probabilities(root2, temperature=1.0, action_dim=config.action_dim)
+        assert probs.sum() == pytest.approx(1.0, abs=1e-5)
+        assert (probs >= 0).all()
+
+        # A0GB value should be valid
+        val = get_greedy_leaf_value(root2, num_players=3)
+        assert val.shape == (3,)
+        assert (val >= -1.0).all()
+        assert (val <= 1.0).all()
+
+    def test_reuse_saves_simulations(self, game_state, evaluator):
+        """Reused search should do fewer NN evaluations than fresh search."""
+
+        class EvalCounter:
+            """Wraps evaluator to count NN forward passes."""
+
+            def __init__(self, inner):
+                self._inner = inner
+                self.num_players = inner.num_players
+                self.eval_count = 0
+
+            def evaluate(self, state):
+                self.eval_count += 1
+                return self._inner.evaluate(state)
+
+            def evaluate_batch(self, states):
+                self.eval_count += len(states)
+                return self._inner.evaluate_batch(states)
+
+            def evaluate_leaves(self, state_arrays, active_player_ids, legal_masks):
+                self.eval_count += len(state_arrays)
+                return self._inner.evaluate_leaves(
+                    state_arrays, active_player_ids, legal_masks
+                )
+
+            def evaluate_terminal(self, state):
+                return self._inner.evaluate_terminal(state)
+
+        # Fresh search
+        counter_fresh = EvalCounter(evaluator)
+        from core.state import get_layout
+        total_size = get_layout(3).total_size
+        pool = StatePool(101, total_size)
+        config = MCTSConfig(num_simulations=100)
+        root = run_search(game_state, counter_fresh, config, state_pool=pool)
+        fresh_evals = counter_fresh.eval_count
+
+        # Prepare reuse
+        assert root.visit_counts is not None and root.legal_actions is not None
+        best_idx = int(np.argmax(root.visit_counts - 1))
+        best_action = int(root.legal_actions[best_idx])
+
+        reuse = prepare_reuse_root(root, best_action, pool)
+        assert reuse is not None
+
+        from core.driver import DRIVER
+        next_state = GameState.from_array(game_state._array, 3)
+        DRIVER.apply_action(next_state, best_action)
+
+        # Reuse search
+        counter_reuse = EvalCounter(evaluator)
+        root2 = run_search(
+            next_state, counter_reuse, config, state_pool=pool, reuse_root=reuse,
+        )
+        reuse_evals = counter_reuse.eval_count
+
+        # Reuse should save evaluations
+        assert reuse_evals < fresh_evals, (
+            f"Reuse ({reuse_evals} evals) should save vs fresh ({fresh_evals} evals)"
+        )
+
+    def test_reuse_with_batched_search(self, game_state, evaluator):
+        """Subtree reuse should work with batched leaf evaluation."""
+        from core.state import get_layout
+        total_size = get_layout(3).total_size
+        pool = StatePool(51, total_size)
+        config = MCTSConfig(num_simulations=50, search_batch_size=4)
+        root = run_search(game_state, evaluator, config, state_pool=pool)
+
+        assert root.visit_counts is not None and root.legal_actions is not None
+        best_idx = int(np.argmax(root.visit_counts - 1))
+        best_action = int(root.legal_actions[best_idx])
+
+        reuse = prepare_reuse_root(root, best_action, pool)
+        assert reuse is not None
+
+        from core.driver import DRIVER
+        next_state = GameState.from_array(game_state._array, 3)
+        DRIVER.apply_action(next_state, best_action)
+
+        root2 = run_search(
+            next_state, evaluator, config, state_pool=pool, reuse_root=reuse,
+        )
+
+        assert root2.visit_count >= config.num_simulations
+        probs = get_action_probabilities(root2, temperature=1.0, action_dim=config.action_dim)
+        assert probs.sum() == pytest.approx(1.0, abs=1e-5)
+
+    def test_multi_move_reuse_chain(self, game_state, evaluator):
+        """Subtree reuse should work across multiple consecutive moves."""
+        from core.driver import DRIVER
+        from core.state import get_layout
+        total_size = get_layout(3).total_size
+        pool = StatePool(51, total_size)
+        config = MCTSConfig(num_simulations=50)
+        rng = np.random.default_rng(42)
+
+        state = GameState.from_array(game_state._array, 3)
+        reuse_root = None
+
+        for _ in range(5):  # Play 5 moves with reuse
+            root = run_search(
+                state, evaluator, config, rng=rng,
+                state_pool=pool, reuse_root=reuse_root,
+            )
+
+            probs = get_action_probabilities(root, temperature=1.0, action_dim=config.action_dim)
+            assert probs.sum() == pytest.approx(1.0, abs=1e-5)
+
+            action = int(rng.choice(config.action_dim, p=probs))
+            status = DRIVER.apply_action(state, action)
+            if status == 2:  # STATUS_GAME_OVER
+                break
+
+            reuse_root = prepare_reuse_root(root, action, pool)

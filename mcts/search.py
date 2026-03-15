@@ -7,6 +7,7 @@ Implements AlphaZero-style MCTS for multiplayer games:
 - A0GB greedy backup for value targets (Willemsen et al., 2020)
 - Pre-allocated state pool for zero per-node allocation
 - Batched leaf evaluation with leaf-lock deduplication for GPU throughput
+- Subtree reuse: reuse the chosen child's subtree as the next search root
 """
 
 from __future__ import annotations
@@ -51,6 +52,22 @@ class StatePool:
         self.states[idx] = self.states[src_idx]
         self._next += 1
         return idx
+
+    def compact(self, nodes: list[MCTSNode]) -> None:
+        """Compact pool to retain only states for the given nodes.
+
+        Copies retained states to the front of the pool and updates
+        each node's state_idx to its new position.
+
+        Args:
+            nodes: Nodes to retain, sorted by state_idx ascending.
+                Ascending order ensures copies never overwrite unread sources.
+        """
+        for new_idx, node in enumerate(nodes):
+            if new_idx != node.state_idx:
+                self.states[new_idx] = self.states[node.state_idx]
+            node.state_idx = new_idx
+        self._next = len(nodes)
 
     def row(self, idx: int) -> np.ndarray:
         """Return a view (not copy) of the given pool row."""
@@ -111,6 +128,7 @@ def run_search(
     config: MCTSConfig,
     rng: np.random.Generator | None = None,
     state_pool: StatePool | None = None,
+    reuse_root: MCTSNode | None = None,
 ) -> MCTSNode:
     """Run MCTS search from the given root state.
 
@@ -133,6 +151,11 @@ def run_search(
         state_pool: Optional pre-allocated StatePool for node state storage.
             If None, a temporary pool is created. For training, pass a
             persistent pool to avoid per-search allocation.
+        reuse_root: Optional pre-searched subtree root from the previous move.
+            When provided, the existing tree statistics are preserved and only
+            the remaining simulations are run to reach num_simulations total.
+            The state_pool must already be compacted for this subtree via
+            prepare_reuse_root().
 
     Returns:
         The root MCTSNode with search statistics populated.
@@ -150,59 +173,68 @@ def run_search(
         from core.state import get_layout
         total_size = get_layout(num_players).total_size
         state_pool = StatePool(config.num_simulations + 1, total_size)
-    state_pool.reset()
 
-    # Scratch GameState rebound to each pool row via rebind() — avoids
-    # allocating a new Python wrapper per node expansion in the hot loop.
+    if reuse_root is not None:
+        # Reuse existing subtree — pool was already compacted by
+        # prepare_reuse_root(), don't reset it.
+        root = reuse_root
+        num_sims = max(0, config.num_simulations - root.visit_count)
+    else:
+        # Fresh search — reset pool and build root from scratch
+        state_pool.reset()
+
+        # Check if root state is terminal
+        is_terminal = root_state.get_phase() == GamePhases.PHASE_GAME_OVER
+
+        root = MCTSNode(
+            prior=0.0,
+            active_player_id=root_state.get_active_player(),
+            num_players=num_players,
+            is_terminal=is_terminal,
+        )
+        root.state_idx = state_pool.alloc(root_state._array)
+
+        if is_terminal:
+            values = evaluator.evaluate_terminal(root_state)
+            root.terminal_values = values
+            root.visit_count = 1
+            root.value_sum += values
+            return root
+
+        # Evaluate root with NN
+        policy_probs, root_values, mask = evaluator.evaluate(root_state)
+
+        # Expand root (sets up per-action arrays, no children created)
+        root.expand(policy_probs, mask, num_players=num_players,
+                    default_value=root_values)
+
+        # Backup root evaluation
+        root.visit_count = 1
+        root.value_sum += root_values
+
+        num_sims = config.num_simulations
+
+    # Scratch GameState rebound to each pool row via rebind()
     scratch_gs = GameState.from_buffer(state_pool.row(0), num_players)
 
-    # Check if root state is terminal
-    is_terminal = root_state.get_phase() == GamePhases.PHASE_GAME_OVER
-
-    root = MCTSNode(
-        prior=0.0,
-        active_player_id=root_state.get_active_player(),
-        num_players=num_players,
-        is_terminal=is_terminal,
-    )
-    root.state_idx = state_pool.alloc(root_state._array)
-
-    if is_terminal:
-        values = evaluator.evaluate_terminal(root_state)
-        root.terminal_values = values
-        root.visit_count = 1
-        root.value_sum += values
-        return root
-
-    # Evaluate root with NN
-    policy_probs, root_values, mask = evaluator.evaluate(root_state)
-
-    # Expand root (sets up per-action arrays, no children created)
-    root.expand(policy_probs, mask, num_players=num_players,
-                default_value=root_values)
-
-    # Add Dirichlet noise at root
+    # Add Dirichlet noise at root (fresh noise each search)
     if rng is None:
         rng = np.random.default_rng()
     if config.dirichlet_epsilon > 0:
         _add_dirichlet_noise(root, config.dirichlet_alpha, config.dirichlet_epsilon, rng)
-
-    # Backup root evaluation
-    root.visit_count = 1
-    root.value_sum += root_values
 
     # Leaf lock sentinel: -inf Q guarantees PUCT never re-selects a locked edge
     neg_inf_row = np.full(num_players, -np.inf, dtype=np.float32)
 
     # Run simulations in batches
     sim = 0
-    while sim < config.num_simulations:
+    while sim < num_sims:
         # Collect a batch of leaves for NN evaluation
         pending: list[tuple[_Path, MCTSNode]] = []
         pending_ids: set[int] = set()  # safety net for single-action parents
         saved_values: list[np.ndarray] = []  # saved parent Q rows for unlock
 
-        for _ in range(min(batch_size, config.num_simulations - sim)):
+        for _ in range(min(batch_size, num_sims - sim)):
             # Selection: traverse tree to find a leaf
             node = root
             path: _Path = []
@@ -425,3 +457,53 @@ def get_greedy_leaf_value(root: MCTSNode, num_players: int) -> np.ndarray:
         return np.zeros(num_players, dtype=np.float32)
 
     return node.value_sum / node.visit_count
+
+
+def _collect_subtree_nodes(root: MCTSNode) -> list[MCTSNode]:
+    """Collect all nodes in a subtree that have pool-allocated states.
+
+    Returns nodes sorted by state_idx (ascending) for safe in-place
+    compaction — copies never overwrite unread source rows.
+    """
+    nodes: list[MCTSNode] = []
+    stack: list[MCTSNode] = [root]
+    while stack:
+        node = stack.pop()
+        if node.state_idx >= 0:
+            nodes.append(node)
+        stack.extend(node.children.values())
+    nodes.sort(key=lambda n: n.state_idx)
+    return nodes
+
+
+def prepare_reuse_root(
+    root: MCTSNode,
+    action_idx: int,
+    state_pool: StatePool,
+) -> MCTSNode | None:
+    """Extract the chosen child as a reuse root for the next search.
+
+    Compacts the state pool to retain only the child's subtree states.
+    The old root and sibling subtrees are left for garbage collection.
+
+    Args:
+        root: The current search root.
+        action_idx: The action that was chosen (played in the real game).
+        state_pool: The state pool used during search.
+
+    Returns:
+        The child node ready for reuse, or None if the action has no
+        child in the tree or the child is terminal.
+    """
+    child = root.children.get(action_idx)
+    if child is None or child.is_terminal:
+        return None
+
+    # All non-terminal children are expanded after search completes
+    assert child.expanded(), "Reuse root must be expanded"
+
+    # Compact pool to retain only this subtree's states
+    retained = _collect_subtree_nodes(child)
+    state_pool.compact(retained)
+
+    return child

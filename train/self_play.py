@@ -13,7 +13,7 @@ import numpy as np
 from core.driver import DRIVER, STATUS_GAME_OVER_PY
 from core.state import GameState
 from mcts.evaluator import rotate_visible_state
-from mcts.search import StatePool, get_action_probabilities, get_greedy_leaf_value, run_search
+from mcts.search import StatePool, get_action_probabilities, get_greedy_leaf_value, prepare_reuse_root, run_search
 from train.config import TrainingConfig
 from train.replay_buffer import TrainingExample
 
@@ -47,17 +47,27 @@ def play_game(
     state = GameState(config.num_players)
     state.initialize_game(seed=game_seed)
 
+    # Ensure state pool exists for subtree reuse across searches
+    if state_pool is None:
+        from core.state import get_layout
+        total_size = get_layout(config.num_players).total_size
+        state_pool = StatePool(config.num_simulations + 1, total_size)
+
     mcts_config = config.to_mcts_config()
 
     examples: list[TrainingExample] = []
     move_count = 0
+    reuse_root: Any = None
 
     while True:
         active_player = state.get_active_player()
         legal_mask = DRIVER.get_legal_moves(state)
 
-        # MCTS search
-        root = run_search(state, evaluator, mcts_config, rng, state_pool=state_pool)
+        # MCTS search (reuses subtree from previous move when available)
+        root = run_search(
+            state, evaluator, mcts_config, rng,
+            state_pool=state_pool, reuse_root=reuse_root,
+        )
 
         # Temperature schedule
         temp = config.temp_initial if move_count < config.temp_threshold else config.temp_final
@@ -85,6 +95,9 @@ def play_game(
 
         if status == STATUS_GAME_OVER_PY:
             break
+
+        # Extract chosen child's subtree for reuse in next search
+        reuse_root = prepare_reuse_root(root, action_idx, state_pool)
 
     net_worths = [
         state.get_player_net_worth(i) for i in range(config.num_players)
