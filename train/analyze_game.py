@@ -25,7 +25,7 @@ from core.driver import DRIVER, STATUS_GAME_OVER_PY as STATUS_GAME_OVER
 from core.state import GameState, get_layout
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator
-from mcts.search import StatePool, run_search, get_action_probabilities
+from mcts.search import StatePool, run_search, get_action_probabilities, get_greedy_leaf_value
 from nn.model_3p import RSSAlphaZeroNet, RSSModelConfig
 from tests.debug_trace import (
     format_action,
@@ -166,6 +166,9 @@ def analyze_game(
         ))
         lines.append("")
         lines.extend(_format_mcts_visits(root, num_players, state, top_n))
+        a0gb = get_greedy_leaf_value(root, num_players)
+        a0gb_parts = [f"P{i}={a0gb[i]:+.3f}" for i in range(num_players)]
+        lines.append(f"  A0GB Value: {', '.join(a0gb_parts)}")
         lines.append("")
         lines.append(f"  **Action: {action_str}**")
         lines.append("")
