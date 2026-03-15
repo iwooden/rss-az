@@ -27,7 +27,12 @@ from core.data cimport (
     SHARE_DIVISOR,
     STAR_DIVISOR,
     MARKET_PRICES,
-    get_corp_share_count
+    get_corp_share_count,
+    COMPANY_STARS,
+    COMPANY_LOW_PRICE,
+    COMPANY_FACE_VALUE,
+    COMPANY_HIGH_PRICE,
+    COMPANY_SYNERGY,
 )
 
 LayoutInfo = namedtuple('LayoutInfo', [
@@ -952,6 +957,19 @@ cdef class GameState:
         turn_module.TURN.clear_acq_active_corp(self)
         turn_module.TURN.clear_acq_target_company(self)
         turn_module.TURN.clear_closing_company(self)
+
+        # 10. Populate static company data (stars, prices, synergies)
+        cdef int j, base_offset
+        cdef int static_stride = 4 + <int>GameConstants.NUM_COMPANIES
+        for i in range(<int>GameConstants.NUM_COMPANIES):
+            base_offset = self._layout.static_offset + i * static_stride
+            self._data[base_offset + 0] = <float>COMPANY_STARS[i] / STAR_DIVISOR
+            self._data[base_offset + 1] = <float>COMPANY_LOW_PRICE[i] / CASH_DIVISOR
+            self._data[base_offset + 2] = <float>COMPANY_FACE_VALUE[i] / CASH_DIVISOR
+            self._data[base_offset + 3] = <float>COMPANY_HIGH_PRICE[i] / CASH_DIVISOR
+            for j in range(<int>GameConstants.NUM_COMPANIES):
+                if COMPANY_SYNERGY[i][j] != 0:
+                    self._data[base_offset + 4 + j] = 1.0
 
         # Set active player
         self._set_active_player(0)
