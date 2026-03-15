@@ -107,7 +107,9 @@ def analyze_game(
     config: TrainingConfig,
     seed: int,
     num_simulations: int,
+    search_batch_size: int = 1,
     top_n: int = 10,
+    verbose: bool = False,
 ) -> str:
     """Play a self-play game with full MCTS and return a detailed log."""
     num_players = config.num_players
@@ -122,7 +124,7 @@ def analyze_game(
         dirichlet_alpha=config.dirichlet_alpha,
         dirichlet_epsilon=config.dirichlet_epsilon,
         num_players=num_players,
-        search_batch_size=config.search_batch_size,
+        search_batch_size=search_batch_size,
     )
 
     layout = get_layout(num_players)
@@ -183,8 +185,8 @@ def analyze_game(
         new_phase = state.get_phase()
         new_turn = TURN.get_turn_number(state)
 
-        # State dump on phase/turn change
-        if new_phase != prev_phase or new_turn != prev_turn:
+        # State dump on phase/turn change (or every step if verbose)
+        if verbose or new_phase != prev_phase or new_turn != prev_turn:
             if new_turn != prev_turn:
                 lines.append(f"--- Turn {new_turn} ---")
                 lines.append("")
@@ -230,7 +232,9 @@ def main() -> None:
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--simulations", type=int, default=800)
+    parser.add_argument("--search-batch-size", type=int, default=1)
     parser.add_argument("--top-n", type=int, default=10, help="Top N actions to show")
+    parser.add_argument("--verbose", action="store_true", help="Full state dump every step")
     parser.add_argument("--output", type=str, default=None, help="Output file (default: stdout)")
     args = parser.parse_args()
 
@@ -269,7 +273,8 @@ def main() -> None:
     print()
 
     result = analyze_game(
-        model, device, config, args.seed, args.simulations, args.top_n
+        model, device, config, args.seed, args.simulations,
+        args.search_batch_size, args.top_n, args.verbose,
     )
 
     if args.output:
