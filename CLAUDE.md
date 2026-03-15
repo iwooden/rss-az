@@ -508,6 +508,8 @@ set_one_hot(array, offset, index, size)
 
 **Python binary:** Always use `.venv/bin/python` (not `python` or `python3`). The venv may not be activated in the shell.
 
+**Pyright:** Use `pyright` (system-installed at `/usr/bin/pyright`), NOT `.venv/bin/pyright`.
+
 ```bash
 # Build Cython extensions (required before running any Python code)
 # Pipe to grep to avoid 200+ lines of output consuming context
