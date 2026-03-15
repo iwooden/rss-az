@@ -143,14 +143,14 @@ class RemoteEvaluator:
         self.num_players = num_players
         self.layout = get_layout(num_players)
 
-    def evaluate(self, state: Any) -> tuple[np.ndarray, np.ndarray]:
+    def evaluate(self, state: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Evaluate a single state via the remote server."""
         return self.evaluate_batch([state])[0]
 
     def evaluate_batch(
         self,
         states: list[Any],
-    ) -> list[tuple[np.ndarray, np.ndarray]]:
+    ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """Evaluate multiple states in a single round-trip to the server."""
         from core.actions import get_valid_action_mask
 
@@ -173,11 +173,11 @@ class RemoteEvaluator:
         self.conn.send(EvalRequest(rotated, masks, n))
         response: EvalResponse = self.conn.recv()
 
-        # Un-rotate values to canonical player order
-        results: list[tuple[np.ndarray, np.ndarray]] = []
+        # Un-rotate values to canonical player order, return masks for reuse
+        results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for i in range(n):
             canonical = unrotate_values(response.values[i], active_ids[i])
-            results.append((response.policies[i], canonical))
+            results.append((response.policies[i], canonical, masks[i]))
         return results
 
     def evaluate_terminal(self, state: Any) -> np.ndarray:

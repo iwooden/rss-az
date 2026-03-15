@@ -521,7 +521,7 @@ class TestSelfPlay:
 
         # Local evaluation
         local_eval = NNEvaluator(small_model, device, num_players=num_players)
-        local_policy, local_values = local_eval.evaluate(state)
+        local_policy, local_values, local_mask = local_eval.evaluate(state)
 
         # Remote evaluation through server
         server_conn, worker_conn = Pipe()
@@ -529,7 +529,7 @@ class TestSelfPlay:
         server.start()
         try:
             remote_eval = RemoteEvaluator(worker_conn, num_players)
-            remote_policy, remote_values = remote_eval.evaluate(state)
+            remote_policy, remote_values, remote_mask = remote_eval.evaluate(state)
         finally:
             server.stop()
             server_conn.close()
@@ -537,6 +537,7 @@ class TestSelfPlay:
 
         np.testing.assert_allclose(remote_policy, local_policy, atol=1e-6)
         np.testing.assert_allclose(remote_values, local_values, atol=1e-6)
+        np.testing.assert_array_equal(remote_mask, local_mask)
 
     def test_remote_evaluator_batch(
         self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
@@ -585,9 +586,10 @@ class TestSelfPlay:
             worker_conn.close()
 
         assert len(remote_results) == len(local_results)
-        for (rp, rv), (lp, lv) in zip(remote_results, local_results):
+        for (rp, rv, rm), (lp, lv, lm) in zip(remote_results, local_results):
             np.testing.assert_allclose(rp, lp, atol=1e-6)
             np.testing.assert_allclose(rv, lv, atol=1e-6)
+            np.testing.assert_array_equal(rm, lm)
 
     def test_play_game_with_remote_evaluator(
         self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig

@@ -146,17 +146,18 @@ class NNEvaluator:
         self.model.eval()
 
     @torch.no_grad()
-    def evaluate(self, state: Any) -> tuple[np.ndarray, np.ndarray]:
+    def evaluate(self, state: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Evaluate a game state with the neural network.
 
         Args:
             state: GameState object.
 
         Returns:
-            Tuple of (policy_probs, canonical_values):
+            Tuple of (policy_probs, canonical_values, legal_mask):
             - policy_probs: shape (action_dim,), softmax over legal actions
             - canonical_values: shape (num_players,), per-player values in
               canonical order (index 0 = player 0, etc.)
+            - legal_mask: shape (action_dim,), binary mask of legal actions
         """
         from core.actions import get_valid_action_mask
 
@@ -184,19 +185,20 @@ class NNEvaluator:
         values_rotated = value_output.squeeze(0).cpu().numpy()
         canonical_values = unrotate_values(values_rotated, active_player)
 
-        return policy_probs, canonical_values
+        return policy_probs, canonical_values, mask_np
 
     @torch.no_grad()
     def evaluate_batch(
         self, states: list[Any],
-    ) -> list[tuple[np.ndarray, np.ndarray]]:
+    ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """Evaluate multiple game states in a single NN forward pass.
 
         Args:
             states: List of GameState objects.
 
         Returns:
-            List of (policy_probs, canonical_values) tuples, one per state.
+            List of (policy_probs, canonical_values, legal_mask) tuples,
+            one per state.
         """
         from core.actions import get_valid_action_mask
 
@@ -223,10 +225,10 @@ class NNEvaluator:
         policy_probs = torch.softmax(policy_logits, dim=-1).cpu().numpy()
         values = value_output.cpu().numpy()
 
-        results: list[tuple[np.ndarray, np.ndarray]] = []
+        results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for i in range(n):
             canonical_values = unrotate_values(values[i], active_players[i])
-            results.append((policy_probs[i], canonical_values))
+            results.append((policy_probs[i], canonical_values, masks[i]))
 
         return results
 

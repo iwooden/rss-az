@@ -137,7 +137,6 @@ def run_search(
     Returns:
         The root MCTSNode with search statistics populated.
     """
-    from core.actions import get_valid_action_mask
     from core.data import GamePhases
     from core.driver import DRIVER, STATUS_GAME_OVER_PY
     from core.state import GameState
@@ -171,8 +170,7 @@ def run_search(
         return root
 
     # Evaluate root with NN
-    policy_probs, root_values = evaluator.evaluate(root_state)
-    mask = get_valid_action_mask(root_state)
+    policy_probs, root_values, mask = evaluator.evaluate(root_state)
 
     # Expand root (sets up per-action arrays, no children created)
     root.expand(policy_probs, mask, num_players=num_players,
@@ -276,7 +274,7 @@ def run_search(
         leaf_states = [gs for _, _, gs in pending]
         results = evaluator.evaluate_batch(leaf_states)
 
-        for i, ((path, node, _leaf_gs), (policy_probs, values)) in enumerate(
+        for i, ((path, node, _leaf_gs), (policy_probs, values, leaf_mask)) in enumerate(
             zip(pending, results)
         ):
             # Unlock parent edge: restore saved Q values
@@ -285,7 +283,6 @@ def run_search(
             parent.value_sums[parent_aidx] = saved_values[i]
 
             # Expand the leaf (sets up arrays for future selection)
-            leaf_mask = get_valid_action_mask(_leaf_gs)
             node.expand(policy_probs, leaf_mask, num_players=num_players,
                         default_value=values)
 

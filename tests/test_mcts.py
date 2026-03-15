@@ -660,24 +660,24 @@ class TestMCTSSearch:
 
 class TestNNEvaluator:
     def test_evaluate_shapes(self, game_state, evaluator):
-        policy, values = evaluator.evaluate(game_state)
+        policy, values, mask = evaluator.evaluate(game_state)
         assert policy.shape == (246,)
         assert values.shape == (3,)
+        assert mask.shape == (246,)
 
     def test_policy_is_valid_distribution(self, game_state, evaluator):
-        policy, _ = evaluator.evaluate(game_state)
+        policy, _, _ = evaluator.evaluate(game_state)
         assert policy.sum() == pytest.approx(1.0, abs=1e-5)
         assert (policy >= 0).all()
 
     def test_values_bounded(self, game_state, evaluator):
-        _, values = evaluator.evaluate(game_state)
+        _, values, _ = evaluator.evaluate(game_state)
         assert (values >= -1.0).all()
         assert (values <= 1.0).all()
 
     def test_policy_zero_on_illegal_actions(self, game_state, evaluator):
         """Policy should have zero probability on illegal actions."""
-        policy, _ = evaluator.evaluate(game_state)
-        mask = get_valid_action_mask(game_state)
+        policy, _, mask = evaluator.evaluate(game_state)
 
         illegal = mask == 0.0
         assert illegal.any(), "Need at least one illegal action for this test"
@@ -696,12 +696,13 @@ class TestNNEvaluator:
 
     def test_evaluate_batch_single(self, game_state, evaluator):
         """Batch of 1 should match single evaluate."""
-        single_policy, single_values = evaluator.evaluate(game_state)
+        single_policy, single_values, single_mask = evaluator.evaluate(game_state)
         batch_results = evaluator.evaluate_batch([game_state])
 
         assert len(batch_results) == 1
         np.testing.assert_array_almost_equal(batch_results[0][0], single_policy)
         np.testing.assert_array_almost_equal(batch_results[0][1], single_values)
+        np.testing.assert_array_equal(batch_results[0][2], single_mask)
 
     def test_evaluate_batch_multiple(self, game_state, evaluator):
         """Batch of identical states should produce identical results."""
@@ -720,9 +721,10 @@ class TestNNEvaluator:
         results = evaluator.evaluate_batch([game_state, game_state, game_state])
 
         assert len(results) == 3
-        for policy, values in results:
+        for policy, values, mask in results:
             assert policy.shape == (246,)
             assert values.shape == (3,)
+            assert mask.shape == (246,)
             assert policy.sum() == pytest.approx(1.0, abs=1e-5)
             assert (values >= -1.0).all()
             assert (values <= 1.0).all()
@@ -827,13 +829,13 @@ class TestBatchedSearch:
                 self.batch_call_sizes: list[int] = []
 
             def evaluate(self, state):
-                policy, values = self._inner.evaluate(state)
-                return self._concentrate(policy), values
+                policy, values, mask = self._inner.evaluate(state)
+                return self._concentrate(policy), values, mask
 
             def evaluate_batch(self, states):
                 results = self._inner.evaluate_batch(states)
                 self.batch_call_sizes.append(len(states))
-                return [(self._concentrate(p), v) for p, v in results]
+                return [(self._concentrate(p), v, m) for p, v, m in results]
 
             def evaluate_terminal(self, state):
                 return self._inner.evaluate_terminal(state)
