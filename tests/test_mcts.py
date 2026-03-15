@@ -270,26 +270,35 @@ class TestValueRotation:
 
 class TestTerminalValues:
     def test_clear_ranking(self):
-        # P1 wins with 300, P0=100 → 2*(100/300)-1=-0.333, P2=200 → 2*(200/300)-1=0.333
+        # NW: P0=100, P1=300, P2=200
+        # Rank: P0=-1.0, P1=+1.0, P2=0.0
+        # Margin: P0=2*(100/300)-1=-1/3, P1=+1.0, P2=2*(200/300)-1=+1/3
+        # Blend: P0=0.5*(-1)+0.5*(-1/3)=-2/3, P1=+1.0, P2=0.5*(0)+0.5*(1/3)=+1/6
         vals = compute_terminal_values([100, 300, 200], 3)
-        np.testing.assert_array_almost_equal(vals, [-1 / 3, 1.0, 1 / 3])
+        np.testing.assert_array_almost_equal(vals, [-2 / 3, 1.0, 1 / 6])
 
     def test_winner_always_gets_one(self):
         vals = compute_terminal_values([50, 200, 150], 3)
         assert vals[1] == 1.0
 
     def test_zero_net_worth_gets_minus_one(self):
+        # Rank: P0=-1.0, P1=+1.0, P2=0.0
+        # Margin: P0=-1.0, P1=+1.0, P2=0.0
         vals = compute_terminal_values([0, 100, 50], 3)
         np.testing.assert_array_almost_equal(vals, [-1.0, 1.0, 0.0])
 
     def test_tied_winners(self):
+        # Rank: P0,P1 tie for 1st → avg(1.0,0.0)=0.5 each, P2=-1.0
+        # Margin: P0=+1.0, P1=+1.0, P2=2*(100/200)-1=0.0
+        # Blend: P0=0.5*0.5+0.5*1.0=0.75, P1=0.75, P2=0.5*(-1)+0.5*0=-0.5
         vals = compute_terminal_values([200, 200, 100], 3)
-        # Both winners get +1.0, P2 = 2*(100/200)-1 = 0.0
-        np.testing.assert_array_almost_equal(vals, [1.0, 1.0, 0.0])
+        np.testing.assert_array_almost_equal(vals, [0.75, 0.75, -0.5])
 
     def test_all_tied(self):
+        # Rank: all avg(1.0,0.0,-1.0)=0.0, Margin: all +1.0
+        # Blend: 0.5*0.0 + 0.5*1.0 = 0.5
         vals = compute_terminal_values([100, 100, 100], 3)
-        np.testing.assert_array_almost_equal(vals, [1.0, 1.0, 1.0])
+        np.testing.assert_array_almost_equal(vals, [0.5, 0.5, 0.5])
 
     def test_all_zero(self):
         vals = compute_terminal_values([0, 0, 0], 3)
@@ -304,6 +313,20 @@ class TestTerminalValues:
         # Winner unchanged
         assert vals_low[2] == 1.0
         assert vals_high[2] == 1.0
+
+    def test_values_bounded(self):
+        """All rewards must be in [-1, +1]."""
+        for nw in ([500, 1, 0], [100, 100, 100], [1, 1000, 500], [0, 0, 100]):
+            vals = compute_terminal_values(nw, 3)
+            assert (vals >= -1.0).all() and (vals <= 1.0).all(), f"Out of bounds for {nw}: {vals}"
+
+    def test_rank_sharpness(self):
+        """Overtaking a close competitor should produce meaningful reward gap."""
+        # P1 barely beats P2: rank component creates large gap
+        vals = compute_terminal_values([200, 101, 100], 3)
+        gap = vals[1] - vals[2]
+        # With pure ratio, gap would be ~0.01. Rank component ensures it's much larger.
+        assert gap > 0.4
 
 
 # ---------------------------------------------------------------------------
@@ -696,9 +719,10 @@ class TestMCTSSearch:
         assert root.is_terminal
         assert not root.expanded()
         assert root.terminal_values is not None
-        # NW ratio: P0=500/500→+1.0, P1=300/500→+0.2, P2=100/500→-0.6
+        # Rank: [+1.0, 0.0, -1.0], Margin: [+1.0, +0.2, -0.6]
+        # Blend: [+1.0, +0.1, -0.8]
         np.testing.assert_array_almost_equal(
-            root.terminal_values, [1.0, 0.2, -0.6]
+            root.terminal_values, [1.0, 0.1, -0.8]
         )
 
 
@@ -740,8 +764,9 @@ class TestNNEvaluator:
         state.set_player_net_worth(2, 100)
 
         vals = evaluator.evaluate_terminal(state)
-        # NW ratio: P0=500/500→+1.0, P1=300/500→+0.2, P2=100/500→-0.6
-        np.testing.assert_array_almost_equal(vals, [1.0, 0.2, -0.6])
+        # Rank: [+1.0, 0.0, -1.0], Margin: [+1.0, +0.2, -0.6]
+        # Blend: [+1.0, +0.1, -0.8]
+        np.testing.assert_array_almost_equal(vals, [1.0, 0.1, -0.8])
 
     def test_evaluate_batch_single(self, game_state, evaluator):
         """Batch of 1 should match single evaluate."""
