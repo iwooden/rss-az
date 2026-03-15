@@ -869,6 +869,13 @@ class TestBatchedSearch:
                 self.batch_call_sizes.append(len(states))
                 return [(self._concentrate(p), v, m) for p, v, m in results]
 
+            def evaluate_leaves(self, state_arrays, active_player_ids, legal_masks):
+                results = self._inner.evaluate_leaves(
+                    state_arrays, active_player_ids, legal_masks
+                )
+                self.batch_call_sizes.append(len(state_arrays))
+                return [(self._concentrate(p), v, m) for p, v, m in results]
+
             def evaluate_terminal(self, state):
                 return self._inner.evaluate_terminal(state)
 
@@ -934,6 +941,12 @@ class TestBatchedSearch:
                 self.batch_sizes.append(len(states))
                 return self._inner.evaluate_batch(states)
 
+            def evaluate_leaves(self, state_arrays, active_player_ids, legal_masks):
+                self.batch_sizes.append(len(state_arrays))
+                return self._inner.evaluate_leaves(
+                    state_arrays, active_player_ids, legal_masks
+                )
+
             def evaluate_terminal(self, state):
                 return self._inner.evaluate_terminal(state)
 
@@ -978,6 +991,14 @@ class TestBatchedSearch:
                 if len(addrs) != len(set(addrs)):
                     self.found_duplicates = True
                 return self._inner.evaluate_batch(states)
+
+            def evaluate_leaves(self, state_arrays, active_player_ids, legal_masks):
+                addrs = [arr.ctypes.data for arr in state_arrays]
+                if len(addrs) != len(set(addrs)):
+                    self.found_duplicates = True
+                return self._inner.evaluate_leaves(
+                    state_arrays, active_player_ids, legal_masks
+                )
 
             def evaluate_terminal(self, state):
                 return self._inner.evaluate_terminal(state)

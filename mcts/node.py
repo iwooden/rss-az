@@ -42,6 +42,7 @@ class MCTSNode:
         "is_terminal",
         "state_idx",
         "terminal_values",
+        "pending_mask",
         "legal_actions",
         "priors",
         "default_value",
@@ -64,6 +65,7 @@ class MCTSNode:
         self.is_terminal: bool = is_terminal
         self.state_idx: int = -1
         self.terminal_values: np.ndarray | None = None
+        self.pending_mask: np.ndarray | None = None
         self.legal_actions: np.ndarray | None = None
         self.priors: np.ndarray | None = None
         self.default_value: np.ndarray | None = None

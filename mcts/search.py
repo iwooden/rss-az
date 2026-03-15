@@ -137,6 +137,7 @@ def run_search(
     Returns:
         The root MCTSNode with search statistics populated.
     """
+    from core.actions import get_valid_action_mask
     from core.data import GamePhases
     from core.driver import DRIVER, STATUS_GAME_OVER_PY
     from core.state import GameState
@@ -150,6 +151,10 @@ def run_search(
         total_size = get_layout(num_players).total_size
         state_pool = StatePool(config.num_simulations + 1, total_size)
     state_pool.reset()
+
+    # Scratch GameState rebound to each pool row via rebind() — avoids
+    # allocating a new Python wrapper per node expansion in the hot loop.
+    scratch_gs = GameState.from_buffer(state_pool.row(0), num_players)
 
     # Check if root state is terminal
     is_terminal = root_state.get_phase() == GamePhases.PHASE_GAME_OVER
@@ -193,7 +198,7 @@ def run_search(
     sim = 0
     while sim < config.num_simulations:
         # Collect a batch of leaves for NN evaluation
-        pending: list[tuple[_Path, MCTSNode, GameState]] = []
+        pending: list[tuple[_Path, MCTSNode]] = []
         pending_ids: set[int] = set()  # safety net for single-action parents
         saved_values: list[np.ndarray] = []  # saved parent Q rows for unlock
 
@@ -210,22 +215,25 @@ def run_search(
                     # Follow existing child
                     node = node.children[action_idx]
                 else:
-                    # First visit: create child node with state from pool
+                    # First visit: create child node with state from pool.
+                    # Rebind scratch GameState to avoid allocating a wrapper.
                     assert node.priors is not None
                     child = MCTSNode(
                         prior=float(node.priors[array_idx]),
                         num_players=num_players,
                     )
-                    # Copy parent state to new pool row, apply action in-place
                     child.state_idx = state_pool.alloc_from_row(node.state_idx)
-                    child_gs = GameState.from_buffer(
-                        state_pool.row(child.state_idx), num_players
-                    )
-                    status = DRIVER.apply_action(child_gs, action_idx)
-                    child.active_player_id = child_gs.get_active_player()
+                    scratch_gs.rebind(state_pool.row(child.state_idx))
+                    status = DRIVER.apply_action(scratch_gs, action_idx)
+                    child.active_player_id = scratch_gs.get_active_player()
                     if status == STATUS_GAME_OVER_PY:
                         child.is_terminal = True
-                        child.terminal_values = evaluator.evaluate_terminal(child_gs)
+                        child.terminal_values = evaluator.evaluate_terminal(
+                            scratch_gs
+                        )
+                    else:
+                        # Cache legal mask for later evaluation
+                        child.pending_mask = get_valid_action_mask(scratch_gs)
                     node.children[action_idx] = child
                     node = child
                     break  # New child is unexpanded — it's the leaf
@@ -260,21 +268,19 @@ def run_search(
             saved_values.append(parent.value_sums[parent_aidx].copy())
             parent.value_sums[parent_aidx] = neg_inf_row
 
-            leaf_gs = GameState.from_buffer(
-                state_pool.row(node.state_idx), num_players
-            )
-            node.active_player_id = leaf_gs.get_active_player()
-            pending.append((path, node, leaf_gs))
+            pending.append((path, node))
             pending_ids.add(nid)
 
-        # Batch evaluate all pending leaves
+        # Batch evaluate all pending leaves using raw arrays (no GameState needed)
         if not pending:
             continue
 
-        leaf_states = [gs for _, _, gs in pending]
-        results = evaluator.evaluate_batch(leaf_states)
+        leaf_arrays = [state_pool.row(node.state_idx) for _, node in pending]
+        leaf_players = [node.active_player_id for _, node in pending]
+        leaf_masks = [node.pending_mask for _, node in pending]
+        results = evaluator.evaluate_leaves(leaf_arrays, leaf_players, leaf_masks)
 
-        for i, ((path, node, _leaf_gs), (policy_probs, values, leaf_mask)) in enumerate(
+        for i, ((path, node), (policy_probs, values, leaf_mask)) in enumerate(
             zip(pending, results)
         ):
             # Unlock parent edge: restore saved Q values

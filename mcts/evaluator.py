@@ -232,6 +232,52 @@ class NNEvaluator:
 
         return results
 
+    @torch.no_grad()
+    def evaluate_leaves(
+        self,
+        state_arrays: list[np.ndarray],
+        active_player_ids: list[int],
+        legal_masks: list[np.ndarray],
+    ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """Evaluate pre-computed leaf data in a single NN forward pass.
+
+        Like evaluate_batch but takes raw arrays instead of GameState objects,
+        avoiding Python wrapper allocation in the MCTS hot loop.
+
+        Args:
+            state_arrays: Raw state arrays (pool row views), each (total_size,).
+            active_player_ids: Active player ID for each state.
+            legal_masks: Pre-computed legal action masks, each (action_dim,).
+
+        Returns:
+            List of (policy_probs, canonical_values, legal_mask) tuples.
+        """
+        n = len(state_arrays)
+        if n == 0:
+            return []
+
+        # Rotate and stack visible states
+        rotated = np.stack([
+            rotate_visible_state(arr, ap, self.num_players)
+            for arr, ap in zip(state_arrays, active_player_ids)
+        ])
+        masks = np.stack(legal_masks)
+
+        # Single forward pass for the whole batch
+        x = torch.from_numpy(rotated).to(self.device)
+        mask = torch.from_numpy(masks).to(self.device)
+        policy_logits, value_output = self.model(x, legal_action_mask=mask)
+
+        policy_probs = torch.softmax(policy_logits, dim=-1).cpu().numpy()
+        values = value_output.cpu().numpy()
+
+        results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        for i in range(n):
+            canonical_values = unrotate_values(values[i], active_player_ids[i])
+            results.append((policy_probs[i], canonical_values, legal_masks[i]))
+
+        return results
+
     def evaluate_terminal(self, state: Any) -> np.ndarray:
         """Compute terminal values from a game-over state.
 

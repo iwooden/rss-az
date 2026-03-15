@@ -180,6 +180,39 @@ class RemoteEvaluator:
             results.append((response.policies[i], canonical, masks[i]))
         return results
 
+    def evaluate_leaves(
+        self,
+        state_arrays: list[np.ndarray],
+        active_player_ids: list[int],
+        legal_masks: list[np.ndarray],
+    ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """Evaluate pre-computed leaf data in a single round-trip to the server.
+
+        Like evaluate_batch but takes raw arrays instead of GameState objects,
+        avoiding Python wrapper allocation in the MCTS hot loop.
+        """
+        n = len(state_arrays)
+        if n == 0:
+            return []
+
+        # Rotate states (CPU work, done in worker process)
+        rotated = np.stack([
+            rotate_visible_state(arr, ap, self.num_players)
+            for arr, ap in zip(state_arrays, active_player_ids)
+        ])
+        masks = np.stack(legal_masks)
+
+        # Send to server and block until response
+        self.conn.send(EvalRequest(rotated, masks, n))
+        response: EvalResponse = self.conn.recv()
+
+        # Un-rotate values to canonical player order
+        results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        for i in range(n):
+            canonical = unrotate_values(response.values[i], active_player_ids[i])
+            results.append((response.policies[i], canonical, legal_masks[i]))
+        return results
+
     def evaluate_terminal(self, state: Any) -> np.ndarray:
         """Compute terminal values locally (no NN needed)."""
         net_worths = [

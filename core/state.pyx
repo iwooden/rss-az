@@ -553,6 +553,19 @@ cdef class GameState:
         state._data = <float*>cnp.PyArray_DATA(buffer)
         return state
 
+    def rebind(self, buffer):
+        """Rebind this GameState to a different backing buffer (zero-copy).
+
+        Avoids allocating a new GameState wrapper when only the underlying
+        data changes. Used in MCTS search hot paths to eliminate per-node
+        Python object allocation.
+
+        Args:
+            buffer: numpy float32 array of correct size (not copied)
+        """
+        self._array = buffer
+        self._data = <float*>cnp.PyArray_DATA(buffer)
+
     # =========================================================================
     # INTERNAL POINTER ACCESS
     # =========================================================================
