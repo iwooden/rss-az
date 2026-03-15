@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from core.state import GameState
-from mcts.config import MCTSConfig
+from train.config import MCTSConfig
 from mcts.evaluator import NNEvaluator
 from mcts.search import run_search
 from nn.model_3p import RSSAlphaZeroNet, RSSModelConfig

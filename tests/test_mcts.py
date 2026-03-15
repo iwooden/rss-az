@@ -9,7 +9,7 @@ from core.data import GamePhases
 from core.state import GameState
 from entities.company import COMPANIES
 from entities.turn import TURN
-from mcts.config import MCTSConfig
+from train.config import MCTSConfig
 from mcts.evaluator import (
     NNEvaluator,
     compute_terminal_values,
@@ -86,6 +86,44 @@ class TestMCTSConfig:
         assert cfg.temperature == 1.0
         assert cfg.num_players == 3
         assert cfg.search_batch_size == 1
+
+    def test_validation_num_simulations(self):
+        with pytest.raises(ValueError, match="num_simulations"):
+            MCTSConfig(num_simulations=0)
+        with pytest.raises(ValueError, match="num_simulations"):
+            MCTSConfig(num_simulations=-1)
+
+    def test_validation_search_batch_size(self):
+        with pytest.raises(ValueError, match="search_batch_size"):
+            MCTSConfig(search_batch_size=0)
+
+    def test_validation_num_players(self):
+        with pytest.raises(ValueError, match="num_players"):
+            MCTSConfig(num_players=1)
+
+    def test_validation_c_puct(self):
+        with pytest.raises(ValueError, match="c_puct"):
+            MCTSConfig(c_puct=-0.1)
+        MCTSConfig(c_puct=0)  # zero is valid
+
+    def test_validation_dirichlet_alpha(self):
+        with pytest.raises(ValueError, match="dirichlet_alpha"):
+            MCTSConfig(dirichlet_alpha=0)
+        with pytest.raises(ValueError, match="dirichlet_alpha"):
+            MCTSConfig(dirichlet_alpha=-1)
+
+    def test_validation_dirichlet_epsilon(self):
+        with pytest.raises(ValueError, match="dirichlet_epsilon"):
+            MCTSConfig(dirichlet_epsilon=-0.1)
+        with pytest.raises(ValueError, match="dirichlet_epsilon"):
+            MCTSConfig(dirichlet_epsilon=1.5)
+        MCTSConfig(dirichlet_epsilon=0)  # boundary valid
+        MCTSConfig(dirichlet_epsilon=1)  # boundary valid
+
+    def test_validation_temperature(self):
+        with pytest.raises(ValueError, match="temperature"):
+            MCTSConfig(temperature=-0.1)
+        MCTSConfig(temperature=0)  # zero is valid
 
 
 # ---------------------------------------------------------------------------

@@ -129,14 +129,17 @@ def main() -> None:
         # Resume: restore checkpointed config, apply operational overrides only
         config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
         _apply_resume_overrides(config, args)
+        config.validate()
         if args.config:
             print("  Warning: --config ignored on resume (using checkpointed config)")
     elif args.config:
         config = TrainingConfig.from_json(Path(args.config).read_text())
         _apply_overrides(config, args)
+        config.validate()
     else:
         config = TrainingConfig()
         _apply_overrides(config, args)
+        config.validate()
 
     # --- RNG ---
     master_rng = np.random.default_rng(config.seed)

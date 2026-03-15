@@ -44,7 +44,6 @@ rss-az-cython2/
 │   ├── wrap_up.pyx    # Turn wrap-up (FI buying)
 │   └── end_card.pyx   # Game-end handling
 ├── mcts/              # MCTS search for AlphaZero training
-│   ├── config.py      # Search hyperparameters (MCTSConfig)
 │   ├── node.py        # MCTSNode: tree node with visit stats
 │   ├── evaluator.py   # NN wrapper (state rotation, single/batch inference, value un-rotation)
 │   └── search.py      # PUCT selection, batched search with virtual loss, A0GB value targets
@@ -161,11 +160,12 @@ Pure-Python AlphaZero-style MCTS for 3-player games.
 
 ```
 mcts/
-├── config.py      # MCTSConfig dataclass (num_simulations, c_puct, dirichlet, temperature)
 ├── node.py        # MCTSNode: visit_count, value_sum, prior, children dict
 ├── evaluator.py   # State rotation, NN inference, value un-rotation, terminal values
 └── search.py      # PUCT selection, search loop, action probabilities, A0GB targets
 ```
+
+MCTSConfig lives in `train/config.py` alongside TrainingConfig.
 
 ### State Rotation
 
@@ -233,7 +233,7 @@ Residual MLP (~26.6M parameters):
 ### Key APIs
 
 ```python
-from mcts.config import MCTSConfig
+from train.config import MCTSConfig
 from mcts.evaluator import NNEvaluator
 from mcts.search import run_search, get_action_probabilities, get_greedy_leaf_value
 
@@ -596,7 +596,7 @@ pytest tests/18xx_games/test_replay.py -v
 | Optimize performance | Any `.pyx` | Check compiler directives, nogil |
 | Add phase | Create `phases/new.pyx` | `core/driver.pyx`, `core/actions.pyx` |
 | Fix bug | Tests first | Phase/entity files |
-| MCTS / search | `mcts/search.py`, `mcts/node.py` | `mcts/evaluator.py`, `mcts/config.py` |
+| MCTS / search | `mcts/search.py`, `mcts/node.py` | `mcts/evaluator.py`, `train/config.py` |
 | NN model | `nn/model_3p.py` | `mcts/evaluator.py` |
 | Self-play / training | `train/main.py`, `train/config.py` | `train/self_play.py`, `train/eval_server.py`, `train/trainer.py` |
 

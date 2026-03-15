@@ -133,6 +133,28 @@ class TestConfig:
         with pytest.raises(ValueError, match="min_buffer_size"):
             TrainingConfig(min_buffer_size=100, batch_size=256)
 
+    def test_validation_num_simulations(self) -> None:
+        with pytest.raises(ValueError, match="num_simulations"):
+            TrainingConfig(num_simulations=0)
+
+    def test_validation_search_batch_size(self) -> None:
+        with pytest.raises(ValueError, match="search_batch_size"):
+            TrainingConfig(search_batch_size=0)
+
+    def test_validation_c_puct(self) -> None:
+        with pytest.raises(ValueError, match="c_puct"):
+            TrainingConfig(c_puct=-1.0)
+
+    def test_validation_dirichlet(self) -> None:
+        with pytest.raises(ValueError, match="dirichlet_alpha"):
+            TrainingConfig(dirichlet_alpha=0)
+        with pytest.raises(ValueError, match="dirichlet_epsilon"):
+            TrainingConfig(dirichlet_epsilon=2.0)
+
+    def test_validation_num_workers(self) -> None:
+        with pytest.raises(ValueError, match="num_workers"):
+            TrainingConfig(num_workers=-1)
+
     def test_to_mcts_config(self) -> None:
         cfg = TrainingConfig(num_simulations=100, c_puct=3.0, num_players=3)
         mcts_cfg = cfg.to_mcts_config()

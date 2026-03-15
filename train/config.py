@@ -21,6 +21,30 @@ class MCTSConfig:
 
     def __post_init__(self) -> None:
         self.action_dim = 186 + self.num_players * 20
+        self.validate()
+
+    def validate(self) -> None:
+        """Validate all fields. Called from __post_init__ and after CLI overrides."""
+        if self.num_simulations < 1:
+            raise ValueError(f"num_simulations must be >= 1, got {self.num_simulations}")
+        if self.search_batch_size < 1:
+            raise ValueError(
+                f"search_batch_size must be >= 1, got {self.search_batch_size}"
+            )
+        if self.num_players < 2:
+            raise ValueError(f"num_players must be >= 2, got {self.num_players}")
+        if self.c_puct < 0:
+            raise ValueError(f"c_puct must be >= 0, got {self.c_puct}")
+        if self.dirichlet_alpha <= 0:
+            raise ValueError(
+                f"dirichlet_alpha must be > 0, got {self.dirichlet_alpha}"
+            )
+        if not 0 <= self.dirichlet_epsilon <= 1:
+            raise ValueError(
+                f"dirichlet_epsilon must be in [0, 1], got {self.dirichlet_epsilon}"
+            )
+        if self.temperature < 0:
+            raise ValueError(f"temperature must be >= 0, got {self.temperature}")
 
 
 @dataclass
@@ -89,9 +113,35 @@ class TrainingConfig:
         from core.state import get_layout
 
         self.visible_size = get_layout(self.num_players).visible_size
+        self.validate()
 
+    def validate(self) -> None:
+        """Validate all fields. Called from __post_init__ and after CLI overrides."""
+        # MCTS fields
+        if self.num_simulations < 1:
+            raise ValueError(f"num_simulations must be >= 1, got {self.num_simulations}")
+        if self.search_batch_size < 1:
+            raise ValueError(
+                f"search_batch_size must be >= 1, got {self.search_batch_size}"
+            )
+        if self.c_puct < 0:
+            raise ValueError(f"c_puct must be >= 0, got {self.c_puct}")
+        if self.dirichlet_alpha <= 0:
+            raise ValueError(
+                f"dirichlet_alpha must be > 0, got {self.dirichlet_alpha}"
+            )
+        if not 0 <= self.dirichlet_epsilon <= 1:
+            raise ValueError(
+                f"dirichlet_epsilon must be in [0, 1], got {self.dirichlet_epsilon}"
+            )
+
+        # Game fields
         if self.num_players < 2:
             raise ValueError(f"num_players must be >= 2, got {self.num_players}")
+
+        # Training fields
+        if self.num_workers < 0:
+            raise ValueError(f"num_workers must be >= 0, got {self.num_workers}")
         if self.buffer_capacity <= self.min_buffer_size:
             raise ValueError(
                 f"buffer_capacity ({self.buffer_capacity}) must exceed "
