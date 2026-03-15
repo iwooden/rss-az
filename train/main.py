@@ -54,7 +54,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _apply_overrides(config: TrainingConfig, args: argparse.Namespace) -> None:
-    """Apply CLI overrides to config in-place."""
+    """Apply all CLI overrides to config in-place (fresh start)."""
     if args.games_per_epoch is not None:
         config.games_per_epoch = args.games_per_epoch
     if args.num_epochs is not None:
@@ -73,28 +73,76 @@ def _apply_overrides(config: TrainingConfig, args: argparse.Namespace) -> None:
         config.seed = args.seed
 
 
+# Fields safe to override on resume (operational, don't affect training semantics)
+_RESUME_OVERRIDES = ("num_workers", "checkpoint_dir", "tensorboard_dir", "num_epochs")
+
+
+def _apply_resume_overrides(config: TrainingConfig, args: argparse.Namespace) -> None:
+    """Apply only operational CLI overrides on resume.
+
+    Training-semantic fields (LR, simulations, batch size, etc.) come from
+    the checkpoint config to ensure the resumed run matches the original.
+    """
+    for field in _RESUME_OVERRIDES:
+        val = getattr(args, field, None)
+        if val is not None:
+            setattr(config, field, val)
+
+    # Warn about ignored overrides
+    _SEMANTIC_FIELDS = {
+        "games_per_epoch", "num_simulations", "search_batch_size", "seed",
+    }
+    for field in _SEMANTIC_FIELDS:
+        if getattr(args, field, None) is not None:
+            print(f"  Warning: --{field.replace('_', '-')} ignored on resume "
+                  f"(using checkpointed value: {getattr(config, field)})")
+
+
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
+    # --- Device (resolved early, needed for checkpoint loading) ---
+    if args.device:
+        device = torch.device(args.device)
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # --- Resolve checkpoint for resume ---
+    cp: dict[str, object] | None = None
+    if args.resume:
+        cp_path: Path | None = None
+        if args.resume == "latest":
+            cp_dir = args.checkpoint_dir or "checkpoints"
+            cp_path = find_latest_checkpoint(Path(cp_dir))
+            if cp_path is None:
+                print("No checkpoint found, starting from scratch.")
+        else:
+            cp_path = Path(args.resume)
+
+        if cp_path is not None:
+            cp = load_checkpoint(cp_path, device)
+            print(f"Loaded checkpoint: {cp_path}")
+
     # --- Config ---
-    if args.config:
+    if cp is not None:
+        # Resume: restore checkpointed config, apply operational overrides only
+        config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
+        _apply_resume_overrides(config, args)
+        if args.config:
+            print("  Warning: --config ignored on resume (using checkpointed config)")
+    elif args.config:
         config = TrainingConfig.from_json(Path(args.config).read_text())
+        _apply_overrides(config, args)
     else:
         config = TrainingConfig()
-    _apply_overrides(config, args)
+        _apply_overrides(config, args)
 
     # --- RNG ---
     master_rng = np.random.default_rng(config.seed)
     torch.manual_seed(config.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(config.seed)
-
-    # --- Device ---
-    if args.device:
-        device = torch.device(args.device)
-    else:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # --- Model ---
     model_config = RSSModelConfig(
@@ -115,24 +163,16 @@ def main() -> None:
     )
     logger = TrainingLogger(config.tensorboard_dir)
 
-    # --- Resume ---
+    # --- Resume: restore model and trainer state ---
     start_epoch = 0
-    if args.resume:
-        if args.resume == "latest":
-            cp_path = find_latest_checkpoint(Path(config.checkpoint_dir))
-            if cp_path is None:
-                print("No checkpoint found, starting from scratch.")
-            else:
-                args.resume = str(cp_path)
-        if args.resume != "latest":
-            cp = load_checkpoint(Path(args.resume), device)
-            model.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
-            trainer.load_state_dict(cp["trainer_state"])  # type: ignore[arg-type]
-            start_epoch = cp["epoch"] + 1  # type: ignore[operator]
-            print(
-                f"Resumed from epoch {cp['epoch']}, "
-                f"step {trainer.global_step}"
-            )
+    if cp is not None:
+        model.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
+        trainer.load_state_dict(cp["trainer_state"])  # type: ignore[arg-type]
+        start_epoch = cp["epoch"] + 1  # type: ignore[operator]
+        print(
+            f"Resumed from epoch {cp['epoch']}, "
+            f"step {trainer.global_step}"
+        )
 
     # --- Log startup ---
     logger.log_training_start(config, device=str(device))

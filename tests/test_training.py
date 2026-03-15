@@ -6,6 +6,7 @@ All file output uses tmp_path to avoid polluting the project directory.
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -388,6 +389,81 @@ class TestCheckpoint:
         remaining = sorted(tmp_path.glob("checkpoint_epoch_*.pt"))
         assert len(remaining) == 3
         assert "0005" in remaining[0].name
+
+    def test_resume_restores_config(
+        self,
+        small_model: RSSAlphaZeroNet,
+        tmp_path: Path,
+    ) -> None:
+        """Resume should use checkpointed config, not fresh defaults."""
+        device = torch.device("cpu")
+
+        # Save checkpoint with non-default config values
+        original_config = TrainingConfig(
+            games_per_epoch=7,
+            num_simulations=50,
+            search_batch_size=4,
+            learning_rate=5e-4,
+            checkpoint_dir=str(tmp_path / "checkpoints"),
+            tensorboard_dir=str(tmp_path / "tb"),
+        )
+        trainer = Trainer(small_model, original_config, device)
+        cp_path = tmp_path / "config_test.pt"
+        save_checkpoint(
+            cp_path,
+            epoch=2,
+            model=small_model,
+            trainer_state=trainer.state_dict(),
+            config=original_config,
+            metrics={},
+            buffer_stats={"size": 0, "capacity": 1000},
+        )
+
+        # Load checkpoint and restore config (simulating what main() does)
+        cp = load_checkpoint(cp_path, device)
+        restored = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
+
+        # Verify non-default values were preserved
+        assert restored.games_per_epoch == 7
+        assert restored.num_simulations == 50
+        assert restored.search_batch_size == 4
+        assert restored.learning_rate == 5e-4
+
+    def test_resume_overrides_only_operational(self) -> None:
+        """_apply_resume_overrides should only modify operational fields."""
+        from train.main import _apply_resume_overrides
+
+        config = TrainingConfig(
+            games_per_epoch=7,
+            num_simulations=50,
+            num_workers=2,
+            checkpoint_dir="original_dir",
+            num_epochs=10,
+        )
+
+        # Simulate CLI args with both operational and semantic overrides
+        args = argparse.Namespace(
+            num_workers=8,
+            checkpoint_dir="new_dir",
+            tensorboard_dir="new_tb",
+            num_epochs=20,
+            # Semantic fields that should be ignored
+            games_per_epoch=999,
+            num_simulations=999,
+            search_batch_size=999,
+            seed=999,
+        )
+        _apply_resume_overrides(config, args)
+
+        # Operational overrides applied
+        assert config.num_workers == 8
+        assert config.checkpoint_dir == "new_dir"
+        assert config.tensorboard_dir == "new_tb"
+        assert config.num_epochs == 20
+
+        # Semantic fields unchanged
+        assert config.games_per_epoch == 7
+        assert config.num_simulations == 50
 
 
 # ---------------------------------------------------------------------------
