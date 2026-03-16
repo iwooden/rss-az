@@ -271,17 +271,17 @@ AlphaZero-style self-play training loop in `train/`.
 
 ### Multi-Process Self-Play Architecture
 
-Self-play uses a centralized evaluation server for GPU throughput:
+Self-play uses one or more centralized evaluation server threads for GPU throughput:
 
 ```
-┌──────────────────────────────────────────────────┐
-│  Main Process                                    │
-│  - Owns model, device, replay buffer, trainer    │
-│  - EvaluationServer thread (batched GPU inference)│
-│  - Spawns N worker processes                     │
-│  - Collects GameRecords, runs training           │
-└────────────────────┬─────────────────────────────┘
-                     │ N Pipe pairs (multiprocessing.Pipe)
+┌──────────────────────────────────────────────────────────┐
+│  Main Process                                            │
+│  - Owns model, device, replay buffer, trainer            │
+│  - M EvaluationServer threads (batched GPU inference)    │
+│  - Spawns N worker processes                             │
+│  - Collects GameRecords, runs training                   │
+└────────────────────┬─────────────────────────────────────┘
+                     │ 1 shared Queue + N Events
        ┌─────────────┼─────────────┐
        ▼             ▼             ▼
 ┌────────────┐ ┌────────────┐ ┌────────────┐
@@ -293,13 +293,14 @@ Self-play uses a centralized evaluation server for GPU throughput:
 
 **Key design decisions:**
 - **Workers are processes** (not threads) because MCTS is CPU-bound — GIL would serialize them
-- **Evaluator is a thread** in the main process — the GIL is released during CUDA kernels, and the model stays in one process
+- **Evaluators are threads** in the main process — the GIL is released during CUDA kernels, and the model stays in one process
+- **Multiple eval servers** (`--num-eval-servers M`) consume from a shared request queue, naturally double-buffering GPU access: one server gathers while another is on GPU
 - **Plain `multiprocessing`** (not `torch.multiprocessing`) — avoids file descriptor exhaustion from shared tensor overhead on small arrays (~12KB per state)
 - **`spawn` context** — avoids CUDA fork issues
 - **Workers are daemon processes** — auto-killed on main process exit for clean Ctrl-C shutdown
 - **`num_workers=0`** falls back to single-process sequential self-play (useful for debugging)
 
-**Communication:** Workers write pre-rotated states and legal masks into per-worker slots in `SharedEvalBuffers` (shared memory via `multiprocessing.RawArray`). Pipes carry only lightweight control messages (integer state counts). The `EvaluationServer` thread polls worker pipes, gathers data from shared memory into pinned CPU buffers, runs batched GPU inference, and scatters results back to shared memory. Uses pinned memory and pre-allocated GPU tensors for zero-alloc H2D/D2H transfers. With 24 workers each sending batch-8 requests, the GPU sees batches of up to ~192 states.
+**Communication:** Workers write pre-rotated states into per-worker slots in `SharedEvalBuffers` (shared memory via `multiprocessing.RawArray`). A shared `multiprocessing.Queue` carries lightweight request tuples `(worker_idx, state_count)`. Each EvaluationServer thread blocks on `queue.get()`, then drains additional requests with `get_nowait()` to build larger batches. After inference, results are scattered to shared memory and per-worker `multiprocessing.Event` objects are set to signal completion. Uses pinned memory and pre-allocated GPU tensors for zero-alloc H2D/D2H transfers. With 24 workers each sending batch-8 requests, the GPU sees batches of up to ~192 states.
 
 **Files:**
 - `train/eval_server.py` — `EvaluationServer` (thread) + `RemoteEvaluator` (worker-side proxy with same interface as `NNEvaluator`)
@@ -331,6 +332,7 @@ Each epoch: (1) play N games via MCTS self-play → (2) store examples in replay
 | `num_simulations` | 800 | MCTS simulations per move |
 | `search_batch_size` | 1 | Leaves per NN call (virtual loss batching) |
 | `num_workers` | 4 | Self-play worker processes (0 = single-process) |
+| `num_eval_servers` | 1 | Eval server threads (2 = double-buffer GPU) |
 | `games_per_epoch` | 1000 | Self-play games per epoch |
 | `learning_rate` | 1e-3 | AdamW, cosine decay to `lr_min` |
 | `lr_min` | 1e-4 | Cosine schedule floor |
@@ -546,6 +548,7 @@ pytest tests/test_invest.py -v
 
 # Run self-play training (requires Cython build first)
 .venv/bin/python -m train --device cuda --num-workers 4 --search-batch-size 8
+.venv/bin/python -m train --device cuda --num-workers 24 --num-eval-servers 2  # double-buffer GPU
 .venv/bin/python -m train --config config.json --resume latest
 .venv/bin/python -m train --num-workers 0 --games-per-epoch 10  # single-process debug
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import queue
 import time
 from dataclasses import dataclass
-from multiprocessing.connection import Connection
 from typing import Any
 
 import numpy as np
@@ -190,22 +189,24 @@ def play_game(
 
 
 def self_play_worker(
-    eval_conn: Connection,
     task_queue: Any,
     result_queue: Any,
     config: TrainingConfig,
-    shared_bufs: Any = None,
-    worker_idx: int = 0,
+    shared_bufs: Any,
+    worker_idx: int,
+    request_queue: Any,
+    done_event: Any,
 ) -> None:
     """Worker process: play games using remote NN evaluation.
 
     Loops until a None sentinel is received on the task queue
-    or the eval connection breaks (shutdown).
+    or the connection breaks (shutdown).
     """
     from train.eval_server import RemoteEvaluator
 
     evaluator = RemoteEvaluator(
-        eval_conn, config.num_players, shared_bufs, worker_idx,
+        config.num_players, shared_bufs, worker_idx,
+        request_queue, done_event,
         profile=config.profile,
     )
 
@@ -231,5 +232,3 @@ def self_play_worker(
             result_queue.put(record)
     except (KeyboardInterrupt, EOFError, BrokenPipeError, OSError):
         pass
-    finally:
-        eval_conn.close()

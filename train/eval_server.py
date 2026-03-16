@@ -1,14 +1,18 @@
 """Centralized NN evaluation server for multi-process self-play.
 
-The EvaluationServer runs as a thread in the main process, owning the model
-and GPU. Worker processes send evaluation requests via shared memory and
-receive results back. Multiple workers' requests are batched into single
-GPU forward passes for throughput.
+One or more EvaluationServer threads run in the main process, sharing the
+model and GPU. Worker processes send evaluation requests via a shared queue
+and receive completion signals via per-worker Events. Multiple workers'
+requests are batched into single GPU forward passes for throughput.
 
 Communication uses shared memory (multiprocessing.RawArray) for state/logit/
-value data, with pipes carrying only lightweight control messages (integer
-state counts). Legal action masking and softmax are applied worker-side
-after receiving raw logits from the server.
+value data. A multiprocessing.Queue carries lightweight request tuples
+(worker_idx, state_count), and per-worker Events signal completion.
+Legal action masking and softmax are applied worker-side after receiving
+raw logits from the server.
+
+Multiple EvaluationServer threads consuming from the same queue naturally
+double-buffer GPU access: one server gathers while another is on GPU.
 
 RemoteEvaluator is the worker-side proxy that implements the same interface
 as NNEvaluator, writing to shared memory instead of serializing over pipes.
@@ -17,11 +21,11 @@ as NNEvaluator, writing to shared memory instead of serializing over pipes.
 from __future__ import annotations
 
 import ctypes
+import queue as _queue
 import threading
 from multiprocessing import RawArray
-from multiprocessing.connection import Connection, wait
 from time import perf_counter
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import torch
@@ -40,7 +44,7 @@ class SharedEvalBuffers:
     """Pre-allocated shared memory for zero-copy worker <-> server communication.
 
     All channels use bfloat16 to halve PCIe and shared memory bandwidth.
-    Workers convert float32 numpy ↔ bfloat16 torch at the boundary.
+    Workers convert float32 numpy <-> bfloat16 torch at the boundary.
     The eval server operates entirely in bfloat16 with zero dtype conversions.
 
     Each worker gets a fixed slot in shared arrays. Workers write rotated states
@@ -109,10 +113,12 @@ class SharedEvalBuffers:
 class EvaluationServer:
     """Thread-based centralized NN evaluator using shared memory.
 
-    Aggregates requests from multiple worker processes,
-    runs batched inference, and dispatches results.
-    Workers signal readiness via pipes (sending integer state counts);
-    actual data is exchanged through SharedEvalBuffers.
+    Consumes (worker_idx, state_count) requests from a shared queue,
+    gathers states from shared memory, runs batched inference, writes
+    results back, and signals workers via per-worker Events.
+
+    Multiple EvaluationServer instances can share the same queue for
+    natural pipeline overlap on a single GPU.
 
     Uses pinned CPU memory and pre-allocated GPU tensors to minimize
     host-to-device and device-to-host transfer overhead.
@@ -122,15 +128,17 @@ class EvaluationServer:
         self,
         model: torch.nn.Module,
         device: torch.device,
-        worker_conns: list[Connection],
         shared_bufs: SharedEvalBuffers,
+        request_queue: Any,
+        worker_events: list[Any],
         *,
         profile: bool = False,
     ) -> None:
         self._model = model
         self._device = device
-        self._conns = list(worker_conns)
         self._shared_bufs = shared_bufs
+        self._request_queue = request_queue
+        self._worker_events = worker_events
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._profile = profile
@@ -191,10 +199,6 @@ class EvaluationServer:
 
     def _loop(self) -> None:
         """Main server loop: gather requests, batch evaluate, dispatch."""
-        conns = list(self._conns)
-        conn_to_idx: dict[Connection, int] = {
-            c: i for i, c in enumerate(self._conns)
-        }
         bufs = self._shared_bufs
         stats = self._stats
         dev = self._device
@@ -212,49 +216,33 @@ class EvaluationServer:
         w_logits = [bufs.get_output_logits(i) for i in range(bufs.num_workers)]
         w_values = [bufs.get_output_values(i) for i in range(bufs.num_workers)]
 
-        while not self._stop.is_set() and conns:
+        req_q = self._request_queue
+        events = self._worker_events
+        max_batch = bufs.num_workers * bufs.batch_size
+
+        while not self._stop.is_set():
             if stats is not None:
                 _tp = perf_counter()
 
+            # Block for first request (with timeout to check stop flag)
             try:
-                ready = wait(conns, timeout=0.01)
-            except (OSError, ValueError):
-                break
-
-            if not ready:
+                first: tuple[int, int] = req_q.get(timeout=0.01)
+            except _queue.Empty:
                 if stats is not None:
                     stats.record_idle(perf_counter() - _tp)
                 continue
 
-            # Non-blocking poll for additional connections that became ready
-            # during the wait() return. This improves batch sizes.
-            ready_set: set[Connection] = set(cast(list[Connection], ready))
-            remaining = [c for c in conns if c not in ready_set]
-            if remaining:
+            # Drain queue greedily to build a larger batch
+            batch_info: list[tuple[int, int]] = [first]
+            while len(batch_info) < max_batch:
                 try:
-                    more = wait(remaining, timeout=0)
-                    if more:
-                        ready_set.update(cast(list[Connection], more))
-                except (OSError, ValueError):
-                    pass
-
-            # Read control messages (just integer state counts)
-            batch_info: list[tuple[Connection, int, int]] = []
-            for conn in ready_set:
-                try:
-                    n: int = conn.recv()
-                    batch_info.append((conn, conn_to_idx[conn], n))
-                except (EOFError, OSError):
-                    if conn in conns:
-                        conns.remove(conn)
-                    continue
-
-            if not batch_info:
-                continue
+                    batch_info.append(req_q.get_nowait())
+                except _queue.Empty:
+                    break
 
             # Gather bfloat16 states into pinned memory
             total_n = 0
-            for _, widx, n in batch_info:
+            for widx, n in batch_info:
                 pin_s[total_n:total_n + n].copy_(w_states[widx][:n])
                 total_n += n
 
@@ -277,16 +265,12 @@ class EvaluationServer:
             if stats is not None:
                 stats.record_batch(total_n, perf_counter() - _ti)
 
-            # Scatter bfloat16 results to per-worker shared memory
+            # Scatter bfloat16 results to per-worker shared memory and signal
             offset = 0
-            for conn, widx, n in batch_info:
+            for widx, n in batch_info:
                 w_logits[widx][:n].copy_(pin_log[offset:offset + n])
                 w_values[widx][:n].copy_(pin_val[offset:offset + n])
-                try:
-                    conn.send(n)
-                except (OSError, BrokenPipeError):
-                    if conn in conns:
-                        conns.remove(conn)
+                events[widx].set()
                 offset += n
 
 
@@ -297,24 +281,27 @@ class RemoteEvaluator:
     as NNEvaluator, so it can be used as a drop-in replacement.
 
     Data flows through SharedEvalBuffers (zero-copy shared memory);
-    pipes carry only integer control messages.
+    a Queue carries request tuples and per-worker Events signal completion.
     """
 
     def __init__(
         self,
-        conn: Connection,
         num_players: int,
         shared_bufs: SharedEvalBuffers,
         worker_idx: int,
+        request_queue: Any,
+        done_event: Any,
         *,
         profile: bool = False,
     ) -> None:
-        self.conn = conn
         self.num_players = num_players
         self.layout = get_layout(num_players)
+        self._worker_idx = worker_idx
         self._in_states = shared_bufs.get_input_states(worker_idx)
         self._out_logits = shared_bufs.get_output_logits(worker_idx)
         self._out_values = shared_bufs.get_output_values(worker_idx)
+        self._queue = request_queue
+        self._event = done_event
         self._profile = profile
         self._stats: EvalClientStats | None = EvalClientStats() if profile else None
 
@@ -323,16 +310,17 @@ class RemoteEvaluator:
         from core.actions import get_valid_action_mask
 
         active_player = state.get_active_player()
-        # f32 numpy → bf16 shared memory (copy_ handles dtype conversion)
+        # f32 numpy -> bf16 shared memory (copy_ handles dtype conversion)
         self._in_states[0].copy_(torch.from_numpy(
             rotate_visible_state(state._array, active_player, self.num_players)
         ))
         mask = get_valid_action_mask(state)
 
-        self.conn.send(1)
-        self.conn.recv()
+        self._event.clear()
+        self._queue.put((self._worker_idx, 1))
+        self._event.wait()
 
-        # bf16 shared memory → f32 numpy, then apply mask + softmax
+        # bf16 shared memory -> f32 numpy, then apply mask + softmax
         policy_probs = apply_mask_softmax(
             self._out_logits[0].float().numpy(), mask,
         )
@@ -361,8 +349,9 @@ class RemoteEvaluator:
             ))
             masks.append(get_valid_action_mask(s))
 
-        self.conn.send(n)
-        self.conn.recv()
+        self._event.clear()
+        self._queue.put((self._worker_idx, n))
+        self._event.wait()
 
         results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for i in range(n):
@@ -395,7 +384,7 @@ class RemoteEvaluator:
         if _stats is not None:
             _t0 = perf_counter()
 
-        # Write rotated states: f32 numpy → bf16 shared memory
+        # Write rotated states: f32 numpy -> bf16 shared memory
         for i, (arr, ap) in enumerate(zip(state_arrays, active_player_ids)):
             self._in_states[i].copy_(torch.from_numpy(
                 rotate_visible_state(arr, ap, self.num_players)
@@ -405,9 +394,10 @@ class RemoteEvaluator:
             _t1 = perf_counter()
             _stats.prepare_secs += _t1 - _t0
 
-        # Signal server (just the count) and wait for completion
-        self.conn.send(n)
-        self.conn.recv()
+        # Signal server and wait for completion
+        self._event.clear()
+        self._queue.put((self._worker_idx, n))
+        self._event.wait()
 
         if _stats is not None:
             _t2 = perf_counter()

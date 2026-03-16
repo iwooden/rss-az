@@ -7,7 +7,6 @@ import multiprocessing as mp
 import queue
 import time
 from collections import defaultdict
-from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any, cast
 
@@ -48,6 +47,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-simulations", type=int)
     parser.add_argument("--search-batch-size", type=int)
     parser.add_argument("--num-workers", type=int)
+    parser.add_argument("--num-eval-servers", type=int)
     parser.add_argument("--checkpoint-dir", type=str)
     parser.add_argument("--tensorboard-dir", type=str)
     parser.add_argument("--seed", type=int)
@@ -89,7 +89,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 _CLI_FIELDS = (
     "games_per_epoch", "num_epochs", "num_simulations", "search_batch_size",
-    "num_workers", "checkpoint_dir", "tensorboard_dir", "seed",
+    "num_workers", "num_eval_servers", "checkpoint_dir", "tensorboard_dir", "seed",
     "temp_initial", "temp_anneal_start", "temp_anneal_end", "temp_final",
     "c_puct_initial", "c_puct_final", "c_puct_anneal_epochs",
     "value_blend_start_epoch", "value_blend_end_epoch",
@@ -268,8 +268,7 @@ def main() -> None:
 
     # --- Multi-process self-play setup ---
     workers: list[Any] = []  # mp.Process (SpawnProcess when using spawn context)
-    eval_server: EvaluationServer | None = None
-    server_conns: list[Connection] = []
+    eval_servers: list[EvaluationServer] = []
     task_queue: Any = None  # mp.Queue
     result_queue: Any = None  # mp.Queue
 
@@ -282,11 +281,9 @@ def main() -> None:
         task_queue = ctx.Queue()
         result_queue = ctx.Queue()
 
-        worker_conns: list[Connection] = []
-        for _ in range(config.num_workers):
-            s_conn, w_conn = ctx.Pipe()
-            server_conns.append(s_conn)
-            worker_conns.append(w_conn)
+        # Shared request queue + per-worker completion events
+        request_queue: Any = ctx.Queue()
+        worker_events: list[Any] = [ctx.Event() for _ in range(config.num_workers)]
 
         shared_bufs = SharedEvalBuffers(
             num_workers=config.num_workers,
@@ -296,28 +293,32 @@ def main() -> None:
             num_players=config.num_players,
         )
 
-        eval_server = EvaluationServer(
-            model, device, server_conns, shared_bufs, profile=config.profile,
-        )
-        eval_server.start()
+        # Spawn M eval server threads (each gets its own pinned/GPU buffers)
+        for _ in range(config.num_eval_servers):
+            server = EvaluationServer(
+                model, device, shared_bufs, request_queue, worker_events,
+                profile=config.profile,
+            )
+            server.start()
+            eval_servers.append(server)
 
         for i in range(config.num_workers):
             p = ctx.Process(
                 target=self_play_worker,
                 args=(
-                    worker_conns[i], task_queue, result_queue, config,
-                    shared_bufs, i,
+                    task_queue, result_queue, config,
+                    shared_bufs, i, request_queue, worker_events[i],
                 ),
                 daemon=True,
             )
             p.start()
             workers.append(p)
 
-        # Close our copies of worker-side pipe ends
-        for conn in worker_conns:
-            conn.close()
-
-        print(f"Started {config.num_workers} self-play workers")
+        n_servers = config.num_eval_servers
+        print(
+            f"Started {config.num_workers} self-play workers, "
+            f"{n_servers} eval server{'s' if n_servers > 1 else ''}"
+        )
     else:
         evaluator = NNEvaluator(model, device, num_players=config.num_players)
         from core.state import get_layout
@@ -376,8 +377,9 @@ def main() -> None:
                 )
 
             # Reset eval server profile stats for this epoch
-            if config.profile and eval_server is not None:
-                eval_server.reset_profile_stats()
+            if config.profile and eval_servers:
+                for es in eval_servers:
+                    es.reset_profile_stats()
 
             # Compute per-epoch annealing parameters
             epoch_cfg = config.compute_epoch_config(epoch)
@@ -456,10 +458,14 @@ def main() -> None:
             # --- Profile summary ---
             if config.profile and game_profiles:
                 sp_duration = time.perf_counter() - epoch_start
-                server_stats = (
-                    eval_server.get_profile_stats()
-                    if eval_server is not None else None
-                )
+                server_stats: EvalServerStats | None = None
+                if eval_servers:
+                    all_stats = [
+                        s.get_profile_stats() for s in eval_servers
+                        if s.get_profile_stats() is not None
+                    ]
+                    if all_stats:
+                        server_stats = EvalServerStats.merge(all_stats)  # type: ignore[arg-type]
                 print(format_epoch_profile(game_profiles, server_stats, sp_duration))
 
                 # Tensorboard: profile scalars
@@ -582,14 +588,9 @@ def main() -> None:
         print("\nInterrupted — shutting down...")
 
     finally:
-        # Clean shutdown: stop eval server, close connections, terminate workers
-        if eval_server is not None:
-            eval_server.stop()
-        for conn in server_conns:
-            try:
-                conn.close()
-            except OSError:
-                pass
+        # Clean shutdown: stop eval servers, terminate workers
+        for es in eval_servers:
+            es.stop()
         for w in workers:
             w.join(timeout=3.0)
             if w.is_alive():
