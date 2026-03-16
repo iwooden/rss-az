@@ -67,6 +67,51 @@ def _format_nn_eval(
     return lines
 
 
+def _format_dirichlet_info(
+    nn_priors: np.ndarray,
+    noised_priors: np.ndarray,
+    legal_actions: np.ndarray,
+    alpha: float,
+    epsilon: float,
+    dynamic: bool,
+    numerator: float,
+    n_legal: int,
+    num_players: int,
+    state: GameState,
+    top_n: int = 10,
+) -> list[str]:
+    """Format Dirichlet noise effect on root priors."""
+    lines = []
+
+    if dynamic:
+        lines.append(
+            f"  Dirichlet Noise: \u03b1={alpha:.3f} "
+            f"(dynamic: {numerator:.1f}/{n_legal} legal), \u03b5={epsilon:.2f}"
+        )
+    else:
+        lines.append(
+            f"  Dirichlet Noise: \u03b1={alpha:.3f} (static), \u03b5={epsilon:.2f}"
+        )
+
+    # Show top actions sorted by original NN prior, with shift
+    nn_legal = nn_priors[legal_actions]
+    sorted_order = np.argsort(-nn_legal)[:top_n]
+
+    lines.append(f"  Noised Priors (top {min(top_n, len(sorted_order))} of {n_legal} legal):")
+    for rank, idx in enumerate(sorted_order):
+        action_idx = int(legal_actions[idx])
+        orig = float(nn_legal[idx])
+        noised = float(noised_priors[idx])
+        delta = noised - orig
+        action_str = format_action(action_idx, num_players, state)
+        sign = "+" if delta >= 0 else ""
+        lines.append(
+            f"    {rank+1:2d}. {orig:5.1%} \u2192 {noised:5.1%} ({sign}{delta*100:.1f}pp) {action_str}"
+        )
+
+    return lines
+
+
 def _format_mcts_visits(
     root,
     num_players: int,
@@ -110,19 +155,28 @@ def analyze_game(
     search_batch_size: int = 1,
     top_n: int = 10,
     verbose: bool = False,
+    dirichlet: bool = True,
 ) -> str:
-    """Play a self-play game with full MCTS and return a detailed log."""
+    """Play a self-play game with full MCTS and return a detailed log.
+
+    Args:
+        dirichlet: If True, apply Dirichlet noise at root using config values
+            and display the noise effect. If False, disable noise (epsilon=0).
+    """
     num_players = config.num_players
 
     state = GameState(num_players)
     state.initialize_game(seed=seed)
 
     evaluator = NNEvaluator(model, device, num_players=num_players)
+    epsilon = config.dirichlet_epsilon if dirichlet else 0.0
     mcts_config = MCTSConfig(
         num_simulations=num_simulations,
         c_puct=config.c_puct_final,
         dirichlet_alpha=config.dirichlet_alpha,
-        dirichlet_epsilon=0.0,
+        dirichlet_epsilon=epsilon,
+        dirichlet_dynamic=config.dirichlet_dynamic,
+        dirichlet_alpha_numerator=config.dirichlet_alpha_numerator,
         num_players=num_players,
         search_batch_size=search_batch_size,
     )
@@ -165,6 +219,22 @@ def analyze_game(
             policy_probs, values, legal_mask, num_players, state, top_n
         ))
         lines.append("")
+
+        # Dirichlet noise info (root.priors modified in-place by run_search)
+        if dirichlet and root.priors is not None and root.legal_actions is not None:
+            n_legal = len(root.priors)
+            if config.dirichlet_dynamic:
+                alpha = config.dirichlet_alpha_numerator / n_legal
+            else:
+                alpha = config.dirichlet_alpha
+            lines.extend(_format_dirichlet_info(
+                policy_probs, root.priors, root.legal_actions,
+                alpha, epsilon, config.dirichlet_dynamic,
+                config.dirichlet_alpha_numerator, n_legal,
+                num_players, state, top_n,
+            ))
+            lines.append("")
+
         lines.extend(_format_mcts_visits(root, num_players, state, top_n))
         a0gb = get_greedy_leaf_value(root, num_players)
         a0gb_parts = [f"P{i}={a0gb[i]:+.3f}" for i in range(num_players)]
@@ -238,6 +308,10 @@ def main() -> None:
     parser.add_argument("--search-batch-size", type=int, default=1)
     parser.add_argument("--top-n", type=int, default=10, help="Top N actions to show")
     parser.add_argument("--verbose", action="store_true", help="Full state dump every step")
+    parser.add_argument(
+        "--no-dirichlet", action="store_true", default=False,
+        help="Disable Dirichlet noise at MCTS root (deterministic analysis)",
+    )
     parser.add_argument("--output", type=str, default=None, help="Output file (default: stdout)")
     args = parser.parse_args()
 
@@ -278,6 +352,7 @@ def main() -> None:
     result = analyze_game(
         model, device, config, args.seed, args.simulations,
         args.search_batch_size, args.top_n, args.verbose,
+        dirichlet=not args.no_dirichlet,
     )
 
     if args.output:
