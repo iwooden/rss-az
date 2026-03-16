@@ -77,6 +77,10 @@ def rotate_visible_state(state_array: np.ndarray, active_player_id: int,
 def apply_mask_softmax(logits: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """Apply legal action mask and softmax to raw policy logits.
 
+    Uses torch.softmax to match the numerics of the GPU eval path exactly
+    (avoids tiny divergences from a numpy softmax implementation that
+    compound through MCTS visit counts).
+
     Args:
         logits: Raw logits from NN, shape (action_dim,).
         mask: Binary mask where 1 = legal, 0 = illegal, shape (action_dim,).
@@ -84,10 +88,9 @@ def apply_mask_softmax(logits: np.ndarray, mask: np.ndarray) -> np.ndarray:
     Returns:
         Probability distribution over actions, shape (action_dim,).
     """
-    masked = logits.copy()
-    masked[mask <= 0] = -1e9
-    e = np.exp(masked - masked.max())
-    return (e / e.sum()).astype(np.float32)
+    t = torch.from_numpy(logits)
+    t = t.masked_fill(torch.from_numpy(mask) <= 0, -1e9)
+    return torch.softmax(t, dim=-1).numpy()
 
 
 def unrotate_values(values: np.ndarray, active_player_id: int) -> np.ndarray:
