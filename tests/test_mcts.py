@@ -43,12 +43,14 @@ def layout():
 
 @pytest.fixture(scope="session")
 def model():
-    return RSSAlphaZeroNet(RSSModelConfig())
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return RSSAlphaZeroNet(RSSModelConfig()).to(device)
 
 
 @pytest.fixture(scope="session")
 def evaluator(model):
-    return NNEvaluator(model, torch.device("cpu"), num_players=3)
+    device = next(model.parameters()).device
+    return NNEvaluator(model, device, num_players=3)
 
 
 @pytest.fixture
@@ -1438,7 +1440,7 @@ class TestEvalCache:
         cache = EvalCache(action_dim=246, num_players=3, initial_capacity=4)
         rng = np.random.default_rng(42)
 
-        for i in range(8):  # Exceeds initial capacity of 4
+        for _ in range(8):  # Exceeds initial capacity of 4
             state = rng.random(4207).astype(np.float32)
             policy = rng.random(246).astype(np.float32)
             values = rng.random(3).astype(np.float32)
@@ -1488,44 +1490,85 @@ class TestEvalCache:
         # Cache should have entries from the search
         assert cache.size > 0
 
-    def test_eval_cache_hits_across_searches(self, game_state, evaluator):
-        """Cache entries from one search should produce hits in the next."""
+    def test_eval_cache_reduces_nn_calls(self, game_state, evaluator):
+        """Cache should reduce the number of NN forward calls across searches.
+
+        Runs two consecutive searches (simulating two moves in a game) with
+        and without a shared cache, then verifies the cached version made
+        fewer NN evaluate calls.
+        """
         from core.driver import DRIVER
         from core.state import GameState, get_layout
         from mcts.eval_cache import EvalCache
 
         total_size = get_layout(3).total_size
-        config = MCTSConfig(num_simulations=30)
+        config = MCTSConfig(num_simulations=50)
+
+        # --- Run two searches WITHOUT cache (baseline call count) ---
+        state_no_cache = GameState.from_array(game_state._array, 3)
+        pool_nc = StatePool(config.num_simulations + 1, total_size)
+        rng_nc = np.random.default_rng(99)
+        call_count_no_cache = 0
+
+        class CountingEvaluator:
+            """Wrapper that counts evaluate/evaluate_batch/evaluate_leaves calls."""
+            def __init__(self, inner: NNEvaluator) -> None:
+                self._inner = inner
+                self.num_players = inner.num_players
+                self.call_count = 0
+
+            def evaluate(self, state):  # type: ignore[no-untyped-def]
+                self.call_count += 1
+                return self._inner.evaluate(state)
+
+            def evaluate_batch(self, states):  # type: ignore[no-untyped-def]
+                self.call_count += len(states)
+                return self._inner.evaluate_batch(states)
+
+            def evaluate_leaves(self, state_arrays, active_player_ids, legal_masks):  # type: ignore[no-untyped-def]
+                self.call_count += len(state_arrays)
+                return self._inner.evaluate_leaves(state_arrays, active_player_ids, legal_masks)
+
+            def evaluate_terminal(self, state):  # type: ignore[no-untyped-def]
+                return self._inner.evaluate_terminal(state)
+
+        counter_nc = CountingEvaluator(evaluator)
+        root1_nc = run_search(
+            state_no_cache, counter_nc, config, rng=rng_nc, state_pool=pool_nc,
+        )
+        probs_nc = get_action_probabilities(root1_nc, temperature=1.0, action_dim=config.action_dim)
+        action_nc = int(rng_nc.choice(config.action_dim, p=probs_nc))
+        DRIVER.apply_action(state_no_cache, action_nc)
+        run_search(
+            state_no_cache, counter_nc, config, rng=rng_nc, state_pool=pool_nc,
+        )
+        call_count_no_cache = counter_nc.call_count
+
+        # --- Run two searches WITH cache (should make fewer calls) ---
+        state_cached = GameState.from_array(game_state._array, 3)
+        pool_c = StatePool(config.num_simulations + 1, total_size)
+        rng_c = np.random.default_rng(99)
         cache = EvalCache(config.action_dim, config.num_players)
-        pool = StatePool(config.num_simulations + 1, total_size)
 
-        state = GameState.from_array(game_state._array, 3)
-        rng = np.random.default_rng(99)
-
-        # First search populates the cache
-        root1 = run_search(
-            state, evaluator, config, rng=rng,
-            state_pool=pool, eval_cache=cache,
+        counter_c = CountingEvaluator(evaluator)
+        root1_c = run_search(
+            state_cached, counter_c, config, rng=rng_c,
+            state_pool=pool_c, eval_cache=cache,
         )
-        size_after_first = cache.size
-        assert size_after_first > 0
-
-        # Play a move
-        probs = get_action_probabilities(root1, temperature=1.0, action_dim=config.action_dim)
-        action = int(rng.choice(config.action_dim, p=probs))
-        DRIVER.apply_action(state, action)
-
-        # Second search should get some cache hits (states from the
-        # chosen child's subtree were already evaluated)
-        root2 = run_search(
-            state, evaluator, config, rng=rng,
-            state_pool=pool, eval_cache=cache,
+        probs_c = get_action_probabilities(root1_c, temperature=1.0, action_dim=config.action_dim)
+        action_c = int(rng_c.choice(config.action_dim, p=probs_c))
+        DRIVER.apply_action(state_cached, action_c)
+        run_search(
+            state_cached, counter_c, config, rng=rng_c,
+            state_pool=pool_c, eval_cache=cache,
         )
-        assert root2.visit_count >= 1
-        # Cache grew (new states explored) but not by the full sim count
-        # (some were hits from the first search)
-        new_entries = cache.size - size_after_first
-        assert new_entries < config.num_simulations
+        call_count_cached = counter_c.call_count
+
+        # The cached version should have made strictly fewer NN calls
+        assert call_count_cached < call_count_no_cache, (
+            f"Cache should reduce NN calls: {call_count_cached} (cached) "
+            f"vs {call_count_no_cache} (no cache)"
+        )
 
     def test_eval_cache_deterministic(self, game_state, evaluator):
         """Search with and without cache should produce the same root values."""
