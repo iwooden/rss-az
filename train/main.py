@@ -9,7 +9,7 @@ import time
 from collections import defaultdict
 from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -70,6 +70,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--profile", action="store_true", default=None,
         help="Enable per-epoch self-play performance profiling",
+    )
+    parser.add_argument(
+        "--no-compile", action="store_true", default=False,
+        help="Disable torch.compile model optimization",
     )
     return parser
 
@@ -229,6 +233,20 @@ def main() -> None:
             f"Resumed from epoch {cp['epoch']}, "
             f"step {trainer.global_step}"
         )
+
+    # --- torch.compile ---
+    if not args.no_compile and device.type == "cuda":
+        print("Compiling model with torch.compile...")
+        # torch.compile returns OptimizedModule (a Module subclass at runtime),
+        # but Pyright sees the return type as FunctionType | Module. Cast to keep
+        # downstream type-safety for .eval(), .train(), save_checkpoint(), etc.
+        model = cast(RSSAlphaZeroNet, torch.compile(model))
+        # Warmup pass to trigger compilation before self-play starts
+        with torch.no_grad():
+            dummy = torch.randn(1, config.visible_size, device=device)
+            dummy_mask = torch.ones(1, config.action_dim, device=device)
+            model(dummy, legal_action_mask=dummy_mask)
+        print("  Model compiled.")
 
     # --- Log startup ---
     logger.log_training_start(config, device=str(device))

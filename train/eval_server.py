@@ -117,6 +117,9 @@ class EvaluationServer:
     runs batched inference, and dispatches results.
     Workers signal readiness via pipes (sending integer state counts);
     actual data is exchanged through SharedEvalBuffers.
+
+    Uses pinned CPU memory and pre-allocated GPU tensors to minimize
+    host-to-device and device-to-host transfer overhead.
     """
 
     def __init__(
@@ -136,6 +139,43 @@ class EvaluationServer:
         self._thread: threading.Thread | None = None
         self._profile = profile
         self._stats: EvalServerStats | None = EvalServerStats() if profile else None
+
+        # Pre-allocated transfer buffers for zero-alloc H2D/D2H.
+        # Max possible batch = num_workers * search_batch_size.
+        max_batch = shared_bufs.num_workers * shared_bufs.batch_size
+        vis = shared_bufs.visible_size
+        act = shared_bufs.action_dim
+        npl = shared_bufs.num_players
+        use_cuda = device.type == "cuda"
+
+        # Pinned CPU buffers for fast DMA to GPU
+        self._pin_states = torch.empty(
+            max_batch, vis, dtype=torch.float32,
+            pin_memory=use_cuda,
+        )
+        self._pin_masks = torch.empty(
+            max_batch, act, dtype=torch.float32,
+            pin_memory=use_cuda,
+        )
+        # Numpy views into pinned memory (avoids per-batch allocation)
+        self._pin_states_np = self._pin_states.numpy()
+        self._pin_masks_np = self._pin_masks.numpy()
+
+        # Pre-allocated GPU tensors (reused every batch)
+        self._gpu_states = torch.empty(max_batch, vis, dtype=torch.float32, device=device)
+        self._gpu_masks = torch.empty(max_batch, act, dtype=torch.float32, device=device)
+
+        # Pinned CPU buffers for fast D2H
+        self._pin_policies = torch.empty(
+            max_batch, act, dtype=torch.float32,
+            pin_memory=use_cuda,
+        )
+        self._pin_values = torch.empty(
+            max_batch, npl, dtype=torch.float32,
+            pin_memory=use_cuda,
+        )
+        self._pin_policies_np = self._pin_policies.numpy()
+        self._pin_values_np = self._pin_values.numpy()
 
     def start(self) -> None:
         """Start the server thread."""
@@ -169,7 +209,21 @@ class EvaluationServer:
         }
         bufs = self._shared_bufs
         stats = self._stats
+        dev = self._device
+        use_cuda = dev.type == "cuda"
         _tp = _ti = 0.0  # profile timing scratch vars
+
+        # Local refs to pre-allocated buffers (avoid attribute lookups in hot loop)
+        pin_s_np = self._pin_states_np
+        pin_m_np = self._pin_masks_np
+        pin_s = self._pin_states
+        pin_m = self._pin_masks
+        gpu_s = self._gpu_states
+        gpu_m = self._gpu_masks
+        pin_pol = self._pin_policies
+        pin_val = self._pin_values
+        pin_pol_np = self._pin_policies_np
+        pin_val_np = self._pin_values_np
 
         while not self._stop.is_set() and conns:
             if stats is not None:
@@ -211,39 +265,46 @@ class EvaluationServer:
             if not batch_info:
                 continue
 
-            # Build batch from shared memory (concatenate worker slots)
-            all_states = np.concatenate(
-                [bufs.get_input_states(widx)[:n] for _, widx, n in batch_info]
-            )
-            all_masks = np.concatenate(
-                [bufs.get_input_masks(widx)[:n] for _, widx, n in batch_info]
-            )
+            # Gather worker data into pinned memory (skip np.concatenate)
+            total_n = 0
+            for _, widx, n in batch_info:
+                pin_s_np[total_n:total_n + n] = bufs.get_input_states(widx)[:n]
+                pin_m_np[total_n:total_n + n] = bufs.get_input_masks(widx)[:n]
+                total_n += n
 
-            # Single GPU forward pass (bfloat16 for throughput)
+            # H2D via pinned memory (non-blocking DMA)
             if stats is not None:
                 _ti = perf_counter()
 
-            total_n = sum(n for _, _, n in batch_info)
+            gpu_s_batch = gpu_s[:total_n]
+            gpu_m_batch = gpu_m[:total_n]
+            gpu_s_batch.copy_(pin_s[:total_n], non_blocking=True)
+            gpu_m_batch.copy_(pin_m[:total_n], non_blocking=True)
 
+            # GPU forward pass (bfloat16 for throughput)
             with torch.no_grad():
-                x = torch.from_numpy(all_states).to(self._device)
-                mask = torch.from_numpy(all_masks).to(self._device)
                 with torch.autocast(
-                    self._device.type, dtype=torch.bfloat16,
-                    enabled=self._device.type == "cuda",
+                    dev.type, dtype=torch.bfloat16, enabled=use_cuda,
                 ):
-                    policy_logits, values = self._model(x, legal_action_mask=mask)
-                policies = torch.softmax(policy_logits.float(), dim=-1).cpu().numpy()
-                values_np = values.float().cpu().numpy()
+                    policy_logits, values = self._model(
+                        gpu_s_batch, legal_action_mask=gpu_m_batch,
+                    )
+                # Softmax on GPU, then D2H via pinned memory
+                pol_f = torch.softmax(policy_logits.float(), dim=-1)
+                val_f = values.float()
+                pin_pol[:total_n].copy_(pol_f, non_blocking=True)
+                pin_val[:total_n].copy_(val_f, non_blocking=True)
+                if use_cuda:
+                    torch.cuda.synchronize()
 
             if stats is not None:
                 stats.record_batch(total_n, perf_counter() - _ti)
 
-            # Write results to shared memory and signal workers
+            # Scatter results from pinned memory to per-worker shared memory
             offset = 0
             for conn, widx, n in batch_info:
-                bufs.get_output_policies(widx)[:n] = policies[offset:offset + n]
-                bufs.get_output_values(widx)[:n] = values_np[offset:offset + n]
+                bufs.get_output_policies(widx)[:n] = pin_pol_np[offset:offset + n]
+                bufs.get_output_values(widx)[:n] = pin_val_np[offset:offset + n]
                 try:
                     conn.send(n)
                 except (OSError, BrokenPipeError):
