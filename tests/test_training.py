@@ -75,7 +75,8 @@ def tiny_config(tmp_path: Path) -> TrainingConfig:
         num_players=3,
         games_per_epoch=1,
         num_simulations=2,
-        temp_threshold=5,
+        temp_anneal_start=3,
+        temp_anneal_end=5,
         buffer_capacity=1000,
         min_buffer_size=10,
         batch_size=4,
@@ -142,8 +143,10 @@ class TestConfig:
             TrainingConfig(search_batch_size=0)
 
     def test_validation_c_puct(self) -> None:
-        with pytest.raises(ValueError, match="c_puct"):
-            TrainingConfig(c_puct=-1.0)
+        with pytest.raises(ValueError, match="c_puct_initial"):
+            TrainingConfig(c_puct_initial=-1.0)
+        with pytest.raises(ValueError, match="c_puct_final"):
+            TrainingConfig(c_puct_final=-1.0)
 
     def test_validation_dirichlet(self) -> None:
         with pytest.raises(ValueError, match="dirichlet_alpha"):
@@ -158,7 +161,7 @@ class TestConfig:
             TrainingConfig(num_workers=-1)
 
     def test_to_mcts_config(self) -> None:
-        cfg = TrainingConfig(num_simulations=100, c_puct=3.0, num_players=3)
+        cfg = TrainingConfig(num_simulations=100, c_puct_final=3.0, num_players=3)
         mcts_cfg = cfg.to_mcts_config()
         assert isinstance(mcts_cfg, MCTSConfig)
         assert mcts_cfg.num_simulations == 100
@@ -166,6 +169,47 @@ class TestConfig:
         assert mcts_cfg.action_dim == 246
         assert mcts_cfg.dirichlet_dynamic is False
         assert mcts_cfg.dirichlet_alpha_numerator == 10.0
+
+    def test_to_mcts_config_c_puct_override(self) -> None:
+        cfg = TrainingConfig(c_puct_final=2.5)
+        mcts_cfg = cfg.to_mcts_config(c_puct_override=3.5)
+        assert mcts_cfg.c_puct == 3.5
+
+    def test_compute_epoch_config(self) -> None:
+        cfg = TrainingConfig(
+            c_puct_initial=4.0, c_puct_final=2.0, c_puct_anneal_epochs=20,
+            value_blend_start_epoch=10, value_blend_end_epoch=40,
+            reuse_subtree_after_epoch=15,
+        )
+        # Epoch 0: c_puct at initial, no blend, no reuse
+        ec = cfg.compute_epoch_config(0)
+        assert ec.c_puct == pytest.approx(4.0)
+        assert ec.value_blend_alpha == pytest.approx(0.0)
+        assert ec.enable_subtree_reuse is False
+
+        # Epoch 10: c_puct halfway, blend starts
+        ec = cfg.compute_epoch_config(10)
+        assert ec.c_puct == pytest.approx(3.0)
+        assert ec.value_blend_alpha == pytest.approx(0.0)
+        assert ec.enable_subtree_reuse is False
+
+        # Epoch 15: reuse enabled
+        ec = cfg.compute_epoch_config(15)
+        assert ec.enable_subtree_reuse is True
+
+        # Epoch 20: c_puct at final
+        ec = cfg.compute_epoch_config(20)
+        assert ec.c_puct == pytest.approx(2.0)
+
+        # Epoch 25: halfway through blend
+        ec = cfg.compute_epoch_config(25)
+        assert ec.value_blend_alpha == pytest.approx(0.5)
+
+        # Epoch 40+: fully A0GB
+        ec = cfg.compute_epoch_config(50)
+        assert ec.c_puct == pytest.approx(2.0)
+        assert ec.value_blend_alpha == pytest.approx(1.0)
+        assert ec.enable_subtree_reuse is True
 
     def test_to_mcts_config_dynamic_dirichlet(self) -> None:
         cfg = TrainingConfig(
@@ -778,10 +822,12 @@ class TestSelfPlay:
             conn.close()
 
         try:
-            # Feed game seeds
+            # Feed game seeds (with epoch config)
+            from train.config import EpochConfig
+            epoch_cfg = EpochConfig(c_puct=2.5, value_blend_alpha=1.0, enable_subtree_reuse=True)
             total_games = num_workers * games_per_worker
             for i in range(total_games):
-                task_queue.put((42 + i, 100 + i))
+                task_queue.put((42 + i, 100 + i, epoch_cfg))
 
             # Collect results
             records = []

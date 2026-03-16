@@ -241,7 +241,7 @@ from mcts.search import run_search, get_action_probabilities, get_greedy_leaf_va
 
 # Setup
 evaluator = NNEvaluator(model, device, num_players=3)
-config = MCTSConfig(num_simulations=800, c_puct=2.5, search_batch_size=4)
+config = MCTSConfig(num_simulations=800, c_puct=2.5, search_batch_size=4)  # c_puct set per-epoch via EpochConfig
 
 # Search (batches 4 leaves per NN call → 200 inference calls instead of 800)
 root = run_search(game_state, evaluator, config)
@@ -322,8 +322,16 @@ Each epoch: (1) play N games via MCTS self-play → (2) store examples in replay
 | `games_per_epoch` | 1000 | Self-play games per epoch |
 | `learning_rate` | 1e-3 | AdamW, cosine decay to `lr_min` |
 | `lr_min` | 1e-4 | Cosine schedule floor |
-| `warmup_steps` | 500 | Linear warmup from 0 to LR |
-| `temp_threshold` | 60 | Moves before temperature drops |
+| `warmup_steps` | 1000 | Linear warmup from 0 to LR |
+| `temp_anneal_start` | 60 | Move where temperature starts decreasing |
+| `temp_anneal_end` | 120 | Move where temperature reaches `temp_final` |
+| `temp_final` | 0.5 | Temperature floor after anneal |
+| `c_puct_initial` | 3.5 | Starting c_puct (anneals to `c_puct_final`) |
+| `c_puct_final` | 2.5 | Final c_puct after annealing |
+| `c_puct_anneal_epochs` | 20 | Epochs over which c_puct anneals |
+| `value_blend_start_epoch` | 10 | Epoch where A0GB blending begins |
+| `value_blend_end_epoch` | 40 | Epoch where blend reaches pure A0GB |
+| `reuse_subtree_after_epoch` | 15 | Subtree reuse disabled before this epoch |
 | `buffer_capacity` | 500,000 | Replay buffer size (~6.6 GB) |
 | `batch_size` | 256 | Training batch size |
 

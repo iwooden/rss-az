@@ -12,9 +12,10 @@ import numpy as np
 
 from core.driver import DRIVER, STATUS_GAME_OVER_PY
 from core.state import GameState
-from mcts.evaluator import rotate_visible_state
+from mcts.eval_cache import EvalCache
+from mcts.evaluator import compute_terminal_values, rotate_visible_state
 from mcts.search import StatePool, get_action_probabilities, get_greedy_leaf_value, prepare_reuse_root, run_search
-from train.config import TrainingConfig
+from train.config import EpochConfig, TrainingConfig
 from train.profile_stats import EvalClientStats, GameProfileData, SearchStats
 from train.replay_buffer import TrainingExample
 
@@ -27,7 +28,25 @@ class GameRecord:
     total_moves: int  # Decision points (MCTS searches)
     net_worths: list[int]  # Final net worth per player (canonical order)
     duration_secs: float  # Wall-clock time
+    policy_entropy_mean: float = 0.0  # Mean entropy of MCTS policy targets (nats)
+    top1_visit_fraction: float = 0.0  # Mean fraction of visits on top action
     profile: GameProfileData | None = None
+
+
+def _compute_temperature(move_count: int, config: TrainingConfig) -> float:
+    """Compute temperature for the current move using the linear ramp schedule.
+
+    Schedule: temp_initial from move 0 to temp_anneal_start, then linearly
+    decreases to temp_final at temp_anneal_end. Stays at temp_final after.
+    """
+    if move_count <= config.temp_anneal_start:
+        return config.temp_initial
+    if move_count >= config.temp_anneal_end:
+        return config.temp_final
+    # Linear interpolation
+    span = config.temp_anneal_end - config.temp_anneal_start
+    t = (move_count - config.temp_anneal_start) / span
+    return config.temp_initial + t * (config.temp_final - config.temp_initial)
 
 
 def play_game(
@@ -36,6 +55,7 @@ def play_game(
     game_seed: int,
     rng: np.random.Generator,
     state_pool: StatePool | None = None,
+    epoch_config: EpochConfig | None = None,
 ) -> GameRecord:
     """Play one self-play game, returning training examples.
 
@@ -43,6 +63,9 @@ def play_game(
         evaluator: NNEvaluator or RemoteEvaluator for leaf evaluation.
         state_pool: Optional pre-allocated StatePool for MCTS node states.
             Reused across searches within the game and across games.
+        epoch_config: Per-epoch dynamic parameters (c_puct, value blend,
+            subtree reuse). If None, uses config defaults (pure A0GB,
+            c_puct_final, subtree reuse enabled).
     """
     t0 = time.perf_counter()
 
@@ -55,7 +78,17 @@ def play_game(
         total_size = get_layout(config.num_players).total_size
         state_pool = StatePool(config.num_simulations + 1, total_size)
 
-    mcts_config = config.to_mcts_config()
+    # Use epoch-specific c_puct if provided
+    c_puct_override = epoch_config.c_puct if epoch_config is not None else None
+    mcts_config = config.to_mcts_config(c_puct_override=c_puct_override)
+
+    # Whether to reuse subtrees between moves
+    enable_reuse = epoch_config is None or epoch_config.enable_subtree_reuse
+
+    # Per-game eval cache (when subtree reuse is disabled)
+    eval_cache: EvalCache | None = None
+    if not enable_reuse:
+        eval_cache = EvalCache(config.action_dim, config.num_players)
 
     # Profile stats (None when --profile not set → zero overhead)
     search_stats: SearchStats | None = None
@@ -65,6 +98,9 @@ def play_game(
             evaluator.reset_profile_stats()
 
     examples: list[TrainingExample] = []
+    active_player_ids: list[int] = []
+    entropy_sum = 0.0
+    top1_sum = 0.0
     move_count = 0
     reuse_root: Any = None
 
@@ -76,13 +112,18 @@ def play_game(
         root = run_search(
             state, evaluator, mcts_config, rng,
             state_pool=state_pool, reuse_root=reuse_root,
-            profile=search_stats,
+            profile=search_stats, eval_cache=eval_cache,
         )
 
-        # Temperature schedule
-        temp = config.temp_initial if move_count < config.temp_threshold else config.temp_final
+        # Temperature schedule (linear ramp)
+        temp = _compute_temperature(move_count, config)
         policy = get_action_probabilities(root, temp, config.action_dim)
         value_target = get_greedy_leaf_value(root, config.num_players)
+
+        # Track policy concentration stats
+        nonzero = policy[policy > 0]
+        entropy_sum += float(-np.sum(nonzero * np.log(nonzero)))
+        top1_sum += float(np.max(policy))
 
         # Store training example with rotated state and values
         rotated_state = rotate_visible_state(
@@ -97,6 +138,7 @@ def play_game(
                 value_target=rotated_value,
             )
         )
+        active_player_ids.append(active_player)
 
         # Sample and apply action
         action_idx = int(rng.choice(config.action_dim, p=policy))
@@ -107,11 +149,23 @@ def play_game(
             break
 
         # Extract chosen child's subtree for reuse in next search
-        reuse_root = prepare_reuse_root(root, action_idx, state_pool)
+        if enable_reuse:
+            reuse_root = prepare_reuse_root(root, action_idx, state_pool)
+        else:
+            reuse_root = None
 
     net_worths = [
         state.get_player_net_worth(i) for i in range(config.num_players)
     ]
+
+    # Blend A0GB value targets with game outcome if configured
+    blend_alpha = epoch_config.value_blend_alpha if epoch_config is not None else 1.0
+    if blend_alpha < 1.0:
+        terminal_values = compute_terminal_values(net_worths, config.num_players)
+        for i, ex in enumerate(examples):
+            rotated_terminal = np.roll(terminal_values, -active_player_ids[i])
+            blended = blend_alpha * ex.value_target + (1.0 - blend_alpha) * rotated_terminal
+            examples[i] = ex._replace(value_target=blended)
 
     game_profile: GameProfileData | None = None
     if config.profile and search_stats is not None:
@@ -129,6 +183,8 @@ def play_game(
         total_moves=move_count,
         net_worths=net_worths,
         duration_secs=time.perf_counter() - t0,
+        policy_entropy_mean=entropy_sum / max(move_count, 1),
+        top1_visit_fraction=top1_sum / max(move_count, 1),
         profile=game_profile,
     )
 
@@ -166,9 +222,12 @@ def self_play_worker(
                 continue
             if task is None:
                 break
-            game_seed, rng_seed = task
+            game_seed, rng_seed, epoch_config = task
             rng = np.random.default_rng(rng_seed)
-            record = play_game(evaluator, config, game_seed, rng, state_pool=state_pool)
+            record = play_game(
+                evaluator, config, game_seed, rng,
+                state_pool=state_pool, epoch_config=epoch_config,
+            )
             result_queue.put(record)
     except (KeyboardInterrupt, EOFError, BrokenPipeError, OSError):
         pass

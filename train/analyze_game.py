@@ -120,7 +120,7 @@ def analyze_game(
     evaluator = NNEvaluator(model, device, num_players=num_players)
     mcts_config = MCTSConfig(
         num_simulations=num_simulations,
-        c_puct=config.c_puct,
+        c_puct=config.c_puct_final,
         dirichlet_alpha=config.dirichlet_alpha,
         dirichlet_epsilon=0.0,
         num_players=num_players,

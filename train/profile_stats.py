@@ -20,6 +20,7 @@ class SearchStats:
     num_searches: int = 0
     num_eval_batches: int = 0
     total_leaves: int = 0
+    cache_hits: int = 0
 
 
 @dataclass

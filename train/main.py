@@ -51,7 +51,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint-dir", type=str)
     parser.add_argument("--tensorboard-dir", type=str)
     parser.add_argument("--seed", type=int)
-    parser.add_argument("--temp-threshold", type=int)
+    parser.add_argument("--temp-initial", type=float)
+    parser.add_argument("--temp-anneal-start", type=int)
+    parser.add_argument("--temp-anneal-end", type=int)
+    parser.add_argument("--temp-final", type=float)
+    parser.add_argument("--c-puct-initial", type=float)
+    parser.add_argument("--c-puct-final", type=float)
+    parser.add_argument("--c-puct-anneal-epochs", type=int)
+    parser.add_argument("--value-blend-start-epoch", type=int)
+    parser.add_argument("--value-blend-end-epoch", type=int)
+    parser.add_argument("--reuse-subtree-after-epoch", type=int)
     parser.add_argument("--dirichlet-alpha", type=float)
     dyn_group = parser.add_mutually_exclusive_group()
     dyn_group.add_argument(
@@ -80,7 +89,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 _CLI_FIELDS = (
     "games_per_epoch", "num_epochs", "num_simulations", "search_batch_size",
-    "num_workers", "checkpoint_dir", "tensorboard_dir", "seed", "temp_threshold",
+    "num_workers", "checkpoint_dir", "tensorboard_dir", "seed",
+    "temp_initial", "temp_anneal_start", "temp_anneal_end", "temp_final",
+    "c_puct_initial", "c_puct_final", "c_puct_anneal_epochs",
+    "value_blend_start_epoch", "value_blend_end_epoch",
+    "reuse_subtree_after_epoch",
     "dirichlet_alpha", "dirichlet_dynamic", "dirichlet_alpha_numerator",
 )
 
@@ -325,6 +338,8 @@ def main() -> None:
             total_examples = 0
             total_moves = 0
             total_duration = 0.0
+            total_entropy = 0.0
+            total_top1 = 0.0
             num_players = config.num_players
             rank_totals = [0.0] * num_players
             rank_mins = [float("inf")] * num_players
@@ -333,10 +348,13 @@ def main() -> None:
 
             def _collect_record(record: object, game_idx: int) -> None:
                 nonlocal total_examples, total_moves, total_duration
+                nonlocal total_entropy, total_top1
                 buffer.add_examples(record.examples)  # type: ignore[union-attr]
                 total_examples += len(record.examples)  # type: ignore[union-attr]
                 total_moves += record.total_moves  # type: ignore[union-attr]
                 total_duration += record.duration_secs  # type: ignore[union-attr]
+                total_entropy += record.policy_entropy_mean  # type: ignore[union-attr]
+                total_top1 += record.top1_visit_fraction  # type: ignore[union-attr]
                 for rank, nw in enumerate(sorted(record.net_worths, reverse=True)):  # type: ignore[union-attr]
                     rank_totals[rank] += nw
                     if nw < rank_mins[rank]:
@@ -353,21 +371,26 @@ def main() -> None:
                     rank_net_worths=[t / n for t in rank_totals],
                     rank_mins=list(rank_mins),
                     rank_maxs=list(rank_maxs),
+                    policy_entropy=total_entropy / n,
+                    top1_visit_frac=total_top1 / n,
                 )
 
             # Reset eval server profile stats for this epoch
             if config.profile and eval_server is not None:
                 eval_server.reset_profile_stats()
 
+            # Compute per-epoch annealing parameters
+            epoch_cfg = config.compute_epoch_config(epoch)
+
             logger.begin_self_play(epoch_num, config.num_epochs, config.games_per_epoch)
 
             if config.num_workers > 0:
                 assert task_queue is not None and result_queue is not None
-                # Feed all game seeds to workers
+                # Feed all game seeds to workers (with epoch config)
                 for _ in range(config.games_per_epoch):
                     game_seed = int(master_rng.integers(0, 2**31))
                     rng_seed = int(master_rng.integers(0, 2**63))
-                    task_queue.put((game_seed, rng_seed))
+                    task_queue.put((game_seed, rng_seed, epoch_cfg))
 
                 # Collect results as they complete
                 for game_idx in range(config.games_per_epoch):
@@ -388,7 +411,7 @@ def main() -> None:
 
                     record = play_game(
                         evaluator, config, game_seed, game_rng,
-                        state_pool=state_pool,
+                        state_pool=state_pool, epoch_config=epoch_cfg,
                     )
                     _collect_record(record, game_idx)
 
@@ -409,6 +432,9 @@ def main() -> None:
                 net_worth_scalars[f"self_play/net_worth_{k}_min"] = mn
                 net_worth_scalars[f"self_play/net_worth_{k}_max"] = mx
 
+            avg_entropy = total_entropy / n_games
+            avg_top1 = total_top1 / n_games
+
             logger.log_scalars(
                 epoch_num,
                 {
@@ -416,8 +442,13 @@ def main() -> None:
                     "self_play/duration_mean": avg_game_dur,
                     "self_play/examples_per_game": total_examples / n_games,
                     "self_play/total_examples": float(total_examples),
+                    "self_play/policy_entropy_mean": avg_entropy,
+                    "self_play/top1_visit_fraction": avg_top1,
                     "buffer/size": float(len(buffer)),
                     "buffer/utilization": len(buffer) / config.buffer_capacity,
+                    "schedule/c_puct": epoch_cfg.c_puct,
+                    "schedule/value_blend_alpha": epoch_cfg.value_blend_alpha,
+                    "schedule/subtree_reuse": float(epoch_cfg.enable_subtree_reuse),
                     **net_worth_scalars,
                 },
             )
@@ -518,6 +549,8 @@ def main() -> None:
                     "rank_net_worths": rank_avgs,
                     "rank_net_worths_min": rank_mins,
                     "rank_net_worths_max": rank_maxs,
+                    "policy_entropy": avg_entropy,
+                    "top1_visit_frac": avg_top1,
                 },
                 train_stats={
                     "steps": float(config.training_steps_per_epoch) if avg_losses else 0.0,

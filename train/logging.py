@@ -57,6 +57,8 @@ class TrainingLogger:
         self._sp_rank_net_worths: list[float] = []
         self._sp_rank_mins: list[float] = []
         self._sp_rank_maxs: list[float] = []
+        self._sp_policy_entropy: float = 0.0
+        self._sp_top1_visit_frac: float = 0.0
 
         # Training state for panel building
         self._tr_epoch = 0
@@ -80,6 +82,8 @@ class TrainingLogger:
         self._sp_rank_net_worths = []
         self._sp_rank_mins = []
         self._sp_rank_maxs = []
+        self._sp_policy_entropy = 0.0
+        self._sp_top1_visit_frac = 0.0
         self._phase_start = time.perf_counter()
 
         self._live = Live(
@@ -97,6 +101,8 @@ class TrainingLogger:
         rank_net_worths: list[float] | None = None,
         rank_mins: list[float] | None = None,
         rank_maxs: list[float] | None = None,
+        policy_entropy: float | None = None,
+        top1_visit_frac: float | None = None,
     ) -> None:
         self._sp_games_done = games_done
         self._sp_total_examples = total_examples
@@ -107,6 +113,10 @@ class TrainingLogger:
             self._sp_rank_mins = rank_mins
         if rank_maxs is not None:
             self._sp_rank_maxs = rank_maxs
+        if policy_entropy is not None:
+            self._sp_policy_entropy = policy_entropy
+        if top1_visit_frac is not None:
+            self._sp_top1_visit_frac = top1_visit_frac
         if self._live is not None:
             self._live.update(self._build_self_play_panel())
 
@@ -135,6 +145,11 @@ class TrainingLogger:
                     part += f" [{self._sp_rank_mins[i]:,.0f}\u2013{self._sp_rank_maxs[i]:,.0f}]"
                 parts.append(part)
             lines.append(f"Net worth: {', '.join(parts)}\n")
+        if self._sp_games_done > 0:
+            lines.append(
+                f"Policy entropy: {self._sp_policy_entropy:.3f} nats    "
+                f"Top-1 visit frac: {self._sp_top1_visit_frac:.1%}\n"
+            )
         lines.append(f"Elapsed: {_format_duration(elapsed)}")
         return Panel(
             lines,
@@ -219,7 +234,22 @@ class TrainingLogger:
         table.add_row("Buffer capacity", f"{config.buffer_capacity:,}")
         table.add_row(
             "Temperature",
-            f"{config.temp_initial} for {config.temp_threshold} moves, then {config.temp_final}",
+            f"{config.temp_initial} \u2192 {config.temp_final} "
+            f"(anneal moves {config.temp_anneal_start}\u2013{config.temp_anneal_end})",
+        )
+        table.add_row(
+            "c_puct",
+            f"{config.c_puct_initial} \u2192 {config.c_puct_final} "
+            f"(anneal {config.c_puct_anneal_epochs} epochs)",
+        )
+        table.add_row(
+            "Value target",
+            f"game outcome \u2192 A0GB "
+            f"(blend epochs {config.value_blend_start_epoch}\u2013{config.value_blend_end_epoch})",
+        )
+        table.add_row(
+            "Subtree reuse",
+            f"enabled after epoch {config.reuse_subtree_after_epoch}",
         )
         table.add_row("Epochs", str(config.num_epochs))
         table.add_row("Checkpoint interval", f"every {config.checkpoint_interval} epochs")
@@ -274,6 +304,13 @@ class TrainingLogger:
         )
         if nw_str:
             self.console.print(f"{pad}{nw_str}")
+        pol_ent = self_play_stats.get("policy_entropy", 0.0)
+        top1_vf = self_play_stats.get("top1_visit_frac", 0.0)
+        if games > 0:
+            self.console.print(
+                f"{pad}  Policy entropy: {pol_ent:.3f} nats, "
+                f"top-1 visit frac: {top1_vf:.1%}"
+            )
         if steps > 0:
             self.console.print(
                 f"{pad}  Training: {steps:,} steps, loss={tl:.3f} "

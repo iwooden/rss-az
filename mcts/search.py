@@ -7,6 +7,7 @@ Implements AlphaZero-style MCTS for multiplayer games:
 - A0GB greedy backup for value targets (Willemsen et al., 2020)
 - Pre-allocated state pool for zero per-node allocation
 - Batched leaf evaluation with leaf-lock deduplication for GPU throughput
+- Optional per-game eval cache to avoid redundant NN calls across searches
 - Subtree reuse: reuse the chosen child's subtree as the next search root
 """
 
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
 import numpy as np
 
 from train.config import MCTSConfig
+from mcts.eval_cache import EvalCache
 from mcts.node import MCTSNode
 
 
@@ -134,6 +136,7 @@ def run_search(
     state_pool: StatePool | None = None,
     reuse_root: MCTSNode | None = None,
     profile: SearchStats | None = None,
+    eval_cache: EvalCache | None = None,
 ) -> MCTSNode:
     """Run MCTS search from the given root state.
 
@@ -161,6 +164,9 @@ def run_search(
             the remaining simulations are run to reach num_simulations total.
             The state_pool must already be compacted for this subtree via
             prepare_reuse_root().
+        eval_cache: Optional per-game cache of NN evaluation results.
+            When provided, leaf evaluations check the cache before calling
+            the evaluator; cache misses are batched and results stored.
 
     Returns:
         The root MCTSNode with search statistics populated.
@@ -206,8 +212,15 @@ def run_search(
             root.value_sum += values
             return root
 
-        # Evaluate root with NN
-        policy_probs, root_values, mask = evaluator.evaluate(root_state)
+        # Evaluate root with NN (check cache first)
+        cached = eval_cache.lookup(root_state._array) if eval_cache is not None else None
+        if cached is not None:
+            policy_probs, root_values = cached
+            mask = get_valid_action_mask(root_state)
+        else:
+            policy_probs, root_values, mask = evaluator.evaluate(root_state)
+            if eval_cache is not None:
+                eval_cache.store(root_state._array, policy_probs, root_values)
 
         # Expand root (sets up per-action arrays, no children created)
         root.expand(policy_probs, mask, num_players=num_players,
@@ -246,12 +259,14 @@ def run_search(
         if profile is not None:
             _t0 = perf_counter()
 
-        # Collect a batch of leaves for NN evaluation
+        # Collect a batch of leaves for NN evaluation.
+        # Cache hits are resolved immediately during selection so they
+        # don't consume batch slots — the evaluator always gets a full batch.
         pending: list[tuple[_Path, MCTSNode]] = []
         pending_ids: set[int] = set()  # safety net for single-action parents
         saved_values: list[np.ndarray] = []  # saved parent Q rows for unlock
 
-        for _ in range(min(batch_size, num_sims - sim)):
+        while len(pending) < batch_size and sim < num_sims:
             # Selection: traverse tree to find a leaf
             node = root
             path: _Path = []
@@ -304,14 +319,26 @@ def run_search(
                 break
 
             sim += 1
-
-            # Increment visit counts along path now (before GPU eval returns).
-            # This gently nudges subsequent PUCT selections toward less-visited
-            # branches via the exploration term, without distorting Q values.
             _increment_visits(path, node)
 
-            # Lock the parent edge: set Q to -inf so PUCT won't re-select
-            # this leaf. Save the original value_sums row for restoration.
+            # Check eval cache — resolve hits immediately so they don't
+            # consume batch slots. The node is expanded and backed up inline;
+            # subsequent selections in this loop see the updated tree.
+            if eval_cache is not None:
+                cached = eval_cache.lookup(state_pool.row(node.state_idx))
+                if cached is not None:
+                    policy_probs, values = cached
+                    assert node.pending_mask is not None
+                    node.expand(
+                        policy_probs, node.pending_mask,
+                        num_players=num_players, default_value=values,
+                    )
+                    _backup(path, node, values)
+                    if profile is not None:
+                        profile.cache_hits += 1
+                    continue
+
+            # Cache miss (or no cache): lock parent edge and queue for batch eval
             parent, _, parent_aidx = path[-1]
             assert parent.value_sums is not None
             saved_values.append(parent.value_sums[parent_aidx].copy())
@@ -353,6 +380,12 @@ def run_search(
 
             # Backup values (visit counts already incremented at selection time)
             _backup(path, node, values)
+
+            # Store in eval cache for future searches within this game
+            if eval_cache is not None:
+                eval_cache.store(
+                    state_pool.row(node.state_idx), policy_probs, values,
+                )
 
         if profile is not None:
             profile.backup_secs += perf_counter() - _t2

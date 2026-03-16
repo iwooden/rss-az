@@ -9,6 +9,16 @@ import torch
 from train.config import TrainingConfig
 
 
+def _unwrap_state_dict(
+    state_dict: dict[str, object],
+) -> dict[str, object]:
+    """Strip ``_orig_mod.`` prefix added by ``torch.compile``."""
+    prefix = "_orig_mod."
+    if any(k.startswith(prefix) for k in state_dict):
+        return {k.removeprefix(prefix): v for k, v in state_dict.items()}
+    return state_dict
+
+
 def save_checkpoint(
     path: Path,
     epoch: int,
@@ -23,7 +33,7 @@ def save_checkpoint(
     torch.save(
         {
             "epoch": epoch,
-            "model_state_dict": model.state_dict(),
+            "model_state_dict": _unwrap_state_dict(model.state_dict()),
             "trainer_state": trainer_state,
             "config_json": config.to_json(),
             "metrics": metrics,
@@ -36,10 +46,16 @@ def save_checkpoint(
 def load_checkpoint(path: Path, device: torch.device) -> dict[str, object]:
     """Load checkpoint from disk with device mapping.
 
+    Automatically strips ``_orig_mod.`` prefix from model keys so checkpoints
+    saved from ``torch.compile``d models load into plain modules.
+
     Uses weights_only=False because optimizer/scheduler state dicts contain
     non-tensor objects. Only load checkpoints you trust.
     """
-    return torch.load(path, map_location=device, weights_only=False)  # type: ignore[no-any-return]
+    cp: dict[str, object] = torch.load(path, map_location=device, weights_only=False)
+    if "model_state_dict" in cp:
+        cp["model_state_dict"] = _unwrap_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
+    return cp
 
 
 def find_latest_checkpoint(checkpoint_dir: Path) -> Path | None:
