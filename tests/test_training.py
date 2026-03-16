@@ -660,8 +660,12 @@ class TestSelfPlay:
             server_conn.close()
             worker_conn.close()
 
-        np.testing.assert_allclose(remote_policy, local_policy, atol=1e-6)
-        np.testing.assert_allclose(remote_values, local_values, atol=1e-6)
+        # Remote path truncates input through bfloat16 shared memory (f32→bf16→f32→model)
+        # while NNEvaluator passes f32 directly. On CUDA both paths are identical
+        # (autocast truncates in both), but CPU tests see bf16 input truncation
+        # propagate through the model: ~4e-5 for policy, ~2e-3 for values.
+        np.testing.assert_allclose(remote_policy, local_policy, atol=1e-4)
+        np.testing.assert_allclose(remote_values, local_values, atol=5e-3)
         np.testing.assert_array_equal(remote_mask, local_mask)
 
     def test_remote_evaluator_batch(
@@ -723,8 +727,8 @@ class TestSelfPlay:
 
         assert len(remote_results) == len(local_results)
         for (rp, rv, rm), (lp, lv, lm) in zip(remote_results, local_results):
-            np.testing.assert_allclose(rp, lp, atol=1e-6)
-            np.testing.assert_allclose(rv, lv, atol=1e-6)
+            np.testing.assert_allclose(rp, lp, atol=1e-4)
+            np.testing.assert_allclose(rv, lv, atol=5e-3)
             np.testing.assert_array_equal(rm, lm)
 
     def test_play_game_with_remote_evaluator(
