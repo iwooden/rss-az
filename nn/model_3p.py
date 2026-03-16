@@ -16,7 +16,6 @@ The model expects legal-action masking to be provided by the Cython engine.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -108,20 +107,14 @@ class RSSAlphaZeroNet(nn.Module):
             nn.init.zeros_(block.fc2.weight)
             nn.init.zeros_(block.fc2.bias)
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        legal_action_mask: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the network.
 
         Args:
             x: shape [batch, input_dim], float32 visible-state vectors.
-            legal_action_mask:
-                Optional shape [batch, action_dim], where 1 = legal and 0 = illegal.
 
         Returns:
-            policy_logits: shape [batch, action_dim], masked if mask provided.
+            policy_logits: shape [batch, action_dim], raw (unmasked) logits.
             values: shape [batch, value_dim], per-player expected outcomes in [-1, 1].
                 Index 0 = active player, subsequent indices follow turn order.
         """
@@ -131,16 +124,6 @@ class RSSAlphaZeroNet(nn.Module):
         h = self.trunk_norm(h)
 
         policy_logits = self.policy_head(h)
-        if legal_action_mask is not None:
-            if legal_action_mask.shape != policy_logits.shape:
-                raise ValueError(
-                    "legal_action_mask shape must match policy logits shape "
-                    f"({tuple(policy_logits.shape)}), got {tuple(legal_action_mask.shape)}."
-                )
-            # Large negative value instead of -inf to avoid NaNs in mixed precision.
-            illegal = legal_action_mask <= 0
-            policy_logits = policy_logits.masked_fill(illegal, -1e9)
-
         values = self.value_head(h)
         return policy_logits, values
 
@@ -168,7 +151,9 @@ if __name__ == "__main__":
     legal_mask = torch.ones(batch_size, cfg.action_dim)
     legal_mask[:, -5:] = 0.0
 
-    policy_logits, values = model(x, legal_action_mask=legal_mask)
+    policy_logits, values = model(x)
+    # Mask and softmax applied outside the model
+    policy_logits.masked_fill_(legal_mask <= 0, -1e9)
     policy = torch.softmax(policy_logits, dim=-1)
 
     print("policy_logits:", tuple(policy_logits.shape))

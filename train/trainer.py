@@ -67,7 +67,8 @@ class Trainer:
         # Forward pass + loss in bfloat16 on CUDA (backward auto-casts gradients)
         with torch.autocast(self.device.type, dtype=torch.bfloat16,
                             enabled=self.device.type == "cuda"):
-            policy_logits, values = self.model(states, legal_action_mask=legal_masks)
+            policy_logits, values = self.model(states)
+            policy_logits.masked_fill_(legal_masks <= 0, -1e9)
 
             # Policy loss: cross-entropy with MCTS target distribution
             log_probs = F.log_softmax(policy_logits, dim=-1)

@@ -257,8 +257,7 @@ def main() -> None:
         # Warmup pass to trigger compilation before self-play starts
         with torch.no_grad():
             dummy = torch.randn(1, config.visible_size, device=device)
-            dummy_mask = torch.ones(1, config.action_dim, device=device)
-            model(dummy, legal_action_mask=dummy_mask)
+            model(dummy)
         print("  Model compiled.")
 
     # --- Log startup ---
