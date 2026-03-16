@@ -265,16 +265,10 @@ class EvaluationServer:
             gpu_s_batch = gpu_s[:total_n]
             gpu_s_batch.copy_(pin_s[:total_n], non_blocking=True)
 
-            # GPU forward pass (bfloat16 on CUDA, float32 on CPU)
+            # Forward pass (bfloat16 throughout via autocast on all devices)
             with torch.no_grad():
-                if use_cuda:
-                    with torch.autocast(dev.type, dtype=torch.bfloat16):
-                        policy_logits, values = self._model(gpu_s_batch)
-                else:
-                    # CPU: model expects float32 input (no autocast)
-                    policy_logits, values = self._model(gpu_s_batch.float())
-                    policy_logits = policy_logits.bfloat16()
-                    values = values.bfloat16()
+                with torch.autocast(dev.type, dtype=torch.bfloat16):
+                    policy_logits, values = self._model(gpu_s_batch)
                 pin_log[:total_n].copy_(policy_logits, non_blocking=True)
                 pin_val[:total_n].copy_(values, non_blocking=True)
                 if use_cuda:

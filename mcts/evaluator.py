@@ -167,7 +167,7 @@ class NNEvaluator:
         self.device = device
         self.num_players = num_players
         self.layout = get_layout(num_players)
-        self._autocast_dtype = torch.bfloat16 if device.type == "cuda" else None
+        self._autocast_dtype = torch.bfloat16
         self.model.eval()
 
     @torch.no_grad()
@@ -200,8 +200,7 @@ class NNEvaluator:
         x = torch.from_numpy(rotated_visible).unsqueeze(0).to(self.device)
 
         # Forward pass (bfloat16 on CUDA for throughput)
-        with torch.autocast(self.device.type, dtype=self._autocast_dtype,
-                            enabled=self._autocast_dtype is not None):
+        with torch.autocast(self.device.type, dtype=self._autocast_dtype):
             policy_logits, value_output = self.model(x)
 
         # Raw logits + values to numpy, then apply mask+softmax CPU-side
@@ -245,8 +244,7 @@ class NNEvaluator:
 
         # Single forward pass (no mask — applied CPU-side after inference)
         x = torch.from_numpy(rotated).to(self.device)
-        with torch.autocast(self.device.type, dtype=self._autocast_dtype,
-                            enabled=self._autocast_dtype is not None):
+        with torch.autocast(self.device.type, dtype=self._autocast_dtype):
             policy_logits, value_output = self.model(x)
 
         logits = policy_logits.float().cpu().numpy()
@@ -292,8 +290,7 @@ class NNEvaluator:
 
         # Single forward pass (no mask — applied CPU-side after inference)
         x = torch.from_numpy(rotated).to(self.device)
-        with torch.autocast(self.device.type, dtype=self._autocast_dtype,
-                            enabled=self._autocast_dtype is not None):
+        with torch.autocast(self.device.type, dtype=self._autocast_dtype):
             policy_logits, value_output = self.model(x)
 
         logits = policy_logits.float().cpu().numpy()
