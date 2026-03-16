@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import multiprocessing as mp
 import queue
 import time
 from collections import defaultdict
@@ -13,6 +12,7 @@ from typing import Any, cast
 
 import numpy as np
 import torch
+import torch.multiprocessing as mp
 
 from nn.model_3p import RSSAlphaZeroNet, RSSModelConfig
 from train.checkpoint import (

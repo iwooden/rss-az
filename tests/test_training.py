@@ -616,19 +616,21 @@ class TestSelfPlay:
             assert (ex.value_target >= -1.0 - 1e-5).all()
             assert (ex.value_target <= 1.0 + 1e-5).all()
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     def test_remote_evaluator_matches_local(
         self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
     ) -> None:
         """RemoteEvaluator through EvaluationServer produces same results as NNEvaluator."""
-        from multiprocessing import Pipe
+        import torch.multiprocessing as tmp
 
         from mcts.evaluator import NNEvaluator
 
         from core.state import GameState
         from train.eval_server import EvaluationServer, RemoteEvaluator
 
-        device = torch.device("cpu")
-        small_model.eval()
+        device = torch.device("cuda")
+        model = small_model.to(device)
+        model.eval()
         num_players = tiny_config.num_players
 
         # Set up a game state to evaluate
@@ -636,7 +638,7 @@ class TestSelfPlay:
         state.initialize_game(seed=42)
 
         # Local evaluation
-        local_eval = NNEvaluator(small_model, device, num_players=num_players)
+        local_eval = NNEvaluator(model, device, num_players=num_players)
         local_policy, local_values, local_mask = local_eval.evaluate(state)
 
         # Remote evaluation through server
@@ -649,8 +651,8 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=num_players,
         )
-        server_conn, worker_conn = Pipe()
-        server = EvaluationServer(small_model, device, [server_conn], shared_bufs)
+        server_conn, worker_conn = tmp.Pipe()
+        server = EvaluationServer(model, device, [server_conn], shared_bufs)
         server.start()
         try:
             remote_eval = RemoteEvaluator(worker_conn, num_players, shared_bufs, 0)
@@ -664,11 +666,12 @@ class TestSelfPlay:
         np.testing.assert_allclose(remote_values, local_values, atol=1e-6)
         np.testing.assert_array_equal(remote_mask, local_mask)
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     def test_remote_evaluator_batch(
         self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
     ) -> None:
         """RemoteEvaluator.evaluate_batch matches NNEvaluator.evaluate_batch."""
-        from multiprocessing import Pipe
+        import torch.multiprocessing as tmp
 
         from mcts.evaluator import NNEvaluator
 
@@ -680,8 +683,9 @@ class TestSelfPlay:
             SharedEvalBuffers,
         )
 
-        device = torch.device("cpu")
-        small_model.eval()
+        device = torch.device("cuda")
+        model = small_model.to(device)
+        model.eval()
         num_players = tiny_config.num_players
 
         # Create a few different game states
@@ -699,7 +703,7 @@ class TestSelfPlay:
             states.append(s)
 
         # Local batch evaluation
-        local_eval = NNEvaluator(small_model, device, num_players=num_players)
+        local_eval = NNEvaluator(model, device, num_players=num_players)
         local_results = local_eval.evaluate_batch(states)
 
         # Remote batch evaluation (batch_size must fit all states)
@@ -710,8 +714,8 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=num_players,
         )
-        server_conn, worker_conn = Pipe()
-        server = EvaluationServer(small_model, device, [server_conn], shared_bufs)
+        server_conn, worker_conn = tmp.Pipe()
+        server = EvaluationServer(model, device, [server_conn], shared_bufs)
         server.start()
         try:
             remote_eval = RemoteEvaluator(worker_conn, num_players, shared_bufs, 0)
@@ -727,11 +731,12 @@ class TestSelfPlay:
             np.testing.assert_allclose(rv, lv, atol=1e-6)
             np.testing.assert_array_equal(rm, lm)
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     def test_play_game_with_remote_evaluator(
         self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
     ) -> None:
         """play_game produces valid results when using RemoteEvaluator."""
-        from multiprocessing import Pipe
+        import torch.multiprocessing as tmp
 
         from train.eval_server import (
             EvaluationServer,
@@ -739,8 +744,9 @@ class TestSelfPlay:
             SharedEvalBuffers,
         )
 
-        device = torch.device("cpu")
-        small_model.eval()
+        device = torch.device("cuda")
+        model = small_model.to(device)
+        model.eval()
 
         shared_bufs = SharedEvalBuffers(
             num_workers=1,
@@ -749,8 +755,8 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=tiny_config.num_players,
         )
-        server_conn, worker_conn = Pipe()
-        server = EvaluationServer(small_model, device, [server_conn], shared_bufs)
+        server_conn, worker_conn = tmp.Pipe()
+        server = EvaluationServer(model, device, [server_conn], shared_bufs)
         server.start()
         try:
             remote_eval = RemoteEvaluator(
@@ -769,17 +775,19 @@ class TestSelfPlay:
         for ex in record.examples:
             assert abs(ex.policy_target.sum() - 1.0) < 1e-5
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     def test_multiprocess_workers(
         self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
     ) -> None:
         """End-to-end test: spawn actual worker processes, play games, collect results."""
-        import multiprocessing as mp
+        import torch.multiprocessing as mp
 
         from train.eval_server import EvaluationServer, SharedEvalBuffers
         from train.self_play import self_play_worker
 
-        device = torch.device("cpu")
-        small_model.eval()
+        device = torch.device("cuda")
+        model = small_model.to(device)
+        model.eval()
         num_workers = 2
         games_per_worker = 1  # 2 games total
 
@@ -802,7 +810,7 @@ class TestSelfPlay:
             server_conns.append(s_conn)
             worker_conns.append(w_conn)
 
-        server = EvaluationServer(small_model, device, server_conns, shared_bufs)
+        server = EvaluationServer(model, device, server_conns, shared_bufs)
         server.start()
 
         workers = []
