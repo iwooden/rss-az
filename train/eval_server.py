@@ -26,7 +26,6 @@ import torch
 from multiprocessing.connection import Connection, wait
 
 from mcts.evaluator import (
-    apply_mask_softmax,
     compute_terminal_values,
     get_layout,
     rotate_visible_state,
@@ -314,19 +313,20 @@ class RemoteEvaluator:
         from core.actions import get_valid_action_mask
 
         active_player = state.get_active_player()
-        # f32 numpy -> bf16 shared memory (copy_ handles dtype conversion)
-        self._in_states[0].copy_(torch.from_numpy(
-            rotate_visible_state(state._array, active_player, self.num_players)
-        ))
+        rotated = rotate_visible_state(
+            state._array, active_player, self.num_players
+        )
+        # Single f32 numpy → bf16 shared memory write
+        self._in_states[0].copy_(torch.from_numpy(rotated))
         mask = get_valid_action_mask(state)
 
         self.conn.send(1)
         self.conn.recv()
 
-        # bf16 shared memory -> f32 numpy, then apply mask + softmax
-        policy_probs = apply_mask_softmax(
-            self._out_logits[0].float().numpy(), mask,
-        )
+        # bf16 → f32 torch, mask+softmax in torch, then numpy at the end
+        logits = self._out_logits[0].float()
+        logits.masked_fill_(torch.from_numpy(mask) <= 0, -1e9)
+        policy_probs = torch.softmax(logits, dim=-1).numpy()
         canonical = unrotate_values(
             self._out_values[0].float().numpy(), active_player,
         )
@@ -346,23 +346,28 @@ class RemoteEvaluator:
         active_ids = [s.get_active_player() for s in states]
         masks = []
 
-        for i, (s, ap) in enumerate(zip(states, active_ids)):
-            self._in_states[i].copy_(torch.from_numpy(
-                rotate_visible_state(s._array, ap, self.num_players)
-            ))
+        # Batch write: stack rotated states, single f32→bf16 conversion
+        rotated = np.stack([
+            rotate_visible_state(s._array, ap, self.num_players)
+            for s, ap in zip(states, active_ids)
+        ])
+        self._in_states[:n].copy_(torch.from_numpy(rotated))
+        for s in states:
             masks.append(get_valid_action_mask(s))
 
         self.conn.send(n)
         self.conn.recv()
 
+        # Batch read: single bf16→f32 conversion, then per-state mask+softmax
+        logits_f32 = self._out_logits[:n].float()
+        values_np = self._out_values[:n].float().numpy()
+
         results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for i in range(n):
-            policy_probs = apply_mask_softmax(
-                self._out_logits[i].float().numpy(), masks[i],
-            )
-            canonical = unrotate_values(
-                self._out_values[i].float().numpy(), active_ids[i],
-            )
+            row = logits_f32[i]
+            row.masked_fill_(torch.from_numpy(masks[i]) <= 0, -1e9)
+            policy_probs = torch.softmax(row, dim=-1).numpy()
+            canonical = unrotate_values(values_np[i], active_ids[i])
             results.append((policy_probs, canonical, masks[i]))
         return results
 
@@ -386,11 +391,12 @@ class RemoteEvaluator:
         if _stats is not None:
             _t0 = perf_counter()
 
-        # Write rotated states: f32 numpy -> bf16 shared memory
-        for i, (arr, ap) in enumerate(zip(state_arrays, active_player_ids)):
-            self._in_states[i].copy_(torch.from_numpy(
-                rotate_visible_state(arr, ap, self.num_players)
-            ))
+        # Batch write: stack rotated states → single f32→bf16 conversion
+        rotated = np.stack([
+            rotate_visible_state(arr, ap, self.num_players)
+            for arr, ap in zip(state_arrays, active_player_ids)
+        ])
+        self._in_states[:n].copy_(torch.from_numpy(rotated))
 
         if _stats is not None:
             _t1 = perf_counter()
@@ -404,15 +410,17 @@ class RemoteEvaluator:
             _t2 = perf_counter()
             _stats.wait_secs += _t2 - _t1
 
-        # Read bf16 logits+values, convert to f32 numpy, apply mask + softmax
+        # Batch read: single bf16→f32 conversion for logits and values,
+        # then per-state mask+softmax staying in torch until final .numpy()
+        logits_f32 = self._out_logits[:n].float()
+        values_np = self._out_values[:n].float().numpy()
+
         results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for i in range(n):
-            policy_probs = apply_mask_softmax(
-                self._out_logits[i].float().numpy(), legal_masks[i],
-            )
-            canonical = unrotate_values(
-                self._out_values[i].float().numpy(), active_player_ids[i],
-            )
+            row = logits_f32[i]
+            row.masked_fill_(torch.from_numpy(legal_masks[i]) <= 0, -1e9)
+            policy_probs = torch.softmax(row, dim=-1).numpy()
+            canonical = unrotate_values(values_np[i], active_player_ids[i])
             results.append((policy_probs, canonical, legal_masks[i]))
 
         if _stats is not None:
