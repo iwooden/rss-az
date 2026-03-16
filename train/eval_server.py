@@ -5,10 +5,10 @@ and GPU. Worker processes send evaluation requests via shared memory and
 receive results back. Multiple workers' requests are batched into single
 GPU forward passes for throughput.
 
-Communication uses shared memory (multiprocessing.RawArray) for state/mask/
-policy/value data, with pipes carrying only lightweight control messages
-(integer state counts). This eliminates pickle serialization of large numpy
-arrays that was the primary throughput bottleneck.
+Communication uses shared memory (multiprocessing.RawArray) for state/logit/
+value data, with pipes carrying only lightweight control messages (integer
+state counts). Legal action masking and softmax are applied worker-side
+after receiving raw logits from the server.
 
 RemoteEvaluator is the worker-side proxy that implements the same interface
 as NNEvaluator, writing to shared memory instead of serializing over pipes.
@@ -27,6 +27,7 @@ import numpy as np
 import torch
 
 from mcts.evaluator import (
+    apply_mask_softmax,
     compute_terminal_values,
     get_layout,
     rotate_visible_state,
@@ -39,13 +40,13 @@ class SharedEvalBuffers:
     """Pre-allocated shared memory for zero-copy worker <-> server communication.
 
     Each worker gets a fixed slot in shared arrays. Workers write rotated states
-    and legal masks into their input slot; the server reads them directly.
-    The server writes policies and values into each worker's output slot.
-    Pipes carry only integer state counts as control messages.
+    into their input slot; the server reads them directly. The server writes
+    raw logits and values into each worker's output slot. Workers apply legal
+    action masking and softmax locally after reading results.
 
     Memory layout (per worker):
-        Input:  states (batch_size x visible_size), masks (batch_size x action_dim)
-        Output: policies (batch_size x action_dim), values (batch_size x num_players)
+        Input:  states (batch_size x visible_size)
+        Output: logits (batch_size x action_dim), values (batch_size x num_players)
     """
 
     def __init__(
@@ -66,11 +67,9 @@ class SharedEvalBuffers:
         self._states = RawArray(
             ctypes.c_float, num_workers * batch_size * visible_size
         )
-        self._masks = RawArray(
-            ctypes.c_float, num_workers * batch_size * action_dim
-        )
         # Output buffers (written by server, read by workers)
-        self._policies = RawArray(
+        # _logits carries raw (unmasked) policy logits; workers apply mask+softmax
+        self._logits = RawArray(
             ctypes.c_float, num_workers * batch_size * action_dim
         )
         self._values = RawArray(
@@ -85,20 +84,12 @@ class SharedEvalBuffers:
             self._states, dtype=np.float32, offset=start * 4, count=count
         ).reshape(self.batch_size, self.visible_size)
 
-    def get_input_masks(self, worker_idx: int) -> np.ndarray:
-        """Numpy view into worker's input mask slot (batch_size x action_dim)."""
+    def get_output_logits(self, worker_idx: int) -> np.ndarray:
+        """Numpy view into worker's output logit slot (batch_size x action_dim)."""
         start = worker_idx * self.batch_size * self.action_dim
         count = self.batch_size * self.action_dim
         return np.frombuffer(
-            self._masks, dtype=np.float32, offset=start * 4, count=count
-        ).reshape(self.batch_size, self.action_dim)
-
-    def get_output_policies(self, worker_idx: int) -> np.ndarray:
-        """Numpy view into worker's output policy slot (batch_size x action_dim)."""
-        start = worker_idx * self.batch_size * self.action_dim
-        count = self.batch_size * self.action_dim
-        return np.frombuffer(
-            self._policies, dtype=np.float32, offset=start * 4, count=count
+            self._logits, dtype=np.float32, offset=start * 4, count=count
         ).reshape(self.batch_size, self.action_dim)
 
     def get_output_values(self, worker_idx: int) -> np.ndarray:
@@ -148,25 +139,18 @@ class EvaluationServer:
         npl = shared_bufs.num_players
         use_cuda = device.type == "cuda"
 
-        # Pinned CPU buffers for fast DMA to GPU
+        # Pinned CPU buffers for fast DMA to GPU (input: states only)
         self._pin_states = torch.empty(
             max_batch, vis, dtype=torch.float32,
             pin_memory=use_cuda,
         )
-        self._pin_masks = torch.empty(
-            max_batch, act, dtype=torch.float32,
-            pin_memory=use_cuda,
-        )
-        # Numpy views into pinned memory (avoids per-batch allocation)
         self._pin_states_np = self._pin_states.numpy()
-        self._pin_masks_np = self._pin_masks.numpy()
 
-        # Pre-allocated GPU tensors (reused every batch)
+        # Pre-allocated GPU tensor (reused every batch)
         self._gpu_states = torch.empty(max_batch, vis, dtype=torch.float32, device=device)
-        self._gpu_masks = torch.empty(max_batch, act, dtype=torch.float32, device=device)
 
-        # Pinned CPU buffers for fast D2H
-        self._pin_policies = torch.empty(
+        # Pinned CPU buffers for fast D2H (output: raw logits + values)
+        self._pin_logits = torch.empty(
             max_batch, act, dtype=torch.float32,
             pin_memory=use_cuda,
         )
@@ -174,7 +158,7 @@ class EvaluationServer:
             max_batch, npl, dtype=torch.float32,
             pin_memory=use_cuda,
         )
-        self._pin_policies_np = self._pin_policies.numpy()
+        self._pin_logits_np = self._pin_logits.numpy()
         self._pin_values_np = self._pin_values.numpy()
 
     def start(self) -> None:
@@ -215,14 +199,11 @@ class EvaluationServer:
 
         # Local refs to pre-allocated buffers (avoid attribute lookups in hot loop)
         pin_s_np = self._pin_states_np
-        pin_m_np = self._pin_masks_np
         pin_s = self._pin_states
-        pin_m = self._pin_masks
         gpu_s = self._gpu_states
-        gpu_m = self._gpu_masks
-        pin_pol = self._pin_policies
+        pin_log = self._pin_logits
         pin_val = self._pin_values
-        pin_pol_np = self._pin_policies_np
+        pin_log_np = self._pin_logits_np
         pin_val_np = self._pin_values_np
 
         while not self._stop.is_set() and conns:
@@ -265,11 +246,10 @@ class EvaluationServer:
             if not batch_info:
                 continue
 
-            # Gather worker data into pinned memory (skip np.concatenate)
+            # Gather states into pinned memory (no masks — applied worker-side)
             total_n = 0
             for _, widx, n in batch_info:
                 pin_s_np[total_n:total_n + n] = bufs.get_input_states(widx)[:n]
-                pin_m_np[total_n:total_n + n] = bufs.get_input_masks(widx)[:n]
                 total_n += n
 
             # H2D via pinned memory (non-blocking DMA)
@@ -277,22 +257,18 @@ class EvaluationServer:
                 _ti = perf_counter()
 
             gpu_s_batch = gpu_s[:total_n]
-            gpu_m_batch = gpu_m[:total_n]
             gpu_s_batch.copy_(pin_s[:total_n], non_blocking=True)
-            gpu_m_batch.copy_(pin_m[:total_n], non_blocking=True)
 
-            # GPU forward pass (bfloat16 for throughput)
+            # GPU forward pass (bfloat16 for throughput, no mask)
             with torch.no_grad():
                 with torch.autocast(
                     dev.type, dtype=torch.bfloat16, enabled=use_cuda,
                 ):
-                    policy_logits, values = self._model(
-                        gpu_s_batch, legal_action_mask=gpu_m_batch,
-                    )
-                # Softmax on GPU, then D2H via pinned memory
-                pol_f = torch.softmax(policy_logits.float(), dim=-1)
+                    policy_logits, values = self._model(gpu_s_batch)
+                # Raw logits + values to pinned memory (no softmax)
+                log_f = policy_logits.float()
                 val_f = values.float()
-                pin_pol[:total_n].copy_(pol_f, non_blocking=True)
+                pin_log[:total_n].copy_(log_f, non_blocking=True)
                 pin_val[:total_n].copy_(val_f, non_blocking=True)
                 if use_cuda:
                     torch.cuda.synchronize()
@@ -303,7 +279,7 @@ class EvaluationServer:
             # Scatter results from pinned memory to per-worker shared memory
             offset = 0
             for conn, widx, n in batch_info:
-                bufs.get_output_policies(widx)[:n] = pin_pol_np[offset:offset + n]
+                bufs.get_output_logits(widx)[:n] = pin_log_np[offset:offset + n]
                 bufs.get_output_values(widx)[:n] = pin_val_np[offset:offset + n]
                 try:
                     conn.send(n)
@@ -336,8 +312,7 @@ class RemoteEvaluator:
         self.num_players = num_players
         self.layout = get_layout(num_players)
         self._in_states = shared_bufs.get_input_states(worker_idx)
-        self._in_masks = shared_bufs.get_input_masks(worker_idx)
-        self._out_policies = shared_bufs.get_output_policies(worker_idx)
+        self._out_logits = shared_bufs.get_output_logits(worker_idx)
         self._out_values = shared_bufs.get_output_values(worker_idx)
         self._profile = profile
         self._stats: EvalClientStats | None = EvalClientStats() if profile else None
@@ -351,13 +326,14 @@ class RemoteEvaluator:
             state._array, active_player, self.num_players
         )
         mask = get_valid_action_mask(state)
-        self._in_masks[0] = mask
 
         self.conn.send(1)
         self.conn.recv()
 
+        # Apply mask + softmax worker-side on raw logits from server
+        policy_probs = apply_mask_softmax(self._out_logits[0], mask)
         canonical = unrotate_values(self._out_values[0].copy(), active_player)
-        return self._out_policies[0].copy(), canonical, mask
+        return policy_probs, canonical, mask
 
     def evaluate_batch(
         self,
@@ -371,24 +347,22 @@ class RemoteEvaluator:
             return []
 
         active_ids = [s.get_active_player() for s in states]
+        masks = []
 
         for i, (s, ap) in enumerate(zip(states, active_ids)):
             self._in_states[i] = rotate_visible_state(
                 s._array, ap, self.num_players
             )
-            self._in_masks[i] = get_valid_action_mask(s)
+            masks.append(get_valid_action_mask(s))
 
         self.conn.send(n)
         self.conn.recv()
 
         results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for i in range(n):
+            policy_probs = apply_mask_softmax(self._out_logits[i], masks[i])
             canonical = unrotate_values(self._out_values[i].copy(), active_ids[i])
-            results.append((
-                self._out_policies[i].copy(),
-                canonical,
-                self._in_masks[i].copy(),
-            ))
+            results.append((policy_probs, canonical, masks[i]))
         return results
 
     def evaluate_leaves(
@@ -411,11 +385,9 @@ class RemoteEvaluator:
         if _stats is not None:
             _t0 = perf_counter()
 
-        # Write rotated states and masks into shared memory
+        # Write rotated states into shared memory (no masks — applied locally)
         for i, (arr, ap) in enumerate(zip(state_arrays, active_player_ids)):
             self._in_states[i] = rotate_visible_state(arr, ap, self.num_players)
-        for i, mask in enumerate(legal_masks):
-            self._in_masks[i] = mask
 
         if _stats is not None:
             _t1 = perf_counter()
@@ -429,13 +401,16 @@ class RemoteEvaluator:
             _t2 = perf_counter()
             _stats.wait_secs += _t2 - _t1
 
-        # Read results from shared memory (must copy — buffer reused next call)
+        # Read raw logits from shared memory, apply mask + softmax locally
         results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for i in range(n):
+            policy_probs = apply_mask_softmax(
+                self._out_logits[i], legal_masks[i],
+            )
             canonical = unrotate_values(
                 self._out_values[i].copy(), active_player_ids[i]
             )
-            results.append((self._out_policies[i].copy(), canonical, legal_masks[i]))
+            results.append((policy_probs, canonical, legal_masks[i]))
 
         if _stats is not None:
             _stats.result_secs += perf_counter() - _t2

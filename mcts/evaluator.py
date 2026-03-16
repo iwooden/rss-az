@@ -74,6 +74,22 @@ def rotate_visible_state(state_array: np.ndarray, active_player_id: int,
     return visible
 
 
+def apply_mask_softmax(logits: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Apply legal action mask and softmax to raw policy logits.
+
+    Args:
+        logits: Raw logits from NN, shape (action_dim,).
+        mask: Binary mask where 1 = legal, 0 = illegal, shape (action_dim,).
+
+    Returns:
+        Probability distribution over actions, shape (action_dim,).
+    """
+    masked = logits.copy()
+    masked[mask <= 0] = -1e9
+    e = np.exp(masked - masked.max())
+    return (e / e.sum()).astype(np.float32)
+
+
 def unrotate_values(values: np.ndarray, active_player_id: int) -> np.ndarray:
     """Convert NN value output (active player at index 0) to canonical order.
 
@@ -180,19 +196,18 @@ class NNEvaluator:
         # Get legal action mask
         mask_np = get_valid_action_mask(state)
 
-        # Convert to tensors
+        # Convert to tensor (no mask — applied CPU-side after inference)
         x = torch.from_numpy(rotated_visible).unsqueeze(0).to(self.device)
-        mask = torch.from_numpy(mask_np).unsqueeze(0).to(self.device)
 
         # Forward pass (bfloat16 on CUDA for throughput)
         with torch.autocast(self.device.type, dtype=self._autocast_dtype,
                             enabled=self._autocast_dtype is not None):
-            policy_logits, value_output = self.model(x, legal_action_mask=mask)
+            policy_logits, value_output = self.model(x)
 
-        # Policy: softmax over masked logits (full precision)
-        policy_probs = torch.softmax(policy_logits.float(), dim=-1).squeeze(0).cpu().numpy()
+        # Raw logits + values to numpy, then apply mask+softmax CPU-side
+        logits = policy_logits.float().squeeze(0).cpu().numpy()
+        policy_probs = apply_mask_softmax(logits, mask_np)
 
-        # Value: already has tanh applied in the model, un-rotate to canonical
         values_rotated = value_output.float().squeeze(0).cpu().numpy()
         canonical_values = unrotate_values(values_rotated, active_player)
 
@@ -226,22 +241,22 @@ class NNEvaluator:
             rotate_visible_state(s._array, ap, self.num_players)
             for s, ap in zip(states, active_players)
         ])
-        masks = np.stack([get_valid_action_mask(s) for s in states])
+        masks = [get_valid_action_mask(s) for s in states]
 
-        # Single forward pass for the whole batch (bfloat16 on CUDA)
+        # Single forward pass (no mask — applied CPU-side after inference)
         x = torch.from_numpy(rotated).to(self.device)
-        mask = torch.from_numpy(masks).to(self.device)
         with torch.autocast(self.device.type, dtype=self._autocast_dtype,
                             enabled=self._autocast_dtype is not None):
-            policy_logits, value_output = self.model(x, legal_action_mask=mask)
+            policy_logits, value_output = self.model(x)
 
-        policy_probs = torch.softmax(policy_logits.float(), dim=-1).cpu().numpy()
+        logits = policy_logits.float().cpu().numpy()
         values = value_output.float().cpu().numpy()
 
         results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for i in range(n):
+            policy_probs = apply_mask_softmax(logits[i], masks[i])
             canonical_values = unrotate_values(values[i], active_players[i])
-            results.append((policy_probs[i], canonical_values, masks[i]))
+            results.append((policy_probs, canonical_values, masks[i]))
 
         return results
 
@@ -274,22 +289,21 @@ class NNEvaluator:
             rotate_visible_state(arr, ap, self.num_players)
             for arr, ap in zip(state_arrays, active_player_ids)
         ])
-        masks = np.stack(legal_masks)
 
-        # Single forward pass for the whole batch (bfloat16 on CUDA)
+        # Single forward pass (no mask — applied CPU-side after inference)
         x = torch.from_numpy(rotated).to(self.device)
-        mask = torch.from_numpy(masks).to(self.device)
         with torch.autocast(self.device.type, dtype=self._autocast_dtype,
                             enabled=self._autocast_dtype is not None):
-            policy_logits, value_output = self.model(x, legal_action_mask=mask)
+            policy_logits, value_output = self.model(x)
 
-        policy_probs = torch.softmax(policy_logits.float(), dim=-1).cpu().numpy()
+        logits = policy_logits.float().cpu().numpy()
         values = value_output.float().cpu().numpy()
 
         results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for i in range(n):
+            policy_probs = apply_mask_softmax(logits[i], legal_masks[i])
             canonical_values = unrotate_values(values[i], active_player_ids[i])
-            results.append((policy_probs[i], canonical_values, legal_masks[i]))
+            results.append((policy_probs, canonical_values, legal_masks[i]))
 
         return results
 
