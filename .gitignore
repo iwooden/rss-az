@@ -11,3 +11,5 @@ scratchpad/
 checkpoints/
 runs/
 backups/
+gamelog.md
+*.tar.gz
