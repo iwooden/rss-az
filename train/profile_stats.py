@@ -97,6 +97,29 @@ class EvalServerStats:
         self.idle_secs = 0.0
         self.total_states = 0
 
+    @classmethod
+    def merge(cls, stats_list: list[EvalServerStats]) -> EvalServerStats:
+        """Merge stats from multiple eval servers into one."""
+        merged = cls()
+        for s in stats_list:
+            merged.batch_count += s.batch_count
+            merged.batch_size_sum += s.batch_size_sum
+            if s.batch_size_min < merged.batch_size_min:
+                merged.batch_size_min = s.batch_size_min
+            if s.batch_size_max > merged.batch_size_max:
+                merged.batch_size_max = s.batch_size_max
+            for size, count in s.batch_size_hist.items():
+                merged.batch_size_hist[size] += count
+            merged.inference_secs_sum += s.inference_secs_sum
+            if s.inference_secs_min < merged.inference_secs_min:
+                merged.inference_secs_min = s.inference_secs_min
+            if s.inference_secs_max > merged.inference_secs_max:
+                merged.inference_secs_max = s.inference_secs_max
+            merged.idle_polls += s.idle_polls
+            merged.idle_secs += s.idle_secs
+            merged.total_states += s.total_states
+        return merged
+
 
 def _pct(value: float, total: float) -> str:
     return f"{value / total * 100:.0f}%" if total > 0 else "-%"

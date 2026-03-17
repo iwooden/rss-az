@@ -1,15 +1,20 @@
 """Centralized NN evaluation server for multi-process self-play.
 
-The EvaluationServer runs as a thread in the main process, owning the model
-and GPU. Worker processes send evaluation requests via shared memory and
-receive results back. Multiple workers' requests are batched into single
-GPU forward passes for throughput.
+One or more EvaluationServer threads run in the main process, sharing the
+model and GPU. Worker processes send evaluation requests via a shared queue
+and receive completion signals via per-worker Events. Multiple workers'
+requests are batched into single GPU forward passes for throughput.
 
 Communication uses shared memory (torch tensors with share_memory_()):
 - Input states: float32 (workers write with pure numpy slice assignment)
 - Output logits: bfloat16 (halves scatter bandwidth; workers upcast for softmax)
 - Output values: float32 (server upcasts from bf16 model output during D2H;
   only 3 floats/state so bf16 savings are negligible vs per-worker conversion)
+
+A multiprocessing.Queue carries lightweight request tuples (worker_idx,
+state_count), and per-worker Events signal completion. Multiple
+EvaluationServer threads consuming from the same queue naturally
+double-buffer GPU access: one server gathers while another is on GPU.
 
 Workers do zero torch operations on the write side (pure numpy).
 On the read side, workers do one bf16→f32 upcast on logits for
@@ -21,13 +26,13 @@ as NNEvaluator, writing to shared memory instead of serializing over pipes.
 
 from __future__ import annotations
 
+import queue as _queue
 import threading
 from time import perf_counter
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import torch
-from multiprocessing.connection import Connection, wait
 
 from mcts.evaluator import (
     compute_terminal_values,
@@ -106,10 +111,12 @@ class SharedEvalBuffers:
 class EvaluationServer:
     """Thread-based centralized NN evaluator using shared memory.
 
-    Aggregates requests from multiple worker processes,
-    runs batched inference, and dispatches results.
-    Workers signal readiness via pipes (sending integer state counts);
-    actual data is exchanged through SharedEvalBuffers.
+    Consumes (worker_idx, state_count) requests from a shared queue,
+    gathers states from shared memory, runs batched inference, writes
+    results back, and signals workers via per-worker Events.
+
+    Multiple EvaluationServer instances can share the same queue for
+    natural pipeline overlap on a single GPU.
 
     Uses pinned CPU memory and pre-allocated GPU tensors to minimize
     host-to-device and device-to-host transfer overhead.
@@ -119,15 +126,17 @@ class EvaluationServer:
         self,
         model: torch.nn.Module,
         device: torch.device,
-        worker_conns: list[Connection],
         shared_bufs: SharedEvalBuffers,
+        request_queue: Any,
+        worker_events: list[Any],
         *,
         profile: bool = False,
     ) -> None:
         self._model = model
         self._device = device
-        self._conns = list(worker_conns)
         self._shared_bufs = shared_bufs
+        self._request_queue = request_queue
+        self._worker_events = worker_events
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._profile = profile
@@ -198,10 +207,6 @@ class EvaluationServer:
 
     def _serve(self) -> None:
         """Inner server loop (called by _loop with exception guard)."""
-        conns = list(self._conns)
-        conn_to_idx: dict[Connection, int] = {
-            c: i for i, c in enumerate(self._conns)
-        }
         bufs = self._shared_bufs
         stats = self._stats
         dev = self._device
@@ -220,49 +225,33 @@ class EvaluationServer:
         w_logits = [bufs.get_output_logits(i) for i in range(bufs.num_workers)]
         w_values = [bufs.get_output_values(i) for i in range(bufs.num_workers)]
 
-        while not self._stop.is_set() and conns:
+        req_q = self._request_queue
+        events = self._worker_events
+        max_batch = bufs.num_workers * bufs.batch_size
+
+        while not self._stop.is_set():
             if stats is not None:
                 _tp = perf_counter()
 
+            # Block for first request (with timeout to check stop flag)
             try:
-                ready = wait(conns, timeout=0.01)
-            except (OSError, ValueError):
-                break
-
-            if not ready:
+                first: tuple[int, int] = req_q.get(timeout=0.01)
+            except _queue.Empty:
                 if stats is not None:
                     stats.record_idle(perf_counter() - _tp)
                 continue
 
-            # Non-blocking poll for additional connections that became ready
-            # during the wait() return. This improves batch sizes.
-            ready_set: set[Connection] = set(cast(list[Connection], ready))
-            remaining = [c for c in conns if c not in ready_set]
-            if remaining:
+            # Drain queue greedily to build a larger batch
+            batch_info: list[tuple[int, int]] = [first]
+            while len(batch_info) < max_batch:
                 try:
-                    more = wait(remaining, timeout=0)
-                    if more:
-                        ready_set.update(cast(list[Connection], more))
-                except (OSError, ValueError):
-                    pass
-
-            # Read control messages (just integer state counts)
-            batch_info: list[tuple[Connection, int, int]] = []
-            for conn in ready_set:
-                try:
-                    n: int = conn.recv()
-                    batch_info.append((conn, conn_to_idx[conn], n))
-                except (EOFError, OSError):
-                    if conn in conns:
-                        conns.remove(conn)
-                    continue
-
-            if not batch_info:
-                continue
+                    batch_info.append(req_q.get_nowait())
+                except _queue.Empty:
+                    break
 
             # Gather f32 states from numpy shared memory into pinned numpy
             total_n = 0
-            for _, widx, n in batch_info:
+            for widx, n in batch_info:
                 pin_s_np[total_n:total_n + n] = w_states_np[widx][:n]
                 total_n += n
 
@@ -292,16 +281,12 @@ class EvaluationServer:
             if stats is not None:
                 stats.record_batch(total_n, perf_counter() - _ti)
 
-            # Scatter results to per-worker shared memory (logits bf16, values f32)
+            # Scatter results to per-worker shared memory and signal completion
             offset = 0
-            for conn, widx, n in batch_info:
+            for widx, n in batch_info:
                 w_logits[widx][:n].copy_(pin_log[offset:offset + n])
                 w_values[widx][:n].copy_(pin_val[offset:offset + n])
-                try:
-                    conn.send(n)
-                except (OSError, BrokenPipeError):
-                    if conn in conns:
-                        conns.remove(conn)
+                events[widx].set()
                 offset += n
 
 
@@ -314,23 +299,35 @@ class RemoteEvaluator:
     Write side: pure numpy slice assignment into f32 shared memory (no torch).
     Read side: logits bf16→f32 for batched mask+softmax in torch;
     values are f32 in shared memory (server upcasts during D2H).
+    A Queue carries request tuples and per-worker Events signal completion.
+
+    Invariant: each worker may have at most one outstanding eval request at a
+    time.  Output slots are keyed by worker_idx alone (no request id), so a
+    second request before the first completes would overwrite the output buffer.
+    The sequential clear → put → wait → read flow enforces this.
     """
+
+    # Seconds to wait for eval server response before raising.
+    _EVAL_TIMEOUT = 30.0
 
     def __init__(
         self,
-        conn: Connection,
         num_players: int,
         shared_bufs: SharedEvalBuffers,
         worker_idx: int,
+        request_queue: Any,
+        done_event: Any,
         *,
         profile: bool = False,
     ) -> None:
-        self.conn = conn
         self.num_players = num_players
         self.layout = get_layout(num_players)
+        self._worker_idx = worker_idx
         self._in_states_np = shared_bufs.get_input_states_np(worker_idx)
         self._out_logits = shared_bufs.get_output_logits(worker_idx)
         self._out_values = shared_bufs.get_output_values(worker_idx)
+        self._queue = request_queue
+        self._event = done_event
         self._profile = profile
         self._stats: EvalClientStats | None = EvalClientStats() if profile else None
 
@@ -345,8 +342,13 @@ class RemoteEvaluator:
         )
         mask = get_valid_action_mask(state)
 
-        self.conn.send(1)
-        self.conn.recv()
+        self._event.clear()
+        self._queue.put((self._worker_idx, 1))
+        if not self._event.wait(timeout=self._EVAL_TIMEOUT):
+            raise RuntimeError(
+                f"Eval server did not respond within {self._EVAL_TIMEOUT}s "
+                f"(worker {self._worker_idx})"
+            )
 
         # Logits: bf16 → f32 for mask+softmax; values: already f32
         logits = self._out_logits[0].float()
@@ -378,8 +380,13 @@ class RemoteEvaluator:
             )
             masks_list.append(get_valid_action_mask(s))
 
-        self.conn.send(n)
-        self.conn.recv()
+        self._event.clear()
+        self._queue.put((self._worker_idx, n))
+        if not self._event.wait(timeout=self._EVAL_TIMEOUT):
+            raise RuntimeError(
+                f"Eval server did not respond within {self._EVAL_TIMEOUT}s "
+                f"(worker {self._worker_idx}, batch {n})"
+            )
 
         # Logits: bf16→f32 for mask+softmax; values: already f32
         logits_f32 = self._out_logits[:n].float()
@@ -423,9 +430,14 @@ class RemoteEvaluator:
             _t1 = perf_counter()
             _stats.prepare_secs += _t1 - _t0
 
-        # Signal server (just the count) and wait for completion
-        self.conn.send(n)
-        self.conn.recv()
+        # Signal server and wait for completion
+        self._event.clear()
+        self._queue.put((self._worker_idx, n))
+        if not self._event.wait(timeout=self._EVAL_TIMEOUT):
+            raise RuntimeError(
+                f"Eval server did not respond within {self._EVAL_TIMEOUT}s "
+                f"(worker {self._worker_idx}, batch {n})"
+            )
 
         if _stats is not None:
             _t2 = perf_counter()

@@ -80,6 +80,7 @@ class TrainingConfig:
     dirichlet_alpha_numerator: float = 10.0
     search_batch_size: int = 1
     num_workers: int = 4
+    num_eval_servers: int = 1
 
     # --- Temperature Schedule (linear ramp) ---
     # temp_initial from move 0 to temp_anneal_start, then linearly decreases
@@ -215,6 +216,10 @@ class TrainingConfig:
         # Training fields
         if self.num_workers < 0:
             raise ValueError(f"num_workers must be >= 0, got {self.num_workers}")
+        if self.num_eval_servers < 1:
+            raise ValueError(
+                f"num_eval_servers must be >= 1, got {self.num_eval_servers}"
+            )
         if self.buffer_capacity <= self.min_buffer_size:
             raise ValueError(
                 f"buffer_capacity ({self.buffer_capacity}) must exceed "

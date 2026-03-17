@@ -160,6 +160,10 @@ class TestConfig:
         with pytest.raises(ValueError, match="num_workers"):
             TrainingConfig(num_workers=-1)
 
+    def test_validation_num_eval_servers(self) -> None:
+        with pytest.raises(ValueError, match="num_eval_servers"):
+            TrainingConfig(num_eval_servers=0)
+
     def test_to_mcts_config(self) -> None:
         cfg = TrainingConfig(num_simulations=100, c_puct_final=3.0, num_players=3)
         mcts_cfg = cfg.to_mcts_config()
@@ -621,12 +625,12 @@ class TestSelfPlay:
         self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
     ) -> None:
         """RemoteEvaluator through EvaluationServer produces same results as NNEvaluator."""
-        import torch.multiprocessing as tmp
+        from multiprocessing import Event, Queue
 
         from mcts.evaluator import NNEvaluator
 
         from core.state import GameState
-        from train.eval_server import EvaluationServer, RemoteEvaluator
+        from train.eval_server import EvaluationServer, RemoteEvaluator, SharedEvalBuffers
 
         device = torch.device("cuda")
         model = small_model.to(device)
@@ -642,8 +646,6 @@ class TestSelfPlay:
         local_policy, local_values, local_mask = local_eval.evaluate(state)
 
         # Remote evaluation through server
-        from train.eval_server import SharedEvalBuffers
-
         shared_bufs = SharedEvalBuffers(
             num_workers=1,
             batch_size=tiny_config.search_batch_size,
@@ -651,16 +653,19 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=num_players,
         )
-        server_conn, worker_conn = tmp.Pipe()
-        server = EvaluationServer(model, device, [server_conn], shared_bufs)
+        request_queue: Queue[tuple[int, int]] = Queue()
+        worker_events = [Event()]
+        server = EvaluationServer(
+            model, device, shared_bufs, request_queue, worker_events,
+        )
         server.start()
         try:
-            remote_eval = RemoteEvaluator(worker_conn, num_players, shared_bufs, 0)
+            remote_eval = RemoteEvaluator(
+                num_players, shared_bufs, 0, request_queue, worker_events[0],
+            )
             remote_policy, remote_values, remote_mask = remote_eval.evaluate(state)
         finally:
             server.stop()
-            server_conn.close()
-            worker_conn.close()
 
         np.testing.assert_allclose(remote_policy, local_policy, atol=1e-6)
         np.testing.assert_allclose(remote_values, local_values, atol=1e-6)
@@ -671,7 +676,7 @@ class TestSelfPlay:
         self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
     ) -> None:
         """RemoteEvaluator.evaluate_batch matches NNEvaluator.evaluate_batch."""
-        import torch.multiprocessing as tmp
+        from multiprocessing import Event, Queue
 
         from mcts.evaluator import NNEvaluator
 
@@ -714,16 +719,19 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=num_players,
         )
-        server_conn, worker_conn = tmp.Pipe()
-        server = EvaluationServer(model, device, [server_conn], shared_bufs)
+        request_queue: Queue[tuple[int, int]] = Queue()
+        worker_events = [Event()]
+        server = EvaluationServer(
+            model, device, shared_bufs, request_queue, worker_events,
+        )
         server.start()
         try:
-            remote_eval = RemoteEvaluator(worker_conn, num_players, shared_bufs, 0)
+            remote_eval = RemoteEvaluator(
+                num_players, shared_bufs, 0, request_queue, worker_events[0],
+            )
             remote_results = remote_eval.evaluate_batch(states)
         finally:
             server.stop()
-            server_conn.close()
-            worker_conn.close()
 
         assert len(remote_results) == len(local_results)
         for (rp, rv, rm), (lp, lv, lm) in zip(remote_results, local_results):
@@ -736,7 +744,7 @@ class TestSelfPlay:
         self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
     ) -> None:
         """play_game produces valid results when using RemoteEvaluator."""
-        import torch.multiprocessing as tmp
+        from multiprocessing import Event, Queue
 
         from train.eval_server import (
             EvaluationServer,
@@ -755,19 +763,21 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=tiny_config.num_players,
         )
-        server_conn, worker_conn = tmp.Pipe()
-        server = EvaluationServer(model, device, [server_conn], shared_bufs)
+        request_queue: Queue[tuple[int, int]] = Queue()
+        worker_events = [Event()]
+        server = EvaluationServer(
+            model, device, shared_bufs, request_queue, worker_events,
+        )
         server.start()
         try:
             remote_eval = RemoteEvaluator(
-                worker_conn, tiny_config.num_players, shared_bufs, 0
+                tiny_config.num_players, shared_bufs, 0,
+                request_queue, worker_events[0],
             )
             rng = np.random.default_rng(42)
             record = play_game(remote_eval, tiny_config, game_seed=123, rng=rng)
         finally:
             server.stop()
-            server_conn.close()
-            worker_conn.close()
 
         assert record.total_moves > 0
         assert len(record.examples) == record.total_moves
@@ -803,14 +813,12 @@ class TestSelfPlay:
             num_players=tiny_config.num_players,
         )
 
-        server_conns = []
-        worker_conns = []
-        for _ in range(num_workers):
-            s_conn, w_conn = ctx.Pipe()
-            server_conns.append(s_conn)
-            worker_conns.append(w_conn)
+        request_queue = ctx.Queue()
+        worker_events = [ctx.Event() for _ in range(num_workers)]
 
-        server = EvaluationServer(model, device, server_conns, shared_bufs)
+        server = EvaluationServer(
+            model, device, shared_bufs, request_queue, worker_events,
+        )
         server.start()
 
         workers = []
@@ -818,16 +826,13 @@ class TestSelfPlay:
             p = ctx.Process(
                 target=self_play_worker,
                 args=(
-                    worker_conns[i], task_queue, result_queue, tiny_config,
-                    shared_bufs, i,
+                    task_queue, result_queue, tiny_config,
+                    shared_bufs, i, request_queue, worker_events[i],
                 ),
                 daemon=True,
             )
             p.start()
             workers.append(p)
-
-        for conn in worker_conns:
-            conn.close()
 
         try:
             # Feed game seeds (with epoch config)
@@ -853,12 +858,102 @@ class TestSelfPlay:
             for _ in workers:
                 task_queue.put(None)
             server.stop()
-            for conn in server_conns:
-                conn.close()
             for w in workers:
                 w.join(timeout=5.0)
                 if w.is_alive():
                     w.terminate()
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    def test_multi_server_eval(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        """Multiple EvaluationServer threads handle concurrent requests correctly."""
+        import threading
+        from multiprocessing import Event, Queue
+
+        from core.state import GameState
+        from train.eval_server import (
+            EvaluationServer,
+            RemoteEvaluator,
+            SharedEvalBuffers,
+        )
+
+        device = torch.device("cuda")
+        model = small_model.to(device)
+        model.eval()
+        num_workers = 4
+        num_servers = 2
+        num_players = tiny_config.num_players
+        num_rounds = 10
+
+        shared_bufs = SharedEvalBuffers(
+            num_workers=num_workers,
+            batch_size=tiny_config.search_batch_size,
+            visible_size=tiny_config.visible_size,
+            action_dim=tiny_config.action_dim,
+            num_players=num_players,
+        )
+
+        request_queue: Queue[tuple[int, int]] = Queue()
+        worker_events = [Event() for _ in range(num_workers)]
+
+        servers = []
+        for _ in range(num_servers):
+            server = EvaluationServer(
+                model, device, shared_bufs, request_queue, worker_events,
+            )
+            server.start()
+            servers.append(server)
+
+        try:
+            evals = [
+                RemoteEvaluator(
+                    num_players, shared_bufs, i, request_queue, worker_events[i],
+                )
+                for i in range(num_workers)
+            ]
+
+            state = GameState(num_players)
+            state.initialize_game(seed=42)
+
+            # Get reference result from a single sequential call
+            ref_policy, ref_values, ref_mask = evals[0].evaluate(state)
+
+            # Fire concurrent requests from all workers across multiple rounds
+            errors: list[Exception] = []
+            results: list[list[tuple[np.ndarray, np.ndarray, np.ndarray]]] = [
+                [] for _ in range(num_workers)
+            ]
+
+            def _worker_fn(wid: int) -> None:
+                try:
+                    for _ in range(num_rounds):
+                        r = evals[wid].evaluate(state)
+                        results[wid].append(r)
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [
+                threading.Thread(target=_worker_fn, args=(i,))
+                for i in range(num_workers)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30.0)
+
+            assert not errors, f"Worker threads raised: {errors}"
+
+            # Every result from every worker must match the reference
+            for wid in range(num_workers):
+                assert len(results[wid]) == num_rounds
+                for rp, rv, rm in results[wid]:
+                    np.testing.assert_allclose(rp, ref_policy, atol=1e-6)
+                    np.testing.assert_allclose(rv, ref_values, atol=1e-6)
+                    np.testing.assert_array_equal(rm, ref_mask)
+        finally:
+            for s in servers:
+                s.stop()
 
 
 # ---------------------------------------------------------------------------
