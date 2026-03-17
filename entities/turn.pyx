@@ -10,7 +10,7 @@ Provides clean getter/setter access to turn-specific state including:
 
 from core.state cimport GameState, StateLayout, TurnStateOffsets
 from libc.math cimport lround
-from core.data cimport GameConstants, GamePhases, CASH_DIVISOR, get_adjusted_company_income
+from core.data cimport GameConstants, GamePhases, CASH_DIVISOR, get_adjusted_company_income, COMPANY_SYNERGY
 from entities import player as player_module
 from entities import company as company_module
 from entities import corp as corp_module
@@ -98,6 +98,8 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
     offset += GameConstants.NUM_COMPANIES  # 36
     t.acq_is_fi_offer = offset
     offset += 1
+    # Skip acq_synergy_values (36)
+    offset += GameConstants.NUM_COMPANIES
 
     t.closing_company = offset
 
@@ -258,6 +260,7 @@ cdef class TurnState:
         self._acq_is_fi_offer_offset = self._turn_offset + turn.acq_is_fi_offer
         # Note: acq_is_fi_offer is a single float (not one-hot), so use visible offset directly
         self._hidden_acq_is_fi_offer_offset = self._acq_is_fi_offer_offset
+        self._acq_synergy_values_offset = self._turn_offset + turn.acq_synergy_values
 
         # Closing
         self._closing_company_offset = self._turn_offset + turn.closing_company
@@ -658,6 +661,35 @@ cdef class TurnState:
     cpdef void set_acq_fi_offer(self, GameState state, bint is_fi):
         """Set whether current acquisition is from Foreign Investor."""
         state._data[self._acq_is_fi_offer_offset] = 1.0 if is_fi else 0.0
+
+    # =========================================================================
+    # ACQUISITION SYNERGY VALUES
+    # =========================================================================
+
+    cpdef void populate_acq_synergy_values(self, GameState state, int corp_id, int target_company_id):
+        """Compute and set synergy values for the current acquisition offer.
+
+        For each company i, if the buying corp owns company i, sets the value to
+        (COMPANY_SYNERGY[i][target] + COMPANY_SYNERGY[target][i]) / CASH_DIVISOR.
+        Otherwise 0.
+        """
+        cdef int i, bonus
+        cdef int offset = self._acq_synergy_values_offset
+        cdef float* corp = state._corp_ptr(corp_id)
+        cdef int owned_offset = state._corp_fields.owned_companies
+        for i in range(<int>GameConstants.NUM_COMPANIES):
+            if corp[owned_offset + i] == 1.0:
+                bonus = COMPANY_SYNERGY[i][target_company_id] + COMPANY_SYNERGY[target_company_id][i]
+                state._data[offset + i] = <float>bonus / CASH_DIVISOR
+            else:
+                state._data[offset + i] = 0.0
+
+    cpdef void clear_acq_synergy_values(self, GameState state):
+        """Clear all synergy values to 0 (non-active)."""
+        cdef int i
+        cdef int offset = self._acq_synergy_values_offset
+        for i in range(<int>GameConstants.NUM_COMPANIES):
+            state._data[offset + i] = 0.0
 
     # =========================================================================
     # CLOSING STATE

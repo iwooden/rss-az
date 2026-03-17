@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | 2943         | 1184        | 4127       |
-| 3       | 3023         | 1184        | 4207       |
-| 4       | 3105         | 1184        | 4289       |
-| 5       | 3189         | 1184        | 4373       |
-| 6       | 3275         | 1184        | 4459       |
+| 2       | 1683         | 1184        | 2867       |
+| 3       | 1763         | 1184        | 2947       |
+| 4       | 1845         | 1184        | 3029       |
+| 5       | 1929         | 1184        | 3113       |
+| 6       | 2015         | 1184        | 3199       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 
@@ -166,7 +166,7 @@ Corp stride = `10 + 27 + 36 + 36` = `109`
 
 ### Turn State
 
-Size varies with player count: `251 + (3 * num_players)`
+Size varies with player count: `287 + (3 * num_players)`
 
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
@@ -193,19 +193,19 @@ Size varies with player count: `251 + (3 * num_players)`
 | `acq_active_corp` | 8 | one-hot | Buying corp |
 | `acq_target_company` | 36 | one-hot | Target company |
 | `acq_is_fi_offer` | 1 | flag | 1=FI target |
+| `acq_synergy_values` | 36 | normalized | Synergy income bonus per company / CASH_DIVISOR, 0 if corp doesn't own |
 | **Closing:** | | | |
 | `closing_company` | 36 | one-hot | Current offer |
 
-### Static Company Data (36 companies x 40 = 1440)
+### Static Company Data (36 companies x 4 = 144)
 
-Per company (40 floats):
+Per company (4 floats):
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
 | `stars` | 1 | normalized | / STAR_DIVISOR |
 | `low_price` | 1 | normalized | / CASH_DIVISOR |
 | `face_value` | 1 | normalized | / CASH_DIVISOR |
 | `high_price` | 1 | normalized | / CASH_DIVISOR |
-| `synergies` | 36 | flags | Synergy connections |
 
 ---
 

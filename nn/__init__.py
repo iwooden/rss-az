@@ -22,7 +22,7 @@ def create_model(
 
     Args:
         arch: "v1" (model_3p, ~26.6M params) or "v2" (model_3p_2, ~6.6M params).
-        input_dim: Visible state size (e.g. 3023 for 3 players).
+        input_dim: Visible state size (e.g. 1763 for 3 players).
         action_dim: Action space size (e.g. 246 for 3 players).
         value_dim: Number of players (e.g. 3).
     """

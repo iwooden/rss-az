@@ -9,7 +9,7 @@ from core.state import GameState, get_layout
 from core.data import (
     get_company_stars, get_company_face_value,
     get_company_low_price, get_company_high_price,
-    get_company_synergy, PY_STAR_DIVISOR, PY_CASH_DIVISOR,
+    PY_STAR_DIVISOR, PY_CASH_DIVISOR,
     GameConstants,
 )
 
@@ -20,11 +20,11 @@ class TestStateLayoutSizes:
     # Expected sizes - these MUST match VECTORS.md and CLAUDE.md
     # If these tests fail, update the documentation to match!
     EXPECTED_SIZES = {
-        2: {'visible': 2943, 'hidden': 1184, 'total': 4127},
-        3: {'visible': 3023, 'hidden': 1184, 'total': 4207},
-        4: {'visible': 3105, 'hidden': 1184, 'total': 4289},
-        5: {'visible': 3189, 'hidden': 1184, 'total': 4373},
-        6: {'visible': 3275, 'hidden': 1184, 'total': 4459},
+        2: {'visible': 1683, 'hidden': 1184, 'total': 2867},
+        3: {'visible': 1763, 'hidden': 1184, 'total': 2947},
+        4: {'visible': 1845, 'hidden': 1184, 'total': 3029},
+        5: {'visible': 1929, 'hidden': 1184, 'total': 3113},
+        6: {'visible': 2015, 'hidden': 1184, 'total': 3199},
     }
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
@@ -72,10 +72,10 @@ class TestComponentSizes:
         assert layout.corp_stride == 109
 
     def test_turn_size_formula(self):
-        """Turn size = 251 + 3*num_players."""
+        """Turn size = 287 + 3*num_players."""
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
-            expected = 251 + 3 * num_players
+            expected = 287 + 3 * num_players
             assert layout.turn_size == expected, (
                 f"{num_players} players: turn size {layout.turn_size} != {expected}"
             )
@@ -86,13 +86,13 @@ class TestComponentSizes:
         assert layout.hidden_size == 1184
 
     def test_static_size(self):
-        """Static company data = 36 * 40 = 1440."""
+        """Static company data = 36 * 4 = 144."""
         layout = get_layout(3)
-        assert layout.static_size == 1440
+        assert layout.static_size == 144
 
 
 NUM_COMPANIES = int(GameConstants.NUM_COMPANIES)
-STATIC_STRIDE = 4 + NUM_COMPANIES
+STATIC_STRIDE = 4
 
 
 class TestStaticCompanyData:
@@ -137,17 +137,6 @@ class TestStaticCompanyData:
         offset = layout.static_offset + company_id * STATIC_STRIDE
         expected = get_company_high_price(company_id) / PY_CASH_DIVISOR
         assert abs(state._array[offset + 3] - expected) < 1e-6
-
-    @pytest.mark.parametrize("company_id", range(NUM_COMPANIES))
-    def test_company_synergy_flags(self, state, company_id):
-        layout = get_layout(3)
-        offset = layout.static_offset + company_id * STATIC_STRIDE + 4
-        for target_id in range(NUM_COMPANIES):
-            expected = 1.0 if get_company_synergy(company_id, target_id) != 0 else 0.0
-            actual = state._array[offset + target_id]
-            assert abs(actual - expected) < 1e-6, (
-                f"Company {company_id} synergy[{target_id}]: {actual} != {expected}"
-            )
 
     def test_static_data_identical_across_seeds(self):
         """Static data should be the same regardless of game seed."""

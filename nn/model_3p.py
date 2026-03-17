@@ -1,7 +1,7 @@
 """AlphaZero-style PyTorch model for Rolling Stock Stars (3 players).
 
 This module implements a residual MLP architecture sized around ~26M parameters:
-- Input (visible state): 3023 floats
+- Input (visible state): 1763 floats (3-player)
 - Policy output: 246 logits (all actions for 3-player layout)
 - Value output: 3 scalars in [-1, 1] (per-player expected outcomes via tanh)
 
@@ -25,7 +25,7 @@ import torch.nn as nn
 class RSSModelConfig:
     """Configuration for the residual MLP trunk and heads."""
 
-    input_dim: int = 3023
+    input_dim: int = 1763
     action_dim: int = 246
     value_dim: int = 3  # Per-player expected outcomes: [v_active, v_next, v_next_next]
     hidden_dim: int = 768
@@ -135,7 +135,7 @@ def count_parameters(model: nn.Module) -> int:
 
 if __name__ == "__main__":
     cfg = RSSModelConfig(
-        input_dim=3023,
+        input_dim=1763,
         action_dim=246,
         value_dim=3,
         hidden_dim=768,

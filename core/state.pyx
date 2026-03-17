@@ -32,7 +32,6 @@ from core.data cimport (
     COMPANY_LOW_PRICE,
     COMPANY_FACE_VALUE,
     COMPANY_HIGH_PRICE,
-    COMPANY_SYNERGY,
 )
 
 LayoutInfo = namedtuple('LayoutInfo', [
@@ -186,6 +185,7 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         GameConstants.NUM_CORPS +         # acq_active_corp
         GameConstants.NUM_COMPANIES +     # acq_target_company
         1 +                 # acq_is_fi_offer
+        GameConstants.NUM_COMPANIES +     # acq_synergy_values
         # Closing
         GameConstants.NUM_COMPANIES       # closing_company
     )
@@ -193,7 +193,7 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     offset += layout.turn_size
 
     # Static company data
-    layout.static_size = GameConstants.NUM_COMPANIES * (4 + GameConstants.NUM_COMPANIES)  # stars, low, face, high, synergies
+    layout.static_size = GameConstants.NUM_COMPANIES * 4  # stars, low, face, high
     layout.static_offset = offset
     offset += layout.static_size
 
@@ -338,6 +338,8 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
     offset += GameConstants.NUM_COMPANIES
     t.acq_is_fi_offer = offset
     offset += 1
+    t.acq_synergy_values = offset
+    offset += GameConstants.NUM_COMPANIES
 
     # Closing phase
     t.closing_company = offset
@@ -990,18 +992,15 @@ cdef class GameState:
         turn_module.TURN.clear_acq_target_company(self)
         turn_module.TURN.clear_closing_company(self)
 
-        # 10. Populate static company data (stars, prices, synergies)
-        cdef int j, base_offset
-        cdef int static_stride = 4 + <int>GameConstants.NUM_COMPANIES
+        # 10. Populate static company data (stars, prices)
+        cdef int base_offset
+        cdef int static_stride = 4
         for i in range(<int>GameConstants.NUM_COMPANIES):
             base_offset = self._layout.static_offset + i * static_stride
             self._data[base_offset + 0] = <float>COMPANY_STARS[i] / STAR_DIVISOR
             self._data[base_offset + 1] = <float>COMPANY_LOW_PRICE[i] / CASH_DIVISOR
             self._data[base_offset + 2] = <float>COMPANY_FACE_VALUE[i] / CASH_DIVISOR
             self._data[base_offset + 3] = <float>COMPANY_HIGH_PRICE[i] / CASH_DIVISOR
-            for j in range(<int>GameConstants.NUM_COMPANIES):
-                if COMPANY_SYNERGY[i][j] != 0:
-                    self._data[base_offset + 4 + j] = 1.0
 
         # Set active player
         self._set_active_player(0)

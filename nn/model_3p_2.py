@@ -1,9 +1,9 @@
 """AlphaZero-style PyTorch model for Rolling Stock Stars (3 players) — v2.
 
 Architecture changes from v1 (model_3p.py) based on interpretability analysis:
-- Two-layer input preprocessing (3023 → 2*hidden → hidden) instead of a single
+- Two-layer input preprocessing (input → 2*hidden → hidden) instead of a single
   linear projection. V1's block 0 did 92% of the work because one linear layer
-  was too bottlenecked for the 3023-dim input (especially the 1296 synergy flags).
+  was too bottlenecked for the input (v1 had 1296 static synergy flags, now removed).
 - 6 residual blocks (down from 10). Blocks 2-9 contributed <1% in bypass tests,
   though BID-phase reasoning used deeper blocks more (2x activation in blocks 5/7/8).
 - hidden_dim=384 (down from 768). Effective rank was 150-192 across all layers;
@@ -27,7 +27,7 @@ import torch.nn as nn
 class RSSModelConfig2:
     """Configuration for the v2 residual MLP trunk and heads."""
 
-    input_dim: int = 3023
+    input_dim: int = 1763
     action_dim: int = 246
     value_dim: int = 3
     hidden_dim: int = 384

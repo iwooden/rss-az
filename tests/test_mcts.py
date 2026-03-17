@@ -140,15 +140,15 @@ class TestMCTSConfig:
 class TestLayout:
     def test_visible_size_3p(self):
         layout = get_layout(3)
-        assert layout.visible_size == 3023
+        assert layout.visible_size == 1763
 
     def test_visible_size_2p(self):
         layout = get_layout(2)
-        assert layout.visible_size == 2943
+        assert layout.visible_size == 1683
 
     def test_visible_size_6p(self):
         layout = get_layout(6)
-        assert layout.visible_size == 3275
+        assert layout.visible_size == 2015
 
     def test_player_stride_3p(self):
         layout = get_layout(3)

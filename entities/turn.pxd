@@ -92,6 +92,7 @@ cdef class TurnState:
     cdef int _acq_active_corp_offset
     cdef int _acq_target_company_offset
     cdef int _acq_is_fi_offer_offset
+    cdef int _acq_synergy_values_offset
 
     # Closing offset
     cdef int _closing_company_offset
@@ -181,6 +182,10 @@ cdef class TurnState:
 
     cpdef bint is_acq_fi_offer(self, GameState state)
     cpdef void set_acq_fi_offer(self, GameState state, bint is_fi)
+
+    # Acquisition synergy values
+    cpdef void populate_acq_synergy_values(self, GameState state, int corp_id, int target_company_id)
+    cpdef void clear_acq_synergy_values(self, GameState state)
 
     # Closing state
     cpdef int get_closing_company(self, GameState state)

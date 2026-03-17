@@ -93,7 +93,7 @@ def tiny_config(tmp_path: Path) -> TrainingConfig:
 @pytest.fixture
 def small_model() -> RSSAlphaZeroNet:
     cfg = RSSModelConfig(
-        input_dim=3023,
+        input_dim=1763,
         action_dim=246,
         value_dim=3,
         hidden_dim=32,
@@ -112,7 +112,7 @@ class TestConfig:
     def test_computed_properties(self) -> None:
         cfg = TrainingConfig(num_players=3)
         assert cfg.action_dim == 246
-        assert cfg.visible_size == 3023
+        assert cfg.visible_size == 1763
 
     def test_json_roundtrip(self) -> None:
         cfg = TrainingConfig(learning_rate=0.005, num_epochs=50)
@@ -238,11 +238,11 @@ class TestReplayBuffer:
         assert len(buf) == 10
 
     def test_sample_shapes(self) -> None:
-        buf = ReplayBuffer(capacity=100, visible_size=3023, action_dim=246, num_players=3)
-        buf.add_examples([_make_example(3023, 246, 3) for _ in range(20)])
+        buf = ReplayBuffer(capacity=100, visible_size=1763, action_dim=246, num_players=3)
+        buf.add_examples([_make_example(1763, 246, 3) for _ in range(20)])
         rng = np.random.default_rng(0)
         batch = buf.sample(batch_size=8, rng=rng)
-        assert batch["states"].shape == (8, 3023)
+        assert batch["states"].shape == (8, 1763)
         assert batch["legal_masks"].shape == (8, 246)
         assert batch["policy_targets"].shape == (8, 246)
         assert batch["value_targets"].shape == (8, 3)
@@ -317,7 +317,7 @@ class TestTrainer:
     ) -> None:
         device = torch.device("cpu")
         trainer = Trainer(small_model, tiny_config, device)
-        batch = _make_batch(4, 3023, 246, 3)
+        batch = _make_batch(4, 1763, 246, 3)
         losses = trainer.train_step(batch)
         assert "policy_loss" in losses
         assert "value_loss" in losses
@@ -330,7 +330,7 @@ class TestTrainer:
         device = torch.device("cpu")
         trainer = Trainer(small_model, tiny_config, device)
         assert trainer.global_step == 0
-        batch = _make_batch(4, 3023, 246, 3)
+        batch = _make_batch(4, 1763, 246, 3)
         trainer.train_step(batch)
         assert trainer.global_step == 1
         trainer.train_step(batch)
@@ -342,7 +342,7 @@ class TestTrainer:
         device = torch.device("cpu")
         tiny_config.warmup_steps = 10
         trainer = Trainer(small_model, tiny_config, device)
-        batch = _make_batch(4, 3023, 246, 3)
+        batch = _make_batch(4, 1763, 246, 3)
         trainer.train_step(batch)
         # First step LR must be non-zero (step+1)/warmup_steps = 1/10
         assert trainer.lr > 0, "LR at step 0 must not be zero"
@@ -355,7 +355,7 @@ class TestTrainer:
         tiny_config.training_steps_per_epoch = 100
         tiny_config.num_epochs = 10
         trainer = Trainer(small_model, tiny_config, device)
-        batch = _make_batch(4, 3023, 246, 3)
+        batch = _make_batch(4, 1763, 246, 3)
         lrs = []
         for _ in range(50):
             trainer.train_step(batch)
@@ -372,7 +372,7 @@ class TestTrainer:
     ) -> None:
         device = torch.device("cpu")
         trainer = Trainer(small_model, tiny_config, device)
-        batch = _make_batch(4, 3023, 246, 3)
+        batch = _make_batch(4, 1763, 246, 3)
         trainer.train_step(batch)
         assert all(torch.isfinite(p).all() for p in small_model.parameters())
 
@@ -381,7 +381,7 @@ class TestTrainer:
     ) -> None:
         device = torch.device("cpu")
         trainer = Trainer(small_model, tiny_config, device)
-        batch = _make_batch(4, 3023, 246, 3)
+        batch = _make_batch(4, 1763, 246, 3)
         trainer.train_step(batch)
         trainer.train_step(batch)
         state = trainer.state_dict()
@@ -440,7 +440,7 @@ class TestCheckpoint:
         """After loading a checkpoint, training should continue correctly."""
         device = torch.device("cpu")
         trainer = Trainer(small_model, tiny_config, device)
-        batch = _make_batch(4, 3023, 246, 3)
+        batch = _make_batch(4, 1763, 246, 3)
         trainer.train_step(batch)
         trainer.train_step(batch)
         original_step = trainer.global_step
@@ -460,7 +460,7 @@ class TestCheckpoint:
 
         # Create fresh model and trainer, load checkpoint
         model2 = RSSAlphaZeroNet(RSSModelConfig(
-            input_dim=3023, action_dim=246, value_dim=3,
+            input_dim=1763, action_dim=246, value_dim=3,
             hidden_dim=32, num_blocks=1, expansion=1,
         ))
         trainer2 = Trainer(model2, tiny_config, device)

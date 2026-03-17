@@ -85,6 +85,7 @@ cdef struct TurnStateOffsets:
     int acq_active_corp
     int acq_target_company
     int acq_is_fi_offer
+    int acq_synergy_values
     # Closing phase
     int closing_company
 

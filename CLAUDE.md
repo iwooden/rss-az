@@ -10,7 +10,7 @@ High-performance Cython game engine for "Rolling Stock Stars" board game, optimi
 
 **Key characteristics:**
 - 2-6 player support with dynamic state sizing
-- ~4100-4500 floats per game state (varies by player count)
+- ~2900-3200 floats per game state (varies by player count)
 - No Python object overhead in hot paths (nogil execution)
 - Benchmark target: thousands of games per minute
 
@@ -117,9 +117,9 @@ Central data structure: single contiguous float32 numpy array.
 **Sizes by player count:**
 | Players | Visible | Hidden | Total |
 |---------|---------|--------|-------|
-| 2 | 2943 | 1184 | 4127 |
-| 3 | 3023 | 1184 | 4207 |
-| 6 | 3275 | 1184 | 4459 |
+| 2 | 1683 | 1184 | 2867 |
+| 3 | 1763 | 1184 | 2947 |
+| 6 | 2015 | 1184 | 3199 |
 
 ### Actions (`core/actions.pyx`)
 
@@ -231,8 +231,8 @@ Instead of using the root node's mean value (soft-Z) or the game outcome as trai
 
 ### NN Model (`nn/model_3p.py`)
 
-Residual MLP (~26.6M parameters):
-- **Input:** 3023 floats (visible state, active player rotated to slot 0)
+Residual MLP (~25.6M parameters):
+- **Input:** 1763 floats (3-player) (visible state, active player rotated to slot 0)
 - **Trunk:** Linear → 10 residual blocks (pre-LN, GELU, expansion=2) → LayerNorm
 - **Policy head:** Linear(768→256) → GELU → Linear(256→246) logits (masked by legal actions before softmax)
 - **Value head:** Linear(768→384) → GELU → Linear(384→192) → GELU → Linear(192→3) → Tanh
@@ -346,19 +346,19 @@ Each epoch: (1) play N games via MCTS self-play → (2) store examples in replay
 | `value_blend_start_epoch` | 10 | Epoch where A0GB blending begins |
 | `value_blend_end_epoch` | 40 | Epoch where blend reaches pure A0GB |
 | `reuse_subtree_after_epoch` | 15 | Subtree reuse disabled before this epoch |
-| `buffer_capacity` | 500,000 | Replay buffer size (~6.6 GB) |
+| `buffer_capacity` | 500,000 | Replay buffer size (~4.2 GB) |
 | `batch_size` | 256 | Training batch size |
 
 `TrainingConfig.to_mcts_config()` creates an `MCTSConfig` from the relevant fields.
 
-**Replay buffer memory** (3 players, 500K capacity): states ~5.7GB + masks ~470MB + policies ~470MB + values ~6MB = **~6.6 GB total**. Reduce `buffer_capacity` if memory is tight.
+**Replay buffer memory** (3 players, 500K capacity): states ~3.3GB + masks ~470MB + policies ~470MB + values ~6MB = **~4.2 GB total**. Reduce `buffer_capacity` if memory is tight.
 
 **Checkpointing:** The replay buffer is NOT checkpointed (too large). On resume, it starts empty and refills during self-play. This is standard AlphaZero practice.
 
 ### Training Examples
 
 At each decision point during self-play, a `TrainingExample` is stored:
-- **state**: Visible state rotated so active player is at slot 0 (shape `(3023,)`)
+- **state**: Visible state rotated so active player is at slot 0 (shape `(1763,)` for 3 players)
 - **legal_mask**: Binary mask of legal actions (shape `(246,)`)
 - **policy_target**: MCTS visit probabilities (shape `(246,)`)
 - **value_target**: A0GB values rotated to active-player-first (shape `(3,)`)
@@ -406,7 +406,7 @@ record = play_game(evaluator, config, game_seed=42, rng=rng)
 ```
 [Phase (11) | CoO Level (7) | Players (repeated) | FI (37) | Companies (108) |
  Company Incomes (36) | Market (27) | Corporations (872) | Turn (complex) |
- Static Data (400) | HIDDEN: Active Player, Deck, Offer Buffers]
+ Static Data (144) | HIDDEN: Active Player, Deck, Offer Buffers]
 ```
 
 **Player stride** = `72 + num_players` floats per player

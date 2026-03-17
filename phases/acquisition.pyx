@@ -567,6 +567,7 @@ cdef void _present_current_offer(GameState state) noexcept:
         turn_module.TURN.set_acq_active_corp(state, corp_id)
         turn_module.TURN.set_acq_target_company(state, company_id)
         turn_module.TURN.set_acq_fi_offer(state, owner_type == LOC_FI)
+        turn_module.TURN.populate_acq_synergy_values(state, corp_id, company_id)
 
         president = corp_module.CORPS[corp_id].get_president_id(state)
         state._set_active_player(president if president >= 0 else 0)
@@ -576,6 +577,7 @@ cdef void _present_current_offer(GameState state) noexcept:
     turn_module.TURN.clear_acq_active_corp(state)
     turn_module.TURN.clear_acq_target_company(state)
     turn_module.TURN.set_acq_fi_offer(state, False)
+    turn_module.TURN.clear_acq_synergy_values(state)
 
 
 cdef void _advance_to_next_offer(GameState state) noexcept:
@@ -1005,10 +1007,14 @@ cdef void _transition_to_closing(GameState state) noexcept:
 
     Steps:
     1. Merge all acquisition zones (proceeds + companies)
-    2. Transition to CLOSING phase (auto-close executes first)
+    2. Clear acquisition synergy values
+    3. Transition to CLOSING phase (auto-close executes first)
     """
     # Merge before leaving ACQUISITION
     _merge_acquisition_zones(state)
+
+    # Clear acquisition-phase-specific visible state
+    turn_module.TURN.clear_acq_synergy_values(state)
 
     # Transition to CLOSING (auto-close will execute, then offers in Phase 17)
     turn_module.TURN.set_phase(state, GamePhases.PHASE_CLOSING)
