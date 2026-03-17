@@ -279,7 +279,9 @@ def main() -> None:
     if config.num_workers > 0:
         ctx = mp.get_context("spawn")
         task_queue = ctx.Queue()
+        task_queue.cancel_join_thread()
         result_queue = ctx.Queue()
+        result_queue.cancel_join_thread()
 
         worker_conns: list[Connection] = []
         for _ in range(config.num_workers):

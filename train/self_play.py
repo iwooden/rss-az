@@ -202,6 +202,9 @@ def self_play_worker(
     Loops until a None sentinel is received on the task queue
     or the eval connection breaks (shutdown).
     """
+    import torch
+    torch.set_num_threads(1)  # Prevent OpenMP oversubscription with many workers
+
     from train.eval_server import RemoteEvaluator
 
     evaluator = RemoteEvaluator(

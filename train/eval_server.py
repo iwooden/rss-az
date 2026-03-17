@@ -5,11 +5,15 @@ and GPU. Worker processes send evaluation requests via shared memory and
 receive results back. Multiple workers' requests are batched into single
 GPU forward passes for throughput.
 
-Communication uses shared memory (torch tensors with share_memory_()) for
-state/logit/value data in bfloat16, with pipes carrying only lightweight
-control messages (integer state counts). Workers convert float32 numpy
-to/from bfloat16 shared memory at the boundary; the eval server operates
-entirely in bfloat16 with zero dtype conversions.
+Communication uses shared memory (torch tensors with share_memory_()):
+- Input states: float32 (workers write with pure numpy slice assignment)
+- Output logits: bfloat16 (halves scatter bandwidth; workers upcast for softmax)
+- Output values: float32 (server upcasts from bf16 model output during D2H;
+  only 3 floats/state so bf16 savings are negligible vs per-worker conversion)
+
+Workers do zero torch operations on the write side (pure numpy).
+On the read side, workers do one bf16→f32 upcast on logits for
+batched mask+softmax in torch. Values are read as f32 numpy directly.
 
 RemoteEvaluator is the worker-side proxy that implements the same interface
 as NNEvaluator, writing to shared memory instead of serializing over pipes.
@@ -37,18 +41,22 @@ from train.profile_stats import EvalClientStats, EvalServerStats
 class SharedEvalBuffers:
     """Pre-allocated shared memory for zero-copy worker <-> server communication.
 
-    All channels use bfloat16 to halve shared memory bandwidth.
-    Workers convert float32 numpy <-> bfloat16 torch at the boundary.
-    The eval server operates entirely in bfloat16 with zero dtype conversions.
+    Input states are float32 so workers can write with pure numpy slice
+    assignment (no torch overhead).  Output logits are bfloat16 to halve
+    scatter bandwidth.  Output values are float32 — the model outputs bf16
+    under autocast, but the server upcasts during D2H copy.  With only
+    3 floats/state the bf16 savings are negligible, and this avoids a
+    per-worker bf16→f32 conversion.
 
     Each worker gets a fixed slot in shared tensors. Workers write rotated
     states into their input slot; the server reads them directly. The server
     writes raw logits and values into each worker's output slot. Workers apply
     legal action masking and softmax locally after reading results.
 
-    Memory layout (per worker, all bfloat16):
-        Input:  states (batch_size x visible_size)
-        Output: logits (batch_size x action_dim), values (batch_size x num_players)
+    Memory layout (per worker):
+        Input:  states  float32 (batch_size x visible_size)
+        Output: logits  bfloat16 (batch_size x action_dim)
+                values  float32  (batch_size x num_players)
     """
 
     def __init__(
@@ -65,27 +73,33 @@ class SharedEvalBuffers:
         self.action_dim = action_dim
         self.num_players = num_players
 
-        # Shared memory tensors (bfloat16, 3 FDs total)
+        # Input: float32 — workers write with pure numpy slice assignment
         self._states = torch.zeros(
-            num_workers, batch_size, visible_size, dtype=torch.bfloat16,
+            num_workers, batch_size, visible_size, dtype=torch.float32,
         ).share_memory_()
+        # Output: bfloat16 — halves scatter bandwidth
         self._logits = torch.zeros(
             num_workers, batch_size, action_dim, dtype=torch.bfloat16,
         ).share_memory_()
         self._values = torch.zeros(
-            num_workers, batch_size, num_players, dtype=torch.bfloat16,
+            num_workers, batch_size, num_players, dtype=torch.float32,
         ).share_memory_()
 
-    def get_input_states(self, worker_idx: int) -> torch.Tensor:
-        """bfloat16 tensor view into worker's input state slot."""
-        return self._states[worker_idx]
+    def get_input_states_np(self, worker_idx: int) -> np.ndarray:
+        """Numpy view into worker's float32 input state slot.
+
+        Creates the view on-demand rather than caching in __init__, because
+        numpy views don't survive pickling across spawn boundaries — they'd
+        become detached copies instead of shared memory views.
+        """
+        return self._states[worker_idx].numpy()
 
     def get_output_logits(self, worker_idx: int) -> torch.Tensor:
         """bfloat16 tensor view into worker's output logit slot."""
         return self._logits[worker_idx]
 
     def get_output_values(self, worker_idx: int) -> torch.Tensor:
-        """bfloat16 tensor view into worker's output value slot."""
+        """float32 tensor view into worker's output value slot."""
         return self._values[worker_idx]
 
 
@@ -98,8 +112,7 @@ class EvaluationServer:
     actual data is exchanged through SharedEvalBuffers.
 
     Uses pinned CPU memory and pre-allocated GPU tensors to minimize
-    host-to-device and device-to-host transfer overhead.  All buffers
-    are bfloat16 — no dtype conversions in the hot loop.
+    host-to-device and device-to-host transfer overhead.
     """
 
     def __init__(
@@ -120,32 +133,30 @@ class EvaluationServer:
         self._profile = profile
         self._stats: EvalServerStats | None = EvalServerStats() if profile else None
 
-        # Pre-allocated transfer buffers for zero-alloc H2D/D2H.
-        # All bfloat16 — no dtype conversions anywhere in the server.
         max_batch = shared_bufs.num_workers * shared_bufs.batch_size
         vis = shared_bufs.visible_size
         act = shared_bufs.action_dim
         npl = shared_bufs.num_players
         use_cuda = device.type == "cuda"
 
-        # Pinned CPU buffer for fast DMA to GPU (input: states)
+        # Input: pinned f32 buffer + f32 GPU tensor
+        # The f32→bf16 conversion happens implicitly via autocast on CUDA
         self._pin_states = torch.empty(
-            max_batch, vis, dtype=torch.bfloat16,
+            max_batch, vis, dtype=torch.float32,
             pin_memory=use_cuda,
         )
-
-        # Pre-allocated GPU tensor (reused every batch)
+        self._pin_states_np = self._pin_states.numpy()
         self._gpu_states = torch.empty(
-            max_batch, vis, dtype=torch.bfloat16, device=device,
+            max_batch, vis, dtype=torch.float32, device=device,
         )
 
-        # Pinned CPU buffers for fast D2H (output: raw logits + values)
+        # Output: pinned buffers (match shared memory dtypes)
         self._pin_logits = torch.empty(
             max_batch, act, dtype=torch.bfloat16,
             pin_memory=use_cuda,
         )
         self._pin_values = torch.empty(
-            max_batch, npl, dtype=torch.bfloat16,
+            max_batch, npl, dtype=torch.float32,
             pin_memory=use_cuda,
         )
 
@@ -174,7 +185,19 @@ class EvaluationServer:
             self._stats.reset()
 
     def _loop(self) -> None:
-        """Main server loop: gather requests, batch evaluate, dispatch."""
+        """Main server loop: gather requests, batch evaluate, dispatch.
+
+        Runs in a daemon thread — uncaught exceptions would be silent.
+        The try/except ensures crashes are logged to stdout.
+        """
+        try:
+            self._serve()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
+    def _serve(self) -> None:
+        """Inner server loop (called by _loop with exception guard)."""
         conns = list(self._conns)
         conn_to_idx: dict[Connection, int] = {
             c: i for i, c in enumerate(self._conns)
@@ -187,12 +210,13 @@ class EvaluationServer:
 
         # Local refs to pre-allocated buffers (avoid attribute lookups in hot loop)
         pin_s = self._pin_states
+        pin_s_np = self._pin_states_np
         gpu_s = self._gpu_states
         pin_log = self._pin_logits
         pin_val = self._pin_values
 
-        # Cache per-worker shared memory views (avoid per-call indexing)
-        w_states = [bufs.get_input_states(i) for i in range(bufs.num_workers)]
+        # Cache per-worker shared memory views
+        w_states_np = [bufs.get_input_states_np(i) for i in range(bufs.num_workers)]
         w_logits = [bufs.get_output_logits(i) for i in range(bufs.num_workers)]
         w_values = [bufs.get_output_values(i) for i in range(bufs.num_workers)]
 
@@ -236,30 +260,31 @@ class EvaluationServer:
             if not batch_info:
                 continue
 
-            # Gather bfloat16 states into pinned memory
+            # Gather f32 states from numpy shared memory into pinned numpy
             total_n = 0
             for _, widx, n in batch_info:
-                pin_s[total_n:total_n + n].copy_(w_states[widx][:n])
+                pin_s_np[total_n:total_n + n] = w_states_np[widx][:n]
                 total_n += n
 
-            # H2D via pinned memory (non-blocking DMA, all bfloat16)
+            # H2D via pinned memory (non-blocking DMA)
             if stats is not None:
                 _ti = perf_counter()
 
             gpu_s_batch = gpu_s[:total_n]
             gpu_s_batch.copy_(pin_s[:total_n], non_blocking=True)
 
-            # GPU forward pass (bfloat16 on CUDA, float32 on CPU)
+            # GPU forward pass — autocast handles f32→bf16 on CUDA
             with torch.no_grad():
                 if use_cuda:
                     with torch.autocast(dev.type, dtype=torch.bfloat16):
                         policy_logits, values = self._model(gpu_s_batch)
                 else:
-                    # CPU: model expects float32 input (no autocast)
-                    policy_logits, values = self._model(gpu_s_batch.float())
-                    policy_logits = policy_logits.bfloat16()
-                    values = values.bfloat16()
-                pin_log[:total_n].copy_(policy_logits, non_blocking=True)
+                    policy_logits, values = self._model(gpu_s_batch)
+                # D2H: logits stay bf16; values upcast bf16→f32 via copy_
+                # (on CPU without autocast both are f32; .bfloat16() converts logits)
+                pin_log[:total_n].copy_(
+                    policy_logits.bfloat16(), non_blocking=True,
+                )
                 pin_val[:total_n].copy_(values, non_blocking=True)
                 if use_cuda:
                     torch.cuda.synchronize()
@@ -267,7 +292,7 @@ class EvaluationServer:
             if stats is not None:
                 stats.record_batch(total_n, perf_counter() - _ti)
 
-            # Scatter bfloat16 results to per-worker shared memory
+            # Scatter results to per-worker shared memory (logits bf16, values f32)
             offset = 0
             for conn, widx, n in batch_info:
                 w_logits[widx][:n].copy_(pin_log[offset:offset + n])
@@ -286,8 +311,9 @@ class RemoteEvaluator:
     Implements the same evaluate/evaluate_batch/evaluate_terminal interface
     as NNEvaluator, so it can be used as a drop-in replacement.
 
-    Data flows through SharedEvalBuffers (bfloat16 shared memory);
-    pipes carry only integer control messages.
+    Write side: pure numpy slice assignment into f32 shared memory (no torch).
+    Read side: logits bf16→f32 for batched mask+softmax in torch;
+    values are f32 in shared memory (server upcasts during D2H).
     """
 
     def __init__(
@@ -302,7 +328,7 @@ class RemoteEvaluator:
         self.conn = conn
         self.num_players = num_players
         self.layout = get_layout(num_players)
-        self._in_states = shared_bufs.get_input_states(worker_idx)
+        self._in_states_np = shared_bufs.get_input_states_np(worker_idx)
         self._out_logits = shared_bufs.get_output_logits(worker_idx)
         self._out_values = shared_bufs.get_output_values(worker_idx)
         self._profile = profile
@@ -313,22 +339,21 @@ class RemoteEvaluator:
         from core.actions import get_valid_action_mask
 
         active_player = state.get_active_player()
-        rotated = rotate_visible_state(
+        # Pure numpy write — no torch overhead
+        self._in_states_np[0] = rotate_visible_state(
             state._array, active_player, self.num_players
         )
-        # Single f32 numpy → bf16 shared memory write
-        self._in_states[0].copy_(torch.from_numpy(rotated))
         mask = get_valid_action_mask(state)
 
         self.conn.send(1)
         self.conn.recv()
 
-        # bf16 → f32 torch, mask+softmax in torch, then numpy at the end
+        # Logits: bf16 → f32 for mask+softmax; values: already f32
         logits = self._out_logits[0].float()
         logits.masked_fill_(torch.from_numpy(mask) <= 0, -1e9)
         policy_probs = torch.softmax(logits, dim=-1).numpy()
         canonical = unrotate_values(
-            self._out_values[0].float().numpy(), active_player,
+            self._out_values[0].numpy(), active_player,
         )
         return policy_probs, canonical, mask
 
@@ -344,31 +369,29 @@ class RemoteEvaluator:
             return []
 
         active_ids = [s.get_active_player() for s in states]
-        masks = []
 
-        # Batch write: stack rotated states, single f32→bf16 conversion
-        rotated = np.stack([
-            rotate_visible_state(s._array, ap, self.num_players)
-            for s, ap in zip(states, active_ids)
-        ])
-        self._in_states[:n].copy_(torch.from_numpy(rotated))
-        for s in states:
-            masks.append(get_valid_action_mask(s))
+        # Pure numpy writes — no torch overhead
+        masks_list = []
+        for i, (s, ap) in enumerate(zip(states, active_ids)):
+            self._in_states_np[i] = rotate_visible_state(
+                s._array, ap, self.num_players
+            )
+            masks_list.append(get_valid_action_mask(s))
 
         self.conn.send(n)
         self.conn.recv()
 
-        # Batch read: single bf16→f32 conversion, then per-state mask+softmax
+        # Logits: bf16→f32 for mask+softmax; values: already f32
         logits_f32 = self._out_logits[:n].float()
-        values_np = self._out_values[:n].float().numpy()
+        masks_t = torch.from_numpy(np.stack(masks_list))
+        logits_f32.masked_fill_(masks_t <= 0, -1e9)
+        probs_batch = torch.softmax(logits_f32, dim=-1).numpy()
+        values_np = self._out_values[:n].numpy()
 
         results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for i in range(n):
-            row = logits_f32[i]
-            row.masked_fill_(torch.from_numpy(masks[i]) <= 0, -1e9)
-            policy_probs = torch.softmax(row, dim=-1).numpy()
             canonical = unrotate_values(values_np[i], active_ids[i])
-            results.append((policy_probs, canonical, masks[i]))
+            results.append((probs_batch[i].copy(), canonical, masks_list[i]))
         return results
 
     def evaluate_leaves(
@@ -391,12 +414,10 @@ class RemoteEvaluator:
         if _stats is not None:
             _t0 = perf_counter()
 
-        # Batch write: stack rotated states → single f32→bf16 conversion
-        rotated = np.stack([
-            rotate_visible_state(arr, ap, self.num_players)
-            for arr, ap in zip(state_arrays, active_player_ids)
-        ])
-        self._in_states[:n].copy_(torch.from_numpy(rotated))
+        # Pure numpy writes — rotate and assign directly to f32 shared memory
+        in_np = self._in_states_np
+        for i, (arr, ap) in enumerate(zip(state_arrays, active_player_ids)):
+            in_np[i] = rotate_visible_state(arr, ap, self.num_players)
 
         if _stats is not None:
             _t1 = perf_counter()
@@ -410,18 +431,17 @@ class RemoteEvaluator:
             _t2 = perf_counter()
             _stats.wait_secs += _t2 - _t1
 
-        # Batch read: single bf16→f32 conversion for logits and values,
-        # then per-state mask+softmax staying in torch until final .numpy()
+        # Logits: bf16→f32 for mask+softmax; values: already f32
         logits_f32 = self._out_logits[:n].float()
-        values_np = self._out_values[:n].float().numpy()
+        masks_t = torch.from_numpy(np.stack(legal_masks))
+        logits_f32.masked_fill_(masks_t <= 0, -1e9)
+        probs_batch = torch.softmax(logits_f32, dim=-1).numpy()
+        values_np = self._out_values[:n].numpy()
 
         results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for i in range(n):
-            row = logits_f32[i]
-            row.masked_fill_(torch.from_numpy(legal_masks[i]) <= 0, -1e9)
-            policy_probs = torch.softmax(row, dim=-1).numpy()
             canonical = unrotate_values(values_np[i], active_player_ids[i])
-            results.append((policy_probs, canonical, legal_masks[i]))
+            results.append((probs_batch[i].copy(), canonical, legal_masks[i]))
 
         if _stats is not None:
             _stats.result_secs += perf_counter() - _t2
