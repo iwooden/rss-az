@@ -134,9 +134,11 @@ def count_parameters(model: nn.Module) -> int:
 
 
 if __name__ == "__main__":
+    from core.state import get_layout
+    _layout = get_layout(3)
     cfg = RSSModelConfig(
-        input_dim=1763,
-        action_dim=246,
+        input_dim=_layout.visible_size,
+        action_dim=186 + 3 * 20,
         value_dim=3,
         hidden_dim=768,
         num_blocks=10,

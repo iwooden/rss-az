@@ -138,17 +138,13 @@ class TestMCTSConfig:
 # ---------------------------------------------------------------------------
 
 class TestLayout:
-    def test_visible_size_3p(self):
-        layout = get_layout(3)
-        assert layout.visible_size == 1763
+    # Visible-size golden values are tested in test_state_layout.py.
+    # Here we just check structural consistency.
 
-    def test_visible_size_2p(self):
-        layout = get_layout(2)
-        assert layout.visible_size == 1683
-
-    def test_visible_size_6p(self):
-        layout = get_layout(6)
-        assert layout.visible_size == 2015
+    def test_visible_plus_hidden_equals_total(self):
+        for n in [2, 3, 6]:
+            layout = get_layout(n)
+            assert layout.visible_size + layout.hidden_size == layout.total_size
 
     def test_player_stride_3p(self):
         layout = get_layout(3)

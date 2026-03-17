@@ -134,7 +134,9 @@ def count_parameters(model: nn.Module) -> int:
 
 
 if __name__ == "__main__":
-    cfg = RSSModelConfig2()
+    from core.state import get_layout
+    _layout = get_layout(3)
+    cfg = RSSModelConfig2(input_dim=_layout.visible_size, action_dim=186 + 3 * 20)
     model = RSSAlphaZeroNet2(cfg)
     total = count_parameters(model)
     print(f"Trainable parameters: {total:,}")
