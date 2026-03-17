@@ -7,7 +7,6 @@ import math
 import torch
 import torch.nn.functional as F
 
-from nn.model_3p import RSSAlphaZeroNet
 from train.config import TrainingConfig
 
 
@@ -16,7 +15,7 @@ class Trainer:
 
     def __init__(
         self,
-        model: RSSAlphaZeroNet,
+        model: torch.nn.Module,
         config: TrainingConfig,
         device: torch.device,
     ) -> None:

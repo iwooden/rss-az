@@ -13,7 +13,7 @@ import numpy as np
 import torch
 import torch.multiprocessing as mp
 
-from nn.model_3p import RSSAlphaZeroNet, RSSModelConfig
+from nn import create_model
 from train.checkpoint import (
     cleanup_checkpoints,
     find_latest_checkpoint,
@@ -42,6 +42,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Resume from checkpoint file, or "latest" to auto-find',
     )
     parser.add_argument("--device", type=str, help="Force device: cuda, cpu")
+    parser.add_argument(
+        "--model-arch", type=str, choices=["v1", "v2"],
+        help="Model architecture: v1 (26.6M) or v2 (6.6M)",
+    )
     parser.add_argument("--games-per-epoch", type=int)
     parser.add_argument("--num-epochs", type=int)
     parser.add_argument("--num-simulations", type=int)
@@ -88,6 +92,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 _CLI_FIELDS = (
+    "model_arch",
     "games_per_epoch", "num_epochs", "num_simulations", "search_batch_size",
     "num_workers", "num_eval_servers", "checkpoint_dir", "tensorboard_dir", "seed",
     "temp_initial", "temp_anneal_start", "temp_anneal_end", "temp_final",
@@ -220,12 +225,12 @@ def main() -> None:
         torch.cuda.manual_seed_all(config.seed)
 
     # --- Model ---
-    model_config = RSSModelConfig(
+    model = create_model(
+        config.model_arch,
         input_dim=config.visible_size,
         action_dim=config.action_dim,
         value_dim=config.num_players,
-    )
-    model = RSSAlphaZeroNet(model_config).to(device)
+    ).to(device)
     param_count = sum(p.numel() for p in model.parameters())
 
     # --- Components ---
@@ -255,7 +260,7 @@ def main() -> None:
         # torch.compile returns OptimizedModule (a Module subclass at runtime),
         # but Pyright sees the return type as FunctionType | Module. Cast to keep
         # downstream type-safety for .eval(), .train(), save_checkpoint(), etc.
-        model = cast(RSSAlphaZeroNet, torch.compile(model, dynamic=True))
+        model = cast(torch.nn.Module, torch.compile(model, dynamic=True))
         # Warmup pass to trigger compilation before self-play starts.
         # Must match the eval server's context exactly (eval mode + no_grad +
         # autocast) so dynamo doesn't recompile when the servers start.

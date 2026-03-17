@@ -68,6 +68,9 @@ class EpochConfig:
 class TrainingConfig:
     """All hyperparameters for the self-play training loop."""
 
+    # --- Model ---
+    model_arch: str = "v1"  # "v1" (model_3p) or "v2" (model_3p_2)
+
     # --- Game ---
     num_players: int = 3
 
@@ -159,6 +162,10 @@ class TrainingConfig:
 
     def validate(self) -> None:
         """Validate all fields. Called from __post_init__ and after CLI overrides."""
+        # Model arch
+        if self.model_arch not in ("v1", "v2"):
+            raise ValueError(f"model_arch must be 'v1' or 'v2', got '{self.model_arch}'")
+
         # MCTS fields
         if self.num_simulations < 1:
             raise ValueError(f"num_simulations must be >= 1, got {self.num_simulations}")

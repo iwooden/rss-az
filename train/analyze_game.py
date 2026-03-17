@@ -26,7 +26,7 @@ from core.state import GameState, get_layout
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool, run_search, get_greedy_leaf_value
-from nn.model_3p import RSSAlphaZeroNet, RSSModelConfig
+from nn import create_model
 from tests.debug_trace import (
     format_action,
     format_state_full,
@@ -261,12 +261,12 @@ def main() -> None:
     config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
 
     # Build model
-    model_config = RSSModelConfig(
+    model = create_model(
+        config.model_arch,
         input_dim=config.visible_size,
         action_dim=config.action_dim,
         value_dim=config.num_players,
-    )
-    model = RSSAlphaZeroNet(model_config).to(device)
+    ).to(device)
     model.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
     model.eval()
 
