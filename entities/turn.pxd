@@ -186,6 +186,7 @@ cdef class TurnState:
     # Acquisition synergy values
     cpdef void populate_acq_synergy_values(self, GameState state, int corp_id, int target_company_id)
     cpdef void clear_acq_synergy_values(self, GameState state)
+    cpdef float get_acq_synergy_value(self, GameState state, int company_id)
 
     # Closing state
     cpdef int get_closing_company(self, GameState state)

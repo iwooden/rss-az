@@ -3,8 +3,9 @@
 import pytest
 from core.state import GameState
 from core.data import (
-    CORP_NAMES, GamePhases,
-    get_company_face_value, get_company_low_price, get_company_high_price
+    CORP_NAMES, GamePhases, COMPANY_NAME_TO_ID,
+    get_company_face_value, get_company_low_price, get_company_high_price,
+    get_company_synergy, PY_CASH_DIVISOR,
 )
 from core.actions import (
     ACTION_ACQ_PRICE_PY as ACTION_ACQ_PRICE,
@@ -1818,3 +1819,150 @@ class TestNoOfferBoundsCheck:
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py no offer FI face check")
         assert apply_acquisition_action_py(gs, ACTION_ACQ_FI_FACE) == 1
+
+
+class TestAcqSynergyValues:
+    """Tests for acq_synergy_values visible state field."""
+
+    # Company ID lookups
+    CDG = COMPANY_NAME_TO_ID["CDG"]   # 22, blue - synergizes with MAD(16), FRA(16), LHR(16), E(8), SBB(4), SNCF(4)
+    MAD = COMPANY_NAME_TO_ID["MAD"]   # 23, blue - synergizes with RENFE(8)
+    FRA = COMPANY_NAME_TO_ID["FRA"]   # 28, blue - synergizes with KK(4), SBB(4), PKP(4), DR(4)
+    SBB = COMPANY_NAME_TO_ID["SBB"]   # 17, yellow
+    BME = COMPANY_NAME_TO_ID["BME"]   # 0, red - no outgoing synergies
+
+    def _setup_corp_with_companies(self, gs, corp_id, company_ids, target_company_id):
+        """Float a corp, give it companies, set up an FI offer for the target."""
+        # Float corp with the first company
+        float_corp_for_test(gs, corp_id, company_id=company_ids[0])
+        CORPS[corp_id].set_cash(gs, 50000)
+
+        # Transfer remaining companies to the corp
+        for cid in company_ids[1:]:
+            COMPANIES[cid].transfer_to_corp(gs, corp_id)
+
+        # Put target on FI so it can be offered
+        COMPANIES[target_company_id].transfer_to_fi(gs)
+
+        setup_acquisition_phase_py(gs)
+
+    def test_zero_at_game_init(self):
+        """All synergy values are 0 in a freshly initialized game."""
+        gs = GameState(3)
+        gs.initialize_game()
+        for i in range(36):
+            assert TURN.get_acq_synergy_value(gs, i) == 0.0
+
+    def test_populated_on_offer_presentation(self):
+        """Synergy values populated when an offer is presented."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Corp 0 owns CDG; target is MAD
+        # CDG(22)->MAD(23) = 16, MAD(23)->CDG(22) = 0
+        self._setup_corp_with_companies(gs, 0, [self.CDG], self.MAD)
+
+        assert get_offer_count(gs) > 0
+        assert TURN.get_acq_active_corp(gs) == 0
+        assert TURN.get_acq_target_company(gs) == self.MAD
+
+        # CDG synergy with MAD target
+        expected = get_company_synergy(self.CDG, self.MAD) + get_company_synergy(self.MAD, self.CDG)
+        assert expected == 16  # sanity: CDG->MAD=16, MAD->CDG=0
+        assert abs(TURN.get_acq_synergy_value(gs, self.CDG) - expected / PY_CASH_DIVISOR) < 1e-6
+
+    def test_zero_for_non_owned_companies(self):
+        """Companies the corp doesn't own have synergy value 0."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        self._setup_corp_with_companies(gs, 0, [self.CDG], self.MAD)
+
+        # BME is not owned by the corp — should be 0
+        assert TURN.get_acq_synergy_value(gs, self.BME) == 0.0
+        # SBB is not owned by the corp — should be 0 even though SBB synergizes with others
+        assert TURN.get_acq_synergy_value(gs, self.SBB) == 0.0
+
+    def test_multiple_owned_companies(self):
+        """Each owned company gets its own synergy value with the target."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Corp owns CDG and SBB; target is FRA
+        # CDG(22)->FRA(28) = 16, FRA(28)->CDG(22) = 0 → 16
+        # SBB(17)->FRA(28) = 0, FRA(28)->SBB(17) = 4 → 4
+        self._setup_corp_with_companies(gs, 0, [self.CDG, self.SBB], self.FRA)
+
+        assert TURN.get_acq_target_company(gs) == self.FRA
+
+        cdg_syn = get_company_synergy(self.CDG, self.FRA) + get_company_synergy(self.FRA, self.CDG)
+        sbb_syn = get_company_synergy(self.SBB, self.FRA) + get_company_synergy(self.FRA, self.SBB)
+        assert cdg_syn == 16
+        assert sbb_syn == 4
+
+        assert abs(TURN.get_acq_synergy_value(gs, self.CDG) - 16 / PY_CASH_DIVISOR) < 1e-6
+        assert abs(TURN.get_acq_synergy_value(gs, self.SBB) - 4 / PY_CASH_DIVISOR) < 1e-6
+
+    def test_no_synergy_company_shows_zero(self):
+        """An owned company with no synergy to the target shows 0."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Corp owns BME (red, no outgoing synergies); target is MAD
+        # BME(0)->MAD(23) = 0, MAD(23)->BME(0) = 0
+        self._setup_corp_with_companies(gs, 0, [self.BME], self.MAD)
+
+        assert TURN.get_acq_target_company(gs) == self.MAD
+        assert TURN.get_acq_synergy_value(gs, self.BME) == 0.0
+
+    def test_cleared_after_transition_to_closing(self):
+        """Synergy values cleared when transitioning to CLOSING phase."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        self._setup_corp_with_companies(gs, 0, [self.CDG], self.MAD)
+
+        # Confirm nonzero before transition
+        assert TURN.get_acq_synergy_value(gs, self.CDG) > 0
+
+        transition_to_closing_py(gs)
+
+        # All zeroed
+        for i in range(36):
+            assert TURN.get_acq_synergy_value(gs, i) == 0.0
+
+    def test_cleared_when_no_offers(self):
+        """Synergy values cleared when no valid offers exist."""
+        gs = GameState(3)
+        gs.initialize_game()
+        # No corps active, no offers possible
+        setup_acquisition_phase_py(gs)
+
+        for i in range(36):
+            assert TURN.get_acq_synergy_value(gs, i) == 0.0
+
+    def test_updated_on_pass_to_new_offer(self):
+        """Synergy values update when passing reveals a new offer with different target."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Corp 0 owns CDG; FI has both MAD and FRA
+        float_corp_for_test(gs, 0, company_id=self.CDG)
+        CORPS[0].set_cash(gs, 50000)
+        COMPANIES[self.MAD].transfer_to_fi(gs)
+        COMPANIES[self.FRA].transfer_to_fi(gs)
+
+        setup_acquisition_phase_py(gs)
+        assert get_offer_count(gs) >= 2
+
+        first_target = TURN.get_acq_target_company(gs)
+
+        # Pass on first offer
+        apply_acquisition_action_py(gs, ACTION_PASS)
+
+        second_target = TURN.get_acq_target_company(gs)
+        if second_target >= 0 and second_target != first_target:
+            # Synergy value should reflect the new target
+            expected = (get_company_synergy(self.CDG, second_target)
+                        + get_company_synergy(second_target, self.CDG))
+            assert abs(TURN.get_acq_synergy_value(gs, self.CDG) - expected / PY_CASH_DIVISOR) < 1e-6

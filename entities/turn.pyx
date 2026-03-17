@@ -691,6 +691,10 @@ cdef class TurnState:
         for i in range(<int>GameConstants.NUM_COMPANIES):
             state._data[offset + i] = 0.0
 
+    cpdef float get_acq_synergy_value(self, GameState state, int company_id):
+        """Get synergy value for a company (for testing). Returns raw float."""
+        return state._data[self._acq_synergy_values_offset + company_id]
+
     # =========================================================================
     # CLOSING STATE
     # =========================================================================
