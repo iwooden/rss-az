@@ -22,7 +22,7 @@ cdef struct StateLayout:
     int corp_stride
     int corps_size
     int turn_size
-    int static_size
+    int auction_slot_info_size
     int visible_size
     int hidden_size
     int total_size
@@ -37,7 +37,7 @@ cdef struct StateLayout:
     int market_offset
     int corps_offset
     int turn_offset
-    int static_offset
+    int auction_slot_info_offset
     int hidden_active_player_offset
     int hidden_num_players_offset
     int hidden_deck_top_offset
@@ -88,6 +88,8 @@ cdef struct TurnStateOffsets:
     int acq_synergy_values
     # Closing phase
     int closing_company
+    # Active company contextual info (5 scalars: stars, low, face, high, income)
+    int active_company
 
 cdef struct PlayerFieldOffsets:
     int cash
@@ -213,6 +215,13 @@ cdef class GameState:
     # Closing state access (setter via TurnState entity to avoid duplication)
     cdef int _get_current_closing_company(self) noexcept nogil
     cpdef int get_current_closing_company(self)
+
+    # Auction slot info
+    cpdef void _populate_auction_slot_info(self)
+
+    # Active company contextual info
+    cpdef void set_active_company(self, int company_id)
+    cpdef void clear_active_company(self)
 
     # Game initialization
     cpdef void initialize_game(self, int seed=*)

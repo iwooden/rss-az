@@ -131,22 +131,19 @@ def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
     post += 16
     groups.append(("turn:ipo", np.arange(post, post + 72)))  # company(36) + remaining(36)
     post += 72
-    groups.append(("turn:acq", np.arange(post, post + 45)))  # active_corp(8) + target(36) + fi_offer(1)
-    post += 45
+    groups.append(("turn:acq", np.arange(post, post + 81)))  # active_corp(8) + target(36) + fi_offer(1) + synergy(36)
+    post += 81
     groups.append(("turn:closing", np.arange(post, post + 36)))
     post += 36
-    assert post == layout.static_offset, f"Turn end {post} != static_offset {layout.static_offset}"
+    groups.append(("turn:active_company", np.arange(post, post + 5)))  # stars, low, face, high, income
+    post += 5
+    assert post == layout.auction_slot_info_offset, (
+        f"Turn end {post} != auction_slot_info_offset {layout.auction_slot_info_offset}"
+    )
 
-    # --- Static company data ---
-    s = layout.static_offset
-    groups.append(("static:stars", np.array([s + c * 40 for c in range(36)])))
-    groups.append(("static:low_price", np.array([s + c * 40 + 1 for c in range(36)])))
-    groups.append(("static:face_value", np.array([s + c * 40 + 2 for c in range(36)])))
-    groups.append(("static:high_price", np.array([s + c * 40 + 3 for c in range(36)])))
-    syn_idx: list[int] = []
-    for c in range(36):
-        syn_idx.extend(range(s + c * 40 + 4, s + c * 40 + 40))
-    groups.append(("static:synergies", np.array(syn_idx)))
+    # --- Auction slot info (5 scalars per slot: stars, low, face, high, income) ---
+    s = layout.auction_slot_info_offset
+    groups.append(("auction_slot_info", np.arange(s, s + layout.auction_slot_info_size)))
 
     # Verify full coverage
     all_idx = np.concatenate([g[1] for g in groups])

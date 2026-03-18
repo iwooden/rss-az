@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | 1683         | 1184        | 2867       |
-| 3       | 1763         | 1184        | 2947       |
-| 4       | 1845         | 1184        | 3029       |
-| 5       | 1929         | 1184        | 3113       |
-| 6       | 2015         | 1184        | 3199       |
+| 2       | 1554         | 1184        | 2738       |
+| 3       | 1639         | 1184        | 2823       |
+| 4       | 1726         | 1184        | 2910       |
+| 5       | 1815         | 1184        | 2999       |
+| 6       | 1906         | 1184        | 3090       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 
@@ -196,16 +196,21 @@ Size varies with player count: `287 + (3 * num_players)`
 | `acq_synergy_values` | 36 | normalized | Synergy income bonus per company / CASH_DIVISOR, 0 if corp doesn't own |
 | **Closing:** | | | |
 | `closing_company` | 36 | one-hot | Current offer |
+| **Active Company:** | | | |
+| `active_company` | 5 | normalized | stars/STAR_DIVISOR, low/face/high/income / CASH_DIVISOR. Set during BID, ACQ, CLOSING, IPO. Zero when no active company. |
 
-### Static Company Data (36 companies x 4 = 144)
+### Auction Slot Info (5 × num_players)
 
-Per company (4 floats):
+Per slot (5 floats, ordered by auction slot index):
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
 | `stars` | 1 | normalized | / STAR_DIVISOR |
 | `low_price` | 1 | normalized | / CASH_DIVISOR |
 | `face_value` | 1 | normalized | / CASH_DIVISOR |
 | `high_price` | 1 | normalized | / CASH_DIVISOR |
+| `income` | 1 | normalized | Adjusted income / CASH_DIVISOR (reflects current CoO) |
+
+Updated when auction row changes (init, auction resolution, WRAP_UP). Empty slots are zero-filled.
 
 ---
 

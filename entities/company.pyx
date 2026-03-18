@@ -359,3 +359,8 @@ cdef class Company:
 # Initialize companies and store in both list (by ID) and dict (by name)
 COMPANIES = [Company(i, name) for i, name in enumerate(COMPANY_NAMES)]
 COMPANIES_BY_NAME = {name: COMPANIES[i] for i, name in enumerate(COMPANY_NAMES)}
+
+
+def get_auction_company_for_slot_py(GameState state, int slot):
+    """Python wrapper for get_auction_company_for_slot (for testing)."""
+    return get_auction_company_for_slot(state, slot)

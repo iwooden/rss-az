@@ -136,28 +136,25 @@ def _compute_metrics(
     return results
 
 
-def _build_static_subfeature_indices(static_offset: int) -> dict[str, np.ndarray]:
-    """Build index arrays for each static sub-feature across all 36 companies.
+def _build_auction_slot_subfeature_indices(offset: int, num_slots: int) -> dict[str, np.ndarray]:
+    """Build index arrays for each auction slot sub-feature.
 
-    Per company (40 floats): stars(1), low_price(1), face_value(1), high_price(1), synergies(36)
+    Per slot (5 floats): stars(1), low_price(1), face_value(1), high_price(1), income(1)
     """
-    num_companies = 36
-    company_stride = 40
-
     groups: dict[str, list[int]] = {
         "stars": [],
         "low_price": [],
         "face_value": [],
         "high_price": [],
-        "synergies": [],
+        "income": [],
     }
-    for c in range(num_companies):
-        base = static_offset + c * company_stride
+    for s in range(num_slots):
+        base = offset + s * 5
         groups["stars"].append(base + 0)
         groups["low_price"].append(base + 1)
         groups["face_value"].append(base + 2)
         groups["high_price"].append(base + 3)
-        groups["synergies"].extend(range(base + 4, base + 40))
+        groups["income"].append(base + 4)
 
     return {k: np.array(v) for k, v in groups.items()}
 
@@ -173,7 +170,7 @@ def run_ablation(
     """Zero out specified features and measure output changes.
 
     Args:
-        ablate_indices: Feature indices to zero. If None, zeros full static region.
+        ablate_indices: Feature indices to zero. If None, zeros auction slot info region.
         orig_cache: Pre-computed (orig_logits, orig_values) to avoid redundant
             forward passes when running multiple ablations on the same data.
 
@@ -187,7 +184,8 @@ def run_ablation(
 
     if ablate_indices is None:
         ablate_indices = np.arange(
-            layout.static_offset, layout.static_offset + layout.static_size
+            layout.auction_slot_info_offset,
+            layout.auction_slot_info_offset + layout.auction_slot_info_size,
         )
 
     # Original forward pass (compute once, reuse)
@@ -207,25 +205,27 @@ def run_ablation(
     return metrics, (orig_logits, orig_values)
 
 
-def run_static_breakdown(
+def run_auction_slot_breakdown(
     model: torch.nn.Module,
     device: torch.device,
     dataset: InterpDataset,
     batch_size: int = 256,
     orig_cache: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> dict[str, dict[str, object]]:
-    """Ablate each static sub-feature group independently.
+    """Ablate each auction slot sub-feature group independently.
 
     Returns dict mapping group name to its ablation metrics.
     """
     layout = get_layout(3)
-    groups = _build_static_subfeature_indices(layout.static_offset)
+    groups = _build_auction_slot_subfeature_indices(
+        layout.auction_slot_info_offset, layout.num_players
+    )
 
-    # Also add a combined "all_scalars" group (stars + prices)
-    groups["all_scalars"] = np.concatenate([
-        groups["stars"], groups["low_price"],
-        groups["face_value"], groups["high_price"],
-    ])
+    # Also add a combined "all" group
+    groups["all"] = np.arange(
+        layout.auction_slot_info_offset,
+        layout.auction_slot_info_offset + layout.auction_slot_info_size,
+    )
 
     # Compute original outputs once
     if orig_cache is None:
@@ -298,7 +298,7 @@ def _print_breakdown_summary(
     """Print a comparison table across all sub-feature groups."""
     print()
     print("=" * 75)
-    print("  STATIC SUB-FEATURE COMPARISON")
+    print("  AUCTION SLOT SUB-FEATURE COMPARISON")
     print("=" * 75)
     print(
         f"  {'Group':<14} {'# Feats':>8} {'% Input':>8} "
@@ -310,7 +310,7 @@ def _print_breakdown_summary(
 
     # Print individual fields first, then composites
     field_order = ["stars", "low_price", "face_value", "high_price",
-                   "synergies", "all_scalars"]
+                   "income", "all"]
     for name in field_order:
         if name not in breakdown:
             continue
@@ -362,7 +362,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--breakdown", action="store_true",
-        help="Also ablate each static sub-feature (stars, prices, synergies) independently",
+        help="Also ablate each auction slot sub-feature (stars, prices, income) independently",
     )
     args = parser.parse_args()
 
@@ -399,25 +399,27 @@ def main() -> None:
 
     layout = get_layout(config.num_players)
 
-    # Overall static ablation
-    print("\nRunning static data ablation...")
+    # Overall auction slot info ablation
+    print("\nRunning auction slot info ablation...")
     print(
-        f"  Zeroing indices [{layout.static_offset}:{layout.static_offset + layout.static_size}] "
-        f"({layout.static_size} floats, {layout.static_size / layout.visible_size:.1%} of input)"
+        f"  Zeroing indices [{layout.auction_slot_info_offset}:"
+        f"{layout.auction_slot_info_offset + layout.auction_slot_info_size}] "
+        f"({layout.auction_slot_info_size} floats, "
+        f"{layout.auction_slot_info_size / layout.visible_size:.1%} of input)"
     )
 
     results, orig_cache = run_ablation(
         model, device, dataset, batch_size=args.batch_size,
     )
     _print_results(
-        results, "STATIC COMPANY DATA ABLATION (ALL)",
-        layout.static_size, layout.visible_size,
+        results, "AUCTION SLOT INFO ABLATION (ALL)",
+        layout.auction_slot_info_size, layout.visible_size,
     )
 
     # Sub-feature breakdown
     if args.breakdown:
         print("\nRunning per-sub-feature ablation...")
-        breakdown = run_static_breakdown(
+        breakdown = run_auction_slot_breakdown(
             model, device, dataset,
             batch_size=args.batch_size, orig_cache=orig_cache,
         )

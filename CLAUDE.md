@@ -117,9 +117,9 @@ Central data structure: single contiguous float32 numpy array.
 **Sizes by player count:**
 | Players | Visible | Hidden | Total |
 |---------|---------|--------|-------|
-| 2 | 1683 | 1184 | 2867 |
-| 3 | 1763 | 1184 | 2947 |
-| 6 | 2015 | 1184 | 3199 |
+| 2 | 1554 | 1184 | 2738 |
+| 3 | 1639 | 1184 | 2823 |
+| 6 | 1906 | 1184 | 3090 |
 
 ### Actions (`core/actions.pyx`)
 
@@ -231,8 +231,8 @@ Instead of using the root node's mean value (soft-Z) or the game outcome as trai
 
 ### NN Model (`nn/model_3p.py`)
 
-Residual MLP (~25.6M parameters):
-- **Input:** 1763 floats (3-player) (visible state, active player rotated to slot 0)
+Residual MLP (~25.5M parameters):
+- **Input:** 1639 floats (3-player) (visible state, active player rotated to slot 0)
 - **Trunk:** Linear → 10 residual blocks (pre-LN, GELU, expansion=2) → LayerNorm
 - **Policy head:** Linear(768→256) → GELU → Linear(256→246) logits (masked by legal actions before softmax)
 - **Value head:** Linear(768→384) → GELU → Linear(384→192) → GELU → Linear(192→3) → Tanh
@@ -358,7 +358,7 @@ Each epoch: (1) play N games via MCTS self-play → (2) store examples in replay
 ### Training Examples
 
 At each decision point during self-play, a `TrainingExample` is stored:
-- **state**: Visible state rotated so active player is at slot 0 (shape `(1763,)` for 3 players)
+- **state**: Visible state rotated so active player is at slot 0 (shape `(1639,)` for 3 players)
 - **legal_mask**: Binary mask of legal actions (shape `(246,)`)
 - **policy_target**: MCTS visit probabilities (shape `(246,)`)
 - **value_target**: A0GB values rotated to active-player-first (shape `(3,)`)
@@ -406,7 +406,7 @@ record = play_game(evaluator, config, game_seed=42, rng=rng)
 ```
 [Phase (11) | CoO Level (7) | Players (repeated) | FI (37) | Companies (108) |
  Company Incomes (36) | Market (27) | Corporations (872) | Turn (complex) |
- Static Data (144) | HIDDEN: Active Player, Deck, Offer Buffers]
+ Auction Slot Info (5*num_players) | HIDDEN: Active Player, Deck, Offer Buffers]
 ```
 
 **Player stride** = `72 + num_players` floats per player

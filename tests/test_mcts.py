@@ -44,7 +44,9 @@ def layout():
 @pytest.fixture(scope="session")
 def model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return RSSAlphaZeroNet(RSSModelConfig()).to(device)
+    _layout = get_layout(3)
+    cfg = RSSModelConfig(input_dim=_layout.visible_size)
+    return RSSAlphaZeroNet(cfg).to(device)
 
 
 @pytest.fixture(scope="session")

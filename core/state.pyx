@@ -32,6 +32,11 @@ from core.data cimport (
     COMPANY_LOW_PRICE,
     COMPANY_FACE_VALUE,
     COMPANY_HIGH_PRICE,
+    COMPANY_INCOME,
+    get_company_stars,
+    get_company_face_value,
+    get_company_low_price,
+    get_company_high_price,
 )
 
 LayoutInfo = namedtuple('LayoutInfo', [
@@ -39,16 +44,19 @@ LayoutInfo = namedtuple('LayoutInfo', [
     'visible_size', 'hidden_size', 'total_size',
     'player_stride', 'players_size', 'fi_size',
     'corp_stride', 'corps_size', 'turn_size',
-    'static_size', 'phase_size', 'coo_size',
+    'auction_slot_info_size', 'phase_size', 'coo_size',
     'companies_size', 'company_incomes_size', 'market_size',
     # Visible offsets
     'phase_offset', 'coo_offset', 'players_offset', 'fi_offset',
     'auction_companies_offset', 'revealed_companies_offset',
     'removed_companies_offset', 'company_incomes_offset',
-    'market_offset', 'corps_offset', 'turn_offset', 'static_offset',
+    'market_offset', 'corps_offset', 'turn_offset',
+    'auction_slot_info_offset',
     # Per-player turn field offsets (absolute, for rotation)
     'auction_high_bidder_offset', 'auction_starter_offset',
     'auction_passed_offset',
+    # Active company offset (absolute, within turn state)
+    'active_company_offset',
     # Convenience
     'num_players',
 ])
@@ -62,6 +70,7 @@ from entities import market as market_module
 from entities import turn as turn_module
 from entities import deck as deck_module
 from entities import offer as offer_module
+from entities.company cimport get_auction_company_for_slot
 
 cnp.import_array()
 
@@ -187,15 +196,17 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         1 +                 # acq_is_fi_offer
         GameConstants.NUM_COMPANIES +     # acq_synergy_values
         # Closing
-        GameConstants.NUM_COMPANIES       # closing_company
+        GameConstants.NUM_COMPANIES +     # closing_company
+        # Active company contextual info
+        5                                 # stars, low, face, high, income
     )
     layout.turn_offset = offset
     offset += layout.turn_size
 
-    # Static company data
-    layout.static_size = GameConstants.NUM_COMPANIES * 4  # stars, low, face, high
-    layout.static_offset = offset
-    offset += layout.static_size
+    # Auction slot info (5 scalars per slot: stars, low, face, high, income)
+    layout.auction_slot_info_size = 5 * num_players
+    layout.auction_slot_info_offset = offset
+    offset += layout.auction_slot_info_size
 
     layout.visible_size = offset
 
@@ -345,6 +356,10 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
     t.closing_company = offset
     offset += GameConstants.NUM_COMPANIES
 
+    # Active company contextual info (5 scalars: stars, low, face, high, income)
+    t.active_company = offset
+    offset += 5
+
     return t
 
 
@@ -403,7 +418,7 @@ def get_layout(int num_players):
         corp_stride=layout.corp_stride,
         corps_size=layout.corps_size,
         turn_size=layout.turn_size,
-        static_size=layout.static_size,
+        auction_slot_info_size=layout.auction_slot_info_size,
         phase_size=layout.phase_size,
         coo_size=layout.coo_size,
         companies_size=layout.companies_size,
@@ -420,10 +435,11 @@ def get_layout(int num_players):
         market_offset=layout.market_offset,
         corps_offset=layout.corps_offset,
         turn_offset=layout.turn_offset,
-        static_offset=layout.static_offset,
+        auction_slot_info_offset=layout.auction_slot_info_offset,
         auction_high_bidder_offset=layout.turn_offset + turn.auction_high_bidder,
         auction_starter_offset=layout.turn_offset + turn.auction_starter,
         auction_passed_offset=layout.turn_offset + turn.auction_passed,
+        active_company_offset=layout.turn_offset + turn.active_company,
         num_players=num_players,
     )
 
@@ -896,6 +912,70 @@ cdef class GameState:
     # Note: set_current_closing_company() removed - use TurnState.set_closing_company()
 
     # =========================================================================
+    # AUCTION SLOT INFO
+    # =========================================================================
+
+    cpdef void _populate_auction_slot_info(self):
+        """
+        Populate auction slot info block with company data for each auction slot.
+
+        For each slot i (0..num_players-1), writes 5 normalized scalars:
+        stars, low_price, face_value, high_price, adjusted_income.
+        Empty slots are zero-filled.
+
+        Called whenever the auction row changes:
+        - Game initialization (after initial draw)
+        - WRAP_UP (after revealed->auction transition)
+        - BID resolution (auction winner removes a company)
+        """
+        cdef int slot, company_id, base
+        cdef int coo_level = <int>self._data[self._layout.hidden_coo_level_offset]
+
+        for slot in range(self._num_players):
+            base = self._layout.auction_slot_info_offset + slot * 5
+            company_id = get_auction_company_for_slot(self, slot)
+            if company_id >= 0:
+                self._data[base + 0] = <float>get_company_stars(company_id) / STAR_DIVISOR
+                self._data[base + 1] = <float>get_company_low_price(company_id) / CASH_DIVISOR
+                self._data[base + 2] = <float>get_company_face_value(company_id) / CASH_DIVISOR
+                self._data[base + 3] = <float>get_company_high_price(company_id) / CASH_DIVISOR
+                self._data[base + 4] = <float>get_adjusted_company_income(company_id, coo_level) / CASH_DIVISOR
+            else:
+                self._data[base + 0] = 0.0
+                self._data[base + 1] = 0.0
+                self._data[base + 2] = 0.0
+                self._data[base + 3] = 0.0
+                self._data[base + 4] = 0.0
+
+    # =========================================================================
+    # ACTIVE COMPANY CONTEXTUAL INFO
+    # =========================================================================
+
+    cpdef void set_active_company(self, int company_id):
+        """
+        Set the active company block in turn state (5 scalars).
+
+        Writes stars, low_price, face_value, high_price, adjusted_income
+        for the given company. Used in BID, ACQUISITION, CLOSING, IPO phases.
+        """
+        cdef int base = self._layout.turn_offset + self._turn_offsets.active_company
+        cdef int coo_level = <int>self._data[self._layout.hidden_coo_level_offset]
+        self._data[base + 0] = <float>get_company_stars(company_id) / STAR_DIVISOR
+        self._data[base + 1] = <float>get_company_low_price(company_id) / CASH_DIVISOR
+        self._data[base + 2] = <float>get_company_face_value(company_id) / CASH_DIVISOR
+        self._data[base + 3] = <float>get_company_high_price(company_id) / CASH_DIVISOR
+        self._data[base + 4] = <float>get_adjusted_company_income(company_id, coo_level) / CASH_DIVISOR
+
+    cpdef void clear_active_company(self):
+        """Clear the active company block (zero-fill 5 floats)."""
+        cdef int base = self._layout.turn_offset + self._turn_offsets.active_company
+        self._data[base + 0] = 0.0
+        self._data[base + 1] = 0.0
+        self._data[base + 2] = 0.0
+        self._data[base + 3] = 0.0
+        self._data[base + 4] = 0.0
+
+    # =========================================================================
     # GAME INITIALIZATION
     # =========================================================================
 
@@ -992,15 +1072,8 @@ cdef class GameState:
         turn_module.TURN.clear_acq_target_company(self)
         turn_module.TURN.clear_closing_company(self)
 
-        # 10. Populate static company data (stars, prices)
-        cdef int base_offset
-        cdef int static_stride = 4
-        for i in range(<int>GameConstants.NUM_COMPANIES):
-            base_offset = self._layout.static_offset + i * static_stride
-            self._data[base_offset + 0] = <float>COMPANY_STARS[i] / STAR_DIVISOR
-            self._data[base_offset + 1] = <float>COMPANY_LOW_PRICE[i] / CASH_DIVISOR
-            self._data[base_offset + 2] = <float>COMPANY_FACE_VALUE[i] / CASH_DIVISOR
-            self._data[base_offset + 3] = <float>COMPANY_HIGH_PRICE[i] / CASH_DIVISOR
+        # 10. Populate auction slot info for initial auction row
+        self._populate_auction_slot_info()
 
         # Set active player
         self._set_active_player(0)

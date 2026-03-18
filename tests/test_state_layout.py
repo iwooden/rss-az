@@ -1,4 +1,4 @@
-"""Tests for GameState layout sizes and static data.
+"""Tests for GameState layout sizes, auction slot info, and active company.
 
 These tests verify that documented sizes in VECTORS.md and CLAUDE.md match actual
 computed sizes. Uses core.state.get_layout() as the single source of truth.
@@ -9,9 +9,11 @@ from core.state import GameState, get_layout
 from core.data import (
     get_company_stars, get_company_face_value,
     get_company_low_price, get_company_high_price,
+    get_adjusted_company_income,
     PY_STAR_DIVISOR, PY_CASH_DIVISOR,
-    GameConstants,
 )
+from entities.company import COMPANIES, get_auction_company_for_slot_py
+from entities.turn import TURN
 
 
 class TestStateLayoutSizes:
@@ -20,11 +22,11 @@ class TestStateLayoutSizes:
     # Expected sizes - these MUST match VECTORS.md and CLAUDE.md
     # If these tests fail, update the documentation to match!
     EXPECTED_SIZES = {
-        2: {'visible': 1683, 'hidden': 1184, 'total': 2867},
-        3: {'visible': 1763, 'hidden': 1184, 'total': 2947},
-        4: {'visible': 1845, 'hidden': 1184, 'total': 3029},
-        5: {'visible': 1929, 'hidden': 1184, 'total': 3113},
-        6: {'visible': 2015, 'hidden': 1184, 'total': 3199},
+        2: {'visible': 1554, 'hidden': 1184, 'total': 2738},
+        3: {'visible': 1639, 'hidden': 1184, 'total': 2823},
+        4: {'visible': 1726, 'hidden': 1184, 'total': 2910},
+        5: {'visible': 1815, 'hidden': 1184, 'total': 2999},
+        6: {'visible': 1906, 'hidden': 1184, 'total': 3090},
     }
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
@@ -72,10 +74,10 @@ class TestComponentSizes:
         assert layout.corp_stride == 109
 
     def test_turn_size_formula(self):
-        """Turn size = 287 + 3*num_players."""
+        """Turn size = 292 + 3*num_players (287 base + 5 active_company)."""
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
-            expected = 287 + 3 * num_players
+            expected = 292 + 3 * num_players
             assert layout.turn_size == expected, (
                 f"{num_players} players: turn size {layout.turn_size} != {expected}"
             )
@@ -85,18 +87,17 @@ class TestComponentSizes:
         layout = get_layout(3)
         assert layout.hidden_size == 1184
 
-    def test_static_size(self):
-        """Static company data = 36 * 4 = 144."""
-        layout = get_layout(3)
-        assert layout.static_size == 144
+    def test_auction_slot_info_size(self):
+        """Auction slot info = 5 * num_players."""
+        for num_players in [2, 3, 4, 5, 6]:
+            layout = get_layout(num_players)
+            assert layout.auction_slot_info_size == 5 * num_players, (
+                f"{num_players} players: auction slot info {layout.auction_slot_info_size} != {5 * num_players}"
+            )
 
 
-NUM_COMPANIES = int(GameConstants.NUM_COMPANIES)
-STATIC_STRIDE = 4
-
-
-class TestStaticCompanyData:
-    """Verify the static company data block is populated correctly."""
+class TestAuctionSlotInfo:
+    """Verify the auction slot info block is populated correctly."""
 
     @pytest.fixture
     def state(self):
@@ -104,59 +105,85 @@ class TestStaticCompanyData:
         gs.initialize_game(seed=42)
         return gs
 
-    def test_static_block_not_all_zeros(self, state):
-        """Static block must contain nonzero data after initialization."""
+    def test_auction_slots_populated_on_init(self, state):
+        """Auction slot info block must contain nonzero data after initialization."""
         layout = get_layout(3)
-        block = state._array[layout.static_offset:layout.static_offset + layout.static_size]
+        block = state._array[layout.auction_slot_info_offset:layout.auction_slot_info_offset + layout.auction_slot_info_size]
         assert np.count_nonzero(block) > 0
 
-    @pytest.mark.parametrize("company_id", range(NUM_COMPANIES))
-    def test_company_stars(self, state, company_id):
+    def test_auction_slot_data_matches_companies(self, state):
+        """Each slot's data should match the actual auction company's static data."""
         layout = get_layout(3)
-        offset = layout.static_offset + company_id * STATIC_STRIDE
-        expected = get_company_stars(company_id) / PY_STAR_DIVISOR
-        assert abs(state._array[offset + 0] - expected) < 1e-6
+        coo_level = TURN.get_coo_level(state)
+        for slot in range(3):
+            company_id = get_auction_company_for_slot_py(state, slot)
+            if company_id < 0:
+                continue
+            base = layout.auction_slot_info_offset + slot * 5
+            assert abs(state._array[base + 0] - get_company_stars(company_id) / PY_STAR_DIVISOR) < 1e-6
+            assert abs(state._array[base + 1] - get_company_low_price(company_id) / PY_CASH_DIVISOR) < 1e-6
+            assert abs(state._array[base + 2] - get_company_face_value(company_id) / PY_CASH_DIVISOR) < 1e-6
+            assert abs(state._array[base + 3] - get_company_high_price(company_id) / PY_CASH_DIVISOR) < 1e-6
+            expected_income = get_adjusted_company_income(company_id, coo_level) / PY_CASH_DIVISOR
+            assert abs(state._array[base + 4] - expected_income) < 1e-6
 
-    @pytest.mark.parametrize("company_id", range(NUM_COMPANIES))
-    def test_company_low_price(self, state, company_id):
+    def test_empty_slots_are_zero(self, state):
+        """When fewer companies available than slots, remaining slots are zero."""
         layout = get_layout(3)
-        offset = layout.static_offset + company_id * STATIC_STRIDE
-        expected = get_company_low_price(company_id) / PY_CASH_DIVISOR
-        assert abs(state._array[offset + 1] - expected) < 1e-6
 
-    @pytest.mark.parametrize("company_id", range(NUM_COMPANIES))
-    def test_company_face_value(self, state, company_id):
+        # Remove all auction companies so all slots become empty
+        for cid in range(36):
+            if COMPANIES[cid].is_for_auction(state):
+                state.set_company_for_auction(cid, False)
+
+        # Re-populate auction slot info
+        state._populate_auction_slot_info()
+
+        # All 3 slots should now be zero
+        for slot in range(3):
+            base = layout.auction_slot_info_offset + slot * 5
+            for i in range(5):
+                assert state._array[base + i] == 0.0, (
+                    f"slot {slot} field {i} should be 0 when no auction companies"
+                )
+
+
+class TestActiveCompany:
+    """Verify the active company block in turn state."""
+
+    @pytest.fixture
+    def state(self):
+        gs = GameState(3)
+        gs.initialize_game(seed=42)
+        return gs
+
+    def test_active_company_zeroed_on_init(self, state):
+        """Active company block should be zero after initialization (INVEST phase)."""
         layout = get_layout(3)
-        offset = layout.static_offset + company_id * STATIC_STRIDE
-        expected = get_company_face_value(company_id) / PY_CASH_DIVISOR
-        assert abs(state._array[offset + 2] - expected) < 1e-6
+        base = layout.active_company_offset
+        for i in range(5):
+            assert state._array[base + i] == 0.0, f"active_company[{i}] != 0.0 at init"
 
-    @pytest.mark.parametrize("company_id", range(NUM_COMPANIES))
-    def test_company_high_price(self, state, company_id):
+    def test_set_active_company(self, state):
+        """set_active_company should populate the 5 scalars correctly."""
         layout = get_layout(3)
-        offset = layout.static_offset + company_id * STATIC_STRIDE
-        expected = get_company_high_price(company_id) / PY_CASH_DIVISOR
-        assert abs(state._array[offset + 3] - expected) < 1e-6
+        company_id = 5  # An arbitrary company
+        coo_level = TURN.get_coo_level(state)
 
-    def test_static_data_identical_across_seeds(self):
-        """Static data should be the same regardless of game seed."""
-        s1 = GameState(3)
-        s1.initialize_game(seed=1)
-        s2 = GameState(3)
-        s2.initialize_game(seed=999)
+        state.set_active_company(company_id)
+        base = layout.active_company_offset
+        assert abs(state._array[base + 0] - get_company_stars(company_id) / PY_STAR_DIVISOR) < 1e-6
+        assert abs(state._array[base + 1] - get_company_low_price(company_id) / PY_CASH_DIVISOR) < 1e-6
+        assert abs(state._array[base + 2] - get_company_face_value(company_id) / PY_CASH_DIVISOR) < 1e-6
+        assert abs(state._array[base + 3] - get_company_high_price(company_id) / PY_CASH_DIVISOR) < 1e-6
+        expected_income = get_adjusted_company_income(company_id, coo_level) / PY_CASH_DIVISOR
+        assert abs(state._array[base + 4] - expected_income) < 1e-6
+
+    def test_clear_active_company(self, state):
+        """clear_active_company should zero out all 5 scalars."""
         layout = get_layout(3)
-        block1 = s1._array[layout.static_offset:layout.static_offset + layout.static_size]
-        block2 = s2._array[layout.static_offset:layout.static_offset + layout.static_size]
-        np.testing.assert_array_equal(block1, block2)
-
-    def test_static_data_identical_across_player_counts(self):
-        """Static data content should be the same for different player counts."""
-        layouts = {}
-        blocks = {}
-        for n in [2, 3, 6]:
-            gs = GameState(n)
-            gs.initialize_game(seed=42)
-            layouts[n] = get_layout(n)
-            blocks[n] = gs._array[layouts[n].static_offset:layouts[n].static_offset + layouts[n].static_size]
-        np.testing.assert_array_equal(blocks[2], blocks[3])
-        np.testing.assert_array_equal(blocks[3], blocks[6])
+        state.set_active_company(10)  # Set first
+        state.clear_active_company()  # Then clear
+        base = layout.active_company_offset
+        for i in range(5):
+            assert state._array[base + i] == 0.0, f"active_company[{i}] != 0.0 after clear"

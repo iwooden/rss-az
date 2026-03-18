@@ -173,6 +173,9 @@ cdef int apply_wrap_up(GameState state) noexcept:
     _process_fi_purchases(state)
     _make_all_revealed_available(state)
 
+    # Update auction slot info (auction row changed after FI purchases + revealed->auction)
+    state._populate_auction_slot_info()
+
     # Set up acquisition phase (generate offers, present first)
     acquisition_module.setup_acquisition_phase(state)
 

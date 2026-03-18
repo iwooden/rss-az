@@ -54,6 +54,12 @@ cdef void _resolve_auction(GameState state) noexcept:
     turn_module.TURN.clear_auction_passed(state)
     turn_module.TURN.set_auction_price(state, -1)
 
+    # Clear active company (no longer in auction context)
+    state.clear_active_company()
+
+    # Update auction slot info (auctioned company removed, replacement drawn as revealed)
+    state._populate_auction_slot_info()
+
     # Return to INVEST phase (BID-10)
     turn_module.TURN.set_phase(state, GamePhases.PHASE_INVEST)
 

@@ -569,6 +569,9 @@ cdef void _present_current_offer(GameState state) noexcept:
         turn_module.TURN.set_acq_fi_offer(state, owner_type == LOC_FI)
         turn_module.TURN.populate_acq_synergy_values(state, corp_id, company_id)
 
+        # Set active company contextual info for ACQUISITION phase
+        state.set_active_company(company_id)
+
         president = corp_module.CORPS[corp_id].get_president_id(state)
         state._set_active_player(president if president >= 0 else 0)
         return
@@ -578,6 +581,7 @@ cdef void _present_current_offer(GameState state) noexcept:
     turn_module.TURN.clear_acq_target_company(state)
     turn_module.TURN.set_acq_fi_offer(state, False)
     turn_module.TURN.clear_acq_synergy_values(state)
+    state.clear_active_company()
 
 
 cdef void _advance_to_next_offer(GameState state) noexcept:
@@ -1015,6 +1019,7 @@ cdef void _transition_to_closing(GameState state) noexcept:
 
     # Clear acquisition-phase-specific visible state
     turn_module.TURN.clear_acq_synergy_values(state)
+    state.clear_active_company()
 
     # Transition to CLOSING (auto-close will execute, then offers in Phase 17)
     turn_module.TURN.set_phase(state, GamePhases.PHASE_CLOSING)

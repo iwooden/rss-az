@@ -51,7 +51,7 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
     - auction_starter (num_players)
     - auction_passed (num_players)
     - dividend_corp (8)
-    - dividend_impact (25)
+    - dividend_impact (26)
     - dividend_remaining (8)
     - issue_corp (8)
     - issue_remaining (8)
@@ -60,7 +60,9 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
     - acq_active_corp (8)
     - acq_target_company (36)
     - acq_is_fi_offer (1)
+    - acq_synergy_values (36)
     - closing_company (36)
+    - active_company (5)
     """
     cdef TurnOffsets t
     cdef int offset = 0
@@ -306,6 +308,8 @@ cdef class TurnState:
             self._update_all_company_incomes(state, level)
             # Recalculate all active corp incomes (they depend on adjusted company incomes)
             self._update_all_corp_incomes(state)
+            # Update auction slot info (income values depend on CoO)
+            state._populate_auction_slot_info()
 
     cdef void _update_all_company_incomes(self, GameState state, int coo_level):
         """

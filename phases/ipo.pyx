@@ -153,8 +153,9 @@ cdef void _transition_out_of_ipo(GameState state) noexcept:
     NOT here. Per RULES.md: Roundtrip info only relevant in INVEST phase -
     clearing it elsewhere pollutes state vector for model.
     """
-    # Clear IPO company
+    # Clear IPO company and active company
     turn_module.TURN.clear_ipo_company(state)
+    state.clear_active_company()
 
     # Increment turn number (end of turn bookkeeping)
     cdef int current_turn = turn_module.TURN.get_turn_number(state)
@@ -193,6 +194,7 @@ cdef void _advance_to_next_company(GameState state) noexcept:
 
     # Set up for company owner's decision
     turn_module.TURN.set_ipo_company(state, company_id)
+    state.set_active_company(company_id)
     player_id = company_module.COMPANIES[company_id].get_owner_id(state)
     state._set_active_player(player_id)
 
