@@ -8,6 +8,7 @@ from core.state cimport GameState
 
 cdef class ForeignInvestor:
     cdef int _cash_offset           # Offset to FI cash in state array
+    cdef int _income_offset         # Offset to FI income in state array
     cdef int _owned_companies_offset  # Offset to FI owned companies
 
     # Initialization
@@ -21,6 +22,8 @@ cdef class ForeignInvestor:
     # Company ownership (use Company.transfer_to_fi() to set)
     cpdef bint owns_company(self, GameState state, int company_id)
 
-    # Income calculation
+    # Income
+    cpdef int get_income(self, GameState state)
+    cpdef void set_income(self, GameState state, int income)
     cpdef int calculate_income(self, GameState state)
     cpdef void apply_income(self, GameState state, int income)

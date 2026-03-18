@@ -41,6 +41,7 @@ cdef class Player:
     cdef int _share_buys_offset
     cdef int _share_sells_offset
     cdef int _acquisition_proceeds_offset
+    cdef int _income_offset
 
     # Initialization
     cpdef void initialize(self, GameState state)
@@ -91,5 +92,7 @@ cdef class Player:
     cpdef void add_acquisition_proceeds(self, GameState state, int amount)
     cpdef void clear_acquisition_proceeds(self, GameState state)
 
-    # Income calculation
+    # Income
     cpdef int get_income(self, GameState state)
+    cpdef void set_income(self, GameState state, int income)
+    cpdef void calculate_income(self, GameState state)

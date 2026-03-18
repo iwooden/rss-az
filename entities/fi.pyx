@@ -24,6 +24,7 @@ cdef class ForeignInvestor:
 
     def __cinit__(self):
         self._cash_offset = 0
+        self._income_offset = 0
         self._owned_companies_offset = 0
 
     cpdef void initialize(self, GameState state):
@@ -34,9 +35,10 @@ cdef class ForeignInvestor:
         """
         cdef StateLayout layout = state._layout
 
-        # FI layout: [cash][owned_companies x 36]
+        # FI layout: [cash][income][owned_companies x 36]
         self._cash_offset = layout.fi_offset
-        self._owned_companies_offset = layout.fi_offset + 1
+        self._income_offset = layout.fi_offset + 1
+        self._owned_companies_offset = layout.fi_offset + 2
 
     # =========================================================================
     # CASH OPERATIONS
@@ -64,12 +66,20 @@ cdef class ForeignInvestor:
         return state._data[self._owned_companies_offset + company_id] == 1.0
 
     # =========================================================================
-    # INCOME CALCULATION
+    # INCOME
     # =========================================================================
+
+    cpdef int get_income(self, GameState state):
+        """Get FI's stored income (integer dollars)."""
+        return <int>lround(state._data[self._income_offset] * CASH_DIVISOR)
+
+    cpdef void set_income(self, GameState state, int income):
+        """Set FI's income (integer dollars)."""
+        state._data[self._income_offset] = <float>income / CASH_DIVISOR
 
     cpdef int calculate_income(self, GameState state):
         """
-        Calculate total income for Foreign Investor.
+        Recalculate, store, and return total income for Foreign Investor.
 
         Uses the cached company_incomes array (updated when CoO changes).
         FI always receives +5 base income bonus.
@@ -84,7 +94,9 @@ cdef class ForeignInvestor:
             if state._data[self._owned_companies_offset + company_id] == 1.0:
                 total += <int>lround(state._data[company_incomes_offset + company_id] * CASH_DIVISOR)
         # FI always gets +5 bonus (RULES.md line 354)
-        return total + 5
+        total += 5
+        self.set_income(state, total)
+        return total
 
     # =========================================================================
     # INCOME APPLICATION

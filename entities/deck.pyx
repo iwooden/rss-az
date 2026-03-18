@@ -14,7 +14,7 @@ Deck setup rules (from RULES.md):
 """
 
 from libc.stdlib cimport rand, srand
-from core.state cimport GameState, StateLayout
+from core.state cimport GameState, StateLayout, TurnStateOffsets
 from core.data cimport GameConstants, get_company_stars, is_last_in_group
 from entities import company as company_module
 from entities import turn as turn_module
@@ -57,20 +57,30 @@ cdef class Deck:
     def __cinit__(self):
         self._deck_top_offset = 0
         self._deck_order_offset = 0
+        self._cards_remaining_offset = 0
 
     cpdef void initialize(self, GameState state):
         """
         Initialize offsets from state layout. Call once when starting a new game.
         """
         cdef StateLayout layout = state._layout
+        cdef TurnStateOffsets turn = state._turn_offsets
 
         # Hidden state offsets are already absolute (computed continuing from visible_size)
         self._deck_top_offset = layout.hidden_deck_top_offset
         self._deck_order_offset = layout.hidden_deck_order_offset
+        # Visible state offset for cards remaining (in turn state section)
+        self._cards_remaining_offset = layout.turn_offset + turn.cards_remaining
 
     # =========================================================================
     # BASIC OPERATIONS
     # =========================================================================
+
+    cdef void _update_cards_remaining(self, GameState state) noexcept:
+        """Update the visible-state cards_remaining scalar from deck_top."""
+        cdef int top = <int>state._data[self._deck_top_offset]
+        cdef int remaining = top + 1 if top >= 0 else 0
+        state._data[self._cards_remaining_offset] = <float>remaining / GameConstants.NUM_COMPANIES
 
     cpdef int draw(self, GameState state):
         """
@@ -100,6 +110,7 @@ cdef class Deck:
         # Move top pointer down
         new_top = top - 1
         state._data[self._deck_top_offset] = <float>new_top
+        self._update_cards_remaining(state)
 
         # Mark drawn company as revealed (unavailable for auction this turn)
         company_module.COMPANIES[company_id].mark_revealed(state)
@@ -167,6 +178,7 @@ cdef class Deck:
         # Clear the vacated top slot and decrement deck_top
         state._data[self._deck_order_offset + top] = -1.0
         state._data[self._deck_top_offset] = <float>(top - 1)
+        self._update_cards_remaining(state)
 
     # =========================================================================
     # SETUP
@@ -241,6 +253,8 @@ cdef class Deck:
         # Clear remaining slots (not strictly necessary but clean)
         for i in range(deck_size, 36):
             state._data[self._deck_order_offset + i] = -1.0
+
+        self._update_cards_remaining(state)
 
     cdef int _add_color_group(self, int* deck_cards, int deck_size, int start, int end, int last_idx, int count):
         """
@@ -346,6 +360,8 @@ cdef class Deck:
         # Clear remaining
         for i in range(size, 36):
             state._data[self._deck_order_offset + i] = -1.0
+
+        self._update_cards_remaining(state)
 
     cpdef list get_ghost_entries(self, GameState state):
         """

@@ -20,6 +20,8 @@ from core.data cimport (
 from core.data import COMPANY_NAMES
 from entities import deck as deck_module
 from entities import corp as corp_module
+from entities import player as player_module
+from entities import fi as fi_module
 
 
 # =============================================================================
@@ -92,7 +94,7 @@ cdef class Company:
         self._auction_offset = layout.auction_companies_offset + self.company_id
         self._revealed_offset = layout.revealed_companies_offset + self.company_id
         self._removed_offset = layout.removed_companies_offset + self.company_id
-        self._fi_offset = layout.fi_offset + 1 + self.company_id  # +1 for fi_cash
+        self._fi_offset = layout.fi_offset + 2 + self.company_id  # +2 for fi_cash, fi_income
         self._income_offset = layout.company_incomes_offset + self.company_id
 
         # Player ownership requires computing per-player offsets
@@ -220,6 +222,11 @@ cdef class Company:
         if old_loc == LOC_CORP and corp_module.CORPS[old_owner].is_active(state):
             corp_module.CORPS[old_owner].recalculate_stars(state)
             corp_module.CORPS[old_owner].calculate_income(state)
+        elif old_loc == LOC_FI:
+            fi_module.FI.calculate_income(state)
+        elif old_loc == LOC_PLAYER and old_owner != player_id:
+            player_module.PLAYERS[old_owner].calculate_income(state)
+        player_module.PLAYERS[player_id].calculate_income(state)
 
     cpdef void transfer_to_fi(self, GameState state):
         """Transfer company to Foreign Investor ownership."""
@@ -232,6 +239,9 @@ cdef class Company:
         if old_loc == LOC_CORP and corp_module.CORPS[old_owner].is_active(state):
             corp_module.CORPS[old_owner].recalculate_stars(state)
             corp_module.CORPS[old_owner].calculate_income(state)
+        elif old_loc == LOC_PLAYER:
+            player_module.PLAYERS[old_owner].calculate_income(state)
+        fi_module.FI.calculate_income(state)
 
     cpdef void transfer_to_corp(self, GameState state, int corp_id):
         """Transfer company to corporation ownership."""
@@ -246,6 +256,10 @@ cdef class Company:
         if old_loc == LOC_CORP and old_owner != corp_id and corp_module.CORPS[old_owner].is_active(state):
             corp_module.CORPS[old_owner].recalculate_stars(state)
             corp_module.CORPS[old_owner].calculate_income(state)
+        elif old_loc == LOC_PLAYER:
+            player_module.PLAYERS[old_owner].calculate_income(state)
+        elif old_loc == LOC_FI:
+            fi_module.FI.calculate_income(state)
         if corp_module.CORPS[corp_id].is_active(state):
             corp_module.CORPS[corp_id].recalculate_stars(state)
             corp_module.CORPS[corp_id].calculate_income(state)
@@ -263,6 +277,10 @@ cdef class Company:
         if old_loc == LOC_CORP and old_owner != corp_id and corp_module.CORPS[old_owner].is_active(state):
             corp_module.CORPS[old_owner].recalculate_stars(state)
             corp_module.CORPS[old_owner].calculate_income(state)
+        elif old_loc == LOC_PLAYER:
+            player_module.PLAYERS[old_owner].calculate_income(state)
+        elif old_loc == LOC_FI:
+            fi_module.FI.calculate_income(state)
         if corp_module.CORPS[corp_id].is_active(state):
             corp_module.CORPS[corp_id].recalculate_stars(state)
             corp_module.CORPS[corp_id].calculate_income(state)
@@ -291,6 +309,10 @@ cdef class Company:
         if old_loc == LOC_CORP and corp_module.CORPS[old_owner].is_active(state):
             corp_module.CORPS[old_owner].recalculate_stars(state)
             corp_module.CORPS[old_owner].calculate_income(state)
+        elif old_loc == LOC_PLAYER:
+            player_module.PLAYERS[old_owner].calculate_income(state)
+        elif old_loc == LOC_FI:
+            fi_module.FI.calculate_income(state)
 
     cpdef void exclude_from_game(self, GameState state):
         """Mark company as excluded during game init (hidden state only).

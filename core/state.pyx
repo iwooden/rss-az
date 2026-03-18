@@ -124,14 +124,15 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         GameConstants.NUM_CORPS +         # is_president
         GameConstants.NUM_CORPS +         # share_buys
         GameConstants.NUM_CORPS +         # share_sells
-        1                   # acquisition_proceeds
+        1 +                 # acquisition_proceeds
+        1                   # income
     )
     layout.players_offset = offset
     layout.players_size = layout.player_stride * num_players
     offset += layout.players_size
 
     # Foreign investor
-    layout.fi_size = 1 + GameConstants.NUM_COMPANIES # cash, owned companies
+    layout.fi_size = 2 + GameConstants.NUM_COMPANIES # cash, income, owned companies
     layout.fi_offset = offset
     offset += layout.fi_size
 
@@ -200,7 +201,9 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         # Active corp
         GameConstants.NUM_CORPS +         # active_corp (one-hot)
         3 +                              # active_corp_info (income, stars, share_price)
-        GameConstants.NUM_COMPANIES       # active_corp_companies (owned company flags)
+        GameConstants.NUM_COMPANIES +     # active_corp_companies (owned company flags)
+        # Deck
+        1                                # cards_remaining
     )
     layout.turn_offset = offset
     offset += layout.turn_size
@@ -356,6 +359,10 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
     t.active_corp_companies = offset
     offset += GameConstants.NUM_COMPANIES
 
+    # Cards remaining in deck
+    t.cards_remaining = offset
+    offset += 1
+
     return t
 
 
@@ -387,6 +394,8 @@ cdef PlayerFieldOffsets compute_player_field_offsets(int num_players) noexcept n
     p.share_sells = offset
     offset += GameConstants.NUM_CORPS
     p.acquisition_proceeds = offset
+    offset += 1
+    p.income = offset
 
     return p
 
@@ -1065,6 +1074,7 @@ cdef class GameState:
 
         # 3. Set Foreign Investor state
         fi_module.FI.set_cash(self, 4)
+        fi_module.FI.set_income(self, 5)  # FI base income (+5, no companies yet)
 
         # 4. Initialize corporations (only non-zero: unissued shares)
         for corp in corp_module.CORPS:

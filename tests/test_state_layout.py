@@ -13,6 +13,9 @@ from core.data import (
     PY_STAR_DIVISOR, PY_CASH_DIVISOR,
 )
 from entities.company import COMPANIES, get_auction_company_for_slot_py
+from entities.deck import DECK
+from entities.fi import FI
+from entities.player import PLAYERS
 from entities.turn import TURN
 
 
@@ -22,11 +25,11 @@ class TestStateLayoutSizes:
     # Expected sizes - these MUST match VECTORS.md and CLAUDE.md
     # If these tests fail, update the documentation to match!
     EXPECTED_SIZES = {
-        2: {'visible': 1469, 'hidden': 1184, 'total': 2653},
-        3: {'visible': 1554, 'hidden': 1184, 'total': 2738},
-        4: {'visible': 1641, 'hidden': 1184, 'total': 2825},
-        5: {'visible': 1730, 'hidden': 1184, 'total': 2914},
-        6: {'visible': 1821, 'hidden': 1184, 'total': 3005},
+        2: {'visible': 1473, 'hidden': 1184, 'total': 2657},
+        3: {'visible': 1559, 'hidden': 1184, 'total': 2743},
+        4: {'visible': 1647, 'hidden': 1184, 'total': 2831},
+        5: {'visible': 1737, 'hidden': 1184, 'total': 2921},
+        6: {'visible': 1829, 'hidden': 1184, 'total': 3013},
     }
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
@@ -61,11 +64,11 @@ class TestComponentSizes:
     """Verify individual component sizes."""
 
     def test_player_stride_formula(self):
-        """Player stride = 72 + num_players."""
+        """Player stride = 73 + num_players."""
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
-            assert layout.player_stride == 72 + num_players, (
-                f"{num_players} players: stride {layout.player_stride} != 72 + {num_players}"
+            assert layout.player_stride == 73 + num_players, (
+                f"{num_players} players: stride {layout.player_stride} != 73 + {num_players}"
             )
 
     def test_corp_stride_fixed(self):
@@ -74,10 +77,10 @@ class TestComponentSizes:
         assert layout.corp_stride == 109
 
     def test_turn_size_formula(self):
-        """Turn size = 207 + 3*num_players."""
+        """Turn size = 208 + 3*num_players."""
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
-            expected = 207 + 3 * num_players
+            expected = 208 + 3 * num_players
             assert layout.turn_size == expected, (
                 f"{num_players} players: turn size {layout.turn_size} != {expected}"
             )
@@ -254,3 +257,91 @@ class TestActiveCorp:
             assert state._array[info_base + i] == 0.0, f"active_corp_info[{i}] != 0.0 after clear"
         for i in range(36):
             assert state._array[co_base + i] == 0.0, f"active_corp_companies[{i}] != 0.0 after clear"
+
+
+class TestPlayerIncome:
+    """Verify the player income field in visible state."""
+
+    @pytest.fixture
+    def state(self):
+        gs = GameState(3)
+        gs.initialize_game(seed=42)
+        return gs
+
+    def test_player_income_zero_at_init(self, state):
+        """Players have no companies at init, income should be 0."""
+        for p in range(3):
+            assert PLAYERS[p].get_income(state) == 0
+
+    def test_player_income_after_company_transfer(self, state):
+        """Transfer a company to player, income should update."""
+        # Transfer company 5 (1-star, red) to player 0
+        COMPANIES[5].transfer_to_player(state, 0)
+        income = PLAYERS[0].get_income(state)
+        expected = get_adjusted_company_income(5, TURN.get_coo_level(state))
+        assert income == expected
+
+    def test_player_income_cleared_on_remove(self, state):
+        """Removing a player's company should update income."""
+        COMPANIES[5].transfer_to_player(state, 0)
+        assert PLAYERS[0].get_income(state) != 0
+        COMPANIES[5].remove_from_game(state)
+        assert PLAYERS[0].get_income(state) == 0
+
+
+class TestFIIncome:
+    """Verify the FI income field in visible state."""
+
+    @pytest.fixture
+    def state(self):
+        gs = GameState(3)
+        gs.initialize_game(seed=42)
+        return gs
+
+    def test_fi_income_at_init(self, state):
+        """FI has no companies at init but gets +5 base bonus."""
+        assert FI.get_income(state) == 5
+
+    def test_fi_income_after_company_transfer(self, state):
+        """Transfer a company to FI, income should update."""
+        COMPANIES[5].transfer_to_fi(state)
+        expected = get_adjusted_company_income(5, TURN.get_coo_level(state)) + 5
+        assert FI.get_income(state) == expected
+
+    def test_fi_income_cleared_on_remove(self, state):
+        """Removing FI's company should update income back to base."""
+        COMPANIES[5].transfer_to_fi(state)
+        assert FI.get_income(state) != 5
+        COMPANIES[5].remove_from_game(state)
+        assert FI.get_income(state) == 5
+
+
+class TestCardsRemaining:
+    """Verify the cards remaining field in turn state."""
+
+    @pytest.fixture
+    def state(self):
+        gs = GameState(3)
+        gs.initialize_game(seed=42)
+        return gs
+
+    def test_cards_remaining_at_init(self, state):
+        """Cards remaining should reflect deck after initial draws."""
+        remaining = DECK.get_remaining_count(state)
+        layout = get_layout(3)
+        # cards_remaining is the last field in turn state
+        cr_offset = layout.turn_offset + layout.turn_size - 1
+        stored = state._array[cr_offset]
+        expected = remaining / 36.0
+        assert abs(stored - expected) < 1e-6
+
+    def test_cards_remaining_decreases_on_draw(self, state):
+        """Drawing a card should decrease cards_remaining."""
+        before = DECK.get_remaining_count(state)
+        DECK.draw(state)
+        after = DECK.get_remaining_count(state)
+        assert after == before - 1
+        layout = get_layout(3)
+        cr_offset = layout.turn_offset + layout.turn_size - 1
+        stored = state._array[cr_offset]
+        assert abs(stored - after / 36.0) < 1e-6

@@ -14,6 +14,7 @@ cdef class Deck:
     # Cached offsets into hidden state
     cdef int _deck_top_offset      # Index of top card (-1 = empty)
     cdef int _deck_order_offset    # Array of 36 company IDs in draw order
+    cdef int _cards_remaining_offset  # Visible state: cards remaining / NUM_COMPANIES
 
     # Initialization
     cpdef void initialize(self, GameState state)
@@ -24,6 +25,7 @@ cdef class Deck:
     cpdef int get_remaining_count(self, GameState state)
     cpdef bint is_empty(self, GameState state)
     cpdef void remove(self, GameState state, int company_id)
+    cdef void _update_cards_remaining(self, GameState state) noexcept
 
     # Setup - builds deck according to rules based on player count
     cpdef void setup(self, GameState state, int num_players, int seed)

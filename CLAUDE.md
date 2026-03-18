@@ -10,7 +10,7 @@ High-performance Cython game engine for "Rolling Stock Stars" board game, optimi
 
 **Key characteristics:**
 - 2-6 player support with dynamic state sizing
-- ~2650-3010 floats per game state (varies by player count)
+- ~2660-3010 floats per game state (varies by player count)
 - No Python object overhead in hot paths (nogil execution)
 - Benchmark target: thousands of games per minute
 
@@ -117,9 +117,9 @@ Central data structure: single contiguous float32 numpy array.
 **Sizes by player count:**
 | Players | Visible | Hidden | Total |
 |---------|---------|--------|-------|
-| 2 | 1469 | 1184 | 2653 |
-| 3 | 1554 | 1184 | 2738 |
-| 6 | 1821 | 1184 | 3005 |
+| 2 | 1473 | 1184 | 2657 |
+| 3 | 1559 | 1184 | 2743 |
+| 6 | 1829 | 1184 | 3013 |
 
 ### Actions (`core/actions.pyx`)
 
@@ -232,7 +232,7 @@ Instead of using the root node's mean value (soft-Z) or the game outcome as trai
 ### NN Model (`nn/model_3p.py`)
 
 Residual MLP (~25.4M parameters):
-- **Input:** 1554 floats (3-player) (visible state, active player rotated to slot 0)
+- **Input:** 1559 floats (3-player) (visible state, active player rotated to slot 0)
 - **Trunk:** Linear → 10 residual blocks (pre-LN, GELU, expansion=2) → LayerNorm
 - **Policy head:** Linear(768→256) → GELU → Linear(256→246) logits (masked by legal actions before softmax)
 - **Value head:** Linear(768→384) → GELU → Linear(384→192) → GELU → Linear(192→3) → Tanh
@@ -409,7 +409,7 @@ record = play_game(evaluator, config, game_seed=42, rng=rng)
  Auction Slot Info (5*num_players) | HIDDEN: Active Player, Deck, Offer Buffers]
 ```
 
-**Player stride** = `72 + num_players` floats per player
+**Player stride** = `73 + num_players` floats per player
 
 **Corporation stride** = 109 floats per corp
 

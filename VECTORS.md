@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | 1469         | 1184        | 2653       |
-| 3       | 1554         | 1184        | 2738       |
-| 4       | 1641         | 1184        | 2825       |
-| 5       | 1730         | 1184        | 2914       |
-| 6       | 1821         | 1184        | 3005       |
+| 2       | 1473         | 1184        | 2657       |
+| 3       | 1559         | 1184        | 2743       |
+| 4       | 1647         | 1184        | 2831       |
+| 5       | 1737         | 1184        | 2921       |
+| 6       | 1829         | 1184        | 3013       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 
@@ -62,7 +62,7 @@ Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact 
 
 ### Players (repeated `num_players` times)
 
-Player stride = `4 + num_players + 36 + 32` = `72 + num_players`
+Player stride = `5 + num_players + 36 + 32` = `73 + num_players`
 
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
@@ -76,6 +76,7 @@ Player stride = `4 + num_players + 36 + 32` = `72 + num_players`
 | `share_buys` | 8 | normalized | / (MAX_ROUNDTRIPS * 2) |
 | `share_sells` | 8 | normalized | / (MAX_ROUNDTRIPS * 2) |
 | `acquisition_proceeds` | 1 | normalized | Cash from selling companies this phase |
+| `income` | 1 | normalized | Total income from owned private companies / CASH_DIVISOR |
 
 **Player Field Offsets (within player stride):**
 | Field | Offset |
@@ -90,12 +91,14 @@ Player stride = `4 + num_players + 36 + 32` = `72 + num_players`
 | share_buys | 55 + num_players |
 | share_sells | 63 + num_players |
 | acquisition_proceeds | 71 + num_players |
+| income | 72 + num_players |
 
 ### Foreign Investor
 
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
 | `fi_cash` | 1 | normalized | / CASH_DIVISOR |
+| `fi_income` | 1 | normalized | Total income including +5 base bonus / CASH_DIVISOR |
 | `fi_companies` | 36 | flags | Companies owned by FI |
 
 ### Company Locations
@@ -166,7 +169,7 @@ Corp stride = `10 + 27 + 36 + 36` = `109`
 
 ### Turn State
 
-Size varies with player count: `207 + (3 * num_players)`
+Size varies with player count: `208 + (3 * num_players)`
 
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
@@ -195,6 +198,8 @@ Size varies with player count: `207 + (3 * num_players)`
 | `active_corp` | 8 | one-hot | Corp under consideration in DIVIDENDS, ISSUE, ACQ, CLOSING (corp-owned offers only). All zeros when inactive or player-owned. |
 | `active_corp_info` | 3 | normalized | income/CASH_DIVISOR, stars/STAR_DIVISOR, share_price/CASH_DIVISOR. Zero when no active corp. |
 | `active_corp_companies` | 36 | flags | Owned company flags copied from corp data block. Zero when no active corp. |
+| **Deck:** | | | |
+| `cards_remaining` | 1 | normalized | Cards remaining in deck / NUM_COMPANIES |
 
 ### Auction Slot Info (5 × num_players)
 

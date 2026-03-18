@@ -87,6 +87,8 @@ cdef struct TurnStateOffsets:
     int active_corp
     int active_corp_info
     int active_corp_companies
+    # Cards remaining in deck
+    int cards_remaining
 
 cdef struct PlayerFieldOffsets:
     int cash
@@ -99,6 +101,7 @@ cdef struct PlayerFieldOffsets:
     int share_buys
     int share_sells
     int acquisition_proceeds
+    int income
 
 cdef struct CorpFieldOffsets:
     int active

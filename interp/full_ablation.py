@@ -63,6 +63,7 @@ def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
         ("player:share_buys", 55 + num_players, 8),
         ("player:share_sells", 63 + num_players, 8),
         ("player:acq_proceeds", 71 + num_players, 1),
+        ("player:income", 72 + num_players, 1),
     ]
     for name, rel, size in _pf:
         idx: list[int] = []
@@ -73,7 +74,8 @@ def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
 
     # --- Foreign Investor ---
     groups.append(("fi:cash", np.array([layout.fi_offset])))
-    groups.append(("fi:companies", np.arange(layout.fi_offset + 1, layout.fi_offset + layout.fi_size)))
+    groups.append(("fi:income", np.array([layout.fi_offset + 1])))
+    groups.append(("fi:companies", np.arange(layout.fi_offset + 2, layout.fi_offset + layout.fi_size)))
 
     # --- Company location flags ---
     groups.append(("co:for_auction", np.arange(layout.auction_companies_offset, layout.auction_companies_offset + 36)))
@@ -142,6 +144,8 @@ def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
     post += 3
     groups.append(("turn:active_corp_companies", np.arange(post, post + 36)))  # owned company flags
     post += 36
+    groups.append(("turn:cards_remaining", np.array([post])))  # cards remaining in deck
+    post += 1
     assert post == layout.auction_slot_info_offset, (
         f"Turn end {post} != auction_slot_info_offset {layout.auction_slot_info_offset}"
     )

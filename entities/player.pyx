@@ -173,6 +173,7 @@ cdef class Player:
         self._share_buys_offset = self._base_offset + fields.share_buys
         self._share_sells_offset = self._base_offset + fields.share_sells
         self._acquisition_proceeds_offset = self._base_offset + fields.acquisition_proceeds
+        self._income_offset = self._base_offset + fields.income
 
     # =========================================================================
     # NOGIL METHODS (use cached offsets for performance)
@@ -383,16 +384,22 @@ cdef class Player:
         state._data[self._acquisition_proceeds_offset] = 0.0
 
     # =========================================================================
-    # INCOME CALCULATION
+    # INCOME
     # =========================================================================
 
     cpdef int get_income(self, GameState state):
-        """
-        Calculate total income from player's private companies.
+        """Get player's stored income (integer dollars)."""
+        return <int>lround(state._data[self._income_offset] * CASH_DIVISOR)
+
+    cpdef void set_income(self, GameState state, int income):
+        """Set player's income (integer dollars)."""
+        state._data[self._income_offset] = <float>income / CASH_DIVISOR
+
+    cpdef void calculate_income(self, GameState state):
+        """Recalculate and store total income from player's private companies.
 
         Uses the cached company_incomes array (updated when CoO changes).
         Note: Only player-owned privates, NOT corp subsidiaries.
-        Used by mandatory close to check if player income + cash < 0.
         """
         cdef int total = 0
         cdef int company_id
@@ -400,7 +407,7 @@ cdef class Player:
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if state._data[self._owned_companies_offset + company_id] == 1.0:
                 total += <int>lround(state._data[company_incomes_offset + company_id] * CASH_DIVISOR)
-        return total
+        self.set_income(state, total)
 
 
 # =============================================================================
