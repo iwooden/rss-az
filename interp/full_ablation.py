@@ -124,18 +124,24 @@ def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
 
     # Remaining turn fields are sequential after auction_passed
     post = layout.auction_passed_offset + num_players
-    groups.append(("turn:dividend", np.arange(post, post + 42)))  # corp(8) + impact(26) + remaining(8)
-    post += 42
-    groups.append(("turn:issue", np.arange(post, post + 16)))  # corp(8) + remaining(8)
-    post += 16
+    groups.append(("turn:dividend", np.arange(post, post + 34)))  # impact(26) + remaining(8)
+    post += 34
+    groups.append(("turn:issue", np.arange(post, post + 8)))  # remaining(8)
+    post += 8
     groups.append(("turn:ipo_remaining", np.arange(post, post + 36)))  # remaining(36)
     post += 36
-    groups.append(("turn:acq", np.arange(post, post + 45)))  # active_corp(8) + fi_offer(1) + synergy(36)
-    post += 45
+    groups.append(("turn:acq", np.arange(post, post + 37)))  # fi_offer(1) + synergy(36)
+    post += 37
     groups.append(("turn:active_company", np.arange(post, post + 36)))  # one-hot(36)
     post += 36
     groups.append(("turn:active_company_info", np.arange(post, post + 5)))  # stars, low, face, high, income
     post += 5
+    groups.append(("turn:active_corp", np.arange(post, post + 8)))  # one-hot(8)
+    post += 8
+    groups.append(("turn:active_corp_info", np.arange(post, post + 3)))  # income, stars, share_price
+    post += 3
+    groups.append(("turn:active_corp_companies", np.arange(post, post + 36)))  # owned company flags
+    post += 36
     assert post == layout.auction_slot_info_offset, (
         f"Turn end {post} != auction_slot_info_offset {layout.auction_slot_info_offset}"
     )

@@ -263,6 +263,7 @@ cdef void _transition_out_of_dividends(GameState state) noexcept:
     """
     # Clear dividend corp
     turn_module.TURN.clear_dividend_corp(state)
+    state.clear_active_corp()
 
     # Transition to END_CARD phase (handles game-over logic)
     turn_module.TURN.set_phase(state, PHASE_END_CARD)
@@ -296,6 +297,7 @@ cdef void _advance_to_next_corp(GameState state) noexcept:
 
         # Set up for player decision
         turn_module.TURN.set_dividend_corp(state, corp_id)
+        state.set_active_corp(corp_id)
         president_id = corp_module.CORPS[corp_id].get_president_id(state)
         state._set_active_player(president_id)
         return

@@ -14,19 +14,15 @@ from core.state cimport GameState
 
 cdef struct TurnOffsets:
     # Offsets within turn state data block in the state vector
-    int acq_active_corp
     int acq_is_fi_offer
-    int dividend_corp
-    int issue_corp
+    int active_corp
 
 # Offset computation
 cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil
 
 # Turn state accessors (raw pointer, nogil)
-cdef int get_acq_active_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil
+cdef int get_active_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil
 cdef bint is_acq_fi_offer_nogil(float* turn, TurnOffsets* t) noexcept nogil
-cdef int get_dividend_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil
-cdef int get_issue_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil
 
 
 # =============================================================================
@@ -69,21 +65,21 @@ cdef class TurnState:
     cdef int _auction_passed_offset
 
     # Dividends offsets
-    cdef int _dividend_corp_offset
     cdef int _dividend_impact_offset
     cdef int _dividend_remaining_offset
 
     # Issue offsets
-    cdef int _issue_corp_offset
     cdef int _issue_remaining_offset
 
     # IPO offsets
     cdef int _ipo_remaining_offset
 
     # Acquisition offsets
-    cdef int _acq_active_corp_offset
     cdef int _acq_is_fi_offer_offset
     cdef int _acq_synergy_values_offset
+
+    # Active corp one-hot offset (shared by dividend/issue/acq/closing)
+    cdef int _active_corp_offset
 
     # Active company one-hot offset (shared by auction/acq/closing/ipo)
     cdef int _active_company_offset
@@ -183,6 +179,10 @@ cdef class TurnState:
     cpdef int get_closing_company(self, GameState state)
     cpdef void set_closing_company(self, GameState state, int company_id)
     cpdef void clear_closing_company(self, GameState state)
+
+    # Active corp one-hot (for phases without their own hidden compact, e.g. CLOSING)
+    cpdef void set_active_corp_one_hot(self, GameState state, int corp_id)
+    cpdef void clear_active_corp_one_hot(self, GameState state)
 
     # Turn order navigation
     cpdef int find_player_at_position(self, GameState state, int position)

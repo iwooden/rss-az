@@ -2038,3 +2038,78 @@ class TestActiveCompanyAcquisition:
             assert gs._array[base + i] == 0.0, (
                 f"active_company[{i}] should be 0 after transition to CLOSING"
             )
+
+
+# =============================================================================
+# ACTIVE CORP TESTS
+# =============================================================================
+
+class TestActiveCorpAcquisition:
+    """Test active corp block during ACQUISITION phase."""
+
+    def test_active_corp_set_on_offer(self):
+        """Active corp info should match the acquiring corp when offer is presented."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        COMPANIES[0].transfer_to_fi(gs)
+        float_corp_for_test(gs, 0)
+        CORPS[0].set_cash(gs, 50000)
+
+        setup_acquisition_phase_py(gs)
+
+        corp_id = TURN.get_acq_active_corp(gs)
+        if corp_id >= 0:
+            layout = get_layout(3)
+            oh_base = layout.active_corp_offset
+            assert gs._array[oh_base + corp_id] == 1.0
+
+            info_base = layout.active_corp_info_offset
+            corp_offset = layout.corps_offset + corp_id * layout.corp_stride
+            assert abs(gs._array[info_base + 0] - gs._array[corp_offset + 5]) < 1e-6  # income
+            assert abs(gs._array[info_base + 1] - gs._array[corp_offset + 6]) < 1e-6  # stars
+            assert abs(gs._array[info_base + 2] - gs._array[corp_offset + 7]) < 1e-6  # share_price
+
+    def test_active_corp_cleared_when_no_offers(self):
+        """Active corp info should be cleared when no offers remain."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # No corps active -> no offers -> active corp cleared
+        setup_acquisition_phase_py(gs)
+
+        layout = get_layout(3)
+        info_base = layout.active_corp_info_offset
+        for i in range(3):
+            assert gs._array[info_base + i] == 0.0, (
+                f"active_corp_info[{i}] should be 0 when no offers"
+            )
+
+    def test_active_corp_updates_on_pass(self):
+        """Active corp info should update when passing to a different corp's offer."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give two companies to FI, float two different corps
+        COMPANIES[0].transfer_to_fi(gs)
+        COMPANIES[1].transfer_to_fi(gs)
+        float_corp_for_test(gs, 0)
+        CORPS[0].set_cash(gs, 50000)
+        float_corp_for_test(gs, 1, player_id=1)
+        CORPS[1].set_cash(gs, 50000)
+
+        setup_acquisition_phase_py(gs)
+
+        first_corp = TURN.get_acq_active_corp(gs)
+        if first_corp < 0:
+            return  # No offers
+
+        apply_acquisition_action_py(gs, ACTION_PASS)
+
+        second_corp = TURN.get_acq_active_corp(gs)
+        if second_corp >= 0:
+            layout = get_layout(3)
+            oh_base = layout.active_corp_offset
+            assert gs._array[oh_base + second_corp] == 1.0
+            if second_corp != first_corp:
+                assert gs._array[oh_base + first_corp] == 0.0

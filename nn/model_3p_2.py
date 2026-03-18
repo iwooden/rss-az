@@ -27,7 +27,7 @@ import torch.nn as nn
 class RSSModelConfig2:
     """Configuration for the v2 residual MLP trunk and heads."""
 
-    input_dim: int = 1531  # get_layout(3).visible_size; always pass explicitly
+    input_dim: int = 1554  # get_layout(3).visible_size; always pass explicitly
     action_dim: int = 246
     value_dim: int = 3
     hidden_dim: int = 384

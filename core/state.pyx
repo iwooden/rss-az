@@ -58,6 +58,10 @@ LayoutInfo = namedtuple('LayoutInfo', [
     # Active company offsets (absolute, within turn state)
     'active_company_offset',
     'active_company_info_offset',
+    # Active corp offsets (absolute, within turn state)
+    'active_corp_offset',
+    'active_corp_info_offset',
+    'active_corp_companies_offset',
     # Convenience
     'num_players',
 ])
@@ -181,21 +185,22 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         num_players +       # auction_starter
         num_players +       # auction_passed
         # Dividends
-        GameConstants.NUM_CORPS +         # dividend_corp
         GameConstants.MAX_DIVIDEND +      # dividend_impact
         GameConstants.NUM_CORPS +         # dividend_remaining
         # Issue
-        GameConstants.NUM_CORPS +         # issue_corp
         GameConstants.NUM_CORPS +         # issue_remaining
         # IPO
         GameConstants.NUM_COMPANIES +     # ipo_remaining
         # Acquisition offers
-        GameConstants.NUM_CORPS +         # acq_active_corp
         1 +                 # acq_is_fi_offer
         GameConstants.NUM_COMPANIES +     # acq_synergy_values
         # Active company
         GameConstants.NUM_COMPANIES +     # active_company (one-hot)
-        5                                 # active_company_info (stars, low, face, high, income)
+        5 +                              # active_company_info (stars, low, face, high, income)
+        # Active corp
+        GameConstants.NUM_CORPS +         # active_corp (one-hot)
+        3 +                              # active_corp_info (income, stars, share_price)
+        GameConstants.NUM_COMPANIES       # active_corp_companies (owned company flags)
     )
     layout.turn_offset = offset
     offset += layout.turn_size
@@ -318,16 +323,12 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
     offset += num_players
 
     # Dividends
-    t.dividend_corp = offset
-    offset += GameConstants.NUM_CORPS
     t.dividend_impact = offset
     offset += GameConstants.MAX_DIVIDEND
     t.dividend_remaining = offset
     offset += GameConstants.NUM_CORPS
 
     # Issue
-    t.issue_corp = offset
-    offset += GameConstants.NUM_CORPS
     t.issue_remaining = offset
     offset += GameConstants.NUM_CORPS
 
@@ -336,8 +337,6 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
     offset += GameConstants.NUM_COMPANIES
 
     # Acquisition offers
-    t.acq_active_corp = offset
-    offset += GameConstants.NUM_CORPS
     t.acq_is_fi_offer = offset
     offset += 1
     t.acq_synergy_values = offset
@@ -348,6 +347,14 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
     offset += GameConstants.NUM_COMPANIES
     t.active_company_info = offset
     offset += 5
+
+    # Active corp: one-hot (8) + contextual info (3 scalars) + owned companies (36 flags)
+    t.active_corp = offset
+    offset += GameConstants.NUM_CORPS
+    t.active_corp_info = offset
+    offset += 3
+    t.active_corp_companies = offset
+    offset += GameConstants.NUM_COMPANIES
 
     return t
 
@@ -430,6 +437,9 @@ def get_layout(int num_players):
         auction_passed_offset=layout.turn_offset + turn.auction_passed,
         active_company_offset=layout.turn_offset + turn.active_company,
         active_company_info_offset=layout.turn_offset + turn.active_company_info,
+        active_corp_offset=layout.turn_offset + turn.active_corp,
+        active_corp_info_offset=layout.turn_offset + turn.active_corp_info,
+        active_corp_companies_offset=layout.turn_offset + turn.active_corp_companies,
         num_players=num_players,
     )
 
@@ -970,6 +980,45 @@ cdef class GameState:
         self._data[base + 4] = 0.0
 
     # =========================================================================
+    # ACTIVE CORP CONTEXTUAL INFO
+    # =========================================================================
+
+    cpdef void set_active_corp(self, int corp_id):
+        """
+        Set active corp info and owned companies in turn state.
+
+        Writes income, stars, and share_price (all normalized) from the corp's
+        data block, plus copies the 36-element owned_companies flags.
+        The one-hot is managed by the per-phase set/clear methods
+        (set_dividend_corp, set_issue_corp, set_acq_active_corp).
+        """
+        cdef int info_base = self._layout.turn_offset + self._turn_offsets.active_corp_info
+        cdef int companies_base = self._layout.turn_offset + self._turn_offsets.active_corp_companies
+        cdef float* corp = self._corp_ptr(corp_id)
+        cdef int i
+        # Income, stars, and share_price (already normalized in corp data block)
+        self._data[info_base + 0] = corp[self._corp_fields.income]
+        self._data[info_base + 1] = corp[self._corp_fields.stars]
+        self._data[info_base + 2] = corp[self._corp_fields.share_price]
+        # Copy owned company flags (36 floats)
+        for i in range(<int>GameConstants.NUM_COMPANIES):
+            self._data[companies_base + i] = corp[self._corp_fields.owned_companies + i]
+
+    cpdef void clear_active_corp(self):
+        """Clear active corp info and owned companies (zero-fill).
+
+        The one-hot is cleared by the per-phase clear methods.
+        """
+        cdef int info_base = self._layout.turn_offset + self._turn_offsets.active_corp_info
+        cdef int companies_base = self._layout.turn_offset + self._turn_offsets.active_corp_companies
+        cdef int i
+        self._data[info_base + 0] = 0.0
+        self._data[info_base + 1] = 0.0
+        self._data[info_base + 2] = 0.0
+        for i in range(<int>GameConstants.NUM_COMPANIES):
+            self._data[companies_base + i] = 0.0
+
+    # =========================================================================
     # GAME INITIALIZATION
     # =========================================================================
 
@@ -1066,7 +1115,10 @@ cdef class GameState:
         turn_module.TURN.clear_acq_target_company(self)
         turn_module.TURN.clear_closing_company(self)
 
-        # 10. Populate auction slot info for initial auction row
+        # 10. Clear active corp info (one-hot cleared above via clear_*_corp)
+        self.clear_active_corp()
+
+        # 11. Populate auction slot info for initial auction row
         self._populate_auction_slot_info()
 
         # Set active player

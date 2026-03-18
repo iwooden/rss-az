@@ -74,18 +74,19 @@ cdef struct TurnStateOffsets:
     int auction_high_bidder
     int auction_starter
     int auction_passed
-    int dividend_corp
     int dividend_impact
     int dividend_remaining
-    int issue_corp
     int issue_remaining
     int ipo_remaining
-    int acq_active_corp
     int acq_is_fi_offer
     int acq_synergy_values
     # Active company: one-hot (36) + contextual info (5 scalars)
     int active_company
     int active_company_info
+    # Active corp: one-hot (8) + contextual info (3 scalars) + owned companies (36 flags)
+    int active_corp
+    int active_corp_info
+    int active_corp_companies
 
 cdef struct PlayerFieldOffsets:
     int cash
@@ -218,6 +219,10 @@ cdef class GameState:
     # Active company contextual info
     cpdef void set_active_company(self, int company_id)
     cpdef void clear_active_company(self)
+
+    # Active corp contextual info
+    cpdef void set_active_corp(self, int corp_id)
+    cpdef void clear_active_corp(self)
 
     # Game initialization
     cpdef void initialize_game(self, int seed=*)

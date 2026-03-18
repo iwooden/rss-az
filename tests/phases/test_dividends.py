@@ -1,6 +1,6 @@
 """Tests for DIVIDENDS phase (Phase 6)."""
 import pytest
-from core.state import GameState
+from core.state import GameState, get_layout
 from core.data import (
     GamePhases, GameConstants, CorpIndices,
     get_required_stars, get_max_dividend, get_market_price,
@@ -758,3 +758,71 @@ class TestDividendsIntegration:
         # Price index 5 = $9, issued = 3
         # Required = round(3 * 9 / 10) = round(2.7) = 3
         assert get_required_stars(5, 3) == 3
+
+
+class TestActiveCorpDividends:
+    """Test active corp block during DIVIDENDS phase."""
+
+    @pytest.fixture
+    def div_state(self):
+        """State with a floated corp ready for dividends."""
+        gs = GameState(3)
+        gs.initialize_game(seed=42)
+        float_corp_for_test(gs, corp_id=0, par_index=10, player_id=0)
+        TURN.set_phase(gs, GamePhases.PHASE_DIVIDENDS)
+        setup_dividends_phase_py(gs)
+        return gs
+
+    def test_active_corp_set_during_dividends(self, div_state):
+        """Active corp info should be populated when dividend corp is set."""
+        layout = get_layout(3)
+        corp_id = TURN.get_dividend_corp(div_state)
+        assert corp_id >= 0, "Expected a dividend corp to be set"
+
+        # Check one-hot
+        oh_base = layout.active_corp_offset
+        assert div_state._array[oh_base + corp_id] == 1.0
+
+        # Check info matches corp data
+        info_base = layout.active_corp_info_offset
+        corp_offset = layout.corps_offset + corp_id * layout.corp_stride
+        assert abs(div_state._array[info_base + 0] - div_state._array[corp_offset + 5]) < 1e-6  # income
+        assert abs(div_state._array[info_base + 1] - div_state._array[corp_offset + 6]) < 1e-6  # stars
+        assert abs(div_state._array[info_base + 2] - div_state._array[corp_offset + 7]) < 1e-6  # share_price
+
+    def test_active_corp_cleared_after_dividends(self, div_state):
+        """Active corp info should be cleared when transitioning out of DIVIDENDS."""
+        layout = get_layout(3)
+        # Apply a dividend of 0 to advance through dividends
+        corp_id = TURN.get_dividend_corp(div_state)
+        apply_dividend_action_py(div_state, 0)
+
+        # After processing all corps, should transition out and clear
+        phase = TURN.get_phase(div_state)
+        if phase != GamePhases.PHASE_DIVIDENDS:
+            # Transitioned out - active corp should be cleared
+            info_base = layout.active_corp_info_offset
+            for i in range(3):
+                assert div_state._array[info_base + i] == 0.0, (
+                    f"active_corp_info[{i}] not cleared after transition"
+                )
+
+    def test_active_corp_updates_between_corps(self, div_state):
+        """Active corp should update when advancing to next dividend corp."""
+        layout = get_layout(3)
+        # Float a second corp
+        float_corp_for_test(div_state, corp_id=1, par_index=15, player_id=1)
+        # Re-setup dividends to pick up both corps
+        setup_dividends_phase_py(div_state)
+
+        first_corp = TURN.get_dividend_corp(div_state)
+        assert first_corp >= 0
+
+        # Apply dividend to advance to next corp
+        apply_dividend_action_py(div_state, 0)
+
+        second_corp = TURN.get_dividend_corp(div_state)
+        if second_corp >= 0 and second_corp != first_corp:
+            oh_base = layout.active_corp_offset
+            assert div_state._array[oh_base + second_corp] == 1.0
+            assert div_state._array[oh_base + first_corp] == 0.0

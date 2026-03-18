@@ -384,6 +384,15 @@ cdef void _present_next_close_offer(GameState state) noexcept:
         # Set active company contextual info for CLOSING phase
         state.set_active_company(company_id)
 
+        # Set or clear active corp based on owner type
+        if owner_type == LOC_CORP:
+            turn_module.TURN.set_active_corp_one_hot(state, owner_id)
+            state.set_active_corp(owner_id)
+        else:
+            # Player-owned: no corp involved, clear active corp fields
+            turn_module.TURN.clear_active_corp_one_hot(state)
+            state.clear_active_corp()
+
         # Determine active player (owner for player, president for corp)
         if owner_type == LOC_PLAYER:
             state._set_active_player(owner_id)
@@ -395,6 +404,8 @@ cdef void _present_next_close_offer(GameState state) noexcept:
     # No more valid offers - process mandatory close then transition
     turn_module.TURN.clear_closing_company(state)
     state.clear_active_company()
+    turn_module.TURN.clear_active_corp_one_hot(state)
+    state.clear_active_corp()
     _process_mandatory_close(state)  # CLO-14, CLO-15: mandatory close before transition
     _transition_to_income(state)
 

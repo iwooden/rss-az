@@ -1,5 +1,6 @@
 """Tests for ISSUE_SHARES phase (Phase 8)."""
 import pytest
+from core.state import get_layout
 from core.data import GamePhases, CorpIndices, get_market_price
 from core.actions import get_valid_action_mask, get_action_layout
 from entities.turn import TURN
@@ -672,3 +673,44 @@ class TestIntegration:
             assert corp.get_unissued_shares(state) == 2  # 3 - 1
             assert corp.get_issued_shares(state) == 5    # 4 + 1
             assert corp.get_bank_shares(state) == 3      # 2 + 1
+
+
+class TestActiveCorpIssue:
+    """Test active corp block during ISSUE phase."""
+
+    @pytest.fixture
+    def issue_state(self, game_state):
+        """State with a floated corp ready for issue."""
+        float_corp_for_test(game_state, corp_id=0, par_index=10, player_id=0)
+        TURN.set_phase(game_state, GamePhases.PHASE_ISSUE_SHARES)
+        setup_issue_phase_py(game_state)
+        return game_state
+
+    def test_active_corp_set_during_issue(self, issue_state):
+        """Active corp info should be populated when issue corp is set."""
+        layout = get_layout(3)
+        corp_id = TURN.get_issue_corp(issue_state)
+        assert corp_id >= 0, "Expected an issue corp to be set"
+
+        oh_base = layout.active_corp_offset
+        assert issue_state._array[oh_base + corp_id] == 1.0
+
+        info_base = layout.active_corp_info_offset
+        corp_offset = layout.corps_offset + corp_id * layout.corp_stride
+        assert abs(issue_state._array[info_base + 0] - issue_state._array[corp_offset + 5]) < 1e-6  # income
+        assert abs(issue_state._array[info_base + 1] - issue_state._array[corp_offset + 6]) < 1e-6  # stars
+        assert abs(issue_state._array[info_base + 2] - issue_state._array[corp_offset + 7]) < 1e-6  # share_price
+
+    def test_active_corp_cleared_after_issue(self, issue_state):
+        """Active corp should be cleared when transitioning out of ISSUE."""
+        layout = get_layout(3)
+        # Pass on issue to advance
+        apply_issue_action_py(issue_state, issue=False)
+
+        phase = TURN.get_phase(issue_state)
+        if phase != GamePhases.PHASE_ISSUE_SHARES:
+            info_base = layout.active_corp_info_offset
+            for i in range(3):
+                assert issue_state._array[info_base + i] == 0.0, (
+                    f"active_corp_info[{i}] not cleared after issue transition"
+                )

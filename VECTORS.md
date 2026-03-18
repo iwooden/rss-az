@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | 1446         | 1184        | 2630       |
-| 3       | 1531         | 1184        | 2715       |
-| 4       | 1618         | 1184        | 2802       |
-| 5       | 1707         | 1184        | 2891       |
-| 6       | 1798         | 1184        | 2982       |
+| 2       | 1469         | 1184        | 2653       |
+| 3       | 1554         | 1184        | 2738       |
+| 4       | 1641         | 1184        | 2825       |
+| 5       | 1730         | 1184        | 2914       |
+| 6       | 1821         | 1184        | 3005       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 
@@ -166,7 +166,7 @@ Corp stride = `10 + 27 + 36 + 36` = `109`
 
 ### Turn State
 
-Size varies with player count: `287 + (3 * num_players)`
+Size varies with player count: `207 + (3 * num_players)`
 
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
@@ -179,21 +179,22 @@ Size varies with player count: `287 + (3 * num_players)`
 | `auction_starter` | num_players | one-hot | -1 if no auction |
 | `auction_passed` | num_players | flags | Player left auction, -1 if no auction |
 | **Dividends:** | | | |
-| `dividend_corp` | 8 | one-hot | Current corp |
 | `dividend_impact` | 26 | values | Price impact per level |
 | `dividend_remaining` | 8 | flags | Corps left to process |
 | **Issue:** | | | |
-| `issue_corp` | 8 | one-hot | Current corp |
 | `issue_remaining` | 8 | flags | Corps left to process |
 | **IPO:** | | | |
 | `ipo_remaining` | 36 | flags | Companies left |
 | **Acquisition:** | | | |
-| `acq_active_corp` | 8 | one-hot | Buying corp |
 | `acq_is_fi_offer` | 1 | flag | 1=FI target |
 | `acq_synergy_values` | 36 | normalized | Synergy income bonus per company / CASH_DIVISOR, 0 if corp doesn't own |
 | **Active Company:** | | | |
 | `active_company` | 36 | one-hot | Company under consideration in BID, ACQ, CLOSING, IPO. All zeros when inactive. |
 | `active_company_info` | 5 | normalized | stars/STAR_DIVISOR, low/face/high/income / CASH_DIVISOR. Zero when no active company. |
+| **Active Corp:** | | | |
+| `active_corp` | 8 | one-hot | Corp under consideration in DIVIDENDS, ISSUE, ACQ, CLOSING (corp-owned offers only). All zeros when inactive or player-owned. |
+| `active_corp_info` | 3 | normalized | income/CASH_DIVISOR, stars/STAR_DIVISOR, share_price/CASH_DIVISOR. Zero when no active corp. |
+| `active_corp_companies` | 36 | flags | Owned company flags copied from corp data block. Zero when no active corp. |
 
 ### Auction Slot Info (5 × num_players)
 

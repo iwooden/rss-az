@@ -10,7 +10,7 @@ High-performance Cython game engine for "Rolling Stock Stars" board game, optimi
 
 **Key characteristics:**
 - 2-6 player support with dynamic state sizing
-- ~2900-3200 floats per game state (varies by player count)
+- ~2650-3010 floats per game state (varies by player count)
 - No Python object overhead in hot paths (nogil execution)
 - Benchmark target: thousands of games per minute
 
@@ -117,9 +117,9 @@ Central data structure: single contiguous float32 numpy array.
 **Sizes by player count:**
 | Players | Visible | Hidden | Total |
 |---------|---------|--------|-------|
-| 2 | 1446 | 1184 | 2630 |
-| 3 | 1531 | 1184 | 2715 |
-| 6 | 1798 | 1184 | 2982 |
+| 2 | 1469 | 1184 | 2653 |
+| 3 | 1554 | 1184 | 2738 |
+| 6 | 1821 | 1184 | 3005 |
 
 ### Actions (`core/actions.pyx`)
 
@@ -232,7 +232,7 @@ Instead of using the root node's mean value (soft-Z) or the game outcome as trai
 ### NN Model (`nn/model_3p.py`)
 
 Residual MLP (~25.4M parameters):
-- **Input:** 1531 floats (3-player) (visible state, active player rotated to slot 0)
+- **Input:** 1554 floats (3-player) (visible state, active player rotated to slot 0)
 - **Trunk:** Linear → 10 residual blocks (pre-LN, GELU, expansion=2) → LayerNorm
 - **Policy head:** Linear(768→256) → GELU → Linear(256→246) logits (masked by legal actions before softmax)
 - **Value head:** Linear(768→384) → GELU → Linear(384→192) → GELU → Linear(192→3) → Tanh

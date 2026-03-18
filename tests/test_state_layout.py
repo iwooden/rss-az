@@ -1,4 +1,4 @@
-"""Tests for GameState layout sizes, auction slot info, and active company.
+"""Tests for GameState layout sizes, auction slot info, active company, and active corp.
 
 These tests verify that documented sizes in VECTORS.md and CLAUDE.md match actual
 computed sizes. Uses core.state.get_layout() as the single source of truth.
@@ -22,11 +22,11 @@ class TestStateLayoutSizes:
     # Expected sizes - these MUST match VECTORS.md and CLAUDE.md
     # If these tests fail, update the documentation to match!
     EXPECTED_SIZES = {
-        2: {'visible': 1446, 'hidden': 1184, 'total': 2630},
-        3: {'visible': 1531, 'hidden': 1184, 'total': 2715},
-        4: {'visible': 1618, 'hidden': 1184, 'total': 2802},
-        5: {'visible': 1707, 'hidden': 1184, 'total': 2891},
-        6: {'visible': 1798, 'hidden': 1184, 'total': 2982},
+        2: {'visible': 1469, 'hidden': 1184, 'total': 2653},
+        3: {'visible': 1554, 'hidden': 1184, 'total': 2738},
+        4: {'visible': 1641, 'hidden': 1184, 'total': 2825},
+        5: {'visible': 1730, 'hidden': 1184, 'total': 2914},
+        6: {'visible': 1821, 'hidden': 1184, 'total': 3005},
     }
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
@@ -74,10 +74,10 @@ class TestComponentSizes:
         assert layout.corp_stride == 109
 
     def test_turn_size_formula(self):
-        """Turn size = 184 + 3*num_players."""
+        """Turn size = 207 + 3*num_players."""
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
-            expected = 184 + 3 * num_players
+            expected = 207 + 3 * num_players
             assert layout.turn_size == expected, (
                 f"{num_players} players: turn size {layout.turn_size} != {expected}"
             )
@@ -190,3 +190,67 @@ class TestActiveCompany:
         base = layout.active_company_info_offset
         for i in range(5):
             assert state._array[base + i] == 0.0, f"active_company_info[{i}] != 0.0 after clear"
+
+
+class TestActiveCorp:
+    """Verify the active corp block in turn state."""
+
+    @pytest.fixture
+    def state(self):
+        gs = GameState(3)
+        gs.initialize_game(seed=42)
+        return gs
+
+    def test_active_corp_zeroed_on_init(self, state):
+        """Active corp one-hot, info, and companies should be zero after init."""
+        layout = get_layout(3)
+        oh_base = layout.active_corp_offset
+        info_base = layout.active_corp_info_offset
+        co_base = layout.active_corp_companies_offset
+        for i in range(8):
+            assert state._array[oh_base + i] == 0.0, f"active_corp_oh[{i}] != 0.0 at init"
+        for i in range(3):
+            assert state._array[info_base + i] == 0.0, f"active_corp_info[{i}] != 0.0 at init"
+        for i in range(36):
+            assert state._array[co_base + i] == 0.0, f"active_corp_companies[{i}] != 0.0 at init"
+
+    def test_set_active_corp(self, state):
+        """set_active_corp should populate info and owned companies from corp data."""
+        layout = get_layout(3)
+        # Float a corp first so it has meaningful data
+        from tests.phases.conftest import float_corp_for_test
+        float_corp_for_test(state, corp_id=0, par_index=10, player_id=0)
+
+        state.set_active_corp(0)
+        info_base = layout.active_corp_info_offset
+        co_base = layout.active_corp_companies_offset
+
+        # Info scalars: income, stars, share_price (already normalized in corp data)
+        corp_ptr_income = state._array[layout.corps_offset + 0 * layout.corp_stride + 5]  # income offset=5
+        corp_ptr_stars = state._array[layout.corps_offset + 0 * layout.corp_stride + 6]  # stars offset=6
+        corp_ptr_price = state._array[layout.corps_offset + 0 * layout.corp_stride + 7]  # share_price offset=7
+        assert abs(state._array[info_base + 0] - corp_ptr_income) < 1e-6
+        assert abs(state._array[info_base + 1] - corp_ptr_stars) < 1e-6
+        assert abs(state._array[info_base + 2] - corp_ptr_price) < 1e-6
+
+        # Owned companies should match corp's owned_companies block
+        corp_owned_offset = layout.corps_offset + 0 * layout.corp_stride + 37  # owned_companies offset=37
+        for i in range(36):
+            assert state._array[co_base + i] == state._array[corp_owned_offset + i], (
+                f"active_corp_companies[{i}] doesn't match corp owned_companies"
+            )
+
+    def test_clear_active_corp(self, state):
+        """clear_active_corp should zero out info and owned companies."""
+        layout = get_layout(3)
+        from tests.phases.conftest import float_corp_for_test
+        float_corp_for_test(state, corp_id=0, par_index=10, player_id=0)
+        state.set_active_corp(0)
+        state.clear_active_corp()
+
+        info_base = layout.active_corp_info_offset
+        co_base = layout.active_corp_companies_offset
+        for i in range(3):
+            assert state._array[info_base + i] == 0.0, f"active_corp_info[{i}] != 0.0 after clear"
+        for i in range(36):
+            assert state._array[co_base + i] == 0.0, f"active_corp_companies[{i}] != 0.0 after clear"

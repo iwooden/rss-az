@@ -565,6 +565,7 @@ cdef void _present_current_offer(GameState state) noexcept:
 
         # Set visible state and return
         turn_module.TURN.set_acq_active_corp(state, corp_id)
+        state.set_active_corp(corp_id)
         turn_module.TURN.set_acq_target_company(state, company_id)
         turn_module.TURN.set_acq_fi_offer(state, owner_type == LOC_FI)
         turn_module.TURN.populate_acq_synergy_values(state, corp_id, company_id)
@@ -578,6 +579,7 @@ cdef void _present_current_offer(GameState state) noexcept:
 
     # No more valid offers
     turn_module.TURN.clear_acq_active_corp(state)
+    state.clear_active_corp()
     turn_module.TURN.clear_acq_target_company(state)
     turn_module.TURN.set_acq_fi_offer(state, False)
     turn_module.TURN.clear_acq_synergy_values(state)

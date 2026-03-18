@@ -1351,3 +1351,102 @@ class TestActiveCompanyClosing:
             assert state._array[base + i] == 0.0, (
                 f"active_company[{i}] should be 0 after all close offers exhausted"
             )
+
+
+# =============================================================================
+# ACTIVE CORP TESTS
+# =============================================================================
+
+class TestActiveCorpClosing:
+    """Test active corp block during CLOSING phase."""
+
+    def test_active_corp_set_for_corp_owned_offer(self, closing_offer_state):
+        """Active corp info should be populated for corp-owned company offers."""
+        gs = closing_offer_state
+
+        # Float corp 1 with company 0, then add company 3 (so we have 2, avoiding last-company rule)
+        float_corp_for_test(gs, corp_id=1, company_id=0, player_id=0)
+        COMPANIES[3].transfer_to_corp(gs, 1)
+
+        TURN.set_phase(gs, GamePhases.PHASE_CLOSING)
+        apply_closing_auto_py(gs)
+
+        closing_company = TURN.get_closing_company(gs)
+        if closing_company < 0:
+            return  # No offers
+
+        # Find the corp offer
+        layout = get_layout(3)
+        count = get_close_offer_count_py(gs)
+        for i in range(count):
+            owner_type, owner_id, _company_id = get_close_offer_py(gs, i)
+            if owner_type == CompanyLocation.LOC_CORP:
+                # Verify active corp one-hot is set
+                oh_base = layout.active_corp_offset
+                assert gs._array[oh_base + owner_id] == 1.0, (
+                    f"active_corp one-hot not set for corp {owner_id}"
+                )
+
+                # Verify info matches corp data
+                info_base = layout.active_corp_info_offset
+                corp_offset = layout.corps_offset + owner_id * layout.corp_stride
+                assert abs(gs._array[info_base + 0] - gs._array[corp_offset + 5]) < 1e-6  # income
+                assert abs(gs._array[info_base + 1] - gs._array[corp_offset + 6]) < 1e-6  # stars
+                assert abs(gs._array[info_base + 2] - gs._array[corp_offset + 7]) < 1e-6  # share_price
+                break
+
+    def test_active_corp_cleared_for_player_owned_offer(self, closing_offer_state):
+        """Active corp fields should be zeroed for player-owned company offers."""
+        gs = closing_offer_state
+
+        # Give a red company to player 0 (player-owned, no corp)
+        COMPANIES[0].transfer_to_player(gs, 0)
+
+        TURN.set_phase(gs, GamePhases.PHASE_CLOSING)
+        apply_closing_auto_py(gs)
+
+        closing_company = TURN.get_closing_company(gs)
+        if closing_company < 0:
+            return  # No offers
+
+        layout = get_layout(3)
+        oh_base = layout.active_corp_offset
+        info_base = layout.active_corp_info_offset
+
+        # One-hot should be all zeros (no corp)
+        for i in range(8):
+            assert gs._array[oh_base + i] == 0.0, (
+                f"active_corp_oh[{i}] should be 0 for player-owned offer"
+            )
+        # Info should be all zeros
+        for i in range(3):
+            assert gs._array[info_base + i] == 0.0, (
+                f"active_corp_info[{i}] should be 0 for player-owned offer"
+            )
+
+    def test_active_corp_cleared_after_closing_exhausted(self, closing_offer_state):
+        """Active corp should be cleared when all close offers are exhausted."""
+        gs = closing_offer_state
+
+        # Float corp 1 with two companies so we get a corp offer
+        float_corp_for_test(gs, corp_id=1, company_id=0, player_id=0)
+        COMPANIES[3].transfer_to_corp(gs, 1)
+
+        TURN.set_phase(gs, GamePhases.PHASE_CLOSING)
+        apply_closing_auto_py(gs)
+
+        # Pass on all offers
+        while TURN.get_closing_company(gs) >= 0:
+            apply_closing_action_py(gs, ACTION_PASS_PY)
+
+        layout = get_layout(3)
+        info_base = layout.active_corp_info_offset
+        co_base = layout.active_corp_companies_offset
+        for i in range(3):
+            assert gs._array[info_base + i] == 0.0, (
+                f"active_corp_info[{i}] not cleared after closing exhausted"
+            )
+        for i in range(36):
+            assert gs._array[co_base + i] == 0.0, (
+                f"active_corp_companies[{i}] not cleared after closing exhausted"
+            )
