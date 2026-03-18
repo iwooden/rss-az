@@ -1,16 +1,20 @@
 """Tests for INVEST phase actions."""
 import pytest
 import numpy as np
-from core.state import GameState
+from core.state import GameState, get_layout
 from core.driver import ZeroLegalActionsError, ForcedActionLoopError
 from core.actions import get_valid_action_mask, get_action_layout
-from core.data import GamePhases, CORP_NAMES, get_company_face_value
+from core.data import (
+    GamePhases, CORP_NAMES, get_company_face_value,
+    get_company_stars, get_company_low_price, get_company_high_price,
+    get_adjusted_company_income, PY_STAR_DIVISOR, PY_CASH_DIVISOR,
+    GameConstants,
+)
 from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.market import MARKET
-from entities.company import COMPANIES
-from core.data import GameConstants
+from entities.company import COMPANIES, get_auction_company_for_slot_py
 from tests.phases.conftest import STATUS_OK, STATUS_GAME_OVER, float_corp_for_test, apply_and_verify_all
 
 # Fixtures come from conftest.py automatically
@@ -813,3 +817,142 @@ class TestGameEndAt75:
         # Game ends because we reached $75
         assert state.get_phase() == GamePhases.PHASE_GAME_OVER
         assert corp.get_price_index(state) == 26
+
+
+# =============================================================================
+# AUCTION SLOT INFO TESTS
+# =============================================================================
+
+def _get_slot_data(state, slot):
+    """Read the 5 auction slot info scalars for a given slot."""
+    layout = get_layout(state.get_num_players())
+    base = layout.auction_slot_info_offset + slot * 5
+    return state._array[base:base + 5].copy()
+
+
+def _assert_slot_matches_company(state, slot, company_id):
+    """Assert that an auction slot's data matches the given company."""
+    data = _get_slot_data(state, slot)
+    coo = TURN.get_coo_level(state)
+    assert abs(data[0] - get_company_stars(company_id) / PY_STAR_DIVISOR) < 1e-6
+    assert abs(data[1] - get_company_low_price(company_id) / PY_CASH_DIVISOR) < 1e-6
+    assert abs(data[2] - get_company_face_value(company_id) / PY_CASH_DIVISOR) < 1e-6
+    assert abs(data[3] - get_company_high_price(company_id) / PY_CASH_DIVISOR) < 1e-6
+    assert abs(data[4] - get_adjusted_company_income(company_id, coo) / PY_CASH_DIVISOR) < 1e-6
+
+
+class TestAuctionSlotInfo:
+    """Test auction slot info block updates correctly during INVEST/BID flow."""
+
+    def test_slots_populated_on_init(self, game_state):
+        """Auction slot info is populated after game init."""
+        for slot in range(3):
+            company_id = get_auction_company_for_slot_py(game_state, slot)
+            assert company_id >= 0, f"Slot {slot} has no company"
+            _assert_slot_matches_company(game_state, slot, company_id)
+
+    def test_slots_match_auction_row_ordering(self, game_state):
+        """Slot data corresponds to auction row order (by company_id)."""
+        companies = []
+        for slot in range(3):
+            cid = get_auction_company_for_slot_py(game_state, slot)
+            companies.append(cid)
+        # Auction slots are ordered by company_id ascending
+        assert companies == sorted(companies)
+
+    def test_slots_update_after_auction_won(self, game_state):
+        """After an auction resolves, slot info updates (one company gone)."""
+        # Record initial auction companies
+        initial_companies = []
+        for slot in range(3):
+            initial_companies.append(get_auction_company_for_slot_py(game_state, slot))
+
+        # Start auction on first available company
+        auction_idx = get_first_valid_auction_action(game_state)
+        assert auction_idx is not None
+        apply_and_verify_all(game_state, auction_idx)
+
+        # Now in BID phase - have all other players leave
+        assert game_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
+        layout = get_action_layout(3)
+        leave_idx = layout['leave_auction']
+
+        # Two leave actions resolve the auction (3 players, starter already bid)
+        apply_and_verify_all(game_state, leave_idx)
+        apply_and_verify_all(game_state, leave_idx)
+
+        # Back in INVEST phase
+        assert game_state.get_phase() == GamePhases.PHASE_INVEST
+
+        # The won company should no longer be in any auction slot
+        won_company = TURN.get_auction_company(game_state)
+        # auction_company is cleared after resolution, so check via ownership
+        new_companies = []
+        for slot in range(3):
+            cid = get_auction_company_for_slot_py(game_state, slot)
+            if cid >= 0:
+                new_companies.append(cid)
+
+        # At least one company from the initial set should be gone
+        assert len(new_companies) <= len(initial_companies)
+
+        # Each remaining slot should have correct data
+        for slot in range(3):
+            cid = get_auction_company_for_slot_py(game_state, slot)
+            if cid >= 0:
+                _assert_slot_matches_company(game_state, slot, cid)
+
+    def test_slots_update_after_wrap_up(self, game_state):
+        """After WRAP_UP, slot info reflects the new auction row."""
+        # All players pass -> WRAP_UP -> ACQUISITION -> ... -> new INVEST turn
+        apply_pass_to_all_players(game_state, 3)
+
+        assert game_state.get_phase() == GamePhases.PHASE_INVEST
+        assert TURN.get_turn_number(game_state) == 2
+
+        # Verify all slots match current auction row
+        for slot in range(3):
+            cid = get_auction_company_for_slot_py(game_state, slot)
+            if cid >= 0:
+                _assert_slot_matches_company(game_state, slot, cid)
+
+    def test_active_company_set_during_bid(self, game_state):
+        """Active company block is populated when entering BID phase."""
+        layout_info = get_layout(3)
+
+        # Verify active company is zero before auction
+        base = layout_info.active_company_offset
+        assert all(game_state._array[base + i] == 0.0 for i in range(5))
+
+        # Start an auction
+        auction_idx = get_first_valid_auction_action(game_state)
+        assert auction_idx is not None
+        apply_and_verify_all(game_state, auction_idx)
+
+        assert game_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
+        company_id = TURN.get_auction_company(game_state)
+
+        # Active company should now match the auction company
+        assert game_state._array[base + 0] != 0.0, "Active company stars should be set"
+        coo = TURN.get_coo_level(game_state)
+        assert abs(game_state._array[base + 2] - get_company_face_value(company_id) / PY_CASH_DIVISOR) < 1e-6
+
+    def test_active_company_cleared_after_bid_resolves(self, game_state):
+        """Active company block is zeroed after auction resolution."""
+        layout_info = get_layout(3)
+        base = layout_info.active_company_offset
+
+        # Start and resolve auction
+        auction_idx = get_first_valid_auction_action(game_state)
+        assert auction_idx is not None
+        apply_and_verify_all(game_state, auction_idx)
+
+        layout = get_action_layout(3)
+        leave_idx = layout['leave_auction']
+        apply_and_verify_all(game_state, leave_idx)
+        apply_and_verify_all(game_state, leave_idx)
+
+        # Back in INVEST, active company should be cleared
+        assert game_state.get_phase() == GamePhases.PHASE_INVEST
+        assert all(game_state._array[base + i] == 0.0 for i in range(5)), \
+            "Active company should be zeroed after bid resolution"

@@ -1,8 +1,8 @@
 """Tests for BID_IN_AUCTION phase actions."""
 import pytest
-from core.state import GameState
+from core.state import GameState, get_layout
 from core.actions import get_valid_action_mask, get_action_layout
-from core.data import GamePhases, get_company_face_value
+from core.data import GamePhases, get_company_face_value, PY_CASH_DIVISOR
 from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.company import COMPANIES
@@ -793,3 +793,56 @@ class TestAutoApplyBehavior:
         assert state.get_phase() == GamePhases.PHASE_INVEST
         # History should include at least the leave action
         assert result.applied_count >= 1
+
+
+# =============================================================================
+# ACTIVE COMPANY TESTS
+# =============================================================================
+
+class TestActiveCompanyBid:
+    """Test active company block is set during BID and cleared after."""
+
+    def test_active_company_set_during_bid(self, bid_state):
+        """Active company block has correct data during BID_IN_AUCTION."""
+        layout = get_layout(3)
+        base = layout.active_company_offset
+        company_id = TURN.get_auction_company(bid_state)
+
+        # Active company face_value should match the auction company
+        expected_fv = get_company_face_value(company_id) / PY_CASH_DIVISOR
+        assert abs(bid_state._array[base + 2] - expected_fv) < 1e-6
+
+        # Should be nonzero (stars > 0 for all companies)
+        assert bid_state._array[base + 0] > 0.0
+
+    def test_active_company_cleared_after_resolution(self, bid_state):
+        """Active company block is zeroed after auction resolves."""
+        layout_info = get_layout(3)
+        base = layout_info.active_company_offset
+        layout = get_action_layout(3)
+
+        # Leave auction (2 players leave -> resolution)
+        apply_and_verify_all(bid_state, layout['leave_auction'])
+        apply_and_verify_all(bid_state, layout['leave_auction'])
+
+        assert bid_state.get_phase() == GamePhases.PHASE_INVEST
+        for i in range(5):
+            assert bid_state._array[base + i] == 0.0, (
+                f"active_company[{i}] should be 0 after bid resolution"
+            )
+
+    def test_active_company_persists_during_bidding(self, bid_state):
+        """Active company block stays set while bidding continues."""
+        layout_info = get_layout(3)
+        base = layout_info.active_company_offset
+        layout = get_action_layout(3)
+
+        company_id = TURN.get_auction_company(bid_state)
+        expected_fv = get_company_face_value(company_id) / PY_CASH_DIVISOR
+
+        # One player leaves, auction continues
+        apply_and_verify_all(bid_state, layout['leave_auction'])
+        assert bid_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
+
+        # Active company should still be set
+        assert abs(bid_state._array[base + 2] - expected_fv) < 1e-6

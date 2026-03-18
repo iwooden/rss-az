@@ -1,10 +1,10 @@
 """Tests for CLOSING phase auto-close logic."""
 import pytest
-from core.state import GameState
+from core.state import GameState, get_layout
 from core.data import (
     GamePhases, GameConstants,
     get_company_income, get_company_stars, get_company_face_value,
-    get_cost_of_ownership
+    get_cost_of_ownership, PY_CASH_DIVISOR,
 )
 from entities.turn import TURN
 from entities.company import COMPANIES, CompanyLocation
@@ -1298,3 +1298,56 @@ class TestClosingEdgeCases:
         assert PLAYERS[0].owns_company(state, 0)
 
         assert_invariants(state, f"After CLOSING ({num_players} players)")
+
+
+# =============================================================================
+# ACTIVE COMPANY TESTS
+# =============================================================================
+
+class TestActiveCompanyClosing:
+    """Test active company block during CLOSING phase."""
+
+    def test_active_company_set_on_close_offer(self, closing_offer_state):
+        """Active company block matches the company being offered for closing."""
+        state = closing_offer_state
+
+        # Give a red company (negative income at CoO 6) to player 0
+        COMPANIES[0].transfer_to_player(state, 0)
+
+        # Enter closing phase
+        TURN.set_phase(state, GamePhases.PHASE_CLOSING)
+        apply_closing_auto_py(state)
+        generate_close_offers_py(state)
+
+        closing_company = TURN.get_closing_company(state)
+        if closing_company >= 0:
+            layout = get_layout(3)
+            base = layout.active_company_offset
+            expected_fv = get_company_face_value(closing_company) / PY_CASH_DIVISOR
+            assert abs(state._array[base + 2] - expected_fv) < 1e-6
+            assert state._array[base + 0] > 0.0  # stars > 0
+
+    def test_active_company_cleared_after_closing_exhausted(self, closing_offer_state):
+        """Active company block is zeroed when no more close offers remain."""
+        state = closing_offer_state
+
+        # Give a red company to player 0 for a close offer
+        COMPANIES[0].transfer_to_player(state, 0)
+
+        TURN.set_phase(state, GamePhases.PHASE_CLOSING)
+        apply_closing_auto_py(state)
+        generate_close_offers_py(state)
+
+        # Pass on all offers until exhausted
+        closing_company = TURN.get_closing_company(state)
+        while closing_company >= 0:
+            apply_closing_action_py(state, ACTION_PASS_PY)
+            closing_company = TURN.get_closing_company(state)
+
+        # Active company should be cleared
+        layout = get_layout(3)
+        base = layout.active_company_offset
+        for i in range(5):
+            assert state._array[base + i] == 0.0, (
+                f"active_company[{i}] should be 0 after all close offers exhausted"
+            )

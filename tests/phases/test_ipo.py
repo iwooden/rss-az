@@ -1,10 +1,11 @@
 """Tests for IPO phase (Phase 9)."""
 import pytest
+from core.state import get_layout
 from core.data import (
     GamePhases, GameConstants,
     get_company_face_value, get_company_stars,
     get_par_price, get_par_index_for_slot, get_market_index,
-    get_corp_share_count,
+    get_corp_share_count, PY_CASH_DIVISOR,
 )
 from core.actions import get_valid_action_mask, get_action_layout
 from entities.turn import TURN
@@ -629,3 +630,63 @@ class TestIPOIntegration:
 
         # Should be in INVEST now (new turn)
         assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
+
+
+# =============================================================================
+# ACTIVE COMPANY TESTS
+# =============================================================================
+
+class TestActiveCompanyIPO:
+    """Test active company block during IPO phase."""
+
+    def test_active_company_set_during_ipo(self, ipo_state_with_company):
+        """Active company block matches the company being considered for IPO."""
+        state = ipo_state_with_company
+        company_id = TURN.get_ipo_company(state)
+        assert company_id >= 0
+
+        layout = get_layout(3)
+        base = layout.active_company_offset
+        expected_fv = get_company_face_value(company_id) / PY_CASH_DIVISOR
+        assert abs(state._array[base + 2] - expected_fv) < 1e-6
+        assert state._array[base + 0] > 0.0  # stars > 0
+
+    def test_active_company_cleared_after_ipo_phase_ends(self, ipo_state_with_company):
+        """Active company block is zeroed after IPO phase transitions to INVEST."""
+        state = ipo_state_with_company
+
+        # Pass on the IPO offer
+        apply_ipo_pass_py(state)
+
+        # Should be in INVEST now
+        assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
+
+        layout = get_layout(3)
+        base = layout.active_company_offset
+        for i in range(5):
+            assert state._array[base + i] == 0.0, (
+                f"active_company[{i}] should be 0 after IPO phase ends"
+            )
+
+    def test_active_company_updates_between_ipo_companies(self, ipo_state_multiple_companies):
+        """Active company block updates when advancing to the next IPO company."""
+        state = ipo_state_multiple_companies
+        TURN.set_phase(state, GamePhases.PHASE_IPO)
+        setup_ipo_phase_py(state)
+
+        layout = get_layout(3)
+        base = layout.active_company_offset
+
+        first_company = TURN.get_ipo_company(state)
+        assert first_company >= 0
+        first_fv = get_company_face_value(first_company) / PY_CASH_DIVISOR
+        assert abs(state._array[base + 2] - first_fv) < 1e-6
+
+        # IPO the first company (corp 0, par slot 0)
+        apply_ipo_action_py(state, 0, 0)
+
+        second_company = TURN.get_ipo_company(state)
+        if second_company >= 0:
+            second_fv = get_company_face_value(second_company) / PY_CASH_DIVISOR
+            assert abs(state._array[base + 2] - second_fv) < 1e-6
+            assert second_fv != first_fv or second_company != first_company

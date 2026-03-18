@@ -1,7 +1,7 @@
 """Tests for ACQUISITION phase."""
 
 import pytest
-from core.state import GameState
+from core.state import GameState, get_layout
 from core.data import (
     CORP_NAMES, GamePhases, COMPANY_NAME_TO_ID,
     get_company_face_value, get_company_low_price, get_company_high_price,
@@ -1966,3 +1966,75 @@ class TestAcqSynergyValues:
             expected = (get_company_synergy(self.CDG, second_target)
                         + get_company_synergy(second_target, self.CDG))
             assert abs(TURN.get_acq_synergy_value(gs, self.CDG) - expected / PY_CASH_DIVISOR) < 1e-6
+
+
+# =============================================================================
+# ACTIVE COMPANY TESTS
+# =============================================================================
+
+class TestActiveCompanyAcquisition:
+    """Test active company block during ACQUISITION phase."""
+
+    def test_active_company_set_on_offer(self):
+        """Active company block matches the target company when offer is presented."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give company 0 to FI, make corp 0 active with cash
+        COMPANIES[0].transfer_to_fi(gs)
+        float_corp_for_test(gs, 0)
+        CORPS[0].set_cash(gs, 50000)
+
+        setup_acquisition_phase_py(gs)
+
+        target = TURN.get_acq_target_company(gs)
+        if target >= 0:
+            layout = get_layout(3)
+            base = layout.active_company_offset
+            expected_fv = get_company_face_value(target) / PY_CASH_DIVISOR
+            assert abs(gs._array[base + 2] - expected_fv) < 1e-6
+            assert gs._array[base + 0] > 0.0  # stars > 0
+
+    def test_active_company_updates_on_pass(self):
+        """Active company block updates when passing to the next offer."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # Give two companies to FI
+        COMPANIES[0].transfer_to_fi(gs)
+        COMPANIES[1].transfer_to_fi(gs)
+
+        float_corp_for_test(gs, 0)
+        CORPS[0].set_cash(gs, 50000)
+
+        setup_acquisition_phase_py(gs)
+
+        first_target = TURN.get_acq_target_company(gs)
+        if first_target < 0:
+            return  # No offers
+
+        # Pass on first offer
+        apply_acquisition_action_py(gs, ACTION_PASS)
+
+        second_target = TURN.get_acq_target_company(gs)
+        if second_target >= 0 and second_target != first_target:
+            layout = get_layout(3)
+            base = layout.active_company_offset
+            expected_fv = get_company_face_value(second_target) / PY_CASH_DIVISOR
+            assert abs(gs._array[base + 2] - expected_fv) < 1e-6
+
+    def test_active_company_cleared_after_transition_to_closing(self):
+        """Active company block is zeroed after transitioning to CLOSING."""
+        gs = GameState(3)
+        gs.initialize_game()
+
+        # No corps active -> no offers -> immediate transition
+        setup_acquisition_phase_py(gs)
+        transition_to_closing_py(gs)
+
+        layout = get_layout(3)
+        base = layout.active_company_offset
+        for i in range(5):
+            assert gs._array[base + i] == 0.0, (
+                f"active_company[{i}] should be 0 after transition to CLOSING"
+            )
