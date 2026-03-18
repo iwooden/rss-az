@@ -112,13 +112,15 @@ def unrotate_values(values: np.ndarray, active_player_id: int) -> np.ndarray:
 def compute_terminal_values(net_worths: list[int], num_players: int) -> np.ndarray:
     """Compute canonical reward values for a terminal game state.
 
-    Hybrid of rank-based and net-worth-ratio rewards, blended 50/50.
-    The rank component provides sharp signal at rank boundaries (overtaking
-    an opponent matters a lot). The margin component provides continuous
-    gradient within ranks (3rd place still has reason to improve).
+    Hybrid of rank-based and zero-sum net-worth-deviation rewards, blended
+    50/50. The rank component provides sharp signal at rank boundaries
+    (overtaking an opponent matters a lot). The margin component provides
+    continuous gradient within ranks (3rd place still has reason to improve).
 
-    Both components are independently in [-1, +1], and the blend is a
-    convex combination, so the result is always in [-1, +1].
+    Both components are zero-sum across players, so the blended result is
+    also zero-sum (better utilization of the tanh value head's [-1, +1]
+    range). The margin uses a scale factor of n/(n-1) to guarantee the
+    result stays in [-1, +1] for any net worth distribution.
 
     When all players have zero net worth, all receive 0.0.
 
@@ -134,7 +136,7 @@ def compute_terminal_values(net_worths: list[int], num_players: int) -> np.ndarr
     if max_nw == 0:
         return np.zeros(num_players, dtype=np.float32)
 
-    # Rank component: evenly spaced from +1.0 to -1.0 by placement
+    # Rank component: evenly spaced from +1.0 to -1.0 by placement (zero-sum)
     rank_rewards = np.linspace(1.0, -1.0, num_players)
     sorted_indices = np.argsort(net_worths)[::-1]  # descending
     rank_values = np.zeros(num_players, dtype=np.float32)
@@ -148,9 +150,12 @@ def compute_terminal_values(net_worths: list[int], num_players: int) -> np.ndarr
             rank_values[sorted_indices[k]] = avg_reward
         i = j
 
-    # Margin component: net-worth ratio to winner
+    # Margin component: zero-sum net-worth deviation from mean, scaled by
+    # n/(n-1) so the range is exactly [-1, +1] for any NW distribution
+    mean_nw = sum(net_worths) / num_players
+    scale = num_players / (num_players - 1)
     margin_values = np.array(
-        [2.0 * nw / max_nw - 1.0 for nw in net_worths], dtype=np.float32
+        [scale * (nw - mean_nw) / max_nw for nw in net_worths], dtype=np.float32
     )
 
     # Blend 50/50

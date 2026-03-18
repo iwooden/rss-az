@@ -185,7 +185,7 @@ The NN always sees the active player's data at slot 0. Before inference, the vis
 
 The value head outputs 3 scalars in [-1, 1] via tanh, representing per-player expected outcomes: `[v_active, v_next, v_next_next]`. These are un-rotated to canonical order via `np.roll(values, active_player_id)`.
 
-**Terminal values:** Hybrid of rank-based and net-worth-ratio rewards, blended 50/50. The rank component (`linspace(+1, -1)` by placement) provides sharp signal at rank boundaries. The margin component (`2 * nw_i / max_nw - 1`) provides continuous gradient within ranks. Both are in [-1, +1], so the convex combination is always bounded. Winner always gets +1.0. All-zero net worths yield 0.0.
+**Terminal values:** Hybrid of rank-based and zero-sum net-worth-deviation rewards, blended 50/50. The rank component (`linspace(+1, -1)` by placement) provides sharp signal at rank boundaries. The margin component (`(n/(n-1)) * (nw_i - mean_nw) / max_nw`) provides continuous gradient within ranks. Both components are zero-sum across players, giving better utilization of the tanh value head's [-1, +1] range. The `n/(n-1)` scale factor guarantees the result stays in [-1, +1] for any NW distribution. All-zero net worths yield 0.0.
 
 ### PUCT Selection
 
