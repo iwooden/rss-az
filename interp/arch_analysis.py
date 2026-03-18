@@ -21,7 +21,6 @@ import numpy as np
 import torch
 
 from interp.utils import InterpDataset, collect_states, load_model
-from nn.model_3p import ResidualMLPBlock
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +61,6 @@ def analyze_block_contributions(
 
     results: list[dict[str, float]] = []
     for i, block in enumerate(model.blocks):
-        assert isinstance(block, ResidualMLPBlock)
         r = np.array(block_ratios[i])
         results.append({
             "block": float(i),
@@ -149,8 +147,10 @@ def analyze_effective_rank(
     """SVD-based effective rank after input_proj, each block, and trunk_norm."""
     model.eval()
 
-    # Collection points
-    layer_names = ["input_proj"] + [f"block_{i}" for i in range(len(model.blocks))] + ["trunk_norm"]
+    # Collection points — detect v1 (input_proj) vs v2 (input_preprocess)
+    input_name = "input_preprocess" if hasattr(model, "input_preprocess") else "input_proj"
+    input_module = getattr(model, input_name)
+    layer_names = [input_name] + [f"block_{i}" for i in range(len(model.blocks))] + ["trunk_norm"]
     activations: dict[str, list[torch.Tensor]] = {n: [] for n in layer_names}
 
     handles = []
@@ -164,7 +164,7 @@ def analyze_effective_rank(
             activations[name].append(out.detach().cpu())
         return hook
 
-    handles.append(model.input_proj.register_forward_hook(make_hook("input_proj")))
+    handles.append(input_module.register_forward_hook(make_hook(input_name)))
     for i, block in enumerate(model.blocks):
         handles.append(block.register_forward_hook(make_hook(f"block_{i}")))
     handles.append(model.trunk_norm.register_forward_hook(make_hook("trunk_norm")))
