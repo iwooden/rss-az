@@ -343,16 +343,16 @@ cdef class TurnState:
         )
 
     cpdef int get_auction_price(self, GameState state):
-        """Get current auction price."""
+        """Get current auction price. Returns 0 when no auction is active."""
         cdef float val = state._data[self._auction_price_offset]
-        if val < 0:
-            return -1
+        if val <= 0:
+            return 0
         return <int>(val * CASH_DIVISOR + 0.5)
 
     cpdef void set_auction_price(self, GameState state, int price):
-        """Set current auction price."""
-        if price < 0:
-            state._data[self._auction_price_offset] = -1.0
+        """Set current auction price. Use 0 or negative to clear."""
+        if price <= 0:
+            state._data[self._auction_price_offset] = 0.0
         else:
             state._data[self._auction_price_offset] = <float>price / CASH_DIVISOR
 
@@ -553,10 +553,10 @@ cdef class TurnState:
         return <int>data[self._hidden_closing_company_offset]
 
     cdef inline int _get_auction_price_nogil(self, float* data) noexcept nogil:
-        """Get current auction price from cached offset. O(1) access."""
+        """Get current auction price from cached offset. Returns 0 when no auction."""
         cdef float val = data[self._auction_price_offset]
-        if val < 0:
-            return -1
+        if val <= 0:
+            return 0
         return <int>(val * CASH_DIVISOR + 0.5)
 
     cdef inline int _get_coo_level_nogil(self, float* data) noexcept nogil:

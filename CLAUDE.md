@@ -404,7 +404,7 @@ record = play_game(evaluator, config, game_seed=42, rng=rng)
 
 **State layout:**
 ```
-[Phase (11) | CoO Level (7) | Players (repeated) | FI (37) | Companies (108) |
+[Phase (11) | CoO Level (7) | Players (repeated) | FI (38) | Companies (108) |
  Company Incomes (36) | Market (27) | Corporations (872) | Turn (complex) |
  Auction Slot Info (5*num_players) | HIDDEN: Active Player, Deck, Offer Buffers]
 ```
@@ -412,6 +412,8 @@ record = play_game(evaluator, config, game_seed=42, rng=rng)
 **Player stride** = `73 + num_players` floats per player
 
 **Corporation stride** = 109 floats per corp
+
+**Context-dependent field convention:** Many turn state fields are only meaningful during specific phases (auction info during BID, active corp during DIVIDENDS, etc.). When inactive, all elements are zeroed — both binary fields (one-hots, flags) and data scalars. This lets the model distinguish "no active context" from valid data. See `VECTORS.md` for the full list of context-dependent fields and their relevant phases.
 
 See `VECTORS.md` for exact offsets.
 

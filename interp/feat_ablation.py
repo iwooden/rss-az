@@ -1,12 +1,14 @@
-"""Feature ablation: measure model sensitivity to static company data.
+"""Feature ablation: measure model sensitivity to auction slot info.
 
-Zeroes out the static company data region (1440 floats, 47.6% of the 3023
-visible-state input) and measures how the model's policy and value outputs
-change. If the model has learned to encode static company properties as
-bias terms in the input projection, zeroing should have minimal effect.
+Zeroes out the auction slot info region (5 floats per auction slot: stars,
+low_price, face_value, high_price, income) and measures how the model's
+policy and value outputs change. With --breakdown, ablates each sub-feature
+(stars, prices, income) independently to identify which signals drive
+model decisions.
 
 Usage:
     .venv/bin/python -m interp.feat_ablation
+    .venv/bin/python -m interp.feat_ablation --breakdown
     .venv/bin/python -m interp.feat_ablation --num-games 100 --save-data interp/data/states.npz
     .venv/bin/python -m interp.feat_ablation --load-data interp/data/states.npz
 """

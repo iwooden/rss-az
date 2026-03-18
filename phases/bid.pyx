@@ -52,7 +52,7 @@ cdef void _resolve_auction(GameState state) noexcept:
     turn_module.TURN.clear_auction_high_bidder(state)
     turn_module.TURN.clear_auction_starter(state)
     turn_module.TURN.clear_auction_passed(state)
-    turn_module.TURN.set_auction_price(state, -1)
+    turn_module.TURN.set_auction_price(state, 0)
 
     # Clear active company (no longer in auction context)
     state.clear_active_company()
