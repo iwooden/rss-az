@@ -1,17 +1,22 @@
 """Full state vector sensitivity analysis.
 
-Ablates every named field in the state vector and produces a markdown
-table showing policy KL divergence per game phase.
+Ablates every named field in the state vector and produces a heatmap
+HTML report (and optional markdown table) showing policy KL divergence
+per game phase.
 
 Usage:
     .venv/bin/python -m interp.full_ablation
     .venv/bin/python -m interp.full_ablation --load-data interp/data/states.npz
+    .venv/bin/python -m interp.full_ablation --no-open  # skip launching browser
 """
 
 from __future__ import annotations
 
 import argparse
+import platform
+import subprocess
 import time
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -233,6 +238,153 @@ def format_markdown_table(
     return "\n".join(lines)
 
 
+def format_html_table(
+    rows: list[tuple[str, int, float, dict[int, float]]],
+    phase_ids: list[int],
+    epoch: int,
+    num_states: int,
+    num_games: int,
+) -> str:
+    """Format results as an HTML heatmap page."""
+    phase_names = [_PHASE_NAMES.get(pid, str(pid)) for pid in phase_ids]
+    headers = ["Feature", "#", "Total"] + phase_names
+
+    # Build JSON-compatible row data for the JS renderer
+    js_rows: list[list[object]] = []
+    for name, size, total_kl, phase_kls in rows:
+        js_rows.append(
+            [name, size, total_kl] + [phase_kls[pid] for pid in phase_ids]
+        )
+
+    # Inline the data as JS literals to keep the HTML self-contained
+    import json
+
+    rows_json = json.dumps(js_rows)
+    headers_json = json.dumps(headers)
+
+    return f"""\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>State Vector Sensitivity — Epoch {epoch}</title>
+<style>
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 Helvetica, Arial, sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    margin: 2rem auto;
+    max-width: 1200px;
+    padding: 0 1rem;
+  }}
+  h1 {{ color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }}
+  .meta {{ color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }}
+  table {{
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.82rem;
+    table-layout: fixed;
+  }}
+  th, td {{ padding: 5px 8px; border: 1px solid #2a2a4a; text-align: right; }}
+  th {{
+    background: #16213e; color: #aaa; font-weight: 600;
+    position: sticky; top: 0; z-index: 1;
+  }}
+  th:first-child, td:first-child {{ text-align: left; width: 200px; }}
+  td:first-child {{
+    font-family: "SF Mono", "Fira Code", Consolas, monospace;
+    font-size: 0.8rem; color: #ccc;
+  }}
+  td:nth-child(2) {{ color: #888; width: 45px; }}
+  tr:hover td {{ border-color: #555; }}
+</style>
+</head>
+<body>
+<h1>State Vector Sensitivity — Epoch {epoch}</h1>
+<div class="meta">
+  Policy KL divergence when each feature group is zeroed.
+  {num_states:,} states from {num_games} games.
+  Sorted by total KL (most sensitive first).
+</div>
+<table id="tbl"></table>
+<script>
+const rows = {rows_json};
+const headers = {headers_json};
+
+let maxVal = 0;
+for (const r of rows)
+  for (let i = 2; i < r.length; i++)
+    if (r[i] > maxVal) maxVal = r[i];
+
+function klColor(v) {{
+  if (v === 0) return "rgba(0,0,0,0)";
+  const t = v / maxVal;
+  const h = t * 120;
+  const s = 70 + t * -5;
+  const l = 18 + t * 22;
+  return "hsl(" + h + "," + s + "%," + l + "%)";
+}}
+
+function fmtKL(v) {{
+  if (v === 0) return "0";
+  if (v < 0.0005) return v.toExponential(0);
+  return v.toFixed(4);
+}}
+
+const tbl = document.getElementById("tbl");
+const thead = tbl.createTHead().insertRow();
+for (const h of headers) {{
+  const th = document.createElement("th");
+  th.textContent = h;
+  thead.appendChild(th);
+}}
+const tbody = tbl.createTBody();
+for (const r of rows) {{
+  const tr = tbody.insertRow();
+  for (let i = 0; i < r.length; i++) {{
+    const td = tr.insertCell();
+    if (i <= 1) {{
+      td.textContent = r[i];
+    }} else {{
+      td.textContent = fmtKL(r[i]);
+      td.style.backgroundColor = klColor(r[i]);
+      if (r[i] / maxVal > 0.45) td.style.color = "#fff";
+    }}
+  }}
+}}
+</script>
+</body>
+</html>"""
+
+
+def _open_file(path: Path) -> None:
+    """Open a file with the platform's default handler."""
+    system = platform.system()
+    try:
+        if system == "Linux":
+            subprocess.Popen(  # noqa: S603
+                ["xdg-open", str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        elif system == "Darwin":
+            subprocess.Popen(  # noqa: S603
+                ["open", str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        elif system == "Windows":
+            subprocess.Popen(  # noqa: S603
+                ["start", "", str(path)],
+                shell=True,  # noqa: S602
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    except OSError:
+        print(f"  Could not open browser. Open manually: {path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Full state vector sensitivity analysis (policy KL per feature per phase)"
@@ -247,7 +399,11 @@ def main() -> None:
     parser.add_argument("--save-data", type=str, default=None)
     parser.add_argument(
         "--output", type=str, default=None,
-        help="Write markdown table to file (default: stdout)",
+        help="Markdown output path (default: interp/data/sensitivity_epoch<N>.md)",
+    )
+    parser.add_argument(
+        "--no-open", action="store_true",
+        help="Don't open the HTML report in a browser",
     )
     args = parser.parse_args()
 
@@ -278,17 +434,31 @@ def main() -> None:
 
     table = format_markdown_table(rows, phase_ids)
 
+    # Always write both markdown and HTML
+    md_header = (
+        f"# State Vector Sensitivity (epoch {epoch})\n\n"
+        f"Policy KL divergence when each feature group is zeroed.\n"
+        f"Data: {dataset.num_states} states from {dataset.num_games} games.\n"
+        f"Sorted by total KL (most sensitive first).\n\n"
+    )
+
     if args.output:
-        with open(args.output, "w") as f:
-            f.write(f"# State Vector Sensitivity (epoch {epoch})\n\n")
-            f.write(f"Policy KL divergence when each feature group is zeroed.\n")
-            f.write(f"Data: {dataset.num_states} states from {dataset.num_games} games.\n")
-            f.write(f"Sorted by total KL (most sensitive first).\n\n")
-            f.write(table)
-            f.write("\n")
-        print(f"\nTable written to {args.output}")
+        md_path = Path(args.output)
     else:
-        print(f"\n{table}")
+        md_path = Path("interp/data") / f"sensitivity_epoch{epoch}.md"
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    md_path.write_text(md_header + table + "\n")
+    print(f"\nMarkdown written to {md_path}")
+
+    html_path = md_path.with_suffix(".html")
+    html_content = format_html_table(
+        rows, phase_ids, epoch, dataset.num_states, dataset.num_games,
+    )
+    html_path.write_text(html_content)
+    print(f"HTML heatmap written to {html_path}")
+
+    if not args.no_open:
+        _open_file(html_path)
 
 
 if __name__ == "__main__":
