@@ -70,7 +70,6 @@ cdef struct TurnStateOffsets:
     int turn_number
     int end_card_flipped
     int consecutive_passes
-    int auction_company
     int auction_price
     int auction_high_bidder
     int auction_starter
@@ -80,16 +79,13 @@ cdef struct TurnStateOffsets:
     int dividend_remaining
     int issue_corp
     int issue_remaining
-    int ipo_company
     int ipo_remaining
     int acq_active_corp
-    int acq_target_company
     int acq_is_fi_offer
     int acq_synergy_values
-    # Closing phase
-    int closing_company
-    # Active company contextual info (5 scalars: stars, low, face, high, income)
+    # Active company: one-hot (36) + contextual info (5 scalars)
     int active_company
+    int active_company_info
 
 cdef struct PlayerFieldOffsets:
     int cash

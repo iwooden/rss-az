@@ -117,9 +117,9 @@ Central data structure: single contiguous float32 numpy array.
 **Sizes by player count:**
 | Players | Visible | Hidden | Total |
 |---------|---------|--------|-------|
-| 2 | 1554 | 1184 | 2738 |
-| 3 | 1639 | 1184 | 2823 |
-| 6 | 1906 | 1184 | 3090 |
+| 2 | 1446 | 1184 | 2630 |
+| 3 | 1531 | 1184 | 2715 |
+| 6 | 1798 | 1184 | 2982 |
 
 ### Actions (`core/actions.pyx`)
 
@@ -231,8 +231,8 @@ Instead of using the root node's mean value (soft-Z) or the game outcome as trai
 
 ### NN Model (`nn/model_3p.py`)
 
-Residual MLP (~25.5M parameters):
-- **Input:** 1639 floats (3-player) (visible state, active player rotated to slot 0)
+Residual MLP (~25.4M parameters):
+- **Input:** 1531 floats (3-player) (visible state, active player rotated to slot 0)
 - **Trunk:** Linear → 10 residual blocks (pre-LN, GELU, expansion=2) → LayerNorm
 - **Policy head:** Linear(768→256) → GELU → Linear(256→246) logits (masked by legal actions before softmax)
 - **Value head:** Linear(768→384) → GELU → Linear(384→192) → GELU → Linear(192→3) → Tanh

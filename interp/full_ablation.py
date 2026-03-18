@@ -115,9 +115,8 @@ def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
     groups.append(("turn:end_card_flipped", np.array([t + 1])))
     groups.append(("turn:consec_passes", np.array([t + 2])))
 
-    # Auction block: company(36) + price(1) + high_bidder(np) + starter(np) + passed(np)
-    auction_idx: list[int] = list(range(t + 3, t + 3 + 36))  # auction_company
-    auction_idx.append(t + 39)  # auction_price
+    # Auction block: price(1) + high_bidder(np) + starter(np) + passed(np)
+    auction_idx: list[int] = [t + 3]  # auction_price
     auction_idx.extend(range(layout.auction_high_bidder_offset, layout.auction_high_bidder_offset + num_players))
     auction_idx.extend(range(layout.auction_starter_offset, layout.auction_starter_offset + num_players))
     auction_idx.extend(range(layout.auction_passed_offset, layout.auction_passed_offset + num_players))
@@ -129,13 +128,13 @@ def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
     post += 42
     groups.append(("turn:issue", np.arange(post, post + 16)))  # corp(8) + remaining(8)
     post += 16
-    groups.append(("turn:ipo", np.arange(post, post + 72)))  # company(36) + remaining(36)
-    post += 72
-    groups.append(("turn:acq", np.arange(post, post + 81)))  # active_corp(8) + target(36) + fi_offer(1) + synergy(36)
-    post += 81
-    groups.append(("turn:closing", np.arange(post, post + 36)))
+    groups.append(("turn:ipo_remaining", np.arange(post, post + 36)))  # remaining(36)
     post += 36
-    groups.append(("turn:active_company", np.arange(post, post + 5)))  # stars, low, face, high, income
+    groups.append(("turn:acq", np.arange(post, post + 45)))  # active_corp(8) + fi_offer(1) + synergy(36)
+    post += 45
+    groups.append(("turn:active_company", np.arange(post, post + 36)))  # one-hot(36)
+    post += 36
+    groups.append(("turn:active_company_info", np.arange(post, post + 5)))  # stars, low, face, high, income
     post += 5
     assert post == layout.auction_slot_info_offset, (
         f"Turn end {post} != auction_slot_info_offset {layout.auction_slot_info_offset}"

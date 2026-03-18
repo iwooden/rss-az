@@ -29,12 +29,9 @@ from entities.encoding cimport (
 cdef struct TurnOffsets:
     # Offsets within turn state data block in the state vector
     int acq_active_corp
-    int acq_target_company
     int acq_is_fi_offer
     int dividend_corp
     int issue_corp
-    int ipo_company
-    int closing_company
 
 
 cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
@@ -45,7 +42,6 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
     - turn_number (1)
     - end_card_flipped (1)
     - consecutive_passes (1)
-    - auction_company (36)
     - auction_price (1)
     - auction_high_bidder (num_players)
     - auction_starter (num_players)
@@ -55,14 +51,12 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
     - dividend_remaining (8)
     - issue_corp (8)
     - issue_remaining (8)
-    - ipo_company (36)
     - ipo_remaining (36)
     - acq_active_corp (8)
-    - acq_target_company (36)
     - acq_is_fi_offer (1)
     - acq_synergy_values (36)
-    - closing_company (36)
-    - active_company (5)
+    - active_company (36)
+    - active_company_info (5)
     """
     cdef TurnOffsets t
     cdef int offset = 0
@@ -70,8 +64,6 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
     # Skip turn_number (1), end_card_flipped (1), consecutive_passes (1)
     offset += 3
 
-    # Skip auction_company (36)
-    offset += 36
     # Skip auction_price (1)
     offset += 1
     # Skip auction_high_bidder (num_players), auction_starter (num_players), auction_passed (num_players)
@@ -79,8 +71,8 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
 
     t.dividend_corp = offset
     offset += GameConstants.NUM_CORPS  # 8
-    # Skip dividend_impact (25)
-    offset += 25
+    # Skip dividend_impact (26)
+    offset += GameConstants.MAX_DIVIDEND
     # Skip dividend_remaining (8)
     offset += GameConstants.NUM_CORPS
 
@@ -89,21 +81,12 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
     # Skip issue_remaining (8)
     offset += GameConstants.NUM_CORPS
 
-    t.ipo_company = offset
-    offset += GameConstants.NUM_COMPANIES  # 36
     # Skip ipo_remaining (36)
     offset += GameConstants.NUM_COMPANIES
 
     t.acq_active_corp = offset
     offset += GameConstants.NUM_CORPS  # 8
-    t.acq_target_company = offset
-    offset += GameConstants.NUM_COMPANIES  # 36
     t.acq_is_fi_offer = offset
-    offset += 1
-    # Skip acq_synergy_values (36)
-    offset += GameConstants.NUM_COMPANIES
-
-    t.closing_company = offset
 
     return t
 
@@ -113,15 +96,6 @@ cdef inline int get_acq_active_corp_nogil(float* turn, TurnOffsets* t) noexcept 
     cdef int i
     for i in range(<int>GameConstants.NUM_CORPS):
         if turn[t.acq_active_corp + i] == 1.0:
-            return i
-    return -1
-
-
-cdef inline int get_acq_target_company_nogil(float* turn, TurnOffsets* t) noexcept nogil:
-    """Get target company for acquisition (scan one-hot, returns -1 if none)."""
-    cdef int i
-    for i in range(<int>GameConstants.NUM_COMPANIES):
-        if turn[t.acq_target_company + i] == 1.0:
             return i
     return -1
 
@@ -145,24 +119,6 @@ cdef inline int get_issue_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil
     cdef int i
     for i in range(<int>GameConstants.NUM_CORPS):
         if turn[t.issue_corp + i] == 1.0:
-            return i
-    return -1
-
-
-cdef inline int get_ipo_company_nogil(float* turn, TurnOffsets* t) noexcept nogil:
-    """Get current IPO company (scan one-hot, returns -1 if none)."""
-    cdef int i
-    for i in range(<int>GameConstants.NUM_COMPANIES):
-        if turn[t.ipo_company + i] == 1.0:
-            return i
-    return -1
-
-
-cdef inline int get_closing_company_nogil(float* turn, TurnOffsets* t) noexcept nogil:
-    """Get company being offered for closing (scan one-hot, returns -1 if none)."""
-    cdef int i
-    for i in range(<int>GameConstants.NUM_COMPANIES):
-        if turn[t.closing_company + i] == 1.0:
             return i
     return -1
 
@@ -237,7 +193,6 @@ cdef class TurnState:
         self._consecutive_passes_offset = self._turn_offset + turn.consecutive_passes
 
         # Auction
-        self._auction_company_offset = self._turn_offset + turn.auction_company
         self._auction_price_offset = self._turn_offset + turn.auction_price
         self._auction_high_bidder_offset = self._turn_offset + turn.auction_high_bidder
         self._auction_starter_offset = self._turn_offset + turn.auction_starter
@@ -253,19 +208,17 @@ cdef class TurnState:
         self._issue_remaining_offset = self._turn_offset + turn.issue_remaining
 
         # IPO
-        self._ipo_company_offset = self._turn_offset + turn.ipo_company
         self._ipo_remaining_offset = self._turn_offset + turn.ipo_remaining
 
-        # Acquisition (one-hot offsets for visible state)
+        # Acquisition
         self._acq_active_corp_offset = self._turn_offset + turn.acq_active_corp
-        self._acq_target_company_offset = self._turn_offset + turn.acq_target_company
         self._acq_is_fi_offer_offset = self._turn_offset + turn.acq_is_fi_offer
         # Note: acq_is_fi_offer is a single float (not one-hot), so use visible offset directly
         self._hidden_acq_is_fi_offer_offset = self._acq_is_fi_offer_offset
         self._acq_synergy_values_offset = self._turn_offset + turn.acq_synergy_values
 
-        # Closing
-        self._closing_company_offset = self._turn_offset + turn.closing_company
+        # Active company one-hot (shared by auction/acq/closing/ipo)
+        self._active_company_offset = self._turn_offset + turn.active_company
 
     # =========================================================================
     # PHASE (one-hot, 11 values: 0-10)
@@ -384,16 +337,16 @@ cdef class TurnState:
         return <int>state._data[self._hidden_auction_company_offset]
 
     cpdef void set_auction_company(self, GameState state, int company_id):
-        """Set company being auctioned. Updates both one-hot and hidden compact storage."""
+        """Set company being auctioned. Updates active_company one-hot and hidden compact."""
         set_one_hot_with_compact(
-            state._data, self._auction_company_offset, GameConstants.NUM_COMPANIES,
+            state._data, self._active_company_offset, GameConstants.NUM_COMPANIES,
             self._hidden_auction_company_offset, company_id
         )
 
     cpdef void clear_auction_company(self, GameState state):
-        """Clear auction company (no active auction). Updates both one-hot and hidden storage."""
+        """Clear auction company. Updates active_company one-hot and hidden compact."""
         clear_one_hot_with_compact(
-            state._data, self._auction_company_offset, GameConstants.NUM_COMPANIES,
+            state._data, self._active_company_offset, GameConstants.NUM_COMPANIES,
             self._hidden_auction_company_offset
         )
 
@@ -550,16 +503,16 @@ cdef class TurnState:
         return <int>state._data[self._hidden_ipo_company_offset]
 
     cpdef void set_ipo_company(self, GameState state, int company_id):
-        """Set current IPO company. Updates both one-hot and hidden compact storage."""
+        """Set current IPO company. Updates active_company one-hot and hidden compact."""
         set_one_hot_with_compact(
-            state._data, self._ipo_company_offset, GameConstants.NUM_COMPANIES,
+            state._data, self._active_company_offset, GameConstants.NUM_COMPANIES,
             self._hidden_ipo_company_offset, company_id
         )
 
     cpdef void clear_ipo_company(self, GameState state):
-        """Clear IPO company. Updates both one-hot and hidden compact storage."""
+        """Clear IPO company. Updates active_company one-hot and hidden compact."""
         clear_one_hot_with_compact(
-            state._data, self._ipo_company_offset, GameConstants.NUM_COMPANIES,
+            state._data, self._active_company_offset, GameConstants.NUM_COMPANIES,
             self._hidden_ipo_company_offset
         )
 
@@ -645,16 +598,16 @@ cdef class TurnState:
         return <int>state._data[self._hidden_acq_target_company_offset]
 
     cpdef void set_acq_target_company(self, GameState state, int company_id):
-        """Set target company for acquisition. Updates both one-hot and hidden compact storage."""
+        """Set target company. Updates active_company one-hot and hidden compact."""
         set_one_hot_with_compact(
-            state._data, self._acq_target_company_offset, GameConstants.NUM_COMPANIES,
+            state._data, self._active_company_offset, GameConstants.NUM_COMPANIES,
             self._hidden_acq_target_company_offset, company_id
         )
 
     cpdef void clear_acq_target_company(self, GameState state):
-        """Clear target company. Updates both one-hot and hidden compact storage."""
+        """Clear target company. Updates active_company one-hot and hidden compact."""
         clear_one_hot_with_compact(
-            state._data, self._acq_target_company_offset, GameConstants.NUM_COMPANIES,
+            state._data, self._active_company_offset, GameConstants.NUM_COMPANIES,
             self._hidden_acq_target_company_offset
         )
 
@@ -708,16 +661,16 @@ cdef class TurnState:
         return <int>state._data[self._hidden_closing_company_offset]
 
     cpdef void set_closing_company(self, GameState state, int company_id):
-        """Set company being offered for closing. Updates both one-hot and hidden compact storage."""
+        """Set company being offered for closing. Updates active_company one-hot and hidden compact."""
         set_one_hot_with_compact(
-            state._data, self._closing_company_offset, GameConstants.NUM_COMPANIES,
+            state._data, self._active_company_offset, GameConstants.NUM_COMPANIES,
             self._hidden_closing_company_offset, company_id
         )
 
     cpdef void clear_closing_company(self, GameState state):
-        """Clear closing company. Updates both one-hot and hidden compact storage."""
+        """Clear closing company. Updates active_company one-hot and hidden compact."""
         clear_one_hot_with_compact(
-            state._data, self._closing_company_offset, GameConstants.NUM_COMPANIES,
+            state._data, self._active_company_offset, GameConstants.NUM_COMPANIES,
             self._hidden_closing_company_offset
         )
 

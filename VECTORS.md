@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | 1554         | 1184        | 2738       |
-| 3       | 1639         | 1184        | 2823       |
-| 4       | 1726         | 1184        | 2910       |
-| 5       | 1815         | 1184        | 2999       |
-| 6       | 1906         | 1184        | 3090       |
+| 2       | 1446         | 1184        | 2630       |
+| 3       | 1531         | 1184        | 2715       |
+| 4       | 1618         | 1184        | 2802       |
+| 5       | 1707         | 1184        | 2891       |
+| 6       | 1798         | 1184        | 2982       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 
@@ -174,7 +174,6 @@ Size varies with player count: `287 + (3 * num_players)`
 | `end_card_flipped` | 1 | flag | |
 | `consecutive_passes` | 1 | normalized | / num_players, INVEST phase |
 | **Auction:** | | | |
-| `auction_company` | 36 | one-hot | -1 if no auction |
 | `auction_price` | 1 | normalized | -1 if no auction |
 | `auction_high_bidder` | num_players | one-hot | -1 if no auction |
 | `auction_starter` | num_players | one-hot | -1 if no auction |
@@ -187,17 +186,14 @@ Size varies with player count: `287 + (3 * num_players)`
 | `issue_corp` | 8 | one-hot | Current corp |
 | `issue_remaining` | 8 | flags | Corps left to process |
 | **IPO:** | | | |
-| `ipo_company` | 36 | one-hot | Current company |
 | `ipo_remaining` | 36 | flags | Companies left |
 | **Acquisition:** | | | |
 | `acq_active_corp` | 8 | one-hot | Buying corp |
-| `acq_target_company` | 36 | one-hot | Target company |
 | `acq_is_fi_offer` | 1 | flag | 1=FI target |
 | `acq_synergy_values` | 36 | normalized | Synergy income bonus per company / CASH_DIVISOR, 0 if corp doesn't own |
-| **Closing:** | | | |
-| `closing_company` | 36 | one-hot | Current offer |
 | **Active Company:** | | | |
-| `active_company` | 5 | normalized | stars/STAR_DIVISOR, low/face/high/income / CASH_DIVISOR. Set during BID, ACQ, CLOSING, IPO. Zero when no active company. |
+| `active_company` | 36 | one-hot | Company under consideration in BID, ACQ, CLOSING, IPO. All zeros when inactive. |
+| `active_company_info` | 5 | normalized | stars/STAR_DIVISOR, low/face/high/income / CASH_DIVISOR. Zero when no active company. |
 
 ### Auction Slot Info (5 × num_players)
 

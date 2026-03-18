@@ -1990,7 +1990,7 @@ class TestActiveCompanyAcquisition:
         target = TURN.get_acq_target_company(gs)
         if target >= 0:
             layout = get_layout(3)
-            base = layout.active_company_offset
+            base = layout.active_company_info_offset
             expected_fv = get_company_face_value(target) / PY_CASH_DIVISOR
             assert abs(gs._array[base + 2] - expected_fv) < 1e-6
             assert gs._array[base + 0] > 0.0  # stars > 0
@@ -2019,7 +2019,7 @@ class TestActiveCompanyAcquisition:
         second_target = TURN.get_acq_target_company(gs)
         if second_target >= 0 and second_target != first_target:
             layout = get_layout(3)
-            base = layout.active_company_offset
+            base = layout.active_company_info_offset
             expected_fv = get_company_face_value(second_target) / PY_CASH_DIVISOR
             assert abs(gs._array[base + 2] - expected_fv) < 1e-6
 
@@ -2033,7 +2033,7 @@ class TestActiveCompanyAcquisition:
         transition_to_closing_py(gs)
 
         layout = get_layout(3)
-        base = layout.active_company_offset
+        base = layout.active_company_info_offset
         for i in range(5):
             assert gs._array[base + i] == 0.0, (
                 f"active_company[{i}] should be 0 after transition to CLOSING"

@@ -22,11 +22,11 @@ class TestStateLayoutSizes:
     # Expected sizes - these MUST match VECTORS.md and CLAUDE.md
     # If these tests fail, update the documentation to match!
     EXPECTED_SIZES = {
-        2: {'visible': 1554, 'hidden': 1184, 'total': 2738},
-        3: {'visible': 1639, 'hidden': 1184, 'total': 2823},
-        4: {'visible': 1726, 'hidden': 1184, 'total': 2910},
-        5: {'visible': 1815, 'hidden': 1184, 'total': 2999},
-        6: {'visible': 1906, 'hidden': 1184, 'total': 3090},
+        2: {'visible': 1446, 'hidden': 1184, 'total': 2630},
+        3: {'visible': 1531, 'hidden': 1184, 'total': 2715},
+        4: {'visible': 1618, 'hidden': 1184, 'total': 2802},
+        5: {'visible': 1707, 'hidden': 1184, 'total': 2891},
+        6: {'visible': 1798, 'hidden': 1184, 'total': 2982},
     }
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
@@ -74,10 +74,10 @@ class TestComponentSizes:
         assert layout.corp_stride == 109
 
     def test_turn_size_formula(self):
-        """Turn size = 292 + 3*num_players (287 base + 5 active_company)."""
+        """Turn size = 184 + 3*num_players."""
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
-            expected = 292 + 3 * num_players
+            expected = 184 + 3 * num_players
             assert layout.turn_size == expected, (
                 f"{num_players} players: turn size {layout.turn_size} != {expected}"
             )
@@ -158,20 +158,23 @@ class TestActiveCompany:
         return gs
 
     def test_active_company_zeroed_on_init(self, state):
-        """Active company block should be zero after initialization (INVEST phase)."""
+        """Active company one-hot and info should be zero after initialization."""
         layout = get_layout(3)
-        base = layout.active_company_offset
+        oh_base = layout.active_company_offset
+        info_base = layout.active_company_info_offset
+        for i in range(36):
+            assert state._array[oh_base + i] == 0.0, f"active_company_oh[{i}] != 0.0 at init"
         for i in range(5):
-            assert state._array[base + i] == 0.0, f"active_company[{i}] != 0.0 at init"
+            assert state._array[info_base + i] == 0.0, f"active_company_info[{i}] != 0.0 at init"
 
     def test_set_active_company(self, state):
-        """set_active_company should populate the 5 scalars correctly."""
+        """set_active_company should populate the 5 info scalars correctly."""
         layout = get_layout(3)
         company_id = 5  # An arbitrary company
         coo_level = TURN.get_coo_level(state)
 
         state.set_active_company(company_id)
-        base = layout.active_company_offset
+        base = layout.active_company_info_offset
         assert abs(state._array[base + 0] - get_company_stars(company_id) / PY_STAR_DIVISOR) < 1e-6
         assert abs(state._array[base + 1] - get_company_low_price(company_id) / PY_CASH_DIVISOR) < 1e-6
         assert abs(state._array[base + 2] - get_company_face_value(company_id) / PY_CASH_DIVISOR) < 1e-6
@@ -180,10 +183,10 @@ class TestActiveCompany:
         assert abs(state._array[base + 4] - expected_income) < 1e-6
 
     def test_clear_active_company(self, state):
-        """clear_active_company should zero out all 5 scalars."""
+        """clear_active_company should zero out the 5 info scalars."""
         layout = get_layout(3)
         state.set_active_company(10)  # Set first
         state.clear_active_company()  # Then clear
-        base = layout.active_company_offset
+        base = layout.active_company_info_offset
         for i in range(5):
-            assert state._array[base + i] == 0.0, f"active_company[{i}] != 0.0 after clear"
+            assert state._array[base + i] == 0.0, f"active_company_info[{i}] != 0.0 after clear"

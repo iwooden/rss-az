@@ -646,7 +646,7 @@ class TestActiveCompanyIPO:
         assert company_id >= 0
 
         layout = get_layout(3)
-        base = layout.active_company_offset
+        base = layout.active_company_info_offset
         expected_fv = get_company_face_value(company_id) / PY_CASH_DIVISOR
         assert abs(state._array[base + 2] - expected_fv) < 1e-6
         assert state._array[base + 0] > 0.0  # stars > 0
@@ -662,7 +662,7 @@ class TestActiveCompanyIPO:
         assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
 
         layout = get_layout(3)
-        base = layout.active_company_offset
+        base = layout.active_company_info_offset
         for i in range(5):
             assert state._array[base + i] == 0.0, (
                 f"active_company[{i}] should be 0 after IPO phase ends"
@@ -675,7 +675,7 @@ class TestActiveCompanyIPO:
         setup_ipo_phase_py(state)
 
         layout = get_layout(3)
-        base = layout.active_company_offset
+        base = layout.active_company_info_offset
 
         first_company = TURN.get_ipo_company(state)
         assert first_company >= 0

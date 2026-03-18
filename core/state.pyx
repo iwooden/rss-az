@@ -55,8 +55,9 @@ LayoutInfo = namedtuple('LayoutInfo', [
     # Per-player turn field offsets (absolute, for rotation)
     'auction_high_bidder_offset', 'auction_starter_offset',
     'auction_passed_offset',
-    # Active company offset (absolute, within turn state)
+    # Active company offsets (absolute, within turn state)
     'active_company_offset',
+    'active_company_info_offset',
     # Convenience
     'num_players',
 ])
@@ -175,7 +176,6 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         1 +                 # end_card_flipped
         1 +                 # consecutive_passes (for INVEST phase)
         # Auction
-        GameConstants.NUM_COMPANIES +     # auction_company
         1 +                 # auction_price
         num_players +       # auction_high_bidder
         num_players +       # auction_starter
@@ -188,17 +188,14 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         GameConstants.NUM_CORPS +         # issue_corp
         GameConstants.NUM_CORPS +         # issue_remaining
         # IPO
-        GameConstants.NUM_COMPANIES +     # ipo_company
         GameConstants.NUM_COMPANIES +     # ipo_remaining
         # Acquisition offers
         GameConstants.NUM_CORPS +         # acq_active_corp
-        GameConstants.NUM_COMPANIES +     # acq_target_company
         1 +                 # acq_is_fi_offer
         GameConstants.NUM_COMPANIES +     # acq_synergy_values
-        # Closing
-        GameConstants.NUM_COMPANIES +     # closing_company
-        # Active company contextual info
-        5                                 # stars, low, face, high, income
+        # Active company
+        GameConstants.NUM_COMPANIES +     # active_company (one-hot)
+        5                                 # active_company_info (stars, low, face, high, income)
     )
     layout.turn_offset = offset
     offset += layout.turn_size
@@ -311,8 +308,6 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
     offset += 1
 
     # Auction
-    t.auction_company = offset
-    offset += GameConstants.NUM_COMPANIES
     t.auction_price = offset
     offset += 1
     t.auction_high_bidder = offset
@@ -337,27 +332,21 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
     offset += GameConstants.NUM_CORPS
 
     # IPO
-    t.ipo_company = offset
-    offset += GameConstants.NUM_COMPANIES
     t.ipo_remaining = offset
     offset += GameConstants.NUM_COMPANIES
 
     # Acquisition offers
     t.acq_active_corp = offset
     offset += GameConstants.NUM_CORPS
-    t.acq_target_company = offset
-    offset += GameConstants.NUM_COMPANIES
     t.acq_is_fi_offer = offset
     offset += 1
     t.acq_synergy_values = offset
     offset += GameConstants.NUM_COMPANIES
 
-    # Closing phase
-    t.closing_company = offset
-    offset += GameConstants.NUM_COMPANIES
-
-    # Active company contextual info (5 scalars: stars, low, face, high, income)
+    # Active company: one-hot (36) + contextual info (5 scalars)
     t.active_company = offset
+    offset += GameConstants.NUM_COMPANIES
+    t.active_company_info = offset
     offset += 5
 
     return t
@@ -440,6 +429,7 @@ def get_layout(int num_players):
         auction_starter_offset=layout.turn_offset + turn.auction_starter,
         auction_passed_offset=layout.turn_offset + turn.auction_passed,
         active_company_offset=layout.turn_offset + turn.active_company,
+        active_company_info_offset=layout.turn_offset + turn.active_company_info,
         num_players=num_players,
     )
 
@@ -953,12 +943,13 @@ cdef class GameState:
 
     cpdef void set_active_company(self, int company_id):
         """
-        Set the active company block in turn state (5 scalars).
+        Set active company info scalars in turn state.
 
         Writes stars, low_price, face_value, high_price, adjusted_income
-        for the given company. Used in BID, ACQUISITION, CLOSING, IPO phases.
+        for the given company. The one-hot is managed by the per-phase
+        set/clear methods (set_auction_company, set_acq_target_company, etc.).
         """
-        cdef int base = self._layout.turn_offset + self._turn_offsets.active_company
+        cdef int base = self._layout.turn_offset + self._turn_offsets.active_company_info
         cdef int coo_level = <int>self._data[self._layout.hidden_coo_level_offset]
         self._data[base + 0] = <float>get_company_stars(company_id) / STAR_DIVISOR
         self._data[base + 1] = <float>get_company_low_price(company_id) / CASH_DIVISOR
@@ -967,8 +958,11 @@ cdef class GameState:
         self._data[base + 4] = <float>get_adjusted_company_income(company_id, coo_level) / CASH_DIVISOR
 
     cpdef void clear_active_company(self):
-        """Clear the active company block (zero-fill 5 floats)."""
-        cdef int base = self._layout.turn_offset + self._turn_offsets.active_company
+        """Clear active company info scalars (zero-fill 5 floats).
+
+        The one-hot is cleared by the per-phase clear methods.
+        """
+        cdef int base = self._layout.turn_offset + self._turn_offsets.active_company_info
         self._data[base + 0] = 0.0
         self._data[base + 1] = 0.0
         self._data[base + 2] = 0.0

@@ -921,7 +921,7 @@ class TestAuctionSlotInfo:
         layout_info = get_layout(3)
 
         # Verify active company is zero before auction
-        base = layout_info.active_company_offset
+        base = layout_info.active_company_info_offset
         assert all(game_state._array[base + i] == 0.0 for i in range(5))
 
         # Start an auction
@@ -940,7 +940,7 @@ class TestAuctionSlotInfo:
     def test_active_company_cleared_after_bid_resolves(self, game_state):
         """Active company block is zeroed after auction resolution."""
         layout_info = get_layout(3)
-        base = layout_info.active_company_offset
+        base = layout_info.active_company_info_offset
 
         # Start and resolve auction
         auction_idx = get_first_valid_auction_action(game_state)

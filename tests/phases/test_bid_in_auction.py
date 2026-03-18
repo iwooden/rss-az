@@ -805,7 +805,7 @@ class TestActiveCompanyBid:
     def test_active_company_set_during_bid(self, bid_state):
         """Active company block has correct data during BID_IN_AUCTION."""
         layout = get_layout(3)
-        base = layout.active_company_offset
+        base = layout.active_company_info_offset
         company_id = TURN.get_auction_company(bid_state)
 
         # Active company face_value should match the auction company
@@ -818,7 +818,7 @@ class TestActiveCompanyBid:
     def test_active_company_cleared_after_resolution(self, bid_state):
         """Active company block is zeroed after auction resolves."""
         layout_info = get_layout(3)
-        base = layout_info.active_company_offset
+        base = layout_info.active_company_info_offset
         layout = get_action_layout(3)
 
         # Leave auction (2 players leave -> resolution)
@@ -834,7 +834,7 @@ class TestActiveCompanyBid:
     def test_active_company_persists_during_bidding(self, bid_state):
         """Active company block stays set while bidding continues."""
         layout_info = get_layout(3)
-        base = layout_info.active_company_offset
+        base = layout_info.active_company_info_offset
         layout = get_action_layout(3)
 
         company_id = TURN.get_auction_company(bid_state)

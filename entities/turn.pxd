@@ -15,24 +15,18 @@ from core.state cimport GameState
 cdef struct TurnOffsets:
     # Offsets within turn state data block in the state vector
     int acq_active_corp
-    int acq_target_company
     int acq_is_fi_offer
     int dividend_corp
     int issue_corp
-    int ipo_company
-    int closing_company
 
 # Offset computation
 cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil
 
 # Turn state accessors (raw pointer, nogil)
 cdef int get_acq_active_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil
-cdef int get_acq_target_company_nogil(float* turn, TurnOffsets* t) noexcept nogil
 cdef bint is_acq_fi_offer_nogil(float* turn, TurnOffsets* t) noexcept nogil
 cdef int get_dividend_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil
 cdef int get_issue_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil
-cdef int get_ipo_company_nogil(float* turn, TurnOffsets* t) noexcept nogil
-cdef int get_closing_company_nogil(float* turn, TurnOffsets* t) noexcept nogil
 
 
 # =============================================================================
@@ -69,7 +63,6 @@ cdef class TurnState:
     cdef int _consecutive_passes_offset
 
     # Auction offsets
-    cdef int _auction_company_offset
     cdef int _auction_price_offset
     cdef int _auction_high_bidder_offset
     cdef int _auction_starter_offset
@@ -85,17 +78,15 @@ cdef class TurnState:
     cdef int _issue_remaining_offset
 
     # IPO offsets
-    cdef int _ipo_company_offset
     cdef int _ipo_remaining_offset
 
     # Acquisition offsets
     cdef int _acq_active_corp_offset
-    cdef int _acq_target_company_offset
     cdef int _acq_is_fi_offer_offset
     cdef int _acq_synergy_values_offset
 
-    # Closing offset
-    cdef int _closing_company_offset
+    # Active company one-hot offset (shared by auction/acq/closing/ipo)
+    cdef int _active_company_offset
 
     # Initialization
     cpdef void initialize(self, GameState state)
@@ -124,7 +115,7 @@ cdef class TurnState:
     cpdef void increment_consecutive_passes(self, GameState state)
     cpdef void clear_consecutive_passes(self, GameState state)
 
-    # Auction state
+    # Auction state (compact-only, one-hot now in active_company)
     cpdef int get_auction_company(self, GameState state)
     cpdef void set_auction_company(self, GameState state, int company_id)
     cpdef void clear_auction_company(self, GameState state)
@@ -163,7 +154,7 @@ cdef class TurnState:
     cpdef bint is_issue_remaining(self, GameState state, int corp_id)
     cpdef void set_issue_remaining(self, GameState state, int corp_id, bint remaining)
 
-    # IPO state
+    # IPO state (compact-only, one-hot now in active_company)
     cpdef int get_ipo_company(self, GameState state)
     cpdef void set_ipo_company(self, GameState state, int company_id)
     cpdef void clear_ipo_company(self, GameState state)
@@ -171,7 +162,7 @@ cdef class TurnState:
     cpdef bint is_ipo_remaining(self, GameState state, int company_id)
     cpdef void set_ipo_remaining(self, GameState state, int company_id, bint remaining)
 
-    # Acquisition state
+    # Acquisition state (compact-only for target, one-hot now in active_company)
     cpdef int get_acq_active_corp(self, GameState state)
     cpdef void set_acq_active_corp(self, GameState state, int corp_id)
     cpdef void clear_acq_active_corp(self, GameState state)
@@ -188,7 +179,7 @@ cdef class TurnState:
     cpdef void clear_acq_synergy_values(self, GameState state)
     cpdef float get_acq_synergy_value(self, GameState state, int company_id)
 
-    # Closing state
+    # Closing state (compact-only, one-hot now in active_company)
     cpdef int get_closing_company(self, GameState state)
     cpdef void set_closing_company(self, GameState state, int company_id)
     cpdef void clear_closing_company(self, GameState state)

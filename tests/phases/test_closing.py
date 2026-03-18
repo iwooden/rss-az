@@ -1322,7 +1322,7 @@ class TestActiveCompanyClosing:
         closing_company = TURN.get_closing_company(state)
         if closing_company >= 0:
             layout = get_layout(3)
-            base = layout.active_company_offset
+            base = layout.active_company_info_offset
             expected_fv = get_company_face_value(closing_company) / PY_CASH_DIVISOR
             assert abs(state._array[base + 2] - expected_fv) < 1e-6
             assert state._array[base + 0] > 0.0  # stars > 0
@@ -1346,7 +1346,7 @@ class TestActiveCompanyClosing:
 
         # Active company should be cleared
         layout = get_layout(3)
-        base = layout.active_company_offset
+        base = layout.active_company_info_offset
         for i in range(5):
             assert state._array[base + i] == 0.0, (
                 f"active_company[{i}] should be 0 after all close offers exhausted"
