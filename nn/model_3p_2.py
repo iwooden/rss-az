@@ -4,15 +4,19 @@ Architecture changes from v1 (model_3p.py) based on interpretability analysis:
 - Two-layer input preprocessing (input → 2*hidden → hidden) instead of a single
   linear projection. V1's block 0 did 92% of the work because one linear layer
   was too bottlenecked for the input (v1 had 1296 static synergy flags, now removed).
-- 6 residual blocks (down from 10). Blocks 2-9 contributed <1% in bypass tests,
-  though BID-phase reasoning used deeper blocks more (2x activation in blocks 5/7/8).
+- 10 residual blocks (restored from 6). Probing showed effective rank still growing
+  at block 5 and all blocks active with flat contribution profile (0.07-0.11),
+  indicating the model can use more depth.
 - hidden_dim=384 (down from 768). Effective rank was 150-192 across all layers;
   384 gives ~2x headroom. Multiple of 64 for GPU tensor core alignment.
-- Symmetric single-hidden-layer heads for both policy and value. V1's multi-layer
-  heads used only 22-40% of their intermediate capacity; a single hidden layer
-  (768 → 768 → output) achieved R²=0.996+ approximation of the full heads.
+- Asymmetric heads informed by probing analysis:
+  - Policy head: 2 hidden layers (hidden→2*hidden→hidden→action_dim). Probing showed
+    trunk activations are linearly poor for policy (0.58 acc) but good for value (R²=0.97),
+    meaning the policy head needs more nonlinear capacity.
+  - Value head: 1 hidden layer (hidden→hidden→value_dim). Trunk already computes value
+    almost linearly; extra layers would be wasted capacity.
 
-~6.2M parameters (down from ~26.6M).
+~8.2M parameters (down from ~26.6M).
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ class RSSModelConfig2:
     action_dim: int = 246
     value_dim: int = 3
     hidden_dim: int = 384
-    num_blocks: int = 6
+    num_blocks: int = 10
     expansion: int = 2
     dropout: float = 0.0
 
@@ -79,7 +83,9 @@ class RSSAlphaZeroNet2(nn.Module):
         self.trunk_norm = nn.LayerNorm(cfg.hidden_dim)
 
         self.policy_head = nn.Sequential(
-            nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
+            nn.Linear(cfg.hidden_dim, 2 * cfg.hidden_dim),
+            nn.GELU(),
+            nn.Linear(2 * cfg.hidden_dim, cfg.hidden_dim),
             nn.GELU(),
             nn.Linear(cfg.hidden_dim, cfg.action_dim),
         )
