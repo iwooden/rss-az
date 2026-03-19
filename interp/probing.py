@@ -35,7 +35,7 @@ from sklearn.preprocessing import StandardScaler
 
 from core.actions import decode_action_py
 from core.state import get_layout
-from interp.feat_ablation import _batch_masked_softmax, _forward_batched
+from interp.utils import batch_masked_softmax, forward_batched
 from interp.utils import InterpDataset, collect_states, load_model
 
 CASH_DIVISOR = 100.0
@@ -142,7 +142,7 @@ def _extract_model_targets(
     batch_size: int = 256,
 ) -> dict[str, tuple[np.ndarray, str]]:
     """Extract model outputs and action-type probes."""
-    logits, values = _forward_batched(model, device, states, batch_size)
+    logits, values = forward_batched(model, device, states, batch_size)
 
     targets: dict[str, tuple[np.ndarray, str]] = {
         "model_value_p0": (values[:, 0].copy(), "regression"),
@@ -155,7 +155,7 @@ def _extract_model_targets(
     targets["model_top_action"] = (top_actions, "classification")
 
     # Policy entropy
-    probs = _batch_masked_softmax(logits, masks)
+    probs = batch_masked_softmax(logits, masks)
     entropy = -np.sum(probs * np.log(np.clip(probs, 1e-10, 1.0)), axis=-1)
     targets["model_entropy"] = (entropy, "regression")
 

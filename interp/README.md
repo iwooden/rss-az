@@ -11,7 +11,9 @@ Run the full analysis pipeline on the latest checkpoint with 10 self-play games:
 .venv/bin/python -m interp.full_ablation --num-games 10 --save-data interp/data/states.npz --no-open
 
 # 2. Reuse collected states for remaining analyses
-.venv/bin/python -m interp.arch_analysis --load-data interp/data/states.npz --skip-conductance
+.venv/bin/python -m interp.norm_check --load-data interp/data/states.npz
+.venv/bin/python -m interp.decision_attr --load-data interp/data/states.npz --no-open
+.venv/bin/python -m interp.arch_analysis --load-data interp/data/states.npz --no-open
 .venv/bin/python -m interp.probing --load-data interp/data/states.npz
 .venv/bin/python -m interp.tb_summary
 ```
@@ -24,9 +26,9 @@ All scripts auto-detect the latest checkpoint. Use `--checkpoint path/to/file.pt
 
 **Question:** Which input features does the model rely on, and in which phases?
 
-**Method:** Zeros out each feature group and measures policy KL divergence from the original output. Higher KL = the model's policy changes more = more reliant on that feature.
+**Method:** Zeros out each feature group and measures both policy KL divergence and value MSE. Higher KL/MSE = the model's output changes more = more reliant on that feature. Separate heatmaps for policy and value heads show which features each head depends on.
 
-**Output:** Markdown table + HTML heatmap (red-to-green gradient). Both written automatically.
+**Output:** Markdown table (policy KL only) + HTML heatmap with separate policy/value tables. Both written automatically.
 
 ```bash
 .venv/bin/python -m interp.full_ablation --num-games 10 --save-data interp/data/states.npz
@@ -47,18 +49,49 @@ All scripts auto-detect the latest checkpoint. Use `--checkpoint path/to/file.pt
 
 ---
 
-## 2. Architecture Analysis (`arch_analysis.py`)
+## 2. Decision Attribution (`decision_attr.py`)
 
-**Question:** Is the model using its depth and width efficiently? Should we add/remove blocks?
+**Question:** What features drive the model's decisions at critical moments? Where is the policy head confused?
 
-**Method:** Three analyses:
-1. **Block contribution** — how much each residual block changes the representation (||residual|| / ||input||)
-2. **Layer conductance** (optional, slow) — Captum-based measurement of each block's importance to policy/value heads
-3. **Effective rank** (SVD) — how many dimensions of hidden_dim are actually utilized at each layer
+**Method:** Identifies high-uncertainty states (top-2 actions close in probability), then uses Captum IntegratedGradients to attribute per-feature importance for each candidate action. The differential attribution (action A minus action B) shows which features tip the model toward one choice over another.
 
 ```bash
-.venv/bin/python -m interp.arch_analysis --load-data interp/data/states.npz --skip-conductance
-# Add --skip-conductance to skip the slow Captum analysis (saves ~5 min)
+.venv/bin/python -m interp.decision_attr --load-data interp/data/states.npz
+# Writes: interp/data/decisions_epoch<N>.html
+# NOTE: ~0.5s per decision on GPU. Default 15 decisions ≈ 8s.
+```
+
+**What to look for:**
+- **Top decisive features per phase** — do they match game intuition? (e.g., `player:cash` should matter for buy decisions, `turn:dividend` for dividend choices)
+- **Irrelevant features with high attribution** — suggests spurious correlations the model has learned
+- **Missing features** — if `corp:cash` never appears in acquisition decisions, the model hasn't learned that corp cash constrains acquisitions
+- **Phase distribution of critical states** — which phases produce the most uncertainty? Those are where policy capacity is most needed
+
+**Key options:**
+- `--top-k N` — number of decisions to analyze (default 15)
+- `--margin-threshold F` — max probability gap between top-2 actions (default 0.15)
+- `--n-steps N` — IntegratedGradients integration steps (default 50, higher = more precise)
+
+---
+
+## 3. Architecture Analysis (`arch_analysis.py`)
+
+**Question:** Is the model using its depth and width efficiently? Should we add/remove blocks? Are the heads sized correctly?
+
+**Method:** Four analyses:
+1. **Block contribution** — how much each residual block changes the representation (||residual|| / ||input||)
+2. **Trunk block conductance** (optional) — Captum-based measurement of each trunk block's importance to policy/value heads
+3. **Head-layer conductance** (optional) — Captum conductance within each head's and input preprocessing's Linear layers, showing which layer does the most work
+4. **Effective rank** (SVD) — dimensionality utilization at each layer, including head layers and optionally per-sublayer within each residual block
+
+**Output:** Console summary + HTML report with bar charts.
+
+```bash
+# Standard analysis (~3s on GPU):
+.venv/bin/python -m interp.arch_analysis --load-data interp/data/states.npz
+
+# With detailed block internals (norm/fc1/fc2 SVD per block):
+.venv/bin/python -m interp.arch_analysis --load-data interp/data/states.npz --block-detail
 ```
 
 **What to look for:**
@@ -71,12 +104,20 @@ All scripts auto-detect the latest checkpoint. Use `--checkpoint path/to/file.pt
 *Effective rank:*
 - **Rank still growing at the last block** — model wants more depth (hasn't finished computing)
 - **Rank plateau** — adding more blocks past the plateau point won't help
-- **Rank / hidden_dim ratio** — <30% means the width is wasteful (could shrink hidden_dim), >70% means the width is well-utilized or tight
-- **Top-50/100/200 energy** — how concentrated the variance is. If top-50 captures 95%+, the model is using a low-dimensional subspace
+- **Utilization %** — effective rank / layer width. <30% means the width is wasteful, >70% means well-utilized
+- **Head layer utilization** — if a head's expansion layer (e.g. 384→768) has low utilization, adding depth is more useful than adding width
 
-*Layer conductance (when enabled):*
+*Trunk block conductance:*
 - **Different top-3 blocks for policy vs value** — the heads use different parts of the network, blocks may specialize
 - **Conductance concentrated in early blocks** — later blocks contribute little to the heads
+
+*Head-layer conductance:*
+- **Uneven split** — if the first layer does >50% of the work, it's the bottleneck. Consider adding depth (more nonlinear transforms) rather than width
+- **Policy vs value balance** — the value head should be evenly split (simple task); the policy head may be imbalanced (complex task)
+
+**Key options:**
+- `--skip-heads` — skip head-specific analyses (head conductance + head SVD)
+- `--block-detail` — break down each residual block into norm/fc1/fc2 in the SVD table
 
 **Reference results (v2, epoch 50, 6 blocks, hidden_dim=384):**
 - Block contribution: flat 0.07-0.11, all blocks active
@@ -86,7 +127,7 @@ All scripts auto-detect the latest checkpoint. Use `--checkpoint path/to/file.pt
 
 ---
 
-## 3. Probing Classifiers (`probing.py`)
+## 4. Probing Classifiers (`probing.py`)
 
 **Question:** Where in the network does the model understand various game concepts? Which blocks serve value vs policy?
 
@@ -95,6 +136,7 @@ All scripts auto-detect the latest checkpoint. Use `--checkpoint path/to/file.pt
 ```bash
 .venv/bin/python -m interp.probing --load-data interp/data/states.npz
 # Writes: interp/data/probing_epoch<N>.md
+# NOTE: Slow — trains 180 probes. Allow ~8-10 minutes for 4-5K states.
 ```
 
 **Probe categories:**
@@ -133,7 +175,7 @@ Note: requires ~10K+ states for reliable MLP probes. With <3K states the MLPs ov
 
 ---
 
-## 4. Tensorboard Summary (`tb_summary.py`)
+## 5. Tensorboard Summary (`tb_summary.py`)
 
 **Question:** How is training progressing? What are the key training metrics?
 
@@ -153,15 +195,21 @@ Uses `train.tb_reader.read_tb_scalars()` which properly merges multiple event fi
 
 ---
 
-## 5. Auction Slot Ablation (`feat_ablation.py`)
+## 6. Normalization Check (`norm_check.py`)
 
-**Question:** How much does the model use the auction slot summary info, and which sub-features (stars, prices, income) matter most?
+**Question:** Are state vector values well-normalized? Which features exceed [-1, +1] or are too sparse to be useful?
 
-This is the original, more focused ablation tool. Use `full_ablation.py` for the comprehensive analysis.
+**Method:** Computes per-feature-group statistics (min, max, zero fraction, out-of-range counts) from collected game states. Flags features with values outside [-1, +1] (divisor too small) or excessive sparsity (signal too weak for learning).
 
 ```bash
-.venv/bin/python -m interp.feat_ablation --num-games 10 --breakdown
+.venv/bin/python -m interp.norm_check --load-data interp/data/states.npz
+.venv/bin/python -m interp.norm_check --load-data interp/data/states.npz --feature invest:buy_impact
 ```
+
+**What to look for:**
+- **Out-of-range features** — values >1.0 suggest the normalization divisor is too small. Mild overflow (1.0–1.5) is acceptable; >2.0 may hurt training
+- **Sparse features** (>95% zero) — context-dependent features (e.g., `turn:dividend`) are expected to be sparse. Non-context features with high sparsity may indicate a weak signal
+- **Feature detail** (`--feature name`) — per-sub-feature and per-phase breakdown. Useful for diagnosing why a feature is sparse or out of range
 
 ---
 
@@ -181,5 +229,4 @@ All scripts share common infrastructure:
 
 See beads issues for planned analyses:
 - **Feature interaction detection** (rss-az-ospf) — pairwise ablation to find feature combinations
-- **Decision attribution** (rss-az-y5cj) — IntegratedGradients on critical game decisions
 - **Counterfactual sensitivity** (rss-az-9dox) — sweep individual features to plot response curves

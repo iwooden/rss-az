@@ -29,6 +29,48 @@ from train.checkpoint import find_latest_checkpoint, load_checkpoint
 from train.config import TrainingConfig
 
 
+def batch_masked_softmax(logits: np.ndarray, masks: np.ndarray) -> np.ndarray:
+    """Apply legal action mask and softmax to batched logits via torch."""
+    t = torch.from_numpy(logits)
+    t = t.masked_fill(torch.from_numpy(masks) <= 0, -1e9)
+    return torch.softmax(t, dim=-1).numpy()
+
+
+def kl_divergence_batch(p: np.ndarray, q: np.ndarray, eps: float = 1e-10) -> np.ndarray:
+    """Per-sample KL(P || Q), shape (N,)."""
+    p_safe = np.clip(p, eps, 1.0)
+    q_safe = np.clip(q, eps, 1.0)
+    return np.sum(p_safe * np.log(p_safe / q_safe), axis=-1)
+
+
+def forward_batched(
+    model: torch.nn.Module,
+    device: torch.device,
+    states: np.ndarray,
+    batch_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run model forward on states in batches. Returns (logits, values)."""
+    logits_list: list[np.ndarray] = []
+    values_list: list[np.ndarray] = []
+    autocast_dtype = torch.bfloat16 if device.type == "cuda" else None
+
+    model.eval()
+    with torch.no_grad():
+        for i in range(0, states.shape[0], batch_size):
+            j = min(i + batch_size, states.shape[0])
+            x = torch.from_numpy(states[i:j]).to(device)
+            with torch.autocast(
+                device.type,
+                dtype=autocast_dtype,
+                enabled=autocast_dtype is not None,
+            ):
+                lo, va = model(x)
+            logits_list.append(lo.float().cpu().numpy())
+            values_list.append(va.float().cpu().numpy())
+
+    return np.concatenate(logits_list), np.concatenate(values_list)
+
+
 @dataclass
 class InterpDataset:
     """Collected game states for interpretability analysis.

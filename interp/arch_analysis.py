@@ -14,7 +14,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
+import platform
+import subprocess
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -82,7 +86,7 @@ def analyze_layer_conductance(
     states: np.ndarray,
     max_samples: int = 200,
     n_steps: int = 20,
-    internal_batch_size: int = 64,
+    internal_batch_size: int | None = None,
 ) -> dict[str, list[dict[str, float]]]:
     """Captum LayerConductance for each block toward policy and value heads.
 
@@ -98,6 +102,10 @@ def analyze_layer_conductance(
         states = states[idx]
 
     inputs = torch.from_numpy(states).to(device).requires_grad_(True)
+
+    # Captum requires internal_batch_size >= 2 * num_samples for finite differences
+    if internal_batch_size is None:
+        internal_batch_size = 2 * states.shape[0]
 
     def policy_forward(x: torch.Tensor) -> torch.Tensor:
         p, _ = model(x)
@@ -135,6 +143,98 @@ def analyze_layer_conductance(
 
 
 # ---------------------------------------------------------------------------
+# 2b. Head-layer conductance (Captum)
+# ---------------------------------------------------------------------------
+
+def analyze_head_conductance(
+    model: Any,
+    device: torch.device,
+    states: np.ndarray,
+    max_samples: int = 200,
+    n_steps: int = 20,
+    internal_batch_size: int | None = None,
+) -> dict[str, list[dict[str, float]]]:
+    """Captum LayerConductance for each Linear layer within the input
+    preprocessing, policy head, and value head.
+
+    Returns {"input_preprocess": [...], "policy": [...], "value": [...]},
+    each a list of per-layer dicts.
+    """
+    from captum.attr import LayerConductance
+
+    model.eval()
+
+    if states.shape[0] > max_samples:
+        idx = np.random.default_rng(0).choice(states.shape[0], max_samples, replace=False)
+        states = states[idx]
+
+    inputs = torch.from_numpy(states).to(device).requires_grad_(True)
+
+    if internal_batch_size is None:
+        internal_batch_size = 2 * states.shape[0]
+
+    def policy_forward(x: torch.Tensor) -> torch.Tensor:
+        p, _ = model(x)
+        return p.sum(dim=-1)
+
+    def value_forward(x: torch.Tensor) -> torch.Tensor:
+        _, v = model(x)
+        return v.sum(dim=-1)
+
+    # Analyze input_preprocess toward both heads combined (full model output)
+    def total_forward(x: torch.Tensor) -> torch.Tensor:
+        p, v = model(x)
+        return p.sum(dim=-1) + v.sum(dim=-1)
+
+    results: dict[str, list[dict[str, float]]] = {
+        "input_preprocess": [], "policy": [], "value": [],
+    }
+
+    modules_to_analyze: list[tuple[str, Any, Any]] = [
+        ("input_preprocess", model.input_preprocess, total_forward),
+        ("policy", model.policy_head, policy_forward),
+        ("value", model.value_head, value_forward),
+    ]
+
+    for section_name, module, fwd_fn in modules_to_analyze:
+        linear_layers: list[tuple[int, torch.nn.Module]] = [
+            (i, layer) for i, layer in enumerate(module)
+            if isinstance(layer, torch.nn.Linear)
+        ]
+
+        conductances: list[float] = []
+        layer_names: list[str] = []
+        t0 = time.perf_counter()
+
+        for seq_idx, layer in linear_layers:
+            in_feat = layer.in_features
+            out_feat = layer.out_features
+            label = f"{section_name}[{seq_idx}] {in_feat}→{out_feat}"
+            layer_names.append(label)
+
+            lc = LayerConductance(fwd_fn, layer)
+            attr = lc.attribute(
+                inputs, n_steps=n_steps,
+                internal_batch_size=internal_batch_size,
+            )
+            assert isinstance(attr, torch.Tensor)
+            conductances.append(float(attr.abs().sum(dim=-1).mean().item()))
+            elapsed = time.perf_counter() - t0
+            print(f"    {label} ({elapsed:.1f}s)")
+
+        total = sum(conductances)
+        for i, c in enumerate(conductances):
+            results[section_name].append({
+                "layer_idx": float(i),
+                "label": layer_names[i],  # type: ignore[dict-item]
+                "conductance": c,
+                "pct": c / total * 100 if total > 0 else 0.0,
+            })
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # 3. Effective rank (SVD)
 # ---------------------------------------------------------------------------
 
@@ -143,16 +243,18 @@ def analyze_effective_rank(
     device: torch.device,
     states: np.ndarray,
     batch_size: int = 256,
+    include_heads: bool = False,
+    include_block_detail: bool = False,
 ) -> list[dict[str, object]]:
-    """SVD-based effective rank after input_proj, each block, and trunk_norm."""
+    """SVD-based effective rank after input_proj, each block, trunk_norm, and optionally head/block-internal layers."""
     model.eval()
 
     # Collection points — detect v1 (input_proj) vs v2 (input_preprocess)
     input_name = "input_preprocess" if hasattr(model, "input_preprocess") else "input_proj"
     input_module = getattr(model, input_name)
-    layer_names = [input_name] + [f"block_{i}" for i in range(len(model.blocks))] + ["trunk_norm"]
-    activations: dict[str, list[torch.Tensor]] = {n: [] for n in layer_names}
 
+    layer_names: list[str] = []
+    activations: dict[str, list[torch.Tensor]] = {}
     handles = []
 
     def make_hook(name: str):
@@ -164,10 +266,48 @@ def analyze_effective_rank(
             activations[name].append(out.detach().cpu())
         return hook
 
-    handles.append(input_module.register_forward_hook(make_hook(input_name)))
+    # Input preprocessing — per-layer breakdown if include_heads, else composite
+    if include_heads and hasattr(input_module, "__iter__"):
+        for seq_idx, layer in enumerate(input_module):
+            if isinstance(layer, torch.nn.Linear):
+                label = f"{input_name}[{seq_idx}] {layer.in_features}→{layer.out_features}"
+                layer_names.append(label)
+                activations[label] = []
+                handles.append(layer.register_forward_hook(make_hook(label)))
+    else:
+        layer_names.append(input_name)
+        activations[input_name] = []
+        handles.append(input_module.register_forward_hook(make_hook(input_name)))
+
+    # Trunk blocks (composite + optional per-sublayer detail)
     for i, block in enumerate(model.blocks):
-        handles.append(block.register_forward_hook(make_hook(f"block_{i}")))
+        if include_block_detail:
+            for sub_name, sub_module in [("norm", block.norm), ("fc1", block.fc1), ("fc2", block.fc2)]:
+                label = f"block_{i}.{sub_name}"
+                if isinstance(sub_module, torch.nn.Linear):
+                    label += f" {sub_module.in_features}→{sub_module.out_features}"
+                layer_names.append(label)
+                activations[label] = []
+                handles.append(sub_module.register_forward_hook(make_hook(label)))
+        else:
+            name = f"block_{i}"
+            layer_names.append(name)
+            activations[name] = []
+            handles.append(block.register_forward_hook(make_hook(name)))
+
+    layer_names.append("trunk_norm")
+    activations["trunk_norm"] = []
     handles.append(model.trunk_norm.register_forward_hook(make_hook("trunk_norm")))
+
+    # Head layers (Linear only, skip activations like GELU/Tanh)
+    if include_heads:
+        for head_name, head_module in [("policy", model.policy_head), ("value", model.value_head)]:
+            for seq_idx, layer in enumerate(head_module):
+                if isinstance(layer, torch.nn.Linear):
+                    label = f"{head_name}[{seq_idx}] {layer.in_features}→{layer.out_features}"
+                    layer_names.append(label)
+                    activations[label] = []
+                    handles.append(layer.register_forward_hook(make_hook(label)))
 
     with torch.no_grad():
         for i in range(0, states.shape[0], batch_size):
@@ -198,9 +338,12 @@ def analyze_effective_rank(
         top100 = float((s[:100] ** 2).sum().item()) / total_var * 100 if total_var > 0 else 0
         top200 = float((s[:200] ** 2).sum().item()) / total_var * 100 if total_var > 0 else 0
 
+        width = int(acts.shape[1])
         results.append({
             "layer": name,
+            "width": width,
             "eff_rank": eff_rank,
+            "utilization": eff_rank / width * 100 if width > 0 else 0.0,
             "eff_rank_1pct": eff_rank_1pct,
             "top50_energy": top50,
             "top100_energy": top100,
@@ -242,19 +385,42 @@ def _print_conductance(data: dict[str, list[dict[str, float]]]) -> None:
         )
 
 
+def _print_head_conductance(data: dict[str, list[dict[str, float]]]) -> None:
+    section_titles = {
+        "input_preprocess": "Input Preprocessing",
+        "policy": "Policy Head",
+        "value": "Value Head",
+    }
+    for section_name in ["input_preprocess", "policy", "value"]:
+        layers = data.get(section_name, [])
+        if not layers:
+            continue
+        title = section_titles.get(section_name, section_name)
+        print(f"\n  {title}:")
+        print(f"    {'Layer':<35}  {'Cond':>10}  {'%':>7}")
+        print(f"    {'-'*35}  {'-'*10}  {'-'*7}")
+        for r in layers:
+            bar = chr(0x2588) * int(r["pct"] / 3)
+            print(f"    {r['label']:<35}  {r['conductance']:>10.1f}  {r['pct']:>6.1f}%  {bar}")
+
+
 def _print_ranks(rows: list[dict[str, object]], hidden_dim: int) -> None:
     print(f"\n  hidden_dim = {hidden_dim}")
     print(
-        f"\n  {'Layer':<12}  {'Eff.Rank':>9}  {'Rank(1%)':>9}  "
+        f"\n  {'Layer':<25}  {'Width':>5}  {'Eff.Rank':>9}  {'Util%':>6}  {'Rank(1%)':>9}  "
         f"{'Top-50':>8}  {'Top-100':>8}  {'Top-200':>8}"
     )
     print(
-        f"  {'-'*12}  {'-'*9}  {'-'*9}  {'-'*8}  {'-'*8}  {'-'*8}"
+        f"  {'-'*25}  {'-'*5}  {'-'*9}  {'-'*6}  {'-'*9}  {'-'*8}  {'-'*8}  {'-'*8}"
     )
     for r in rows:
         name = str(r["layer"])
+        w = r["width"]
+        assert isinstance(w, int)
         er = r["eff_rank"]
         assert isinstance(er, float)
+        util = r["utilization"]
+        assert isinstance(util, float)
         er1 = r["eff_rank_1pct"]
         assert isinstance(er1, int)
         t50 = r["top50_energy"]
@@ -262,9 +428,205 @@ def _print_ranks(rows: list[dict[str, object]], hidden_dim: int) -> None:
         t200 = r["top200_energy"]
         assert isinstance(t50, float) and isinstance(t100, float) and isinstance(t200, float)
         print(
-            f"  {name:<12}  {er:>9.1f}  {er1:>9}  "
+            f"  {name:<25}  {w:>5}  {er:>9.1f}  {util:>5.1f}%  {er1:>9}  "
             f"{t50:>7.1f}%  {t100:>7.1f}%  {t200:>7.1f}%"
         )
+
+
+# ---------------------------------------------------------------------------
+# HTML report
+# ---------------------------------------------------------------------------
+
+def format_html_report(
+    contributions: list[dict[str, float]],
+    ranks: list[dict[str, object]],
+    hidden_dim: int,
+    epoch: int,
+    num_states: int,
+    conductance: dict[str, list[dict[str, float]]],
+    head_conductance: dict[str, list[dict[str, float]]] | None = None,
+) -> str:
+    """Generate a self-contained HTML report for architecture analysis."""
+    contrib_json = json.dumps(contributions)
+    ranks_json = json.dumps(ranks)
+    conductance_json = json.dumps(conductance) if conductance else "null"
+    head_cond_json = json.dumps(head_conductance) if head_conductance else "null"
+
+    return f"""\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Architecture Analysis — Epoch {epoch}</title>
+<style>
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 Helvetica, Arial, sans-serif;
+    background: #1a1a2e; color: #e0e0e0;
+    margin: 2rem auto; max-width: 1100px; padding: 0 1rem;
+  }}
+  h1 {{ color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }}
+  h2 {{ color: #ccc; font-size: 1.1rem; margin-top: 2rem;
+        border-bottom: 1px solid #333; padding-bottom: 0.3rem; }}
+  .meta {{ color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }}
+  table {{
+    border-collapse: collapse; width: 100%;
+    font-size: 0.82rem; margin-bottom: 1.5rem;
+  }}
+  th, td {{ padding: 5px 8px; border: 1px solid #2a2a4a; text-align: right; }}
+  th {{ background: #16213e; color: #aaa; font-weight: 600; }}
+  th:first-child, td:first-child {{ text-align: left; }}
+  td:first-child {{
+    font-family: "SF Mono", "Fira Code", Consolas, monospace;
+    font-size: 0.8rem; color: #ccc;
+  }}
+  tr:hover td {{ border-color: #555; }}
+  .bar-container {{ display: inline-block; width: 120px; vertical-align: middle; }}
+  .bar {{
+    display: inline-block; height: 12px; border-radius: 2px;
+    vertical-align: middle;
+  }}
+  .bar-blue {{ background: #4a9eff; }}
+  .bar-green {{ background: #4ecca3; }}
+  .bar-orange {{ background: #e9a945; }}
+</style>
+</head>
+<body>
+<h1>Architecture Analysis — Epoch {epoch}</h1>
+<div class="meta">
+  {num_states:,} states. hidden_dim={hidden_dim}.
+</div>
+
+<h2>1. Residual Block Contribution</h2>
+<p style="color:#888;font-size:0.85rem">||output - input|| / ||input|| per block. Higher = block changes the representation more.</p>
+<table id="tbl-contrib"></table>
+
+<div id="conductance-section"></div>
+<div id="head-conductance-section"></div>
+
+<h2 id="rank-header">Effective Rank (SVD)</h2>
+<p style="color:#888;font-size:0.85rem">Entropy-based effective dimensionality at each layer.</p>
+<table id="tbl-rank"></table>
+
+<script>
+const contribs = {contrib_json};
+const ranks = {ranks_json};
+const conductance = {conductance_json};
+const headCond = {head_cond_json};
+const hiddenDim = {hidden_dim};
+
+function makeBar(val, maxVal, cls) {{
+  const pct = maxVal > 0 ? val / maxVal * 100 : 0;
+  return '<span class="bar-container"><span class="bar ' + cls + '" style="width:' + pct + '%"></span></span>';
+}}
+
+// --- Block contribution table ---
+(function() {{
+  const tbl = document.getElementById("tbl-contrib");
+  const maxMean = Math.max(...contribs.map(r => r.mean));
+  let html = '<tr><th>Block</th><th>||res||/||in||</th><th></th><th>Std</th><th>P95</th><th>fc2 ||W||</th></tr>';
+  for (const r of contribs) {{
+    html += '<tr><td>Block ' + Math.round(r.block) + '</td>' +
+      '<td>' + r.mean.toFixed(4) + '</td>' +
+      '<td>' + makeBar(r.mean, maxMean, 'bar-blue') + '</td>' +
+      '<td>' + r.std.toFixed(4) + '</td>' +
+      '<td>' + r.p95.toFixed(4) + '</td>' +
+      '<td>' + r.fc2_weight_norm.toFixed(1) + '</td></tr>';
+  }}
+  tbl.innerHTML = html;
+}})();
+
+// --- Trunk conductance table ---
+if (conductance) {{
+  const section = document.getElementById("conductance-section");
+  const maxPol = Math.max(...conductance.policy.map(r => r.conductance));
+  const maxVal = Math.max(...conductance.value.map(r => r.conductance));
+  let html = '<h2>2. Trunk Block Conductance</h2>' +
+    '<p style="color:#888;font-size:0.85rem">Integrated-gradient conductance toward each head. Shows which blocks each head relies on.</p>' +
+    '<table><tr><th>Block</th><th>Policy</th><th></th><th>Policy %</th><th>Value</th><th></th><th>Value %</th></tr>';
+  for (let i = 0; i < conductance.policy.length; i++) {{
+    const p = conductance.policy[i];
+    const v = conductance.value[i];
+    html += '<tr><td>Block ' + Math.round(p.block) + '</td>' +
+      '<td>' + p.conductance.toFixed(1) + '</td>' +
+      '<td>' + makeBar(p.conductance, maxPol, 'bar-green') + '</td>' +
+      '<td>' + p.pct.toFixed(1) + '%</td>' +
+      '<td>' + v.conductance.toFixed(1) + '</td>' +
+      '<td>' + makeBar(v.conductance, maxVal, 'bar-orange') + '</td>' +
+      '<td>' + v.pct.toFixed(1) + '%</td></tr>';
+  }}
+  html += '</table>';
+  section.innerHTML = html;
+}}
+
+// --- Head-layer conductance table ---
+if (headCond) {{
+  const section = document.getElementById("head-conductance-section");
+  let html = '<h2>Per-Layer Conductance</h2>' +
+    '<p style="color:#888;font-size:0.85rem">Conductance within each module\\'s Linear layers. Shows which layer does the most work.</p>';
+
+  const colorMap = {{'input_preprocess': 'bar-blue', 'policy': 'bar-green', 'value': 'bar-orange'}};
+  const titleMap = {{'input_preprocess': 'Input Preprocessing', 'policy': 'Policy Head', 'value': 'Value Head'}};
+
+  for (const [headName, layers] of Object.entries(headCond)) {{
+    const maxC = Math.max(...layers.map(r => r.conductance));
+    const cls = colorMap[headName] || 'bar-blue';
+    const title = titleMap[headName] || headName;
+    html += '<h3 style="color:#aaa;font-size:0.95rem;margin-top:1rem">' + title + '</h3>';
+    html += '<table><tr><th>Layer</th><th>Conductance</th><th></th><th>%</th></tr>';
+    for (const r of layers) {{
+      html += '<tr><td>' + r.label + '</td>' +
+        '<td>' + r.conductance.toFixed(1) + '</td>' +
+        '<td>' + makeBar(r.conductance, maxC, cls) + '</td>' +
+        '<td>' + r.pct.toFixed(1) + '%</td></tr>';
+    }}
+    html += '</table>';
+  }}
+  section.innerHTML = html;
+}}
+
+// --- Effective rank table ---
+(function() {{
+  const tbl = document.getElementById("tbl-rank");
+  let html = '<tr><th>Layer</th><th>Width</th><th>Eff. Rank</th><th></th><th>Util%</th><th>Rank(1%)</th><th>Top-50</th><th>Top-100</th><th>Top-200</th></tr>';
+  for (const r of ranks) {{
+    html += '<tr><td>' + r.layer + '</td>' +
+      '<td>' + r.width + '</td>' +
+      '<td>' + r.eff_rank.toFixed(1) + '</td>' +
+      '<td>' + makeBar(r.eff_rank, r.width, 'bar-blue') + '</td>' +
+      '<td>' + r.utilization.toFixed(1) + '%</td>' +
+      '<td>' + r.eff_rank_1pct + '</td>' +
+      '<td>' + r.top50_energy.toFixed(1) + '%</td>' +
+      '<td>' + r.top100_energy.toFixed(1) + '%</td>' +
+      '<td>' + r.top200_energy.toFixed(1) + '%</td></tr>';
+  }}
+  tbl.innerHTML = html;
+}})();
+
+// Renumber rank header based on what's shown
+document.getElementById("rank-header").textContent =
+  (conductance ? "3" : "2") + ". Effective Rank (SVD)";
+</script>
+</body>
+</html>"""
+
+
+def _open_file(path: Path) -> None:
+    """Open a file with the platform's default handler."""
+    system = platform.system()
+    try:
+        if system == "Linux":
+            subprocess.Popen(
+                ["xdg-open", str(path)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        elif system == "Darwin":
+            subprocess.Popen(
+                ["open", str(path)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+    except OSError:
+        print(f"  Could not open browser. Open manually: {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -284,11 +646,23 @@ def main() -> None:
     parser.add_argument("--load-data", type=str, default=None)
     parser.add_argument("--save-data", type=str, default=None)
     parser.add_argument(
-        "--skip-conductance", action="store_true",
-        help="Skip Captum layer conductance (the slowest analysis)",
+        "--skip-heads", action="store_true",
+        help="Skip head-layer analysis (conductance + SVD for policy/value head layers)",
+    )
+    parser.add_argument(
+        "--block-detail", action="store_true",
+        help="Show per-sublayer SVD within each residual block (norm, fc1, fc2)",
     )
     parser.add_argument("--conductance-samples", type=int, default=200)
     parser.add_argument("--conductance-steps", type=int, default=20)
+    parser.add_argument(
+        "--output", type=str, default=None,
+        help="HTML output path (default: interp/data/arch_epoch<N>.html)",
+    )
+    parser.add_argument(
+        "--no-open", action="store_true",
+        help="Don't open the HTML report in a browser",
+    )
     args = parser.parse_args()
 
     model, config, device, epoch = load_model(
@@ -323,24 +697,38 @@ def main() -> None:
     print(f"  ({time.perf_counter() - t0:.1f}s)")
     _print_contributions(contributions)
 
-    # --- 2. Layer conductance ---
-    conductance = None
-    if not args.skip_conductance:
+    # --- 2. Trunk block conductance ---
+    print("\n" + "=" * 65)
+    print("  2. TRUNK BLOCK CONDUCTANCE (Captum)")
+    print("=" * 65)
+    print(
+        f"  Integrated-gradient conductance toward policy/value sum"
+        f" ({args.conductance_samples} samples, {args.conductance_steps} steps)"
+    )
+    t0 = time.perf_counter()
+    conductance = analyze_layer_conductance(
+        model, device, dataset.states,
+        max_samples=args.conductance_samples,
+        n_steps=args.conductance_steps,
+    )
+    print(f"  ({time.perf_counter() - t0:.1f}s)")
+    _print_conductance(conductance)
+
+    # --- 2b. Head-layer conductance ---
+    head_conductance = None
+    if not args.skip_heads:
         print("\n" + "=" * 65)
-        print("  2. LAYER CONDUCTANCE (Captum)")
+        print("  2b. HEAD-LAYER CONDUCTANCE (Captum)")
         print("=" * 65)
-        print(
-            f"  Integrated-gradient conductance toward policy/value sum"
-            f" ({args.conductance_samples} samples, {args.conductance_steps} steps)"
-        )
+        print("  Conductance within each head's Linear layers")
         t0 = time.perf_counter()
-        conductance = analyze_layer_conductance(
+        head_conductance = analyze_head_conductance(
             model, device, dataset.states,
             max_samples=args.conductance_samples,
             n_steps=args.conductance_steps,
         )
         print(f"  ({time.perf_counter() - t0:.1f}s)")
-        _print_conductance(conductance)
+        _print_head_conductance(head_conductance)
 
     # --- 3. Effective rank ---
     print("\n" + "=" * 65)
@@ -350,6 +738,8 @@ def main() -> None:
     t0 = time.perf_counter()
     ranks = analyze_effective_rank(
         model, device, dataset.states, batch_size=args.batch_size,
+        include_heads=not args.skip_heads,
+        include_block_detail=args.block_detail,
     )
     print(f"  ({time.perf_counter() - t0:.1f}s)")
     hidden_dim: int = model.cfg.hidden_dim  # type: ignore[union-attr]
@@ -377,16 +767,16 @@ def main() -> None:
         print(f"    -> Contribution is flat — all blocks are active, more depth may help")
 
     # Conductance
-    if conductance is not None:
-        pol_pcts = [r["pct"] for r in conductance["policy"]]
-        val_pcts = [r["pct"] for r in conductance["value"]]
-        pol_top3 = sorted(range(10), key=lambda i: -pol_pcts[i])[:3]
-        val_top3 = sorted(range(10), key=lambda i: -val_pcts[i])[:3]
-        print(f"\n  Layer conductance:")
-        print(f"    Policy top-3 blocks: {pol_top3} ({sum(pol_pcts[i] for i in pol_top3):.1f}% of total)")
-        print(f"    Value top-3 blocks:  {val_top3} ({sum(val_pcts[i] for i in val_top3):.1f}% of total)")
-        if set(pol_top3) != set(val_top3):
-            print(f"    -> Heads use different blocks — blocks may specialize by task")
+    pol_pcts = [r["pct"] for r in conductance["policy"]]
+    val_pcts = [r["pct"] for r in conductance["value"]]
+    n_blocks = len(pol_pcts)
+    pol_top3 = sorted(range(n_blocks), key=lambda i: -pol_pcts[i])[:3]
+    val_top3 = sorted(range(n_blocks), key=lambda i: -val_pcts[i])[:3]
+    print(f"\n  Layer conductance:")
+    print(f"    Policy top-3 blocks: {pol_top3} ({sum(pol_pcts[i] for i in pol_top3):.1f}% of total)")
+    print(f"    Value top-3 blocks:  {val_top3} ({sum(val_pcts[i] for i in val_top3):.1f}% of total)")
+    if set(pol_top3) != set(val_top3):
+        print(f"    -> Heads use different blocks — blocks may specialize by task")
 
     # Effective rank
     trunk_rank = None
@@ -407,7 +797,23 @@ def main() -> None:
         elif utilization > 70:
             print(f"    -> High utilization — current width is well-matched or tight")
 
-    print()
+    # --- HTML report ---
+    if args.output:
+        html_path = Path(args.output)
+    else:
+        html_path = Path("interp/data") / f"arch_epoch{epoch}.html"
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+
+    html = format_html_report(
+        contributions, ranks, hidden_dim, epoch, dataset.num_states,
+        conductance=conductance,
+        head_conductance=head_conductance,
+    )
+    html_path.write_text(html)
+    print(f"\nHTML report written to {html_path}")
+
+    if not args.no_open:
+        _open_file(html_path)
 
 
 if __name__ == "__main__":

@@ -601,7 +601,7 @@ def main() -> None:
                 save_epoch = epoch if did_train else epoch - 1
                 shutdown_cp = (
                     Path(config.checkpoint_dir)
-                    / f"checkpoint_epoch_{epoch_num:04d}.pt"
+                    / f"checkpoint_epoch_{save_epoch + 1:04d}.pt"
                 )
                 save_checkpoint(
                     path=shutdown_cp,
