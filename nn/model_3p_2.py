@@ -4,19 +4,21 @@ Architecture changes from v1 (model_3p.py) based on interpretability analysis:
 - Two-layer input preprocessing (input → 2*hidden → hidden) instead of a single
   linear projection. V1's block 0 did 92% of the work because one linear layer
   was too bottlenecked for the input (v1 had 1296 static synergy flags, now removed).
-- 10 residual blocks (restored from 6). Probing showed effective rank still growing
-  at block 5 and all blocks active with flat contribution profile (0.07-0.11),
-  indicating the model can use more depth.
-- hidden_dim=384 (down from 768). Effective rank was 150-192 across all layers;
+- 10 residual blocks with expansion=1 (no inner expansion). SVD analysis at epoch 59
+  showed fc1 (384→768) layers at 13-16% utilization across all blocks — the expanded
+  width was almost entirely unused. Removing the expansion halves trunk parameters
+  with no representational loss.
+- hidden_dim=384 (down from 768). Effective rank was 150-194 across all layers;
   384 gives ~2x headroom. Multiple of 64 for GPU tensor core alignment.
-- Asymmetric heads informed by probing analysis:
-  - Policy head: 2 hidden layers (hidden→2*hidden→hidden→action_dim). Probing showed
-    trunk activations are linearly poor for policy (0.58 acc) but good for value (R²=0.97),
-    meaning the policy head needs more nonlinear capacity.
+- Asymmetric heads informed by probing + conductance analysis:
+  - Policy head: 3 hidden layers, all hidden_dim wide (hidden→hidden→hidden→hidden→action).
+    Conductance showed the first layer doing 57.6% of policy work through a single
+    nonlinear transform, while SVD showed 14.5% utilization of the expanded width —
+    the bottleneck is depth (not enough nonlinear transforms), not width.
   - Value head: 1 hidden layer (hidden→hidden→value_dim). Trunk already computes value
-    almost linearly; extra layers would be wasted capacity.
+    almost linearly (R²=0.97); conductance is 45/55 split across both layers.
 
-~8.2M parameters (down from ~26.6M).
+~5.1M parameters (down from ~8.2M).
 """
 
 from __future__ import annotations
@@ -36,28 +38,23 @@ class RSSModelConfig2:
     value_dim: int = 3
     hidden_dim: int = 384
     num_blocks: int = 10
-    expansion: int = 2
-    dropout: float = 0.0
 
 
 class ResidualMLPBlock(nn.Module):
-    """Pre-LN residual MLP block with expansion factor."""
+    """Pre-LN residual MLP block (no inner expansion)."""
 
-    def __init__(self, hidden_dim: int, expansion: int = 2, dropout: float = 0.0) -> None:
+    def __init__(self, hidden_dim: int) -> None:
         super().__init__()
-        inner_dim = hidden_dim * expansion
         self.norm = nn.LayerNorm(hidden_dim)
-        self.fc1 = nn.Linear(hidden_dim, inner_dim)
+        self.fc1 = nn.Linear(hidden_dim, hidden_dim)
         self.act = nn.GELU()
-        self.drop = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
-        self.fc2 = nn.Linear(inner_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
         x = self.norm(x)
         x = self.fc1(x)
         x = self.act(x)
-        x = self.drop(x)
         x = self.fc2(x)
         return residual + x
 
@@ -78,14 +75,16 @@ class RSSAlphaZeroNet2(nn.Module):
         )
 
         self.blocks = nn.ModuleList(
-            [ResidualMLPBlock(cfg.hidden_dim, cfg.expansion, cfg.dropout) for _ in range(cfg.num_blocks)]
+            [ResidualMLPBlock(cfg.hidden_dim) for _ in range(cfg.num_blocks)]
         )
         self.trunk_norm = nn.LayerNorm(cfg.hidden_dim)
 
         self.policy_head = nn.Sequential(
-            nn.Linear(cfg.hidden_dim, 2 * cfg.hidden_dim),
+            nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
             nn.GELU(),
-            nn.Linear(2 * cfg.hidden_dim, cfg.hidden_dim),
+            nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
+            nn.GELU(),
+            nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
             nn.GELU(),
             nn.Linear(cfg.hidden_dim, cfg.action_dim),
         )
