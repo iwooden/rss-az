@@ -1,0 +1,185 @@
+# Interpretability Analysis Guide
+
+How to analyze a trained checkpoint. All commands assume Cython extensions are built and the venv is available.
+
+## Quick Start
+
+Run the full analysis pipeline on the latest checkpoint with 10 self-play games:
+
+```bash
+# 1. Collect states (shared across analyses)
+.venv/bin/python -m interp.full_ablation --num-games 10 --save-data interp/data/states.npz --no-open
+
+# 2. Reuse collected states for remaining analyses
+.venv/bin/python -m interp.arch_analysis --load-data interp/data/states.npz --skip-conductance
+.venv/bin/python -m interp.probing --load-data interp/data/states.npz
+.venv/bin/python -m interp.tb_summary
+```
+
+All scripts auto-detect the latest checkpoint. Use `--checkpoint path/to/file.pt` to specify one.
+
+---
+
+## 1. Feature Ablation (`full_ablation.py`)
+
+**Question:** Which input features does the model rely on, and in which phases?
+
+**Method:** Zeros out each feature group and measures policy KL divergence from the original output. Higher KL = the model's policy changes more = more reliant on that feature.
+
+**Output:** Markdown table + HTML heatmap (red-to-green gradient). Both written automatically.
+
+```bash
+.venv/bin/python -m interp.full_ablation --num-games 10 --save-data interp/data/states.npz
+# Opens HTML heatmap in browser. Use --no-open to suppress.
+# Writes: interp/data/sensitivity_epoch<N>.md and .html
+```
+
+**What to look for:**
+- **Top features by Total KL** — what the model cares about most overall
+- **Phase-specific spikes** — features that only matter in their relevant phase (e.g., `turn:dividend` only in DIV). These validate that the model has learned phase-appropriate reasoning
+- **Surprisingly high/low features** — `corp:share_price` being low while `corp:price_index` is high means the model uses the one-hot encoding, not the scalar. Features near zero (like `fi:income`) are essentially unused
+- **Context-dependent fields** — `turn:active_company`, `turn:auction`, etc. should spike only in their relevant phases and be near-zero elsewhere
+
+**Key options:**
+- `--num-games N` — more games = more stable estimates (default 5, use 10-20 for publication)
+- `--save-data` / `--load-data` — save states for reuse across analyses
+- `--output path.md` — custom output path (HTML goes alongside)
+
+---
+
+## 2. Architecture Analysis (`arch_analysis.py`)
+
+**Question:** Is the model using its depth and width efficiently? Should we add/remove blocks?
+
+**Method:** Three analyses:
+1. **Block contribution** — how much each residual block changes the representation (||residual|| / ||input||)
+2. **Layer conductance** (optional, slow) — Captum-based measurement of each block's importance to policy/value heads
+3. **Effective rank** (SVD) — how many dimensions of hidden_dim are actually utilized at each layer
+
+```bash
+.venv/bin/python -m interp.arch_analysis --load-data interp/data/states.npz --skip-conductance
+# Add --skip-conductance to skip the slow Captum analysis (saves ~5 min)
+```
+
+**What to look for:**
+
+*Block contribution:*
+- **Flat profile** (all blocks ~same ratio) — all blocks are active, model may benefit from more depth
+- **Declining profile** (later blocks near zero) — later blocks are dead weight, consider removing them
+- **Single dominant block** — usually block 0, indicates the input projection is a bottleneck
+
+*Effective rank:*
+- **Rank still growing at the last block** — model wants more depth (hasn't finished computing)
+- **Rank plateau** — adding more blocks past the plateau point won't help
+- **Rank / hidden_dim ratio** — <30% means the width is wasteful (could shrink hidden_dim), >70% means the width is well-utilized or tight
+- **Top-50/100/200 energy** — how concentrated the variance is. If top-50 captures 95%+, the model is using a low-dimensional subspace
+
+*Layer conductance (when enabled):*
+- **Different top-3 blocks for policy vs value** — the heads use different parts of the network, blocks may specialize
+- **Conductance concentrated in early blocks** — later blocks contribute little to the heads
+
+**Reference results (v2, epoch 50, 6 blocks, hidden_dim=384):**
+- Block contribution: flat 0.07-0.11, all blocks active
+- Effective rank: 160 → 218, still growing at block 5
+- Width utilization: 214/384 = 55.8%
+- Conclusion: model can use more depth → increased to 10 blocks
+
+---
+
+## 3. Probing Classifiers (`probing.py`)
+
+**Question:** Where in the network does the model understand various game concepts? Which blocks serve value vs policy?
+
+**Method:** Trains linear probes (logistic regression / ridge regression) on intermediate activations at each layer to predict game-relevant quantities. If a probe at block 2 predicts as well as at block 5, the later blocks aren't contributing to that type of understanding.
+
+```bash
+.venv/bin/python -m interp.probing --load-data interp/data/states.npz
+# Writes: interp/data/probing_epoch<N>.md
+```
+
+**Probe categories:**
+- `--probes sanity` — phase, game_progress (should be perfect from input layer)
+- `--probes game` — winning_player, lead_margin, num_active_corps, etc. (require cross-entity reasoning)
+- `--probes policy` — action_type, invest_action, model_top_action (policy behavior)
+- `--probes value` — model_value_p0, model_entropy (value behavior)
+- `--probes all` — everything (default)
+
+**Nonlinear comparison** — tests whether policy info is in the trunk but nonlinearly encoded:
+```bash
+.venv/bin/python -m interp.probing --load-data interp/data/states.npz --nonlinear
+```
+Note: requires ~10K+ states for reliable MLP probes. With <3K states the MLPs overfit and results are unreliable.
+
+**What to look for:**
+
+*Value probes (model_value_p0):*
+- **R² climbing through blocks** — value computation happens progressively, more depth helps value
+- **R² flat after block N** — value computation is done by block N, blocks after that serve policy
+- **High R² at trunk (>0.95)** — value is almost a linear function of the trunk; value head doesn't need to be deep
+
+*Policy probes (action_type, invest_action, model_top_action):*
+- **Accuracy improving through blocks** — trunk depth helps policy
+- **Accuracy flat or declining** — trunk doesn't help policy; the policy head's nonlinear layers are doing the work. Consider a deeper/wider policy head instead of a deeper trunk
+- **action_type vs model_top_action gap** — if action_type (broad category) is well-predicted but exact action isn't, the trunk knows the strategy but specifics require nonlinear computation
+
+*Game state probes:*
+- **Declining from input to trunk** — expected. The model transforms raw features into abstract representations. Raw features get harder to linearly decode
+- **Already high at input** — the input preprocessing layer handles this concept easily (e.g., who's winning)
+
+**Reference results (v2, epoch 50, 6 blocks):**
+- `model_value_p0`: R² 0.89 → 0.97 (value climbs through all blocks)
+- `invest_action`: 0.80 → 0.80 (flat — policy doesn't benefit from depth)
+- Conclusion: trunk serves value; deeper policy head needed → expanded to 2 hidden layers
+
+---
+
+## 4. Tensorboard Summary (`tb_summary.py`)
+
+**Question:** How is training progressing? What are the key training metrics?
+
+```bash
+.venv/bin/python -m interp.tb_summary
+.venv/bin/python -m interp.tb_summary --max-rows 30  # more detail
+```
+
+**What to look for:**
+- **Policy entropy** — should decrease over training but not collapse to near-zero (that kills MCTS exploration). Healthy range: 0.3-0.8 after 50 epochs
+- **Top-1 visit fraction** — complement of entropy. If >95%, the model is too confident and MCTS can't explore alternatives
+- **Value loss** — should decrease steadily. If it plateaus while policy loss still drops, the value head may need more capacity
+- **Game length** — if games get longer over training, the model is learning to play more defensively (not necessarily bad)
+- **Net worth spread** (1st vs 3rd) — wider spread = model has learned to differentiate player outcomes
+
+Uses `train.tb_reader.read_tb_scalars()` which properly merges multiple event files from training restarts.
+
+---
+
+## 5. Auction Slot Ablation (`feat_ablation.py`)
+
+**Question:** How much does the model use the auction slot summary info, and which sub-features (stars, prices, income) matter most?
+
+This is the original, more focused ablation tool. Use `full_ablation.py` for the comprehensive analysis.
+
+```bash
+.venv/bin/python -m interp.feat_ablation --num-games 10 --breakdown
+```
+
+---
+
+## Shared Utilities (`utils.py`)
+
+All scripts share common infrastructure:
+
+- **`load_model()`** — loads latest checkpoint (or specified path), returns (model, config, device, epoch)
+- **`collect_states()`** — plays fast games via policy sampling (no MCTS) to collect diverse states. Returns an `InterpDataset`
+- **`InterpDataset`** — states, legal_masks, phases, active_players. Saveable to `.npz` for reuse
+
+**State collection tip:** Collect once with `--save-data`, then `--load-data` for all subsequent analyses. This is much faster than re-playing games for each script.
+
+---
+
+## Future Work
+
+See beads issues for planned analyses:
+- **Feature interaction detection** (rss-az-ospf) — pairwise ablation to find feature combinations
+- **Decision attribution** (rss-az-y5cj) — IntegratedGradients on critical game decisions
+- **Counterfactual sensitivity** (rss-az-9dox) — sweep individual features to plot response curves
