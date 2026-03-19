@@ -10,7 +10,7 @@ High-performance Cython game engine for "Rolling Stock Stars" board game, optimi
 
 **Key characteristics:**
 - 2-6 player support with dynamic state sizing
-- ~2670-3030 floats per game state (varies by player count)
+- ~2690-3070 floats per game state (varies by player count)
 - No Python object overhead in hot paths (nogil execution)
 - Benchmark target: thousands of games per minute
 
@@ -126,9 +126,9 @@ Central data structure: single contiguous float32 numpy array.
 **Sizes by player count:**
 | Players | Visible | Hidden | Total |
 |---------|---------|--------|-------|
-| 2 | 1491 | 1184 | 2675 |
-| 3 | 1577 | 1184 | 2761 |
-| 6 | 1847 | 1184 | 3031 |
+| 2 | 1472 | 1217 | 2689 |
+| 3 | 1549 | 1233 | 2782 |
+| 6 | 1792 | 1281 | 3073 |
 
 ### Actions (`core/actions.pyx`)
 
@@ -244,8 +244,8 @@ Instead of using the root node's mean value (soft-Z) or the game outcome as trai
 ### NN Model (`nn/model_3p_2.py`)
 
 Residual MLP (~5.2M parameters):
-- **Input:** 1577 floats (3-player) (visible state, active player rotated to slot 0)
-- **Input preprocessing:** Linear(1577→768) → GELU → Linear(768→384)
+- **Input:** 1549 floats (3-player) (visible state, active player rotated to slot 0)
+- **Input preprocessing:** Linear(1549→768) → GELU → Linear(768→384)
 - **Trunk:** 10 residual blocks (pre-LN, GELU, no expansion: 384→384→384) → LayerNorm
 - **Policy head:** 3 hidden layers at hidden_dim: Linear(384→384) → GELU → Linear(384→384) → GELU → Linear(384→384) → GELU → Linear(384→246) logits (masked by legal actions before softmax)
 - **Value head:** Linear(384→384) → GELU → Linear(384→3) → Tanh
@@ -391,7 +391,7 @@ Two shutdown modes during training:
 ### Training Examples
 
 At each decision point during self-play, a `TrainingExample` is stored:
-- **state**: Visible state rotated so active player is at slot 0 (shape `(1577,)` for 3 players)
+- **state**: Visible state rotated so active player is at slot 0 (shape `(1549,)` for 3 players)
 - **legal_mask**: Binary mask of legal actions (shape `(246,)`)
 - **policy_target**: MCTS visit probabilities (shape `(246,)`)
 - **value_target**: A0GB values rotated to active-player-first (shape `(3,)`)
@@ -442,7 +442,7 @@ record = play_game(evaluator, config, game_seed=42, rng=rng)
  Auction Slot Info (5*num_players) | Invest Impacts (16) | HIDDEN: Active Player, Deck, Offer Buffers]
 ```
 
-**Player stride** = `73 + num_players` floats per player
+**Player stride** = `64 + num_players` floats per player
 
 **Corporation stride** = 109 floats per corp
 

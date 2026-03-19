@@ -63,14 +63,12 @@ def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
         ("player:cash", 0, 1),
         ("player:net_worth", 1, 1),
         ("player:turn_order", 2, num_players),
-        ("player:auction_bidder", 2 + num_players, 1),
-        ("player:owned_companies", 3 + num_players, 36),
-        ("player:owned_shares", 39 + num_players, 8),
-        ("player:is_president", 47 + num_players, 8),
-        ("player:share_buys", 55 + num_players, 8),
-        ("player:share_sells", 63 + num_players, 8),
-        ("player:acq_proceeds", 71 + num_players, 1),
-        ("player:income", 72 + num_players, 1),
+        ("player:owned_companies", 2 + num_players, 36),
+        ("player:owned_shares", 38 + num_players, 8),
+        ("player:is_president", 46 + num_players, 8),
+        ("player:round_trips", 54 + num_players, 8),
+        ("player:acq_proceeds", 62 + num_players, 1),
+        ("player:income", 63 + num_players, 1),
     ]
     for name, rel, size in _pf:
         idx: list[int] = []
@@ -120,12 +118,11 @@ def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
 
     # --- Turn state ---
     t = layout.turn_offset
-    groups.append(("turn:turn_number", np.array([t])))
-    groups.append(("turn:end_card_flipped", np.array([t + 1])))
-    groups.append(("turn:consec_passes", np.array([t + 2])))
+    groups.append(("turn:end_card_flipped", np.array([t])))
+    groups.append(("turn:consec_passes", np.array([t + 1])))
 
     # Auction block: price(1) + high_bidder(np) + starter(np) + passed(np)
-    auction_idx: list[int] = [t + 3]  # auction_price
+    auction_idx: list[int] = [t + 2]  # auction_price
     auction_idx.extend(range(layout.auction_high_bidder_offset, layout.auction_high_bidder_offset + num_players))
     auction_idx.extend(range(layout.auction_starter_offset, layout.auction_starter_offset + num_players))
     auction_idx.extend(range(layout.auction_passed_offset, layout.auction_passed_offset + num_players))

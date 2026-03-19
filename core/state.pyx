@@ -123,12 +123,10 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         1 +                 # cash
         1 +                 # net_worth
         num_players +       # turn_order one-hot
-        1 +                 # is_auction_high_bidder
         GameConstants.NUM_COMPANIES +     # owned_companies
         GameConstants.NUM_CORPS +         # owned_shares
         GameConstants.NUM_CORPS +         # is_president
-        GameConstants.NUM_CORPS +         # share_buys
-        GameConstants.NUM_CORPS +         # share_sells
+        GameConstants.NUM_CORPS +         # round_trips (visible: min(buys, sells) / MAX_ROUNDTRIPS)
         1 +                 # acquisition_proceeds
         1                   # income
     )
@@ -182,7 +180,6 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
 
     # Turn state
     layout.turn_size = (
-        1 +                 # turn_number
         1 +                 # end_card_flipped
         1 +                 # consecutive_passes (for INVEST phase)
         # Auction
@@ -227,7 +224,7 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
 
     layout.visible_size = offset
 
-    # Hidden state layout:
+    # Hidden state layout (offsets are relative to visible_size):
     # [0] active_player
     # [1] num_players
     # [2] deck_top
@@ -238,18 +235,22 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     # [42] auction_high_bidder (compact)
     # [43] auction_starter (compact)
     # [44..51] corp_price_indices (8 slots)
-    # [52] offer_count (number of offers in buffer)
-    # [53] offer_index (current offer being processed)
-    # [54..803] offer_buffer (250 offers * 3 floats: owner_type, corp_id, company_id)
-    # [804] close_offer_count (number of close offers)
-    # [805] close_offer_index (current close offer being processed)
-    # [806..1105] close_offer_buffer (100 offers * 3 floats: owner_type, owner_id, company_id)
-    # [1106] acq_active_corp (compact, for O(1) access)
-    # [1107] acq_target_company (compact, for O(1) access)
-    # [1108] closing_company (compact, for O(1) access)
-    # [1109] dividend_corp (compact, for O(1) access)
-    # [1110] issue_corp (compact, for O(1) access)
-    # [1111] ipo_company (compact, for O(1) access)
+    # [52] offer_count
+    # [53] offer_index
+    # [54..803] offer_buffer (250 * 3)
+    # [804] close_offer_count
+    # [805] close_offer_index
+    # [806..1105] close_offer_buffer (100 * 3)
+    # [1106] acq_active_corp (compact)
+    # [1107] acq_target_company (compact)
+    # [1108] closing_company (compact)
+    # [1109] dividend_corp (compact)
+    # [1110] issue_corp (compact)
+    # [1111] ipo_company (compact)
+    # [1112] turn_number
+    # [1113..] share_buys (num_players * 8)
+    # [...] share_sells (num_players * 8)
+    # Then: company_locations (36), company_owner_ids (36)
     layout.hidden_active_player_offset = offset
     offset += 1
     layout.hidden_num_players_offset = offset
@@ -297,9 +298,15 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     offset += 1
     layout.hidden_ipo_company_offset = offset
     offset += 1
+    # Turn number (moved from visible to hidden)
+    layout.hidden_turn_number_offset = offset
+    offset += 1
+    # Per-player share buy/sell tracking (moved from visible to hidden)
+    layout.hidden_share_buys_offset = offset
+    offset += num_players * GameConstants.NUM_CORPS   # 8 floats per player
+    layout.hidden_share_sells_offset = offset
+    offset += num_players * GameConstants.NUM_CORPS   # 8 floats per player
     # Company location tracking (O(1) clearing without scanning visible state)
-    # [862..897] company_locations (36 floats: CompanyLocation enum per company)
-    # [898..933] company_owner_ids (36 floats: player_id or corp_id, -1 when N/A)
     layout.hidden_company_locations_offset = offset
     offset += GameConstants.NUM_COMPANIES
     layout.hidden_company_owner_ids_offset = offset
@@ -320,8 +327,6 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
     cdef TurnStateOffsets t
     cdef int offset = 0
 
-    t.turn_number = offset
-    offset += 1
     t.end_card_flipped = offset
     offset += 1
     t.consecutive_passes = offset
@@ -397,17 +402,13 @@ cdef PlayerFieldOffsets compute_player_field_offsets(int num_players) noexcept n
     offset += 1
     p.turn_order = offset
     offset += num_players
-    p.is_auction_high_bidder = offset
-    offset += 1
     p.owned_companies = offset
     offset += GameConstants.NUM_COMPANIES
     p.owned_shares = offset
     offset += GameConstants.NUM_CORPS
     p.is_president = offset
     offset += GameConstants.NUM_CORPS
-    p.share_buys = offset
-    offset += GameConstants.NUM_CORPS
-    p.share_sells = offset
+    p.round_trips = offset
     offset += GameConstants.NUM_CORPS
     p.acquisition_proceeds = offset
     offset += 1

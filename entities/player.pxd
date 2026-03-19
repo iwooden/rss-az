@@ -31,17 +31,19 @@ cdef class Player:
     cdef int _num_players
     cdef bint _initialized
 
-    # Cached field offsets
+    # Cached field offsets (visible state)
     cdef int _cash_offset
     cdef int _net_worth_offset
     cdef int _turn_order_offset
     cdef int _owned_companies_offset
     cdef int _owned_shares_offset
     cdef int _is_president_offset
-    cdef int _share_buys_offset
-    cdef int _share_sells_offset
+    cdef int _round_trips_offset
     cdef int _acquisition_proceeds_offset
     cdef int _income_offset
+    # Cached field offsets (hidden state — share buy/sell tracking)
+    cdef int _hidden_share_buys_offset
+    cdef int _hidden_share_sells_offset
 
     # Initialization
     cpdef void initialize(self, GameState state)
@@ -78,11 +80,12 @@ cdef class Player:
     # President status (read-only - presidency is derived from share ownership)
     cpdef bint is_president_of(self, GameState state, int corp_id)
 
-    # Round-trip tracking
+    # Round-trip tracking (hidden: buys/sells, visible: round_trips)
     cpdef int get_share_buys(self, GameState state, int corp_id)
     cpdef void increment_share_buys(self, GameState state, int corp_id)
     cpdef int get_share_sells(self, GameState state, int corp_id)
     cpdef void increment_share_sells(self, GameState state, int corp_id)
+    cdef void _update_visible_roundtrips(self, GameState state, int corp_id)
     cpdef int get_roundtrips(self, GameState state, int corp_id)
     cpdef void clear_roundtrip_tracking(self, GameState state)
 

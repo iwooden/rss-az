@@ -64,12 +64,16 @@ cdef struct StateLayout:
     int hidden_dividend_corp_offset
     int hidden_issue_corp_offset
     int hidden_ipo_company_offset
+    # Turn number (moved from visible to hidden)
+    int hidden_turn_number_offset
+    # Per-player share buy/sell tracking (moved from visible to hidden)
+    int hidden_share_buys_offset   # [p0_buys(8), p1_buys(8), ...]
+    int hidden_share_sells_offset  # [p0_sells(8), p1_sells(8), ...]
     # Company location tracking (O(1) clearing without scanning visible state)
     int hidden_company_locations_offset
     int hidden_company_owner_ids_offset
 
 cdef struct TurnStateOffsets:
-    int turn_number
     int end_card_flipped
     int consecutive_passes
     int auction_price
@@ -98,12 +102,10 @@ cdef struct PlayerFieldOffsets:
     int cash
     int net_worth
     int turn_order
-    int is_auction_high_bidder
     int owned_companies
     int owned_shares
     int is_president
-    int share_buys
-    int share_sells
+    int round_trips
     int acquisition_proceeds
     int income
 

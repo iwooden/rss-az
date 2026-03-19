@@ -25,11 +25,11 @@ class TestStateLayoutSizes:
     # Expected sizes - these MUST match VECTORS.md and CLAUDE.md
     # If these tests fail, update the documentation to match!
     EXPECTED_SIZES = {
-        2: {'visible': 1491, 'hidden': 1184, 'total': 2675},
-        3: {'visible': 1577, 'hidden': 1184, 'total': 2761},
-        4: {'visible': 1665, 'hidden': 1184, 'total': 2849},
-        5: {'visible': 1755, 'hidden': 1184, 'total': 2939},
-        6: {'visible': 1847, 'hidden': 1184, 'total': 3031},
+        2: {'visible': 1472, 'hidden': 1217, 'total': 2689},
+        3: {'visible': 1549, 'hidden': 1233, 'total': 2782},
+        4: {'visible': 1628, 'hidden': 1249, 'total': 2877},
+        5: {'visible': 1709, 'hidden': 1265, 'total': 2974},
+        6: {'visible': 1792, 'hidden': 1281, 'total': 3073},
     }
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
@@ -64,11 +64,11 @@ class TestComponentSizes:
     """Verify individual component sizes."""
 
     def test_player_stride_formula(self):
-        """Player stride = 73 + num_players."""
+        """Player stride = 64 + num_players."""
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
-            assert layout.player_stride == 73 + num_players, (
-                f"{num_players} players: stride {layout.player_stride} != 73 + {num_players}"
+            assert layout.player_stride == 64 + num_players, (
+                f"{num_players} players: stride {layout.player_stride} != 64 + {num_players}"
             )
 
     def test_corp_stride_fixed(self):
@@ -77,18 +77,22 @@ class TestComponentSizes:
         assert layout.corp_stride == 109
 
     def test_turn_size_formula(self):
-        """Turn size = 210 + 3*num_players."""
+        """Turn size = 209 + 3*num_players."""
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
-            expected = 210 + 3 * num_players
+            expected = 209 + 3 * num_players
             assert layout.turn_size == expected, (
                 f"{num_players} players: turn size {layout.turn_size} != {expected}"
             )
 
-    def test_hidden_size_fixed(self):
-        """Hidden size = 1184 (fixed for all player counts)."""
-        layout = get_layout(3)
-        assert layout.hidden_size == 1184
+    def test_hidden_size_formula(self):
+        """Hidden size = 1185 + 16*num_players (per-player share tracking)."""
+        for num_players in [2, 3, 4, 5, 6]:
+            layout = get_layout(num_players)
+            expected = 1185 + 16 * num_players
+            assert layout.hidden_size == expected, (
+                f"{num_players} players: hidden size {layout.hidden_size} != {expected}"
+            )
 
     def test_auction_slot_info_size(self):
         """Auction slot info = 5 * num_players."""

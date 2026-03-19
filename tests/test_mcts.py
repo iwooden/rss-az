@@ -150,7 +150,7 @@ class TestLayout:
 
     def test_player_stride_3p(self):
         layout = get_layout(3)
-        assert layout.player_stride == 76  # 73 + num_players
+        assert layout.player_stride == 67  # 64 + num_players
 
 
 # ---------------------------------------------------------------------------

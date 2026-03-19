@@ -100,19 +100,17 @@ Many fields in the visible state are only meaningful during specific game phases
 
 ### Players (repeated `num_players` times)
 
-Player stride = `5 + num_players + 36 + 32` = `73 + num_players`
+Player stride = `4 + num_players + 36 + 24` = `64 + num_players`
 
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
 | `cash` | 1 | normalized | / CASH_DIVISOR |
 | `net_worth` | 1 | normalized | / CASH_DIVISOR |
 | `turn_order` | num_players | one-hot | Position 0 = first to act |
-| `is_auction_high_bidder` | 1 | flag | |
 | `owned_companies` | 36 | flags | 1 per company |
 | `owned_shares` | 8 | normalized | / SHARE_DIVISOR |
 | `is_president` | 8 | flags | 1 per corp |
-| `share_buys` | 8 | normalized | / (MAX_ROUNDTRIPS * 2) |
-| `share_sells` | 8 | normalized | / (MAX_ROUNDTRIPS * 2) |
+| `round_trips` | 8 | normalized | min(buys, sells) / MAX_ROUNDTRIPS. Context-dependent: zeroed outside INVEST |
 | `acquisition_proceeds` | 1 | normalized | Cash from selling companies this phase / CASH_DIVISOR |
 | `income` | 1 | normalized | Total income from owned private companies / PRICE_DIVISOR |
 
@@ -122,14 +120,12 @@ Player stride = `5 + num_players + 36 + 32` = `73 + num_players`
 | cash | 0 |
 | net_worth | 1 |
 | turn_order | 2 |
-| is_auction_high_bidder | 2 + num_players |
-| owned_companies | 3 + num_players |
-| owned_shares | 39 + num_players |
-| is_president | 47 + num_players |
-| share_buys | 55 + num_players |
-| share_sells | 63 + num_players |
-| acquisition_proceeds | 71 + num_players |
-| income | 72 + num_players |
+| owned_companies | 2 + num_players |
+| owned_shares | 38 + num_players |
+| is_president | 46 + num_players |
+| round_trips | 54 + num_players |
+| acquisition_proceeds | 62 + num_players |
+| income | 63 + num_players |
 
 ### Foreign Investor
 
@@ -207,11 +203,10 @@ Corp stride = `10 + 27 + 36 + 36` = `109`
 
 ### Turn State
 
-Size varies with player count: `210 + (3 * num_players)`
+Size varies with player count: `209 + (3 * num_players)`
 
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
-| `turn_number` | 1 | normalized | / 50.0 |
 | `end_card_flipped` | 1 | flag | |
 | `consecutive_passes` | 1 | normalized | / num_players, INVEST phase |
 | **Auction:** | | | |
@@ -269,11 +264,11 @@ Shown for all active corps regardless of affordability or share ownership. Recom
 
 ## Hidden State Layout
 
-Hidden state starts at `visible_size` offset. Total hidden size = 1184.
+Hidden state starts at `visible_size` offset. Total hidden size = `1185 + 16 * num_players`.
 
 The hidden state serves several purposes:
-- **Information hiding**: Data the NN shouldn't see (deck order, active player before rotation)
-- **Bookkeeping**: Offer buffers for acquisition/closing phases
+- **Information hiding**: Data the NN shouldn't see (deck order, active player before rotation, turn number)
+- **Bookkeeping**: Offer buffers for acquisition/closing phases, per-player share buy/sell tracking
 - **Performance**: Compact storage for O(1) access to one-hot values and company locations
 
 | Field | Offset | Size | Notes |
@@ -300,8 +295,11 @@ The hidden state serves several purposes:
 | `dividend_corp` | 1109 | 1 | Compact storage for O(1) access |
 | `issue_corp` | 1110 | 1 | Compact storage for O(1) access |
 | `ipo_company` | 1111 | 1 | Compact storage for O(1) access |
-| `company_locations` | 1112 | 36 | CompanyLocation enum per company (O(1) clearing) |
-| `company_owner_ids` | 1148 | 36 | Owner ID per company (-1 if N/A, player_id or corp_id) |
+| `turn_number` | 1112 | 1 | / 50.0 (moved from visible turn state) |
+| `share_buys` | 1113 | num_players × 8 | Per-player buy counts / (MAX_ROUNDTRIPS * 2) |
+| `share_sells` | 1113 + np×8 | num_players × 8 | Per-player sell counts / (MAX_ROUNDTRIPS * 2) |
+| `company_locations` | varies | 36 | CompanyLocation enum per company (O(1) clearing) |
+| `company_owner_ids` | varies | 36 | Owner ID per company (-1 if N/A, player_id or corp_id) |
 
 **CompanyLocation Enum:**
 | Value | Location | Notes |

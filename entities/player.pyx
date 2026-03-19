@@ -163,17 +163,20 @@ cdef class Player:
         self._num_players = state._num_players
         self._base_offset = layout.players_offset + (self.player_id * layout.player_stride)
 
-        # Cache absolute offsets for each field
+        # Cache absolute offsets for visible fields
         self._cash_offset = self._base_offset + fields.cash
         self._net_worth_offset = self._base_offset + fields.net_worth
         self._turn_order_offset = self._base_offset + fields.turn_order
         self._owned_companies_offset = self._base_offset + fields.owned_companies
         self._owned_shares_offset = self._base_offset + fields.owned_shares
         self._is_president_offset = self._base_offset + fields.is_president
-        self._share_buys_offset = self._base_offset + fields.share_buys
-        self._share_sells_offset = self._base_offset + fields.share_sells
+        self._round_trips_offset = self._base_offset + fields.round_trips
         self._acquisition_proceeds_offset = self._base_offset + fields.acquisition_proceeds
         self._income_offset = self._base_offset + fields.income
+
+        # Cache absolute offsets for hidden share buy/sell tracking
+        self._hidden_share_buys_offset = layout.hidden_share_buys_offset + self.player_id * <int>GameConstants.NUM_CORPS
+        self._hidden_share_sells_offset = layout.hidden_share_sells_offset + self.player_id * <int>GameConstants.NUM_CORPS
 
     # =========================================================================
     # NOGIL METHODS (use cached offsets for performance)
@@ -188,12 +191,12 @@ cdef class Player:
         return <int>(data[self._owned_shares_offset + corp_id] * SHARE_DIVISOR + 0.5)
 
     cdef inline int _get_share_buys_nogil(self, float* data, int corp_id) noexcept nogil:
-        """Get share buy count (nogil version)."""
-        return <int>(data[self._share_buys_offset + corp_id] * MAX_ROUNDTRIPS * 2 + 0.5)
+        """Get share buy count from hidden state (nogil version)."""
+        return <int>(data[self._hidden_share_buys_offset + corp_id] * MAX_ROUNDTRIPS * 2 + 0.5)
 
     cdef inline int _get_share_sells_nogil(self, float* data, int corp_id) noexcept nogil:
-        """Get share sell count (nogil version)."""
-        return <int>(data[self._share_sells_offset + corp_id] * MAX_ROUNDTRIPS * 2 + 0.5)
+        """Get share sell count from hidden state (nogil version)."""
+        return <int>(data[self._hidden_share_sells_offset + corp_id] * MAX_ROUNDTRIPS * 2 + 0.5)
 
     cdef inline bint _owns_company_nogil(self, float* data, int company_id) noexcept nogil:
         """Check if player owns a company (nogil version)."""
@@ -325,22 +328,31 @@ cdef class Player:
     # =========================================================================
 
     cpdef int get_share_buys(self, GameState state, int corp_id):
-        """Get share buy count for this corp this turn."""
-        return <int>(state._data[self._share_buys_offset + corp_id] * MAX_ROUNDTRIPS * 2 + 0.5)
+        """Get share buy count for this corp this turn (from hidden state)."""
+        return <int>(state._data[self._hidden_share_buys_offset + corp_id] * MAX_ROUNDTRIPS * 2 + 0.5)
 
     cpdef void increment_share_buys(self, GameState state, int corp_id):
-        """Increment share buy count."""
+        """Increment share buy count and update visible round_trips."""
         cdef int current = self.get_share_buys(state, corp_id)
-        state._data[self._share_buys_offset + corp_id] = <float>(current + 1) / (MAX_ROUNDTRIPS * 2)
+        state._data[self._hidden_share_buys_offset + corp_id] = <float>(current + 1) / (MAX_ROUNDTRIPS * 2)
+        self._update_visible_roundtrips(state, corp_id)
 
     cpdef int get_share_sells(self, GameState state, int corp_id):
-        """Get share sell count for this corp this turn."""
-        return <int>(state._data[self._share_sells_offset + corp_id] * MAX_ROUNDTRIPS * 2 + 0.5)
+        """Get share sell count for this corp this turn (from hidden state)."""
+        return <int>(state._data[self._hidden_share_sells_offset + corp_id] * MAX_ROUNDTRIPS * 2 + 0.5)
 
     cpdef void increment_share_sells(self, GameState state, int corp_id):
-        """Increment share sell count."""
+        """Increment share sell count and update visible round_trips."""
         cdef int current = self.get_share_sells(state, corp_id)
-        state._data[self._share_sells_offset + corp_id] = <float>(current + 1) / (MAX_ROUNDTRIPS * 2)
+        state._data[self._hidden_share_sells_offset + corp_id] = <float>(current + 1) / (MAX_ROUNDTRIPS * 2)
+        self._update_visible_roundtrips(state, corp_id)
+
+    cdef void _update_visible_roundtrips(self, GameState state, int corp_id):
+        """Recompute visible round_trips[corp_id] = min(buys, sells) / MAX_ROUNDTRIPS."""
+        cdef int buys = self.get_share_buys(state, corp_id)
+        cdef int sells = self.get_share_sells(state, corp_id)
+        cdef int rt = buys if buys < sells else sells
+        state._data[self._round_trips_offset + corp_id] = <float>rt / MAX_ROUNDTRIPS
 
     cpdef int get_roundtrips(self, GameState state, int corp_id):
         """
@@ -356,11 +368,12 @@ cdef class Player:
         return buys if buys < sells else sells
 
     cpdef void clear_roundtrip_tracking(self, GameState state):
-        """Clear buy/sell tracking for all corps. Called at end of INVEST phase."""
+        """Clear buy/sell tracking (hidden) and round_trips (visible) for all corps."""
         cdef int i
         for i in range(<int>GameConstants.NUM_CORPS):
-            state._data[self._share_buys_offset + i] = 0.0
-            state._data[self._share_sells_offset + i] = 0.0
+            state._data[self._hidden_share_buys_offset + i] = 0.0
+            state._data[self._hidden_share_sells_offset + i] = 0.0
+            state._data[self._round_trips_offset + i] = 0.0
 
     # =========================================================================
     # ACQUISITION PROCEEDS

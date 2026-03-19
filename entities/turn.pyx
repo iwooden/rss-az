@@ -38,7 +38,6 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
     Compute field offsets within turn data block.
 
     The turn state is stored as a contiguous float array with the following layout:
-    - turn_number (1)
     - end_card_flipped (1)
     - consecutive_passes (1)
     - auction_price (1)
@@ -60,8 +59,8 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
     cdef TurnOffsets t
     cdef int offset = 0
 
-    # Skip turn_number (1), end_card_flipped (1), consecutive_passes (1)
-    offset += 3
+    # Skip end_card_flipped (1), consecutive_passes (1)
+    offset += 2
 
     # Skip auction_price (1)
     offset += 1
@@ -171,8 +170,9 @@ cdef class TurnState:
         # Turn state base offset
         self._turn_offset = layout.turn_offset
 
-        # Cache absolute offsets for turn state fields
-        self._turn_number_offset = self._turn_offset + turn.turn_number
+        # Turn number is in hidden state
+        self._turn_number_offset = layout.hidden_turn_number_offset
+        # Cache absolute offsets for visible turn state fields
         self._end_card_flipped_offset = self._turn_offset + turn.end_card_flipped
         self._consecutive_passes_offset = self._turn_offset + turn.consecutive_passes
 
