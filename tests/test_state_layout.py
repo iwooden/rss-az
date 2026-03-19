@@ -25,11 +25,11 @@ class TestStateLayoutSizes:
     # Expected sizes - these MUST match VECTORS.md and CLAUDE.md
     # If these tests fail, update the documentation to match!
     EXPECTED_SIZES = {
-        2: {'visible': 1489, 'hidden': 1184, 'total': 2673},
-        3: {'visible': 1575, 'hidden': 1184, 'total': 2759},
-        4: {'visible': 1663, 'hidden': 1184, 'total': 2847},
-        5: {'visible': 1753, 'hidden': 1184, 'total': 2937},
-        6: {'visible': 1845, 'hidden': 1184, 'total': 3029},
+        2: {'visible': 1491, 'hidden': 1184, 'total': 2675},
+        3: {'visible': 1577, 'hidden': 1184, 'total': 2761},
+        4: {'visible': 1665, 'hidden': 1184, 'total': 2849},
+        5: {'visible': 1755, 'hidden': 1184, 'total': 2939},
+        6: {'visible': 1847, 'hidden': 1184, 'total': 3031},
     }
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
@@ -77,10 +77,10 @@ class TestComponentSizes:
         assert layout.corp_stride == 109
 
     def test_turn_size_formula(self):
-        """Turn size = 208 + 3*num_players."""
+        """Turn size = 210 + 3*num_players."""
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
-            expected = 208 + 3 * num_players
+            expected = 210 + 3 * num_players
             assert layout.turn_size == expected, (
                 f"{num_players} players: turn size {layout.turn_size} != {expected}"
             )

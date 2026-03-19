@@ -79,6 +79,8 @@ cdef struct TurnStateOffsets:
     int dividend_impact
     int dividend_remaining
     int issue_remaining
+    int issue_price_impact
+    int issue_cash_gain
     int ipo_remaining
     int acq_is_fi_offer
     int acq_synergy_values

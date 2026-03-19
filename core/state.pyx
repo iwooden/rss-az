@@ -194,6 +194,8 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         GameConstants.NUM_CORPS +         # dividend_remaining
         # Issue
         GameConstants.NUM_CORPS +         # issue_remaining
+        1 +                              # issue_price_impact
+        1 +                              # issue_cash_gain
         # IPO
         GameConstants.NUM_COMPANIES +     # ipo_remaining
         # Acquisition offers
@@ -343,6 +345,10 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
     # Issue
     t.issue_remaining = offset
     offset += GameConstants.NUM_CORPS
+    t.issue_price_impact = offset
+    offset += 1
+    t.issue_cash_gain = offset
+    offset += 1
 
     # IPO
     t.ipo_remaining = offset

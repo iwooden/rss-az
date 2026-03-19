@@ -117,9 +117,9 @@ Central data structure: single contiguous float32 numpy array.
 **Sizes by player count:**
 | Players | Visible | Hidden | Total |
 |---------|---------|--------|-------|
-| 2 | 1489 | 1184 | 2673 |
-| 3 | 1575 | 1184 | 2759 |
-| 6 | 1845 | 1184 | 3029 |
+| 2 | 1491 | 1184 | 2675 |
+| 3 | 1577 | 1184 | 2761 |
+| 6 | 1847 | 1184 | 3031 |
 
 ### Actions (`core/actions.pyx`)
 
@@ -235,7 +235,7 @@ Instead of using the root node's mean value (soft-Z) or the game outcome as trai
 ### NN Model (`nn/model_3p.py`)
 
 Residual MLP (~25.4M parameters):
-- **Input:** 1575 floats (3-player) (visible state, active player rotated to slot 0)
+- **Input:** 1577 floats (3-player) (visible state, active player rotated to slot 0)
 - **Trunk:** Linear → 10 residual blocks (pre-LN, GELU, expansion=2) → LayerNorm
 - **Policy head:** Linear(768→256) → GELU → Linear(256→246) logits (masked by legal actions before softmax)
 - **Value head:** Linear(768→384) → GELU → Linear(384→192) → GELU → Linear(192→3) → Tanh
@@ -361,7 +361,7 @@ Each epoch: (1) play N games via MCTS self-play → (2) store examples in replay
 ### Training Examples
 
 At each decision point during self-play, a `TrainingExample` is stored:
-- **state**: Visible state rotated so active player is at slot 0 (shape `(1575,)` for 3 players)
+- **state**: Visible state rotated so active player is at slot 0 (shape `(1577,)` for 3 players)
 - **legal_mask**: Binary mask of legal actions (shape `(246,)`)
 - **policy_target**: MCTS visit probabilities (shape `(246,)`)
 - **value_target**: A0GB values rotated to active-player-first (shape `(3,)`)

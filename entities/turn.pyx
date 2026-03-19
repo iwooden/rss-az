@@ -188,6 +188,8 @@ cdef class TurnState:
 
         # Issue
         self._issue_remaining_offset = self._turn_offset + turn.issue_remaining
+        self._issue_price_impact_offset = self._turn_offset + turn.issue_price_impact
+        self._issue_cash_gain_offset = self._turn_offset + turn.issue_cash_gain
 
         # IPO
         self._ipo_remaining_offset = self._turn_offset + turn.ipo_remaining
@@ -491,6 +493,27 @@ cdef class TurnState:
         """Set whether corp needs issue processing."""
         if corp_id >= 0 and corp_id < GameConstants.NUM_CORPS:
             state._data[self._issue_remaining_offset + corp_id] = 1.0 if remaining else 0.0
+
+    cpdef float get_issue_price_impact(self, GameState state):
+        """Get pre-computed price index impact of issuing (raw normalized value)."""
+        return state._data[self._issue_price_impact_offset]
+
+    cpdef void set_issue_price_impact(self, GameState state, int impact):
+        """Set issue price impact (index delta, typically negative)."""
+        state._data[self._issue_price_impact_offset] = <float>impact / IMPACT_DIVISOR
+
+    cpdef float get_issue_cash_gain(self, GameState state):
+        """Get pre-computed cash gain from issuing (raw normalized value)."""
+        return state._data[self._issue_cash_gain_offset]
+
+    cpdef void set_issue_cash_gain(self, GameState state, int cash):
+        """Set issue cash gain (price at destination index)."""
+        state._data[self._issue_cash_gain_offset] = <float>cash / PRICE_DIVISOR
+
+    cpdef void clear_issue_impact(self, GameState state):
+        """Clear issue impact scalars (zero-fill)."""
+        state._data[self._issue_price_impact_offset] = 0.0
+        state._data[self._issue_cash_gain_offset] = 0.0
 
     # =========================================================================
     # IPO STATE

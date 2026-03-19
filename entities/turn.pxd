@@ -70,6 +70,8 @@ cdef class TurnState:
 
     # Issue offsets
     cdef int _issue_remaining_offset
+    cdef int _issue_price_impact_offset
+    cdef int _issue_cash_gain_offset
 
     # IPO offsets
     cdef int _ipo_remaining_offset
@@ -151,6 +153,12 @@ cdef class TurnState:
 
     cpdef bint is_issue_remaining(self, GameState state, int corp_id)
     cpdef void set_issue_remaining(self, GameState state, int corp_id, bint remaining)
+
+    cpdef float get_issue_price_impact(self, GameState state)
+    cpdef void set_issue_price_impact(self, GameState state, int impact)
+    cpdef float get_issue_cash_gain(self, GameState state)
+    cpdef void set_issue_cash_gain(self, GameState state, int cash)
+    cpdef void clear_issue_impact(self, GameState state)
 
     # IPO state (compact-only, one-hot now in active_company)
     cpdef int get_ipo_company(self, GameState state)

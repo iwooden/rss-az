@@ -149,6 +149,37 @@ cdef void _process_issue_share(GameState state, int corp_id) noexcept:
     corp_module.CORPS[corp_id].add_cash(state, proceeds)
 
 
+cdef void _populate_issue_impact(GameState state, int corp_id) noexcept:
+    """
+    Compute and set issue_price_impact and issue_cash_gain for the active corp.
+
+    These context-dependent scalars tell the model what would happen if it issues:
+    - price_impact: how many index positions the price drops (0 for Stock Masters)
+    - cash_gain: cash the corp receives (price at destination index)
+
+    If no unissued shares, both are left at 0 (driver auto-passes).
+    """
+    cdef int current_index, new_index, impact, cash_gain
+
+    if corp_module.CORPS[corp_id].get_unissued_shares(state) <= 0:
+        turn_module.TURN.clear_issue_impact(state)
+        return
+
+    current_index = corp_module.CORPS[corp_id].get_price_index(state)
+
+    if corp_id == CorpIndices.CORP_SM:
+        # Stock Masters: price doesn't change
+        impact = 0
+        cash_gain = get_market_price(current_index)
+    else:
+        new_index = market_module.MARKET.find_next_lower_space(state, current_index)
+        impact = new_index - current_index  # Negative (price drops)
+        cash_gain = get_market_price(new_index)
+
+    turn_module.TURN.set_issue_price_impact(state, impact)
+    turn_module.TURN.set_issue_cash_gain(state, cash_gain)
+
+
 cdef void _process_receivership_corp(GameState state, int corp_id) noexcept:
     """
     Auto-process a receivership corporation.
@@ -176,8 +207,9 @@ cdef void _transition_out_of_issue(GameState state) noexcept:
 
     Transitions to IPO phase for player-owned companies to form corporations.
     """
-    # Clear issue corp
+    # Clear issue corp and impact scalars
     turn_module.TURN.clear_issue_corp(state)
+    turn_module.TURN.clear_issue_impact(state)
     state.clear_active_corp()
 
     # Transition to IPO phase
@@ -214,6 +246,7 @@ cdef void _advance_to_next_corp(GameState state) noexcept:
         # Set up for player decision
         turn_module.TURN.set_issue_corp(state, corp_id)
         state.set_active_corp(corp_id)
+        _populate_issue_impact(state, corp_id)
         president_id = corp_module.CORPS[corp_id].get_president_id(state)
         state._set_active_player(president_id)
         return

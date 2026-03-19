@@ -1,7 +1,7 @@
 """Tests for ISSUE_SHARES phase (Phase 8)."""
 import pytest
 from core.state import get_layout
-from core.data import GamePhases, CorpIndices, get_market_price
+from core.data import GamePhases, CorpIndices, get_market_price, PY_PRICE_DIVISOR, PY_IMPACT_DIVISOR
 from core.actions import get_valid_action_mask, get_action_layout
 from entities.turn import TURN
 from entities.player import PLAYERS
@@ -714,3 +714,97 @@ class TestActiveCorpIssue:
                 assert issue_state._array[info_base + i] == 0.0, (
                     f"active_corp_info[{i}] not cleared after issue transition"
                 )
+
+
+# =============================================================================
+# Issue Impact Scalars
+# =============================================================================
+
+
+class TestIssueImpactScalars:
+    """Test issue_price_impact and issue_cash_gain context-dependent scalars."""
+
+    def test_zero_on_game_init(self):
+        """Impact scalars should be zero after game initialization."""
+        from core.state import GameState
+        state = GameState(3)
+        state.initialize_game(seed=42)
+
+        assert TURN.get_issue_price_impact(state) == 0.0
+        assert TURN.get_issue_cash_gain(state) == 0.0
+
+    def test_populated_on_issue_setup(self, issue_state_with_corp):
+        """Impact scalars set when corp is presented for issue decision."""
+        state = issue_state_with_corp
+        setup_issue_phase_py(state)
+
+        # Corp 0 at index 15 ($24), next lower should be index 14 ($22)
+        # Impact = 14 - 15 = -1, cash gain = $22
+        assert TURN.get_phase(state) == GamePhases.PHASE_ISSUE_SHARES
+        impact = TURN.get_issue_price_impact(state)
+        cash_gain = TURN.get_issue_cash_gain(state)
+
+        assert abs(impact - (-1.0 / PY_IMPACT_DIVISOR)) < 1e-6, (
+            f"Expected impact -1/5 = -0.2, got {impact}"
+        )
+        assert abs(cash_gain - (22.0 / PY_PRICE_DIVISOR)) < 1e-6, (
+            f"Expected cash_gain 22/40 = 0.55, got {cash_gain}"
+        )
+
+    def test_cleared_after_transition_out(self, issue_state_with_corp):
+        """Impact scalars zeroed when transitioning out of ISSUE phase."""
+        state = issue_state_with_corp
+        setup_issue_phase_py(state)
+
+        # Pass on issue — should transition out since only one corp
+        apply_issue_action_py(state, issue=False)
+
+        assert TURN.get_issue_price_impact(state) == 0.0
+        assert TURN.get_issue_cash_gain(state) == 0.0
+
+    def test_stock_masters_zero_impact(self, game_state):
+        """Stock Masters (CORP_SM) has zero price impact."""
+        state = game_state
+        # Float SM (corp 3) at price index 15 ($24)
+        float_corp_for_test(state, corp_id=3, par_index=15, float_shares=2)
+        CORPS[3].set_cash(state, 50)
+        TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
+        setup_issue_phase_py(state)
+
+        # SM should be presented (highest price)
+        assert TURN.get_issue_corp(state) == 3
+
+        impact = TURN.get_issue_price_impact(state)
+        cash_gain = TURN.get_issue_cash_gain(state)
+
+        # SM: no price change, receives current price ($24)
+        assert impact == 0.0, f"SM impact should be 0, got {impact}"
+        assert abs(cash_gain - (24.0 / PY_PRICE_DIVISOR)) < 1e-6, (
+            f"SM cash_gain should be 24/40 = 0.60, got {cash_gain}"
+        )
+
+    def test_impact_with_occupied_space_slide(self, game_state):
+        """Impact reflects sliding past occupied market spaces."""
+        state = game_state
+        # Float two corps: corp 0 at index 14, corp 1 at index 15
+        float_corp_for_test(state, corp_id=0, par_index=14, float_shares=2)
+        float_corp_for_test(state, corp_id=1, par_index=15, float_shares=2)
+        CORPS[1].set_cash(state, 50)
+
+        # Corp 1 at index 15 would normally go to 14, but 14 is occupied
+        # So it slides to 13
+        TURN.set_phase(state, GamePhases.PHASE_ISSUE_SHARES)
+        setup_issue_phase_py(state)
+
+        # Corp 1 has higher price, should be presented first
+        assert TURN.get_issue_corp(state) == 1
+
+        impact = TURN.get_issue_price_impact(state)
+        cash_gain = TURN.get_issue_cash_gain(state)
+
+        # Slides from 15 to 13 (skipping occupied 14): impact = -2
+        assert abs(impact - (-2.0 / PY_IMPACT_DIVISOR)) < 1e-6, (
+            f"Expected impact -2/5 = -0.4, got {impact}"
+        )
+        expected_price = get_market_price(13)  # $20
+        assert abs(cash_gain - (expected_price / PY_PRICE_DIVISOR)) < 1e-6
