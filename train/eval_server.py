@@ -248,9 +248,10 @@ class EvaluationServer:
         another's data transfer.  Stream-local synchronize() replaces the
         device-wide torch.cuda.synchronize() to avoid cross-stream blocking.
 
-        A shared gather lock serializes the queue-drain phase so only one
-        server builds a batch at a time, preventing fragmentation where two
-        servers each grab half the pending requests.
+        A shared gather lock serializes the ``get_nowait()`` drain so only
+        one server sweeps the queue at a time.  The blocking ``get()`` that
+        waits for the first request is deliberately OUTSIDE the lock so an
+        idle server never blocks the other from processing.
         """
         bufs = self._shared_bufs
         stats = self._stats
@@ -280,18 +281,21 @@ class EvaluationServer:
             if stats is not None:
                 _tp = perf_counter()
 
-            # --- Gather phase (serialized by lock to prevent batch fragmentation) ---
+            # Block for first request WITHOUT the lock — an idle server
+            # must never hold the lock during its 10ms poll timeout, or it
+            # blocks the other server from processing accumulated requests.
+            try:
+                first: tuple[int, int] = req_q.get(timeout=0.01)
+            except _queue.Empty:
+                if stats is not None:
+                    stats.record_idle(perf_counter() - _tp)
+                continue
+
+            # Drain additional requests under the lock so one server sweeps
+            # the full queue without the other server fragmenting the batch.
             if gather_lock is not None:
                 gather_lock.acquire()
             try:
-                # Block for first request (with timeout to check stop flag)
-                try:
-                    first: tuple[int, int] = req_q.get(timeout=0.01)
-                except _queue.Empty:
-                    if stats is not None:
-                        stats.record_idle(perf_counter() - _tp)
-                    continue
-                # Drain queue greedily to build a larger batch
                 batch_info: list[tuple[int, int]] = [first]
                 while len(batch_info) < max_batch:
                     try:

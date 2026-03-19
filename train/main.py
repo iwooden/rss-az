@@ -435,10 +435,12 @@ def main() -> None:
         )
 
         # Spawn M eval server threads (each gets its own CUDA stream +
-        # pinned/GPU buffers).  A shared gather lock serializes queue
-        # draining so one server builds a maximal batch while the other
-        # is on the GPU — true double-buffering.
-        gather_lock = threading.Lock()
+        # pinned/GPU buffers).  A shared gather lock serializes the
+        # get_nowait() drain so one server sweeps the full queue while
+        # the other is on the GPU.  Only needed for >1 server.
+        gather_lock = (
+            threading.Lock() if config.num_eval_servers > 1 else None
+        )
         for i in range(config.num_eval_servers):
             server = EvaluationServer(
                 model, device, shared_bufs, request_queue, worker_events,
