@@ -23,6 +23,8 @@ cdef struct StateLayout:
     int corps_size
     int turn_size
     int auction_slot_info_size
+    int invest_impacts_size
+    int invest_impacts_offset
     int visible_size
     int hidden_size
     int total_size
@@ -218,6 +220,10 @@ cdef class GameState:
 
     # Auction slot info
     cpdef void _populate_auction_slot_info(self)
+
+    # Invest phase impacts
+    cpdef void _populate_invest_impacts(self)
+    cpdef void _clear_invest_impacts(self)
 
     # Active company contextual info
     cpdef void set_active_company(self, int company_id)

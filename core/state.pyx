@@ -37,6 +37,7 @@ from core.data cimport (
     get_company_face_value,
     get_company_low_price,
     get_company_high_price,
+    get_market_price,
 )
 
 LayoutInfo = namedtuple('LayoutInfo', [
@@ -44,7 +45,7 @@ LayoutInfo = namedtuple('LayoutInfo', [
     'visible_size', 'hidden_size', 'total_size',
     'player_stride', 'players_size', 'fi_size',
     'corp_stride', 'corps_size', 'turn_size',
-    'auction_slot_info_size', 'phase_size', 'coo_size',
+    'auction_slot_info_size', 'invest_impacts_size', 'phase_size', 'coo_size',
     'companies_size', 'company_incomes_size', 'market_size',
     # Visible offsets
     'phase_offset', 'coo_offset', 'players_offset', 'fi_offset',
@@ -52,6 +53,7 @@ LayoutInfo = namedtuple('LayoutInfo', [
     'removed_companies_offset', 'company_incomes_offset',
     'market_offset', 'corps_offset', 'turn_offset',
     'auction_slot_info_offset',
+    'invest_impacts_offset',
     # Per-player turn field offsets (absolute, for rotation)
     'auction_high_bidder_offset', 'auction_starter_offset',
     'auction_passed_offset',
@@ -212,6 +214,11 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     layout.auction_slot_info_size = 5 * num_players
     layout.auction_slot_info_offset = offset
     offset += layout.auction_slot_info_size
+
+    # Invest phase impacts (8 buy + 8 sell = 16 floats)
+    layout.invest_impacts_size = 2 * GameConstants.NUM_CORPS
+    layout.invest_impacts_offset = offset
+    offset += layout.invest_impacts_size
 
     layout.visible_size = offset
 
@@ -424,6 +431,7 @@ def get_layout(int num_players):
         corps_size=layout.corps_size,
         turn_size=layout.turn_size,
         auction_slot_info_size=layout.auction_slot_info_size,
+        invest_impacts_size=layout.invest_impacts_size,
         phase_size=layout.phase_size,
         coo_size=layout.coo_size,
         companies_size=layout.companies_size,
@@ -441,6 +449,7 @@ def get_layout(int num_players):
         corps_offset=layout.corps_offset,
         turn_offset=layout.turn_offset,
         auction_slot_info_offset=layout.auction_slot_info_offset,
+        invest_impacts_offset=layout.invest_impacts_offset,
         auction_high_bidder_offset=layout.turn_offset + turn.auction_high_bidder,
         auction_starter_offset=layout.turn_offset + turn.auction_starter,
         auction_passed_offset=layout.turn_offset + turn.auction_passed,
@@ -957,6 +966,67 @@ cdef class GameState:
                 self._data[base + 4] = 0.0
 
     # =========================================================================
+    # INVEST PHASE IMPACTS
+    # =========================================================================
+
+    cpdef void _populate_invest_impacts(self):
+        """
+        Compute buy/sell net worth impact for the active player for each corp.
+
+        Layout: [buy_impact_0..buy_impact_7, sell_impact_0..sell_impact_7]
+        Each normalized by CASH_DIVISOR.
+
+        Net worth delta from buying or selling one share:
+          delta = current_shares * (new_price - old_price)
+
+        Buy: new_price = price at next higher available market space
+        Sell: new_price = price at next lower available market space
+
+        Invalid actions (no bank shares, can't afford, no player shares) → 0.
+        """
+        cdef int corp_id, player_id, shares, current_index, new_index
+        cdef int old_price, new_price, impact, buy_base, sell_base
+        cdef int player_cash
+
+        player_id = self._get_active_player()
+        player_cash = player_module.PLAYERS[player_id].get_cash(self)
+        buy_base = self._layout.invest_impacts_offset
+        sell_base = buy_base + <int>GameConstants.NUM_CORPS
+
+        for corp_id in range(<int>GameConstants.NUM_CORPS):
+            self._data[buy_base + corp_id] = 0.0
+            self._data[sell_base + corp_id] = 0.0
+
+            if not corp_module.CORPS[corp_id].is_active(self):
+                continue
+
+            current_index = corp_module.CORPS[corp_id].get_price_index(self)
+            old_price = get_market_price(current_index)
+            shares = player_module.PLAYERS[player_id].get_shares(self, corp_id)
+
+            # Buy impact: need bank shares available and player can afford
+            if corp_module.CORPS[corp_id].get_bank_shares(self) > 0:
+                new_index = market_module.MARKET.find_next_higher_space(self, current_index)
+                new_price = get_market_price(new_index)
+                if player_cash >= new_price:
+                    impact = shares * (new_price - old_price)
+                    self._data[buy_base + corp_id] = <float>impact / CASH_DIVISOR
+
+            # Sell impact: need player to own shares
+            if shares > 0:
+                new_index = market_module.MARKET.find_next_lower_space(self, current_index)
+                new_price = get_market_price(new_index)
+                impact = shares * (new_price - old_price)
+                self._data[sell_base + corp_id] = <float>impact / CASH_DIVISOR
+
+    cpdef void _clear_invest_impacts(self):
+        """Zero all invest impact slots."""
+        cdef int i
+        cdef int base = self._layout.invest_impacts_offset
+        for i in range(self._layout.invest_impacts_size):
+            self._data[base + i] = 0.0
+
+    # =========================================================================
     # ACTIVE COMPANY CONTEXTUAL INFO
     # =========================================================================
 
@@ -1133,3 +1203,6 @@ cdef class GameState:
 
         # Set active player
         self._set_active_player(0)
+
+        # 12. Populate invest impacts for first player
+        self._populate_invest_impacts()

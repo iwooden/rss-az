@@ -172,6 +172,9 @@ cdef void _transition_out_of_ipo(GameState state) noexcept:
     # Transition to INVEST phase (start new turn)
     turn_module.TURN.set_phase(state, PHASE_INVEST)
 
+    # Compute buy/sell impacts for the first player
+    state._populate_invest_impacts()
+
 
 cdef void _advance_to_next_company(GameState state) noexcept:
     """

@@ -51,6 +51,7 @@ cdef float CASH_DIVISOR
 cdef float SHARE_DIVISOR
 cdef float STAR_DIVISOR
 cdef float MAX_ROUNDTRIPS
+cdef float IMPACT_DIVISOR
 
 # Company data arrays
 cdef int[36] COMPANY_FACE_VALUE

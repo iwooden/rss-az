@@ -18,12 +18,14 @@ cdef float CASH_DIVISOR = 100.0
 cdef float SHARE_DIVISOR = 7.0
 cdef float STAR_DIVISOR = 20.0
 cdef float MAX_ROUNDTRIPS = 2.0
+cdef float IMPACT_DIVISOR = 5.0
 
 # Python-accessible versions
 PY_CASH_DIVISOR = CASH_DIVISOR
 PY_SHARE_DIVISOR = SHARE_DIVISOR
 PY_STAR_DIVISOR = STAR_DIVISOR
 PY_MAX_ROUNDTRIPS = MAX_ROUNDTRIPS
+PY_IMPACT_DIVISOR = IMPACT_DIVISOR
 
 # =============================================================================
 # COMPANY DATA

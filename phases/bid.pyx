@@ -66,6 +66,9 @@ cdef void _resolve_auction(GameState state) noexcept:
     # Next player after starter (BID-11)
     turn_module.TURN.set_active_player_after(state, starter_id)
 
+    # Compute buy/sell impacts for the new active player
+    state._populate_invest_impacts()
+
 
 # =============================================================================
 # MAIN PHASE HANDLER

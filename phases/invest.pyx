@@ -25,12 +25,13 @@ from core.data import CORP_NAMES
 # _recalculate_presidency() for the implementation.
 
 cdef void _advance_active_player(GameState state) noexcept:
-    """Advance to next player in turn order."""
+    """Advance to next player in turn order and recompute invest impacts."""
     cdef int current_player = state._get_active_player()
     cdef int current_position = player_module.PLAYERS[current_player].get_turn_order(state)
     cdef int next_position = (current_position + 1) % state._num_players
     cdef int next_player = turn_module.TURN.find_player_at_position(state, next_position)
     state._set_active_player(next_player)
+    state._populate_invest_impacts()
 
 
 cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
@@ -90,6 +91,7 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
 
     # Check for $75 game end - immediate after buy completes (RULES.md line 346)
     if new_index == 26:
+        state._clear_invest_impacts()
         turn_module.TURN.set_phase(state, PHASE_GAME_OVER)
         return
 
@@ -188,6 +190,7 @@ cdef int apply_invest_action(GameState state, ActionInfo* info) noexcept:
                 player_module.PLAYERS[i].clear_roundtrip_tracking(state)
 
             # All players passed - transition to WRAP_UP phase
+            state._clear_invest_impacts()
             turn_module.TURN.set_phase(state, PHASE_WRAP_UP)
         else:
             # Advance to next player in turn order
@@ -223,6 +226,7 @@ cdef int apply_invest_action(GameState state, ActionInfo* info) noexcept:
         turn_module.TURN.clear_consecutive_passes(state)
 
         # Transition to BID_IN_AUCTION phase
+        state._clear_invest_impacts()
         turn_module.TURN.set_phase(state, PHASE_BID_IN_AUCTION)
 
         # Advance to next bidder (skipping passed players)

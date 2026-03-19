@@ -139,6 +139,7 @@ cdef class TurnState:
 
     cpdef int get_dividend_impact(self, GameState state, int level)
     cpdef void set_dividend_impact(self, GameState state, int level, int impact)
+    cpdef void clear_dividend_impacts(self, GameState state)
 
     cpdef bint is_dividend_remaining(self, GameState state, int corp_id)
     cpdef void set_dividend_remaining(self, GameState state, int corp_id, bint remaining)

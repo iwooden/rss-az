@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | 1473         | 1184        | 2657       |
-| 3       | 1559         | 1184        | 2743       |
-| 4       | 1647         | 1184        | 2831       |
-| 5       | 1737         | 1184        | 2921       |
-| 6       | 1829         | 1184        | 3013       |
+| 2       | 1489         | 1184        | 2673       |
+| 3       | 1575         | 1184        | 2759       |
+| 4       | 1663         | 1184        | 2847       |
+| 5       | 1753         | 1184        | 2937       |
+| 6       | 1845         | 1184        | 3029       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 
@@ -33,6 +33,7 @@ Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact 
 | `SHARE_DIVISOR` | 7.0 | Share counts |
 | `STAR_DIVISOR` | 20.0 | Star ratings |
 | `MAX_ROUNDTRIPS` | 2.0 | Round-trip limit (divisor = MAX_ROUNDTRIPS * 2 = 4.0) |
+| `IMPACT_DIVISOR` | 5.0 | Dividend price index deltas |
 
 ### Context-Dependent Fields
 
@@ -54,6 +55,8 @@ Many fields in the visible state are only meaningful during specific game phases
 | `dividend_remaining` | flags | DIVIDENDS |
 | `issue_remaining` | flags | ISSUE |
 | `ipo_remaining` | flags | IPO |
+| `invest_buy_impact` | values | INVEST |
+| `invest_sell_impact` | values | INVEST |
 | `acq_is_fi_offer` | flag | ACQUISITION |
 | `acq_synergy_values` | values | ACQUISITION |
 | `active_company` | one-hot | BID, ACQ, CLOSING, IPO |
@@ -212,7 +215,7 @@ Size varies with player count: `208 + (3 * num_players)`
 | `auction_starter` | num_players | one-hot | 0 when no auction |
 | `auction_passed` | num_players | flags | Player left auction. 0 when no auction |
 | **Dividends:** | | | |
-| `dividend_impact` | 26 | values | Price impact per level |
+| `dividend_impact` | 26 | normalized | Price index delta per dividend level / IMPACT_DIVISOR. 0 for invalid levels |
 | `dividend_remaining` | 8 | flags | Corps left to process |
 | **Issue:** | | | |
 | `issue_remaining` | 8 | flags | Corps left to process |
@@ -243,6 +246,17 @@ Per slot (5 floats, ordered by auction slot index):
 | `income` | 1 | normalized | Adjusted income / CASH_DIVISOR (reflects current CoO) |
 
 Updated when auction row changes (init, auction resolution, WRAP_UP). Empty slots are zero-filled.
+
+### Invest Impacts (16)
+
+Net worth impact of buying/selling each corp's share for the active player. Context-dependent: zeroed outside INVEST phase.
+
+| Field | Size | Encoding | Notes |
+|-------|------|----------|-------|
+| `buy_impact` | 8 | normalized | `shares * (new_price - old_price) / CASH_DIVISOR` per corp. 0 for invalid buys |
+| `sell_impact` | 8 | normalized | `shares * (new_price - old_price) / CASH_DIVISOR` per corp. 0 for invalid sells |
+
+Recomputed on active player change during INVEST. Buy uses next higher market space, sell uses next lower.
 
 ---
 

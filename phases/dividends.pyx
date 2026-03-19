@@ -24,9 +24,9 @@ Action space: 26 actions (dividend amounts 0-25 per share)
 
 from core.state cimport GameState
 from core.data cimport (
-    GameConstants, GamePhases,
+    GameConstants, GamePhases, CorpIndices,
     PHASE_END_CARD,
-    get_required_stars, MARKET_PRICES
+    get_required_stars, get_max_dividend, MARKET_PRICES
 )
 from core.actions cimport ActionInfo, ACTION_DIVIDEND
 from entities import turn as turn_module
@@ -255,13 +255,63 @@ cdef void _process_receivership_corp(GameState state, int corp_id) noexcept:
     turn_module.TURN.set_dividend_remaining(state, corp_id, False)
 
 
+cdef void _compute_dividend_impacts(GameState state, int corp_id) noexcept:
+    """
+    Precompute price index impact for each valid dividend level.
+
+    For each level 0..max_dividend, simulates:
+    1. New corp cash after paying level * issued_shares
+    2. New cash stars from reduced cash
+    3. New total stars → price move → target index via _find_target_index
+    4. Stores (target_index - current_index) normalized by IMPACT_DIVISOR
+
+    Invalid levels (beyond what the corp can pay) are left at 0.0.
+    """
+    cdef int current_index = corp_module.CORPS[corp_id].get_price_index(state)
+    cdef int issued_shares = corp_module.CORPS[corp_id].get_issued_shares(state)
+    cdef int corp_cash = corp_module.CORPS[corp_id].get_cash(state)
+    cdef int current_stars = corp_module.CORPS[corp_id].get_stars(state)
+    cdef int required_stars = get_required_stars(current_index, issued_shares)
+
+    # Decompose current stars into non-cash component
+    cdef int current_cash_stars = corp_cash // 10 if corp_cash > 0 else 0
+    cdef int si_bonus = 2 if corp_id == <int>CorpIndices.CORP_SI else 0
+    cdef int base_stars = current_stars - current_cash_stars - si_bonus
+
+    # Compute max valid dividend level (same logic as action mask)
+    cdef int card_max = get_max_dividend(current_index)
+    cdef int afford_max
+    if issued_shares > 0:
+        afford_max = corp_cash // issued_shares
+    else:
+        afford_max = 0
+    cdef int max_div = card_max if card_max < afford_max else afford_max
+    if max_div >= <int>GameConstants.MAX_DIVIDEND:
+        max_div = <int>GameConstants.MAX_DIVIDEND - 1
+
+    cdef int level, new_cash, new_cash_stars, new_total_stars, move, target_index, impact
+
+    # Clear all slots first (invalid levels stay at 0.0)
+    turn_module.TURN.clear_dividend_impacts(state)
+
+    for level in range(max_div + 1):
+        new_cash = corp_cash - (level * issued_shares)
+        new_cash_stars = new_cash // 10 if new_cash > 0 else 0
+        new_total_stars = base_stars + new_cash_stars + si_bonus
+        move = _calculate_price_move(new_total_stars, required_stars)
+        target_index = _find_target_index(state, current_index, move)
+        impact = target_index - current_index
+        turn_module.TURN.set_dividend_impact(state, level, impact)
+
+
 cdef void _transition_out_of_dividends(GameState state) noexcept:
     """
     Transition out of DIVIDENDS phase.
 
     Always transitions to END_CARD - let it handle game-over checks.
     """
-    # Clear dividend corp
+    # Clear dividend impact and corp
+    turn_module.TURN.clear_dividend_impacts(state)
     turn_module.TURN.clear_dividend_corp(state)
     state.clear_active_corp()
 
@@ -298,6 +348,7 @@ cdef void _advance_to_next_corp(GameState state) noexcept:
         # Set up for player decision
         turn_module.TURN.set_dividend_corp(state, corp_id)
         state.set_active_corp(corp_id)
+        _compute_dividend_impacts(state, corp_id)
         president_id = corp_module.CORPS[corp_id].get_president_id(state)
         state._set_active_player(president_id)
         return
@@ -401,3 +452,8 @@ def calculate_price_move_py(int owned_stars, int required_stars):
 def find_target_index_py(GameState state, int current_index, int move):
     """Python wrapper for _find_target_index."""
     return _find_target_index(state, current_index, move)
+
+
+def compute_dividend_impacts_py(GameState state, int corp_id):
+    """Python wrapper for _compute_dividend_impacts."""
+    _compute_dividend_impacts(state, corp_id)

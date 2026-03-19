@@ -10,7 +10,7 @@ Provides clean getter/setter access to turn-specific state including:
 
 from core.state cimport GameState, StateLayout, TurnStateOffsets
 from libc.math cimport lround
-from core.data cimport GameConstants, GamePhases, CASH_DIVISOR, get_adjusted_company_income, COMPANY_SYNERGY
+from core.data cimport GameConstants, GamePhases, CASH_DIVISOR, IMPACT_DIVISOR, get_adjusted_company_income, COMPANY_SYNERGY
 from entities import player as player_module
 from entities import company as company_module
 from entities import corp as corp_module
@@ -432,15 +432,21 @@ cdef class TurnState:
         )
 
     cpdef int get_dividend_impact(self, GameState state, int level):
-        """Get dividend impact at given level (0-25)."""
+        """Get dividend impact at given level (0-25). Returns denormalized index delta."""
         if level < 0 or level >= GameConstants.MAX_DIVIDEND:
             return 0
-        return <int>lround(state._data[self._dividend_impact_offset + level])
+        return <int>lround(state._data[self._dividend_impact_offset + level] * IMPACT_DIVISOR)
 
     cpdef void set_dividend_impact(self, GameState state, int level, int impact):
-        """Set dividend impact at given level."""
+        """Set dividend impact at given level. Normalizes by IMPACT_DIVISOR for NN."""
         if level >= 0 and level < GameConstants.MAX_DIVIDEND:
-            state._data[self._dividend_impact_offset + level] = <float>impact
+            state._data[self._dividend_impact_offset + level] = <float>impact / IMPACT_DIVISOR
+
+    cpdef void clear_dividend_impacts(self, GameState state):
+        """Zero all 26 dividend impact slots."""
+        cdef int i
+        for i in range(<int>GameConstants.MAX_DIVIDEND):
+            state._data[self._dividend_impact_offset + i] = 0.0
 
     cpdef bint is_dividend_remaining(self, GameState state, int corp_id):
         """Check if corp still needs dividend processing."""

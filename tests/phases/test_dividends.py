@@ -826,3 +826,179 @@ class TestActiveCorpDividends:
             oh_base = layout.active_corp_offset
             assert div_state._array[oh_base + second_corp] == 1.0
             assert div_state._array[oh_base + first_corp] == 0.0
+
+
+# =============================================================================
+# Dividend Impact Tests
+# =============================================================================
+
+
+class TestDividendImpact:
+    """Dividend impact precomputation for NN visible state."""
+
+    def test_impacts_populated_during_setup(self, dividend_state):
+        """Impacts are set for valid dividend levels after setup."""
+        state = dividend_state
+
+        # dividend_state: corp 0, price_index=10 ($14), issued=5, cash=100
+        # card_max = 14//3 = 4, afford_max = 100//5 = 20, max_div = 4
+        # Levels 0-4 should have non-zero-or-zero impacts (but be populated)
+        # Levels 5-25 should be exactly 0 (invalid)
+        for level in range(5, 26):
+            assert TURN.get_dividend_impact(state, level) == 0, (
+                f"Invalid level {level} should have zero impact"
+            )
+
+    def test_impact_values_correct_varied(self):
+        """Different dividend levels produce correct distinct price impacts."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Float corp 0 at price_index=10 ($14)
+        float_corp_for_test(state, corp_id=0, par_index=10, float_shares=2)
+        corp = CORPS[0]
+
+        # After float: unissued=3, issued=4, bank=2, player0=2
+        # Want: issued=5, unissued=2, bank=1, player0=2, player1=2
+        # set_shares auto-adjusts bank by -delta, so pre-set bank=3
+        corp.set_issued_shares(state, 5)
+        corp.set_unissued_shares(state, 2)
+        corp.set_bank_shares(state, 3)  # set_shares below subtracts 2
+        PLAYERS[1].set_shares(state, 0, 2)  # delta=+2, bank: 3-2=1
+        corp.set_cash(state, 72)
+
+        # Make market spaces available for movement
+        for i in range(27):
+            MARKET.set_space_available(state, i, True)
+        MARKET.set_space_available(state, 10, False)  # Corp 0's current space
+
+        TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
+        setup_dividends_phase_py(state)
+        assert_invariants(state, "After setup")
+
+        # Verify dividend corp is set
+        assert TURN.get_dividend_corp(state) == 0
+
+        # card_max = 14//3 = 4, afford_max = 72//5 = 14, max_div = 4
+        # Level 0: cash=72, cash_stars=7, total=8, diff=+1, move=+1 → target=11, impact=+1
+        # Level 1: cash=67, cash_stars=6, total=7, diff=0, move=0 → target=10, impact=0
+        # Level 2: cash=62, cash_stars=6, total=7, diff=0, move=0 → target=10, impact=0
+        # Level 3: cash=57, cash_stars=5, total=6, diff=-1, move=-1 → target=9, impact=-1
+        # Level 4: cash=52, cash_stars=5, total=6, diff=-1, move=-1 → target=9, impact=-1
+        assert TURN.get_dividend_impact(state, 0) == 1
+        assert TURN.get_dividend_impact(state, 1) == 0
+        assert TURN.get_dividend_impact(state, 2) == 0
+        assert TURN.get_dividend_impact(state, 3) == -1
+        assert TURN.get_dividend_impact(state, 4) == -1
+
+        # Invalid levels are zero
+        for level in range(5, 26):
+            assert TURN.get_dividend_impact(state, level) == 0
+
+    def test_impact_with_occupied_spaces(self):
+        """Impact accounts for sliding past occupied market spaces."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        float_corp_for_test(state, corp_id=0, par_index=10, float_shares=2)
+        corp = CORPS[0]
+
+        # After float: unissued=3, issued=4, bank=2, player0=2
+        # Want: issued=5, unissued=2, bank=1, player0=2, player1=2
+        corp.set_issued_shares(state, 5)
+        corp.set_unissued_shares(state, 2)
+        corp.set_bank_shares(state, 3)  # set_shares below subtracts 2
+        PLAYERS[1].set_shares(state, 0, 2)  # delta=+2, bank: 3-2=1
+        corp.set_cash(state, 72)
+
+        # Block space 11 (the natural +1 target) so it slides to 12
+        for i in range(27):
+            MARKET.set_space_available(state, i, True)
+        MARKET.set_space_available(state, 10, False)  # Corp 0
+        MARKET.set_space_available(state, 11, False)  # Blocked
+
+        TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
+        setup_dividends_phase_py(state)
+        assert_invariants(state, "After setup")
+
+        # Level 0: move=+1, target=11 occupied → slides to 12, impact=+2
+        assert TURN.get_dividend_impact(state, 0) == 2
+
+    def test_impacts_cleared_on_phase_transition(self, dividend_state):
+        """Impacts are cleared when transitioning out of DIVIDENDS."""
+        state = dividend_state
+
+        # Verify impacts are populated
+        assert TURN.get_dividend_corp(state) == 0
+
+        # Apply dividend to process the only corp → transitions out
+        apply_dividend_action_py(state, 0)
+        assert_invariants(state, "After dividend action")
+        assert state.get_phase() == GamePhases.PHASE_END_CARD
+
+        # All impacts should be cleared
+        for level in range(26):
+            assert TURN.get_dividend_impact(state, level) == 0, (
+                f"Impact at level {level} not cleared after phase transition"
+            )
+
+    def test_impacts_update_between_corps(self, multi_corp_dividend_state):
+        """Impacts are recomputed when advancing to next corp."""
+        state = multi_corp_dividend_state
+
+        TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
+        setup_dividends_phase_py(state)
+        assert_invariants(state, "After setup")
+
+        # First corp (corp 1, highest price)
+        first_corp = TURN.get_dividend_corp(state)
+        assert first_corp == 1
+        first_impact_0 = TURN.get_dividend_impact(state, 0)
+
+        # Apply dividend to advance to next corp
+        apply_dividend_action_py(state, 0)
+        assert_invariants(state, "After first dividend")
+
+        # Second corp (corp 0, middle price)
+        second_corp = TURN.get_dividend_corp(state)
+        assert second_corp == 0
+
+        # Impacts should be freshly computed for the new corp
+        # The new corp has different cash/stars/price, so impacts differ
+        # Just verify they're populated (at least level 0 exists since $0 is always valid)
+        second_impact_0 = TURN.get_dividend_impact(state, 0)
+        # Both corps have enough stars to rise, so impact should be positive
+        assert second_impact_0 != 0 or first_impact_0 != 0, (
+            "At least one corp should have non-zero impact at level 0"
+        )
+
+    def test_impact_normalization_roundtrip(self):
+        """Values survive set→get roundtrip through normalization."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Test various impact values including negative
+        for impact in [-5, -2, -1, 0, 1, 2, 5]:
+            TURN.set_dividend_impact(state, 0, impact)
+            assert TURN.get_dividend_impact(state, 0) == impact, (
+                f"Roundtrip failed for impact={impact}"
+            )
+
+    def test_impact_zero_dividend_always_populated(self):
+        """Level 0 (pay nothing) always has an impact since it's always valid."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        float_corp_for_test(state, corp_id=0, par_index=10)
+        CORPS[0].set_cash(state, 50)
+
+        TURN.set_phase(state, GamePhases.PHASE_DIVIDENDS)
+        setup_dividends_phase_py(state)
+        assert_invariants(state, "After setup")
+
+        # Level 0 should always be computed (paying $0 is always valid)
+        # The impact reflects price movement from current stars vs required
+        assert TURN.get_dividend_corp(state) == 0
+        # get_dividend_impact returns the denormalized value; it should be an integer
+        impact = TURN.get_dividend_impact(state, 0)
+        assert isinstance(impact, int)

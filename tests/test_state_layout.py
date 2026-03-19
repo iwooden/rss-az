@@ -25,11 +25,11 @@ class TestStateLayoutSizes:
     # Expected sizes - these MUST match VECTORS.md and CLAUDE.md
     # If these tests fail, update the documentation to match!
     EXPECTED_SIZES = {
-        2: {'visible': 1473, 'hidden': 1184, 'total': 2657},
-        3: {'visible': 1559, 'hidden': 1184, 'total': 2743},
-        4: {'visible': 1647, 'hidden': 1184, 'total': 2831},
-        5: {'visible': 1737, 'hidden': 1184, 'total': 2921},
-        6: {'visible': 1829, 'hidden': 1184, 'total': 3013},
+        2: {'visible': 1489, 'hidden': 1184, 'total': 2673},
+        3: {'visible': 1575, 'hidden': 1184, 'total': 2759},
+        4: {'visible': 1663, 'hidden': 1184, 'total': 2847},
+        5: {'visible': 1753, 'hidden': 1184, 'total': 2937},
+        6: {'visible': 1845, 'hidden': 1184, 'total': 3029},
     }
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
