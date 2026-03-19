@@ -7,7 +7,7 @@ from core.actions import get_valid_action_mask, get_action_layout
 from core.data import (
     GamePhases, CORP_NAMES, get_company_face_value,
     get_company_stars, get_company_low_price, get_company_high_price,
-    get_adjusted_company_income, PY_COMPANY_STAR_DIVISOR, PY_PRICE_DIVISOR, PY_INCOME_DIVISOR,
+    get_adjusted_company_income, PY_COMPANY_STAR_DIVISOR, PY_PRICE_DIVISOR, PY_IMPACT_DIVISOR, PY_INCOME_DIVISOR,
     GameConstants,
 )
 from entities.turn import TURN
@@ -993,26 +993,24 @@ class TestInvestImpacts:
         return state
 
     def test_buy_impact_computed(self, impact_state):
-        """Buy impact reflects net worth change from price appreciation."""
+        """Buy impact reflects price index steps up."""
         state = impact_state
         layout = get_layout(3)
         buy_base = layout.invest_impacts_offset
 
-        # Corp 0 at index 10 ($14), next higher is 11 ($16)
-        # Player 0 has 2 shares, buy impact = 2 * (16 - 14) = $4
-        # Stored normalized: 4 / 40.0 = 0.10
-        assert abs(state._array[buy_base + 0] - 4.0 / PY_PRICE_DIVISOR) < 1e-6
+        # Corp 0 at index 10, next higher is 11 → 1 step up
+        # Stored normalized: 1 / 5.0 = 0.2
+        assert abs(state._array[buy_base + 0] - 1.0 / PY_IMPACT_DIVISOR) < 1e-6
 
     def test_sell_impact_computed(self, impact_state):
-        """Sell impact reflects net worth change from price depreciation."""
+        """Sell impact reflects price index steps down."""
         state = impact_state
         layout = get_layout(3)
         sell_base = layout.invest_impacts_offset + 8  # After 8 buy slots
 
-        # Corp 0 at index 10 ($14), next lower is 9 ($13)
-        # Player 0 has 2 shares, sell impact = 2 * (13 - 14) = -$2
-        # Stored normalized: -2 / 40.0 = -0.05
-        assert abs(state._array[sell_base + 0] - (-2.0 / PY_PRICE_DIVISOR)) < 1e-6
+        # Corp 0 at index 10, next lower is 9 → 1 step down
+        # Stored normalized: -1 / 5.0 = -0.2
+        assert abs(state._array[sell_base + 0] - (-1.0 / PY_IMPACT_DIVISOR)) < 1e-6
 
     def test_inactive_corp_zero_impact(self, impact_state):
         """Inactive corps have zero buy and sell impact."""
@@ -1026,14 +1024,13 @@ class TestInvestImpacts:
             assert state._array[buy_base + corp_id] == 0.0
             assert state._array[sell_base + corp_id] == 0.0
 
-    def test_no_bank_shares_zero_buy_impact(self):
-        """Buy impact is zero when no bank shares available."""
+    def test_buy_impact_shown_without_bank_shares(self):
+        """Buy impact shown even when no bank shares available."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
         float_corp_for_test(state, corp_id=0, par_index=10, float_shares=2)
         # float gives bank=2, player0=2. Move all bank to player0:
-        # set_shares(0, 4) → delta=+2, bank=2-2=0
         PLAYERS[0].set_shares(state, 0, 4)
 
         PLAYERS[0].set_cash(state, 200)
@@ -1041,29 +1038,29 @@ class TestInvestImpacts:
 
         layout = get_layout(3)
         buy_base = layout.invest_impacts_offset
-        assert state._array[buy_base + 0] == 0.0  # No bank shares
+        # Still shows index delta even without bank shares
+        assert abs(state._array[buy_base + 0] - 1.0 / PY_IMPACT_DIVISOR) < 1e-6
 
-    def test_cant_afford_zero_buy_impact(self):
-        """Buy impact is zero when player can't afford the buy price."""
+    def test_buy_impact_shown_when_cant_afford(self):
+        """Buy impact shown even when player can't afford the buy price."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
         float_corp_for_test(state, corp_id=0, par_index=10, float_shares=2)
-        # Next higher space is 11 ($16), set player cash below that
         PLAYERS[0].set_cash(state, 15)
         state._populate_invest_impacts()
 
         layout = get_layout(3)
         buy_base = layout.invest_impacts_offset
-        assert state._array[buy_base + 0] == 0.0  # Can't afford
+        # Still shows index delta regardless of affordability
+        assert abs(state._array[buy_base + 0] - 1.0 / PY_IMPACT_DIVISOR) < 1e-6
 
-    def test_no_shares_zero_sell_impact(self):
-        """Sell impact is zero when player owns no shares of a corp."""
+    def test_sell_impact_shown_without_shares(self):
+        """Sell impact shown even when player owns no shares of a corp."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
         float_corp_for_test(state, corp_id=0, par_index=10, float_shares=2)
-        # Player 1 has no shares of corp 0
         # Advance active player to player 1 via pass action
         layout_dict = get_action_layout(3)
         apply_and_verify_all(state, layout_dict['pass_invest'])
@@ -1071,7 +1068,8 @@ class TestInvestImpacts:
 
         layout = get_layout(3)
         sell_base = layout.invest_impacts_offset + 8
-        assert state._array[sell_base + 0] == 0.0  # No shares to sell
+        # Still shows index delta regardless of share ownership
+        assert abs(state._array[sell_base + 0] - (-1.0 / PY_IMPACT_DIVISOR)) < 1e-6
 
     def test_impacts_cleared_outside_invest(self):
         """Impacts are zeroed when transitioning out of INVEST."""
@@ -1102,23 +1100,26 @@ class TestInvestImpacts:
         state.initialize_game(seed=42)
 
         float_corp_for_test(state, corp_id=0, par_index=10, float_shares=2)
-        # Player 0 has 2 shares, player 1 has 0 shares
         PLAYERS[0].set_cash(state, 200)
         state._populate_invest_impacts()
 
         layout = get_layout(3)
-        sell_base = layout.invest_impacts_offset + 8
+        buy_base = layout.invest_impacts_offset
+        sell_base = buy_base + 8
 
-        # Player 0 should have sell impact (owns shares)
+        # Player 0 should have impacts
+        assert state._array[buy_base + 0] != 0.0
         assert state._array[sell_base + 0] != 0.0
 
-        # Pass → next player (player 1, no shares of corp 0)
+        # Pass → next player (impacts are player-independent now,
+        # but verify recomputation still happens)
         layout_dict = get_action_layout(3)
         apply_and_verify_all(state, layout_dict['pass_invest'])
         assert state.get_active_player() == 1
 
-        # Player 1 should have zero sell impact (no shares)
-        assert state._array[sell_base + 0] == 0.0
+        # Player 1 still sees impacts (no longer gated on share ownership)
+        assert state._array[buy_base + 0] != 0.0
+        assert state._array[sell_base + 0] != 0.0
 
     def test_impacts_with_occupied_space_slide(self):
         """Buy impact accounts for sliding past occupied market spaces."""
@@ -1126,8 +1127,8 @@ class TestInvestImpacts:
         state.initialize_game(seed=42)
 
         float_corp_for_test(state, corp_id=0, par_index=10, float_shares=2)
-        # Corp 0 at index 10 ($14)
-        # Block index 11 so buy slides to 12 ($18)
+        # Corp 0 at index 10
+        # Block index 11 so buy slides to 12 (2 steps)
         for i in range(27):
             MARKET.set_space_available(state, i, True)
         MARKET.set_space_available(state, 10, False)  # Corp 0
@@ -1139,8 +1140,8 @@ class TestInvestImpacts:
         layout = get_layout(3)
         buy_base = layout.invest_impacts_offset
 
-        # Buy slides to index 12 ($18), impact = 2 * (18 - 14) = $8
-        assert abs(state._array[buy_base + 0] - 8.0 / PY_PRICE_DIVISOR) < 1e-6
+        # Buy slides to index 12 → 2 steps up
+        assert abs(state._array[buy_base + 0] - 2.0 / PY_IMPACT_DIVISOR) < 1e-6
 
     def test_impacts_populated_at_game_start(self):
         """Impacts are computed during initialize_game."""

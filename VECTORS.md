@@ -256,14 +256,14 @@ Updated when auction row changes (init, auction resolution, WRAP_UP). Empty slot
 
 ### Invest Impacts (16)
 
-Net worth impact of buying/selling each corp's share for the active player. Context-dependent: zeroed outside INVEST phase.
+Price index delta from buying/selling each corp's share. Context-dependent: zeroed outside INVEST phase.
 
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
-| `buy_impact` | 8 | normalized | `shares * (new_price - old_price) / PRICE_DIVISOR` per corp. 0 for invalid buys |
-| `sell_impact` | 8 | normalized | `shares * (new_price - old_price) / PRICE_DIVISOR` per corp. 0 for invalid sells |
+| `buy_impact` | 8 | normalized | `(new_index - current_index) / IMPACT_DIVISOR` per corp. Positive (price steps up). 0 for inactive corps |
+| `sell_impact` | 8 | normalized | `(new_index - current_index) / IMPACT_DIVISOR` per corp. Negative (price steps down). 0 for inactive corps |
 
-Recomputed on active player change during INVEST. Buy uses next higher market space, sell uses next lower.
+Shown for all active corps regardless of affordability or share ownership. Recomputed on active player change during INVEST. Buy uses next higher market space, sell uses next lower.
 
 ---
 

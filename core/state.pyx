@@ -24,6 +24,7 @@ from core.data cimport (
     GameConstants,
     GamePhases,
     CASH_DIVISOR,
+    IMPACT_DIVISOR,
     INCOME_DIVISOR,
     PRICE_DIVISOR,
     SHARE_DIVISOR,
@@ -979,25 +980,19 @@ cdef class GameState:
 
     cpdef void _populate_invest_impacts(self):
         """
-        Compute buy/sell net worth impact for the active player for each corp.
+        Compute price index delta from buying/selling each corp's share.
 
         Layout: [buy_impact_0..buy_impact_7, sell_impact_0..sell_impact_7]
-        Each normalized by PRICE_DIVISOR.
+        Each normalized by IMPACT_DIVISOR (5.0).
 
-        Net worth delta from buying or selling one share:
-          delta = current_shares * (new_price - old_price)
+        buy_impact[corp]  = (new_index - current_index) / IMPACT_DIVISOR  (positive)
+        sell_impact[corp] = (new_index - current_index) / IMPACT_DIVISOR  (negative)
 
-        Buy: new_price = price at next higher available market space
-        Sell: new_price = price at next lower available market space
-
-        Invalid actions (no bank shares, can't afford, no player shares) → 0.
+        Shown for all active corps regardless of affordability or share ownership.
+        Inactive corps remain 0.
         """
-        cdef int corp_id, player_id, shares, current_index, new_index
-        cdef int old_price, new_price, impact, buy_base, sell_base
-        cdef int player_cash
+        cdef int corp_id, current_index, new_index, buy_base, sell_base
 
-        player_id = self._get_active_player()
-        player_cash = player_module.PLAYERS[player_id].get_cash(self)
         buy_base = self._layout.invest_impacts_offset
         sell_base = buy_base + <int>GameConstants.NUM_CORPS
 
@@ -1009,23 +1004,14 @@ cdef class GameState:
                 continue
 
             current_index = corp_module.CORPS[corp_id].get_price_index(self)
-            old_price = get_market_price(current_index)
-            shares = player_module.PLAYERS[player_id].get_shares(self, corp_id)
 
-            # Buy impact: need bank shares available and player can afford
-            if corp_module.CORPS[corp_id].get_bank_shares(self) > 0:
-                new_index = market_module.MARKET.find_next_higher_space(self, current_index)
-                new_price = get_market_price(new_index)
-                if player_cash >= new_price:
-                    impact = shares * (new_price - old_price)
-                    self._data[buy_base + corp_id] = <float>impact / PRICE_DIVISOR
+            # Buy impact: price index steps up
+            new_index = market_module.MARKET.find_next_higher_space(self, current_index)
+            self._data[buy_base + corp_id] = <float>(new_index - current_index) / IMPACT_DIVISOR
 
-            # Sell impact: need player to own shares
-            if shares > 0:
-                new_index = market_module.MARKET.find_next_lower_space(self, current_index)
-                new_price = get_market_price(new_index)
-                impact = shares * (new_price - old_price)
-                self._data[sell_base + corp_id] = <float>impact / PRICE_DIVISOR
+            # Sell impact: price index steps down
+            new_index = market_module.MARKET.find_next_lower_space(self, current_index)
+            self._data[sell_base + corp_id] = <float>(new_index - current_index) / IMPACT_DIVISOR
 
     cpdef void _clear_invest_impacts(self):
         """Zero all invest impact slots."""

@@ -159,7 +159,7 @@ Static game constants:
 - **Normalization divisors:**
   - `CASH_DIVISOR = 100.0` (cash balances, net worth, acquisition proceeds)
   - `INCOME_DIVISOR = 10.0` (per-company incomes, synergy values)
-  - `PRICE_DIVISOR = 40.0` (company/share prices, entity incomes, buy/sell impacts)
+  - `PRICE_DIVISOR = 40.0` (company/share prices, entity incomes)
   - `SHARE_DIVISOR = 7.0` (share counts)
   - `COMPANY_STAR_DIVISOR = 5.0` (per-company star ratings)
   - `CORP_STAR_DIVISOR = 20.0` (corporation aggregate stars)
