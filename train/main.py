@@ -127,6 +127,19 @@ def _build_profile_scalars(
     scalars["profile/search_eval_secs"] = evl
     scalars["profile/search_backup_secs"] = bak
 
+    searches = sum(g.search.num_searches for g in game_profiles) / n
+    batches = sum(g.search.num_eval_batches for g in game_profiles) / n
+    leaves = sum(g.search.total_leaves for g in game_profiles) / n
+    scalars["profile/searches_per_game"] = searches
+    scalars["profile/eval_batches_per_game"] = batches
+    scalars["profile/leaves_per_game"] = leaves
+
+    cache_hits = sum(g.search.cache_hits for g in game_profiles) / n
+    scalars["profile/cache_hits_per_game"] = cache_hits
+    scalars["profile/cache_misses_per_game"] = leaves - cache_hits
+    if leaves > 0:
+        scalars["profile/cache_hit_rate_pct"] = cache_hits / leaves * 100
+
     clients = [g.eval_client for g in game_profiles if g.eval_client is not None]
     if clients:
         nc = len(clients)
