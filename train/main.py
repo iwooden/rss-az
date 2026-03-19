@@ -760,9 +760,9 @@ def main() -> None:
                 checkpoint_path=checkpoint_path,
             )
 
-        # --- Final checkpoint ---
+        # --- Final checkpoint (skip if we exited via graceful shutdown) ---
         final_cp = Path(config.checkpoint_dir) / f"checkpoint_epoch_{config.num_epochs:04d}.pt"
-        if not final_cp.exists():
+        if not shutdown_event.is_set() and not final_cp.exists():
             save_checkpoint(
                 final_cp,
                 config.num_epochs - 1,
