@@ -1153,3 +1153,221 @@ class TestInvestImpacts:
         buy_base = layout.invest_impacts_offset
         for i in range(16):
             assert state._array[buy_base + i] == 0.0
+
+
+# =============================================================================
+# ROUND-TRIP TRACKING (VISIBLE + HIDDEN STATE)
+# =============================================================================
+
+class TestRoundTripTracking:
+    """Test that visible round_trips and hidden share_buys/sells are filled correctly."""
+
+    def _get_visible_round_trips(self, state, player_id, corp_id):
+        """Read visible round_trips[corp_id] directly from the state array."""
+        layout = get_layout(3)
+        # round_trips is 10 positions from the end of the player stride
+        # (8 round_trips slots + 1 acquisition_proceeds + 1 income)
+        rt_rel = layout.player_stride - 10
+        offset = layout.players_offset + player_id * layout.player_stride + rt_rel + corp_id
+        return state._array[offset]
+
+    def test_visible_round_trips_zero_at_init(self):
+        """Visible round_trips are zero for all players/corps after init."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+        for p in range(3):
+            for c in range(8):
+                assert self._get_visible_round_trips(state, p, c) == 0.0
+
+    def test_hidden_buys_sells_zero_at_init(self):
+        """Hidden share_buys and share_sells are zero after init."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+        for p in range(3):
+            for c in range(8):
+                assert PLAYERS[p].get_share_buys(state, c) == 0
+                assert PLAYERS[p].get_share_sells(state, c) == 0
+
+    def test_buy_increments_hidden_buys_only(self):
+        """increment_share_buys updates hidden buys but not hidden sells."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        PLAYERS[0].increment_share_buys(state, 2)
+        assert PLAYERS[0].get_share_buys(state, 2) == 1
+        assert PLAYERS[0].get_share_sells(state, 2) == 0
+
+    def test_sell_increments_hidden_sells_only(self):
+        """increment_share_sells updates hidden sells but not hidden buys."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        PLAYERS[0].increment_share_sells(state, 2)
+        assert PLAYERS[0].get_share_sells(state, 2) == 1
+        assert PLAYERS[0].get_share_buys(state, 2) == 0
+
+    def test_visible_round_trips_zero_after_single_buy(self):
+        """A buy without a matching sell gives round_trips=0."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        PLAYERS[0].increment_share_buys(state, 0)
+        # min(1, 0) = 0
+        assert self._get_visible_round_trips(state, 0, 0) == 0.0
+
+    def test_visible_round_trips_after_buy_and_sell(self):
+        """A buy + sell gives round_trips = min(1,1)/MAX_ROUNDTRIPS = 0.5."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        PLAYERS[0].increment_share_buys(state, 0)
+        PLAYERS[0].increment_share_sells(state, 0)
+        # min(1, 1) = 1, normalized: 1 / 2.0 = 0.5
+        assert abs(self._get_visible_round_trips(state, 0, 0) - 0.5) < 1e-6
+
+    def test_visible_round_trips_after_two_roundtrips(self):
+        """Two buys + two sells gives round_trips = min(2,2)/MAX_ROUNDTRIPS = 1.0."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        for _ in range(2):
+            PLAYERS[0].increment_share_buys(state, 0)
+            PLAYERS[0].increment_share_sells(state, 0)
+        assert abs(self._get_visible_round_trips(state, 0, 0) - 1.0) < 1e-6
+
+    def test_visible_round_trips_asymmetric(self):
+        """3 buys + 1 sell gives round_trips = min(3,1)/MAX_ROUNDTRIPS = 0.5."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        for _ in range(3):
+            PLAYERS[0].increment_share_buys(state, 0)
+        PLAYERS[0].increment_share_sells(state, 0)
+        assert abs(self._get_visible_round_trips(state, 0, 0) - 0.5) < 1e-6
+
+    def test_per_corp_independence(self):
+        """Round trips for different corps are independent."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        PLAYERS[0].increment_share_buys(state, 0)
+        PLAYERS[0].increment_share_sells(state, 0)
+        PLAYERS[0].increment_share_buys(state, 3)
+
+        assert abs(self._get_visible_round_trips(state, 0, 0) - 0.5) < 1e-6  # 1 round-trip
+        assert self._get_visible_round_trips(state, 0, 3) == 0.0              # 1 buy, no sells
+        assert self._get_visible_round_trips(state, 0, 1) == 0.0              # untouched
+
+    def test_per_player_independence(self):
+        """Round trips for different players are independent."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        PLAYERS[0].increment_share_buys(state, 0)
+        PLAYERS[0].increment_share_sells(state, 0)
+        PLAYERS[1].increment_share_buys(state, 0)
+
+        assert abs(self._get_visible_round_trips(state, 0, 0) - 0.5) < 1e-6  # player 0: 1 rt
+        assert self._get_visible_round_trips(state, 1, 0) == 0.0              # player 1: buy only
+        assert PLAYERS[0].get_share_buys(state, 0) == 1
+        assert PLAYERS[1].get_share_buys(state, 0) == 1
+        assert PLAYERS[1].get_share_sells(state, 0) == 0
+
+    def test_clear_roundtrip_tracking_zeros_all(self):
+        """clear_roundtrip_tracking zeros hidden buys/sells AND visible round_trips."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Build up some tracking data across players and corps
+        for _ in range(2):
+            PLAYERS[0].increment_share_buys(state, 0)
+            PLAYERS[0].increment_share_sells(state, 0)
+        PLAYERS[1].increment_share_buys(state, 3)
+        PLAYERS[1].increment_share_sells(state, 3)
+
+        # Verify non-zero before clearing
+        assert PLAYERS[0].get_share_buys(state, 0) == 2
+        assert abs(self._get_visible_round_trips(state, 0, 0) - 1.0) < 1e-6
+        assert abs(self._get_visible_round_trips(state, 1, 3) - 0.5) < 1e-6
+
+        # Clear all players
+        for p in range(3):
+            PLAYERS[p].clear_roundtrip_tracking(state)
+
+        # Everything should be zero
+        for p in range(3):
+            for c in range(8):
+                assert PLAYERS[p].get_share_buys(state, c) == 0, f"p{p} c{c} buys not cleared"
+                assert PLAYERS[p].get_share_sells(state, c) == 0, f"p{p} c{c} sells not cleared"
+                assert self._get_visible_round_trips(state, p, c) == 0.0, f"p{p} c{c} visible rt not cleared"
+
+    def test_clear_only_affects_target_player(self):
+        """Clearing one player's tracking doesn't affect another's."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        PLAYERS[0].increment_share_buys(state, 0)
+        PLAYERS[0].increment_share_sells(state, 0)
+        PLAYERS[1].increment_share_buys(state, 0)
+        PLAYERS[1].increment_share_sells(state, 0)
+
+        PLAYERS[0].clear_roundtrip_tracking(state)
+
+        # Player 0 cleared
+        assert PLAYERS[0].get_share_buys(state, 0) == 0
+        assert PLAYERS[0].get_share_sells(state, 0) == 0
+        assert self._get_visible_round_trips(state, 0, 0) == 0.0
+        # Player 1 untouched
+        assert PLAYERS[1].get_share_buys(state, 0) == 1
+        assert PLAYERS[1].get_share_sells(state, 0) == 1
+        assert abs(self._get_visible_round_trips(state, 1, 0) - 0.5) < 1e-6
+
+    def test_buy_action_updates_hidden_buys(self, trade_state):
+        """Actual buy action through the driver increments hidden share_buys."""
+        player = PLAYERS[0]
+        layout = get_action_layout(3)
+        buy_idx = layout['buy_share_base'] + 0
+
+        assert player.get_share_buys(trade_state, 0) == 0
+        apply_and_verify_all(trade_state, buy_idx)
+
+        # Buy increments hidden buys; no sells yet so visible round_trips stays 0
+        assert player.get_share_buys(trade_state, 0) == 1
+        assert player.get_share_sells(trade_state, 0) == 0
+        assert self._get_visible_round_trips(trade_state, 0, 0) == 0.0
+
+    def test_sell_action_updates_hidden_sells(self, trade_state):
+        """Actual sell action through the driver increments hidden share_sells."""
+        player = PLAYERS[0]
+        layout = get_action_layout(3)
+        sell_idx = layout['sell_share_base'] + 0
+
+        assert player.get_share_sells(trade_state, 0) == 0
+        apply_and_verify_all(trade_state, sell_idx)
+
+        # Sell increments hidden sells; no buys yet so visible round_trips stays 0
+        assert player.get_share_sells(trade_state, 0) == 1
+        assert player.get_share_buys(trade_state, 0) == 0
+        assert self._get_visible_round_trips(trade_state, 0, 0) == 0.0
+
+    def test_buy_sell_via_driver_sets_visible_round_trips(self, trade_state):
+        """A buy + sell in the same INVEST phase produces nonzero visible round_trips.
+
+        Player 0 buys, players 1-2 pass (only corp 0 exists, they have no shares),
+        then player 0 sells. This is a complete round-trip through the driver.
+        """
+        player = PLAYERS[0]
+        layout = get_action_layout(3)
+
+        # Player 0 buys corp 0
+        apply_and_verify_all(trade_state, layout['buy_share_base'] + 0)
+        # Players 1 and 2 pass (no tradeable corps)
+        apply_and_verify_all(trade_state, layout['pass_invest'])
+        apply_and_verify_all(trade_state, layout['pass_invest'])
+        # Player 0 is active again — sell corp 0
+        assert trade_state.get_active_player() == 0
+        apply_and_verify_all(trade_state, layout['sell_share_base'] + 0)
+
+        assert player.get_share_buys(trade_state, 0) == 1
+        assert player.get_share_sells(trade_state, 0) == 1
+        assert abs(self._get_visible_round_trips(trade_state, 0, 0) - 0.5) < 1e-6
