@@ -33,7 +33,8 @@ Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact 
 | `INCOME_DIVISOR` | 10.0 | Per-company adjusted incomes, synergy values, active company income, auction slot income |
 | `PRICE_DIVISOR` | 40.0 | Company prices (face/low/high), share prices, auction price, entity incomes (player/corp/FI), buy/sell impacts |
 | `SHARE_DIVISOR` | 7.0 | Share counts |
-| `STAR_DIVISOR` | 20.0 | Star ratings |
+| `COMPANY_STAR_DIVISOR` | 5.0 | Per-company star ratings (1-5) |
+| `CORP_STAR_DIVISOR` | 20.0 | Corporation aggregate star totals |
 | `MAX_ROUNDTRIPS` | 2.0 | Round-trip limit (divisor = MAX_ROUNDTRIPS * 2 = 4.0) |
 | `IMPACT_DIVISOR` | 5.0 | Dividend price index deltas |
 
@@ -177,7 +178,7 @@ Corp stride = `10 + 27 + 36 + 36` = `109`
 | `issued_shares` | 1 | normalized | / SHARE_DIVISOR |
 | `bank_shares` | 1 | normalized | Issued but not player-owned |
 | `income` | 1 | normalized | Derived from companies / PRICE_DIVISOR |
-| `stars` | 1 | normalized | / STAR_DIVISOR |
+| `stars` | 1 | normalized | / CORP_STAR_DIVISOR |
 | `share_price` | 1 | normalized | / PRICE_DIVISOR |
 | `acquisition_proceeds` | 1 | normalized | Pending this phase |
 | `in_receivership` | 1 | flag | |
@@ -228,10 +229,10 @@ Size varies with player count: `208 + (3 * num_players)`
 | `acq_synergy_values` | 36 | normalized | Synergy income bonus per company / INCOME_DIVISOR, 0 if corp doesn't own |
 | **Active Company:** | | | |
 | `active_company` | 36 | one-hot | Company under consideration in BID, ACQ, CLOSING, IPO. 0 when inactive. |
-| `active_company_info` | 5 | normalized | stars/STAR_DIVISOR, low/face/high / PRICE_DIVISOR, income / INCOME_DIVISOR. 0 when inactive. |
+| `active_company_info` | 5 | normalized | stars/COMPANY_STAR_DIVISOR, low/face/high / PRICE_DIVISOR, income / INCOME_DIVISOR. 0 when inactive. |
 | **Active Corp:** | | | |
 | `active_corp` | 8 | one-hot | Corp under consideration in DIVIDENDS, ISSUE, ACQ, CLOSING (corp-owned offers only). 0 when inactive or player-owned. |
-| `active_corp_info` | 3 | normalized | income/PRICE_DIVISOR, stars/STAR_DIVISOR, share_price/PRICE_DIVISOR. 0 when inactive. |
+| `active_corp_info` | 3 | normalized | income/PRICE_DIVISOR, stars/CORP_STAR_DIVISOR, share_price/PRICE_DIVISOR. 0 when inactive. |
 | `active_corp_companies` | 36 | flags | Owned company flags copied from corp data block. 0 when inactive. |
 | **Deck:** | | | |
 | `cards_remaining` | 1 | normalized | Cards remaining in deck / NUM_COMPANIES |
@@ -241,7 +242,7 @@ Size varies with player count: `208 + (3 * num_players)`
 Per slot (5 floats, ordered by auction slot index):
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
-| `stars` | 1 | normalized | / STAR_DIVISOR |
+| `stars` | 1 | normalized | / COMPANY_STAR_DIVISOR |
 | `low_price` | 1 | normalized | / PRICE_DIVISOR |
 | `face_value` | 1 | normalized | / PRICE_DIVISOR |
 | `high_price` | 1 | normalized | / PRICE_DIVISOR |

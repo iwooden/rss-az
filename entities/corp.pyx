@@ -11,7 +11,7 @@ from libc.math cimport lround
 
 from core.state cimport GameState, StateLayout, CorpFieldOffsets
 from core.data cimport (
-    GameConstants, CASH_DIVISOR, INCOME_DIVISOR, PRICE_DIVISOR, SHARE_DIVISOR, STAR_DIVISOR, MARKET_PRICES,
+    GameConstants, CASH_DIVISOR, INCOME_DIVISOR, PRICE_DIVISOR, SHARE_DIVISOR, CORP_STAR_DIVISOR, MARKET_PRICES,
     get_company_income, get_company_stars, get_cost_of_ownership,
     get_company_face_value, compute_synergy_bonuses, CorpIndices, get_corp_share_count,
 )
@@ -289,11 +289,11 @@ cdef class Corporation:
 
     cpdef int get_stars(self, GameState state):
         """Get corporation's total stars (from owned companies)."""
-        return <int>(state._data[self._stars_offset] * STAR_DIVISOR + 0.5)
+        return <int>(state._data[self._stars_offset] * CORP_STAR_DIVISOR + 0.5)
 
     cpdef void set_stars(self, GameState state, int stars):
         """Set corporation's stars."""
-        state._data[self._stars_offset] = <float>stars / STAR_DIVISOR
+        state._data[self._stars_offset] = <float>stars / CORP_STAR_DIVISOR
 
     cpdef void recalculate_stars(self, GameState state):
         """

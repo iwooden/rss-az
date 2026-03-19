@@ -51,7 +51,8 @@ cdef float CASH_DIVISOR
 cdef float INCOME_DIVISOR
 cdef float PRICE_DIVISOR
 cdef float SHARE_DIVISOR
-cdef float STAR_DIVISOR
+cdef float COMPANY_STAR_DIVISOR
+cdef float CORP_STAR_DIVISOR
 cdef float MAX_ROUNDTRIPS
 cdef float IMPACT_DIVISOR
 

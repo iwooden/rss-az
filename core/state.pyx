@@ -27,7 +27,7 @@ from core.data cimport (
     INCOME_DIVISOR,
     PRICE_DIVISOR,
     SHARE_DIVISOR,
-    STAR_DIVISOR,
+    COMPANY_STAR_DIVISOR,
     MARKET_PRICES,
     get_corp_share_count,
     COMPANY_STARS,
@@ -955,7 +955,7 @@ cdef class GameState:
             base = self._layout.auction_slot_info_offset + slot * 5
             company_id = get_auction_company_for_slot(self, slot)
             if company_id >= 0:
-                self._data[base + 0] = <float>get_company_stars(company_id) / STAR_DIVISOR
+                self._data[base + 0] = <float>get_company_stars(company_id) / COMPANY_STAR_DIVISOR
                 self._data[base + 1] = <float>get_company_low_price(company_id) / PRICE_DIVISOR
                 self._data[base + 2] = <float>get_company_face_value(company_id) / PRICE_DIVISOR
                 self._data[base + 3] = <float>get_company_high_price(company_id) / PRICE_DIVISOR
@@ -1042,7 +1042,7 @@ cdef class GameState:
         """
         cdef int base = self._layout.turn_offset + self._turn_offsets.active_company_info
         cdef int coo_level = <int>self._data[self._layout.hidden_coo_level_offset]
-        self._data[base + 0] = <float>get_company_stars(company_id) / STAR_DIVISOR
+        self._data[base + 0] = <float>get_company_stars(company_id) / COMPANY_STAR_DIVISOR
         self._data[base + 1] = <float>get_company_low_price(company_id) / PRICE_DIVISOR
         self._data[base + 2] = <float>get_company_face_value(company_id) / PRICE_DIVISOR
         self._data[base + 3] = <float>get_company_high_price(company_id) / PRICE_DIVISOR

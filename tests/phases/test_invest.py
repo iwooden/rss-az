@@ -7,7 +7,7 @@ from core.actions import get_valid_action_mask, get_action_layout
 from core.data import (
     GamePhases, CORP_NAMES, get_company_face_value,
     get_company_stars, get_company_low_price, get_company_high_price,
-    get_adjusted_company_income, PY_STAR_DIVISOR, PY_PRICE_DIVISOR, PY_INCOME_DIVISOR,
+    get_adjusted_company_income, PY_COMPANY_STAR_DIVISOR, PY_PRICE_DIVISOR, PY_INCOME_DIVISOR,
     GameConstants,
 )
 from entities.turn import TURN
@@ -834,7 +834,7 @@ def _assert_slot_matches_company(state, slot, company_id):
     """Assert that an auction slot's data matches the given company."""
     data = _get_slot_data(state, slot)
     coo = TURN.get_coo_level(state)
-    assert abs(data[0] - get_company_stars(company_id) / PY_STAR_DIVISOR) < 1e-6
+    assert abs(data[0] - get_company_stars(company_id) / PY_COMPANY_STAR_DIVISOR) < 1e-6
     assert abs(data[1] - get_company_low_price(company_id) / PY_PRICE_DIVISOR) < 1e-6
     assert abs(data[2] - get_company_face_value(company_id) / PY_PRICE_DIVISOR) < 1e-6
     assert abs(data[3] - get_company_high_price(company_id) / PY_PRICE_DIVISOR) < 1e-6

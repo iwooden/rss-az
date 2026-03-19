@@ -152,7 +152,8 @@ Static game constants:
   - `INCOME_DIVISOR = 10.0` (per-company incomes, synergy values)
   - `PRICE_DIVISOR = 40.0` (company/share prices, entity incomes, buy/sell impacts)
   - `SHARE_DIVISOR = 7.0` (share counts)
-  - `STAR_DIVISOR = 20.0` (star ratings)
+  - `COMPANY_STAR_DIVISOR = 5.0` (per-company star ratings)
+  - `CORP_STAR_DIVISOR = 20.0` (corporation aggregate stars)
   - `MAX_ROUNDTRIPS = 2.0` (buy/sell tracking)
 
 ## MCTS Search
