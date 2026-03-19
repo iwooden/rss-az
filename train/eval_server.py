@@ -12,9 +12,20 @@ Communication uses shared memory (torch tensors with share_memory_()):
   only 3 floats/state so bf16 savings are negligible vs per-worker conversion)
 
 A multiprocessing.Queue carries lightweight request tuples (worker_idx,
-state_count), and per-worker Events signal completion. Multiple
-EvaluationServer threads consuming from the same queue naturally
-double-buffer GPU access: one server gathers while another is on GPU.
+state_count), and per-worker Events signal completion.
+
+**Multi-server concurrency:**
+
+Each EvaluationServer has its own CUDA stream so GPU operations (H2D,
+forward, D2H) on different servers truly overlap.  A shared gather lock
+serializes the queue-drain phase: one server builds a maximal batch from
+all pending requests while the other server runs its GPU pipeline.  This
+provides true double-buffering — gather and compute phases interleave
+across servers without batch fragmentation.
+
+Stream-local ``stream.synchronize()`` replaces the device-wide
+``torch.cuda.synchronize()``, so each server only blocks on its own
+stream's operations.
 
 Workers do zero torch operations on the write side (pure numpy).
 On the read side, workers do one bf16→f32 upcast on logits for
@@ -115,8 +126,18 @@ class EvaluationServer:
     gathers states from shared memory, runs batched inference, writes
     results back, and signals workers via per-worker Events.
 
-    Multiple EvaluationServer instances can share the same queue for
-    natural pipeline overlap on a single GPU.
+    Multiple EvaluationServer instances sharing the same queue provide
+    true double-buffered GPU access: each server has its own CUDA stream,
+    so one server's H2D/compute/D2H pipeline overlaps with the other's.
+    A shared gather lock prevents batch fragmentation from two servers
+    racing on get_nowait().
+
+    **Autocast safety:** When using per-server CUDA streams, ``torch.autocast``
+    must be called with ``cache_enabled=False``.  The autocast weight cache
+    stores bf16 tensors on whichever stream first casts them; a second server
+    on a different stream can read stale or incomplete data without cross-stream
+    synchronization.  Disabling the cache forces each server to cast weights
+    independently on its own stream (~0.1ms overhead, negligible vs MCTS time).
 
     Uses pinned CPU memory and pre-allocated GPU tensors to minimize
     host-to-device and device-to-host transfer overhead.
@@ -130,6 +151,8 @@ class EvaluationServer:
         request_queue: Any,
         worker_events: list[Any],
         *,
+        server_id: int = 0,
+        gather_lock: threading.Lock | None = None,
         profile: bool = False,
     ) -> None:
         self._model = model
@@ -139,14 +162,24 @@ class EvaluationServer:
         self._worker_events = worker_events
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._server_id = server_id
+        self._gather_lock = gather_lock
         self._profile = profile
         self._stats: EvalServerStats | None = EvalServerStats() if profile else None
+
+        # Per-server CUDA stream for true GPU concurrency.
+        # Operations submitted to different streams can overlap on the GPU,
+        # enabling double-buffering: one server's compute overlaps another's
+        # H2D transfer.
+        use_cuda = device.type == "cuda"
+        self._stream: torch.cuda.Stream | None = (
+            torch.cuda.Stream(device) if use_cuda else None
+        )
 
         max_batch = shared_bufs.num_workers * shared_bufs.batch_size
         vis = shared_bufs.visible_size
         act = shared_bufs.action_dim
         npl = shared_bufs.num_players
-        use_cuda = device.type == "cuda"
 
         # Input: pinned f32 buffer + f32 GPU tensor
         # The f32→bf16 conversion happens implicitly via autocast on CUDA
@@ -173,7 +206,8 @@ class EvaluationServer:
         """Start the server thread."""
         self._stop.clear()
         self._thread = threading.Thread(
-            target=self._loop, daemon=True, name="eval-server"
+            target=self._loop, daemon=True,
+            name=f"eval-server-{self._server_id}",
         )
         self._thread.start()
 
@@ -206,11 +240,24 @@ class EvaluationServer:
             traceback.print_exc()
 
     def _serve(self) -> None:
-        """Inner server loop (called by _loop with exception guard)."""
+        """Inner server loop (called by _loop with exception guard).
+
+        Each server uses a private CUDA stream (via context manager) so all
+        GPU operations (H2D, forward, D2H) overlap across servers.  This
+        enables true double-buffering: one server's compute can overlap
+        another's data transfer.  Stream-local synchronize() replaces the
+        device-wide torch.cuda.synchronize() to avoid cross-stream blocking.
+
+        A shared gather lock serializes the queue-drain phase so only one
+        server builds a batch at a time, preventing fragmentation where two
+        servers each grab half the pending requests.
+        """
         bufs = self._shared_bufs
         stats = self._stats
         dev = self._device
         use_cuda = dev.type == "cuda"
+        stream = self._stream
+        gather_lock = self._gather_lock
         _tp = _ti = 0.0  # profile timing scratch vars
 
         # Local refs to pre-allocated buffers (avoid attribute lookups in hot loop)
@@ -233,21 +280,27 @@ class EvaluationServer:
             if stats is not None:
                 _tp = perf_counter()
 
-            # Block for first request (with timeout to check stop flag)
+            # --- Gather phase (serialized by lock to prevent batch fragmentation) ---
+            if gather_lock is not None:
+                gather_lock.acquire()
             try:
-                first: tuple[int, int] = req_q.get(timeout=0.01)
-            except _queue.Empty:
-                if stats is not None:
-                    stats.record_idle(perf_counter() - _tp)
-                continue
-
-            # Drain queue greedily to build a larger batch
-            batch_info: list[tuple[int, int]] = [first]
-            while len(batch_info) < max_batch:
+                # Block for first request (with timeout to check stop flag)
                 try:
-                    batch_info.append(req_q.get_nowait())
+                    first: tuple[int, int] = req_q.get(timeout=0.01)
                 except _queue.Empty:
-                    break
+                    if stats is not None:
+                        stats.record_idle(perf_counter() - _tp)
+                    continue
+                # Drain queue greedily to build a larger batch
+                batch_info: list[tuple[int, int]] = [first]
+                while len(batch_info) < max_batch:
+                    try:
+                        batch_info.append(req_q.get_nowait())
+                    except _queue.Empty:
+                        break
+            finally:
+                if gather_lock is not None:
+                    gather_lock.release()
 
             # Gather f32 states from numpy shared memory into pinned numpy
             total_n = 0
@@ -255,28 +308,50 @@ class EvaluationServer:
                 pin_s_np[total_n:total_n + n] = w_states_np[widx][:n]
                 total_n += n
 
-            # H2D via pinned memory (non-blocking DMA)
             if stats is not None:
                 _ti = perf_counter()
 
-            gpu_s_batch = gpu_s[:total_n]
-            gpu_s_batch.copy_(pin_s[:total_n], non_blocking=True)
-
-            # GPU forward pass — autocast handles f32→bf16 on CUDA
-            with torch.no_grad():
-                if use_cuda:
-                    with torch.autocast(dev.type, dtype=torch.bfloat16):
+            # --- GPU pipeline on this server's CUDA stream ---
+            # Using the context manager (not set_stream) ensures proper
+            # stream scoping per iteration without persistent thread-local
+            # state.  All H2D, compute, and D2H ops go to the private stream.
+            # --- GPU pipeline ---
+            # When using per-server CUDA streams, autocast weight caching
+            # must be disabled: the cache stores bf16 tensors on whichever
+            # stream first casts them, and other servers' streams can read
+            # stale/incomplete data without cross-stream synchronization.
+            # Disabling the cache adds ~0.1ms per forward pass for the bf16
+            # weight cast, negligible vs. MCTS CPU time.
+            if stream is not None:
+                with torch.cuda.stream(stream):
+                    gpu_s_batch = gpu_s[:total_n]
+                    gpu_s_batch.copy_(pin_s[:total_n], non_blocking=True)
+                    with torch.no_grad():
+                        with torch.autocast(
+                            dev.type, dtype=torch.bfloat16,
+                            cache_enabled=False,
+                        ):
+                            policy_logits, values = self._model(gpu_s_batch)
+                        pin_log[:total_n].copy_(
+                            policy_logits.bfloat16(), non_blocking=True,
+                        )
+                        pin_val[:total_n].copy_(values, non_blocking=True)
+                stream.synchronize()
+            else:
+                gpu_s_batch = gpu_s[:total_n]
+                gpu_s_batch.copy_(pin_s[:total_n], non_blocking=True)
+                with torch.no_grad():
+                    if use_cuda:
+                        with torch.autocast(dev.type, dtype=torch.bfloat16):
+                            policy_logits, values = self._model(gpu_s_batch)
+                    else:
                         policy_logits, values = self._model(gpu_s_batch)
-                else:
-                    policy_logits, values = self._model(gpu_s_batch)
-                # D2H: logits stay bf16; values upcast bf16→f32 via copy_
-                # (on CPU without autocast both are f32; .bfloat16() converts logits)
-                pin_log[:total_n].copy_(
-                    policy_logits.bfloat16(), non_blocking=True,
-                )
-                pin_val[:total_n].copy_(values, non_blocking=True)
-                if use_cuda:
-                    torch.cuda.synchronize()
+                    pin_log[:total_n].copy_(
+                        policy_logits.bfloat16(), non_blocking=True,
+                    )
+                    pin_val[:total_n].copy_(values, non_blocking=True)
+                    if use_cuda:
+                        torch.cuda.synchronize()
 
             if stats is not None:
                 stats.record_batch(total_n, perf_counter() - _ti)

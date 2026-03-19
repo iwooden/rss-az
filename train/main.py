@@ -349,13 +349,26 @@ def main() -> None:
         # but Pyright sees the return type as FunctionType | Module. Cast to keep
         # downstream type-safety for .eval(), .train(), save_checkpoint(), etc.
         model = cast(torch.nn.Module, torch.compile(model, dynamic=True))
-        # Warmup pass to trigger compilation before self-play starts.
+        # Warmup passes to trigger compilation before self-play starts.
         # Must match the eval server's context exactly (eval mode + no_grad +
         # autocast) so dynamo doesn't recompile when the servers start.
+        # Two passes: batch=1 for the common single-state case, then the
+        # realistic max batch size to force Triton to compile kernels for
+        # the actual workload.  Without the larger warmup, the first real
+        # eval server batch can trigger Triton recompilation concurrently
+        # across multiple server threads, pegging the CPU on compiler procs.
         model.eval()
+        max_warmup = max(1, config.num_workers * config.search_batch_size)
         with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
-            dummy = torch.randn(1, config.visible_size, device=device)
-            model(dummy)
+            for warmup_bs in (1, max_warmup):
+                dummy = torch.randn(warmup_bs, config.visible_size, device=device)
+                model(dummy)
+                del dummy
+        # Synchronize to ensure autocast weight cache is fully populated
+        # before eval servers start on non-default streams.  Without this,
+        # cached bf16 weights created here on the default stream might not
+        # be visible to server threads' private streams.
+        torch.cuda.synchronize()
         print("  Model compiled.")
 
     # --- Components ---
@@ -421,10 +434,16 @@ def main() -> None:
             num_players=config.num_players,
         )
 
-        # Spawn M eval server threads (each gets its own pinned/GPU buffers)
-        for _ in range(config.num_eval_servers):
+        # Spawn M eval server threads (each gets its own CUDA stream +
+        # pinned/GPU buffers).  A shared gather lock serializes queue
+        # draining so one server builds a maximal batch while the other
+        # is on the GPU — true double-buffering.
+        gather_lock = threading.Lock()
+        for i in range(config.num_eval_servers):
             server = EvaluationServer(
                 model, device, shared_bufs, request_queue, worker_events,
+                server_id=i,
+                gather_lock=gather_lock,
                 profile=config.profile,
             )
             server.start()

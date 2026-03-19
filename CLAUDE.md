@@ -307,7 +307,7 @@ Self-play uses one or more centralized evaluation server threads for GPU through
 **Key design decisions:**
 - **Workers are processes** (not threads) because MCTS is CPU-bound — GIL would serialize them
 - **Evaluators are threads** in the main process — the GIL is released during CUDA kernels, and the model stays in one process
-- **Multiple eval servers** (`--num-eval-servers M`) consume from a shared request queue, naturally double-buffering GPU access: one server gathers while another is on GPU
+- **Multiple eval servers** (`--num-eval-servers M`) consume from a shared request queue with per-server CUDA streams for true double-buffering: one server's compute overlaps another's data transfer. A shared gather lock prevents batch fragmentation. Autocast weight caching is disabled on private streams (`cache_enabled=False`) to avoid cross-stream data races
 - **Plain `multiprocessing`** (not `torch.multiprocessing`) — avoids file descriptor exhaustion from shared tensor overhead on small arrays (~12KB per state)
 - **`spawn` context** — avoids CUDA fork issues
 - **Workers are daemon processes** — auto-killed on main process exit for clean Ctrl-C shutdown
