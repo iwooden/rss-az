@@ -108,6 +108,11 @@ class TrainingConfig:
     value_blend_start_epoch: int = 10
     value_blend_end_epoch: int = 40
 
+    # --- Terminal reward blending ---
+    # Blend between rank-based rewards (1.0) and net-worth-margin rewards (0.0).
+    # Default 0.5 = equal blend. Set to 1.0 for pure [-1, 0, +1] rank rewards.
+    terminal_blend: float = 0.5
+
     # --- Subtree reuse ---
     # Disabled for early epochs to allow Dirichlet noise to take effect.
     reuse_subtree_after_epoch: int = 15
@@ -208,6 +213,12 @@ class TrainingConfig:
             raise ValueError(
                 f"value_blend_start_epoch ({self.value_blend_start_epoch}) must be <= "
                 f"value_blend_end_epoch ({self.value_blend_end_epoch})"
+            )
+
+        # Terminal blend
+        if not 0.0 <= self.terminal_blend <= 1.0:
+            raise ValueError(
+                f"terminal_blend must be in [0, 1], got {self.terminal_blend}"
             )
 
         # Subtree reuse

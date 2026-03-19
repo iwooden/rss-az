@@ -67,6 +67,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--value-blend-start-epoch", type=int)
     parser.add_argument("--value-blend-end-epoch", type=int)
     parser.add_argument("--reuse-subtree-after-epoch", type=int)
+    parser.add_argument(
+        "--terminal-blend", type=float,
+        help="Rank vs margin weight for terminal rewards (0=margin, 1=rank, default 0.5)",
+    )
     parser.add_argument("--dirichlet-alpha", type=float)
     dyn_group = parser.add_mutually_exclusive_group()
     dyn_group.add_argument(
@@ -100,7 +104,7 @@ _CLI_FIELDS = (
     "temp_initial", "temp_anneal_start", "temp_anneal_end", "temp_final",
     "c_puct_initial", "c_puct_final", "c_puct_anneal_epochs",
     "value_blend_start_epoch", "value_blend_end_epoch",
-    "reuse_subtree_after_epoch",
+    "reuse_subtree_after_epoch", "terminal_blend",
     "dirichlet_alpha", "dirichlet_dynamic", "dirichlet_alpha_numerator",
 )
 
@@ -444,7 +448,10 @@ def main() -> None:
             f"{n_servers} eval server{'s' if n_servers > 1 else ''}"
         )
     else:
-        evaluator = NNEvaluator(model, device, num_players=config.num_players)
+        evaluator = NNEvaluator(
+            model, device, num_players=config.num_players,
+            terminal_rank_weight=config.terminal_blend,
+        )
         from core.state import get_layout
 
         total_state_size = get_layout(config.num_players).total_size

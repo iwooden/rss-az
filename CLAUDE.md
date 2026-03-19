@@ -188,7 +188,7 @@ The NN always sees the active player's data at slot 0. Before inference, the vis
 
 The value head outputs 3 scalars in [-1, 1] via tanh, representing per-player expected outcomes: `[v_active, v_next, v_next_next]`. These are un-rotated to canonical order via `np.roll(values, active_player_id)`.
 
-**Terminal values:** Hybrid of rank-based and zero-sum net-worth-deviation rewards, blended 50/50. The rank component (`linspace(+1, -1)` by placement) provides sharp signal at rank boundaries. The margin component (`(n/(n-1)) * (nw_i - mean_nw) / max_nw`) provides continuous gradient within ranks. Both components are zero-sum across players, giving better utilization of the tanh value head's [-1, +1] range. The `n/(n-1)` scale factor guarantees the result stays in [-1, +1] for any NW distribution. All-zero net worths yield 0.0.
+**Terminal values:** Blend of rank-based and zero-sum net-worth-deviation rewards, controlled by `--terminal-blend` (default 0.5). The rank component (`linspace(+1, -1)` by placement) provides sharp signal at rank boundaries. The margin component (`(n/(n-1)) * (nw_i - mean_nw) / max_nw`) provides continuous gradient within ranks. Both components are zero-sum across players, giving better utilization of the tanh value head's [-1, +1] range. The `n/(n-1)` scale factor guarantees the result stays in [-1, +1] for any NW distribution. All-zero net worths yield 0.0. Use `--terminal-blend 1.0` for pure rank rewards (`[-1, 0, +1]`).
 
 ### PUCT Selection
 
@@ -367,6 +367,7 @@ Two shutdown modes during training:
 | `c_puct_anneal_epochs` | 20 | Epochs over which c_puct anneals |
 | `value_blend_start_epoch` | 10 | Epoch where A0GB blending begins |
 | `value_blend_end_epoch` | 40 | Epoch where blend reaches pure A0GB |
+| `terminal_blend` | 0.5 | Rank vs margin weight (0=margin, 1=rank) |
 | `reuse_subtree_after_epoch` | 15 | Subtree reuse disabled before this epoch |
 | `buffer_capacity` | 500,000 | Replay buffer size (~4.2 GB) |
 | `batch_size` | 256 | Training batch size |

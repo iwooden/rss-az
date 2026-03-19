@@ -319,8 +319,10 @@ class RemoteEvaluator:
         done_event: Any,
         *,
         profile: bool = False,
+        terminal_rank_weight: float = 0.5,
     ) -> None:
         self.num_players = num_players
+        self.terminal_rank_weight = terminal_rank_weight
         self.layout = get_layout(num_players)
         self._worker_idx = worker_idx
         self._in_states_np = shared_bufs.get_input_states_np(worker_idx)
@@ -476,4 +478,6 @@ class RemoteEvaluator:
         net_worths = [
             state.get_player_net_worth(i) for i in range(self.num_players)
         ]
-        return compute_terminal_values(net_worths, self.num_players)
+        return compute_terminal_values(
+            net_worths, self.num_players, self.terminal_rank_weight
+        )

@@ -109,13 +109,15 @@ def unrotate_values(values: np.ndarray, active_player_id: int) -> np.ndarray:
     return np.roll(values, active_player_id)
 
 
-def compute_terminal_values(net_worths: list[int], num_players: int) -> np.ndarray:
+def compute_terminal_values(
+    net_worths: list[int], num_players: int, rank_weight: float = 0.5,
+) -> np.ndarray:
     """Compute canonical reward values for a terminal game state.
 
-    Hybrid of rank-based and zero-sum net-worth-deviation rewards, blended
-    50/50. The rank component provides sharp signal at rank boundaries
-    (overtaking an opponent matters a lot). The margin component provides
-    continuous gradient within ranks (3rd place still has reason to improve).
+    Blend of rank-based and zero-sum net-worth-deviation rewards. The rank
+    component provides sharp signal at rank boundaries (overtaking an
+    opponent matters a lot). The margin component provides continuous
+    gradient within ranks (3rd place still has reason to improve).
 
     Both components are zero-sum across players, so the blended result is
     also zero-sum (better utilization of the tanh value head's [-1, +1]
@@ -127,6 +129,8 @@ def compute_terminal_values(net_worths: list[int], num_players: int) -> np.ndarr
     Args:
         net_worths: List of net worth values per player (canonical order).
         num_players: Number of players.
+        rank_weight: Weight for rank component (0.0 = pure margin,
+            1.0 = pure rank). Default 0.5 (equal blend).
 
     Returns:
         np.ndarray of shape (num_players,) with reward values per player.
@@ -150,6 +154,9 @@ def compute_terminal_values(net_worths: list[int], num_players: int) -> np.ndarr
             rank_values[sorted_indices[k]] = avg_reward
         i = j
 
+    if rank_weight >= 1.0:
+        return rank_values
+
     # Margin component: zero-sum net-worth deviation from mean, scaled by
     # n/(n-1) so the range is exactly [-1, +1] for any NW distribution
     mean_nw = sum(net_worths) / num_players
@@ -158,8 +165,10 @@ def compute_terminal_values(net_worths: list[int], num_players: int) -> np.ndarr
         [scale * (nw - mean_nw) / max_nw for nw in net_worths], dtype=np.float32
     )
 
-    # Blend 50/50
-    return 0.5 * rank_values + 0.5 * margin_values
+    if rank_weight <= 0.0:
+        return margin_values
+
+    return rank_weight * rank_values + (1.0 - rank_weight) * margin_values
 
 
 class NNEvaluator:
@@ -170,10 +179,12 @@ class NNEvaluator:
     """
 
     def __init__(self, model: torch.nn.Module, device: torch.device,
-                 num_players: int = 3) -> None:
+                 num_players: int = 3, *,
+                 terminal_rank_weight: float = 0.5) -> None:
         self.model = model
         self.device = device
         self.num_players = num_players
+        self.terminal_rank_weight = terminal_rank_weight
         self.layout = get_layout(num_players)
         self._autocast_dtype = torch.bfloat16 if device.type == "cuda" else None
         self.model.eval()
@@ -325,4 +336,6 @@ class NNEvaluator:
             Canonical values, shape (num_players,).
         """
         net_worths = [state.get_player_net_worth(i) for i in range(self.num_players)]
-        return compute_terminal_values(net_worths, self.num_players)
+        return compute_terminal_values(
+            net_worths, self.num_players, self.terminal_rank_weight
+        )

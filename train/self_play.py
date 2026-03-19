@@ -160,7 +160,10 @@ def play_game(
     # Blend A0GB value targets with game outcome if configured
     blend_alpha = epoch_config.value_blend_alpha if epoch_config is not None else 1.0
     if blend_alpha < 1.0:
-        terminal_values = compute_terminal_values(net_worths, config.num_players)
+        rank_weight = getattr(evaluator, "terminal_rank_weight", 0.5)
+        terminal_values = compute_terminal_values(
+            net_worths, config.num_players, rank_weight
+        )
         for i, ex in enumerate(examples):
             rotated_terminal = np.roll(terminal_values, -active_player_ids[i])
             blended = blend_alpha * ex.value_target + (1.0 - blend_alpha) * rotated_terminal
@@ -211,6 +214,7 @@ def self_play_worker(
         config.num_players, shared_bufs, worker_idx,
         request_queue, done_event,
         profile=config.profile,
+        terminal_rank_weight=config.terminal_blend,
     )
 
     from core.state import get_layout
