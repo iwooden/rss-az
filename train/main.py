@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import queue
+import sys
+import threading
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -171,6 +173,90 @@ def _apply_overrides(
             setattr(config, field, val)
 
 
+def _start_shutdown_listener() -> threading.Event:
+    """Start a background thread that listens for 'q' + Enter on stdin.
+
+    Returns an Event that is set when the user requests graceful shutdown.
+    If stdin is not a TTY (piped input), returns an unset Event with no thread.
+    """
+    event = threading.Event()
+    if not sys.stdin.isatty():
+        return event
+
+    def _listen() -> None:
+        try:
+            for line in sys.stdin:
+                if line.strip().lower() == "q":
+                    event.set()
+                    return
+        except (EOFError, OSError):
+            pass
+
+    t = threading.Thread(target=_listen, daemon=True)
+    t.start()
+    return event
+
+
+def _drain_workers(
+    task_queue: Any,
+    result_queue: Any,
+    workers: list[Any],
+    collect_fn: Any,
+    games_collected: int,
+    timeout: float = 120.0,
+) -> int:
+    """Drain in-flight games from worker processes.
+
+    Clears remaining seeds from the task queue, sends None sentinels to
+    workers, and collects results until all workers have exited or the
+    timeout is reached.
+
+    Returns the total number of games collected (including pre-drain).
+    """
+    # Clear remaining seeds from task queue
+    cleared = 0
+    while True:
+        try:
+            task_queue.get_nowait()
+            cleared += 1
+        except queue.Empty:
+            break
+
+    # Send None sentinels so workers exit after their current game
+    for _ in workers:
+        task_queue.put(None)
+
+    if cleared > 0:
+        print(f"  Cleared {cleared} pending game seeds from queue")
+
+    # Collect results from in-flight games
+    deadline = time.perf_counter() + timeout
+    drained = 0
+    while time.perf_counter() < deadline:
+        alive = [w for w in workers if w.is_alive()]
+        if not alive and result_queue.empty():
+            break
+        try:
+            record = result_queue.get(timeout=1.0)
+            collect_fn(record, games_collected + drained)
+            drained += 1
+            print(f"  Drained game {drained} (from {len(alive)} live workers)")
+        except queue.Empty:
+            if not alive:
+                break
+
+    # Join workers
+    for w in workers:
+        w.join(timeout=3.0)
+        if w.is_alive():
+            w.terminate()
+
+    if drained > 0:
+        print(f"  Collected {drained} in-flight games")
+
+    return games_collected + drained
+
+
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
@@ -273,7 +359,17 @@ def main() -> None:
     # --- Log startup ---
     logger.log_training_start(config, device=str(device))
     print(f"Model parameters: {param_count:,}")
-    print()
+
+    # --- Resume: load replay buffer if available ---
+    buffer_dir = Path(config.checkpoint_dir) / "replay_buffer"
+    if cp is not None:
+        loaded = buffer.load(buffer_dir)
+        if loaded > 0:
+            print(f"Loaded {loaded:,} examples into replay buffer")
+
+    # --- Graceful shutdown listener ---
+    shutdown_event = _start_shutdown_listener()
+    print("Press q + Enter for graceful shutdown\n")
 
     # --- Multi-process self-play setup ---
     workers: list[Any] = []  # mp.Process (SpawnProcess when using spawn context)
@@ -398,6 +494,8 @@ def main() -> None:
 
             logger.begin_self_play(epoch_num, config.num_epochs, config.games_per_epoch)
 
+            games_collected = 0
+
             if config.num_workers > 0:
                 assert task_queue is not None and result_queue is not None
                 # Feed all game seeds to workers (with epoch config)
@@ -417,6 +515,18 @@ def main() -> None:
                             f"({alive}/{config.num_workers} workers alive)"
                         )
                     _collect_record(record, game_idx)
+                    games_collected = game_idx + 1
+                    if shutdown_event.is_set():
+                        logger.end_self_play()
+                        print(
+                            "\nGraceful shutdown requested "
+                            "— draining in-flight games..."
+                        )
+                        games_collected = _drain_workers(
+                            task_queue, result_queue, workers,
+                            _collect_record, games_collected,
+                        )
+                        break
             else:
                 assert evaluator is not None
                 for game_idx in range(config.games_per_epoch):
@@ -428,8 +538,76 @@ def main() -> None:
                         state_pool=state_pool, epoch_config=epoch_cfg,
                     )
                     _collect_record(record, game_idx)
+                    games_collected = game_idx + 1
+                    if shutdown_event.is_set():
+                        break
 
-            logger.end_self_play()
+            logger.end_self_play()  # idempotent if already stopped
+
+            # --- Graceful shutdown: save state and exit ---
+            if shutdown_event.is_set():
+                if config.num_workers == 0:
+                    print("\nGraceful shutdown requested...")
+
+                did_train = False
+                if (
+                    games_collected >= config.games_per_epoch
+                    and len(buffer) >= config.min_buffer_size
+                ):
+                    # Met quota — run full training phase before exiting
+                    print("Game quota met — running training before shutdown...")
+                    model.train()
+                    shutdown_losses: dict[str, list[float]] = defaultdict(list)
+                    logger.begin_training(
+                        epoch_num, config.num_epochs,
+                        config.training_steps_per_epoch,
+                    )
+                    for step in range(config.training_steps_per_epoch):
+                        batch = buffer.sample(config.batch_size, master_rng)
+                        losses = trainer.train_step(batch)
+                        for k, v in losses.items():
+                            shutdown_losses[k].append(v)
+                        logger.update_training(step + 1, losses, trainer.lr)
+                    logger.end_training()
+                    avg_losses = {
+                        k: sum(v) / len(v) for k, v in shutdown_losses.items()
+                    }
+                    did_train = True
+
+                # Save checkpoint
+                save_epoch = epoch if did_train else epoch - 1
+                shutdown_cp = (
+                    Path(config.checkpoint_dir)
+                    / f"checkpoint_epoch_{epoch_num:04d}.pt"
+                )
+                save_checkpoint(
+                    path=shutdown_cp,
+                    epoch=save_epoch,
+                    model=model,
+                    trainer_state=trainer.state_dict(),
+                    config=config,
+                    metrics=avg_losses,
+                    buffer_stats={
+                        "size": len(buffer),
+                        "capacity": config.buffer_capacity,
+                    },
+                )
+
+                # Save replay buffer
+                buf_dir = Path(config.checkpoint_dir) / "replay_buffer"
+                print(f"Saving replay buffer ({len(buffer):,} examples)...")
+                buffer.save(buf_dir)
+
+                print(
+                    f"\nShutdown complete:"
+                    f"\n  Checkpoint: {shutdown_cp}"
+                    f"\n  Replay buffer: {buf_dir}/"
+                    f"\n  Games collected: {games_collected}"
+                    f"\n  Buffer size: {len(buffer):,}"
+                    f"\n  Trained: {'yes' if did_train else 'no'}"
+                    f"\n  Resume with: python -m train --resume latest"
+                )
+                break
 
             # Self-play Tensorboard metrics
             n_games = config.games_per_epoch

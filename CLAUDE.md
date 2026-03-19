@@ -326,6 +326,25 @@ Each epoch: (1) play N games via MCTS self-play → (2) store examples in replay
 .venv/bin/python -m train --num-workers 0 --games-per-epoch 10
 ```
 
+### Graceful Shutdown
+
+Two shutdown modes during training:
+- **Ctrl-C**: Fast/hard shutdown — exits immediately, discards in-memory state
+- **q + Enter**: Graceful shutdown — drains workers, saves checkpoint and replay buffer
+
+**Graceful shutdown behavior:**
+- Only activates during the self-play phase
+- Workers finish their current in-flight games (120s timeout)
+- If all `games_per_epoch` games were collected, runs the training phase before exiting
+- Saves model checkpoint to `checkpoints/checkpoint_epoch_NNNN.pt`
+- Saves replay buffer (~4 GB) to `checkpoints/replay_buffer/` (overwritten each time)
+- On resume (`--resume latest`), the replay buffer is loaded and the interrupted epoch restarts
+
+**Replay buffer persistence:**
+- `ReplayBuffer.save(directory)` / `ReplayBuffer.load(directory)` handle serialization
+- Individual `.npy` files per array + `metadata.json` for ring buffer state
+- Capacity must match between save and load (warns and skips on mismatch)
+
 ### Training Configuration (`train/config.py`)
 
 `TrainingConfig` dataclass holds all hyperparameters. Key defaults:

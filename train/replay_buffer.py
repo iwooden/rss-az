@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
@@ -112,3 +114,58 @@ class ReplayBuffer:
     @property
     def capacity(self) -> int:
         return self._capacity
+
+    def save(self, directory: Path) -> None:
+        """Save buffer contents to directory for later resume.
+
+        Writes individual .npy files for each array (only the occupied portion)
+        plus a metadata.json with size/index/capacity.
+        """
+        if self._size == 0:
+            return
+        directory.mkdir(parents=True, exist_ok=True)
+        n = self._size
+        if n < self._capacity:
+            # Partial buffer: data is contiguous in [0, n)
+            np.save(directory / "states.npy", self._states[:n])
+            np.save(directory / "legal_masks.npy", self._legal_masks[:n])
+            np.save(directory / "policy_targets.npy", self._policy_targets[:n])
+            np.save(directory / "value_targets.npy", self._value_targets[:n])
+        else:
+            # Full buffer: save entire arrays
+            np.save(directory / "states.npy", self._states)
+            np.save(directory / "legal_masks.npy", self._legal_masks)
+            np.save(directory / "policy_targets.npy", self._policy_targets)
+            np.save(directory / "value_targets.npy", self._value_targets)
+        (directory / "metadata.json").write_text(
+            json.dumps({"size": self._size, "index": self._index,
+                        "capacity": self._capacity})
+        )
+
+    def load(self, directory: Path) -> int:
+        """Load buffer contents from directory.
+
+        Returns the number of examples loaded (0 if directory missing or
+        capacity mismatch).
+        """
+        metadata_path = directory / "metadata.json"
+        if not metadata_path.exists():
+            return 0
+        meta = json.loads(metadata_path.read_text())
+        saved_capacity: int = meta["capacity"]
+        if saved_capacity != self._capacity:
+            print(
+                f"  Warning: replay buffer capacity mismatch "
+                f"(saved={saved_capacity:,}, current={self._capacity:,}), "
+                f"skipping load"
+            )
+            return 0
+        states = np.load(directory / "states.npy")
+        n = states.shape[0]
+        self._states[:n] = states
+        self._legal_masks[:n] = np.load(directory / "legal_masks.npy")
+        self._policy_targets[:n] = np.load(directory / "policy_targets.npy")
+        self._value_targets[:n] = np.load(directory / "value_targets.npy")
+        self._size = meta["size"]
+        self._index = meta["index"]
+        return self._size
