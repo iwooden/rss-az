@@ -19,7 +19,7 @@ from libc.string cimport memset, memcpy
 
 from core.state cimport GameState
 from core.data cimport (
-    GameConstants, GamePhases, CASH_DIVISOR, MAX_DIVIDEND, NUM_PAR_PRICES,
+    GameConstants, GamePhases, MAX_DIVIDEND, NUM_PAR_PRICES,
     get_company_face_value, get_company_low_price, get_company_high_price,
     get_company_stars, get_par_price, get_market_index, get_market_price,
     get_max_dividend, is_valid_par_price, get_par_index_for_slot, CORP_OS

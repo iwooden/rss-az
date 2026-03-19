@@ -2,7 +2,7 @@
 import pytest
 from core.state import GameState, get_layout
 from core.actions import get_valid_action_mask, get_action_layout
-from core.data import GamePhases, get_company_face_value, PY_CASH_DIVISOR
+from core.data import GamePhases, get_company_face_value, PY_PRICE_DIVISOR
 from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.company import COMPANIES
@@ -809,7 +809,7 @@ class TestActiveCompanyBid:
         company_id = TURN.get_auction_company(bid_state)
 
         # Active company face_value should match the auction company
-        expected_fv = get_company_face_value(company_id) / PY_CASH_DIVISOR
+        expected_fv = get_company_face_value(company_id) / PY_PRICE_DIVISOR
         assert abs(bid_state._array[base + 2] - expected_fv) < 1e-6
 
         # Should be nonzero (stars > 0 for all companies)
@@ -838,7 +838,7 @@ class TestActiveCompanyBid:
         layout = get_action_layout(3)
 
         company_id = TURN.get_auction_company(bid_state)
-        expected_fv = get_company_face_value(company_id) / PY_CASH_DIVISOR
+        expected_fv = get_company_face_value(company_id) / PY_PRICE_DIVISOR
 
         # One player leaves, auction continues
         apply_and_verify_all(bid_state, layout['leave_auction'])

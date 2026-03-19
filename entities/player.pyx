@@ -11,7 +11,7 @@ from libc.math cimport lround
 
 from core.state cimport GameState, StateLayout, PlayerFieldOffsets
 from core.data cimport (
-    GameConstants, CASH_DIVISOR, SHARE_DIVISOR, MAX_ROUNDTRIPS,
+    GameConstants, CASH_DIVISOR, INCOME_DIVISOR, PRICE_DIVISOR, SHARE_DIVISOR, MAX_ROUNDTRIPS,
     get_company_face_value
 )
 from entities.encoding cimport set_one_hot, get_one_hot_index
@@ -389,11 +389,11 @@ cdef class Player:
 
     cpdef int get_income(self, GameState state):
         """Get player's stored income (integer dollars)."""
-        return <int>lround(state._data[self._income_offset] * CASH_DIVISOR)
+        return <int>lround(state._data[self._income_offset] * PRICE_DIVISOR)
 
     cpdef void set_income(self, GameState state, int income):
         """Set player's income (integer dollars)."""
-        state._data[self._income_offset] = <float>income / CASH_DIVISOR
+        state._data[self._income_offset] = <float>income / PRICE_DIVISOR
 
     cpdef void calculate_income(self, GameState state):
         """Recalculate and store total income from player's private companies.
@@ -406,7 +406,7 @@ cdef class Player:
         cdef int company_incomes_offset = state._layout.company_incomes_offset
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if state._data[self._owned_companies_offset + company_id] == 1.0:
-                total += <int>lround(state._data[company_incomes_offset + company_id] * CASH_DIVISOR)
+                total += <int>lround(state._data[company_incomes_offset + company_id] * INCOME_DIVISOR)
         self.set_income(state, total)
 
 

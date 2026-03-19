@@ -48,6 +48,8 @@ cpdef enum CorpIndices:
 # Normalization constants
 # Note: These are declared as extern here, defined in data.pyx
 cdef float CASH_DIVISOR
+cdef float INCOME_DIVISOR
+cdef float PRICE_DIVISOR
 cdef float SHARE_DIVISOR
 cdef float STAR_DIVISOR
 cdef float MAX_ROUNDTRIPS

@@ -5,7 +5,7 @@ from core.data import (
     GamePhases, GameConstants,
     get_company_face_value, get_company_stars,
     get_par_price, get_par_index_for_slot, get_market_index,
-    get_corp_share_count, PY_CASH_DIVISOR,
+    get_corp_share_count, PY_PRICE_DIVISOR,
 )
 from core.actions import get_valid_action_mask, get_action_layout
 from entities.turn import TURN
@@ -647,7 +647,7 @@ class TestActiveCompanyIPO:
 
         layout = get_layout(3)
         base = layout.active_company_info_offset
-        expected_fv = get_company_face_value(company_id) / PY_CASH_DIVISOR
+        expected_fv = get_company_face_value(company_id) / PY_PRICE_DIVISOR
         assert abs(state._array[base + 2] - expected_fv) < 1e-6
         assert state._array[base + 0] > 0.0  # stars > 0
 
@@ -679,7 +679,7 @@ class TestActiveCompanyIPO:
 
         first_company = TURN.get_ipo_company(state)
         assert first_company >= 0
-        first_fv = get_company_face_value(first_company) / PY_CASH_DIVISOR
+        first_fv = get_company_face_value(first_company) / PY_PRICE_DIVISOR
         assert abs(state._array[base + 2] - first_fv) < 1e-6
 
         # IPO the first company (corp 0, par slot 0)
@@ -687,6 +687,6 @@ class TestActiveCompanyIPO:
 
         second_company = TURN.get_ipo_company(state)
         if second_company >= 0:
-            second_fv = get_company_face_value(second_company) / PY_CASH_DIVISOR
+            second_fv = get_company_face_value(second_company) / PY_PRICE_DIVISOR
             assert abs(state._array[base + 2] - second_fv) < 1e-6
             assert second_fv != first_fv or second_company != first_company

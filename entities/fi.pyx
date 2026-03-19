@@ -10,7 +10,7 @@ and holds them until corporations acquire them.
 from libc.math cimport lround
 
 from core.state cimport GameState, StateLayout
-from core.data cimport GameConstants, CASH_DIVISOR
+from core.data cimport GameConstants, CASH_DIVISOR, INCOME_DIVISOR, PRICE_DIVISOR
 
 
 cdef class ForeignInvestor:
@@ -71,11 +71,11 @@ cdef class ForeignInvestor:
 
     cpdef int get_income(self, GameState state):
         """Get FI's stored income (integer dollars)."""
-        return <int>lround(state._data[self._income_offset] * CASH_DIVISOR)
+        return <int>lround(state._data[self._income_offset] * PRICE_DIVISOR)
 
     cpdef void set_income(self, GameState state, int income):
         """Set FI's income (integer dollars)."""
-        state._data[self._income_offset] = <float>income / CASH_DIVISOR
+        state._data[self._income_offset] = <float>income / PRICE_DIVISOR
 
     cpdef int calculate_income(self, GameState state):
         """
@@ -92,7 +92,7 @@ cdef class ForeignInvestor:
         cdef int company_incomes_offset = state._layout.company_incomes_offset
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if state._data[self._owned_companies_offset + company_id] == 1.0:
-                total += <int>lround(state._data[company_incomes_offset + company_id] * CASH_DIVISOR)
+                total += <int>lround(state._data[company_incomes_offset + company_id] * INCOME_DIVISOR)
         # FI always gets +5 bonus (RULES.md line 354)
         total += 5
         self.set_income(state, total)

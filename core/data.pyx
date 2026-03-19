@@ -15,6 +15,8 @@ from libc.stdint cimport uint8_t, uint16_t, uint64_t, int8_t
 # =============================================================================
 
 cdef float CASH_DIVISOR = 100.0
+cdef float INCOME_DIVISOR = 10.0
+cdef float PRICE_DIVISOR = 40.0
 cdef float SHARE_DIVISOR = 7.0
 cdef float STAR_DIVISOR = 20.0
 cdef float MAX_ROUNDTRIPS = 2.0
@@ -22,6 +24,8 @@ cdef float IMPACT_DIVISOR = 5.0
 
 # Python-accessible versions
 PY_CASH_DIVISOR = CASH_DIVISOR
+PY_INCOME_DIVISOR = INCOME_DIVISOR
+PY_PRICE_DIVISOR = PRICE_DIVISOR
 PY_SHARE_DIVISOR = SHARE_DIVISOR
 PY_STAR_DIVISOR = STAR_DIVISOR
 PY_MAX_ROUNDTRIPS = MAX_ROUNDTRIPS

@@ -7,7 +7,7 @@ from core.actions import get_valid_action_mask, get_action_layout
 from core.data import (
     GamePhases, CORP_NAMES, get_company_face_value,
     get_company_stars, get_company_low_price, get_company_high_price,
-    get_adjusted_company_income, PY_STAR_DIVISOR, PY_CASH_DIVISOR,
+    get_adjusted_company_income, PY_STAR_DIVISOR, PY_PRICE_DIVISOR, PY_INCOME_DIVISOR,
     GameConstants,
 )
 from entities.turn import TURN
@@ -835,10 +835,10 @@ def _assert_slot_matches_company(state, slot, company_id):
     data = _get_slot_data(state, slot)
     coo = TURN.get_coo_level(state)
     assert abs(data[0] - get_company_stars(company_id) / PY_STAR_DIVISOR) < 1e-6
-    assert abs(data[1] - get_company_low_price(company_id) / PY_CASH_DIVISOR) < 1e-6
-    assert abs(data[2] - get_company_face_value(company_id) / PY_CASH_DIVISOR) < 1e-6
-    assert abs(data[3] - get_company_high_price(company_id) / PY_CASH_DIVISOR) < 1e-6
-    assert abs(data[4] - get_adjusted_company_income(company_id, coo) / PY_CASH_DIVISOR) < 1e-6
+    assert abs(data[1] - get_company_low_price(company_id) / PY_PRICE_DIVISOR) < 1e-6
+    assert abs(data[2] - get_company_face_value(company_id) / PY_PRICE_DIVISOR) < 1e-6
+    assert abs(data[3] - get_company_high_price(company_id) / PY_PRICE_DIVISOR) < 1e-6
+    assert abs(data[4] - get_adjusted_company_income(company_id, coo) / PY_INCOME_DIVISOR) < 1e-6
 
 
 class TestAuctionSlotInfo:
@@ -935,7 +935,7 @@ class TestAuctionSlotInfo:
         # Active company should now match the auction company
         assert game_state._array[base + 0] != 0.0, "Active company stars should be set"
         coo = TURN.get_coo_level(game_state)
-        assert abs(game_state._array[base + 2] - get_company_face_value(company_id) / PY_CASH_DIVISOR) < 1e-6
+        assert abs(game_state._array[base + 2] - get_company_face_value(company_id) / PY_PRICE_DIVISOR) < 1e-6
 
     def test_active_company_cleared_after_bid_resolves(self, game_state):
         """Active company block is zeroed after auction resolution."""
@@ -1000,8 +1000,8 @@ class TestInvestImpacts:
 
         # Corp 0 at index 10 ($14), next higher is 11 ($16)
         # Player 0 has 2 shares, buy impact = 2 * (16 - 14) = $4
-        # Stored normalized: 4 / 100.0 = 0.04
-        assert abs(state._array[buy_base + 0] - 4.0 / PY_CASH_DIVISOR) < 1e-6
+        # Stored normalized: 4 / 40.0 = 0.10
+        assert abs(state._array[buy_base + 0] - 4.0 / PY_PRICE_DIVISOR) < 1e-6
 
     def test_sell_impact_computed(self, impact_state):
         """Sell impact reflects net worth change from price depreciation."""
@@ -1011,8 +1011,8 @@ class TestInvestImpacts:
 
         # Corp 0 at index 10 ($14), next lower is 9 ($13)
         # Player 0 has 2 shares, sell impact = 2 * (13 - 14) = -$2
-        # Stored normalized: -2 / 100.0 = -0.02
-        assert abs(state._array[sell_base + 0] - (-2.0 / PY_CASH_DIVISOR)) < 1e-6
+        # Stored normalized: -2 / 40.0 = -0.05
+        assert abs(state._array[sell_base + 0] - (-2.0 / PY_PRICE_DIVISOR)) < 1e-6
 
     def test_inactive_corp_zero_impact(self, impact_state):
         """Inactive corps have zero buy and sell impact."""
@@ -1140,7 +1140,7 @@ class TestInvestImpacts:
         buy_base = layout.invest_impacts_offset
 
         # Buy slides to index 12 ($18), impact = 2 * (18 - 14) = $8
-        assert abs(state._array[buy_base + 0] - 8.0 / PY_CASH_DIVISOR) < 1e-6
+        assert abs(state._array[buy_base + 0] - 8.0 / PY_PRICE_DIVISOR) < 1e-6
 
     def test_impacts_populated_at_game_start(self):
         """Impacts are computed during initialize_game."""

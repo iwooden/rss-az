@@ -10,7 +10,7 @@ for O(1) location queries and atomic transfers.
 from libc.math cimport lround
 from core.state cimport GameState, StateLayout, PlayerFieldOffsets, CorpFieldOffsets
 from core.data cimport (
-    GameConstants, CASH_DIVISOR,
+    GameConstants, INCOME_DIVISOR,
     get_company_face_value, get_company_low_price, get_company_high_price,
     get_company_stars, get_company_income, get_company_synergy,
     is_last_in_group as data_is_last_in_group
@@ -367,11 +367,11 @@ cdef class Company:
 
         Uses lround for proper rounding of negative values (high CoO can make income negative).
         """
-        return <int>lround(state._data[self._income_offset] * CASH_DIVISOR)
+        return <int>lround(state._data[self._income_offset] * INCOME_DIVISOR)
 
     cpdef void set_adjusted_income(self, GameState state, int income):
         """Set company's adjusted income."""
-        state._data[self._income_offset] = <float>income / CASH_DIVISOR
+        state._data[self._income_offset] = <float>income / INCOME_DIVISOR
 
 
 # =============================================================================

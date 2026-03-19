@@ -24,6 +24,8 @@ from core.data cimport (
     GameConstants,
     GamePhases,
     CASH_DIVISOR,
+    INCOME_DIVISOR,
+    PRICE_DIVISOR,
     SHARE_DIVISOR,
     STAR_DIVISOR,
     MARKET_PRICES,
@@ -748,7 +750,7 @@ cdef class GameState:
     cdef int _get_corp_share_price(self, int corp_id) noexcept nogil:
         """Get corporation's share price (nogil version)."""
         cdef float* corp = self._corp_ptr(corp_id)
-        return <int>(corp[self._corp_fields.share_price] * CASH_DIVISOR + 0.5)
+        return <int>(corp[self._corp_fields.share_price] * PRICE_DIVISOR + 0.5)
 
     cpdef int get_corp_share_price(self, int corp_id):
         """Get corporation's share price."""
@@ -757,7 +759,7 @@ cdef class GameState:
     cpdef void set_corp_share_price(self, int corp_id, int price):
         """Set corporation's share price."""
         cdef float* corp = self._corp_ptr(corp_id)
-        corp[self._corp_fields.share_price] = <float>price / CASH_DIVISOR
+        corp[self._corp_fields.share_price] = <float>price / PRICE_DIVISOR
 
     cpdef int get_corp_price_index(self, int corp_id):
         """Get corporation's market price index from hidden state."""
@@ -838,7 +840,7 @@ cdef class GameState:
     cpdef int get_auction_price(self):
         """Get current auction price."""
         cdef float* turn = self._turn_ptr()
-        return <int>(turn[self._turn_offsets.auction_price] * CASH_DIVISOR + 0.5)
+        return <int>(turn[self._turn_offsets.auction_price] * PRICE_DIVISOR + 0.5)
 
     # Note: set_auction_price() removed - use TurnState.set_auction_price()
 
@@ -954,10 +956,10 @@ cdef class GameState:
             company_id = get_auction_company_for_slot(self, slot)
             if company_id >= 0:
                 self._data[base + 0] = <float>get_company_stars(company_id) / STAR_DIVISOR
-                self._data[base + 1] = <float>get_company_low_price(company_id) / CASH_DIVISOR
-                self._data[base + 2] = <float>get_company_face_value(company_id) / CASH_DIVISOR
-                self._data[base + 3] = <float>get_company_high_price(company_id) / CASH_DIVISOR
-                self._data[base + 4] = <float>get_adjusted_company_income(company_id, coo_level) / CASH_DIVISOR
+                self._data[base + 1] = <float>get_company_low_price(company_id) / PRICE_DIVISOR
+                self._data[base + 2] = <float>get_company_face_value(company_id) / PRICE_DIVISOR
+                self._data[base + 3] = <float>get_company_high_price(company_id) / PRICE_DIVISOR
+                self._data[base + 4] = <float>get_adjusted_company_income(company_id, coo_level) / INCOME_DIVISOR
             else:
                 self._data[base + 0] = 0.0
                 self._data[base + 1] = 0.0
@@ -974,7 +976,7 @@ cdef class GameState:
         Compute buy/sell net worth impact for the active player for each corp.
 
         Layout: [buy_impact_0..buy_impact_7, sell_impact_0..sell_impact_7]
-        Each normalized by CASH_DIVISOR.
+        Each normalized by PRICE_DIVISOR.
 
         Net worth delta from buying or selling one share:
           delta = current_shares * (new_price - old_price)
@@ -1010,14 +1012,14 @@ cdef class GameState:
                 new_price = get_market_price(new_index)
                 if player_cash >= new_price:
                     impact = shares * (new_price - old_price)
-                    self._data[buy_base + corp_id] = <float>impact / CASH_DIVISOR
+                    self._data[buy_base + corp_id] = <float>impact / PRICE_DIVISOR
 
             # Sell impact: need player to own shares
             if shares > 0:
                 new_index = market_module.MARKET.find_next_lower_space(self, current_index)
                 new_price = get_market_price(new_index)
                 impact = shares * (new_price - old_price)
-                self._data[sell_base + corp_id] = <float>impact / CASH_DIVISOR
+                self._data[sell_base + corp_id] = <float>impact / PRICE_DIVISOR
 
     cpdef void _clear_invest_impacts(self):
         """Zero all invest impact slots."""
@@ -1041,10 +1043,10 @@ cdef class GameState:
         cdef int base = self._layout.turn_offset + self._turn_offsets.active_company_info
         cdef int coo_level = <int>self._data[self._layout.hidden_coo_level_offset]
         self._data[base + 0] = <float>get_company_stars(company_id) / STAR_DIVISOR
-        self._data[base + 1] = <float>get_company_low_price(company_id) / CASH_DIVISOR
-        self._data[base + 2] = <float>get_company_face_value(company_id) / CASH_DIVISOR
-        self._data[base + 3] = <float>get_company_high_price(company_id) / CASH_DIVISOR
-        self._data[base + 4] = <float>get_adjusted_company_income(company_id, coo_level) / CASH_DIVISOR
+        self._data[base + 1] = <float>get_company_low_price(company_id) / PRICE_DIVISOR
+        self._data[base + 2] = <float>get_company_face_value(company_id) / PRICE_DIVISOR
+        self._data[base + 3] = <float>get_company_high_price(company_id) / PRICE_DIVISOR
+        self._data[base + 4] = <float>get_adjusted_company_income(company_id, coo_level) / INCOME_DIVISOR
 
     cpdef void clear_active_company(self):
         """Clear active company info scalars (zero-fill 5 floats).
