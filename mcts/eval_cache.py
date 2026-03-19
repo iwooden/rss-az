@@ -7,8 +7,9 @@ MCTS tree (so Dirichlet noise is fully effective), but cached NN results
 mean we don't pay full GPU cost to rebuild it.
 
 Backed by pre-allocated numpy matrices with a dict-based hash index.
-The cache stores (policy, value) tuples keyed by a 128-bit MD5 hash of
-the state array. At 131K entries the collision probability is ~10^-28.
+The cache stores (policy, value) tuples keyed by a 64-bit xxh3 hash of
+the state array. At 131K entries the collision probability is ~5×10^-10
+(birthday bound), which is negligible for this use case.
 
 Memory per entry: ~1.1KB (984B policy + 12B values + ~100B index overhead).
 At 131K entries: ~140MB per worker. With 24 workers: ~3.4GB total.
@@ -16,7 +17,7 @@ At 131K entries: ~140MB per worker. With 24 workers: ~3.4GB total.
 
 from __future__ import annotations
 
-import hashlib
+import xxhash
 
 import numpy as np
 
@@ -57,7 +58,7 @@ class EvalCache:
             (policy_probs, canonical_values) if cached, else None.
             Returned arrays are views into the backing matrices.
         """
-        key = hashlib.md5(state_array).digest()
+        key = xxhash.xxh3_64(state_array).digest()
         idx = self._index.get(key)
         if idx is None:
             return None
@@ -76,7 +77,7 @@ class EvalCache:
             policy: Policy probabilities, shape (action_dim,).
             values: Canonical per-player values, shape (num_players,).
         """
-        key = hashlib.md5(state_array).digest()
+        key = xxhash.xxh3_64(state_array).digest()
         if key in self._index:
             return
         if self._count >= self._capacity:
