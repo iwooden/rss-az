@@ -49,7 +49,7 @@ rss-az-cython2/
 │   ├── eval_cache.py  # Per-game NN eval cache (alternative to subtree reuse)
 │   └── search.py      # PUCT selection, batched search with virtual loss, A0GB value targets
 ├── nn/                # Neural network models
-│   └── model_3p.py    # Residual MLP with policy + per-player value heads
+│   └── model_3p_2.py  # V2 residual MLP with policy + per-player value heads
 ├── train/             # Self-play training harness
 │   ├── config.py      # TrainingConfig (all hyperparameters)
 │   ├── eval_server.py # Centralized GPU evaluator + RemoteEvaluator proxy
@@ -70,6 +70,15 @@ rss-az-cython2/
 │   │   ├── action_parser.py    # 18xx action → engine action mapper
 │   │   └── test_replay.py      # Pytest entry point
 │   └── conftest.py    # Pytest fixtures
+├── interp/            # Interpretability analysis tools
+│   ├── README.md      # Guide to all analysis scripts
+│   ├── full_ablation.py   # Feature group ablation (policy KL + value MSE)
+│   ├── decision_attr.py   # IntegratedGradients on critical decisions
+│   ├── arch_analysis.py   # Block contribution, conductance, SVD rank
+│   ├── probing.py         # Linear probing classifiers per layer
+│   ├── norm_check.py      # Normalization health check
+│   ├── tb_summary.py      # Tensorboard training summary
+│   └── utils.py           # Shared model loading, state collection, inference
 ├── RULES.md           # Complete game rules (authoritative)
 ├── VECTORS.md         # State/action vector documentation
 └── RSS.pdf            # Original board game rulebook
@@ -232,13 +241,14 @@ Instead of using the root node's mean value (soft-Z) or the game outcome as trai
 
 **Memory efficiency:** States are NOT stored in tree nodes. The root state is cloned and actions replayed to reach each leaf.
 
-### NN Model (`nn/model_3p.py`)
+### NN Model (`nn/model_3p_2.py`)
 
-Residual MLP (~25.4M parameters):
+Residual MLP (~5.2M parameters):
 - **Input:** 1577 floats (3-player) (visible state, active player rotated to slot 0)
-- **Trunk:** Linear → 10 residual blocks (pre-LN, GELU, expansion=2) → LayerNorm
-- **Policy head:** Linear(768→256) → GELU → Linear(256→246) logits (masked by legal actions before softmax)
-- **Value head:** Linear(768→384) → GELU → Linear(384→192) → GELU → Linear(192→3) → Tanh
+- **Input preprocessing:** Linear(1577→768) → GELU → Linear(768→384)
+- **Trunk:** 10 residual blocks (pre-LN, GELU, no expansion: 384→384→384) → LayerNorm
+- **Policy head:** 3 hidden layers at hidden_dim: Linear(384→384) → GELU → Linear(384→384) → GELU → Linear(384→384) → GELU → Linear(384→246) logits (masked by legal actions before softmax)
+- **Value head:** Linear(384→384) → GELU → Linear(384→3) → Tanh
 - **Init:** Xavier uniform for all linear layers; residual block fc2 layers zero-initialized (blocks start as identity)
 
 ### Key APIs
@@ -653,8 +663,9 @@ pytest tests/18xx_games/test_replay.py -v
 | Add phase | Create `phases/new.pyx` | `core/driver.pyx`, `core/actions.pyx` |
 | Fix bug | Tests first | Phase/entity files |
 | MCTS / search | `mcts/search.py`, `mcts/node.py` | `mcts/evaluator.py`, `mcts/eval_cache.py`, `train/config.py` |
-| NN model | `nn/model_3p.py` | `mcts/evaluator.py` |
+| NN model | `nn/model_3p_2.py` | `mcts/evaluator.py` |
 | Self-play / training | `train/main.py`, `train/config.py` | `train/self_play.py`, `train/eval_server.py`, `train/trainer.py` |
+| Interpretability | `interp/README.md` | `interp/*.py` |
 
 ## Documentation
 
@@ -662,6 +673,7 @@ pytest tests/18xx_games/test_replay.py -v
 - **RULES.md**: Complete game rules (24KB)
 - **VECTORS.md**: State/action vector layouts with exact offsets
 - **RSS.pdf**: Original board game rulebook
+- **interp/README.md**: Guide to interpretability analysis scripts
 
 ---
 
