@@ -332,28 +332,13 @@ def main() -> None:
     ).to(device)
     param_count = sum(p.numel() for p in model.parameters())
 
-    # --- Components ---
-    trainer = Trainer(model, config, device)
-    buffer = ReplayBuffer(
-        config.buffer_capacity,
-        config.visible_size,
-        config.action_dim,
-        config.num_players,
-    )
-    logger = TrainingLogger(config.tensorboard_dir)
-
-    # --- Resume: restore model and trainer state ---
+    # --- Resume: restore model weights (before compile + Trainer creation) ---
     start_epoch = 0
     if cp is not None:
         model.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
-        trainer.load_state_dict(cp["trainer_state"])  # type: ignore[arg-type]
         start_epoch = cp["epoch"] + 1  # type: ignore[operator]
-        print(
-            f"Resumed from epoch {cp['epoch']}, "
-            f"step {trainer.global_step}"
-        )
 
-    # --- torch.compile ---
+    # --- torch.compile (before Trainer so training also uses compiled model) ---
     if not args.no_compile and device.type == "cuda":
         print("Compiling model with torch.compile...")
         # torch.compile returns OptimizedModule (a Module subclass at runtime),
@@ -368,6 +353,24 @@ def main() -> None:
             dummy = torch.randn(1, config.visible_size, device=device)
             model(dummy)
         print("  Model compiled.")
+
+    # --- Components ---
+    trainer = Trainer(model, config, device)
+    buffer = ReplayBuffer(
+        config.buffer_capacity,
+        config.visible_size,
+        config.action_dim,
+        config.num_players,
+    )
+    logger = TrainingLogger(config.tensorboard_dir)
+
+    # --- Resume: restore trainer state (optimizer + scheduler) ---
+    if cp is not None:
+        trainer.load_state_dict(cp["trainer_state"])  # type: ignore[arg-type]
+        print(
+            f"Resumed from epoch {cp['epoch']}, "
+            f"step {trainer.global_step}"
+        )
 
     # --- Log startup ---
     logger.log_training_start(config, device=str(device))
