@@ -406,9 +406,9 @@ class TestMCTSNode:
         assert node.priors[1] == pytest.approx(0.3)
         assert node.priors[2] == pytest.approx(0.1)
         np.testing.assert_array_almost_equal(node.default_value, default_val)
-        # Virtual visits: visit_counts start at 1, value_sums at default_value
+        # Zero-init: visit_counts start at 0, value_sums at default_value (FPU)
         assert node.visit_counts.shape == (3,)
-        assert (node.visit_counts == 1).all()
+        assert (node.visit_counts == 0).all()
         assert node.value_sums.shape == (3, 3)  # 3 actions x 3 players
         for i in range(3):
             np.testing.assert_array_almost_equal(
@@ -683,12 +683,11 @@ class TestMCTSSearch:
         """A0GB traversal should follow the most-visited child at each level."""
         root, config = search_root_deep
 
-        # Manually trace the greedy path using real visit counts
+        # Manually trace the greedy path using visit counts
         node = root
         while node.expanded() and not node.is_terminal:
-            real_counts = node.visit_counts - 1
-            best_idx = int(np.argmax(real_counts))
-            if real_counts[best_idx] == 0:
+            best_idx = int(np.argmax(node.visit_counts))
+            if node.visit_counts[best_idx] == 0:
                 break
             best_action = int(node.legal_actions[best_idx])
             if best_action not in node.children:
@@ -994,11 +993,11 @@ class TestBatchedSearch:
             if not node.expanded():
                 return
             assert node.visit_counts is not None
-            real_child_visits = int((node.visit_counts - 1).sum())
-            expected = 1 + real_child_visits
+            child_visits = int(node.visit_counts.sum())
+            expected = 1 + child_visits  # 1 for this node's own eval
             assert node.visit_count == expected, (
                 f"visit_count={node.visit_count} != "
-                f"1 + sum(real_child_visits)={expected}"
+                f"1 + sum(child_visits)={expected}"
             )
             for child in node.children.values():
                 check_invariant(child)

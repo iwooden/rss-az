@@ -26,11 +26,12 @@ class MCTSNode:
         terminal_values: Cached terminal values for game-over nodes.
         legal_actions: Sorted int array of legal action indices, shape (N,).
         priors: NN policy priors for legal actions, shape (N,).
-        default_value: Parent's NN value used as FPU virtual visit.
-        visit_counts: Per-action visit counts, shape (N,). Initialized to 1
-            (virtual visit from FPU) so Q = value_sums / visit_counts always.
+        default_value: Parent's NN value used as FPU for unvisited actions.
+        visit_counts: Per-action visit counts, shape (N,). Zero-initialized;
+            unvisited actions use default_value via value_sums / max(1, vc).
         value_sums: Per-action cumulative values, shape (N, num_players).
-            Initialized to default_value per row (FPU virtual visit).
+            Initialized to default_value per row (FPU). On the first real
+            visit, _backup replaces (not adds to) this FPU value.
     """
 
     __slots__ = (
@@ -110,9 +111,11 @@ class MCTSNode:
         self.legal_actions = actions
         self.priors = policy_priors[actions].astype(np.float32).copy()
         self.default_value = default_value.copy()
-        # Virtual visit: each action starts with 1 visit at parent's value.
-        # Q = value_sums / visit_counts is always valid (no division by zero).
-        self.visit_counts = np.ones(n, dtype=np.int32)
+        # Zero-init: unvisited actions use default_value as Q estimate
+        # (FPU), divided by max(1, visit_count) in select_child.  On the
+        # first real visit, _backup *sets* value_sums to the child's value
+        # instead of adding, eliminating the old "averaging with FPU" distortion.
+        self.visit_counts = np.zeros(n, dtype=np.int32)
         self.value_sums = np.broadcast_to(
             default_value, (n, num_players)
         ).astype(np.float32).copy()

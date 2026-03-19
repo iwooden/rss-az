@@ -87,8 +87,9 @@ def select_child(node: MCTSNode, c_puct: float) -> tuple[int, int]:
         UCB(a) = Q(a) + c_puct * P(a) * sqrt(N_parent) / (1 + N(a))
 
     where Q(a) is the mean value for the active player at this node.
-    Each action starts with a virtual visit at the parent's NN value (FPU),
-    so visit_counts >= 1 and Q = value_sums / visit_counts always.
+    Unvisited actions (visit_count == 0) use the parent's NN value as
+    the Q estimate (FPU).  Division uses max(1, visit_count) to avoid
+    division by zero.
 
     Args:
         node: The parent node to select from. Must be expanded.
@@ -104,8 +105,9 @@ def select_child(node: MCTSNode, c_puct: float) -> tuple[int, int]:
     sqrt_parent = math.sqrt(node.visit_count)
     vc = node.visit_counts
 
-    # Q values: visit_counts >= 1 always (FPU virtual visit), no branching
-    q = node.value_sums[:, player] / vc
+    # Q values: unvisited actions (vc=0) use FPU default_value stored
+    # in value_sums; max(1, vc) avoids division by zero.
+    q = node.value_sums[:, player] / np.maximum(vc, 1)
     ucb = q + c_puct * node.priors * sqrt_parent / (1 + vc)
     best_idx = int(np.argmax(ucb))
     return int(node.legal_actions[best_idx]), best_idx
@@ -424,6 +426,11 @@ def _backup(
     Visit counts are NOT incremented here — they are incremented at
     selection time by _increment_visits.
 
+    On the first real visit to an edge (visit_counts == 1, set by
+    _increment_visits), we *replace* the FPU default value instead of
+    adding to it.  This eliminates the distortion where Q averaged the
+    parent's value with the child's value.
+
     Args:
         path: List of (parent_node, action, array_idx) tuples from root
             to leaf's parent.
@@ -433,9 +440,13 @@ def _backup(
     leaf.value_sum += values
 
     for node, _, array_idx in reversed(path):
-        assert node.value_sums is not None
+        assert node.value_sums is not None and node.visit_counts is not None
         node.value_sum += values
-        node.value_sums[array_idx] += values
+        if node.visit_counts[array_idx] == 1:
+            # First real visit: replace FPU default value
+            node.value_sums[array_idx] = values
+        else:
+            node.value_sums[array_idx] += values
 
 
 def get_action_probabilities(
@@ -461,21 +472,20 @@ def get_action_probabilities(
         return probs
     assert root.visit_counts is not None
 
-    # Real visit counts (subtract virtual FPU visit)
-    real_counts = root.visit_counts - 1
+    counts = root.visit_counts
 
     if temperature < 1e-8:
         # Greedy: pick the most-visited action
-        best_idx = int(np.argmax(real_counts))
+        best_idx = int(np.argmax(counts))
         probs[root.legal_actions[best_idx]] = 1.0
         return probs
 
     # Temperature-scaled visit counts
-    counts = real_counts.astype(np.float32) ** (1.0 / temperature)
-    total = counts.sum()
+    scaled = counts.astype(np.float32) ** (1.0 / temperature)
+    total = scaled.sum()
     if total > 0:
-        counts /= total
-    probs[root.legal_actions] = counts
+        scaled /= total
+    probs[root.legal_actions] = scaled
 
     return probs
 
@@ -504,11 +514,8 @@ def get_greedy_leaf_value(root: MCTSNode, num_players: int) -> np.ndarray:
 
     while node.expanded() and not node.is_terminal:
         assert node.visit_counts is not None and node.legal_actions is not None
-        # Real visit counts (subtract virtual FPU visit)
-        real_counts = node.visit_counts - 1
-        # Follow the child with the most real visits (greedy)
-        best_idx = int(np.argmax(real_counts))
-        if real_counts[best_idx] == 0:
+        best_idx = int(np.argmax(node.visit_counts))
+        if node.visit_counts[best_idx] == 0:
             # All children are unvisited — this node is the tree-edge leaf.
             # Its value_sum / visit_count equals V_NN from its single evaluation.
             break
