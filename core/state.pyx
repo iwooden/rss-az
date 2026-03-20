@@ -63,8 +63,13 @@ TurnFields = namedtuple('TurnFields', [
     'issue_remaining', 'issue_price_impact', 'issue_cash_gain',
     'ipo_remaining',
     'acq_is_fi_offer', 'acq_synergy_values',
-    'active_company', 'active_company_info',
-    'active_corp', 'active_corp_info', 'active_corp_companies',
+    'active_company',
+    'active_company_stars', 'active_company_low_price',
+    'active_company_face_value', 'active_company_high_price',
+    'active_company_income',
+    'active_corp',
+    'active_corp_income', 'active_corp_stars', 'active_corp_share_price',
+    'active_corp_companies',
     'cards_remaining',
 ])
 
@@ -87,10 +92,16 @@ LayoutInfo = namedtuple('LayoutInfo', [
     'auction_passed_offset',
     # Active company offsets (absolute, within turn state)
     'active_company_offset',
-    'active_company_info_offset',
+    'active_company_stars_offset',
+    'active_company_low_price_offset',
+    'active_company_face_value_offset',
+    'active_company_high_price_offset',
+    'active_company_income_offset',
     # Active corp offsets (absolute, within turn state)
     'active_corp_offset',
-    'active_corp_info_offset',
+    'active_corp_income_offset',
+    'active_corp_stars_offset',
+    'active_corp_share_price_offset',
     'active_corp_companies_offset',
     # Convenience
     'num_players',
@@ -115,6 +126,14 @@ cnp.import_array()
 # cannot be imported across Cython modules.
 DEF OFFER_BUFFER_SIZE = 250
 DEF CLOSE_OFFER_BUFFER_SIZE = 100
+
+# Auction slot sub-offsets (within each 5-float slot)
+DEF SLOT_STARS = 0
+DEF SLOT_LOW_PRICE = 1
+DEF SLOT_FACE_VALUE = 2
+DEF SLOT_HIGH_PRICE = 3
+DEF SLOT_INCOME = 4
+DEF AUCTION_SLOT_STRIDE = 5
 
 # =============================================================================
 # STATE LAYOUT STRUCTURE
@@ -226,10 +245,16 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         GameConstants.NUM_COMPANIES +     # acq_synergy_values
         # Active company
         GameConstants.NUM_COMPANIES +     # active_company (one-hot)
-        5 +                              # active_company_info (stars, low, face, high, income)
+        1 +                              # active_company_stars
+        1 +                              # active_company_low_price
+        1 +                              # active_company_face_value
+        1 +                              # active_company_high_price
+        1 +                              # active_company_income
         # Active corp
         GameConstants.NUM_CORPS +         # active_corp (one-hot)
-        3 +                              # active_corp_info (income, stars, share_price)
+        1 +                              # active_corp_income
+        1 +                              # active_corp_stars
+        1 +                              # active_corp_share_price
         GameConstants.NUM_COMPANIES +     # active_corp_companies (owned company flags)
         # Deck
         1                                # cards_remaining
@@ -237,8 +262,8 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     layout.turn_offset = offset
     offset += layout.turn_size
 
-    # Auction slot info (5 scalars per slot: stars, low, face, high, income)
-    layout.auction_slot_info_size = 5 * num_players
+    # Auction slot info (AUCTION_SLOT_STRIDE scalars per slot: stars, low, face, high, income)
+    layout.auction_slot_info_size = AUCTION_SLOT_STRIDE * num_players
     layout.auction_slot_info_offset = offset
     offset += layout.auction_slot_info_size
 
@@ -391,17 +416,29 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
     t.acq_synergy_values = offset
     offset += GameConstants.NUM_COMPANIES
 
-    # Active company: one-hot (36) + contextual info (5 scalars)
+    # Active company: one-hot (36) + 5 individual scalars
     t.active_company = offset
     offset += GameConstants.NUM_COMPANIES
-    t.active_company_info = offset
-    offset += 5
+    t.active_company_stars = offset
+    offset += 1
+    t.active_company_low_price = offset
+    offset += 1
+    t.active_company_face_value = offset
+    offset += 1
+    t.active_company_high_price = offset
+    offset += 1
+    t.active_company_income = offset
+    offset += 1
 
-    # Active corp: one-hot (8) + contextual info (3 scalars) + owned companies (36 flags)
+    # Active corp: one-hot (8) + 3 individual scalars + owned companies (36 flags)
     t.active_corp = offset
     offset += GameConstants.NUM_CORPS
-    t.active_corp_info = offset
-    offset += 3
+    t.active_corp_income = offset
+    offset += 1
+    t.active_corp_stars = offset
+    offset += 1
+    t.active_corp_share_price = offset
+    offset += 1
     t.active_corp_companies = offset
     offset += GameConstants.NUM_COMPANIES
 
@@ -489,9 +526,15 @@ def get_layout(int num_players):
         auction_starter_offset=layout.turn_offset + turn.auction_starter,
         auction_passed_offset=layout.turn_offset + turn.auction_passed,
         active_company_offset=layout.turn_offset + turn.active_company,
-        active_company_info_offset=layout.turn_offset + turn.active_company_info,
+        active_company_stars_offset=layout.turn_offset + turn.active_company_stars,
+        active_company_low_price_offset=layout.turn_offset + turn.active_company_low_price,
+        active_company_face_value_offset=layout.turn_offset + turn.active_company_face_value,
+        active_company_high_price_offset=layout.turn_offset + turn.active_company_high_price,
+        active_company_income_offset=layout.turn_offset + turn.active_company_income,
         active_corp_offset=layout.turn_offset + turn.active_corp,
-        active_corp_info_offset=layout.turn_offset + turn.active_corp_info,
+        active_corp_income_offset=layout.turn_offset + turn.active_corp_income,
+        active_corp_stars_offset=layout.turn_offset + turn.active_corp_stars,
+        active_corp_share_price_offset=layout.turn_offset + turn.active_corp_share_price,
         active_corp_companies_offset=layout.turn_offset + turn.active_corp_companies,
         num_players=num_players,
     )
@@ -564,9 +607,15 @@ def get_turn_fields(int num_players):
         acq_is_fi_offer=t.acq_is_fi_offer,
         acq_synergy_values=t.acq_synergy_values,
         active_company=t.active_company,
-        active_company_info=t.active_company_info,
+        active_company_stars=t.active_company_stars,
+        active_company_low_price=t.active_company_low_price,
+        active_company_face_value=t.active_company_face_value,
+        active_company_high_price=t.active_company_high_price,
+        active_company_income=t.active_company_income,
         active_corp=t.active_corp,
-        active_corp_info=t.active_corp_info,
+        active_corp_income=t.active_corp_income,
+        active_corp_stars=t.active_corp_stars,
+        active_corp_share_price=t.active_corp_share_price,
         active_corp_companies=t.active_corp_companies,
         cards_remaining=t.cards_remaining,
     )
@@ -1060,20 +1109,20 @@ cdef class GameState:
         cdef int coo_level = <int>self._data[self._layout.hidden_coo_level_offset]
 
         for slot in range(self._num_players):
-            base = self._layout.auction_slot_info_offset + slot * 5
+            base = self._layout.auction_slot_info_offset + slot * AUCTION_SLOT_STRIDE
             company_id = get_auction_company_for_slot(self, slot)
             if company_id >= 0:
-                self._data[base + 0] = <float>get_company_stars(company_id) / COMPANY_STAR_DIVISOR
-                self._data[base + 1] = <float>get_company_low_price(company_id) / PRICE_DIVISOR
-                self._data[base + 2] = <float>get_company_face_value(company_id) / PRICE_DIVISOR
-                self._data[base + 3] = <float>get_company_high_price(company_id) / PRICE_DIVISOR
-                self._data[base + 4] = <float>get_adjusted_company_income(company_id, coo_level) / INCOME_DIVISOR
+                self._data[base + SLOT_STARS] = <float>get_company_stars(company_id) / COMPANY_STAR_DIVISOR
+                self._data[base + SLOT_LOW_PRICE] = <float>get_company_low_price(company_id) / PRICE_DIVISOR
+                self._data[base + SLOT_FACE_VALUE] = <float>get_company_face_value(company_id) / PRICE_DIVISOR
+                self._data[base + SLOT_HIGH_PRICE] = <float>get_company_high_price(company_id) / PRICE_DIVISOR
+                self._data[base + SLOT_INCOME] = <float>get_adjusted_company_income(company_id, coo_level) / INCOME_DIVISOR
             else:
-                self._data[base + 0] = 0.0
-                self._data[base + 1] = 0.0
-                self._data[base + 2] = 0.0
-                self._data[base + 3] = 0.0
-                self._data[base + 4] = 0.0
+                self._data[base + SLOT_STARS] = 0.0
+                self._data[base + SLOT_LOW_PRICE] = 0.0
+                self._data[base + SLOT_FACE_VALUE] = 0.0
+                self._data[base + SLOT_HIGH_PRICE] = 0.0
+                self._data[base + SLOT_INCOME] = 0.0
 
     # =========================================================================
     # INVEST PHASE IMPACTS
@@ -1127,31 +1176,31 @@ cdef class GameState:
 
     cpdef void set_active_company(self, int company_id):
         """
-        Set active company info scalars in turn state.
+        Set active company scalars in turn state.
 
         Writes stars, low_price, face_value, high_price, adjusted_income
         for the given company. The one-hot is managed by the per-phase
         set/clear methods (set_auction_company, set_acq_target_company, etc.).
         """
-        cdef int base = self._layout.turn_offset + self._turn_offsets.active_company_info
+        cdef int turn_base = self._layout.turn_offset
         cdef int coo_level = <int>self._data[self._layout.hidden_coo_level_offset]
-        self._data[base + 0] = <float>get_company_stars(company_id) / COMPANY_STAR_DIVISOR
-        self._data[base + 1] = <float>get_company_low_price(company_id) / PRICE_DIVISOR
-        self._data[base + 2] = <float>get_company_face_value(company_id) / PRICE_DIVISOR
-        self._data[base + 3] = <float>get_company_high_price(company_id) / PRICE_DIVISOR
-        self._data[base + 4] = <float>get_adjusted_company_income(company_id, coo_level) / INCOME_DIVISOR
+        self._data[turn_base + self._turn_offsets.active_company_stars] = <float>get_company_stars(company_id) / COMPANY_STAR_DIVISOR
+        self._data[turn_base + self._turn_offsets.active_company_low_price] = <float>get_company_low_price(company_id) / PRICE_DIVISOR
+        self._data[turn_base + self._turn_offsets.active_company_face_value] = <float>get_company_face_value(company_id) / PRICE_DIVISOR
+        self._data[turn_base + self._turn_offsets.active_company_high_price] = <float>get_company_high_price(company_id) / PRICE_DIVISOR
+        self._data[turn_base + self._turn_offsets.active_company_income] = <float>get_adjusted_company_income(company_id, coo_level) / INCOME_DIVISOR
 
     cpdef void clear_active_company(self):
-        """Clear active company info scalars (zero-fill 5 floats).
+        """Clear active company scalars (zero-fill 5 floats).
 
         The one-hot is cleared by the per-phase clear methods.
         """
-        cdef int base = self._layout.turn_offset + self._turn_offsets.active_company_info
-        self._data[base + 0] = 0.0
-        self._data[base + 1] = 0.0
-        self._data[base + 2] = 0.0
-        self._data[base + 3] = 0.0
-        self._data[base + 4] = 0.0
+        cdef int turn_base = self._layout.turn_offset
+        self._data[turn_base + self._turn_offsets.active_company_stars] = 0.0
+        self._data[turn_base + self._turn_offsets.active_company_low_price] = 0.0
+        self._data[turn_base + self._turn_offsets.active_company_face_value] = 0.0
+        self._data[turn_base + self._turn_offsets.active_company_high_price] = 0.0
+        self._data[turn_base + self._turn_offsets.active_company_income] = 0.0
 
     # =========================================================================
     # ACTIVE CORP CONTEXTUAL INFO
@@ -1159,36 +1208,36 @@ cdef class GameState:
 
     cpdef void set_active_corp(self, int corp_id):
         """
-        Set active corp info and owned companies in turn state.
+        Set active corp scalars and owned companies in turn state.
 
         Writes income, stars, and share_price (all normalized) from the corp's
         data block, plus copies the 36-element owned_companies flags.
         The one-hot is managed by the per-phase set/clear methods
         (set_dividend_corp, set_issue_corp, set_acq_active_corp).
         """
-        cdef int info_base = self._layout.turn_offset + self._turn_offsets.active_corp_info
-        cdef int companies_base = self._layout.turn_offset + self._turn_offsets.active_corp_companies
+        cdef int turn_base = self._layout.turn_offset
+        cdef int companies_base = turn_base + self._turn_offsets.active_corp_companies
         cdef float* corp = self._corp_ptr(corp_id)
         cdef int i
         # Income, stars, and share_price (already normalized in corp data block)
-        self._data[info_base + 0] = corp[self._corp_fields.income]
-        self._data[info_base + 1] = corp[self._corp_fields.stars]
-        self._data[info_base + 2] = corp[self._corp_fields.share_price]
+        self._data[turn_base + self._turn_offsets.active_corp_income] = corp[self._corp_fields.income]
+        self._data[turn_base + self._turn_offsets.active_corp_stars] = corp[self._corp_fields.stars]
+        self._data[turn_base + self._turn_offsets.active_corp_share_price] = corp[self._corp_fields.share_price]
         # Copy owned company flags (36 floats)
         for i in range(<int>GameConstants.NUM_COMPANIES):
             self._data[companies_base + i] = corp[self._corp_fields.owned_companies + i]
 
     cpdef void clear_active_corp(self):
-        """Clear active corp info and owned companies (zero-fill).
+        """Clear active corp scalars and owned companies (zero-fill).
 
         The one-hot is cleared by the per-phase clear methods.
         """
-        cdef int info_base = self._layout.turn_offset + self._turn_offsets.active_corp_info
-        cdef int companies_base = self._layout.turn_offset + self._turn_offsets.active_corp_companies
+        cdef int turn_base = self._layout.turn_offset
+        cdef int companies_base = turn_base + self._turn_offsets.active_corp_companies
         cdef int i
-        self._data[info_base + 0] = 0.0
-        self._data[info_base + 1] = 0.0
-        self._data[info_base + 2] = 0.0
+        self._data[turn_base + self._turn_offsets.active_corp_income] = 0.0
+        self._data[turn_base + self._turn_offsets.active_corp_stars] = 0.0
+        self._data[turn_base + self._turn_offsets.active_corp_share_price] = 0.0
         for i in range(<int>GameConstants.NUM_COMPANIES):
             self._data[companies_base + i] = 0.0
 

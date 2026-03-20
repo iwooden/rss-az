@@ -695,11 +695,10 @@ class TestActiveCorpIssue:
         oh_base = layout.active_corp_offset
         assert issue_state._array[oh_base + corp_id] == 1.0
 
-        info_base = layout.active_corp_info_offset
         corp_offset = layout.corps_offset + corp_id * layout.corp_stride
-        assert abs(issue_state._array[info_base + 0] - issue_state._array[corp_offset + 5]) < 1e-6  # income
-        assert abs(issue_state._array[info_base + 1] - issue_state._array[corp_offset + 6]) < 1e-6  # stars
-        assert abs(issue_state._array[info_base + 2] - issue_state._array[corp_offset + 7]) < 1e-6  # share_price
+        assert abs(issue_state._array[layout.active_corp_income_offset] - issue_state._array[corp_offset + 5]) < 1e-6  # income
+        assert abs(issue_state._array[layout.active_corp_stars_offset] - issue_state._array[corp_offset + 6]) < 1e-6  # stars
+        assert abs(issue_state._array[layout.active_corp_share_price_offset] - issue_state._array[corp_offset + 7]) < 1e-6  # share_price
 
     def test_active_corp_cleared_after_issue(self, issue_state):
         """Active corp should be cleared when transitioning out of ISSUE."""
@@ -709,10 +708,10 @@ class TestActiveCorpIssue:
 
         phase = TURN.get_phase(issue_state)
         if phase != GamePhases.PHASE_ISSUE_SHARES:
-            info_base = layout.active_corp_info_offset
-            for i in range(3):
-                assert issue_state._array[info_base + i] == 0.0, (
-                    f"active_corp_info[{i}] not cleared after issue transition"
+            for offset_name in ('active_corp_income_offset', 'active_corp_stars_offset',
+                                'active_corp_share_price_offset'):
+                assert issue_state._array[getattr(layout, offset_name)] == 0.0, (
+                    f"{offset_name} not cleared after issue transition"
                 )
 
 

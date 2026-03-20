@@ -51,9 +51,15 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
     - acq_is_fi_offer (1)
     - acq_synergy_values (36)
     - active_company (36)
-    - active_company_info (5)
+    - active_company_stars (1)
+    - active_company_low_price (1)
+    - active_company_face_value (1)
+    - active_company_high_price (1)
+    - active_company_income (1)
     - active_corp (8)
-    - active_corp_info (3)
+    - active_corp_income (1)
+    - active_corp_stars (1)
+    - active_corp_share_price (1)
     - active_corp_companies (36)
     """
     cdef TurnOffsets t
@@ -82,10 +88,8 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
     offset += 1
     # Skip acq_synergy_values (36)
     offset += GameConstants.NUM_COMPANIES
-    # Skip active_company (36)
-    offset += GameConstants.NUM_COMPANIES
-    # Skip active_company_info (5)
-    offset += 5
+    # Skip active_company (36) + 5 scalars (stars, low, face, high, income)
+    offset += GameConstants.NUM_COMPANIES + 5
 
     t.active_corp = offset
 

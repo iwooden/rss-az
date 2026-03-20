@@ -88,12 +88,18 @@ cdef struct TurnStateOffsets:
     int ipo_remaining
     int acq_is_fi_offer
     int acq_synergy_values
-    # Active company: one-hot (36) + contextual info (5 scalars)
+    # Active company: one-hot (36) + 5 individual scalars
     int active_company
-    int active_company_info
-    # Active corp: one-hot (8) + contextual info (3 scalars) + owned companies (36 flags)
+    int active_company_stars
+    int active_company_low_price
+    int active_company_face_value
+    int active_company_high_price
+    int active_company_income
+    # Active corp: one-hot (8) + 3 individual scalars + owned companies (36 flags)
     int active_corp
-    int active_corp_info
+    int active_corp_income
+    int active_corp_stars
+    int active_corp_share_price
     int active_corp_companies
     # Cards remaining in deck
     int cards_remaining

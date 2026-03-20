@@ -160,16 +160,20 @@ def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
     # Active company: one-hot(NC)
     groups.append(("turn:active_company", np.arange(t + tf.active_company, t + tf.active_company + NC)))
 
-    # Active company info: 5 scalars (stars, low, face, high, income)
-    active_co_info_size = tf.active_corp - tf.active_company_info
-    groups.append(("turn:active_company_info", np.arange(t + tf.active_company_info, t + tf.active_company_info + active_co_info_size)))
+    # Active company scalars (5 individual features)
+    groups.append(("turn:active_company_stars", np.array([t + tf.active_company_stars])))
+    groups.append(("turn:active_company_low_price", np.array([t + tf.active_company_low_price])))
+    groups.append(("turn:active_company_face_value", np.array([t + tf.active_company_face_value])))
+    groups.append(("turn:active_company_high_price", np.array([t + tf.active_company_high_price])))
+    groups.append(("turn:active_company_income", np.array([t + tf.active_company_income])))
 
     # Active corp: one-hot(NK)
     groups.append(("turn:active_corp", np.arange(t + tf.active_corp, t + tf.active_corp + NK)))
 
-    # Active corp info: 3 scalars (income, stars, share_price)
-    active_corp_info_size = tf.active_corp_companies - tf.active_corp_info
-    groups.append(("turn:active_corp_info", np.arange(t + tf.active_corp_info, t + tf.active_corp_info + active_corp_info_size)))
+    # Active corp scalars (3 individual features)
+    groups.append(("turn:active_corp_income", np.array([t + tf.active_corp_income])))
+    groups.append(("turn:active_corp_stars", np.array([t + tf.active_corp_stars])))
+    groups.append(("turn:active_corp_share_price", np.array([t + tf.active_corp_share_price])))
 
     # Active corp companies: NC flags
     groups.append(("turn:active_corp_companies", np.arange(t + tf.active_corp_companies, t + tf.active_corp_companies + NC)))

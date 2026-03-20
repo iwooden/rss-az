@@ -1322,10 +1322,9 @@ class TestActiveCompanyClosing:
         closing_company = TURN.get_closing_company(state)
         if closing_company >= 0:
             layout = get_layout(3)
-            base = layout.active_company_info_offset
             expected_fv = get_company_face_value(closing_company) / PY_PRICE_DIVISOR
-            assert abs(state._array[base + 2] - expected_fv) < 1e-6
-            assert state._array[base + 0] > 0.0  # stars > 0
+            assert abs(state._array[layout.active_company_face_value_offset] - expected_fv) < 1e-6
+            assert state._array[layout.active_company_stars_offset] > 0.0  # stars > 0
 
     def test_active_company_cleared_after_closing_exhausted(self, closing_offer_state):
         """Active company block is zeroed when no more close offers remain."""
@@ -1346,10 +1345,11 @@ class TestActiveCompanyClosing:
 
         # Active company should be cleared
         layout = get_layout(3)
-        base = layout.active_company_info_offset
-        for i in range(5):
-            assert state._array[base + i] == 0.0, (
-                f"active_company[{i}] should be 0 after all close offers exhausted"
+        for offset_name in ('active_company_stars_offset', 'active_company_low_price_offset',
+                            'active_company_face_value_offset', 'active_company_high_price_offset',
+                            'active_company_income_offset'):
+            assert state._array[getattr(layout, offset_name)] == 0.0, (
+                f"{offset_name} should be 0 after all close offers exhausted"
             )
 
 
@@ -1388,11 +1388,10 @@ class TestActiveCorpClosing:
                 )
 
                 # Verify info matches corp data
-                info_base = layout.active_corp_info_offset
                 corp_offset = layout.corps_offset + owner_id * layout.corp_stride
-                assert abs(gs._array[info_base + 0] - gs._array[corp_offset + 5]) < 1e-6  # income
-                assert abs(gs._array[info_base + 1] - gs._array[corp_offset + 6]) < 1e-6  # stars
-                assert abs(gs._array[info_base + 2] - gs._array[corp_offset + 7]) < 1e-6  # share_price
+                assert abs(gs._array[layout.active_corp_income_offset] - gs._array[corp_offset + 5]) < 1e-6  # income
+                assert abs(gs._array[layout.active_corp_stars_offset] - gs._array[corp_offset + 6]) < 1e-6  # stars
+                assert abs(gs._array[layout.active_corp_share_price_offset] - gs._array[corp_offset + 7]) < 1e-6  # share_price
                 break
 
     def test_active_corp_cleared_for_player_owned_offer(self, closing_offer_state):
@@ -1411,17 +1410,17 @@ class TestActiveCorpClosing:
 
         layout = get_layout(3)
         oh_base = layout.active_corp_offset
-        info_base = layout.active_corp_info_offset
 
         # One-hot should be all zeros (no corp)
         for i in range(8):
             assert gs._array[oh_base + i] == 0.0, (
                 f"active_corp_oh[{i}] should be 0 for player-owned offer"
             )
-        # Info should be all zeros
-        for i in range(3):
-            assert gs._array[info_base + i] == 0.0, (
-                f"active_corp_info[{i}] should be 0 for player-owned offer"
+        # Scalars should be all zeros
+        for offset_name in ('active_corp_income_offset', 'active_corp_stars_offset',
+                            'active_corp_share_price_offset'):
+            assert gs._array[getattr(layout, offset_name)] == 0.0, (
+                f"{offset_name} should be 0 for player-owned offer"
             )
 
     def test_active_corp_cleared_after_closing_exhausted(self, closing_offer_state):
@@ -1440,11 +1439,11 @@ class TestActiveCorpClosing:
             apply_closing_action_py(gs, ACTION_PASS_PY)
 
         layout = get_layout(3)
-        info_base = layout.active_corp_info_offset
         co_base = layout.active_corp_companies_offset
-        for i in range(3):
-            assert gs._array[info_base + i] == 0.0, (
-                f"active_corp_info[{i}] not cleared after closing exhausted"
+        for offset_name in ('active_corp_income_offset', 'active_corp_stars_offset',
+                            'active_corp_share_price_offset'):
+            assert gs._array[getattr(layout, offset_name)] == 0.0, (
+                f"{offset_name} not cleared after closing exhausted"
             )
         for i in range(36):
             assert gs._array[co_base + i] == 0.0, (

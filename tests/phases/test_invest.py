@@ -921,8 +921,10 @@ class TestAuctionSlotInfo:
         layout_info = get_layout(3)
 
         # Verify active company is zero before auction
-        base = layout_info.active_company_info_offset
-        assert all(game_state._array[base + i] == 0.0 for i in range(5))
+        for offset_name in ('active_company_stars_offset', 'active_company_low_price_offset',
+                            'active_company_face_value_offset', 'active_company_high_price_offset',
+                            'active_company_income_offset'):
+            assert game_state._array[getattr(layout_info, offset_name)] == 0.0
 
         # Start an auction
         auction_idx = get_first_valid_auction_action(game_state)
@@ -933,14 +935,13 @@ class TestAuctionSlotInfo:
         company_id = TURN.get_auction_company(game_state)
 
         # Active company should now match the auction company
-        assert game_state._array[base + 0] != 0.0, "Active company stars should be set"
+        assert game_state._array[layout_info.active_company_stars_offset] != 0.0, "Active company stars should be set"
         coo = TURN.get_coo_level(game_state)
-        assert abs(game_state._array[base + 2] - get_company_face_value(company_id) / PY_PRICE_DIVISOR) < 1e-6
+        assert abs(game_state._array[layout_info.active_company_face_value_offset] - get_company_face_value(company_id) / PY_PRICE_DIVISOR) < 1e-6
 
     def test_active_company_cleared_after_bid_resolves(self, game_state):
         """Active company block is zeroed after auction resolution."""
         layout_info = get_layout(3)
-        base = layout_info.active_company_info_offset
 
         # Start and resolve auction
         auction_idx = get_first_valid_auction_action(game_state)
@@ -954,8 +955,11 @@ class TestAuctionSlotInfo:
 
         # Back in INVEST, active company should be cleared
         assert game_state.get_phase() == GamePhases.PHASE_INVEST
-        assert all(game_state._array[base + i] == 0.0 for i in range(5)), \
-            "Active company should be zeroed after bid resolution"
+        for offset_name in ('active_company_stars_offset', 'active_company_low_price_offset',
+                            'active_company_face_value_offset', 'active_company_high_price_offset',
+                            'active_company_income_offset'):
+            assert game_state._array[getattr(layout_info, offset_name)] == 0.0, \
+                f"{offset_name} should be zeroed after bid resolution"
 
 
 # =============================================================================

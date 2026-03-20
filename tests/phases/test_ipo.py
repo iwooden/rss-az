@@ -646,10 +646,9 @@ class TestActiveCompanyIPO:
         assert company_id >= 0
 
         layout = get_layout(3)
-        base = layout.active_company_info_offset
         expected_fv = get_company_face_value(company_id) / PY_PRICE_DIVISOR
-        assert abs(state._array[base + 2] - expected_fv) < 1e-6
-        assert state._array[base + 0] > 0.0  # stars > 0
+        assert abs(state._array[layout.active_company_face_value_offset] - expected_fv) < 1e-6
+        assert state._array[layout.active_company_stars_offset] > 0.0  # stars > 0
 
     def test_active_company_cleared_after_ipo_phase_ends(self, ipo_state_with_company):
         """Active company block is zeroed after IPO phase transitions to INVEST."""
@@ -662,10 +661,11 @@ class TestActiveCompanyIPO:
         assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
 
         layout = get_layout(3)
-        base = layout.active_company_info_offset
-        for i in range(5):
-            assert state._array[base + i] == 0.0, (
-                f"active_company[{i}] should be 0 after IPO phase ends"
+        for offset_name in ('active_company_stars_offset', 'active_company_low_price_offset',
+                            'active_company_face_value_offset', 'active_company_high_price_offset',
+                            'active_company_income_offset'):
+            assert state._array[getattr(layout, offset_name)] == 0.0, (
+                f"{offset_name} should be 0 after IPO phase ends"
             )
 
     def test_active_company_updates_between_ipo_companies(self, ipo_state_multiple_companies):
@@ -675,12 +675,11 @@ class TestActiveCompanyIPO:
         setup_ipo_phase_py(state)
 
         layout = get_layout(3)
-        base = layout.active_company_info_offset
 
         first_company = TURN.get_ipo_company(state)
         assert first_company >= 0
         first_fv = get_company_face_value(first_company) / PY_PRICE_DIVISOR
-        assert abs(state._array[base + 2] - first_fv) < 1e-6
+        assert abs(state._array[layout.active_company_face_value_offset] - first_fv) < 1e-6
 
         # IPO the first company (corp 0, par slot 0)
         apply_ipo_action_py(state, 0, 0)
@@ -688,5 +687,5 @@ class TestActiveCompanyIPO:
         second_company = TURN.get_ipo_company(state)
         if second_company >= 0:
             second_fv = get_company_face_value(second_company) / PY_PRICE_DIVISOR
-            assert abs(state._array[base + 2] - second_fv) < 1e-6
+            assert abs(state._array[layout.active_company_face_value_offset] - second_fv) < 1e-6
             assert second_fv != first_fv or second_company != first_company

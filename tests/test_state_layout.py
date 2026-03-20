@@ -95,11 +95,12 @@ class TestComponentSizes:
             )
 
     def test_auction_slot_info_size(self):
-        """Auction slot info = 5 * num_players."""
+        """Auction slot info = AUCTION_SLOT_STRIDE * num_players."""
+        AUCTION_SLOT_STRIDE = 5  # stars, low_price, face_value, high_price, income
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
-            assert layout.auction_slot_info_size == 5 * num_players, (
-                f"{num_players} players: auction slot info {layout.auction_slot_info_size} != {5 * num_players}"
+            assert layout.auction_slot_info_size == AUCTION_SLOT_STRIDE * num_players, (
+                f"{num_players} players: auction slot info {layout.auction_slot_info_size} != {AUCTION_SLOT_STRIDE * num_players}"
             )
 
 
@@ -120,19 +121,21 @@ class TestAuctionSlotInfo:
 
     def test_auction_slot_data_matches_companies(self, state):
         """Each slot's data should match the actual auction company's static data."""
+        SLOT_STARS, SLOT_LOW_PRICE, SLOT_FACE_VALUE, SLOT_HIGH_PRICE, SLOT_INCOME = 0, 1, 2, 3, 4
+        AUCTION_SLOT_STRIDE = 5
         layout = get_layout(3)
         coo_level = TURN.get_coo_level(state)
         for slot in range(3):
             company_id = get_auction_company_for_slot_py(state, slot)
             if company_id < 0:
                 continue
-            base = layout.auction_slot_info_offset + slot * 5
-            assert abs(state._array[base + 0] - get_company_stars(company_id) / PY_COMPANY_STAR_DIVISOR) < 1e-6
-            assert abs(state._array[base + 1] - get_company_low_price(company_id) / PY_PRICE_DIVISOR) < 1e-6
-            assert abs(state._array[base + 2] - get_company_face_value(company_id) / PY_PRICE_DIVISOR) < 1e-6
-            assert abs(state._array[base + 3] - get_company_high_price(company_id) / PY_PRICE_DIVISOR) < 1e-6
+            base = layout.auction_slot_info_offset + slot * AUCTION_SLOT_STRIDE
+            assert abs(state._array[base + SLOT_STARS] - get_company_stars(company_id) / PY_COMPANY_STAR_DIVISOR) < 1e-6
+            assert abs(state._array[base + SLOT_LOW_PRICE] - get_company_low_price(company_id) / PY_PRICE_DIVISOR) < 1e-6
+            assert abs(state._array[base + SLOT_FACE_VALUE] - get_company_face_value(company_id) / PY_PRICE_DIVISOR) < 1e-6
+            assert abs(state._array[base + SLOT_HIGH_PRICE] - get_company_high_price(company_id) / PY_PRICE_DIVISOR) < 1e-6
             expected_income = get_adjusted_company_income(company_id, coo_level) / PY_INCOME_DIVISOR
-            assert abs(state._array[base + 4] - expected_income) < 1e-6
+            assert abs(state._array[base + SLOT_INCOME] - expected_income) < 1e-6
 
     def test_empty_slots_are_zero(self, state):
         """When fewer companies available than slots, remaining slots are zero."""
@@ -147,9 +150,10 @@ class TestAuctionSlotInfo:
         state._populate_auction_slot_info()
 
         # All 3 slots should now be zero
+        AUCTION_SLOT_STRIDE = 5
         for slot in range(3):
-            base = layout.auction_slot_info_offset + slot * 5
-            for i in range(5):
+            base = layout.auction_slot_info_offset + slot * AUCTION_SLOT_STRIDE
+            for i in range(AUCTION_SLOT_STRIDE):
                 assert state._array[base + i] == 0.0, (
                     f"slot {slot} field {i} should be 0 when no auction companies"
                 )
@@ -165,38 +169,39 @@ class TestActiveCompany:
         return gs
 
     def test_active_company_zeroed_on_init(self, state):
-        """Active company one-hot and info should be zero after initialization."""
+        """Active company one-hot and scalars should be zero after initialization."""
         layout = get_layout(3)
         oh_base = layout.active_company_offset
-        info_base = layout.active_company_info_offset
         for i in range(36):
             assert state._array[oh_base + i] == 0.0, f"active_company_oh[{i}] != 0.0 at init"
-        for i in range(5):
-            assert state._array[info_base + i] == 0.0, f"active_company_info[{i}] != 0.0 at init"
+        for offset_name in ('active_company_stars_offset', 'active_company_low_price_offset',
+                            'active_company_face_value_offset', 'active_company_high_price_offset',
+                            'active_company_income_offset'):
+            assert state._array[getattr(layout, offset_name)] == 0.0, f"{offset_name} != 0.0 at init"
 
     def test_set_active_company(self, state):
-        """set_active_company should populate the 5 info scalars correctly."""
+        """set_active_company should populate the 5 scalars correctly."""
         layout = get_layout(3)
         company_id = 5  # An arbitrary company
         coo_level = TURN.get_coo_level(state)
 
         state.set_active_company(company_id)
-        base = layout.active_company_info_offset
-        assert abs(state._array[base + 0] - get_company_stars(company_id) / PY_COMPANY_STAR_DIVISOR) < 1e-6
-        assert abs(state._array[base + 1] - get_company_low_price(company_id) / PY_PRICE_DIVISOR) < 1e-6
-        assert abs(state._array[base + 2] - get_company_face_value(company_id) / PY_PRICE_DIVISOR) < 1e-6
-        assert abs(state._array[base + 3] - get_company_high_price(company_id) / PY_PRICE_DIVISOR) < 1e-6
+        assert abs(state._array[layout.active_company_stars_offset] - get_company_stars(company_id) / PY_COMPANY_STAR_DIVISOR) < 1e-6
+        assert abs(state._array[layout.active_company_low_price_offset] - get_company_low_price(company_id) / PY_PRICE_DIVISOR) < 1e-6
+        assert abs(state._array[layout.active_company_face_value_offset] - get_company_face_value(company_id) / PY_PRICE_DIVISOR) < 1e-6
+        assert abs(state._array[layout.active_company_high_price_offset] - get_company_high_price(company_id) / PY_PRICE_DIVISOR) < 1e-6
         expected_income = get_adjusted_company_income(company_id, coo_level) / PY_INCOME_DIVISOR
-        assert abs(state._array[base + 4] - expected_income) < 1e-6
+        assert abs(state._array[layout.active_company_income_offset] - expected_income) < 1e-6
 
     def test_clear_active_company(self, state):
-        """clear_active_company should zero out the 5 info scalars."""
+        """clear_active_company should zero out the 5 scalars."""
         layout = get_layout(3)
         state.set_active_company(10)  # Set first
         state.clear_active_company()  # Then clear
-        base = layout.active_company_info_offset
-        for i in range(5):
-            assert state._array[base + i] == 0.0, f"active_company_info[{i}] != 0.0 after clear"
+        for offset_name in ('active_company_stars_offset', 'active_company_low_price_offset',
+                            'active_company_face_value_offset', 'active_company_high_price_offset',
+                            'active_company_income_offset'):
+            assert state._array[getattr(layout, offset_name)] == 0.0, f"{offset_name} != 0.0 after clear"
 
 
 class TestActiveCorp:
@@ -209,20 +214,20 @@ class TestActiveCorp:
         return gs
 
     def test_active_corp_zeroed_on_init(self, state):
-        """Active corp one-hot, info, and companies should be zero after init."""
+        """Active corp one-hot, scalars, and companies should be zero after init."""
         layout = get_layout(3)
         oh_base = layout.active_corp_offset
-        info_base = layout.active_corp_info_offset
         co_base = layout.active_corp_companies_offset
         for i in range(8):
             assert state._array[oh_base + i] == 0.0, f"active_corp_oh[{i}] != 0.0 at init"
-        for i in range(3):
-            assert state._array[info_base + i] == 0.0, f"active_corp_info[{i}] != 0.0 at init"
+        for offset_name in ('active_corp_income_offset', 'active_corp_stars_offset',
+                            'active_corp_share_price_offset'):
+            assert state._array[getattr(layout, offset_name)] == 0.0, f"{offset_name} != 0.0 at init"
         for i in range(36):
             assert state._array[co_base + i] == 0.0, f"active_corp_companies[{i}] != 0.0 at init"
 
     def test_set_active_corp(self, state):
-        """set_active_corp should populate info and owned companies from corp data."""
+        """set_active_corp should populate scalars and owned companies from corp data."""
         layout = get_layout(3)
         cf = get_corp_fields()
         # Float a corp first so it has meaningful data
@@ -230,17 +235,16 @@ class TestActiveCorp:
         float_corp_for_test(state, corp_id=0, par_index=10, player_id=0)
 
         state.set_active_corp(0)
-        info_base = layout.active_corp_info_offset
         co_base = layout.active_corp_companies_offset
 
-        # Info scalars: income, stars, share_price (already normalized in corp data)
+        # Individual scalars: income, stars, share_price (already normalized in corp data)
         corp_base = layout.corps_offset + 0 * layout.corp_stride
         corp_ptr_income = state._array[corp_base + cf.income]
         corp_ptr_stars = state._array[corp_base + cf.stars]
         corp_ptr_price = state._array[corp_base + cf.share_price]
-        assert abs(state._array[info_base + 0] - corp_ptr_income) < 1e-6
-        assert abs(state._array[info_base + 1] - corp_ptr_stars) < 1e-6
-        assert abs(state._array[info_base + 2] - corp_ptr_price) < 1e-6
+        assert abs(state._array[layout.active_corp_income_offset] - corp_ptr_income) < 1e-6
+        assert abs(state._array[layout.active_corp_stars_offset] - corp_ptr_stars) < 1e-6
+        assert abs(state._array[layout.active_corp_share_price_offset] - corp_ptr_price) < 1e-6
 
         # Owned companies should match corp's owned_companies block
         corp_owned_offset = corp_base + cf.owned_companies
@@ -250,17 +254,17 @@ class TestActiveCorp:
             )
 
     def test_clear_active_corp(self, state):
-        """clear_active_corp should zero out info and owned companies."""
+        """clear_active_corp should zero out scalars and owned companies."""
         layout = get_layout(3)
         from tests.phases.conftest import float_corp_for_test
         float_corp_for_test(state, corp_id=0, par_index=10, player_id=0)
         state.set_active_corp(0)
         state.clear_active_corp()
 
-        info_base = layout.active_corp_info_offset
         co_base = layout.active_corp_companies_offset
-        for i in range(3):
-            assert state._array[info_base + i] == 0.0, f"active_corp_info[{i}] != 0.0 after clear"
+        for offset_name in ('active_corp_income_offset', 'active_corp_stars_offset',
+                            'active_corp_share_price_offset'):
+            assert state._array[getattr(layout, offset_name)] == 0.0, f"{offset_name} != 0.0 after clear"
         for i in range(36):
             assert state._array[co_base + i] == 0.0, f"active_corp_companies[{i}] != 0.0 after clear"
 

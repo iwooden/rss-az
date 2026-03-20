@@ -805,20 +805,18 @@ class TestActiveCompanyBid:
     def test_active_company_set_during_bid(self, bid_state):
         """Active company block has correct data during BID_IN_AUCTION."""
         layout = get_layout(3)
-        base = layout.active_company_info_offset
         company_id = TURN.get_auction_company(bid_state)
 
         # Active company face_value should match the auction company
         expected_fv = get_company_face_value(company_id) / PY_PRICE_DIVISOR
-        assert abs(bid_state._array[base + 2] - expected_fv) < 1e-6
+        assert abs(bid_state._array[layout.active_company_face_value_offset] - expected_fv) < 1e-6
 
         # Should be nonzero (stars > 0 for all companies)
-        assert bid_state._array[base + 0] > 0.0
+        assert bid_state._array[layout.active_company_stars_offset] > 0.0
 
     def test_active_company_cleared_after_resolution(self, bid_state):
         """Active company block is zeroed after auction resolves."""
         layout_info = get_layout(3)
-        base = layout_info.active_company_info_offset
         layout = get_action_layout(3)
 
         # Leave auction (2 players leave -> resolution)
@@ -826,15 +824,16 @@ class TestActiveCompanyBid:
         apply_and_verify_all(bid_state, layout['leave_auction'])
 
         assert bid_state.get_phase() == GamePhases.PHASE_INVEST
-        for i in range(5):
-            assert bid_state._array[base + i] == 0.0, (
-                f"active_company[{i}] should be 0 after bid resolution"
+        for offset_name in ('active_company_stars_offset', 'active_company_low_price_offset',
+                            'active_company_face_value_offset', 'active_company_high_price_offset',
+                            'active_company_income_offset'):
+            assert bid_state._array[getattr(layout_info, offset_name)] == 0.0, (
+                f"{offset_name} should be 0 after bid resolution"
             )
 
     def test_active_company_persists_during_bidding(self, bid_state):
         """Active company block stays set while bidding continues."""
         layout_info = get_layout(3)
-        base = layout_info.active_company_info_offset
         layout = get_action_layout(3)
 
         company_id = TURN.get_auction_company(bid_state)
@@ -845,4 +844,4 @@ class TestActiveCompanyBid:
         assert bid_state.get_phase() == GamePhases.PHASE_BID_IN_AUCTION
 
         # Active company should still be set
-        assert abs(bid_state._array[base + 2] - expected_fv) < 1e-6
+        assert abs(bid_state._array[layout_info.active_company_face_value_offset] - expected_fv) < 1e-6

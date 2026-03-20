@@ -65,9 +65,15 @@ Many fields in the visible state are only meaningful during specific game phases
 | `acq_is_fi_offer` | flag | ACQUISITION |
 | `acq_synergy_values` | values | ACQUISITION |
 | `active_company` | one-hot | BID, ACQ, CLOSING, IPO |
-| `active_company_info` | scalars | BID, ACQ, CLOSING, IPO |
+| `active_company_stars` | scalar | BID, ACQ, CLOSING, IPO |
+| `active_company_low_price` | scalar | BID, ACQ, CLOSING, IPO |
+| `active_company_face_value` | scalar | BID, ACQ, CLOSING, IPO |
+| `active_company_high_price` | scalar | BID, ACQ, CLOSING, IPO |
+| `active_company_income` | scalar | BID, ACQ, CLOSING, IPO |
 | `active_corp` | one-hot | DIVIDENDS, ISSUE, ACQ, CLOSING |
-| `active_corp_info` | scalars | DIVIDENDS, ISSUE, ACQ, CLOSING |
+| `active_corp_income` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING |
+| `active_corp_stars` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING |
+| `active_corp_share_price` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING |
 | `active_corp_companies` | flags | DIVIDENDS, ISSUE, ACQ, CLOSING |
 
 **Non-context-dependent fields** (always valid regardless of phase): `phase`, `coo`, all player fields, FI fields, company locations, company adjusted incomes, market availability, corporation data blocks, `turn_number`, `end_card_flipped`, `consecutive_passes`, `cards_remaining`, auction slot info.
@@ -228,10 +234,16 @@ Size varies with player count: `209 + (3 * num_players)`
 | `acq_synergy_values` | 36 | normalized | Synergy income bonus per company / INCOME_DIVISOR, 0 if corp doesn't own |
 | **Active Company:** | | | |
 | `active_company` | 36 | one-hot | Company under consideration in BID, ACQ, CLOSING, IPO. 0 when inactive. |
-| `active_company_info` | 5 | normalized | stars/COMPANY_STAR_DIVISOR, low/face/high / PRICE_DIVISOR, income / INCOME_DIVISOR. 0 when inactive. |
+| `active_company_stars` | 1 | normalized | / COMPANY_STAR_DIVISOR. 0 when inactive. |
+| `active_company_low_price` | 1 | normalized | / PRICE_DIVISOR. 0 when inactive. |
+| `active_company_face_value` | 1 | normalized | / PRICE_DIVISOR. 0 when inactive. |
+| `active_company_high_price` | 1 | normalized | / PRICE_DIVISOR. 0 when inactive. |
+| `active_company_income` | 1 | normalized | Adjusted income / INCOME_DIVISOR. 0 when inactive. |
 | **Active Corp:** | | | |
 | `active_corp` | 8 | one-hot | Corp under consideration in DIVIDENDS, ISSUE, ACQ, CLOSING (corp-owned offers only). 0 when inactive or player-owned. |
-| `active_corp_info` | 3 | normalized | income/PRICE_DIVISOR, stars/CORP_STAR_DIVISOR, share_price/PRICE_DIVISOR. 0 when inactive. |
+| `active_corp_income` | 1 | normalized | / PRICE_DIVISOR. 0 when inactive. |
+| `active_corp_stars` | 1 | normalized | / CORP_STAR_DIVISOR. 0 when inactive. |
+| `active_corp_share_price` | 1 | normalized | / PRICE_DIVISOR. 0 when inactive. |
 | `active_corp_companies` | 36 | flags | Owned company flags copied from corp data block. 0 when inactive. |
 | **Deck:** | | | |
 | `cards_remaining` | 1 | normalized | Cards remaining in deck / NUM_COMPANIES |

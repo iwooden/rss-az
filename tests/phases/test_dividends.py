@@ -784,11 +784,10 @@ class TestActiveCorpDividends:
         assert div_state._array[oh_base + corp_id] == 1.0
 
         # Check info matches corp data
-        info_base = layout.active_corp_info_offset
         corp_offset = layout.corps_offset + corp_id * layout.corp_stride
-        assert abs(div_state._array[info_base + 0] - div_state._array[corp_offset + 5]) < 1e-6  # income
-        assert abs(div_state._array[info_base + 1] - div_state._array[corp_offset + 6]) < 1e-6  # stars
-        assert abs(div_state._array[info_base + 2] - div_state._array[corp_offset + 7]) < 1e-6  # share_price
+        assert abs(div_state._array[layout.active_corp_income_offset] - div_state._array[corp_offset + 5]) < 1e-6  # income
+        assert abs(div_state._array[layout.active_corp_stars_offset] - div_state._array[corp_offset + 6]) < 1e-6  # stars
+        assert abs(div_state._array[layout.active_corp_share_price_offset] - div_state._array[corp_offset + 7]) < 1e-6  # share_price
 
     def test_active_corp_cleared_after_dividends(self, div_state):
         """Active corp info should be cleared when transitioning out of DIVIDENDS."""
@@ -801,10 +800,10 @@ class TestActiveCorpDividends:
         phase = TURN.get_phase(div_state)
         if phase != GamePhases.PHASE_DIVIDENDS:
             # Transitioned out - active corp should be cleared
-            info_base = layout.active_corp_info_offset
-            for i in range(3):
-                assert div_state._array[info_base + i] == 0.0, (
-                    f"active_corp_info[{i}] not cleared after transition"
+            for offset_name in ('active_corp_income_offset', 'active_corp_stars_offset',
+                                'active_corp_share_price_offset'):
+                assert div_state._array[getattr(layout, offset_name)] == 0.0, (
+                    f"{offset_name} not cleared after transition"
                 )
 
     def test_active_corp_updates_between_corps(self, div_state):
