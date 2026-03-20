@@ -97,6 +97,52 @@ cdef void _backup_node(
             value_sums[array_idx, p] = value_sums[array_idx, p] + values[p]
 
 
+cdef void _virtual_backup_node(
+    float[:] value_sum, float[:, :] value_sums,
+    int[:] visit_counts, int array_idx,
+    const float[:] child_q, int num_players,
+) noexcept nogil:
+    """Update root stats for one virtual backup during subtree reuse catch-up.
+
+    Like _backup_node but also increments visit_counts[array_idx] (the root
+    manages its own visit count increment in the caller). On the first visit
+    (visit_counts goes from 0 to 1), replaces the FPU default; otherwise adds.
+    """
+    cdef int p
+    visit_counts[array_idx] = visit_counts[array_idx] + 1
+    cdef bint first_visit = (visit_counts[array_idx] == 1)
+
+    for p in range(num_players):
+        value_sum[p] = value_sum[p] + child_q[p]
+        if first_visit:
+            value_sums[array_idx, p] = child_q[p]
+        else:
+            value_sums[array_idx, p] = value_sums[array_idx, p] + child_q[p]
+
+
+def virtual_backup(root, child, int array_idx):
+    """Perform one virtual backup at the root during subtree reuse.
+
+    Computes the child's mean Q value and updates the root's visit counts,
+    value_sum, and value_sums using typed memoryviews and a nogil C helper.
+    The child node is not modified.
+
+    Args:
+        root: MCTSNode (must be expanded). Modified in place.
+        child: Child MCTSNode with existing visits.
+        array_idx: Index into root's per-action arrays for this child.
+    """
+    cdef int num_players = root.value_sum.shape[0]
+    child_q = child.value_sum / child.visit_count
+    cdef float[:] child_q_view = child_q
+    cdef float[:] root_value_sum = root.value_sum
+    cdef float[:, :] vs = root.value_sums
+    cdef int[:] vc = root.visit_counts
+
+    _virtual_backup_node(root_value_sum, vs, vc, array_idx, child_q_view, num_players)
+    root.visit_count += 1
+
+
 def backup(list path, leaf, values_np):
     """Backpropagate values from a leaf up to the root.
 

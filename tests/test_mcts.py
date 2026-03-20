@@ -1162,23 +1162,30 @@ class TestSubtreeReuse:
         assert root in all_nodes
 
     def test_prepare_reuse_root_returns_child(self, game_state, evaluator):
-        """Should return the chosen child with compacted pool."""
+        """Should return the chosen child with compacted pool and reset stats."""
         from core.state import get_layout
         total_size = get_layout(3).total_size
-        pool = StatePool(51, total_size)
+        pool = StatePool(102, total_size)
         config = MCTSConfig(num_simulations=50)
         root = run_search(game_state, evaluator, config, state_pool=pool)
 
         # Find the most-visited action
         assert root.visit_counts is not None and root.legal_actions is not None
-        best_idx = int(np.argmax(root.visit_counts - 1))
+        best_idx = int(np.argmax(root.visit_counts))
         best_action = int(root.legal_actions[best_idx])
+
+        old_children = dict(root.children[best_action].children)
 
         reuse = prepare_reuse_root(root, best_action, pool)
 
         assert reuse is not None
         assert reuse.expanded()
-        assert reuse.visit_count > 0
+        # Root stats should be reset for zero-visit-root reuse
+        assert reuse.visit_count == 1
+        assert reuse.visit_counts is not None
+        assert (reuse.visit_counts == 0).all()
+        # Children should be preserved
+        assert reuse.children == old_children
         # Pool should be compacted to just the subtree size
         subtree_size = len(_collect_subtree_nodes(reuse))
         assert pool._next == subtree_size
@@ -1220,15 +1227,14 @@ class TestSubtreeReuse:
         """Search with reuse_root should produce a valid tree."""
         from core.state import get_layout
         total_size = get_layout(3).total_size
-        pool = StatePool(101, total_size)
+        pool = StatePool(202, total_size)
         config = MCTSConfig(num_simulations=100)
         root = run_search(game_state, evaluator, config, state_pool=pool)
 
         # Find best action and prepare reuse
         assert root.visit_counts is not None and root.legal_actions is not None
-        best_idx = int(np.argmax(root.visit_counts - 1))
+        best_idx = int(np.argmax(root.visit_counts))
         best_action = int(root.legal_actions[best_idx])
-        old_child_visits = root.children[best_action].visit_count
 
         reuse = prepare_reuse_root(root, best_action, pool)
         assert reuse is not None
@@ -1243,9 +1249,7 @@ class TestSubtreeReuse:
 
         # Should be the same node object
         assert root2 is reuse
-        # Visit count should increase
-        assert root2.visit_count >= old_child_visits
-        # Should reach target sim count
+        # Should reach target sim count (full budget after reset)
         assert root2.visit_count >= config.num_simulations
 
         # Action probabilities should be valid
@@ -1291,14 +1295,14 @@ class TestSubtreeReuse:
         counter_fresh = EvalCounter(evaluator)
         from core.state import get_layout
         total_size = get_layout(3).total_size
-        pool = StatePool(101, total_size)
+        pool = StatePool(202, total_size)
         config = MCTSConfig(num_simulations=100)
         root = run_search(game_state, counter_fresh, config, state_pool=pool)
         fresh_evals = counter_fresh.eval_count
 
         # Prepare reuse
         assert root.visit_counts is not None and root.legal_actions is not None
-        best_idx = int(np.argmax(root.visit_counts - 1))
+        best_idx = int(np.argmax(root.visit_counts))
         best_action = int(root.legal_actions[best_idx])
 
         reuse = prepare_reuse_root(root, best_action, pool)
@@ -1324,12 +1328,12 @@ class TestSubtreeReuse:
         """Subtree reuse should work with batched leaf evaluation."""
         from core.state import get_layout
         total_size = get_layout(3).total_size
-        pool = StatePool(51, total_size)
+        pool = StatePool(102, total_size)
         config = MCTSConfig(num_simulations=50, search_batch_size=4)
         root = run_search(game_state, evaluator, config, state_pool=pool)
 
         assert root.visit_counts is not None and root.legal_actions is not None
-        best_idx = int(np.argmax(root.visit_counts - 1))
+        best_idx = int(np.argmax(root.visit_counts))
         best_action = int(root.legal_actions[best_idx])
 
         reuse = prepare_reuse_root(root, best_action, pool)
@@ -1352,7 +1356,7 @@ class TestSubtreeReuse:
         from core.driver import DRIVER
         from core.state import get_layout
         total_size = get_layout(3).total_size
-        pool = StatePool(51, total_size)
+        pool = StatePool(102, total_size)
         config = MCTSConfig(num_simulations=50)
         rng = np.random.default_rng(42)
 
@@ -1374,6 +1378,140 @@ class TestSubtreeReuse:
                 break
 
             reuse_root = prepare_reuse_root(root, action, pool)
+
+    def test_reuse_root_reset_preserves_children(self, game_state, evaluator):
+        """After prepare_reuse_root, children dict should be preserved
+        but root visit stats should be zeroed."""
+        from core.state import get_layout
+        total_size = get_layout(3).total_size
+        pool = StatePool(202, total_size)
+        config = MCTSConfig(num_simulations=100)
+        root = run_search(game_state, evaluator, config, state_pool=pool)
+
+        assert root.visit_counts is not None and root.legal_actions is not None
+        best_idx = int(np.argmax(root.visit_counts))
+        best_action = int(root.legal_actions[best_idx])
+        child = root.children[best_action]
+
+        # Snapshot child's subtree structure before reuse
+        old_children_keys = set(child.children.keys())
+        old_child_visits = {
+            a: c.visit_count for a, c in child.children.items()
+        }
+        old_default_value = child.default_value.copy() if child.default_value is not None else None
+
+        reuse = prepare_reuse_root(root, best_action, pool)
+        assert reuse is not None
+        assert reuse is child
+
+        # Root stats should be reset
+        assert reuse.visit_count == 1
+        assert reuse.visit_counts is not None
+        assert (reuse.visit_counts == 0).all()
+        assert reuse.value_sums is not None
+        assert reuse.default_value is not None
+        assert reuse.legal_actions is not None
+        # Each row of value_sums should equal default_value (FPU)
+        for i in range(len(reuse.legal_actions)):
+            np.testing.assert_array_equal(reuse.value_sums[i], reuse.default_value)
+        np.testing.assert_array_equal(reuse.value_sum, reuse.default_value)
+
+        # Children should be completely preserved
+        assert set(reuse.children.keys()) == old_children_keys
+        for a, c in reuse.children.items():
+            assert c.visit_count == old_child_visits[a]
+        # default_value should be unchanged
+        assert old_default_value is not None
+        np.testing.assert_array_equal(reuse.default_value, old_default_value)
+
+    def test_virtual_backup_matches_child_q(self, game_state, evaluator):
+        """After search with reuse, root Q for caught-up actions should
+        match the child's Q value."""
+        from core.state import get_layout
+        total_size = get_layout(3).total_size
+        pool = StatePool(202, total_size)
+        config = MCTSConfig(num_simulations=100)
+        root = run_search(game_state, evaluator, config, state_pool=pool)
+
+        assert root.visit_counts is not None and root.legal_actions is not None
+        best_idx = int(np.argmax(root.visit_counts))
+        best_action = int(root.legal_actions[best_idx])
+
+        reuse = prepare_reuse_root(root, best_action, pool)
+        assert reuse is not None
+
+        # Snapshot the children's Q values before the reuse search
+        # (children that existed before reuse search starts)
+        pre_search_child_qs = {}
+        for action_idx, child in reuse.children.items():
+            if child.visit_count > 0:
+                pre_search_child_qs[action_idx] = (
+                    child.value_sum.copy() / child.visit_count
+                )
+
+        from core.driver import DRIVER
+        next_state = GameState.from_array(game_state._array, 3)
+        DRIVER.apply_action(next_state, best_action)
+
+        root2 = run_search(next_state, evaluator, config, state_pool=pool, reuse_root=reuse)
+        assert root2.visit_counts is not None and root2.value_sums is not None
+        assert root2.legal_actions is not None
+
+        # For each action where the root caught up to the child's old visits,
+        # the root's Q should be roughly equal to the child's Q.
+        for i, action in enumerate(root2.legal_actions):
+            action = int(action)
+            if action not in root2.children or action not in pre_search_child_qs:
+                continue
+            child = root2.children[action]
+            if root2.visit_counts[i] == 0:
+                continue
+            root_q = root2.value_sums[i] / root2.visit_counts[i]
+            child_q = child.value_sum / child.visit_count
+            np.testing.assert_allclose(root_q, child_q, atol=0.001)
+
+    def test_reuse_noise_affects_distribution(self, game_state, evaluator):
+        """Different RNG seeds should produce meaningfully different visit
+        distributions when using subtree reuse, demonstrating that Dirichlet
+        noise is effective."""
+        from core.driver import DRIVER
+        from core.state import get_layout
+        total_size = get_layout(3).total_size
+        config = MCTSConfig(num_simulations=100)
+
+        distributions = []
+        for seed in [42, 123]:
+            pool = StatePool(202, total_size)
+            root = run_search(
+                game_state, evaluator, config, state_pool=pool,
+                rng=np.random.default_rng(seed),
+            )
+
+            assert root.visit_counts is not None and root.legal_actions is not None
+            best_idx = int(np.argmax(root.visit_counts))
+            best_action = int(root.legal_actions[best_idx])
+
+            reuse = prepare_reuse_root(root, best_action, pool)
+            assert reuse is not None
+
+            next_state = GameState.from_array(game_state._array, 3)
+            DRIVER.apply_action(next_state, best_action)
+
+            root2 = run_search(
+                next_state, evaluator, config, state_pool=pool,
+                reuse_root=reuse, rng=np.random.default_rng(seed + 1000),
+            )
+
+            probs = get_action_probabilities(
+                root2, temperature=1.0, action_dim=config.action_dim,
+            )
+            distributions.append(probs)
+
+        # The two distributions should differ due to different noise
+        diff = np.abs(distributions[0] - distributions[1]).sum()
+        assert diff > 0.05, (
+            f"Noise should produce different distributions (L1 diff={diff:.4f})"
+        )
 
 
 # ---------------------------------------------------------------------------

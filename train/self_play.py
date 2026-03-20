@@ -75,7 +75,7 @@ def play_game(
     if state_pool is None:
         from core.state import get_layout
         total_size = get_layout(config.num_players).total_size
-        state_pool = StatePool(config.num_simulations + 1, total_size)
+        state_pool = StatePool(2 * (config.num_simulations + 1), total_size)
 
     # Use epoch-specific c_puct if provided
     c_puct_override = epoch_config.c_puct if epoch_config is not None else None
@@ -220,7 +220,7 @@ def self_play_worker(
     from core.state import get_layout
 
     total_size = get_layout(config.num_players).total_size
-    state_pool = StatePool(config.num_simulations + 1, total_size)
+    state_pool = StatePool(2 * (config.num_simulations + 1), total_size)
 
     try:
         while True:

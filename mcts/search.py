@@ -24,7 +24,7 @@ import numpy as np
 
 from train.config import MCTSConfig
 from mcts.node import MCTSNode
-from mcts.mcts_core import select_child, backup as _backup, increment_visits as _increment_visits
+from mcts.mcts_core import select_child, backup as _backup, increment_visits as _increment_visits, virtual_backup as _virtual_backup
 
 
 class StatePool:
@@ -129,10 +129,12 @@ def run_search(
             If None, a temporary pool is created. For training, pass a
             persistent pool to avoid per-search allocation.
         reuse_root: Optional pre-searched subtree root from the previous move.
-            When provided, the existing tree statistics are preserved and only
-            the remaining simulations are run to reach num_simulations total.
-            The state_pool must already be compacted for this subtree via
-            prepare_reuse_root().
+            When provided, the root's visit statistics have been reset by
+            prepare_reuse_root() so Dirichlet noise is fully effective.
+            Actions whose children have existing visits trigger lightweight
+            "virtual backups" (child Q echoed to root) until the root's
+            per-action count catches up, then real search begins.
+            The state_pool must already be compacted for this subtree.
         eval_cache: Optional per-game cache of NN evaluation results.
             When provided, leaf evaluations check the cache before calling
             the evaluator; cache misses are batched and results stored.
@@ -158,13 +160,15 @@ def run_search(
     if state_pool is None:
         from core.state import get_layout
         total_size = get_layout(num_players).total_size
-        state_pool = StatePool(config.num_simulations + 1, total_size)
+        state_pool = StatePool(2 * (config.num_simulations + 1), total_size)
 
     if reuse_root is not None:
-        # Reuse existing subtree — pool was already compacted by
-        # prepare_reuse_root(), don't reset it.
+        # Reuse existing subtree — pool was already compacted and root
+        # stats reset by prepare_reuse_root(), don't reset the pool.
+        # Full sim budget: virtual backups for existing children are
+        # near-free, real search runs once root catches up per action.
         root = reuse_root
-        num_sims = max(0, config.num_simulations - root.visit_count)
+        num_sims = config.num_simulations
     else:
         # Fresh search — reset pool and build root from scratch
         state_pool.reset()
@@ -245,14 +249,32 @@ def run_search(
             # Selection: traverse tree to find a leaf
             node = root
             path: _Path = []
+            is_root = True
+            did_virtual_backup = False
 
             while node.expanded() and not node.is_terminal:
                 action_idx, array_idx = select_child(node, config.c_puct)
                 path.append((node, action_idx, array_idx))
 
                 if action_idx in node.children:
+                    child = node.children[action_idx]
+
+                    # Virtual backup: at the root of a reused subtree,
+                    # if the child has more real visits than the root
+                    # has recorded, echo the child's mean Q to the root
+                    # without traversing deeper. This lets Dirichlet noise
+                    # meaningfully influence the root visit distribution.
+                    if (is_root
+                            and child.visit_count > 0
+                            and node.visit_counts[array_idx] < child.visit_count):
+                        _virtual_backup(node, child, array_idx)
+                        sim += 1
+                        did_virtual_backup = True
+                        break
+
                     # Follow existing child
-                    node = node.children[action_idx]
+                    is_root = False
+                    node = child
                 else:
                     # First visit: create child node with state from pool.
                     # Rebind scratch GameState to avoid allocating a wrapper.
@@ -276,6 +298,10 @@ def run_search(
                     node.children[action_idx] = child
                     node = child
                     break  # New child is unexpanded — it's the leaf
+
+            # Virtual backup already handled — skip leaf processing
+            if did_virtual_backup:
+                continue
 
             # Terminal node: increment visits along path and backup values
             if node.is_terminal:
@@ -469,6 +495,31 @@ def _collect_subtree_nodes(root: MCTSNode) -> list[MCTSNode]:
     return nodes
 
 
+def _reset_root_for_reuse(node: MCTSNode) -> None:
+    """Reset root-level visit stats for zero-visit-root reuse.
+
+    Preserves children, priors, legal_actions, and default_value.
+    Resets visit_counts, value_sums, visit_count, and value_sum
+    so that Dirichlet noise has full effect on PUCT selection.
+
+    During subsequent search, actions whose children have existing
+    visit counts trigger "virtual backups" — the child's mean Q is
+    backed up without tree traversal until the root's per-action
+    visit count catches up to the child's visit count.
+    """
+    assert node.expanded()
+    assert node.legal_actions is not None
+    assert node.default_value is not None
+    n = len(node.legal_actions)
+    num_players = node.value_sum.shape[0]
+    node.visit_count = 1
+    node.value_sum = node.default_value.copy()
+    node.visit_counts = np.zeros(n, dtype=np.int32)
+    node.value_sums = np.broadcast_to(
+        node.default_value, (n, num_players)
+    ).astype(np.float32).copy()
+
+
 def prepare_reuse_root(
     root: MCTSNode,
     action_idx: int,
@@ -476,8 +527,9 @@ def prepare_reuse_root(
 ) -> MCTSNode | None:
     """Extract the chosen child as a reuse root for the next search.
 
-    Compacts the state pool to retain only the child's subtree states.
-    The old root and sibling subtrees are left for garbage collection.
+    Compacts the state pool to retain only the child's subtree states,
+    then resets the child's root-level visit statistics so that
+    Dirichlet noise has full effect during the next search.
 
     Args:
         root: The current search root.
@@ -498,5 +550,8 @@ def prepare_reuse_root(
     # Compact pool to retain only this subtree's states
     retained = _collect_subtree_nodes(child)
     state_pool.compact(retained)
+
+    # Reset root-level stats so Dirichlet noise is effective
+    _reset_root_for_reuse(child)
 
     return child

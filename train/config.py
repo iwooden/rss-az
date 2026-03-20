@@ -114,8 +114,9 @@ class TrainingConfig:
     terminal_blend: float = 0.5
 
     # --- Subtree reuse ---
-    # Disabled for early epochs to allow Dirichlet noise to take effect.
-    reuse_subtree_after_epoch: int = 15
+    # Zero-visit-root reuse makes Dirichlet noise effective from the start,
+    # so subtree reuse is enabled by default for all epochs.
+    reuse_subtree_after_epoch: int = 0
 
     # --- Replay Buffer ---
     buffer_capacity: int = 500_000

@@ -12,3 +12,9 @@ cdef void _backup_node(
     const int[:] visit_counts, int array_idx,
     const float[:] values, int num_players,
 ) noexcept nogil
+
+cdef void _virtual_backup_node(
+    float[:] value_sum, float[:, :] value_sums,
+    int[:] visit_counts, int array_idx,
+    const float[:] child_q, int num_players,
+) noexcept nogil
