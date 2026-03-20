@@ -18,67 +18,14 @@ High-performance Cython game engine for "Rolling Stock Stars" board game, optimi
 
 ```
 rss-az-cython2/
-├── core/              # Low-level game engine
-│   ├── state.pyx      # GameState: the central float32 array
-│   ├── driver.pyx     # GameDriver: action dispatch and game loop
-│   ├── actions.pyx    # Action space layout and decoding
-│   └── data.pyx       # Static game constants (companies, corps, prices)
-├── entities/          # Entity handles for state access
-│   ├── player.pyx     # Player cash, shares, companies
-│   ├── corp.pyx       # Corporation state (IPO'd companies)
-│   ├── company.pyx    # Company state (auction deck items)
-│   ├── deck.pyx       # Company deck management
-│   ├── turn.pyx       # Turn and phase tracking
-│   ├── market.pyx     # Share price market spaces
-│   ├── fi.pyx         # Foreign Investor entity
-│   └── encoding.pyx   # One-hot encoding utilities
-├── phases/            # Game phase handlers
-│   ├── invest.pyx     # Investment phase (buy/sell/auction)
-│   ├── bid.pyx        # Auction bidding
-│   ├── acquisition.pyx # Company acquisition offers
-│   ├── closing.pyx    # Company closure logic
-│   ├── dividends.pyx  # Dividend calculations
-│   ├── income.pyx     # Income distribution
-│   ├── issue.pyx      # Share issuance
-│   ├── ipo.pyx        # IPO conversions
-│   ├── wrap_up.pyx    # Turn wrap-up (FI buying)
-│   └── end_card.pyx   # Game-end handling
-├── mcts/              # MCTS search for AlphaZero training
-│   ├── node.py        # MCTSNode: tree node with visit stats
-│   ├── evaluator.py   # NN wrapper (state rotation, single/batch inference, value un-rotation)
-│   ├── eval_cache.py  # Per-game NN eval cache (alternative to subtree reuse)
-│   └── search.py      # PUCT selection, batched search with virtual loss, A0GB value targets
-├── nn/                # Neural network models
-│   └── model_3p_2.py  # V2 residual MLP with policy + per-player value heads
-├── train/             # Self-play training harness
-│   ├── config.py      # TrainingConfig (all hyperparameters)
-│   ├── eval_server.py # Centralized GPU evaluator + RemoteEvaluator proxy
-│   ├── self_play.py   # Game generation via MCTS + worker process entry point
-│   ├── replay_buffer.py # Ring buffer for training examples
-│   ├── trainer.py     # Loss computation, optimizer, LR schedule
-│   ├── checkpoint.py  # Save/load model checkpoints
-│   ├── logging.py     # Rich live UI + Tensorboard integration
-│   ├── main.py        # Training loop orchestration
-│   └── __main__.py    # python -m train entry point
-├── tests/             # Test suite
-│   ├── phases/        # Phase-specific tests
-│   ├── 18xx_games/    # Replay tests against 18xx.games engine
-│   │   ├── 18xx/      # 18xx.games Ruby engine (git submodule)
-│   │   ├── data/      # Game JSON files from 18xx.games
-│   │   ├── extract_states.rb   # Ruby state extractor
-│   │   ├── replay_harness.py   # Python replay + comparison engine
-│   │   ├── action_parser.py    # 18xx action → engine action mapper
-│   │   └── test_replay.py      # Pytest entry point
-│   └── conftest.py    # Pytest fixtures
-├── interp/            # Interpretability analysis tools
-│   ├── README.md      # Guide to all analysis scripts
-│   ├── full_ablation.py   # Feature group ablation (policy KL + value MSE)
-│   ├── decision_attr.py   # IntegratedGradients on critical decisions
-│   ├── arch_analysis.py   # Block contribution, conductance, SVD rank
-│   ├── probing.py         # Linear probing classifiers per layer
-│   ├── norm_check.py      # Normalization health check
-│   ├── tb_summary.py      # Tensorboard training summary
-│   └── utils.py           # Shared model loading, state collection, inference
+├── core/              # Low-level engine: state.pyx, driver.pyx, actions.pyx, data.pyx
+├── entities/          # Entity handles: player, corp, company, deck, turn, market, fi, encoding
+├── phases/            # Phase handlers: invest, bid, acquisition, closing, dividends, income, issue, ipo, wrap_up, end_card
+├── mcts/              # MCTS search: node.py, evaluator.py, eval_cache.py, search.py
+├── nn/                # Neural network: model_3p_2.py (residual MLP, policy + value heads)
+├── train/             # Self-play training: config, eval_server, self_play, replay_buffer, trainer, checkpoint, logging, main
+├── tests/             # Test suite: phases/, 18xx_games/ replay tests, conftest.py
+├── interp/            # Interpretability analysis (see interp/README.md)
 ├── RULES.md           # Complete game rules (authoritative)
 ├── VECTORS.md         # State/action vector documentation
 └── RSS.pdf            # Original board game rulebook
@@ -102,11 +49,7 @@ Each entity provides:
 - **cpdef methods**: Python-accessible wrappers for testing
 - **Access pattern**: `entity.get_field(state)` reads from cached offset
 
-### Low-level vs High-level Access
-
-- **Low-level** (`cdef` nogil): Performance-critical loops, action validation
-- **High-level** (cpdef/def): Python code, testing, debugging
-- High-level wraps low-level (no code duplication)
+Low-level (`cdef` nogil) wraps high-level (cpdef/def) with no code duplication.
 
 ## Key Modules
 
@@ -116,12 +59,7 @@ Central data structure: single contiguous float32 numpy array.
 
 **Two-part layout:**
 - **Visible state**: NN input (player-rotated so active player first)
-- **Hidden state**: Internal bookkeeping (truncated before NN sees state)
-
-**Hidden state purposes:**
-- **Information hiding**: Data the model shouldn't see (deck order, canonical active player)
-- **Bookkeeping**: Offer buffers for acquisition/closing phases
-- **Performance**: Compact storage for O(1) access to one-hot values (phase, auction company, corp price indices, etc.)
+- **Hidden state**: Internal bookkeeping (truncated before NN sees state) — information hiding (deck order, canonical active player), offer buffers, compact O(1) one-hot storage
 
 **Sizes by player count:**
 | Players | Visible | Hidden | Total |
@@ -132,9 +70,7 @@ Central data structure: single contiguous float32 numpy array.
 
 ### Actions (`core/actions.pyx`)
 
-Dynamic action space: `186 + (num_players * 20)` total actions.
-- 3 players: 246 actions
-- 6 players: 306 actions
+Dynamic action space: `186 + (num_players * 20)` total actions (3p: 246, 6p: 306).
 
 **Action layout by phase:**
 - INVEST: 1 pass + auction slots + 8 buy + 8 sell
@@ -147,57 +83,40 @@ Dynamic action space: `186 + (num_players * 20)` total actions.
 
 ### Driver (`core/driver.pyx`)
 
-Stateless game loop engine:
-- `apply_action(state, action_idx, history)`: Main entry point
-- Auto-applies forced actions when only 1 legal choice
-- Returns: `STATUS_OK`, `STATUS_INVALID`, or `STATUS_GAME_OVER`
+Stateless game loop: `apply_action(state, action_idx, history)` dispatches to phase handlers, auto-applies forced actions. Returns `STATUS_OK`, `STATUS_INVALID`, or `STATUS_GAME_OVER`.
 
 ### Data (`core/data.pyx`)
 
-Static game constants:
-- 36 companies, 8 corporations, 27 market prices
-- **Normalization divisors:**
-  - `CASH_DIVISOR = 100.0` (cash balances, net worth, acquisition proceeds)
-  - `INCOME_DIVISOR = 10.0` (per-company incomes, synergy values)
-  - `PRICE_DIVISOR = 40.0` (company/share prices, entity incomes)
-  - `SHARE_DIVISOR = 7.0` (share counts)
-  - `COMPANY_STAR_DIVISOR = 5.0` (per-company star ratings)
-  - `CORP_STAR_DIVISOR = 20.0` (corporation aggregate stars)
-  - `MAX_ROUNDTRIPS = 2.0` (buy/sell tracking)
+Static game constants: 36 companies, 8 corporations, 27 market prices.
+
+**Normalization divisors:**
+- `CASH_DIVISOR = 100.0` (cash balances, net worth, acquisition proceeds)
+- `INCOME_DIVISOR = 10.0` (per-company incomes, synergy values)
+- `PRICE_DIVISOR = 40.0` (company/share prices, entity incomes)
+- `SHARE_DIVISOR = 7.0` (share counts)
+- `COMPANY_STAR_DIVISOR = 5.0` (per-company star ratings)
+- `CORP_STAR_DIVISOR = 20.0` (corporation aggregate stars)
+- `MAX_ROUNDTRIPS = 2.0` (buy/sell tracking)
 
 ## MCTS Search
 
-Pure-Python AlphaZero-style MCTS for 3-player games.
-
-### Architecture
-
-```
-mcts/
-├── node.py        # MCTSNode: visit_count, value_sum, prior, children dict
-├── evaluator.py   # State rotation, NN inference, value un-rotation, terminal values
-├── eval_cache.py  # Per-game NN eval cache (matrix-backed, MD5 hash index)
-└── search.py      # PUCT selection, search loop, action probabilities, A0GB targets
-```
-
-MCTSConfig lives in `train/config.py` alongside TrainingConfig.
+Pure-Python AlphaZero-style MCTS for 3-player games. MCTSConfig lives in `train/config.py`.
 
 ### State Rotation
 
-The NN always sees the active player's data at slot 0. Before inference, the visible state is rotated so the active player's block comes first. After inference, the per-player value output is un-rotated back to canonical order.
+The NN always sees the active player at slot 0. Before inference, visible state is rotated; after, values are un-rotated to canonical order.
 
-**What gets rotated:**
-- Player data blocks (contiguous, each `player_stride` floats)
-- Per-player turn state fields: `auction_high_bidder`, `auction_starter`, `auction_passed`
+**Rotated:** Player data blocks (each `player_stride` floats) + per-player turn fields (`auction_high_bidder`, `auction_starter`, `auction_passed`)
 
-**What does NOT get rotated:** phase, CoO, FI, companies, corporations, market, static data
+**NOT rotated:** phase, CoO, FI, companies, corporations, market, static data
 
-**Important:** `GameState._layout` is a Cython `cdef` struct — NOT accessible from Python. Use `core.state.get_layout(num_players)` to get a Python-accessible `LayoutInfo` namedtuple with the same offsets (cached wrapper also available at `mcts.evaluator.get_layout()`).
+**Important:** `GameState._layout` is a Cython `cdef` struct — NOT accessible from Python. Use `core.state.get_layout(num_players)` for a Python-accessible `LayoutInfo` namedtuple (cached wrapper at `mcts.evaluator.get_layout()`).
 
 ### Value Representation
 
-The value head outputs 3 scalars in [-1, 1] via tanh, representing per-player expected outcomes: `[v_active, v_next, v_next_next]`. These are un-rotated to canonical order via `np.roll(values, active_player_id)`.
+Value head outputs 3 scalars in [-1, 1] via tanh: `[v_active, v_next, v_next_next]`. Un-rotated to canonical order via `np.roll(values, active_player_id)`.
 
-**Terminal values:** Blend of rank-based and zero-sum net-worth-deviation rewards, controlled by `--terminal-blend` (default 0.5). The rank component (`linspace(+1, -1)` by placement) provides sharp signal at rank boundaries. The margin component (`(n/(n-1)) * (nw_i - mean_nw) / max_nw`) provides continuous gradient within ranks. Both components are zero-sum across players, giving better utilization of the tanh value head's [-1, +1] range. The `n/(n-1)` scale factor guarantees the result stays in [-1, +1] for any NW distribution. All-zero net worths yield 0.0. Use `--terminal-blend 1.0` for pure rank rewards (`[-1, 0, +1]`).
+**Terminal values:** Blend of rank-based and zero-sum net-worth-deviation rewards (`--terminal-blend`, default 0.5). Rank: `linspace(+1, -1)` by placement. Margin: `(n/(n-1)) * (nw_i - mean_nw) / max_nw`. Both zero-sum, stays in [-1, +1]. Use `--terminal-blend 1.0` for pure rank.
 
 ### PUCT Selection
 
@@ -205,253 +124,64 @@ The value head outputs 3 scalars in [-1, 1] via tanh, representing per-player ex
 UCB(a) = Q(a) + c_puct * P(a) * sqrt(N_parent) / (1 + N(a))
 ```
 
-Where Q(a) is the mean value for the **active player** at the parent node. This ensures each player maximizes their own expected outcome.
+Q(a) is the mean value for the **active player** at the parent node.
 
 ### A0GB Greedy Backup (Value Targets)
 
-Instead of using the root node's mean value (soft-Z) or the game outcome as training targets, we use **A0GB** (Willemsen et al., "Value targets in off-policy AlphaZero: a new greedy backup", ALA 2020 / Neural Computing and Applications, 2022).
-
-**Algorithm:** Starting from the root, follow the child with the highest visit count at each level until reaching a leaf (unexpanded node) or terminal. Return that node's value as the training target.
-
-**Why A0GB:**
-- At a leaf node visited once, the value equals V_NN (the neural network's evaluation)
-- At a terminal node, the value equals the game outcome
-- Removes exploration bias that contaminates soft-Z targets
-- Converges faster than soft-Z or game-outcome targets in practice
-
-**Implementation:** `get_greedy_leaf_value(root)` in `search.py`. Stops when the best child has `visit_count == 0` (the current node is the tree-edge leaf).
+Instead of soft-Z or game outcome, we use **A0GB** (Willemsen et al., 2022): follow max-visit child from root to leaf/terminal, return that node's value as training target. Removes exploration bias, converges faster. Implementation: `get_greedy_leaf_value(root)` in `search.py`. Stops when best child has `visit_count == 0`.
 
 ### Search Flow
 
-1. **Root setup:** Evaluate root state with NN, expand, add Dirichlet noise to priors
-2. **Per batch of simulations** (`search_batch_size` leaves per batch):
-   - **Select:** Traverse tree using PUCT until reaching unexpanded or terminal node. Increment visit counts along the path and **lock** the selected leaf by setting its Q in the parent to -inf (preventing re-selection).
-   - Terminal nodes have visits incremented and values backed up immediately.
-   - **Batch evaluate:** All non-terminal leaves in the batch are evaluated in a single NN forward pass via `evaluate_batch()`.
-   - **Unlock + Expand + Backup:** Restore parent Q, expand each leaf, propagate values up the tree. Visit counts were already incremented at selection time.
-3. **Output:** `get_action_probabilities(root, temperature)` converts visit counts to policy target
+1. **Root setup:** Evaluate with NN, expand, add Dirichlet noise
+2. **Per batch** (`search_batch_size` leaves): Select via PUCT → lock leaf (Q=-inf prevents re-selection) → batch evaluate → unlock + expand + backup
+3. **Output:** `get_action_probabilities(root, temperature)` → policy target
 
-**Leaf lock:** When a leaf is queued for batch evaluation, its Q in the parent edge is set to -inf so PUCT cannot re-select it. This is surgical — only the specific leaf edge is locked, not the entire ancestor path. Subsequent selections can still explore deep into the same subtree via different frontier nodes, avoiding the width bias of traditional virtual loss.
+**Subtree reuse:** Child subtree becomes new root after action. `prepare_reuse_root()` compacts state pool. Saves 40-60% GPU evals. Controlled by `--reuse-subtree-after-epoch`.
 
-**Subtree reuse:** After choosing an action, the child's subtree is preserved as the root for the next move's search. `prepare_reuse_root(root, action, pool)` compacts the state pool and returns the child. `run_search(..., reuse_root=child)` then runs only `max(0, num_simulations - child.visit_count)` additional simulations. This saves 40-60% of GPU forward passes per game. Fresh Dirichlet noise is added to the reused root each time. Controlled by `--reuse-subtree-after-epoch`.
+**Eval cache (alternative):** Per-game `EvalCache` caches NN results by state hash (MD5). Fresh tree each move (full Dirichlet), ~70% of subtree reuse throughput. Activate: `--reuse-subtree-after-epoch 9999`.
 
-**Eval cache (alternative to subtree reuse):** When subtree reuse is disabled, `play_game()` creates a per-game `EvalCache` that caches NN evaluation results (policy + values) keyed by state hash (MD5). Each move starts with a fresh MCTS tree so Dirichlet noise is fully effective, but cached evals from prior moves avoid redundant GPU calls. Cache hits are resolved inline during MCTS selection — they don't consume batch slots, so the evaluator always gets full batches of cache misses. The cache is matrix-backed with a doubling growth strategy (~1.1KB per entry), cleared per game. Recovers ~70% of subtree reuse's throughput benefit while maintaining full exploration.
-
-**When to use which:** Subtree reuse is faster but carries over visit counts that can drown out Dirichlet noise, causing the model to lock into narrow lines. The eval cache sacrifices some throughput for better exploration. To disable subtree reuse and activate the cache: `--reuse-subtree-after-epoch 9999`.
-
-**Memory efficiency:** States are NOT stored in tree nodes. The root state is cloned and actions replayed to reach each leaf.
+**Memory:** States NOT stored in tree nodes — root cloned and actions replayed to reach leaves.
 
 ### NN Model (`nn/model_3p_2.py`)
 
-Residual MLP (~5.2M parameters):
-- **Input:** 1549 floats (3-player) (visible state, active player rotated to slot 0)
-- **Input preprocessing:** Linear(1549→768) → GELU → Linear(768→384)
-- **Trunk:** 10 residual blocks (pre-LN, GELU, no expansion: 384→384→384) → LayerNorm
-- **Policy head:** 3 hidden layers at hidden_dim: Linear(384→384) → GELU → Linear(384→384) → GELU → Linear(384→384) → GELU → Linear(384→246) logits (masked by legal actions before softmax)
-- **Value head:** Linear(384→384) → GELU → Linear(384→3) → Tanh
-- **Init:** Xavier uniform for all linear layers; residual block fc2 layers zero-initialized (blocks start as identity)
-
-### Key APIs
-
-```python
-from train.config import MCTSConfig
-from mcts.evaluator import NNEvaluator
-from mcts.eval_cache import EvalCache
-from mcts.search import run_search, get_action_probabilities, get_greedy_leaf_value, prepare_reuse_root
-
-# Setup
-evaluator = NNEvaluator(model, device, num_players=3)
-config = MCTSConfig(num_simulations=800, c_puct=2.5, search_batch_size=4)  # c_puct set per-epoch via EpochConfig
-
-# Search (batches 4 leaves per NN call → 200 inference calls instead of 800)
-root = run_search(game_state, evaluator, config)
-policy = get_action_probabilities(root, temperature=1.0, action_dim=config.action_dim)
-value_target = get_greedy_leaf_value(root, num_players=config.num_players)
-
-# Subtree reuse: reuse chosen child as next root (saves ~40-60% GPU evals)
-reuse_root = prepare_reuse_root(root, chosen_action, state_pool)
-root = run_search(next_state, evaluator, config, state_pool=state_pool, reuse_root=reuse_root)
-
-# Eval cache (alternative to subtree reuse): fresh tree each move, cached NN evals
-cache = EvalCache(config.action_dim, config.num_players)  # created once per game
-root = run_search(game_state, evaluator, config, eval_cache=cache)
-# cache persists across searches within the game; cleared per game via cache.clear()
-```
+Residual MLP (~5.2M params): Input 1549 → preprocessing (768→384) → 10 residual blocks (384-dim, pre-LN, GELU) → policy head (3 hidden layers → 246 logits) + value head (→ 3 tanh). Xavier init, zero-init residual fc2.
 
 ## Self-Play Training
 
-AlphaZero-style self-play training loop in `train/`.
+AlphaZero-style loop in `train/`. Each epoch: play N games via MCTS → store in replay buffer → train NN → checkpoint.
 
-### Multi-Process Self-Play Architecture
+### Architecture
 
-Self-play uses one or more centralized evaluation server processes for GPU throughput:
+Worker processes (MCTS is CPU-bound, need own GIL) send states to eval server processes via shared memory (`SharedEvalBuffers`). Model shared zero-copy via CUDA IPC. `spawn` context, `torch.compile` per-process, daemon workers. `num_workers=0` for single-process debug.
 
-```
-┌──────────────────────────────────────────────────────────┐
-│  Main Process                                            │
-│  - Owns model (GPU, shared via CUDA IPC), trainer        │
-│  - Replay buffer, checkpoint management                  │
-│  - Spawns M eval server + N worker processes             │
-│  - Collects GameRecords, runs training                   │
-└────────┬───────────────────────────────────┬─────────────┘
-         │ CUDA IPC (shared GPU params)      │
-   ┌─────┴─────────┐                        │
-   ▼               ▼                        │ 1 shared Queue + N Events
-┌────────────┐ ┌────────────┐    ┌──────────┼──────────┐
-│ EvalServer │ │ EvalServer │    ▼          ▼          ▼
-│ Process 0  │ │ Process 1  │ ┌────────┐┌────────┐┌────────┐
-│ (own GIL)  │ │ (own GIL)  │ │Worker 0││Worker 1││Worker K│
-└────────────┘ └────────────┘ │play_game││play_game││play_game│
-                              │RemoteEval│RemoteEval│RemoteEval│
-                              └────────┘└────────┘└────────┘
-```
+Key files: `train/eval_server.py` (EvaluationServer + RemoteEvaluator), `train/self_play.py` (play_game + worker entry), `train/main.py` (orchestration).
 
-**Key design decisions:**
-- **Workers are processes** (not threads) because MCTS is CPU-bound — GIL would serialize them
-- **Eval servers are processes** (not threads) — each has its own GIL, eliminating Python-level contention for torch dispatch, queue ops, and numpy copies. This enables true double-buffering where two servers' GPU pipelines overlap without serialization
-- **Model sharing via `torch.multiprocessing`** — CUDA parameter tensors are shared zero-copy across processes via CUDA IPC (`cudaIpcGetMemHandle`). The module structure is pickled and duplicated per process. `optimizer.step()` modifies parameters in-place on the GPU, and eval servers see updates automatically (the existing drain-before-training flow ensures no server is mid-forward-pass during updates)
-- **Multiple eval servers** (`--num-eval-servers M`) consume from a shared request queue. A shared `mp.Lock` serializes the queue-drain phase so one server sweeps the full queue while the other runs its GPU pipeline. Each server uses its process's default CUDA stream
-- **`torch.compile` per-process** — each eval server compiles the model independently (no shared dynamo state, no GIL-serialized guard checks). The main process compiles separately for training
-- **`spawn` context** — avoids CUDA fork issues
-- **Workers are daemon processes** — auto-killed on main process exit for clean Ctrl-C shutdown
-- **`num_workers=0`** falls back to single-process sequential self-play (useful for debugging)
+### Configuration
 
-**Communication:** Workers write pre-rotated states into per-worker slots in `SharedEvalBuffers` (shared memory via `share_memory_()`). A shared `multiprocessing.Queue` carries lightweight request tuples `(worker_idx, state_count)`. Each EvaluationServer process blocks on `queue.get()`, then drains additional requests with `get_nowait()` to build larger batches. After inference, results are scattered to shared memory and per-worker `multiprocessing.Event` objects are set to signal completion. Uses pinned memory and pre-allocated GPU tensors for zero-alloc H2D/D2H transfers. With 24 workers each sending batch-8 requests, the GPU sees batches of up to ~192 states.
+All hyperparameters in `TrainingConfig` dataclass (`train/config.py`). `TrainingConfig.to_mcts_config()` creates MCTSConfig. `--resume latest` to continue from checkpoint.
 
-**Files:**
-- `train/eval_server.py` — `EvaluationServer` (process wrapper) + `_eval_server_main()` (process entry point) + `RemoteEvaluator` (worker-side proxy with same interface as `NNEvaluator`)
-- `train/self_play.py` — `play_game()` (takes an evaluator object) + `self_play_worker()` (worker process entry point)
-- `train/main.py` — Orchestration: spawns eval servers and workers, feeds game seeds via `mp.Queue`, collects `GameRecord`s
+**Replay buffer** (3p, 500K capacity): ~4.2 GB. Saved to `checkpoints/replay_buffer/` via `ReplayBuffer.save()/load()`.
 
-### Training Loop
+### Training Examples & Loss
 
-Each epoch: (1) play N games via MCTS self-play → (2) store examples in replay buffer → (3) train NN on batched samples → (4) checkpoint and log.
+At each decision point: state (visible, rotated), legal_mask, policy_target (MCTS visits), value_target (A0GB, rotated to active-player-first via `np.roll(canonical, -active_player_id)`).
 
-```bash
-# Run training (builds Cython extensions must be done first)
-.venv/bin/python -m train
-
-# With options
-.venv/bin/python -m train --device cuda --games-per-epoch 100 --num-workers 4 --search-batch-size 8
-.venv/bin/python -m train --config config.json --resume latest
-
-# Single-process mode (for debugging)
-.venv/bin/python -m train --num-workers 0 --games-per-epoch 10
-```
+**Loss:** Policy cross-entropy with MCTS targets + Value MSE with A0GB targets.
 
 ### Graceful Shutdown
 
-Two shutdown modes during training:
-- **Ctrl-C**: Fast/hard shutdown — exits immediately, discards in-memory state
-- **q + Enter**: Graceful shutdown — drains workers, saves checkpoint and replay buffer
-
-**Graceful shutdown behavior:**
-- Only activates during the self-play phase
-- Workers finish their current in-flight games (120s timeout)
-- If all `games_per_epoch` games were collected, runs the training phase before exiting
-- Saves model checkpoint to `checkpoints/checkpoint_epoch_NNNN.pt`
-- Saves replay buffer (~4 GB) to `checkpoints/replay_buffer/` (overwritten each time)
-- On resume (`--resume latest`), the replay buffer is loaded and the interrupted epoch restarts
-
-**Replay buffer persistence:**
-- `ReplayBuffer.save(directory)` / `ReplayBuffer.load(directory)` handle serialization
-- Individual `.npy` files per array + `metadata.json` for ring buffer state
-- Capacity must match between save and load (warns and skips on mismatch)
-
-### Training Configuration (`train/config.py`)
-
-`TrainingConfig` dataclass holds all hyperparameters. Key defaults:
-
-| Parameter | Default | Notes |
-|-----------|---------|-------|
-| `num_simulations` | 800 | MCTS simulations per move |
-| `search_batch_size` | 1 | Leaves per NN call (virtual loss batching) |
-| `num_workers` | 4 | Self-play worker processes (0 = single-process) |
-| `num_eval_servers` | 1 | Eval server threads (2 = double-buffer GPU) |
-| `games_per_epoch` | 1000 | Self-play games per epoch |
-| `learning_rate` | 1e-3 | AdamW, cosine decay to `lr_min` |
-| `lr_min` | 1e-4 | Cosine schedule floor |
-| `warmup_steps` | 1000 | Linear warmup from 0 to LR |
-| `temp_anneal_start` | 60 | Move where temperature starts decreasing |
-| `temp_anneal_end` | 120 | Move where temperature reaches `temp_final` |
-| `temp_final` | 0.5 | Temperature floor after anneal |
-| `c_puct_initial` | 3.5 | Starting c_puct (anneals to `c_puct_final`) |
-| `c_puct_final` | 2.5 | Final c_puct after annealing |
-| `c_puct_anneal_epochs` | 20 | Epochs over which c_puct anneals |
-| `value_blend_start_epoch` | 10 | Epoch where A0GB blending begins |
-| `value_blend_end_epoch` | 40 | Epoch where blend reaches pure A0GB |
-| `terminal_blend` | 0.5 | Rank vs margin weight (0=margin, 1=rank) |
-| `reuse_subtree_after_epoch` | 15 | Subtree reuse disabled before this epoch |
-| `buffer_capacity` | 500,000 | Replay buffer size (~4.2 GB) |
-| `batch_size` | 256 | Training batch size |
-
-`TrainingConfig.to_mcts_config()` creates an `MCTSConfig` from the relevant fields.
-
-**Replay buffer memory** (3 players, 500K capacity): states ~3.3GB + masks ~470MB + policies ~470MB + values ~6MB = **~4.2 GB total**. Reduce `buffer_capacity` if memory is tight.
-
-**Checkpointing:** The replay buffer is NOT checkpointed (too large). On resume, it starts empty and refills during self-play. This is standard AlphaZero practice.
-
-### Training Examples
-
-At each decision point during self-play, a `TrainingExample` is stored:
-- **state**: Visible state rotated so active player is at slot 0 (shape `(1549,)` for 3 players)
-- **legal_mask**: Binary mask of legal actions (shape `(246,)`)
-- **policy_target**: MCTS visit probabilities (shape `(246,)`)
-- **value_target**: A0GB values rotated to active-player-first (shape `(3,)`)
-
-**Value target rotation:** `get_greedy_leaf_value()` returns canonical order `[p0, p1, p2]`. The NN outputs active-player-first `[active, next, next_next]`. Training targets are rotated to match: `np.roll(canonical_values, -active_player_id)`.
-
-### Loss Functions
-
-- **Policy**: Cross-entropy with MCTS targets: `-(pi * log_softmax(logits)).sum(-1).mean()`. Legal action mask is passed to the model so softmax only covers legal actions.
-- **Value**: MSE between NN output and A0GB target.
-- **Total**: `policy_loss_weight * policy_loss + value_loss_weight * value_loss`
-
-### Key Training APIs
-
-```python
-from train.config import TrainingConfig
-from train.self_play import play_game, GameRecord
-from train.eval_server import EvaluationServer, RemoteEvaluator
-from train.replay_buffer import ReplayBuffer, TrainingExample
-from train.trainer import Trainer
-from train.checkpoint import save_checkpoint, load_checkpoint, find_latest_checkpoint
-from train.logging import TrainingLogger
-from mcts.evaluator import NNEvaluator
-
-# Single-process usage:
-evaluator = NNEvaluator(model, device, num_players=3)
-record = play_game(evaluator, config, game_seed=42, rng=rng)
-
-# Multi-process: play_game is called inside self_play_worker with a RemoteEvaluator
-```
+- **Ctrl-C**: Hard exit
+- **q + Enter**: Graceful — drains workers, saves checkpoint + replay buffer, then exits
 
 ## State Representation
 
-**Normalization strategy:**
-- Integers divided by divisor before storage
-- Retrieved by multiplying back: `<int>(value * DIVISOR + 0.5)`
+**Normalization:** Integers divided by divisor before storage, retrieved by `<int>(value * DIVISOR + 0.5)`.
 
-**One-hot encodings for:**
-- Phase (11 values)
-- Cost of ownership (7 levels)
-- Turn order (per player)
-- Price index (27 market spaces per corp)
+**One-hot encodings:** Phase (11), Cost of ownership (7), Turn order (per player), Price index (27 per corp).
 
-**State layout:**
-```
-[Phase (11) | CoO Level (7) | Players (repeated) | FI (38) | Companies (108) |
- Company Incomes (36) | Market (27) | Corporations (872) | Turn (complex) |
- Auction Slot Info (5*num_players) | Invest Impacts (16) | HIDDEN: Active Player, Deck, Offer Buffers]
-```
+**Layout:** `[Phase | CoO | Players (stride=64+num_players) | FI | Companies | Incomes | Market | Corps (stride=109) | Turn | Auction Slots | Invest Impacts | HIDDEN]`
 
-**Player stride** = `64 + num_players` floats per player
-
-**Corporation stride** = 109 floats per corp
-
-**Context-dependent field convention:** Many turn state fields are only meaningful during specific phases (auction info during BID, active corp during DIVIDENDS, etc.). When inactive, all elements are zeroed — both binary fields (one-hots, flags) and data scalars. This lets the model distinguish "no active context" from valid data. See `VECTORS.md` for the full list of context-dependent fields and their relevant phases.
-
-See `VECTORS.md` for exact offsets.
+**Context-dependent fields:** Many turn state fields zeroed when inactive phase. See `VECTORS.md` for exact offsets.
 
 ## Game Flow & Phases
 
@@ -474,95 +204,18 @@ See `VECTORS.md` for exact offsets.
 
 ### Offer Buffer Pattern (acquisition.pyx, closing.pyx)
 
-Both ACQUISITION and CLOSING phases use a **one-by-one offer presentation** pattern to keep the action space small. Instead of exposing all possible offers simultaneously (which would create a combinatorial explosion), offers are:
+Both phases use **one-by-one offer presentation**: offers generated into hidden buffer at phase entry, sorted by priority, presented sequentially, re-validated dynamically. Keeps action space constant.
 
-1. **Generated once** at phase entry into a hidden state buffer
-2. **Sorted** by priority rules (varies by phase)
-3. **Presented one at a time** to the active player
-4. **Advanced sequentially** after each accept/pass decision
-5. **Re-validated dynamically** since earlier decisions may invalidate later offers
+**ACQUISITION:** Priority: OS→FI (face value DESC) → Corp→FI (price DESC) → Corp→Corp → Corp→Player. Receivership corps auto-buy from FI at HIGH if affordable, auto-pass otherwise. Actions: 51 price offsets, FI_HIGH, FI_FACE (OS only), PASS.
 
-**Why this pattern?**
-- Action space stays constant regardless of game state complexity
-- Model sees one decision at a time (cleaner learning signal)
-- Priority ordering is deterministic (no hidden information)
-- Buffer lives in hidden state (not visible to NN, but persists across actions)
-
-#### ACQUISITION Phase Offers
-
-**Priority order** (RULES-compliant):
-1. **OS→FI**: OS corporation buys from Foreign Investor at face value (special ability), sorted by face value DESC
-2. **Other Corp→FI**: By (share price DESC, face value DESC) - higher-valued corps and more expensive companies first
-3. **Corp→Corp**: Same president controls buyer and seller, sorted by (buyer price DESC, face value DESC)
-4. **Corp→Player**: President's corp buying their private companies, sorted by (buyer price DESC, face value DESC)
-
-**Hidden buffer layout:**
-```
-[offer_count][offer_index][owner_type₀, corp_id₀, company_id₀][owner_type₁, corp_id₁, company_id₁]...
-```
-
-**Receivership handling**: Corps without a president (in receivership) have automated behavior:
-- Auto-buy from FI at HIGH price if affordable (most expensive company first)
-- Auto-pass on all other offers (receivership can only buy from FI)
-
-**Actions**: 51 price offsets (low to high), FI_HIGH, FI_FACE (OS only), PASS
-
-#### CLOSING Phase Offers
-
-**Two-stage process:**
-1. **Auto-close** (deterministic, no player input):
-   - FI closes companies with negative adjusted income
-   - Receivership corps close red/orange companies above CoO thresholds
-2. **Offer-based close** (player decisions):
-   - Only for player-owned and player-presided corps
-   - Sorted by face value ascending (cheapest first)
-
-**Hidden buffer layout:**
-```
-[offer_count][offer_index][owner_type₀, owner_id₀, company_id₀]...
-```
-Where `owner_type` is OWNER_PLAYER (0) or OWNER_CORP (1).
-
-**Validation rules:**
-- Company not already closed this phase
-- Ownership unchanged since buffer generation
-- Corp last-company rule: can't close if corp would have 0 companies
-
-**Mandatory close** (after all offers processed): If a player would have negative income+cash, their cheapest negative-income private company is force-closed repeatedly until safe.
-
-**Actions**: CLOSE, PASS
+**CLOSING:** Two stages: (1) auto-close (FI negative-income, receivership red/orange above CoO), (2) player offers sorted by face value ASC. Actions: CLOSE, PASS. Mandatory close at end if player has negative income+cash.
 
 ## Code Conventions
 
-### Naming
-- `corp_id`, `company_id`, `player_id` = indices (0-7, 0-35, 0-5)
-- `CORPS[corp_id]`, `PLAYERS[player_id]` = global singletons
-- `PHASE_*` constants from `GamePhases` enum
-
-### Normalization
-```cython
-# Store: divide by divisor
-state[offset] = cash / CASH_DIVISOR
-
-# Retrieve: multiply and round
-cash = <int>(state[offset] * CASH_DIVISOR + 0.5)
-```
-
-### One-hot patterns
-```cython
-# Find set bit
-for i in range(N):
-    if array[offset + i] == 1.0:
-        return i
-
-# Set bit
-set_one_hot(array, offset, index, size)
-```
-
-### Pointer safety
-- All `nogil` functions take pointers or direct offsets
-- GameState provides `_player_ptr()`, `_corp_ptr()` helpers
-- Entities compute offsets once and cache them
+- **Naming:** `corp_id`/`company_id`/`player_id` = indices; `CORPS[i]`/`PLAYERS[i]` = singletons; `PHASE_*` from `GamePhases`
+- **Normalization:** `state[offset] = cash / CASH_DIVISOR` (store), `<int>(state[offset] * CASH_DIVISOR + 0.5)` (retrieve)
+- **One-hot:** `set_one_hot(array, offset, index, size)` to set; loop `array[offset + i] == 1.0` to find
+- **Pointer safety:** `nogil` functions take pointers/offsets; `_player_ptr()`/`_corp_ptr()` helpers; entities cache offsets
 
 ## Build Commands
 
@@ -572,88 +225,45 @@ set_one_hot(array, offset, index, size)
 
 ```bash
 # Build Cython extensions (required before running any Python code)
-# Pipe to grep to avoid 200+ lines of output consuming context
 .venv/bin/python setup.py build_ext --inplace 2>&1 | grep -E "(warning|error)" || true
 
 # Run all tests
 pytest tests/
 
-# Run specific test file
-pytest tests/test_invest.py -v
-
-# Clean build artifacts (.c, .so, .html, build/, *.egg-info)
+# Clean build artifacts
 .venv/bin/python setup.py clean
 
-# Run self-play training (requires Cython build first)
+# Run self-play training
 .venv/bin/python -m train --device cuda --num-workers 4 --search-batch-size 8
-.venv/bin/python -m train --device cuda --num-workers 24 --num-eval-servers 2  # double-buffer GPU
-.venv/bin/python -m train --config config.json --resume latest
 .venv/bin/python -m train --num-workers 0 --games-per-epoch 10  # single-process debug
 
 # Run MCTS benchmark
-.venv/bin/python setup.py benchmark --device=cuda
 .venv/bin/python setup.py benchmark --device=cuda --batch-size=4
 ```
 
-**Warning-free builds:** The build should produce no compiler warnings. If warnings appear, create a beads issue to fix them.
+**Warning-free builds:** No compiler warnings expected. If warnings appear, create a beads issue.
 
-**Pyright errors:** When Pyright diagnostics appear after reading or editing a file, fix them before moving on. Unused imports, unused variables, and type errors should be resolved immediately rather than left for later. The auto-injected diagnostics can be stale after edits — run `pyright <file>` via Bash to get definitive results.
+**Pyright errors:** Fix before moving on. Run `pyright <file>` via Bash for definitive results (auto-injected diagnostics can be stale).
 
 ## Testing Approach
 
-**Organization:** Tests in `tests/`, phase tests in `tests/phases/`
+**Key fixtures** (conftest.py): `game_state` (3-player, seed=42), `invest_state`, `bid_state`, `trade_state`, `apply_and_track`.
 
-**Key fixtures** (conftest.py):
-- `game_state`: 3-player initialized game (seed=42)
-- `invest_state`, `bid_state`, `trade_state`: Pre-configured states
-- `apply_and_track`: Helper for action history and invariants
+**Patterns:** Validate action effects, check mask validity, verify phase transitions, assert invariants (cash conservation, share counts).
 
-**Test patterns:**
-- Validate action effects on state
-- Check mask validity after actions
-- Verify phase transitions
-- Assert game invariants (cash conservation, share counts)
-
-**When a test fails, assume the implementation is broken** until proven otherwise. Investigate the root cause thoroughly before concluding that a test is wrong. Only "fix" a test to make it pass after confirming the implementation is correct and the test setup was invalid.
+**When a test fails, assume the implementation is broken** until proven otherwise. Only "fix" a test after confirming the implementation is correct and the test setup was invalid.
 
 **Status codes:** STATUS_OK (0), STATUS_INVALID (1), STATUS_GAME_OVER (2)
 
 ### 18xx.games Replay Tests
 
-Replay tests validate our engine against real completed games from [18xx.games](https://18xx.games). They replay every action from a game log through our engine and compare state at each action boundary against reference snapshots extracted from the Ruby 18xx.games engine.
+Validate our engine against completed games from 18xx.games by replaying every action and comparing state. **Requires Ruby** — `extract_states.rb` runs as subprocess.
 
-**Requires Ruby** — the state extractor (`extract_states.rb`) runs inline as a subprocess during tests. No pre-generated state files are stored; reference states are extracted on-the-fly and held in memory.
+Key files: `extract_states.rb` (state extraction), `action_parser.py` (action mapping with undo/redo handling), `replay_harness.py` (replay + comparison), `test_replay.py` (pytest entry).
 
-**Architecture:**
-- `extract_states.rb` — Loads game JSON into the Ruby 18xx engine (git submodule at `tests/18xx_games/18xx/`), replays all actions, and emits a JSON snapshot after each action
-- `action_parser.py` — Maps 18xx action format (bid, par, sell_shares, etc.) to our engine's integer action indices, handling undo/redo, auto-actions, and program_* auto-pass flattening
-- `replay_harness.py` — Drives the replay loop: initializes our engine with the 18xx deck order, replays actions phase-by-phase, and compares state against reference snapshots
-- `test_replay.py` — Pytest parametrized entry point
+**Action space differences:** Our engine doesn't support: (1) player-owned corp-to-corp ACQ transfers, (2) closing companies with positive income. Check for these before investigating engine bugs if replay fails.
 
-**State compared at each action boundary:**
-- **Players**: cash, net worth, companies owned, shares held
-- **Corporations**: active/floated status, share price, cash, companies owned, shares in market
-- **Foreign Investor**: cash, companies owned
-- **Global**: offering (auction + revealed), deck size, cost of ownership level
-- **Active entity**: active player (INVEST/BID/IPO) and active corp (DIVIDENDS/ISSUE), gated on phase alignment
-
-**ACQ and CLOSING phases** use special adapters because our engine structures offers differently (sequential offer buffer vs. the 18xx engine's proposal model). These phases diff the before/after reference state to determine outcomes rather than mapping actions 1:1.
-
-**Action space differences from 18xx.games:** Our engine intentionally restricts certain actions that 18xx.games allows, to simplify the model's decision space:
-- **ACQUISITION**: 18xx.games allows player-owned corp-to-corp transfers via an offer/accept system. Our engine does not support these transfers. Game logs containing such offers will need the ACQ adapter to handle them (typically by passing).
-- **CLOSING**: 18xx.games allows players to close companies with positive income. Our engine never offers this since there is no strategic reason to do so. Game logs where a player closes a positive-income company will fail replay.
-
-When adding a new game, verify it doesn't rely on these unsupported actions. If a replay fails, check whether the game log contains corp-to-corp ACQ transfers or positive-income closures before investigating engine bugs.
-
-**Adding a new game:**
-1. Export the game JSON from 18xx.games (game data API or browser)
-2. Save to `tests/18xx_games/data/<game_id>.json`
-3. Add the game ID to the `@pytest.mark.parametrize` list in `test_replay.py`
-
-```bash
-# Run replay tests (requires Ruby)
-pytest tests/18xx_games/test_replay.py -v
-```
+**Adding a game:** Export JSON → save to `tests/18xx_games/data/<id>.json` → add to `@pytest.mark.parametrize` in `test_replay.py`.
 
 ## Key Files by Task
 
@@ -663,20 +273,10 @@ pytest tests/18xx_games/test_replay.py -v
 | Modify action space | `core/actions.pyx` | `core/driver.pyx`, `phases/*.pyx` |
 | Debug state | `core/state.pyx`, `VECTORS.md` | Entity files |
 | Optimize performance | Any `.pyx` | Check compiler directives, nogil |
-| Add phase | Create `phases/new.pyx` | `core/driver.pyx`, `core/actions.pyx` |
 | Fix bug | Tests first | Phase/entity files |
-| MCTS / search | `mcts/search.py`, `mcts/node.py` | `mcts/evaluator.py`, `mcts/eval_cache.py`, `train/config.py` |
-| NN model | `nn/model_3p_2.py` | `mcts/evaluator.py` |
-| Self-play / training | `train/main.py`, `train/config.py` | `train/self_play.py`, `train/eval_server.py`, `train/trainer.py` |
+| MCTS / search | `mcts/search.py`, `mcts/node.py` | `mcts/evaluator.py`, `train/config.py` |
+| Self-play / training | `train/main.py`, `train/config.py` | `train/self_play.py`, `train/eval_server.py` |
 | Interpretability | `interp/README.md` | `interp/*.py` |
-
-## Documentation
-
-- **CLAUDE.md**: This file - agent instructions
-- **RULES.md**: Complete game rules (24KB)
-- **VECTORS.md**: State/action vector layouts with exact offsets
-- **RSS.pdf**: Original board game rulebook
-- **interp/README.md**: Guide to interpretability analysis scripts
 
 ---
 
@@ -684,120 +284,37 @@ pytest tests/18xx_games/test_replay.py -v
 
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
-## Understanding Game Rules
-
-**Before working on any game logic**, read `RULES.md` to understand the correct behavior. This is the authoritative source for how the game should work. Common areas where rules matter:
-- Share buying/selling price calculations
-- Phase transitions and action ordering
-- Dividend payments and constraints
-- Acquisition and closing logic
-- Receivership and bankruptcy handling
-
-## Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --status in_progress  # Claim work
-bd close <id>         # Complete work
-bd sync               # Sync with git
-```
+**Before working on any game logic**, read `RULES.md` — authoritative source for rules.
 
 ## Agent Work Standards
 
-When working on any task, create beads issues (`bd create`) for:
-- Bugs or problems discovered
-- Rule discrepancies or ambiguities
-- Missing functionality or gaps
-- Performance concerns
-- Code quality issues
-- Anything that needs follow-up but is out of scope for current task
-
-**No insights or work should be lost.** When in doubt, create an issue.
+Create beads issues for anything discovered that needs follow-up but is out of scope. **No insights or work should be lost.**
 
 ## Using Subtasks
 
-When breaking down a feature into multiple steps, **use subtasks instead of independent issues**. Subtasks keep related work grouped and make progress easier to track.
-
-**Subtask IDs** use dot notation: `parent.1`, `parent.2`, etc. Nesting is supported up to two levels (`parent.1.1`).
-
-```bash
-# Create subtasks for a feature (e.g., rss-az-cython2-abc)
-bd create --parent=rss-az-cython2-abc --title="Create phase handler" --type=task
-bd create --parent=rss-az-cython2-abc --title="Integrate into driver" --type=task
-bd create --parent=rss-az-cython2-abc --title="Add tests" --type=task
-
-# Results in: abc.1, abc.2, abc.3
-```
-
-**When to use subtasks:**
-- Implementation steps for a feature (handler, integration, tests)
-- Bug fix with multiple related changes
-- Any work that logically belongs to a parent issue
-
-**When to use independent issues:**
-- Unrelated bugs discovered during work
-- Cross-cutting concerns affecting multiple features
-- Work that should be tracked separately for prioritization
+Use subtasks (`bd create --parent=<id> --title="..." --type=task`) for related work. Results in dot-notation IDs: `abc.1`, `abc.2`. Use independent issues for unrelated bugs or cross-cutting concerns.
 
 ## Ad-hoc Test Scripts
 
-When writing ad-hoc Python scripts to test or debug code, **write them to the scratchpad directory** instead of inlining them in Bash commands. This is more token-efficient when iterating:
-
-```bash
-# Write script to scratchpad
-Write scratchpad/test_something.py
-
-# Run it (PYTHONPATH required since script runs outside the project directory)
-PYTHONPATH=/home/icebreaker/rss-az-cython2 .venv/bin/python /path/to/scratchpad/test_something.py
-
-# If it fails, use Edit to make small changes instead of rewriting
-```
-
-Benefits:
-- Small edits are cheaper than rewriting 50+ line scripts inline
-- Script persists for re-running after fixes
-- Easier to read and debug
-
-**PYTHONPATH:** Always prepend `PYTHONPATH=/home/icebreaker/rss-az-cython2` when running scratchpad scripts, since they live outside the project tree and won't find `core/`, `entities/`, `phases/` etc. without it.
-
-The scratchpad path is provided in the system prompt at session start.
+Write ad-hoc scripts to the scratchpad directory (path in system prompt), not inline in Bash. Use `Edit` for iteration. Always prepend `PYTHONPATH=/home/icebreaker/rss-az-cython2` when running.
 
 ## Verification Before Closing
-
-Before closing a task, run a **full clean rebuild** to catch stale artifacts:
 
 ```bash
 .venv/bin/python setup.py clean && .venv/bin/python setup.py build_ext --inplace 2>&1 | grep -E "(warning|error)" || true
 pytest tests/
 ```
 
-A regular `build_ext --inplace` is incremental and may miss issues caused by changed `.pxd` headers or removed symbols. Always clean first when verifying.
-
-**IMPORTANT:** Always run the full test suite (`pytest tests/`). Do NOT use `--ignore` to skip the 18xx replay tests or any other test directory. All tests must pass before closing a task.
+**IMPORTANT:** Always run `pytest tests/` without `--ignore`. All tests must pass.
 
 ## Landing the Plane (Session Completion)
 
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+Work is NOT complete until `git push` succeeds. **MANDATORY:**
 
-**MANDATORY WORKFLOW:**
+1. File issues for remaining work
+2. Run quality gates (tests, builds)
+3. Update issue status (`bd close`)
+4. Push: `git pull --rebase && bd sync && git push && git status`
+5. Verify all changes committed AND pushed
 
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   bd sync
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
-
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
+**NEVER stop before pushing. NEVER say "ready to push when you are" — YOU must push.**
