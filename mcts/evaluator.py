@@ -28,6 +28,47 @@ def get_layout(num_players: int) -> LayoutInfo:
     return _layout_cache[num_players]
 
 
+def rotate_visible_state_into(
+    dst: np.ndarray,
+    state_array: np.ndarray,
+    active_player_id: int,
+    num_players: int,
+) -> None:
+    """Copy visible state into *dst* with player data rotated in-place.
+
+    Same rotation as :func:`rotate_visible_state` but writes directly into
+    a caller-supplied buffer, avoiding an intermediate allocation.
+
+    Args:
+        dst: Destination array of shape ``(visible_size,)`` — written in-place.
+        state_array: Full state array (visible + hidden).
+        active_player_id: Canonical player ID (0 to num_players-1).
+        num_players: Number of players in the game.
+    """
+    layout = get_layout(num_players)
+    dst[:] = state_array[:layout.visible_size]
+
+    if active_player_id == 0:
+        return
+
+    # Rotate player data blocks
+    p_off = layout.players_offset
+    stride = layout.player_stride
+    player_data = dst[p_off:p_off + layout.players_size].copy()
+    player_blocks = player_data.reshape(num_players, stride)
+    rotated_blocks = np.roll(player_blocks, -active_player_id, axis=0)
+    dst[p_off:p_off + layout.players_size] = rotated_blocks.ravel()
+
+    # Rotate per-player turn state fields
+    for field_offset in (layout.auction_high_bidder_offset,
+                         layout.auction_starter_offset,
+                         layout.auction_passed_offset):
+        field = dst[field_offset:field_offset + num_players].copy()
+        dst[field_offset:field_offset + num_players] = np.roll(
+            field, -active_player_id
+        )
+
+
 def rotate_visible_state(state_array: np.ndarray, active_player_id: int,
                          num_players: int) -> np.ndarray:
     """Return a copy of the visible state with player data rotated.
@@ -48,30 +89,9 @@ def rotate_visible_state(state_array: np.ndarray, active_player_id: int,
         Copy of visible state portion with rotation applied.
     """
     layout = get_layout(num_players)
-    visible = state_array[:layout.visible_size].copy()
-
-    if active_player_id == 0:
-        return visible  # No rotation needed
-
-    # Rotate player data blocks
-    p_off = layout.players_offset
-    stride = layout.player_stride
-    # Extract all player blocks, then roll
-    player_data = visible[p_off:p_off + layout.players_size].copy()
-    player_blocks = player_data.reshape(num_players, stride)
-    rotated_blocks = np.roll(player_blocks, -active_player_id, axis=0)
-    visible[p_off:p_off + layout.players_size] = rotated_blocks.ravel()
-
-    # Rotate per-player turn state fields
-    for field_offset in (layout.auction_high_bidder_offset,
-                         layout.auction_starter_offset,
-                         layout.auction_passed_offset):
-        field = visible[field_offset:field_offset + num_players].copy()
-        visible[field_offset:field_offset + num_players] = np.roll(
-            field, -active_player_id
-        )
-
-    return visible
+    dst = np.empty(layout.visible_size, dtype=state_array.dtype)
+    rotate_visible_state_into(dst, state_array, active_player_id, num_players)
+    return dst
 
 
 def apply_mask_softmax(logits: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -255,11 +275,10 @@ class NNEvaluator:
 
         active_players = [s.get_active_player() for s in states]
 
-        # Rotate and stack visible states
-        rotated = np.stack([
-            rotate_visible_state(s._array, ap, self.num_players)
-            for s, ap in zip(states, active_players)
-        ])
+        # Rotate visible states directly into a pre-allocated buffer
+        rotated = np.empty((n, self.layout.visible_size), dtype=np.float32)
+        for i, (s, ap) in enumerate(zip(states, active_players)):
+            rotate_visible_state_into(rotated[i], s._array, ap, self.num_players)
         masks = [get_valid_action_mask(s) for s in states]
 
         # Single forward pass (no mask — applied CPU-side after inference)
@@ -303,11 +322,10 @@ class NNEvaluator:
         if n == 0:
             return []
 
-        # Rotate and stack visible states
-        rotated = np.stack([
-            rotate_visible_state(arr, ap, self.num_players)
-            for arr, ap in zip(state_arrays, active_player_ids)
-        ])
+        # Rotate visible states directly into a pre-allocated buffer
+        rotated = np.empty((n, self.layout.visible_size), dtype=np.float32)
+        for i, (arr, ap) in enumerate(zip(state_arrays, active_player_ids)):
+            rotate_visible_state_into(rotated[i], arr, ap, self.num_players)
 
         # Single forward pass (no mask — applied CPU-side after inference)
         x = torch.from_numpy(rotated).to(self.device)

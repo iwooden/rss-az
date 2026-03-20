@@ -44,7 +44,7 @@ import torch
 from mcts.evaluator import (
     compute_terminal_values,
     get_layout,
-    rotate_visible_state,
+    rotate_visible_state_into,
     unrotate_values,
 )
 from train.profile_stats import EvalClientStats, EvalServerStats
@@ -427,9 +427,9 @@ class RemoteEvaluator:
         from core.actions import get_valid_action_mask
 
         active_player = state.get_active_player()
-        # Pure numpy write — no torch overhead
-        self._in_states_np[0] = rotate_visible_state(
-            state._array, active_player, self.num_players
+        # Write rotated state directly into shared memory — no intermediate
+        rotate_visible_state_into(
+            self._in_states_np[0], state._array, active_player, self.num_players
         )
         mask = get_valid_action_mask(state)
 
@@ -463,11 +463,11 @@ class RemoteEvaluator:
 
         active_ids = [s.get_active_player() for s in states]
 
-        # Pure numpy writes — no torch overhead
+        # Write rotated states directly into shared memory — no intermediates
         masks_list = []
         for i, (s, ap) in enumerate(zip(states, active_ids)):
-            self._in_states_np[i] = rotate_visible_state(
-                s._array, ap, self.num_players
+            rotate_visible_state_into(
+                self._in_states_np[i], s._array, ap, self.num_players
             )
             masks_list.append(get_valid_action_mask(s))
 
@@ -512,10 +512,10 @@ class RemoteEvaluator:
         if _stats is not None:
             _t0 = perf_counter()
 
-        # Pure numpy writes — rotate and assign directly to f32 shared memory
+        # Write rotated states directly into shared memory — no intermediates
         in_np = self._in_states_np
         for i, (arr, ap) in enumerate(zip(state_arrays, active_player_ids)):
-            in_np[i] = rotate_visible_state(arr, ap, self.num_players)
+            rotate_visible_state_into(in_np[i], arr, ap, self.num_players)
 
         if _stats is not None:
             _t1 = perf_counter()
