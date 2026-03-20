@@ -914,11 +914,10 @@ class TestSelfPlay:
         worker_events = [ctx.Event() for _ in range(num_workers)]
 
         servers = []
-        gather_lock = ctx.Lock()
         for i in range(num_servers):
             server = EvaluationServer(
                 model, device, shared_bufs, request_queue, worker_events,
-                server_id=i, gather_lock=gather_lock,
+                server_id=i,
                 mp_context=ctx, no_compile=True,
             )
             server.start()

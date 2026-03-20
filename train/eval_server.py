@@ -18,10 +18,10 @@ state_count), and per-worker Events signal completion.
 **Multi-server concurrency:**
 
 Each EvaluationServer process has its own GIL, CUDA context, and default
-stream. A shared gather lock (mp.Lock) serializes the queue-drain phase:
-one server builds a maximal batch from all pending requests while the other
-runs its GPU pipeline. This provides true double-buffering without batch
-fragmentation.
+stream. Servers race on the shared queue without a lock — after completing
+a forward pass, each server eagerly drains all pending requests via
+get_nowait() and immediately starts the next batch. This creates organic
+alternation: one server computes while the other gathers.
 
 Workers do zero torch operations on the write side (pure numpy).
 On the read side, workers do one bf16→f32 upcast on logits for
@@ -126,7 +126,6 @@ def _eval_server_main(
     stats_queue: Any,
     *,
     server_id: int,
-    gather_lock: Any | None,
     profile: bool,
     no_compile: bool,
 ) -> None:
@@ -140,7 +139,7 @@ def _eval_server_main(
         _eval_server_serve(
             model, device, shared_bufs, request_queue, worker_events,
             stop_event, stats_report_event, stats_queue,
-            server_id=server_id, gather_lock=gather_lock,
+            server_id=server_id,
             profile=profile, no_compile=no_compile,
         )
     except Exception:
@@ -159,7 +158,6 @@ def _eval_server_serve(
     stats_queue: Any,
     *,
     server_id: int,
-    gather_lock: Any | None,
     profile: bool,
     no_compile: bool,
 ) -> None:
@@ -212,36 +210,36 @@ def _eval_server_serve(
         if stats is not None:
             _tp = perf_counter()
 
-        # Block for first request WITHOUT the lock — an idle server
-        # must never hold the lock during its 10ms poll timeout, or it
-        # blocks the other server from processing accumulated requests.
-        try:
-            first: tuple[int, int] = request_queue.get(timeout=0.01)
-        except _queue.Empty:
-            if stats is not None:
-                stats.record_idle(perf_counter() - _tp)
-            # Check if main process wants stats
-            if stats_report_event is not None and stats_report_event.is_set():
-                stats_queue.put(copy.copy(stats))
-                if stats is not None:
-                    stats.reset()
-                stats_report_event.clear()
-            continue
+        # Eagerly drain all pending requests without blocking.
+        # Only fall back to a blocking get() when we have nothing,
+        # to avoid busy-spinning when idle.
+        batch_info: list[tuple[int, int]] = []
+        while len(batch_info) < max_batch:
+            try:
+                batch_info.append(request_queue.get_nowait())
+            except _queue.Empty:
+                break
 
-        # Drain additional requests under the lock so one server sweeps
-        # the full queue without the other server fragmenting the batch.
-        if gather_lock is not None:
-            gather_lock.acquire()
-        try:
-            batch_info: list[tuple[int, int]] = [first]
+        if not batch_info:
+            # Nothing pending — block briefly to avoid busy-spin
+            try:
+                batch_info.append(request_queue.get(timeout=0.01))
+            except _queue.Empty:
+                if stats is not None:
+                    stats.record_idle(perf_counter() - _tp)
+                # Check if main process wants stats
+                if stats_report_event is not None and stats_report_event.is_set():
+                    stats_queue.put(copy.copy(stats))
+                    if stats is not None:
+                        stats.reset()
+                    stats_report_event.clear()
+                continue
+            # Got one — drain any more that arrived
             while len(batch_info) < max_batch:
                 try:
                     batch_info.append(request_queue.get_nowait())
                 except _queue.Empty:
                     break
-        finally:
-            if gather_lock is not None:
-                gather_lock.release()
 
         # Gather f32 states from numpy shared memory into pinned numpy
         total_n = 0
@@ -299,8 +297,6 @@ class EvaluationServer:
     tensors are shared via CUDA IPC (torch.multiprocessing), so weight
     updates from the trainer are visible automatically.
 
-    A shared gather lock (mp.Lock) prevents batch fragmentation from
-    two servers racing on get_nowait().
     """
 
     def __init__(
@@ -312,7 +308,6 @@ class EvaluationServer:
         worker_events: list[Any],
         *,
         server_id: int = 0,
-        gather_lock: Any | None = None,
         profile: bool = False,
         mp_context: Any = None,
         no_compile: bool = False,
@@ -329,7 +324,6 @@ class EvaluationServer:
         )
         self._process_kwargs = {
             "server_id": server_id,
-            "gather_lock": gather_lock,
             "profile": profile,
             "no_compile": no_compile,
         }

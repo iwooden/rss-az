@@ -410,17 +410,12 @@ def main() -> None:
         )
 
         # Spawn M eval server processes (each gets its own GIL + CUDA
-        # default stream).  A shared mp.Lock serializes the get_nowait()
-        # drain so one server sweeps the full queue while the other runs
-        # its GPU pipeline.  Only needed for >1 server.
-        gather_lock: Any = (
-            ctx.Lock() if config.num_eval_servers > 1 else None
-        )
+        # default stream).  Servers race on get_nowait() without a lock —
+        # organic alternation: one server computes while the other gathers.
         for i in range(config.num_eval_servers):
             server = EvaluationServer(
                 model, device, shared_bufs, request_queue, worker_events,
                 server_id=i,
-                gather_lock=gather_lock,
                 profile=config.profile,
                 mp_context=ctx,
                 no_compile=args.no_compile,
