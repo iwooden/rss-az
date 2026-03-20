@@ -34,12 +34,10 @@ from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.preprocessing import StandardScaler
 
 from core.actions import decode_action_py
-from core.state import get_layout
+from core.data import GameConstants, PY_CASH_DIVISOR, PY_SHARE_DIVISOR
+from core.state import get_corp_fields, get_layout, get_player_fields
 from interp.utils import batch_masked_softmax, forward_batched
 from interp.utils import InterpDataset, collect_states, load_model
-
-CASH_DIVISOR = 100.0
-SHARE_DIVISOR = 7.0
 
 # Action type names for readable output
 _ACTION_TYPE_NAMES = {
@@ -70,14 +68,18 @@ def _extract_game_targets(
 ) -> dict[str, tuple[np.ndarray, str]]:
     """Extract probe targets from rotated state arrays."""
     layout = get_layout(num_players)
+    pf = get_player_fields(num_players)
+    cf = get_corp_fields()
+    NK = GameConstants.NUM_CORPS
+    NC = GameConstants.NUM_COMPANIES
     n = states.shape[0]
     targets: dict[str, tuple[np.ndarray, str]] = {}
 
     # Player net worths (denormalized)
     net_worths = np.zeros((n, num_players), dtype=np.float32)
     for p in range(num_players):
-        off = layout.players_offset + p * layout.player_stride + 1
-        net_worths[:, p] = states[:, off] * CASH_DIVISOR
+        off = layout.players_offset + p * layout.player_stride + pf.net_worth
+        net_worths[:, p] = states[:, off] * PY_CASH_DIVISOR
 
     # Phase (sanity)
     phase_oh = states[:, layout.phase_offset : layout.phase_offset + layout.phase_size]
@@ -97,7 +99,7 @@ def _extract_game_targets(
 
     # Lead margin
     max_opp = np.max(net_worths[:, 1:], axis=1)
-    targets["lead_margin"] = ((net_worths[:, 0] - max_opp) / CASH_DIVISOR, "regression")
+    targets["lead_margin"] = ((net_worths[:, 0] - max_opp) / PY_CASH_DIVISOR, "regression")
 
     # Net worth rank (0=first)
     rank = np.sum(
@@ -107,14 +109,14 @@ def _extract_game_targets(
 
     # Number of active corps
     num_active = np.zeros(n, dtype=np.float32)
-    for c in range(8):
-        off = layout.corps_offset + c * layout.corp_stride
+    for c in range(NK):
+        off = layout.corps_offset + c * layout.corp_stride + cf.active
         num_active += (states[:, off] > 0.5).astype(np.float32)
     targets["num_active_corps"] = (num_active, "regression")
 
     # Active player total shares
-    shares_off = layout.players_offset + 39 + num_players
-    shares = states[:, shares_off : shares_off + 8] * SHARE_DIVISOR
+    shares_off = layout.players_offset + pf.owned_shares
+    shares = states[:, shares_off : shares_off + NK] * PY_SHARE_DIVISOR
     targets["total_shares"] = (np.sum(shares, axis=1), "regression")
 
     # Corps invested in
@@ -123,8 +125,8 @@ def _extract_game_targets(
     )
 
     # Companies owned
-    co_off = layout.players_offset + 3 + num_players
-    companies = states[:, co_off : co_off + 36]
+    co_off = layout.players_offset + pf.owned_companies
+    companies = states[:, co_off : co_off + NC]
     targets["companies_owned"] = (
         np.sum(companies > 0.5, axis=1).astype(np.float32), "regression",
     )

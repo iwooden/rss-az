@@ -43,6 +43,31 @@ from core.data cimport (
     get_market_price,
 )
 
+PlayerFields = namedtuple('PlayerFields', [
+    'cash', 'net_worth', 'turn_order', 'owned_companies',
+    'owned_shares', 'is_president', 'round_trips',
+    'acquisition_proceeds', 'income',
+])
+
+CorpFields = namedtuple('CorpFields', [
+    'active', 'cash', 'unissued_shares', 'issued_shares', 'bank_shares',
+    'income', 'stars', 'share_price', 'acquisition_proceeds',
+    'in_receivership', 'price_index', 'owned_companies',
+    'acquisition_companies',
+])
+
+TurnFields = namedtuple('TurnFields', [
+    'end_card_flipped', 'consecutive_passes',
+    'auction_price', 'auction_high_bidder', 'auction_starter', 'auction_passed',
+    'dividend_impact', 'dividend_remaining',
+    'issue_remaining', 'issue_price_impact', 'issue_cash_gain',
+    'ipo_remaining',
+    'acq_is_fi_offer', 'acq_synergy_values',
+    'active_company', 'active_company_info',
+    'active_corp', 'active_corp_info', 'active_corp_companies',
+    'cards_remaining',
+])
+
 LayoutInfo = namedtuple('LayoutInfo', [
     # Sizes
     'visible_size', 'hidden_size', 'total_size',
@@ -469,6 +494,81 @@ def get_layout(int num_players):
         active_corp_info_offset=layout.turn_offset + turn.active_corp_info,
         active_corp_companies_offset=layout.turn_offset + turn.active_corp_companies,
         num_players=num_players,
+    )
+
+
+def get_player_fields(int num_players):
+    """Python-accessible player field sub-offsets within each player's data block.
+
+    Returns a PlayerFields namedtuple with relative offsets (add to
+    players_offset + p * player_stride to get absolute position).
+    """
+    cdef PlayerFieldOffsets p = compute_player_field_offsets(num_players)
+    return PlayerFields(
+        cash=p.cash,
+        net_worth=p.net_worth,
+        turn_order=p.turn_order,
+        owned_companies=p.owned_companies,
+        owned_shares=p.owned_shares,
+        is_president=p.is_president,
+        round_trips=p.round_trips,
+        acquisition_proceeds=p.acquisition_proceeds,
+        income=p.income,
+    )
+
+
+def get_corp_fields():
+    """Python-accessible corp field sub-offsets within each corp's data block.
+
+    Returns a CorpFields namedtuple with relative offsets (add to
+    corps_offset + c * corp_stride to get absolute position).
+    """
+    cdef CorpFieldOffsets c = compute_corp_field_offsets()
+    return CorpFields(
+        active=c.active,
+        cash=c.cash,
+        unissued_shares=c.unissued_shares,
+        issued_shares=c.issued_shares,
+        bank_shares=c.bank_shares,
+        income=c.income,
+        stars=c.stars,
+        share_price=c.share_price,
+        acquisition_proceeds=c.acquisition_proceeds,
+        in_receivership=c.in_receivership,
+        price_index=c.price_index,
+        owned_companies=c.owned_companies,
+        acquisition_companies=c.acquisition_companies,
+    )
+
+
+def get_turn_fields(int num_players):
+    """Python-accessible turn state sub-offsets within the turn block.
+
+    Returns a TurnFields namedtuple with relative offsets (add to
+    turn_offset to get absolute position).
+    """
+    cdef TurnStateOffsets t = compute_turn_offsets(num_players)
+    return TurnFields(
+        end_card_flipped=t.end_card_flipped,
+        consecutive_passes=t.consecutive_passes,
+        auction_price=t.auction_price,
+        auction_high_bidder=t.auction_high_bidder,
+        auction_starter=t.auction_starter,
+        auction_passed=t.auction_passed,
+        dividend_impact=t.dividend_impact,
+        dividend_remaining=t.dividend_remaining,
+        issue_remaining=t.issue_remaining,
+        issue_price_impact=t.issue_price_impact,
+        issue_cash_gain=t.issue_cash_gain,
+        ipo_remaining=t.ipo_remaining,
+        acq_is_fi_offer=t.acq_is_fi_offer,
+        acq_synergy_values=t.acq_synergy_values,
+        active_company=t.active_company,
+        active_company_info=t.active_company_info,
+        active_corp=t.active_corp,
+        active_corp_info=t.active_corp_info,
+        active_corp_companies=t.active_corp_companies,
+        cards_remaining=t.cards_remaining,
     )
 
 

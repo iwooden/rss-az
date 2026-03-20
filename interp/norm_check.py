@@ -14,6 +14,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
+import platform
+import subprocess
+from pathlib import Path
 
 import numpy as np
 
@@ -190,6 +194,184 @@ def _print_feature_detail(
             print(f"    p{pct:<2}: {np.percentile(nz, pct):>8.4f}")
 
 
+def _format_html_report(
+    rows: list[dict[str, object]],
+    num_states: int,
+    num_games: int,
+    epoch: int,
+) -> str:
+    """Generate a self-contained HTML report for normalization check."""
+    total_features = sum(r["n_features"] for r in rows)  # type: ignore[arg-type]
+    rows_json = json.dumps(rows)
+
+    return f"""\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Normalization Check — Epoch {epoch}</title>
+<style>
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 Helvetica, Arial, sans-serif;
+    background: #1a1a2e; color: #e0e0e0;
+    margin: 2rem auto; max-width: 1200px; padding: 0 1rem;
+  }}
+  h1 {{ color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }}
+  h2 {{ color: #ccc; font-size: 1.1rem; margin-top: 2rem;
+        border-bottom: 1px solid #333; padding-bottom: 0.3rem; }}
+  .meta {{ color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }}
+  table {{
+    border-collapse: collapse; width: 100%;
+    font-size: 0.82rem; margin-bottom: 1.5rem;
+  }}
+  th, td {{ padding: 5px 8px; border: 1px solid #2a2a4a; text-align: right; }}
+  th {{ background: #16213e; color: #aaa; font-weight: 600; position: sticky; top: 0; z-index: 1; }}
+  th:first-child, td:first-child {{ text-align: left; width: 220px; }}
+  td:first-child {{
+    font-family: "SF Mono", "Fira Code", Consolas, monospace;
+    font-size: 0.8rem; color: #ccc;
+  }}
+  tr:hover td {{ border-color: #555; }}
+  .bar-container {{ display: inline-block; width: 100px; vertical-align: middle; }}
+  .bar {{
+    display: inline-block; height: 12px; border-radius: 2px;
+    vertical-align: middle;
+  }}
+  .bar-blue {{ background: #4a9eff; }}
+  .bar-red {{ background: #e94560; }}
+  .bar-yellow {{ background: #e9a945; }}
+  .bar-green {{ background: #4ecca3; }}
+  .tag {{
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 0.75rem; font-weight: 600;
+  }}
+  .tag-ok {{ background: #1a3a2a; color: #4ecca3; }}
+  .tag-warn {{ background: #3a2a1a; color: #e9a945; }}
+  .tag-bad {{ background: #3a1a1a; color: #e94560; }}
+</style>
+</head>
+<body>
+<h1>Normalization Check — Epoch {epoch}</h1>
+<div class="meta">
+  {num_states:,} states from {num_games} games. {total_features} visible features across {len(rows)} groups.
+</div>
+
+<h2>1. All Feature Groups</h2>
+<p style="color:#888;font-size:0.85rem">Sorted by |Max| descending. Values outside [-1, +1] indicate the normalization divisor may be too small.</p>
+<table id="tbl-all"></table>
+
+<h2>2. Out-of-Range Features</h2>
+<p style="color:#888;font-size:0.85rem">Features with values exceeding [-1, +1]. Bar shows % of values out of range.</p>
+<table id="tbl-oor"></table>
+
+<h2>3. Sparse Features (&gt;90% zero)</h2>
+<p style="color:#888;font-size:0.85rem">Features that are mostly zero. Context-dependent features (turn:*, phase) are expected to be sparse.</p>
+<table id="tbl-sparse"></table>
+
+<script>
+const rows = {rows_json};
+
+function makeBar(val, maxVal, cls) {{
+  const pct = maxVal > 0 ? Math.min(val / maxVal * 100, 100) : 0;
+  return '<span class="bar-container"><span class="bar ' + cls + '" style="width:' + pct + '%"></span></span>';
+}}
+
+function fmtPct(v) {{ return (v * 100).toFixed(1) + '%'; }}
+function fmtVal(v, d) {{ return v.toFixed(d === undefined ? 3 : d); }}
+
+function statusTag(absMax) {{
+  if (absMax <= 1.0) return '<span class="tag tag-ok">OK</span>';
+  if (absMax <= 1.5) return '<span class="tag tag-warn">mild</span>';
+  return '<span class="tag tag-bad">high</span>';
+}}
+
+// --- All features table ---
+(function() {{
+  const sorted = rows.slice().sort((a, b) => b.abs_max - a.abs_max);
+  const tbl = document.getElementById("tbl-all");
+  let html = '<tr><th>Feature</th><th>#</th><th>Min</th><th>Max</th><th>|Max|</th>' +
+    '<th></th><th>Status</th><th>Mean</th><th>Std</th><th>%Zero</th><th>%Out</th></tr>';
+  const maxAbsMax = Math.max(...sorted.map(r => r.abs_max));
+  for (const r of sorted) {{
+    const oorStr = r.n_outside > 0 ? fmtPct(r.outside_frac) : '-';
+    const barCls = r.abs_max > 1.5 ? 'bar-red' : r.abs_max > 1.0 ? 'bar-yellow' : 'bar-green';
+    html += '<tr><td>' + r.name + '</td>' +
+      '<td>' + r.n_features + '</td>' +
+      '<td>' + fmtVal(r.min) + '</td>' +
+      '<td>' + fmtVal(r.max) + '</td>' +
+      '<td>' + fmtVal(r.abs_max) + '</td>' +
+      '<td>' + makeBar(r.abs_max, maxAbsMax, barCls) + '</td>' +
+      '<td style="text-align:center">' + statusTag(r.abs_max) + '</td>' +
+      '<td>' + fmtVal(r.mean, 4) + '</td>' +
+      '<td>' + fmtVal(r.std, 4) + '</td>' +
+      '<td>' + Math.round(r.zero_frac * 100) + '%</td>' +
+      '<td>' + oorStr + '</td></tr>';
+  }}
+  tbl.innerHTML = html;
+}})();
+
+// --- Out-of-range table ---
+(function() {{
+  const oor = rows.filter(r => r.n_outside > 0).sort((a, b) => b.abs_max - a.abs_max);
+  const tbl = document.getElementById("tbl-oor");
+  if (oor.length === 0) {{
+    tbl.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#4ecca3">No features outside [-1, +1]</td></tr>';
+    return;
+  }}
+  const maxPct = Math.max(...oor.map(r => r.outside_frac));
+  let html = '<tr><th>Feature</th><th>|Max|</th><th># Out</th><th>% Out</th><th></th></tr>';
+  for (const r of oor) {{
+    html += '<tr><td>' + r.name + '</td>' +
+      '<td>' + fmtVal(r.abs_max) + '</td>' +
+      '<td>' + r.n_outside.toLocaleString() + '</td>' +
+      '<td>' + fmtPct(r.outside_frac) + '</td>' +
+      '<td>' + makeBar(r.outside_frac, maxPct, 'bar-red') + '</td></tr>';
+  }}
+  tbl.innerHTML = html;
+}})();
+
+// --- Sparse features table ---
+(function() {{
+  const sparse = rows.filter(r => r.zero_frac > 0.90 && r.n_nonzero > 0)
+    .sort((a, b) => b.zero_frac - a.zero_frac);
+  const tbl = document.getElementById("tbl-sparse");
+  if (sparse.length === 0) {{
+    tbl.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#4ecca3">No sparse features</td></tr>';
+    return;
+  }}
+  let html = '<tr><th>Feature</th><th>% Zero</th><th>NZ Mean</th><th>NZ |Max|</th></tr>';
+  for (const r of sparse) {{
+    html += '<tr><td>' + r.name + '</td>' +
+      '<td>' + Math.round(r.zero_frac * 100) + '%</td>' +
+      '<td>' + fmtVal(r.nz_mean, 4) + '</td>' +
+      '<td>' + fmtVal(r.nz_absmax, 4) + '</td></tr>';
+  }}
+  tbl.innerHTML = html;
+}})();
+</script>
+</body>
+</html>"""
+
+
+def _open_file(path: Path) -> None:
+    """Open a file with the platform's default handler."""
+    system = platform.system()
+    try:
+        if system == "Linux":
+            subprocess.Popen(
+                ["xdg-open", str(path)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        elif system == "Darwin":
+            subprocess.Popen(
+                ["open", str(path)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+    except OSError:
+        print(f"  Could not open browser. Open manually: {path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Normalization health check for the visible state vector"
@@ -204,6 +386,14 @@ def main() -> None:
     parser.add_argument(
         "--feature", type=str, default=None,
         help="Show detailed stats for a specific feature group (e.g. 'invest:buy_impact')",
+    )
+    parser.add_argument(
+        "--output", type=str, default=None,
+        help="HTML output path (default: interp/data/norm_epoch<N>.html)",
+    )
+    parser.add_argument(
+        "--no-open", action="store_true",
+        help="Don't open the HTML report in a browser",
     )
     args = parser.parse_args()
 
@@ -244,7 +434,19 @@ def main() -> None:
             name, indices = match[0]
             _print_feature_detail(name, dataset.states, indices, dataset.phases)
 
-    print()
+    # --- HTML report ---
+    if args.output:
+        html_path = Path(args.output)
+    else:
+        html_path = Path("interp/data") / f"norm_epoch{epoch}.html"
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+
+    html = _format_html_report(rows, dataset.num_states, dataset.num_games, epoch)
+    html_path.write_text(html)
+    print(f"\nHTML report written to {html_path}")
+
+    if not args.no_open:
+        _open_file(html_path)
 
 
 if __name__ == "__main__":

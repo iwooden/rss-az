@@ -5,7 +5,7 @@ computed sizes. Uses core.state.get_layout() as the single source of truth.
 """
 import numpy as np
 import pytest
-from core.state import GameState, get_layout
+from core.state import GameState, get_corp_fields, get_layout
 from core.data import (
     get_company_stars, get_company_face_value,
     get_company_low_price, get_company_high_price,
@@ -224,6 +224,7 @@ class TestActiveCorp:
     def test_set_active_corp(self, state):
         """set_active_corp should populate info and owned companies from corp data."""
         layout = get_layout(3)
+        cf = get_corp_fields()
         # Float a corp first so it has meaningful data
         from tests.phases.conftest import float_corp_for_test
         float_corp_for_test(state, corp_id=0, par_index=10, player_id=0)
@@ -233,15 +234,16 @@ class TestActiveCorp:
         co_base = layout.active_corp_companies_offset
 
         # Info scalars: income, stars, share_price (already normalized in corp data)
-        corp_ptr_income = state._array[layout.corps_offset + 0 * layout.corp_stride + 5]  # income offset=5
-        corp_ptr_stars = state._array[layout.corps_offset + 0 * layout.corp_stride + 6]  # stars offset=6
-        corp_ptr_price = state._array[layout.corps_offset + 0 * layout.corp_stride + 7]  # share_price offset=7
+        corp_base = layout.corps_offset + 0 * layout.corp_stride
+        corp_ptr_income = state._array[corp_base + cf.income]
+        corp_ptr_stars = state._array[corp_base + cf.stars]
+        corp_ptr_price = state._array[corp_base + cf.share_price]
         assert abs(state._array[info_base + 0] - corp_ptr_income) < 1e-6
         assert abs(state._array[info_base + 1] - corp_ptr_stars) < 1e-6
         assert abs(state._array[info_base + 2] - corp_ptr_price) < 1e-6
 
         # Owned companies should match corp's owned_companies block
-        corp_owned_offset = layout.corps_offset + 0 * layout.corp_stride + 37  # owned_companies offset=37
+        corp_owned_offset = corp_base + cf.owned_companies
         for i in range(36):
             assert state._array[co_base + i] == state._array[corp_owned_offset + i], (
                 f"active_corp_companies[{i}] doesn't match corp owned_companies"

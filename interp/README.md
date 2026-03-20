@@ -201,9 +201,12 @@ Uses `train.tb_reader.read_tb_scalars()` which properly merges multiple event fi
 
 **Method:** Computes per-feature-group statistics (min, max, zero fraction, out-of-range counts) from collected game states. Flags features with values outside [-1, +1] (divisor too small) or excessive sparsity (signal too weak for learning).
 
+**Output:** Console summary + HTML report with sortable overview, out-of-range, and sparsity tables.
+
 ```bash
 .venv/bin/python -m interp.norm_check --load-data interp/data/states.npz
 .venv/bin/python -m interp.norm_check --load-data interp/data/states.npz --feature invest:buy_impact
+# Writes: interp/data/norm_epoch<N>.html. Use --no-open to suppress browser.
 ```
 
 **What to look for:**

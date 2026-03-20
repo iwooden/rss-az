@@ -21,7 +21,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from core.state import get_layout
+from core.data import GameConstants
+from core.state import get_corp_fields, get_layout, get_player_fields, get_turn_fields
 from interp.utils import (
     InterpDataset,
     batch_masked_softmax,
@@ -45,13 +46,25 @@ _PHASE_NAMES = {
     10: "GAME_OVER",
 }
 
-NUM_COMPANIES = 36
-NUM_CORPS = 8
+NUM_COMPANIES = GameConstants.NUM_COMPANIES
+NUM_CORPS = GameConstants.NUM_CORPS
 
 
 def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
-    """Build (name, indices) for every named field in the visible state."""
+    """Build (name, indices) for every named field in the visible state.
+
+    Uses get_player_fields/get_corp_fields/get_turn_fields for sub-offsets
+    so this stays in sync with the layout defined in core/state.pyx.
+    """
     layout = get_layout(num_players)
+    pf = get_player_fields(num_players)
+    cf = get_corp_fields()
+    tf = get_turn_fields(num_players)
+    NC = GameConstants.NUM_COMPANIES
+    NK = GameConstants.NUM_CORPS
+    NM = GameConstants.NUM_MARKET_SPACES
+    MAX_DIV = GameConstants.MAX_DIVIDEND
+
     groups: list[tuple[str, np.ndarray]] = []
 
     # --- Phase & CoO ---
@@ -59,18 +72,19 @@ def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
     groups.append(("coo_level", np.arange(layout.coo_offset, layout.coo_offset + layout.coo_size)))
 
     # --- Player fields (aggregated across all players) ---
-    _pf = [
-        ("player:cash", 0, 1),
-        ("player:net_worth", 1, 1),
-        ("player:turn_order", 2, num_players),
-        ("player:owned_companies", 2 + num_players, 36),
-        ("player:owned_shares", 38 + num_players, 8),
-        ("player:is_president", 46 + num_players, 8),
-        ("player:round_trips", 54 + num_players, 8),
-        ("player:acq_proceeds", 62 + num_players, 1),
-        ("player:income", 63 + num_players, 1),
+    # (name, relative_offset, size)
+    _player_groups = [
+        ("player:cash", pf.cash, 1),
+        ("player:net_worth", pf.net_worth, 1),
+        ("player:turn_order", pf.turn_order, num_players),
+        ("player:owned_companies", pf.owned_companies, NC),
+        ("player:owned_shares", pf.owned_shares, NK),
+        ("player:is_president", pf.is_president, NK),
+        ("player:round_trips", pf.round_trips, NK),
+        ("player:acq_proceeds", pf.acquisition_proceeds, 1),
+        ("player:income", pf.income, 1),
     ]
-    for name, rel, size in _pf:
+    for name, rel, size in _player_groups:
         idx: list[int] = []
         for p in range(num_players):
             base = layout.players_offset + p * layout.player_stride + rel
@@ -83,9 +97,9 @@ def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
     groups.append(("fi:companies", np.arange(layout.fi_offset + 2, layout.fi_offset + layout.fi_size)))
 
     # --- Company location flags ---
-    groups.append(("co:for_auction", np.arange(layout.auction_companies_offset, layout.auction_companies_offset + 36)))
-    groups.append(("co:revealed", np.arange(layout.revealed_companies_offset, layout.revealed_companies_offset + 36)))
-    groups.append(("co:removed", np.arange(layout.removed_companies_offset, layout.removed_companies_offset + 36)))
+    groups.append(("co:for_auction", np.arange(layout.auction_companies_offset, layout.auction_companies_offset + NC)))
+    groups.append(("co:revealed", np.arange(layout.revealed_companies_offset, layout.revealed_companies_offset + NC)))
+    groups.append(("co:removed", np.arange(layout.removed_companies_offset, layout.removed_companies_offset + NC)))
 
     # --- Company adjusted incomes ---
     groups.append(("co:adj_incomes", np.arange(layout.company_incomes_offset, layout.company_incomes_offset + layout.company_incomes_size)))
@@ -94,73 +108,86 @@ def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
     groups.append(("market:available", np.arange(layout.market_offset, layout.market_offset + layout.market_size)))
 
     # --- Corporation fields (aggregated across all corps) ---
-    _cf = [
-        ("corp:active", 0, 1),
-        ("corp:cash", 1, 1),
-        ("corp:unissued_shares", 2, 1),
-        ("corp:issued_shares", 3, 1),
-        ("corp:bank_shares", 4, 1),
-        ("corp:income", 5, 1),
-        ("corp:stars", 6, 1),
-        ("corp:share_price", 7, 1),
-        ("corp:acq_proceeds", 8, 1),
-        ("corp:in_receivership", 9, 1),
-        ("corp:price_index", 10, 27),
-        ("corp:owned_companies", 37, 36),
-        ("corp:acq_companies", 73, 36),
+    _corp_groups = [
+        ("corp:active", cf.active, 1),
+        ("corp:cash", cf.cash, 1),
+        ("corp:unissued_shares", cf.unissued_shares, 1),
+        ("corp:issued_shares", cf.issued_shares, 1),
+        ("corp:bank_shares", cf.bank_shares, 1),
+        ("corp:income", cf.income, 1),
+        ("corp:stars", cf.stars, 1),
+        ("corp:share_price", cf.share_price, 1),
+        ("corp:acq_proceeds", cf.acquisition_proceeds, 1),
+        ("corp:in_receivership", cf.in_receivership, 1),
+        ("corp:price_index", cf.price_index, NM),
+        ("corp:owned_companies", cf.owned_companies, NC),
+        ("corp:acq_companies", cf.acquisition_companies, NC),
     ]
-    for name, rel, size in _cf:
+    for name, rel, size in _corp_groups:
         idx = []
-        for c in range(NUM_CORPS):
+        for c in range(NK):
             base = layout.corps_offset + c * layout.corp_stride + rel
             idx.extend(range(base, base + size))
         groups.append((name, np.array(idx)))
 
     # --- Turn state ---
     t = layout.turn_offset
-    groups.append(("turn:end_card_flipped", np.array([t])))
-    groups.append(("turn:consec_passes", np.array([t + 1])))
+    groups.append(("turn:end_card_flipped", np.array([t + tf.end_card_flipped])))
+    groups.append(("turn:consec_passes", np.array([t + tf.consecutive_passes])))
 
     # Auction block: price(1) + high_bidder(np) + starter(np) + passed(np)
-    auction_idx: list[int] = [t + 2]  # auction_price
-    auction_idx.extend(range(layout.auction_high_bidder_offset, layout.auction_high_bidder_offset + num_players))
-    auction_idx.extend(range(layout.auction_starter_offset, layout.auction_starter_offset + num_players))
-    auction_idx.extend(range(layout.auction_passed_offset, layout.auction_passed_offset + num_players))
+    auction_idx: list[int] = [t + tf.auction_price]
+    auction_idx.extend(range(t + tf.auction_high_bidder, t + tf.auction_high_bidder + num_players))
+    auction_idx.extend(range(t + tf.auction_starter, t + tf.auction_starter + num_players))
+    auction_idx.extend(range(t + tf.auction_passed, t + tf.auction_passed + num_players))
     groups.append(("turn:auction", np.array(auction_idx)))
 
-    # Remaining turn fields are sequential after auction_passed
-    post = layout.auction_passed_offset + num_players
-    groups.append(("turn:dividend", np.arange(post, post + 34)))  # impact(26) + remaining(8)
-    post += 34
-    groups.append(("turn:issue", np.arange(post, post + 10)))  # remaining(8) + price_impact(1) + cash_gain(1)
-    post += 10
-    groups.append(("turn:ipo_remaining", np.arange(post, post + 36)))  # remaining(36)
-    post += 36
-    groups.append(("turn:acq", np.arange(post, post + 37)))  # fi_offer(1) + synergy(36)
-    post += 37
-    groups.append(("turn:active_company", np.arange(post, post + 36)))  # one-hot(36)
-    post += 36
-    groups.append(("turn:active_company_info", np.arange(post, post + 5)))  # stars, low, face, high, income
-    post += 5
-    groups.append(("turn:active_corp", np.arange(post, post + 8)))  # one-hot(8)
-    post += 8
-    groups.append(("turn:active_corp_info", np.arange(post, post + 3)))  # income, stars, share_price
-    post += 3
-    groups.append(("turn:active_corp_companies", np.arange(post, post + 36)))  # owned company flags
-    post += 36
-    groups.append(("turn:cards_remaining", np.array([post])))  # cards remaining in deck
-    post += 1
-    assert post == layout.auction_slot_info_offset, (
-        f"Turn end {post} != auction_slot_info_offset {layout.auction_slot_info_offset}"
+    # Dividend: impact(MAX_DIV) + remaining(NK)
+    div_size = MAX_DIV + NK
+    groups.append(("turn:dividend", np.arange(t + tf.dividend_impact, t + tf.dividend_impact + div_size)))
+
+    # Issue: remaining(NK) + price_impact(1) + cash_gain(1)
+    issue_size = NK + 2
+    groups.append(("turn:issue", np.arange(t + tf.issue_remaining, t + tf.issue_remaining + issue_size)))
+
+    # IPO remaining: NC companies
+    groups.append(("turn:ipo_remaining", np.arange(t + tf.ipo_remaining, t + tf.ipo_remaining + NC)))
+
+    # Acquisition: fi_offer(1) + synergy(NC)
+    acq_size = 1 + NC
+    groups.append(("turn:acq", np.arange(t + tf.acq_is_fi_offer, t + tf.acq_is_fi_offer + acq_size)))
+
+    # Active company: one-hot(NC)
+    groups.append(("turn:active_company", np.arange(t + tf.active_company, t + tf.active_company + NC)))
+
+    # Active company info: 5 scalars (stars, low, face, high, income)
+    active_co_info_size = tf.active_corp - tf.active_company_info
+    groups.append(("turn:active_company_info", np.arange(t + tf.active_company_info, t + tf.active_company_info + active_co_info_size)))
+
+    # Active corp: one-hot(NK)
+    groups.append(("turn:active_corp", np.arange(t + tf.active_corp, t + tf.active_corp + NK)))
+
+    # Active corp info: 3 scalars (income, stars, share_price)
+    active_corp_info_size = tf.active_corp_companies - tf.active_corp_info
+    groups.append(("turn:active_corp_info", np.arange(t + tf.active_corp_info, t + tf.active_corp_info + active_corp_info_size)))
+
+    # Active corp companies: NC flags
+    groups.append(("turn:active_corp_companies", np.arange(t + tf.active_corp_companies, t + tf.active_corp_companies + NC)))
+
+    # Cards remaining: 1 scalar
+    groups.append(("turn:cards_remaining", np.array([t + tf.cards_remaining])))
+
+    assert t + tf.cards_remaining + 1 == layout.auction_slot_info_offset, (
+        f"Turn end {t + tf.cards_remaining + 1} != auction_slot_info_offset {layout.auction_slot_info_offset}"
     )
 
     # --- Auction slot info (5 scalars per slot: stars, low, face, high, income) ---
     s = layout.auction_slot_info_offset
     groups.append(("auction_slot_info", np.arange(s, s + layout.auction_slot_info_size)))
 
-    # --- Invest impacts (8 buy + 8 sell, context-dependent on INVEST phase) ---
-    groups.append(("invest:buy_impact", np.arange(layout.invest_impacts_offset, layout.invest_impacts_offset + NUM_CORPS)))
-    groups.append(("invest:sell_impact", np.arange(layout.invest_impacts_offset + NUM_CORPS, layout.invest_impacts_offset + layout.invest_impacts_size)))
+    # --- Invest impacts (NK buy + NK sell, context-dependent on INVEST phase) ---
+    groups.append(("invest:buy_impact", np.arange(layout.invest_impacts_offset, layout.invest_impacts_offset + NK)))
+    groups.append(("invest:sell_impact", np.arange(layout.invest_impacts_offset + NK, layout.invest_impacts_offset + layout.invest_impacts_size)))
 
     # Verify full coverage
     all_idx = np.concatenate([g[1] for g in groups])
