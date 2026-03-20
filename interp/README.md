@@ -133,10 +133,15 @@ All scripts auto-detect the latest checkpoint. Use `--checkpoint path/to/file.pt
 
 **Method:** Trains linear probes (logistic regression / ridge regression) on intermediate activations at each layer to predict game-relevant quantities. If a probe at block 2 predicts as well as at block 5, the later blocks aren't contributing to that type of understanding.
 
+**Output:** Console summary + HTML report with separate tables for trunk, policy head, and value head layers.
+
 ```bash
 .venv/bin/python -m interp.probing --load-data interp/data/states.npz
-# Writes: interp/data/probing_epoch<N>.md
-# NOTE: Slow — trains 180 probes. Allow ~8-10 minutes for 4-5K states.
+# Writes: interp/data/probing_epoch<N>.md and .html
+# NOTE: Slow — trains 180+ probes. Allow ~8-10 minutes for 4-5K states.
+
+# Heads-only mode — probes only policy/value head layers (much faster):
+.venv/bin/python -m interp.probing --load-data interp/data/states.npz --heads-only
 ```
 
 **Probe categories:**

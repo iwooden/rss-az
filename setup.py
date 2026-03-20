@@ -92,11 +92,16 @@ class CleanCommand(Command):
             '*.html',
             '**/*.c',
             '**/*.so',
-            '**/*.html',
         ]
+        # Clean Cython-generated .html annotation files, but NOT interp reports
+        cython_html_dirs = ['core', 'entities', 'phases', 'mcts']
 
         for pattern in patterns:
             for path in glob.glob(pattern, recursive=True):
+                print(f'Removing {path}')
+                os.remove(path)
+        for d in cython_html_dirs:
+            for path in glob.glob(f'{d}/**/*.html', recursive=True):
                 print(f'Removing {path}')
                 os.remove(path)
 
