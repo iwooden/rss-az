@@ -164,6 +164,15 @@ def run_search(
         state_pool = StatePool(2 * config.num_simulations + 2, total_size)
 
     if reuse_root is not None:
+        # Safety check: ensure pool has room for a full search on top of
+        # the compacted subtree. Over many moves the retained subtree can
+        # accumulate nodes; if it outgrows the pool, abandon reuse for
+        # this move and fall through to a fresh search.
+        pool_remaining = len(state_pool.states) - state_pool._next
+        if pool_remaining < config.num_simulations + 1:
+            reuse_root = None
+
+    if reuse_root is not None:
         # Lazy subtree reuse: increment generation so stale nodes get
         # their stats reset on first encounter during selection.
         _search_generation += 1

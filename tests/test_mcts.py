@@ -1220,16 +1220,14 @@ class TestSubtreeReuse:
         """Search with reuse_root should produce a valid tree."""
         from core.state import get_layout
         total_size = get_layout(3).total_size
-        pool = StatePool(101, total_size)
         config = MCTSConfig(num_simulations=100)
+        pool = StatePool(2 * config.num_simulations + 2, total_size)
         root = run_search(game_state, evaluator, config, state_pool=pool)
 
         # Find best action and prepare reuse
         assert root.visit_counts is not None and root.legal_actions is not None
         best_idx = int(np.argmax(root.visit_counts - 1))
         best_action = int(root.legal_actions[best_idx])
-        old_child_visits = root.children[best_action].visit_count
-
         reuse = prepare_reuse_root(root, best_action, pool)
         assert reuse is not None
 
@@ -1241,12 +1239,10 @@ class TestSubtreeReuse:
         # Run search with reuse
         root2 = run_search(next_state, evaluator, config, state_pool=pool, reuse_root=reuse)
 
-        # Should be the same node object
+        # Should be the same node object (reuse was not abandoned)
         assert root2 is reuse
-        # Visit count should increase
-        assert root2.visit_count >= old_child_visits
-        # Should reach target sim count
-        assert root2.visit_count >= config.num_simulations
+        # Visit count should be fresh (num_simulations + 1 for root eval)
+        assert root2.visit_count == config.num_simulations + 1
 
         # Action probabilities should be valid
         probs = get_action_probabilities(root2, temperature=1.0, action_dim=config.action_dim)
@@ -1291,8 +1287,8 @@ class TestSubtreeReuse:
         counter_fresh = EvalCounter(evaluator)
         from core.state import get_layout
         total_size = get_layout(3).total_size
-        pool = StatePool(101, total_size)
         config = MCTSConfig(num_simulations=100)
+        pool = StatePool(2 * config.num_simulations + 2, total_size)
         root = run_search(game_state, counter_fresh, config, state_pool=pool)
         fresh_evals = counter_fresh.eval_count
 
@@ -1324,8 +1320,8 @@ class TestSubtreeReuse:
         """Subtree reuse should work with batched leaf evaluation."""
         from core.state import get_layout
         total_size = get_layout(3).total_size
-        pool = StatePool(51, total_size)
         config = MCTSConfig(num_simulations=50, search_batch_size=4)
+        pool = StatePool(2 * config.num_simulations + 2, total_size)
         root = run_search(game_state, evaluator, config, state_pool=pool)
 
         assert root.visit_counts is not None and root.legal_actions is not None
@@ -1343,7 +1339,7 @@ class TestSubtreeReuse:
             next_state, evaluator, config, state_pool=pool, reuse_root=reuse,
         )
 
-        assert root2.visit_count >= config.num_simulations
+        assert root2.visit_count == config.num_simulations + 1
         probs = get_action_probabilities(root2, temperature=1.0, action_dim=config.action_dim)
         assert probs.sum() == pytest.approx(1.0, abs=1e-5)
 
@@ -1352,8 +1348,8 @@ class TestSubtreeReuse:
         from core.driver import DRIVER
         from core.state import get_layout
         total_size = get_layout(3).total_size
-        pool = StatePool(51, total_size)
         config = MCTSConfig(num_simulations=50)
+        pool = StatePool(2 * config.num_simulations + 2, total_size)
         rng = np.random.default_rng(42)
 
         state = GameState.from_array(game_state._array, 3)
