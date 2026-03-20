@@ -17,12 +17,12 @@ from time import perf_counter
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from mcts.eval_cache import EvalCache
     from train.profile_stats import SearchStats
 
 import numpy as np
 
 from train.config import MCTSConfig
-from mcts.eval_cache import EvalCache
 from mcts.node import MCTSNode
 from mcts.mcts_core import select_child, backup as _backup, increment_visits as _increment_visits
 
@@ -136,6 +136,8 @@ def run_search(
         eval_cache: Optional per-game cache of NN evaluation results.
             When provided, leaf evaluations check the cache before calling
             the evaluator; cache misses are batched and results stored.
+            Mutually exclusive with reuse_root — subtree reuse and eval
+            caching are alternative strategies.
 
     Returns:
         The root MCTSNode with search statistics populated.
@@ -144,6 +146,10 @@ def run_search(
     from core.data import GamePhases
     from core.driver import DRIVER, STATUS_GAME_OVER_PY
     from core.state import GameState
+
+    assert reuse_root is None or eval_cache is None, (
+        "reuse_root and eval_cache are mutually exclusive"
+    )
 
     num_players = config.num_players
     batch_size = config.search_batch_size
