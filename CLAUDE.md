@@ -284,41 +284,44 @@ AlphaZero-style self-play training loop in `train/`.
 
 ### Multi-Process Self-Play Architecture
 
-Self-play uses one or more centralized evaluation server threads for GPU throughput:
+Self-play uses one or more centralized evaluation server processes for GPU throughput:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  Main Process                                            │
-│  - Owns model, device, replay buffer, trainer            │
-│  - M EvaluationServer threads (batched GPU inference)    │
-│  - Spawns N worker processes                             │
+│  - Owns model (GPU, shared via CUDA IPC), trainer        │
+│  - Replay buffer, checkpoint management                  │
+│  - Spawns M eval server + N worker processes             │
 │  - Collects GameRecords, runs training                   │
-└────────────────────┬─────────────────────────────────────┘
-                     │ 1 shared Queue + N Events
-       ┌─────────────┼─────────────┐
-       ▼             ▼             ▼
-┌────────────┐ ┌────────────┐ ┌────────────┐
-│  Worker 0  │ │  Worker 1  │ │  Worker K  │
-│ play_game()│ │ play_game()│ │ play_game()│
-│ RemoteEval │ │ RemoteEval │ │ RemoteEval │
-└────────────┘ └────────────┘ └────────────┘
+└────────┬───────────────────────────────────┬─────────────┘
+         │ CUDA IPC (shared GPU params)      │
+   ┌─────┴─────────┐                        │
+   ▼               ▼                        │ 1 shared Queue + N Events
+┌────────────┐ ┌────────────┐    ┌──────────┼──────────┐
+│ EvalServer │ │ EvalServer │    ▼          ▼          ▼
+│ Process 0  │ │ Process 1  │ ┌────────┐┌────────┐┌────────┐
+│ (own GIL)  │ │ (own GIL)  │ │Worker 0││Worker 1││Worker K│
+└────────────┘ └────────────┘ │play_game││play_game││play_game│
+                              │RemoteEval│RemoteEval│RemoteEval│
+                              └────────┘└────────┘└────────┘
 ```
 
 **Key design decisions:**
 - **Workers are processes** (not threads) because MCTS is CPU-bound — GIL would serialize them
-- **Evaluators are threads** in the main process — the GIL is released during CUDA kernels, and the model stays in one process
-- **Multiple eval servers** (`--num-eval-servers M`) consume from a shared request queue with per-server CUDA streams for true double-buffering: one server's compute overlaps another's data transfer. A shared gather lock prevents batch fragmentation. Autocast weight caching is disabled on private streams (`cache_enabled=False`) to avoid cross-stream data races
-- **Plain `multiprocessing`** (not `torch.multiprocessing`) — avoids file descriptor exhaustion from shared tensor overhead on small arrays (~12KB per state)
+- **Eval servers are processes** (not threads) — each has its own GIL, eliminating Python-level contention for torch dispatch, queue ops, and numpy copies. This enables true double-buffering where two servers' GPU pipelines overlap without serialization
+- **Model sharing via `torch.multiprocessing`** — CUDA parameter tensors are shared zero-copy across processes via CUDA IPC (`cudaIpcGetMemHandle`). The module structure is pickled and duplicated per process. `optimizer.step()` modifies parameters in-place on the GPU, and eval servers see updates automatically (the existing drain-before-training flow ensures no server is mid-forward-pass during updates)
+- **Multiple eval servers** (`--num-eval-servers M`) consume from a shared request queue. A shared `mp.Lock` serializes the queue-drain phase so one server sweeps the full queue while the other runs its GPU pipeline. Each server uses its process's default CUDA stream
+- **`torch.compile` per-process** — each eval server compiles the model independently (no shared dynamo state, no GIL-serialized guard checks). The main process compiles separately for training
 - **`spawn` context** — avoids CUDA fork issues
 - **Workers are daemon processes** — auto-killed on main process exit for clean Ctrl-C shutdown
 - **`num_workers=0`** falls back to single-process sequential self-play (useful for debugging)
 
-**Communication:** Workers write pre-rotated states into per-worker slots in `SharedEvalBuffers` (shared memory via `multiprocessing.RawArray`). A shared `multiprocessing.Queue` carries lightweight request tuples `(worker_idx, state_count)`. Each EvaluationServer thread blocks on `queue.get()`, then drains additional requests with `get_nowait()` to build larger batches. After inference, results are scattered to shared memory and per-worker `multiprocessing.Event` objects are set to signal completion. Uses pinned memory and pre-allocated GPU tensors for zero-alloc H2D/D2H transfers. With 24 workers each sending batch-8 requests, the GPU sees batches of up to ~192 states.
+**Communication:** Workers write pre-rotated states into per-worker slots in `SharedEvalBuffers` (shared memory via `share_memory_()`). A shared `multiprocessing.Queue` carries lightweight request tuples `(worker_idx, state_count)`. Each EvaluationServer process blocks on `queue.get()`, then drains additional requests with `get_nowait()` to build larger batches. After inference, results are scattered to shared memory and per-worker `multiprocessing.Event` objects are set to signal completion. Uses pinned memory and pre-allocated GPU tensors for zero-alloc H2D/D2H transfers. With 24 workers each sending batch-8 requests, the GPU sees batches of up to ~192 states.
 
 **Files:**
-- `train/eval_server.py` — `EvaluationServer` (thread) + `RemoteEvaluator` (worker-side proxy with same interface as `NNEvaluator`)
+- `train/eval_server.py` — `EvaluationServer` (process wrapper) + `_eval_server_main()` (process entry point) + `RemoteEvaluator` (worker-side proxy with same interface as `NNEvaluator`)
 - `train/self_play.py` — `play_game()` (takes an evaluator object) + `self_play_worker()` (worker process entry point)
-- `train/main.py` — Orchestration: spawns workers, feeds game seeds via `mp.Queue`, collects `GameRecord`s
+- `train/main.py` — Orchestration: spawns eval servers and workers, feeds game seeds via `mp.Queue`, collects `GameRecord`s
 
 ### Training Loop
 

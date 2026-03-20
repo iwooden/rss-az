@@ -342,34 +342,9 @@ def main() -> None:
         model.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
         start_epoch = cp["epoch"] + 1  # type: ignore[operator]
 
-    # --- torch.compile (before Trainer so training also uses compiled model) ---
-    if not args.no_compile and device.type == "cuda":
-        print("Compiling model with torch.compile...")
-        # torch.compile returns OptimizedModule (a Module subclass at runtime),
-        # but Pyright sees the return type as FunctionType | Module. Cast to keep
-        # downstream type-safety for .eval(), .train(), save_checkpoint(), etc.
-        model = cast(torch.nn.Module, torch.compile(model, dynamic=True))
-        # Warmup passes to trigger compilation before self-play starts.
-        # Must match the eval server's context exactly (eval mode + no_grad +
-        # autocast) so dynamo doesn't recompile when the servers start.
-        # Two passes: batch=1 for the common single-state case, then the
-        # realistic max batch size to force Triton to compile kernels for
-        # the actual workload.  Without the larger warmup, the first real
-        # eval server batch can trigger Triton recompilation concurrently
-        # across multiple server threads, pegging the CPU on compiler procs.
-        model.eval()
-        max_warmup = max(1, config.num_workers * config.search_batch_size)
-        with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
-            for warmup_bs in (1, max_warmup):
-                dummy = torch.randn(warmup_bs, config.visible_size, device=device)
-                model(dummy)
-                del dummy
-        # Synchronize to ensure autocast weight cache is fully populated
-        # before eval servers start on non-default streams.  Without this,
-        # cached bf16 weights created here on the default stream might not
-        # be visible to server threads' private streams.
-        torch.cuda.synchronize()
-        print("  Model compiled.")
+    # NOTE: torch.compile is deferred until after eval servers are spawned.
+    # Eval servers receive the uncompiled model (they compile independently
+    # in their own processes). The main process compiles for training below.
 
     # --- Components ---
     trainer = Trainer(model, config, device)
@@ -434,12 +409,12 @@ def main() -> None:
             num_players=config.num_players,
         )
 
-        # Spawn M eval server threads (each gets its own CUDA stream +
-        # pinned/GPU buffers).  A shared gather lock serializes the
-        # get_nowait() drain so one server sweeps the full queue while
-        # the other is on the GPU.  Only needed for >1 server.
-        gather_lock = (
-            threading.Lock() if config.num_eval_servers > 1 else None
+        # Spawn M eval server processes (each gets its own GIL + CUDA
+        # default stream).  A shared mp.Lock serializes the get_nowait()
+        # drain so one server sweeps the full queue while the other runs
+        # its GPU pipeline.  Only needed for >1 server.
+        gather_lock: Any = (
+            ctx.Lock() if config.num_eval_servers > 1 else None
         )
         for i in range(config.num_eval_servers):
             server = EvaluationServer(
@@ -447,6 +422,8 @@ def main() -> None:
                 server_id=i,
                 gather_lock=gather_lock,
                 profile=config.profile,
+                mp_context=ctx,
+                no_compile=args.no_compile,
             )
             server.start()
             eval_servers.append(server)
@@ -477,6 +454,23 @@ def main() -> None:
 
         total_state_size = get_layout(config.num_players).total_size
         state_pool = StatePool(config.num_simulations + 1, total_state_size)
+
+    # --- torch.compile for training in main process ---
+    # Eval servers compile independently in their own processes.
+    # Main process compiles for training only.
+    if not args.no_compile and device.type == "cuda":
+        print("Compiling model with torch.compile (main process)...")
+        model = cast(torch.nn.Module, torch.compile(model, dynamic=True))
+        # Warmup in training context
+        model.train()
+        max_warmup = max(1, config.num_workers * config.search_batch_size)
+        with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
+            for warmup_bs in (1, max_warmup):
+                dummy = torch.randn(warmup_bs, config.visible_size, device=device)
+                model(dummy)
+                del dummy
+        torch.cuda.synchronize()
+        print("  Model compiled.")
 
     # --- Training loop ---
     avg_losses: dict[str, float] = {}

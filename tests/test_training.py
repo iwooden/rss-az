@@ -632,7 +632,7 @@ class TestSelfPlay:
         self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
     ) -> None:
         """RemoteEvaluator through EvaluationServer produces same results as NNEvaluator."""
-        from multiprocessing import Event, Queue
+        import torch.multiprocessing as mp
 
         from mcts.evaluator import NNEvaluator
 
@@ -643,6 +643,7 @@ class TestSelfPlay:
         model = small_model.to(device)
         model.eval()
         num_players = tiny_config.num_players
+        ctx = mp.get_context("spawn")
 
         # Set up a game state to evaluate
         state = GameState(num_players)
@@ -660,10 +661,11 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=num_players,
         )
-        request_queue: Queue[tuple[int, int]] = Queue()
-        worker_events = [Event()]
+        request_queue = ctx.Queue()
+        worker_events = [ctx.Event()]
         server = EvaluationServer(
             model, device, shared_bufs, request_queue, worker_events,
+            mp_context=ctx, no_compile=True,
         )
         server.start()
         try:
@@ -683,7 +685,7 @@ class TestSelfPlay:
         self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
     ) -> None:
         """RemoteEvaluator.evaluate_batch matches NNEvaluator.evaluate_batch."""
-        from multiprocessing import Event, Queue
+        import torch.multiprocessing as mp
 
         from mcts.evaluator import NNEvaluator
 
@@ -699,6 +701,7 @@ class TestSelfPlay:
         model = small_model.to(device)
         model.eval()
         num_players = tiny_config.num_players
+        ctx = mp.get_context("spawn")
 
         # Create a few different game states
         states = []
@@ -726,10 +729,11 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=num_players,
         )
-        request_queue: Queue[tuple[int, int]] = Queue()
-        worker_events = [Event()]
+        request_queue = ctx.Queue()
+        worker_events = [ctx.Event()]
         server = EvaluationServer(
             model, device, shared_bufs, request_queue, worker_events,
+            mp_context=ctx, no_compile=True,
         )
         server.start()
         try:
@@ -751,7 +755,7 @@ class TestSelfPlay:
         self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
     ) -> None:
         """play_game produces valid results when using RemoteEvaluator."""
-        from multiprocessing import Event, Queue
+        import torch.multiprocessing as mp
 
         from train.eval_server import (
             EvaluationServer,
@@ -762,6 +766,7 @@ class TestSelfPlay:
         device = torch.device("cuda")
         model = small_model.to(device)
         model.eval()
+        ctx = mp.get_context("spawn")
 
         shared_bufs = SharedEvalBuffers(
             num_workers=1,
@@ -770,10 +775,11 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=tiny_config.num_players,
         )
-        request_queue: Queue[tuple[int, int]] = Queue()
-        worker_events = [Event()]
+        request_queue = ctx.Queue()
+        worker_events = [ctx.Event()]
         server = EvaluationServer(
             model, device, shared_bufs, request_queue, worker_events,
+            mp_context=ctx, no_compile=True,
         )
         server.start()
         try:
@@ -825,6 +831,7 @@ class TestSelfPlay:
 
         server = EvaluationServer(
             model, device, shared_bufs, request_queue, worker_events,
+            mp_context=ctx, no_compile=True,
         )
         server.start()
 
@@ -874,9 +881,10 @@ class TestSelfPlay:
     def test_multi_server_eval(
         self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
     ) -> None:
-        """Multiple EvaluationServer threads handle concurrent requests correctly."""
+        """Multiple EvaluationServer processes handle concurrent requests correctly."""
         import threading
-        from multiprocessing import Event, Queue
+
+        import torch.multiprocessing as mp
 
         from core.state import GameState
         from train.eval_server import (
@@ -892,6 +900,7 @@ class TestSelfPlay:
         num_servers = 2
         num_players = tiny_config.num_players
         num_rounds = 10
+        ctx = mp.get_context("spawn")
 
         shared_bufs = SharedEvalBuffers(
             num_workers=num_workers,
@@ -901,15 +910,16 @@ class TestSelfPlay:
             num_players=num_players,
         )
 
-        request_queue: Queue[tuple[int, int]] = Queue()
-        worker_events = [Event() for _ in range(num_workers)]
+        request_queue = ctx.Queue()
+        worker_events = [ctx.Event() for _ in range(num_workers)]
 
         servers = []
-        gather_lock = threading.Lock()
+        gather_lock = ctx.Lock()
         for i in range(num_servers):
             server = EvaluationServer(
                 model, device, shared_bufs, request_queue, worker_events,
                 server_id=i, gather_lock=gather_lock,
+                mp_context=ctx, no_compile=True,
             )
             server.start()
             servers.append(server)
