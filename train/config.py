@@ -61,7 +61,6 @@ class EpochConfig:
 
     c_puct: float
     value_blend_alpha: float  # 0.0 = pure game outcome, 1.0 = pure A0GB
-    enable_subtree_reuse: bool
 
 
 @dataclass
@@ -112,10 +111,6 @@ class TrainingConfig:
     # Blend between rank-based rewards (1.0) and net-worth-margin rewards (0.0).
     # Default 0.5 = equal blend. Set to 1.0 for pure [-1, 0, +1] rank rewards.
     terminal_blend: float = 0.5
-
-    # --- Subtree reuse ---
-    # Disabled for early epochs to allow Dirichlet noise to take effect.
-    reuse_subtree_after_epoch: int = 15
 
     # --- Replay Buffer ---
     buffer_capacity: int = 500_000
@@ -221,12 +216,6 @@ class TrainingConfig:
                 f"terminal_blend must be in [0, 1], got {self.terminal_blend}"
             )
 
-        # Subtree reuse
-        if self.reuse_subtree_after_epoch < 0:
-            raise ValueError(
-                f"reuse_subtree_after_epoch must be >= 0, got {self.reuse_subtree_after_epoch}"
-            )
-
         # Game fields
         if self.num_players < 2:
             raise ValueError(f"num_players must be >= 2, got {self.num_players}")
@@ -271,13 +260,9 @@ class TrainingConfig:
             span = self.value_blend_end_epoch - self.value_blend_start_epoch
             value_blend_alpha = (epoch - self.value_blend_start_epoch) / max(span, 1)
 
-        # Subtree reuse
-        enable_subtree_reuse = epoch >= self.reuse_subtree_after_epoch
-
         return EpochConfig(
             c_puct=c_puct,
             value_blend_alpha=value_blend_alpha,
-            enable_subtree_reuse=enable_subtree_reuse,
         )
 
     def to_mcts_config(self, c_puct_override: float | None = None) -> MCTSConfig:

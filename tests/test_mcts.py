@@ -1377,151 +1377,28 @@ class TestSubtreeReuse:
 
 
 # ---------------------------------------------------------------------------
-# EvalCache
+# Lazy subtree reuse
 # ---------------------------------------------------------------------------
 
-class TestEvalCache:
-    """Tests for the per-game NN evaluation cache."""
+class TestLazySubtreeReuse:
+    """Tests for lazy generation-based subtree reuse."""
 
-    def test_store_and_lookup(self):
-        """Stored entries should be retrievable by the same state array."""
-        from mcts.eval_cache import EvalCache
+    def test_subtree_reuse_reduces_nn_calls(self, game_state, evaluator):
+        """Subtree reuse should reduce the number of NN forward calls.
 
-        cache = EvalCache(action_dim=246, num_players=3, initial_capacity=16)
-        state = np.random.default_rng(42).random(4207).astype(np.float32)
-        policy = np.random.default_rng(43).random(246).astype(np.float32)
-        values = np.array([0.5, -0.3, 0.1], dtype=np.float32)
-
-        assert cache.lookup(state) is None
-        cache.store(state, policy, values)
-        assert cache.size == 1
-
-        result = cache.lookup(state)
-        assert result is not None
-        np.testing.assert_array_equal(result[0], policy)
-        np.testing.assert_array_equal(result[1], values)
-
-    def test_lookup_miss(self):
-        """Different state arrays should not collide."""
-        from mcts.eval_cache import EvalCache
-
-        rng = np.random.default_rng(42)
-        cache = EvalCache(action_dim=246, num_players=3)
-        state1 = rng.random(4207).astype(np.float32)
-        state2 = rng.random(4207).astype(np.float32)
-        policy = rng.random(246).astype(np.float32)
-        values = np.zeros(3, dtype=np.float32)
-
-        cache.store(state1, policy, values)
-        assert cache.lookup(state2) is None
-
-    def test_duplicate_store_is_noop(self):
-        """Storing the same state twice should not add a second entry."""
-        from mcts.eval_cache import EvalCache
-
-        cache = EvalCache(action_dim=246, num_players=3)
-        state = np.ones(4207, dtype=np.float32)
-        policy = np.zeros(246, dtype=np.float32)
-        values = np.zeros(3, dtype=np.float32)
-
-        cache.store(state, policy, values)
-        cache.store(state, policy, values)
-        assert cache.size == 1
-
-    def test_clear(self):
-        """Clear should remove all entries but keep capacity."""
-        from mcts.eval_cache import EvalCache
-
-        cache = EvalCache(action_dim=246, num_players=3, initial_capacity=16)
-        state = np.ones(4207, dtype=np.float32)
-        cache.store(state, np.zeros(246, dtype=np.float32), np.zeros(3, dtype=np.float32))
-        assert cache.size == 1
-
-        cache.clear()
-        assert cache.size == 0
-        assert cache.lookup(state) is None
-        # Capacity preserved
-        assert cache._capacity == 16
-
-    def test_grow(self):
-        """Cache should double capacity when full."""
-        from mcts.eval_cache import EvalCache
-
-        cache = EvalCache(action_dim=246, num_players=3, initial_capacity=4)
-        rng = np.random.default_rng(42)
-
-        for _ in range(8):  # Exceeds initial capacity of 4
-            state = rng.random(4207).astype(np.float32)
-            policy = rng.random(246).astype(np.float32)
-            values = rng.random(3).astype(np.float32)
-            cache.store(state, policy, values)
-
-        assert cache.size == 8
-        assert cache._capacity == 8  # Doubled from 4 to 8
-
-    def test_grow_preserves_data(self):
-        """Growing should preserve all previously stored entries."""
-        from mcts.eval_cache import EvalCache
-
-        cache = EvalCache(action_dim=246, num_players=3, initial_capacity=2)
-        rng = np.random.default_rng(42)
-        states = []
-        policies = []
-
-        for i in range(5):  # Forces two doublings: 2→4→8
-            state = rng.random(4207).astype(np.float32)
-            policy = rng.random(246).astype(np.float32)
-            values = np.array([float(i), 0.0, 0.0], dtype=np.float32)
-            states.append(state)
-            policies.append(policy)
-            cache.store(state, policy, values)
-
-        # Verify all entries survived the grows
-        for i, state in enumerate(states):
-            result = cache.lookup(state)
-            assert result is not None
-            np.testing.assert_array_equal(result[0], policies[i])
-            assert result[1][0] == pytest.approx(float(i))
-
-    def test_search_with_eval_cache(self, game_state, evaluator):
-        """Search with eval_cache should produce valid results."""
-        from mcts.eval_cache import EvalCache
-
-        config = MCTSConfig(num_simulations=50)
-        cache = EvalCache(config.action_dim, config.num_players)
-        root = run_search(game_state, evaluator, config, eval_cache=cache)
-
-        assert root.visit_count >= 1
-        assert root.expanded()
-
-        probs = get_action_probabilities(root, temperature=1.0, action_dim=config.action_dim)
-        assert probs.sum() == pytest.approx(1.0, abs=1e-5)
-
-        # Cache should have entries from the search
-        assert cache.size > 0
-
-    def test_eval_cache_reduces_nn_calls(self, game_state, evaluator):
-        """Cache should reduce the number of NN forward calls across searches.
-
-        Runs two consecutive searches (simulating two moves in a game) with
-        and without a shared cache, then verifies the cached version made
-        fewer NN evaluate calls.
+        Runs two consecutive searches with and without subtree reuse,
+        then verifies the reuse version made fewer NN evaluate calls.
+        Uses greedy action selection (argmax) to ensure the chosen action
+        has a well-explored subtree.
         """
         from core.driver import DRIVER
         from core.state import GameState, get_layout
-        from mcts.eval_cache import EvalCache
 
         total_size = get_layout(3).total_size
-        config = MCTSConfig(num_simulations=50)
-
-        # --- Run two searches WITHOUT cache (baseline call count) ---
-        state_no_cache = GameState.from_array(game_state._array, 3)
-        pool_nc = StatePool(config.num_simulations + 1, total_size)
-        rng_nc = np.random.default_rng(99)
-        call_count_no_cache = 0
+        config = MCTSConfig(num_simulations=200)
 
         class CountingEvaluator:
-            """Wrapper that counts evaluate/evaluate_batch/evaluate_leaves calls."""
+            """Wrapper that counts evaluate/evaluate_leaves calls."""
             def __init__(self, inner: NNEvaluator) -> None:
                 self._inner = inner
                 self.num_players = inner.num_players
@@ -1531,10 +1408,6 @@ class TestEvalCache:
                 self.call_count += 1
                 return self._inner.evaluate(state)
 
-            def evaluate_batch(self, states):  # type: ignore[no-untyped-def]
-                self.call_count += len(states)
-                return self._inner.evaluate_batch(states)
-
             def evaluate_leaves(self, state_arrays, active_player_ids, legal_masks):  # type: ignore[no-untyped-def]
                 self.call_count += len(state_arrays)
                 return self._inner.evaluate_leaves(state_arrays, active_player_ids, legal_masks)
@@ -1542,98 +1415,88 @@ class TestEvalCache:
             def evaluate_terminal(self, state):  # type: ignore[no-untyped-def]
                 return self._inner.evaluate_terminal(state)
 
-        counter_nc = CountingEvaluator(evaluator)
-        root1_nc = run_search(
-            state_no_cache, counter_nc, config, rng=rng_nc, state_pool=pool_nc,
-        )
-        probs_nc = get_action_probabilities(root1_nc, temperature=1.0, action_dim=config.action_dim)
-        action_nc = int(rng_nc.choice(config.action_dim, p=probs_nc))
-        DRIVER.apply_action(state_no_cache, action_nc)
-        run_search(
-            state_no_cache, counter_nc, config, rng=rng_nc, state_pool=pool_nc,
-        )
-        call_count_no_cache = counter_nc.call_count
+        # --- Run two searches WITHOUT subtree reuse ---
+        state_nr = GameState.from_array(game_state._array, 3)
+        pool_nr = StatePool(2 * config.num_simulations + 2, total_size)
+        rng_nr = np.random.default_rng(99)
 
-        # --- Run two searches WITH cache (should make fewer calls) ---
-        state_cached = GameState.from_array(game_state._array, 3)
-        pool_c = StatePool(config.num_simulations + 1, total_size)
-        rng_c = np.random.default_rng(99)
-        cache = EvalCache(config.action_dim, config.num_players)
+        counter_nr = CountingEvaluator(evaluator)
+        root1 = run_search(state_nr, counter_nr, config, rng=rng_nr, state_pool=pool_nr)
+        # Greedy selection ensures the chosen action has many visits (a big subtree)
+        probs1 = get_action_probabilities(root1, temperature=1e-9, action_dim=config.action_dim)
+        action1 = int(np.argmax(probs1))
+        DRIVER.apply_action(state_nr, action1)
+        run_search(state_nr, counter_nr, config, rng=rng_nr, state_pool=pool_nr)
+        no_reuse_calls = counter_nr.call_count
 
-        counter_c = CountingEvaluator(evaluator)
-        root1_c = run_search(
-            state_cached, counter_c, config, rng=rng_c,
-            state_pool=pool_c, eval_cache=cache,
-        )
-        probs_c = get_action_probabilities(root1_c, temperature=1.0, action_dim=config.action_dim)
-        action_c = int(rng_c.choice(config.action_dim, p=probs_c))
-        DRIVER.apply_action(state_cached, action_c)
-        run_search(
-            state_cached, counter_c, config, rng=rng_c,
-            state_pool=pool_c, eval_cache=cache,
-        )
-        call_count_cached = counter_c.call_count
+        # --- Run two searches WITH subtree reuse ---
+        state_r = GameState.from_array(game_state._array, 3)
+        pool_r = StatePool(2 * config.num_simulations + 2, total_size)
+        rng_r = np.random.default_rng(99)
 
-        # The cached version should have made strictly fewer NN calls
-        assert call_count_cached < call_count_no_cache, (
-            f"Cache should reduce NN calls: {call_count_cached} (cached) "
-            f"vs {call_count_no_cache} (no cache)"
+        counter_r = CountingEvaluator(evaluator)
+        root2 = run_search(state_r, counter_r, config, rng=rng_r, state_pool=pool_r)
+        probs2 = get_action_probabilities(root2, temperature=1e-9, action_dim=config.action_dim)
+        action2 = int(np.argmax(probs2))
+        DRIVER.apply_action(state_r, action2)
+        reuse_root = prepare_reuse_root(root2, action2, pool_r)
+        assert reuse_root is not None, "Greedy action should have a subtree"
+        run_search(state_r, counter_r, config, rng=rng_r,
+                   state_pool=pool_r, reuse_root=reuse_root)
+        reuse_calls = counter_r.call_count
+
+        # Reuse version should make fewer NN calls due to cached tree nodes
+        assert reuse_calls < no_reuse_calls, (
+            f"Subtree reuse should reduce NN calls: {reuse_calls} (reuse) "
+            f"vs {no_reuse_calls} (no reuse)"
         )
 
-    def test_eval_cache_deterministic(self, game_state, evaluator):
-        """Search with and without cache should produce the same root values."""
-        from mcts.eval_cache import EvalCache
-
-        config = MCTSConfig(num_simulations=50)
-
-        # Search without cache
-        rng1 = np.random.default_rng(42)
-        root_no_cache = run_search(game_state, evaluator, config, rng=rng1)
-
-        # Search with cache (same RNG seed)
-        rng2 = np.random.default_rng(42)
-        cache = EvalCache(config.action_dim, config.num_players)
-        root_with_cache = run_search(game_state, evaluator, config, rng=rng2, eval_cache=cache)
-
-        # Same root visit count and value
-        assert root_no_cache.visit_count == root_with_cache.visit_count
-        np.testing.assert_allclose(
-            root_no_cache.value_sum / root_no_cache.visit_count,
-            root_with_cache.value_sum / root_with_cache.visit_count,
-            atol=1e-5,
-        )
-
-    def test_eval_cache_with_batched_search(self, game_state, evaluator):
-        """Cache should work correctly with search_batch_size > 1."""
-        from mcts.eval_cache import EvalCache
-
-        config = MCTSConfig(num_simulations=50, search_batch_size=4)
-        cache = EvalCache(config.action_dim, config.num_players)
-        root = run_search(game_state, evaluator, config, eval_cache=cache)
-
-        assert root.visit_count >= 1
-        probs = get_action_probabilities(root, temperature=1.0, action_dim=config.action_dim)
-        assert probs.sum() == pytest.approx(1.0, abs=1e-5)
-        assert cache.size > 0
-
-    def test_eval_cache_multi_move_game(self, game_state, evaluator):
-        """Play multiple moves with eval cache — no subtree reuse."""
+    def test_subtree_reuse_fresh_visit_counts(self, game_state, evaluator):
+        """Reused subtree should have fresh visit counts after search."""
         from core.driver import DRIVER
         from core.state import GameState, get_layout
-        from mcts.eval_cache import EvalCache
 
         total_size = get_layout(3).total_size
-        config = MCTSConfig(num_simulations=30)
-        cache = EvalCache(config.action_dim, config.num_players)
-        pool = StatePool(config.num_simulations + 1, total_size)
+        config = MCTSConfig(num_simulations=50)
+        pool = StatePool(2 * config.num_simulations + 2, total_size)
         rng = np.random.default_rng(42)
 
         state = GameState.from_array(game_state._array, 3)
 
-        for _ in range(5):  # Play 5 moves with cache, no subtree reuse
+        # First search
+        root1 = run_search(state, evaluator, config, rng=rng, state_pool=pool)
+        assert root1.visit_count == config.num_simulations + 1  # +1 for root eval
+
+        # Play a move and reuse
+        probs = get_action_probabilities(root1, temperature=1.0, action_dim=config.action_dim)
+        action = int(rng.choice(config.action_dim, p=probs))
+        DRIVER.apply_action(state, action)
+        reuse_root = prepare_reuse_root(root1, action, pool)
+
+        if reuse_root is not None:
+            # Second search with reuse — should run full simulations
+            root2 = run_search(state, evaluator, config, rng=rng,
+                               state_pool=pool, reuse_root=reuse_root)
+            # Visit count should be fresh (num_simulations + 1 for root eval)
+            assert root2.visit_count == config.num_simulations + 1
+
+    def test_subtree_reuse_multi_move(self, game_state, evaluator):
+        """Play multiple moves with subtree reuse — should produce valid results."""
+        from core.driver import DRIVER
+        from core.state import GameState, get_layout
+
+        total_size = get_layout(3).total_size
+        config = MCTSConfig(num_simulations=30)
+        pool = StatePool(2 * config.num_simulations + 2, total_size)
+        rng = np.random.default_rng(42)
+
+        state = GameState.from_array(game_state._array, 3)
+        reuse_root = None
+
+        for _ in range(5):
             root = run_search(
                 state, evaluator, config, rng=rng,
-                state_pool=pool, eval_cache=cache,
+                state_pool=pool, reuse_root=reuse_root,
             )
 
             probs = get_action_probabilities(root, temperature=1.0, action_dim=config.action_dim)
@@ -1644,5 +1507,4 @@ class TestEvalCache:
             if status == 2:  # STATUS_GAME_OVER
                 break
 
-        # Cache should have accumulated entries across all moves
-        assert cache.size > config.num_simulations  # More than one search worth
+            reuse_root = prepare_reuse_root(root, action, pool)

@@ -46,7 +46,7 @@ rss-az-cython2/
 ├── mcts/              # MCTS search for AlphaZero training
 │   ├── node.py        # MCTSNode: tree node with visit stats
 │   ├── evaluator.py   # NN wrapper (state rotation, single/batch inference, value un-rotation)
-│   ├── eval_cache.py  # Per-game NN eval cache (alternative to subtree reuse)
+│   ├── mcts_core.pyx  # Cython hot-path functions (select_child, backup, increment_visits)
 │   └── search.py      # PUCT selection, batched search with virtual loss, A0GB value targets
 ├── nn/                # Neural network models
 │   └── model_3p_2.py  # V2 residual MLP with policy + per-player value heads
@@ -175,7 +175,7 @@ Pure-Python AlphaZero-style MCTS for 3-player games.
 mcts/
 ├── node.py        # MCTSNode: visit_count, value_sum, prior, children dict
 ├── evaluator.py   # State rotation, NN inference, value un-rotation, terminal values
-├── eval_cache.py  # Per-game NN eval cache (matrix-backed, MD5 hash index)
+├── mcts_core.pyx  # Cython hot-path: select_child, backup, increment_visits (nogil)
 └── search.py      # PUCT selection, search loop, action probabilities, A0GB targets
 ```
 
@@ -233,11 +233,7 @@ Instead of using the root node's mean value (soft-Z) or the game outcome as trai
 
 **Leaf lock:** When a leaf is queued for batch evaluation, its Q in the parent edge is set to -inf so PUCT cannot re-select it. This is surgical — only the specific leaf edge is locked, not the entire ancestor path. Subsequent selections can still explore deep into the same subtree via different frontier nodes, avoiding the width bias of traditional virtual loss.
 
-**Subtree reuse:** After choosing an action, the child's subtree is preserved as the root for the next move's search. `prepare_reuse_root(root, action, pool)` compacts the state pool and returns the child. `run_search(..., reuse_root=child)` then runs only `max(0, num_simulations - child.visit_count)` additional simulations. This saves 40-60% of GPU forward passes per game. Fresh Dirichlet noise is added to the reused root each time. Controlled by `--reuse-subtree-after-epoch`.
-
-**Eval cache (alternative to subtree reuse):** When subtree reuse is disabled, `play_game()` creates a per-game `EvalCache` that caches NN evaluation results (policy + values) keyed by state hash (MD5). Each move starts with a fresh MCTS tree so Dirichlet noise is fully effective, but cached evals from prior moves avoid redundant GPU calls. Cache hits are resolved inline during MCTS selection — they don't consume batch slots, so the evaluator always gets full batches of cache misses. The cache is matrix-backed with a doubling growth strategy (~1.1KB per entry), cleared per game. Recovers ~70% of subtree reuse's throughput benefit while maintaining full exploration.
-
-**When to use which:** Subtree reuse is faster but carries over visit counts that can drown out Dirichlet noise, causing the model to lock into narrow lines. The eval cache sacrifices some throughput for better exploration. To disable subtree reuse and activate the cache: `--reuse-subtree-after-epoch 9999`.
+**Lazy subtree reuse:** After choosing an action, the child's subtree is preserved for the next move. `prepare_reuse_root(root, action, pool)` compacts the state pool and returns the child. `run_search(..., reuse_root=child)` uses a generation counter to lazily reset visit statistics: the tree topology (children, priors, cached NN evals) is preserved, but all visit counts are zeroed on first access. This gives the performance benefit of subtree reuse (no redundant NN evals for already-expanded nodes) with the exploration benefit of fresh trees (Dirichlet noise is fully effective since visit counts start at zero). When selection encounters a stale node from a previous generation, it resets the node's stats, backs up its cached value immediately, and counts it as a completed simulation without using a GPU batch slot. Always enabled — subtree reuse is unconditional.
 
 **Memory efficiency:** States are NOT stored in tree nodes. The root state is cloned and actions replayed to reach each leaf.
 
@@ -256,7 +252,6 @@ Residual MLP (~5.2M parameters):
 ```python
 from train.config import MCTSConfig
 from mcts.evaluator import NNEvaluator
-from mcts.eval_cache import EvalCache
 from mcts.search import run_search, get_action_probabilities, get_greedy_leaf_value, prepare_reuse_root
 
 # Setup
@@ -268,14 +263,10 @@ root = run_search(game_state, evaluator, config)
 policy = get_action_probabilities(root, temperature=1.0, action_dim=config.action_dim)
 value_target = get_greedy_leaf_value(root, num_players=config.num_players)
 
-# Subtree reuse: reuse chosen child as next root (saves ~40-60% GPU evals)
+# Lazy subtree reuse: tree topology preserved, visit stats lazily reset per generation
 reuse_root = prepare_reuse_root(root, chosen_action, state_pool)
 root = run_search(next_state, evaluator, config, state_pool=state_pool, reuse_root=reuse_root)
-
-# Eval cache (alternative to subtree reuse): fresh tree each move, cached NN evals
-cache = EvalCache(config.action_dim, config.num_players)  # created once per game
-root = run_search(game_state, evaluator, config, eval_cache=cache)
-# cache persists across searches within the game; cleared per game via cache.clear()
+# Full num_simulations always run; stale nodes are reclaimed as free cache hits
 ```
 
 ## Self-Play Training
@@ -381,7 +372,6 @@ Two shutdown modes during training:
 | `value_blend_start_epoch` | 10 | Epoch where A0GB blending begins |
 | `value_blend_end_epoch` | 40 | Epoch where blend reaches pure A0GB |
 | `terminal_blend` | 0.5 | Rank vs margin weight (0=margin, 1=rank) |
-| `reuse_subtree_after_epoch` | 15 | Subtree reuse disabled before this epoch |
 | `buffer_capacity` | 500,000 | Replay buffer size (~4.2 GB) |
 | `batch_size` | 256 | Training batch size |
 
@@ -665,7 +655,7 @@ pytest tests/18xx_games/test_replay.py -v
 | Optimize performance | Any `.pyx` | Check compiler directives, nogil |
 | Add phase | Create `phases/new.pyx` | `core/driver.pyx`, `core/actions.pyx` |
 | Fix bug | Tests first | Phase/entity files |
-| MCTS / search | `mcts/search.py`, `mcts/node.py` | `mcts/evaluator.py`, `mcts/eval_cache.py`, `train/config.py` |
+| MCTS / search | `mcts/search.py`, `mcts/node.py` | `mcts/evaluator.py`, `mcts/mcts_core.pyx`, `train/config.py` |
 | NN model | `nn/model_3p_2.py` | `mcts/evaluator.py` |
 | Self-play / training | `train/main.py`, `train/config.py` | `train/self_play.py`, `train/eval_server.py`, `train/trainer.py` |
 | Interpretability | `interp/README.md` | `interp/*.py` |

@@ -49,6 +49,7 @@ class MCTSNode:
         "default_value",
         "visit_counts",
         "value_sums",
+        "search_generation",
     )
 
     def __init__(
@@ -72,6 +73,7 @@ class MCTSNode:
         self.default_value: np.ndarray | None = None
         self.visit_counts: np.ndarray | None = None
         self.value_sums: np.ndarray | None = None
+        self.search_generation: int = 0
 
     def mean_value(self, player_id: int) -> float:
         """Return the mean value estimate for the given player.
@@ -85,6 +87,21 @@ class MCTSNode:
     def expanded(self) -> bool:
         """Return True if this node has been expanded (has per-action arrays)."""
         return self.legal_actions is not None
+
+    def reset_stats(self, generation: int) -> None:
+        """Reset visit statistics for a new search generation.
+
+        Zeroes visit counts and value sums while preserving the tree
+        topology (children, priors, legal_actions, default_value).
+        Called lazily during selection when a stale node is encountered.
+        """
+        assert self.default_value is not None
+        assert self.visit_counts is not None and self.value_sums is not None
+        self.visit_count = 0
+        self.value_sum[:] = 0
+        self.visit_counts[:] = 0
+        self.value_sums[:] = self.default_value
+        self.search_generation = generation
 
     def expand(
         self,

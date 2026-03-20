@@ -7,8 +7,8 @@ Implements AlphaZero-style MCTS for multiplayer games:
 - A0GB greedy backup for value targets (Willemsen et al., 2020)
 - Pre-allocated state pool for zero per-node allocation
 - Batched leaf evaluation with leaf-lock deduplication for GPU throughput
-- Optional per-game eval cache to avoid redundant NN calls across searches
-- Subtree reuse: reuse the chosen child's subtree as the next search root
+- Lazy subtree reuse: tree topology persists across searches, visit stats
+  reset lazily via generation counter for fresh Dirichlet noise each move
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ if TYPE_CHECKING:
 import numpy as np
 
 from train.config import MCTSConfig
-from mcts.eval_cache import EvalCache
 from mcts.node import MCTSNode
 from mcts.mcts_core import select_child, backup as _backup, increment_visits as _increment_visits
 
@@ -96,6 +95,12 @@ def _add_dirichlet_noise(
 # Type alias for a selection path: list of (parent_node, action, array_idx)
 _Path = list[tuple[MCTSNode, int, int]]
 
+# Monotonically increasing search generation counter.
+# Incremented each time run_search is called with a reused subtree.
+# Nodes with a stale generation have their visit stats lazily reset
+# during selection, so Dirichlet noise is fully effective each search.
+_search_generation: int = 0
+
 
 def run_search(
     root_state: Any,
@@ -105,7 +110,6 @@ def run_search(
     state_pool: StatePool | None = None,
     reuse_root: MCTSNode | None = None,
     profile: SearchStats | None = None,
-    eval_cache: EvalCache | None = None,
 ) -> MCTSNode:
     """Run MCTS search from the given root state.
 
@@ -119,6 +123,13 @@ def run_search(
     to gently nudge subsequent selections toward less-explored branches.
     After evaluation, the leaf lock is removed and values are backed up.
 
+    Subtree reuse uses lazy generation-based reset: when a reuse_root is
+    provided, the tree topology (children, priors, cached NN evals) is
+    preserved but all visit statistics are lazily zeroed on first access.
+    This gives the performance of subtree reuse (no redundant NN evals for
+    already-expanded nodes) with the exploration benefit of fresh trees
+    (Dirichlet noise is fully effective since visit counts start at zero).
+
     Args:
         root_state: GameState object to search from.
         evaluator: NNEvaluator for leaf evaluation.
@@ -128,18 +139,16 @@ def run_search(
         state_pool: Optional pre-allocated StatePool for node state storage.
             If None, a temporary pool is created. For training, pass a
             persistent pool to avoid per-search allocation.
-        reuse_root: Optional pre-searched subtree root from the previous move.
-            When provided, the existing tree statistics are preserved and only
-            the remaining simulations are run to reach num_simulations total.
-            The state_pool must already be compacted for this subtree via
-            prepare_reuse_root().
-        eval_cache: Optional per-game cache of NN evaluation results.
-            When provided, leaf evaluations check the cache before calling
-            the evaluator; cache misses are batched and results stored.
+        reuse_root: Optional subtree root from the previous move's search.
+            When provided, the tree topology is reused but visit stats are
+            lazily reset via generation counter. Full num_simulations are
+            run (no subtraction of prior visit counts).
 
     Returns:
         The root MCTSNode with search statistics populated.
     """
+    global _search_generation
+
     from core.actions import get_valid_action_mask
     from core.data import GamePhases
     from core.driver import DRIVER, STATUS_GAME_OVER_PY
@@ -152,15 +161,28 @@ def run_search(
     if state_pool is None:
         from core.state import get_layout
         total_size = get_layout(num_players).total_size
-        state_pool = StatePool(config.num_simulations + 1, total_size)
+        state_pool = StatePool(2 * config.num_simulations + 2, total_size)
 
     if reuse_root is not None:
-        # Reuse existing subtree — pool was already compacted by
-        # prepare_reuse_root(), don't reset it.
+        # Lazy subtree reuse: increment generation so stale nodes get
+        # their stats reset on first encounter during selection.
+        _search_generation += 1
         root = reuse_root
-        num_sims = max(0, config.num_simulations - root.visit_count)
+        # Reset root stats (it's always visited, so do it eagerly)
+        root.reset_stats(_search_generation)
+
+        # Evaluate root to get fresh value for backup
+        policy_probs, root_values, mask = evaluator.evaluate(root_state)
+
+        # Re-expand root with fresh NN eval (priors may have shifted)
+        root.expand(policy_probs, mask, num_players=num_players,
+                    default_value=root_values)
+
+        root.visit_count = 1
+        root.value_sum += root_values
     else:
         # Fresh search — reset pool and build root from scratch
+        _search_generation += 1
         state_pool.reset()
 
         # Check if root state is terminal
@@ -172,6 +194,7 @@ def run_search(
             num_players=num_players,
             is_terminal=is_terminal,
         )
+        root.search_generation = _search_generation
         root.state_idx = state_pool.alloc(root_state._array)
 
         if is_terminal:
@@ -181,15 +204,8 @@ def run_search(
             root.value_sum += values
             return root
 
-        # Evaluate root with NN (check cache first)
-        cached = eval_cache.lookup(root_state._array) if eval_cache is not None else None
-        if cached is not None:
-            policy_probs, root_values = cached
-            mask = get_valid_action_mask(root_state)
-        else:
-            policy_probs, root_values, mask = evaluator.evaluate(root_state)
-            if eval_cache is not None:
-                eval_cache.store(root_state._array, policy_probs, root_values)
+        # Evaluate root with NN
+        policy_probs, root_values, mask = evaluator.evaluate(root_state)
 
         # Expand root (sets up per-action arrays, no children created)
         root.expand(policy_probs, mask, num_players=num_players,
@@ -199,7 +215,8 @@ def run_search(
         root.visit_count = 1
         root.value_sum += root_values
 
-        num_sims = config.num_simulations
+    num_sims = config.num_simulations
+    gen = _search_generation
 
     # Scratch GameState rebound to each pool row via rebind()
     scratch_gs = GameState.from_buffer(state_pool.row(0), num_players)
@@ -229,8 +246,6 @@ def run_search(
             _t0 = perf_counter()
 
         # Collect a batch of leaves for NN evaluation.
-        # Cache hits are resolved immediately during selection so they
-        # don't consume batch slots — the evaluator always gets a full batch.
         pending: list[tuple[_Path, MCTSNode]] = []
         pending_ids: set[int] = set()  # safety net for single-action parents
         saved_values: list[np.ndarray] = []  # saved parent Q rows for unlock
@@ -239,6 +254,7 @@ def run_search(
             # Selection: traverse tree to find a leaf
             node = root
             path: _Path = []
+            reclaimed = False
 
             while node.expanded() and not node.is_terminal:
                 action_idx, array_idx = select_child(node, config.c_puct)
@@ -246,7 +262,23 @@ def run_search(
 
                 if action_idx in node.children:
                     # Follow existing child
-                    node = node.children[action_idx]
+                    child = node.children[action_idx]
+
+                    # Lazy generation reset: if this child is from a
+                    # previous search, reset its stats and treat as a
+                    # cache hit — backup cached value without GPU eval.
+                    if child.search_generation < gen:
+                        if child.is_terminal:
+                            child.visit_count = 0
+                            child.value_sum[:] = 0
+                            child.search_generation = gen
+                        elif child.expanded():
+                            child.reset_stats(gen)
+                            node = child
+                            reclaimed = True
+                            break
+
+                    node = child
                 else:
                     # First visit: create child node with state from pool.
                     # Rebind scratch GameState to avoid allocating a wrapper.
@@ -255,6 +287,7 @@ def run_search(
                         prior=float(node.priors[array_idx]),
                         num_players=num_players,
                     )
+                    child.search_generation = gen
                     child.state_idx = state_pool.alloc_from_row(node.state_idx)
                     scratch_gs.rebind(state_pool.row(child.state_idx))
                     status = DRIVER.apply_action(scratch_gs, action_idx)
@@ -270,6 +303,15 @@ def run_search(
                     node.children[action_idx] = child
                     node = child
                     break  # New child is unexpanded — it's the leaf
+
+            # Reclaimed stale node: treat as cache hit — backup the
+            # cached NN value immediately without using a GPU batch slot.
+            if reclaimed:
+                assert node.default_value is not None
+                sim += 1
+                _increment_visits(path, node)
+                _backup(path, node, node.default_value)
+                continue
 
             # Terminal node: increment visits along path and backup values
             if node.is_terminal:
@@ -290,24 +332,7 @@ def run_search(
             sim += 1
             _increment_visits(path, node)
 
-            # Check eval cache — resolve hits immediately so they don't
-            # consume batch slots. The node is expanded and backed up inline;
-            # subsequent selections in this loop see the updated tree.
-            if eval_cache is not None:
-                cached = eval_cache.lookup(state_pool.row(node.state_idx))
-                if cached is not None:
-                    policy_probs, values = cached
-                    assert node.pending_mask is not None
-                    node.expand(
-                        policy_probs, node.pending_mask,
-                        num_players=num_players, default_value=values,
-                    )
-                    _backup(path, node, values)
-                    if profile is not None:
-                        profile.cache_hits += 1
-                    continue
-
-            # Cache miss (or no cache): lock parent edge and queue for batch eval
+            # Lock parent edge and queue for batch eval
             parent, _, parent_aidx = path[-1]
             assert parent.value_sums is not None
             saved_values.append(parent.value_sums[parent_aidx].copy())
@@ -349,12 +374,6 @@ def run_search(
 
             # Backup values (visit counts already incremented at selection time)
             _backup(path, node, values)
-
-            # Store in eval cache for future searches within this game
-            if eval_cache is not None:
-                eval_cache.store(
-                    state_pool.row(node.state_idx), policy_probs, values,
-                )
 
         if profile is not None:
             profile.backup_secs += perf_counter() - _t2
@@ -472,6 +491,9 @@ def prepare_reuse_root(
 
     Compacts the state pool to retain only the child's subtree states.
     The old root and sibling subtrees are left for garbage collection.
+
+    The child's visit stats are NOT reset here — that happens lazily in
+    run_search via the generation counter mechanism.
 
     Args:
         root: The current search root.

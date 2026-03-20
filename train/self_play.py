@@ -11,7 +11,6 @@ import numpy as np
 
 from core.driver import DRIVER, STATUS_GAME_OVER_PY
 from core.state import GameState
-from mcts.eval_cache import EvalCache
 from mcts.evaluator import compute_terminal_values, rotate_visible_state
 from mcts.search import StatePool, get_action_probabilities, get_greedy_leaf_value, prepare_reuse_root, run_search
 from train.config import EpochConfig, TrainingConfig
@@ -75,19 +74,11 @@ def play_game(
     if state_pool is None:
         from core.state import get_layout
         total_size = get_layout(config.num_players).total_size
-        state_pool = StatePool(config.num_simulations + 1, total_size)
+        state_pool = StatePool(2 * config.num_simulations + 2, total_size)
 
     # Use epoch-specific c_puct if provided
     c_puct_override = epoch_config.c_puct if epoch_config is not None else None
     mcts_config = config.to_mcts_config(c_puct_override=c_puct_override)
-
-    # Whether to reuse subtrees between moves
-    enable_reuse = epoch_config is None or epoch_config.enable_subtree_reuse
-
-    # Per-game eval cache (when subtree reuse is disabled)
-    eval_cache: EvalCache | None = None
-    if not enable_reuse:
-        eval_cache = EvalCache(config.action_dim, config.num_players)
 
     # Profile stats (None when --profile not set → zero overhead)
     search_stats: SearchStats | None = None
@@ -111,7 +102,7 @@ def play_game(
         root = run_search(
             state, evaluator, mcts_config, rng,
             state_pool=state_pool, reuse_root=reuse_root,
-            profile=search_stats, eval_cache=eval_cache,
+            profile=search_stats,
         )
 
         # Temperature schedule (linear ramp)
@@ -148,10 +139,7 @@ def play_game(
             break
 
         # Extract chosen child's subtree for reuse in next search
-        if enable_reuse:
-            reuse_root = prepare_reuse_root(root, action_idx, state_pool)
-        else:
-            reuse_root = None
+        reuse_root = prepare_reuse_root(root, action_idx, state_pool)
 
     net_worths = [
         state.get_player_net_worth(i) for i in range(config.num_players)
@@ -220,7 +208,7 @@ def self_play_worker(
     from core.state import get_layout
 
     total_size = get_layout(config.num_players).total_size
-    state_pool = StatePool(config.num_simulations + 1, total_size)
+    state_pool = StatePool(2 * config.num_simulations + 2, total_size)
 
     try:
         while True:
