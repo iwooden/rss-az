@@ -290,6 +290,8 @@ This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get sta
 
 Create beads issues for anything discovered that needs follow-up but is out of scope. **No insights or work should be lost.**
 
+**Always include `--description="..."` when creating a `bd` issue.** A title alone is not enough — descriptions provide the context needed to pick up work later.
+
 ## Using Subtasks
 
 Use subtasks (`bd create --parent=<id> --title="..." --type=task`) for related work. Results in dot-notation IDs: `abc.1`, `abc.2`. Use independent issues for unrelated bugs or cross-cutting concerns.
