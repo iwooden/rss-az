@@ -24,6 +24,7 @@ from core.data cimport (
     GameConstants,
     GamePhases,
     CASH_DIVISOR,
+    NET_WORTH_DIVISOR,
     IMPACT_DIVISOR,
     INCOME_DIVISOR,
     PRICE_DIVISOR,
@@ -839,12 +840,12 @@ cdef class GameState:
     cpdef int get_player_net_worth(self, int player_id):
         """Get player's net worth."""
         cdef float* player = self._player_ptr(player_id)
-        return <int>(player[self._player_fields.net_worth] * CASH_DIVISOR + 0.5)
+        return <int>(player[self._player_fields.net_worth] * NET_WORTH_DIVISOR + 0.5)
 
     cpdef void set_player_net_worth(self, int player_id, int net_worth):
         """Set player's net worth."""
         cdef float* player = self._player_ptr(player_id)
-        player[self._player_fields.net_worth] = <float>net_worth / CASH_DIVISOR
+        player[self._player_fields.net_worth] = <float>net_worth / NET_WORTH_DIVISOR
 
     # =========================================================================
     # CORPORATION ACCESS

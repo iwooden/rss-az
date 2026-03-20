@@ -37,7 +37,7 @@ from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.preprocessing import StandardScaler
 
 from core.actions import decode_action_py
-from core.data import GameConstants, PY_CASH_DIVISOR, PY_SHARE_DIVISOR
+from core.data import GameConstants, PY_CASH_DIVISOR, PY_NET_WORTH_DIVISOR, PY_SHARE_DIVISOR
 from core.state import get_corp_fields, get_layout, get_player_fields
 from interp.utils import batch_masked_softmax, forward_batched
 from interp.utils import InterpDataset, collect_states, load_model
@@ -82,7 +82,7 @@ def _extract_game_targets(
     net_worths = np.zeros((n, num_players), dtype=np.float32)
     for p in range(num_players):
         off = layout.players_offset + p * layout.player_stride + pf.net_worth
-        net_worths[:, p] = states[:, off] * PY_CASH_DIVISOR
+        net_worths[:, p] = states[:, off] * PY_NET_WORTH_DIVISOR
 
     # Phase (sanity)
     phase_oh = states[:, layout.phase_offset : layout.phase_offset + layout.phase_size]

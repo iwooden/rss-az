@@ -11,8 +11,8 @@ from libc.math cimport lround
 
 from core.state cimport GameState, StateLayout, PlayerFieldOffsets
 from core.data cimport (
-    GameConstants, CASH_DIVISOR, INCOME_DIVISOR, PRICE_DIVISOR, SHARE_DIVISOR, MAX_ROUNDTRIPS,
-    get_company_face_value
+    GameConstants, CASH_DIVISOR, NET_WORTH_DIVISOR, INCOME_DIVISOR, PRICE_DIVISOR,
+    SHARE_DIVISOR, MAX_ROUNDTRIPS, get_company_face_value
 )
 from entities.encoding cimport set_one_hot, get_one_hot_index
 
@@ -225,11 +225,11 @@ cdef class Player:
 
     cpdef int get_net_worth(self, GameState state):
         """Get player's stored net worth (integer dollars)."""
-        return <int>(state._data[self._net_worth_offset] * CASH_DIVISOR + 0.5)
+        return <int>(state._data[self._net_worth_offset] * NET_WORTH_DIVISOR + 0.5)
 
     cpdef void set_net_worth(self, GameState state, int net_worth):
         """Set player's net worth (integer dollars)."""
-        state._data[self._net_worth_offset] = <float>net_worth / CASH_DIVISOR
+        state._data[self._net_worth_offset] = <float>net_worth / NET_WORTH_DIVISOR
 
     cpdef int calculate_net_worth(self, GameState state):
         """

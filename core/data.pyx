@@ -15,16 +15,18 @@ from libc.stdint cimport uint8_t, uint16_t, uint64_t, int8_t
 # =============================================================================
 
 cdef float CASH_DIVISOR = 100.0
+cdef float NET_WORTH_DIVISOR = 200.0
 cdef float INCOME_DIVISOR = 10.0
-cdef float PRICE_DIVISOR = 40.0
+cdef float PRICE_DIVISOR = 50.0
 cdef float SHARE_DIVISOR = 7.0
 cdef float COMPANY_STAR_DIVISOR = 5.0
-cdef float CORP_STAR_DIVISOR = 20.0
+cdef float CORP_STAR_DIVISOR = 40.0
 cdef float MAX_ROUNDTRIPS = 2.0
 cdef float IMPACT_DIVISOR = 5.0
 
 # Python-accessible versions
 PY_CASH_DIVISOR = CASH_DIVISOR
+PY_NET_WORTH_DIVISOR = NET_WORTH_DIVISOR
 PY_INCOME_DIVISOR = INCOME_DIVISOR
 PY_PRICE_DIVISOR = PRICE_DIVISOR
 PY_SHARE_DIVISOR = SHARE_DIVISOR
