@@ -80,21 +80,21 @@ def _format_mcts_visits(
         lines.append("  MCTS: (no search data)")
         return lines
 
-    real_counts = root.visit_counts - 1  # subtract FPU virtual visit
-    total_visits = int(real_counts.sum())
-    sorted_order = np.argsort(-real_counts)[:top_n]
+    counts = root.visit_counts
+    total_visits = int(counts.sum())
+    sorted_order = np.argsort(-counts)[:top_n]
 
     lines.append(f"  MCTS Visits (top {min(top_n, len(sorted_order))}, {total_visits} total):")
     for rank, idx in enumerate(sorted_order):
         action_idx = int(root.legal_actions[idx])
-        visits = int(real_counts[idx])
+        visits = int(counts[idx])
         if visits == 0:
             break
         pct = visits / max(total_visits, 1)
         action_str = format_action(action_idx, num_players, state)
 
-        # Show Q value for this action
-        q_val = float(root.value_sums[idx, root.active_player_id] / root.visit_counts[idx])
+        # Show Q value for this action (max(1,vc) matches select_child convention)
+        q_val = float(root.value_sums[idx, root.active_player_id] / max(visits, 1))
         bar = "\u2588" * int(pct * 40)
         lines.append(f"    {rank+1:2d}. {visits:5d} ({pct:5.1%}) Q={q_val:+.3f} {bar} {action_str}")
 
