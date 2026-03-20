@@ -135,27 +135,27 @@ def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
     groups.append(("turn:end_card_flipped", np.array([t + tf.end_card_flipped])))
     groups.append(("turn:consec_passes", np.array([t + tf.consecutive_passes])))
 
-    # Auction block: price(1) + high_bidder(np) + starter(np) + passed(np)
-    auction_idx: list[int] = [t + tf.auction_price]
-    auction_idx.extend(range(t + tf.auction_high_bidder, t + tf.auction_high_bidder + num_players))
-    auction_idx.extend(range(t + tf.auction_starter, t + tf.auction_starter + num_players))
-    auction_idx.extend(range(t + tf.auction_passed, t + tf.auction_passed + num_players))
-    groups.append(("turn:auction", np.array(auction_idx)))
+    # Auction block
+    groups.append(("turn:auction_price", np.array([t + tf.auction_price])))
+    groups.append(("turn:auction_high_bidder", np.arange(t + tf.auction_high_bidder, t + tf.auction_high_bidder + num_players)))
+    groups.append(("turn:auction_starter", np.arange(t + tf.auction_starter, t + tf.auction_starter + num_players)))
+    groups.append(("turn:auction_passed", np.arange(t + tf.auction_passed, t + tf.auction_passed + num_players)))
 
-    # Dividend: impact(MAX_DIV) + remaining(NK)
-    div_size = MAX_DIV + NK
-    groups.append(("turn:dividend", np.arange(t + tf.dividend_impact, t + tf.dividend_impact + div_size)))
+    # Dividend block
+    groups.append(("turn:dividend_impact", np.arange(t + tf.dividend_impact, t + tf.dividend_impact + MAX_DIV)))
+    groups.append(("turn:dividend_remaining", np.arange(t + tf.dividend_remaining, t + tf.dividend_remaining + NK)))
 
-    # Issue: remaining(NK) + price_impact(1) + cash_gain(1)
-    issue_size = NK + 2
-    groups.append(("turn:issue", np.arange(t + tf.issue_remaining, t + tf.issue_remaining + issue_size)))
+    # Issue block
+    groups.append(("turn:issue_remaining", np.arange(t + tf.issue_remaining, t + tf.issue_remaining + NK)))
+    groups.append(("turn:issue_price_impact", np.array([t + tf.issue_price_impact])))
+    groups.append(("turn:issue_cash_gain", np.array([t + tf.issue_cash_gain])))
 
-    # IPO remaining: NC companies
+    # IPO remaining
     groups.append(("turn:ipo_remaining", np.arange(t + tf.ipo_remaining, t + tf.ipo_remaining + NC)))
 
-    # Acquisition: fi_offer(1) + synergy(NC)
-    acq_size = 1 + NC
-    groups.append(("turn:acq", np.arange(t + tf.acq_is_fi_offer, t + tf.acq_is_fi_offer + acq_size)))
+    # Acquisition block
+    groups.append(("turn:acq_is_fi_offer", np.array([t + tf.acq_is_fi_offer])))
+    groups.append(("turn:acq_synergy", np.arange(t + tf.acq_synergy_values, t + tf.acq_synergy_values + NC)))
 
     # Active company: one-hot(NC)
     groups.append(("turn:active_company", np.arange(t + tf.active_company, t + tf.active_company + NC)))

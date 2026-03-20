@@ -21,8 +21,42 @@ from pathlib import Path
 
 import numpy as np
 
-from interp.full_ablation import _build_feature_groups
+from interp.full_ablation import _PHASE_NAMES, _build_feature_groups
 from interp.utils import InterpDataset, collect_states, load_model
+
+# Feature group name -> list of phase indices where the feature is active.
+# Derived from the "Context-Dependent Fields" table in VECTORS.md.
+_PHASE_SPECIFIC_FEATURES: dict[str, list[int]] = {
+    "turn:auction_price": [1],                       # BID
+    "turn:auction_high_bidder": [1],                 # BID
+    "turn:auction_starter": [1],                     # BID
+    "turn:auction_passed": [1],                      # BID
+    "turn:dividend_impact": [6],                     # DIV
+    "turn:dividend_remaining": [6],                  # DIV
+    "turn:issue_remaining": [8],                     # ISSUE
+    "turn:issue_price_impact": [8],                  # ISSUE
+    "turn:issue_cash_gain": [8],                     # ISSUE
+    "turn:ipo_remaining": [9],                       # IPO
+    "turn:acq_is_fi_offer": [3],                     # ACQ
+    "turn:acq_synergy": [3],                         # ACQ
+    "turn:active_company": [1, 3, 4, 9],             # BID, ACQ, CLOSE, IPO
+    "turn:active_company_stars": [1, 3, 4, 9],
+    "turn:active_company_low_price": [1, 3, 4, 9],
+    "turn:active_company_face_value": [1, 3, 4, 9],
+    "turn:active_company_high_price": [1, 3, 4, 9],
+    "turn:active_company_income": [1, 3, 4, 9],
+    "turn:active_corp": [3, 4, 6, 8],               # ACQ, CLOSE, DIV, ISSUE
+    "turn:active_corp_income": [3, 4, 6, 8],
+    "turn:active_corp_stars": [3, 4, 6, 8],
+    "turn:active_corp_share_price": [3, 4, 6, 8],
+    "turn:active_corp_companies": [3, 4, 6, 8],
+    "invest:buy_impact": [0],                        # INVEST
+    "invest:sell_impact": [0],                       # INVEST
+    "player:round_trips": [0],                       # INVEST
+    "player:acq_proceeds": [3],                      # ACQ
+    "corp:acq_proceeds": [3],                        # ACQ
+    "corp:acq_companies": [3],                       # ACQ
+}
 
 
 def _group_stats(
@@ -64,6 +98,53 @@ def _group_stats(
     return rows
 
 
+def _phase_specific_stats(
+    states: np.ndarray,
+    groups: list[tuple[str, np.ndarray]],
+    phases: np.ndarray,
+) -> list[dict[str, object]]:
+    """Compute per-group stats filtered to only the phases where each feature is active."""
+    rows: list[dict[str, object]] = []
+    for name, indices in groups:
+        phase_ids = _PHASE_SPECIFIC_FEATURES.get(name)
+        if phase_ids is None:
+            continue
+
+        mask = np.isin(phases, phase_ids)
+        if not mask.any():
+            continue
+
+        phase_states = states[mask]
+        vals = phase_states[:, indices]
+        flat = vals.ravel()
+        n_total = flat.size
+        n_nonzero = int(np.count_nonzero(flat))
+        n_outside = int(np.sum((flat < -1.0) | (flat > 1.0)))
+        abs_max = float(np.max(np.abs(flat))) if n_total > 0 else 0.0
+
+        phase_labels = ", ".join(
+            _PHASE_NAMES.get(p, str(p)) for p in sorted(phase_ids)
+        )
+
+        rows.append({
+            "name": name,
+            "n_features": len(indices),
+            "n_states": int(mask.sum()),
+            "n_total": n_total,
+            "n_nonzero": n_nonzero,
+            "zero_frac": 1.0 - n_nonzero / n_total if n_total > 0 else 1.0,
+            "n_outside": n_outside,
+            "outside_frac": n_outside / n_total if n_total > 0 else 0.0,
+            "min": float(np.min(flat)),
+            "max": float(np.max(flat)),
+            "abs_max": abs_max,
+            "mean": float(np.mean(flat)),
+            "std": float(np.std(flat)),
+            "phases": phase_labels,
+        })
+    return rows
+
+
 def _print_overview(rows: list[dict[str, object]], num_states: int) -> None:
     """Print high-level normalization summary."""
     total_features = sum(r["n_features"] for r in rows)  # type: ignore[arg-type]
@@ -95,7 +176,7 @@ def _print_table(rows: list[dict[str, object]]) -> None:
             f"  {r['name']:<28} {r['n_features']:>3} "
             f"{r['min']:>7.3f} {r['max']:>7.3f} {r['abs_max']:>6.3f} "
             f"{r['mean']:>7.4f} {r['std']:>7.4f} "
-            f"{r['zero_frac']:>5.0%} {outside_str:>6}"
+            f"{r['zero_frac']:>6.1%} {outside_str:>6}"
         )
 
 
@@ -118,20 +199,48 @@ def _print_out_of_range(rows: list[dict[str, object]]) -> None:
 
 
 def _print_sparsity(rows: list[dict[str, object]]) -> None:
-    """Print groups with high zero fractions (potential underutilization)."""
-    sparse = [r for r in rows if r["zero_frac"] > 0.90 and r["n_nonzero"] > 0]  # type: ignore[arg-type]
+    """Print groups with high zero fractions, excluding phase-specific features."""
+    sparse = [
+        r for r in rows
+        if r["zero_frac"] > 0.90  # type: ignore[arg-type]
+        and r["n_nonzero"] > 0  # type: ignore[arg-type]
+        and r["name"] not in _PHASE_SPECIFIC_FEATURES
+    ]
     sparse.sort(key=lambda r: -r["zero_frac"])  # type: ignore[arg-type]
 
     if not sparse:
         return
 
-    print(f"\n  SPARSE FEATURES (>90% zero):")
-    print(f"  {'Feature':<28} {'%Zero':>6} {'NZ Mean':>8} {'NZ |Max|':>8}")
-    print(f"  {'-'*28} {'-'*6} {'-'*8} {'-'*8}")
+    print(f"\n  SPARSE FEATURES (>90% zero, excluding phase-specific):")
+    print(f"  {'Feature':<28} {'%Zero':>7} {'NZ Mean':>8} {'NZ |Max|':>8}")
+    print(f"  {'-'*28} {'-'*7} {'-'*8} {'-'*8}")
     for r in sparse:
         print(
-            f"  {r['name']:<28} {r['zero_frac']:>5.0%} "
+            f"  {r['name']:<28} {r['zero_frac']:>6.1%} "
             f"{r['nz_mean']:>8.4f} {r['nz_absmax']:>8.4f}"
+        )
+
+
+def _print_phase_specific(phase_rows: list[dict[str, object]]) -> None:
+    """Print phase-specific features with stats filtered to their relevant phases."""
+    if not phase_rows:
+        return
+
+    sorted_rows = sorted(phase_rows, key=lambda r: -r["abs_max"])  # type: ignore[arg-type]
+
+    print(f"\n  PHASE-SPECIFIC FEATURES (stats filtered to relevant phases):")
+    print(f"  {'Feature':<28} {'Phases':<22} {'#St':>5} {'#':>3} "
+          f"{'Min':>7} {'Max':>7} {'|Max|':>6} {'Mean':>7} {'Std':>7} {'%Zero':>7} {'%Out':>6}")
+    print(f"  {'-'*28} {'-'*22} {'-'*5} {'-'*3} "
+          f"{'-'*7} {'-'*7} {'-'*6} {'-'*7} {'-'*7} {'-'*7} {'-'*6}")
+
+    for r in sorted_rows:
+        outside_str = f"{r['outside_frac']:.1%}" if r["n_outside"] > 0 else "-"  # type: ignore[arg-type]
+        print(
+            f"  {r['name']:<28} {r['phases']:<22} {r['n_states']:>5} {r['n_features']:>3} "
+            f"{r['min']:>7.3f} {r['max']:>7.3f} {r['abs_max']:>6.3f} "
+            f"{r['mean']:>7.4f} {r['std']:>7.4f} "
+            f"{r['zero_frac']:>6.1%} {outside_str:>6}"
         )
 
 
@@ -196,6 +305,7 @@ def _print_feature_detail(
 
 def _format_html_report(
     rows: list[dict[str, object]],
+    phase_rows: list[dict[str, object]],
     num_states: int,
     num_games: int,
     epoch: int,
@@ -203,6 +313,8 @@ def _format_html_report(
     """Generate a self-contained HTML report for normalization check."""
     total_features = sum(r["n_features"] for r in rows)  # type: ignore[arg-type]
     rows_json = json.dumps(rows)
+    phase_rows_json = json.dumps(phase_rows)
+    phase_specific_names_json = json.dumps(list(_PHASE_SPECIFIC_FEATURES.keys()))
 
     return f"""\
 <!DOCTYPE html>
@@ -249,6 +361,11 @@ def _format_html_report(
   .tag-ok {{ background: #1a3a2a; color: #4ecca3; }}
   .tag-warn {{ background: #3a2a1a; color: #e9a945; }}
   .tag-bad {{ background: #3a1a1a; color: #e94560; }}
+  .tag-phase {{
+    display: inline-block; padding: 1px 5px; border-radius: 3px;
+    font-size: 0.7rem; font-weight: 600; margin: 1px 2px;
+    background: #1a2a3e; color: #4a9eff;
+  }}
 </style>
 </head>
 <body>
@@ -266,11 +383,17 @@ def _format_html_report(
 <table id="tbl-oor"></table>
 
 <h2>3. Sparse Features (&gt;90% zero)</h2>
-<p style="color:#888;font-size:0.85rem">Features that are mostly zero. Context-dependent features (turn:*, phase) are expected to be sparse.</p>
+<p style="color:#888;font-size:0.85rem">Non-phase-specific features that are mostly zero. Phase-specific features are shown in table 4.</p>
 <table id="tbl-sparse"></table>
+
+<h2>4. Phase-Specific Features</h2>
+<p style="color:#888;font-size:0.85rem">Context-dependent features, stats filtered to only the phases where each feature is active. Zeroed outside these phases by design.</p>
+<table id="tbl-phase"></table>
 
 <script>
 const rows = {rows_json};
+const phaseRows = {phase_rows_json};
+const phaseSpecificNames = new Set({phase_specific_names_json});
 
 function makeBar(val, maxVal, cls) {{
   const pct = maxVal > 0 ? Math.min(val / maxVal * 100, 100) : 0;
@@ -284,6 +407,10 @@ function statusTag(absMax) {{
   if (absMax <= 1.0) return '<span class="tag tag-ok">OK</span>';
   if (absMax <= 1.5) return '<span class="tag tag-warn">mild</span>';
   return '<span class="tag tag-bad">high</span>';
+}}
+
+function phaseTags(phases) {{
+  return phases.split(', ').map(p => '<span class="tag-phase">' + p + '</span>').join('');
 }}
 
 // --- All features table ---
@@ -305,7 +432,7 @@ function statusTag(absMax) {{
       '<td style="text-align:center">' + statusTag(r.abs_max) + '</td>' +
       '<td>' + fmtVal(r.mean, 4) + '</td>' +
       '<td>' + fmtVal(r.std, 4) + '</td>' +
-      '<td>' + Math.round(r.zero_frac * 100) + '%</td>' +
+      '<td>' + (r.zero_frac * 100).toFixed(1) + '%</td>' +
       '<td>' + oorStr + '</td></tr>';
   }}
   tbl.innerHTML = html;
@@ -331,9 +458,9 @@ function statusTag(absMax) {{
   tbl.innerHTML = html;
 }})();
 
-// --- Sparse features table ---
+// --- Sparse features table (excluding phase-specific) ---
 (function() {{
-  const sparse = rows.filter(r => r.zero_frac > 0.90 && r.n_nonzero > 0)
+  const sparse = rows.filter(r => r.zero_frac > 0.90 && r.n_nonzero > 0 && !phaseSpecificNames.has(r.name))
     .sort((a, b) => b.zero_frac - a.zero_frac);
   const tbl = document.getElementById("tbl-sparse");
   if (sparse.length === 0) {{
@@ -343,9 +470,41 @@ function statusTag(absMax) {{
   let html = '<tr><th>Feature</th><th>% Zero</th><th>NZ Mean</th><th>NZ |Max|</th></tr>';
   for (const r of sparse) {{
     html += '<tr><td>' + r.name + '</td>' +
-      '<td>' + Math.round(r.zero_frac * 100) + '%</td>' +
+      '<td>' + (r.zero_frac * 100).toFixed(1) + '%</td>' +
       '<td>' + fmtVal(r.nz_mean, 4) + '</td>' +
       '<td>' + fmtVal(r.nz_absmax, 4) + '</td></tr>';
+  }}
+  tbl.innerHTML = html;
+}})();
+
+// --- Phase-specific features table ---
+(function() {{
+  const sorted = phaseRows.slice().sort((a, b) => b.abs_max - a.abs_max);
+  const tbl = document.getElementById("tbl-phase");
+  if (sorted.length === 0) {{
+    tbl.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#4ecca3">No phase-specific features</td></tr>';
+    return;
+  }}
+  let html = '<tr><th>Feature</th><th>Phases</th><th># States</th><th>#</th>' +
+    '<th>Min</th><th>Max</th><th>|Max|</th><th></th><th>Status</th>' +
+    '<th>Mean</th><th>Std</th><th>%Zero</th><th>%Out</th></tr>';
+  const maxAbsMax = Math.max(...sorted.map(r => r.abs_max));
+  for (const r of sorted) {{
+    const oorStr = r.n_outside > 0 ? fmtPct(r.outside_frac) : '-';
+    const barCls = r.abs_max > 1.5 ? 'bar-red' : r.abs_max > 1.0 ? 'bar-yellow' : 'bar-green';
+    html += '<tr><td>' + r.name + '</td>' +
+      '<td style="text-align:left">' + phaseTags(r.phases) + '</td>' +
+      '<td>' + r.n_states.toLocaleString() + '</td>' +
+      '<td>' + r.n_features + '</td>' +
+      '<td>' + fmtVal(r.min) + '</td>' +
+      '<td>' + fmtVal(r.max) + '</td>' +
+      '<td>' + fmtVal(r.abs_max) + '</td>' +
+      '<td>' + makeBar(r.abs_max, maxAbsMax, barCls) + '</td>' +
+      '<td style="text-align:center">' + statusTag(r.abs_max) + '</td>' +
+      '<td>' + fmtVal(r.mean, 4) + '</td>' +
+      '<td>' + fmtVal(r.std, 4) + '</td>' +
+      '<td>' + (r.zero_frac * 100).toFixed(1) + '%</td>' +
+      '<td>' + oorStr + '</td></tr>';
   }}
   tbl.innerHTML = html;
 }})();
@@ -419,11 +578,13 @@ def main() -> None:
 
     groups = _build_feature_groups(config.num_players)
     rows = _group_stats(dataset.states, groups)
+    phase_rows = _phase_specific_stats(dataset.states, groups, dataset.phases)
 
     _print_overview(rows, dataset.num_states)
     _print_table(rows)
     _print_out_of_range(rows)
     _print_sparsity(rows)
+    _print_phase_specific(phase_rows)
 
     if args.feature:
         match = [(n, idx) for n, idx in groups if n == args.feature]
@@ -441,7 +602,7 @@ def main() -> None:
         html_path = Path("interp/data") / f"norm_epoch{epoch}.html"
     html_path.parent.mkdir(parents=True, exist_ok=True)
 
-    html = _format_html_report(rows, dataset.num_states, dataset.num_games, epoch)
+    html = _format_html_report(rows, phase_rows, dataset.num_states, dataset.num_games, epoch)
     html_path.write_text(html)
     print(f"\nHTML report written to {html_path}")
 
