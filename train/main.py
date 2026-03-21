@@ -731,11 +731,11 @@ def main() -> None:
                 server_stats: EvalServerStats | None = None
                 if eval_servers:
                     all_stats = [
-                        s.get_profile_stats() for s in eval_servers
-                        if s.get_profile_stats() is not None
+                        s for s in (es.get_profile_stats() for es in eval_servers)
+                        if s is not None
                     ]
                     if all_stats:
-                        server_stats = EvalServerStats.merge(all_stats)  # type: ignore[arg-type]
+                        server_stats = EvalServerStats.merge(all_stats)
                 print(format_epoch_profile(game_profiles, server_stats, sp_duration))
 
                 # Tensorboard: profile scalars
