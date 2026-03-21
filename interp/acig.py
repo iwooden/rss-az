@@ -51,7 +51,9 @@ _DIV_MID_MAX = 17
 def _bucket_name(action_type: int, amount: int) -> str:
     """Readable bucket name, sub-grouping dividends by amount range."""
     if action_type == 10:  # ACTION_DIVIDEND
-        if amount <= _DIV_LOW_MAX:
+        if amount == 0:
+            return "div_zero"
+        elif amount <= _DIV_LOW_MAX:
             return "div_low"
         elif amount <= _DIV_MID_MAX:
             return "div_mid"
