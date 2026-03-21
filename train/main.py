@@ -361,12 +361,7 @@ def main() -> None:
         model.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
         start_epoch = cp["epoch"] + 1  # type: ignore[operator]
 
-    # NOTE: torch.compile is deferred until after eval servers are spawned.
-    # Eval servers receive the uncompiled model (they compile independently
-    # in their own processes). The main process compiles for training below.
-
-    # --- Components ---
-    trainer = Trainer(model, config, device)
+    # --- Components (model-independent) ---
     buffer = ReplayBuffer(
         config.buffer_capacity,
         config.visible_size,
@@ -374,14 +369,6 @@ def main() -> None:
         config.num_players,
     )
     logger = TrainingLogger(config.tensorboard_dir)
-
-    # --- Resume: restore trainer state (optimizer + scheduler) ---
-    if cp is not None:
-        trainer.load_state_dict(cp["trainer_state"])  # type: ignore[arg-type]
-        print(
-            f"Resumed from epoch {cp['epoch']}, "
-            f"step {trainer.global_step}"
-        )
 
     # --- Log startup ---
     logger.log_training_start(config, device=str(device))
@@ -399,14 +386,12 @@ def main() -> None:
     print("Press q + Enter for graceful shutdown\n")
 
     # --- Multi-process self-play setup ---
+    # Eval servers must be spawned BEFORE torch.compile — they receive the
+    # uncompiled model via CUDA IPC and compile independently per-process.
     workers: list[Any] = []  # mp.Process (SpawnProcess when using spawn context)
     eval_servers: list[EvaluationServer] = []
     task_queue: Any = None  # mp.Queue
     result_queue: Any = None  # mp.Queue
-
-    # Single-process fallback
-    evaluator: NNEvaluator | None = None
-    state_pool: StatePool | None = None
 
     if config.num_workers > 0:
         ctx = mp.get_context("spawn")
@@ -459,19 +444,11 @@ def main() -> None:
             f"Started {config.num_workers} self-play workers, "
             f"{n_servers} eval server{'s' if n_servers > 1 else ''}"
         )
-    else:
-        evaluator = NNEvaluator(
-            model, device, num_players=config.num_players,
-            terminal_rank_weight=config.terminal_blend,
-        )
-        from core.state import get_layout
 
-        total_state_size = get_layout(config.num_players).total_size
-        state_pool = StatePool(2 * (config.num_simulations + 1), total_state_size)
-
-    # --- torch.compile for training in main process ---
-    # Eval servers compile independently in their own processes.
-    # Main process compiles for training only.
+    # --- torch.compile for main process ---
+    # Now that eval servers have the uncompiled model, compile for training
+    # and single-process self-play. Trainer and NNEvaluator are created
+    # after this so they receive the compiled module.
     if not args.no_compile and device.type == "cuda":
         print("Compiling model with torch.compile (main process)...")
         model = cast(torch.nn.Module, torch.compile(model, dynamic=True))
@@ -485,6 +462,31 @@ def main() -> None:
                 del dummy
         torch.cuda.synchronize()
         print("  Model compiled.")
+
+    # --- Trainer (receives possibly-compiled model) ---
+    trainer = Trainer(model, config, device)
+
+    # --- Resume: restore trainer state (optimizer + scheduler) ---
+    if cp is not None:
+        trainer.load_state_dict(cp["trainer_state"])  # type: ignore[arg-type]
+        print(
+            f"Resumed from epoch {cp['epoch']}, "
+            f"step {trainer.global_step}"
+        )
+
+    # --- Single-process evaluator (receives possibly-compiled model) ---
+    evaluator: NNEvaluator | None = None
+    state_pool: StatePool | None = None
+
+    if config.num_workers == 0:
+        evaluator = NNEvaluator(
+            model, device, num_players=config.num_players,
+            terminal_rank_weight=config.terminal_blend,
+        )
+        from core.state import get_layout
+
+        total_state_size = get_layout(config.num_players).total_size
+        state_pool = StatePool(2 * (config.num_simulations + 1), total_state_size)
 
     # --- Training loop ---
     avg_losses: dict[str, float] = {}
