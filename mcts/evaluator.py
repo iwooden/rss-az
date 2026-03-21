@@ -12,6 +12,11 @@ import numpy as np
 import torch
 
 from core.state import LayoutInfo, get_layout as _get_layout_uncached
+from mcts.mcts_core import (
+    rotate_visible_state_into as _rotate_cython,
+    masked_softmax as _masked_softmax_cython,
+    unrotate_values as _unrotate_cython,
+)
 
 # Cache layouts per player count
 _layout_cache: dict[int, LayoutInfo] = {}
@@ -36,8 +41,8 @@ def rotate_visible_state_into(
 ) -> None:
     """Copy visible state into *dst* with player data rotated in-place.
 
-    Same rotation as :func:`rotate_visible_state` but writes directly into
-    a caller-supplied buffer, avoiding an intermediate allocation.
+    Delegates to a Cython implementation that uses memcpy and pointer
+    arithmetic instead of numpy roll/copy/reshape.
 
     Args:
         dst: Destination array of shape ``(visible_size,)`` — written in-place.
@@ -46,27 +51,13 @@ def rotate_visible_state_into(
         num_players: Number of players in the game.
     """
     layout = get_layout(num_players)
-    dst[:] = state_array[:layout.visible_size]
-
-    if active_player_id == 0:
-        return
-
-    # Rotate player data blocks
-    p_off = layout.players_offset
-    stride = layout.player_stride
-    player_data = dst[p_off:p_off + layout.players_size].copy()
-    player_blocks = player_data.reshape(num_players, stride)
-    rotated_blocks = np.roll(player_blocks, -active_player_id, axis=0)
-    dst[p_off:p_off + layout.players_size] = rotated_blocks.ravel()
-
-    # Rotate per-player turn state fields
-    for field_offset in (layout.auction_high_bidder_offset,
-                         layout.auction_starter_offset,
-                         layout.auction_passed_offset):
-        field = dst[field_offset:field_offset + num_players].copy()
-        dst[field_offset:field_offset + num_players] = np.roll(
-            field, -active_player_id
-        )
+    _rotate_cython(
+        dst, state_array, active_player_id, num_players,
+        layout.visible_size, layout.players_offset, layout.player_stride,
+        layout.auction_high_bidder_offset,
+        layout.auction_starter_offset,
+        layout.auction_passed_offset,
+    )
 
 
 def rotate_visible_state(state_array: np.ndarray, active_player_id: int,
@@ -97,27 +88,24 @@ def rotate_visible_state(state_array: np.ndarray, active_player_id: int,
 def apply_mask_softmax(logits: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """Apply legal action mask and softmax to raw policy logits.
 
-    Uses torch.softmax to match the numerics of the GPU eval path exactly
-    (avoids tiny divergences from a numpy softmax implementation that
-    compound through MCTS visit counts).
+    Delegates to a Cython implementation that uses a single C loop
+    instead of the previous torch tensor round-trip.
 
     Args:
         logits: Raw logits from NN, shape (action_dim,).
-        mask: Binary mask where 1 = legal, 0 = illegal, shape (action_dim,).
+        mask: Binary float32 mask (1.0 = legal, 0.0 = illegal).
 
     Returns:
         Probability distribution over actions, shape (action_dim,).
     """
-    t = torch.from_numpy(logits)
-    t = t.masked_fill(torch.from_numpy(mask) <= 0, -1e9)
-    return torch.softmax(t, dim=-1).numpy()
+    return _masked_softmax_cython(logits, mask)
 
 
 def unrotate_values(values: np.ndarray, active_player_id: int) -> np.ndarray:
     """Convert NN value output (active player at index 0) to canonical order.
 
-    The NN outputs values where index 0 = active player, index 1 = next player, etc.
-    This rotates them back so index 0 = player 0, index 1 = player 1, etc.
+    Delegates to a Cython implementation that avoids numpy dispatch
+    overhead on the tiny (num_players,) array.
 
     Args:
         values: Per-player values from NN, shape (num_players,).
@@ -126,7 +114,8 @@ def unrotate_values(values: np.ndarray, active_player_id: int) -> np.ndarray:
     Returns:
         Values in canonical player order.
     """
-    return np.roll(values, active_player_id)
+    vals = values if values.dtype == np.float32 else values.astype(np.float32)
+    return _unrotate_cython(vals, active_player_id, len(vals))
 
 
 def compute_terminal_values(

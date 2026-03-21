@@ -1,12 +1,13 @@
 # cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
-"""Cython implementations of MCTS selection and backup hot functions.
+"""Cython implementations of MCTS hot functions.
 
-These replace the pure-Python/numpy versions in search.py, eliminating
-numpy dispatch overhead (~15-20us/call) for arrays of 20-100 elements
-where the overhead dominates actual computation.
+Replaces pure-Python/numpy versions in search.py and evaluator.py,
+eliminating numpy/torch dispatch overhead for small arrays where the
+overhead dominates actual computation.
 """
 
-from libc.math cimport sqrtf
+from libc.math cimport sqrtf, expf
+from libc.string cimport memcpy
 
 import numpy as np
 
@@ -198,3 +199,165 @@ def increment_visits(list path, leaf):
         node.visit_count += 1
         vc = node.visit_counts
         vc[array_idx] = vc[array_idx] + 1
+
+
+# ---------------------------------------------------------------------------
+# State rotation (replaces numpy roll/copy in evaluator.py)
+# ---------------------------------------------------------------------------
+
+cdef void _rotate_visible_state(
+    float* dst, const float* src,
+    int visible_size, int active_player_id, int num_players,
+    int players_offset, int player_stride,
+    int field0_offset, int field1_offset, int field2_offset,
+) noexcept nogil:
+    """Copy visible state from src to dst with player rotation.
+
+    Copies the full visible region, then overwrites player blocks and
+    per-player turn fields in rotated order. Reads from src only, so
+    there is no aliasing issue even though dst starts as a copy of src.
+    """
+    # Bulk copy entire visible state
+    memcpy(dst, src, visible_size * sizeof(float))
+
+    if active_player_id == 0:
+        return
+
+    # Overwrite player data blocks in rotated order.
+    # np.roll(blocks, -active_player_id, axis=0) means:
+    #   dst_slot[i] = src_slot[(i + active_player_id) % num_players]
+    cdef int i, src_player
+    cdef int byte_stride = player_stride * sizeof(float)
+    for i in range(num_players):
+        src_player = (i + active_player_id) % num_players
+        memcpy(
+            dst + players_offset + i * player_stride,
+            src + players_offset + src_player * player_stride,
+            byte_stride,
+        )
+
+    # Rotate 3 per-player turn state fields (each num_players floats)
+    cdef int field_offsets[3]
+    field_offsets[0] = field0_offset
+    field_offsets[1] = field1_offset
+    field_offsets[2] = field2_offset
+    cdef int f, off
+    for f in range(3):
+        off = field_offsets[f]
+        for i in range(num_players):
+            src_player = (i + active_player_id) % num_players
+            dst[off + i] = src[off + src_player]
+
+
+def rotate_visible_state_into(
+    float[:] dst, const float[:] src,
+    int active_player_id, int num_players,
+    int visible_size, int players_offset, int player_stride,
+    int field0_offset, int field1_offset, int field2_offset,
+):
+    """Copy visible state into dst with player rotation.
+
+    Drop-in replacement for evaluator.rotate_visible_state_into.
+    Uses memcpy and pointer arithmetic instead of numpy roll/copy.
+
+    Args:
+        dst: Destination buffer, shape (visible_size,).
+        src: Full state array (visible + hidden).
+        active_player_id: Canonical player ID (0 to num_players-1).
+        num_players: Number of players.
+        visible_size: Size of visible state region.
+        players_offset: Offset to player data blocks.
+        player_stride: Floats per player block.
+        field0_offset: Offset to auction_high_bidder per-player field.
+        field1_offset: Offset to auction_starter per-player field.
+        field2_offset: Offset to auction_passed per-player field.
+    """
+    _rotate_visible_state(
+        &dst[0], &src[0],
+        visible_size, active_player_id, num_players,
+        players_offset, player_stride,
+        field0_offset, field1_offset, field2_offset,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Masked softmax (replaces torch round-trip in evaluator.py)
+# ---------------------------------------------------------------------------
+
+cdef void _masked_softmax(
+    float* out, const float* logits, const float* mask, int n,
+) noexcept nogil:
+    """Numerically stable masked softmax: mask, shift, exp, normalize.
+
+    Illegal actions (mask <= 0) get probability 0.
+    """
+    cdef int i
+    cdef float max_val = -1e30
+    cdef float v
+
+    # Find max of legal logits for numerical stability
+    for i in range(n):
+        if mask[i] > 0.0:
+            v = logits[i]
+            if v > max_val:
+                max_val = v
+
+    # Compute exp(logit - max) for legal actions, sum
+    cdef float total = 0.0
+    for i in range(n):
+        if mask[i] > 0.0:
+            out[i] = expf(logits[i] - max_val)
+            total = total + out[i]
+        else:
+            out[i] = 0.0
+
+    # Normalize
+    if total > 0.0:
+        for i in range(n):
+            out[i] = out[i] / total
+
+
+def masked_softmax(const float[:] logits, const float[:] mask):
+    """Apply legal action mask and softmax to raw policy logits.
+
+    Drop-in replacement for evaluator.apply_mask_softmax. Uses a single
+    C loop instead of torch tensor round-trip.
+
+    Args:
+        logits: Raw logits from NN, shape (action_dim,).
+        mask: Binary float32 mask (1.0 = legal, 0.0 = illegal).
+
+    Returns:
+        Probability distribution over actions, shape (action_dim,).
+    """
+    cdef int n = logits.shape[0]
+    result = np.empty(n, dtype=np.float32)
+    cdef float[:] out = result
+    _masked_softmax(&out[0], &logits[0], &mask[0], n)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Value un-rotation (replaces np.roll on tiny arrays in evaluator.py)
+# ---------------------------------------------------------------------------
+
+def unrotate_values(const float[:] values, int active_player_id, int num_players):
+    """Convert NN values (active player at index 0) to canonical order.
+
+    Drop-in replacement for evaluator.unrotate_values.
+    Equivalent to np.roll(values, active_player_id) without numpy dispatch.
+
+    Args:
+        values: Per-player values from NN, shape (num_players,).
+        active_player_id: Canonical player ID of the active player.
+        num_players: Number of players.
+
+    Returns:
+        Values in canonical player order, shape (num_players,).
+    """
+    result = np.empty(num_players, dtype=np.float32)
+    cdef float[:] out = result
+    cdef int i
+    for i in range(num_players):
+        out[(i + active_player_id) % num_players] = values[i]
+    return result
