@@ -427,6 +427,39 @@ def main() -> None:
             server.start()
             eval_servers.append(server)
 
+        # Wait for all eval servers to finish compilation + warmup before
+        # spawning workers.  This prevents workers from timing out on
+        # unresponsive servers and avoids CPU contention between server
+        # compilation and the main-process compile below.
+        n_servers = config.num_eval_servers
+        print(
+            f"Waiting for {n_servers} eval server{'s' if n_servers > 1 else ''} "
+            f"to compile..."
+        )
+        for server in eval_servers:
+            if not server.wait_ready(timeout=300.0):
+                raise RuntimeError(
+                    "Eval server did not become ready within 300s — "
+                    "compilation may have failed (check stderr)"
+                )
+        print(f"  {n_servers} eval server{'s' if n_servers > 1 else ''} ready.")
+
+        # Compile for training in main process (after servers finish, so no
+        # CPU contention from concurrent Inductor/Triton jobs).
+        if not args.no_compile and device.type == "cuda":
+            print("Compiling model with torch.compile (main process)...")
+            model = cast(torch.nn.Module, torch.compile(model, dynamic=True))
+            model.train()
+            max_warmup = max(1, config.num_workers * config.search_batch_size)
+            with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
+                for warmup_bs in (1, max_warmup):
+                    dummy = torch.randn(warmup_bs, config.visible_size, device=device)
+                    model(dummy)
+                    del dummy
+            torch.cuda.synchronize()
+            print("  Model compiled.")
+
+        # Spawn workers now that eval servers are ready to serve requests.
         for i in range(config.num_workers):
             p = ctx.Process(
                 target=self_play_worker,
@@ -439,29 +472,23 @@ def main() -> None:
             p.start()
             workers.append(p)
 
-        n_servers = config.num_eval_servers
         print(
             f"Started {config.num_workers} self-play workers, "
             f"{n_servers} eval server{'s' if n_servers > 1 else ''}"
         )
-
-    # --- torch.compile for main process ---
-    # Now that eval servers have the uncompiled model, compile for training
-    # and single-process self-play. Trainer and NNEvaluator are created
-    # after this so they receive the compiled module.
-    if not args.no_compile and device.type == "cuda":
-        print("Compiling model with torch.compile (main process)...")
-        model = cast(torch.nn.Module, torch.compile(model, dynamic=True))
-        # Warmup in training context
-        model.train()
-        max_warmup = max(1, config.num_workers * config.search_batch_size)
-        with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
-            for warmup_bs in (1, max_warmup):
-                dummy = torch.randn(warmup_bs, config.visible_size, device=device)
-                model(dummy)
-                del dummy
-        torch.cuda.synchronize()
-        print("  Model compiled.")
+    else:
+        # Single-process: compile for both training and self-play evaluation
+        if not args.no_compile and device.type == "cuda":
+            print("Compiling model with torch.compile...")
+            model = cast(torch.nn.Module, torch.compile(model, dynamic=True))
+            model.train()
+            with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
+                for warmup_bs in (1, 1):
+                    dummy = torch.randn(warmup_bs, config.visible_size, device=device)
+                    model(dummy)
+                    del dummy
+            torch.cuda.synchronize()
+            print("  Model compiled.")
 
     # --- Trainer (receives possibly-compiled model) ---
     trainer = Trainer(model, config, device)

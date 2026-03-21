@@ -121,6 +121,7 @@ def _eval_server_main(
     request_queue: Any,
     worker_events: list[Any],
     stop_event: Any,
+    ready_event: Any,
     stats_report_event: Any,
     stats_queue: Any,
     *,
@@ -137,7 +138,7 @@ def _eval_server_main(
     try:
         _eval_server_serve(
             model, device, shared_bufs, request_queue, worker_events,
-            stop_event, stats_report_event, stats_queue,
+            stop_event, ready_event, stats_report_event, stats_queue,
             server_id=server_id,
             profile=profile, no_compile=no_compile,
         )
@@ -153,6 +154,7 @@ def _eval_server_serve(
     request_queue: Any,
     worker_events: list[Any],
     stop_event: Any,
+    ready_event: Any,
     stats_report_event: Any,
     stats_queue: Any,
     *,
@@ -182,6 +184,9 @@ def _eval_server_serve(
                 del dummy
         if use_cuda:
             torch.cuda.synchronize()
+
+    # Signal that this server is ready to serve requests
+    ready_event.set()
 
     # Allocate pinned CPU buffers and GPU tensors in this process's CUDA context
     max_batch = shared_bufs.num_workers * shared_bufs.batch_size
@@ -314,12 +319,14 @@ class EvaluationServer:
         import multiprocessing
         ctx = mp_context or multiprocessing
         self._stop_event = ctx.Event()
+        self._ready_event = ctx.Event()
         self._stats_report_event: Any = ctx.Event() if profile else None
         self._stats_queue: Any = ctx.Queue() if profile else None
         self._process: Any | None = None
         self._process_args = (
             model, device, shared_bufs, request_queue, worker_events,
-            self._stop_event, self._stats_report_event, self._stats_queue,
+            self._stop_event, self._ready_event,
+            self._stats_report_event, self._stats_queue,
         )
         self._process_kwargs = {
             "server_id": server_id,
@@ -340,6 +347,13 @@ class EvaluationServer:
         )
         p.start()
         self._process = p
+
+    def wait_ready(self, timeout: float = 120.0) -> bool:
+        """Block until the server has finished compilation and warmup.
+
+        Returns True if the server signaled ready, False on timeout.
+        """
+        return self._ready_event.wait(timeout=timeout)
 
     def stop(self) -> None:
         """Signal the server to stop and wait for it."""
