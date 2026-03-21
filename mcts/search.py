@@ -259,6 +259,8 @@ def run_search(
                         _virtual_backup(node, child, array_idx)
                         sim += 1
                         did_virtual_backup = True
+                        if profile is not None:
+                            profile.virtual_backups += 1
                         break
 
                     # Follow existing child

@@ -25,6 +25,8 @@ class GameRecord:
     examples: list[TrainingExample]
     total_moves: int  # Decision points (MCTS searches)
     net_worths: list[int]  # Final net worth per player (canonical order)
+    shares_per_player: list[int]  # Total shares held per player (canonical order)
+    companies_per_player: list[int]  # Companies owned per player (canonical order)
     duration_secs: float  # Wall-clock time
     policy_entropy_mean: float = 0.0  # Mean entropy of MCTS policy targets (nats)
     top1_visit_fraction: float = 0.0  # Mean fraction of visits on top action
@@ -144,6 +146,20 @@ def play_game(
         state.get_player_net_worth(i) for i in range(config.num_players)
     ]
 
+    # Extract end-of-game ownership stats
+    from entities.player import PLAYERS
+    from core.data import GameConstants
+    num_corps = int(GameConstants.NUM_CORPS)
+    num_companies = int(GameConstants.NUM_COMPANIES)
+    shares_per_player = [
+        sum(PLAYERS[i].get_shares(state, c) for c in range(num_corps))
+        for i in range(config.num_players)
+    ]
+    companies_per_player = [
+        sum(1 for c in range(num_companies) if PLAYERS[i].owns_company(state, c))
+        for i in range(config.num_players)
+    ]
+
     # Blend A0GB value targets with game outcome if configured
     blend_alpha = epoch_config.value_blend_alpha if epoch_config is not None else 1.0
     if blend_alpha < 1.0:
@@ -171,6 +187,8 @@ def play_game(
         examples=examples,
         total_moves=move_count,
         net_worths=net_worths,
+        shares_per_player=shares_per_player,
+        companies_per_player=companies_per_player,
         duration_secs=time.perf_counter() - t0,
         policy_entropy_mean=entropy_sum / max(move_count, 1),
         top1_visit_fraction=top1_sum / max(move_count, 1),

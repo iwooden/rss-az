@@ -133,9 +133,11 @@ def _build_profile_scalars(
     searches = sum(g.search.num_searches for g in game_profiles) / n
     batches = sum(g.search.num_eval_batches for g in game_profiles) / n
     leaves = sum(g.search.total_leaves for g in game_profiles) / n
+    vbackups = sum(g.search.virtual_backups for g in game_profiles) / n
     scalars["profile/searches_per_game"] = searches
     scalars["profile/eval_batches_per_game"] = batches
     scalars["profile/leaves_per_game"] = leaves
+    scalars["profile/virtual_backups_per_game"] = vbackups
 
     clients = [g.eval_client for g in game_profiles if g.eval_client is not None]
     if clients:
@@ -533,6 +535,8 @@ def main() -> None:
             rank_totals = [0.0] * num_players
             rank_mins = [float("inf")] * num_players
             rank_maxs = [float("-inf")] * num_players
+            total_shares = [0] * num_players
+            total_companies = [0] * num_players
             game_profiles: list[GameProfileData] = []
 
             def _collect_record(record: object, game_idx: int) -> None:
@@ -544,12 +548,17 @@ def main() -> None:
                 total_duration += record.duration_secs  # type: ignore[union-attr]
                 total_entropy += record.policy_entropy_mean  # type: ignore[union-attr]
                 total_top1 += record.top1_visit_fraction  # type: ignore[union-attr]
-                for rank, nw in enumerate(sorted(record.net_worths, reverse=True)):  # type: ignore[union-attr]
+                # Sort players by net worth descending (1st, 2nd, 3rd, ...)
+                ranked = sorted(range(num_players), key=lambda p: record.net_worths[p], reverse=True)  # type: ignore[union-attr]
+                for rank, p in enumerate(ranked):
+                    nw = record.net_worths[p]  # type: ignore[index]
                     rank_totals[rank] += nw
                     if nw < rank_mins[rank]:
                         rank_mins[rank] = nw
                     if nw > rank_maxs[rank]:
                         rank_maxs[rank] = nw
+                    total_shares[rank] += record.shares_per_player[p]  # type: ignore[index]
+                    total_companies[rank] += record.companies_per_player[p]  # type: ignore[index]
                 if record.profile is not None:  # type: ignore[union-attr]
                     game_profiles.append(record.profile)  # type: ignore[union-attr]
                 n = game_idx + 1
@@ -707,6 +716,17 @@ def main() -> None:
 
             avg_entropy = total_entropy / n_games
             avg_top1 = total_top1 / n_games
+            avg_total_nw = sum(rank_totals) / n_games
+            avg_shares = [t / n_games for t in total_shares]
+            avg_companies = [t / n_games for t in total_companies]
+
+            ownership_scalars: dict[str, float] = {
+                "self_play/total_shares": sum(avg_shares),
+                "self_play/total_companies": sum(avg_companies),
+            }
+            for k, s, c in zip(rank_labels, avg_shares, avg_companies):
+                ownership_scalars[f"self_play/shares_{k}"] = s
+                ownership_scalars[f"self_play/companies_{k}"] = c
 
             logger.log_scalars(
                 epoch_num,
@@ -717,11 +737,13 @@ def main() -> None:
                     "self_play/total_examples": float(total_examples),
                     "self_play/policy_entropy_mean": avg_entropy,
                     "self_play/top1_visit_fraction": avg_top1,
+                    "self_play/total_net_worth": avg_total_nw,
                     "buffer/size": float(len(buffer)),
                     "buffer/utilization": len(buffer) / config.buffer_capacity,
                     "schedule/c_puct": epoch_cfg.c_puct,
                     "schedule/value_blend_alpha": epoch_cfg.value_blend_alpha,
                     **net_worth_scalars,
+                    **ownership_scalars,
                 },
             )
 
@@ -830,6 +852,9 @@ def main() -> None:
                     "rank_net_worths_max": rank_maxs,
                     "policy_entropy": avg_entropy,
                     "top1_visit_frac": avg_top1,
+                    "total_net_worth": avg_total_nw,
+                    "avg_shares_per_player": avg_shares,
+                    "avg_companies_per_player": avg_companies,
                 },
                 train_stats={
                     "steps": float(config.training_steps_per_epoch) if avg_losses else 0.0,
