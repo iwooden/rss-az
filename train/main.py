@@ -441,7 +441,7 @@ def main() -> None:
         from core.state import get_layout
 
         total_state_size = get_layout(config.num_players).total_size
-        state_pool = StatePool(config.num_simulations + 1, total_state_size)
+        state_pool = StatePool(2 * (config.num_simulations + 1), total_state_size)
 
     # --- torch.compile for training in main process ---
     # Eval servers compile independently in their own processes.

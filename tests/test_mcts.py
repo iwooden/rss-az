@@ -1508,3 +1508,41 @@ class TestSubtreeReuse:
         assert diff > 0.05, (
             f"Noise should produce different distributions (L1 diff={diff:.4f})"
         )
+
+    def test_reuse_pool_capacity_must_be_2x(self, game_state, evaluator):
+        """Pool sized 2*(num_simulations+1) must suffice for subtree reuse.
+
+        Regression test: train/main.py once allocated StatePool with only
+        num_simulations+1 capacity. With subtree reuse, compacted nodes
+        occupy the front of the pool and new allocations start after them,
+        requiring up to 2*(num_simulations+1) total capacity.
+        """
+        from core.driver import DRIVER
+        from core.state import get_layout
+
+        num_sims = 50
+        total_size = get_layout(3).total_size
+
+        # Correctly sized pool: 2*(num_sims+1) — must not overflow
+        pool = StatePool(2 * (num_sims + 1), total_size)
+        config = MCTSConfig(num_simulations=num_sims)
+        rng = np.random.default_rng(42)
+        state = GameState.from_array(game_state._array, 3)
+        reuse_root = None
+        moves_played = 0
+
+        for _ in range(20):
+            root = run_search(
+                state, evaluator, config, rng=rng,
+                state_pool=pool, reuse_root=reuse_root,
+            )
+            probs = get_action_probabilities(root, temperature=1.0,
+                                             action_dim=config.action_dim)
+            action = int(rng.choice(config.action_dim, p=probs))
+            status = DRIVER.apply_action(state, action)
+            moves_played += 1
+            if status == 2:
+                break
+            reuse_root = prepare_reuse_root(root, action, pool)
+
+        assert moves_played >= 2, "Need multiple moves to exercise reuse"
