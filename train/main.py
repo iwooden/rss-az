@@ -66,7 +66,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--c-puct-anneal-epochs", type=int)
     parser.add_argument("--value-blend-start-epoch", type=int)
     parser.add_argument("--value-blend-end-epoch", type=int)
-    parser.add_argument("--reuse-subtree-after-epoch", type=int)
     parser.add_argument(
         "--terminal-blend", type=float,
         help="Rank vs margin weight for terminal rewards (0=margin, 1=rank, default 0.5)",
@@ -104,7 +103,7 @@ _CLI_FIELDS = (
     "temp_initial", "temp_anneal_start", "temp_anneal_end", "temp_final",
     "c_puct_initial", "c_puct_final", "c_puct_anneal_epochs",
     "value_blend_start_epoch", "value_blend_end_epoch",
-    "reuse_subtree_after_epoch", "terminal_blend",
+    "terminal_blend",
     "dirichlet_alpha", "dirichlet_dynamic", "dirichlet_alpha_numerator",
 )
 
@@ -137,12 +136,6 @@ def _build_profile_scalars(
     scalars["profile/searches_per_game"] = searches
     scalars["profile/eval_batches_per_game"] = batches
     scalars["profile/leaves_per_game"] = leaves
-
-    cache_hits = sum(g.search.cache_hits for g in game_profiles) / n
-    scalars["profile/cache_hits_per_game"] = cache_hits
-    scalars["profile/cache_misses_per_game"] = leaves - cache_hits
-    if leaves > 0:
-        scalars["profile/cache_hit_rate_pct"] = cache_hits / leaves * 100
 
     clients = [g.eval_client for g in game_profiles if g.eval_client is not None]
     if clients:
@@ -673,7 +666,6 @@ def main() -> None:
                     "buffer/utilization": len(buffer) / config.buffer_capacity,
                     "schedule/c_puct": epoch_cfg.c_puct,
                     "schedule/value_blend_alpha": epoch_cfg.value_blend_alpha,
-                    "schedule/subtree_reuse": float(epoch_cfg.enable_subtree_reuse),
                     **net_worth_scalars,
                 },
             )

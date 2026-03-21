@@ -11,7 +11,6 @@ import numpy as np
 
 from core.driver import DRIVER, STATUS_GAME_OVER_PY
 from core.state import GameState
-from mcts.eval_cache import EvalCache
 from mcts.evaluator import compute_terminal_values, rotate_visible_state
 from mcts.search import StatePool, get_action_probabilities, get_greedy_leaf_value, prepare_reuse_root, run_search
 from train.config import EpochConfig, TrainingConfig
@@ -62,9 +61,8 @@ def play_game(
         evaluator: NNEvaluator or RemoteEvaluator for leaf evaluation.
         state_pool: Optional pre-allocated StatePool for MCTS node states.
             Reused across searches within the game and across games.
-        epoch_config: Per-epoch dynamic parameters (c_puct, value blend,
-            subtree reuse). If None, uses config defaults (pure A0GB,
-            c_puct_final, subtree reuse enabled).
+        epoch_config: Per-epoch dynamic parameters (c_puct, value blend).
+            If None, uses config defaults (pure A0GB, c_puct_final).
     """
     t0 = time.perf_counter()
 
@@ -80,14 +78,6 @@ def play_game(
     # Use epoch-specific c_puct if provided
     c_puct_override = epoch_config.c_puct if epoch_config is not None else None
     mcts_config = config.to_mcts_config(c_puct_override=c_puct_override)
-
-    # Whether to reuse subtrees between moves
-    enable_reuse = epoch_config is None or epoch_config.enable_subtree_reuse
-
-    # Per-game eval cache (when subtree reuse is disabled)
-    eval_cache: EvalCache | None = None
-    if not enable_reuse:
-        eval_cache = EvalCache(config.action_dim, config.num_players)
 
     # Profile stats (None when --profile not set → zero overhead)
     search_stats: SearchStats | None = None
@@ -111,7 +101,7 @@ def play_game(
         root = run_search(
             state, evaluator, mcts_config, rng,
             state_pool=state_pool, reuse_root=reuse_root,
-            profile=search_stats, eval_cache=eval_cache,
+            profile=search_stats,
         )
 
         # Temperature schedule (linear ramp)
@@ -148,10 +138,7 @@ def play_game(
             break
 
         # Extract chosen child's subtree for reuse in next search
-        if enable_reuse:
-            reuse_root = prepare_reuse_root(root, action_idx, state_pool)
-        else:
-            reuse_root = None
+        reuse_root = prepare_reuse_root(root, action_idx, state_pool)
 
     net_worths = [
         state.get_player_net_worth(i) for i in range(config.num_players)

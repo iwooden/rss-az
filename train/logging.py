@@ -247,10 +247,6 @@ class TrainingLogger:
             f"game outcome \u2192 A0GB "
             f"(blend epochs {config.value_blend_start_epoch}\u2013{config.value_blend_end_epoch})",
         )
-        table.add_row(
-            "Subtree reuse",
-            f"enabled after epoch {config.reuse_subtree_after_epoch}",
-        )
         table.add_row("Epochs", str(config.num_epochs))
         table.add_row("Checkpoint interval", f"every {config.checkpoint_interval} epochs")
         table.add_row("Device", device)

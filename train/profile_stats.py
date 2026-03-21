@@ -20,7 +20,6 @@ class SearchStats:
     num_searches: int = 0
     num_eval_batches: int = 0
     total_leaves: int = 0
-    cache_hits: int = 0
 
 
 @dataclass
@@ -145,21 +144,12 @@ def format_epoch_profile(
     batches = sum(g.search.num_eval_batches for g in game_profiles) / n
     leaves = sum(g.search.total_leaves for g in game_profiles) / n
 
-    cache_hits = sum(g.search.cache_hits for g in game_profiles) / n
-    cache_misses = leaves - cache_hits
-    hit_rate = cache_hits / leaves * 100 if leaves > 0 else 0
-
     lines.append(
         f"  Profile: Search avg/game: "
         f"select={sel:.3f}s({_pct(sel, total_search)}) "
         f"eval={evl:.3f}s({_pct(evl, total_search)}) "
         f"backup={bak:.3f}s({_pct(bak, total_search)}) "
         f"| {searches:.0f} searches, {batches:.0f} batches, {leaves:.0f} leaves"
-    )
-    lines.append(
-        f"           Cache avg/game: "
-        f"{cache_hits:.0f} hits, {cache_misses:.0f} misses "
-        f"({hit_rate:.1f}% hit rate)"
     )
 
     # Aggregate eval client stats

@@ -191,23 +191,16 @@ class TestConfig:
         cfg = TrainingConfig(
             c_puct_initial=4.0, c_puct_final=2.0, c_puct_anneal_epochs=20,
             value_blend_start_epoch=10, value_blend_end_epoch=40,
-            reuse_subtree_after_epoch=15,
         )
-        # Epoch 0: c_puct at initial, no blend, no reuse
+        # Epoch 0: c_puct at initial, no blend
         ec = cfg.compute_epoch_config(0)
         assert ec.c_puct == pytest.approx(4.0)
         assert ec.value_blend_alpha == pytest.approx(0.0)
-        assert ec.enable_subtree_reuse is False
 
         # Epoch 10: c_puct halfway, blend starts
         ec = cfg.compute_epoch_config(10)
         assert ec.c_puct == pytest.approx(3.0)
         assert ec.value_blend_alpha == pytest.approx(0.0)
-        assert ec.enable_subtree_reuse is False
-
-        # Epoch 15: reuse enabled
-        ec = cfg.compute_epoch_config(15)
-        assert ec.enable_subtree_reuse is True
 
         # Epoch 20: c_puct at final
         ec = cfg.compute_epoch_config(20)
@@ -221,7 +214,6 @@ class TestConfig:
         ec = cfg.compute_epoch_config(50)
         assert ec.c_puct == pytest.approx(2.0)
         assert ec.value_blend_alpha == pytest.approx(1.0)
-        assert ec.enable_subtree_reuse is True
 
     def test_to_mcts_config_dynamic_dirichlet(self) -> None:
         cfg = TrainingConfig(
@@ -852,7 +844,7 @@ class TestSelfPlay:
         try:
             # Feed game seeds (with epoch config)
             from train.config import EpochConfig
-            epoch_cfg = EpochConfig(c_puct=2.5, value_blend_alpha=1.0, enable_subtree_reuse=True)
+            epoch_cfg = EpochConfig(c_puct=2.5, value_blend_alpha=1.0)
             total_games = num_workers * games_per_worker
             for i in range(total_games):
                 task_queue.put((42 + i, 100 + i, epoch_cfg))

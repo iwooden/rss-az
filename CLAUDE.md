@@ -21,7 +21,7 @@ rss-az-cython2/
 ├── core/              # Low-level engine: state.pyx, driver.pyx, actions.pyx, data.pyx
 ├── entities/          # Entity handles: player, corp, company, deck, turn, market, fi, encoding
 ├── phases/            # Phase handlers: invest, bid, acquisition, closing, dividends, income, issue, ipo, wrap_up, end_card
-├── mcts/              # MCTS search: node.py, evaluator.py, eval_cache.py, search.py
+├── mcts/              # MCTS search: node.py, evaluator.py, search.py
 ├── nn/                # Neural network: model_3p_2.py (residual MLP, policy + value heads)
 ├── train/             # Self-play training: config, eval_server, self_play, replay_buffer, trainer, checkpoint, logging, main
 ├── tests/             # Test suite: phases/, 18xx_games/ replay tests, conftest.py
@@ -136,9 +136,7 @@ Instead of soft-Z or game outcome, we use **A0GB** (Willemsen et al., 2022): fol
 2. **Per batch** (`search_batch_size` leaves): Select via PUCT → lock leaf (Q=-inf prevents re-selection) → batch evaluate → unlock + expand + backup
 3. **Output:** `get_action_probabilities(root, temperature)` → policy target
 
-**Subtree reuse:** Child subtree becomes new root after action. `prepare_reuse_root()` compacts state pool. Saves 40-60% GPU evals. Controlled by `--reuse-subtree-after-epoch`.
-
-**Eval cache (alternative):** Per-game `EvalCache` caches NN results by state hash (MD5). Fresh tree each move (full Dirichlet), ~70% of subtree reuse throughput. Activate: `--reuse-subtree-after-epoch 9999`.
+**Subtree reuse:** Child subtree becomes new root after action. `prepare_reuse_root()` compacts state pool. Saves 40-60% GPU evals. Always enabled.
 
 **Memory:** States NOT stored in tree nodes — root cloned and actions replayed to reach leaves.
 
