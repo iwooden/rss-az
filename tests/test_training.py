@@ -27,12 +27,13 @@ from train.replay_buffer import ReplayBuffer, TrainingExample
 from train.self_play import play_game
 from train.trainer import Trainer
 
+from core.actions import get_total_action_count
 from core.state import get_layout
 
 # Computed layout constants for 3-player tests (single source of truth)
 _L3 = get_layout(3)
 _VIS = _L3.visible_size
-_ACT = 181 + 3 * 15  # action_dim for 3 players
+_ACT = get_total_action_count(3)
 
 
 # ---------------------------------------------------------------------------

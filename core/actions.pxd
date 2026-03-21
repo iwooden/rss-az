@@ -107,7 +107,8 @@ cdef ActionInfo decode_action(ActionLayout* layout, int action_idx) noexcept nog
 # Forced action check (returns single valid action if only one exists)
 cpdef tuple get_forced_action(GameState state)
 
-# Pre-allocated mask buffer (max size for 6 players = 271)
+# Pre-allocated mask buffer: 166 + (1 + 6) * AUCTION_CAP
+# Update if AUCTION_CAP or max player count changes.
 cdef float _mask_buffer[271]
 
 # Internal mask helpers (no numpy allocation)

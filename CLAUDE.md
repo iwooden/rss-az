@@ -70,7 +70,7 @@ Central data structure: single contiguous float32 numpy array.
 
 ### Actions (`core/actions.pyx`)
 
-Dynamic action space: `181 + (num_players * 15)` total actions (3p: 226, 6p: 271).
+Dynamic action space: `166 + (1 + num_players) * AUCTION_CAP` total actions. Use `get_total_action_count(num_players)` for the exact size.
 
 **Action layout by phase:**
 - INVEST: 1 pass + auction slots + 8 buy + 8 sell

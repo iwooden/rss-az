@@ -21,7 +21,9 @@ class MCTSConfig:
     action_dim: int = field(init=False)
 
     def __post_init__(self) -> None:
-        self.action_dim = 181 + self.num_players * 15
+        from core.actions import get_total_action_count
+
+        self.action_dim = get_total_action_count(self.num_players)
         self.validate()
 
     def validate(self) -> None:
@@ -159,9 +161,10 @@ class TrainingConfig:
     visible_size: int = field(init=False)
 
     def __post_init__(self) -> None:
-        self.action_dim = 181 + self.num_players * 15
-
+        from core.actions import get_total_action_count
         from core.state import get_layout
+
+        self.action_dim = get_total_action_count(self.num_players)
 
         self.visible_size = get_layout(self.num_players).visible_size
         self.validate()

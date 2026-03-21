@@ -3,11 +3,7 @@
 Action vector implementation.
 
 Defines the action space for the neural network output layer:
-- Dynamic action count based on player count: 181 + (num_players * 15)
-  - 3 players: 226 actions
-  - 4 players: 241 actions
-  - 5 players: 256 actions
-  - 6 players: 271 actions
+- Dynamic action count based on player count (see get_total_actions_for_players)
 - Valid action mask generation
 - Action decoding (index -> ActionInfo)
 """
@@ -48,7 +44,8 @@ from entities.corp cimport (
 from entities.turn cimport TurnState
 from entities.turn import TURN
 
-# Maximum action count (6 players = 181 + 90 = 271)
+# Maximum action count (6 players): 166 + (1 + 6) * AUCTION_CAP
+# Update this if AUCTION_CAP or max player count changes.
 DEF MAX_ACTION_COUNT = 271
 
 # Module-level mask buffer (pre-allocated, cleared before each use)
@@ -62,18 +59,11 @@ cdef int get_total_actions_for_players(int num_players) noexcept nogil:
     """
     Calculate total action count for a given player count.
 
-    Layout:
-    - INVEST: 1 + (num_players * 15) + 8 + 8 = 17 + (num_players * 15)
-    - BID: 15
-    - ACQUISITION: 54
-    - CLOSING: 2
-    - DIVIDENDS: 26
-    - ISSUE: 2
-    - IPO: 65
-
-    Total = 181 + (num_players * 15)
+    166 fixed non-auction actions + (1 + num_players) * AUCTION_CAP
+    The +1 accounts for BID phase raise actions (AUCTION_CAP - 1 raises + 1 leave).
     """
-    return 181 + (num_players * AUCTION_CAP)
+    # 166 = pass(1) + buy(8) + sell(8) + leave(1) + acq(54) + close(2) + div(26) + issue(2) + ipo(65)
+    return 166 + (1 + num_players) * AUCTION_CAP
 
 
 cdef ActionLayout compute_action_layout(int num_players) noexcept nogil:
@@ -574,7 +564,7 @@ cpdef object get_valid_action_mask(GameState state):
     - 1.0 = valid action
     - 0.0 = invalid action
 
-    Size depends on player count: 181 + (num_players * 15)
+    Size depends on player count (see get_total_action_count).
     """
     _fill_action_mask(state)
 

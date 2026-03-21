@@ -2,7 +2,7 @@
 
 This module implements a residual MLP architecture sized around ~26M parameters:
 - Input (visible state): 1575 floats (3-player)
-- Policy output: 226 logits (all actions for 3-player layout)
+- Policy output: action logits (see get_total_action_count for sizing)
 - Value output: 3 scalars in [-1, 1] (per-player expected outcomes via tanh)
 
 The value head outputs per-player expected outcomes [v_active, v_next, v_next_next],
@@ -26,7 +26,7 @@ class RSSModelConfig:
     """Configuration for the residual MLP trunk and heads."""
 
     input_dim: int = 1549  # get_layout(3).visible_size; always pass explicitly
-    action_dim: int = 226
+    action_dim: int = 226  # get_total_action_count(3); always pass explicitly
     value_dim: int = 3  # Per-player expected outcomes: [v_active, v_next, v_next_next]
     hidden_dim: int = 768
     num_blocks: int = 10
@@ -134,11 +134,12 @@ def count_parameters(model: nn.Module) -> int:
 
 
 if __name__ == "__main__":
+    from core.actions import get_total_action_count
     from core.state import get_layout
     _layout = get_layout(3)
     cfg = RSSModelConfig(
         input_dim=_layout.visible_size,
-        action_dim=181 + 3 * 15,
+        action_dim=get_total_action_count(3),
         value_dim=3,
         hidden_dim=768,
         num_blocks=10,
