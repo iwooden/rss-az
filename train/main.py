@@ -199,11 +199,18 @@ def _capture_rng_state(master_rng: np.random.Generator) -> dict[str, object]:
 def _restore_rng_state(
     master_rng: np.random.Generator, state: dict[str, object],
 ) -> None:
-    """Restore RNG states from a checkpoint."""
+    """Restore RNG states from a checkpoint.
+
+    The checkpoint may have been loaded with map_location=cuda, which moves
+    the RNG state tensors to GPU. torch.set_rng_state requires CPU ByteTensors,
+    so we explicitly move them back.
+    """
     master_rng.bit_generator.state = state["numpy"]  # type: ignore[assignment]
-    torch.set_rng_state(state["torch_cpu"])  # type: ignore[arg-type]
+    torch.set_rng_state(state["torch_cpu"].cpu().byte())  # type: ignore[union-attr]
     if "torch_cuda" in state and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(state["torch_cuda"])  # type: ignore[arg-type]
+        torch.cuda.set_rng_state_all(  # type: ignore[arg-type]
+            [s.cpu().byte() for s in state["torch_cuda"]]  # type: ignore[union-attr]
+        )
 
 
 def _start_shutdown_listener() -> threading.Event:
