@@ -476,6 +476,46 @@ class TestCheckpoint:
         assert trainer2.global_step == original_step + 1
         assert np.isfinite(losses["total_loss"])
 
+    def test_checkpoint_preserves_rng_state(
+        self,
+        small_model: RSSAlphaZeroNet,
+        tiny_config: TrainingConfig,
+        tmp_path: Path,
+    ) -> None:
+        """RNG state should round-trip through checkpoint save/load."""
+        from train.main import _capture_rng_state, _restore_rng_state
+
+        # Advance the RNG so it's not at initial state
+        rng = np.random.default_rng(42)
+        for _ in range(100):
+            rng.integers(0, 2**31)
+
+        # Capture state and generate reference values
+        rng_state = _capture_rng_state(rng)
+        expected = [int(rng.integers(0, 2**31)) for _ in range(10)]
+
+        # Save checkpoint with RNG state
+        cp_path = tmp_path / "rng_test.pt"
+        save_checkpoint(
+            cp_path,
+            epoch=0,
+            model=small_model,
+            trainer_state=Trainer(small_model, tiny_config, torch.device("cpu")).state_dict(),
+            config=tiny_config,
+            metrics={},
+            buffer_stats={"size": 0, "capacity": 1000},
+            rng_state=rng_state,
+        )
+
+        # Load and restore into fresh RNG
+        cp = load_checkpoint(cp_path, torch.device("cpu"))
+        rng2 = np.random.default_rng(0)  # different seed
+        _restore_rng_state(rng2, cp["rng_state"])  # type: ignore[arg-type]
+
+        # Should produce identical sequence
+        actual = [int(rng2.integers(0, 2**31)) for _ in range(10)]
+        assert actual == expected
+
     def test_cleanup(self, tmp_path: Path) -> None:
         for epoch in range(1, 8):
             (tmp_path / f"checkpoint_epoch_{epoch:04d}.pt").touch()

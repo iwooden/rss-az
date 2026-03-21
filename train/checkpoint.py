@@ -27,20 +27,21 @@ def save_checkpoint(
     config: TrainingConfig,
     metrics: dict[str, float],
     buffer_stats: dict[str, int],
+    rng_state: dict[str, object] | None = None,
 ) -> None:
     """Save checkpoint via torch.save. Creates parent dirs if needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "epoch": epoch,
-            "model_state_dict": _unwrap_state_dict(model.state_dict()),
-            "trainer_state": trainer_state,
-            "config_json": config.to_json(),
-            "metrics": metrics,
-            "buffer_stats": buffer_stats,
-        },
-        path,
-    )
+    data: dict[str, object] = {
+        "epoch": epoch,
+        "model_state_dict": _unwrap_state_dict(model.state_dict()),
+        "trainer_state": trainer_state,
+        "config_json": config.to_json(),
+        "metrics": metrics,
+        "buffer_stats": buffer_stats,
+    }
+    if rng_state is not None:
+        data["rng_state"] = rng_state
+    torch.save(data, path)
 
 
 def load_checkpoint(path: Path, device: torch.device) -> dict[str, object]:

@@ -183,6 +183,27 @@ def _apply_overrides(
             setattr(config, field, val)
 
 
+def _capture_rng_state(master_rng: np.random.Generator) -> dict[str, object]:
+    """Capture all RNG states for checkpoint reproducibility."""
+    state: dict[str, object] = {
+        "numpy": master_rng.bit_generator.state,
+        "torch_cpu": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["torch_cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def _restore_rng_state(
+    master_rng: np.random.Generator, state: dict[str, object],
+) -> None:
+    """Restore RNG states from a checkpoint."""
+    master_rng.bit_generator.state = state["numpy"]  # type: ignore[assignment]
+    torch.set_rng_state(state["torch_cpu"])  # type: ignore[arg-type]
+    if "torch_cuda" in state and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["torch_cuda"])  # type: ignore[arg-type]
+
+
 def _start_shutdown_listener() -> threading.Event:
     """Start a background thread that listens for 'q' + Enter on stdin.
 
@@ -319,6 +340,11 @@ def main() -> None:
     torch.manual_seed(config.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(config.seed)
+
+    # Restore RNG state from checkpoint (after base init, before any draws)
+    if cp is not None and "rng_state" in cp:
+        _restore_rng_state(master_rng, cp["rng_state"])  # type: ignore[arg-type]
+        print("  Restored RNG state from checkpoint")
 
     # --- Model ---
     model = create_model(
@@ -617,6 +643,7 @@ def main() -> None:
                         "size": len(buffer),
                         "capacity": config.buffer_capacity,
                     },
+                    rng_state=_capture_rng_state(master_rng),
                 )
 
                 # Save replay buffer
@@ -753,7 +780,9 @@ def main() -> None:
                     config=config,
                     metrics=avg_losses,
                     buffer_stats={"size": len(buffer), "capacity": config.buffer_capacity},
+                    rng_state=_capture_rng_state(master_rng),
                 )
+                buffer.save(buffer_dir)
                 cleanup_checkpoints(Path(config.checkpoint_dir), config.keep_last_n)
                 checkpoint_path = str(cp_path)
 
@@ -796,7 +825,9 @@ def main() -> None:
                 config,
                 avg_losses,
                 {"size": len(buffer), "capacity": config.buffer_capacity},
+                rng_state=_capture_rng_state(master_rng),
             )
+            buffer.save(buffer_dir)
 
         print("\nTraining complete.")
 
