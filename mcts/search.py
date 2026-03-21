@@ -298,9 +298,11 @@ def run_search(
                 continue
 
             # Non-terminal leaf: queue for batch evaluation.
-            # If all frontier nodes below a subtree are locked, selection
-            # lands on an already-pending leaf. Stop filling this batch —
-            # once current leaves are evaluated, new frontier opens up.
+            # If selection lands on an already-pending leaf, stop filling
+            # this batch. `continue` would loop forever: neither sim nor
+            # visit counts were updated, so PUCT would make identical
+            # choices. Instead, evaluate the partial batch (unlocking
+            # leaves), then the next iteration has fresh frontier.
             nid = id(node)
             if nid in pending_ids:
                 break
