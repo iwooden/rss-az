@@ -173,17 +173,14 @@ def _eval_server_serve(
     # Optionally compile the model (per-process compilation)
     if not no_compile and use_cuda:
         model = torch.compile(model, dynamic=True)  # type: ignore[assignment]
-        # Warmup: compile kernels before serving real requests
+        # Single warmup pass — dynamic=True uses symbolic shapes so one
+        # compilation covers all batch sizes.
         model.eval()
-        vis = shared_bufs.visible_size
-        max_warmup = max(1, shared_bufs.num_workers * shared_bufs.batch_size)
         with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
-            for warmup_bs in (1, max_warmup):
-                dummy = torch.randn(warmup_bs, vis, device=device)
-                model(dummy)
-                del dummy
-        if use_cuda:
-            torch.cuda.synchronize()
+            dummy = torch.randn(1, shared_bufs.visible_size, device=device)
+            model(dummy)
+            del dummy
+        torch.cuda.synchronize()
 
     # Signal that this server is ready to serve requests
     ready_event.set()

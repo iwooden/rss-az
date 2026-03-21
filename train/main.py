@@ -449,13 +449,13 @@ def main() -> None:
         if not args.no_compile and device.type == "cuda":
             print("Compiling model with torch.compile (main process)...")
             model = cast(torch.nn.Module, torch.compile(model, dynamic=True))
+            # Single warmup pass — dynamic=True uses symbolic shapes so one
+            # compilation covers all batch sizes.
             model.train()
-            max_warmup = max(1, config.num_workers * config.search_batch_size)
             with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
-                for warmup_bs in (1, max_warmup):
-                    dummy = torch.randn(warmup_bs, config.visible_size, device=device)
-                    model(dummy)
-                    del dummy
+                dummy = torch.randn(1, config.visible_size, device=device)
+                model(dummy)
+                del dummy
             torch.cuda.synchronize()
             print("  Model compiled.")
 
@@ -483,10 +483,9 @@ def main() -> None:
             model = cast(torch.nn.Module, torch.compile(model, dynamic=True))
             model.train()
             with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
-                for warmup_bs in (1, 1):
-                    dummy = torch.randn(warmup_bs, config.visible_size, device=device)
-                    model(dummy)
-                    del dummy
+                dummy = torch.randn(1, config.visible_size, device=device)
+                model(dummy)
+                del dummy
             torch.cuda.synchronize()
             print("  Model compiled.")
 
