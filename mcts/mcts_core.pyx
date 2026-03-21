@@ -331,6 +331,7 @@ def masked_softmax(const float[:] logits, const float[:] mask):
         Probability distribution over actions, shape (action_dim,).
     """
     cdef int n = logits.shape[0]
+    assert mask.shape[0] == n, f"logits length ({n}) != mask length ({mask.shape[0]})"
     result = np.empty(n, dtype=np.float32)
     cdef float[:] out = result
     _masked_softmax(&out[0], &logits[0], &mask[0], n)

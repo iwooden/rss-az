@@ -198,6 +198,24 @@ class NNEvaluator:
         self._autocast_dtype = torch.bfloat16 if device.type == "cuda" else None
         self.model.eval()
 
+        # Validate model output dims match expected action space and num_players.
+        # Catches misconfiguration before it reaches boundscheck=False Cython code.
+        from core.actions import get_total_action_count
+        expected_action_dim = get_total_action_count(num_players)
+        cfg = getattr(model, "cfg", None)
+        if cfg is not None:
+            if getattr(cfg, "action_dim", expected_action_dim) != expected_action_dim:
+                raise ValueError(
+                    f"Model action_dim ({cfg.action_dim}) does not match "
+                    f"expected action space for {num_players} players "
+                    f"({expected_action_dim})"
+                )
+            if getattr(cfg, "value_dim", num_players) != num_players:
+                raise ValueError(
+                    f"Model value_dim ({cfg.value_dim}) does not match "
+                    f"num_players ({num_players})"
+                )
+
     @torch.no_grad()
     def evaluate(self, state: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Evaluate a game state with the neural network.
