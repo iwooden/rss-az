@@ -13,6 +13,7 @@ Run the full analysis pipeline on the latest checkpoint with 10 self-play games:
 # 2. Reuse collected states for remaining analyses
 .venv/bin/python -m interp.norm_check --load-data interp/data/states.npz
 .venv/bin/python -m interp.decision_attr --load-data interp/data/states.npz --no-open
+.venv/bin/python -m interp.acig --load-data interp/data/states.npz --no-open
 .venv/bin/python -m interp.arch_analysis --load-data interp/data/states.npz --no-open
 .venv/bin/python -m interp.probing --load-data interp/data/states.npz
 .venv/bin/python -m interp.tb_summary
@@ -71,6 +72,33 @@ All scripts auto-detect the latest checkpoint. Use `--checkpoint path/to/file.pt
 - `--top-k N` — number of decisions to analyze (default 15)
 - `--margin-threshold F` — max probability gap between top-2 actions (default 0.15)
 - `--n-steps N` — IntegratedGradients integration steps (default 50, higher = more precise)
+
+---
+
+## 2b. Action-Conditioned IG (`acig.py`)
+
+**Question:** What features drive each *type* of action? Where ablation groups by phase and decision attribution examines individual uncertain states, ACIG groups by the action the model actually chose — revealing the conditional logic within each phase.
+
+**Method:** Classifies all states by their argmax action, groups into action-type buckets, samples from each bucket, then runs IntegratedGradients targeting the chosen action's logit. Signed means are preserved (positive = feature pushes toward this action). A "discriminative features" table highlights features with highest variance across action types — these are the conditional gates.
+
+**Output:** Console summary + HTML report with per-phase heatmaps and discriminative feature tables.
+
+```bash
+.venv/bin/python -m interp.acig --load-data interp/data/states.npz
+# Writes: interp/data/acig_epoch<N>.html
+# ~3s on GPU with default settings (50 samples/bucket, 30 IG steps)
+```
+
+**What to look for:**
+- **Action-specific feature spikes** — `player:cash` pushing toward sell but away from auction confirms the model gates on affordability
+- **Discriminative features** (high std across action types) — these are the features the policy head uses to distinguish actions. If `co:adj_incomes` discriminates buy vs sell, the model is correctly reasoning about income potential
+- **Surprising feature usage** — a feature with high attribution for an unexpected action type suggests learned correlations worth investigating
+- **Phase-specific sub-groups** — dividends are split into low/mid/high buckets to reveal how dividend magnitude decisions differ
+
+**Key options:**
+- `--samples-per-bucket N` — states sampled per action bucket (default 50, more = stabler)
+- `--n-steps N` — IG integration steps (default 30, lower than decision_attr since averaging)
+- `--min-bucket-size N` — skip buckets with fewer states (default 5)
 
 ---
 
