@@ -223,7 +223,7 @@ class TestRaiseBid:
         # Check each raise bid offset
         any_valid = False
         any_invalid = False
-        for bid_offset in range(19):  # AUCTION_CAP - 1
+        for bid_offset in range(14):  # AUCTION_CAP - 1
             new_bid = face_value + bid_offset + 1
             action_idx = layout['raise_bid_base'] + bid_offset
             if new_bid > current_bid and new_bid <= affordable_limit:
@@ -256,7 +256,7 @@ class TestRaiseBid:
         assert mask[layout['leave_auction']] == 1.0
 
         # All raise options must be masked out
-        for bid_offset in range(19):
+        for bid_offset in range(14):
             action_idx = layout['raise_bid_base'] + bid_offset
             assert mask[action_idx] == 0.0, \
                 f"Raise at offset {bid_offset} should be masked (player has no cash)"

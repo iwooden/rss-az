@@ -78,11 +78,11 @@ def search_root_deep(game_state, evaluator):
 class TestMCTSConfig:
     def test_action_dim_3p(self):
         cfg = MCTSConfig(num_players=3)
-        assert cfg.action_dim == 246  # 186 + 3*20
+        assert cfg.action_dim == 226  # 181 + 3*15
 
     def test_action_dim_6p(self):
         cfg = MCTSConfig(num_players=6)
-        assert cfg.action_dim == 306  # 186 + 6*20
+        assert cfg.action_dim == 271  # 181 + 6*15
 
     def test_defaults(self):
         cfg = MCTSConfig()
@@ -382,8 +382,8 @@ class TestMCTSNode:
     def test_expand_sets_up_arrays(self):
         """expand() creates per-action arrays but no child nodes."""
         node = MCTSNode(num_players=3)
-        priors = np.zeros(246, dtype=np.float32)
-        mask = np.zeros(246, dtype=np.float32)
+        priors = np.zeros(226, dtype=np.float32)
+        mask = np.zeros(226, dtype=np.float32)
         priors[0] = 0.6
         priors[5] = 0.3
         priors[10] = 0.1
@@ -777,9 +777,9 @@ class TestMCTSSearch:
 class TestNNEvaluator:
     def test_evaluate_shapes(self, game_state, evaluator):
         policy, values, mask = evaluator.evaluate(game_state)
-        assert policy.shape == (246,)
+        assert policy.shape == (226,)
         assert values.shape == (3,)
-        assert mask.shape == (246,)
+        assert mask.shape == (226,)
 
     def test_policy_is_valid_distribution(self, game_state, evaluator):
         policy, _, _ = evaluator.evaluate(game_state)
@@ -841,9 +841,9 @@ class TestNNEvaluator:
 
         assert len(results) == 3
         for policy, values, mask in results:
-            assert policy.shape == (246,)
+            assert policy.shape == (226,)
             assert values.shape == (3,)
-            assert mask.shape == (246,)
+            assert mask.shape == (226,)
             assert policy.sum() == pytest.approx(1.0, abs=1e-5)
             assert (values >= -1.0).all()
             assert (values <= 1.0).all()
@@ -1525,9 +1525,9 @@ class TestEvalCache:
         """Stored entries should be retrievable by the same state array."""
         from mcts.eval_cache import EvalCache
 
-        cache = EvalCache(action_dim=246, num_players=3, initial_capacity=16)
+        cache = EvalCache(action_dim=226, num_players=3, initial_capacity=16)
         state = np.random.default_rng(42).random(4207).astype(np.float32)
-        policy = np.random.default_rng(43).random(246).astype(np.float32)
+        policy = np.random.default_rng(43).random(226).astype(np.float32)
         values = np.array([0.5, -0.3, 0.1], dtype=np.float32)
 
         assert cache.lookup(state) is None
@@ -1544,10 +1544,10 @@ class TestEvalCache:
         from mcts.eval_cache import EvalCache
 
         rng = np.random.default_rng(42)
-        cache = EvalCache(action_dim=246, num_players=3)
+        cache = EvalCache(action_dim=226, num_players=3)
         state1 = rng.random(4207).astype(np.float32)
         state2 = rng.random(4207).astype(np.float32)
-        policy = rng.random(246).astype(np.float32)
+        policy = rng.random(226).astype(np.float32)
         values = np.zeros(3, dtype=np.float32)
 
         cache.store(state1, policy, values)
@@ -1557,9 +1557,9 @@ class TestEvalCache:
         """Storing the same state twice should not add a second entry."""
         from mcts.eval_cache import EvalCache
 
-        cache = EvalCache(action_dim=246, num_players=3)
+        cache = EvalCache(action_dim=226, num_players=3)
         state = np.ones(4207, dtype=np.float32)
-        policy = np.zeros(246, dtype=np.float32)
+        policy = np.zeros(226, dtype=np.float32)
         values = np.zeros(3, dtype=np.float32)
 
         cache.store(state, policy, values)
@@ -1570,9 +1570,9 @@ class TestEvalCache:
         """Clear should remove all entries but keep capacity."""
         from mcts.eval_cache import EvalCache
 
-        cache = EvalCache(action_dim=246, num_players=3, initial_capacity=16)
+        cache = EvalCache(action_dim=226, num_players=3, initial_capacity=16)
         state = np.ones(4207, dtype=np.float32)
-        cache.store(state, np.zeros(246, dtype=np.float32), np.zeros(3, dtype=np.float32))
+        cache.store(state, np.zeros(226, dtype=np.float32), np.zeros(3, dtype=np.float32))
         assert cache.size == 1
 
         cache.clear()
@@ -1585,12 +1585,12 @@ class TestEvalCache:
         """Cache should double capacity when full."""
         from mcts.eval_cache import EvalCache
 
-        cache = EvalCache(action_dim=246, num_players=3, initial_capacity=4)
+        cache = EvalCache(action_dim=226, num_players=3, initial_capacity=4)
         rng = np.random.default_rng(42)
 
         for _ in range(8):  # Exceeds initial capacity of 4
             state = rng.random(4207).astype(np.float32)
-            policy = rng.random(246).astype(np.float32)
+            policy = rng.random(226).astype(np.float32)
             values = rng.random(3).astype(np.float32)
             cache.store(state, policy, values)
 
@@ -1601,14 +1601,14 @@ class TestEvalCache:
         """Growing should preserve all previously stored entries."""
         from mcts.eval_cache import EvalCache
 
-        cache = EvalCache(action_dim=246, num_players=3, initial_capacity=2)
+        cache = EvalCache(action_dim=226, num_players=3, initial_capacity=2)
         rng = np.random.default_rng(42)
         states = []
         policies = []
 
         for i in range(5):  # Forces two doublings: 2→4→8
             state = rng.random(4207).astype(np.float32)
-            policy = rng.random(246).astype(np.float32)
+            policy = rng.random(226).astype(np.float32)
             values = np.array([float(i), 0.0, 0.0], dtype=np.float32)
             states.append(state)
             policies.append(policy)

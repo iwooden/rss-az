@@ -32,7 +32,7 @@ from core.state import get_layout
 # Computed layout constants for 3-player tests (single source of truth)
 _L3 = get_layout(3)
 _VIS = _L3.visible_size
-_ACT = 186 + 3 * 20  # action_dim for 3 players
+_ACT = 181 + 3 * 15  # action_dim for 3 players
 
 
 # ---------------------------------------------------------------------------

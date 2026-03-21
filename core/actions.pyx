@@ -3,11 +3,11 @@
 Action vector implementation.
 
 Defines the action space for the neural network output layer:
-- Dynamic action count based on player count: 186 + (num_players * 20)
-  - 3 players: 246 actions
-  - 4 players: 266 actions
-  - 5 players: 286 actions
-  - 6 players: 306 actions
+- Dynamic action count based on player count: 181 + (num_players * 15)
+  - 3 players: 226 actions
+  - 4 players: 241 actions
+  - 5 players: 256 actions
+  - 6 players: 271 actions
 - Valid action mask generation
 - Action decoding (index -> ActionInfo)
 """
@@ -48,8 +48,8 @@ from entities.corp cimport (
 from entities.turn cimport TurnState
 from entities.turn import TURN
 
-# Maximum action count (6 players = 186 + 120 = 306)
-DEF MAX_ACTION_COUNT = 306
+# Maximum action count (6 players = 181 + 90 = 271)
+DEF MAX_ACTION_COUNT = 271
 
 # Module-level mask buffer (pre-allocated, cleared before each use)
 # NOTE: Not thread-safe. For parallel execution, use multiprocessing (separate
@@ -63,17 +63,17 @@ cdef int get_total_actions_for_players(int num_players) noexcept nogil:
     Calculate total action count for a given player count.
 
     Layout:
-    - INVEST: 1 + (num_players * 20) + 8 + 8 = 17 + (num_players * 20)
-    - BID: 20
+    - INVEST: 1 + (num_players * 15) + 8 + 8 = 17 + (num_players * 15)
+    - BID: 15
     - ACQUISITION: 54
     - CLOSING: 2
     - DIVIDENDS: 26
     - ISSUE: 2
     - IPO: 65
 
-    Total = 186 + (num_players * 20)
+    Total = 181 + (num_players * 15)
     """
-    return 186 + (num_players * AUCTION_CAP)
+    return 181 + (num_players * AUCTION_CAP)
 
 
 cdef ActionLayout compute_action_layout(int num_players) noexcept nogil:
@@ -89,22 +89,22 @@ cdef ActionLayout compute_action_layout(int num_players) noexcept nogil:
     layout.pass_invest = offset
     offset += 1
     layout.auction_base = offset  # slot * AUCTION_CAP + bid_offset
-    offset += auction_slots * AUCTION_CAP  # num_players * 20
+    offset += auction_slots * AUCTION_CAP  # num_players * 15
     layout.buy_share_base = offset  # +corp_id
     offset += GameConstants.NUM_CORPS  # 8
     layout.sell_share_base = offset  # +corp_id
     offset += GameConstants.NUM_CORPS  # 8
-    # Total invest: 1 + (num_players * 20) + 8 + 8
+    # Total invest: 1 + (num_players * 15) + 8 + 8
 
-    # BID phase: 137-156 (20 actions)
+    # BID phase (15 actions)
     layout.bid_start = offset
     layout.leave_auction = offset
     offset += 1
-    layout.raise_bid_base = offset  # +bid_offset (0-18)
-    offset += AUCTION_CAP - 1  # 19
-    # Total bid: 1 + 19 = 20
+    layout.raise_bid_base = offset  # +bid_offset (0-13)
+    offset += AUCTION_CAP - 1  # 14
+    # Total bid: 1 + 14 = 15
 
-    # ACQUISITION phase: 157-210 (54 actions)
+    # ACQUISITION phase (54 actions)
     layout.acquisition_start = offset
     layout.acq_price_base = offset  # +price_offset (0-50)
     offset += ACQ_PRICE_RANGE  # 51
@@ -116,7 +116,7 @@ cdef ActionLayout compute_action_layout(int num_players) noexcept nogil:
     offset += 1
     # Total acquisition: 51 + 1 + 1 + 1 = 54
 
-    # CLOSING phase: 211-212 (2 actions)
+    # CLOSING phase (2 actions)
     layout.closing_start = offset
     layout.close_action = offset
     offset += 1
@@ -124,13 +124,13 @@ cdef ActionLayout compute_action_layout(int num_players) noexcept nogil:
     offset += 1
     # Total closing: 2
 
-    # DIVIDENDS phase: 213-238 (26 actions)
+    # DIVIDENDS phase (26 actions)
     layout.dividends_start = offset
     layout.dividend_base = offset  # +amount (0-25)
     offset += MAX_DIVIDEND
     # Total dividends: 26
 
-    # ISSUE phase: 239-240 (2 actions)
+    # ISSUE phase (2 actions)
     layout.issue_start = offset
     layout.issue_pass = offset
     offset += 1
@@ -138,7 +138,7 @@ cdef ActionLayout compute_action_layout(int num_players) noexcept nogil:
     offset += 1
     # Total issue: 2
 
-    # IPO phase: 241-305 (65 actions)
+    # IPO phase (65 actions)
     layout.ipo_start = offset
     layout.ipo_pass = offset
     offset += 1
@@ -196,7 +196,7 @@ cdef ActionInfo decode_action(ActionLayout* layout, int action_idx) noexcept nog
             info.action_type = ACTION_LEAVE_AUCTION
         else:
             info.action_type = ACTION_RAISE_BID
-            info.amount = action_idx - layout.raise_bid_base  # 0-18 -> bid face+1 to face+19
+            info.amount = action_idx - layout.raise_bid_base  # 0-13 -> bid face+1 to face+14
         return info
 
     # ACQUISITION phase
@@ -352,7 +352,7 @@ cdef void _fill_bid_mask(GameState state, ActionLayout* layout, float* mask, Pla
 
     face_value = get_company_face_value(company_id)
 
-    # Raise bid: offset 0-18 represents bid face+1 to face+19
+    # Raise bid: offset 0-13 represents bid face+1 to face+14
     # Must beat current bid
     for bid_offset in range(AUCTION_CAP - 1):
         new_bid = face_value + bid_offset + 1  # +1 because min raise is face+1
@@ -574,7 +574,7 @@ cpdef object get_valid_action_mask(GameState state):
     - 1.0 = valid action
     - 0.0 = invalid action
 
-    Size depends on player count: 186 + (num_players * 20)
+    Size depends on player count: 181 + (num_players * 15)
     """
     _fill_action_mask(state)
 

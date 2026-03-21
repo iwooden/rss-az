@@ -64,7 +64,7 @@ SKIP_ACTIONS = {
     'redo',
 }
 
-AUCTION_CAP = 20  # Maximum bid offset above face value (per slot)
+AUCTION_CAP = 15  # Maximum bid offset above face value (per slot)
 
 
 # =============================================================================

@@ -106,7 +106,7 @@ cdef int apply_bid_action(GameState state, ActionInfo* info) noexcept:
         company_id = turn_module.TURN.get_auction_company(state)
 
         # Calculate new bid: face value + info.amount + 1
-        # info.amount is 0-18, representing bids from face+1 to face+19
+        # info.amount is 0-13, representing bids from face+1 to face+14
         new_bid = get_company_face_value(company_id) + info.amount + 1
 
         # Get current player

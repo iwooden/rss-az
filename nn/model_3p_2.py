@@ -34,7 +34,7 @@ class RSSModelConfig2:
     """Configuration for the v2 residual MLP trunk and heads."""
 
     input_dim: int = 1549  # get_layout(3).visible_size; always pass explicitly
-    action_dim: int = 246
+    action_dim: int = 226
     value_dim: int = 3
     hidden_dim: int = 384
     num_blocks: int = 10
@@ -141,7 +141,7 @@ def count_parameters(model: nn.Module) -> int:
 if __name__ == "__main__":
     from core.state import get_layout
     _layout = get_layout(3)
-    cfg = RSSModelConfig2(input_dim=_layout.visible_size, action_dim=186 + 3 * 20)
+    cfg = RSSModelConfig2(input_dim=_layout.visible_size, action_dim=181 + 3 * 15)
     model = RSSAlphaZeroNet2(cfg)
     total = count_parameters(model)
     print(f"Trainable parameters: {total:,}")

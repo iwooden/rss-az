@@ -345,12 +345,12 @@ Action space size varies by player count:
 
 | Players | Auction Actions | Total Actions |
 |---------|-----------------|---------------|
-| 3       | 60 (3 x 20)     | 246           |
-| 4       | 80 (4 x 20)     | 266           |
-| 5       | 100 (5 x 20)    | 286           |
-| 6       | 120 (6 x 20)    | 306           |
+| 3       | 45 (3 x 15)     | 226           |
+| 4       | 60 (4 x 15)     | 241           |
+| 5       | 75 (5 x 15)     | 256           |
+| 6       | 90 (6 x 15)     | 271           |
 
-Formula: `186 + (num_players * 20)`
+Formula: `181 + (num_players * 15)`
 
 Use `get_total_action_count(num_players)` for the exact size.
 
@@ -358,7 +358,7 @@ Use `get_total_action_count(num_players)` for the exact size.
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `AUCTION_CAP` | 20 | Max bid offset over face value |
+| `AUCTION_CAP` | 15 | Max bid offset over face value |
 | `MAX_PAR_SLOTS` | 8 | Max valid par prices per star tier |
 | `ACQ_PRICE_RANGE` | 51 | Price offsets 0-50 |
 | `MAX_DIVIDEND` | 26 | Dividend amounts 0-25 |
@@ -370,33 +370,33 @@ Use `get_total_action_count(num_players)` for the exact size.
 
 | Phase | Actions | Count | Indices |
 |-------|---------|-------|---------|
-| **INVEST** | pass, auction[3x20], buy[8], sell[8] | 77 | 0-76 |
-| **BID_IN_AUCTION** | leave, raise_bid[19] | 20 | 77-96 |
-| **ACQUISITION** | price[51], fi_high, fi_face, pass | 54 | 97-150 |
-| **CLOSING** | close, pass | 2 | 151-152 |
-| **DIVIDENDS** | dividend[26] | 26 | 153-178 |
-| **ISSUE_SHARES** | pass, issue | 2 | 179-180 |
-| **IPO** | pass, ipo[8x8] | 65 | 181-245 |
+| **INVEST** | pass, auction[3x15], buy[8], sell[8] | 62 | 0-61 |
+| **BID_IN_AUCTION** | leave, raise_bid[14] | 15 | 62-76 |
+| **ACQUISITION** | price[51], fi_high, fi_face, pass | 54 | 77-130 |
+| **CLOSING** | close, pass | 2 | 131-132 |
+| **DIVIDENDS** | dividend[26] | 26 | 133-158 |
+| **ISSUE_SHARES** | pass, issue | 2 | 159-160 |
+| **IPO** | pass, ipo[8x8] | 65 | 161-225 |
 
 ### Detailed Action Indices (for N players)
 
-#### INVEST Phase (0 to 16 + N*20)
+#### INVEST Phase (0 to 16 + N*15)
 
 | Index | Action | Decoding |
 |-------|--------|----------|
 | 0 | Pass | - |
-| 1 to N*20 | Auction | `slot = (idx-1) // 20`, `bid_offset = (idx-1) % 20` |
-| N*20+1 to N*20+8 | Buy Share | `corp_id = idx - (N*20+1)` |
-| N*20+9 to N*20+16 | Sell Share | `corp_id = idx - (N*20+9)` |
+| 1 to N*15 | Auction | `slot = (idx-1) // 15`, `bid_offset = (idx-1) % 15` |
+| N*15+1 to N*15+8 | Buy Share | `corp_id = idx - (N*15+1)` |
+| N*15+9 to N*15+16 | Sell Share | `corp_id = idx - (N*15+9)` |
 
 **Auction slot mapping:** Slot N maps to the Nth available-for-auction company (ordered by company_id). Use `get_auction_company_for_slot(state, slot)` to resolve.
 
-#### BID_IN_AUCTION Phase (+20 actions)
+#### BID_IN_AUCTION Phase (+15 actions)
 
 | Index | Action | Decoding |
 |-------|--------|----------|
 | +0 | Leave Auction | - |
-| +1 to +19 | Raise Bid | `bid_offset = idx - base - 1` (new bid = face + offset + 1) |
+| +1 to +14 | Raise Bid | `bid_offset = idx - base - 1` (new bid = face + offset + 1) |
 
 #### ACQUISITION Phase (+54 actions)
 
@@ -473,8 +473,8 @@ nn_input = state.get_nn_input()  # Shape: (visible_size,)
 print(f"Visible size: {state.visible_size}")
 
 # Action vector (size depends on player count)
-total_actions = get_total_action_count(3)  # 246 for 3 players
-mask = get_valid_action_mask(state)  # Shape: (246,)
+total_actions = get_total_action_count(3)  # 226 for 3 players
+mask = get_valid_action_mask(state)  # Shape: (226,)
 valid_actions = mask.nonzero()[0]
 
 # Decode an action

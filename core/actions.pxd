@@ -14,7 +14,7 @@ from core.state cimport GameState
 
 cdef enum:
     # Action space dimensions (game constants like NUM_CORPS are in data.pxd)
-    AUCTION_CAP = 20         # Max bid offset over face value
+    AUCTION_CAP = 15         # Max bid offset over face value
     MAX_PAR_SLOTS = 8        # Max valid par prices per star tier
     ACQ_PRICE_RANGE = 51     # 0-50 price offset
 
@@ -47,36 +47,36 @@ cdef struct ActionLayout:
     int total_size
     # Phase boundaries (start indices)
     int invest_start          # 0
-    int bid_start             # 137
-    int acquisition_start     # 157
-    int closing_start         # 211
-    int dividends_start       # 213
-    int issue_start           # 239
-    int ipo_start             # 241
+    int bid_start             # 107
+    int acquisition_start     # 122
+    int closing_start         # 176
+    int dividends_start       # 178
+    int issue_start           # 204
+    int ipo_start             # 206
     # INVEST sub-offsets
     int pass_invest           # 0
     int auction_base          # 1 (slot * AUCTION_CAP + bid_offset)
-    int buy_share_base        # 121 (+corp_id)
-    int sell_share_base       # 129 (+corp_id)
+    int buy_share_base        # 91 (+corp_id)
+    int sell_share_base       # 99 (+corp_id)
     # BID sub-offsets
-    int leave_auction         # 137
-    int raise_bid_base        # 138 (+bid_offset, 0-18 = new bid face+1 to face+19)
+    int leave_auction         # 107
+    int raise_bid_base        # 108 (+bid_offset, 0-13 = new bid face+1 to face+14)
     # ACQUISITION sub-offsets
-    int acq_price_base        # 157 (+price_offset 0-50)
-    int acq_fi_high           # 208
-    int acq_fi_face           # 209
-    int acq_pass              # 210
+    int acq_price_base        # 122 (+price_offset 0-50)
+    int acq_fi_high           # 173
+    int acq_fi_face           # 174
+    int acq_pass              # 175
     # CLOSING sub-offsets
-    int close_action          # 211
-    int close_pass            # 212
+    int close_action          # 176
+    int close_pass            # 177
     # DIVIDENDS sub-offsets
-    int dividend_base         # 213 (+amount 0-25)
+    int dividend_base         # 178 (+amount 0-25)
     # ISSUE sub-offsets
-    int issue_pass            # 239
-    int issue_action          # 240
+    int issue_pass            # 204
+    int issue_action          # 205
     # IPO sub-offsets
-    int ipo_pass              # 241
-    int ipo_base              # 242 (corp_id * MAX_PAR_SLOTS + par_slot)
+    int ipo_pass              # 206
+    int ipo_base              # 207 (corp_id * MAX_PAR_SLOTS + par_slot)
 
 
 # =============================================================================
@@ -107,8 +107,8 @@ cdef ActionInfo decode_action(ActionLayout* layout, int action_idx) noexcept nog
 # Forced action check (returns single valid action if only one exists)
 cpdef tuple get_forced_action(GameState state)
 
-# Pre-allocated mask buffer (max size for 6 players = 306)
-cdef float _mask_buffer[306]
+# Pre-allocated mask buffer (max size for 6 players = 271)
+cdef float _mask_buffer[271]
 
 # Internal mask helpers (no numpy allocation)
 cdef void _fill_action_mask(GameState state)

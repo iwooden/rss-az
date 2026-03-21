@@ -280,7 +280,7 @@ class TestStartAuction:
         cheapest_face = None
         cheapest_slot = None
         for slot in range(3):  # num_players auction slots
-            action_base = layout['auction_base'] + slot * 20  # AUCTION_CAP = 20
+            action_base = layout['auction_base'] + slot * 15  # AUCTION_CAP = 15
             # Check if slot has a company by looking at an initial mask
             initial_mask = get_valid_action_mask(state)
             if initial_mask[action_base] == 1.0:
@@ -317,8 +317,8 @@ class TestStartAuction:
         # Any company with higher face value should be fully masked
         for idx, (cid, fv) in enumerate(auction_companies):
             if fv > cheapest_face:
-                slot_base = layout['auction_base'] + idx * 20
-                for offset in range(20):
+                slot_base = layout['auction_base'] + idx * 15
+                for offset in range(15):
                     assert mask[slot_base + offset] == 0.0, \
                         f"Company {cid} (face={fv}) should be fully masked (cash={cheapest_face})"
 

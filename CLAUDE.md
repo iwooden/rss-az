@@ -70,11 +70,11 @@ Central data structure: single contiguous float32 numpy array.
 
 ### Actions (`core/actions.pyx`)
 
-Dynamic action space: `186 + (num_players * 20)` total actions (3p: 246, 6p: 306).
+Dynamic action space: `181 + (num_players * 15)` total actions (3p: 226, 6p: 271).
 
 **Action layout by phase:**
 - INVEST: 1 pass + auction slots + 8 buy + 8 sell
-- BID: 1 leave + 19 raise bid amounts
+- BID: 1 leave + 14 raise bid amounts
 - ACQUISITION: 51 price offsets + 2 FI actions + 1 pass
 - CLOSING: 1 close + 1 pass
 - DIVIDENDS: 26 dividend amounts
@@ -144,7 +144,7 @@ Instead of soft-Z or game outcome, we use **A0GB** (Willemsen et al., 2022): fol
 
 ### NN Model (`nn/model_3p_2.py`)
 
-Residual MLP (~5.2M params): Input 1549 → preprocessing (768→384) → 10 residual blocks (384-dim, pre-LN, GELU) → policy head (3 hidden layers → 246 logits) + value head (→ 3 tanh). Xavier init, zero-init residual fc2.
+Residual MLP (~5.2M params): Input 1549 → preprocessing (768→384) → 10 residual blocks (384-dim, pre-LN, GELU) → policy head (3 hidden layers → 226 logits) + value head (→ 3 tanh). Xavier init, zero-init residual fc2.
 
 ## Self-Play Training
 
