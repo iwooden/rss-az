@@ -537,11 +537,15 @@ def main() -> None:
             rank_maxs = [float("-inf")] * num_players
             total_shares = [0] * num_players
             total_companies = [0] * num_players
+            total_pres_share_values = [0.0] * num_players
+            total_avg_corp_price = 0.0
+            total_corps_in_receivership = 0
             game_profiles: list[GameProfileData] = []
 
             def _collect_record(record: object, game_idx: int) -> None:
                 nonlocal total_examples, total_moves, total_duration
                 nonlocal total_entropy, total_top1
+                nonlocal total_avg_corp_price, total_corps_in_receivership
                 buffer.add_examples(record.examples)  # type: ignore[union-attr]
                 total_examples += len(record.examples)  # type: ignore[union-attr]
                 total_moves += record.total_moves  # type: ignore[union-attr]
@@ -559,6 +563,9 @@ def main() -> None:
                         rank_maxs[rank] = nw
                     total_shares[rank] += record.shares_per_player[p]  # type: ignore[index]
                     total_companies[rank] += record.companies_per_player[p]  # type: ignore[index]
+                    total_pres_share_values[rank] += record.pres_share_values[p]  # type: ignore[index]
+                total_avg_corp_price += record.avg_active_corp_price  # type: ignore[union-attr]
+                total_corps_in_receivership += record.corps_in_receivership  # type: ignore[union-attr]
                 if record.profile is not None:  # type: ignore[union-attr]
                     game_profiles.append(record.profile)  # type: ignore[union-attr]
                 n = game_idx + 1
@@ -719,14 +726,20 @@ def main() -> None:
             avg_total_nw = sum(rank_totals) / n_games
             avg_shares = [t / n_games for t in total_shares]
             avg_companies = [t / n_games for t in total_companies]
+            avg_pres_share_values = [t / n_games for t in total_pres_share_values]
 
             ownership_scalars: dict[str, float] = {
                 "self_play/total_shares": sum(avg_shares),
                 "self_play/total_companies": sum(avg_companies),
+                "self_play/avg_active_corp_price": total_avg_corp_price / n_games,
+                "self_play/corps_in_receivership": total_corps_in_receivership / n_games,
             }
-            for k, s, c in zip(rank_labels, avg_shares, avg_companies):
+            for k, s, c, psv in zip(
+                rank_labels, avg_shares, avg_companies, avg_pres_share_values
+            ):
                 ownership_scalars[f"self_play/shares_{k}"] = s
                 ownership_scalars[f"self_play/companies_{k}"] = c
+                ownership_scalars[f"self_play/pres_share_value_{k}"] = psv
 
             logger.log_scalars(
                 epoch_num,

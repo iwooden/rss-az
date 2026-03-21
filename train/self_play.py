@@ -27,6 +27,9 @@ class GameRecord:
     net_worths: list[int]  # Final net worth per player (canonical order)
     shares_per_player: list[int]  # Total shares held per player (canonical order)
     companies_per_player: list[int]  # Companies owned per player (canonical order)
+    pres_share_values: list[float]  # Value of shares in corps where player is president
+    avg_active_corp_price: float  # Average share price of active corps
+    corps_in_receivership: int  # Number of corps in receivership
     duration_secs: float  # Wall-clock time
     policy_entropy_mean: float = 0.0  # Mean entropy of MCTS policy targets (nats)
     top1_visit_fraction: float = 0.0  # Mean fraction of visits on top action
@@ -148,6 +151,7 @@ def play_game(
 
     # Extract end-of-game ownership stats
     from entities.player import PLAYERS
+    from entities.corp import CORPS
     from core.data import GameConstants
     num_corps = int(GameConstants.NUM_CORPS)
     num_companies = int(GameConstants.NUM_COMPANIES)
@@ -159,6 +163,25 @@ def play_game(
         sum(1 for c in range(num_companies) if PLAYERS[i].owns_company(state, c))
         for i in range(config.num_players)
     ]
+
+    # Per-player value of shares in corps where they are president
+    pres_share_values: list[float] = []
+    for i in range(config.num_players):
+        val = 0.0
+        for c in range(num_corps):
+            if PLAYERS[i].is_president_of(state, c):
+                val += PLAYERS[i].get_shares(state, c) * CORPS[c].get_share_price(state)
+        pres_share_values.append(val)
+
+    # Corp-level stats
+    active_prices: list[int] = []
+    corps_in_receivership = 0
+    for c in range(num_corps):
+        if CORPS[c].is_active(state):
+            active_prices.append(CORPS[c].get_share_price(state))
+            if CORPS[c].is_in_receivership(state):
+                corps_in_receivership += 1
+    avg_active_corp_price = sum(active_prices) / len(active_prices) if active_prices else 0.0
 
     # Blend A0GB value targets with game outcome if configured
     blend_alpha = epoch_config.value_blend_alpha if epoch_config is not None else 1.0
@@ -189,6 +212,9 @@ def play_game(
         net_worths=net_worths,
         shares_per_player=shares_per_player,
         companies_per_player=companies_per_player,
+        pres_share_values=pres_share_values,
+        avg_active_corp_price=avg_active_corp_price,
+        corps_in_receivership=corps_in_receivership,
         duration_secs=time.perf_counter() - t0,
         policy_entropy_mean=entropy_sum / max(move_count, 1),
         top1_visit_fraction=top1_sum / max(move_count, 1),
