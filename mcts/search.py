@@ -138,7 +138,7 @@ def run_search(
     """
     from core.actions import get_valid_action_mask
     from core.data import GamePhases
-    from core.driver import DRIVER, STATUS_GAME_OVER_PY
+    from core.driver import DRIVER, STATUS_GAME_OVER_PY, STATUS_INVALID_PY
     from core.state import GameState
 
     num_players = config.num_players
@@ -157,6 +157,12 @@ def run_search(
         # near-free, real search runs once root catches up per action.
         root = reuse_root
         num_sims = config.num_simulations
+
+        # Sanity check: reused subtree must match the supplied state
+        assert root.active_player_id == root_state.get_active_player(), (
+            f"reuse_root active_player={root.active_player_id} != "
+            f"root_state active_player={root_state.get_active_player()}"
+        )
     else:
         # Fresh search — reset pool and build root from scratch
         state_pool.reset()
@@ -231,6 +237,7 @@ def run_search(
             did_virtual_backup = False
 
             while node.expanded() and not node.is_terminal:
+                assert node.visit_counts is not None
                 action_idx, array_idx = select_child(node, config.c_puct)
                 path.append((node, action_idx, array_idx))
 
@@ -262,6 +269,9 @@ def run_search(
                     child.state_idx = state_pool.alloc_from_row(node.state_idx)
                     scratch_gs.rebind(state_pool.row(child.state_idx))
                     status = DRIVER.apply_action(scratch_gs, action_idx)
+                    assert status != STATUS_INVALID_PY, (
+                        f"MCTS expansion got STATUS_INVALID for action {action_idx}"
+                    )
                     child.active_player_id = scratch_gs.get_active_player()
                     if status == STATUS_GAME_OVER_PY:
                         child.is_terminal = True
@@ -338,6 +348,7 @@ def run_search(
             policy_probs = _apply_mask_softmax(logits, node.pending_mask)
             node.expand(policy_probs, node.pending_mask,
                         num_players=num_players, default_value=values)
+            node.pending_mask = None  # dead after expansion
 
             # Backup values (visit counts already incremented at selection time)
             _backup(path, node, values)
