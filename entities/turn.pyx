@@ -10,7 +10,8 @@ Provides clean getter/setter access to turn-specific state including:
 
 from core.state cimport GameState, StateLayout, TurnStateOffsets
 from libc.math cimport lround
-from core.data cimport GameConstants, GamePhases, INCOME_DIVISOR, PRICE_DIVISOR, IMPACT_DIVISOR, get_adjusted_company_income, COMPANY_SYNERGY
+from core.data cimport GameConstants, GamePhases, INCOME_DIVISOR, PRICE_DIVISOR, IMPACT_DIVISOR, get_adjusted_company_income, get_company_stars, COMPANY_SYNERGY
+from entities.company cimport Company, LOC_REMOVED
 from entities import player as player_module
 from entities import company as company_module
 from entities import corp as corp_module
@@ -255,6 +256,9 @@ cdef class TurnState:
             fi_module.FI.calculate_income(state)
             # Update auction slot info (income values depend on CoO)
             state._populate_auction_slot_info()
+            # Mark excluded companies as visibly removed now that their
+            # absence is deducible from the CoO level
+            self._mark_excluded_companies_removed(state, level)
 
     cdef void _update_all_company_incomes(self, GameState state, int coo_level):
         """
@@ -280,6 +284,21 @@ cdef class TurnState:
         cdef int player_id
         for player_id in range(self._num_players):
             player_module.PLAYERS[player_id].calculate_income(state)
+
+    cdef void _mark_excluded_companies_removed(self, GameState state, int coo_level):
+        """Mark setup-excluded companies as visibly removed when CoO advances.
+
+        At CoO level L, all companies with star tier < L have been drawn.
+        Companies still at LOC_REMOVED without a visible removed flag were
+        excluded during setup — reveal this to the NN now that it's deducible.
+        """
+        cdef int company_id
+        cdef Company comp
+        for company_id in range(<int>GameConstants.NUM_COMPANIES):
+            if get_company_stars(company_id) < coo_level:
+                comp = <Company>company_module.COMPANIES[company_id]
+                if comp._get_hidden_location(state) == LOC_REMOVED and state._data[comp._removed_offset] != 1.0:
+                    state._data[comp._removed_offset] = 1.0
 
     # =========================================================================
     # TURN NUMBER

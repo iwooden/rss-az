@@ -9,10 +9,10 @@ Covers:
 """
 import pytest
 from core.state import GameState
-from core.data import GamePhases, GameConstants, COMPANY_NAMES, get_adjusted_company_income
+from core.data import GamePhases, GameConstants, COMPANY_NAMES, get_adjusted_company_income, get_company_stars
 from entities.deck import DECK
 from entities.turn import TURN
-from entities.company import COMPANIES
+from entities.company import COMPANIES, CompanyLocation
 
 
 # =============================================================================
@@ -273,6 +273,156 @@ class TestCoOIncrementOnDraw:
         # Draw BME(red) — deck empty → CoO 4
         DECK.draw(game_state)
         assert TURN.get_coo_level(game_state) == 4
+
+
+# =============================================================================
+# EXCLUDED COMPANY REMOVAL ON COO ADVANCE
+# =============================================================================
+
+class TestExcludedCompanyRemoval:
+    """Tests that setup-excluded companies get marked as visibly removed
+    when CoO advances past their star tier."""
+
+    def _get_excluded(self, state):
+        """Return list of (company_id, stars) for setup-excluded companies."""
+        return [
+            (cid, get_company_stars(cid))
+            for cid in range(GameConstants.NUM_COMPANIES)
+            if COMPANIES[cid].get_location(state) == CompanyLocation.LOC_REMOVED
+            and not COMPANIES[cid].is_removed(state)
+        ]
+
+    def test_no_visible_removed_at_coo_1(self):
+        """At CoO 1, no excluded companies should be visibly removed."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        assert TURN.get_coo_level(state) == 1
+        for cid in range(GameConstants.NUM_COMPANIES):
+            assert not COMPANIES[cid].is_removed(state)
+
+    def test_coo_2_marks_excluded_reds(self):
+        """Advancing to CoO 2 should mark excluded red (1-star) companies as removed."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+        excluded = self._get_excluded(state)
+        excluded_reds = {cid for cid, stars in excluded if stars == 1}
+        assert len(excluded_reds) > 0, "3p game should exclude some reds"
+
+        TURN.set_coo_level(state, 2)
+
+        for cid in excluded_reds:
+            assert COMPANIES[cid].is_removed(state), \
+                f"Excluded red company {COMPANY_NAMES[cid]} should be visibly removed at CoO 2"
+
+    def test_coo_2_does_not_mark_higher_tiers(self):
+        """CoO 2 should NOT mark excluded companies of star tier >= 2."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+        excluded = self._get_excluded(state)
+        excluded_non_reds = {cid for cid, stars in excluded if stars >= 2}
+
+        TURN.set_coo_level(state, 2)
+
+        for cid in excluded_non_reds:
+            assert not COMPANIES[cid].is_removed(state), \
+                f"Excluded {get_company_stars(cid)}-star company {COMPANY_NAMES[cid]} should NOT be removed at CoO 2"
+
+    def test_coo_3_marks_excluded_oranges(self):
+        """Advancing to CoO 3 should also mark excluded orange (2-star) companies."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+        excluded = self._get_excluded(state)
+        excluded_oranges = {cid for cid, stars in excluded if stars == 2}
+        assert len(excluded_oranges) > 0
+
+        TURN.set_coo_level(state, 3)
+
+        for cid in excluded_oranges:
+            assert COMPANIES[cid].is_removed(state), \
+                f"Excluded orange company {COMPANY_NAMES[cid]} should be visibly removed at CoO 3"
+
+    def test_coo_6_marks_all_excluded(self):
+        """By CoO 6, all excluded companies should be visibly removed."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+        excluded = self._get_excluded(state)
+        assert len(excluded) > 0
+
+        TURN.set_coo_level(state, 6)
+
+        for cid, _ in excluded:
+            assert COMPANIES[cid].is_removed(state), \
+                f"Excluded company {COMPANY_NAMES[cid]} should be visibly removed at CoO 6"
+
+    def test_in_deck_companies_not_removed(self):
+        """Companies in the deck should never be marked as removed by CoO advance."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+        in_deck = [
+            cid for cid in range(GameConstants.NUM_COMPANIES)
+            if COMPANIES[cid].get_location(state) != CompanyLocation.LOC_REMOVED
+        ]
+
+        TURN.set_coo_level(state, 6)
+
+        for cid in in_deck:
+            assert not COMPANIES[cid].is_removed(state), \
+                f"In-deck company {COMPANY_NAMES[cid]} should not be removed"
+
+    def test_no_leakage_at_each_coo_level(self):
+        """At each CoO level, only companies with star tier < level should be revealed.
+
+        Companies with star tier >= level must NOT be visibly removed, even if they
+        were excluded during setup. This prevents leaking deck composition to the NN.
+        """
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+        excluded = self._get_excluded(state)
+        excluded_ids = {cid for cid, _ in excluded}
+
+        for level in range(1, 7):
+            # Fresh state each time to test each level independently
+            state = GameState(num_players=3)
+            state.initialize_game(seed=42)
+            TURN.set_coo_level(state, level)
+
+            for cid in excluded_ids:
+                stars = get_company_stars(cid)
+                if stars >= level:
+                    assert not COMPANIES[cid].is_removed(state), \
+                        f"Excluded {stars}-star company {COMPANY_NAMES[cid]} " \
+                        f"should NOT be visibly removed at CoO {level} (data leakage!)"
+                else:
+                    assert COMPANIES[cid].is_removed(state), \
+                        f"Excluded {stars}-star company {COMPANY_NAMES[cid]} " \
+                        f"should be visibly removed at CoO {level}"
+
+    def test_6_player_no_excluded(self):
+        """6-player game uses all 36 companies — CoO advance should remove none."""
+        state = GameState(num_players=6)
+        state.initialize_game(seed=42)
+        excluded = self._get_excluded(state)
+        assert len(excluded) == 0, "6p game should have no excluded companies"
+
+        TURN.set_coo_level(state, 6)
+
+        for cid in range(GameConstants.NUM_COMPANIES):
+            assert not COMPANIES[cid].is_removed(state)
+
+    def test_already_closed_companies_unaffected(self):
+        """Companies closed during gameplay should keep their removed flag."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        # Close a company that's in the deck (draw it first, then remove)
+        company_id = DECK.draw(state)
+        COMPANIES[company_id].remove_from_game(state)
+        assert COMPANIES[company_id].is_removed(state)
+
+        # Advance CoO — the already-removed company should stay removed
+        TURN.set_coo_level(state, 6)
+        assert COMPANIES[company_id].is_removed(state)
 
 
 # =============================================================================

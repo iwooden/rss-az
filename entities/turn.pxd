@@ -99,6 +99,7 @@ cdef class TurnState:
     cdef void _update_all_company_incomes(self, GameState state, int coo_level)
     cdef void _update_all_corp_incomes(self, GameState state)
     cdef void _update_all_player_incomes(self, GameState state)
+    cdef void _mark_excluded_companies_removed(self, GameState state, int coo_level)
 
     # Turn number
     cpdef int get_turn_number(self, GameState state)
