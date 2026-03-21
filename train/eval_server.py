@@ -540,7 +540,7 @@ class RemoteEvaluator:
         results: list[tuple[np.ndarray, np.ndarray]] = []
         for i in range(n):
             canonical = unrotate_values(values_np[i], active_player_ids[i])
-            results.append((logits_np[i].copy(), canonical))
+            results.append((logits_np[i], canonical))
 
         if _stats is not None:
             _stats.result_secs += perf_counter() - _t2
