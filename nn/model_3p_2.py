@@ -4,12 +4,12 @@ Architecture changes from v1 (model_3p.py) based on interpretability analysis:
 - Two-layer input preprocessing (input → 2*hidden → hidden) instead of a single
   linear projection. V1's block 0 did 92% of the work because one linear layer
   was too bottlenecked for the input (v1 had 1296 static synergy flags, now removed).
-- 10 residual blocks with expansion=1 (no inner expansion). SVD analysis at epoch 59
+- 6 residual blocks with expansion=1 (no inner expansion). SVD analysis at epoch 59
   showed fc1 (384→768) layers at 13-16% utilization across all blocks — the expanded
   width was almost entirely unused. Removing the expansion halves trunk parameters
   with no representational loss.
-- hidden_dim=384 (down from 768). Effective rank was 150-194 across all layers;
-  384 gives ~2x headroom. Multiple of 64 for GPU tensor core alignment.
+- hidden_dim=256 (down from 384). Late-stage interp analysis showed sufficient
+  capacity at this width. Multiple of 64 for GPU tensor core alignment.
 - Asymmetric heads informed by probing + conductance analysis:
   - Policy head: 3 hidden layers, all hidden_dim wide (hidden→hidden→hidden→hidden→action).
     Conductance showed the first layer doing 57.6% of policy work through a single
@@ -18,7 +18,7 @@ Architecture changes from v1 (model_3p.py) based on interpretability analysis:
   - Value head: 1 hidden layer (hidden→hidden→value_dim). Trunk already computes value
     almost linearly (R²=0.97); conductance is 45/55 split across both layers.
 
-~5.1M parameters (down from ~8.2M).
+~2.0M parameters (down from ~5.1M).
 """
 
 from __future__ import annotations
@@ -36,8 +36,8 @@ class RSSModelConfig2:
     input_dim: int = 1549  # get_layout(3).visible_size; always pass explicitly
     action_dim: int = 226  # get_total_action_count(3); always pass explicitly
     value_dim: int = 3
-    hidden_dim: int = 384
-    num_blocks: int = 10
+    hidden_dim: int = 256
+    num_blocks: int = 6
 
 
 class ResidualMLPBlock(nn.Module):
@@ -99,10 +99,10 @@ class RSSAlphaZeroNet2(nn.Module):
         self._init_weights()
 
     def _init_weights(self) -> None:
-        """Xavier init for linear layers; zero-init residual block fc2."""
+        """Kaiming init for linear layers (GELU); zero-init residual block fc2."""
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
+                nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
             elif isinstance(module, nn.LayerNorm):
