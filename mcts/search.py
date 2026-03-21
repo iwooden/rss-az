@@ -96,7 +96,7 @@ _Path = list[tuple[MCTSNode, int, int]]
 
 
 def run_search(
-    root_state: Any,
+    root_state: Any | None,
     evaluator: Any,
     config: MCTSConfig,
     rng: np.random.Generator | None = None,
@@ -117,7 +117,9 @@ def run_search(
     After evaluation, the leaf lock is removed and values are backed up.
 
     Args:
-        root_state: GameState object to search from.
+        root_state: GameState object to search from. Required for fresh
+            searches, ignored when reuse_root is provided (the reused
+            subtree's pooled states are authoritative).
         evaluator: NNEvaluator for leaf evaluation.
         config: Search hyperparameters (search_batch_size controls batching).
         rng: Optional numpy random Generator for Dirichlet noise.
@@ -125,6 +127,7 @@ def run_search(
         state_pool: Optional pre-allocated StatePool for node state storage.
             If None, a temporary pool is created. For training, pass a
             persistent pool to avoid per-search allocation.
+            Required when reuse_root is provided.
         reuse_root: Optional pre-searched subtree root from the previous move.
             When provided, the root's visit statistics have been reset by
             prepare_reuse_root() so Dirichlet noise is fully effective.
@@ -144,26 +147,27 @@ def run_search(
     num_players = config.num_players
     batch_size = config.search_batch_size
 
-    # Set up state pool
-    if state_pool is None:
-        from core.state import get_layout
-        total_size = get_layout(num_players).total_size
-        state_pool = StatePool(2 * (config.num_simulations + 1), total_size)
-
     if reuse_root is not None:
+        # Reuse requires the matching pool — a fresh pool would make the
+        # reused nodes' state_idx values point into uninitialized memory.
+        if state_pool is None:
+            raise ValueError("state_pool is required when reuse_root is provided")
+
         # Reuse existing subtree — pool was already compacted and root
         # stats reset by prepare_reuse_root(), don't reset the pool.
         # Full sim budget: virtual backups for existing children are
         # near-free, real search runs once root catches up per action.
         root = reuse_root
         num_sims = config.num_simulations
-
-        # Sanity check: reused subtree must match the supplied state
-        assert root.active_player_id == root_state.get_active_player(), (
-            f"reuse_root active_player={root.active_player_id} != "
-            f"root_state active_player={root_state.get_active_player()}"
-        )
     else:
+        if root_state is None:
+            raise ValueError("root_state is required for fresh searches")
+
+        # Set up state pool
+        if state_pool is None:
+            from core.state import get_layout
+            total_size = get_layout(num_players).total_size
+            state_pool = StatePool(2 * (config.num_simulations + 1), total_size)
         # Fresh search — reset pool and build root from scratch
         state_pool.reset()
 

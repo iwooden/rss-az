@@ -130,8 +130,9 @@ def compute_terminal_values(
 
     Both components are zero-sum across players, so the blended result is
     also zero-sum (better utilization of the tanh value head's [-1, +1]
-    range). The margin uses a scale factor of n/(n-1) to guarantee the
-    result stays in [-1, +1] for any net worth distribution.
+    range). The margin uses a scale factor of n/(n-1) which guarantees
+    the result stays in [-1, +1] when all net worths are non-negative
+    (game rules ensure this — players cannot have negative net worth).
 
     When all players have zero net worth, all receive 0.0.
 
@@ -253,6 +254,9 @@ class NNEvaluator(BaseEvaluator):
         self._autocast_dtype = torch.bfloat16 if device.type == "cuda" else None
         self.model.eval()
 
+        # Reusable rotation buffer for batch evaluation, grows as needed
+        self._rotation_buf: np.ndarray | None = None
+
         # Validate model output dims match expected action space and num_players.
         # Catches misconfiguration before it reaches boundscheck=False Cython code.
         from core.actions import get_total_action_count
@@ -270,6 +274,14 @@ class NNEvaluator(BaseEvaluator):
                     f"Model value_dim ({cfg.value_dim}) does not match "
                     f"num_players ({num_players})"
                 )
+
+    def _get_rotation_buf(self, n: int) -> np.ndarray:
+        """Return a (n, visible_size) rotation buffer, reusing if large enough."""
+        buf = self._rotation_buf
+        if buf is None or buf.shape[0] < n:
+            buf = np.empty((n, self.layout.visible_size), dtype=np.float32)
+            self._rotation_buf = buf
+        return buf[:n]
 
     @torch.no_grad()
     def evaluate(self, state: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -333,8 +345,8 @@ class NNEvaluator(BaseEvaluator):
 
         active_players = [s.get_active_player() for s in states]
 
-        # Rotate visible states directly into a pre-allocated buffer
-        rotated = np.empty((n, self.layout.visible_size), dtype=np.float32)
+        # Rotate visible states into reusable buffer
+        rotated = self._get_rotation_buf(n)
         for i, (s, ap) in enumerate(zip(states, active_players)):
             rotate_visible_state_into(rotated[i], s._array, ap, self.num_players)
         masks = [get_valid_action_mask(s) for s in states]
@@ -374,8 +386,8 @@ class NNEvaluator(BaseEvaluator):
         if n == 0:
             return []
 
-        # Rotate visible states directly into a pre-allocated buffer
-        rotated = np.empty((n, self.layout.visible_size), dtype=np.float32)
+        # Rotate visible states into reusable buffer
+        rotated = self._get_rotation_buf(n)
         for i, (arr, ap) in enumerate(zip(state_arrays, active_player_ids)):
             rotate_visible_state_into(rotated[i], arr, ap, self.num_players)
 

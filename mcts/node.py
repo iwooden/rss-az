@@ -73,6 +73,8 @@ class MCTSNode:
         """Return the mean value estimate for the given player.
 
         Returns 0.0 if this node has never been visited.
+
+        Not used in production search — kept for test assertions.
         """
         if self.visit_count == 0:
             return 0.0
