@@ -22,7 +22,7 @@ import numpy as np
 
 from train.config import MCTSConfig
 from mcts.node import MCTSNode
-from mcts.mcts_core import select_child, backup as _backup, increment_visits as _increment_visits, virtual_backup as _virtual_backup
+from mcts.mcts_core import select_child, backup as _backup, increment_visits as _increment_visits, virtual_backup as _virtual_backup, masked_softmax as _apply_mask_softmax
 
 
 class StatePool:
@@ -322,14 +322,13 @@ def run_search(
 
         leaf_arrays = [state_pool.row(node.state_idx) for _, node in pending]
         leaf_players = [node.active_player_id for _, node in pending]
-        leaf_masks = [node.pending_mask for _, node in pending]
-        results = evaluator.evaluate_leaves(leaf_arrays, leaf_players, leaf_masks)
+        results = evaluator.evaluate_leaves(leaf_arrays, leaf_players)
 
         if profile is not None:
             _t2 = perf_counter()
             profile.eval_secs += _t2 - _t1
 
-        for i, ((path, node), (policy_probs, values, leaf_mask)) in enumerate(
+        for i, ((path, node), (logits, values)) in enumerate(
             zip(pending, results)
         ):
             # Unlock parent edge: restore saved Q values
@@ -337,9 +336,11 @@ def run_search(
             assert parent.value_sums is not None
             parent.value_sums[parent_aidx] = saved_values[i]
 
-            # Expand the leaf (sets up arrays for future selection)
-            node.expand(policy_probs, leaf_mask, num_players=num_players,
-                        default_value=values)
+            # Apply masked softmax and expand the leaf
+            assert node.pending_mask is not None
+            policy_probs = _apply_mask_softmax(logits, node.pending_mask)
+            node.expand(policy_probs, node.pending_mask,
+                        num_players=num_players, default_value=values)
 
             # Backup values (visit counts already incremented at selection time)
             _backup(path, node, values)

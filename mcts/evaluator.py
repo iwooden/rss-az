@@ -292,20 +292,21 @@ class NNEvaluator:
         self,
         state_arrays: list[np.ndarray],
         active_player_ids: list[int],
-        legal_masks: list[np.ndarray],
-    ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    ) -> list[tuple[np.ndarray, np.ndarray]]:
         """Evaluate pre-computed leaf data in a single NN forward pass.
 
-        Like evaluate_batch but takes raw arrays instead of GameState objects,
-        avoiding Python wrapper allocation in the MCTS hot loop.
+        Optimized for the MCTS hot loop: takes raw arrays instead of
+        GameState objects, avoiding Python wrapper allocation. Returns
+        raw logits — the caller applies masked softmax using the legal
+        masks it already has on each node.
 
         Args:
             state_arrays: Raw state arrays (pool row views), each (total_size,).
             active_player_ids: Active player ID for each state.
-            legal_masks: Pre-computed legal action masks, each (action_dim,).
 
         Returns:
-            List of (policy_probs, canonical_values, legal_mask) tuples.
+            List of (logits, canonical_values) tuples. Logits are raw
+            NN output; caller must apply masked softmax before use.
         """
         n = len(state_arrays)
         if n == 0:
@@ -316,7 +317,7 @@ class NNEvaluator:
         for i, (arr, ap) in enumerate(zip(state_arrays, active_player_ids)):
             rotate_visible_state_into(rotated[i], arr, ap, self.num_players)
 
-        # Single forward pass (no mask — applied CPU-side after inference)
+        # Single forward pass
         x = torch.from_numpy(rotated).to(self.device)
         with torch.autocast(self.device.type, dtype=self._autocast_dtype,
                             enabled=self._autocast_dtype is not None):
@@ -325,11 +326,10 @@ class NNEvaluator:
         logits = policy_logits.float().cpu().numpy()
         values = value_output.float().cpu().numpy()
 
-        results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        results: list[tuple[np.ndarray, np.ndarray]] = []
         for i in range(n):
-            policy_probs = apply_mask_softmax(logits[i], legal_masks[i])
             canonical_values = unrotate_values(values[i], active_player_ids[i])
-            results.append((policy_probs, canonical_values, legal_masks[i]))
+            results.append((logits[i], canonical_values))
 
         return results
 

@@ -496,12 +496,11 @@ class RemoteEvaluator:
         self,
         state_arrays: list[np.ndarray],
         active_player_ids: list[int],
-        legal_masks: list[np.ndarray],
-    ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    ) -> list[tuple[np.ndarray, np.ndarray]]:
         """Evaluate pre-computed leaf data in a single round-trip to the server.
 
-        Like evaluate_batch but takes raw arrays instead of GameState objects,
-        avoiding Python wrapper allocation in the MCTS hot loop.
+        Returns raw logits — the caller applies masked softmax using the
+        legal masks it already has on each node.
         """
         n = len(state_arrays)
         if n == 0:
@@ -534,17 +533,14 @@ class RemoteEvaluator:
             _t2 = perf_counter()
             _stats.wait_secs += _t2 - _t1
 
-        # Logits: bf16→f32 for mask+softmax; values: already f32
-        logits_f32 = self._out_logits[:n].float()
-        masks_t = torch.from_numpy(np.stack(legal_masks))
-        logits_f32.masked_fill_(masks_t <= 0, -1e9)
-        probs_batch = torch.softmax(logits_f32, dim=-1).numpy()
+        # Logits: bf16→f32; values: already f32
+        logits_np = self._out_logits[:n].float().numpy()
         values_np = self._out_values[:n].numpy()
 
-        results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        results: list[tuple[np.ndarray, np.ndarray]] = []
         for i in range(n):
             canonical = unrotate_values(values_np[i], active_player_ids[i])
-            results.append((probs_batch[i].copy(), canonical, legal_masks[i]))
+            results.append((logits_np[i].copy(), canonical))
 
         if _stats is not None:
             _stats.result_secs += perf_counter() - _t2
