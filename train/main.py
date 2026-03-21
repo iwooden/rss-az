@@ -538,6 +538,9 @@ def main() -> None:
             total_shares = [0] * num_players
             total_companies = [0] * num_players
             total_pres_share_values = [0.0] * num_players
+            total_nw_cash_pct = [0.0] * num_players
+            total_nw_companies_pct = [0.0] * num_players
+            total_nw_shares_pct = [0.0] * num_players
             total_avg_corp_price = 0.0
             total_corps_in_receivership = 0
             game_profiles: list[GameProfileData] = []
@@ -564,6 +567,9 @@ def main() -> None:
                     total_shares[rank] += record.shares_per_player[p]  # type: ignore[index]
                     total_companies[rank] += record.companies_per_player[p]  # type: ignore[index]
                     total_pres_share_values[rank] += record.pres_share_values[p]  # type: ignore[index]
+                    total_nw_cash_pct[rank] += record.nw_cash_pct[p]  # type: ignore[index]
+                    total_nw_companies_pct[rank] += record.nw_companies_pct[p]  # type: ignore[index]
+                    total_nw_shares_pct[rank] += record.nw_shares_pct[p]  # type: ignore[index]
                 total_avg_corp_price += record.avg_active_corp_price  # type: ignore[union-attr]
                 total_corps_in_receivership += record.corps_in_receivership  # type: ignore[union-attr]
                 if record.profile is not None:  # type: ignore[union-attr]
@@ -727,6 +733,9 @@ def main() -> None:
             avg_shares = [t / n_games for t in total_shares]
             avg_companies = [t / n_games for t in total_companies]
             avg_pres_share_values = [t / n_games for t in total_pres_share_values]
+            avg_nw_cash_pct = [t / n_games for t in total_nw_cash_pct]
+            avg_nw_companies_pct = [t / n_games for t in total_nw_companies_pct]
+            avg_nw_shares_pct = [t / n_games for t in total_nw_shares_pct]
 
             ownership_scalars: dict[str, float] = {
                 "self_play/total_shares": sum(avg_shares),
@@ -734,19 +743,22 @@ def main() -> None:
                 "self_play/avg_active_corp_price": total_avg_corp_price / n_games,
                 "self_play/corps_in_receivership": total_corps_in_receivership / n_games,
             }
-            for k, s, c, psv in zip(
-                rank_labels, avg_shares, avg_companies, avg_pres_share_values
+            for k, s, c, psv, nw_cash, nw_co, nw_sh in zip(
+                rank_labels, avg_shares, avg_companies, avg_pres_share_values,
+                avg_nw_cash_pct, avg_nw_companies_pct, avg_nw_shares_pct,
             ):
                 ownership_scalars[f"self_play/shares_{k}"] = s
                 ownership_scalars[f"self_play/companies_{k}"] = c
                 ownership_scalars[f"self_play/pres_share_value_{k}"] = psv
+                ownership_scalars[f"self_play/nw_cash_pct_{k}"] = nw_cash
+                ownership_scalars[f"self_play/nw_companies_pct_{k}"] = nw_co
+                ownership_scalars[f"self_play/nw_shares_pct_{k}"] = nw_sh
 
             logger.log_scalars(
                 epoch_num,
                 {
                     "self_play/game_length_mean": avg_game_moves,
                     "self_play/duration_mean": avg_game_dur,
-                    "self_play/examples_per_game": total_examples / n_games,
                     "self_play/total_examples": float(total_examples),
                     "self_play/policy_entropy_mean": avg_entropy,
                     "self_play/top1_visit_fraction": avg_top1,

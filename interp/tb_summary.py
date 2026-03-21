@@ -34,7 +34,7 @@ def main() -> None:
         "Epoch Loss": ["epoch/policy_loss_avg", "epoch/value_loss_avg", "epoch/total_loss_avg"],
         "Self-Play": [
             "self_play/policy_entropy_mean", "self_play/top1_visit_fraction",
-            "self_play/game_length_mean", "self_play/examples_per_game",
+            "self_play/game_length_mean",
         ],
         "Net Worth": [
             "self_play/net_worth_1st", "self_play/net_worth_2nd", "self_play/net_worth_3rd",

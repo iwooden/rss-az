@@ -28,6 +28,9 @@ class GameRecord:
     shares_per_player: list[int]  # Total shares held per player (canonical order)
     companies_per_player: list[int]  # Companies owned per player (canonical order)
     pres_share_values: list[float]  # Value of shares in corps where player is president
+    nw_cash_pct: list[float]  # % of net worth from cash per player
+    nw_companies_pct: list[float]  # % of net worth from owned company face values
+    nw_shares_pct: list[float]  # % of net worth from owned shares (count * price)
     avg_active_corp_price: float  # Average share price of active corps
     corps_in_receivership: int  # Number of corps in receivership
     duration_secs: float  # Wall-clock time
@@ -173,6 +176,32 @@ def play_game(
                 val += PLAYERS[i].get_shares(state, c) * CORPS[c].get_share_price(state)
         pres_share_values.append(val)
 
+    # Net worth component breakdown (% of total)
+    from entities.company import COMPANIES
+    nw_cash_pct: list[float] = []
+    nw_companies_pct: list[float] = []
+    nw_shares_pct: list[float] = []
+    for i in range(config.num_players):
+        nw = net_worths[i]
+        cash = PLAYERS[i].get_cash(state)
+        company_value = sum(
+            COMPANIES[c].get_face_value()
+            for c in range(num_companies)
+            if PLAYERS[i].owns_company(state, c)
+        )
+        share_value = sum(
+            PLAYERS[i].get_shares(state, c) * CORPS[c].get_share_price(state)
+            for c in range(num_corps)
+        )
+        if nw > 0:
+            nw_cash_pct.append(cash / nw)
+            nw_companies_pct.append(company_value / nw)
+            nw_shares_pct.append(share_value / nw)
+        else:
+            nw_cash_pct.append(0.0)
+            nw_companies_pct.append(0.0)
+            nw_shares_pct.append(0.0)
+
     # Corp-level stats
     active_prices: list[int] = []
     corps_in_receivership = 0
@@ -213,6 +242,9 @@ def play_game(
         shares_per_player=shares_per_player,
         companies_per_player=companies_per_player,
         pres_share_values=pres_share_values,
+        nw_cash_pct=nw_cash_pct,
+        nw_companies_pct=nw_companies_pct,
+        nw_shares_pct=nw_shares_pct,
         avg_active_corp_price=avg_active_corp_price,
         corps_in_receivership=corps_in_receivership,
         duration_secs=time.perf_counter() - t0,
