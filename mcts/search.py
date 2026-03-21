@@ -165,7 +165,6 @@ def run_search(
         is_terminal = root_state.get_phase() == GamePhases.PHASE_GAME_OVER
 
         root = MCTSNode(
-            prior=0.0,
             active_player_id=root_state.get_active_player(),
             num_players=num_players,
             is_terminal=is_terminal,
@@ -257,9 +256,7 @@ def run_search(
                 else:
                     # First visit: create child node with state from pool.
                     # Rebind scratch GameState to avoid allocating a wrapper.
-                    assert node.priors is not None
                     child = MCTSNode(
-                        prior=float(node.priors[array_idx]),
                         num_players=num_players,
                     )
                     child.state_idx = state_pool.alloc_from_row(node.state_idx)

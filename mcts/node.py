@@ -18,7 +18,6 @@ class MCTSNode:
     Attributes:
         visit_count: Number of times this node has been visited (N).
         value_sum: Cumulative canonical values per player, shape (num_players,).
-        prior: Policy prior P(a) assigned by the parent's NN evaluation.
         active_player_id: The player who acts at this node.
         children: Mapping from action index to child MCTSNode (visited only).
         is_terminal: Whether this node represents a game-over state.
@@ -37,7 +36,6 @@ class MCTSNode:
     __slots__ = (
         "visit_count",
         "value_sum",
-        "prior",
         "active_player_id",
         "children",
         "is_terminal",
@@ -53,14 +51,12 @@ class MCTSNode:
 
     def __init__(
         self,
-        prior: float = 0.0,
         active_player_id: int = 0,
         num_players: int = 3,
         is_terminal: bool = False,
     ) -> None:
         self.visit_count: int = 0
         self.value_sum: np.ndarray = np.zeros(num_players, dtype=np.float32)
-        self.prior: float = prior
         self.active_player_id: int = active_player_id
         self.children: dict[int, MCTSNode] = {}
         self.is_terminal: bool = is_terminal

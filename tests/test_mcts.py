@@ -360,7 +360,6 @@ class TestMCTSNode:
     def test_default_construction(self):
         node = MCTSNode()
         assert node.visit_count == 0
-        assert node.prior == 0.0
         assert node.active_player_id == 0
         assert not node.is_terminal
         assert not node.expanded()
