@@ -8,7 +8,7 @@ to eval servers automatically.
 
 Communication uses shared memory (torch tensors with share_memory_()):
 - Input states: float32 (workers write with pure numpy slice assignment)
-- Output logits: bfloat16 (halves scatter bandwidth; workers upcast for softmax)
+- Output logits: bfloat16 (halves scatter bandwidth; workers upcast for Cython softmax)
 - Output values: float32 (server upcasts from bf16 model output during D2H;
   only 3 floats/state so bf16 savings are negligible vs per-worker conversion)
 
@@ -24,8 +24,9 @@ get_nowait() and immediately starts the next batch. This creates organic
 alternation: one server computes while the other gathers.
 
 Workers do zero torch operations on the write side (pure numpy).
-On the read side, workers do one bf16→f32 upcast on logits for
-batched mask+softmax in torch. Values are read as f32 numpy directly.
+On the read side, workers upcast bf16→f32 logits and apply mask+softmax
+via Cython (no torch on the worker hot path). Values are read as f32
+numpy directly.
 
 RemoteEvaluator is the worker-side proxy that implements the same interface
 as NNEvaluator, writing to shared memory instead of serializing over pipes.
@@ -42,6 +43,7 @@ import numpy as np
 import torch
 
 from mcts.evaluator import (
+    apply_mask_softmax,
     compute_terminal_values,
     get_layout,
     rotate_visible_state_into,
@@ -386,8 +388,8 @@ class RemoteEvaluator:
     as NNEvaluator, so it can be used as a drop-in replacement.
 
     Write side: pure numpy slice assignment into f32 shared memory (no torch).
-    Read side: logits bf16→f32 for batched mask+softmax in torch;
-    values are f32 in shared memory (server upcasts during D2H).
+    Read side: logits bf16→f32 for Cython mask+softmax (no torch on
+    read path); values are f32 in shared memory (server upcasts during D2H).
     A Queue carries request tuples and per-worker Events signal completion.
 
     Invariant: each worker may have at most one outstanding eval request at a
@@ -441,10 +443,9 @@ class RemoteEvaluator:
                 f"(worker {self._worker_idx})"
             )
 
-        # Logits: bf16 → f32 for mask+softmax; values: already f32
-        logits = self._out_logits[0].float()
-        logits.masked_fill_(torch.from_numpy(mask) <= 0, -1e9)
-        policy_probs = torch.softmax(logits, dim=-1).numpy()
+        # Logits: bf16 → f32 numpy for Cython mask+softmax; values: already f32
+        logits = self._out_logits[0].float().numpy()
+        policy_probs = apply_mask_softmax(logits, mask)
         canonical = unrotate_values(
             self._out_values[0].numpy(), active_player,
         )
@@ -479,17 +480,15 @@ class RemoteEvaluator:
                 f"(worker {self._worker_idx}, batch {n})"
             )
 
-        # Logits: bf16→f32 for mask+softmax; values: already f32
-        logits_f32 = self._out_logits[:n].float()
-        masks_t = torch.from_numpy(np.stack(masks_list))
-        logits_f32.masked_fill_(masks_t <= 0, -1e9)
-        probs_batch = torch.softmax(logits_f32, dim=-1).numpy()
+        # Logits: bf16→f32 numpy for Cython mask+softmax; values: already f32
+        logits_np = self._out_logits[:n].float().numpy()
         values_np = self._out_values[:n].numpy()
 
         results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for i in range(n):
+            policy_probs = apply_mask_softmax(logits_np[i], masks_list[i])
             canonical = unrotate_values(values_np[i], active_ids[i])
-            results.append((probs_batch[i].copy(), canonical, masks_list[i]))
+            results.append((policy_probs, canonical, masks_list[i]))
         return results
 
     def evaluate_leaves(
