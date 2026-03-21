@@ -180,7 +180,64 @@ def compute_terminal_values(
     return rank_weight * rank_values + (1.0 - rank_weight) * margin_values
 
 
-class NNEvaluator:
+class BaseEvaluator:
+    """Shared state and post-processing for MCTS evaluators.
+
+    Subclassed by NNEvaluator (local model inference) and
+    RemoteEvaluator (shared-memory IPC to eval server).
+    """
+
+    def __init__(self, num_players: int, terminal_rank_weight: float = 0.5) -> None:
+        self.num_players = num_players
+        self.terminal_rank_weight = terminal_rank_weight
+        self.layout = get_layout(num_players)
+
+    def evaluate_terminal(self, state: Any) -> np.ndarray:
+        """Compute terminal values from a game-over state.
+
+        Args:
+            state: GameState in GAME_OVER phase.
+
+        Returns:
+            Canonical values, shape (num_players,).
+        """
+        net_worths = [state.get_player_net_worth(i) for i in range(self.num_players)]
+        return compute_terminal_values(
+            net_worths, self.num_players, self.terminal_rank_weight
+        )
+
+    def _finalize_single(
+        self, logits: np.ndarray, values: np.ndarray,
+        mask: np.ndarray, active_player_id: int,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Apply mask+softmax and unrotate values for a single state."""
+        policy_probs = apply_mask_softmax(logits, mask)
+        canonical_values = unrotate_values(values, active_player_id)
+        return policy_probs, canonical_values, mask
+
+    def _finalize_batch(
+        self, logits_np: np.ndarray, values_np: np.ndarray,
+        masks: list[np.ndarray], active_player_ids: list[int],
+    ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """Apply mask+softmax and unrotate values for a batch of states."""
+        return [
+            self._finalize_single(logits_np[i], values_np[i], masks[i],
+                                  active_player_ids[i])
+            for i in range(len(active_player_ids))
+        ]
+
+    def _finalize_leaves(
+        self, logits_np: np.ndarray, values_np: np.ndarray,
+        active_player_ids: list[int],
+    ) -> list[tuple[np.ndarray, np.ndarray]]:
+        """Unrotate values for a batch of leaves (logits returned raw)."""
+        return [
+            (logits_np[i], unrotate_values(values_np[i], active_player_ids[i]))
+            for i in range(len(active_player_ids))
+        ]
+
+
+class NNEvaluator(BaseEvaluator):
     """Wraps a neural network model for MCTS leaf evaluation.
 
     Handles state rotation, legal action masking, inference,
@@ -190,11 +247,9 @@ class NNEvaluator:
     def __init__(self, model: torch.nn.Module, device: torch.device,
                  num_players: int = 3, *,
                  terminal_rank_weight: float = 0.5) -> None:
+        super().__init__(num_players, terminal_rank_weight)
         self.model = model
         self.device = device
-        self.num_players = num_players
-        self.terminal_rank_weight = terminal_rank_weight
-        self.layout = get_layout(num_players)
         self._autocast_dtype = torch.bfloat16 if device.type == "cuda" else None
         self.model.eval()
 
@@ -250,14 +305,10 @@ class NNEvaluator:
                             enabled=self._autocast_dtype is not None):
             policy_logits, value_output = self.model(x)
 
-        # Raw logits + values to numpy, then apply mask+softmax CPU-side
+        # Raw logits + values to numpy, then finalize CPU-side
         logits = policy_logits.float().squeeze(0).cpu().numpy()
-        policy_probs = apply_mask_softmax(logits, mask_np)
-
-        values_rotated = value_output.float().squeeze(0).cpu().numpy()
-        canonical_values = unrotate_values(values_rotated, active_player)
-
-        return policy_probs, canonical_values, mask_np
+        values = value_output.float().squeeze(0).cpu().numpy()
+        return self._finalize_single(logits, values, mask_np, active_player)
 
     @torch.no_grad()
     def evaluate_batch(
@@ -296,14 +347,7 @@ class NNEvaluator:
 
         logits = policy_logits.float().cpu().numpy()
         values = value_output.float().cpu().numpy()
-
-        results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-        for i in range(n):
-            policy_probs = apply_mask_softmax(logits[i], masks[i])
-            canonical_values = unrotate_values(values[i], active_players[i])
-            results.append((policy_probs, canonical_values, masks[i]))
-
-        return results
+        return self._finalize_batch(logits, values, masks, active_players)
 
     @torch.no_grad()
     def evaluate_leaves(
@@ -343,24 +387,4 @@ class NNEvaluator:
 
         logits = policy_logits.float().cpu().numpy()
         values = value_output.float().cpu().numpy()
-
-        results: list[tuple[np.ndarray, np.ndarray]] = []
-        for i in range(n):
-            canonical_values = unrotate_values(values[i], active_player_ids[i])
-            results.append((logits[i], canonical_values))
-
-        return results
-
-    def evaluate_terminal(self, state: Any) -> np.ndarray:
-        """Compute terminal values from a game-over state.
-
-        Args:
-            state: GameState in GAME_OVER phase.
-
-        Returns:
-            Canonical values, shape (num_players,).
-        """
-        net_worths = [state.get_player_net_worth(i) for i in range(self.num_players)]
-        return compute_terminal_values(
-            net_worths, self.num_players, self.terminal_rank_weight
-        )
+        return self._finalize_leaves(logits, values, active_player_ids)

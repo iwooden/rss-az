@@ -43,11 +43,8 @@ import numpy as np
 import torch
 
 from mcts.evaluator import (
-    apply_mask_softmax,
-    compute_terminal_values,
-    get_layout,
+    BaseEvaluator,
     rotate_visible_state_into,
-    unrotate_values,
 )
 from train.profile_stats import EvalClientStats, EvalServerStats
 
@@ -381,7 +378,7 @@ class EvaluationServer:
                     break
 
 
-class RemoteEvaluator:
+class RemoteEvaluator(BaseEvaluator):
     """Worker-side proxy that evaluates states via shared memory + EvaluationServer.
 
     Implements the same evaluate/evaluate_batch/evaluate_terminal interface
@@ -412,9 +409,7 @@ class RemoteEvaluator:
         profile: bool = False,
         terminal_rank_weight: float = 0.5,
     ) -> None:
-        self.num_players = num_players
-        self.terminal_rank_weight = terminal_rank_weight
-        self.layout = get_layout(num_players)
+        super().__init__(num_players, terminal_rank_weight)
         self._worker_idx = worker_idx
         self._in_states_np = shared_bufs.get_input_states_np(worker_idx)
         self._out_logits = shared_bufs.get_output_logits(worker_idx)
@@ -424,32 +419,31 @@ class RemoteEvaluator:
         self._profile = profile
         self._stats: EvalClientStats | None = EvalClientStats() if profile else None
 
+    def _request_eval(self, n: int) -> None:
+        """Signal the eval server and block until results are ready."""
+        self._event.clear()
+        self._queue.put((self._worker_idx, n))
+        if not self._event.wait(timeout=self._EVAL_TIMEOUT):
+            raise RuntimeError(
+                f"Eval server did not respond within {self._EVAL_TIMEOUT}s "
+                f"(worker {self._worker_idx}, batch {n})"
+            )
+
     def evaluate(self, state: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Evaluate a single state via the remote server."""
         from core.actions import get_valid_action_mask
 
         active_player = state.get_active_player()
-        # Write rotated state directly into shared memory — no intermediate
         rotate_visible_state_into(
             self._in_states_np[0], state._array, active_player, self.num_players
         )
         mask = get_valid_action_mask(state)
 
-        self._event.clear()
-        self._queue.put((self._worker_idx, 1))
-        if not self._event.wait(timeout=self._EVAL_TIMEOUT):
-            raise RuntimeError(
-                f"Eval server did not respond within {self._EVAL_TIMEOUT}s "
-                f"(worker {self._worker_idx})"
-            )
+        self._request_eval(1)
 
-        # Logits: bf16 → f32 numpy for Cython mask+softmax; values: already f32
         logits = self._out_logits[0].float().numpy()
-        policy_probs = apply_mask_softmax(logits, mask)
-        canonical = unrotate_values(
-            self._out_values[0].numpy(), active_player,
-        )
-        return policy_probs, canonical, mask
+        values = self._out_values[0].numpy()
+        return self._finalize_single(logits, values, mask, active_player)
 
     def evaluate_batch(
         self,
@@ -464,7 +458,6 @@ class RemoteEvaluator:
 
         active_ids = [s.get_active_player() for s in states]
 
-        # Write rotated states directly into shared memory — no intermediates
         masks_list = []
         for i, (s, ap) in enumerate(zip(states, active_ids)):
             rotate_visible_state_into(
@@ -472,24 +465,11 @@ class RemoteEvaluator:
             )
             masks_list.append(get_valid_action_mask(s))
 
-        self._event.clear()
-        self._queue.put((self._worker_idx, n))
-        if not self._event.wait(timeout=self._EVAL_TIMEOUT):
-            raise RuntimeError(
-                f"Eval server did not respond within {self._EVAL_TIMEOUT}s "
-                f"(worker {self._worker_idx}, batch {n})"
-            )
+        self._request_eval(n)
 
-        # Logits: bf16→f32 numpy for Cython mask+softmax; values: already f32
         logits_np = self._out_logits[:n].float().numpy()
         values_np = self._out_values[:n].numpy()
-
-        results: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-        for i in range(n):
-            policy_probs = apply_mask_softmax(logits_np[i], masks_list[i])
-            canonical = unrotate_values(values_np[i], active_ids[i])
-            results.append((policy_probs, canonical, masks_list[i]))
-        return results
+        return self._finalize_batch(logits_np, values_np, masks_list, active_ids)
 
     def evaluate_leaves(
         self,
@@ -510,7 +490,6 @@ class RemoteEvaluator:
         if _stats is not None:
             _t0 = perf_counter()
 
-        # Write rotated states directly into shared memory — no intermediates
         in_np = self._in_states_np
         for i, (arr, ap) in enumerate(zip(state_arrays, active_player_ids)):
             rotate_visible_state_into(in_np[i], arr, ap, self.num_players)
@@ -519,27 +498,15 @@ class RemoteEvaluator:
             _t1 = perf_counter()
             _stats.prepare_secs += _t1 - _t0
 
-        # Signal server and wait for completion
-        self._event.clear()
-        self._queue.put((self._worker_idx, n))
-        if not self._event.wait(timeout=self._EVAL_TIMEOUT):
-            raise RuntimeError(
-                f"Eval server did not respond within {self._EVAL_TIMEOUT}s "
-                f"(worker {self._worker_idx}, batch {n})"
-            )
+        self._request_eval(n)
 
         if _stats is not None:
             _t2 = perf_counter()
             _stats.wait_secs += _t2 - _t1
 
-        # Logits: bf16→f32; values: already f32
         logits_np = self._out_logits[:n].float().numpy()
         values_np = self._out_values[:n].numpy()
-
-        results: list[tuple[np.ndarray, np.ndarray]] = []
-        for i in range(n):
-            canonical = unrotate_values(values_np[i], active_player_ids[i])
-            results.append((logits_np[i], canonical))
+        results = self._finalize_leaves(logits_np, values_np, active_player_ids)
 
         if _stats is not None:
             _stats.result_secs += perf_counter() - _t2
@@ -556,12 +523,3 @@ class RemoteEvaluator:
     def get_profile_stats(self) -> EvalClientStats | None:
         """Return accumulated profile stats (None if profiling disabled)."""
         return self._stats
-
-    def evaluate_terminal(self, state: Any) -> np.ndarray:
-        """Compute terminal values locally (no NN needed)."""
-        net_worths = [
-            state.get_player_net_worth(i) for i in range(self.num_players)
-        ]
-        return compute_terminal_values(
-            net_worths, self.num_players, self.terminal_rank_weight
-        )
