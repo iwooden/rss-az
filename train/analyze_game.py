@@ -134,7 +134,10 @@ def analyze_game(
     state.initialize_game(seed=seed)
 
     terminal_rank_weight = terminal_blend if terminal_blend is not None else config.terminal_blend
-    evaluator = NNEvaluator(model, device, num_players=num_players)
+    evaluator = NNEvaluator(
+        model, device, num_players=num_players,
+        terminal_rank_weight=terminal_rank_weight,
+    )
     mcts_config = config.to_mcts_config()
     mcts_config = MCTSConfig(
         num_simulations=num_simulations,
