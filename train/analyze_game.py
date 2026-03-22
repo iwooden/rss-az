@@ -43,8 +43,15 @@ def _format_nn_eval(
     num_players: int,
     state: GameState,
     top_n: int = 10,
+    noised_priors: dict[int, float] | None = None,
 ) -> list[str]:
-    """Format NN evaluation into readable lines."""
+    """Format NN evaluation into readable lines.
+
+    Args:
+        noised_priors: If provided, maps global action index to the
+            noise-applied prior from the MCTS root. Shows the delta
+            next to each raw prior.
+    """
     lines = []
 
     # Values (canonical order)
@@ -62,7 +69,12 @@ def _format_nn_eval(
         prior = legal_priors[idx]
         action_str = format_action(action_idx, num_players, state)
         bar = "\u2588" * int(prior * 40)
-        lines.append(f"    {rank+1:2d}. {prior:6.1%} {bar} {action_str}")
+        if noised_priors is not None and action_idx in noised_priors:
+            noised = noised_priors[action_idx]
+            delta_pp = (noised - prior) * 100
+            lines.append(f"    {rank+1:2d}. {prior:6.1%} ({delta_pp:+5.1f}pp) {bar} {action_str}")
+        else:
+            lines.append(f"    {rank+1:2d}. {prior:6.1%} {bar} {action_str}")
 
     return lines
 
@@ -173,11 +185,20 @@ def analyze_game(
         action = int(root.legal_actions[np.argmax(root.visit_counts)])
         action_str = format_action(action, num_players, state)
 
+        # Build noised prior map if noise was applied
+        noised_map: dict[int, float] | None = None
+        if mcts_config.dirichlet_epsilon > 0 and root.priors is not None:
+            noised_map = {
+                int(root.legal_actions[i]): float(root.priors[i])
+                for i in range(len(root.legal_actions))
+            }
+
         # Log this decision point
         lines.append(f"### Step {step}: P{active_player} [{cur_phase}]")
         lines.append("")
         lines.extend(_format_nn_eval(
-            policy_probs, values, legal_mask, num_players, state, top_n
+            policy_probs, values, legal_mask, num_players, state, top_n,
+            noised_priors=noised_map,
         ))
         lines.append("")
         lines.extend(_format_mcts_visits(root, num_players, state, top_n))
