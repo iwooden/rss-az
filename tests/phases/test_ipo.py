@@ -4,9 +4,12 @@ from core.state import get_layout
 from core.data import (
     GamePhases, GameConstants,
     get_company_face_value, get_company_stars,
+    get_company_low_price, get_company_high_price,
+    get_adjusted_company_income,
     get_par_price, get_market_index,
     get_corp_share_count, is_valid_par_price,
-    PY_COMPANY_PRICE_DIVISOR,
+    PY_COMPANY_PRICE_DIVISOR, PY_COMPANY_STAR_DIVISOR,
+    PY_COMPANY_INCOME_DIVISOR,
 )
 from core.actions import get_valid_action_mask, get_action_layout
 from entities.turn import TURN
@@ -872,15 +875,28 @@ class TestActiveCompanyIPO:
     """Test active company block during IPO phase."""
 
     def test_active_company_set_during_ipo(self, ipo_state_with_company):
-        """Active company block matches the company being considered for IPO."""
+        """Active company block fully populated during IPO phase."""
         state = ipo_state_with_company
         company_id = TURN.get_ipo_company(state)
         assert company_id >= 0
 
         layout = get_layout(3)
-        expected_fv = get_company_face_value(company_id) / PY_COMPANY_PRICE_DIVISOR
-        assert abs(state._array[layout.active_company_face_value_offset] - expected_fv) < 1e-6
-        assert state._array[layout.active_company_stars_offset] > 0.0
+        coo_level = TURN.get_coo_level(state)
+
+        # One-hot should identify the company
+        assert state._array[layout.active_company_offset + company_id] == 1.0
+
+        # All scalar fields should be populated
+        assert abs(state._array[layout.active_company_face_value_offset]
+                   - get_company_face_value(company_id) / PY_COMPANY_PRICE_DIVISOR) < 1e-6
+        assert abs(state._array[layout.active_company_stars_offset]
+                   - get_company_stars(company_id) / PY_COMPANY_STAR_DIVISOR) < 1e-6
+        assert abs(state._array[layout.active_company_low_price_offset]
+                   - get_company_low_price(company_id) / PY_COMPANY_PRICE_DIVISOR) < 1e-6
+        assert abs(state._array[layout.active_company_high_price_offset]
+                   - get_company_high_price(company_id) / PY_COMPANY_PRICE_DIVISOR) < 1e-6
+        assert abs(state._array[layout.active_company_income_offset]
+                   - get_adjusted_company_income(company_id, coo_level) / PY_COMPANY_INCOME_DIVISOR) < 1e-6
 
     def test_active_company_cleared_after_ipo_phase_ends(self, ipo_state_with_company):
         """Active company block is zeroed after IPO phase transitions to INVEST."""
@@ -921,16 +937,28 @@ class TestActiveCompanyIPO:
             assert second_fv != first_fv or second_company != first_company
 
     def test_active_company_preserved_in_par_phase(self, ipo_state_with_company):
-        """Active company remains set during PAR sub-phase."""
+        """Active company block fully preserved during PAR sub-phase."""
         state = ipo_state_with_company
         layout = get_layout(3)
 
         company_id = TURN.get_ipo_company(state)
-        expected_fv = get_company_face_value(company_id) / PY_COMPANY_PRICE_DIVISOR
+        coo_level = TURN.get_coo_level(state)
 
         # Transition to PAR
         apply_ipo_action_py(state, 0)
         assert state.get_phase() == GamePhases.PHASE_PAR
 
-        # Active company should still be set
-        assert abs(state._array[layout.active_company_face_value_offset] - expected_fv) < 1e-6
+        # One-hot should still identify the company
+        assert state._array[layout.active_company_offset + company_id] == 1.0
+
+        # All scalar fields should still be populated (same company)
+        assert abs(state._array[layout.active_company_face_value_offset]
+                   - get_company_face_value(company_id) / PY_COMPANY_PRICE_DIVISOR) < 1e-6
+        assert abs(state._array[layout.active_company_stars_offset]
+                   - get_company_stars(company_id) / PY_COMPANY_STAR_DIVISOR) < 1e-6
+        assert abs(state._array[layout.active_company_low_price_offset]
+                   - get_company_low_price(company_id) / PY_COMPANY_PRICE_DIVISOR) < 1e-6
+        assert abs(state._array[layout.active_company_high_price_offset]
+                   - get_company_high_price(company_id) / PY_COMPANY_PRICE_DIVISOR) < 1e-6
+        assert abs(state._array[layout.active_company_income_offset]
+                   - get_adjusted_company_income(company_id, coo_level) / PY_COMPANY_INCOME_DIVISOR) < 1e-6
