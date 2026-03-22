@@ -24,7 +24,7 @@ from core.data import GamePhases
 from core.driver import DRIVER, STATUS_GAME_OVER_PY as STATUS_GAME_OVER
 from core.state import GameState, get_layout
 from entities.turn import TURN
-from mcts.evaluator import NNEvaluator
+from mcts.evaluator import NNEvaluator, compute_terminal_values
 from mcts.search import StatePool, run_search, get_greedy_leaf_value
 from nn import create_model
 from tests.debug_trace import (
@@ -110,6 +110,10 @@ def analyze_game(
     search_batch_size: int = 1,
     top_n: int = 10,
     verbose: bool = False,
+    *,
+    dirichlet_epsilon: float | None = None,
+    dirichlet_dynamic: bool | None = None,
+    terminal_blend: float | None = None,
 ) -> str:
     """Play a self-play game with full MCTS and return a detailed log."""
     num_players = config.num_players
@@ -117,12 +121,16 @@ def analyze_game(
     state = GameState(num_players)
     state.initialize_game(seed=seed)
 
+    terminal_rank_weight = terminal_blend if terminal_blend is not None else config.terminal_blend
     evaluator = NNEvaluator(model, device, num_players=num_players)
+    mcts_config = config.to_mcts_config()
     mcts_config = MCTSConfig(
         num_simulations=num_simulations,
-        c_puct=config.c_puct_final,
-        dirichlet_alpha=config.dirichlet_alpha,
-        dirichlet_epsilon=0.0,
+        c_puct=mcts_config.c_puct,
+        dirichlet_alpha=mcts_config.dirichlet_alpha,
+        dirichlet_epsilon=dirichlet_epsilon if dirichlet_epsilon is not None else mcts_config.dirichlet_epsilon,
+        dirichlet_dynamic=dirichlet_dynamic if dirichlet_dynamic is not None else mcts_config.dirichlet_dynamic,
+        dirichlet_alpha_numerator=mcts_config.dirichlet_alpha_numerator,
         num_players=num_players,
         search_batch_size=search_batch_size,
     )
@@ -132,7 +140,14 @@ def analyze_game(
     rng = np.random.default_rng(seed)
 
     lines: list[str] = []
+    noise_desc = f"epsilon={mcts_config.dirichlet_epsilon}"
+    if mcts_config.dirichlet_epsilon > 0:
+        if mcts_config.dirichlet_dynamic:
+            noise_desc += f", dynamic alpha={mcts_config.dirichlet_alpha_numerator}/K"
+        else:
+            noise_desc += f", alpha={mcts_config.dirichlet_alpha}"
     lines.append(f"# Self-Play Analysis: seed={seed}, {num_simulations} simulations/move")
+    lines.append(f"# Noise: {noise_desc} | Terminal blend: {terminal_rank_weight}")
     lines.append("")
     lines.append(format_state_full(state))
     lines.append("")
@@ -219,6 +234,11 @@ def analyze_game(
     lines.append("")
     lines.append(f"**Winner: P{winner} (${net_worths[winner]})**")
 
+    # Terminal reward values
+    terminal_values = compute_terminal_values(net_worths, num_players, terminal_rank_weight)
+    tv_parts = [f"P{i}={terminal_values[i]:+.3f}" for i in range(num_players)]
+    lines.append(f"Terminal values (blend={terminal_rank_weight}): {', '.join(tv_parts)}")
+
     return "\n".join(lines)
 
 
@@ -239,6 +259,28 @@ def main() -> None:
     parser.add_argument("--top-n", type=int, default=10, help="Top N actions to show")
     parser.add_argument("--verbose", action="store_true", help="Full state dump every step")
     parser.add_argument("--output", type=str, default=None, help="Output file (default: stdout)")
+    parser.add_argument(
+        "--terminal-blend", type=float, default=None,
+        help="Rank vs margin weight for terminal rewards (0=margin, 1=rank, default from checkpoint)",
+    )
+    noise_group = parser.add_mutually_exclusive_group()
+    noise_group.add_argument(
+        "--no-dirichlet-noise", dest="dirichlet_epsilon", action="store_const", const=0.0,
+        help="Disable Dirichlet noise at root (pure NN priors)",
+    )
+    noise_group.add_argument(
+        "--dirichlet-epsilon", type=float, default=None,
+        help="Dirichlet noise epsilon (default from checkpoint)",
+    )
+    dyn_group = parser.add_mutually_exclusive_group()
+    dyn_group.add_argument(
+        "--dynamic-dirichlet", dest="dirichlet_dynamic", action="store_true", default=None,
+        help="Use dynamic alpha = numerator / n_legal_actions",
+    )
+    dyn_group.add_argument(
+        "--no-dynamic-dirichlet", dest="dirichlet_dynamic", action="store_false",
+        help="Use static alpha",
+    )
     args = parser.parse_args()
 
     # Device
@@ -278,6 +320,9 @@ def main() -> None:
     result = analyze_game(
         model, device, config, args.seed, args.simulations,
         args.search_batch_size, args.top_n, args.verbose,
+        dirichlet_epsilon=args.dirichlet_epsilon,
+        dirichlet_dynamic=args.dirichlet_dynamic,
+        terminal_blend=args.terminal_blend,
     )
 
     if args.output:
