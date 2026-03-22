@@ -35,7 +35,8 @@ cdef enum ActionType:
     ACTION_CLOSE = 8          # Close current company
     ACTION_DIVIDEND = 9       # Pay dividend: amount
     ACTION_ISSUE = 10         # Issue share
-    ACTION_IPO = 11           # IPO: (corp_id, par_slot)
+    ACTION_IPO = 11           # IPO: select corp (corp_id)
+    ACTION_PAR = 12           # PAR: select par price (par_index)
 
 
 # =============================================================================
@@ -74,7 +75,10 @@ cdef struct ActionLayout:
     int issue_action          # 205
     # IPO sub-offsets
     int ipo_pass              # 206
-    int ipo_base              # 207 (corp_id * MAX_PAR_SLOTS + par_slot)
+    int ipo_base              # 207 (+corp_id)
+    # PAR sub-offsets
+    int par_start             # 215
+    int par_base              # 215 (+par_index, 0-13)
 
 
 # =============================================================================

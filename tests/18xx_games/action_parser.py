@@ -10,8 +10,6 @@ from core.data import (
     CORP_NAME_TO_ID,
     COMPANY_NAMES,
     get_company_face_value,
-    get_company_stars,
-    get_par_index_for_slot,
     get_par_price,
 )
 from core.actions import get_action_layout
@@ -383,13 +381,17 @@ def map_bid_action(action: dict, layout: ActionLayout) -> int:
     raise ValueError(f"Unrecognised bid action type: {atype!r}")
 
 
-def map_ipo_action(action: dict, layout: ActionLayout) -> int:
+def map_ipo_action(action: dict, layout: ActionLayout) -> list[int]:
     """
-    Map an 18xx IPO-phase action to our engine's action index.
+    Map an 18xx IPO-phase action to our engine's action indices.
+
+    The IPO+PAR two-phase flow means a 'par' action maps to TWO engine
+    actions: corp selection (IPO phase) + par price (PAR phase).
+    A 'pass' maps to a single action.
 
     Supported action types:
-    - 'pass' -> IPO pass
-    - 'par'  -> IPO a company into a corp at a given par price
+    - 'pass' -> [IPO pass]
+    - 'par'  -> [IPO select corp, PAR select price]
 
     The 'par' action format:
     - action['entity']:      company name being IPO'd (e.g. 'MHE')
@@ -401,7 +403,7 @@ def map_ipo_action(action: dict, layout: ActionLayout) -> int:
         layout: ActionLayout for the current num_players.
 
     Returns:
-        Engine action index.
+        List of engine action indices (1 for pass, 2 for par).
 
     Raises:
         ValueError: If the par price is not valid for the company's star tier,
@@ -410,7 +412,7 @@ def map_ipo_action(action: dict, layout: ActionLayout) -> int:
     atype = action['type']
 
     if atype == 'pass':
-        return layout.ipo_pass
+        return [layout.ipo_pass]
 
     if atype == 'par':
         # Parse share price from "price,row,col" format
@@ -420,28 +422,22 @@ def map_ipo_action(action: dict, layout: ActionLayout) -> int:
         corp_name = action['corporation']
         corp_id = CORP_NAME_TO_ID[corp_name]
 
-        # Identify the company being IPO'd to get its star tier
-        company_name = action['entity']
-        company_id = COMPANY_NAME_TO_ID[company_name]
-        star_tier = get_company_stars(company_id)
-
-        # Find which par_slot corresponds to this price for this star tier
-        par_slot = None
-        for slot in range(8):  # MAX_PAR_SLOTS = 8
-            par_index = get_par_index_for_slot(star_tier, slot)
-            if par_index < 0:
-                break  # No more valid slots for this tier
-            if get_par_price(par_index) == par_price:
-                par_slot = slot
+        # Find par_index by matching the price against ALL_PAR_PRICES
+        par_index = None
+        for idx in range(14):  # NUM_PAR_PRICES = 14
+            if get_par_price(idx) == par_price:
+                par_index = idx
                 break
 
-        if par_slot is None:
+        if par_index is None:
             raise ValueError(
-                f"Par price {par_price} is not a valid par price for star tier "
-                f"{star_tier} (company {company_name!r})"
+                f"Par price {par_price} is not a valid par price"
             )
 
-        return layout.ipo_base + corp_id * 8 + par_slot  # MAX_PAR_SLOTS = 8
+        return [
+            layout.ipo_base + corp_id,      # IPO: select corp
+            layout.par_base + par_index,    # PAR: select par price
+        ]
 
     raise ValueError(f"Unrecognised IPO action type: {atype!r}")
 

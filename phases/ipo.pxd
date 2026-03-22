@@ -7,4 +7,5 @@ from core.state cimport GameState
 from core.actions cimport ActionInfo
 
 cdef int apply_ipo_action(GameState state, ActionInfo* info) noexcept
+cdef int apply_par_action(GameState state, ActionInfo* info) noexcept
 cpdef void setup_ipo_phase(GameState state)

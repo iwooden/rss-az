@@ -1,22 +1,29 @@
 # cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
 """
-IPO phase: Player-owned companies may form corporations.
+IPO + PAR phases: Player-owned companies may form corporations.
 
-DESIGN: Processing Order and Form Corporation
-==============================================
-Processing order: Descending face value (highest first).
-For each player-owned company:
-1. Company owner decides: Form Corporation (choose corp + par) or Pass
-2. If IPO: Execute Form Corporation procedure
+DESIGN: Two-Phase Corporation Formation
+========================================
+The IPO/PAR flow splits corporation formation into two sequential decisions:
+
+IPO Phase:
+- Companies processed in descending face value order (highest first)
+- For each player-owned company, the owner chooses a corp charter OR passes
+- Selecting a corp transitions to the PAR sub-phase
+
+PAR Phase:
+- The player selects a valid par price for the chosen corp
+- No pass action — once a corp is selected, a par price must be chosen
+- After par selection, Form Corporation is executed and the next company
+  is processed (back in IPO phase)
 
 Form Corporation procedure:
-1. Player selects available corp charter and valid par price for company's color
-2. Share distribution based on face value vs par price:
+1. Share distribution based on face value vs par price:
    - FV > par: player gets 2 shares, bank gets 2 shares
    - FV <= par: player gets 1 share, bank gets 1 share
-3. Player pays corp: (player_shares * par_price) - face_value
-4. Bank pays corp: bank_shares * par_price
-5. Company becomes subsidiary of new corporation
+2. Player pays corp: (player_shares * par_price) - face_value
+3. Bank pays corp: bank_shares * par_price
+4. Company becomes subsidiary of new corporation
 
 Phase transitions:
 - After all companies processed -> INVEST (new turn)
@@ -25,12 +32,12 @@ Phase transitions:
 from core.state cimport GameState
 from core.data cimport (
     GameConstants, GamePhases,
-    PHASE_INVEST,
+    PHASE_INVEST, PHASE_PAR,
     get_company_face_value, get_company_stars,
-    get_par_price, get_par_index_for_slot, get_market_index,
-    get_corp_share_count
+    get_par_price, get_market_index,
+    get_corp_share_count, is_valid_par_price
 )
-from core.actions cimport ActionInfo, ACTION_PASS, ACTION_IPO
+from core.actions cimport ActionInfo, ACTION_PASS, ACTION_IPO, ACTION_PAR
 from entities import turn as turn_module
 from entities import corp as corp_module
 from entities import company as company_module
@@ -91,13 +98,13 @@ cdef int _find_next_ipo_company(GameState state) noexcept:
     return best_company
 
 
-cdef void _process_ipo(GameState state, int corp_id, int par_slot) noexcept:
+cdef void _process_ipo(GameState state, int corp_id, int par_index) noexcept:
     """
     Execute Form Corporation procedure.
 
     Per RULES.md Form Corporation:
     1. Select unused charter card (corp_id)
-    2. Select valid par price for company's color (par_slot)
+    2. Select valid par price (par_index, directly into ALL_PAR_PRICES)
     3. Share distribution:
        - FV > par: player 2, bank 2
        - FV <= par: player 1, bank 1
@@ -108,16 +115,14 @@ cdef void _process_ipo(GameState state, int corp_id, int par_slot) noexcept:
     Args:
         state: Game state
         corp_id: Selected corporation charter
-        par_slot: Selected par price slot for this star tier
+        par_index: Index into ALL_PAR_PRICES (0-13)
     """
     # Get current IPO company info
     cdef int company_id = turn_module.TURN.get_ipo_company(state)
     cdef int player_id = company_module.COMPANIES[company_id].get_owner_id(state)
-    cdef int star_tier = get_company_stars(company_id)
     cdef int face_value = get_company_face_value(company_id)
 
-    # Get par price from slot
-    cdef int par_index = get_par_index_for_slot(star_tier, par_slot)
+    # Get par price directly from index
     cdef int par_price = get_par_price(par_index)
     cdef int market_index = get_market_index(par_price)
 
@@ -195,7 +200,8 @@ cdef void _advance_to_next_company(GameState state) noexcept:
     # (catches INCOME cash changes, prior IPO payments, and share acquisitions)
     player_module.update_all_net_worths(state)
 
-    # Set up for company owner's decision
+    # Set up for company owner's decision (IPO phase)
+    turn_module.TURN.set_phase(state, GamePhases.PHASE_IPO)
     turn_module.TURN.set_ipo_company(state, company_id)
     state.set_active_company(company_id)
     player_id = company_module.COMPANIES[company_id].get_owner_id(state)
@@ -203,51 +209,85 @@ cdef void _advance_to_next_company(GameState state) noexcept:
 
 
 # =============================================================================
-# ACTION HANDLER
+# ACTION HANDLERS
 # =============================================================================
 
 cdef int apply_ipo_action(GameState state, ActionInfo* info) noexcept:
     """
-    Apply IPO phase player action.
+    Apply IPO phase player action (corp selection).
 
     Action types:
     - ACTION_PASS: Owner declines to IPO this company
-    - ACTION_IPO: Owner forms corporation (corp_id, par_slot)
-
-    Steps:
-    1. If IPO: Execute Form Corporation procedure
-    2. Mark company as processed
-    3. Advance to next company
+    - ACTION_IPO: Owner selects a corp charter -> transitions to PAR phase
 
     Returns: 0=success, 1=invalid
     """
     cdef int company_id = turn_module.TURN.get_ipo_company(state)
-    cdef int star_tier
-    cdef int par_index
 
     if company_id < 0:
         return 1  # No active company
 
     if info.action_type == ACTION_IPO:
         # Validate corp is available (not already active)
+        if info.corp_id < 0 or info.corp_id >= <int>GameConstants.NUM_CORPS:
+            return 1
         if corp_module.CORPS[info.corp_id].is_active(state):
             return 1  # Corp already in use
 
-        # Validate par_index bounds (memory safety)
-        star_tier = get_company_stars(company_id)
-        par_index = get_par_index_for_slot(star_tier, info.slot)
-        if par_index < 0 or par_index >= <int>GameConstants.NUM_PAR_PRICES:
-            return 1  # Invalid par slot
+        # Store selected corp and transition to PAR phase
+        turn_module.TURN.set_par_corp(state, info.corp_id)
+        state.set_active_corp(info.corp_id)
+        turn_module.TURN.set_phase(state, PHASE_PAR)
 
-        # Process the IPO
-        _process_ipo(state, info.corp_id, info.slot)
     elif info.action_type == ACTION_PASS:
-        # Mark as processed
+        # Mark as processed, advance to next company
         turn_module.TURN.set_ipo_remaining(state, company_id, False)
+        _advance_to_next_company(state)
     else:
         return 1  # Invalid action type
 
-    # Advance to next company
+    return 0
+
+
+cdef int apply_par_action(GameState state, ActionInfo* info) noexcept:
+    """
+    Apply PAR phase player action (par price selection).
+
+    Action types:
+    - ACTION_PAR: Select par price for the locked-in corp
+
+    There is no pass in the PAR phase — once a corp is selected,
+    a par price must be chosen.
+
+    Returns: 0=success, 1=invalid
+    """
+    if info.action_type != ACTION_PAR:
+        return 1  # Only ACTION_PAR is valid in PAR phase
+
+    cdef int company_id = turn_module.TURN.get_ipo_company(state)
+    cdef int corp_id = turn_module.TURN.get_par_corp(state)
+    cdef int par_index = info.slot
+
+    if company_id < 0 or corp_id < 0:
+        return 1  # Invalid state
+
+    # Validate par_index bounds
+    if par_index < 0 or par_index >= <int>GameConstants.NUM_PAR_PRICES:
+        return 1
+
+    # Validate par price is valid for company's star tier
+    cdef int star_tier = get_company_stars(company_id)
+    if not is_valid_par_price(star_tier, par_index):
+        return 1
+
+    # Execute Form Corporation
+    _process_ipo(state, corp_id, par_index)
+
+    # Clear PAR state
+    turn_module.TURN.clear_par_corp(state)
+    state.clear_active_corp()
+
+    # Advance to next company (sets phase back to IPO or transitions out)
     _advance_to_next_company(state)
 
     return 0
@@ -283,19 +323,17 @@ def setup_ipo_phase_py(GameState state):
     setup_ipo_phase(state)
 
 
-def apply_ipo_action_py(GameState state, int corp_id, int par_slot):
+def apply_ipo_action_py(GameState state, int corp_id):
     """
-    Python wrapper for apply_ipo_action with IPO action.
+    Python wrapper for apply_ipo_action with IPO action (corp selection).
 
     Args:
         state: Game state
-        corp_id: Corporation to form
-        par_slot: Par price slot for company's star tier
+        corp_id: Corporation to select
     """
     cdef ActionInfo info
     info.action_type = ACTION_IPO
     info.corp_id = corp_id
-    info.slot = par_slot
     return apply_ipo_action(state, &info)
 
 
@@ -306,11 +344,25 @@ def apply_ipo_pass_py(GameState state):
     return apply_ipo_action(state, &info)
 
 
+def apply_par_action_py(GameState state, int par_index):
+    """
+    Python wrapper for apply_par_action.
+
+    Args:
+        state: Game state
+        par_index: Index into ALL_PAR_PRICES (0-13)
+    """
+    cdef ActionInfo info
+    info.action_type = ACTION_PAR
+    info.slot = par_index
+    return apply_par_action(state, &info)
+
+
 def find_next_ipo_company_py(GameState state):
     """Python wrapper for _find_next_ipo_company."""
     return _find_next_ipo_company(state)
 
 
-def process_ipo_py(GameState state, int corp_id, int par_slot):
+def process_ipo_py(GameState state, int corp_id, int par_index):
     """Python wrapper for _process_ipo."""
-    _process_ipo(state, corp_id, par_slot)
+    _process_ipo(state, corp_id, par_index)

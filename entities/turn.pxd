@@ -48,6 +48,7 @@ cdef class TurnState:
     cdef int _hidden_dividend_corp_offset
     cdef int _hidden_issue_corp_offset
     cdef int _hidden_ipo_company_offset
+    cdef int _hidden_par_corp_offset
     cdef int _hidden_closing_company_offset
 
     # Turn state base offset
@@ -166,6 +167,11 @@ cdef class TurnState:
     cpdef void set_ipo_company(self, GameState state, int company_id)
     cpdef void clear_ipo_company(self, GameState state)
 
+    # PAR state (sets active_corp one-hot + hidden compact)
+    cpdef int get_par_corp(self, GameState state)
+    cpdef void set_par_corp(self, GameState state, int corp_id)
+    cpdef void clear_par_corp(self, GameState state)
+
     cpdef bint is_ipo_remaining(self, GameState state, int company_id)
     cpdef void set_ipo_remaining(self, GameState state, int company_id, bint remaining)
 
@@ -207,6 +213,7 @@ cdef class TurnState:
     cdef inline int _get_dividend_corp_nogil(self, float* data) noexcept nogil
     cdef inline int _get_issue_corp_nogil(self, float* data) noexcept nogil
     cdef inline int _get_ipo_company_nogil(self, float* data) noexcept nogil
+    cdef inline int _get_par_corp_nogil(self, float* data) noexcept nogil
     cdef inline int _get_closing_company_nogil(self, float* data) noexcept nogil
     cdef inline int _get_auction_price_nogil(self, float* data) noexcept nogil
     cdef inline int _get_coo_level_nogil(self, float* data) noexcept nogil

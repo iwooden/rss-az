@@ -88,6 +88,28 @@ def pass_through_phase(state, num_players, phase, pass_action_key, max_iteration
     return iterations
 
 
+def do_ipo_action(state, num_players):
+    """Find and execute a valid IPO action (corp selection + par price).
+
+    Returns True if an IPO was executed, False if no valid action found.
+    """
+    layout = get_action_layout(num_players)
+    ipo_action = find_valid_action(
+        state, layout['ipo_base'], layout['ipo_base'] + 8
+    )
+    if ipo_action is None:
+        return False
+    apply_action(state, ipo_action, "IPO select corp")
+    # Now in PAR phase - find and apply a valid par price
+    assert state.get_phase() == GamePhases.PHASE_PAR
+    par_action = find_valid_action(
+        state, layout['par_base'], layout['par_base'] + 14
+    )
+    assert par_action is not None, "Should have valid par action after selecting corp"
+    apply_action(state, par_action, "PAR select price")
+    return True
+
+
 def apply_action_or_game_over(state, action_idx, msg=""):
     """Apply action via apply_and_verify_all, accepting OK or GAME_OVER.
 
@@ -270,13 +292,7 @@ class TestTurnWithAuction:
         assert state.get_phase() == GamePhases.PHASE_IPO
 
         # Find valid IPO action (not pass)
-        ipo_action = find_valid_action(
-            state, layout['ipo_base'], layout['ipo_base'] + 64
-        )
-
-        if ipo_action:
-            apply_action(state, ipo_action, "IPO company")
-
+        if do_ipo_action(state, 3):
             # Verify a corp is now active
             active_corps = sum(1 for i in range(8) if CORPS[i].is_active(state))
             assert active_corps >= 1, "Should have at least one active corp"
@@ -325,11 +341,7 @@ class TestTurnWithActiveCorp:
         # IPO the company
         assert state.get_phase() == GamePhases.PHASE_IPO
 
-        ipo_action = find_valid_action(
-            state, layout['ipo_base'], layout['ipo_base'] + 64
-        )
-        assert ipo_action is not None, "Should have valid IPO action"
-        apply_action(state, ipo_action, "IPO company")
+        assert do_ipo_action(state, 3), "Should have valid IPO action"
 
         # Complete IPO phase
         while state.get_phase() == GamePhases.PHASE_IPO:
@@ -459,11 +471,7 @@ class TestMultiTurn:
         pass_all_players(state, 3)
 
         # IPO the company
-        ipo_action = find_valid_action(
-            state, layout['ipo_base'], layout['ipo_base'] + 64
-        )
-        if ipo_action:
-            apply_action(state, ipo_action, "IPO")
+        do_ipo_action(state, 3)
 
         while state.get_phase() == GamePhases.PHASE_IPO:
             apply_action(state, layout['ipo_pass'], "Pass IPO")
@@ -528,11 +536,7 @@ class TestMultiTurn:
 
         pass_all_players(state, 3)
 
-        ipo_action = find_valid_action(
-            state, layout['ipo_base'], layout['ipo_base'] + 64
-        )
-        if ipo_action:
-            apply_action(state, ipo_action, "IPO 1")
+        do_ipo_action(state, 3)
 
         while state.get_phase() == GamePhases.PHASE_IPO:
             apply_action(state, layout['ipo_pass'], "Pass IPO")
@@ -561,11 +565,7 @@ class TestMultiTurn:
         pass_through_phase(state, 3, GamePhases.PHASE_ISSUE_SHARES, 'issue_pass')
 
         # Try to IPO second company
-        ipo_action = find_valid_action(
-            state, layout['ipo_base'], layout['ipo_base'] + 64
-        )
-        if ipo_action:
-            apply_action(state, ipo_action, "IPO 2")
+        do_ipo_action(state, 3)
 
         while state.get_phase() == GamePhases.PHASE_IPO:
             apply_action(state, layout['ipo_pass'], "Pass IPO")
@@ -612,11 +612,7 @@ class TestMultiTurn:
             pass_through_phase(state, num_players, GamePhases.PHASE_ISSUE_SHARES, 'issue_pass')
 
             # IPO if available
-            ipo_action = find_valid_action(
-                state, layout['ipo_base'], layout['ipo_base'] + 64
-            )
-            if ipo_action:
-                apply_action(state, ipo_action, "IPO")
+            do_ipo_action(state, num_players)
 
             while state.get_phase() == GamePhases.PHASE_IPO:
                 apply_action(state, layout['ipo_pass'], "Pass IPO")
@@ -638,7 +634,7 @@ class TestGameEnd:
     def test_game_over_phase_recognized(self):
         """Verify GAME_OVER phase constant is recognized."""
         # Just verify the constant exists and has expected value
-        assert GamePhases.PHASE_GAME_OVER == 10
+        assert GamePhases.PHASE_GAME_OVER == 11
 
     def test_extended_play_eventually_ends_or_continues(self):
         """Play many turns - game should either end or continue stably."""
@@ -771,11 +767,7 @@ class TestAcquisitionClosingDriver:
         pass_all_players(state, num_players)
 
         # IPO the company
-        ipo_action = find_valid_action(
-            state, layout['ipo_base'], layout['ipo_base'] + 64
-        )
-        assert ipo_action is not None
-        apply_action(state, ipo_action, "IPO")
+        assert do_ipo_action(state, 3), "Should have valid IPO action"
 
         while state.get_phase() == GamePhases.PHASE_IPO:
             apply_action(state, layout['ipo_pass'], "Pass IPO")

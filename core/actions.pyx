@@ -26,7 +26,7 @@ from core.actions cimport (
     ActionLayout, ActionInfo, ActionType,
     ACTION_PASS, ACTION_AUCTION, ACTION_BUY_SHARE, ACTION_SELL_SHARE,
     ACTION_LEAVE_AUCTION, ACTION_RAISE_BID, ACTION_ACQ_PRICE, ACTION_ACQ_FI_BUY,
-    ACTION_CLOSE, ACTION_DIVIDEND, ACTION_ISSUE, ACTION_IPO,
+    ACTION_CLOSE, ACTION_DIVIDEND, ACTION_ISSUE, ACTION_IPO, ACTION_PAR,
     AUCTION_CAP, MAX_PAR_SLOTS, ACQ_PRICE_RANGE
 )
 
@@ -59,11 +59,13 @@ cdef int get_total_actions_for_players(int num_players) noexcept nogil:
     """
     Calculate total action count for a given player count.
 
-    165 fixed non-auction actions + (1 + num_players) * AUCTION_CAP
+    123 fixed non-auction actions + (1 + num_players) * AUCTION_CAP
     The +1 accounts for BID phase raise actions (AUCTION_CAP - 1 raises + 1 leave).
     """
-    # 165 = pass(1) + buy(8) + sell(8) + leave(1) + acq(53) + close(2) + div(26) + issue(2) + ipo(65)
-    return 165 + (1 + num_players) * AUCTION_CAP
+    # 123 = pass(1) + buy(8) + sell(8) + leave(1) + acq(53) + close(2) + div(26) + issue(2) + ipo(9) + par(14)
+    #   ipo(9) = 1 pass + 8 corp selections
+    #   par(14) = 14 par price indices (no pass)
+    return 123 + (1 + num_players) * AUCTION_CAP
 
 
 cdef ActionLayout compute_action_layout(int num_players) noexcept nogil:
@@ -126,13 +128,19 @@ cdef ActionLayout compute_action_layout(int num_players) noexcept nogil:
     offset += 1
     # Total issue: 2
 
-    # IPO phase (65 actions)
+    # IPO phase (9 actions: 1 pass + 8 corp selections)
     layout.ipo_start = offset
     layout.ipo_pass = offset
     offset += 1
-    layout.ipo_base = offset  # corp_id * MAX_PAR_SLOTS + par_slot
-    offset += GameConstants.NUM_CORPS * MAX_PAR_SLOTS  # 64
-    # Total IPO: 1 + 64 = 65
+    layout.ipo_base = offset  # +corp_id (0-7)
+    offset += GameConstants.NUM_CORPS  # 8
+    # Total IPO: 1 + 8 = 9
+
+    # PAR phase (14 actions: par price indices, no pass)
+    layout.par_start = offset
+    layout.par_base = offset  # +par_index (0-13)
+    offset += NUM_PAR_PRICES  # 14
+    # Total PAR: 14
 
     return layout
 
@@ -225,14 +233,19 @@ cdef ActionInfo decode_action(ActionLayout* layout, int action_idx) noexcept nog
         return info
 
     # IPO phase
-    info.phase = GamePhases.PHASE_IPO
-    if action_idx == layout.ipo_pass:
-        info.action_type = ACTION_PASS
-    else:
-        info.action_type = ACTION_IPO
-        ipo_offset = action_idx - layout.ipo_base
-        info.corp_id = ipo_offset // MAX_PAR_SLOTS
-        info.slot = ipo_offset % MAX_PAR_SLOTS  # par_slot
+    if action_idx < layout.par_start:
+        info.phase = GamePhases.PHASE_IPO
+        if action_idx == layout.ipo_pass:
+            info.action_type = ACTION_PASS
+        else:
+            info.action_type = ACTION_IPO
+            info.corp_id = action_idx - layout.ipo_base
+        return info
+
+    # PAR phase
+    info.phase = GamePhases.PHASE_PAR
+    info.action_type = ACTION_PAR
+    info.slot = action_idx - layout.par_base  # par_index (0-13)
     return info
 
 
@@ -446,11 +459,17 @@ cdef void _fill_issue_mask(GameState state, ActionLayout* layout, float* mask, T
 
 
 cdef void _fill_ipo_mask(GameState state, ActionLayout* layout, float* mask, Player active_player, TurnState turn) noexcept nogil:
-    """Fill mask for IPO phase actions."""
+    """Fill mask for IPO phase actions (corp selection).
+
+    For each inactive corp, check if ANY valid par price exists (valid for
+    star tier, market space available, player can afford). If so, unmask
+    the corp selection action.
+    """
     cdef CorpOffsets co = get_corp_offsets()
     cdef float* corp
-    cdef int company_id, corp_id, par_slot, par_index, par_price, market_index
+    cdef int company_id, corp_id, par_index, par_price, market_index
     cdef int star_tier, face_value, player_cash, cost, player_shares
+    cdef bint has_valid_par
 
     # Pass is always valid
     mask[layout.ipo_pass] = 1.0
@@ -468,19 +487,18 @@ cdef void _fill_ipo_mask(GameState state, ActionLayout* layout, float* mask, Pla
         if is_corp_active(corp, &co):
             continue  # Skip active corps
 
-        for par_slot in range(MAX_PAR_SLOTS):
-            par_index = get_par_index_for_slot(star_tier, par_slot)
-            if par_index < 0:
-                break  # No more valid par prices for this tier
+        # Check if this corp has any valid par price for the current company
+        has_valid_par = False
+        for par_index in range(<int>GameConstants.NUM_PAR_PRICES):
+            if not is_valid_par_price(star_tier, par_index):
+                continue
 
             par_price = get_par_price(par_index)
             market_index = get_market_index(par_price)
 
-            # Check if market space is available
             if market_index < 0 or not is_market_space_available_nogil(state, market_index):
                 continue
 
-            # Calculate cost: (player_shares * par_price) - face_value
             if par_price >= face_value:
                 player_shares = 1
             else:
@@ -488,7 +506,48 @@ cdef void _fill_ipo_mask(GameState state, ActionLayout* layout, float* mask, Pla
             cost = (player_shares * par_price) - face_value
 
             if cost <= player_cash:
-                mask[layout.ipo_base + corp_id * MAX_PAR_SLOTS + par_slot] = 1.0
+                has_valid_par = True
+                break  # One valid par is enough to unmask this corp
+
+        if has_valid_par:
+            mask[layout.ipo_base + corp_id] = 1.0
+
+
+cdef void _fill_par_mask(GameState state, ActionLayout* layout, float* mask, Player active_player, TurnState turn) noexcept nogil:
+    """Fill mask for PAR phase actions (par price selection).
+
+    Uses the stored par corp from hidden state and the active company's star
+    tier to determine which of the 14 par prices are valid.
+    """
+    cdef int company_id, par_index, par_price, market_index
+    cdef int star_tier, face_value, player_cash, cost, player_shares
+
+    company_id = turn._get_ipo_company_nogil(state._data)
+    if company_id < 0:
+        return
+
+    star_tier = get_company_stars(company_id)
+    face_value = get_company_face_value(company_id)
+    player_cash = active_player._get_cash_nogil(state._data)
+
+    for par_index in range(<int>GameConstants.NUM_PAR_PRICES):
+        if not is_valid_par_price(star_tier, par_index):
+            continue
+
+        par_price = get_par_price(par_index)
+        market_index = get_market_index(par_price)
+
+        if market_index < 0 or not is_market_space_available_nogil(state, market_index):
+            continue
+
+        if par_price >= face_value:
+            player_shares = 1
+        else:
+            player_shares = 2
+        cost = (player_shares * par_price) - face_value
+
+        if cost <= player_cash:
+            mask[layout.par_base + par_index] = 1.0
 
 
 cdef void _fill_mask_for_phase(GameState state, int phase, ActionLayout* layout, float* mask, Player active_player, TurnState turn) noexcept nogil:
@@ -507,6 +566,8 @@ cdef void _fill_mask_for_phase(GameState state, int phase, ActionLayout* layout,
         _fill_issue_mask(state, layout, mask, turn)
     elif phase == GamePhases.PHASE_IPO:
         _fill_ipo_mask(state, layout, mask, active_player, turn)
+    elif phase == GamePhases.PHASE_PAR:
+        _fill_par_mask(state, layout, mask, active_player, turn)
 
 
 # =============================================================================
@@ -639,6 +700,8 @@ cpdef dict get_action_layout(int num_players):
         'issue_action': layout.issue_action,
         'ipo_pass': layout.ipo_pass,
         'ipo_base': layout.ipo_base,
+        'par_start': layout.par_start,
+        'par_base': layout.par_base,
     }
 
 
@@ -665,3 +728,4 @@ ACTION_CLOSE_PY = ACTION_CLOSE
 ACTION_DIVIDEND_PY = ACTION_DIVIDEND
 ACTION_ISSUE_PY = ACTION_ISSUE
 ACTION_IPO_PY = ACTION_IPO
+ACTION_PAR_PY = ACTION_PAR

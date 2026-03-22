@@ -25,6 +25,7 @@ from core.actions import (
     ACTION_DIVIDEND_PY as ACTION_DIVIDEND,
     ACTION_ISSUE_PY as ACTION_ISSUE,
     ACTION_IPO_PY as ACTION_IPO,
+    ACTION_PAR_PY as ACTION_PAR,
 )
 from core.data import (
     COMPANY_NAMES,
@@ -59,7 +60,8 @@ PHASE_NAMES = {
     7: "END_CARD",
     8: "ISSUE_SHARES",
     9: "IPO",
-    10: "GAME_OVER",
+    10: "PAR",
+    11: "GAME_OVER",
 }
 
 SENTINEL_NAMES = {
@@ -138,8 +140,11 @@ def format_action(action_idx, num_players, state=None):
         return "ISSUE shares"
 
     if atype == ACTION_IPO:
+        return f"IPO → select {CORP_NAMES[corp_id]}"
+
+    if atype == ACTION_PAR:
         par = get_par_price(slot)
-        return f"IPO → {CORP_NAMES[corp_id]} at par ${par}"
+        return f"PAR → ${par}"
 
     return f"UNKNOWN(idx={action_idx})"
 
@@ -303,6 +308,12 @@ def format_state_full(state):
         ic = TURN.get_ipo_company(state)
         if ic >= 0:
             lines.append(f"**IPO**: {COMPANY_NAMES[ic]}")
+
+    elif phase_idx == GamePhases.PHASE_PAR:
+        ic = TURN.get_ipo_company(state)
+        pc = TURN.get_par_corp(state)
+        if ic >= 0 and pc >= 0:
+            lines.append(f"**PAR**: {COMPANY_NAMES[ic]} → {CORP_NAMES[pc]}")
 
     return "\n".join(lines)
 

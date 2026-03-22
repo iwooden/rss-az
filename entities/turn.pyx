@@ -141,6 +141,7 @@ cdef class TurnState:
         self._hidden_dividend_corp_offset = 0
         self._hidden_issue_corp_offset = 0
         self._hidden_ipo_company_offset = 0
+        self._hidden_par_corp_offset = 0
         self._hidden_closing_company_offset = 0
 
     cpdef void initialize(self, GameState state):
@@ -170,6 +171,7 @@ cdef class TurnState:
         self._hidden_dividend_corp_offset = layout.hidden_dividend_corp_offset
         self._hidden_issue_corp_offset = layout.hidden_issue_corp_offset
         self._hidden_ipo_company_offset = layout.hidden_ipo_company_offset
+        self._hidden_par_corp_offset = layout.hidden_par_corp_offset
         self._hidden_closing_company_offset = layout.hidden_closing_company_offset
 
         # Turn state base offset
@@ -572,6 +574,28 @@ cdef class TurnState:
             state._data[self._ipo_remaining_offset + company_id] = 1.0 if remaining else 0.0
 
     # =========================================================================
+    # PAR STATE
+    # =========================================================================
+
+    cpdef int get_par_corp(self, GameState state):
+        """Get current PAR corp. Uses hidden compact storage for O(1) access. Returns -1 if none."""
+        return <int>state._data[self._hidden_par_corp_offset]
+
+    cpdef void set_par_corp(self, GameState state, int corp_id):
+        """Set current PAR corp. Updates active_corp one-hot and hidden compact."""
+        set_one_hot_with_compact(
+            state._data, self._active_corp_offset, GameConstants.NUM_CORPS,
+            self._hidden_par_corp_offset, corp_id
+        )
+
+    cpdef void clear_par_corp(self, GameState state):
+        """Clear PAR corp. Updates active_corp one-hot and hidden compact."""
+        clear_one_hot_with_compact(
+            state._data, self._active_corp_offset, GameConstants.NUM_CORPS,
+            self._hidden_par_corp_offset
+        )
+
+    # =========================================================================
     # NOGIL ACCESSORS (for mask generation in actions.pyx)
     # Uses hidden state offsets for O(1) access instead of scanning one-hot arrays.
     # =========================================================================
@@ -599,6 +623,10 @@ cdef class TurnState:
     cdef inline int _get_ipo_company_nogil(self, float* data) noexcept nogil:
         """Get current IPO company from hidden state. O(1) access."""
         return <int>data[self._hidden_ipo_company_offset]
+
+    cdef inline int _get_par_corp_nogil(self, float* data) noexcept nogil:
+        """Get selected PAR corp from hidden state. O(1) access."""
+        return <int>data[self._hidden_par_corp_offset]
 
     cdef inline int _get_closing_company_nogil(self, float* data) noexcept nogil:
         """Get company being offered for closing from hidden state. O(1) access."""

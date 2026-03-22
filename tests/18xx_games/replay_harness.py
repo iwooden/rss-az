@@ -60,6 +60,7 @@ PHASE_DIVIDENDS = GamePhases.PHASE_DIVIDENDS
 PHASE_END_CARD = GamePhases.PHASE_END_CARD
 PHASE_ISSUE = GamePhases.PHASE_ISSUE_SHARES
 PHASE_IPO = GamePhases.PHASE_IPO
+PHASE_PAR = GamePhases.PHASE_PAR
 PHASE_GAME_OVER = GamePhases.PHASE_GAME_OVER
 
 
@@ -256,7 +257,8 @@ class ReplayHarness:
             PHASE_INVEST: "INVEST", PHASE_BID: "BID", PHASE_WRAP_UP: "WRAP_UP",
             PHASE_ACQ: "ACQ", PHASE_CLOSING: "CLOSING", PHASE_INCOME: "INCOME",
             PHASE_DIVIDENDS: "DIVIDENDS", PHASE_END_CARD: "END_CARD",
-            PHASE_ISSUE: "ISSUE", PHASE_IPO: "IPO", PHASE_GAME_OVER: "GAME_OVER",
+            PHASE_ISSUE: "ISSUE", PHASE_IPO: "IPO", PHASE_PAR: "PAR",
+            PHASE_GAME_OVER: "GAME_OVER",
         }
         return names.get(phase, f"UNKNOWN({phase})")
 
@@ -295,6 +297,7 @@ class ReplayHarness:
                 self._last_ref = ref_by_action[action_id]
             return idx + 1
 
+        # engine_action is either None, a single int, or a list of ints
         if engine_action is None:
             # Check if this unmappable action belongs to ACQ/CLO rounds that the
             # engine already auto-processed. If so, skip the ref update — using
@@ -312,16 +315,26 @@ class ReplayHarness:
                 self._last_ref = ref_by_action[action_id]
             return idx + 1
 
-        result = DRIVER.apply_action(state, engine_action)
-        if result == STATUS_INVALID:
-            self.mismatches.append(Mismatch(
-                action_id=action_id,
-                phase=self._get_phase_name(state),
-                field="action_validity",
-                expected="STATUS_OK",
-                actual="STATUS_INVALID",
-                context=f"engine_action={engine_action}, 18xx_type={action.get('type')}",
-            ))
+        # Normalize to list for uniform handling (IPO 'par' returns 2 actions)
+        action_list = engine_action if isinstance(engine_action, list) else [engine_action]
+
+        for i, ea in enumerate(action_list):
+            # For multi-action sequences (IPO corp + PAR price), the driver may
+            # auto-apply the second action if only one par price is valid. Skip
+            # remaining actions if the engine already advanced past the expected phase.
+            if i > 0 and TURN.get_phase(state) != PHASE_PAR:
+                break  # Driver auto-applied the forced PAR action
+            result = DRIVER.apply_action(state, ea)
+            if result == STATUS_INVALID:
+                self.mismatches.append(Mismatch(
+                    action_id=action_id,
+                    phase=self._get_phase_name(state),
+                    field="action_validity",
+                    expected="STATUS_OK",
+                    actual="STATUS_INVALID",
+                    context=f"engine_action={ea}, 18xx_type={action.get('type')}",
+                ))
+                break
 
         # Update reference for next comparison
         if has_ref:

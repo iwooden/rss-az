@@ -18,7 +18,7 @@ from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.company import COMPANIES
 from entities.turn import TURN
-from phases.ipo import setup_ipo_phase_py, apply_ipo_action_py
+from phases.ipo import setup_ipo_phase_py, apply_ipo_action_py, apply_par_action_py
 from tests.phases.conftest import (
     float_corp_for_test, assert_invariants, apply_and_verify_all,
 )
@@ -301,7 +301,9 @@ class TestPresidencyRecalculation:
 
         assert not PLAYERS[0].is_president_of(state, 0)
 
-        apply_ipo_action_py(state, 0, 0)
+        # Select corp 0, then par index 5 (price 16, first valid for star=3)
+        apply_ipo_action_py(state, 0)
+        apply_par_action_py(state, 5)
         assert_invariants(state, "After IPO action")
 
         assert PLAYERS[0].is_president_of(state, 0)

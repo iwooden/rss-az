@@ -10,7 +10,7 @@ High-performance Cython game engine for "Rolling Stock Stars" board game, optimi
 
 **Key characteristics:**
 - 2-6 player support with dynamic state sizing
-- ~2690-3070 floats per game state (varies by player count)
+- ~2690-3080 floats per game state (varies by player count)
 - No Python object overhead in hot paths (nogil execution)
 - Benchmark target: thousands of games per minute
 
@@ -64,13 +64,13 @@ Central data structure: single contiguous float32 numpy array.
 **Sizes by player count:**
 | Players | Visible | Hidden | Total |
 |---------|---------|--------|-------|
-| 2 | 1472 | 1217 | 2689 |
-| 3 | 1549 | 1233 | 2782 |
-| 6 | 1792 | 1281 | 3073 |
+| 2 | 1473 | 1218 | 2691 |
+| 3 | 1550 | 1234 | 2784 |
+| 6 | 1793 | 1282 | 3075 |
 
 ### Actions (`core/actions.pyx`)
 
-Dynamic action space: `165 + (1 + num_players) * AUCTION_CAP` total actions. Use `get_total_action_count(num_players)` for the exact size.
+Dynamic action space: `123 + (1 + num_players) * AUCTION_CAP` total actions. Use `get_total_action_count(num_players)` for the exact size.
 
 **Action layout by phase:**
 - INVEST: 1 pass + auction slots + 8 buy + 8 sell
@@ -79,7 +79,8 @@ Dynamic action space: `165 + (1 + num_players) * AUCTION_CAP` total actions. Use
 - CLOSING: 1 close + 1 pass
 - DIVIDENDS: 26 dividend amounts
 - ISSUE: 1 issue + 1 pass
-- IPO: 1 pass + 64 corp/par combinations
+- IPO: 1 pass + 8 corp selections
+- PAR: 14 par price indices (no pass)
 
 ### Driver (`core/driver.pyx`)
 
@@ -142,7 +143,7 @@ Instead of soft-Z or game outcome, we use **A0GB** (Willemsen et al., 2022): fol
 
 ### NN Model (`nn/model_3p_2.py`)
 
-Residual MLP (~2.0M params): Input 1549 → preprocessing (512→256) → 6 residual blocks (256-dim, pre-LN, GELU) → policy head (3 hidden layers → 225 logits) + value head (→ 3 tanh). Kaiming init, zero-init residual fc2.
+Residual MLP (~2.0M params): Input 1550 → preprocessing (512→256) → 6 residual blocks (256-dim, pre-LN, GELU) → policy head (3 hidden layers → 183 logits) + value head (→ 3 tanh). Kaiming init, zero-init residual fc2.
 
 ## Self-Play Training
 
@@ -183,7 +184,7 @@ At each decision point: state (visible, rotated), legal_mask, policy_target (MCT
 
 ## Game Flow & Phases
 
-**11 Phases** (indices 0-10):
+**12 Phases** (indices 0-11):
 | Index | Phase | Description |
 |-------|-------|-------------|
 | 0 | INVEST | Buy/sell shares, start auctions |
@@ -195,8 +196,9 @@ At each decision point: state (visible, rotated), legal_mask, policy_target (MCT
 | 6 | DIVIDENDS | Dividend calculation |
 | 7 | END_CARD | Game end triggered |
 | 8 | ISSUE_SHARES | Corp issuing shares |
-| 9 | IPO | Company → Corporation conversion |
-| 10 | GAME_OVER | Terminal state |
+| 9 | IPO | Select corp charter for company |
+| 10 | PAR | Select par price for new corp |
+| 11 | GAME_OVER | Terminal state |
 
 **Automated phases** (no player input): WRAP_UP, INCOME, END_CARD
 

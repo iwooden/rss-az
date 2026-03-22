@@ -64,6 +64,7 @@ cdef struct StateLayout:
     int hidden_dividend_corp_offset
     int hidden_issue_corp_offset
     int hidden_ipo_company_offset
+    int hidden_par_corp_offset
     # Turn number (moved from visible to hidden)
     int hidden_turn_number_offset
     # Per-player share buy/sell tracking (moved from visible to hidden)
@@ -223,6 +224,10 @@ cdef class GameState:
     # IPO state access (setter via TurnState entity to avoid duplication)
     cdef int _get_ipo_company(self) noexcept nogil
     cpdef int get_ipo_company(self)
+
+    # PAR state access (setter via TurnState entity to avoid duplication)
+    cdef int _get_par_corp(self) noexcept nogil
+    cpdef int get_par_corp(self)
 
     # Closing state access (setter via TurnState entity to avoid duplication)
     cdef int _get_current_closing_company(self) noexcept nogil

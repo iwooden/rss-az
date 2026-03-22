@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | 1491         | 1184        | 2675       |
-| 3       | 1577         | 1184        | 2761       |
-| 4       | 1665         | 1184        | 2849       |
-| 5       | 1755         | 1184        | 2939       |
-| 6       | 1847         | 1184        | 3031       |
+| 2       | 1473         | 1218        | 2691       |
+| 3       | 1550         | 1234        | 2784       |
+| 4       | 1629         | 1250        | 2879       |
+| 5       | 1710         | 1266        | 2976       |
+| 6       | 1793         | 1282        | 3075       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 
@@ -64,17 +64,17 @@ Many fields in the visible state are only meaningful during specific game phases
 | `invest_sell_impact` | values | INVEST |
 | `acq_is_fi_offer` | flag | ACQUISITION |
 | `acq_synergy_values` | values | ACQUISITION |
-| `active_company` | one-hot | BID, ACQ, CLOSING, IPO |
-| `active_company_stars` | scalar | BID, ACQ, CLOSING, IPO |
-| `active_company_low_price` | scalar | BID, ACQ, CLOSING, IPO |
-| `active_company_face_value` | scalar | BID, ACQ, CLOSING, IPO |
-| `active_company_high_price` | scalar | BID, ACQ, CLOSING, IPO |
-| `active_company_income` | scalar | BID, ACQ, CLOSING, IPO |
-| `active_corp` | one-hot | DIVIDENDS, ISSUE, ACQ, CLOSING |
-| `active_corp_income` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING |
-| `active_corp_stars` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING |
-| `active_corp_share_price` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING |
-| `active_corp_companies` | flags | DIVIDENDS, ISSUE, ACQ, CLOSING |
+| `active_company` | one-hot | BID, ACQ, CLOSING, IPO, PAR |
+| `active_company_stars` | scalar | BID, ACQ, CLOSING, IPO, PAR |
+| `active_company_low_price` | scalar | BID, ACQ, CLOSING, IPO, PAR |
+| `active_company_face_value` | scalar | BID, ACQ, CLOSING, IPO, PAR |
+| `active_company_high_price` | scalar | BID, ACQ, CLOSING, IPO, PAR |
+| `active_company_income` | scalar | BID, ACQ, CLOSING, IPO, PAR |
+| `active_corp` | one-hot | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
+| `active_corp_income` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
+| `active_corp_stars` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
+| `active_corp_share_price` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
+| `active_corp_companies` | flags | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
 
 **Non-context-dependent fields** (always valid regardless of phase): `phase`, `coo`, all player fields, FI fields, company locations, company adjusted incomes, market availability, corporation data blocks, `turn_number`, `end_card_flipped`, `consecutive_passes`, `cards_remaining`, auction slot info.
 
@@ -102,7 +102,8 @@ Many fields in the visible state are only meaningful during specific game phases
 | 7 | END_CARD |
 | 8 | ISSUE_SHARES |
 | 9 | IPO |
-| 10 | GAME_OVER |
+| 10 | PAR |
+| 11 | GAME_OVER |
 
 ### Players (repeated `num_players` times)
 
@@ -276,7 +277,7 @@ Shown for all active corps regardless of affordability or share ownership. Recom
 
 ## Hidden State Layout
 
-Hidden state starts at `visible_size` offset. Total hidden size = `1185 + 16 * num_players`.
+Hidden state starts at `visible_size` offset. Total hidden size = `1186 + 16 * num_players`.
 
 The hidden state serves several purposes:
 - **Information hiding**: Data the NN shouldn't see (deck order, active player before rotation, turn number)
@@ -307,9 +308,10 @@ The hidden state serves several purposes:
 | `dividend_corp` | 1109 | 1 | Compact storage for O(1) access |
 | `issue_corp` | 1110 | 1 | Compact storage for O(1) access |
 | `ipo_company` | 1111 | 1 | Compact storage for O(1) access |
-| `turn_number` | 1112 | 1 | / 50.0 (moved from visible turn state) |
-| `share_buys` | 1113 | num_players × 8 | Per-player buy counts / (MAX_ROUNDTRIPS * 2) |
-| `share_sells` | 1113 + np×8 | num_players × 8 | Per-player sell counts / (MAX_ROUNDTRIPS * 2) |
+| `par_corp` | 1112 | 1 | Compact storage for O(1) access (selected corp during PAR phase) |
+| `turn_number` | 1113 | 1 | / 50.0 (moved from visible turn state) |
+| `share_buys` | 1114 | num_players × 8 | Per-player buy counts / (MAX_ROUNDTRIPS * 2) |
+| `share_sells` | 1114 + np×8 | num_players × 8 | Per-player sell counts / (MAX_ROUNDTRIPS * 2) |
 | `company_locations` | varies | 36 | CompanyLocation enum per company (O(1) clearing) |
 | `company_owner_ids` | varies | 36 | Owner ID per company (-1 if N/A, player_id or corp_id) |
 
@@ -345,12 +347,12 @@ Action space size varies by player count:
 
 | Players | Auction Actions | Total Actions |
 |---------|-----------------|---------------|
-| 3       | 45 (3 x 15)     | 225           |
-| 4       | 60 (4 x 15)     | 240           |
-| 5       | 75 (5 x 15)     | 255           |
-| 6       | 90 (6 x 15)     | 270           |
+| 3       | 45 (3 x 15)     | 183           |
+| 4       | 60 (4 x 15)     | 198           |
+| 5       | 75 (5 x 15)     | 213           |
+| 6       | 90 (6 x 15)     | 228           |
 
-Formula: `180 + (num_players * 15)`
+Formula: `138 + (1 + num_players) * 15`
 
 Use `get_total_action_count(num_players)` for the exact size.
 
@@ -359,7 +361,8 @@ Use `get_total_action_count(num_players)` for the exact size.
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `AUCTION_CAP` | 15 | Max bid offset over face value |
-| `MAX_PAR_SLOTS` | 8 | Max valid par prices per star tier |
+| `MAX_PAR_SLOTS` | 8 | Max valid par prices per star tier (legacy) |
+| `NUM_PAR_PRICES` | 14 | Total par price count (used by PAR phase) |
 | `ACQ_PRICE_RANGE` | 51 | Price offsets 0-50 |
 | `MAX_DIVIDEND` | 26 | Dividend amounts 0-25 |
 | `NUM_CORPS` | 8 | Corporation count |
@@ -376,7 +379,8 @@ Use `get_total_action_count(num_players)` for the exact size.
 | **CLOSING** | close, pass | 2 | 130-131 |
 | **DIVIDENDS** | dividend[26] | 26 | 132-157 |
 | **ISSUE_SHARES** | pass, issue | 2 | 158-159 |
-| **IPO** | pass, ipo[8x8] | 65 | 160-224 |
+| **IPO** | pass, corp[8] | 9 | 160-168 |
+| **PAR** | par[14] | 14 | 169-182 |
 
 ### Detailed Action Indices (for N players)
 
@@ -426,14 +430,23 @@ Use `get_total_action_count(num_players)` for the exact size.
 | +0 | Pass | Don't issue |
 | +1 | Issue | Issue one share |
 
-#### IPO Phase (+65 actions)
+#### IPO Phase (+9 actions)
 
 | Index | Action | Decoding |
 |-------|--------|----------|
 | +0 | Pass | Don't IPO |
-| +1 to +64 | IPO | `corp_id = (idx - base - 1) // 8`, `par_slot = (idx - base - 1) % 8` |
+| +1 to +8 | Select Corp | `corp_id = idx - base - 1` |
 
-**Par slot mapping:** Slot N maps to the Nth valid par price for the company's star tier. Use `get_par_index_for_slot(star_tier, slot)` to resolve.
+Selecting a corp transitions to the PAR sub-phase.
+
+#### PAR Phase (+14 actions)
+
+| Index | Action | Decoding |
+|-------|--------|----------|
+| +0 to +13 | Select Par Price | `par_index = idx - base` |
+
+No pass action — once a corp is selected, a par price must be chosen.
+Par index maps directly to `ALL_PAR_PRICES[par_index]`. Invalid prices for the company's star tier are masked out.
 
 ### Action Types Enum
 
@@ -450,7 +463,8 @@ Use `get_total_action_count(num_players)` for the exact size.
 | 8 | ACTION_CLOSE | Close current company |
 | 9 | ACTION_DIVIDEND | Pay dividend (amount) |
 | 10 | ACTION_ISSUE | Issue share |
-| 11 | ACTION_IPO | IPO (corp_id, par_slot) |
+| 11 | ACTION_IPO | IPO: select corp (corp_id) |
+| 12 | ACTION_PAR | PAR: select par price (par_index) |
 
 ---
 
@@ -471,7 +485,7 @@ nn_input = state.get_nn_input()  # Shape: (visible_size,)
 print(f"Visible size: {state.visible_size}")
 
 # Action vector (size depends on player count)
-total_actions = get_total_action_count(3)  # 226 for 3 players
+total_actions = get_total_action_count(3)  # 183 for 3 players
 mask = get_valid_action_mask(state)  # Shape: (226,)
 valid_actions = mask.nonzero()[0]
 

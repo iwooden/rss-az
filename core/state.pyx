@@ -299,7 +299,8 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     # [1109] dividend_corp (compact)
     # [1110] issue_corp (compact)
     # [1111] ipo_company (compact)
-    # [1112] turn_number
+    # [1112] par_corp (compact)
+    # [1113] turn_number
     # [1113..] share_buys (num_players * 8)
     # [...] share_sells (num_players * 8)
     # Then: company_locations (36), company_owner_ids (36)
@@ -349,6 +350,8 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     layout.hidden_issue_corp_offset = offset
     offset += 1
     layout.hidden_ipo_company_offset = offset
+    offset += 1
+    layout.hidden_par_corp_offset = offset
     offset += 1
     # Turn number (moved from visible to hidden)
     layout.hidden_turn_number_offset = offset
@@ -1077,6 +1080,20 @@ cdef class GameState:
     # Note: set_ipo_company() removed - use TurnState.set_ipo_company()
 
     # =========================================================================
+    # PAR STATE ACCESS
+    # =========================================================================
+
+    cdef int _get_par_corp(self) noexcept nogil:
+        """Get current PAR corp (nogil version)."""
+        return <int>self._data[self._layout.hidden_par_corp_offset]
+
+    cpdef int get_par_corp(self):
+        """Get current PAR corp."""
+        return self._get_par_corp()
+
+    # Note: set_par_corp() - use TurnState.set_par_corp()
+
+    # =========================================================================
     # CLOSING STATE ACCESS
     # =========================================================================
 
@@ -1337,6 +1354,7 @@ cdef class GameState:
         turn_module.TURN.clear_dividend_corp(self)
         turn_module.TURN.clear_issue_corp(self)
         turn_module.TURN.clear_ipo_company(self)
+        turn_module.TURN.clear_par_corp(self)
         turn_module.TURN.clear_acq_active_corp(self)
         turn_module.TURN.clear_acq_target_company(self)
         turn_module.TURN.clear_closing_company(self)

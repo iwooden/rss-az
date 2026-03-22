@@ -1,11 +1,12 @@
-"""Tests for IPO phase (Phase 9)."""
+"""Tests for IPO phase (Phase 9) and PAR sub-phase (Phase 10)."""
 import pytest
 from core.state import get_layout
 from core.data import (
     GamePhases, GameConstants,
     get_company_face_value, get_company_stars,
-    get_par_price, get_par_index_for_slot, get_market_index,
-    get_corp_share_count, PY_COMPANY_PRICE_DIVISOR,
+    get_par_price, get_market_index,
+    get_corp_share_count, is_valid_par_price,
+    PY_COMPANY_PRICE_DIVISOR,
 )
 from core.actions import get_valid_action_mask, get_action_layout
 from entities.turn import TURN
@@ -17,8 +18,36 @@ from phases.ipo import (
     setup_ipo_phase_py,
     apply_ipo_action_py,
     apply_ipo_pass_py,
+    apply_par_action_py,
 )
 from tests.phases.conftest import assert_invariants
+
+
+# =============================================================================
+# Helpers
+# =============================================================================
+
+def do_ipo(state, corp_id, par_index):
+    """Execute full IPO: select corp (IPO phase) then select par (PAR phase).
+
+    Returns the result of the PAR action (0=success, 1=invalid).
+    """
+    result = apply_ipo_action_py(state, corp_id)
+    if result != 0:
+        return result
+    return apply_par_action_py(state, par_index)
+
+
+# Par index constants for readability
+# Star 3 (yellow): valid par indices 5-10 -> prices 16,18,20,22,24,27
+PAR_16 = 5   # get_par_index_for_slot(3, 0)
+PAR_18 = 6   # get_par_index_for_slot(3, 1)
+PAR_20 = 7   # get_par_index_for_slot(3, 2)
+PAR_22 = 8   # get_par_index_for_slot(3, 3)
+PAR_24 = 9   # get_par_index_for_slot(3, 4)
+PAR_27 = 10  # get_par_index_for_slot(3, 5)
+# Star 5 (blue): valid par indices 11-13 -> prices 30,33,37
+PAR_30 = 11  # get_par_index_for_slot(5, 0)
 
 
 # =============================================================================
@@ -45,7 +74,7 @@ def ipo_state_with_company(game_state):
 
     Company 14 (first yellow, FV=20, stars=3):
     - Owned by player 0
-    - Valid par prices: 16, 18, 20, 22, 24, 27 (slots 0-5)
+    - Valid par prices: 16, 18, 20, 22, 24, 27 (par indices 5-10)
     - Player 0 has 100 cash
 
     All corps are inactive (available for IPO).
@@ -93,7 +122,79 @@ def ipo_state_multiple_companies(game_state):
 
 
 # =============================================================================
-# Basic IPO Mechanics
+# IPO -> PAR Phase Transition
+# =============================================================================
+
+
+class TestIPOtoPARTransition:
+    """IPO corp selection transitions to PAR sub-phase."""
+
+    def test_selecting_corp_transitions_to_par(self, ipo_state_with_company):
+        """Selecting a corp in IPO phase transitions to PAR phase."""
+        state = ipo_state_with_company
+
+        assert state.get_phase() == GamePhases.PHASE_IPO
+
+        apply_ipo_action_py(state, 0)
+
+        assert state.get_phase() == GamePhases.PHASE_PAR
+
+    def test_par_corp_stored_during_par_phase(self, ipo_state_with_company):
+        """The selected corp_id is stored in hidden state during PAR."""
+        state = ipo_state_with_company
+
+        apply_ipo_action_py(state, 3)
+
+        assert state.get_par_corp() == 3
+
+    def test_active_corp_set_during_par(self, ipo_state_with_company):
+        """Active corp one-hot is set during PAR phase."""
+        state = ipo_state_with_company
+        layout = get_layout(3)
+
+        apply_ipo_action_py(state, 2)
+
+        # Active corp one-hot should have corp 2 set
+        assert state._array[layout.active_corp_offset + 2] == 1.0
+
+    def test_active_company_preserved_during_par(self, ipo_state_with_company):
+        """Active company remains set during PAR (same company being IPO'd)."""
+        state = ipo_state_with_company
+        company_id = TURN.get_ipo_company(state)
+
+        apply_ipo_action_py(state, 0)
+
+        # Company should still be active during PAR
+        assert TURN.get_ipo_company(state) == company_id
+
+    def test_par_action_executes_ipo_and_advances(self, ipo_state_with_company):
+        """PAR action executes Form Corporation and advances to next company."""
+        state = ipo_state_with_company
+
+        apply_ipo_action_py(state, 0)
+        assert state.get_phase() == GamePhases.PHASE_PAR
+
+        apply_par_action_py(state, PAR_16)
+
+        # Should transition out (only one company) to INVEST
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+        assert CORPS[0].is_active(state)
+
+    def test_par_clears_active_corp_after_completion(self, ipo_state_with_company):
+        """Active corp is cleared after PAR completes."""
+        state = ipo_state_with_company
+        layout = get_layout(3)
+
+        do_ipo(state, 0, PAR_16)
+
+        # Active corp should be cleared
+        assert state.get_par_corp() < 0
+        for i in range(int(GameConstants.NUM_CORPS)):
+            assert state._array[layout.active_corp_offset + i] == 0.0
+
+
+# =============================================================================
+# Basic IPO Mechanics (via full IPO+PAR flow)
 # =============================================================================
 
 
@@ -105,16 +206,13 @@ class TestBasicIPOMechanics:
         state = ipo_state_with_company
         company = COMPANIES[14]
 
-        # Verify company is player-owned before
         assert company.get_location(state) == CompanyLocation.LOC_PLAYER
         assert company.get_owner_id(state) == 0
 
-        # Execute IPO: corp 0, par slot 0 (par price 16 for star=3)
-        result = apply_ipo_action_py(state, 0, 0)
+        result = do_ipo(state, 0, PAR_16)
         assert result == 0
         assert_invariants(state, "After IPO transfers company to corp")
 
-        # Company now belongs to corp
         assert company.get_location(state) == CompanyLocation.LOC_CORP
         assert company.get_owner_id(state) == 0  # corp 0
 
@@ -125,7 +223,7 @@ class TestBasicIPOMechanics:
 
         assert not corp.is_active(state)
 
-        apply_ipo_action_py(state, 0, 0)
+        do_ipo(state, 0, PAR_16)
         assert_invariants(state, "After IPO activates corporation")
 
         assert corp.is_active(state)
@@ -135,12 +233,11 @@ class TestBasicIPOMechanics:
         state = ipo_state_with_company
         corp = CORPS[0]
 
-        # Par slot 2 for star=3 (yellow) = par price 20, market index = 7
-        par_index = get_par_index_for_slot(3, 2)
-        par_price = get_par_price(par_index)
+        # par_index 7 -> par price 20, market index = get_market_index(20) = 7
+        par_price = get_par_price(PAR_20)
         market_index = get_market_index(par_price)
 
-        apply_ipo_action_py(state, 0, 2)
+        do_ipo(state, 0, PAR_20)
         assert_invariants(state, "After IPO sets corp price index")
 
         assert corp.get_price_index(state) == market_index
@@ -150,13 +247,12 @@ class TestBasicIPOMechanics:
         """IPO claims the selected market space."""
         state = ipo_state_with_company
 
-        par_index = get_par_index_for_slot(3, 0)  # First valid par for star=3
-        par_price = get_par_price(par_index)
+        par_price = get_par_price(PAR_16)
         market_index = get_market_index(par_price)
 
         assert MARKET.is_space_available(state, market_index)
 
-        apply_ipo_action_py(state, 0, 0)
+        do_ipo(state, 0, PAR_16)
         assert_invariants(state, "After IPO claims market space")
 
         assert not MARKET.is_space_available(state, market_index)
@@ -166,10 +262,10 @@ class TestBasicIPOMechanics:
         state = ipo_state_with_company
         corp = CORPS[0]
 
-        # Company 14 has 3 stars (yellow), par slot 0 -> par=16, FV=20 > par
+        # Company 14 has 3 stars (yellow), par=16, FV=20 > par
         # 2 shares each -> corp cash = (2*16-20) + (2*16) = 44
         # Owned stars = 3 (company) + 44//10 (cash) = 7
-        apply_ipo_action_py(state, 0, 0)
+        do_ipo(state, 0, PAR_16)
         assert_invariants(state, "After IPO sets corp stars")
 
         company_stars = get_company_stars(14)  # 3
@@ -191,20 +287,16 @@ class TestShareDistribution:
         state = ipo_state_with_company
         corp = CORPS[0]
 
-        # Company 14: FV=20, par slot 0 -> par_price=16 (FV > par)
-        par_index = get_par_index_for_slot(3, 0)
-        par_price = get_par_price(par_index)
+        # Company 14: FV=20, par=16 (FV > par)
+        par_price = get_par_price(PAR_16)
         assert get_company_face_value(14) > par_price
 
-        apply_ipo_action_py(state, 0, 0)
+        do_ipo(state, 0, PAR_16)
         assert_invariants(state, "After IPO FV > par")
 
-        # Player gets 2 shares
         assert PLAYERS[0].get_shares(state, 0) == 2
-        # issued_shares = player_shares + bank_shares = 2 + 2 = 4
         assert corp.get_issued_shares(state) == 4
         assert corp.get_bank_shares(state) == 2
-        # Unissued = total - player - bank
         total = get_corp_share_count(0)
         assert corp.get_unissued_shares(state) == total - 4
 
@@ -213,16 +305,14 @@ class TestShareDistribution:
         state = ipo_state_with_company
         corp = CORPS[0]
 
-        # Company 14: FV=20, par slot 2 -> par_price=20 (FV == par)
-        par_index = get_par_index_for_slot(3, 2)
-        par_price = get_par_price(par_index)
+        # Company 14: FV=20, par=20 (FV == par)
+        par_price = get_par_price(PAR_20)
         assert get_company_face_value(14) == par_price
 
-        apply_ipo_action_py(state, 0, 2)
+        do_ipo(state, 0, PAR_20)
         assert_invariants(state, "After IPO FV == par")
 
         assert PLAYERS[0].get_shares(state, 0) == 1
-        # issued_shares = player_shares + bank_shares = 1 + 1 = 2
         assert corp.get_issued_shares(state) == 2
         assert corp.get_bank_shares(state) == 1
         total = get_corp_share_count(0)
@@ -233,16 +323,14 @@ class TestShareDistribution:
         state = ipo_state_with_company
         corp = CORPS[0]
 
-        # Company 14: FV=20, par slot 5 -> par_price=27 (FV < par)
-        par_index = get_par_index_for_slot(3, 5)
-        par_price = get_par_price(par_index)
+        # Company 14: FV=20, par=27 (FV < par)
+        par_price = get_par_price(PAR_27)
         assert get_company_face_value(14) < par_price
 
-        apply_ipo_action_py(state, 0, 5)
+        do_ipo(state, 0, PAR_27)
         assert_invariants(state, "After IPO FV < par")
 
         assert PLAYERS[0].get_shares(state, 0) == 1
-        # issued_shares = player_shares + bank_shares = 1 + 1 = 2
         assert corp.get_issued_shares(state) == 2
         assert corp.get_bank_shares(state) == 1
 
@@ -257,14 +345,13 @@ class TestPaymentCalculation:
         initial_cash = PLAYERS[0].get_cash(state)
         face_value = get_company_face_value(14)  # 20
 
-        # Par slot 0 -> par_price=16, FV > par -> 2 shares
-        par_index = get_par_index_for_slot(3, 0)
-        par_price = get_par_price(par_index)
-        player_shares = 2  # FV > par
+        # par=16, FV > par -> 2 shares
+        par_price = get_par_price(PAR_16)
+        player_shares = 2
 
         expected_payment = (player_shares * par_price) - face_value
 
-        apply_ipo_action_py(state, 0, 0)
+        do_ipo(state, 0, PAR_16)
         assert_invariants(state, "After IPO player payment")
 
         assert PLAYERS[0].get_cash(state) == initial_cash - expected_payment
@@ -276,9 +363,8 @@ class TestPaymentCalculation:
 
         face_value = get_company_face_value(14)  # 20
 
-        # Par slot 0 -> par_price=16, FV > par -> 2 shares each
-        par_index = get_par_index_for_slot(3, 0)
-        par_price = get_par_price(par_index)
+        # par=16, FV > par -> 2 shares each
+        par_price = get_par_price(PAR_16)
         player_shares = 2
         bank_shares = 2
 
@@ -286,7 +372,7 @@ class TestPaymentCalculation:
         bank_payment = bank_shares * par_price
         expected_corp_cash = player_payment + bank_payment
 
-        apply_ipo_action_py(state, 0, 0)
+        do_ipo(state, 0, PAR_16)
         assert_invariants(state, "After IPO corp receives payment")
 
         assert corp.get_cash(state) == expected_corp_cash
@@ -308,9 +394,7 @@ class TestProcessingOrder:
         setup_ipo_phase_py(state)
         assert_invariants(state, "After setup_ipo_phase highest FV")
 
-        # Company 30 has highest FV (45)
-        ipo_company = TURN.get_ipo_company(state)
-        assert ipo_company == 30
+        assert TURN.get_ipo_company(state) == 30
 
     def test_processing_order_descending_fv(self, ipo_state_multiple_companies):
         """Companies processed in descending face value order."""
@@ -352,11 +436,11 @@ class TestCorpAvailability:
         state = ipo_state_with_company
 
         # Float corp 0 using a different company so company 14 remains available
-        COMPANIES[0].transfer_to_player(state, 1)  # Different player to avoid conflict
+        COMPANIES[0].transfer_to_player(state, 1)
         CORPS[0].float_corp(state, 1, 0, 10, 1)
 
         # Try to IPO to corp 0 - should fail (corp already active)
-        result = apply_ipo_action_py(state, 0, 0)
+        result = apply_ipo_action_py(state, 0)
         assert result == 1  # Invalid
 
     def test_mask_excludes_active_corps(self, ipo_state_with_company):
@@ -370,32 +454,32 @@ class TestCorpAvailability:
         mask = get_valid_action_mask(state)
         layout = get_action_layout(3)
 
-        # Corp 0 actions should be masked out
-        for slot in range(8):  # MAX_PAR_SLOTS
-            action_idx = layout['ipo_base'] + 0 * 8 + slot
-            assert mask[action_idx] == 0.0
+        # Corp 0 should be masked out
+        assert mask[layout['ipo_base'] + 0] == 0.0
 
 
 class TestMarketSpaceAvailability:
     """Market space availability (can't use occupied space)."""
 
-    def test_mask_excludes_occupied_spaces(self, ipo_state_with_company):
-        """Action mask excludes IPO actions for occupied market spaces."""
+    def test_mask_excludes_corps_with_no_valid_par(self, ipo_state_with_company):
+        """If all par prices for a star tier are occupied, corp is masked."""
         state = ipo_state_with_company
 
-        # Occupy the market space for par slot 0 (par=16 for star=3)
-        par_index = get_par_index_for_slot(3, 0)
-        par_price = get_par_price(par_index)
-        market_index = get_market_index(par_price)
-        MARKET.set_space_available(state, market_index, False)
+        # Occupy ALL valid market spaces for star=3 (indices 5-10, prices 16-27)
+        for par_idx in range(5, 11):
+            par_price = get_par_price(par_idx)
+            market_index = get_market_index(par_price)
+            MARKET.set_space_available(state, market_index, False)
 
         mask = get_valid_action_mask(state)
         layout = get_action_layout(3)
 
-        # Par slot 0 actions should be masked out for all corps
+        # All corp selections should be masked (no valid par prices)
         for corp_id in range(int(GameConstants.NUM_CORPS)):
-            action_idx = layout['ipo_base'] + corp_id * 8 + 0
-            assert mask[action_idx] == 0.0
+            assert mask[layout['ipo_base'] + corp_id] == 0.0
+
+        # Pass should still be valid
+        assert mask[layout['ipo_pass']] == 1.0
 
 
 # =============================================================================
@@ -406,26 +490,119 @@ class TestMarketSpaceAvailability:
 class TestCostValidation:
     """Cost validation (player must afford payment)."""
 
-    def test_mask_excludes_unaffordable_options(self, ipo_state_with_company):
-        """Action mask excludes IPO actions player can't afford."""
+    def test_mask_excludes_unaffordable_corps(self, ipo_state_with_company):
+        """Action mask excludes corps when player can't afford any par price."""
         state = ipo_state_with_company
 
-        # Give player very little cash
-        PLAYERS[0].set_cash(state, 5)
+        # Give player very little cash - can't afford any par price
+        # Cheapest par for star=3: par=16, FV=20, cost = 2*16 - 20 = 12
+        PLAYERS[0].set_cash(state, 0)
 
         mask = get_valid_action_mask(state)
         layout = get_action_layout(3)
 
-        # Company 14: FV=20
-        # For each valid par price, check if player can afford
-        # Par slot 0: par=16, FV > par, 2 shares, cost = 2*16 - 20 = 12 (can't afford)
-        # Par slot 2: par=20, FV == par, 1 share, cost = 1*20 - 20 = 0 (can afford)
+        # But FV=20, par=20 has cost 0, so corp selection should be valid
+        # when cash=0, cost = 1*20 - 20 = 0 -> affordable!
+        # Only corps with at least one valid+affordable par should appear
+        # par=20 (index 7) -> market_index = get_market_index(20) should be available
+        # So corps should actually be valid for cash=0 because cost=0 exists
 
-        # Slot 0 should be masked (cost > 5)
-        assert mask[layout['ipo_base'] + 0 * 8 + 0] == 0.0
+        # Verify: at least one corp is valid (par=20 costs 0)
+        any_valid = False
+        for corp_id in range(int(GameConstants.NUM_CORPS)):
+            if mask[layout['ipo_base'] + corp_id] == 1.0:
+                any_valid = True
+        assert any_valid, "Should have valid corps when cost=0 exists"
 
-        # Slot 2 should be valid (cost = 0)
-        assert mask[layout['ipo_base'] + 0 * 8 + 2] == 1.0
+
+# =============================================================================
+# PAR Phase Mask
+# =============================================================================
+
+
+class TestPARMask:
+    """PAR phase action mask validation."""
+
+    def test_par_mask_shows_valid_prices(self, ipo_state_with_company):
+        """PAR mask shows valid par prices for company's star tier."""
+        state = ipo_state_with_company
+
+        # Select corp 0 -> transition to PAR
+        apply_ipo_action_py(state, 0)
+        assert state.get_phase() == GamePhases.PHASE_PAR
+
+        mask = get_valid_action_mask(state)
+        layout = get_action_layout(3)
+
+        # Company 14 star=3: valid par indices 5-10
+        for par_idx in range(14):
+            expected = is_valid_par_price(3, par_idx)
+            if expected:
+                # Also check market availability and affordability
+                par_price = get_par_price(par_idx)
+                mkt = get_market_index(par_price)
+                if mkt >= 0 and MARKET.is_space_available(state, mkt):
+                    assert mask[layout['par_base'] + par_idx] == 1.0, (
+                        f"Par index {par_idx} (price {par_price}) should be valid"
+                    )
+            else:
+                assert mask[layout['par_base'] + par_idx] == 0.0, (
+                    f"Par index {par_idx} should be invalid for star=3"
+                )
+
+    def test_par_mask_excludes_occupied_market_spaces(self, ipo_state_with_company):
+        """PAR mask excludes par prices whose market spaces are taken."""
+        state = ipo_state_with_company
+
+        # Occupy the market space for par price 16 (index 5)
+        par_price = get_par_price(PAR_16)
+        market_index = get_market_index(par_price)
+        MARKET.set_space_available(state, market_index, False)
+
+        # Select corp 0 -> transition to PAR
+        apply_ipo_action_py(state, 0)
+        assert state.get_phase() == GamePhases.PHASE_PAR
+
+        mask = get_valid_action_mask(state)
+        layout = get_action_layout(3)
+
+        # Par index 5 (price 16) should be masked
+        assert mask[layout['par_base'] + PAR_16] == 0.0
+
+        # Par index 7 (price 20) should still be valid
+        assert mask[layout['par_base'] + PAR_20] == 1.0
+
+    def test_par_mask_has_no_pass(self, ipo_state_with_company):
+        """PAR phase has no pass action — only par price selections."""
+        state = ipo_state_with_company
+
+        apply_ipo_action_py(state, 0)
+        assert state.get_phase() == GamePhases.PHASE_PAR
+
+        mask = get_valid_action_mask(state)
+        layout = get_action_layout(3)
+
+        # IPO pass should not be valid during PAR
+        assert mask[layout['ipo_pass']] == 0.0
+
+    def test_par_mask_excludes_unaffordable_prices(self, ipo_state_with_company):
+        """PAR mask excludes par prices the player can't afford."""
+        state = ipo_state_with_company
+
+        # Player has exactly 0 cash
+        PLAYERS[0].set_cash(state, 0)
+
+        apply_ipo_action_py(state, 0)
+        assert state.get_phase() == GamePhases.PHASE_PAR
+
+        mask = get_valid_action_mask(state)
+        layout = get_action_layout(3)
+
+        # par=16, FV=20 > par, cost = 2*16 - 20 = 12 -> can't afford
+        assert mask[layout['par_base'] + PAR_16] == 0.0
+
+        # par=20, FV=20 == par, cost = 1*20 - 20 = 0 -> can afford
+        assert mask[layout['par_base'] + PAR_20] == 1.0
 
 
 # =============================================================================
@@ -479,7 +656,7 @@ class TestPassAction:
 
 
 class TestPhaseTransitions:
-    """Phase transitions (ISSUE_SHARES -> IPO -> INVEST)."""
+    """Phase transitions (ISSUE_SHARES -> IPO -> PAR -> INVEST)."""
 
     def test_empty_ipo_transitions_to_invest(self, ipo_state):
         """IPO with no player-owned companies transitions to INVEST."""
@@ -503,19 +680,46 @@ class TestPhaseTransitions:
         """After IPO-ing all companies, transitions to INVEST."""
         state = ipo_state_with_company
 
-        apply_ipo_action_py(state, 0, 0)
+        do_ipo(state, 0, PAR_16)
         assert_invariants(state, "After all IPO transitions to invest")
 
         assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
 
+    def test_ipo_to_par_to_ipo_to_invest(self, ipo_state_multiple_companies):
+        """Full flow: IPO -> PAR -> IPO (next company) -> ... -> INVEST."""
+        state = ipo_state_multiple_companies
+
+        TURN.set_phase(state, GamePhases.PHASE_IPO)
+        setup_ipo_phase_py(state)
+
+        # Company 30 (star=5): select corp, then par
+        assert state.get_phase() == GamePhases.PHASE_IPO
+        apply_ipo_action_py(state, 0)
+        assert state.get_phase() == GamePhases.PHASE_PAR
+        apply_par_action_py(state, PAR_30)
+
+        # Should be back in IPO for next company
+        assert state.get_phase() == GamePhases.PHASE_IPO
+        assert TURN.get_ipo_company(state) == 22
+
+        # Pass on company 22
+        apply_ipo_pass_py(state)
+        assert state.get_phase() == GamePhases.PHASE_IPO
+        assert TURN.get_ipo_company(state) == 14
+
+        # IPO company 14
+        do_ipo(state, 1, PAR_16)
+
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+
 
 # =============================================================================
-# Action Mask Validation
+# Action Mask Validation (IPO phase)
 # =============================================================================
 
 
 class TestActionMask:
-    """Action mask validation."""
+    """IPO phase action mask validation."""
 
     def test_pass_always_valid(self, ipo_state_with_company):
         """Pass action is always valid in IPO phase."""
@@ -526,22 +730,19 @@ class TestActionMask:
 
         assert mask[layout['ipo_pass']] == 1.0
 
-    def test_invalid_par_prices_not_in_mask(self, ipo_state_with_company):
-        """Invalid par prices for company's color are not in mask."""
+    def test_valid_corps_in_mask(self, ipo_state_with_company):
+        """At least one corp should be valid for IPO."""
         state = ipo_state_with_company
 
         mask = get_valid_action_mask(state)
         layout = get_action_layout(3)
 
-        # Company 14 is star=3, valid slots are 0-5 (6 valid par prices)
-        # Slot 6 and 7 should be invalid for all corps
+        valid_count = 0
         for corp_id in range(int(GameConstants.NUM_CORPS)):
-            # Check slots beyond valid range
-            for slot in range(6, 8):
-                action_idx = layout['ipo_base'] + corp_id * 8 + slot
-                assert mask[action_idx] == 0.0, (
-                    f"Invalid slot {slot} for corp {corp_id} should be masked"
-                )
+            if mask[layout['ipo_base'] + corp_id] == 1.0:
+                valid_count += 1
+
+        assert valid_count > 0, "Should have at least one valid corp"
 
 
 # =============================================================================
@@ -593,12 +794,10 @@ class TestIPOIntegration:
 
         assert_invariants(state, "Before IPO")
 
-        # Execute IPO
-        apply_ipo_action_py(state, 0, 0)
+        do_ipo(state, 0, PAR_16)
 
         assert_invariants(state, "After IPO")
 
-        # Verify end state
         assert CORPS[0].is_active(state)
         assert PLAYERS[0].is_president_of(state, 0)
         assert COMPANIES[14].get_location(state) == CompanyLocation.LOC_CORP
@@ -613,8 +812,7 @@ class TestIPOIntegration:
         assert_invariants(state, "Before any action")
 
         # IPO company 30 (player 0's blue company)
-        # Use corp 0, par slot 0 for star=5 (par=30)
-        apply_ipo_action_py(state, 0, 0)
+        do_ipo(state, 0, PAR_30)
         assert_invariants(state, "After first IPO")
         assert CORPS[0].is_active(state)
 
@@ -623,8 +821,7 @@ class TestIPOIntegration:
         assert_invariants(state, "After pass")
 
         # IPO company 14 (player 0's yellow company)
-        # Use corp 1, par slot 0 for star=3 (par=16)
-        apply_ipo_action_py(state, 1, 0)
+        do_ipo(state, 1, PAR_16)
         assert_invariants(state, "After second IPO")
         assert CORPS[1].is_active(state)
 
@@ -648,16 +845,14 @@ class TestActiveCompanyIPO:
         layout = get_layout(3)
         expected_fv = get_company_face_value(company_id) / PY_COMPANY_PRICE_DIVISOR
         assert abs(state._array[layout.active_company_face_value_offset] - expected_fv) < 1e-6
-        assert state._array[layout.active_company_stars_offset] > 0.0  # stars > 0
+        assert state._array[layout.active_company_stars_offset] > 0.0
 
     def test_active_company_cleared_after_ipo_phase_ends(self, ipo_state_with_company):
         """Active company block is zeroed after IPO phase transitions to INVEST."""
         state = ipo_state_with_company
 
-        # Pass on the IPO offer
         apply_ipo_pass_py(state)
 
-        # Should be in INVEST now
         assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
 
         layout = get_layout(3)
@@ -681,11 +876,26 @@ class TestActiveCompanyIPO:
         first_fv = get_company_face_value(first_company) / PY_COMPANY_PRICE_DIVISOR
         assert abs(state._array[layout.active_company_face_value_offset] - first_fv) < 1e-6
 
-        # IPO the first company (corp 0, par slot 0)
-        apply_ipo_action_py(state, 0, 0)
+        # IPO the first company (corp 0, par=30 for star=5)
+        do_ipo(state, 0, PAR_30)
 
         second_company = TURN.get_ipo_company(state)
         if second_company >= 0:
             second_fv = get_company_face_value(second_company) / PY_COMPANY_PRICE_DIVISOR
             assert abs(state._array[layout.active_company_face_value_offset] - second_fv) < 1e-6
             assert second_fv != first_fv or second_company != first_company
+
+    def test_active_company_preserved_in_par_phase(self, ipo_state_with_company):
+        """Active company remains set during PAR sub-phase."""
+        state = ipo_state_with_company
+        layout = get_layout(3)
+
+        company_id = TURN.get_ipo_company(state)
+        expected_fv = get_company_face_value(company_id) / PY_COMPANY_PRICE_DIVISOR
+
+        # Transition to PAR
+        apply_ipo_action_py(state, 0)
+        assert state.get_phase() == GamePhases.PHASE_PAR
+
+        # Active company should still be set
+        assert abs(state._array[layout.active_company_face_value_offset] - expected_fv) < 1e-6
