@@ -5,7 +5,7 @@ from core.state import GameState, get_layout
 from core.data import (
     CORP_NAMES, GamePhases, COMPANY_NAME_TO_ID,
     get_company_face_value, get_company_low_price, get_company_high_price,
-    get_company_synergy, PY_PRICE_DIVISOR, PY_INCOME_DIVISOR,
+    get_company_synergy, PY_COMPANY_PRICE_DIVISOR, PY_COMPANY_INCOME_DIVISOR,
 )
 from core.actions import (
     ACTION_ACQ_PRICE_PY as ACTION_ACQ_PRICE,
@@ -1869,7 +1869,7 @@ class TestAcqSynergyValues:
         # CDG synergy with MAD target
         expected = get_company_synergy(self.CDG, self.MAD) + get_company_synergy(self.MAD, self.CDG)
         assert expected == 16  # sanity: CDG->MAD=16, MAD->CDG=0
-        assert abs(TURN.get_acq_synergy_value(gs, self.CDG) - expected / PY_INCOME_DIVISOR) < 1e-6
+        assert abs(TURN.get_acq_synergy_value(gs, self.CDG) - expected / PY_COMPANY_INCOME_DIVISOR) < 1e-6
 
     def test_zero_for_non_owned_companies(self):
         """Companies the corp doesn't own have synergy value 0."""
@@ -1900,8 +1900,8 @@ class TestAcqSynergyValues:
         assert cdg_syn == 16
         assert sbb_syn == 4
 
-        assert abs(TURN.get_acq_synergy_value(gs, self.CDG) - 16 / PY_INCOME_DIVISOR) < 1e-6
-        assert abs(TURN.get_acq_synergy_value(gs, self.SBB) - 4 / PY_INCOME_DIVISOR) < 1e-6
+        assert abs(TURN.get_acq_synergy_value(gs, self.CDG) - 16 / PY_COMPANY_INCOME_DIVISOR) < 1e-6
+        assert abs(TURN.get_acq_synergy_value(gs, self.SBB) - 4 / PY_COMPANY_INCOME_DIVISOR) < 1e-6
 
     def test_no_synergy_company_shows_zero(self):
         """An owned company with no synergy to the target shows 0."""
@@ -1965,7 +1965,7 @@ class TestAcqSynergyValues:
             # Synergy value should reflect the new target
             expected = (get_company_synergy(self.CDG, second_target)
                         + get_company_synergy(second_target, self.CDG))
-            assert abs(TURN.get_acq_synergy_value(gs, self.CDG) - expected / PY_INCOME_DIVISOR) < 1e-6
+            assert abs(TURN.get_acq_synergy_value(gs, self.CDG) - expected / PY_COMPANY_INCOME_DIVISOR) < 1e-6
 
 
 # =============================================================================
@@ -1990,7 +1990,7 @@ class TestActiveCompanyAcquisition:
         target = TURN.get_acq_target_company(gs)
         if target >= 0:
             layout = get_layout(3)
-            expected_fv = get_company_face_value(target) / PY_PRICE_DIVISOR
+            expected_fv = get_company_face_value(target) / PY_COMPANY_PRICE_DIVISOR
             assert abs(gs._array[layout.active_company_face_value_offset] - expected_fv) < 1e-6
             assert gs._array[layout.active_company_stars_offset] > 0.0  # stars > 0
 
@@ -2018,7 +2018,7 @@ class TestActiveCompanyAcquisition:
         second_target = TURN.get_acq_target_company(gs)
         if second_target >= 0 and second_target != first_target:
             layout = get_layout(3)
-            expected_fv = get_company_face_value(second_target) / PY_PRICE_DIVISOR
+            expected_fv = get_company_face_value(second_target) / PY_COMPANY_PRICE_DIVISOR
             assert abs(gs._array[layout.active_company_face_value_offset] - expected_fv) < 1e-6
 
     def test_active_company_cleared_after_transition_to_closing(self):

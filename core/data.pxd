@@ -49,9 +49,11 @@ cpdef enum CorpIndices:
 # Note: These are declared as extern here, defined in data.pyx
 cdef float CASH_DIVISOR
 cdef float NET_WORTH_DIVISOR
-cdef float INCOME_DIVISOR
-cdef float PRICE_DIVISOR
+cdef float COMPANY_INCOME_DIVISOR
+cdef float ENTITY_INCOME_DIVISOR
 cdef float SHARE_DIVISOR
+cdef float COMPANY_PRICE_DIVISOR
+cdef float SHARE_PRICE_DIVISOR
 cdef float COMPANY_STAR_DIVISOR
 cdef float CORP_STAR_DIVISOR
 cdef float MAX_ROUNDTRIPS

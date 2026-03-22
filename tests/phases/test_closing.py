@@ -4,7 +4,7 @@ from core.state import GameState, get_layout
 from core.data import (
     GamePhases, GameConstants,
     get_company_income, get_company_stars, get_company_face_value,
-    get_cost_of_ownership, PY_PRICE_DIVISOR,
+    get_cost_of_ownership, PY_COMPANY_PRICE_DIVISOR,
 )
 from entities.turn import TURN
 from entities.company import COMPANIES, CompanyLocation
@@ -1322,7 +1322,7 @@ class TestActiveCompanyClosing:
         closing_company = TURN.get_closing_company(state)
         if closing_company >= 0:
             layout = get_layout(3)
-            expected_fv = get_company_face_value(closing_company) / PY_PRICE_DIVISOR
+            expected_fv = get_company_face_value(closing_company) / PY_COMPANY_PRICE_DIVISOR
             assert abs(state._array[layout.active_company_face_value_offset] - expected_fv) < 1e-6
             assert state._array[layout.active_company_stars_offset] > 0.0  # stars > 0
 

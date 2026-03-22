@@ -10,7 +10,7 @@ from core.data import (
     get_company_stars, get_company_face_value,
     get_company_low_price, get_company_high_price,
     get_adjusted_company_income,
-    PY_COMPANY_STAR_DIVISOR, PY_PRICE_DIVISOR, PY_INCOME_DIVISOR,
+    PY_COMPANY_STAR_DIVISOR, PY_COMPANY_PRICE_DIVISOR, PY_COMPANY_INCOME_DIVISOR,
 )
 from entities.company import COMPANIES, get_auction_company_for_slot_py
 from entities.deck import DECK
@@ -131,10 +131,10 @@ class TestAuctionSlotInfo:
                 continue
             base = layout.auction_slot_info_offset + slot * AUCTION_SLOT_STRIDE
             assert abs(state._array[base + SLOT_STARS] - get_company_stars(company_id) / PY_COMPANY_STAR_DIVISOR) < 1e-6
-            assert abs(state._array[base + SLOT_LOW_PRICE] - get_company_low_price(company_id) / PY_PRICE_DIVISOR) < 1e-6
-            assert abs(state._array[base + SLOT_FACE_VALUE] - get_company_face_value(company_id) / PY_PRICE_DIVISOR) < 1e-6
-            assert abs(state._array[base + SLOT_HIGH_PRICE] - get_company_high_price(company_id) / PY_PRICE_DIVISOR) < 1e-6
-            expected_income = get_adjusted_company_income(company_id, coo_level) / PY_INCOME_DIVISOR
+            assert abs(state._array[base + SLOT_LOW_PRICE] - get_company_low_price(company_id) / PY_COMPANY_PRICE_DIVISOR) < 1e-6
+            assert abs(state._array[base + SLOT_FACE_VALUE] - get_company_face_value(company_id) / PY_COMPANY_PRICE_DIVISOR) < 1e-6
+            assert abs(state._array[base + SLOT_HIGH_PRICE] - get_company_high_price(company_id) / PY_COMPANY_PRICE_DIVISOR) < 1e-6
+            expected_income = get_adjusted_company_income(company_id, coo_level) / PY_COMPANY_INCOME_DIVISOR
             assert abs(state._array[base + SLOT_INCOME] - expected_income) < 1e-6
 
     def test_empty_slots_are_zero(self, state):
@@ -187,10 +187,10 @@ class TestActiveCompany:
 
         state.set_active_company(company_id)
         assert abs(state._array[layout.active_company_stars_offset] - get_company_stars(company_id) / PY_COMPANY_STAR_DIVISOR) < 1e-6
-        assert abs(state._array[layout.active_company_low_price_offset] - get_company_low_price(company_id) / PY_PRICE_DIVISOR) < 1e-6
-        assert abs(state._array[layout.active_company_face_value_offset] - get_company_face_value(company_id) / PY_PRICE_DIVISOR) < 1e-6
-        assert abs(state._array[layout.active_company_high_price_offset] - get_company_high_price(company_id) / PY_PRICE_DIVISOR) < 1e-6
-        expected_income = get_adjusted_company_income(company_id, coo_level) / PY_INCOME_DIVISOR
+        assert abs(state._array[layout.active_company_low_price_offset] - get_company_low_price(company_id) / PY_COMPANY_PRICE_DIVISOR) < 1e-6
+        assert abs(state._array[layout.active_company_face_value_offset] - get_company_face_value(company_id) / PY_COMPANY_PRICE_DIVISOR) < 1e-6
+        assert abs(state._array[layout.active_company_high_price_offset] - get_company_high_price(company_id) / PY_COMPANY_PRICE_DIVISOR) < 1e-6
+        expected_income = get_adjusted_company_income(company_id, coo_level) / PY_COMPANY_INCOME_DIVISOR
         assert abs(state._array[layout.active_company_income_offset] - expected_income) < 1e-6
 
     def test_clear_active_company(self, state):

@@ -1,7 +1,7 @@
 """Tests for ISSUE_SHARES phase (Phase 8)."""
 import pytest
 from core.state import get_layout
-from core.data import GamePhases, CorpIndices, get_market_price, PY_PRICE_DIVISOR, PY_IMPACT_DIVISOR
+from core.data import GamePhases, CorpIndices, get_market_price, PY_SHARE_PRICE_DIVISOR, PY_IMPACT_DIVISOR
 from core.actions import get_valid_action_mask, get_action_layout
 from entities.turn import TURN
 from entities.player import PLAYERS
@@ -746,7 +746,7 @@ class TestIssueImpactScalars:
         assert abs(impact - (-1.0 / PY_IMPACT_DIVISOR)) < 1e-6, (
             f"Expected impact -1/5 = -0.2, got {impact}"
         )
-        assert abs(cash_gain - (22.0 / PY_PRICE_DIVISOR)) < 1e-6, (
+        assert abs(cash_gain - (22.0 / PY_SHARE_PRICE_DIVISOR)) < 1e-6, (
             f"Expected cash_gain 22/40 = 0.55, got {cash_gain}"
         )
 
@@ -778,7 +778,7 @@ class TestIssueImpactScalars:
 
         # SM: no price change, receives current price ($24)
         assert impact == 0.0, f"SM impact should be 0, got {impact}"
-        assert abs(cash_gain - (24.0 / PY_PRICE_DIVISOR)) < 1e-6, (
+        assert abs(cash_gain - (24.0 / PY_SHARE_PRICE_DIVISOR)) < 1e-6, (
             f"SM cash_gain should be 24/40 = 0.60, got {cash_gain}"
         )
 
@@ -806,4 +806,4 @@ class TestIssueImpactScalars:
             f"Expected impact -2/5 = -0.4, got {impact}"
         )
         expected_price = get_market_price(13)  # $20
-        assert abs(cash_gain - (expected_price / PY_PRICE_DIVISOR)) < 1e-6
+        assert abs(cash_gain - (expected_price / PY_SHARE_PRICE_DIVISOR)) < 1e-6

@@ -11,7 +11,7 @@ from libc.math cimport lround
 
 from core.state cimport GameState, StateLayout, CorpFieldOffsets
 from core.data cimport (
-    GameConstants, CASH_DIVISOR, INCOME_DIVISOR, PRICE_DIVISOR, SHARE_DIVISOR, CORP_STAR_DIVISOR, MARKET_PRICES,
+    GameConstants, CASH_DIVISOR, COMPANY_INCOME_DIVISOR, ENTITY_INCOME_DIVISOR, SHARE_PRICE_DIVISOR, SHARE_DIVISOR, CORP_STAR_DIVISOR, MARKET_PRICES,
     get_company_income, get_company_stars, get_cost_of_ownership,
     get_company_face_value, compute_synergy_bonuses, CorpIndices, get_corp_share_count,
 )
@@ -281,11 +281,11 @@ cdef class Corporation:
 
     cpdef int get_income(self, GameState state):
         """Get corporation's total income (from owned companies)."""
-        return <int>lround(state._data[self._income_offset] * PRICE_DIVISOR)
+        return <int>lround(state._data[self._income_offset] * ENTITY_INCOME_DIVISOR)
 
     cpdef void set_income(self, GameState state, int income):
         """Set corporation's income."""
-        state._data[self._income_offset] = <float>income / PRICE_DIVISOR
+        state._data[self._income_offset] = <float>income / ENTITY_INCOME_DIVISOR
 
     cpdef int get_stars(self, GameState state):
         """Get corporation's total stars (from owned companies)."""
@@ -327,11 +327,11 @@ cdef class Corporation:
 
     cpdef int get_share_price(self, GameState state):
         """Get current share price (integer dollars)."""
-        return <int>(state._data[self._share_price_offset] * PRICE_DIVISOR + 0.5)
+        return <int>(state._data[self._share_price_offset] * SHARE_PRICE_DIVISOR + 0.5)
 
     cpdef void set_share_price(self, GameState state, int price):
         """Set share price (integer dollars)."""
-        state._data[self._share_price_offset] = <float>price / PRICE_DIVISOR
+        state._data[self._share_price_offset] = <float>price / SHARE_PRICE_DIVISOR
 
     cpdef int get_price_index(self, GameState state):
         """Get market price index (0-26, where 0 is bankruptcy). Uses hidden compact storage for O(1) access."""
@@ -455,7 +455,7 @@ cdef class Corporation:
                 company_count += 1
 
                 # Sum cached adjusted income (base - CoO already applied)
-                adjusted_income_sum += <int>lround(data[self._company_incomes_offset + company_id] * INCOME_DIVISOR)
+                adjusted_income_sum += <int>lround(data[self._company_incomes_offset + company_id] * COMPANY_INCOME_DIVISOR)
 
                 # Track highest FV for DA ability (need base income)
                 base_income = get_company_income(company_id)

@@ -10,7 +10,7 @@ Provides clean getter/setter access to turn-specific state including:
 
 from core.state cimport GameState, StateLayout, TurnStateOffsets
 from libc.math cimport lround
-from core.data cimport GameConstants, GamePhases, INCOME_DIVISOR, PRICE_DIVISOR, IMPACT_DIVISOR, get_adjusted_company_income, get_company_stars, COMPANY_SYNERGY
+from core.data cimport GameConstants, GamePhases, COMPANY_INCOME_DIVISOR, COMPANY_PRICE_DIVISOR, SHARE_PRICE_DIVISOR, IMPACT_DIVISOR, get_adjusted_company_income, get_company_stars, COMPANY_SYNERGY
 from entities.company cimport Company, LOC_REMOVED
 from entities import player as player_module
 from entities import company as company_module
@@ -372,14 +372,14 @@ cdef class TurnState:
         cdef float val = state._data[self._auction_price_offset]
         if val <= 0:
             return 0
-        return <int>(val * PRICE_DIVISOR + 0.5)
+        return <int>(val * COMPANY_PRICE_DIVISOR + 0.5)
 
     cpdef void set_auction_price(self, GameState state, int price):
         """Set current auction price. Use 0 or negative to clear."""
         if price <= 0:
             state._data[self._auction_price_offset] = 0.0
         else:
-            state._data[self._auction_price_offset] = <float>price / PRICE_DIVISOR
+            state._data[self._auction_price_offset] = <float>price / COMPANY_PRICE_DIVISOR
 
     cpdef int get_auction_high_bidder(self, GameState state):
         """Get current high bidder. Uses hidden compact storage for O(1) access. Returns -1 if none."""
@@ -531,7 +531,7 @@ cdef class TurnState:
 
     cpdef void set_issue_cash_gain(self, GameState state, int cash):
         """Set issue cash gain (price at destination index)."""
-        state._data[self._issue_cash_gain_offset] = <float>cash / PRICE_DIVISOR
+        state._data[self._issue_cash_gain_offset] = <float>cash / SHARE_PRICE_DIVISOR
 
     cpdef void clear_issue_impact(self, GameState state):
         """Clear issue impact scalars (zero-fill)."""
@@ -609,7 +609,7 @@ cdef class TurnState:
         cdef float val = data[self._auction_price_offset]
         if val <= 0:
             return 0
-        return <int>(val * PRICE_DIVISOR + 0.5)
+        return <int>(val * COMPANY_PRICE_DIVISOR + 0.5)
 
     cdef inline int _get_coo_level_nogil(self, float* data) noexcept nogil:
         """Get cost of ownership level from hidden state. O(1) access."""
@@ -671,7 +671,7 @@ cdef class TurnState:
         """Compute and set synergy values for the current acquisition offer.
 
         For each company i, if the buying corp owns company i, sets the value to
-        (COMPANY_SYNERGY[i][target] + COMPANY_SYNERGY[target][i]) / INCOME_DIVISOR.
+        (COMPANY_SYNERGY[i][target] + COMPANY_SYNERGY[target][i]) / COMPANY_INCOME_DIVISOR.
         Otherwise 0.
         """
         cdef int i, bonus
@@ -681,7 +681,7 @@ cdef class TurnState:
         for i in range(<int>GameConstants.NUM_COMPANIES):
             if corp[owned_offset + i] == 1.0:
                 bonus = COMPANY_SYNERGY[i][target_company_id] + COMPANY_SYNERGY[target_company_id][i]
-                state._data[offset + i] = <float>bonus / INCOME_DIVISOR
+                state._data[offset + i] = <float>bonus / COMPANY_INCOME_DIVISOR
             else:
                 state._data[offset + i] = 0.0
 
