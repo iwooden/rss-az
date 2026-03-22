@@ -33,9 +33,9 @@ import torch.nn as nn
 class RSSModelConfig2:
     """Configuration for the v2 residual MLP trunk and heads."""
 
-    input_dim: int = 1549  # get_layout(3).visible_size; always pass explicitly
-    action_dim: int = 225  # get_total_action_count(3); always pass explicitly
-    value_dim: int = 3
+    input_dim: int  # get_layout(num_players).visible_size
+    action_dim: int  # get_total_action_count(num_players)
+    value_dim: int  # num_players (per-player expected outcomes)
     hidden_dim: int = 256
     num_blocks: int = 6
 
@@ -62,7 +62,7 @@ class ResidualMLPBlock(nn.Module):
 class RSSAlphaZeroNet2(nn.Module):
     """V2 residual MLP with multi-layer input preprocessing."""
 
-    def __init__(self, cfg: RSSModelConfig2 = RSSModelConfig2()) -> None:
+    def __init__(self, cfg: RSSModelConfig2) -> None:
         super().__init__()
         self.cfg = cfg
 
@@ -142,7 +142,7 @@ if __name__ == "__main__":
     from core.actions import get_total_action_count
     from core.state import get_layout
     _layout = get_layout(3)
-    cfg = RSSModelConfig2(input_dim=_layout.visible_size, action_dim=get_total_action_count(3))
+    cfg = RSSModelConfig2(input_dim=_layout.visible_size, action_dim=get_total_action_count(3), value_dim=3)
     model = RSSAlphaZeroNet2(cfg)
     total = count_parameters(model)
     print(f"Trainable parameters: {total:,}")

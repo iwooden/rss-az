@@ -12,6 +12,7 @@ import time
 import numpy as np
 import torch
 
+from core.actions import get_total_action_count
 from core.state import GameState, get_layout
 from train.config import MCTSConfig
 from mcts.evaluator import NNEvaluator
@@ -35,7 +36,7 @@ def run_mcts_benchmark(
 
     # Build model with random weights
     _layout = get_layout(num_players)
-    config = RSSModelConfig(input_dim=_layout.visible_size)
+    config = RSSModelConfig(input_dim=_layout.visible_size, action_dim=get_total_action_count(num_players), value_dim=num_players)
     model = RSSAlphaZeroNet(config)
     model.to(torch_device)
 

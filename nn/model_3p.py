@@ -25,9 +25,9 @@ import torch.nn as nn
 class RSSModelConfig:
     """Configuration for the residual MLP trunk and heads."""
 
-    input_dim: int = 1549  # get_layout(3).visible_size; always pass explicitly
-    action_dim: int = 225  # get_total_action_count(3); always pass explicitly
-    value_dim: int = 3  # Per-player expected outcomes: [v_active, v_next, v_next_next]
+    input_dim: int  # get_layout(num_players).visible_size
+    action_dim: int  # get_total_action_count(num_players)
+    value_dim: int  # num_players (per-player expected outcomes)
     hidden_dim: int = 768
     num_blocks: int = 10
     expansion: int = 2
@@ -59,7 +59,7 @@ class ResidualMLPBlock(nn.Module):
 class RSSAlphaZeroNet(nn.Module):
     """Residual MLP model with policy and value heads for RSS."""
 
-    def __init__(self, cfg: RSSModelConfig = RSSModelConfig()) -> None:
+    def __init__(self, cfg: RSSModelConfig) -> None:
         super().__init__()
         self.cfg = cfg
 
