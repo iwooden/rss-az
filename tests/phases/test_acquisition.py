@@ -9,8 +9,7 @@ from core.data import (
 )
 from core.actions import (
     ACTION_ACQ_PRICE_PY as ACTION_ACQ_PRICE,
-    ACTION_ACQ_FI_HIGH_PY as ACTION_ACQ_FI_HIGH,
-    ACTION_ACQ_FI_FACE_PY as ACTION_ACQ_FI_FACE,
+    ACTION_ACQ_FI_BUY_PY as ACTION_ACQ_FI_BUY,
     ACTION_PASS_PY as ACTION_PASS
 )
 from entities.player import PLAYERS
@@ -475,41 +474,43 @@ class TestValidation:
         assert get_offer_count(gs) == 0 or TURN.get_acq_active_corp(gs) == -1, \
             "Bug: Offer generated for corp that cannot afford the minimum price"
 
-    def test_fi_buy_high_rejects_os_corp(self):
-        """OS corp cannot use FI Buy High action."""
+    def test_fi_buy_os_pays_face_value(self):
+        """OS corp uses fi_buy at face value (not high price)."""
         gs = GameState(3)
         gs.initialize_game()
 
         # Give company to FI, make OS (corp 2) active
         COMPANIES[0].transfer_to_fi(gs)
         float_corp_for_test(gs, 2)
-        CORPS[2].set_cash(gs, 50000)
+        face_value = get_company_face_value(0)
+        CORPS[2].set_cash(gs, face_value)  # Exactly enough for face value
 
         setup_acquisition_phase_py(gs)
-        assert_invariants(gs, "After setup_acquisition_phase_py OS FI Buy High test")
+        assert_invariants(gs, "After setup_acquisition_phase_py OS FI Buy test")
 
-        # OS tries FI Buy High - should reject
+        # OS can afford face value, should succeed
         if get_offer_count(gs) > 0:
-            result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_HIGH, 0)
-            assert result == 1  # Invalid
+            result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_BUY, 0)
+            assert result == 0  # Valid - OS pays face value
 
-    def test_fi_buy_face_rejects_non_os_corp(self):
-        """Non-OS corp cannot use FI Buy Face action."""
+    def test_fi_buy_non_os_pays_high_price(self):
+        """Non-OS corp uses fi_buy at high price."""
         gs = GameState(3)
         gs.initialize_game()
 
         # Give company to FI, make non-OS corp active
         COMPANIES[0].transfer_to_fi(gs)
         float_corp_for_test(gs, 0)
-        CORPS[0].set_cash(gs, 50000)
+        high_price = get_company_high_price(0)
+        CORPS[0].set_cash(gs, high_price)  # Exactly enough for high price
 
         setup_acquisition_phase_py(gs)
-        assert_invariants(gs, "After setup_acquisition_phase_py non-OS FI Buy Face test")
+        assert_invariants(gs, "After setup_acquisition_phase_py non-OS FI Buy test")
 
-        # Non-OS tries FI Buy Face - should reject
+        # Non-OS can afford high price, should succeed
         if get_offer_count(gs) > 0:
-            result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_FACE, 0)
-            assert result == 1  # Invalid
+            result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_BUY, 0)
+            assert result == 0  # Valid - non-OS pays high price
 
     def test_target_already_acquired_rejected(self):
         """Cannot buy company already in acquisition_companies."""
@@ -887,7 +888,7 @@ class TestActionIntegration:
             corp_cash_before = CORPS[0].get_cash(gs)
             fi_cash_before = FI.get_cash(gs)
 
-            result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_HIGH, 0)
+            result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_BUY, 0)
             assert result == 0
             assert_invariants(gs, "After FI buy high action")
 
@@ -917,7 +918,7 @@ class TestActionIntegration:
             corp_cash_before = CORPS[2].get_cash(gs)
             fi_cash_before = FI.get_cash(gs)
 
-            result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_FACE, 0)
+            result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_BUY, 0)
             assert result == 0
             assert_invariants(gs, "After FI buy face action")
 
@@ -964,7 +965,7 @@ class TestActionIntegration:
         fi_cash_before = FI.get_cash(gs)
 
         # OS uses FI_BUY_FACE action
-        result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_FACE, 0)
+        result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_BUY, 0)
         assert result == 0, "FI_BUY_FACE should succeed for OS"
         assert_invariants(gs, "After OS FI buy face action")
 
@@ -1067,7 +1068,7 @@ class TestActionIntegration:
         fi_cash_before = FI.get_cash(gs)
         high_corp_cash_before = high_corp.get_cash(gs)
 
-        result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_HIGH, 0)
+        result = apply_acquisition_action_py(gs, ACTION_ACQ_FI_BUY, 0)
         assert result == 0, "Accept action should succeed"
         assert_invariants(gs, "After FI intervention accept action")
 
@@ -1804,21 +1805,13 @@ class TestNoOfferBoundsCheck:
         assert get_offer_count(gs) == 0
         assert apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 0) == 1
 
-    def test_fi_high_action_no_offer_returns_invalid(self):
-        """ACTION_ACQ_FI_HIGH with no active offer returns 1, not segfault."""
+    def test_fi_buy_action_no_offer_returns_invalid(self):
+        """ACTION_ACQ_FI_BUY with no active offer returns 1, not segfault."""
         gs = GameState(3)
         gs.initialize_game()
         setup_acquisition_phase_py(gs)
-        assert_invariants(gs, "After setup_acquisition_phase_py no offer FI high check")
-        assert apply_acquisition_action_py(gs, ACTION_ACQ_FI_HIGH) == 1
-
-    def test_fi_face_action_no_offer_returns_invalid(self):
-        """ACTION_ACQ_FI_FACE with no active offer returns 1, not segfault."""
-        gs = GameState(3)
-        gs.initialize_game()
-        setup_acquisition_phase_py(gs)
-        assert_invariants(gs, "After setup_acquisition_phase_py no offer FI face check")
-        assert apply_acquisition_action_py(gs, ACTION_ACQ_FI_FACE) == 1
+        assert_invariants(gs, "After setup_acquisition_phase_py no offer FI buy check")
+        assert apply_acquisition_action_py(gs, ACTION_ACQ_FI_BUY) == 1
 
 
 class TestAcqSynergyValues:

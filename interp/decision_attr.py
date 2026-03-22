@@ -36,8 +36,8 @@ from interp.utils import (
 # Action type names for readable output
 _ACTION_TYPE_NAMES = {
     0: "pass", 1: "auction", 2: "buy_share", 3: "sell_share",
-    4: "leave_bid", 5: "raise_bid", 6: "acq_price", 7: "acq_fi_high",
-    8: "acq_fi_face", 9: "close", 10: "dividend", 11: "issue", 12: "ipo",
+    4: "leave_bid", 5: "raise_bid", 6: "acq_price", 7: "acq_fi_buy",
+    8: "close", 9: "dividend", 10: "issue", 11: "ipo",
 }
 
 

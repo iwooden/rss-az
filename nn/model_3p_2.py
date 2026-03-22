@@ -34,7 +34,7 @@ class RSSModelConfig2:
     """Configuration for the v2 residual MLP trunk and heads."""
 
     input_dim: int = 1549  # get_layout(3).visible_size; always pass explicitly
-    action_dim: int = 226  # get_total_action_count(3); always pass explicitly
+    action_dim: int = 225  # get_total_action_count(3); always pass explicitly
     value_dim: int = 3
     hidden_dim: int = 256
     num_blocks: int = 6

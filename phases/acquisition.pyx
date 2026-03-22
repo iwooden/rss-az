@@ -13,7 +13,7 @@ create a huge action space of corp × company × price combinations), offers are
 4. Advanced sequentially after accept/pass (_advance_to_next_offer)
 5. Re-validated dynamically since earlier buys may invalidate later offers
 
-This keeps the action space constant (51 prices + 2 FI actions + pass = 54 actions)
+This keeps the action space constant (51 prices + 1 FI buy + pass = 53 actions)
 regardless of how many potential acquisitions exist in a given game state.
 
 Receivership corps (no president) are handled automatically:
@@ -26,7 +26,7 @@ See CLAUDE.md "Offer Buffer Pattern" for full documentation.
 from core.state cimport GameState
 from core.driver cimport _is_game_terminal
 from core.data cimport GamePhases, GameConstants, CorpIndices, get_company_face_value, get_company_low_price
-from core.actions cimport ActionInfo, ACTION_PASS, ACTION_ACQ_PRICE, ACTION_ACQ_FI_HIGH, ACTION_ACQ_FI_FACE
+from core.actions cimport ActionInfo, ACTION_PASS, ACTION_ACQ_PRICE, ACTION_ACQ_FI_BUY
 from entities import turn as turn_module
 from entities import player as player_module
 from entities import company as company_module
@@ -694,14 +694,13 @@ cdef bint _validate_price_action(GameState state, int price) noexcept:
     return True
 
 
-cdef bint _validate_fi_buy_high(GameState state) noexcept:
+cdef bint _validate_fi_buy(GameState state) noexcept:
     """
-    Validate FI Buy High action (non-OS corps buying at high price).
+    Validate FI Buy action (OS buys at face value, others at high price).
 
     Checks:
     - Defensive: is_acq_fi_offer is True
-    - Corp is not OS (OS must use face value)
-    - Corp has sufficient cash for high_price
+    - Corp has sufficient cash (face for OS, high for others)
     - Target not already acquired
 
     Returns True if valid, False otherwise.
@@ -714,51 +713,15 @@ cdef bint _validate_fi_buy_high(GameState state) noexcept:
     if not is_fi:
         return False
 
-    # OS cannot use FI Buy High
+    # OS pays face value, others pay high price
+    cdef int price
     if corp_id == CorpIndices.CORP_OS:
-        return False
+        price = get_company_face_value(company_id)
+    else:
+        price = company_module.COMPANIES[company_id].get_high_price()
 
-    # Corp can afford high price
-    cdef int high_price = company_module.COMPANIES[company_id].get_high_price()
     cdef int corp_cash = corp_module.CORPS[corp_id].get_cash(state)
-    if corp_cash < high_price:
-        return False
-
-    # Target not already acquired
-    if _is_target_already_acquired(state, company_id):
-        return False
-
-    return True
-
-
-cdef bint _validate_fi_buy_face(GameState state) noexcept:
-    """
-    Validate FI Buy Face action (OS only, buying at face value).
-
-    Checks:
-    - Defensive: is_acq_fi_offer is True
-    - Corp is OS (only OS uses face value)
-    - Corp has sufficient cash for face_value
-    - Target not already acquired
-
-    Returns True if valid, False otherwise.
-    """
-    cdef int corp_id = turn_module.TURN.get_acq_active_corp(state)
-    cdef int company_id = turn_module.TURN.get_acq_target_company(state)
-    cdef bint is_fi = turn_module.TURN.is_acq_fi_offer(state)
-
-    # Defensive: Must be FI offer
-    if not is_fi:
-        return False
-
-    # Only OS can use FI Buy Face
-    if corp_id != CorpIndices.CORP_OS:
-        return False
-
-    # Corp can afford face value
-    cdef int face_value = get_company_face_value(company_id)
-    cdef int corp_cash = corp_module.CORPS[corp_id].get_cash(state)
-    if corp_cash < face_value:
+    if corp_cash < price:
         return False
 
     # Target not already acquired
@@ -812,50 +775,31 @@ cdef void _handle_accept_price(GameState state, int price) noexcept:
     _rescan_offers(state)
 
 
-cdef void _handle_fi_buy_high(GameState state) noexcept:
+cdef void _handle_fi_buy(GameState state) noexcept:
     """
-    Execute FI purchase at high price (non-OS corps).
+    Execute FI purchase (OS buys at face value, others at high price).
 
     Transfers:
-    - high_price from buyer corp to FI
+    - Price from buyer corp to FI
     - Company to buyer's acquisition zone
 
-    Then advances to next offer.
+    Then rescans offers from start.
     """
     cdef int corp_id = turn_module.TURN.get_acq_active_corp(state)
     cdef int company_id = turn_module.TURN.get_acq_target_company(state)
-    cdef int high_price = company_module.COMPANIES[company_id].get_high_price()
+
+    # OS pays face value, others pay high price
+    cdef int price
+    if corp_id == CorpIndices.CORP_OS:
+        price = get_company_face_value(company_id)
+    else:
+        price = company_module.COMPANIES[company_id].get_high_price()
 
     # Transfer money: buyer -> FI
-    corp_module.CORPS[corp_id].add_cash(state, -high_price)
-    fi_module.FI.add_cash(state, high_price)
+    corp_module.CORPS[corp_id].add_cash(state, -price)
+    fi_module.FI.add_cash(state, price)
 
     # Transfer company to buyer's acquisition zone
-    company_module.COMPANIES[company_id].transfer_to_corp_acquisition(state, corp_id)
-
-    # Rescan from start — state changed, previously-invalid offers may now be valid
-    _rescan_offers(state)
-
-
-cdef void _handle_fi_buy_face(GameState state) noexcept:
-    """
-    Execute FI purchase at face value (OS only).
-
-    Transfers:
-    - face_value from OS to FI
-    - Company to OS's acquisition zone
-
-    Then advances to next offer.
-    """
-    cdef int corp_id = turn_module.TURN.get_acq_active_corp(state)
-    cdef int company_id = turn_module.TURN.get_acq_target_company(state)
-    cdef int face_value = get_company_face_value(company_id)
-
-    # Transfer money: OS -> FI
-    corp_module.CORPS[corp_id].add_cash(state, -face_value)
-    fi_module.FI.add_cash(state, face_value)
-
-    # Transfer company to OS's acquisition zone
     company_module.COMPANIES[company_id].transfer_to_corp_acquisition(state, corp_id)
 
     # Rescan from start — state changed, previously-invalid offers may now be valid
@@ -1037,8 +981,7 @@ cdef int apply_acquisition_action(GameState state, ActionInfo* info) noexcept:
 
     Action types:
     - ACTION_ACQ_PRICE: Buy at low_price + info.amount
-    - ACTION_ACQ_FI_HIGH: Buy FI company at high price (non-OS)
-    - ACTION_ACQ_FI_FACE: Buy FI company at face value (OS only)
+    - ACTION_ACQ_FI_BUY: Buy FI company (OS=face value, others=high price)
     - ACTION_PASS: Decline current offer
 
     Returns: 0=success, 1=invalid
@@ -1063,16 +1006,10 @@ cdef int apply_acquisition_action(GameState state, ActionInfo* info) noexcept:
         _handle_accept_price(state, price)
         return 0
 
-    elif info.action_type == ACTION_ACQ_FI_HIGH:
-        if not _validate_fi_buy_high(state):
+    elif info.action_type == ACTION_ACQ_FI_BUY:
+        if not _validate_fi_buy(state):
             return 1
-        _handle_fi_buy_high(state)
-        return 0
-
-    elif info.action_type == ACTION_ACQ_FI_FACE:
-        if not _validate_fi_buy_face(state):
-            return 1
-        _handle_fi_buy_face(state)
+        _handle_fi_buy(state)
         return 0
 
     elif info.action_type == ACTION_PASS:

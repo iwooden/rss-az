@@ -345,12 +345,12 @@ Action space size varies by player count:
 
 | Players | Auction Actions | Total Actions |
 |---------|-----------------|---------------|
-| 3       | 45 (3 x 15)     | 226           |
-| 4       | 60 (4 x 15)     | 241           |
-| 5       | 75 (5 x 15)     | 256           |
-| 6       | 90 (6 x 15)     | 271           |
+| 3       | 45 (3 x 15)     | 225           |
+| 4       | 60 (4 x 15)     | 240           |
+| 5       | 75 (5 x 15)     | 255           |
+| 6       | 90 (6 x 15)     | 270           |
 
-Formula: `181 + (num_players * 15)`
+Formula: `180 + (num_players * 15)`
 
 Use `get_total_action_count(num_players)` for the exact size.
 
@@ -372,11 +372,11 @@ Use `get_total_action_count(num_players)` for the exact size.
 |-------|---------|-------|---------|
 | **INVEST** | pass, auction[3x15], buy[8], sell[8] | 62 | 0-61 |
 | **BID_IN_AUCTION** | leave, raise_bid[14] | 15 | 62-76 |
-| **ACQUISITION** | price[51], fi_high, fi_face, pass | 54 | 77-130 |
-| **CLOSING** | close, pass | 2 | 131-132 |
-| **DIVIDENDS** | dividend[26] | 26 | 133-158 |
-| **ISSUE_SHARES** | pass, issue | 2 | 159-160 |
-| **IPO** | pass, ipo[8x8] | 65 | 161-225 |
+| **ACQUISITION** | price[51], fi_buy, pass | 53 | 77-129 |
+| **CLOSING** | close, pass | 2 | 130-131 |
+| **DIVIDENDS** | dividend[26] | 26 | 132-157 |
+| **ISSUE_SHARES** | pass, issue | 2 | 158-159 |
+| **IPO** | pass, ipo[8x8] | 65 | 160-224 |
 
 ### Detailed Action Indices (for N players)
 
@@ -398,14 +398,13 @@ Use `get_total_action_count(num_players)` for the exact size.
 | +0 | Leave Auction | - |
 | +1 to +14 | Raise Bid | `bid_offset = idx - base - 1` (new bid = face + offset + 1) |
 
-#### ACQUISITION Phase (+54 actions)
+#### ACQUISITION Phase (+53 actions)
 
 | Index | Action | Decoding |
 |-------|--------|----------|
 | +0 to +50 | Price Offer | `price = low_price + (idx - base)` |
-| +51 | FI Buy High | Buy FI company at high price |
-| +52 | FI Buy Face | Buy FI company at face (OS only) |
-| +53 | Pass | Decline acquisition |
+| +51 | FI Buy | Buy FI company (OS=face value, others=high price) |
+| +52 | Pass | Decline acquisition |
 
 #### CLOSING Phase (+2 actions)
 
@@ -447,12 +446,11 @@ Use `get_total_action_count(num_players)` for the exact size.
 | 4 | ACTION_LEAVE_AUCTION | Leave auction |
 | 5 | ACTION_RAISE_BID | Raise bid (bid_offset) |
 | 6 | ACTION_ACQ_PRICE | Acquire at price (price_offset) |
-| 7 | ACTION_ACQ_FI_HIGH | FI buy at high price |
-| 8 | ACTION_ACQ_FI_FACE | FI buy at face value |
-| 9 | ACTION_CLOSE | Close current company |
-| 10 | ACTION_DIVIDEND | Pay dividend (amount) |
-| 11 | ACTION_ISSUE | Issue share |
-| 12 | ACTION_IPO | IPO (corp_id, par_slot) |
+| 7 | ACTION_ACQ_FI_BUY | FI buy (OS=face, others=high) |
+| 8 | ACTION_CLOSE | Close current company |
+| 9 | ACTION_DIVIDEND | Pay dividend (amount) |
+| 10 | ACTION_ISSUE | Issue share |
+| 11 | ACTION_IPO | IPO (corp_id, par_slot) |
 
 ---
 

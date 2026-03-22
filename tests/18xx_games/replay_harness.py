@@ -477,11 +477,8 @@ class ReplayHarness:
                     print(f"  ACQ offer: {corp_name} -> {company_name} [ACCEPT]")
 
                 if is_fi:
-                    # FI offer: OS pays face value, others pay high price
-                    if acq_corp_id == CORP_NAME_TO_ID.get('OS', -1):
-                        engine_action = layout.acq_fi_face
-                    else:
-                        engine_action = layout.acq_fi_high
+                    # FI offer: single fi_buy action (OS pays face, others pay high)
+                    engine_action = layout.acq_fi_buy
                 else:
                     # Non-FI: use the recorded price
                     price = acq_outcomes[company_name][1]

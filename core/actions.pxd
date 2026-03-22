@@ -31,12 +31,11 @@ cdef enum ActionType:
     ACTION_LEAVE_AUCTION = 4  # Leave auction
     ACTION_RAISE_BID = 5      # Raise bid: bid_offset
     ACTION_ACQ_PRICE = 6      # Acquire at price: price_offset
-    ACTION_ACQ_FI_HIGH = 7    # FI buy at high price
-    ACTION_ACQ_FI_FACE = 8    # FI buy at face value (OS only)
-    ACTION_CLOSE = 9          # Close current company
-    ACTION_DIVIDEND = 10      # Pay dividend: amount
-    ACTION_ISSUE = 11         # Issue share
-    ACTION_IPO = 12           # IPO: (corp_id, par_slot)
+    ACTION_ACQ_FI_BUY = 7     # FI buy (OS=face value, others=high price)
+    ACTION_CLOSE = 8          # Close current company
+    ACTION_DIVIDEND = 9       # Pay dividend: amount
+    ACTION_ISSUE = 10         # Issue share
+    ACTION_IPO = 11           # IPO: (corp_id, par_slot)
 
 
 # =============================================================================
@@ -63,9 +62,8 @@ cdef struct ActionLayout:
     int raise_bid_base        # 108 (+bid_offset, 0-13 = new bid face+1 to face+14)
     # ACQUISITION sub-offsets
     int acq_price_base        # 122 (+price_offset 0-50)
-    int acq_fi_high           # 173
-    int acq_fi_face           # 174
-    int acq_pass              # 175
+    int acq_fi_buy            # 173
+    int acq_pass              # 174
     # CLOSING sub-offsets
     int close_action          # 176
     int close_pass            # 177
@@ -107,9 +105,9 @@ cdef ActionInfo decode_action(ActionLayout* layout, int action_idx) noexcept nog
 # Forced action check (returns single valid action if only one exists)
 cpdef tuple get_forced_action(GameState state)
 
-# Pre-allocated mask buffer: 166 + (1 + 6) * AUCTION_CAP
+# Pre-allocated mask buffer: 165 + (1 + 6) * AUCTION_CAP
 # Update if AUCTION_CAP or max player count changes.
-cdef float _mask_buffer[271]
+cdef float _mask_buffer[270]
 
 # Internal mask helpers (no numpy allocation)
 cdef void _fill_action_mask(GameState state)

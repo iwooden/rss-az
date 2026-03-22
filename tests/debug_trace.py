@@ -20,8 +20,7 @@ from core.actions import (
     ACTION_LEAVE_AUCTION_PY as ACTION_LEAVE_AUCTION,
     ACTION_RAISE_BID_PY as ACTION_RAISE_BID,
     ACTION_ACQ_PRICE_PY as ACTION_ACQ_PRICE,
-    ACTION_ACQ_FI_HIGH_PY as ACTION_ACQ_FI_HIGH,
-    ACTION_ACQ_FI_FACE_PY as ACTION_ACQ_FI_FACE,
+    ACTION_ACQ_FI_BUY_PY as ACTION_ACQ_FI_BUY,
     ACTION_CLOSE_PY as ACTION_CLOSE,
     ACTION_DIVIDEND_PY as ACTION_DIVIDEND,
     ACTION_ISSUE_PY as ACTION_ISSUE,
@@ -126,11 +125,8 @@ def format_action(action_idx, num_players, state=None):
     if atype == ACTION_ACQ_PRICE:
         return f"ACQUIRE at price offset {amount}"
 
-    if atype == ACTION_ACQ_FI_HIGH:
-        return "ACQUIRE from FI (high price)"
-
-    if atype == ACTION_ACQ_FI_FACE:
-        return "ACQUIRE from FI (face value, OS)"
+    if atype == ACTION_ACQ_FI_BUY:
+        return "ACQUIRE from FI"
 
     if atype == ACTION_CLOSE:
         return "CLOSE company"

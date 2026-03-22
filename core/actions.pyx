@@ -25,8 +25,8 @@ from core.data cimport (
 from core.actions cimport (
     ActionLayout, ActionInfo, ActionType,
     ACTION_PASS, ACTION_AUCTION, ACTION_BUY_SHARE, ACTION_SELL_SHARE,
-    ACTION_LEAVE_AUCTION, ACTION_RAISE_BID, ACTION_ACQ_PRICE, ACTION_ACQ_FI_HIGH,
-    ACTION_ACQ_FI_FACE, ACTION_CLOSE, ACTION_DIVIDEND, ACTION_ISSUE, ACTION_IPO,
+    ACTION_LEAVE_AUCTION, ACTION_RAISE_BID, ACTION_ACQ_PRICE, ACTION_ACQ_FI_BUY,
+    ACTION_CLOSE, ACTION_DIVIDEND, ACTION_ISSUE, ACTION_IPO,
     AUCTION_CAP, MAX_PAR_SLOTS, ACQ_PRICE_RANGE
 )
 
@@ -44,9 +44,9 @@ from entities.corp cimport (
 from entities.turn cimport TurnState
 from entities.turn import TURN
 
-# Maximum action count (6 players): 166 + (1 + 6) * AUCTION_CAP
+# Maximum action count (6 players): 165 + (1 + 6) * AUCTION_CAP
 # Update this if AUCTION_CAP or max player count changes.
-DEF MAX_ACTION_COUNT = 271
+DEF MAX_ACTION_COUNT = 270
 
 # Module-level mask buffer (pre-allocated, cleared before each use)
 # NOTE: Not thread-safe. For parallel execution, use multiprocessing (separate
@@ -59,11 +59,11 @@ cdef int get_total_actions_for_players(int num_players) noexcept nogil:
     """
     Calculate total action count for a given player count.
 
-    166 fixed non-auction actions + (1 + num_players) * AUCTION_CAP
+    165 fixed non-auction actions + (1 + num_players) * AUCTION_CAP
     The +1 accounts for BID phase raise actions (AUCTION_CAP - 1 raises + 1 leave).
     """
-    # 166 = pass(1) + buy(8) + sell(8) + leave(1) + acq(54) + close(2) + div(26) + issue(2) + ipo(65)
-    return 166 + (1 + num_players) * AUCTION_CAP
+    # 165 = pass(1) + buy(8) + sell(8) + leave(1) + acq(53) + close(2) + div(26) + issue(2) + ipo(65)
+    return 165 + (1 + num_players) * AUCTION_CAP
 
 
 cdef ActionLayout compute_action_layout(int num_players) noexcept nogil:
@@ -94,17 +94,15 @@ cdef ActionLayout compute_action_layout(int num_players) noexcept nogil:
     offset += AUCTION_CAP - 1  # 14
     # Total bid: 1 + 14 = 15
 
-    # ACQUISITION phase (54 actions)
+    # ACQUISITION phase (53 actions)
     layout.acquisition_start = offset
     layout.acq_price_base = offset  # +price_offset (0-50)
     offset += ACQ_PRICE_RANGE  # 51
-    layout.acq_fi_high = offset
-    offset += 1
-    layout.acq_fi_face = offset
+    layout.acq_fi_buy = offset
     offset += 1
     layout.acq_pass = offset
     offset += 1
-    # Total acquisition: 51 + 1 + 1 + 1 = 54
+    # Total acquisition: 51 + 1 + 1 = 53
 
     # CLOSING phase (2 actions)
     layout.closing_start = offset
@@ -192,13 +190,11 @@ cdef ActionInfo decode_action(ActionLayout* layout, int action_idx) noexcept nog
     # ACQUISITION phase
     if action_idx < layout.closing_start:
         info.phase = GamePhases.PHASE_ACQUISITION
-        if action_idx < layout.acq_fi_high:
+        if action_idx < layout.acq_fi_buy:
             info.action_type = ACTION_ACQ_PRICE
             info.amount = action_idx - layout.acq_price_base  # 0-50
-        elif action_idx == layout.acq_fi_high:
-            info.action_type = ACTION_ACQ_FI_HIGH
-        elif action_idx == layout.acq_fi_face:
-            info.action_type = ACTION_ACQ_FI_FACE
+        elif action_idx == layout.acq_fi_buy:
+            info.action_type = ACTION_ACQ_FI_BUY
         else:
             info.action_type = ACTION_PASS
         return info
@@ -357,7 +353,7 @@ cdef void _fill_acquisition_mask(GameState state, ActionLayout* layout, float* m
     cdef float* data = state._data
     cdef int corp_id = turn._get_acq_active_corp_nogil(data)
     cdef int company_id = turn._get_acq_target_company_nogil(data)
-    cdef int low_price, high_price, corp_cash, offset, price
+    cdef int low_price, high_price, corp_cash, offset, price, fi_price
 
     if corp_id < 0 or company_id < 0:
         return
@@ -368,15 +364,13 @@ cdef void _fill_acquisition_mask(GameState state, ActionLayout* layout, float* m
     corp = state._corp_ptr(corp_id)
 
     if turn._is_acq_fi_offer_nogil(data):
-        # FI offer: only specific buy actions valid
+        # FI offer: OS buys at face value, others at high price
         if corp_id == CORP_OS:
-            # OS buys at face value
-            if get_corp_cash(corp, &co) >= get_company_face_value(company_id):
-                mask[layout.acq_fi_face] = 1.0
+            fi_price = get_company_face_value(company_id)
         else:
-            # Others buy at high price
-            if get_corp_cash(corp, &co) >= get_company_high_price(company_id):
-                mask[layout.acq_fi_high] = 1.0
+            fi_price = get_company_high_price(company_id)
+        if get_corp_cash(corp, &co) >= fi_price:
+            mask[layout.acq_fi_buy] = 1.0
     else:
         # General acquisition: price offsets based on affordability
         low_price = get_company_low_price(company_id)
@@ -636,8 +630,7 @@ cpdef dict get_action_layout(int num_players):
         'leave_auction': layout.leave_auction,
         'raise_bid_base': layout.raise_bid_base,
         'acq_price_base': layout.acq_price_base,
-        'acq_fi_high': layout.acq_fi_high,
-        'acq_fi_face': layout.acq_fi_face,
+        'acq_fi_buy': layout.acq_fi_buy,
         'acq_pass': layout.acq_pass,
         'close_action': layout.close_action,
         'close_pass': layout.close_pass,
@@ -667,8 +660,7 @@ ACTION_SELL_SHARE_PY = ACTION_SELL_SHARE
 ACTION_LEAVE_AUCTION_PY = ACTION_LEAVE_AUCTION
 ACTION_RAISE_BID_PY = ACTION_RAISE_BID
 ACTION_ACQ_PRICE_PY = ACTION_ACQ_PRICE
-ACTION_ACQ_FI_HIGH_PY = ACTION_ACQ_FI_HIGH
-ACTION_ACQ_FI_FACE_PY = ACTION_ACQ_FI_FACE
+ACTION_ACQ_FI_BUY_PY = ACTION_ACQ_FI_BUY
 ACTION_CLOSE_PY = ACTION_CLOSE
 ACTION_DIVIDEND_PY = ACTION_DIVIDEND
 ACTION_ISSUE_PY = ACTION_ISSUE

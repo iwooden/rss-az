@@ -29,7 +29,7 @@ from phases.acquisition import (
 from phases.closing import apply_closing_auto_py, apply_closing_action_py
 from phases.ipo import setup_ipo_phase_py, process_ipo_py
 from core.actions import (
-    ACTION_PASS_PY, ACTION_CLOSE_PY, ACTION_ACQ_FI_HIGH_PY,
+    ACTION_PASS_PY, ACTION_CLOSE_PY, ACTION_ACQ_FI_BUY_PY,
 )
 from tests.phases.conftest import (
     apply_and_verify_all, float_corp_for_test,
@@ -589,7 +589,7 @@ class TestNetWorthFreshAfterAcquisitionAction:
         inject_stale_net_worth(state)
 
         # Accept first offer at high price
-        apply_acquisition_action_py(state, ACTION_ACQ_FI_HIGH_PY)
+        apply_acquisition_action_py(state, ACTION_ACQ_FI_BUY_PY)
 
         if state.get_phase() == GamePhases.PHASE_ACQUISITION:
             assert_net_worth_fresh(state, "After acq accept, before next offer")
