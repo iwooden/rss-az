@@ -147,6 +147,22 @@ class TestIPOtoPARTransition:
 
         assert state.get_par_corp() == 3
 
+    def test_active_corp_not_set_during_ipo(self, ipo_state_with_company):
+        """Active corp one-hot and scalars should be zeroed during IPO phase."""
+        state = ipo_state_with_company
+        layout = get_layout(3)
+
+        assert state.get_phase() == GamePhases.PHASE_IPO
+
+        # One-hot should be all zeros (no corp selected yet)
+        for i in range(int(GameConstants.NUM_CORPS)):
+            assert state._array[layout.active_corp_offset + i] == 0.0
+
+        # Scalars should be zero
+        assert state._array[layout.active_corp_income_offset] == 0.0
+        assert state._array[layout.active_corp_stars_offset] == 0.0
+        assert state._array[layout.active_corp_share_price_offset] == 0.0
+
     def test_active_corp_set_during_par(self, ipo_state_with_company):
         """Active corp one-hot is set during PAR phase."""
         state = ipo_state_with_company
@@ -156,6 +172,25 @@ class TestIPOtoPARTransition:
 
         # Active corp one-hot should have corp 2 set
         assert state._array[layout.active_corp_offset + 2] == 1.0
+
+    def test_active_corp_scalars_zero_during_par(self, ipo_state_with_company):
+        """Active corp scalars should be zero during PAR (corp not yet formed)."""
+        state = ipo_state_with_company
+        layout = get_layout(3)
+
+        apply_ipo_action_py(state, 0)
+        assert state.get_phase() == GamePhases.PHASE_PAR
+
+        # One-hot is set (identity of corp is known)
+        assert state._array[layout.active_corp_offset + 0] == 1.0
+
+        # But scalars are zero — corp hasn't been formed yet, so it has
+        # no income, no stars, no share price, and no owned companies
+        assert state._array[layout.active_corp_income_offset] == 0.0
+        assert state._array[layout.active_corp_stars_offset] == 0.0
+        assert state._array[layout.active_corp_share_price_offset] == 0.0
+        for i in range(int(GameConstants.NUM_COMPANIES)):
+            assert state._array[layout.active_corp_companies_offset + i] == 0.0
 
     def test_active_company_preserved_during_par(self, ipo_state_with_company):
         """Active company remains set during PAR (same company being IPO'd)."""
