@@ -31,6 +31,7 @@ cdef extern from *:
 DEF FLAG_IDLE = 0
 DEF FLAG_SUBMITTED = 1
 DEF FLAG_DONE = 2
+DEF FLAG_PROCESSING = 3  # server has claimed this request
 
 
 def worker_signal_submit(int[:] flags, int[:] counts, int worker_idx, int state_count):
@@ -65,7 +66,9 @@ def server_scan(
     """Server-side: scan worker flags and collect pending requests.
 
     Scans flags[start:end] for SUBMITTED flags, copies worker indices and
-    counts into output arrays. Does NOT change flags (server sets DONE later).
+    counts into output arrays. Each claimed worker's flag is atomically set
+    to PROCESSING so subsequent scans within the same accumulation loop
+    don't re-find the same worker.
 
     Args:
         flags: Shared flag array, shape (num_workers,).
@@ -86,6 +89,8 @@ def server_scan(
             if n >= max_requests:
                 break
             if LOAD_ACQUIRE(&flags[i]) == FLAG_SUBMITTED:
+                # Claim this request so re-scans don't double-count it
+                STORE_RELEASE(&flags[i], FLAG_PROCESSING)
                 out_worker_indices[n] = i
                 out_counts[n] = LOAD_ACQUIRE(&counts[i])
                 n = n + 1

@@ -282,12 +282,19 @@ def _eval_server_serve(
         if stats is not None:
             _tp = perf_counter()
 
-        # Scan assigned worker flags for SUBMITTED requests (Cython nogil).
-        num_requests = _server_scan(
-            sig_flags, sig_counts,
-            _widx_buf, _cnt_buf,
-            worker_start, worker_end, partition_size,
-        )
+        # Accumulate requests: keep scanning until a scan returns nothing,
+        # then process whatever we've collected. This naturally batches
+        # concurrent arrivals for better GPU utilization.
+        num_requests = 0
+        while num_requests < partition_size:
+            n = _server_scan(
+                sig_flags, sig_counts,
+                _widx_buf[num_requests:], _cnt_buf[num_requests:],
+                worker_start, worker_end, partition_size - num_requests,
+            )
+            if n == 0:
+                break
+            num_requests += n
 
         if num_requests == 0:
             empty_scans += 1
