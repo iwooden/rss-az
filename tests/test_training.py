@@ -687,6 +687,42 @@ class TestSelfPlay:
             assert (record.value_targets[i] >= -1.0 - 1e-5).all()
             assert (record.value_targets[i] <= 1.0 + 1e-5).all()
 
+    def test_value_blend_modifies_targets(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        """Value blending (blend_alpha < 1) should produce targets between pure A0GB and terminal."""
+        from mcts.evaluator import NNEvaluator
+        from train.config import EpochConfig
+
+        device = torch.device("cpu")
+        small_model.eval()
+        evaluator = NNEvaluator(small_model, device, num_players=tiny_config.num_players)
+        rng_seed = 42
+
+        # Play same game twice: once without blending, once with
+        pure_record = play_game(
+            evaluator, tiny_config, game_seed=123,
+            rng=np.random.default_rng(rng_seed),
+            epoch_config=EpochConfig(c_puct=2.5, value_blend_alpha=1.0),
+        )
+        blended_record = play_game(
+            evaluator, tiny_config, game_seed=123,
+            rng=np.random.default_rng(rng_seed),
+            epoch_config=EpochConfig(c_puct=2.5, value_blend_alpha=0.5),
+        )
+
+        # Same game, same moves → same number of examples
+        assert pure_record.num_examples == blended_record.num_examples
+        # States and policies should be identical (same game trajectory)
+        np.testing.assert_array_equal(pure_record.states, blended_record.states)
+        np.testing.assert_array_equal(pure_record.policy_targets, blended_record.policy_targets)
+        # Value targets should differ due to blending
+        assert not np.allclose(pure_record.value_targets, blended_record.value_targets), \
+            "Blended values should differ from pure A0GB values"
+        # Blended values should still be in valid range
+        assert (blended_record.value_targets >= -1.0 - 1e-5).all()
+        assert (blended_record.value_targets <= 1.0 + 1e-5).all()
+
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     def test_remote_evaluator_matches_local(
         self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
