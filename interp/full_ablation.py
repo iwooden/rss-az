@@ -63,7 +63,6 @@ def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
     tf = get_turn_fields(num_players)
     NC = GameConstants.NUM_COMPANIES
     NK = GameConstants.NUM_CORPS
-    NM = GameConstants.NUM_MARKET_SPACES
     MAX_DIV = GameConstants.MAX_DIVIDEND
 
     groups: list[tuple[str, np.ndarray]] = []
@@ -120,9 +119,8 @@ def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
         ("corp:share_price", cf.share_price, 1),
         ("corp:acq_proceeds", cf.acquisition_proceeds, 1),
         ("corp:in_receivership", cf.in_receivership, 1),
-        ("corp:price_index", cf.price_index, NM),
+        ("corp:price_index_norm", cf.price_index_norm, 1),
         ("corp:owned_companies", cf.owned_companies, NC),
-        ("corp:acq_companies", cf.acquisition_companies, NC),
     ]
     for name, rel, size in _corp_groups:
         idx = []
@@ -150,9 +148,6 @@ def _build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
     groups.append(("turn:issue_remaining", np.arange(t + tf.issue_remaining, t + tf.issue_remaining + NK)))
     groups.append(("turn:issue_price_impact", np.array([t + tf.issue_price_impact])))
     groups.append(("turn:issue_cash_gain", np.array([t + tf.issue_cash_gain])))
-
-    # IPO remaining
-    groups.append(("turn:ipo_remaining", np.arange(t + tf.ipo_remaining, t + tf.ipo_remaining + NC)))
 
     # Acquisition block
     groups.append(("turn:acq_is_fi_offer", np.array([t + tf.acq_is_fi_offer])))

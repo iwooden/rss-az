@@ -17,6 +17,7 @@ from core.data cimport (
 )
 from core.data import CORP_NAMES
 from entities.encoding cimport set_one_hot, set_one_hot_with_compact
+from entities.company cimport LOC_CORP_ACQ
 from entities import turn as turn_module
 from entities import company as company_module
 from entities import market as market_module
@@ -56,9 +57,8 @@ cdef CorpOffsets get_corp_offsets() noexcept nogil:
     - share_price (1)
     - acquisition_proceeds (1)
     - in_receivership (1)
-    - price_index (26) - omitted from struct (uses hidden compact storage)
+    - price_index_norm (1) - omitted from struct (uses hidden compact storage for game logic)
     - owned_companies (36) - omitted from struct (not used in masks)
-    - acquisition_companies (36) - omitted from struct (not used in masks)
     """
     cdef CorpOffsets c
     cdef int offset = 0
@@ -163,10 +163,13 @@ cdef class Corporation:
         self._share_price_offset = self._base_offset + fields.share_price
         self._acquisition_proceeds_offset = self._base_offset + fields.acquisition_proceeds
         self._in_receivership_offset = self._base_offset + fields.in_receivership
-        self._price_index_offset = self._base_offset + fields.price_index
+        self._price_index_norm_offset = self._base_offset + fields.price_index_norm
         self._owned_companies_offset = self._base_offset + fields.owned_companies
-        self._acquisition_companies_offset = self._base_offset + fields.acquisition_companies
         self._company_incomes_offset = layout.company_incomes_offset
+
+        # Hidden state offsets for acquisition company lookups
+        self._hidden_company_locations_offset = layout.hidden_company_locations_offset
+        self._hidden_company_owner_ids_offset = layout.hidden_company_owner_ids_offset
 
     # =========================================================================
     # ACTIVE STATUS
@@ -309,7 +312,8 @@ cdef class Corporation:
 
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if self._owns_company_nogil(state._data, company_id) or \
-               state._data[self._acquisition_companies_offset + company_id] == 1.0:
+               (state._data[self._hidden_company_locations_offset + company_id] == <float>LOC_CORP_ACQ and
+                <int>state._data[self._hidden_company_owner_ids_offset + company_id] == self.corp_id):
                 total += get_company_stars(company_id)
 
         cash = self.get_cash(state)
@@ -338,14 +342,16 @@ cdef class Corporation:
         return <int>state._data[self._hidden_price_index_offset]
 
     cpdef void set_price_index(self, GameState state, int index):
-        """Set market price index. Updates both one-hot and hidden compact storage."""
-        set_one_hot_with_compact(
-            state._data, self._price_index_offset, GameConstants.NUM_MARKET_SPACES,
-            self._hidden_price_index_offset, index
-        )
-        # Also update the denormalized share_price field
+        """Set market price index. Updates normalized scalar, hidden compact, and share_price."""
+        # Update hidden compact storage for O(1) game logic access
         if 0 <= index < GameConstants.NUM_MARKET_SPACES:
+            state._data[self._hidden_price_index_offset] = <float>index
+            # Normalized scalar for NN (index / 26.0)
+            state._data[self._price_index_norm_offset] = <float>index / (<float>GameConstants.NUM_MARKET_SPACES - 1.0)
             self.set_share_price(state, MARKET_PRICES[index])
+        else:
+            state._data[self._hidden_price_index_offset] = -1.0
+            state._data[self._price_index_norm_offset] = 0.0
 
     # =========================================================================
     # ACQUISITION PROCEEDS
@@ -403,7 +409,9 @@ cdef class Corporation:
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if state._data[self._owned_companies_offset + company_id] == 1.0:
                 count += 1
-            elif include_acquisition and state._data[self._acquisition_companies_offset + company_id] == 1.0:
+            elif include_acquisition and \
+                 state._data[self._hidden_company_locations_offset + company_id] == <float>LOC_CORP_ACQ and \
+                 <int>state._data[self._hidden_company_owner_ids_offset + company_id] == self.corp_id:
                 count += 1
 
         return count
@@ -450,7 +458,8 @@ cdef class Corporation:
         # First pass: collect companies (owned + acquisition zone), sum cached adjusted incomes, track highest FV
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if self._owns_company_nogil(data, company_id) or \
-               data[self._acquisition_companies_offset + company_id] == 1.0:
+               (data[self._hidden_company_locations_offset + company_id] == <float>LOC_CORP_ACQ and
+                <int>data[self._hidden_company_owner_ids_offset + company_id] == self.corp_id):
                 company_ids[company_count] = company_id
                 company_count += 1
 
@@ -572,9 +581,6 @@ cdef class Corporation:
         self.set_income(state, 0)
         self.set_stars(state, 0)
         self.set_acquisition_proceeds(state, 0)
-        # Note: No need to clear acquisition_company flags - bankruptcy only happens
-        # during INVEST, INCOME, DIVIDENDS, or ISSUE phases, after ACQUISITION phase
-        # has already merged all acquisition companies into owned_companies.
 
         # Update net worth for all players (shares wiped, price gone)
         player_module.update_all_net_worths(state)
@@ -597,8 +603,8 @@ cdef class Corporation:
 
     cpdef bint has_acquisition_company(self, GameState state, int company_id):
         """Check if company is in corporation's acquisition pile (pending integration)."""
-        return state._data[self._acquisition_companies_offset + company_id] == 1.0
-    # Note: No set_acquisition_company() - use Company.transfer_to_corp_acquisition()
+        return (state._data[self._hidden_company_locations_offset + company_id] == <float>LOC_CORP_ACQ and
+                <int>state._data[self._hidden_company_owner_ids_offset + company_id] == self.corp_id)
 
 
 # =============================================================================

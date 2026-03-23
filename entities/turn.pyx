@@ -48,7 +48,8 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
     - dividend_impact (26)
     - dividend_remaining (8)
     - issue_remaining (8)
-    - ipo_remaining (36)
+    - issue_price_impact (1)
+    - issue_cash_gain (1)
     - acq_is_fi_offer (1)
     - acq_synergy_values (36)
     - active_company (36)
@@ -81,9 +82,8 @@ cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil:
 
     # Skip issue_remaining (8)
     offset += GameConstants.NUM_CORPS
-
-    # Skip ipo_remaining (36)
-    offset += GameConstants.NUM_COMPANIES
+    # Skip issue_price_impact (1) + issue_cash_gain (1)
+    offset += 2
 
     t.acq_is_fi_offer = offset
     offset += 1
@@ -198,8 +198,8 @@ cdef class TurnState:
         self._issue_price_impact_offset = self._turn_offset + turn.issue_price_impact
         self._issue_cash_gain_offset = self._turn_offset + turn.issue_cash_gain
 
-        # IPO
-        self._ipo_remaining_offset = self._turn_offset + turn.ipo_remaining
+        # IPO (ipo_remaining is in hidden state)
+        self._ipo_remaining_offset = layout.hidden_ipo_remaining_offset
 
         # Acquisition
         self._acq_is_fi_offer_offset = self._turn_offset + turn.acq_is_fi_offer

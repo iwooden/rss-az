@@ -25,11 +25,11 @@ class TestStateLayoutSizes:
     # Expected sizes - these MUST match VECTORS.md and CLAUDE.md
     # If these tests fail, update the documentation to match!
     EXPECTED_SIZES = {
-        2: {'visible': 1473, 'hidden': 1218, 'total': 2691},
-        3: {'visible': 1550, 'hidden': 1234, 'total': 2784},
-        4: {'visible': 1629, 'hidden': 1250, 'total': 2879},
-        5: {'visible': 1710, 'hidden': 1266, 'total': 2976},
-        6: {'visible': 1793, 'hidden': 1282, 'total': 3075},
+        2: {'visible': 941, 'hidden': 1254, 'total': 2195},
+        3: {'visible': 1018, 'hidden': 1270, 'total': 2288},
+        4: {'visible': 1097, 'hidden': 1286, 'total': 2383},
+        5: {'visible': 1178, 'hidden': 1302, 'total': 2480},
+        6: {'visible': 1261, 'hidden': 1318, 'total': 2579},
     }
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
@@ -74,13 +74,13 @@ class TestComponentSizes:
     def test_corp_stride_fixed(self):
         """Corp stride = 109 (fixed for all player counts)."""
         layout = get_layout(3)
-        assert layout.corp_stride == 109
+        assert layout.corp_stride == 47
 
     def test_turn_size_formula(self):
         """Turn size = 209 + 3*num_players."""
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
-            expected = 209 + 3 * num_players
+            expected = 173 + 3 * num_players
             assert layout.turn_size == expected, (
                 f"{num_players} players: turn size {layout.turn_size} != {expected}"
             )
@@ -89,7 +89,7 @@ class TestComponentSizes:
         """Hidden size = 1186 + 16*num_players (per-player share tracking)."""
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
-            expected = 1186 + 16 * num_players
+            expected = 1222 + 16 * num_players
             assert layout.hidden_size == expected, (
                 f"{num_players} players: hidden size {layout.hidden_size} != {expected}"
             )

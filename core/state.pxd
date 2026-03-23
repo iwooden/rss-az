@@ -73,6 +73,8 @@ cdef struct StateLayout:
     # Company location tracking (O(1) clearing without scanning visible state)
     int hidden_company_locations_offset
     int hidden_company_owner_ids_offset
+    # IPO remaining tracking (moved from visible to hidden)
+    int hidden_ipo_remaining_offset
 
 cdef struct TurnStateOffsets:
     int end_card_flipped
@@ -86,7 +88,6 @@ cdef struct TurnStateOffsets:
     int issue_remaining
     int issue_price_impact
     int issue_cash_gain
-    int ipo_remaining
     int acq_is_fi_offer
     int acq_synergy_values
     # Active company: one-hot (36) + 5 individual scalars
@@ -127,9 +128,8 @@ cdef struct CorpFieldOffsets:
     int share_price
     int acquisition_proceeds
     int in_receivership
-    int price_index
+    int price_index_norm
     int owned_companies
-    int acquisition_companies
 
 # =============================================================================
 # LAYOUT COMPUTATION FUNCTIONS

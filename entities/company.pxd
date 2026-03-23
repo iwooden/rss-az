@@ -48,7 +48,6 @@ cdef class Company:
     cdef int _corps_offset            # Start of corps section
     cdef int _corp_stride             # Size of each corp's data
     cdef int _corp_companies_field    # Offset to owned_companies within corp stride
-    cdef int _corp_acq_field          # Offset to acquisition_companies within corp stride
 
     cdef int _num_players
 
