@@ -1,39 +1,51 @@
 """Neural network models for Rolling Stock Stars AlphaZero training."""
 
+import importlib
+
 import torch.nn as nn
 
 from nn.model_3p import RSSAlphaZeroNet, RSSModelConfig, count_parameters
-from nn.model_3p_2 import RSSAlphaZeroNet2, RSSModelConfig2
 
 __all__ = [
     "RSSAlphaZeroNet", "RSSModelConfig",
-    "RSSAlphaZeroNet2", "RSSModelConfig2",
     "count_parameters", "create_model",
 ]
 
+# Default model module path (used by --model-path CLI arg)
+DEFAULT_MODEL_PATH = "nn.model_3p"
+
 
 def create_model(
-    arch: str,
+    model_path: str,
     input_dim: int,
     action_dim: int,
     value_dim: int,
 ) -> nn.Module:
-    """Factory: instantiate a model by architecture name.
+    """Factory: instantiate a model by module path.
+
+    The module must export ``RSSModelConfig`` (a dataclass accepting at least
+    ``input_dim``, ``action_dim``, ``value_dim``) and ``RSSAlphaZeroNet``
+    (an ``nn.Module`` subclass that takes the config).
 
     Args:
-        arch: "v1" (model_3p, ~26.6M params) or "v2" (model_3p_2, ~6.6M params).
-        input_dim: Visible state size (e.g. 1763 for 3 players).
+        model_path: Dotted Python module path (e.g. "nn.model_3p").
+        input_dim: Visible state size (e.g. 1018 for 3 players).
         action_dim: Action space size (from get_total_action_count).
         value_dim: Number of players (e.g. 3).
     """
-    if arch == "v1":
-        cfg = RSSModelConfig(
-            input_dim=input_dim, action_dim=action_dim, value_dim=value_dim,
+    mod = importlib.import_module(model_path)
+
+    config_cls = getattr(mod, "RSSModelConfig", None)
+    if config_cls is None:
+        raise ValueError(
+            f"Module {model_path!r} does not export 'RSSModelConfig'"
         )
-        return RSSAlphaZeroNet(cfg)
-    if arch == "v2":
-        cfg2 = RSSModelConfig2(
-            input_dim=input_dim, action_dim=action_dim, value_dim=value_dim,
+
+    net_cls = getattr(mod, "RSSAlphaZeroNet", None)
+    if net_cls is None:
+        raise ValueError(
+            f"Module {model_path!r} does not export 'RSSAlphaZeroNet'"
         )
-        return RSSAlphaZeroNet2(cfg2)
-    raise ValueError(f"Unknown model arch: {arch!r}. Must be 'v1' or 'v2'.")
+
+    cfg = config_cls(input_dim=input_dim, action_dim=action_dim, value_dim=value_dim)
+    return net_cls(cfg)

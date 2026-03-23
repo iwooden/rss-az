@@ -70,7 +70,7 @@ class TrainingConfig:
     """All hyperparameters for the self-play training loop."""
 
     # --- Model ---
-    model_arch: str = "v1"  # "v1" (model_3p) or "v2" (model_3p_2)
+    model_path: str = "nn.model_3p"  # dotted module path to model definition
 
     # --- Game ---
     num_players: int = 3
@@ -166,9 +166,9 @@ class TrainingConfig:
 
     def validate(self) -> None:
         """Validate all fields. Called from __post_init__ and after CLI overrides."""
-        # Model arch
-        if self.model_arch not in ("v1", "v2"):
-            raise ValueError(f"model_arch must be 'v1' or 'v2', got '{self.model_arch}'")
+        # Model path — must be a non-empty dotted module path
+        if not self.model_path or not isinstance(self.model_path, str):
+            raise ValueError(f"model_path must be a non-empty string, got {self.model_path!r}")
 
         # MCTS fields
         if self.num_simulations < 1:
@@ -315,6 +315,11 @@ class TrainingConfig:
                 d["c_puct_final"] = d.pop("c_puct")
             else:
                 d.pop("c_puct")
+        # model_arch -> model_path (old checkpoints stored "v1" or "v2")
+        if "model_arch" in d:
+            d.pop("model_arch")
+            if "model_path" not in d:
+                d["model_path"] = "nn.model_3p"  # both v1/v2 map to the single model
 
         # Drop any fields not in the dataclass (future-proofing)
         valid = set(cls.__dataclass_fields__)
