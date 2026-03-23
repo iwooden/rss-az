@@ -56,8 +56,12 @@ _PROBE_CATEGORIES: dict[str, list[str]] = {
         "winning_player", "active_leading", "lead_margin", "nw_rank",
         "num_active_corps", "total_shares", "corps_invested", "companies_owned",
     ],
-    "policy": ["action_type", "invest_action", "model_top_action"],
-    "value": ["model_value_p0", "model_entropy"],
+    "policy": [
+        "action_type", "invest_action", "bid_action", "acq_action",
+        "ipo_action", "issue_action", "dividend_level", "par_price_level",
+        "close_action", "model_top_action", "policy_margin", "policy_concentration",
+    ],
+    "value": ["model_value_p0", "model_entropy", "value_spread"],
 }
 
 
@@ -170,13 +174,96 @@ def _extract_model_targets(
     ], dtype=np.int32)
     targets["action_type"] = (action_types, "classification")
 
-    # INVEST-phase action type only (pass=0, auction=1, buy=2, sell=3)
+    # Phase-specific action probes
+    # Convention: target stored as (subset_array, "classification"/"regression"),
+    # mask stored as (_<probe_name>_mask, "_index_mask") for activation subsetting.
+
+    # INVEST: pass=0, auction=1, buy=2, sell=3
     invest_mask = phases == 0
     if np.sum(invest_mask) >= 50:
         invest_types = action_types[invest_mask]
-        # Store with index mask for subsetting activations later
         targets["invest_action"] = (invest_types, "classification")
-        targets["_invest_mask"] = (invest_mask, "_index_mask")
+        targets["_invest_action_mask"] = (invest_mask, "_index_mask")
+
+    # BID: leave=0, raise=1
+    bid_mask = phases == 1
+    if np.sum(bid_mask) >= 50:
+        bid_types = action_types[bid_mask]
+        # leave_bid=4 → 0, raise_bid=5 → 1
+        bid_actions = (bid_types == 5).astype(np.int32)
+        targets["bid_action"] = (bid_actions, "classification")
+        targets["_bid_action_mask"] = (bid_mask, "_index_mask")
+
+    # ACQ: acq_price=0, acq_fi_buy=1, pass=2
+    acq_mask = phases == 3
+    if np.sum(acq_mask) >= 50:
+        acq_types = action_types[acq_mask]
+        acq_actions = np.where(acq_types == 6, 0,
+                      np.where(acq_types == 7, 1, 2)).astype(np.int32)
+        targets["acq_action"] = (acq_actions, "classification")
+        targets["_acq_action_mask"] = (acq_mask, "_index_mask")
+
+    # IPO: pass=0, ipo=1
+    ipo_mask = phases == 9
+    if np.sum(ipo_mask) >= 50:
+        ipo_types = action_types[ipo_mask]
+        ipo_actions = (ipo_types == 11).astype(np.int32)
+        targets["ipo_action"] = (ipo_actions, "classification")
+        targets["_ipo_action_mask"] = (ipo_mask, "_index_mask")
+
+    # ISSUE: pass=0, issue=1
+    issue_mask = phases == 8
+    if np.sum(issue_mask) >= 50:
+        issue_types = action_types[issue_mask]
+        issue_actions = (issue_types == 10).astype(np.int32)
+        targets["issue_action"] = (issue_actions, "classification")
+        targets["_issue_action_mask"] = (issue_mask, "_index_mask")
+
+    # DIVIDENDS: chosen dividend level (regression, normalized 0-1)
+    div_mask = phases == 6
+    if np.sum(div_mask) >= 50:
+        div_action_indices = top_actions[div_mask]
+        div_amounts = np.array([
+            decode_action_py(int(a), num_players)[4]
+            for a in div_action_indices
+        ], dtype=np.float32) / 25.0
+        targets["dividend_level"] = (div_amounts, "regression")
+        targets["_dividend_level_mask"] = (div_mask, "_index_mask")
+
+    # PAR: chosen par price index (regression, normalized 0-1)
+    par_mask = phases == 10
+    if np.sum(par_mask) >= 50:
+        par_action_indices = top_actions[par_mask]
+        par_levels = np.array([
+            decode_action_py(int(a), num_players)[2]  # par index is in 'slot' field
+            for a in par_action_indices
+        ], dtype=np.float32) / 13.0  # 14 par prices, indices 0-13
+        targets["par_price_level"] = (par_levels, "regression")
+        targets["_par_price_level_mask"] = (par_mask, "_index_mask")
+
+    # CLOSING: close=1, pass=0
+    close_mask = phases == 4
+    if np.sum(close_mask) >= 50:
+        close_types = action_types[close_mask]
+        close_actions = (close_types == 8).astype(np.int32)
+        targets["close_action"] = (close_actions, "classification")
+        targets["_close_action_mask"] = (close_mask, "_index_mask")
+
+    # Value spread: std of the 3 per-player value outputs
+    value_spread = np.std(values, axis=1)
+    targets["value_spread"] = (value_spread.astype(np.float32), "regression")
+
+    # Policy decisiveness probes (all states, no phase mask)
+    # policy_margin: top-1 minus top-2 probability
+    sorted_probs = np.sort(probs, axis=-1)
+    policy_margin = sorted_probs[:, -1] - sorted_probs[:, -2]
+    targets["policy_margin"] = (policy_margin.astype(np.float32), "regression")
+
+    # policy_concentration: KL(policy || uniform over legal actions)
+    # KL = log(num_legal) - entropy
+    num_legal = np.sum(masks > 0, axis=-1).astype(np.float32)
+    kl = np.log(np.clip(num_legal, 1, None)) - entropy
+    targets["policy_concentration"] = (kl.astype(np.float32), "regression")
 
     return targets
 
@@ -307,6 +394,184 @@ def _fit_one_probe(
         return float(r2_score(y_test, reg.predict(x_test_s))), "R²"
 
 
+# ---------------------------------------------------------------------------
+# GPU-accelerated probe training
+# ---------------------------------------------------------------------------
+
+
+def _standardize_gpu(
+    X_train: torch.Tensor, X_test: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Standardize features using train statistics (matches sklearn StandardScaler)."""
+    mean = X_train.mean(dim=0)
+    std = X_train.std(dim=0, correction=0).clamp(min=1e-7)
+    return (X_train - mean) / std, (X_test - mean) / std
+
+
+@torch.no_grad()
+def _fit_ridge_gpu(
+    X_train: torch.Tensor, y_train: torch.Tensor,
+    X_test: torch.Tensor, y_test: torch.Tensor,
+    alpha: float = 1.0,
+) -> float:
+    """Closed-form Ridge regression on GPU. Returns R²."""
+    X_tr, X_te = _standardize_gpu(X_train, X_test)
+    # Center target — intercept = y_mean (since X is zero-mean after standardization)
+    y_mean = y_train.mean()
+    y_c = y_train - y_mean
+    # Normal equations: w = (X'X + αI)⁻¹ X'y
+    A = X_tr.T @ X_tr
+    A.diagonal().add_(alpha)
+    w = torch.linalg.solve(A, (X_tr.T @ y_c).unsqueeze(-1)).squeeze(-1)
+    y_pred = X_te @ w + y_mean
+    ss_res = ((y_test - y_pred) ** 2).sum()
+    ss_tot = ((y_test - y_test.mean()) ** 2).sum()
+    return (1.0 - ss_res / ss_tot.clamp(min=1e-8)).item()
+
+
+def _fit_logreg_gpu(
+    X_train: torch.Tensor, y_train: torch.Tensor,
+    X_test: torch.Tensor, y_test: torch.Tensor,
+    C: float = 1.0,
+) -> float:
+    """L2-regularized logistic regression via L-BFGS on GPU. Returns accuracy.
+
+    Matches sklearn's objective: sum(CE) + 1/(2C) * ||W||².
+    Since cross_entropy(reduction='mean') = sum(CE)/n, we scale the L2
+    term by 1/n to get the equivalent: mean(CE) + 1/(2Cn) * ||W||².
+    """
+    d = X_train.shape[1]
+    n = X_train.shape[0]
+    device = X_train.device
+
+    # Remap labels to dense 0..K-1 (sklearn does this internally)
+    classes = y_train.unique(sorted=True)
+    n_classes = classes.shape[0]
+    if classes[-1] >= n_classes:
+        remap = torch.zeros(int(classes[-1].item()) + 1, dtype=torch.long, device=device)
+        for new, old in enumerate(classes):
+            remap[old] = new
+        y_train = remap[y_train]
+        y_test = remap[y_test]
+
+    X_tr, X_te = _standardize_gpu(X_train, X_test)
+
+    W = torch.zeros(d, n_classes, device=device, requires_grad=True)
+    b = torch.zeros(n_classes, device=device, requires_grad=True)
+    opt = torch.optim.LBFGS(
+        [W, b], max_iter=100, history_size=10, line_search_fn="strong_wolfe",
+    )
+    reg = 1.0 / (2.0 * C * n)
+
+    def closure() -> torch.Tensor:
+        opt.zero_grad()
+        logits = X_tr @ W + b
+        loss = torch.nn.functional.cross_entropy(logits, y_train) + reg * (W * W).sum()
+        loss.backward()
+        return loss
+
+    opt.step(closure)
+
+    with torch.no_grad():
+        logits = X_te @ W + b
+        return float((logits.argmax(dim=1) == y_test).float().mean().item())
+
+
+def train_probes_gpu(
+    activations: dict[str, np.ndarray],
+    targets: dict[str, tuple[np.ndarray, str]],
+    device: torch.device,
+    enabled_probes: set[str] | None = None,
+    test_fraction: float = 0.2,
+    seed: int = 42,
+) -> list[ProbeResult]:
+    """GPU-accelerated linear probes. Drop-in replacement for train_probes."""
+    rng = np.random.default_rng(seed)
+    n = next(iter(activations.values())).shape[0]
+
+    indices = rng.permutation(n)
+    split = int(n * (1 - test_fraction))
+    train_idx, test_idx = indices[:split], indices[split:]
+
+    # Collect phase masks
+    phase_masks: dict[str, np.ndarray] = {}
+    for key, (val, tt) in targets.items():
+        if tt == "_index_mask":
+            phase_masks[key[1:-5]] = val.astype(bool)
+
+    # Pre-compute splits and GPU targets for each probe (avoids redundant
+    # work in the per-layer loop and ensures consistent splits across layers).
+    probe_info: list[tuple[str, str, str, torch.Tensor, torch.Tensor,
+                           np.ndarray, np.ndarray]] = []
+
+    for probe_name, (target, task_type) in targets.items():
+        if task_type.startswith("_"):
+            continue
+        if enabled_probes is not None and probe_name not in enabled_probes:
+            continue
+
+        if probe_name in phase_masks:
+            sub_idx = np.where(phase_masks[probe_name])[0]
+            sub_perm = rng.permutation(len(sub_idx))
+            sub_split = int(len(sub_idx) * (1 - test_fraction))
+            local_train, local_test = sub_perm[:sub_split], sub_perm[sub_split:]
+            global_train = sub_idx[local_train]
+            global_test = sub_idx[local_test]
+        else:
+            local_train, local_test = train_idx, test_idx
+            global_train, global_test = train_idx, test_idx
+
+        y_train_np, y_test_np = target[local_train], target[local_test]
+
+        if task_type == "classification" and len(np.unique(y_train_np)) < 2:
+            continue
+        if task_type == "regression" and np.std(y_train_np) < 1e-8:
+            continue
+
+        if task_type == "classification":
+            y_train_gpu = torch.from_numpy(y_train_np.astype(np.int64)).to(device)
+            y_test_gpu = torch.from_numpy(y_test_np.astype(np.int64)).to(device)
+            metric_name = "acc"
+        else:
+            y_train_gpu = torch.from_numpy(y_train_np.astype(np.float32)).to(device)
+            y_test_gpu = torch.from_numpy(y_test_np.astype(np.float32)).to(device)
+            metric_name = "R²"
+
+        probe_info.append((
+            probe_name, task_type, metric_name,
+            y_train_gpu, y_test_gpu, global_train, global_test,
+        ))
+
+    results: list[ProbeResult] = []
+    layer_names = list(activations.keys())
+
+    for layer_name in layer_names:
+        acts_gpu = torch.from_numpy(activations[layer_name]).to(device)
+
+        for (probe_name, task_type, metric_name,
+             y_train_gpu, y_test_gpu, global_train, global_test) in probe_info:
+
+            X_train = acts_gpu[global_train]
+            X_test = acts_gpu[global_test]
+
+            if task_type == "classification":
+                metric = _fit_logreg_gpu(X_train, y_train_gpu, X_test, y_test_gpu)
+            else:
+                metric = _fit_ridge_gpu(X_train, y_train_gpu, X_test, y_test_gpu)
+
+            results.append(ProbeResult(
+                probe_name=probe_name,
+                layer_name=layer_name,
+                task_type=task_type,
+                metric=metric,
+                metric_name=metric_name,
+            ))
+
+        del acts_gpu
+
+    return results
+
+
 def train_probes(
     activations: dict[str, np.ndarray],
     targets: dict[str, tuple[np.ndarray, str]],
@@ -323,11 +588,14 @@ def train_probes(
     train_idx = indices[:split]
     test_idx = indices[split:]
 
-    # Handle invest_action subsetting: target is only invest-phase states,
-    # but activations are full-size. We need to subset activations too.
-    invest_mask = None
-    if "_invest_mask" in targets:
-        invest_mask = targets["_invest_mask"][0].astype(bool)
+    # Collect phase masks for phase-specific probes.
+    # Convention: _<probe_name>_mask → used to subset activations for that probe.
+    phase_masks: dict[str, np.ndarray] = {}
+    for key, (val, tt) in targets.items():
+        if tt == "_index_mask":
+            # _foo_mask → foo
+            probe_name_for_mask = key[1:-5]  # strip leading _ and trailing _mask
+            phase_masks[probe_name_for_mask] = val.astype(bool)
 
     results: list[ProbeResult] = []
     layer_names = list(activations.keys())
@@ -338,17 +606,16 @@ def train_probes(
         if enabled_probes is not None and probe_name not in enabled_probes:
             continue
 
-        # For invest_action, work within the invest-phase subset
-        if probe_name == "invest_action" and invest_mask is not None:
-            invest_idx = np.where(invest_mask)[0]
-            n_invest = len(invest_idx)
-            sub_indices = rng.permutation(n_invest)
-            sub_split = int(n_invest * (1 - test_fraction))
-            probe_train_local = sub_indices[:sub_split]
-            probe_test_local = sub_indices[sub_split:]
-            # invest_idx maps local → global for activation indexing
-            probe_train_global = invest_idx[probe_train_local]
-            probe_test_global = invest_idx[probe_test_local]
+        # Phase-specific probes: target is a subset, activations are full-size
+        if probe_name in phase_masks:
+            sub_idx = np.where(phase_masks[probe_name])[0]
+            n_sub = len(sub_idx)
+            sub_perm = rng.permutation(n_sub)
+            sub_split = int(n_sub * (1 - test_fraction))
+            probe_train_local = sub_perm[:sub_split]
+            probe_test_local = sub_perm[sub_split:]
+            probe_train_global = sub_idx[probe_train_local]
+            probe_test_global = sub_idx[probe_test_local]
         else:
             probe_train_local = train_idx
             probe_test_local = test_idx
@@ -404,15 +671,21 @@ def train_nonlinear_comparison(
     compare_probes = [
         "model_value_p0", "model_top_action", "model_entropy",
         "action_type", "winning_player", "lead_margin",
+        "policy_margin", "policy_concentration",
     ]
 
-    invest_mask = None
-    if "_invest_mask" in targets:
-        invest_mask = targets["_invest_mask"][0].astype(bool)
+    # Collect phase masks
+    phase_masks: dict[str, np.ndarray] = {}
+    for key, (val, tt) in targets.items():
+        if tt == "_index_mask":
+            probe_name_for_mask = key[1:-5]
+            phase_masks[probe_name_for_mask] = val.astype(bool)
 
-    # Include invest_action if available
-    if "invest_action" in targets:
-        compare_probes.append("invest_action")
+    # Include phase-specific action probes if available
+    for name in ["invest_action", "bid_action", "acq_action",
+                 "ipo_action", "issue_action", "dividend_level"]:
+        if name in targets:
+            compare_probes.append(name)
 
     results: list[tuple[str, str, float, float]] = []
 
@@ -423,15 +696,15 @@ def train_nonlinear_comparison(
         if task_type.startswith("_"):
             continue
 
-        if probe_name == "invest_action" and invest_mask is not None:
-            invest_idx = np.where(invest_mask)[0]
-            n_invest = len(invest_idx)
-            sub_indices = rng.permutation(n_invest)
-            sub_split = int(n_invest * (1 - test_fraction))
-            local_train = sub_indices[:sub_split]
-            local_test = sub_indices[sub_split:]
-            global_train = invest_idx[local_train]
-            global_test = invest_idx[local_test]
+        if probe_name in phase_masks:
+            sub_idx = np.where(phase_masks[probe_name])[0]
+            n_sub = len(sub_idx)
+            sub_perm = rng.permutation(n_sub)
+            sub_split = int(n_sub * (1 - test_fraction))
+            local_train = sub_perm[:sub_split]
+            local_test = sub_perm[sub_split:]
+            global_train = sub_idx[local_train]
+            global_test = sub_idx[local_test]
         else:
             local_train = train_idx
             local_test = test_idx
@@ -969,7 +1242,12 @@ def main() -> None:
     )
     print(f"\nTraining {active_count * len(probe_layer_names)} linear probes...")
     t0 = time.perf_counter()
-    results = train_probes(probe_layers, targets, enabled_probes, seed=args.seed)
+    if device.type == "cuda":
+        results = train_probes_gpu(
+            probe_layers, targets, device, enabled_probes, seed=args.seed,
+        )
+    else:
+        results = train_probes(probe_layers, targets, enabled_probes, seed=args.seed)
     print(f"  Done in {time.perf_counter() - t0:.1f}s")
 
     # --- Nonlinear comparison ---
