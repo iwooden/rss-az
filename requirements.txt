@@ -1,6 +1,23 @@
-# Core dependencies for building and running the game engine
+# Python dependencies for rss-az-cython2.
+#
+# Use ./install.sh to install correctly — it handles the PyTorch
+# hardware index and the captum numpy<2.0 constraint workaround.
+# See install.sh for details.
+
+# Core
 numpy>=2.0
 Cython>=3.0
+torch>=2.0
+
+# Training infrastructure
+tensorboard>=2.0
+rich>=13.0
+
+# Interpretability (interp/)
+captum>=0.7       # requires --no-deps (declares numpy<2.0, works fine with 2.x)
+matplotlib>=3.0   # captum runtime dep
+tqdm>=4.0         # captum runtime dep
+scikit-learn>=1.0
 
 # Testing
 pytest>=8.0
