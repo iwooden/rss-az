@@ -9,6 +9,9 @@ overhead dominates actual computation.
 from libc.math cimport sqrtf, expf
 from libc.string cimport memcpy
 
+cdef extern from "<assert.h>" nogil:
+    void assert_c "assert" (bint expression)
+
 import numpy as np
 
 
@@ -474,6 +477,7 @@ def gather_states(
         for i in range(num_requests):
             widx = worker_indices[i]
             n = counts[i]
+            assert_c(total + n <= <int>dst.shape[0])
             memcpy(&dst[total, 0], &src[widx, 0, 0], n * row_bytes)
             total = total + n
     return total
@@ -516,6 +520,7 @@ def scatter_results(
         for i in range(num_requests):
             widx = worker_indices[i]
             n = counts[i]
+            assert_c(offset + n <= <int>src_logits.shape[0])
             memcpy(&dst_logits[widx, 0, 0], &src_logits[offset, 0], n * logit_row_bytes)
             memcpy(&dst_values[widx, 0, 0], &src_values[offset, 0], n * val_row_bytes)
             offset = offset + n

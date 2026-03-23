@@ -231,6 +231,11 @@ class TrainingConfig:
             raise ValueError(
                 f"num_eval_servers must be >= 1, got {self.num_eval_servers}"
             )
+        if self.num_workers > 0 and self.num_eval_servers > self.num_workers:
+            raise ValueError(
+                f"num_eval_servers ({self.num_eval_servers}) must be <= "
+                f"num_workers ({self.num_workers})"
+            )
         if self.buffer_capacity <= self.min_buffer_size:
             raise ValueError(
                 f"buffer_capacity ({self.buffer_capacity}) must exceed "

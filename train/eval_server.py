@@ -12,16 +12,22 @@ Communication uses shared memory (torch tensors with share_memory_()):
 - Output values: float32 (server upcasts from bf16 model output during D2H;
   only 3 floats/state so bf16 savings are negligible vs per-worker conversion)
 
-A multiprocessing.Queue carries lightweight request tuples (worker_idx,
-state_count), and per-worker Events signal completion.
+**Signaling protocol:**
+
+Request submission is lockfree via per-worker shared-memory flags (Cython
+atomics in mcts_core.pyx). Each worker has an int32 flag with states:
+IDLE → SUBMITTED → PROCESSING → DONE → IDLE. Workers set SUBMITTED;
+servers scan their partition and transition to PROCESSING/DONE. Completion
+notification uses per-worker mp.Events for efficient kernel sleep (workers
+block on Event.wait() instead of spin-polling).
 
 **Multi-server concurrency:**
 
-Each EvaluationServer process has its own GIL, CUDA context, and default
-stream. Servers race on the shared queue without a lock — after completing
-a forward pass, each server eagerly drains all pending requests via
-get_nowait() and immediately starts the next batch. This creates organic
-alternation: one server computes while the other gathers.
+Each EvaluationServer owns a static partition of workers [worker_start,
+worker_end) and only scans those workers' flags. Each server process has
+its own GIL, CUDA context, and default stream, so multiple servers truly
+overlap. Gather/scatter between per-worker slots and contiguous inference
+buffers uses Cython nogil memcpy (no per-worker Python loop).
 
 Workers do zero torch operations on the write side (pure numpy).
 On the read side, workers upcast bf16→f32 logits and apply mask+softmax
@@ -227,9 +233,6 @@ def _eval_server_serve(
             del dummy
         torch.cuda.synchronize()
 
-    # Signal that this server is ready to serve requests
-    ready_event.set()
-
     # Allocate pinned CPU buffers and GPU tensors in this process's CUDA context
     partition_size = worker_end - worker_start
     max_batch = partition_size * shared_bufs.batch_size
@@ -277,6 +280,12 @@ def _eval_server_serve(
     # Each scan of 48 workers is ~1us; 50 empty scans = ~50us before sleeping.
     _EMPTY_SCAN_LIMIT = 50
     empty_scans = 0
+
+    # Signal ready only after all initialization (imports, buffer allocation,
+    # done_events validation) has succeeded. This ensures workers won't be
+    # spawned against a server that's about to die from e.g. a missing Cython
+    # rebuild.
+    ready_event.set()
 
     while not stop_event.is_set():
         if stats is not None:
@@ -367,8 +376,9 @@ class EvaluationServer:
     """Process-based centralized NN evaluator using shared memory.
 
     Each server owns a contiguous partition of workers [worker_start,
-    worker_end) and only scans those workers' flags. Communication is
-    fully lockfree via shared-memory flags — no mp.Queue or mp.Event.
+    worker_end) and only scans those workers' flags. Request submission
+    is lockfree via shared-memory flags; completion uses per-worker
+    mp.Events for efficient kernel sleep.
 
     Each EvaluationServer runs in its own process with a separate GIL,
     eliminating GIL contention between servers. The model's GPU parameter
@@ -481,14 +491,15 @@ class RemoteEvaluator(BaseEvaluator):
     Read side: logits bf16→f32 for Cython mask+softmax (no torch on
     read path); values are f32 in shared memory (server upcasts during D2H).
 
-    Communication is lockfree via shared-memory flags: worker sets
-    flag=SUBMITTED, spins until flag=DONE, then reads results and resets
-    flag=IDLE. No mp.Queue or mp.Event involved.
+    Communication uses shared-memory flags for lockfree request submission
+    and per-worker mp.Events for done notification. Worker sets flag=SUBMITTED,
+    sleeps on Event.wait() until the server signals completion, then reads
+    results and resets flag=IDLE.
 
     Invariant: each worker may have at most one outstanding eval request at a
     time. Output slots are keyed by worker_idx alone (no request id), so a
     second request before the first completes would overwrite the output buffer.
-    The sequential submit → spin-wait → read → idle flow enforces this.
+    The sequential submit → wait → read → idle flow enforces this.
     """
 
     # Seconds to wait for eval server response before raising.
@@ -523,7 +534,11 @@ class RemoteEvaluator(BaseEvaluator):
         self._done_event = shared_bufs.done_events[worker_idx]
 
     def _request_eval(self, n: int) -> None:
-        """Submit request via shared-memory flag, sleep until server signals done."""
+        """Submit request via shared-memory flag, sleep until server signals done.
+
+        After this returns, the caller MUST read results from the output
+        buffers and then call _release_slot() to reset the flag to IDLE.
+        """
         self._done_event.clear()
         self._signal_submit(self._sig_flags, self._sig_counts, self._worker_idx, n)
         if not self._done_event.wait(timeout=self._EVAL_TIMEOUT):
@@ -531,6 +546,9 @@ class RemoteEvaluator(BaseEvaluator):
                 f"Eval server did not respond within {self._EVAL_TIMEOUT}s "
                 f"(worker {self._worker_idx}, batch {n})"
             )
+
+    def _release_slot(self) -> None:
+        """Reset flag to IDLE after reading results. Must be called after every _request_eval."""
         self._reset_idle(self._sig_flags, self._worker_idx)
 
     def evaluate(self, state: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -544,9 +562,9 @@ class RemoteEvaluator(BaseEvaluator):
         mask = get_valid_action_mask(state)
 
         self._request_eval(1)
-
         logits = self._out_logits[0].float().numpy()
         values = self._out_values[0].numpy()
+        self._release_slot()
         return self._finalize_single(logits, values, mask, active_player)
 
     def evaluate_batch(
@@ -570,9 +588,9 @@ class RemoteEvaluator(BaseEvaluator):
             masks_list.append(get_valid_action_mask(s))
 
         self._request_eval(n)
-
         logits_np = self._out_logits[:n].float().numpy()
         values_np = self._out_values[:n].numpy()
+        self._release_slot()
         return self._finalize_batch(logits_np, values_np, masks_list, active_ids)
 
     def evaluate_leaves(
@@ -610,6 +628,7 @@ class RemoteEvaluator(BaseEvaluator):
 
         logits_np = self._out_logits[:n].float().numpy()
         values_np = self._out_values[:n].numpy()
+        self._release_slot()
         results = self._finalize_leaves(logits_np, values_np, active_player_ids)
 
         if _stats is not None:
