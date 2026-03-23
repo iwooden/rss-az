@@ -60,10 +60,13 @@ class Trainer:
         Returns:
             dict with "policy_loss", "value_loss", "total_loss" as floats.
         """
-        states = batch["states"].to(self.device)
-        legal_masks = batch["legal_masks"].to(self.device)
-        policy_targets = batch["policy_targets"].to(self.device)
-        value_targets = batch["value_targets"].to(self.device)
+        # non_blocking=True allows CPU work to overlap with DMA transfer.
+        # On NVIDIA GH200 with NVLink-C2C this is especially beneficial.
+        nb = self.device.type == "cuda"
+        states = batch["states"].to(self.device, non_blocking=nb)
+        legal_masks = batch["legal_masks"].to(self.device, non_blocking=nb)
+        policy_targets = batch["policy_targets"].to(self.device, non_blocking=nb)
+        value_targets = batch["value_targets"].to(self.device, non_blocking=nb)
 
         # Forward pass + loss in bfloat16 on CUDA (backward auto-casts gradients)
         with torch.autocast(self.device.type, dtype=torch.bfloat16,

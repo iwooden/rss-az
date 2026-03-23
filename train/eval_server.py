@@ -128,6 +128,7 @@ def _eval_server_main(
     server_id: int,
     profile: bool,
     no_compile: bool,
+    compile_kwargs: dict[str, Any] | None = None,
 ) -> None:
     """Eval server process entry point.
 
@@ -141,6 +142,7 @@ def _eval_server_main(
             stop_event, ready_event, stats_report_event, stats_queue,
             server_id=server_id,
             profile=profile, no_compile=no_compile,
+            compile_kwargs=compile_kwargs,
         )
     except Exception:
         import traceback
@@ -161,6 +163,7 @@ def _eval_server_serve(
     server_id: int,
     profile: bool,
     no_compile: bool,
+    compile_kwargs: dict[str, Any] | None = None,
 ) -> None:
     """Inner serve loop for an eval server process."""
     # Prevent OpenMP oversubscription (same as worker processes)
@@ -170,11 +173,20 @@ def _eval_server_serve(
 
     use_cuda = device.type == "cuda"
 
-    # Optionally compile the model (per-process compilation)
+    # Apply NVIDIA-specific per-process settings (TF32 etc.) if active.
+    # Detected by checking compile_kwargs for reduce-overhead mode.
+    if compile_kwargs and compile_kwargs.get("mode") == "reduce-overhead":
+        from train.nvidia import apply_nvidia_optimizations
+        apply_nvidia_optimizations()
+
+    # Optionally compile the model (per-process compilation).
+    # compile_kwargs controls the compilation strategy:
+    #   - Default (non-NVIDIA): {"dynamic": True} — symbolic shapes, one compilation
+    #   - NVIDIA: {"mode": "reduce-overhead", "dynamic": True} — CUDA graph tree,
+    #     captures graphs for observed batch sizes, eliminates kernel launch overhead
     if not no_compile and use_cuda:
-        model = torch.compile(model, dynamic=True)  # type: ignore[assignment]
-        # Single warmup pass — dynamic=True uses symbolic shapes so one
-        # compilation covers all batch sizes.
+        ckw = compile_kwargs if compile_kwargs else {"dynamic": True}
+        model = torch.compile(model, **ckw)  # type: ignore[assignment]
         model.eval()
         with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
             dummy = torch.randn(1, shared_bufs.visible_size, device=device)
@@ -312,6 +324,7 @@ class EvaluationServer:
         profile: bool = False,
         mp_context: Any = None,
         no_compile: bool = False,
+        compile_kwargs: dict[str, Any] | None = None,
     ) -> None:
         import multiprocessing
         ctx = mp_context or multiprocessing
@@ -329,6 +342,7 @@ class EvaluationServer:
             "server_id": server_id,
             "profile": profile,
             "no_compile": no_compile,
+            "compile_kwargs": compile_kwargs,
         }
         self._mp_context = ctx
         self._server_id = server_id

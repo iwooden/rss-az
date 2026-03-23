@@ -97,6 +97,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-compile", action="store_true", default=False,
         help="Disable torch.compile model optimization",
     )
+    nvidia_group = parser.add_mutually_exclusive_group()
+    nvidia_group.add_argument(
+        "--nvidia", action="store_true", default=None,
+        help="Enable NVIDIA-specific optimizations (TF32, CUDA graphs). Auto-detected if omitted.",
+    )
+    nvidia_group.add_argument(
+        "--no-nvidia", dest="nvidia", action="store_false",
+        help="Disable NVIDIA-specific optimizations (for AMD ROCm or debugging)",
+    )
     return parser
 
 
@@ -311,6 +320,21 @@ def main() -> None:
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # --- NVIDIA optimizations (must be set before any torch.compile) ---
+    from train.nvidia import apply_nvidia_optimizations, get_compile_kwargs, is_nvidia_gpu
+
+    if args.nvidia is None:
+        use_nvidia = device.type == "cuda" and is_nvidia_gpu()
+    else:
+        use_nvidia = args.nvidia
+
+    if use_nvidia:
+        nvidia_info = apply_nvidia_optimizations()
+        print(
+            "NVIDIA optimizations enabled: "
+            + ", ".join(f"{k}={v}" for k, v in nvidia_info.items())
+        )
+
     # --- Resolve checkpoint for resume ---
     cp: dict[str, object] | None = None
     if args.resume:
@@ -429,6 +453,10 @@ def main() -> None:
         # Spawn M eval server processes (each gets its own GIL + CUDA
         # default stream).  Servers race on get_nowait() without a lock —
         # organic alternation: one server computes while the other gathers.
+        eval_compile_kwargs = (
+            get_compile_kwargs(for_training=False) if use_nvidia
+            else {"dynamic": True}
+        )
         for i in range(config.num_eval_servers):
             server = EvaluationServer(
                 model, device, shared_bufs, request_queue, worker_events,
@@ -436,6 +464,7 @@ def main() -> None:
                 profile=config.profile,
                 mp_context=ctx,
                 no_compile=args.no_compile,
+                compile_kwargs=eval_compile_kwargs,
             )
             server.start()
             eval_servers.append(server)
@@ -460,13 +489,19 @@ def main() -> None:
         # Compile for training in main process (after servers finish, so no
         # CPU contention from concurrent Inductor/Triton jobs).
         if not args.no_compile and device.type == "cuda":
-            print("Compiling model with torch.compile (main process)...")
-            model = cast(torch.nn.Module, torch.compile(model, dynamic=True))
-            # Single warmup pass — dynamic=True uses symbolic shapes so one
-            # compilation covers all batch sizes.
+            train_compile_kwargs = (
+                get_compile_kwargs(for_training=True) if use_nvidia
+                else {"dynamic": True}
+            )
+            print(f"Compiling model with torch.compile ({train_compile_kwargs})...")
+            model = cast(torch.nn.Module, torch.compile(model, **train_compile_kwargs))  # type: ignore[call-overload]
+            # Warmup pass — triggers Inductor compilation (and CUDA graph
+            # capture in reduce-overhead mode).  Use actual batch size for
+            # reduce-overhead so the graph matches training dimensions.
+            warmup_bs = config.batch_size if use_nvidia else 1
             model.train()
             with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
-                dummy = torch.randn(1, config.visible_size, device=device)
+                dummy = torch.randn(warmup_bs, config.visible_size, device=device)
                 model(dummy)
                 del dummy
             torch.cuda.synchronize()
@@ -490,10 +525,16 @@ def main() -> None:
             f"{n_servers} eval server{'s' if n_servers > 1 else ''}"
         )
     else:
-        # Single-process: compile for both training and self-play evaluation
+        # Single-process: compile for both training and self-play evaluation.
+        # Use dynamic=True here since both inference (variable batch) and
+        # training (fixed batch) share the same compiled model.
         if not args.no_compile and device.type == "cuda":
-            print("Compiling model with torch.compile...")
-            model = cast(torch.nn.Module, torch.compile(model, dynamic=True))
+            sp_compile_kwargs: dict[str, Any] = (
+                get_compile_kwargs(for_training=False) if use_nvidia
+                else {"dynamic": True}
+            )
+            print(f"Compiling model with torch.compile ({sp_compile_kwargs})...")
+            model = cast(torch.nn.Module, torch.compile(model, **sp_compile_kwargs))  # type: ignore[call-overload]
             model.train()
             with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
                 dummy = torch.randn(1, config.visible_size, device=device)
