@@ -163,6 +163,49 @@ def format_state_compact(state):
     return f"Turn {turn} | {phase} | Player {active} | {cash}"
 
 
+def format_phase_context(state) -> str:
+    """Return a one-line phase-specific context string, or empty string."""
+    phase_idx = state.get_phase()
+    if phase_idx == GamePhases.PHASE_BID_IN_AUCTION:
+        ac = TURN.get_auction_company(state)
+        ap = TURN.get_auction_price(state)
+        hb = TURN.get_auction_high_bidder(state)
+        st = TURN.get_auction_starter(state)
+        ac_name = COMPANY_NAMES[ac] if 0 <= ac < NUM_COMPANIES else "?"
+        return (f"**Auction**: {ac_name} current bid=${ap} "
+                f"high bidder=P{hb} starter=P{st}")
+    elif phase_idx == GamePhases.PHASE_ACQUISITION:
+        acorp = TURN.get_acq_active_corp(state)
+        atgt = TURN.get_acq_target_company(state)
+        fi_offer = TURN.is_acq_fi_offer(state)
+        corp_name = CORP_NAMES[acorp] if 0 <= acorp < NUM_CORPS else "?"
+        tgt_name = COMPANY_NAMES[atgt] if 0 <= atgt < NUM_COMPANIES else "?"
+        return (f"**Acquisition Offer**: {corp_name} → {tgt_name}"
+                f"{' (from FI)' if fi_offer else ''}")
+    elif phase_idx == GamePhases.PHASE_CLOSING:
+        cc = TURN.get_closing_company(state)
+        if cc >= 0:
+            return f"**Closing Offer**: {COMPANY_NAMES[cc]}"
+    elif phase_idx == GamePhases.PHASE_DIVIDENDS:
+        dc = TURN.get_dividend_corp(state)
+        if dc >= 0:
+            return f"**Dividends**: {CORP_NAMES[dc]}"
+    elif phase_idx == GamePhases.PHASE_ISSUE_SHARES:
+        ic = TURN.get_issue_corp(state)
+        if ic >= 0:
+            return f"**Issue**: {CORP_NAMES[ic]}"
+    elif phase_idx == GamePhases.PHASE_IPO:
+        ic = TURN.get_ipo_company(state)
+        if ic >= 0:
+            return f"**IPO**: {COMPANY_NAMES[ic]}"
+    elif phase_idx == GamePhases.PHASE_PAR:
+        ic = TURN.get_ipo_company(state)
+        pc = TURN.get_par_corp(state)
+        if ic >= 0 and pc >= 0:
+            return f"**PAR**: {COMPANY_NAMES[ic]} → {CORP_NAMES[pc]}"
+    return ""
+
+
 def format_state_full(state):
     """Multi-line visible-state dump."""
     np_ = state.get_num_players()
@@ -270,50 +313,9 @@ def format_state_full(state):
     lines.append("")
 
     # Phase-specific context
-    phase_idx = state.get_phase()
-    if phase_idx == GamePhases.PHASE_BID_IN_AUCTION:
-        ac = TURN.get_auction_company(state)
-        ap = TURN.get_auction_price(state)
-        hb = TURN.get_auction_high_bidder(state)
-        st = TURN.get_auction_starter(state)
-        ac_name = COMPANY_NAMES[ac] if 0 <= ac < NUM_COMPANIES else "?"
-        lines.append(f"**Auction**: {ac_name} current bid=${ap} "
-                     f"high bidder=P{hb} starter=P{st}")
-
-    elif phase_idx == GamePhases.PHASE_ACQUISITION:
-        acorp = TURN.get_acq_active_corp(state)
-        atgt = TURN.get_acq_target_company(state)
-        fi_offer = TURN.is_acq_fi_offer(state)
-        corp_name = CORP_NAMES[acorp] if 0 <= acorp < NUM_CORPS else "?"
-        tgt_name = COMPANY_NAMES[atgt] if 0 <= atgt < NUM_COMPANIES else "?"
-        lines.append(f"**Acquisition Offer**: {corp_name} → {tgt_name}"
-                     f"{' (from FI)' if fi_offer else ''}")
-
-    elif phase_idx == GamePhases.PHASE_CLOSING:
-        cc = TURN.get_closing_company(state)
-        if cc >= 0:
-            lines.append(f"**Closing Offer**: {COMPANY_NAMES[cc]}")
-
-    elif phase_idx == GamePhases.PHASE_DIVIDENDS:
-        dc = TURN.get_dividend_corp(state)
-        if dc >= 0:
-            lines.append(f"**Dividends**: {CORP_NAMES[dc]}")
-
-    elif phase_idx == GamePhases.PHASE_ISSUE_SHARES:
-        ic = TURN.get_issue_corp(state)
-        if ic >= 0:
-            lines.append(f"**Issue**: {CORP_NAMES[ic]}")
-
-    elif phase_idx == GamePhases.PHASE_IPO:
-        ic = TURN.get_ipo_company(state)
-        if ic >= 0:
-            lines.append(f"**IPO**: {COMPANY_NAMES[ic]}")
-
-    elif phase_idx == GamePhases.PHASE_PAR:
-        ic = TURN.get_ipo_company(state)
-        pc = TURN.get_par_corp(state)
-        if ic >= 0 and pc >= 0:
-            lines.append(f"**PAR**: {COMPANY_NAMES[ic]} → {CORP_NAMES[pc]}")
+    ctx = format_phase_context(state)
+    if ctx:
+        lines.append(ctx)
 
     return "\n".join(lines)
 

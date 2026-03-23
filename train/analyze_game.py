@@ -25,10 +25,11 @@ from core.driver import DRIVER, STATUS_GAME_OVER_PY as STATUS_GAME_OVER
 from core.state import GameState, get_layout
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator, compute_terminal_values
-from mcts.search import StatePool, run_search, get_greedy_leaf_value
+from mcts.search import StatePool, run_search, get_greedy_leaf_value, prepare_reuse_root
 from nn import create_model
 from tests.debug_trace import (
     format_action,
+    format_phase_context,
     format_state_full,
     PHASE_NAMES,
 )
@@ -151,7 +152,7 @@ def analyze_game(
     )
 
     layout = get_layout(num_players)
-    state_pool = StatePool(num_simulations + 1, layout.total_size)
+    state_pool = StatePool(2 * (num_simulations + 1), layout.total_size)
     rng = np.random.default_rng(seed)
 
     lines: list[str] = []
@@ -169,9 +170,13 @@ def analyze_game(
     lines.append("---")
     lines.append("")
 
+    from train.profile_stats import SearchStats
+
     step = 0
     prev_phase = state.get_phase()
     prev_turn = TURN.get_turn_number(state)
+    reuse_root = None
+    total_vbackups = 0
 
     while state.get_phase() != GamePhases.PHASE_GAME_OVER:
         active_player = state.get_active_player()
@@ -180,8 +185,13 @@ def analyze_game(
         # NN evaluation (raw, before MCTS)
         policy_probs, values, legal_mask = evaluator.evaluate(state)
 
-        # MCTS search
-        root = run_search(state, evaluator, mcts_config, rng, state_pool=state_pool)
+        # MCTS search (reuses subtree from previous move when available)
+        search_stats = SearchStats()
+        root = run_search(
+            state, evaluator, mcts_config, rng,
+            state_pool=state_pool, reuse_root=reuse_root,
+            profile=search_stats,
+        )
 
         # Choose action (argmax = best play)
         assert root.legal_actions is not None and root.visit_counts is not None
@@ -199,6 +209,10 @@ def analyze_game(
         # Log this decision point
         lines.append(f"### Step {step}: P{active_player} [{cur_phase}]")
         lines.append("")
+        phase_ctx = format_phase_context(state)
+        if phase_ctx:
+            lines.append(f"  {phase_ctx}")
+            lines.append("")
         lines.extend(_format_nn_eval(
             policy_probs, values, legal_mask, num_players, state, top_n,
             noised_priors=noised_map,
@@ -207,7 +221,10 @@ def analyze_game(
         lines.extend(_format_mcts_visits(root, num_players, state, top_n))
         a0gb = get_greedy_leaf_value(root, num_players)
         a0gb_parts = [f"P{i}={a0gb[i]:+.3f}" for i in range(num_players)]
-        lines.append(f"  A0GB Value: {', '.join(a0gb_parts)}")
+        vb = search_stats.virtual_backups
+        total_vbackups += vb
+        vb_str = f" (vbackups: {vb})" if vb > 0 else ""
+        lines.append(f"  A0GB Value: {', '.join(a0gb_parts)}{vb_str}")
         lines.append("")
         lines.append(f"  **Action: {action_str}**")
         lines.append("")
@@ -222,6 +239,9 @@ def analyze_game(
                 auto_str = format_action(aid, num_players)
                 lines.append(f"  \u21b3 auto: {auto_str}")
             lines.append("")
+
+        # Extract chosen child's subtree for reuse in next search
+        reuse_root = prepare_reuse_root(root, action, state_pool)
 
         step += 1
         new_phase = state.get_phase()
@@ -246,7 +266,7 @@ def analyze_game(
     lines.append("")
     lines.append("## Game Over")
     lines.append("")
-    lines.append(f"Completed in {step} decision points")
+    lines.append(f"Completed in {step} decision points ({total_vbackups} virtual backups from subtree reuse)")
     lines.append("")
 
     from entities.player import PLAYERS
