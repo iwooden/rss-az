@@ -1,9 +1,9 @@
 """AlphaZero-style PyTorch model for Rolling Stock Stars (3 players).
 
 Architecture informed by interpretability analysis:
-- Two-layer input preprocessing (input -> 2*hidden -> hidden) instead of a single
+- Two-layer input preprocessing (input -> 3*hidden -> hidden) instead of a single
   linear projection, to avoid bottlenecking the input transform.
-- 6 residual blocks with expansion=1 (no inner expansion). SVD analysis showed
+- 8 residual blocks with expansion=1 (no inner expansion). SVD analysis showed
   expanded widths at 13-16% utilization — removing the expansion halves trunk
   parameters with no representational loss.
 - hidden_dim=256. Multiple of 64 for GPU tensor core alignment.
@@ -15,7 +15,7 @@ Architecture informed by interpretability analysis:
   - Value head: 1 hidden layer (hidden->hidden->value_dim). Trunk already computes value
     almost linearly (R^2=0.97); conductance is 45/55 split across both layers.
 
-~2.0M parameters.
+~2.3M parameters.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ class RSSModelConfig:
     action_dim: int  # get_total_action_count(num_players)
     value_dim: int  # num_players (per-player expected outcomes)
     hidden_dim: int = 256
-    num_blocks: int = 6
+    num_blocks: int = 8
 
 
 class ResidualMLPBlock(nn.Module):
@@ -64,11 +64,11 @@ class RSSAlphaZeroNet(nn.Module):
         self.cfg = cfg
 
         # Two-layer input preprocessing:
-        # input_dim -> 2*hidden_dim -> hidden_dim
+        # input_dim -> 3*hidden_dim -> hidden_dim
         self.input_preprocess = nn.Sequential(
-            nn.Linear(cfg.input_dim, 2 * cfg.hidden_dim),
+            nn.Linear(cfg.input_dim, 3 * cfg.hidden_dim),
             nn.GELU(),
-            nn.Linear(2 * cfg.hidden_dim, cfg.hidden_dim),
+            nn.Linear(3 * cfg.hidden_dim, cfg.hidden_dim),
         )
 
         self.blocks = nn.ModuleList(
