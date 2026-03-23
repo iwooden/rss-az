@@ -20,9 +20,18 @@ from train.replay_buffer import TrainingExample
 
 @dataclass
 class GameRecord:
-    """Results from a single self-play game."""
+    """Results from a single self-play game.
 
-    examples: list[TrainingExample]
+    Training data is pre-stacked into contiguous arrays (4 arrays instead of
+    N×4 small arrays) so that pickling through mp.Queue is a fast memcpy
+    rather than per-object serialization.
+    """
+
+    states: np.ndarray  # (num_examples, visible_size), float32
+    legal_masks: np.ndarray  # (num_examples, action_dim), float32
+    policy_targets: np.ndarray  # (num_examples, action_dim), float32
+    value_targets: np.ndarray  # (num_examples, num_players), float32
+    num_examples: int  # Number of training examples
     total_moves: int  # Decision points (MCTS searches)
     net_worths: list[int]  # Final net worth per player (canonical order)
     shares_per_player: list[int]  # Total shares held per player (canonical order)
@@ -212,6 +221,13 @@ def play_game(
                 corps_in_receivership += 1
     avg_active_corp_price = sum(active_prices) / len(active_prices) if active_prices else 0.0
 
+    # Pre-stack training data into contiguous arrays (4 large arrays instead
+    # of N×4 small ones) so pickle through mp.Queue is a fast memcpy.
+    stacked_states = np.stack([e.state for e in examples])
+    stacked_legal_masks = np.stack([e.legal_mask for e in examples])
+    stacked_policy_targets = np.stack([e.policy_target for e in examples])
+    stacked_value_targets = np.stack([e.value_target for e in examples])
+
     # Blend A0GB value targets with game outcome if configured
     blend_alpha = epoch_config.value_blend_alpha if epoch_config is not None else 1.0
     if blend_alpha < 1.0:
@@ -219,10 +235,12 @@ def play_game(
         terminal_values = compute_terminal_values(
             net_worths, config.num_players, rank_weight
         )
-        for i, ex in enumerate(examples):
+        for i in range(len(examples)):
             rotated_terminal = np.roll(terminal_values, -active_player_ids[i])
-            blended = blend_alpha * ex.value_target + (1.0 - blend_alpha) * rotated_terminal
-            examples[i] = ex._replace(value_target=blended)
+            stacked_value_targets[i] = (
+                blend_alpha * stacked_value_targets[i]
+                + (1.0 - blend_alpha) * rotated_terminal
+            )
 
     game_profile: GameProfileData | None = None
     if config.profile and search_stats is not None:
@@ -236,7 +254,11 @@ def play_game(
         )
 
     return GameRecord(
-        examples=examples,
+        states=stacked_states,
+        legal_masks=stacked_legal_masks,
+        policy_targets=stacked_policy_targets,
+        value_targets=stacked_value_targets,
+        num_examples=len(examples),
         total_moves=move_count,
         net_worths=net_worths,
         shares_per_player=shares_per_player,

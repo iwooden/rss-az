@@ -42,17 +42,22 @@ class ReplayBuffer:
         self._policy_targets = np.zeros((capacity, action_dim), dtype=np.float32)
         self._value_targets = np.zeros((capacity, num_players), dtype=np.float32)
 
-    def add_examples(self, examples: list[TrainingExample]) -> None:
-        """Add a batch of examples to the ring buffer."""
-        n = len(examples)
+    def add_stacked(
+        self,
+        states: np.ndarray,
+        legal_masks: np.ndarray,
+        policy_targets: np.ndarray,
+        value_targets: np.ndarray,
+    ) -> None:
+        """Add pre-stacked arrays directly into the ring buffer.
+
+        Arrays should have shape (n, feature_dim) where n is the number of
+        examples. This avoids redundant np.stack when the caller already has
+        contiguous arrays (e.g., from pre-stacking in worker processes).
+        """
+        n = states.shape[0]
         if n == 0:
             return
-
-        # Stack into contiguous arrays
-        states = np.stack([e.state for e in examples])
-        legal_masks = np.stack([e.legal_mask for e in examples])
-        policy_targets = np.stack([e.policy_target for e in examples])
-        value_targets = np.stack([e.value_target for e in examples])
 
         if n >= self._capacity:
             # More examples than capacity — just keep the last `capacity` examples

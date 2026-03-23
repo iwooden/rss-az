@@ -560,8 +560,11 @@ def main() -> None:
                 nonlocal total_examples, total_moves, total_duration
                 nonlocal total_entropy, total_top1
                 nonlocal total_avg_corp_price, total_corps_in_receivership
-                buffer.add_examples(record.examples)  # type: ignore[union-attr]
-                total_examples += len(record.examples)  # type: ignore[union-attr]
+                buffer.add_stacked(  # type: ignore[union-attr]
+                    record.states, record.legal_masks,  # type: ignore[union-attr]
+                    record.policy_targets, record.value_targets,  # type: ignore[union-attr]
+                )
+                total_examples += record.num_examples  # type: ignore[union-attr]
                 total_moves += record.total_moves  # type: ignore[union-attr]
                 total_duration += record.duration_secs  # type: ignore[union-attr]
                 total_entropy += record.policy_entropy_mean  # type: ignore[union-attr]

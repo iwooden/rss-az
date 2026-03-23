@@ -59,6 +59,16 @@ def _make_example(
     )
 
 
+def _stack_examples(examples: list[TrainingExample]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Stack a list of TrainingExamples into 4 contiguous arrays."""
+    return (
+        np.stack([e.state for e in examples]),
+        np.stack([e.legal_mask for e in examples]),
+        np.stack([e.policy_target for e in examples]),
+        np.stack([e.value_target for e in examples]),
+    )
+
+
 def _make_batch(
     batch_size: int, visible_size: int, action_dim: int, num_players: int
 ) -> dict[str, torch.Tensor]:
@@ -234,12 +244,12 @@ class TestReplayBuffer:
     def test_add_and_len(self) -> None:
         buf = ReplayBuffer(capacity=100, visible_size=4, action_dim=2, num_players=3)
         assert len(buf) == 0
-        buf.add_examples([_make_example(4, 2, 3) for _ in range(10)])
+        buf.add_stacked(*_stack_examples([_make_example(4, 2, 3) for _ in range(10)]))
         assert len(buf) == 10
 
     def test_sample_shapes(self) -> None:
         buf = ReplayBuffer(capacity=100, visible_size=_VIS, action_dim=_ACT, num_players=3)
-        buf.add_examples([_make_example(_VIS, _ACT, 3) for _ in range(20)])
+        buf.add_stacked(*_stack_examples([_make_example(_VIS, _ACT, 3) for _ in range(20)]))
         rng = np.random.default_rng(0)
         batch = buf.sample(batch_size=8, rng=rng)
         assert batch["states"].shape == (8, _VIS)
@@ -251,13 +261,12 @@ class TestReplayBuffer:
     def test_ring_wrap(self) -> None:
         buf = ReplayBuffer(capacity=10, visible_size=4, action_dim=2, num_players=3)
         for i in range(15):
-            ex = TrainingExample(
-                state=np.full(4, float(i), dtype=np.float32),
-                legal_mask=np.ones(2, dtype=np.float32),
-                policy_target=np.array([0.5, 0.5], dtype=np.float32),
-                value_target=np.zeros(3, dtype=np.float32),
+            buf.add_stacked(
+                np.full((1, 4), float(i), dtype=np.float32),
+                np.ones((1, 2), dtype=np.float32),
+                np.array([[0.5, 0.5]], dtype=np.float32),
+                np.zeros((1, 3), dtype=np.float32),
             )
-            buf.add_examples([ex])
         assert len(buf) == 10
         rng = np.random.default_rng(0)
         batch = buf.sample(10, rng)
@@ -267,16 +276,12 @@ class TestReplayBuffer:
     def test_batch_overflow_keeps_last_capacity(self) -> None:
         """Adding more examples than capacity should keep only the last `capacity`."""
         buf = ReplayBuffer(capacity=5, visible_size=4, action_dim=2, num_players=3)
-        examples = [
-            TrainingExample(
-                state=np.full(4, float(i), dtype=np.float32),
-                legal_mask=np.ones(2, dtype=np.float32),
-                policy_target=np.array([0.5, 0.5], dtype=np.float32),
-                value_target=np.zeros(3, dtype=np.float32),
-            )
-            for i in range(10)
-        ]
-        buf.add_examples(examples)
+        buf.add_stacked(
+            np.stack([np.full(4, float(i), dtype=np.float32) for i in range(10)]),
+            np.ones((10, 2), dtype=np.float32),
+            np.full((10, 2), 0.5, dtype=np.float32),
+            np.zeros((10, 3), dtype=np.float32),
+        )
         assert len(buf) == 5
         rng = np.random.default_rng(0)
         batch = buf.sample(5, rng)
@@ -285,7 +290,7 @@ class TestReplayBuffer:
 
     def test_sample_raises_when_batch_exceeds_size(self) -> None:
         buf = ReplayBuffer(capacity=100, visible_size=4, action_dim=2, num_players=3)
-        buf.add_examples([_make_example(4, 2, 3) for _ in range(3)])
+        buf.add_stacked(*_stack_examples([_make_example(4, 2, 3) for _ in range(3)]))
         rng = np.random.default_rng(0)
         with pytest.raises(ValueError, match="batch_size.*exceeds"):
             buf.sample(batch_size=10, rng=rng)
@@ -293,14 +298,14 @@ class TestReplayBuffer:
     def test_sample_exact_size(self) -> None:
         """Sampling exactly len(buffer) items should work."""
         buf = ReplayBuffer(capacity=100, visible_size=4, action_dim=2, num_players=3)
-        buf.add_examples([_make_example(4, 2, 3) for _ in range(7)])
+        buf.add_stacked(*_stack_examples([_make_example(4, 2, 3) for _ in range(7)]))
         rng = np.random.default_rng(0)
         batch = buf.sample(batch_size=7, rng=rng)
         assert batch["states"].shape == (7, 4)
 
     def test_sample_only_from_filled(self) -> None:
         buf = ReplayBuffer(capacity=100, visible_size=4, action_dim=2, num_players=3)
-        buf.add_examples([_make_example(4, 2, 3) for _ in range(5)])
+        buf.add_stacked(*_stack_examples([_make_example(4, 2, 3) for _ in range(5)]))
         rng = np.random.default_rng(0)
         batch = buf.sample(batch_size=3, rng=rng)
         assert batch["states"].shape == (3, 4)
@@ -667,21 +672,20 @@ class TestSelfPlay:
         record = play_game(evaluator, tiny_config, game_seed=123, rng=rng)
 
         assert record.total_moves > 0
-        assert len(record.examples) == record.total_moves
+        assert record.num_examples == record.total_moves
         assert len(record.net_worths) == tiny_config.num_players
         assert record.duration_secs > 0
 
-        ex = record.examples[0]
-        assert ex.state.shape == (tiny_config.visible_size,)
-        assert ex.legal_mask.shape == (tiny_config.action_dim,)
-        assert ex.policy_target.shape == (tiny_config.action_dim,)
-        assert ex.value_target.shape == (tiny_config.num_players,)
+        assert record.states.shape == (record.num_examples, tiny_config.visible_size)
+        assert record.legal_masks.shape == (record.num_examples, tiny_config.action_dim)
+        assert record.policy_targets.shape == (record.num_examples, tiny_config.action_dim)
+        assert record.value_targets.shape == (record.num_examples, tiny_config.num_players)
 
-        for ex in record.examples:
-            assert abs(ex.policy_target.sum() - 1.0) < 1e-5
-            assert (ex.policy_target >= 0).all()
-            assert (ex.value_target >= -1.0 - 1e-5).all()
-            assert (ex.value_target <= 1.0 + 1e-5).all()
+        for i in range(record.num_examples):
+            assert abs(record.policy_targets[i].sum() - 1.0) < 1e-5
+            assert (record.policy_targets[i] >= 0).all()
+            assert (record.value_targets[i] >= -1.0 - 1e-5).all()
+            assert (record.value_targets[i] <= 1.0 + 1e-5).all()
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     def test_remote_evaluator_matches_local(
@@ -849,10 +853,10 @@ class TestSelfPlay:
             server.stop()
 
         assert record.total_moves > 0
-        assert len(record.examples) == record.total_moves
+        assert record.num_examples == record.total_moves
         assert len(record.net_worths) == tiny_config.num_players
-        for ex in record.examples:
-            assert abs(ex.policy_target.sum() - 1.0) < 1e-5
+        for i in range(record.num_examples):
+            assert abs(record.policy_targets[i].sum() - 1.0) < 1e-5
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     def test_multiprocess_workers(
@@ -921,7 +925,7 @@ class TestSelfPlay:
             assert len(records) == total_games
             for record in records:
                 assert record.total_moves > 0
-                assert len(record.examples) == record.total_moves
+                assert record.num_examples == record.total_moves
                 assert len(record.net_worths) == tiny_config.num_players
         finally:
             # Clean shutdown
@@ -1059,7 +1063,7 @@ class TestEndToEnd:
             tiny_config.action_dim,
             tiny_config.num_players,
         )
-        buf.add_examples(record.examples)
+        buf.add_stacked(record.states, record.legal_masks, record.policy_targets, record.value_targets)
         assert len(buf) > 0
 
         # Training
