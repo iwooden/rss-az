@@ -22,7 +22,7 @@ rss-az-cython2/
 ├── entities/          # Entity handles: player, corp, company, deck, turn, market, fi, encoding
 ├── phases/            # Phase handlers: invest, bid, acquisition, closing, dividends, income, issue, ipo, wrap_up, end_card
 ├── mcts/              # MCTS search: node.py, evaluator.py, search.py
-├── nn/                # Neural network: model_3p_2.py (residual MLP, policy + value heads)
+├── nn/                # Neural network: model_3p.py (residual MLP, policy + value heads)
 ├── train/             # Self-play training: config, eval_server, self_play, replay_buffer, trainer, checkpoint, logging, main
 ├── tests/             # Test suite: phases/, 18xx_games/ replay tests, conftest.py
 ├── interp/            # Interpretability analysis (see interp/README.md)
@@ -145,7 +145,7 @@ Instead of soft-Z or game outcome, we use **A0GB** (Willemsen et al., 2022): fol
 
 **Memory:** States NOT stored in tree nodes — root cloned and actions replayed to reach leaves.
 
-### NN Model (`nn/model_3p_2.py`)
+### NN Model (`nn/model_3p.py`)
 
 Residual MLP (~2.0M params): Input 1018 → preprocessing (512→256) → 6 residual blocks (256-dim, pre-LN, GELU) → policy head (3 hidden layers → 183 logits) + value head (→ 3 tanh). Kaiming init, zero-init residual fc2.
 

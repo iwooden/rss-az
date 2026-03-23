@@ -45,8 +45,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--device", type=str, help="Force device: cuda, cpu")
     parser.add_argument(
-        "--model-arch", type=str, choices=["v1", "v2"],
-        help="Model architecture: v1 (26.6M) or v2 (6.6M)",
+        "--model-path", type=str,
+        help="Dotted module path to model definition (default: nn.model_3p)",
     )
     parser.add_argument("--games-per-epoch", type=int)
     parser.add_argument("--num-epochs", type=int)
@@ -101,7 +101,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 _CLI_FIELDS = (
-    "model_arch",
+    "model_path",
     "games_per_epoch", "num_epochs", "num_simulations", "search_batch_size",
     "num_workers", "num_eval_servers", "checkpoint_dir", "tensorboard_dir", "seed",
     "temp_initial", "temp_anneal_start", "temp_anneal_end", "temp_final",
@@ -361,7 +361,7 @@ def main() -> None:
 
     # --- Model ---
     model = create_model(
-        config.model_arch,
+        config.model_path,
         input_dim=config.visible_size,
         action_dim=config.action_dim,
         value_dim=config.num_players,

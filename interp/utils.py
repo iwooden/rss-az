@@ -154,7 +154,7 @@ def load_model(
     config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
 
     model = create_model(
-        config.model_arch,
+        config.model_path,
         input_dim=config.visible_size,
         action_dim=config.action_dim,
         value_dim=config.num_players,

@@ -348,7 +348,7 @@ def main() -> None:
 
     # Build model
     model = create_model(
-        config.model_arch,
+        config.model_path,
         input_dim=config.visible_size,
         action_dim=config.action_dim,
         value_dim=config.num_players,

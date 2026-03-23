@@ -106,7 +106,6 @@ def small_model() -> RSSAlphaZeroNet:
         value_dim=3,
         hidden_dim=32,
         num_blocks=1,
-        expansion=1,
     )
     return RSSAlphaZeroNet(cfg)
 
@@ -484,7 +483,7 @@ class TestCheckpoint:
         # Create fresh model and trainer, load checkpoint
         model2 = RSSAlphaZeroNet(RSSModelConfig(
             input_dim=_VIS, action_dim=_ACT, value_dim=3,
-            hidden_dim=32, num_blocks=1, expansion=1,
+            hidden_dim=32, num_blocks=1,
         ))
         trainer2 = Trainer(model2, tiny_config, device)
         cp = load_checkpoint(cp_path, device)
