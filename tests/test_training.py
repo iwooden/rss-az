@@ -756,6 +756,7 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=num_players,
         )
+        shared_bufs.init_done_events(ctx)
         server = EvaluationServer(
             model, device, shared_bufs,
             worker_start=0, worker_end=1,
@@ -823,6 +824,7 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=num_players,
         )
+        shared_bufs.init_done_events(ctx)
         server = EvaluationServer(
             model, device, shared_bufs,
             worker_start=0, worker_end=1,
@@ -868,6 +870,7 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=tiny_config.num_players,
         )
+        shared_bufs.init_done_events(ctx)
         server = EvaluationServer(
             model, device, shared_bufs,
             worker_start=0, worker_end=1,
@@ -916,6 +919,7 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=tiny_config.num_players,
         )
+        shared_bufs.init_done_events(ctx)
 
         server = EvaluationServer(
             model, device, shared_bufs,
@@ -998,6 +1002,7 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=num_players,
         )
+        shared_bufs.init_done_events(ctx)
 
         workers_per_server = num_workers // num_servers
         servers = []

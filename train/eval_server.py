@@ -96,11 +96,15 @@ class SharedEvalBuffers:
             num_workers, batch_size, num_players, dtype=torch.float32,
         ).share_memory_()
 
-        # Shared-memory signaling (replaces mp.Queue + mp.Event)
-        # flags: per-worker int32 — 0=IDLE, 1=SUBMITTED, 2=DONE
+        # Shared-memory signaling (replaces mp.Queue)
+        # flags: per-worker int32 — 0=IDLE, 1=SUBMITTED (server scans these)
         # counts: per-worker int32 — number of states in current request
         self._flags = torch.zeros(num_workers, dtype=torch.int32).share_memory_()
         self._counts = torch.zeros(num_workers, dtype=torch.int32).share_memory_()
+
+        # Per-worker done events for efficient sleep-wake (replaces spin-wait).
+        # Created lazily via init_done_events() with the correct mp context.
+        self.done_events: list[Any] | None = None
 
     def get_input_states_np(self, worker_idx: int) -> np.ndarray:
         """Numpy view into worker's float32 input state slot.
@@ -118,6 +122,17 @@ class SharedEvalBuffers:
     def get_output_values(self, worker_idx: int) -> torch.Tensor:
         """float32 tensor view into worker's output value slot."""
         return self._values[worker_idx]
+
+    def init_done_events(self, mp_context: Any = None) -> None:
+        """Create per-worker done Events using the given mp context.
+
+        Must be called before passing SharedEvalBuffers to server/worker
+        processes. Events are used to wake workers after inference completes
+        (efficient kernel sleep instead of spin-waiting).
+        """
+        import multiprocessing
+        ctx = mp_context or multiprocessing
+        self.done_events = [ctx.Event() for _ in range(self.num_workers)]
 
     def get_signal_arrays(self) -> tuple[np.ndarray, np.ndarray]:
         """Return (flags, counts) numpy int32 views for shared-memory signaling.
@@ -250,6 +265,9 @@ def _eval_server_serve(
 
     # Shared-memory flag and count arrays
     sig_flags, sig_counts = shared_bufs.get_signal_arrays()
+    # Per-worker done events for waking workers after inference
+    assert shared_bufs.done_events is not None
+    done_events = shared_bufs.done_events
 
     # Pre-allocate request arrays (filled each scan, avoids per-batch allocation)
     _widx_buf = np.empty(partition_size, dtype=np.int32)
@@ -326,6 +344,9 @@ def _eval_server_serve(
             logit_row_bytes,
         )
         _server_signal_done(sig_flags, _widx_buf[:num_requests], num_requests)
+        # Wake workers via kernel event (efficient sleep, no spin-wait)
+        for i in range(num_requests):
+            done_events[_widx_buf[i]].set()
 
         # Check if main process wants stats (also check in busy path)
         if stats_report_event is not None and stats_report_event.is_set():
@@ -483,14 +504,27 @@ class RemoteEvaluator(BaseEvaluator):
         self._profile = profile
         self._stats: EvalClientStats | None = EvalClientStats() if profile else None
 
-        # Shared-memory signaling (replaces mp.Queue + mp.Event)
-        from mcts.mcts_core import worker_submit as _worker_submit
+        # Shared-memory signaling: flags for lockfree request submission,
+        # mp.Event for efficient done notification (kernel sleep, no spin).
+        from mcts.mcts_core import worker_signal_submit, worker_reset_idle
         self._sig_flags, self._sig_counts = shared_bufs.get_signal_arrays()
-        self._worker_submit = _worker_submit
+        self._signal_submit = worker_signal_submit
+        self._reset_idle = worker_reset_idle
+        assert shared_bufs.done_events is not None, (
+            "SharedEvalBuffers.init_done_events() must be called before creating RemoteEvaluator"
+        )
+        self._done_event = shared_bufs.done_events[worker_idx]
 
     def _request_eval(self, n: int) -> None:
-        """Submit request via shared-memory flag and spin-wait for results."""
-        self._worker_submit(self._sig_flags, self._sig_counts, self._worker_idx, n)
+        """Submit request via shared-memory flag, sleep until server signals done."""
+        self._done_event.clear()
+        self._signal_submit(self._sig_flags, self._sig_counts, self._worker_idx, n)
+        if not self._done_event.wait(timeout=self._EVAL_TIMEOUT):
+            raise RuntimeError(
+                f"Eval server did not respond within {self._EVAL_TIMEOUT}s "
+                f"(worker {self._worker_idx}, batch {n})"
+            )
+        self._reset_idle(self._sig_flags, self._worker_idx)
 
     def evaluate(self, state: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Evaluate a single state via the remote server."""

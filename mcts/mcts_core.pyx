@@ -33,29 +33,24 @@ DEF FLAG_SUBMITTED = 1
 DEF FLAG_DONE = 2
 
 
-def worker_submit(int[:] flags, int[:] counts, int worker_idx, int state_count):
-    """Worker-side: submit a request and wait for results.
+def worker_signal_submit(int[:] flags, int[:] counts, int worker_idx, int state_count):
+    """Worker-side: write state count and set flag to SUBMITTED.
 
-    Writes state_count, sets flag=SUBMITTED, then spin-waits until flag=DONE.
-    On return, results are available in shared output buffers.
+    After calling this, the worker should sleep on an mp.Event until the
+    server signals completion, then call worker_reset_idle().
     """
-    cdef int* flag_ptr = &flags[worker_idx]
-    cdef int i
-    cdef bint done = False
     counts[worker_idx] = state_count
-    STORE_RELEASE(flag_ptr, FLAG_SUBMITTED)
+    STORE_RELEASE(&flags[worker_idx], FLAG_SUBMITTED)
 
-    # Spin-wait for server to process
-    while not done:
-        # Spin ~2000 iterations without GIL (covers typical ~100-200us latency)
-        with nogil:
-            for i in range(2000):
-                if LOAD_ACQUIRE(flag_ptr) == FLAG_DONE:
-                    STORE_RELEASE(flag_ptr, FLAG_IDLE)
-                    done = True
-                    break
-        # If not done, briefly reacquire GIL to let OS scheduler run,
-        # then loop back for another spin round.
+
+def worker_reset_idle(int[:] flags, int worker_idx):
+    """Worker-side: reset flag to IDLE after reading results.
+
+    Called after the worker wakes from its done Event and has read the
+    output buffers. The release fence ensures the server won't see a
+    stale SUBMITTED from a previous request.
+    """
+    STORE_RELEASE(&flags[worker_idx], FLAG_IDLE)
 
 
 def server_scan(

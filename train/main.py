@@ -444,6 +444,7 @@ def main() -> None:
             action_dim=config.action_dim,
             num_players=config.num_players,
         )
+        shared_bufs.init_done_events(ctx)
 
         # Partition workers across eval servers. Each server owns a
         # contiguous range and only scans its partition's flags.
