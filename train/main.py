@@ -70,6 +70,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--terminal-blend", type=float,
         help="Rank vs margin weight for terminal rewards (0=margin, 1=rank, default 0.5)",
     )
+    parser.add_argument(
+        "--lr-decay-end-epoch", type=int,
+        help="Epoch at which LR reaches lr_min and stays constant (default: num_epochs)",
+    )
     parser.add_argument("--dirichlet-alpha", type=float)
     dyn_group = parser.add_mutually_exclusive_group()
     dyn_group.add_argument(
@@ -103,7 +107,7 @@ _CLI_FIELDS = (
     "temp_initial", "temp_anneal_start", "temp_anneal_end", "temp_final",
     "c_puct_initial", "c_puct_final", "c_puct_anneal_epochs",
     "value_blend_start_epoch", "value_blend_end_epoch",
-    "terminal_blend",
+    "terminal_blend", "lr_decay_end_epoch",
     "dirichlet_alpha", "dirichlet_dynamic", "dirichlet_alpha_numerator",
 )
 

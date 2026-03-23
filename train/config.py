@@ -129,6 +129,7 @@ class TrainingConfig:
     # Cosine annealing with linear warmup
     warmup_steps: int = 1000
     lr_min: float = 1e-4
+    lr_decay_end_epoch: int | None = None  # epoch where LR reaches lr_min (default: num_epochs)
 
     # --- Loss ---
     value_loss_weight: float = 1.0

@@ -30,10 +30,11 @@ class Trainer:
             weight_decay=config.weight_decay,
         )
 
-        # total_steps assumes all epochs train. If early epochs skip training
-        # (buffer not ready), the cosine decay stretches slightly — acceptable
-        # since at most 1 epoch is skipped in practice.
-        total_steps = config.num_epochs * config.training_steps_per_epoch
+        # Decay spans lr_decay_end_epoch epochs (default: all epochs).
+        # If early epochs skip training (buffer not ready), the cosine decay
+        # stretches slightly — acceptable since at most 1 epoch is skipped.
+        decay_epochs = config.lr_decay_end_epoch or config.num_epochs
+        total_steps = decay_epochs * config.training_steps_per_epoch
         warmup_steps = config.warmup_steps
         lr_min_ratio = config.lr_min / config.learning_rate
 
@@ -41,6 +42,7 @@ class Trainer:
             if step < warmup_steps:
                 return (step + 1) / max(warmup_steps, 1)
             progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
+            progress = min(progress, 1.0)
             cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
             return lr_min_ratio + (1.0 - lr_min_ratio) * cosine_decay
 

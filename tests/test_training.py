@@ -367,6 +367,29 @@ class TestTrainer:
         # Should not go below lr_min (with small tolerance)
         assert all(lr >= tiny_config.lr_min * 0.99 for lr in lrs)
 
+    def test_lr_decay_end_epoch(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        """LR reaches lr_min at decay end epoch, then stays constant."""
+        device = torch.device("cpu")
+        tiny_config.warmup_steps = 0
+        tiny_config.training_steps_per_epoch = 10
+        tiny_config.num_epochs = 100
+        tiny_config.lr_decay_end_epoch = 5  # decay over 50 steps
+        trainer = Trainer(small_model, tiny_config, device)
+        batch = _make_batch(4, _VIS, _ACT, 3)
+        lrs = []
+        for _ in range(80):
+            trainer.train_step(batch)
+            lrs.append(trainer.lr)
+        # Should decay over first 50 steps
+        assert lrs[0] > lrs[49]
+        # At step 50 should be at lr_min
+        assert abs(lrs[49] - tiny_config.lr_min) < 1e-6
+        # After decay end, LR stays constant at lr_min
+        assert abs(lrs[79] - tiny_config.lr_min) < 1e-6
+        assert abs(lrs[60] - tiny_config.lr_min) < 1e-6
+
     def test_parameters_stay_finite(
         self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
     ) -> None:
