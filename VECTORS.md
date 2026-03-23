@@ -29,14 +29,17 @@ Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact 
 
 | Constant | Value | Used For |
 |----------|-------|----------|
-| `CASH_DIVISOR` | 100.0 | Player/corp/FI cash, net worth, acquisition proceeds |
-| `INCOME_DIVISOR` | 10.0 | Per-company adjusted incomes, synergy values, active company income, auction slot income |
-| `PRICE_DIVISOR` | 40.0 | Company prices (face/low/high), share prices, auction price, entity incomes (player/corp/FI), buy/sell impacts |
+| `CASH_DIVISOR` | 150.0 | Player/corp/FI cash, acquisition proceeds |
+| `NET_WORTH_DIVISOR` | 200.0 | Player net worth |
+| `COMPANY_INCOME_DIVISOR` | 10.0 | Per-company adjusted incomes, synergy values, active company income, auction slot income |
+| `ENTITY_INCOME_DIVISOR` | 80.0 | Player/corp/FI aggregate income |
+| `COMPANY_PRICE_DIVISOR` | 80.0 | Company prices (face/low/high), auction price |
+| `SHARE_PRICE_DIVISOR` | 75.0 | Corp share prices, issue cash gain |
 | `SHARE_DIVISOR` | 7.0 | Share counts |
 | `COMPANY_STAR_DIVISOR` | 5.0 | Per-company star ratings (1-5) |
-| `CORP_STAR_DIVISOR` | 20.0 | Corporation aggregate star totals |
+| `CORP_STAR_DIVISOR` | 40.0 | Corporation aggregate star totals |
 | `MAX_ROUNDTRIPS` | 2.0 | Round-trip limit (divisor = MAX_ROUNDTRIPS * 2 = 4.0) |
-| `IMPACT_DIVISOR` | 5.0 | Dividend price index deltas |
+| `IMPACT_DIVISOR` | 5.0 | Dividend/issue/invest price index deltas |
 
 ### Context-Dependent Fields
 
@@ -59,7 +62,7 @@ Many fields in the visible state are only meaningful during specific game phases
 | `issue_remaining` | flags | ISSUE |
 | `issue_price_impact` | scalar | ISSUE |
 | `issue_cash_gain` | scalar | ISSUE |
-| `ipo_remaining` | flags | IPO |
+| `ipo_remaining` | flags | IPO, PAR |
 | `invest_buy_impact` | values | INVEST |
 | `invest_sell_impact` | values | INVEST |
 | `acq_is_fi_offer` | flag | ACQUISITION |
@@ -86,7 +89,7 @@ Many fields in the visible state are only meaningful during specific game phases
 
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
-| `phase` | 11 | one-hot | Phase indices 0-10 |
+| `phase` | 12 | one-hot | Phase indices 0-11 |
 | `coo` | 7 | one-hot | Cost of ownership level 1-7 |
 
 **Phase Indices:**
@@ -112,14 +115,14 @@ Player stride = `4 + num_players + 36 + 24` = `64 + num_players`
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
 | `cash` | 1 | normalized | / CASH_DIVISOR |
-| `net_worth` | 1 | normalized | / CASH_DIVISOR |
+| `net_worth` | 1 | normalized | / NET_WORTH_DIVISOR |
 | `turn_order` | num_players | one-hot | Position 0 = first to act |
 | `owned_companies` | 36 | flags | 1 per company |
 | `owned_shares` | 8 | normalized | / SHARE_DIVISOR |
 | `is_president` | 8 | flags | 1 per corp |
 | `round_trips` | 8 | normalized | min(buys, sells) / MAX_ROUNDTRIPS. Context-dependent: zeroed outside INVEST |
 | `acquisition_proceeds` | 1 | normalized | Cash from selling companies this phase / CASH_DIVISOR |
-| `income` | 1 | normalized | Total income from owned private companies / PRICE_DIVISOR |
+| `income` | 1 | normalized | Total income from owned private companies / ENTITY_INCOME_DIVISOR |
 
 **Player Field Offsets (within player stride):**
 | Field | Offset |
@@ -139,7 +142,7 @@ Player stride = `4 + num_players + 36 + 24` = `64 + num_players`
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
 | `fi_cash` | 1 | normalized | / CASH_DIVISOR |
-| `fi_income` | 1 | normalized | Total income including +5 base bonus / PRICE_DIVISOR |
+| `fi_income` | 1 | normalized | Total income including +5 base bonus / ENTITY_INCOME_DIVISOR |
 | `fi_companies` | 36 | flags | Companies owned by FI |
 
 ### Company Locations
@@ -154,7 +157,7 @@ Player stride = `4 + num_players + 36 + 24` = `64 + num_players`
 
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
-| `company_incomes` | 36 | normalized | / INCOME_DIVISOR, updated when CoO changes |
+| `company_incomes` | 36 | normalized | / COMPANY_INCOME_DIVISOR, updated when CoO changes |
 
 These are the companies' adjusted incomes (base income minus cost of ownership). They are automatically updated whenever the CoO level changes via `set_coo_level()`.
 
@@ -182,9 +185,9 @@ Corp stride = `10 + 27 + 36 + 36` = `109`
 | `unissued_shares` | 1 | normalized | / SHARE_DIVISOR |
 | `issued_shares` | 1 | normalized | / SHARE_DIVISOR |
 | `bank_shares` | 1 | normalized | Issued but not player-owned |
-| `income` | 1 | normalized | Derived from companies / PRICE_DIVISOR |
+| `income` | 1 | normalized | Derived from companies / ENTITY_INCOME_DIVISOR |
 | `stars` | 1 | normalized | / CORP_STAR_DIVISOR |
-| `share_price` | 1 | normalized | / PRICE_DIVISOR |
+| `share_price` | 1 | normalized | / SHARE_PRICE_DIVISOR |
 | `acquisition_proceeds` | 1 | normalized | Pending this phase |
 | `in_receivership` | 1 | flag | |
 | `price_index` | 27 | one-hot | Market position |
@@ -217,7 +220,7 @@ Size varies with player count: `209 + (3 * num_players)`
 | `end_card_flipped` | 1 | flag | |
 | `consecutive_passes` | 1 | normalized | / num_players, INVEST phase |
 | **Auction:** | | | |
-| `auction_price` | 1 | normalized | / PRICE_DIVISOR. 0 when no auction |
+| `auction_price` | 1 | normalized | / COMPANY_PRICE_DIVISOR. 0 when no auction |
 | `auction_high_bidder` | num_players | one-hot | 0 when no auction |
 | `auction_starter` | num_players | one-hot | 0 when no auction |
 | `auction_passed` | num_players | flags | Player left auction. 0 when no auction |
@@ -227,24 +230,24 @@ Size varies with player count: `209 + (3 * num_players)`
 | **Issue:** | | | |
 | `issue_remaining` | 8 | flags | Corps left to process |
 | `issue_price_impact` | 1 | normalized | Price index delta if issuing / IMPACT_DIVISOR. 0 outside ISSUE. |
-| `issue_cash_gain` | 1 | normalized | Cash corp receives if issuing / PRICE_DIVISOR. 0 outside ISSUE. |
+| `issue_cash_gain` | 1 | normalized | Cash corp receives if issuing / SHARE_PRICE_DIVISOR. 0 outside ISSUE. |
 | **IPO:** | | | |
 | `ipo_remaining` | 36 | flags | Companies left |
 | **Acquisition:** | | | |
 | `acq_is_fi_offer` | 1 | flag | 1=FI target |
-| `acq_synergy_values` | 36 | normalized | Synergy income bonus per company / INCOME_DIVISOR, 0 if corp doesn't own |
+| `acq_synergy_values` | 36 | normalized | Synergy income bonus per company / COMPANY_INCOME_DIVISOR, 0 if corp doesn't own |
 | **Active Company:** | | | |
-| `active_company` | 36 | one-hot | Company under consideration in BID, ACQ, CLOSING, IPO. 0 when inactive. |
+| `active_company` | 36 | one-hot | Company under consideration in BID, ACQ, CLOSING, IPO, PAR. 0 when inactive. |
 | `active_company_stars` | 1 | normalized | / COMPANY_STAR_DIVISOR. 0 when inactive. |
-| `active_company_low_price` | 1 | normalized | / PRICE_DIVISOR. 0 when inactive. |
-| `active_company_face_value` | 1 | normalized | / PRICE_DIVISOR. 0 when inactive. |
-| `active_company_high_price` | 1 | normalized | / PRICE_DIVISOR. 0 when inactive. |
-| `active_company_income` | 1 | normalized | Adjusted income / INCOME_DIVISOR. 0 when inactive. |
+| `active_company_low_price` | 1 | normalized | / COMPANY_PRICE_DIVISOR. 0 when inactive. |
+| `active_company_face_value` | 1 | normalized | / COMPANY_PRICE_DIVISOR. 0 when inactive. |
+| `active_company_high_price` | 1 | normalized | / COMPANY_PRICE_DIVISOR. 0 when inactive. |
+| `active_company_income` | 1 | normalized | Adjusted income / COMPANY_INCOME_DIVISOR. 0 when inactive. |
 | **Active Corp:** | | | |
 | `active_corp` | 8 | one-hot | Corp under consideration in DIVIDENDS, ISSUE, ACQ, CLOSING (corp-owned offers only). 0 when inactive or player-owned. |
-| `active_corp_income` | 1 | normalized | / PRICE_DIVISOR. 0 when inactive. |
+| `active_corp_income` | 1 | normalized | / ENTITY_INCOME_DIVISOR. 0 when inactive. |
 | `active_corp_stars` | 1 | normalized | / CORP_STAR_DIVISOR. 0 when inactive. |
-| `active_corp_share_price` | 1 | normalized | / PRICE_DIVISOR. 0 when inactive. |
+| `active_corp_share_price` | 1 | normalized | / SHARE_PRICE_DIVISOR. 0 when inactive. |
 | `active_corp_companies` | 36 | flags | Owned company flags copied from corp data block. 0 when inactive. |
 | **Deck:** | | | |
 | `cards_remaining` | 1 | normalized | Cards remaining in deck / NUM_COMPANIES |
@@ -255,10 +258,10 @@ Per slot (5 floats, ordered by auction slot index):
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
 | `stars` | 1 | normalized | / COMPANY_STAR_DIVISOR |
-| `low_price` | 1 | normalized | / PRICE_DIVISOR |
-| `face_value` | 1 | normalized | / PRICE_DIVISOR |
-| `high_price` | 1 | normalized | / PRICE_DIVISOR |
-| `income` | 1 | normalized | Adjusted income / INCOME_DIVISOR (reflects current CoO) |
+| `low_price` | 1 | normalized | / COMPANY_PRICE_DIVISOR |
+| `face_value` | 1 | normalized | / COMPANY_PRICE_DIVISOR |
+| `high_price` | 1 | normalized | / COMPANY_PRICE_DIVISOR |
+| `income` | 1 | normalized | Adjusted income / COMPANY_INCOME_DIVISOR (reflects current CoO) |
 
 Updated when auction row changes (init, auction resolution, WRAP_UP). Empty slots are zero-filled.
 
@@ -352,7 +355,7 @@ Action space size varies by player count:
 | 5       | 75 (5 x 15)     | 213           |
 | 6       | 90 (6 x 15)     | 228           |
 
-Formula: `138 + (1 + num_players) * 15`
+Formula: `138 + num_players * 15`
 
 Use `get_total_action_count(num_players)` for the exact size.
 
@@ -486,7 +489,7 @@ print(f"Visible size: {state.visible_size}")
 
 # Action vector (size depends on player count)
 total_actions = get_total_action_count(3)  # 183 for 3 players
-mask = get_valid_action_mask(state)  # Shape: (226,)
+mask = get_valid_action_mask(state)  # Shape: (183,)
 valid_actions = mask.nonzero()[0]
 
 # Decode an action

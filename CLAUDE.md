@@ -91,13 +91,17 @@ Stateless game loop: `apply_action(state, action_idx, history)` dispatches to ph
 Static game constants: 36 companies, 8 corporations, 27 market prices.
 
 **Normalization divisors:**
-- `CASH_DIVISOR = 100.0` (cash balances, net worth, acquisition proceeds)
-- `INCOME_DIVISOR = 10.0` (per-company incomes, synergy values)
-- `PRICE_DIVISOR = 40.0` (company/share prices, entity incomes)
+- `CASH_DIVISOR = 150.0` (player/corp/FI cash, acquisition proceeds)
+- `NET_WORTH_DIVISOR = 200.0` (player net worth)
+- `COMPANY_INCOME_DIVISOR = 10.0` (per-company incomes, synergy values)
+- `ENTITY_INCOME_DIVISOR = 80.0` (player/corp/FI aggregate income)
+- `COMPANY_PRICE_DIVISOR = 80.0` (company face/low/high prices, auction price)
+- `SHARE_PRICE_DIVISOR = 75.0` (corp share prices, issue cash gain)
 - `SHARE_DIVISOR = 7.0` (share counts)
 - `COMPANY_STAR_DIVISOR = 5.0` (per-company star ratings)
-- `CORP_STAR_DIVISOR = 20.0` (corporation aggregate stars)
+- `CORP_STAR_DIVISOR = 40.0` (corporation aggregate stars)
 - `MAX_ROUNDTRIPS = 2.0` (buy/sell tracking)
+- `IMPACT_DIVISOR = 5.0` (dividend/issue/invest price index deltas)
 
 ## MCTS Search
 
@@ -176,7 +180,7 @@ At each decision point: state (visible, rotated), legal_mask, policy_target (MCT
 
 **Normalization:** Integers divided by divisor before storage, retrieved by `<int>(value * DIVISOR + 0.5)`.
 
-**One-hot encodings:** Phase (11), Cost of ownership (7), Turn order (per player), Price index (27 per corp).
+**One-hot encodings:** Phase (12), Cost of ownership (7), Turn order (per player), Price index (27 per corp).
 
 **Layout:** `[Phase | CoO | Players (stride=64+num_players) | FI | Companies | Incomes | Market | Corps (stride=109) | Turn | Auction Slots | Invest Impacts | HIDDEN]`
 
@@ -206,7 +210,7 @@ At each decision point: state (visible, rotated), legal_mask, policy_target (MCT
 
 Both phases use **one-by-one offer presentation**: offers generated into hidden buffer at phase entry, sorted by priority, presented sequentially, re-validated dynamically. Keeps action space constant.
 
-**ACQUISITION:** Priority: OS→FI (face value DESC) → Corp→FI (price DESC) → Corp→Corp → Corp→Player. Receivership corps auto-buy from FI at HIGH if affordable, auto-pass otherwise. Actions: 51 price offsets, FI_HIGH, FI_FACE (OS only), PASS.
+**ACQUISITION:** Priority: OS→FI (face value DESC) → Corp→FI (price DESC) → Corp→Corp → Corp→Player. Receivership corps auto-buy from FI at HIGH if affordable, auto-pass otherwise. Actions: 51 price offsets, FI_BUY, PASS.
 
 **CLOSING:** Two stages: (1) auto-close (FI negative-income, receivership red/orange above CoO), (2) player offers sorted by face value ASC. Actions: CLOSE, PASS. Mandatory close at end if player has negative income+cash.
 

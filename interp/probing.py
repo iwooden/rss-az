@@ -46,7 +46,7 @@ from interp.utils import InterpDataset, collect_states, load_model
 _ACTION_TYPE_NAMES = {
     0: "pass", 1: "auction", 2: "buy", 3: "sell",
     4: "leave_bid", 5: "raise_bid", 6: "acq_price", 7: "acq_fi_buy",
-    8: "close", 9: "dividend", 10: "issue", 11: "ipo",
+    8: "close", 9: "dividend", 10: "issue", 11: "ipo", 12: "par",
 }
 
 # Probe categories for --probes filtering

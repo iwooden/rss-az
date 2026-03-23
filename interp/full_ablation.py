@@ -43,7 +43,8 @@ _PHASE_NAMES = {
     7: "END_CARD",
     8: "ISSUE",
     9: "IPO",
-    10: "GAME_OVER",
+    10: "PAR",
+    11: "GAME_OVER",
 }
 
 NUM_COMPANIES = GameConstants.NUM_COMPANIES

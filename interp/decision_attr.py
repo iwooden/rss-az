@@ -37,7 +37,7 @@ from interp.utils import (
 _ACTION_TYPE_NAMES = {
     0: "pass", 1: "auction", 2: "buy_share", 3: "sell_share",
     4: "leave_bid", 5: "raise_bid", 6: "acq_price", 7: "acq_fi_buy",
-    8: "close", 9: "dividend", 10: "issue", 11: "ipo",
+    8: "close", 9: "dividend", 10: "issue", 11: "ipo", 12: "par",
 }
 
 

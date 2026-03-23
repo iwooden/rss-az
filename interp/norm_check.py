@@ -36,20 +36,20 @@ _PHASE_SPECIFIC_FEATURES: dict[str, list[int]] = {
     "turn:issue_remaining": [8],                     # ISSUE
     "turn:issue_price_impact": [8],                  # ISSUE
     "turn:issue_cash_gain": [8],                     # ISSUE
-    "turn:ipo_remaining": [9],                       # IPO
+    "turn:ipo_remaining": [9, 10],                    # IPO, PAR
     "turn:acq_is_fi_offer": [3],                     # ACQ
     "turn:acq_synergy": [3],                         # ACQ
-    "turn:active_company": [1, 3, 4, 9],             # BID, ACQ, CLOSE, IPO
-    "turn:active_company_stars": [1, 3, 4, 9],
-    "turn:active_company_low_price": [1, 3, 4, 9],
-    "turn:active_company_face_value": [1, 3, 4, 9],
-    "turn:active_company_high_price": [1, 3, 4, 9],
-    "turn:active_company_income": [1, 3, 4, 9],
-    "turn:active_corp": [3, 4, 6, 8],               # ACQ, CLOSE, DIV, ISSUE
-    "turn:active_corp_income": [3, 4, 6, 8],
-    "turn:active_corp_stars": [3, 4, 6, 8],
-    "turn:active_corp_share_price": [3, 4, 6, 8],
-    "turn:active_corp_companies": [3, 4, 6, 8],
+    "turn:active_company": [1, 3, 4, 9, 10],         # BID, ACQ, CLOSE, IPO, PAR
+    "turn:active_company_stars": [1, 3, 4, 9, 10],
+    "turn:active_company_low_price": [1, 3, 4, 9, 10],
+    "turn:active_company_face_value": [1, 3, 4, 9, 10],
+    "turn:active_company_high_price": [1, 3, 4, 9, 10],
+    "turn:active_company_income": [1, 3, 4, 9, 10],
+    "turn:active_corp": [3, 4, 6, 8, 10],            # ACQ, CLOSE, DIV, ISSUE, PAR
+    "turn:active_corp_income": [3, 4, 6, 8, 10],
+    "turn:active_corp_stars": [3, 4, 6, 8, 10],
+    "turn:active_corp_share_price": [3, 4, 6, 8, 10],
+    "turn:active_corp_companies": [3, 4, 6, 8, 10],
     "invest:buy_impact": [0],                        # INVEST
     "invest:sell_impact": [0],                       # INVEST
     "player:round_trips": [0],                       # INVEST

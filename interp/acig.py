@@ -41,7 +41,7 @@ from interp.utils import (
 )
 
 # Phases with player decisions (skip automated: WRAP_UP, INCOME, END_CARD, GAME_OVER)
-_DECISION_PHASES = {"INVEST", "BID", "ACQ", "CLOSE", "DIV", "ISSUE", "IPO"}
+_DECISION_PHASES = {"INVEST", "BID", "ACQ", "CLOSE", "DIV", "ISSUE", "IPO", "PAR"}
 
 # Dividend sub-grouping boundaries
 _DIV_LOW_MAX = 8
