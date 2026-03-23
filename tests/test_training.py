@@ -756,16 +756,15 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=num_players,
         )
-        request_queue = ctx.Queue()
-        worker_events = [ctx.Event()]
         server = EvaluationServer(
-            model, device, shared_bufs, request_queue, worker_events,
+            model, device, shared_bufs,
+            worker_start=0, worker_end=1,
             mp_context=ctx, no_compile=True,
         )
         server.start()
         try:
             remote_eval = RemoteEvaluator(
-                num_players, shared_bufs, 0, request_queue, worker_events[0],
+                num_players, shared_bufs, 0,
             )
             remote_policy, remote_values, remote_mask = remote_eval.evaluate(state)
         finally:
@@ -824,16 +823,15 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=num_players,
         )
-        request_queue = ctx.Queue()
-        worker_events = [ctx.Event()]
         server = EvaluationServer(
-            model, device, shared_bufs, request_queue, worker_events,
+            model, device, shared_bufs,
+            worker_start=0, worker_end=1,
             mp_context=ctx, no_compile=True,
         )
         server.start()
         try:
             remote_eval = RemoteEvaluator(
-                num_players, shared_bufs, 0, request_queue, worker_events[0],
+                num_players, shared_bufs, 0,
             )
             remote_results = remote_eval.evaluate_batch(states)
         finally:
@@ -870,17 +868,15 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=tiny_config.num_players,
         )
-        request_queue = ctx.Queue()
-        worker_events = [ctx.Event()]
         server = EvaluationServer(
-            model, device, shared_bufs, request_queue, worker_events,
+            model, device, shared_bufs,
+            worker_start=0, worker_end=1,
             mp_context=ctx, no_compile=True,
         )
         server.start()
         try:
             remote_eval = RemoteEvaluator(
                 tiny_config.num_players, shared_bufs, 0,
-                request_queue, worker_events[0],
             )
             rng = np.random.default_rng(42)
             record = play_game(remote_eval, tiny_config, game_seed=123, rng=rng)
@@ -921,11 +917,9 @@ class TestSelfPlay:
             num_players=tiny_config.num_players,
         )
 
-        request_queue = ctx.Queue()
-        worker_events = [ctx.Event() for _ in range(num_workers)]
-
         server = EvaluationServer(
-            model, device, shared_bufs, request_queue, worker_events,
+            model, device, shared_bufs,
+            worker_start=0, worker_end=num_workers,
             mp_context=ctx, no_compile=True,
         )
         server.start()
@@ -936,7 +930,7 @@ class TestSelfPlay:
                 target=self_play_worker,
                 args=(
                     task_queue, result_queue, tiny_config,
-                    shared_bufs, i, request_queue, worker_events[i],
+                    shared_bufs, i,
                 ),
                 daemon=True,
             )
@@ -1005,13 +999,14 @@ class TestSelfPlay:
             num_players=num_players,
         )
 
-        request_queue = ctx.Queue()
-        worker_events = [ctx.Event() for _ in range(num_workers)]
-
+        workers_per_server = num_workers // num_servers
         servers = []
         for i in range(num_servers):
+            ws = i * workers_per_server
+            we = ws + workers_per_server
             server = EvaluationServer(
-                model, device, shared_bufs, request_queue, worker_events,
+                model, device, shared_bufs,
+                worker_start=ws, worker_end=we,
                 server_id=i,
                 mp_context=ctx, no_compile=True,
             )
@@ -1021,7 +1016,7 @@ class TestSelfPlay:
         try:
             evals = [
                 RemoteEvaluator(
-                    num_players, shared_bufs, i, request_queue, worker_events[i],
+                    num_players, shared_bufs, i,
                 )
                 for i in range(num_workers)
             ]

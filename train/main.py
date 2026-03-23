@@ -437,11 +437,6 @@ def main() -> None:
         result_queue = ctx.Queue()
         result_queue.cancel_join_thread()
 
-        # Shared request queue + per-worker completion events
-        request_queue: Any = ctx.Queue()
-        request_queue.cancel_join_thread()
-        worker_events: list[Any] = [ctx.Event() for _ in range(config.num_workers)]
-
         shared_bufs = SharedEvalBuffers(
             num_workers=config.num_workers,
             batch_size=config.search_batch_size,
@@ -450,17 +445,26 @@ def main() -> None:
             num_players=config.num_players,
         )
 
-        # Spawn M eval server processes (each gets its own GIL + CUDA
-        # default stream).  Servers race on get_nowait() without a lock —
-        # organic alternation: one server computes while the other gathers.
+        # Partition workers across eval servers. Each server owns a
+        # contiguous range and only scans its partition's flags.
+        # E.g., 96 workers / 2 servers → server 0: [0, 48), server 1: [48, 96)
+        n_servers = config.num_eval_servers
+        workers_per_server = config.num_workers // n_servers
+        remainder = config.num_workers % n_servers
+
         eval_compile_kwargs = (
             get_compile_kwargs(for_training=False) if use_nvidia
             else {"dynamic": True}
         )
-        for i in range(config.num_eval_servers):
+        w_offset = 0
+        for i in range(n_servers):
+            # Distribute remainder workers to the first 'remainder' servers
+            partition = workers_per_server + (1 if i < remainder else 0)
             server = EvaluationServer(
-                model, device, shared_bufs, request_queue, worker_events,
+                model, device, shared_bufs,
                 server_id=i,
+                worker_start=w_offset,
+                worker_end=w_offset + partition,
                 profile=config.profile,
                 mp_context=ctx,
                 no_compile=args.no_compile,
@@ -468,6 +472,7 @@ def main() -> None:
             )
             server.start()
             eval_servers.append(server)
+            w_offset += partition
 
         # Wait for all eval servers to finish compilation + warmup before
         # spawning workers.  This prevents workers from timing out on
@@ -513,7 +518,7 @@ def main() -> None:
                 target=self_play_worker,
                 args=(
                     task_queue, result_queue, config,
-                    shared_bufs, i, request_queue, worker_events[i],
+                    shared_bufs, i,
                 ),
                 daemon=True,
             )

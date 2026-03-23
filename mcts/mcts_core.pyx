@@ -12,6 +12,107 @@ from libc.string cimport memcpy
 import numpy as np
 
 
+# ---------------------------------------------------------------------------
+# Shared-memory signaling primitives (eval server <-> worker communication)
+# ---------------------------------------------------------------------------
+# GCC built-in atomics provide correct memory ordering on both x86 (TSO) and
+# ARM (weak ordering, needs explicit barriers). These replace mp.Queue and
+# mp.Event for cross-process communication via shared memory.
+
+cdef extern from *:
+    """
+    #define STORE_RELEASE(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELEASE)
+    #define LOAD_ACQUIRE(ptr) __atomic_load_n(ptr, __ATOMIC_ACQUIRE)
+    """
+    void STORE_RELEASE(int* ptr, int val) nogil
+    int LOAD_ACQUIRE(int* ptr) nogil
+
+# Flag values for the shared-memory protocol
+DEF FLAG_IDLE = 0
+DEF FLAG_SUBMITTED = 1
+DEF FLAG_DONE = 2
+
+
+def worker_submit(int[:] flags, int[:] counts, int worker_idx, int state_count):
+    """Worker-side: submit a request and wait for results.
+
+    Writes state_count, sets flag=SUBMITTED, then spin-waits until flag=DONE.
+    On return, results are available in shared output buffers.
+    """
+    cdef int* flag_ptr = &flags[worker_idx]
+    cdef int i
+    cdef bint done = False
+    counts[worker_idx] = state_count
+    STORE_RELEASE(flag_ptr, FLAG_SUBMITTED)
+
+    # Spin-wait for server to process
+    while not done:
+        # Spin ~2000 iterations without GIL (covers typical ~100-200us latency)
+        with nogil:
+            for i in range(2000):
+                if LOAD_ACQUIRE(flag_ptr) == FLAG_DONE:
+                    STORE_RELEASE(flag_ptr, FLAG_IDLE)
+                    done = True
+                    break
+        # If not done, briefly reacquire GIL to let OS scheduler run,
+        # then loop back for another spin round.
+
+
+def server_scan(
+    int[:] flags,
+    int[:] counts,
+    int[:] out_worker_indices,
+    int[:] out_counts,
+    int start,
+    int end,
+    int max_requests,
+):
+    """Server-side: scan worker flags and collect pending requests.
+
+    Scans flags[start:end] for SUBMITTED flags, copies worker indices and
+    counts into output arrays. Does NOT change flags (server sets DONE later).
+
+    Args:
+        flags: Shared flag array, shape (num_workers,).
+        counts: Shared count array, shape (num_workers,).
+        out_worker_indices: Output buffer for worker indices.
+        out_counts: Output buffer for state counts.
+        start: First worker index in this server's partition.
+        end: One past last worker index (exclusive).
+        max_requests: Maximum requests to collect.
+
+    Returns:
+        Number of requests found.
+    """
+    cdef int n = 0
+    cdef int i
+    with nogil:
+        for i in range(start, end):
+            if n >= max_requests:
+                break
+            if LOAD_ACQUIRE(&flags[i]) == FLAG_SUBMITTED:
+                out_worker_indices[n] = i
+                out_counts[n] = LOAD_ACQUIRE(&counts[i])
+                n = n + 1
+    return n
+
+
+def server_signal_done(int[:] flags, const int[:] worker_indices, int n):
+    """Server-side: set flags to DONE for completed workers.
+
+    Called after scatter_results has written output data.
+
+    Args:
+        flags: Shared flag array.
+        worker_indices: Workers that were processed.
+        n: Number of workers to signal.
+    """
+    cdef int i
+    with nogil:
+        for i in range(n):
+            STORE_RELEASE(&flags[worker_indices[i]], FLAG_DONE)
+
+
 cdef (int, int) _select_child_impl(
     const int[:] legal_actions, const float[:] priors,
     const int[:] visit_counts, const float[:, :] value_sums,

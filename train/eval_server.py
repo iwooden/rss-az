@@ -96,6 +96,12 @@ class SharedEvalBuffers:
             num_workers, batch_size, num_players, dtype=torch.float32,
         ).share_memory_()
 
+        # Shared-memory signaling (replaces mp.Queue + mp.Event)
+        # flags: per-worker int32 — 0=IDLE, 1=SUBMITTED, 2=DONE
+        # counts: per-worker int32 — number of states in current request
+        self._flags = torch.zeros(num_workers, dtype=torch.int32).share_memory_()
+        self._counts = torch.zeros(num_workers, dtype=torch.int32).share_memory_()
+
     def get_input_states_np(self, worker_idx: int) -> np.ndarray:
         """Numpy view into worker's float32 input state slot.
 
@@ -113,34 +119,43 @@ class SharedEvalBuffers:
         """float32 tensor view into worker's output value slot."""
         return self._values[worker_idx]
 
+    def get_signal_arrays(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return (flags, counts) numpy int32 views for shared-memory signaling.
+
+        Creates views on-demand (numpy views don't survive spawn pickling).
+        """
+        return self._flags.numpy(), self._counts.numpy()
+
 
 def _eval_server_main(
     model: torch.nn.Module,
     device: torch.device,
     shared_bufs: SharedEvalBuffers,
-    request_queue: Any,
-    worker_events: list[Any],
     stop_event: Any,
     ready_event: Any,
     stats_report_event: Any,
     stats_queue: Any,
     *,
     server_id: int,
+    worker_start: int,
+    worker_end: int,
     profile: bool,
     no_compile: bool,
     compile_kwargs: dict[str, Any] | None = None,
 ) -> None:
     """Eval server process entry point.
 
-    Runs batched GPU inference in a loop, consuming requests from the shared
-    queue and writing results back to shared memory. Each process has its own
-    GIL and CUDA default stream, so multiple servers truly overlap.
+    Runs batched GPU inference in a loop, scanning shared-memory flags for
+    requests from its assigned worker partition [worker_start, worker_end).
+    Each process has its own GIL and CUDA default stream, so multiple
+    servers truly overlap.
     """
     try:
         _eval_server_serve(
-            model, device, shared_bufs, request_queue, worker_events,
+            model, device, shared_bufs,
             stop_event, ready_event, stats_report_event, stats_queue,
             server_id=server_id,
+            worker_start=worker_start, worker_end=worker_end,
             profile=profile, no_compile=no_compile,
             compile_kwargs=compile_kwargs,
         )
@@ -153,19 +168,26 @@ def _eval_server_serve(
     model: torch.nn.Module,
     device: torch.device,
     shared_bufs: SharedEvalBuffers,
-    request_queue: Any,
-    worker_events: list[Any],
     stop_event: Any,
     ready_event: Any,
     stats_report_event: Any,
     stats_queue: Any,
     *,
     server_id: int,
+    worker_start: int,
+    worker_end: int,
     profile: bool,
     no_compile: bool,
     compile_kwargs: dict[str, Any] | None = None,
 ) -> None:
-    """Inner serve loop for an eval server process."""
+    """Inner serve loop for an eval server process.
+
+    Scans shared-memory flags for assigned worker partition [worker_start,
+    worker_end) instead of using mp.Queue. Communication is fully lockfree:
+    workers set flag=SUBMITTED, server scans and sets flag=DONE.
+    """
+    import time as _time
+
     # Prevent OpenMP oversubscription (same as worker processes)
     torch.set_num_threads(1)
 
@@ -180,10 +202,6 @@ def _eval_server_serve(
         apply_nvidia_optimizations()
 
     # Optionally compile the model (per-process compilation).
-    # compile_kwargs controls the compilation strategy:
-    #   - Default (non-NVIDIA): {"dynamic": True} — symbolic shapes, one compilation
-    #   - NVIDIA: {"mode": "reduce-overhead", "dynamic": True} — CUDA graph tree,
-    #     captures graphs for observed batch sizes, eliminates kernel launch overhead
     if not no_compile and use_cuda:
         ckw = compile_kwargs if compile_kwargs else {"dynamic": True}
         model = torch.compile(model, **ckw)  # type: ignore[assignment]
@@ -198,7 +216,8 @@ def _eval_server_serve(
     ready_event.set()
 
     # Allocate pinned CPU buffers and GPU tensors in this process's CUDA context
-    max_batch = shared_bufs.num_workers * shared_bufs.batch_size
+    partition_size = worker_end - worker_start
+    max_batch = partition_size * shared_bufs.batch_size
     vis = shared_bufs.visible_size
     act = shared_bufs.action_dim
     npl = shared_bufs.num_players
@@ -215,7 +234,12 @@ def _eval_server_serve(
     _tp = _ti = 0.0
 
     # Contiguous 3D views for Cython gather/scatter (no per-worker Python loop)
-    from mcts.mcts_core import gather_states as _gather_states, scatter_results as _scatter_results
+    from mcts.mcts_core import (
+        gather_states as _gather_states,
+        scatter_results as _scatter_results,
+        server_scan as _server_scan,
+        server_signal_done as _server_signal_done,
+    )
     # states: (num_workers, batch_size, visible_size) f32 numpy
     all_states_np = shared_bufs._states.numpy()
     # logits: (num_workers, batch_size, action_dim) — view as bytes for bf16
@@ -224,53 +248,48 @@ def _eval_server_serve(
     all_values_np = shared_bufs._values.numpy()
     logit_row_bytes = act * 2  # bf16 = 2 bytes per element
 
-    # Pre-allocate request arrays (filled each batch, avoids per-batch allocation)
-    _widx_buf = np.empty(shared_bufs.num_workers, dtype=np.int32)
-    _cnt_buf = np.empty(shared_bufs.num_workers, dtype=np.int32)
+    # Shared-memory flag and count arrays
+    sig_flags, sig_counts = shared_bufs.get_signal_arrays()
 
-    events = worker_events
+    # Pre-allocate request arrays (filled each scan, avoids per-batch allocation)
+    _widx_buf = np.empty(partition_size, dtype=np.int32)
+    _cnt_buf = np.empty(partition_size, dtype=np.int32)
+
+    # Number of empty scans before sleeping (avoid busy-spin when idle).
+    # Each scan of 48 workers is ~1us; 50 empty scans = ~50us before sleeping.
+    _EMPTY_SCAN_LIMIT = 50
+    empty_scans = 0
 
     while not stop_event.is_set():
         if stats is not None:
             _tp = perf_counter()
 
-        # Eagerly drain all pending requests without blocking.
-        # Only fall back to a blocking get() when we have nothing,
-        # to avoid busy-spinning when idle.
-        batch_info: list[tuple[int, int]] = []
-        while len(batch_info) < max_batch:
-            try:
-                batch_info.append(request_queue.get_nowait())
-            except _queue.Empty:
-                break
+        # Scan assigned worker flags for SUBMITTED requests (Cython nogil).
+        num_requests = _server_scan(
+            sig_flags, sig_counts,
+            _widx_buf, _cnt_buf,
+            worker_start, worker_end, partition_size,
+        )
 
-        if not batch_info:
-            # Nothing pending — block briefly to avoid busy-spin
-            try:
-                batch_info.append(request_queue.get(timeout=0.01))
-            except _queue.Empty:
+        if num_requests == 0:
+            empty_scans += 1
+            if empty_scans >= _EMPTY_SCAN_LIMIT:
+                # Brief sleep to avoid burning CPU when truly idle.
+                _time.sleep(0.0001)  # 100us
+                empty_scans = 0
+            if stats is not None:
+                stats.record_idle(perf_counter() - _tp)
+            # Check if main process wants stats
+            if stats_report_event is not None and stats_report_event.is_set():
+                stats_queue.put(copy.copy(stats))
                 if stats is not None:
-                    stats.record_idle(perf_counter() - _tp)
-                # Check if main process wants stats
-                if stats_report_event is not None and stats_report_event.is_set():
-                    stats_queue.put(copy.copy(stats))
-                    if stats is not None:
-                        stats.reset()
-                    stats_report_event.clear()
-                continue
-            # Got one — drain any more that arrived
-            while len(batch_info) < max_batch:
-                try:
-                    batch_info.append(request_queue.get_nowait())
-                except _queue.Empty:
-                    break
+                    stats.reset()
+                stats_report_event.clear()
+            continue
+
+        empty_scans = 0
 
         # Gather f32 states from per-worker shared memory into contiguous pinned buffer.
-        # Cython nogil loop replaces Python loop (~96 iterations → single memcpy sequence).
-        num_requests = len(batch_info)
-        for i, (widx, n) in enumerate(batch_info):
-            _widx_buf[i] = widx
-            _cnt_buf[i] = n
         total_n = _gather_states(
             pin_s_np, all_states_np,
             _widx_buf[:num_requests], _cnt_buf[:num_requests], num_requests,
@@ -298,16 +317,15 @@ def _eval_server_serve(
         if stats is not None:
             stats.record_batch(total_n, perf_counter() - _ti)
 
-        # Scatter results to per-worker shared memory (Cython nogil memcpy)
-        # then signal completion (Python Events — must stay in Python loop).
+        # Scatter results to per-worker shared memory (Cython nogil memcpy),
+        # then signal DONE via atomic flag writes (also Cython nogil).
         _scatter_results(
             pin_log_bytes, pin_val_np,
             all_logits_bytes, all_values_np,
             _widx_buf[:num_requests], _cnt_buf[:num_requests], num_requests,
             logit_row_bytes,
         )
-        for i in range(num_requests):
-            events[_widx_buf[i]].set()
+        _server_signal_done(sig_flags, _widx_buf[:num_requests], num_requests)
 
         # Check if main process wants stats (also check in busy path)
         if stats_report_event is not None and stats_report_event.is_set():
@@ -320,15 +338,14 @@ def _eval_server_serve(
 class EvaluationServer:
     """Process-based centralized NN evaluator using shared memory.
 
-    Consumes (worker_idx, state_count) requests from a shared queue,
-    gathers states from shared memory, runs batched inference, writes
-    results back, and signals workers via per-worker Events.
+    Each server owns a contiguous partition of workers [worker_start,
+    worker_end) and only scans those workers' flags. Communication is
+    fully lockfree via shared-memory flags — no mp.Queue or mp.Event.
 
     Each EvaluationServer runs in its own process with a separate GIL,
     eliminating GIL contention between servers. The model's GPU parameter
     tensors are shared via CUDA IPC (torch.multiprocessing), so weight
     updates from the trainer are visible automatically.
-
     """
 
     def __init__(
@@ -336,10 +353,10 @@ class EvaluationServer:
         model: torch.nn.Module,
         device: torch.device,
         shared_bufs: SharedEvalBuffers,
-        request_queue: Any,
-        worker_events: list[Any],
         *,
         server_id: int = 0,
+        worker_start: int = 0,
+        worker_end: int | None = None,
         profile: bool = False,
         mp_context: Any = None,
         no_compile: bool = False,
@@ -347,18 +364,22 @@ class EvaluationServer:
     ) -> None:
         import multiprocessing
         ctx = mp_context or multiprocessing
+        if worker_end is None:
+            worker_end = shared_bufs.num_workers
         self._stop_event = ctx.Event()
         self._ready_event = ctx.Event()
         self._stats_report_event: Any = ctx.Event() if profile else None
         self._stats_queue: Any = ctx.Queue() if profile else None
         self._process: Any | None = None
         self._process_args = (
-            model, device, shared_bufs, request_queue, worker_events,
+            model, device, shared_bufs,
             self._stop_event, self._ready_event,
             self._stats_report_event, self._stats_queue,
         )
         self._process_kwargs = {
             "server_id": server_id,
+            "worker_start": worker_start,
+            "worker_end": worker_end,
             "profile": profile,
             "no_compile": no_compile,
             "compile_kwargs": compile_kwargs,
@@ -431,12 +452,15 @@ class RemoteEvaluator(BaseEvaluator):
     Write side: pure numpy slice assignment into f32 shared memory (no torch).
     Read side: logits bf16→f32 for Cython mask+softmax (no torch on
     read path); values are f32 in shared memory (server upcasts during D2H).
-    A Queue carries request tuples and per-worker Events signal completion.
+
+    Communication is lockfree via shared-memory flags: worker sets
+    flag=SUBMITTED, spins until flag=DONE, then reads results and resets
+    flag=IDLE. No mp.Queue or mp.Event involved.
 
     Invariant: each worker may have at most one outstanding eval request at a
-    time.  Output slots are keyed by worker_idx alone (no request id), so a
+    time. Output slots are keyed by worker_idx alone (no request id), so a
     second request before the first completes would overwrite the output buffer.
-    The sequential clear → put → wait → read flow enforces this.
+    The sequential submit → spin-wait → read → idle flow enforces this.
     """
 
     # Seconds to wait for eval server response before raising.
@@ -447,8 +471,6 @@ class RemoteEvaluator(BaseEvaluator):
         num_players: int,
         shared_bufs: SharedEvalBuffers,
         worker_idx: int,
-        request_queue: Any,
-        done_event: Any,
         *,
         profile: bool = False,
         terminal_rank_weight: float = 0.5,
@@ -458,20 +480,17 @@ class RemoteEvaluator(BaseEvaluator):
         self._in_states_np = shared_bufs.get_input_states_np(worker_idx)
         self._out_logits = shared_bufs.get_output_logits(worker_idx)
         self._out_values = shared_bufs.get_output_values(worker_idx)
-        self._queue = request_queue
-        self._event = done_event
         self._profile = profile
         self._stats: EvalClientStats | None = EvalClientStats() if profile else None
 
+        # Shared-memory signaling (replaces mp.Queue + mp.Event)
+        from mcts.mcts_core import worker_submit as _worker_submit
+        self._sig_flags, self._sig_counts = shared_bufs.get_signal_arrays()
+        self._worker_submit = _worker_submit
+
     def _request_eval(self, n: int) -> None:
-        """Signal the eval server and block until results are ready."""
-        self._event.clear()
-        self._queue.put((self._worker_idx, n))
-        if not self._event.wait(timeout=self._EVAL_TIMEOUT):
-            raise RuntimeError(
-                f"Eval server did not respond within {self._EVAL_TIMEOUT}s "
-                f"(worker {self._worker_idx}, batch {n})"
-            )
+        """Submit request via shared-memory flag and spin-wait for results."""
+        self._worker_submit(self._sig_flags, self._sig_counts, self._worker_idx, n)
 
     def evaluate(self, state: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Evaluate a single state via the remote server."""

@@ -282,8 +282,6 @@ def self_play_worker(
     config: TrainingConfig,
     shared_bufs: Any,
     worker_idx: int,
-    request_queue: Any,
-    done_event: Any,
 ) -> None:
     """Worker process: play games using remote NN evaluation.
 
@@ -297,7 +295,6 @@ def self_play_worker(
 
     evaluator = RemoteEvaluator(
         config.num_players, shared_bufs, worker_idx,
-        request_queue, done_event,
         profile=config.profile,
         terminal_rank_weight=config.terminal_blend,
     )
