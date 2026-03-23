@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | 1473         | 1218        | 2691       |
-| 3       | 1550         | 1234        | 2784       |
-| 4       | 1629         | 1250        | 2879       |
-| 5       | 1710         | 1266        | 2976       |
-| 6       | 1793         | 1282        | 3075       |
+| 2       | 941          | 1254        | 2195       |
+| 3       | 1018         | 1270        | 2288       |
+| 4       | 1097         | 1286        | 2383       |
+| 5       | 1178         | 1302        | 2480       |
+| 6       | 1261         | 1318        | 2579       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 
@@ -62,7 +62,6 @@ Many fields in the visible state are only meaningful during specific game phases
 | `issue_remaining` | flags | ISSUE |
 | `issue_price_impact` | scalar | ISSUE |
 | `issue_cash_gain` | scalar | ISSUE |
-| `ipo_remaining` | flags | IPO, PAR |
 | `invest_buy_impact` | values | INVEST |
 | `invest_sell_impact` | values | INVEST |
 | `acq_is_fi_offer` | flag | ACQUISITION |
@@ -176,7 +175,7 @@ These are the companies' adjusted incomes (base income minus cost of ownership).
 
 ### Corporations (repeated 8 times)
 
-Corp stride = `10 + 27 + 36 + 36` = `109`
+Corp stride = `11 + 36` = `47`
 
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
@@ -190,9 +189,8 @@ Corp stride = `10 + 27 + 36 + 36` = `109`
 | `share_price` | 1 | normalized | / SHARE_PRICE_DIVISOR |
 | `acquisition_proceeds` | 1 | normalized | Pending this phase |
 | `in_receivership` | 1 | flag | |
-| `price_index` | 27 | one-hot | Market position |
+| `price_index_norm` | 1 | normalized | Market position index / 26.0 |
 | `owned_companies` | 36 | flags | Companies owned |
-| `acquisition_companies` | 36 | flags | Pending acquisition |
 
 **Corp Field Offsets (within corp stride):**
 | Field | Offset |
@@ -207,13 +205,12 @@ Corp stride = `10 + 27 + 36 + 36` = `109`
 | share_price | 7 |
 | acquisition_proceeds | 8 |
 | in_receivership | 9 |
-| price_index | 10 |
-| owned_companies | 37 |
-| acquisition_companies | 73 |
+| price_index_norm | 10 |
+| owned_companies | 11 |
 
 ### Turn State
 
-Size varies with player count: `209 + (3 * num_players)`
+Size varies with player count: `173 + (3 * num_players)`
 
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
@@ -231,8 +228,6 @@ Size varies with player count: `209 + (3 * num_players)`
 | `issue_remaining` | 8 | flags | Corps left to process |
 | `issue_price_impact` | 1 | normalized | Price index delta if issuing / IMPACT_DIVISOR. 0 outside ISSUE. |
 | `issue_cash_gain` | 1 | normalized | Cash corp receives if issuing / SHARE_PRICE_DIVISOR. 0 outside ISSUE. |
-| **IPO:** | | | |
-| `ipo_remaining` | 36 | flags | Companies left |
 | **Acquisition:** | | | |
 | `acq_is_fi_offer` | 1 | flag | 1=FI target |
 | `acq_synergy_values` | 36 | normalized | Synergy income bonus per company / COMPANY_INCOME_DIVISOR, 0 if corp doesn't own |
@@ -280,7 +275,7 @@ Shown for all active corps regardless of affordability or share ownership. Recom
 
 ## Hidden State Layout
 
-Hidden state starts at `visible_size` offset. Total hidden size = `1186 + 16 * num_players`.
+Hidden state starts at `visible_size` offset. Total hidden size = `1222 + 16 * num_players`.
 
 The hidden state serves several purposes:
 - **Information hiding**: Data the NN shouldn't see (deck order, active player before rotation, turn number)
@@ -317,6 +312,7 @@ The hidden state serves several purposes:
 | `share_sells` | 1114 + np×8 | num_players × 8 | Per-player sell counts / (MAX_ROUNDTRIPS * 2) |
 | `company_locations` | varies | 36 | CompanyLocation enum per company (O(1) clearing) |
 | `company_owner_ids` | varies | 36 | Owner ID per company (-1 if N/A, player_id or corp_id) |
+| `ipo_remaining` | varies | 36 | IPO processing flags (moved from visible) |
 
 **CompanyLocation Enum:**
 | Value | Location | Notes |

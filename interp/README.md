@@ -40,7 +40,7 @@ All scripts auto-detect the latest checkpoint. Use `--checkpoint path/to/file.pt
 **What to look for:**
 - **Top features by Total KL** — what the model cares about most overall
 - **Phase-specific spikes** — features that only matter in their relevant phase (e.g., `turn:dividend` only in DIV). These validate that the model has learned phase-appropriate reasoning
-- **Surprisingly high/low features** — `corp:share_price` being low while `corp:price_index` is high means the model uses the one-hot encoding, not the scalar. Features near zero (like `fi:income`) are essentially unused
+- **Surprisingly high/low features** — features near zero (like `fi:income`) are essentially unused
 - **Context-dependent fields** — `turn:active_company`, `turn:auction`, etc. should spike only in their relevant phases and be near-zero elsewhere
 
 **Key options:**

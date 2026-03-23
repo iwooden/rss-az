@@ -106,7 +106,6 @@ cdef class Company:
         self._corps_offset = layout.corps_offset
         self._corp_stride = layout.corp_stride
         self._corp_companies_field = corp_fields.owned_companies
-        self._corp_acq_field = corp_fields.acquisition_companies
 
         # Hidden state offsets for O(1) location access
         self._hidden_location_offset = layout.hidden_company_locations_offset + self.company_id
@@ -173,7 +172,8 @@ cdef class Company:
         """Check if company is in specific corporation's acquisition pile."""
         if corp_id < 0 or corp_id >= GameConstants.NUM_CORPS:
             return False
-        return state._data[self._corps_offset + corp_id * self._corp_stride + self._corp_acq_field + self.company_id] == 1.0
+        return (self._get_hidden_location(state) == LOC_CORP_ACQ and
+                self._get_hidden_owner_id(state) == corp_id)
 
     cpdef bint is_removed(self, GameState state):
         """Check if company has been removed from the game."""
@@ -200,9 +200,7 @@ cdef class Company:
             state._data[self._players_offset + owner_id * self._player_stride + self._player_companies_field + self.company_id] = 0.0
         elif location == LOC_CORP:
             state._data[self._corps_offset + owner_id * self._corp_stride + self._corp_companies_field + self.company_id] = 0.0
-        elif location == LOC_CORP_ACQ:
-            state._data[self._corps_offset + owner_id * self._corp_stride + self._corp_acq_field + self.company_id] = 0.0
-        # LOC_DECK has no flag to clear
+        # LOC_CORP_ACQ and LOC_DECK have no visible flag to clear
 
     cdef void _remove_from_deck_if_needed(self, GameState state):
         """If company is currently in the deck, remove it from the deck order array."""
@@ -265,14 +263,13 @@ cdef class Company:
             corp_module.CORPS[corp_id].calculate_income(state)
 
     cpdef void transfer_to_corp_acquisition(self, GameState state, int corp_id):
-        """Transfer company to corporation's acquisition pile."""
+        """Transfer company to corporation's acquisition pile (hidden state only)."""
         if corp_id < 0 or corp_id >= GameConstants.NUM_CORPS:
             return
         cdef int old_loc = self._get_hidden_location(state)
         cdef int old_owner = self._get_hidden_owner_id(state)
         self._remove_from_deck_if_needed(state)
         self._clear_visible_flag(state)
-        state._data[self._corps_offset + corp_id * self._corp_stride + self._corp_acq_field + self.company_id] = 1.0
         self._set_hidden_location(state, LOC_CORP_ACQ, corp_id)
         if old_loc == LOC_CORP and old_owner != corp_id and corp_module.CORPS[old_owner].is_active(state):
             corp_module.CORPS[old_owner].recalculate_stars(state)
