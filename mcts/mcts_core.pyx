@@ -342,6 +342,84 @@ def masked_softmax(const float[:] logits, const float[:] mask):
 # Value un-rotation (replaces np.roll on tiny arrays in evaluator.py)
 # ---------------------------------------------------------------------------
 
+def gather_states(
+    float[:, :] dst,
+    float[:, :, :] src,
+    const int[:] worker_indices,
+    const int[:] counts,
+    int num_requests,
+):
+    """Gather input states from per-worker shared memory into a contiguous buffer.
+
+    Replaces the Python loop in eval_server._eval_server_serve:
+        for widx, n in batch_info:
+            pin_s_np[total_n:total_n + n] = w_states_np[widx][:n]
+
+    Args:
+        dst: Contiguous destination buffer, shape (max_batch, visible_size).
+        src: Per-worker input states, shape (num_workers, batch_size, visible_size).
+        worker_indices: Worker index per request, shape (num_requests,).
+        counts: Number of states per request, shape (num_requests,).
+        num_requests: Number of requests in this batch.
+
+    Returns:
+        Total number of states gathered.
+    """
+    cdef int vis = dst.shape[1]
+    cdef int row_bytes = vis * sizeof(float)
+    cdef int total = 0
+    cdef int i, n, widx
+    with nogil:
+        for i in range(num_requests):
+            widx = worker_indices[i]
+            n = counts[i]
+            memcpy(&dst[total, 0], &src[widx, 0, 0], n * row_bytes)
+            total = total + n
+    return total
+
+
+def scatter_results(
+    const char[:, :] src_logits,
+    const float[:, :] src_values,
+    char[:, :, :] dst_logits,
+    float[:, :, :] dst_values,
+    const int[:] worker_indices,
+    const int[:] counts,
+    int num_requests,
+    int logit_row_bytes,
+):
+    """Scatter inference results from contiguous buffers to per-worker shared memory.
+
+    Replaces the Python loop in eval_server._eval_server_serve:
+        for widx, n in batch_info:
+            w_logits[widx][:n].copy_(pin_log[offset:offset + n])
+            w_values[widx][:n].copy_(pin_val[offset:offset + n])
+
+    Uses char (byte) views for logits to handle bf16 without Cython dtype support.
+
+    Args:
+        src_logits: Contiguous logit buffer as bytes, shape (max_batch, logit_row_bytes).
+        src_values: Contiguous value buffer, shape (max_batch, num_players).
+        dst_logits: Per-worker logit slots as bytes, shape (num_workers, batch_size, logit_row_bytes).
+        dst_values: Per-worker value slots, shape (num_workers, batch_size, num_players).
+        worker_indices: Worker index per request, shape (num_requests,).
+        counts: Number of states per request, shape (num_requests,).
+        num_requests: Number of requests in this batch.
+        logit_row_bytes: Bytes per logit row (action_dim * 2 for bf16).
+    """
+    cdef int npl = src_values.shape[1]
+    cdef int val_row_bytes = npl * sizeof(float)
+    cdef int offset = 0
+    cdef int i, n, widx
+    with nogil:
+        for i in range(num_requests):
+            widx = worker_indices[i]
+            n = counts[i]
+            memcpy(&dst_logits[widx, 0, 0], &src_logits[offset, 0], n * logit_row_bytes)
+            memcpy(&dst_values[widx, 0, 0], &src_values[offset, 0], n * val_row_bytes)
+            offset = offset + n
+
+
 def unrotate_values(const float[:] values, int active_player_id, int num_players):
     """Convert NN values (active player at index 0) to canonical order.
 

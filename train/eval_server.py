@@ -207,15 +207,26 @@ def _eval_server_serve(
     pin_s_np = pin_s.numpy()
     gpu_s = torch.empty(max_batch, vis, dtype=torch.float32, device=device)
     pin_log = torch.empty(max_batch, act, dtype=torch.bfloat16, pin_memory=use_cuda)
+    pin_log_bytes = pin_log.view(torch.int8).numpy()  # byte view for Cython scatter
     pin_val = torch.empty(max_batch, npl, dtype=torch.float32, pin_memory=use_cuda)
+    pin_val_np = pin_val.numpy()
 
     stats: EvalServerStats | None = EvalServerStats() if profile else None
     _tp = _ti = 0.0
 
-    # Cache per-worker shared memory views
-    w_states_np = [shared_bufs.get_input_states_np(i) for i in range(shared_bufs.num_workers)]
-    w_logits = [shared_bufs.get_output_logits(i) for i in range(shared_bufs.num_workers)]
-    w_values = [shared_bufs.get_output_values(i) for i in range(shared_bufs.num_workers)]
+    # Contiguous 3D views for Cython gather/scatter (no per-worker Python loop)
+    from mcts.mcts_core import gather_states as _gather_states, scatter_results as _scatter_results
+    # states: (num_workers, batch_size, visible_size) f32 numpy
+    all_states_np = shared_bufs._states.numpy()
+    # logits: (num_workers, batch_size, action_dim) — view as bytes for bf16
+    all_logits_bytes = shared_bufs._logits.view(torch.int8).numpy()
+    # values: (num_workers, batch_size, num_players) f32 numpy
+    all_values_np = shared_bufs._values.numpy()
+    logit_row_bytes = act * 2  # bf16 = 2 bytes per element
+
+    # Pre-allocate request arrays (filled each batch, avoids per-batch allocation)
+    _widx_buf = np.empty(shared_bufs.num_workers, dtype=np.int32)
+    _cnt_buf = np.empty(shared_bufs.num_workers, dtype=np.int32)
 
     events = worker_events
 
@@ -254,11 +265,16 @@ def _eval_server_serve(
                 except _queue.Empty:
                     break
 
-        # Gather f32 states from numpy shared memory into pinned numpy
-        total_n = 0
-        for widx, n in batch_info:
-            pin_s_np[total_n:total_n + n] = w_states_np[widx][:n]
-            total_n += n
+        # Gather f32 states from per-worker shared memory into contiguous pinned buffer.
+        # Cython nogil loop replaces Python loop (~96 iterations → single memcpy sequence).
+        num_requests = len(batch_info)
+        for i, (widx, n) in enumerate(batch_info):
+            _widx_buf[i] = widx
+            _cnt_buf[i] = n
+        total_n = _gather_states(
+            pin_s_np, all_states_np,
+            _widx_buf[:num_requests], _cnt_buf[:num_requests], num_requests,
+        )
 
         if stats is not None:
             _ti = perf_counter()
@@ -282,13 +298,16 @@ def _eval_server_serve(
         if stats is not None:
             stats.record_batch(total_n, perf_counter() - _ti)
 
-        # Scatter results to per-worker shared memory and signal completion
-        offset = 0
-        for widx, n in batch_info:
-            w_logits[widx][:n].copy_(pin_log[offset:offset + n])
-            w_values[widx][:n].copy_(pin_val[offset:offset + n])
-            events[widx].set()
-            offset += n
+        # Scatter results to per-worker shared memory (Cython nogil memcpy)
+        # then signal completion (Python Events — must stay in Python loop).
+        _scatter_results(
+            pin_log_bytes, pin_val_np,
+            all_logits_bytes, all_values_np,
+            _widx_buf[:num_requests], _cnt_buf[:num_requests], num_requests,
+            logit_row_bytes,
+        )
+        for i in range(num_requests):
+            events[_widx_buf[i]].set()
 
         # Check if main process wants stats (also check in busy path)
         if stats_report_event is not None and stats_report_event.is_set():
