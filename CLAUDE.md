@@ -14,6 +14,12 @@ High-performance Cython game engine for "Rolling Stock Stars" board game, optimi
 - No Python object overhead in hot paths (nogil execution)
 - Benchmark target: thousands of games per minute
 
+## Devbox Hardware
+
+- **Platform:** WSL2 on Windows
+- **CPU:** AMD Ryzen 9 9950X3D (32 usable cores)
+- **GPU:** AMD Radeon RX 9070 XT (ROCm 7.2.0)
+
 ## Directory Structure
 
 ```
