@@ -236,6 +236,16 @@ class TrainingConfig:
                 f"num_eval_servers ({self.num_eval_servers}) must be <= "
                 f"num_workers ({self.num_workers})"
             )
+        if self.num_workers > 0:
+            max_partition = -(-self.num_workers // self.num_eval_servers)
+            if max_partition > 64:
+                raise ValueError(
+                    f"Worker partition size {max_partition} exceeds 64 "
+                    f"(num_workers={self.num_workers}, "
+                    f"num_eval_servers={self.num_eval_servers}). "
+                    f"Increase num_eval_servers so each partition has "
+                    f"<= 64 workers."
+                )
         if self.buffer_capacity <= self.min_buffer_size:
             raise ValueError(
                 f"buffer_capacity ({self.buffer_capacity}) must exceed "

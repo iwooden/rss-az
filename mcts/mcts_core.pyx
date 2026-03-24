@@ -19,101 +19,88 @@ import numpy as np
 # Shared-memory signaling primitives (eval server <-> worker communication)
 # ---------------------------------------------------------------------------
 # GCC built-in atomics provide correct memory ordering on both x86 (TSO) and
-# ARM (weak ordering, needs explicit barriers). These replace mp.Queue and
-# mp.Event for cross-process communication via shared memory.
+# ARM (weak ordering, needs explicit barriers).
+#
+# Protocol uses a per-server uint64 bitmap where bit i means local worker i
+# has a pending request. Workers publish via atomic fetch-or (release),
+# servers claim all pending work via atomic exchange (acquire). This gives
+# O(1) empty check and O(k) drain for k ready workers.
+
+from libc.stdint cimport uint64_t
 
 cdef extern from *:
     """
-    #define STORE_RELEASE(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELEASE)
-    #define LOAD_ACQUIRE(ptr) __atomic_load_n(ptr, __ATOMIC_ACQUIRE)
+    #include <stdint.h>
+    #define ATOMIC_FETCH_OR_U64(ptr, val) __atomic_fetch_or(ptr, val, __ATOMIC_RELEASE)
+    #define ATOMIC_EXCHANGE_U64(ptr, val) __atomic_exchange_n(ptr, val, __ATOMIC_ACQUIRE)
+    #define ATOMIC_LOAD_U64(ptr) __atomic_load_n(ptr, __ATOMIC_ACQUIRE)
+    #define CTZ64(x) __builtin_ctzll(x)
     """
-    void STORE_RELEASE(int* ptr, int val) nogil
-    int LOAD_ACQUIRE(int* ptr) nogil
-
-# Flag values for the shared-memory protocol
-DEF FLAG_IDLE = 0
-DEF FLAG_SUBMITTED = 1
-DEF FLAG_DONE = 2
-DEF FLAG_PROCESSING = 3  # server has claimed this request
+    uint64_t ATOMIC_FETCH_OR_U64(uint64_t* ptr, uint64_t val) nogil
+    uint64_t ATOMIC_EXCHANGE_U64(uint64_t* ptr, uint64_t val) nogil
+    uint64_t ATOMIC_LOAD_U64(uint64_t* ptr) nogil
+    int CTZ64(uint64_t x) nogil
 
 
-def worker_signal_submit(int[:] flags, int[:] counts, int worker_idx, int state_count):
-    """Worker-side: write state count and set flag to SUBMITTED.
+def worker_publish_request(
+    uint64_t[:] submitted_masks,
+    int[:] counts,
+    int worker_idx,
+    int server_id,
+    int local_idx,
+    int state_count,
+):
+    """Worker-side: write count, atomically set bit in server's submitted mask.
 
-    After calling this, the worker should sleep on an mp.Event until the
-    server signals completion, then call worker_reset_idle().
+    The release fence on fetch_or ensures the server sees state data and
+    count writes that preceded this call.
+
+    Returns True if the server's mask transitioned from 0 -> non-zero
+    (caller should set the server's doorbell event to wake it).
     """
     counts[worker_idx] = state_count
-    STORE_RELEASE(&flags[worker_idx], FLAG_SUBMITTED)
+    cdef uint64_t bit = <uint64_t>1 << <uint64_t>local_idx
+    cdef uint64_t old_mask = ATOMIC_FETCH_OR_U64(&submitted_masks[server_id], bit)
+    return old_mask == 0
 
 
-def worker_reset_idle(int[:] flags, int worker_idx):
-    """Worker-side: reset flag to IDLE after reading results.
-
-    Called after the worker wakes from its done Event and has read the
-    output buffers. The release fence ensures the server won't see a
-    stale SUBMITTED from a previous request.
-    """
-    STORE_RELEASE(&flags[worker_idx], FLAG_IDLE)
-
-
-def server_scan(
-    int[:] flags,
+def server_drain_bitmap(
+    uint64_t[:] submitted_masks,
     int[:] counts,
     int[:] out_worker_indices,
     int[:] out_counts,
-    int start,
-    int end,
-    int max_requests,
+    int server_id,
+    int partition_start,
 ):
-    """Server-side: scan worker flags and collect pending requests.
+    """Server-side: atomically claim all pending requests from the bitmap.
 
-    Scans flags[start:end] for SUBMITTED flags, copies worker indices and
-    counts into output arrays. Each claimed worker's flag is atomically set
-    to PROCESSING so subsequent scans within the same accumulation loop
-    don't re-find the same worker.
+    Exchanges the server's submitted_mask with 0 (acquire), then iterates
+    set bits via ctz to build worker_indices and counts arrays. O(k) in
+    the number of ready workers.
 
-    Args:
-        flags: Shared flag array, shape (num_workers,).
-        counts: Shared count array, shape (num_workers,).
-        out_worker_indices: Output buffer for worker indices.
-        out_counts: Output buffer for state counts.
-        start: First worker index in this server's partition.
-        end: One past last worker index (exclusive).
-        max_requests: Maximum requests to collect.
-
-    Returns:
-        Number of requests found.
+    Returns the number of requests found.
     """
+    cdef uint64_t mask = ATOMIC_EXCHANGE_U64(&submitted_masks[server_id], 0)
     cdef int n = 0
-    cdef int i
+    cdef int local_idx, worker_idx
     with nogil:
-        for i in range(start, end):
-            if n >= max_requests:
-                break
-            if LOAD_ACQUIRE(&flags[i]) == FLAG_SUBMITTED:
-                # Claim this request so re-scans don't double-count it
-                STORE_RELEASE(&flags[i], FLAG_PROCESSING)
-                out_worker_indices[n] = i
-                out_counts[n] = LOAD_ACQUIRE(&counts[i])
-                n = n + 1
+        while mask != 0:
+            local_idx = CTZ64(mask)
+            worker_idx = partition_start + local_idx
+            out_worker_indices[n] = worker_idx
+            out_counts[n] = counts[worker_idx]
+            n = n + 1
+            mask = mask & (mask - 1)  # clear lowest set bit
     return n
 
 
-def server_signal_done(int[:] flags, const int[:] worker_indices, int n):
-    """Server-side: set flags to DONE for completed workers.
+def server_peek_bitmap(uint64_t[:] submitted_masks, int server_id):
+    """Server-side: acquire-load the submitted mask without modifying it.
 
-    Called after scatter_results has written output data.
-
-    Args:
-        flags: Shared flag array.
-        worker_indices: Workers that were processed.
-        n: Number of workers to signal.
+    Used for the lost-wakeup recheck: after clearing the doorbell event,
+    peek to see if new work arrived before sleeping.
     """
-    cdef int i
-    with nogil:
-        for i in range(n):
-            STORE_RELEASE(&flags[worker_indices[i]], FLAG_DONE)
+    return ATOMIC_LOAD_U64(&submitted_masks[server_id]) != 0
 
 
 cdef (int, int) _select_child_impl(

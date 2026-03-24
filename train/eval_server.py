@@ -13,20 +13,20 @@ Communication uses shared memory (torch tensors with share_memory_()):
 
 **Signaling protocol:**
 
-Request submission is lockfree via per-worker shared-memory flags (Cython
-atomics in mcts_core.pyx). Each worker has an int32 flag with states:
-IDLE → SUBMITTED → PROCESSING → DONE → IDLE. Workers set SUBMITTED;
-servers scan their partition and transition to PROCESSING/DONE. Completion
-notification uses per-worker mp.Events for efficient kernel sleep (workers
-block on Event.wait() instead of spin-polling).
+Request submission is lockfree via per-server uint64 bitmaps (Cython
+atomics in mcts_core.pyx). Each worker atomically sets its bit in the
+server's bitmap via fetch-or (release); the server atomically exchanges
+the bitmap to zero (acquire) to claim all pending work in O(1). A
+per-server mp.Event doorbell wakes idle servers; per-worker mp.Events
+signal completion to workers.
 
 **Multi-server concurrency:**
 
 Each EvaluationServer owns a static partition of workers [worker_start,
-worker_end) and only scans those workers' flags. Each server process has
-its own GIL, CUDA context, and default stream, so multiple servers truly
-overlap. Gather/scatter between per-worker slots and contiguous inference
-buffers uses Cython nogil memcpy (no per-worker Python loop).
+worker_end) and only scans its partition's bitmap. Each server process
+has its own GIL, CUDA context, and default stream, so multiple servers
+truly overlap. Gather/scatter between per-worker slots and contiguous
+inference buffers uses Cython nogil memcpy (no per-worker Python loop).
 
 Workers do zero torch operations — pure numpy on both write and read sides.
 Mask+softmax is applied via Cython on the worker's f32 numpy logit view.
@@ -55,9 +55,10 @@ from train.profile_stats import EvalClientStats, EvalServerStats
 class SharedEvalBuffers:
     """Pre-allocated shared memory for zero-copy worker <-> server communication.
 
-    All tensors are float32. Workers read and write via pure numpy (no torch
-    on the hot path). The server upcasts from bf16 model output during D2H
-    copy so workers get fp32 directly.
+    Input states are float32 so workers can write with pure numpy slice
+    assignment (no torch overhead).  Output logits are bfloat16 to halve
+    scatter bandwidth.  Output values are float32 — the model outputs bf16
+    under autocast, but the server upcasts during D2H copy.
 
     Each worker gets a fixed slot in shared tensors. Workers write rotated
     states into their input slot; the server reads them directly. The server
@@ -96,14 +97,14 @@ class SharedEvalBuffers:
             num_workers, batch_size, num_players, dtype=torch.float32,
         ).share_memory_()
 
-        # Shared-memory signaling (replaces mp.Queue)
-        # flags: per-worker int32 — 0=IDLE, 1=SUBMITTED (server scans these)
-        # counts: per-worker int32 — number of states in current request
-        self._flags = torch.zeros(num_workers, dtype=torch.int32).share_memory_()
+        # Per-worker state counts (how many states in current request)
         self._counts = torch.zeros(num_workers, dtype=torch.int32).share_memory_()
 
-        # Per-worker done events for efficient sleep-wake (replaces spin-wait).
-        # Created lazily via init_done_events() with the correct mp context.
+        # Bitmap signaling and events — initialized lazily via init_bitmap().
+        self._submitted_masks: torch.Tensor | None = None
+        self._worker_to_server: np.ndarray | None = None
+        self._worker_to_local_idx: np.ndarray | None = None
+        self.server_events: list[Any] | None = None
         self.done_events: list[Any] | None = None
 
     def get_input_states_np(self, worker_idx: int) -> np.ndarray:
@@ -123,23 +124,58 @@ class SharedEvalBuffers:
         """float32 tensor view into worker's output value slot."""
         return self._values[worker_idx]
 
-    def init_done_events(self, mp_context: Any = None) -> None:
-        """Create per-worker done Events using the given mp context.
+    def init_bitmap(
+        self,
+        partitions: list[tuple[int, int]],
+        mp_context: Any = None,
+    ) -> None:
+        """Initialize bitmap signaling and per-worker/server events.
 
         Must be called before passing SharedEvalBuffers to server/worker
-        processes. Events are used to wake workers after inference completes
-        (efficient kernel sleep instead of spin-waiting).
+        processes.
+
+        Args:
+            partitions: List of (worker_start, worker_end) per eval server.
+            mp_context: Multiprocessing context for Event creation.
         """
         import multiprocessing
         ctx = mp_context or multiprocessing
+        num_servers = len(partitions)
+
+        # Per-server submitted bitmask (uint64). Use int64 torch tensor
+        # (same bit width) because torch lacks uint64; reinterpreted on
+        # the Cython side via .view(np.uint64).
+        self._submitted_masks = torch.zeros(
+            num_servers, dtype=torch.int64,
+        ).share_memory_()
+
+        # Worker -> server and worker -> local_idx mappings
+        w2s = np.zeros(self.num_workers, dtype=np.int32)
+        w2l = np.zeros(self.num_workers, dtype=np.int32)
+        for server_id, (ws, we) in enumerate(partitions):
+            for w in range(ws, we):
+                w2s[w] = server_id
+                w2l[w] = w - ws
+        self._worker_to_server = w2s
+        self._worker_to_local_idx = w2l
+
+        # Per-server doorbell events (wake idle servers on new work)
+        self.server_events = [ctx.Event() for _ in range(num_servers)]
+        # Per-worker done events (wake workers after inference completes)
         self.done_events = [ctx.Event() for _ in range(self.num_workers)]
 
-    def get_signal_arrays(self) -> tuple[np.ndarray, np.ndarray]:
-        """Return (flags, counts) numpy int32 views for shared-memory signaling.
+    def get_bitmap_arrays(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return (submitted_masks_uint64, counts_int32) numpy views.
 
         Creates views on-demand (numpy views don't survive spawn pickling).
         """
-        return self._flags.numpy(), self._counts.numpy()
+        assert self._submitted_masks is not None
+        return self._submitted_masks.numpy().view(np.uint64), self._counts.numpy()
+
+    def get_worker_mapping(self, worker_idx: int) -> tuple[int, int]:
+        """Return (server_id, local_idx) for a given worker."""
+        assert self._worker_to_server is not None
+        return int(self._worker_to_server[worker_idx]), int(self._worker_to_local_idx[worker_idx])
 
 
 def _eval_server_main(
@@ -197,12 +233,10 @@ def _eval_server_serve(
 ) -> None:
     """Inner serve loop for an eval server process.
 
-    Scans shared-memory flags for assigned worker partition [worker_start,
-    worker_end) instead of using mp.Queue. Communication is fully lockfree:
-    workers set flag=SUBMITTED, server scans and sets flag=DONE.
+    Claims pending requests via atomic bitmap exchange, runs batched GPU
+    inference, scatters results, and wakes workers via done events. Blocks
+    on a per-server doorbell event when idle instead of busy-polling.
     """
-    import time as _time
-
     # Prevent OpenMP oversubscription (same as worker processes)
     torch.set_num_threads(1)
 
@@ -249,8 +283,8 @@ def _eval_server_serve(
     from mcts.mcts_core import (
         gather_states as _gather_states,
         scatter_results as _scatter_results,
-        server_scan as _server_scan,
-        server_signal_done as _server_signal_done,
+        server_drain_bitmap as _drain,
+        server_peek_bitmap as _peek,
     )
     # states: (num_workers, batch_size, visible_size) f32 numpy
     all_states_np = shared_bufs._states.numpy()
@@ -260,51 +294,33 @@ def _eval_server_serve(
     all_values_np = shared_bufs._values.numpy()
     logit_row_bytes = act * 4  # fp32 = 4 bytes per element
 
-    # Shared-memory flag and count arrays
-    sig_flags, sig_counts = shared_bufs.get_signal_arrays()
-    # Per-worker done events for waking workers after inference
+    # Bitmap and event handles
+    submitted_masks, sig_counts = shared_bufs.get_bitmap_arrays()
     assert shared_bufs.done_events is not None
+    assert shared_bufs.server_events is not None
     done_events = shared_bufs.done_events
+    server_event = shared_bufs.server_events[server_id]
 
-    # Pre-allocate request arrays (filled each scan, avoids per-batch allocation)
+    # Pre-allocate request arrays (filled each drain, avoids per-batch alloc)
     _widx_buf = np.empty(partition_size, dtype=np.int32)
     _cnt_buf = np.empty(partition_size, dtype=np.int32)
 
-    # Number of empty scans before sleeping (avoid busy-spin when idle).
-    # Each scan of 48 workers is ~1us; 50 empty scans = ~50us before sleeping.
-    _EMPTY_SCAN_LIMIT = 50
-    empty_scans = 0
-
     # Signal ready only after all initialization (imports, buffer allocation,
-    # done_events validation) has succeeded. This ensures workers won't be
-    # spawned against a server that's about to die from e.g. a missing Cython
-    # rebuild.
+    # event validation) has succeeded. This ensures workers won't be spawned
+    # against a server that's about to die from e.g. a missing Cython rebuild.
     ready_event.set()
 
     while not stop_event.is_set():
         if stats is not None:
             _tp = perf_counter()
 
-        # Accumulate requests: keep scanning until a scan returns nothing,
-        # then process whatever we've collected. This naturally batches
-        # concurrent arrivals for better GPU utilization.
-        num_requests = 0
-        while num_requests < partition_size:
-            n = _server_scan(
-                sig_flags, sig_counts,
-                _widx_buf[num_requests:], _cnt_buf[num_requests:],
-                worker_start, worker_end, partition_size - num_requests,
-            )
-            if n == 0:
-                break
-            num_requests += n
+        # Atomically claim all pending requests from the bitmap.
+        num_requests = _drain(
+            submitted_masks, sig_counts,
+            _widx_buf, _cnt_buf, server_id, worker_start,
+        )
 
         if num_requests == 0:
-            empty_scans += 1
-            if empty_scans >= _EMPTY_SCAN_LIMIT:
-                # Brief sleep to avoid burning CPU when truly idle.
-                _time.sleep(0.0001)  # 100us
-                empty_scans = 0
             if stats is not None:
                 stats.record_idle(perf_counter() - _tp)
             # Check if main process wants stats
@@ -313,9 +329,15 @@ def _eval_server_serve(
                 if stats is not None:
                     stats.reset()
                 stats_report_event.clear()
+            # Lost-wakeup avoidance: clear doorbell, recheck bitmap, then
+            # sleep. If a worker sets a bit between exchange and clear, the
+            # event stays set. If between clear and peek, peek catches it.
+            # If between peek and wait, the worker also calls event.set().
+            server_event.clear()
+            if _peek(submitted_masks, server_id):
+                continue
+            server_event.wait(timeout=0.1)
             continue
-
-        empty_scans = 0
 
         # Gather f32 states from per-worker shared memory into contiguous pinned buffer.
         total_n = _gather_states(
@@ -346,15 +368,13 @@ def _eval_server_serve(
             stats.record_batch(total_n, perf_counter() - _ti)
 
         # Scatter results to per-worker shared memory (Cython nogil memcpy),
-        # then signal DONE via atomic flag writes (also Cython nogil).
+        # then wake workers via done events.
         _scatter_results(
             pin_log_np.view(np.int8), pin_val_np,
             all_logits_np.view(np.int8), all_values_np,
             _widx_buf[:num_requests], _cnt_buf[:num_requests], num_requests,
             logit_row_bytes,
         )
-        _server_signal_done(sig_flags, _widx_buf[:num_requests], num_requests)
-        # Wake workers via kernel event (efficient sleep, no spin-wait)
         for i in range(num_requests):
             done_events[_widx_buf[i]].set()
 
@@ -370,9 +390,9 @@ class EvaluationServer:
     """Process-based centralized NN evaluator using shared memory.
 
     Each server owns a contiguous partition of workers [worker_start,
-    worker_end) and only scans those workers' flags. Request submission
-    is lockfree via shared-memory flags; completion uses per-worker
-    mp.Events for efficient kernel sleep.
+    worker_end) and claims pending requests via atomic bitmap exchange.
+    A per-server doorbell event wakes idle servers; per-worker done
+    events signal completion to workers.
 
     Each EvaluationServer runs in its own process with a separate GIL,
     eliminating GIL contention between servers. The model's GPU parameter
@@ -484,15 +504,15 @@ class RemoteEvaluator(BaseEvaluator):
     Write side: pure numpy slice assignment into f32 shared memory (no torch).
     Read side: zero-copy f32 numpy views for Cython mask+softmax (no torch).
 
-    Communication uses shared-memory flags for lockfree request submission
-    and per-worker mp.Events for done notification. Worker sets flag=SUBMITTED,
-    sleeps on Event.wait() until the server signals completion, then reads
-    results and resets flag=IDLE.
+    Communication uses per-server uint64 bitmaps for lockfree request
+    submission (atomic fetch-or) and per-worker mp.Events for done
+    notification. Worker sets its bit in the server's bitmap, sleeps on
+    Event.wait() until the server signals completion, then reads results.
 
     Invariant: each worker may have at most one outstanding eval request at a
     time. Output slots are keyed by worker_idx alone (no request id), so a
     second request before the first completes would overwrite the output buffer.
-    The sequential submit → wait → read → idle flow enforces this.
+    The sequential submit → wait → read flow enforces this.
     """
 
     # Seconds to wait for eval server response before raising.
@@ -515,34 +535,32 @@ class RemoteEvaluator(BaseEvaluator):
         self._profile = profile
         self._stats: EvalClientStats | None = EvalClientStats() if profile else None
 
-        # Shared-memory signaling: flags for lockfree request submission,
-        # mp.Event for efficient done notification (kernel sleep, no spin).
-        from mcts.mcts_core import worker_signal_submit, worker_reset_idle
-        self._sig_flags, self._sig_counts = shared_bufs.get_signal_arrays()
-        self._signal_submit = worker_signal_submit
-        self._reset_idle = worker_reset_idle
+        # Bitmap signaling: atomic fetch-or to publish, mp.Event for done.
+        from mcts.mcts_core import worker_publish_request
+        self._submitted_masks, self._sig_counts = shared_bufs.get_bitmap_arrays()
+        self._publish = worker_publish_request
+        self._server_id, self._local_idx = shared_bufs.get_worker_mapping(worker_idx)
         assert shared_bufs.done_events is not None, (
-            "SharedEvalBuffers.init_done_events() must be called before creating RemoteEvaluator"
+            "SharedEvalBuffers.init_bitmap() must be called before creating RemoteEvaluator"
         )
+        assert shared_bufs.server_events is not None
         self._done_event = shared_bufs.done_events[worker_idx]
+        self._server_event = shared_bufs.server_events[self._server_id]
 
     def _request_eval(self, n: int) -> None:
-        """Submit request via shared-memory flag, sleep until server signals done.
-
-        After this returns, the caller MUST read results from the output
-        buffers and then call _release_slot() to reset the flag to IDLE.
-        """
+        """Publish request via bitmap, wake server if needed, sleep until done."""
         self._done_event.clear()
-        self._signal_submit(self._sig_flags, self._sig_counts, self._worker_idx, n)
+        became_nonempty = self._publish(
+            self._submitted_masks, self._sig_counts,
+            self._worker_idx, self._server_id, self._local_idx, n,
+        )
+        if became_nonempty:
+            self._server_event.set()
         if not self._done_event.wait(timeout=self._EVAL_TIMEOUT):
             raise RuntimeError(
                 f"Eval server did not respond within {self._EVAL_TIMEOUT}s "
                 f"(worker {self._worker_idx}, batch {n})"
             )
-
-    def _release_slot(self) -> None:
-        """Reset flag to IDLE after reading results. Must be called after every _request_eval."""
-        self._reset_idle(self._sig_flags, self._worker_idx)
 
     def evaluate(self, state: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Evaluate a single state via the remote server."""
@@ -557,7 +575,7 @@ class RemoteEvaluator(BaseEvaluator):
         self._request_eval(1)
         logits = self._out_logits[0].numpy()
         values = self._out_values[0].numpy()
-        self._release_slot()
+
         return self._finalize_single(logits, values, mask, active_player)
 
     def evaluate_batch(
@@ -583,7 +601,7 @@ class RemoteEvaluator(BaseEvaluator):
         self._request_eval(n)
         logits_np = self._out_logits[:n].numpy()
         values_np = self._out_values[:n].numpy()
-        self._release_slot()
+
         return self._finalize_batch(logits_np, values_np, masks_list, active_ids)
 
     def evaluate_leaves(
@@ -621,7 +639,7 @@ class RemoteEvaluator(BaseEvaluator):
 
         logits_np = self._out_logits[:n].numpy()
         values_np = self._out_values[:n].numpy()
-        self._release_slot()
+
         results = self._finalize_leaves(logits_np, values_np, active_player_ids)
 
         if _stats is not None:

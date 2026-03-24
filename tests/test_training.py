@@ -756,7 +756,7 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=num_players,
         )
-        shared_bufs.init_done_events(ctx)
+        shared_bufs.init_bitmap([(0, 1)], ctx)
         server = EvaluationServer(
             model, device, shared_bufs,
             worker_start=0, worker_end=1,
@@ -824,7 +824,7 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=num_players,
         )
-        shared_bufs.init_done_events(ctx)
+        shared_bufs.init_bitmap([(0, 1)], ctx)
         server = EvaluationServer(
             model, device, shared_bufs,
             worker_start=0, worker_end=1,
@@ -870,7 +870,7 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=tiny_config.num_players,
         )
-        shared_bufs.init_done_events(ctx)
+        shared_bufs.init_bitmap([(0, 1)], ctx)
         server = EvaluationServer(
             model, device, shared_bufs,
             worker_start=0, worker_end=1,
@@ -919,7 +919,7 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=tiny_config.num_players,
         )
-        shared_bufs.init_done_events(ctx)
+        shared_bufs.init_bitmap([(0, num_workers)], ctx)
 
         server = EvaluationServer(
             model, device, shared_bufs,
@@ -1002,13 +1002,15 @@ class TestSelfPlay:
             action_dim=tiny_config.action_dim,
             num_players=num_players,
         )
-        shared_bufs.init_done_events(ctx)
-
         workers_per_server = num_workers // num_servers
+        partitions = [
+            (i * workers_per_server, (i + 1) * workers_per_server)
+            for i in range(num_servers)
+        ]
+        shared_bufs.init_bitmap(partitions, ctx)
+
         servers = []
-        for i in range(num_servers):
-            ws = i * workers_per_server
-            we = ws + workers_per_server
+        for i, (ws, we) in enumerate(partitions):
             server = EvaluationServer(
                 model, device, shared_bufs,
                 worker_start=ws, worker_end=we,
