@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import queue
 import sys
 import threading
@@ -516,6 +517,15 @@ def main() -> None:
             f"Started {config.num_workers} self-play workers, "
             f"{n_servers} eval server{'s' if n_servers > 1 else ''}"
         )
+
+        # Write process IDs for external profiling tools.
+        with open("procids.txt", "w") as f:
+            f.write(f"main {os.getpid()}\n")
+            for i, server in enumerate(eval_servers):
+                f.write(f"eval_server_{i} {server._process.pid}\n")  # type: ignore[union-attr]
+            for i, w in enumerate(workers):
+                f.write(f"worker_{i} {w.pid}\n")
+        print("Wrote procids.txt")
     else:
         # Single-process: compile for both training and self-play evaluation.
         # Use dynamic=True here since both inference (variable batch) and
