@@ -181,6 +181,24 @@ class TestConfig:
         with pytest.raises(ValueError, match="num_eval_servers"):
             TrainingConfig(num_eval_servers=0)
 
+    def test_validation_servers_gt_workers(self) -> None:
+        with pytest.raises(ValueError, match="num_eval_servers.*must be <="):
+            TrainingConfig(num_workers=2, num_eval_servers=3)
+
+    def test_validation_partition_size_over_64(self) -> None:
+        with pytest.raises(ValueError, match="partition size.*exceeds 64"):
+            TrainingConfig(num_workers=65, num_eval_servers=1)
+
+    def test_validation_partition_size_at_64(self) -> None:
+        # Exactly 64 should be accepted (fits in uint64)
+        cfg = TrainingConfig(num_workers=64, num_eval_servers=1)
+        assert cfg.num_workers == 64
+
+    def test_validation_partition_size_split(self) -> None:
+        # 65 workers / 2 servers → partitions of 33 and 32, both <= 64
+        cfg = TrainingConfig(num_workers=65, num_eval_servers=2)
+        assert cfg.num_workers == 65
+
     def test_to_mcts_config(self) -> None:
         cfg = TrainingConfig(num_simulations=100, c_puct_final=3.0, num_players=3)
         mcts_cfg = cfg.to_mcts_config()
@@ -232,6 +250,173 @@ class TestConfig:
         mcts_cfg = cfg.to_mcts_config()
         assert mcts_cfg.dirichlet_dynamic is True
         assert mcts_cfg.dirichlet_alpha_numerator == 15.0
+
+
+# ---------------------------------------------------------------------------
+# Bitmap Signaling Tests
+# ---------------------------------------------------------------------------
+
+
+class TestBitmapSignaling:
+    """Tests for the atomic bitmap primitives in mcts_core.pyx."""
+
+    def test_publish_and_drain_single(self) -> None:
+        """Single worker publish + server drain round-trip."""
+        from mcts.mcts_core import worker_publish_request, server_drain_bitmap
+        masks = np.zeros(1, dtype=np.uint64)
+        counts = np.zeros(4, dtype=np.int32)
+        out_widx = np.zeros(4, dtype=np.int32)
+        out_cnt = np.zeros(4, dtype=np.int32)
+
+        became_nonempty = worker_publish_request(masks, counts, 2, 0, 2, 5)
+        assert became_nonempty is True
+
+        n = server_drain_bitmap(masks, counts, out_widx, out_cnt, 0, 0)
+        assert n == 1
+        assert out_widx[0] == 2
+        assert out_cnt[0] == 5
+        assert masks[0] == 0  # exchanged to zero
+
+    def test_publish_multiple_workers(self) -> None:
+        """Multiple workers publish, drain gets all of them."""
+        from mcts.mcts_core import worker_publish_request, server_drain_bitmap
+        masks = np.zeros(1, dtype=np.uint64)
+        counts = np.zeros(8, dtype=np.int32)
+        out_widx = np.zeros(8, dtype=np.int32)
+        out_cnt = np.zeros(8, dtype=np.int32)
+
+        # First publish transitions 0 -> non-zero
+        assert worker_publish_request(masks, counts, 1, 0, 1, 3) is True
+        # Subsequent publishes see non-zero mask
+        assert worker_publish_request(masks, counts, 5, 0, 5, 7) is False
+        assert worker_publish_request(masks, counts, 0, 0, 0, 1) is False
+
+        n = server_drain_bitmap(masks, counts, out_widx, out_cnt, 0, 0)
+        assert n == 3
+        result = sorted(zip(out_widx[:n].tolist(), out_cnt[:n].tolist()))
+        assert result == [(0, 1), (1, 3), (5, 7)]
+
+    def test_drain_empty_bitmap(self) -> None:
+        """Draining an empty bitmap returns 0."""
+        from mcts.mcts_core import server_drain_bitmap
+        masks = np.zeros(1, dtype=np.uint64)
+        counts = np.zeros(4, dtype=np.int32)
+        out_widx = np.zeros(4, dtype=np.int32)
+        out_cnt = np.zeros(4, dtype=np.int32)
+
+        n = server_drain_bitmap(masks, counts, out_widx, out_cnt, 0, 0)
+        assert n == 0
+
+    def test_peek_bitmap(self) -> None:
+        """Peek returns True when work is pending, False when empty."""
+        from mcts.mcts_core import (
+            worker_publish_request, server_drain_bitmap, server_peek_bitmap,
+        )
+        masks = np.zeros(1, dtype=np.uint64)
+        counts = np.zeros(4, dtype=np.int32)
+        out_widx = np.zeros(4, dtype=np.int32)
+        out_cnt = np.zeros(4, dtype=np.int32)
+
+        assert server_peek_bitmap(masks, 0) is False
+        worker_publish_request(masks, counts, 0, 0, 0, 1)
+        assert server_peek_bitmap(masks, 0) is True
+        # Peek doesn't consume — drain still finds it
+        server_drain_bitmap(masks, counts, out_widx, out_cnt, 0, 0)
+        assert server_peek_bitmap(masks, 0) is False
+
+    def test_partition_offset(self) -> None:
+        """Drain maps local bit index back to global worker index."""
+        from mcts.mcts_core import worker_publish_request, server_drain_bitmap
+        masks = np.zeros(2, dtype=np.uint64)
+        counts = np.zeros(8, dtype=np.int32)
+        out_widx = np.zeros(4, dtype=np.int32)
+        out_cnt = np.zeros(4, dtype=np.int32)
+
+        # Server 1 owns workers [4, 8). Worker 5 is local_idx=1.
+        worker_publish_request(masks, counts, 5, 1, 1, 10)
+        n = server_drain_bitmap(masks, counts, out_widx, out_cnt, 1, 4)
+        assert n == 1
+        assert out_widx[0] == 5  # global index, not local
+        assert out_cnt[0] == 10
+
+    def test_high_bit_index(self) -> None:
+        """Bit 63 (max for uint64) works correctly."""
+        from mcts.mcts_core import worker_publish_request, server_drain_bitmap
+        masks = np.zeros(1, dtype=np.uint64)
+        counts = np.zeros(64, dtype=np.int32)
+        out_widx = np.zeros(64, dtype=np.int32)
+        out_cnt = np.zeros(64, dtype=np.int32)
+
+        worker_publish_request(masks, counts, 63, 0, 63, 2)
+        n = server_drain_bitmap(masks, counts, out_widx, out_cnt, 0, 0)
+        assert n == 1
+        assert out_widx[0] == 63
+        assert out_cnt[0] == 2
+
+    def test_all_64_bits(self) -> None:
+        """All 64 workers in a partition can publish and be drained."""
+        from mcts.mcts_core import worker_publish_request, server_drain_bitmap
+        masks = np.zeros(1, dtype=np.uint64)
+        counts = np.zeros(64, dtype=np.int32)
+        out_widx = np.zeros(64, dtype=np.int32)
+        out_cnt = np.zeros(64, dtype=np.int32)
+
+        for i in range(64):
+            worker_publish_request(masks, counts, i, 0, i, i + 1)
+
+        n = server_drain_bitmap(masks, counts, out_widx, out_cnt, 0, 0)
+        assert n == 64
+        result = sorted(zip(out_widx[:n].tolist(), out_cnt[:n].tolist()))
+        assert result == [(i, i + 1) for i in range(64)]
+
+    def test_repeated_publish_drain_cycles(self) -> None:
+        """Multiple publish/drain cycles don't leave stale state."""
+        from mcts.mcts_core import worker_publish_request, server_drain_bitmap
+        masks = np.zeros(1, dtype=np.uint64)
+        counts = np.zeros(4, dtype=np.int32)
+        out_widx = np.zeros(4, dtype=np.int32)
+        out_cnt = np.zeros(4, dtype=np.int32)
+
+        for cycle in range(5):
+            became_nonempty = worker_publish_request(
+                masks, counts, 0, 0, 0, cycle + 1,
+            )
+            assert became_nonempty is True  # always 0->non-zero since we drain each time
+            n = server_drain_bitmap(masks, counts, out_widx, out_cnt, 0, 0)
+            assert n == 1
+            assert out_cnt[0] == cycle + 1
+
+    def test_concurrent_publish_no_lost_bits(self) -> None:
+        """Concurrent publishes from multiple threads don't lose any bits."""
+        import threading
+        from mcts.mcts_core import worker_publish_request, server_drain_bitmap
+
+        num_workers = 48
+        masks = np.zeros(1, dtype=np.uint64)
+        counts = np.zeros(num_workers, dtype=np.int32)
+        wakeups = [False] * num_workers
+
+        barrier = threading.Barrier(num_workers)
+
+        def publish(w: int) -> None:
+            barrier.wait()
+            wakeups[w] = worker_publish_request(masks, counts, w, 0, w, 1)
+
+        threads = [threading.Thread(target=publish, args=(i,)) for i in range(num_workers)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Exactly one thread should have seen the 0->non-zero transition
+        assert sum(wakeups) == 1
+
+        # Drain should find all workers
+        out_widx = np.zeros(num_workers, dtype=np.int32)
+        out_cnt = np.zeros(num_workers, dtype=np.int32)
+        n = server_drain_bitmap(masks, counts, out_widx, out_cnt, 0, 0)
+        assert n == num_workers
+        assert sorted(out_widx[:n].tolist()) == list(range(num_workers))
 
 
 # ---------------------------------------------------------------------------
