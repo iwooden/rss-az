@@ -1,6 +1,6 @@
-"""NVIDIA GPU detection and optimization utilities.
+"""NVIDIA GPU optimization utilities.
 
-When --nvidia is passed (or auto-detected), these optimizations are applied:
+When running on NVIDIA hardware, these optimizations are applied:
 
 1. **TF32 matmul precision** (Ampere+): ~2-3x speedup for float32 matmuls
    with minimal precision loss (19-bit mantissa vs 23-bit). Affects the float32
@@ -13,9 +13,6 @@ When --nvidia is passed (or auto-detected), these optimizations are applied:
 
 3. **non_blocking H2D transfers**: Allows CPU work to overlap with GPU DMA.
    Especially beneficial on GH200 with NVLink-C2C (900 GB/s).
-
-All optimizations are gated behind --nvidia (auto-detected by default) so the
-default behavior is unchanged for AMD ROCm.
 """
 
 from __future__ import annotations
@@ -25,17 +22,11 @@ from typing import Any
 import torch
 
 
-def is_nvidia_gpu() -> bool:
-    """Check if CUDA is backed by NVIDIA hardware (not AMD ROCm)."""
-    if not torch.cuda.is_available():
-        return False
-    # torch.version.hip is set when built with ROCm; None for NVIDIA CUDA
-    return getattr(torch.version, "hip", None) is None
-
-
 def get_compute_capability() -> tuple[int, int] | None:
-    """Return (major, minor) compute capability, or None if no NVIDIA GPU."""
-    if not is_nvidia_gpu():
+    """Return (major, minor) compute capability, or None if not NVIDIA."""
+    if not torch.cuda.is_available():
+        return None
+    if getattr(torch.version, "hip", None) is not None:
         return None
     return torch.cuda.get_device_capability()
 

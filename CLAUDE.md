@@ -30,6 +30,7 @@ rss-az-cython2/
 ├── mcts/              # MCTS search: node.py, evaluator.py, search.py, mcts_core.pyx (Cython hot functions + signaling)
 ├── nn/                # Neural network: model_3p.py (residual MLP, policy + value heads)
 ├── train/             # Self-play training: config, eval_server, self_play, replay_buffer, trainer, checkpoint, logging, main
+│   └── gpu/           # Vendor-specific GPU optimizations: nvidia.py, amd.py (auto-detected)
 ├── tests/             # Test suite: phases/, 18xx_games/ replay tests, conftest.py
 ├── interp/            # Interpretability analysis (see interp/README.md)
 ├── RULES.md           # Complete game rules (authoritative)

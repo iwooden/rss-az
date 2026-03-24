@@ -97,15 +97,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-compile", action="store_true", default=False,
         help="Disable torch.compile model optimization",
     )
-    nvidia_group = parser.add_mutually_exclusive_group()
-    nvidia_group.add_argument(
-        "--nvidia", action="store_true", default=None,
-        help="Enable NVIDIA-specific optimizations (TF32, CUDA graphs). Auto-detected if omitted.",
-    )
-    nvidia_group.add_argument(
-        "--no-nvidia", dest="nvidia", action="store_false",
-        help="Disable NVIDIA-specific optimizations (for AMD ROCm or debugging)",
-    )
     return parser
 
 
@@ -320,19 +311,16 @@ def main() -> None:
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # --- NVIDIA optimizations (must be set before any torch.compile) ---
-    from train.nvidia import apply_nvidia_optimizations, get_compile_kwargs, is_nvidia_gpu
+    # --- GPU vendor detection and optimizations ---
+    from train.gpu import detect_gpu
 
-    if args.nvidia is None:
-        use_nvidia = device.type == "cuda" and is_nvidia_gpu()
-    else:
-        use_nvidia = args.nvidia
+    gpu = detect_gpu(device.type)
 
-    if use_nvidia:
-        nvidia_info = apply_nvidia_optimizations()
+    if gpu.vendor != "cpu":
+        gpu_info = gpu.apply_optimizations()
         print(
-            "NVIDIA optimizations enabled: "
-            + ", ".join(f"{k}={v}" for k, v in nvidia_info.items())
+            f"GPU optimizations ({gpu.vendor}): "
+            + ", ".join(f"{k}={v}" for k, v in gpu_info.items())
         )
 
     # --- Resolve checkpoint for resume ---
@@ -460,10 +448,7 @@ def main() -> None:
 
         shared_bufs.init_bitmap(partitions, ctx)
 
-        eval_compile_kwargs = (
-            get_compile_kwargs(for_training=False) if use_nvidia
-            else {"dynamic": True}
-        )
+        eval_compile_kwargs = gpu.get_compile_kwargs(for_training=False)
         for i, (ws, we) in enumerate(partitions):
             server = EvaluationServer(
                 model, device, shared_bufs,
@@ -474,6 +459,7 @@ def main() -> None:
                 mp_context=ctx,
                 no_compile=args.no_compile,
                 compile_kwargs=eval_compile_kwargs,
+                gpu_vendor=gpu.vendor,
             )
             server.start()
             eval_servers.append(server)
@@ -498,16 +484,13 @@ def main() -> None:
         # Compile for training in main process (after servers finish, so no
         # CPU contention from concurrent Inductor/Triton jobs).
         if not args.no_compile and device.type == "cuda":
-            train_compile_kwargs = (
-                get_compile_kwargs(for_training=True) if use_nvidia
-                else {"dynamic": True}
-            )
+            train_compile_kwargs = gpu.get_compile_kwargs(for_training=True)
             print(f"Compiling model with torch.compile ({train_compile_kwargs})...")
             model = cast(torch.nn.Module, torch.compile(model, **train_compile_kwargs))  # type: ignore[call-overload]
-            # Warmup pass — triggers Inductor compilation (and CUDA graph
-            # capture in reduce-overhead mode).  Use actual batch size for
-            # reduce-overhead so the graph matches training dimensions.
-            warmup_bs = config.batch_size if use_nvidia else 1
+            # Warmup pass — triggers Inductor compilation (and graph capture
+            # in reduce-overhead mode).  Use actual batch size so the graph
+            # matches training dimensions.
+            warmup_bs = gpu.warmup_batch_size(config.batch_size)
             model.train()
             with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
                 dummy = torch.randn(warmup_bs, config.visible_size, device=device)
@@ -538,10 +521,7 @@ def main() -> None:
         # Use dynamic=True here since both inference (variable batch) and
         # training (fixed batch) share the same compiled model.
         if not args.no_compile and device.type == "cuda":
-            sp_compile_kwargs: dict[str, Any] = (
-                get_compile_kwargs(for_training=False) if use_nvidia
-                else {"dynamic": True}
-            )
+            sp_compile_kwargs = gpu.get_compile_kwargs(for_training=False)
             print(f"Compiling model with torch.compile ({sp_compile_kwargs})...")
             model = cast(torch.nn.Module, torch.compile(model, **sp_compile_kwargs))  # type: ignore[call-overload]
             model.train()

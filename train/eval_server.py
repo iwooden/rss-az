@@ -194,6 +194,7 @@ def _eval_server_main(
     profile: bool,
     no_compile: bool,
     compile_kwargs: dict[str, Any] | None = None,
+    gpu_vendor: str = "cpu",
 ) -> None:
     """Eval server process entry point.
 
@@ -210,6 +211,7 @@ def _eval_server_main(
             worker_start=worker_start, worker_end=worker_end,
             profile=profile, no_compile=no_compile,
             compile_kwargs=compile_kwargs,
+            gpu_vendor=gpu_vendor,
         )
     except Exception:
         import traceback
@@ -231,6 +233,7 @@ def _eval_server_serve(
     profile: bool,
     no_compile: bool,
     compile_kwargs: dict[str, Any] | None = None,
+    gpu_vendor: str = "cpu",
 ) -> None:
     """Inner serve loop for an eval server process.
 
@@ -245,11 +248,10 @@ def _eval_server_serve(
 
     use_cuda = device.type == "cuda"
 
-    # Apply NVIDIA-specific per-process settings (TF32 etc.) if active.
-    # Detected by checking compile_kwargs for reduce-overhead mode.
-    if compile_kwargs and compile_kwargs.get("mode") == "reduce-overhead":
-        from train.nvidia import apply_nvidia_optimizations
-        apply_nvidia_optimizations()
+    # Apply vendor-specific per-process GPU settings (TF32 for NVIDIA, etc.).
+    if gpu_vendor != "cpu":
+        from train.gpu import GpuConfig
+        GpuConfig(vendor=gpu_vendor).apply_optimizations()
 
     # Optionally compile the model (per-process compilation).
     if not no_compile and use_cuda:
@@ -414,6 +416,7 @@ class EvaluationServer:
         mp_context: Any = None,
         no_compile: bool = False,
         compile_kwargs: dict[str, Any] | None = None,
+        gpu_vendor: str = "cpu",
     ) -> None:
         import multiprocessing
         ctx = mp_context or multiprocessing
@@ -436,6 +439,7 @@ class EvaluationServer:
             "profile": profile,
             "no_compile": no_compile,
             "compile_kwargs": compile_kwargs,
+            "gpu_vendor": gpu_vendor,
         }
         self._mp_context = ctx
         self._server_id = server_id
