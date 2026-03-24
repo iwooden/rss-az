@@ -8,9 +8,8 @@ to eval servers automatically.
 
 Communication uses shared memory (torch tensors with share_memory_()):
 - Input states: float32 (workers write with pure numpy slice assignment)
-- Output logits: bfloat16 (halves scatter bandwidth; workers upcast for Cython softmax)
-- Output values: float32 (server upcasts from bf16 model output during D2H;
-  only 3 floats/state so bf16 savings are negligible vs per-worker conversion)
+- Output logits: float32 (workers read via zero-copy .numpy() for Cython softmax)
+- Output values: float32 (workers read via zero-copy .numpy())
 
 **Signaling protocol:**
 
@@ -29,10 +28,8 @@ its own GIL, CUDA context, and default stream, so multiple servers truly
 overlap. Gather/scatter between per-worker slots and contiguous inference
 buffers uses Cython nogil memcpy (no per-worker Python loop).
 
-Workers do zero torch operations on the write side (pure numpy).
-On the read side, workers upcast bf16→f32 logits and apply mask+softmax
-via Cython (no torch on the worker hot path). Values are read as f32
-numpy directly.
+Workers do zero torch operations — pure numpy on both write and read sides.
+Mask+softmax is applied via Cython on the worker's f32 numpy logit view.
 
 RemoteEvaluator is the worker-side proxy that implements the same interface
 as NNEvaluator, writing to shared memory instead of serializing over pipes.
@@ -58,12 +55,9 @@ from train.profile_stats import EvalClientStats, EvalServerStats
 class SharedEvalBuffers:
     """Pre-allocated shared memory for zero-copy worker <-> server communication.
 
-    Input states are float32 so workers can write with pure numpy slice
-    assignment (no torch overhead).  Output logits are bfloat16 to halve
-    scatter bandwidth.  Output values are float32 — the model outputs bf16
-    under autocast, but the server upcasts during D2H copy.  With only
-    3 floats/state the bf16 savings are negligible, and this avoids a
-    per-worker bf16→f32 conversion.
+    All tensors are float32. Workers read and write via pure numpy (no torch
+    on the hot path). The server upcasts from bf16 model output during D2H
+    copy so workers get fp32 directly.
 
     Each worker gets a fixed slot in shared tensors. Workers write rotated
     states into their input slot; the server reads them directly. The server
@@ -72,7 +66,7 @@ class SharedEvalBuffers:
 
     Memory layout (per worker):
         Input:  states  float32 (batch_size x visible_size)
-        Output: logits  bfloat16 (batch_size x action_dim)
+        Output: logits  float32  (batch_size x action_dim)
                 values  float32  (batch_size x num_players)
     """
 
@@ -94,9 +88,9 @@ class SharedEvalBuffers:
         self._states = torch.zeros(
             num_workers, batch_size, visible_size, dtype=torch.float32,
         ).share_memory_()
-        # Output: bfloat16 — halves scatter bandwidth
+        # Output: float32 — workers read via .numpy() (zero-copy view)
         self._logits = torch.zeros(
-            num_workers, batch_size, action_dim, dtype=torch.bfloat16,
+            num_workers, batch_size, action_dim, dtype=torch.float32,
         ).share_memory_()
         self._values = torch.zeros(
             num_workers, batch_size, num_players, dtype=torch.float32,
@@ -122,7 +116,7 @@ class SharedEvalBuffers:
         return self._states[worker_idx].numpy()
 
     def get_output_logits(self, worker_idx: int) -> torch.Tensor:
-        """bfloat16 tensor view into worker's output logit slot."""
+        """float32 tensor view into worker's output logit slot."""
         return self._logits[worker_idx]
 
     def get_output_values(self, worker_idx: int) -> torch.Tensor:
@@ -243,8 +237,8 @@ def _eval_server_serve(
     pin_s = torch.empty(max_batch, vis, dtype=torch.float32, pin_memory=use_cuda)
     pin_s_np = pin_s.numpy()
     gpu_s = torch.empty(max_batch, vis, dtype=torch.float32, device=device)
-    pin_log = torch.empty(max_batch, act, dtype=torch.bfloat16, pin_memory=use_cuda)
-    pin_log_bytes = pin_log.view(torch.int8).numpy()  # byte view for Cython scatter
+    pin_log = torch.empty(max_batch, act, dtype=torch.float32, pin_memory=use_cuda)
+    pin_log_np = pin_log.numpy()
     pin_val = torch.empty(max_batch, npl, dtype=torch.float32, pin_memory=use_cuda)
     pin_val_np = pin_val.numpy()
 
@@ -260,11 +254,11 @@ def _eval_server_serve(
     )
     # states: (num_workers, batch_size, visible_size) f32 numpy
     all_states_np = shared_bufs._states.numpy()
-    # logits: (num_workers, batch_size, action_dim) — view as bytes for bf16
-    all_logits_bytes = shared_bufs._logits.view(torch.int8).numpy()
+    # logits: (num_workers, batch_size, action_dim) f32 numpy
+    all_logits_np = shared_bufs._logits.numpy()
     # values: (num_workers, batch_size, num_players) f32 numpy
     all_values_np = shared_bufs._values.numpy()
-    logit_row_bytes = act * 2  # bf16 = 2 bytes per element
+    logit_row_bytes = act * 4  # fp32 = 4 bytes per element
 
     # Shared-memory flag and count arrays
     sig_flags, sig_counts = shared_bufs.get_signal_arrays()
@@ -342,7 +336,7 @@ def _eval_server_serve(
             else:
                 policy_logits, values = model(gpu_s_batch)
             pin_log[:total_n].copy_(
-                policy_logits.bfloat16(), non_blocking=True,
+                policy_logits.float(), non_blocking=True,
             )
             pin_val[:total_n].copy_(values, non_blocking=True)
             if use_cuda:
@@ -354,8 +348,8 @@ def _eval_server_serve(
         # Scatter results to per-worker shared memory (Cython nogil memcpy),
         # then signal DONE via atomic flag writes (also Cython nogil).
         _scatter_results(
-            pin_log_bytes, pin_val_np,
-            all_logits_bytes, all_values_np,
+            pin_log_np.view(np.int8), pin_val_np,
+            all_logits_np.view(np.int8), all_values_np,
             _widx_buf[:num_requests], _cnt_buf[:num_requests], num_requests,
             logit_row_bytes,
         )
@@ -488,8 +482,7 @@ class RemoteEvaluator(BaseEvaluator):
     as NNEvaluator, so it can be used as a drop-in replacement.
 
     Write side: pure numpy slice assignment into f32 shared memory (no torch).
-    Read side: logits bf16→f32 for Cython mask+softmax (no torch on
-    read path); values are f32 in shared memory (server upcasts during D2H).
+    Read side: zero-copy f32 numpy views for Cython mask+softmax (no torch).
 
     Communication uses shared-memory flags for lockfree request submission
     and per-worker mp.Events for done notification. Worker sets flag=SUBMITTED,
@@ -562,7 +555,7 @@ class RemoteEvaluator(BaseEvaluator):
         mask = get_valid_action_mask(state)
 
         self._request_eval(1)
-        logits = self._out_logits[0].float().numpy()
+        logits = self._out_logits[0].numpy()
         values = self._out_values[0].numpy()
         self._release_slot()
         return self._finalize_single(logits, values, mask, active_player)
@@ -588,7 +581,7 @@ class RemoteEvaluator(BaseEvaluator):
             masks_list.append(get_valid_action_mask(s))
 
         self._request_eval(n)
-        logits_np = self._out_logits[:n].float().numpy()
+        logits_np = self._out_logits[:n].numpy()
         values_np = self._out_values[:n].numpy()
         self._release_slot()
         return self._finalize_batch(logits_np, values_np, masks_list, active_ids)
@@ -626,7 +619,7 @@ class RemoteEvaluator(BaseEvaluator):
             _t2 = perf_counter()
             _stats.wait_secs += _t2 - _t1
 
-        logits_np = self._out_logits[:n].float().numpy()
+        logits_np = self._out_logits[:n].numpy()
         values_np = self._out_values[:n].numpy()
         self._release_slot()
         results = self._finalize_leaves(logits_np, values_np, active_player_ids)

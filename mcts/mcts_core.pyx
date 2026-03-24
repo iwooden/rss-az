@@ -500,7 +500,7 @@ def scatter_results(
             w_logits[widx][:n].copy_(pin_log[offset:offset + n])
             w_values[widx][:n].copy_(pin_val[offset:offset + n])
 
-    Uses char (byte) views for logits to handle bf16 without Cython dtype support.
+    Uses char (byte) views for logits to stay dtype-agnostic at the Cython level.
 
     Args:
         src_logits: Contiguous logit buffer as bytes, shape (max_batch, logit_row_bytes).
