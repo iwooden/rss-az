@@ -1,9 +1,8 @@
 Run the full interpretability analysis pipeline on the latest checkpoint and produce a structured assessment of model behavior.
 
 Optional argument: `$ARGUMENTS`
-- `--probe` or `probe`: Also run linear probing analysis (slow, ~8-10 minutes)
 - `--num-games N`: Number of self-play games for data collection (default 100)
-- If no arguments given, runs all analyses except probing with 100 games
+- If no arguments given, runs all analyses including probing with 100 games
 
 ## Instructions
 
@@ -29,7 +28,6 @@ Run these in parallel (they are independent and all load from the saved data):
 .venv/bin/python -m interp.tb_summary --max-rows 30
 ```
 
-If `--probe` was requested, also run (this is slow):
 ```bash
 .venv/bin/python -m interp.probing --load-data interp/data/states.npz
 ```
@@ -63,7 +61,7 @@ Read the generated markdown and console output from each analysis. The key files
 - ACIG console output — action-conditioned feature importance
 - Architecture analysis console output — block contribution, conductance, SVD/effective rank
 - TB summary console output — training curves, self-play stats
-- If probing was run: `interp/data/probing_epoch<N>.md`
+- `interp/data/probing_epoch<N>.md` — linear probing results
 
 Read ALL output carefully before producing the analysis.
 
@@ -102,7 +100,7 @@ From the architecture analysis:
 - **Head efficiency** — conductance distribution across head layers
 - **Trunk specialization** — do policy and value use different blocks?
 
-If probing was run:
+From probing:
 - **Value probe trajectory** — R² through blocks (where does value get computed?)
 - **Policy probe trajectory** — accuracy through blocks (does the trunk help policy?)
 - **Trunk role** — does the trunk primarily serve value, policy, or both?
