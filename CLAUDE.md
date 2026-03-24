@@ -21,7 +21,7 @@ rss-az-cython2/
 ├── core/              # Low-level engine: state.pyx, driver.pyx, actions.pyx, data.pyx
 ├── entities/          # Entity handles: player, corp, company, deck, turn, market, fi, encoding
 ├── phases/            # Phase handlers: invest, bid, acquisition, closing, dividends, income, issue, ipo, wrap_up, end_card
-├── mcts/              # MCTS search: node.py, evaluator.py, search.py
+├── mcts/              # MCTS search: node.py, evaluator.py, search.py, mcts_core.pyx (Cython hot functions + signaling)
 ├── nn/                # Neural network: model_3p.py (residual MLP, policy + value heads)
 ├── train/             # Self-play training: config, eval_server, self_play, replay_buffer, trainer, checkpoint, logging, main
 ├── tests/             # Test suite: phases/, 18xx_games/ replay tests, conftest.py
@@ -157,11 +157,13 @@ AlphaZero-style loop in `train/`. Each epoch: play N games via MCTS → store in
 
 Worker processes (MCTS is CPU-bound, need own GIL) send states to eval server processes via shared memory (`SharedEvalBuffers`). Model shared zero-copy via CUDA IPC. `spawn` context, `torch.compile` per-process, daemon workers. `num_workers=0` for single-process debug.
 
+**Worker ↔ eval server communication** uses per-server uint64 bitmaps for lockfree request submission and per-worker `mp.Event`s for done signaling. Workers atomically set a bit in their server's bitmap (`fetch_or`, release); servers atomically exchange the bitmap to zero (`exchange`, acquire) to claim all pending work in O(1). A per-server doorbell `mp.Event` wakes idle servers. Each server owns a static partition of workers `[worker_start, worker_end)` — max 64 workers per partition (bitmap width). Gather/scatter between per-worker slots and contiguous inference buffers uses Cython `nogil` memcpy. Signaling primitives live in `mcts/mcts_core.pyx`.
+
 Key files: `train/eval_server.py` (EvaluationServer + RemoteEvaluator), `train/self_play.py` (play_game + worker entry), `train/main.py` (orchestration).
 
 ### Configuration
 
-All hyperparameters in `TrainingConfig` dataclass (`train/config.py`). `TrainingConfig.to_mcts_config()` creates MCTSConfig. `--resume latest` to continue from checkpoint.
+All hyperparameters in `TrainingConfig` dataclass (`train/config.py`). `TrainingConfig.to_mcts_config()` creates MCTSConfig. `--resume latest` to continue from checkpoint. Config validation enforces `num_eval_servers <= num_workers` and max 64 workers per eval server partition (uint64 bitmap width).
 
 **Replay buffer** (3p, 500K capacity): ~4.2 GB. Saved to `checkpoints/replay_buffer/` via `ReplayBuffer.save()/load()`.
 
@@ -279,7 +281,7 @@ Key files: `extract_states.rb` (state extraction), `action_parser.py` (action ma
 | Optimize performance | Any `.pyx` | Check compiler directives, nogil |
 | Fix bug | Tests first | Phase/entity files |
 | MCTS / search | `mcts/search.py`, `mcts/node.py` | `mcts/evaluator.py`, `train/config.py` |
-| Self-play / training | `train/main.py`, `train/config.py` | `train/self_play.py`, `train/eval_server.py` |
+| Self-play / training | `train/main.py`, `train/config.py` | `train/self_play.py`, `train/eval_server.py`, `mcts/mcts_core.pyx` |
 | Interpretability | `interp/README.md` | `interp/*.py` |
 
 ---
