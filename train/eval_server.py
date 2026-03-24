@@ -175,6 +175,7 @@ class SharedEvalBuffers:
     def get_worker_mapping(self, worker_idx: int) -> tuple[int, int]:
         """Return (server_id, local_idx) for a given worker."""
         assert self._worker_to_server is not None
+        assert self._worker_to_local_idx is not None
         return int(self._worker_to_server[worker_idx]), int(self._worker_to_local_idx[worker_idx])
 
 
