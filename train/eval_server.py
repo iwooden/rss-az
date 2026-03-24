@@ -352,8 +352,16 @@ def _eval_server_serve(
             _ti = perf_counter()
 
         # --- GPU pipeline (default stream, no stream context needed) ---
-        gpu_s_batch = gpu_s[:total_n]
-        gpu_s_batch.copy_(pin_s[:total_n], non_blocking=True)
+        # When compiled with reduce-overhead, bucket to next power-of-2
+        # (clamped to max_batch) so the graph cache stays small.  Padded
+        # rows stay zero; results are never scattered back to workers.
+        # Without compilation, skip bucketing to avoid wasted compute.
+        if no_compile:
+            padded_n = total_n
+        else:
+            padded_n = min(1 << (total_n - 1).bit_length(), max_batch)
+        gpu_s_batch = gpu_s[:padded_n]
+        gpu_s_batch[:total_n].copy_(pin_s[:total_n], non_blocking=True)
         with torch.no_grad():
             if use_cuda:
                 with torch.autocast(device.type, dtype=torch.bfloat16):
@@ -361,9 +369,9 @@ def _eval_server_serve(
             else:
                 policy_logits, values = model(gpu_s_batch)
             pin_log[:total_n].copy_(
-                policy_logits.float(), non_blocking=True,
+                policy_logits[:total_n].float(), non_blocking=True,
             )
-            pin_val[:total_n].copy_(values, non_blocking=True)
+            pin_val[:total_n].copy_(values[:total_n], non_blocking=True)
             if use_cuda:
                 torch.cuda.synchronize()
 
