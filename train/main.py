@@ -55,9 +55,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--search-batch-size", type=int)
     parser.add_argument("--num-workers", type=int)
     parser.add_argument("--num-eval-servers", type=int)
-    parser.add_argument(
+    batch_group = parser.add_mutually_exclusive_group()
+    batch_group.add_argument(
         "--eval-fixed-batch-workers", type=int,
         help="Fixed number of workers per GPU batch (default: auto from compilation)",
+    )
+    batch_group.add_argument(
+        "--eval-no-fixed-batch", action="store_true", default=False,
+        help="Disable fixed batching (override checkpoint config, use greedy dynamic)",
     )
     parser.add_argument("--checkpoint-dir", type=str)
     parser.add_argument("--tensorboard-dir", type=str)
@@ -362,9 +367,18 @@ def main() -> None:
         _apply_overrides(config, args)
         config.validate()
 
-    # --- Profile flag (operational, not in config JSON) ---
+    # --- Operational flags (not persisted in config JSON) ---
     if args.profile:
         config.profile = True
+
+    # --eval-no-fixed-batch: force greedy dynamic batching even if checkpoint
+    # has eval_fixed_batch_workers set or torch.compile would auto-enable it.
+    no_fixed_batch = getattr(args, "eval_no_fixed_batch", False)
+    if no_fixed_batch:
+        if config.eval_fixed_batch_workers is not None:
+            print(f"  CLI override: eval_fixed_batch_workers = None "
+                  f"(was {config.eval_fixed_batch_workers})")
+            config.eval_fixed_batch_workers = None
 
     # --- RNG ---
     master_rng = np.random.default_rng(config.seed)
@@ -460,11 +474,11 @@ def main() -> None:
         max_partition_size = max(we - ws for ws, we in partitions)
         if config.eval_fixed_batch_workers is not None:
             effective_fbw: int | None = config.eval_fixed_batch_workers
-        elif not args.no_compile:
+        elif no_fixed_batch or args.no_compile:
+            effective_fbw = None
+        else:
             # Auto: greatest power of 2 <= partition size
             effective_fbw = 1 << (max_partition_size.bit_length() - 1)
-        else:
-            effective_fbw = None
 
         # Epoch-ending flag for fixed-batch servers (prevents deadlock at
         # end of epoch when fewer workers are active than the target).
