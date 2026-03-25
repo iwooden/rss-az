@@ -249,15 +249,144 @@ Uses `train.tb_reader.read_tb_scalars()` which properly merges multiple event fi
 
 ---
 
+## 7. Layer-Specific Analysis (`layers/`)
+
+Deep analysis of individual model components, beyond what the global arch_analysis provides.
+
+### 7a. Input Preprocessing (`layers/preprocess.py`)
+
+**Question:** Is the 768->256 compression losing policy-relevant signal? Should we add an intermediate layer?
+
+**Method:** Three analyses:
+1. **Signal attenuation** — for each feature group, measures activation delta at 768-dim and 256-dim when the group is ablated. Attenuation = delta_256/delta_768 (1.0 = preserved, <1.0 = lost). Cross-referenced with policy KL.
+2. **Expanded probing** — linear probes at raw input (1018), 768-dim intermediate, 256-dim output, and block_0. Tracks information loss through each step.
+3. **SVD projection** — identifies which 768-dim singular vectors the learned weight matrix preserves vs discards, and correlates with feature group importance.
+
+```bash
+.venv/bin/python -m interp.layers.preprocess --load-data interp/data/states.npz
+```
+
+### 7b. Policy Head (`layers/policy_head.py`)
+
+**Question:** How does the policy head organize its computation? Does it have enough depth/width for all action types?
+
+**Method:** Three analyses:
+1. **Logit lens** — projects intermediate policy representations through the final weight matrix to get "early logits." Shows when decisions crystallize and whether later layers refine or fight earlier commitments.
+2. **Neuron specialization** — NeuronConductance per action type reveals which neurons serve which actions. Measures functional width utilization vs structural (SVD) utilization.
+3. **Layer causal necessity** — replaces each layer with a skip connection per phase, measuring the causal effect on policy. Identifies which layers are critical for which phases.
+
+```bash
+.venv/bin/python -m interp.layers.policy_head --load-data interp/data/states.npz
+```
+
+### 7c. Value Head (`layers/value_head.py`)
+
+**Question:** Does V0 add meaningful computation? Are neurons specialized by player? Where is value prediction weakest?
+
+**Method:** Four analyses:
+1. **Value lens** — projects trunk directly through V2 (skipping V0+GELU). Compares to full head output to measure V0's contribution.
+2. **Per-player neuron specialization** — NeuronConductance at V0 GELU toward each player's value output. Shows whether neurons specialize by player.
+3. **Phase-stratified value characteristics** — value magnitude, spread, and per-player means by phase and game progress (early/mid/late).
+4. **Layer causal necessity** — bypasses V0+GELU, measures value MSE change per phase.
+
+```bash
+.venv/bin/python -m interp.layers.value_head --load-data interp/data/states.npz
+```
+
+---
+
+## 8. Phase-Specific Analysis (`phases/`)
+
+Deep analysis of model behavior within specific game phases.
+
+### 8a. Acquisition Phase (`phases/acquisition.py`)
+
+**Question:** How does the model price acquisitions? Does it use OS's face-value FI ability correctly?
+
+**Method:** Filters to ACQ phase states and analyzes:
+1. **Action distribution** — pass/price/FI-buy breakdown
+2. **Price offset histogram** — how the model distributes price offers (0=low, 50=max)
+3. **By-tier breakdown** — pricing behavior for red/orange/yellow/green/blue companies
+4. **FI offer analysis** — pass vs buy rates, broken out by OS (face-value ability) vs non-OS corps
+5. **Uncertainty analysis** — where the model is most uncertain about acquisition decisions
+
+```bash
+.venv/bin/python -m interp.phases.acquisition --load-data interp/data/states.npz
+# Writes: interp/data/acq_phase_epoch<N>.html
+```
+
+### 8b. Invest Phase (`phases/invest.py`)
+
+**Question:** How does the model value companies at auction? What share trading patterns emerge?
+
+**Method:** Reconstructs auction narratives from sequential INVEST/BID states and analyzes:
+1. **Auction pricing** — per-company opening bid, bid rounds, final price vs face value
+2. **Share trades** — buys/sells per corp with president vs non-president breakdown
+3. **Per-turn activity** — share buys/sells per corp per game turn (uses engine turn numbers)
+
+```bash
+.venv/bin/python -m interp.phases.invest --load-data interp/data/states.npz
+# Writes: interp/data/invest_phase_epoch<N>.html
+```
+
+---
+
 ## Shared Utilities (`utils.py`)
 
 All scripts share common infrastructure:
 
 - **`load_model()`** — loads latest checkpoint (or specified path), returns (model, config, device, epoch)
 - **`collect_states()`** — plays fast games via policy sampling (no MCTS) to collect diverse states. Returns an `InterpDataset`
-- **`InterpDataset`** — states, legal_masks, phases, active_players. Saveable to `.npz` for reuse
+- **`InterpDataset`** — states, legal_masks, phases, active_players, turn_numbers, game_indices. Saveable to `.npz` for reuse (backward-compatible with old files missing turn/game data)
 
 **State collection tip:** Collect once with `--save-data`, then `--load-data` for all subsequent analyses. This is much faster than re-playing games for each script.
+
+---
+
+## Captum Attribution Toolkit (v0.8.0)
+
+Reference for available attribution methods in `captum.attr`. Currently used: `IntegratedGradients` (decision_attr, acig), `LayerConductance` (arch_analysis), `NeuronConductance` (layers/policy_head).
+
+### Input-Level Attribution
+| Method | Type | Notes |
+|--------|------|-------|
+| `IntegratedGradients` | Gradient | Our workhorse. Path integral from baseline to input. |
+| `Saliency` | Gradient | Simple gradient magnitude. Fast but noisy. |
+| `InputXGradient` | Gradient | Input * gradient. Cheap approximation to IG. |
+| `DeepLift` / `DeepLiftShap` | Reference | Compares to reference activation, not just gradient. |
+| `GradientShap` | Gradient+SHAP | Stochastic IG variant with Shapley guarantees. |
+| `FeatureAblation` | Perturbation | Zero/replace features, measure output change. What our full_ablation does manually. |
+| `FeaturePermutation` | Perturbation | Permute features across samples. |
+| `Occlusion` | Perturbation | Sliding window ablation. |
+| `Lime` / `KernelShap` | Surrogate | Local linear model. Expensive but model-agnostic. |
+| `ShapleyValueSampling` | Game-theoretic | Approximate Shapley values. Very expensive. |
+| `LRP` | Propagation | Layer-wise relevance propagation. |
+
+### Layer-Level Attribution
+| Method | Notes |
+|--------|-------|
+| `LayerConductance` | IG through a specific layer. Our primary layer tool. |
+| `LayerActivation` | Raw activations (no attribution, just extraction). |
+| `LayerGradientXActivation` | Gradient * activation at a layer. Fast approximation. |
+| `LayerIntegratedGradients` | IG computed at a specific layer. |
+| `LayerFeatureAblation` | Ablation at intermediate layer (not just input). |
+| `LayerDeepLift` / `LayerGradientShap` | Layer variants of input methods. |
+| `LayerLRP` | LRP at a specific layer. |
+
+### Neuron-Level Attribution
+| Method | Notes |
+|--------|-------|
+| `NeuronConductance` | Conductance for a single neuron toward an output. Key for specialization analysis. |
+| `NeuronIntegratedGradients` | IG for a single neuron. |
+| `NeuronGradient` / `NeuronGradientShap` | Gradient-based neuron importance. |
+| `NeuronFeatureAblation` | Which input features matter for a specific neuron. |
+| `NeuronDeepLift` | DeepLift for neurons. |
+
+### Utility
+| Method | Notes |
+|--------|-------|
+| `NoiseTunnel` | Wraps any method with SmoothGrad (average over noisy inputs). Reduces gradient noise. |
+| `InternalInfluence` | Influence of intermediate activations on output. |
 
 ---
 

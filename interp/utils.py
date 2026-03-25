@@ -20,9 +20,16 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from core.data import GamePhases
+from core.data import GameConstants, GamePhases
 from core.driver import DRIVER, STATUS_GAME_OVER_PY
-from core.state import GameState
+from core.state import (
+    GameState,
+    get_corp_fields,
+    get_layout,
+    get_player_fields,
+    get_turn_fields,
+)
+from entities.turn import TURN
 from mcts.evaluator import NNEvaluator, rotate_visible_state
 from nn import create_model
 from train.checkpoint import find_latest_checkpoint, load_checkpoint
@@ -83,6 +90,8 @@ class InterpDataset:
     legal_masks: np.ndarray  # (N, action_dim) float32
     phases: np.ndarray  # (N,) int32
     active_players: np.ndarray  # (N,) int32
+    turn_numbers: np.ndarray  # (N,) int32  — game turn (1-based)
+    game_indices: np.ndarray  # (N,) int32  — which game (0-based)
     num_games: int
     checkpoint_path: str
     seed: int
@@ -101,6 +110,8 @@ class InterpDataset:
             legal_masks=self.legal_masks,
             phases=self.phases,
             active_players=self.active_players,
+            turn_numbers=self.turn_numbers,
+            game_indices=self.game_indices,
             meta=np.array([self.num_games, self.seed]),
             checkpoint_path=np.array(self.checkpoint_path),
         )
@@ -112,11 +123,23 @@ class InterpDataset:
         """Load dataset from .npz file."""
         data = np.load(path, allow_pickle=True)
         meta = data["meta"]
+        n = len(data["phases"])
+        # Backward compat: old files lack turn_numbers/game_indices
+        turn_numbers = (
+            data["turn_numbers"] if "turn_numbers" in data
+            else np.zeros(n, dtype=np.int32)
+        )
+        game_indices = (
+            data["game_indices"] if "game_indices" in data
+            else np.zeros(n, dtype=np.int32)
+        )
         return InterpDataset(
             states=data["states"],
             legal_masks=data["legal_masks"],
             phases=data["phases"],
             active_players=data["active_players"],
+            turn_numbers=turn_numbers,
+            game_indices=game_indices,
             num_games=int(meta[0]),
             checkpoint_path=str(data["checkpoint_path"]),
             seed=int(meta[1]),
@@ -200,6 +223,8 @@ def collect_states(
     all_masks: list[np.ndarray] = []
     all_phases: list[int] = []
     all_active: list[int] = []
+    all_turns: list[int] = []
+    all_game_idx: list[int] = []
 
     t0 = time.perf_counter()
     for game_idx in range(num_games):
@@ -221,6 +246,8 @@ def collect_states(
             all_masks.append(legal_mask)
             all_phases.append(phase)
             all_active.append(active_player)
+            all_turns.append(TURN.get_turn_number(state))
+            all_game_idx.append(game_idx)
 
             action = int(rng.choice(config.action_dim, p=policy_probs))
             status = DRIVER.apply_action(state, action)
@@ -244,7 +271,139 @@ def collect_states(
         legal_masks=np.array(all_masks, dtype=np.float32),
         phases=np.array(all_phases, dtype=np.int32),
         active_players=np.array(all_active, dtype=np.int32),
+        turn_numbers=np.array(all_turns, dtype=np.int32),
+        game_indices=np.array(all_game_idx, dtype=np.int32),
         num_games=num_games,
         checkpoint_path=checkpoint_path,
         seed=seed,
     )
+
+
+def build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
+    """Build (name, indices) for every named field in the visible state.
+
+    Uses get_player_fields/get_corp_fields/get_turn_fields for sub-offsets
+    so this stays in sync with the layout defined in core/state.pyx.
+    """
+    layout = get_layout(num_players)
+    pf = get_player_fields(num_players)
+    cf = get_corp_fields()
+    tf = get_turn_fields(num_players)
+    NC = GameConstants.NUM_COMPANIES
+    NK = GameConstants.NUM_CORPS
+    MAX_DIV = GameConstants.MAX_DIVIDEND
+
+    groups: list[tuple[str, np.ndarray]] = []
+
+    # --- Phase & CoO ---
+    groups.append(("phase", np.arange(layout.phase_offset, layout.phase_offset + layout.phase_size)))
+    groups.append(("coo_level", np.arange(layout.coo_offset, layout.coo_offset + layout.coo_size)))
+
+    # --- Player fields (aggregated across all players) ---
+    _player_groups = [
+        ("player:cash", pf.cash, 1),
+        ("player:net_worth", pf.net_worth, 1),
+        ("player:turn_order", pf.turn_order, num_players),
+        ("player:owned_companies", pf.owned_companies, NC),
+        ("player:owned_shares", pf.owned_shares, NK),
+        ("player:is_president", pf.is_president, NK),
+        ("player:round_trips", pf.round_trips, NK),
+        ("player:acq_proceeds", pf.acquisition_proceeds, 1),
+        ("player:income", pf.income, 1),
+    ]
+    for name, rel, size in _player_groups:
+        idx: list[int] = []
+        for p in range(num_players):
+            base = layout.players_offset + p * layout.player_stride + rel
+            idx.extend(range(base, base + size))
+        groups.append((name, np.array(idx)))
+
+    # --- Foreign Investor ---
+    groups.append(("fi:cash", np.array([layout.fi_offset])))
+    groups.append(("fi:income", np.array([layout.fi_offset + 1])))
+    groups.append(("fi:companies", np.arange(layout.fi_offset + 2, layout.fi_offset + layout.fi_size)))
+
+    # --- Company location flags ---
+    groups.append(("co:for_auction", np.arange(layout.auction_companies_offset, layout.auction_companies_offset + NC)))
+    groups.append(("co:revealed", np.arange(layout.revealed_companies_offset, layout.revealed_companies_offset + NC)))
+    groups.append(("co:removed", np.arange(layout.removed_companies_offset, layout.removed_companies_offset + NC)))
+
+    # --- Company adjusted incomes ---
+    groups.append(("co:adj_incomes", np.arange(layout.company_incomes_offset, layout.company_incomes_offset + layout.company_incomes_size)))
+
+    # --- Market availability ---
+    groups.append(("market:available", np.arange(layout.market_offset, layout.market_offset + layout.market_size)))
+
+    # --- Corporation fields (aggregated across all corps) ---
+    _corp_groups = [
+        ("corp:active", cf.active, 1),
+        ("corp:cash", cf.cash, 1),
+        ("corp:unissued_shares", cf.unissued_shares, 1),
+        ("corp:issued_shares", cf.issued_shares, 1),
+        ("corp:bank_shares", cf.bank_shares, 1),
+        ("corp:income", cf.income, 1),
+        ("corp:stars", cf.stars, 1),
+        ("corp:share_price", cf.share_price, 1),
+        ("corp:acq_proceeds", cf.acquisition_proceeds, 1),
+        ("corp:in_receivership", cf.in_receivership, 1),
+        ("corp:price_index_norm", cf.price_index_norm, 1),
+        ("corp:owned_companies", cf.owned_companies, NC),
+    ]
+    for name, rel, size in _corp_groups:
+        idx_list: list[int] = []
+        for c in range(NK):
+            base = layout.corps_offset + c * layout.corp_stride + rel
+            idx_list.extend(range(base, base + size))
+        groups.append((name, np.array(idx_list)))
+
+    # --- Turn state ---
+    t = layout.turn_offset
+    groups.append(("turn:end_card_flipped", np.array([t + tf.end_card_flipped])))
+    groups.append(("turn:consec_passes", np.array([t + tf.consecutive_passes])))
+
+    groups.append(("turn:auction_price", np.array([t + tf.auction_price])))
+    groups.append(("turn:auction_high_bidder", np.arange(t + tf.auction_high_bidder, t + tf.auction_high_bidder + num_players)))
+    groups.append(("turn:auction_starter", np.arange(t + tf.auction_starter, t + tf.auction_starter + num_players)))
+    groups.append(("turn:auction_passed", np.arange(t + tf.auction_passed, t + tf.auction_passed + num_players)))
+
+    groups.append(("turn:dividend_impact", np.arange(t + tf.dividend_impact, t + tf.dividend_impact + MAX_DIV)))
+    groups.append(("turn:dividend_remaining", np.arange(t + tf.dividend_remaining, t + tf.dividend_remaining + NK)))
+
+    groups.append(("turn:issue_remaining", np.arange(t + tf.issue_remaining, t + tf.issue_remaining + NK)))
+    groups.append(("turn:issue_price_impact", np.array([t + tf.issue_price_impact])))
+    groups.append(("turn:issue_cash_gain", np.array([t + tf.issue_cash_gain])))
+
+    groups.append(("turn:acq_is_fi_offer", np.array([t + tf.acq_is_fi_offer])))
+    groups.append(("turn:acq_synergy", np.arange(t + tf.acq_synergy_values, t + tf.acq_synergy_values + NC)))
+
+    groups.append(("turn:active_company", np.arange(t + tf.active_company, t + tf.active_company + NC)))
+    groups.append(("turn:active_company_stars", np.array([t + tf.active_company_stars])))
+    groups.append(("turn:active_company_low_price", np.array([t + tf.active_company_low_price])))
+    groups.append(("turn:active_company_face_value", np.array([t + tf.active_company_face_value])))
+    groups.append(("turn:active_company_high_price", np.array([t + tf.active_company_high_price])))
+    groups.append(("turn:active_company_income", np.array([t + tf.active_company_income])))
+
+    groups.append(("turn:active_corp", np.arange(t + tf.active_corp, t + tf.active_corp + NK)))
+    groups.append(("turn:active_corp_income", np.array([t + tf.active_corp_income])))
+    groups.append(("turn:active_corp_stars", np.array([t + tf.active_corp_stars])))
+    groups.append(("turn:active_corp_share_price", np.array([t + tf.active_corp_share_price])))
+    groups.append(("turn:active_corp_companies", np.arange(t + tf.active_corp_companies, t + tf.active_corp_companies + NC)))
+
+    groups.append(("turn:cards_remaining", np.array([t + tf.cards_remaining])))
+
+    # --- Auction slot info ---
+    s = layout.auction_slot_info_offset
+    groups.append(("auction_slot_info", np.arange(s, s + layout.auction_slot_info_size)))
+
+    # --- Invest impacts ---
+    groups.append(("invest:buy_impact", np.arange(layout.invest_impacts_offset, layout.invest_impacts_offset + NK)))
+    groups.append(("invest:sell_impact", np.arange(layout.invest_impacts_offset + NK, layout.invest_impacts_offset + layout.invest_impacts_size)))
+
+    # Verify full coverage
+    all_idx = np.concatenate([g[1] for g in groups])
+    assert len(all_idx) == layout.visible_size, (
+        f"Coverage {len(all_idx)} != visible_size {layout.visible_size}"
+    )
+    assert len(set(all_idx)) == layout.visible_size, "Overlapping indices"
+
+    return groups
