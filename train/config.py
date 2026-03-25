@@ -85,6 +85,7 @@ class TrainingConfig:
     search_batch_size: int = 1
     num_workers: int = 4
     num_eval_servers: int = 1
+    eval_fixed_batch_workers: int | None = None
 
     # --- Temperature Schedule (linear ramp) ---
     # temp_initial from move 0 to temp_anneal_start, then linearly decreases
@@ -246,6 +247,12 @@ class TrainingConfig:
                     f"Increase num_eval_servers so each partition has "
                     f"<= 64 workers."
                 )
+            if self.eval_fixed_batch_workers is not None:
+                if not 1 <= self.eval_fixed_batch_workers <= max_partition:
+                    raise ValueError(
+                        f"eval_fixed_batch_workers ({self.eval_fixed_batch_workers}) "
+                        f"must be between 1 and partition size ({max_partition})"
+                    )
         if self.buffer_capacity <= self.min_buffer_size:
             raise ValueError(
                 f"buffer_capacity ({self.buffer_capacity}) must exceed "

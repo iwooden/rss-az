@@ -55,6 +55,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--search-batch-size", type=int)
     parser.add_argument("--num-workers", type=int)
     parser.add_argument("--num-eval-servers", type=int)
+    parser.add_argument(
+        "--eval-fixed-batch-workers", type=int,
+        help="Fixed number of workers per GPU batch (default: auto from compilation)",
+    )
     parser.add_argument("--checkpoint-dir", type=str)
     parser.add_argument("--tensorboard-dir", type=str)
     parser.add_argument("--seed", type=int)
@@ -104,7 +108,8 @@ def _build_parser() -> argparse.ArgumentParser:
 _CLI_FIELDS = (
     "model_path",
     "games_per_epoch", "num_epochs", "num_simulations", "search_batch_size",
-    "num_workers", "num_eval_servers", "checkpoint_dir", "tensorboard_dir", "seed",
+    "num_workers", "num_eval_servers", "eval_fixed_batch_workers",
+    "checkpoint_dir", "tensorboard_dir", "seed",
     "temp_initial", "temp_anneal_start", "temp_anneal_end", "temp_final",
     "c_puct_initial", "c_puct_final", "c_puct_anneal_epochs",
     "value_blend_start_epoch", "value_blend_end_epoch",
@@ -418,6 +423,8 @@ def main() -> None:
     eval_servers: list[EvaluationServer] = []
     task_queue: Any = None  # mp.Queue
     result_queue: Any = None  # mp.Queue
+    epoch_ending_flag: Any = None  # mp.Value(c_bool) for fixed-batch servers
+    max_partition_size: int = 0
 
     if config.num_workers > 0:
         ctx = mp.get_context("spawn")
@@ -449,6 +456,24 @@ def main() -> None:
 
         shared_bufs.init_bitmap(partitions, ctx)
 
+        # Resolve fixed_batch_workers: explicit > auto (compiled) > None (greedy).
+        max_partition_size = max(we - ws for ws, we in partitions)
+        if config.eval_fixed_batch_workers is not None:
+            effective_fbw: int | None = config.eval_fixed_batch_workers
+        elif not args.no_compile:
+            # Auto: greatest power of 2 <= partition size
+            effective_fbw = 1 << (max_partition_size.bit_length() - 1)
+        else:
+            effective_fbw = None
+
+        # Epoch-ending flag for fixed-batch servers (prevents deadlock at
+        # end of epoch when fewer workers are active than the target).
+        import ctypes
+        epoch_ending_flag: Any = (
+            ctx.Value(ctypes.c_bool, False)
+            if effective_fbw is not None else None
+        )
+
         eval_compile_kwargs = gpu.get_compile_kwargs(for_training=False)
         for i, (ws, we) in enumerate(partitions):
             server = EvaluationServer(
@@ -461,6 +486,8 @@ def main() -> None:
                 no_compile=args.no_compile,
                 compile_kwargs=eval_compile_kwargs,
                 gpu_vendor=gpu.vendor,
+                fixed_batch_workers=effective_fbw,
+                epoch_ending_flag=epoch_ending_flag,
             )
             server.start()
             eval_servers.append(server)
@@ -513,9 +540,17 @@ def main() -> None:
             p.start()
             workers.append(p)
 
+        if effective_fbw is not None:
+            fbw_detail = (
+                f", fixed batch: {effective_fbw} workers "
+                f"({effective_fbw * config.search_batch_size} states)"
+            )
+        else:
+            fbw_detail = ", batch mode: greedy"
         print(
             f"Started {config.num_workers} self-play workers, "
             f"{n_servers} eval server{'s' if n_servers > 1 else ''}"
+            f"{fbw_detail}"
         )
 
         # Write process IDs for external profiling tools.
@@ -640,10 +675,12 @@ def main() -> None:
                     top1_visit_frac=total_top1 / n,
                 )
 
-            # Reset eval server profile stats for this epoch
+            # Reset eval server profile stats and epoch-ending flag
             if config.profile and eval_servers:
                 for es in eval_servers:
                     es.reset_profile_stats()
+            if epoch_ending_flag is not None:
+                epoch_ending_flag.value = False
 
             # Compute per-epoch annealing parameters
             epoch_cfg = config.compute_epoch_config(epoch)
@@ -672,7 +709,18 @@ def main() -> None:
                         )
                     _collect_record(record, game_idx)
                     games_collected = game_idx + 1
+                    # Signal eval servers when few games remain so they
+                    # don't deadlock waiting for a full batch.
+                    if (
+                        epoch_ending_flag is not None
+                        and not epoch_ending_flag.value
+                        and config.games_per_epoch - games_collected
+                            < max_partition_size
+                    ):
+                        epoch_ending_flag.value = True
                     if shutdown_event.is_set():
+                        if epoch_ending_flag is not None:
+                            epoch_ending_flag.value = True
                         logger.end_self_play()
                         print(
                             "\nGraceful shutdown requested "

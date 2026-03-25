@@ -195,6 +195,8 @@ def _eval_server_main(
     no_compile: bool,
     compile_kwargs: dict[str, Any] | None = None,
     gpu_vendor: str = "cpu",
+    fixed_batch_workers: int | None = None,
+    epoch_ending_flag: Any = None,
 ) -> None:
     """Eval server process entry point.
 
@@ -212,6 +214,8 @@ def _eval_server_main(
             profile=profile, no_compile=no_compile,
             compile_kwargs=compile_kwargs,
             gpu_vendor=gpu_vendor,
+            fixed_batch_workers=fixed_batch_workers,
+            epoch_ending_flag=epoch_ending_flag,
         )
     except Exception:
         import traceback
@@ -234,12 +238,22 @@ def _eval_server_serve(
     no_compile: bool,
     compile_kwargs: dict[str, Any] | None = None,
     gpu_vendor: str = "cpu",
+    fixed_batch_workers: int | None = None,
+    epoch_ending_flag: Any = None,
 ) -> None:
     """Inner serve loop for an eval server process.
 
-    Claims pending requests via atomic bitmap exchange, runs batched GPU
-    inference, scatters results, and wakes workers via done events. Blocks
-    on a per-server doorbell event when idle instead of busy-polling.
+    Two modes based on fixed_batch_workers:
+
+    **Fixed-batch mode** (fixed_batch_workers is an int): Accumulates
+    drained workers until target_workers are ready, then submits a
+    consistent-size GPU batch. At end-of-epoch (epoch_ending_flag set),
+    flushes partial batches with zero-padding (if compiled) to maintain
+    a single compiled graph size.
+
+    **Greedy mode** (fixed_batch_workers is None): Drains all pending
+    requests and submits immediately with exact batch size. No padding,
+    no accumulation.
     """
     # Prevent OpenMP oversubscription (same as worker processes)
     torch.set_num_threads(1)
@@ -308,58 +322,31 @@ def _eval_server_serve(
     _widx_buf = np.empty(partition_size, dtype=np.int32)
     _cnt_buf = np.empty(partition_size, dtype=np.int32)
 
-    # Signal ready only after all initialization (imports, buffer allocation,
-    # event validation) has succeeded. This ensures workers won't be spawned
-    # against a server that's about to die from e.g. a missing Cython rebuild.
-    ready_event.set()
+    # --- Shared helpers (closures over setup state) ---
 
-    while not stop_event.is_set():
-        if stats is not None:
-            _tp = perf_counter()
+    def _infer_and_scatter(widx: np.ndarray, cnts: np.ndarray,
+                           n_req: int, padded_n: int = 0) -> int:
+        """Gather states, run GPU inference, scatter results, signal workers.
 
-        # Atomically claim all pending requests from the bitmap.
-        num_requests = _drain(
-            submitted_masks, sig_counts,
-            _widx_buf, _cnt_buf, server_id, worker_start,
-        )
+        Args:
+            widx: Worker indices array (length n_req).
+            cnts: Per-worker state counts (length n_req).
+            n_req: Number of workers in this batch.
+            padded_n: GPU batch size (0 = use actual total_n, no padding).
 
-        if num_requests == 0:
-            if stats is not None:
-                stats.record_idle(perf_counter() - _tp)
-            # Check if main process wants stats
-            if stats_report_event is not None and stats_report_event.is_set():
-                stats_queue.put(copy.copy(stats))
-                if stats is not None:
-                    stats.reset()
-                stats_report_event.clear()
-            # Lost-wakeup avoidance: clear doorbell, recheck bitmap, then
-            # sleep. If a worker sets a bit between exchange and clear, the
-            # event stays set. If between clear and peek, peek catches it.
-            # If between peek and wait, the worker also calls event.set().
-            server_event.clear()
-            if _peek(submitted_masks, server_id):
-                continue
-            server_event.wait(timeout=0.1)
-            continue
-
-        # Gather f32 states from per-worker shared memory into contiguous pinned buffer.
+        Returns:
+            total_n: Actual number of states processed.
+        """
+        nonlocal _ti
         total_n = _gather_states(
-            pin_s_np, all_states_np,
-            _widx_buf[:num_requests], _cnt_buf[:num_requests], num_requests,
+            pin_s_np, all_states_np, widx, cnts, n_req,
         )
+        if padded_n == 0:
+            padded_n = total_n
 
         if stats is not None:
             _ti = perf_counter()
 
-        # --- GPU pipeline (default stream, no stream context needed) ---
-        # When compiled with reduce-overhead, bucket to next power-of-2
-        # (clamped to max_batch) so the graph cache stays small.  Padded
-        # rows stay zero; results are never scattered back to workers.
-        # Without compilation, skip bucketing to avoid wasted compute.
-        if no_compile:
-            padded_n = total_n
-        else:
-            padded_n = min(1 << (total_n - 1).bit_length(), max_batch)
         gpu_s_batch = gpu_s[:padded_n]
         gpu_s_batch[:total_n].copy_(pin_s[:total_n], non_blocking=True)
         with torch.no_grad():
@@ -378,23 +365,119 @@ def _eval_server_serve(
         if stats is not None:
             stats.record_batch(total_n, perf_counter() - _ti)
 
-        # Scatter results to per-worker shared memory (Cython nogil memcpy),
-        # then wake workers via done events.
         _scatter_results(
             pin_log_np.view(np.int8), pin_val_np,
             all_logits_np.view(np.int8), all_values_np,
-            _widx_buf[:num_requests], _cnt_buf[:num_requests], num_requests,
-            logit_row_bytes,
+            widx, cnts, n_req, logit_row_bytes,
         )
-        for i in range(num_requests):
-            done_events[_widx_buf[i]].set()
+        for i in range(n_req):
+            done_events[widx[i]].set()
+        return total_n
 
-        # Check if main process wants stats (also check in busy path)
+    def _check_stats_report() -> None:
+        """Send stats to main process if requested."""
         if stats_report_event is not None and stats_report_event.is_set():
             stats_queue.put(copy.copy(stats))
             if stats is not None:
                 stats.reset()
             stats_report_event.clear()
+
+    def _idle_wait() -> None:
+        """Lost-wakeup-safe doorbell wait when no work is pending."""
+        server_event.clear()
+        if _peek(submitted_masks, server_id):
+            return
+        server_event.wait(timeout=0.1)
+
+    # Signal ready only after all initialization (imports, buffer allocation,
+    # event validation) has succeeded. This ensures workers won't be spawned
+    # against a server that's about to die from e.g. a missing Cython rebuild.
+    ready_event.set()
+
+    if fixed_batch_workers is not None:
+        # --- Fixed-batch accumulation loop ---
+        target_workers = fixed_batch_workers
+        fixed_batch_size = target_workers * shared_bufs.batch_size
+        _accum_widx = np.empty(partition_size, dtype=np.int32)
+        _accum_cnts = np.empty(partition_size, dtype=np.int32)
+        _accum_n = 0
+
+        while not stop_event.is_set():
+            if stats is not None:
+                _tp = perf_counter()
+
+            # Drain bitmap into accumulation buffer.
+            num_drained = _drain(
+                submitted_masks, sig_counts,
+                _widx_buf, _cnt_buf, server_id, worker_start,
+            )
+            if num_drained > 0:
+                _accum_widx[_accum_n:_accum_n + num_drained] = _widx_buf[:num_drained]
+                _accum_cnts[_accum_n:_accum_n + num_drained] = _cnt_buf[:num_drained]
+                _accum_n += num_drained
+
+            # Submit full batches from accumulator.
+            while _accum_n >= target_workers:
+                _infer_and_scatter(
+                    _accum_widx[:target_workers],
+                    _accum_cnts[:target_workers],
+                    target_workers, fixed_batch_size,
+                )
+                remaining = _accum_n - target_workers
+                if remaining > 0:
+                    _accum_widx[:remaining] = _accum_widx[target_workers:_accum_n]
+                    _accum_cnts[:remaining] = _accum_cnts[target_workers:_accum_n]
+                _accum_n = remaining
+
+            # Flush partial batch at end of epoch.
+            if (
+                _accum_n > 0
+                and epoch_ending_flag is not None
+                and epoch_ending_flag.value
+            ):
+                padded = fixed_batch_size if not no_compile else 0
+                _infer_and_scatter(
+                    _accum_widx[:_accum_n],
+                    _accum_cnts[:_accum_n],
+                    _accum_n, padded,
+                )
+                _accum_n = 0
+
+            # Idle / doorbell handling.
+            if _accum_n == 0:
+                if num_drained == 0 and stats is not None:
+                    stats.record_idle(perf_counter() - _tp)
+                _check_stats_report()
+                _idle_wait()
+            else:
+                # Have partial work — brief wait for more arrivals.
+                _check_stats_report()
+                server_event.clear()
+                if not _peek(submitted_masks, server_id):
+                    server_event.wait(timeout=0.01)
+    else:
+        # --- Greedy loop (no fixed batch, no padding) ---
+        while not stop_event.is_set():
+            if stats is not None:
+                _tp = perf_counter()
+
+            num_requests = _drain(
+                submitted_masks, sig_counts,
+                _widx_buf, _cnt_buf, server_id, worker_start,
+            )
+
+            if num_requests == 0:
+                if stats is not None:
+                    stats.record_idle(perf_counter() - _tp)
+                _check_stats_report()
+                _idle_wait()
+                continue
+
+            _infer_and_scatter(
+                _widx_buf[:num_requests], _cnt_buf[:num_requests],
+                num_requests,
+            )
+            _check_stats_report()
 
 
 class EvaluationServer:
@@ -425,6 +508,8 @@ class EvaluationServer:
         no_compile: bool = False,
         compile_kwargs: dict[str, Any] | None = None,
         gpu_vendor: str = "cpu",
+        fixed_batch_workers: int | None = None,
+        epoch_ending_flag: Any = None,
     ) -> None:
         import multiprocessing
         ctx = mp_context or multiprocessing
@@ -448,6 +533,8 @@ class EvaluationServer:
             "no_compile": no_compile,
             "compile_kwargs": compile_kwargs,
             "gpu_vendor": gpu_vendor,
+            "fixed_batch_workers": fixed_batch_workers,
+            "epoch_ending_flag": epoch_ending_flag,
         }
         self._mp_context = ctx
         self._server_id = server_id
