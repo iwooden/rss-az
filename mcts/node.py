@@ -47,6 +47,7 @@ class MCTSNode:
         "default_value",
         "visit_counts",
         "value_sums",
+        "_propagation_saved",
     )
 
     def __init__(
@@ -68,6 +69,7 @@ class MCTSNode:
         self.default_value: np.ndarray | None = None
         self.visit_counts: np.ndarray | None = None
         self.value_sums: np.ndarray | None = None
+        self._propagation_saved: dict[int, np.ndarray] | None = None
 
     def mean_value(self, player_id: int) -> float:
         """Return the mean value estimate for the given player.

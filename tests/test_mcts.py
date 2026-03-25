@@ -23,6 +23,8 @@ from mcts.search import (
     _add_dirichlet_noise,
     _backup,
     _collect_subtree_nodes,
+    _propagate_lock,
+    _propagate_unlock,
     get_action_probabilities,
     get_greedy_leaf_value,
     prepare_reuse_root,
@@ -1095,6 +1097,339 @@ class TestBatchedSearch:
         run_search(game_state, tracker, config)
 
         assert not tracker.found_duplicates, "Same node appeared twice in a batch"
+
+
+# ---------------------------------------------------------------------------
+# Propagation lock
+# ---------------------------------------------------------------------------
+
+class TestPropagationLock:
+    """Tests for lock propagation up the tree when all children are locked."""
+
+    @staticmethod
+    def _make_node(
+        active_player: int, num_actions: int, num_players: int = 3,
+        q_values: np.ndarray | None = None,
+    ) -> MCTSNode:
+        """Create an expanded MCTSNode with given number of legal actions."""
+        node = MCTSNode(active_player_id=active_player, num_players=num_players)
+        node.legal_actions = np.arange(num_actions, dtype=np.int32)
+        node.priors = np.full(num_actions, 1.0 / num_actions, dtype=np.float32)
+        node.default_value = np.zeros(num_players, dtype=np.float32)
+        node.visit_counts = np.ones(num_actions, dtype=np.int32)
+        if q_values is not None:
+            node.value_sums = q_values.copy()
+        else:
+            node.value_sums = np.zeros((num_actions, num_players), dtype=np.float32)
+        node.visit_count = num_actions + 1
+        return node
+
+    def test_no_propagation_when_siblings_unlocked(self):
+        """Locking one of two children should NOT propagate."""
+        npl = 3
+        neg_inf = np.full(npl, -np.inf, dtype=np.float32)
+        root = self._make_node(0, 2)
+        parent = self._make_node(1, 2, q_values=np.array(
+            [[0.1, -0.05, -0.05], [0.2, -0.1, -0.1]], dtype=np.float32,
+        ))
+        root.children[0] = parent
+        assert parent.value_sums is not None
+        assert root.value_sums is not None
+
+        # Lock one child edge at parent
+        parent.value_sums[0] = neg_inf
+        path = [(root, 0, 0), (parent, 0, 0)]
+        _propagate_lock(path, neg_inf)
+
+        # Root edge should NOT be locked (only 1 of 2 parent edges locked)
+        assert root._propagation_saved is None
+        assert not np.isinf(root.value_sums[0, 0])
+
+    def test_propagation_when_all_children_locked(self):
+        """Locking all children of a node should propagate to the parent edge."""
+        npl = 3
+        neg_inf = np.full(npl, -np.inf, dtype=np.float32)
+        root = self._make_node(0, 1)
+        parent = self._make_node(1, 2)
+        root.children[0] = parent
+        assert root.value_sums is not None
+        assert parent.value_sums is not None
+        root_q_before = root.value_sums[0].copy()
+
+        # Lock first child
+        path_a = [(root, 0, 0), (parent, 0, 0)]
+        parent.value_sums[0] = neg_inf
+        _propagate_lock(path_a, neg_inf)
+        assert root._propagation_saved is None  # not yet
+
+        # Lock second child — all locked, should propagate
+        path_b = [(root, 0, 0), (parent, 1, 1)]
+        parent.value_sums[1] = neg_inf
+        _propagate_lock(path_b, neg_inf)
+
+        assert root._propagation_saved is not None
+        assert 0 in root._propagation_saved
+        np.testing.assert_array_equal(root._propagation_saved[0], root_q_before)
+        assert root.value_sums[0, 0] == -np.inf
+
+    def test_multi_level_propagation(self):
+        """Propagation should cascade through multiple levels."""
+        npl = 3
+        neg_inf = np.full(npl, -np.inf, dtype=np.float32)
+
+        # root (1 edge) -> mid (1 edge) -> parent (2 edges) -> leaves
+        root = self._make_node(0, 1)
+        mid = self._make_node(1, 1)
+        parent = self._make_node(0, 2)
+        root.children[0] = mid
+        mid.children[0] = parent
+        assert parent.value_sums is not None
+        assert root.value_sums is not None
+
+        # Lock both leaves — should propagate through parent, mid, to root
+        path_a = [(root, 0, 0), (mid, 0, 0), (parent, 0, 0)]
+        parent.value_sums[0] = neg_inf
+        _propagate_lock(path_a, neg_inf)
+        # parent has 1 of 2 locked, no propagation yet
+        assert mid._propagation_saved is None
+
+        path_b = [(root, 0, 0), (mid, 0, 0), (parent, 1, 1)]
+        parent.value_sums[1] = neg_inf
+        _propagate_lock(path_b, neg_inf)
+
+        # Now parent fully locked → mid edge locked → root edge locked
+        assert mid._propagation_saved is not None
+        assert 0 in mid._propagation_saved
+        assert root._propagation_saved is not None
+        assert 0 in root._propagation_saved
+        assert root.value_sums[0, 0] == -np.inf
+
+    def test_unlock_restores_values(self):
+        """Unlocking a leaf should restore propagation-locked ancestor values."""
+        npl = 3
+        neg_inf = np.full(npl, -np.inf, dtype=np.float32)
+        root = self._make_node(0, 1)
+        parent = self._make_node(1, 2, q_values=np.array(
+            [[0.3, -0.1, -0.2], [0.5, -0.2, -0.3]], dtype=np.float32,
+        ))
+        root.children[0] = parent
+        assert root.value_sums is not None
+        assert parent.value_sums is not None
+        root_q_before = root.value_sums[0].copy()
+        parent_q_a = parent.value_sums[0].copy()
+
+        # Lock both children, triggering propagation to root
+        path_a = [(root, 0, 0), (parent, 0, 0)]
+        parent.value_sums[0] = neg_inf
+        _propagate_lock(path_a, neg_inf)
+
+        path_b = [(root, 0, 0), (parent, 1, 1)]
+        parent.value_sums[1] = neg_inf
+        _propagate_lock(path_b, neg_inf)
+
+        assert root.value_sums[0, 0] == -np.inf  # propagation-locked
+
+        # Unlock leaf A: restore parent edge, then propagation unlock
+        parent.value_sums[0] = parent_q_a
+        _propagate_unlock(path_a)
+
+        # Root edge should be restored
+        np.testing.assert_array_equal(root.value_sums[0], root_q_before)
+        assert root._propagation_saved is None
+
+        # Parent edge B still locked (not restored by A's unlock)
+        assert parent.value_sums[1, 0] == -np.inf
+
+    def test_unlock_order_independent(self):
+        """Unlocking in either order should produce the same final state."""
+        npl = 3
+        neg_inf = np.full(npl, -np.inf, dtype=np.float32)
+
+        for order in [(0, 1), (1, 0)]:
+            root = self._make_node(0, 1)
+            parent = self._make_node(1, 2, q_values=np.array(
+                [[0.3, -0.1, -0.2], [0.5, -0.2, -0.3]], dtype=np.float32,
+            ))
+            root.children[0] = parent
+            assert root.value_sums is not None
+            assert parent.value_sums is not None
+            root.value_sums[0] = np.array([0.4, -0.2, -0.2], dtype=np.float32)
+            root_q_orig = root.value_sums[0].copy()
+            parent_qs = [parent.value_sums[i].copy() for i in range(2)]
+
+            paths: list[list[tuple[MCTSNode, int, int]]] = [
+                [(root, 0, 0), (parent, 0, 0)],
+                [(root, 0, 0), (parent, 1, 1)],
+            ]
+            # Lock both
+            for p in paths:
+                aidx = p[-1][2]
+                parent.value_sums[aidx] = neg_inf
+                _propagate_lock(p, neg_inf)
+
+            assert root.value_sums[0, 0] == -np.inf
+
+            # Unlock in specified order
+            for idx in order:
+                parent.value_sums[paths[idx][-1][2]] = parent_qs[idx]
+                _propagate_unlock(paths[idx])
+
+            # Final state should be the same regardless of order
+            np.testing.assert_array_equal(root.value_sums[0], root_q_orig)
+            assert root._propagation_saved is None
+            for i in range(2):
+                np.testing.assert_array_equal(parent.value_sums[i], parent_qs[i])
+
+    def test_propagation_with_mixed_locked_unlocked(self):
+        """Propagation locks the edge to a fully-locked child but not others."""
+        npl = 3
+        neg_inf = np.full(npl, -np.inf, dtype=np.float32)
+
+        # root (2 edges) -> A (1 edge, will be fully locked) and B (unlocked)
+        root = self._make_node(0, 2)
+        node_a = self._make_node(1, 1)
+        root.children[0] = node_a
+        assert node_a.value_sums is not None
+        assert root.value_sums is not None
+
+        path = [(root, 0, 0), (node_a, 0, 0)]
+        node_a.value_sums[0] = neg_inf
+        _propagate_lock(path, neg_inf)
+
+        # Root's edge to A should be propagation-locked (A is fully locked)
+        assert root._propagation_saved is not None
+        assert 0 in root._propagation_saved
+        assert root.value_sums[0, 0] == -np.inf
+
+        # Root's edge to B (index 1) should still be unlocked
+        assert not np.isinf(root.value_sums[1, 0])
+
+        # Root is NOT fully locked (has unlocked edge to B)
+        assert not np.all(root.value_sums[:, 0] == -np.inf)
+
+    def test_no_residual_propagation_saves_after_search(self, game_state, evaluator):
+        """After search completes, no nodes should have residual propagation saves."""
+        config = MCTSConfig(num_simulations=50, search_batch_size=8)
+        root = run_search(game_state, evaluator, config)
+
+        stack: list[MCTSNode] = [root]
+        while stack:
+            node = stack.pop()
+            assert node._propagation_saved is None, (
+                "Residual propagation save found after search"
+            )
+            stack.extend(node.children.values())
+
+    def test_no_residual_saves_concentrated_evaluator(self, game_state, evaluator):
+        """Concentrated evaluator creates narrow frontiers — verify clean unlock."""
+
+        class ConcentratedEvaluator:
+            def __init__(self, inner):
+                self._inner = inner
+                self.num_players = inner.num_players
+
+            def evaluate(self, state):
+                policy, values, mask = self._inner.evaluate(state)
+                best = np.argmax(policy)
+                new = np.full_like(policy, 0.05 / max(np.count_nonzero(policy) - 1, 1))
+                new[policy == 0] = 0
+                new[best] = 0.95
+                total = new.sum()
+                if total > 0:
+                    new /= total
+                return new, values, mask
+
+            def evaluate_leaves(self, state_arrays, active_player_ids):
+                results = self._inner.evaluate_leaves(state_arrays, active_player_ids)
+                out = []
+                for logits, values in results:
+                    policy = np.exp(logits - logits.max())
+                    best = np.argmax(policy)
+                    new = np.full_like(policy, 0.05 / max(len(policy) - 1, 1))
+                    new[best] = 0.95
+                    total = new.sum()
+                    if total > 0:
+                        new /= total
+                    out.append((logits, values))  # logits don't matter, mask does
+                return results  # return original — mask applied in expand
+
+            def evaluate_terminal(self, state):
+                return self._inner.evaluate_terminal(state)
+
+        conc = ConcentratedEvaluator(evaluator)
+        config = MCTSConfig(
+            num_simulations=30, search_batch_size=8,
+            dirichlet_epsilon=0.0,
+        )
+        root = run_search(game_state, conc, config)
+
+        stack: list[MCTSNode] = [root]
+        while stack:
+            node = stack.pop()
+            assert node._propagation_saved is None, (
+                "Residual propagation save found after concentrated search"
+            )
+            stack.extend(node.children.values())
+
+    def test_early_termination_caps_batch(self, game_state, evaluator):
+        """When root becomes fully locked, batch should stop filling early."""
+
+        class BatchSizeTracker:
+            def __init__(self, inner):
+                self._inner = inner
+                self.num_players = inner.num_players
+                self.batch_sizes: list[int] = []
+
+            def evaluate(self, state):
+                return self._inner.evaluate(state)
+
+            def evaluate_leaves(self, state_arrays, active_player_ids):
+                self.batch_sizes.append(len(state_arrays))
+                return self._inner.evaluate_leaves(state_arrays, active_player_ids)
+
+            def evaluate_terminal(self, state):
+                return self._inner.evaluate_terminal(state)
+
+        legal_count = int(get_valid_action_mask(game_state).sum())
+        tracker = BatchSizeTracker(evaluator)
+        config = MCTSConfig(
+            num_simulations=legal_count,
+            search_batch_size=legal_count + 20,
+            dirichlet_epsilon=0.0,
+        )
+        run_search(game_state, tracker, config)
+
+        # First batch should be capped at frontier size; with propagation,
+        # all root edges are locked after queuing all frontier leaves, and
+        # early termination fires.
+        assert len(tracker.batch_sizes) >= 1
+        assert tracker.batch_sizes[0] == legal_count
+
+    def test_search_correctness_with_propagation(self, game_state, evaluator):
+        """Batched search with propagation should produce valid results."""
+        for bs in [2, 4, 8, 16]:
+            config = MCTSConfig(num_simulations=40, search_batch_size=bs)
+            root = run_search(game_state, evaluator, config)
+
+            assert root.visit_count == 41  # 1 initial + 40 simulations
+            probs = get_action_probabilities(
+                root, temperature=1.0, action_dim=config.action_dim,
+            )
+            assert probs.sum() == pytest.approx(1.0, abs=1e-5)
+            assert (probs >= 0).all()
+
+            # Visit count invariant: node.visit_count == 1 + sum(child visits)
+            def check_invariant(node: MCTSNode) -> None:
+                if not node.expanded():
+                    return
+                assert node.visit_counts is not None
+                child_visits = int(node.visit_counts.sum())
+                expected = 1 + child_visits
+                assert node.visit_count == expected
+                for child in node.children.values():
+                    check_invariant(child)
+
+            check_invariant(root)
 
 
 # ---------------------------------------------------------------------------
