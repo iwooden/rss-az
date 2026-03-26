@@ -318,25 +318,14 @@ class ReplayHarness:
         action_id = action.get('id', -1)
         has_ref = action_id >= 0 and action_id in ref_by_action
 
-        # Skip dividend actions for corps that couldn't afford $1/share — the
-        # engine auto-applied the only valid dividend (0) when it advanced past
-        # the previous corp.  Must check BEFORE comparison: our state already
-        # includes the auto-applied dividend's share price adjustment.
-        # The engine may have already left DIVIDENDS (e.g. into ISSUE), so
-        # don't gate on the current phase.
-        if (action.get('type') == 'dividend'
-                and action.get('entity_type') == 'corporation'):
-            corp_name = action.get('entity', '')
-            corp_id = CORP_NAME_TO_ID.get(corp_name)
-            if corp_id is not None and (
-                CORPS[corp_id].get_cash(state) < CORPS[corp_id].get_issued_shares(state)
-                or not CORPS[corp_id].is_active(state)  # Bankrupt after auto-applied dividend
-            ):
-                if self.verbose:
-                    print(f"  Skipping auto-applied dividend for {corp_name} (cash < issued shares)")
-                if has_ref:
-                    self._last_ref = ref_by_action[action_id]
-                return idx + 1
+        # Skip forced dividend actions — the Ruby extractor tags dividends as
+        # forced when corp cash < issued shares or corp is in receivership.
+        # Our engine auto-applies these (only valid dividend is 0).
+        if has_ref and ref_by_action[action_id].get('forced'):
+            if self.verbose:
+                print(f"  Skipping forced action {action_id} ({action.get('type')} for {action.get('entity')})")
+            self._last_ref = ref_by_action[action_id]
+            return idx + 1
 
         # Skip ACQ/CLO-round actions when the engine already advanced past
         # those phases (e.g. no corps active, or all CLO offers were for
@@ -1100,19 +1089,9 @@ class ReplayHarness:
                 expected=ref_deck_size, actual=our_deck_size, context=context,
             ))
 
-        # Compare cost level
-        # The Ruby Stars engine uses levels 1-5, 7, 8 (skipping 6):
-        #   Ruby 7 = END_CARD_FRONT (deck empty, 7● side)
-        #   Ruby 8 = END_CARD_BACK (end card flipped, 10● side)
-        # Our engine uses contiguous 1-7:
-        #   Our 6 = game end card (7● side)
-        #   Our 7 = game end card flipped (10● side)
+        # Compare cost level (Ruby extractor normalizes to our numbering)
         our_coo = TURN.get_coo_level(state)
         ref_coo = ref.get('cost_level', 0)
-        if ref_coo == 7:
-            ref_coo = 6  # Ruby END_CARD_FRONT → our level 6
-        elif ref_coo == 8:
-            ref_coo = 7  # Ruby END_CARD_BACK → our level 7
         if our_coo != ref_coo:
             self.mismatches.append(Mismatch(
                 action_id=action_id, phase=phase_name,

@@ -152,7 +152,13 @@ def build_snapshot(game, action_id:, action_type:, round_override: nil)
     foreign_investor: snapshot_foreign_investor(game),
     offering:         game.offering.map(&:sym),
     deck_size:        game.company_deck.size,
-    cost_level:       game.cost_level,
+    # Normalize cost_level to our engine's contiguous numbering:
+    # Ruby 7 (END_CARD_FRONT) → 6, Ruby 8 (END_CARD_BACK) → 7
+    cost_level:       case game.cost_level
+                      when 7 then 6
+                      when 8 then 7
+                      else game.cost_level
+                      end,
   }
 end
 
@@ -231,6 +237,16 @@ def process_game(json_path)
     # (the last action in a round would otherwise show the next round's name).
     round_before = game.round.class.short_name
 
+    # Detect forced actions BEFORE processing — our Cython engine auto-applies
+    # these, so the Python replay harness needs to skip them.
+    forced = false
+    if action_type == 'dividend'
+      corp = game.corporations.find { |c| c.name == raw_action['entity'] }
+      if corp && corp.floated?
+        forced = corp.receivership? || game.max_dividend_per_share(corp) == 0
+      end
+    end
+
     result = game.process_action(raw_action)
     game = result if result.is_a?(Engine::Game::Base)
 
@@ -239,8 +255,10 @@ def process_game(json_path)
     # so the engine's auto-pass flags stay correct.
     next if skip_types.include?(action_type)
 
-    snapshots << build_snapshot(game, action_id: action_id, action_type: action_type,
-                                round_override: round_before)
+    snap = build_snapshot(game, action_id: action_id, action_type: action_type,
+                          round_override: round_before)
+    snap[:forced] = true if forced
+    snapshots << snap
   end
 
   # Collect committed action IDs (everything except the initial record).

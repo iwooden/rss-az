@@ -4,8 +4,8 @@ Validates our Cython game engine against completed games from [18xx.games](https
 
 ## Architecture
 
-- **`extract_states.rb`** — Ruby script that replays a game through the 18xx engine and extracts a state snapshot after every action. Requires the 18xx engine submodule at `18xx/`.
-- **`action_parser.py`** — Converts 18xx action streams into our engine's integer action indices. Handles undo/redo, auto-action flattening, and per-phase mapping.
+- **`extract_states.rb`** — Ruby script that replays a game through the 18xx engine and extracts a state snapshot after every action. Requires the 18xx engine submodule at `18xx/`. This is the **preferred place for preprocessing** — the Ruby side has direct access to the 18xx engine's internal state, making it much easier to annotate snapshots with metadata (forced actions, round labels, etc.) than reconstructing that information on the Python side.
+- **`action_parser.py`** — Converts 18xx action streams into our engine's integer action indices. Handles committed-action filtering (via IDs from the extractor), auto-action flattening, and per-phase mapping.
 - **`replay_harness.py`** — Orchestrates replay: initializes our engine with the 18xx deck order, replays actions through the parser, and compares state snapshots.
 - **`test_replay.py`** — Pytest entry point. Dynamically discovers game JSON files in `data/`.
 
@@ -73,16 +73,41 @@ Our Cython engine makes several intentional design choices that differ from the 
 
 **18xx:** Every action is explicit in the action stream, even when there's only one valid choice (e.g., dividend 0 for a corp with insufficient cash).
 
-**Our engine:** Forced actions (only one valid choice) are auto-applied without player input. This includes dividends when `cash < issued_shares` (only dividend 0 is valid), receivership dividends (always 0), and any single-option phase.
+**Our engine:** Forced actions (only one valid choice) are auto-applied without player input. Examples:
+- Dividends when `cash < issued_shares` (only dividend 0 is valid)
+- Receivership dividends (always 0)
+- IPO passes when a company's owner can't afford any valid par price
+- PAR price selection when only one par price is valid for the company's star tier
+- Any single-option offer in ACQ/CLO phases
 
-**Replay handling:** The replay harness detects dividend actions for corps with `cash < issued_shares` and skips both the comparison and the action mapping. The engine already auto-applied the dividend (including share price adjustment), so applying it again would target the wrong corp.
+**Replay handling:** The replay harness detects each case and skips both the comparison and the action mapping for actions the engine already auto-applied. For dividends, it checks `cash < issued_shares` or bankrupt status. For IPO, it checks whether the owner can afford any par. For PAR, it checks whether the engine already advanced past `PHASE_PAR`.
 
 ### 9. Round Label Timing in Extractor
 
 The Ruby extractor captures the round label **before** processing each action, not after. This ensures the last action of a round (which causes a phase transition) is labeled with the round it was *taken in*, not the round the engine transitions *to*.
 
+### 10. Cost of Ownership Level Numbering
+
+**18xx (Ruby):** Uses levels 1-5, 7, 8 (skipping 6). Level 7 = deck empty / game end card front (7-coin side). Level 8 = game end card flipped (10-coin side).
+
+**Our engine:** Uses contiguous levels 1-7. Level 6 = game end card front. Level 7 = game end card flipped.
+
+**Replay handling:** The state comparator remaps Ruby levels: 7 → 6, 8 → 7.
+
+## State Comparison
+
+The harness compares these fields at action boundaries (before applying each action):
+
+- **Players:** cash, net worth (value), owned companies, shares per corp
+- **Corporations:** active/floated status, share price, treasury cash, owned companies, shares in market (bank)
+- **Foreign Investor:** cash, owned companies
+- **Offering:** companies available for auction + revealed/unavailable
+- **Deck:** remaining card count, cost of ownership level
+- **Active entity:** active player (INVEST/BID/IPO) or active corp (DIVIDENDS/ISSUE), only when phases are aligned between engines
+
 ## Adding a Game
 
 1. Export game JSON from 18xx.games → save to `data/<game_id>.json`
-2. Run `ruby extract_states.rb data/` to generate the `_extract.json` file
-3. The test will auto-discover it via `test_replay.py`'s dynamic game ID collection
+2. Extracts are auto-generated: the pytest session fixture runs `ruby extract_states.rb data/` to create any missing `_extract.json` files. You can also run it manually to pre-generate or regenerate extracts.
+3. The test auto-discovers all game JSONs in `data/` (excluding `*_extract.json`).
+4. If a game exposes a confirmed **18xx.games engine bug** (not a bug in our engine), add its ID to `SKIP_GAMES` in `test_replay.py` with a comment explaining the bug.
