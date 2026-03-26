@@ -44,6 +44,13 @@ SKIP_GAMES = {
     # despite having 27 cash remaining.  Our engine correctly repeats.
     # Tracked: rss-az-xwzk (submit PR to 18xx.games repo)
     243592,
+    # 18xx receivership FI buying: OS special ability priority unclear.
+    # Our engine gives OS first priority for FI purchases (special ability:
+    # "always considered highest share price"). 18xx uses actual share price
+    # ordering for receivership, ignoring OS special. Need to clarify.
+    # Tracked: rss-az-76nd
+    210560,
+    210896,  # Same OS receivership FI priority issue (rss-az-76nd)
 }
 
 

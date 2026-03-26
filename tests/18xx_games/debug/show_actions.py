@@ -50,12 +50,23 @@ def format_action(a, committed_ids):
         status = "committed" if committed else "UNDONE"
         parts.append(f"  [{status}]")
 
-    # Auto-actions
+    # Auto-actions summary
     autos = a.get("auto_actions", [])
     if autos:
         parts.append(f"  auto_actions={len(autos)}")
 
     return "".join(parts)
+
+
+def format_auto_actions(a):
+    """Format auto_actions detail lines (for --expand-autos)."""
+    lines = []
+    for aa in a.get("auto_actions", []):
+        aa_type = aa.get("type", "?")
+        aa_entity = aa.get("entity", "")
+        aa_etype = aa.get("entity_type", "")
+        lines.append(f"       -> auto: type={aa_type}  entity={aa_etype}:{aa_entity}")
+    return lines
 
 
 def main():
@@ -65,6 +76,8 @@ def main():
                         help="Action ID range START-END")
     parser.add_argument("--committed-only", action="store_true",
                         help="Only show committed actions")
+    parser.add_argument("--expand-autos", action="store_true",
+                        help="Show auto_action details on separate lines")
     args = parser.parse_args()
 
     game_path = DATA_DIR / f"{args.game_id}.json"
@@ -93,6 +106,9 @@ def main():
         if args.committed_only and committed_ids and aid not in committed_ids:
             continue
         print(format_action(a, committed_ids))
+        if args.expand_autos:
+            for line in format_auto_actions(a):
+                print(line)
 
 
 if __name__ == "__main__":

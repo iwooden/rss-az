@@ -117,8 +117,9 @@ All scripts operate on extract files (`data/<game_id>_extract.json`) and/or raw 
 | `show_acq_outcomes.py` | List all ACQ outcomes (with cross-president flags) | `python ... 210560 --cross-only` |
 | `dump_state.py` | Dump full state at specific action IDs | `python ... 210560 280 282` |
 | `diff_states.py` | Diff two snapshots to see what changed | `python ... 210560 280 282` |
-| `show_actions.py` | Show raw 18xx actions with committed/undone status | `python ... 210560 --range 278-290` |
+| `show_actions.py` | Show raw 18xx actions with committed/undone status | `python ... 210560 --range 278-290 --expand-autos` |
 | `show_round.py` | Show all snapshots for a round type (ACQ, CLO, etc.) | `python ... 210560 ACQ --range 260-290` |
+| `find_gaps.py` | Find phase-transition gaps from undone actions | `python ... 213447` |
 
 ### Common workflows
 
@@ -129,6 +130,8 @@ All scripts operate on extract files (`data/<game_id>_extract.json`) and/or raw 
 **ACQ/CLO issues:** Use `show_acq_outcomes.py` to see all transfers and cross-president flags. Use `show_round.py ACQ` to see the full ACQ round state. Use `show_actions.py` to see the raw 18xx actions (offer/respond/pass).
 
 **Invisible turn cycles:** When two adjacent extract snapshots are both INV-round but state changed significantly (receivership auto-buys, INCOME, etc.), use `diff_states.py` to see everything that happened during the automated phases.
+
+**Undo gaps:** When the engine is stuck in a phase but the action stream jumps ahead, use `find_gaps.py` to find places where undone actions created phase-transition holes. Use `show_actions.py --expand-autos` to see the full undo/redo chain and auto_actions in the gap.
 
 ## Adding a Game
 
