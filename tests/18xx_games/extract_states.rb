@@ -245,6 +245,27 @@ def process_game(json_path)
       if corp && corp.floated?
         forced = corp.receivership? || game.max_dividend_per_share(corp) == 0
       end
+    elsif action_type == 'pass' && round_before == 'IPO'
+      entity = game.round.current_entity
+      if entity&.company? && entity.owner&.player?
+        # Check affordability using our Cython engine's cost formula:
+        #   par >= face → 1 player share, cost = par - face
+        #   par <  face → 2 player shares, cost = 2*par - face
+        can_afford = false
+        unless game.corporations.all?(&:ipoed)
+          face_value = entity.value
+          player_cash = entity.owner.cash
+          game.available_par_prices(entity).each do |pp|
+            player_shares = pp.price >= face_value ? 1 : 2
+            cost = (player_shares * pp.price) - face_value
+            if cost <= player_cash
+              can_afford = true
+              break
+            end
+          end
+        end
+        forced = true unless can_afford
+      end
     end
 
     result = game.process_action(raw_action)
