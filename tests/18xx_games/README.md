@@ -105,6 +105,31 @@ The harness compares these fields at action boundaries (before applying each act
 - **Deck:** remaining card count, cost of ownership level
 - **Active entity:** active player (INVEST/BID/IPO) or active corp (DIVIDENDS/ISSUE), only when phases are aligned between engines
 
+## Debug Scripts
+
+The `debug/` directory contains reusable scripts for investigating replay failures. **Always prefer extending these over writing ad-hoc inline scripts.** If you need a new debug pattern, add it as a script here.
+
+All scripts operate on extract files (`data/<game_id>_extract.json`) and/or raw game JSONs (`data/<game_id>.json`). Run from the repo root with `python tests/18xx_games/debug/<script>.py`.
+
+| Script | Purpose | Example |
+|--------|---------|---------|
+| `track_company.py` | Track a company's ownership across snapshots | `python ... 210560 SJ --transitions-only` |
+| `show_acq_outcomes.py` | List all ACQ outcomes (with cross-president flags) | `python ... 210560 --cross-only` |
+| `dump_state.py` | Dump full state at specific action IDs | `python ... 210560 280 282` |
+| `diff_states.py` | Diff two snapshots to see what changed | `python ... 210560 280 282` |
+| `show_actions.py` | Show raw 18xx actions with committed/undone status | `python ... 210560 --range 278-290` |
+| `show_round.py` | Show all snapshots for a round type (ACQ, CLO, etc.) | `python ... 210560 ACQ --range 260-290` |
+
+### Common workflows
+
+**First mismatch in a test:** Run the test with `-x --tb=long` to get the first mismatch action ID and field. Then use `dump_state.py` to inspect the reference state at that point, and `diff_states.py` to see what changed in the turn leading up to it.
+
+**Company in wrong place:** Use `track_company.py --transitions-only` to find when ownership diverged. Then `diff_states.py` on the two surrounding action IDs to see the full delta.
+
+**ACQ/CLO issues:** Use `show_acq_outcomes.py` to see all transfers and cross-president flags. Use `show_round.py ACQ` to see the full ACQ round state. Use `show_actions.py` to see the raw 18xx actions (offer/respond/pass).
+
+**Invisible turn cycles:** When two adjacent extract snapshots are both INV-round but state changed significantly (receivership auto-buys, INCOME, etc.), use `diff_states.py` to see everything that happened during the automated phases.
+
 ## Adding a Game
 
 1. Export game JSON from 18xx.games → save to `data/<game_id>.json`
