@@ -49,6 +49,7 @@ def layout():
 
 @pytest.fixture(scope="session")
 def model():
+    torch.manual_seed(0)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     _layout = get_layout(3)
     cfg = RSSModelConfig(input_dim=_layout.visible_size, action_dim=get_total_action_count(3), value_dim=3)
