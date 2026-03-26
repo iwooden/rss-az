@@ -9,12 +9,12 @@ Fixture Usage Guide:
 """
 import pytest
 import numpy as np
-from core.state import GameState, get_corp_fields, get_turn_fields, get_layout
+from core.state import GameState, get_corp_fields, get_player_fields, get_turn_fields, get_layout
 from core.driver import DRIVER
 from core.actions import get_valid_action_mask, get_action_layout
 from core.data import (
     GamePhases, CORP_NAMES, CorpIndices, get_corp_share_count, get_company_stars,
-    get_required_stars, PY_IMPACT_DIVISOR as IMPACT_DIVISOR,
+    get_required_stars, PY_IMPACT_DIVISOR as IMPACT_DIVISOR, PY_MAX_ROUNDTRIPS as MAX_ROUNDTRIPS,
     PY_CASH_DIVISOR as CASH_DIVISOR,
     get_company_face_value, get_par_price, get_market_index, is_valid_par_price,
     GameConstants,
@@ -234,6 +234,24 @@ def assert_invariants(state, msg=""):
                 f"stored={stored} != expected={expected} "
                 f"(stars={stars}, idx={idx}, issued={issued}, required={required}, move={move})"
             )
+
+    # Visible round_trips consistency: scalar must match max(per-corp round trips)
+    pf = get_player_fields(num_players)
+    for p in range(num_players):
+        rt_offset = layout.players_offset + p * layout.player_stride + pf.round_trips
+        stored_rt = state._array[rt_offset]
+        max_rt = 0
+        for c in range(8):
+            buys = PLAYERS[p].get_share_buys(state, c)
+            sells = PLAYERS[p].get_share_sells(state, c)
+            rt = min(buys, sells)
+            if rt > max_rt:
+                max_rt = rt
+        expected_rt = max_rt / MAX_ROUNDTRIPS
+        assert abs(stored_rt - expected_rt) < 1e-6, (
+            f"{msg}\nPlayer {p} round_trips mismatch: "
+            f"stored={stored_rt} != expected={expected_rt} (max_rt={max_rt})"
+        )
 
     # PAR info consistency: must be zero outside IPO/PAR, valid inside
     phase = TURN.get_phase(state)

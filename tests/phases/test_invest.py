@@ -1,7 +1,7 @@
 """Tests for INVEST phase actions."""
 import pytest
 import numpy as np
-from core.state import GameState, get_layout
+from core.state import GameState, get_layout, get_player_fields
 from core.driver import ZeroLegalActionsError, ForcedActionLoopError
 from core.actions import get_valid_action_mask, get_action_layout
 from core.data import (
@@ -1164,24 +1164,25 @@ class TestInvestImpacts:
 # =============================================================================
 
 class TestRoundTripTracking:
-    """Test that visible round_trips and hidden share_buys/sells are filled correctly."""
+    """Test that visible round_trips scalar and hidden share_buys/sells are filled correctly.
 
-    def _get_visible_round_trips(self, state, player_id, corp_id):
-        """Read visible round_trips[corp_id] directly from the state array."""
+    The visible round_trips field is a single scalar per player: max(min(buys, sells))
+    across all corps, normalized by MAX_ROUNDTRIPS. Hidden state still tracks per-corp.
+    """
+
+    def _get_visible_round_trips(self, state, player_id):
+        """Read visible round_trips scalar directly from the state array."""
         layout = get_layout(3)
-        # round_trips is 10 positions from the end of the player stride
-        # (8 round_trips slots + 1 acquisition_proceeds + 1 income)
-        rt_rel = layout.player_stride - 10
-        offset = layout.players_offset + player_id * layout.player_stride + rt_rel + corp_id
+        fields = get_player_fields(3)
+        offset = layout.players_offset + player_id * layout.player_stride + fields.round_trips
         return state._array[offset]
 
     def test_visible_round_trips_zero_at_init(self):
-        """Visible round_trips are zero for all players/corps after init."""
+        """Visible round_trips scalar is zero for all players after init."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
         for p in range(3):
-            for c in range(8):
-                assert self._get_visible_round_trips(state, p, c) == 0.0
+            assert self._get_visible_round_trips(state, p) == 0.0
 
     def test_hidden_buys_sells_zero_at_init(self):
         """Hidden share_buys and share_sells are zero after init."""
@@ -1216,51 +1217,54 @@ class TestRoundTripTracking:
         state.initialize_game(seed=42)
 
         PLAYERS[0].increment_share_buys(state, 0)
-        # min(1, 0) = 0
-        assert self._get_visible_round_trips(state, 0, 0) == 0.0
+        # max(min(1,0)) = 0
+        assert self._get_visible_round_trips(state, 0) == 0.0
 
     def test_visible_round_trips_after_buy_and_sell(self):
-        """A buy + sell gives round_trips = min(1,1)/MAX_ROUNDTRIPS = 0.5."""
+        """A buy + sell on same corp gives round_trips = max(min(1,1))/MAX_ROUNDTRIPS = 0.5."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
         PLAYERS[0].increment_share_buys(state, 0)
         PLAYERS[0].increment_share_sells(state, 0)
-        # min(1, 1) = 1, normalized: 1 / 2.0 = 0.5
-        assert abs(self._get_visible_round_trips(state, 0, 0) - 0.5) < 1e-6
+        # max(min(1,1)) = 1, normalized: 1 / 2.0 = 0.5
+        assert abs(self._get_visible_round_trips(state, 0) - 0.5) < 1e-6
 
     def test_visible_round_trips_after_two_roundtrips(self):
-        """Two buys + two sells gives round_trips = min(2,2)/MAX_ROUNDTRIPS = 1.0."""
+        """Two buys + two sells on same corp gives round_trips = 1.0."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
         for _ in range(2):
             PLAYERS[0].increment_share_buys(state, 0)
             PLAYERS[0].increment_share_sells(state, 0)
-        assert abs(self._get_visible_round_trips(state, 0, 0) - 1.0) < 1e-6
+        assert abs(self._get_visible_round_trips(state, 0) - 1.0) < 1e-6
 
     def test_visible_round_trips_asymmetric(self):
-        """3 buys + 1 sell gives round_trips = min(3,1)/MAX_ROUNDTRIPS = 0.5."""
+        """3 buys + 1 sell gives round_trips = max(min(3,1))/MAX_ROUNDTRIPS = 0.5."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
         for _ in range(3):
             PLAYERS[0].increment_share_buys(state, 0)
         PLAYERS[0].increment_share_sells(state, 0)
-        assert abs(self._get_visible_round_trips(state, 0, 0) - 0.5) < 1e-6
+        assert abs(self._get_visible_round_trips(state, 0) - 0.5) < 1e-6
 
-    def test_per_corp_independence(self):
-        """Round trips for different corps are independent."""
+    def test_visible_is_max_across_corps(self):
+        """Visible scalar reflects the max round-trip count across all corps."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
+        # Corp 0: 1 round-trip
         PLAYERS[0].increment_share_buys(state, 0)
         PLAYERS[0].increment_share_sells(state, 0)
-        PLAYERS[0].increment_share_buys(state, 3)
+        # Corp 3: 2 round-trips (the max)
+        for _ in range(2):
+            PLAYERS[0].increment_share_buys(state, 3)
+            PLAYERS[0].increment_share_sells(state, 3)
 
-        assert abs(self._get_visible_round_trips(state, 0, 0) - 0.5) < 1e-6  # 1 round-trip
-        assert self._get_visible_round_trips(state, 0, 3) == 0.0              # 1 buy, no sells
-        assert self._get_visible_round_trips(state, 0, 1) == 0.0              # untouched
+        # Visible should be max(1, 2) / 2.0 = 1.0
+        assert abs(self._get_visible_round_trips(state, 0) - 1.0) < 1e-6
 
     def test_per_player_independence(self):
         """Round trips for different players are independent."""
@@ -1271,8 +1275,8 @@ class TestRoundTripTracking:
         PLAYERS[0].increment_share_sells(state, 0)
         PLAYERS[1].increment_share_buys(state, 0)
 
-        assert abs(self._get_visible_round_trips(state, 0, 0) - 0.5) < 1e-6  # player 0: 1 rt
-        assert self._get_visible_round_trips(state, 1, 0) == 0.0              # player 1: buy only
+        assert abs(self._get_visible_round_trips(state, 0) - 0.5) < 1e-6  # player 0: 1 rt
+        assert self._get_visible_round_trips(state, 1) == 0.0              # player 1: buy only
         assert PLAYERS[0].get_share_buys(state, 0) == 1
         assert PLAYERS[1].get_share_buys(state, 0) == 1
         assert PLAYERS[1].get_share_sells(state, 0) == 0
@@ -1291,19 +1295,19 @@ class TestRoundTripTracking:
 
         # Verify non-zero before clearing
         assert PLAYERS[0].get_share_buys(state, 0) == 2
-        assert abs(self._get_visible_round_trips(state, 0, 0) - 1.0) < 1e-6
-        assert abs(self._get_visible_round_trips(state, 1, 3) - 0.5) < 1e-6
+        assert abs(self._get_visible_round_trips(state, 0) - 1.0) < 1e-6
+        assert abs(self._get_visible_round_trips(state, 1) - 0.5) < 1e-6
 
         # Clear all players
         for p in range(3):
             PLAYERS[p].clear_roundtrip_tracking(state)
 
-        # Everything should be zero
+        # Hidden state and visible scalar should all be zero
         for p in range(3):
             for c in range(8):
                 assert PLAYERS[p].get_share_buys(state, c) == 0, f"p{p} c{c} buys not cleared"
                 assert PLAYERS[p].get_share_sells(state, c) == 0, f"p{p} c{c} sells not cleared"
-                assert self._get_visible_round_trips(state, p, c) == 0.0, f"p{p} c{c} visible rt not cleared"
+            assert self._get_visible_round_trips(state, p) == 0.0, f"p{p} visible rt not cleared"
 
     def test_clear_only_affects_target_player(self):
         """Clearing one player's tracking doesn't affect another's."""
@@ -1320,11 +1324,11 @@ class TestRoundTripTracking:
         # Player 0 cleared
         assert PLAYERS[0].get_share_buys(state, 0) == 0
         assert PLAYERS[0].get_share_sells(state, 0) == 0
-        assert self._get_visible_round_trips(state, 0, 0) == 0.0
+        assert self._get_visible_round_trips(state, 0) == 0.0
         # Player 1 untouched
         assert PLAYERS[1].get_share_buys(state, 0) == 1
         assert PLAYERS[1].get_share_sells(state, 0) == 1
-        assert abs(self._get_visible_round_trips(state, 1, 0) - 0.5) < 1e-6
+        assert abs(self._get_visible_round_trips(state, 1) - 0.5) < 1e-6
 
     def test_buy_action_updates_hidden_buys(self, trade_state):
         """Actual buy action through the driver increments hidden share_buys."""
@@ -1338,7 +1342,7 @@ class TestRoundTripTracking:
         # Buy increments hidden buys; no sells yet so visible round_trips stays 0
         assert player.get_share_buys(trade_state, 0) == 1
         assert player.get_share_sells(trade_state, 0) == 0
-        assert self._get_visible_round_trips(trade_state, 0, 0) == 0.0
+        assert self._get_visible_round_trips(trade_state, 0) == 0.0
 
     def test_sell_action_updates_hidden_sells(self, trade_state):
         """Actual sell action through the driver increments hidden share_sells."""
@@ -1352,7 +1356,7 @@ class TestRoundTripTracking:
         # Sell increments hidden sells; no buys yet so visible round_trips stays 0
         assert player.get_share_sells(trade_state, 0) == 1
         assert player.get_share_buys(trade_state, 0) == 0
-        assert self._get_visible_round_trips(trade_state, 0, 0) == 0.0
+        assert self._get_visible_round_trips(trade_state, 0) == 0.0
 
     def test_buy_sell_via_driver_sets_visible_round_trips(self, trade_state):
         """A buy + sell in the same INVEST phase produces nonzero visible round_trips.
@@ -1374,4 +1378,4 @@ class TestRoundTripTracking:
 
         assert player.get_share_buys(trade_state, 0) == 1
         assert player.get_share_sells(trade_state, 0) == 1
-        assert abs(self._get_visible_round_trips(trade_state, 0, 0) - 0.5) < 1e-6
+        assert abs(self._get_visible_round_trips(trade_state, 0) - 0.5) < 1e-6

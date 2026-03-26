@@ -392,7 +392,7 @@ cdef class Player:
         """Increment share buy count and update visible round_trips."""
         cdef int current = self.get_share_buys(state, corp_id)
         state._data[self._hidden_share_buys_offset + corp_id] = <float>(current + 1) / (MAX_ROUNDTRIPS * 2)
-        self._update_visible_roundtrips(state, corp_id)
+        self._update_visible_roundtrips(state)
 
     cpdef int get_share_sells(self, GameState state, int corp_id):
         """Get share sell count for this corp this turn (from hidden state)."""
@@ -402,14 +402,18 @@ cdef class Player:
         """Increment share sell count and update visible round_trips."""
         cdef int current = self.get_share_sells(state, corp_id)
         state._data[self._hidden_share_sells_offset + corp_id] = <float>(current + 1) / (MAX_ROUNDTRIPS * 2)
-        self._update_visible_roundtrips(state, corp_id)
+        self._update_visible_roundtrips(state)
 
-    cdef void _update_visible_roundtrips(self, GameState state, int corp_id):
-        """Recompute visible round_trips[corp_id] = min(buys, sells) / MAX_ROUNDTRIPS."""
-        cdef int buys = self.get_share_buys(state, corp_id)
-        cdef int sells = self.get_share_sells(state, corp_id)
-        cdef int rt = buys if buys < sells else sells
-        state._data[self._round_trips_offset + corp_id] = <float>rt / MAX_ROUNDTRIPS
+    cdef void _update_visible_roundtrips(self, GameState state):
+        """Recompute visible round_trips = max(min(buys, sells)) across all corps / MAX_ROUNDTRIPS."""
+        cdef int i, buys, sells, rt, max_rt = 0
+        for i in range(<int>GameConstants.NUM_CORPS):
+            buys = self.get_share_buys(state, i)
+            sells = self.get_share_sells(state, i)
+            rt = buys if buys < sells else sells
+            if rt > max_rt:
+                max_rt = rt
+        state._data[self._round_trips_offset] = <float>max_rt / MAX_ROUNDTRIPS
 
     cpdef int get_roundtrips(self, GameState state, int corp_id):
         """
@@ -430,7 +434,7 @@ cdef class Player:
         for i in range(<int>GameConstants.NUM_CORPS):
             state._data[self._hidden_share_buys_offset + i] = 0.0
             state._data[self._hidden_share_sells_offset + i] = 0.0
-            state._data[self._round_trips_offset + i] = 0.0
+        state._data[self._round_trips_offset] = 0.0
 
     # =========================================================================
     # ACQUISITION PROCEEDS

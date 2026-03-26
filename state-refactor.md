@@ -105,6 +105,23 @@ Changes to the visible state vector that need doc/test updates when complete.
 - `tests/phases/conftest.py` — invariant: zero outside IPO/PAR, values match formula inside
 - `tests/phases/test_ipo.py` — 9 new tests in `TestParInfoPopulation`
 
+### 6. Player: compact `round_trips` to single scalar (-7 per player)
+
+**Position:** Same field offset, but now 1 float instead of 8.
+**Encoding:** `max(min(buys[c], sells[c]) for all corps) / MAX_ROUNDTRIPS` — worst-case round-trip count.
+**Value:** 0 outside INVEST phase (context-dependent, unchanged).
+**Player stride:** -7 per player (-21 for 3p)
+
+**Hidden state unchanged:** Per-corp buy/sell counts still tracked in hidden state for action masking.
+
+**Code changes:**
+- `core/state.pyx` — player_stride (`NUM_CORPS` → `1`), `compute_player_field_offsets` (`+= NUM_CORPS` → `+= 1`)
+- `entities/player.pxd` — `_update_visible_roundtrips` signature drops `corp_id`
+- `entities/player.pyx` — `_update_visible_roundtrips` computes max across all corps; `clear_roundtrip_tracking` clears single slot
+- `interp/utils.py` — round_trips group size `NK` → `1`
+- `tests/phases/test_invest.py` — rewritten `TestRoundTripTracking` for single-scalar semantics; added `test_visible_is_max_across_corps`
+- `tests/phases/conftest.py` — invariant: visible scalar matches max(per-corp round trips)
+
 ## Pending Updates (do when all changes are done)
 
 - [ ] `VECTORS.md` — corp stride, field table, field offsets, turn state fields, size table

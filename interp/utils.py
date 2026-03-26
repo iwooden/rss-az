@@ -307,7 +307,7 @@ def build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
         ("player:owned_companies", pf.owned_companies, NC),
         ("player:owned_shares", pf.owned_shares, NK),
         ("player:is_president", pf.is_president, NK),
-        ("player:round_trips", pf.round_trips, NK),
+        ("player:round_trips", pf.round_trips, 1),
         ("player:acq_proceeds", pf.acquisition_proceeds, 1),
         ("player:income", pf.income, 1),
     ]

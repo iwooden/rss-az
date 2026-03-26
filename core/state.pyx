@@ -181,7 +181,7 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         GameConstants.NUM_COMPANIES +     # owned_companies
         GameConstants.NUM_CORPS +         # owned_shares
         GameConstants.NUM_CORPS +         # is_president
-        GameConstants.NUM_CORPS +         # round_trips (visible: min(buys, sells) / MAX_ROUNDTRIPS)
+        1 +                 # round_trips (visible: max round-trip count across all corps / MAX_ROUNDTRIPS)
         1 +                 # acquisition_proceeds
         1                   # income
     )
@@ -511,7 +511,7 @@ cdef PlayerFieldOffsets compute_player_field_offsets(int num_players) noexcept n
     p.is_president = offset
     offset += GameConstants.NUM_CORPS
     p.round_trips = offset
-    offset += GameConstants.NUM_CORPS
+    offset += 1
     p.acquisition_proceeds = offset
     offset += 1
     p.income = offset
