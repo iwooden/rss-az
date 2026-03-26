@@ -22,7 +22,7 @@ from core.state import GameState
 from core.driver import DRIVER, STATUS_INVALID_PY as STATUS_INVALID
 from core.data import (
     COMPANY_NAME_TO_ID, CORP_NAME_TO_ID, COMPANY_NAMES, CORP_NAMES,
-    GamePhases, get_company_low_price,
+    GamePhases, get_company_low_price, get_company_income,
 )
 from core.actions import get_valid_action_mask
 from entities.deck import DECK
@@ -338,6 +338,12 @@ class ReplayHarness:
         # Update reference for next comparison
         if has_ref:
             self._last_ref = ref_by_action[action_id]
+        elif action_id < 0 and action.get('type') == 'pass':
+            # Auto-action pass (from program_share_pass/program_close_pass):
+            # the filtered program_* action's ref is not in the stream, so
+            # _last_ref would be stale. Clear it to avoid false active_player
+            # mismatches on the next real action.
+            self._last_ref = None
 
         return idx + 1
 
@@ -419,8 +425,10 @@ class ReplayHarness:
         if self.verbose and acq_outcomes:
             print(f"  ACQ adapter: outcomes={acq_outcomes}")
 
-        # Pre-apply cross-president corp-to-corp transfers that our engine
-        # intentionally excludes from its action space (RULES.md constraint #1).
+        # Pre-apply transfers that our engine intentionally excludes from its
+        # action space (RULES.md constraint #1):
+        #   - Cross-president corp-to-corp transfers
+        #   - Player-to-corp transfers where player != buyer corp's president
         # Must happen BEFORE the while loop because the driver auto-advances
         # through CLOSING and INCOME after ACQ — patching after would be too late.
         for company_name, (buyer_name, price) in list(acq_outcomes.items()):
@@ -429,27 +437,52 @@ class ReplayHarness:
             if company_id is None or buyer_corp_id is None:
                 continue
 
-            # Check if company is owned by a corp with a different president
+            buyer_president = CORPS[buyer_corp_id].get_president_id(state)
+
+            # Check if company is owned by a corp (corp-to-corp transfer)
             seller_corp_id = None
             for cid in range(8):
                 if CORPS[cid].is_active(state) and COMPANIES[company_id].is_owned_by_corp(state, cid):
                     seller_corp_id = cid
                     break
 
-            if seller_corp_id is None:
-                continue  # Not a corp-to-corp transfer
-            if CORPS[seller_corp_id].get_president_id(state) == CORPS[buyer_corp_id].get_president_id(state):
-                continue  # Same president — engine handles this
+            if seller_corp_id is not None:
+                if CORPS[seller_corp_id].get_president_id(state) == buyer_president:
+                    continue  # Same president — engine handles this
 
-            # Direct state patch: transfer company and cash
-            COMPANIES[company_id].transfer_to_corp(state, buyer_corp_id)
-            CORPS[buyer_corp_id].add_cash(state, -price)
-            CORPS[seller_corp_id].add_cash(state, price)
-            del acq_outcomes[company_name]
-            if self.verbose:
-                print(f"  ACQ adapter: pre-applied cross-president transfer "
-                      f"{CORP_NAMES[seller_corp_id]}->{buyer_name} "
-                      f"for {company_name} at price {price}")
+                # Cross-president corp-to-corp transfer
+                COMPANIES[company_id].transfer_to_corp(state, buyer_corp_id)
+                CORPS[buyer_corp_id].add_cash(state, -price)
+                current = CORPS[seller_corp_id].get_acquisition_proceeds(state)
+                CORPS[seller_corp_id].set_acquisition_proceeds(state, current + price)
+                del acq_outcomes[company_name]
+                if self.verbose:
+                    print(f"  ACQ adapter: pre-applied cross-president corp transfer "
+                          f"{CORP_NAMES[seller_corp_id]}->{buyer_name} "
+                          f"for {company_name} at price {price}")
+                continue
+
+            # Check if company is owned by a player (player-to-corp transfer)
+            seller_player_id = None
+            for pid in range(state.get_num_players()):
+                if PLAYERS[pid].owns_company(state, company_id):
+                    seller_player_id = pid
+                    break
+
+            if seller_player_id is not None:
+                if seller_player_id == buyer_president:
+                    continue  # Player is president of buyer — engine handles this
+
+                # Player-to-corp transfer where player != buyer's president
+                COMPANIES[company_id].transfer_to_corp(state, buyer_corp_id)
+                CORPS[buyer_corp_id].add_cash(state, -price)
+                PLAYERS[seller_player_id].add_acquisition_proceeds(state, price)
+                del acq_outcomes[company_name]
+                if self.verbose:
+                    player_name = f"player[{seller_player_id}]"
+                    print(f"  ACQ adapter: pre-applied player-to-corp transfer "
+                          f"{player_name}->{buyer_name} "
+                          f"for {company_name} at price {price}")
 
         # Walk our engine's offer buffer
         max_iterations = 200
@@ -597,8 +630,25 @@ class ReplayHarness:
 
         Returns new index into actions stream.
         """
-        # Collect closing actions
-        close_actions, end_idx = self._collect_phase_actions(actions, idx, 'CLO', ref_by_action)
+        # Collect closing actions — scan past any ACQ-round actions that
+        # precede the CLO-round actions in the stream (the 18xx action stream
+        # has ACQ actions first, then CLO actions, but our engine may have
+        # already auto-advanced past ACQ).
+        close_actions = []
+        end_idx = idx
+        for i in range(idx, len(actions)):
+            action = actions[i]
+            action_id = action.get('id', -1)
+            if action_id in ref_by_action:
+                ref = ref_by_action[action_id]
+                round_name = ref.get('round', '')
+                if round_name == 'CLO':
+                    close_actions.append(action)
+                elif round_name != 'ACQ':
+                    # Hit a non-ACQ/non-CLO round — done collecting
+                    end_idx = i
+                    break
+            end_idx = i + 1
 
         # Build close set: company names that were closed
         closed_companies = set()
@@ -606,7 +656,27 @@ class ReplayHarness:
             if a.get('type') == 'sell_company':
                 closed_companies.add(a.get('company', ''))
 
-        # Walk our engine's offer buffer
+        # Pre-apply closings for positive-income companies that our engine
+        # won't offer (intentional scope constraint — see RULES.md CLO-14).
+        # Similar to cross-president ACQ transfer patching.
+        for company_name in list(closed_companies):
+            company_id = COMPANY_NAME_TO_ID.get(company_name)
+            if company_id is None:
+                continue
+            if COMPANIES[company_id].get_adjusted_income(state) >= 0:
+                # Positive/zero adjusted income — our engine won't offer this.
+                # Check for JS scrapping bonus before removing.
+                for corp_id in range(8):
+                    if CORPS[corp_id].is_active(state) and COMPANIES[company_id].is_owned_by_corp(state, corp_id):
+                        if corp_id == 0:  # JS = Junkyard Scrappers
+                            CORPS[corp_id].add_cash(state, get_company_income(company_id) * 2)
+                        break
+                COMPANIES[company_id].remove_from_game(state)
+                closed_companies.discard(company_name)
+                if self.verbose:
+                    print(f"  CLO adapter: pre-applied positive-income close for {company_name}")
+
+        # Walk our engine's offer buffer for remaining (negative-income) closings
         max_iterations = 200
         iterations = 0
         while TURN.get_phase(state) == PHASE_CLOSING and iterations < max_iterations:

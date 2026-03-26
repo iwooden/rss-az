@@ -119,7 +119,13 @@ def filter_actions(actions: list) -> list:
             continue
 
         if atype in SKIP_ACTIONS:
-            # Skip entirely — do not add to result or committed stacks
+            # Skip the program action itself, but preserve any auto_actions
+            # it carries (e.g. program_share_pass generates an auto pass that
+            # our engine needs to count toward consecutive-pass tracking).
+            for auto in action.get('auto_actions', []):
+                auto_idx = len(result)
+                result.append(auto)
+                committed.append(auto_idx)
             continue
 
         idx = len(result)

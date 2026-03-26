@@ -126,7 +126,7 @@ end
 
 # Assemble a full state snapshot object.  The action_id and action_type fields
 # are set by the caller since this helper only reads the current game state.
-def build_snapshot(game, action_id:, action_type:)
+def build_snapshot(game, action_id:, action_type:, round_override: nil)
   entity = game.round.current_entity
   active_player_id = nil
   active_corp_name = nil
@@ -143,7 +143,7 @@ def build_snapshot(game, action_id:, action_type:)
   {
     action_id:        action_id,
     action_type:      action_type,
-    round:            game.round.class.short_name,
+    round:            round_override || game.round.class.short_name,
     turn:             game.turn,
     active_player:    active_player_id,
     active_corp:      active_corp_name,
@@ -185,6 +185,11 @@ def process_game(json_path)
     action_id   = raw_action['id']
     action_type = raw_action['type']
 
+    # Capture the round BEFORE processing: the snapshot records state AFTER
+    # the action, but the round label should reflect WHEN the action was taken
+    # (the last action in a round would otherwise show the next round's name).
+    round_before = game.round.class.short_name
+
     if action_type == 'undo' || action_type == 'redo'
       game = Engine::Game.load(data, at_action: action_id)
     else
@@ -192,7 +197,8 @@ def process_game(json_path)
       game = result if result.is_a?(Engine::Game::Base)
     end
 
-    snapshots << build_snapshot(game, action_id: action_id, action_type: action_type)
+    snapshots << build_snapshot(game, action_id: action_id, action_type: action_type,
+                                round_override: round_before)
   end
 
   snapshots
