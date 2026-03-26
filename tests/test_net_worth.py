@@ -1,6 +1,6 @@
 """Comprehensive tests for player net worth calculation, storage, and freshness.
 
-Net worth = cash + acquisition_proceeds + sum(company face values) + sum(shares * share_price)
+Net worth = cash + sum(company face values) + sum(shares * share_price)
 
 Tests verify:
 1. The calculate_net_worth formula includes all components
@@ -112,12 +112,11 @@ class TestNetWorthFormula:
         assert nw == 30 + (2 * share_price)
 
     def test_all_components(self):
-        """NW = cash + acq_proceeds + companies + shares."""
+        """NW = cash + companies + shares."""
         state = GameState(num_players=3)
         state.initialize_game(seed=42)
 
-        PLAYERS[0].set_cash(state, 40)
-        PLAYERS[0].set_acquisition_proceeds(state, 15)
+        PLAYERS[0].set_cash(state, 55)
 
         # Give player a private company
         cid = DECK.draw(state)
@@ -129,21 +128,7 @@ class TestNetWorthFormula:
         share_price = CORPS[0].get_share_price(state)
 
         nw = PLAYERS[0].calculate_net_worth(state)
-        assert nw == 40 + 15 + fv + (1 * share_price)
-
-    def test_acquisition_proceeds_included(self):
-        """Set proceeds=100, clear, verify NW drops by 100."""
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-
-        PLAYERS[0].set_cash(state, 50)
-        PLAYERS[0].set_acquisition_proceeds(state, 100)
-        nw_with = PLAYERS[0].calculate_net_worth(state)
-
-        PLAYERS[0].clear_acquisition_proceeds(state)
-        nw_without = PLAYERS[0].calculate_net_worth(state)
-
-        assert nw_with - nw_without == 100
+        assert nw == 55 + fv + (1 * share_price)
 
     def test_inactive_corp_shares_excluded(self):
         """Shares in inactive corp don't count toward NW."""
@@ -655,39 +640,6 @@ class TestNetWorthFreshAfterClosingAction:
 
         if state.get_phase() == GamePhases.PHASE_CLOSING:
             assert_net_worth_fresh(state, "After closing accept, before next offer")
-
-
-# =============================================================================
-# ACQUISITION PROCEEDS IN NET WORTH
-# =============================================================================
-
-class TestAcquisitionProceedsInNetWorth:
-    """Verify acquisition_proceeds is part of net worth calculation."""
-
-    def test_proceeds_included_in_calculation(self):
-        """Set acq_proceeds=50, verify calculate_net_worth includes it."""
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-
-        PLAYERS[0].set_cash(state, 100)
-        PLAYERS[0].set_acquisition_proceeds(state, 50)
-
-        nw = PLAYERS[0].calculate_net_worth(state)
-        assert nw == 150
-
-    def test_proceeds_cleared_reduces_net_worth(self):
-        """Set proceeds, calculate, clear, recalculate — verify drop."""
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-
-        PLAYERS[0].set_cash(state, 100)
-        PLAYERS[0].set_acquisition_proceeds(state, 50)
-        nw_before = PLAYERS[0].calculate_net_worth(state)
-
-        PLAYERS[0].clear_acquisition_proceeds(state)
-        nw_after = PLAYERS[0].calculate_net_worth(state)
-
-        assert nw_before - nw_after == 50
 
 
 # =============================================================================

@@ -123,7 +123,6 @@ cdef struct PlayerFieldOffsets:
     int owned_shares
     int is_president
     int round_trips
-    int acquisition_proceeds
     int income
 
 cdef struct CorpFieldOffsets:

@@ -517,7 +517,7 @@ class ReplayHarness:
                             if seller_idx is not None:
                                 COMPANIES[company_id].transfer_to_corp(state, buyer_corp_id)
                                 CORPS[buyer_corp_id].add_cash(state, -price)
-                                PLAYERS[seller_idx].add_acquisition_proceeds(state, price)
+                                PLAYERS[seller_idx].add_cash(state, price)
                                 if self.verbose:
                                     print(f"  ACQ adapter: pre-applied cross-president player transfer "
                                           f"player[{seller_idx}]->{o['buyer']} for {o['company']} at {price}")

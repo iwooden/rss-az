@@ -173,7 +173,6 @@ cdef class Player:
         self._owned_shares_offset = self._base_offset + fields.owned_shares
         self._is_president_offset = self._base_offset + fields.is_president
         self._round_trips_offset = self._base_offset + fields.round_trips
-        self._acquisition_proceeds_offset = self._base_offset + fields.acquisition_proceeds
         self._income_offset = self._base_offset + fields.income
 
         # Cache absolute offsets for hidden share buy/sell tracking
@@ -237,9 +236,9 @@ cdef class Player:
         """
         Calculate player's total net worth.
 
-        Net worth = cash + acquisition_proceeds + sum(company face values) + sum(shares * share_price)
+        Net worth = cash + sum(company face values) + sum(shares * share_price)
         """
-        cdef int total = self.get_cash(state) + self.get_acquisition_proceeds(state)
+        cdef int total = self.get_cash(state)
         cdef int company_id, corp_id
         cdef int shares
 
@@ -435,27 +434,6 @@ cdef class Player:
             state._data[self._hidden_share_buys_offset + i] = 0.0
             state._data[self._hidden_share_sells_offset + i] = 0.0
         state._data[self._round_trips_offset] = 0.0
-
-    # =========================================================================
-    # ACQUISITION PROCEEDS
-    # =========================================================================
-
-    cpdef int get_acquisition_proceeds(self, GameState state):
-        """Get player's acquisition proceeds (integer dollars)."""
-        return <int>(state._data[self._acquisition_proceeds_offset] * CASH_DIVISOR + 0.5)
-
-    cpdef void set_acquisition_proceeds(self, GameState state, int proceeds):
-        """Set player's acquisition proceeds (integer dollars)."""
-        state._data[self._acquisition_proceeds_offset] = <float>proceeds / CASH_DIVISOR
-
-    cpdef void add_acquisition_proceeds(self, GameState state, int amount):
-        """Add to player's acquisition proceeds (can be negative to subtract)."""
-        cdef int current = self.get_acquisition_proceeds(state)
-        self.set_acquisition_proceeds(state, current + amount)
-
-    cpdef void clear_acquisition_proceeds(self, GameState state):
-        """Clear player's acquisition proceeds (set to 0)."""
-        state._data[self._acquisition_proceeds_offset] = 0.0
 
     # =========================================================================
     # INCOME

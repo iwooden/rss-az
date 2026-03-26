@@ -366,25 +366,23 @@ class TestPhaseFlow:
         # Turn number does NOT increment yet (happens after CLOSING completes in Phase 18)
         assert TURN.get_turn_number(gs) == initial_turn
 
-    def test_transition_merges_player_proceeds(self):
-        """Transition merges player acquisition_proceeds."""
+    def test_transition_preserves_player_cash(self):
+        """Player cash credited directly during ACQ (no separate merge needed)."""
         gs = GameState(3)
         gs.initialize_game()
 
         player = PLAYERS[0]
         initial_cash = player.get_cash(gs)
-        proceeds = 35
+        bonus = 35
 
-        player.add_acquisition_proceeds(gs, proceeds)
+        # Simulate player receiving cash during ACQ (credited directly)
+        player.add_cash(gs, bonus)
         TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
 
         transition_to_closing_py(gs)
-        assert_invariants(gs, "After transition_to_closing_py merges player proceeds")
+        assert_invariants(gs, "After transition_to_closing_py player cash preserved")
 
-        # Proceeds merged to cash
-        assert player.get_cash(gs) == initial_cash + proceeds
-        # Proceeds cleared
-        assert player.get_acquisition_proceeds(gs) == 0
+        assert player.get_cash(gs) == initial_cash + bonus
 
     def test_transition_merges_corp_proceeds(self):
         """Transition merges corp acquisition_proceeds."""
@@ -883,18 +881,18 @@ class TestActionIntegration:
         # Verify setup
         assert get_offer_count(gs) > 0
         corp_cash_before = CORPS[0].get_cash(gs)
-        player_proceeds_before = PLAYERS[0].get_acquisition_proceeds(gs)
+        player_cash_before = PLAYERS[0].get_cash(gs)
 
         # Execute action (offset 0 = low_price, always valid)
         result = apply_acquisition_action_py(gs, ACTION_ACQ_PRICE, 0)
         assert result == 0
         assert_invariants(gs, "After accept price action")
 
-        # Verify money transfer
+        # Verify money transfer (player cash credited directly)
         corp_cash_after = CORPS[0].get_cash(gs)
-        player_proceeds_after = PLAYERS[0].get_acquisition_proceeds(gs)
+        player_cash_after = PLAYERS[0].get_cash(gs)
         assert corp_cash_after < corp_cash_before
-        assert player_proceeds_after > player_proceeds_before
+        assert player_cash_after > player_cash_before
 
         # Verify company in acquisition zone
         assert CORPS[0].has_acquisition_company(gs, 0)
@@ -1134,28 +1132,6 @@ class TestActionIntegration:
 class TestZoneMerging:
     """Tests for acquisition zone merging at phase end."""
 
-    def test_player_proceeds_merge_to_cash(self):
-        """Player acquisition_proceeds merge to cash at phase end."""
-        gs = GameState(3)
-        gs.initialize_game()
-
-        player = PLAYERS[0]
-        initial_cash = player.get_cash(gs)
-        proceeds = 25
-
-        # Simulate acquisition proceeds from selling
-        player.add_acquisition_proceeds(gs, proceeds)
-        assert player.get_acquisition_proceeds(gs) == proceeds
-
-        # Trigger merge
-        merge_acquisition_zones_py(gs)
-        assert_invariants(gs, "After merge_acquisition_zones_py player proceeds")
-
-        # Proceeds merged to cash
-        assert player.get_cash(gs) == initial_cash + proceeds
-        # Proceeds cleared
-        assert player.get_acquisition_proceeds(gs) == 0
-
     def test_corp_proceeds_merge_to_cash(self):
         """Corp acquisition_proceeds merge to cash at phase end."""
         gs = GameState(3)
@@ -1205,12 +1181,9 @@ class TestZoneMerging:
         assert not company.is_acquired(gs)
 
     def test_zones_cleared_after_merge(self):
-        """Acquisition zones are cleared (zeroed) after merge."""
+        """Corp acquisition zones are cleared (zeroed) after merge."""
         gs = GameState(3)
         gs.initialize_game()
-
-        player = PLAYERS[0]
-        player.add_acquisition_proceeds(gs, 50)
 
         float_corp_for_test(gs, 0)
         corp = CORPS[0]
@@ -1220,8 +1193,6 @@ class TestZoneMerging:
         merge_acquisition_zones_py(gs)
         assert_invariants(gs, "After merge_acquisition_zones_py zones cleared")
 
-        # All zones cleared
-        assert player.get_acquisition_proceeds(gs) == 0
         assert corp.get_acquisition_proceeds(gs) == 0
 
 

@@ -122,6 +122,24 @@ Changes to the visible state vector that need doc/test updates when complete.
 - `tests/phases/test_invest.py` — rewritten `TestRoundTripTracking` for single-scalar semantics; added `test_visible_is_max_across_corps`
 - `tests/phases/conftest.py` — invariant: visible scalar matches max(per-corp round trips)
 
+### 7. Player: remove `acquisition_proceeds` (-1 per player)
+
+**Position:** Removed from between `round_trips` and `income` in player stride.
+**Player stride:** shrinks by 1 per player.
+
+**Rationale:** Players are passive sellers in ACQ — they never buy, so cash vs pending-proceeds distinction is irrelevant. Player sale proceeds now credited directly to cash via `add_cash` in `_handle_accept_price`.
+
+**Code changes:**
+- `core/state.pxd` — removed from `PlayerFieldOffsets`
+- `core/state.pyx` — player_stride, `PlayerFields`, `compute_player_field_offsets`, `get_player_fields`
+- `entities/player.pxd` — removed `_acquisition_proceeds_offset` and 4 method declarations
+- `entities/player.pyx` — removed cached offset, 4 methods, removed from `calculate_net_worth`
+- `phases/acquisition.pyx` — `_handle_accept_price` uses `add_cash` for player sellers; removed `_merge_player_proceeds`; `_merge_acquisition_zones` no longer calls it
+- `tests/18xx_games/replay_harness.py` — `add_cash` instead of `add_acquisition_proceeds` for player sellers
+- `interp/utils.py` — removed `player:acq_proceeds` group
+- `tests/phases/test_acquisition.py` — removed/updated player proceeds tests
+- `tests/test_net_worth.py` — removed `TestAcquisitionProceedsInNetWorth`, updated formula tests
+
 ## Pending Updates (do when all changes are done)
 
 - [ ] `VECTORS.md` — corp stride, field table, field offsets, turn state fields, size table

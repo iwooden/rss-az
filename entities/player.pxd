@@ -41,7 +41,6 @@ cdef class Player:
     cdef int _owned_shares_offset
     cdef int _is_president_offset
     cdef int _round_trips_offset
-    cdef int _acquisition_proceeds_offset
     cdef int _income_offset
     # Cached field offsets (hidden state — share buy/sell tracking)
     cdef int _hidden_share_buys_offset
@@ -95,12 +94,6 @@ cdef class Player:
     cdef void _update_visible_roundtrips(self, GameState state)
     cpdef int get_roundtrips(self, GameState state, int corp_id)
     cpdef void clear_roundtrip_tracking(self, GameState state)
-
-    # Acquisition proceeds
-    cpdef int get_acquisition_proceeds(self, GameState state)
-    cpdef void set_acquisition_proceeds(self, GameState state, int proceeds)
-    cpdef void add_acquisition_proceeds(self, GameState state, int amount)
-    cpdef void clear_acquisition_proceeds(self, GameState state)
 
     # Income
     cpdef int get_income(self, GameState state)

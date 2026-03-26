@@ -759,14 +759,14 @@ cdef void _handle_accept_price(GameState state, int price) noexcept:
     # Buyer pays
     corp_module.CORPS[corp_id].add_cash(state, -price)
 
-    # Seller receives (to acquisition_proceeds)
+    # Seller receives
     if owner_type == LOC_CORP:
-        # Corp seller: use get+set pattern (no add_acquisition_proceeds method)
+        # Corp seller: accumulate in acquisition_proceeds (merged at phase end)
         current_proceeds = corp_module.CORPS[seller_id].get_acquisition_proceeds(state)
         corp_module.CORPS[seller_id].set_acquisition_proceeds(state, current_proceeds + price)
     elif owner_type == LOC_PLAYER:
-        # Player seller: has add_acquisition_proceeds method
-        player_module.PLAYERS[seller_id].add_acquisition_proceeds(state, price)
+        # Player seller: credit cash directly (players can't buy during ACQ)
+        player_module.PLAYERS[seller_id].add_cash(state, price)
 
     # Transfer company to buyer's acquisition zone
     company_module.COMPANIES[company_id].transfer_to_corp_acquisition(state, corp_id)
@@ -890,19 +890,6 @@ def transition_to_closing_py(GameState state):
 # ZONE MERGING (Phase 14)
 # =============================================================================
 
-cdef void _merge_player_proceeds(GameState state) noexcept:
-    """
-    Merge player acquisition_proceeds into cash, then clear.
-
-    """
-    cdef int player_id, proceeds
-    for player_id in range(state._num_players):
-        proceeds = player_module.PLAYERS[player_id].get_acquisition_proceeds(state)
-        if proceeds > 0:
-            player_module.PLAYERS[player_id].add_cash(state, proceeds)
-            player_module.PLAYERS[player_id].clear_acquisition_proceeds(state)
-
-
 cdef void _merge_corp_proceeds(GameState state) noexcept:
     """
     Merge corp acquisition_proceeds into cash, then clear.
@@ -943,10 +930,9 @@ cdef void _merge_acquisition_zones(GameState state) noexcept:
     Merge all acquisition zones into final state.
 
     Called before transitioning to CLOSING phase.
-    Order: proceeds first (both player and corp), then companies.
+    Order: corp proceeds first, then companies.
     Stars auto-update via set_cash and transfer_to_corp.
     """
-    _merge_player_proceeds(state)
     _merge_corp_proceeds(state)
     _merge_corp_companies(state)
 

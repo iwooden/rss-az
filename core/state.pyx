@@ -48,7 +48,7 @@ from core.data cimport (
 PlayerFields = namedtuple('PlayerFields', [
     'cash', 'net_worth', 'liquidity', 'turn_order', 'owned_companies',
     'owned_shares', 'is_president', 'round_trips',
-    'acquisition_proceeds', 'income',
+    'income',
 ])
 
 CorpFields = namedtuple('CorpFields', [
@@ -182,7 +182,6 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         GameConstants.NUM_CORPS +         # owned_shares
         GameConstants.NUM_CORPS +         # is_president
         1 +                 # round_trips (visible: max round-trip count across all corps / MAX_ROUNDTRIPS)
-        1 +                 # acquisition_proceeds
         1                   # income
     )
     layout.players_offset = offset
@@ -512,8 +511,6 @@ cdef PlayerFieldOffsets compute_player_field_offsets(int num_players) noexcept n
     offset += GameConstants.NUM_CORPS
     p.round_trips = offset
     offset += 1
-    p.acquisition_proceeds = offset
-    offset += 1
     p.income = offset
 
     return p
@@ -601,7 +598,6 @@ def get_player_fields(int num_players):
         owned_shares=p.owned_shares,
         is_president=p.is_president,
         round_trips=p.round_trips,
-        acquisition_proceeds=p.acquisition_proceeds,
         income=p.income,
     )
 
