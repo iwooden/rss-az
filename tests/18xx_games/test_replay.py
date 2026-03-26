@@ -2,9 +2,14 @@
 
 Replays real human game data from 18xx.games through our Cython engine and
 compares state at phase boundaries against reference snapshots extracted
-by the Ruby state extractor (run inline via subprocess).
+by the Ruby state extractor.
+
+Game JSON files are discovered dynamically from the data/ directory.
+Reference states are pre-extracted to {game_id}_extract.json files by
+the Ruby batch extractor (runs once per session if any are missing).
 """
 
+import glob
 import importlib
 import os
 
@@ -12,19 +17,38 @@ import pytest
 
 _harness = importlib.import_module("tests.18xx_games.replay_harness")
 ReplayHarness = _harness.ReplayHarness
-extract_ref_states = _harness.extract_ref_states
+ensure_extracts = _harness.ensure_extracts
+load_ref_states = _harness.load_ref_states
 format_mismatches = _harness.format_mismatches
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 
-@pytest.mark.parametrize("game_id", [224885, 226358, 239448, 244526, 244645])
+def _discover_game_ids():
+    """Find all game IDs from JSON files in the data directory."""
+    pattern = os.path.join(DATA_DIR, "*.json")
+    return sorted(
+        int(os.path.basename(f).removesuffix(".json"))
+        for f in glob.glob(pattern)
+        if not f.endswith("_extract.json")
+    )
+
+
+game_ids = _discover_game_ids()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _extract_ref_states():
+    """Ensure all reference state extracts exist before any replay test runs."""
+    ensure_extracts(DATA_DIR)
+
+
+@pytest.mark.parametrize("game_id", game_ids, ids=[str(g) for g in game_ids])
 def test_replay_game(game_id):
     """Replay an 18xx game and verify state matches at phase boundaries."""
     game_json = os.path.join(DATA_DIR, f"{game_id}.json")
-    assert os.path.exists(game_json), f"Game JSON not found: {game_json}"
 
-    ref_states = extract_ref_states(game_json)
+    ref_states = load_ref_states(game_json)
 
     harness = ReplayHarness(
         game_json_path=game_json,

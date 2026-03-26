@@ -81,28 +81,18 @@ class Mismatch:
         return s
 
 
-def extract_ref_states(game_json_path: str) -> list[dict]:
-    """Run the Ruby state extractor and return parsed reference states.
+def ensure_extracts(data_dir: str) -> None:
+    """Run the Ruby batch extractor to generate any missing _extract.json files.
 
-    Executes extract_states.rb as a subprocess, capturing its JSON output
-    directly into memory without writing to disk.
-
-    Args:
-        game_json_path: Path to the 18xx game JSON file.
-
-    Returns:
-        List of reference state snapshot dicts.
-
-    Raises:
-        RuntimeError: If ruby is not available or the extractor fails.
+    This is a no-op if all extracts already exist on disk.
     """
     import subprocess
 
     extractor = str(Path(__file__).parent / "extract_states.rb")
     try:
         result = subprocess.run(
-            ["ruby", extractor, game_json_path],
-            capture_output=True, text=True, timeout=120,
+            ["ruby", extractor, data_dir],
+            capture_output=True, text=True, timeout=600,
         )
     except FileNotFoundError:
         raise RuntimeError(
@@ -114,7 +104,16 @@ def extract_ref_states(game_json_path: str) -> list[dict]:
             f"State extractor failed (exit {result.returncode}):\n{result.stderr}"
         )
 
-    return json.loads(result.stdout)
+
+def load_ref_states(game_json_path: str) -> list[dict]:
+    """Load pre-extracted reference states from the corresponding _extract.json file."""
+    extract_path = game_json_path.replace(".json", "_extract.json")
+    if not Path(extract_path).exists():
+        raise FileNotFoundError(
+            f"Extract file not found: {extract_path}\n"
+            f"Run: ruby tests/18xx_games/extract_states.rb tests/18xx_games/data/"
+        )
+    return json.loads(Path(extract_path).read_text())
 
 
 @dataclass

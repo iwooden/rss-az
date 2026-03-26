@@ -157,69 +157,84 @@ def build_snapshot(game, action_id:, action_type:)
 end
 
 # ---------------------------------------------------------------------------
-# 2.  Load the game JSON
+# 2.  Find games needing extraction
 # ---------------------------------------------------------------------------
+# If a directory is given, scan it for game JSON files missing extracts.
+# If a single file is given, extract just that file (legacy mode).
 
-abort "Usage: ruby #{$PROGRAM_NAME} <game.json>" unless ARGV.size >= 1
+def process_game(json_path)
+  data = JSON.parse(File.read(json_path))
 
-json_path = ARGV[0]
-abort "File not found: #{json_path}" unless File.exist?(json_path)
+  game = Engine::Game.load(data, at_action: 0)
 
-data = JSON.parse(File.read(json_path))
+  initial_deck_order    = game.company_deck.map(&:sym)
+  initial_offering      = game.offering.map(&:sym)
+  initial_player_order  = game.players.map { |p| p.id }
 
-# ---------------------------------------------------------------------------
-# 3.  Capture the initial state (action_id 0)
-# ---------------------------------------------------------------------------
-# Load the game up to action 0 (i.e. just after setup, before any player
-# action has been processed).
+  initial_record = build_snapshot(game, action_id: 0, action_type: 'initial').merge(
+    deck_order:     initial_deck_order,
+    initial_offering: initial_offering,
+    player_order:   initial_player_order,
+  )
 
-game = Engine::Game.load(data, at_action: 0)
+  snapshots = [initial_record]
 
-# The company_deck and offering are populated by setup(), which runs when
-# at_action: 0.  We capture both for the initial record.
-initial_deck_order    = game.company_deck.map(&:sym)
-initial_offering      = game.offering.map(&:sym)
-initial_player_order  = game.players.map { |p| p.id }
+  actions = data['actions'] || []
 
-initial_record = build_snapshot(game, action_id: 0, action_type: 'initial').merge(
-  deck_order:     initial_deck_order,
-  initial_offering: initial_offering,
-  player_order:   initial_player_order,
-)
+  actions.each do |raw_action|
+    action_id   = raw_action['id']
+    action_type = raw_action['type']
 
-snapshots = [initial_record]
+    if action_type == 'undo' || action_type == 'redo'
+      game = Engine::Game.load(data, at_action: action_id)
+    else
+      result = game.process_action(raw_action)
+      game = result if result.is_a?(Engine::Game::Base)
+    end
 
-# ---------------------------------------------------------------------------
-# 4.  Step through all actions one at a time
-# ---------------------------------------------------------------------------
-# We replay each action from the raw actions array in order.
-#
-# For normal actions, process_action mutates the game in place and returns self.
-# For undo/redo, the engine's incremental clone mechanism can produce stale
-# state (the cloned game doesn't always match a clean reload).  To guarantee
-# correct snapshots, we detect undo/redo actions and reload the game from
-# scratch with Engine::Game.load(data, at_action: id).  This is slower but
-# ensures the snapshot always reflects the true game state.
-
-actions = data['actions'] || []
-
-actions.each do |raw_action|
-  action_id   = raw_action['id']
-  action_type = raw_action['type']
-
-  if action_type == 'undo' || action_type == 'redo'
-    # Reload from scratch to get the correct post-undo/redo state.
-    game = Engine::Game.load(data, at_action: action_id)
-  else
-    result = game.process_action(raw_action)
-    game = result if result.is_a?(Engine::Game::Base)
+    snapshots << build_snapshot(game, action_id: action_id, action_type: action_type)
   end
 
-  snapshots << build_snapshot(game, action_id: action_id, action_type: action_type)
+  snapshots
 end
 
-# ---------------------------------------------------------------------------
-# 5.  Output
-# ---------------------------------------------------------------------------
+abort "Usage: ruby #{$PROGRAM_NAME} <data_dir|game.json>" unless ARGV.size >= 1
 
-$stdout.puts JSON.generate(snapshots)
+target = ARGV[0]
+
+if File.directory?(target)
+  # Batch mode: scan directory for games missing extracts
+  game_files = Dir.glob(File.join(target, '*.json'))
+                  .reject { |f| f.end_with?('_extract.json') }
+                  .sort
+
+  pending = game_files.select do |f|
+    extract_path = f.sub(/\.json$/, '_extract.json')
+    !File.exist?(extract_path)
+  end
+
+  if pending.empty?
+    $stderr.puts "All #{game_files.size} games already extracted."
+  else
+    $stderr.puts "Extracting #{pending.size} of #{game_files.size} games..."
+    pending.each_with_index do |json_path, idx|
+      game_id = File.basename(json_path, '.json')
+      $stderr.print "  [#{idx + 1}/#{pending.size}] #{game_id}..."
+      $stderr.flush
+
+      begin
+        snapshots = process_game(json_path)
+        extract_path = json_path.sub(/\.json$/, '_extract.json')
+        File.write(extract_path, JSON.generate(snapshots))
+        $stderr.puts " OK (#{snapshots.size} snapshots)"
+      rescue => e
+        $stderr.puts " FAILED: #{e.message}"
+      end
+    end
+  end
+else
+  # Single-file mode (legacy): output to stdout
+  abort "File not found: #{target}" unless File.exist?(target)
+  snapshots = process_game(target)
+  $stdout.puts JSON.generate(snapshots)
+end
