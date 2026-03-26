@@ -149,6 +149,24 @@ def assert_invariants(state, msg=""):
     """
     num_players = state.get_num_players()
 
+    # Phase one-hot matches hidden compact phase
+    from entities.turn import TURN, get_phase_visible_index
+    phase = TURN.get_phase(state)
+    vis_idx = get_phase_visible_index(phase)
+    layout = get_layout(num_players)
+    phase_arr = state._array[layout.phase_offset:layout.phase_offset + layout.phase_size]
+    if vis_idx < 0:
+        assert float(phase_arr.sum()) == 0.0, (
+            f"{msg}\nAuto phase {phase} should have all-zero visible one-hot, got sum={phase_arr.sum()}"
+        )
+    else:
+        assert float(phase_arr[vis_idx]) == 1.0, (
+            f"{msg}\nPhase {phase} visible one-hot[{vis_idx}] should be 1.0, got {phase_arr[vis_idx]}"
+        )
+        assert float(phase_arr.sum()) == 1.0, (
+            f"{msg}\nPhase {phase} visible one-hot should have exactly one 1.0, got sum={phase_arr.sum()}"
+        )
+
     # Share conservation for active corps
     for corp_id in range(8):
         corp = CORPS[corp_id]

@@ -140,6 +140,30 @@ Changes to the visible state vector that need doc/test updates when complete.
 - `tests/phases/test_acquisition.py` — removed/updated player proceeds tests
 - `tests/test_net_worth.py` — removed `TestAcquisitionProceedsInNetWorth`, updated formula tests
 
+### 8. Phase one-hot: shrink from 12 → 8 (decision phases only, -4 total)
+
+**Position:** Offset 0, first element of visible state.
+**Encoding:** 8-slot one-hot mapping only decision phases. Auto phases (WRAP_UP, INCOME, END_CARD, GAME_OVER) produce all-zeros.
+
+| Visible Index | Phase |
+|---|---|
+| 0 | INVEST (0) |
+| 1 | BID_IN_AUCTION (1) |
+| 2 | ACQUISITION (3) |
+| 3 | CLOSING (4) |
+| 4 | DIVIDENDS (6) |
+| 5 | ISSUE_SHARES (8) |
+| 6 | IPO (9) |
+| 7 | PAR (10) |
+
+**Hidden compact unchanged:** Still stores original phase 0-11 at hidden offset 39.
+
+**Code changes:**
+- `core/data.pxd` — added `NUM_DECISION_PHASES = 8` to `GameConstants`
+- `core/state.pyx` — `layout.phase_size` uses `NUM_DECISION_PHASES`
+- `entities/turn.pyx` — `_PHASE_VIS_MAP` array, `set_phase` uses remapped index, `get_phase_visible_index` Python helper
+- `tests/phases/conftest.py` — phase one-hot invariant in `assert_invariants`
+
 ## Pending Updates (do when all changes are done)
 
 - [ ] `VECTORS.md` — corp stride, field table, field offsets, turn state fields, size table

@@ -12,6 +12,7 @@ cpdef enum GameConstants:
     NUM_CORPS = 8
     NUM_MARKET_SPACES = 27
     NUM_PHASES = 12
+    NUM_DECISION_PHASES = 8
     NUM_COO_LEVELS = 7
     MAX_PLAYERS = 6
     MAX_STAR_TIERS = 5

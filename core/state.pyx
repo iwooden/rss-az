@@ -163,7 +163,7 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     cdef int offset = 0
 
     # Phase one-hot
-    layout.phase_size = GameConstants.NUM_PHASES
+    layout.phase_size = GameConstants.NUM_DECISION_PHASES
     layout.phase_offset = offset
     offset += layout.phase_size
 

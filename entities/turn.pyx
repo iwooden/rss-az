@@ -21,7 +21,19 @@ from entities.encoding cimport (
     set_one_hot_with_compact, clear_one_hot_with_compact,
 )
 
-# Use constants from GameConstants (imported above)
+# Mapping from GamePhases (0-11) to visible one-hot index (0-7).
+# Auto phases (WRAP_UP, INCOME, END_CARD, GAME_OVER) map to -1 → all-zeros one-hot.
+cdef int _PHASE_VIS_MAP[12]
+_PHASE_VIS_MAP[0] = 0; _PHASE_VIS_MAP[1] = 1; _PHASE_VIS_MAP[2] = -1; _PHASE_VIS_MAP[3] = 2
+_PHASE_VIS_MAP[4] = 3; _PHASE_VIS_MAP[5] = -1; _PHASE_VIS_MAP[6] = 4; _PHASE_VIS_MAP[7] = -1
+_PHASE_VIS_MAP[8] = 5; _PHASE_VIS_MAP[9] = 6; _PHASE_VIS_MAP[10] = 7; _PHASE_VIS_MAP[11] = -1
+
+
+def get_phase_visible_index(int phase):
+    """Python-accessible mapping from game phase to visible one-hot index."""
+    if 0 <= phase < 12:
+        return _PHASE_VIS_MAP[phase]
+    return -1
 
 
 # =============================================================================
@@ -224,11 +236,12 @@ cdef class TurnState:
         return <int>state._data[self._hidden_phase_offset]
 
     cpdef void set_phase(self, GameState state, int phase):
-        """Set current game phase. Updates both one-hot and hidden compact storage."""
-        set_one_hot_with_compact(
-            state._data, self._phase_offset, GameConstants.NUM_PHASES,
-            self._hidden_phase_offset, phase
-        )
+        """Set current game phase. Updates remapped visible one-hot and hidden compact storage."""
+        cdef int vis_idx = _PHASE_VIS_MAP[phase] if 0 <= phase < 12 else -1
+        # Visible one-hot uses remapped 8-slot encoding (auto phases → all zeros)
+        set_one_hot(state._data, self._phase_offset, GameConstants.NUM_DECISION_PHASES, vis_idx)
+        # Hidden compact always stores the original phase value
+        state._data[self._hidden_phase_offset] = <float>phase
 
     # =========================================================================
     # COST OF OWNERSHIP LEVEL (one-hot, 7 values: 1-7 in game terms)
