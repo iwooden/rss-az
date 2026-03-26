@@ -83,6 +83,28 @@ Changes to the visible state vector that need doc/test updates when complete.
 - `tests/phases/conftest.py` — invariant for `LOC_CORP_ACQ` → `co:acquired` + `corp:owned_companies`; phase invariant (acquired flags zero outside ACQ)
 - `tests/phases/test_acquisition.py` — updated assertions for eager `owned_companies`; set `PHASE_ACQUISITION` before all `setup_acquisition_phase_py` calls
 
+### 5. Turn state: `par_corp_treasury[14]` + `par_shares[14]` (+28 total)
+
+**Position:** After `cards_remaining` at end of turn state block.
+**Context-dependent:** IPO and PAR phases only, zeroed otherwise.
+**Encoding:**
+- `par_corp_treasury`: resulting corp cash if floated at this par / `CASH_DIVISOR`. 0 for invalid slots.
+- `par_shares`: 0.5 for 2 issued shares (FV ≤ par), 1.0 for 4 issued shares (FV > par). 0 for invalid slots.
+
+**Invalid slots:** Star tier mismatch, market space unavailable, or player can't afford → both fields 0.
+
+**Population:** `_populate_par_info()` called from `_advance_to_next_company` when setting up IPO for a company.
+**Clearing:** `clear_par_info()` called from `_transition_out_of_ipo`.
+
+**Code changes:**
+- `core/state.pxd` — `TurnStateOffsets.par_corp_treasury`, `.par_shares`
+- `core/state.pyx` — turn_size (+28), `TurnFields`, `compute_turn_offsets`, `get_turn_fields`
+- `entities/turn.pxd` — `_par_corp_treasury_offset`, `_par_shares_offset`, set/clear methods
+- `entities/turn.pyx` — cached offsets, `set_par_corp_treasury`, `set_par_shares`, `clear_par_info`
+- `phases/ipo.pyx` — `_populate_par_info` (mirrors `_fill_par_mask` validity logic), called on company setup, cleared on phase exit
+- `tests/phases/conftest.py` — invariant: zero outside IPO/PAR, values match formula inside
+- `tests/phases/test_ipo.py` — 9 new tests in `TestParInfoPopulation`
+
 ## Pending Updates (do when all changes are done)
 
 - [ ] `VECTORS.md` — corp stride, field table, field offsets, turn state fields, size table

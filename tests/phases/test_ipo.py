@@ -1,6 +1,6 @@
 """Tests for IPO phase (Phase 9) and PAR sub-phase (Phase 10)."""
 import pytest
-from core.state import get_layout
+from core.state import get_layout, get_turn_fields
 from core.data import (
     GamePhases, GameConstants,
     get_company_face_value, get_company_stars,
@@ -9,7 +9,7 @@ from core.data import (
     get_par_price, get_market_index,
     get_corp_share_count, is_valid_par_price,
     PY_COMPANY_PRICE_DIVISOR, PY_COMPANY_STAR_DIVISOR,
-    PY_COMPANY_INCOME_DIVISOR,
+    PY_COMPANY_INCOME_DIVISOR, PY_CASH_DIVISOR,
 )
 from core.actions import get_valid_action_mask, get_action_layout
 from entities.turn import TURN
@@ -962,3 +962,149 @@ class TestActiveCompanyIPO:
                    - get_company_high_price(company_id) / PY_COMPANY_PRICE_DIVISOR) < 1e-6
         assert abs(state._array[layout.active_company_income_offset]
                    - get_adjusted_company_income(company_id, coo_level) / PY_COMPANY_INCOME_DIVISOR) < 1e-6
+
+
+# =============================================================================
+# PAR Info Visible State
+# =============================================================================
+
+
+def _read_par_info(state):
+    """Read par_corp_treasury and par_shares arrays from state."""
+    layout = get_layout(state.get_num_players())
+    tf = get_turn_fields(state.get_num_players())
+    base_t = layout.turn_offset + tf.par_corp_treasury
+    base_s = layout.turn_offset + tf.par_shares
+    treasury = [float(state._array[base_t + i]) for i in range(14)]
+    shares = [float(state._array[base_s + i]) for i in range(14)]
+    return treasury, shares
+
+
+class TestParInfoPopulation:
+    """par_corp_treasury and par_shares are populated during IPO/PAR."""
+
+    def test_populated_during_ipo(self, ipo_state_with_company):
+        """Par info is populated when IPO phase sets up a company."""
+        state = ipo_state_with_company
+        treasury, shares = _read_par_info(state)
+
+        # Company 14: FV=20, stars=3. Valid par indices 5-10 (prices 16-27).
+        assert any(t != 0.0 for t in treasury)
+        assert any(s != 0.0 for s in shares)
+
+    def test_invalid_slots_are_zero(self, ipo_state_with_company):
+        """Slots outside the star tier are zero."""
+        state = ipo_state_with_company
+        treasury, shares = _read_par_info(state)
+
+        # Company 14 is star 3 (yellow). Indices 0-4 are star 1-2 only.
+        for i in range(5):
+            assert treasury[i] == 0.0
+            assert shares[i] == 0.0
+
+    def test_corp_treasury_values(self, ipo_state_with_company):
+        """par_corp_treasury matches expected formula for valid slots."""
+        state = ipo_state_with_company
+        treasury, _ = _read_par_info(state)
+
+        face_value = get_company_face_value(14)  # 20
+        for i in range(14):
+            if treasury[i] == 0.0:
+                continue
+            par_price = get_par_price(i)
+            float_shares = 2 if face_value > par_price else 1
+            player_cost = (float_shares * par_price) - face_value
+            bank_pays = float_shares * par_price
+            expected = (player_cost + bank_pays) / PY_CASH_DIVISOR
+            assert abs(treasury[i] - expected) < 1e-5, (
+                f"par_corp_treasury[{i}] (par={par_price}): {treasury[i]} != {expected}"
+            )
+
+    def test_shares_encoding(self, ipo_state_with_company):
+        """par_shares is 0.5 for 2 shares, 1.0 for 4 shares."""
+        state = ipo_state_with_company
+        _, shares = _read_par_info(state)
+
+        face_value = get_company_face_value(14)  # 20
+        for i in range(14):
+            if shares[i] == 0.0:
+                continue
+            par_price = get_par_price(i)
+            if face_value > par_price:
+                assert shares[i] == 1.0, f"par_shares[{i}]: expected 1.0 (4 shares)"
+            else:
+                assert shares[i] == 0.5, f"par_shares[{i}]: expected 0.5 (2 shares)"
+
+    def test_preserved_during_par_phase(self, ipo_state_with_company):
+        """Par info stays populated when transitioning IPO -> PAR."""
+        state = ipo_state_with_company
+        treasury_before, shares_before = _read_par_info(state)
+
+        apply_ipo_action_py(state, 0)
+        assert state.get_phase() == GamePhases.PHASE_PAR
+
+        treasury_after, shares_after = _read_par_info(state)
+        assert treasury_before == treasury_after
+        assert shares_before == shares_after
+
+    def test_cleared_after_par_completion(self, ipo_state_with_company):
+        """Par info is cleared when IPO phase transitions out."""
+        state = ipo_state_with_company
+
+        do_ipo(state, 0, PAR_16)
+        assert state.get_phase() == GamePhases.PHASE_INVEST
+
+        treasury, shares = _read_par_info(state)
+        assert all(t == 0.0 for t in treasury)
+        assert all(s == 0.0 for s in shares)
+
+    def test_unaffordable_slots_are_zero(self, game_state):
+        """Slots the player can't afford are zeroed."""
+        state = game_state
+        COMPANIES[14].transfer_to_player(state, 0)
+        PLAYERS[0].set_cash(state, 1)  # Almost no cash
+        TURN.set_phase(state, GamePhases.PHASE_IPO)
+        setup_ipo_phase_py(state)
+
+        treasury, shares = _read_par_info(state)
+        # FV=20, star 3 valid range is indices 5-10.
+        # Par $16 (i=5): cost = 2*16-20 = $12 -> can't afford -> 0
+        assert treasury[5] == 0.0
+        assert shares[5] == 0.0
+        # Par $20 (i=7): cost = 1*20-20 = $0 -> CAN afford -> nonzero
+        assert treasury[7] != 0.0
+        assert shares[7] != 0.0
+        # Par $22 (i=8): cost = 1*22-20 = $2 -> can't afford -> 0
+        assert treasury[8] == 0.0
+        assert shares[8] == 0.0
+
+    def test_unavailable_market_slots_are_zero(self, ipo_state_with_company):
+        """Slots with unavailable market spaces are zeroed."""
+        state = ipo_state_with_company
+
+        # Block market space for par index 5 (price 16, market index for $16)
+        mkt_idx = get_market_index(get_par_price(5))
+        MARKET.set_space_available(state, mkt_idx, False)
+
+        # Re-setup to repopulate par info
+        setup_ipo_phase_py(state)
+        treasury, shares = _read_par_info(state)
+        assert treasury[5] == 0.0
+        assert shares[5] == 0.0
+
+    def test_repopulated_for_next_company(self, ipo_state_multiple_companies):
+        """Par info is repopulated when advancing to the next company."""
+        state = ipo_state_multiple_companies
+        TURN.set_phase(state, GamePhases.PHASE_IPO)
+        setup_ipo_phase_py(state)
+
+        # First company is 30 (FV=45, star 5). Record its par info.
+        treasury_first, _ = _read_par_info(state)
+
+        # IPO company 30, then advance to next
+        do_ipo(state, 0, PAR_30)
+
+        # Now at company 22 (FV=30, star 4) - different par info
+        assert state.get_phase() == GamePhases.PHASE_IPO
+        treasury_second, _ = _read_par_info(state)
+        assert treasury_first != treasury_second

@@ -75,6 +75,7 @@ TurnFields = namedtuple('TurnFields', [
     'active_corp_coo_cost', 'active_corp_ability_income',
     'active_corp_companies',
     'cards_remaining',
+    'par_corp_treasury', 'par_shares',
 ])
 
 LayoutInfo = namedtuple('LayoutInfo', [
@@ -275,7 +276,10 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         1 +                              # active_corp_ability_income
         GameConstants.NUM_COMPANIES +     # active_corp_companies (owned company flags)
         # Deck
-        1                                # cards_remaining
+        1 +                              # cards_remaining
+        # PAR info (context-dependent: IPO/PAR phases only)
+        GameConstants.NUM_PAR_PRICES +   # par_corp_treasury
+        GameConstants.NUM_PAR_PRICES     # par_shares
     )
     layout.turn_offset = offset
     offset += layout.turn_size
@@ -474,6 +478,12 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
     t.cards_remaining = offset
     offset += 1
 
+    # PAR info (14 slots each, context-dependent: IPO/PAR phases only)
+    t.par_corp_treasury = offset
+    offset += GameConstants.NUM_PAR_PRICES
+    t.par_shares = offset
+    offset += GameConstants.NUM_PAR_PRICES
+
     return t
 
 
@@ -661,6 +671,8 @@ def get_turn_fields(int num_players):
         active_corp_ability_income=t.active_corp_ability_income,
         active_corp_companies=t.active_corp_companies,
         cards_remaining=t.cards_remaining,
+        par_corp_treasury=t.par_corp_treasury,
+        par_shares=t.par_shares,
     )
 
 

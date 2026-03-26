@@ -35,7 +35,7 @@ from core.data cimport (
     PHASE_INVEST, PHASE_PAR,
     get_company_face_value, get_company_stars,
     get_par_price, get_market_index,
-    get_corp_share_count, is_valid_par_price
+    get_corp_share_count, is_valid_par_price,
 )
 from core.actions cimport ActionInfo, ACTION_PASS, ACTION_IPO, ACTION_PAR
 from entities import turn as turn_module
@@ -98,6 +98,59 @@ cdef int _find_next_ipo_company(GameState state) noexcept:
     return best_company
 
 
+cdef void _populate_par_info(GameState state) noexcept:
+    """
+    Populate par_corp_treasury and par_shares for the active IPO company.
+
+    For each of the 14 par slots, checks validity (star tier, market availability,
+    player affordability) and fills:
+    - par_corp_treasury: resulting corp cash if floated at this par / CASH_DIVISOR
+    - par_shares: 0.5 for 2 issued shares, 1.0 for 4 issued shares
+
+    Invalid slots get 0 in both fields.
+    """
+    cdef int company_id, par_index, par_price, market_index
+    cdef int star_tier, face_value, player_cash, player_id
+    cdef int float_shares, player_payment, bank_payment, corp_treasury
+
+    # Clear first
+    turn_module.TURN.clear_par_info(state)
+
+    company_id = turn_module.TURN.get_ipo_company(state)
+    if company_id < 0:
+        return
+
+    star_tier = get_company_stars(company_id)
+    face_value = get_company_face_value(company_id)
+    player_id = state._get_active_player()
+    player_cash = player_module.PLAYERS[player_id].get_cash(state)
+
+    for par_index in range(<int>GameConstants.NUM_PAR_PRICES):
+        if not is_valid_par_price(star_tier, par_index):
+            continue
+
+        par_price = get_par_price(par_index)
+        market_index = get_market_index(par_price)
+
+        if market_index < 0 or not market_module.MARKET.is_space_available(state, market_index):
+            continue
+
+        if face_value > par_price:
+            float_shares = 2
+        else:
+            float_shares = 1
+
+        player_payment = (float_shares * par_price) - face_value
+        if player_payment > player_cash:
+            continue
+
+        bank_payment = float_shares * par_price
+        corp_treasury = player_payment + bank_payment
+
+        turn_module.TURN.set_par_corp_treasury(state, par_index, corp_treasury)
+        turn_module.TURN.set_par_shares(state, par_index, 1.0 if float_shares == 2 else 0.5)
+
+
 cdef void _process_ipo(GameState state, int corp_id, int par_index) noexcept:
     """
     Execute Form Corporation procedure.
@@ -158,9 +211,10 @@ cdef void _transition_out_of_ipo(GameState state) noexcept:
     NOT here. Per RULES.md: Roundtrip info only relevant in INVEST phase -
     clearing it elsewhere pollutes state vector for model.
     """
-    # Clear IPO company and active company
+    # Clear IPO company, active company, and par info
     turn_module.TURN.clear_ipo_company(state)
     state.clear_active_company()
+    turn_module.TURN.clear_par_info(state)
 
     # Increment turn number (end of turn bookkeeping)
     cdef int current_turn = turn_module.TURN.get_turn_number(state)
@@ -206,6 +260,9 @@ cdef void _advance_to_next_company(GameState state) noexcept:
     state.set_active_company(company_id)
     player_id = company_module.COMPANIES[company_id].get_owner_id(state)
     state._set_active_player(player_id)
+
+    # Populate par info for the active company/player
+    _populate_par_info(state)
 
 
 # =============================================================================

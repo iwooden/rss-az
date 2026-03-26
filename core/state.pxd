@@ -110,6 +110,9 @@ cdef struct TurnStateOffsets:
     int active_corp_companies
     # Cards remaining in deck
     int cards_remaining
+    # PAR info (14 slots each, context-dependent: IPO/PAR phases only)
+    int par_corp_treasury
+    int par_shares
 
 cdef struct PlayerFieldOffsets:
     int cash

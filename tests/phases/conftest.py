@@ -9,12 +9,15 @@ Fixture Usage Guide:
 """
 import pytest
 import numpy as np
-from core.state import GameState, get_corp_fields, get_layout
+from core.state import GameState, get_corp_fields, get_turn_fields, get_layout
 from core.driver import DRIVER
 from core.actions import get_valid_action_mask, get_action_layout
 from core.data import (
     GamePhases, CORP_NAMES, CorpIndices, get_corp_share_count, get_company_stars,
     get_required_stars, PY_IMPACT_DIVISOR as IMPACT_DIVISOR,
+    PY_CASH_DIVISOR as CASH_DIVISOR,
+    get_company_face_value, get_par_price, get_market_index, is_valid_par_price,
+    GameConstants,
 )
 from entities.turn import TURN
 from entities.player import PLAYERS, update_all_net_worths
@@ -231,6 +234,62 @@ def assert_invariants(state, msg=""):
                 f"stored={stored} != expected={expected} "
                 f"(stars={stars}, idx={idx}, issued={issued}, required={required}, move={move})"
             )
+
+    # PAR info consistency: must be zero outside IPO/PAR, valid inside
+    phase = TURN.get_phase(state)
+    turn_fields = get_turn_fields(num_players)
+    par_treasury_offset = layout.turn_offset + turn_fields.par_corp_treasury
+    par_shares_offset = layout.turn_offset + turn_fields.par_shares
+    if phase not in (GamePhases.PHASE_IPO, GamePhases.PHASE_PAR, GamePhases.PHASE_GAME_OVER):
+        for i in range(14):
+            assert state._array[par_treasury_offset + i] == 0.0, (
+                f"{msg}\npar_corp_treasury[{i}]={state._array[par_treasury_offset + i]} "
+                f"nonzero outside IPO/PAR (phase={phase})"
+            )
+            assert state._array[par_shares_offset + i] == 0.0, (
+                f"{msg}\npar_shares[{i}]={state._array[par_shares_offset + i]} "
+                f"nonzero outside IPO/PAR (phase={phase})"
+            )
+    else:
+        company_id = TURN.get_ipo_company(state)
+        if company_id >= 0:
+            player_id = state.get_active_player()
+            player_cash = PLAYERS[player_id].get_cash(state)
+            star_tier = get_company_stars(company_id)
+            face_value = get_company_face_value(company_id)
+            for i in range(14):
+                treasury_val = state._array[par_treasury_offset + i]
+                shares_val = state._array[par_shares_offset + i]
+                # Check valid slots have correct values
+                par_price = get_par_price(i)
+                mkt_idx = get_market_index(par_price)
+                is_valid = (
+                    is_valid_par_price(star_tier, i)
+                    and mkt_idx >= 0
+                    and MARKET.is_space_available(state, mkt_idx)
+                )
+                if is_valid:
+                    float_shares = 2 if face_value > par_price else 1
+                    cost = (float_shares * par_price) - face_value
+                    if cost <= player_cash:
+                        expected_treasury = (cost + float_shares * par_price) / CASH_DIVISOR
+                        expected_shares = 1.0 if float_shares == 2 else 0.5
+                        assert abs(treasury_val - expected_treasury) < 1e-5, (
+                            f"{msg}\npar_corp_treasury[{i}] mismatch: "
+                            f"{treasury_val} != {expected_treasury}"
+                        )
+                        assert shares_val == expected_shares, (
+                            f"{msg}\npar_shares[{i}] mismatch: "
+                            f"{shares_val} != {expected_shares}"
+                        )
+                        continue
+                # Invalid or unaffordable slot must be zero
+                assert treasury_val == 0.0, (
+                    f"{msg}\npar_corp_treasury[{i}]={treasury_val} nonzero for invalid slot"
+                )
+                assert shares_val == 0.0, (
+                    f"{msg}\npar_shares[{i}]={shares_val} nonzero for invalid slot"
+                )
 
     # Income decomposition consistency: components must sum to income
     for corp_id in range(8):

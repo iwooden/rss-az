@@ -74,8 +74,10 @@ cdef class TurnState:
     cdef int _issue_price_impact_offset
     cdef int _issue_cash_gain_offset
 
-    # IPO offsets
+    # IPO/PAR offsets
     cdef int _ipo_remaining_offset
+    cdef int _par_corp_treasury_offset
+    cdef int _par_shares_offset
 
     # Acquisition offsets
     cdef int _acq_is_fi_offer_offset
@@ -174,6 +176,11 @@ cdef class TurnState:
 
     cpdef bint is_ipo_remaining(self, GameState state, int company_id)
     cpdef void set_ipo_remaining(self, GameState state, int company_id, bint remaining)
+
+    # PAR info (context-dependent: IPO/PAR phases only)
+    cpdef void set_par_corp_treasury(self, GameState state, int par_index, int treasury)
+    cpdef void set_par_shares(self, GameState state, int par_index, float value)
+    cpdef void clear_par_info(self, GameState state)
 
     # Acquisition state (compact-only for target, one-hot now in active_company)
     cpdef int get_acq_active_corp(self, GameState state)

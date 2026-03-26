@@ -10,7 +10,7 @@ Provides clean getter/setter access to turn-specific state including:
 
 from core.state cimport GameState, StateLayout, TurnStateOffsets
 from libc.math cimport lround
-from core.data cimport GameConstants, GamePhases, COMPANY_INCOME_DIVISOR, COMPANY_PRICE_DIVISOR, SHARE_PRICE_DIVISOR, IMPACT_DIVISOR, get_adjusted_company_income, get_company_stars, COMPANY_SYNERGY
+from core.data cimport GameConstants, GamePhases, CASH_DIVISOR, COMPANY_INCOME_DIVISOR, COMPANY_PRICE_DIVISOR, SHARE_PRICE_DIVISOR, IMPACT_DIVISOR, get_adjusted_company_income, get_company_stars, COMPANY_SYNERGY
 from entities.company cimport Company, LOC_REMOVED
 from entities import player as player_module
 from entities import company as company_module
@@ -200,6 +200,8 @@ cdef class TurnState:
 
         # IPO (ipo_remaining is in hidden state)
         self._ipo_remaining_offset = layout.hidden_ipo_remaining_offset
+        self._par_corp_treasury_offset = self._turn_offset + turn.par_corp_treasury
+        self._par_shares_offset = self._turn_offset + turn.par_shares
 
         # Acquisition
         self._acq_is_fi_offer_offset = self._turn_offset + turn.acq_is_fi_offer
@@ -594,6 +596,25 @@ cdef class TurnState:
             state._data, self._active_corp_offset, GameConstants.NUM_CORPS,
             self._hidden_par_corp_offset
         )
+
+    # =========================================================================
+    # PAR INFO (context-dependent: IPO/PAR phases only)
+    # =========================================================================
+
+    cpdef void set_par_corp_treasury(self, GameState state, int par_index, int treasury):
+        """Set resulting corp treasury for a par slot."""
+        state._data[self._par_corp_treasury_offset + par_index] = <float>treasury / CASH_DIVISOR
+
+    cpdef void set_par_shares(self, GameState state, int par_index, float value):
+        """Set par shares encoding for a par slot (0.5=2 shares, 1.0=4 shares)."""
+        state._data[self._par_shares_offset + par_index] = value
+
+    cpdef void clear_par_info(self, GameState state):
+        """Zero-fill both par info arrays (28 floats total)."""
+        cdef int i
+        for i in range(<int>GameConstants.NUM_PAR_PRICES):
+            state._data[self._par_corp_treasury_offset + i] = 0.0
+            state._data[self._par_shares_offset + i] = 0.0
 
     # =========================================================================
     # NOGIL ACCESSORS (for mask generation in actions.pyx)
