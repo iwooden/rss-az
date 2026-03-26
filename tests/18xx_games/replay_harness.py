@@ -248,9 +248,8 @@ class ReplayHarness:
             cid = DECK.draw(state)
             COMPANIES[cid].move_to_auction(state)
 
-        # 4. Restore CoO level to 1 (draw may have bumped it if a color-boundary
-        #    card happened to be in the offering)
-        TURN.set_coo_level(state, 1)
+        # CoO level is set correctly by draw() — if color-boundary cards
+        # (e.g. MHE for red) are in the offering, CoO is bumped appropriately.
 
     def _get_phase_name(self, state) -> str:
         """Get human-readable phase name."""
