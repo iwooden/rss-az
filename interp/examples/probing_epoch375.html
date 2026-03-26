@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Probing Classifiers — Epoch 375</title>
+<style>
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               Helvetica, Arial, sans-serif;
+  background: #1a1a2e; color: #e0e0e0;
+  margin: 2rem auto; max-width: 1400px; padding: 0 1rem;
+}
+h1 { color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }
+h2 { color: #ccc; font-size: 1.1rem; margin-top: 2rem;
+      border-bottom: 1px solid #333; padding-bottom: 0.3rem; }
+h3 { color: #aaa; font-size: 0.95rem; margin-top: 1rem; }
+.meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+table {
+  border-collapse: collapse; width: 100%;
+  font-size: 0.82rem; margin-bottom: 1.5rem;
+}
+th, td { padding: 5px 8px; border: 1px solid #2a2a4a; text-align: right; }
+th { background: #16213e; color: #aaa; font-weight: 600;
+     position: sticky; top: 0; z-index: 1; }
+th:first-child, td:first-child { text-align: left; }
+td:first-child {
+  font-family: "SF Mono", "Fira Code", Consolas, monospace;
+  font-size: 0.8rem; color: #ccc;
+}
+tr:hover td { border-color: #555; }
+th:first-child, td:first-child { width: 180px; }
+.delta-pos { color: #4ecca3; }
+.delta-neg { color: #e94560; }
+.delta-flat { color: #888; }
+.tag {
+  display: inline-block; padding: 1px 5px; border-radius: 3px;
+  font-size: 0.75rem; font-weight: 600;
+}
+.tag-acc { background: #1a2a3a; color: #4a9eff; }
+.tag-r2 { background: #1a3a2a; color: #4ecca3; }
+</style>
+</head>
+<body>
+<h1>Probing Classifiers — Epoch 375</h1>
+<div class="meta">26,633 states from 100 games. Train/test 80/20, linear probes.</div>
+<h2>1. Trunk Probes</h2>
+<p style="color:#888;font-size:0.85rem">Linear probe accuracy/R&sup2; at each trunk layer. &Delta;(deep) = trunk &minus; input.</p>
+<table id="tbl-trunk"></table>
+
+<div id="policy-section"></div>
+<div id="value-section"></div>
+<div id="comp-section"></div>
+<script>
+const trunkRows = [{"probe": "phase", "type": "acc", "values": [0.9990614056587219, 0.9988736510276794, 0.9975596070289612, 0.9975596070289612, 0.9975596070289612, 0.9975596070289612, 0.9977473616600037, 0.9979350566864014, 0.997184157371521, 0.9969964623451233], "delta": -0.002064943313598633}, {"probe": "close_action", "type": "acc", "values": [0.9977375864982605, 0.9932126998901367, 0.9909502863883972, 0.9909502863883972, 0.9932126998901367, 0.995475172996521, 0.995475172996521, 0.995475172996521, 0.995475172996521, 0.995475172996521], "delta": -0.002262413501739502}, {"probe": "issue_action", "type": "acc", "values": [0.9348658919334412, 0.9406130313873291, 0.9425287246704102, 0.9463601112365723, 0.9482758641242981, 0.9444444179534912, 0.9444444179534912, 0.9444444179534912, 0.9386972784996033, 0.9348658919334412], "delta": 0.0}, {"probe": "active_leading", "type": "acc", "values": [0.8843626976013184, 0.903322696685791, 0.91083163022995, 0.9234090447425842, 0.924910843372345, 0.9260371923446655, 0.928665280342102, 0.9326074719429016, 0.9348601698875427, 0.9337338209152222], "delta": 0.04937112331390381}, {"probe": "winning_player", "type": "acc", "values": [0.9082034826278687, 0.9072648882865906, 0.9113947749137878, 0.9097052812576294, 0.9087666869163513, 0.9082034826278687, 0.9053876399993896, 0.9063262939453125, 0.9050121903419495, 0.9044490456581116], "delta": -0.00375443696975708}, {"probe": "action_type", "type": "acc", "values": [0.8556410670280457, 0.855453372001648, 0.8601464033126831, 0.8595832586288452, 0.8616482019424438, 0.8586446642875671, 0.8584569096565247, 0.8627745509147644, 0.8678430914878845, 0.8697202801704407], "delta": 0.01407921314239502}, {"probe": "invest_action", "type": "acc", "values": [0.8414055109024048, 0.8437796831130981, 0.8499525189399719, 0.8537511825561523, 0.8556504845619202, 0.8532763123512268, 0.8608736991882324, 0.8613485097885132, 0.8660968542098999, 0.8656219840049744], "delta": 0.02421647310256958}, {"probe": "acq_action", "type": "acc", "values": [0.7838982939720154, 0.7782486081123352, 0.7683615684509277, 0.7697740197181702, 0.7838982939720154, 0.7740113139152527, 0.7768361568450928, 0.7881355881690979, 0.8022598624229431, 0.8008474707603455], "delta": 0.016949176788330078}, {"probe": "ipo_action", "type": "acc", "values": [0.725806474685669, 0.75, 0.7419354915618896, 0.7446236610412598, 0.7473118305206299, 0.7688171863555908, 0.774193525314331, 0.7715053558349609, 0.7849462628364563, 0.7661290168762207], "delta": 0.04032254219055176}, {"probe": "bid_action", "type": "acc", "values": [0.6909722089767456, 0.7361111044883728, 0.71875, 0.7152777910232544, 0.7083333134651184, 0.7083333134651184, 0.7291666865348816, 0.725694477558136, 0.7430555820465088, 0.75], "delta": 0.059027791023254395}, {"probe": "model_top_action", "type": "acc", "values": [0.7306176424026489, 0.737187922000885, 0.7411301136016846, 0.7411301136016846, 0.7381265163421631, 0.7403792142868042, 0.7405669093132019, 0.7430073022842407, 0.7443214058876038, 0.7452600002288818], "delta": 0.01464235782623291}, {"probe": "model_value_p0", "type": "R\u00b2", "values": [0.7754213213920593, 0.8301486372947693, 0.8915112614631653, 0.8996562957763672, 0.9070914387702942, 0.9238065481185913, 0.9331137537956238, 0.9433559775352478, 0.9591911435127258, 0.9693987965583801], "delta": 0.1939774751663208}, {"probe": "num_active_corps", "type": "R\u00b2", "values": [0.9629315137863159, 0.9602329730987549, 0.9559555649757385, 0.9538800120353699, 0.9526038765907288, 0.9514714479446411, 0.9496861100196838, 0.9482187032699585, 0.9466680288314819, 0.949907660484314], "delta": -0.013023853302001953}, {"probe": "lead_margin", "type": "R\u00b2", "values": [0.8961676359176636, 0.9212610721588135, 0.9426153302192688, 0.9497872591018677, 0.9497626423835754, 0.9534044861793518, 0.9566165208816528, 0.9598474502563477, 0.9608780145645142, 0.9473854303359985], "delta": 0.05121779441833496}, {"probe": "game_progress", "type": "R\u00b2", "values": [0.9396117329597473, 0.933991551399231, 0.927122950553894, 0.9252351522445679, 0.922527015209198, 0.9188424944877625, 0.9178586006164551, 0.9145724773406982, 0.9102261066436768, 0.8976001739501953], "delta": -0.042011559009552}, {"probe": "corps_invested", "type": "R\u00b2", "values": [0.8878129124641418, 0.886346161365509, 0.8858082890510559, 0.8837255835533142, 0.8822135925292969, 0.8801824450492859, 0.8796621561050415, 0.8770619630813599, 0.8759023547172546, 0.8781833052635193], "delta": -0.009629607200622559}, {"probe": "total_shares", "type": "R\u00b2", "values": [0.8702995777130127, 0.8642808198928833, 0.864193856716156, 0.8596497178077698, 0.8588452339172363, 0.8589287400245667, 0.8586746454238892, 0.8613752126693726, 0.8597319722175598, 0.856932520866394], "delta": -0.013367056846618652}, {"probe": "value_spread", "type": "R\u00b2", "values": [0.6087785959243774, 0.6351099014282227, 0.6451593637466431, 0.6813409328460693, 0.6853142976760864, 0.6975713968276978, 0.7376821041107178, 0.7779424786567688, 0.8069024682044983, 0.8501253724098206], "delta": 0.24134677648544312}, {"probe": "companies_owned", "type": "R\u00b2", "values": [0.8304269313812256, 0.8274340033531189, 0.8204019665718079, 0.8166444897651672, 0.8164182901382446, 0.8156232833862305, 0.8151538968086243, 0.8113123178482056, 0.8089273571968079, 0.8294911980628967], "delta": -0.0009357333183288574}, {"probe": "nw_rank", "type": "R\u00b2", "values": [0.5852866172790527, 0.6358171701431274, 0.6942816972732544, 0.6973800659179688, 0.7041316032409668, 0.7186651825904846, 0.7273703813552856, 0.7334291934967041, 0.7464715242385864, 0.7706473469734192], "delta": 0.18536072969436646}, {"probe": "par_price_level", "type": "R\u00b2", "values": [0.743798017501831, 0.7421852350234985, 0.7411366701126099, 0.7313966155052185, 0.7408028841018677, 0.7437382936477661, 0.7385090589523315, 0.7248961925506592, 0.7065110206604004, 0.7095571756362915], "delta": -0.03424084186553955}, {"probe": "dividend_level", "type": "R\u00b2", "values": [0.5405339598655701, 0.5605059862136841, 0.5716525316238403, 0.5690393447875977, 0.5733225345611572, 0.5751813650131226, 0.5740599036216736, 0.5829051733016968, 0.6013638973236084, 0.6156048774719238], "delta": 0.07507091760635376}, {"probe": "policy_concentration", "type": "R\u00b2", "values": [0.518780529499054, 0.506683349609375, 0.5003735423088074, 0.5014565587043762, 0.5039306879043579, 0.5040841102600098, 0.5046657919883728, 0.5060490965843201, 0.5095134377479553, 0.5133978128433228], "delta": -0.005382716655731201}, {"probe": "model_entropy", "type": "R\u00b2", "values": [0.3850478529930115, 0.3866843581199646, 0.38923925161361694, 0.3915368318557739, 0.3922188878059387, 0.39655619859695435, 0.40389108657836914, 0.4055057764053345, 0.4160516858100891, 0.4386824369430542], "delta": 0.053634583950042725}, {"probe": "policy_margin", "type": "R\u00b2", "values": [0.27372103929519653, 0.28150486946105957, 0.28625160455703735, 0.28910326957702637, 0.292725145816803, 0.29591602087020874, 0.30409783124923706, 0.3082955479621887, 0.32002389430999756, 0.3310108780860901], "delta": 0.057289838790893555}];
+const trunkHeaders = ["input", "B0", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "trunk"];
+const policyRows = [{"probe": "close_action", "type": "acc", "values": [0.9932126998901367, 0.9977375864982605, 0.9977375864982605, 0.9977375864982605], "delta": 0.004524886608123779}, {"probe": "issue_action", "type": "acc", "values": [0.9501915574073792, 0.9693486094474792, 0.984674334526062, 0.984674334526062], "delta": 0.03448277711868286}, {"probe": "invest_action", "type": "acc", "values": [0.8694207072257996, 0.885090172290802, 0.8865147233009338, 0.874643862247467], "delta": 0.0052231550216674805}, {"probe": "acq_action", "type": "acc", "values": [0.8022598624229431, 0.8446327447891235, 0.8403955101966858, 0.8333333134651184], "delta": 0.031073451042175293}, {"probe": "phase", "type": "acc", "values": [0.9902384281158447, 0.9667730331420898, 0.9204055070877075, 0.8280457854270935], "delta": -0.16219264268875122}, {"probe": "ipo_action", "type": "acc", "values": [0.7956989407539368, 0.8172042965888977, 0.8467742204666138, 0.7983871102333069], "delta": 0.002688169479370117}, {"probe": "action_type", "type": "acc", "values": [0.8584569096565247, 0.8633376955986023, 0.8473812937736511, 0.7976347208023071], "delta": -0.06082218885421753}, {"probe": "bid_action", "type": "acc", "values": [0.7604166865348816, 0.7951388955116272, 0.7847222089767456, 0.78125], "delta": 0.020833313465118408}, {"probe": "model_top_action", "type": "acc", "values": [0.7394406199455261, 0.7751079201698303, 0.7584006190299988, 0.7054627537727356], "delta": -0.03397786617279053}, {"probe": "active_leading", "type": "acc", "values": [0.9290407299995422, 0.8862399458885193, 0.7942556738853455, 0.6990801692008972], "delta": -0.22996056079864502}, {"probe": "winning_player", "type": "acc", "values": [0.8935611248016357, 0.7638445496559143, 0.5928289890289307, 0.4982166290283203], "delta": -0.39534449577331543}, {"probe": "par_price_level", "type": "R\u00b2", "values": [0.7649519443511963, 0.8037908673286438, 0.8208622932434082, 0.8193193674087524], "delta": 0.05436742305755615}, {"probe": "num_active_corps", "type": "R\u00b2", "values": [0.949285089969635, 0.8954896926879883, 0.851334273815155, 0.7927145957946777], "delta": -0.15657049417495728}, {"probe": "dividend_level", "type": "R\u00b2", "values": [0.6097066402435303, 0.7520732879638672, 0.7581437230110168, 0.7493026256561279], "delta": 0.13959598541259766}, {"probe": "corps_invested", "type": "R\u00b2", "values": [0.8775006532669067, 0.8300057649612427, 0.7463647723197937, 0.6009781360626221], "delta": -0.27652251720428467}, {"probe": "total_shares", "type": "R\u00b2", "values": [0.8557966947555542, 0.8089255690574646, 0.7352654933929443, 0.5987728834152222], "delta": -0.25702381134033203}, {"probe": "value_spread", "type": "R\u00b2", "values": [0.8488526940345764, 0.7993332147598267, 0.6824981570243835, 0.5955361127853394], "delta": -0.25331658124923706}, {"probe": "policy_concentration", "type": "R\u00b2", "values": [0.5066328644752502, 0.5552376508712769, 0.5678286552429199, 0.5043579339981079], "delta": -0.002274930477142334}, {"probe": "companies_owned", "type": "R\u00b2", "values": [0.8284223079681396, 0.7535588145256042, 0.6136294603347778, 0.4756053686141968], "delta": -0.35281693935394287}, {"probe": "game_progress", "type": "R\u00b2", "values": [0.8954293131828308, 0.7625537514686584, 0.6355645060539246, 0.44736337661743164], "delta": -0.44806593656539917}, {"probe": "lead_margin", "type": "R\u00b2", "values": [0.9466699361801147, 0.8724431395530701, 0.6554227471351624, 0.43056029081344604], "delta": -0.5161096453666687}, {"probe": "model_entropy", "type": "R\u00b2", "values": [0.4370073676109314, 0.47368955612182617, 0.4744700789451599, 0.4253383278846741], "delta": -0.011669039726257324}, {"probe": "model_value_p0", "type": "R\u00b2", "values": [0.9691089391708374, 0.9333255290985107, 0.6633169651031494, 0.39071810245513916], "delta": -0.5783908367156982}, {"probe": "policy_margin", "type": "R\u00b2", "values": [0.3301495909690857, 0.3769267797470093, 0.39205437898635864, 0.3656198978424072], "delta": 0.03547030687332153}, {"probe": "nw_rank", "type": "R\u00b2", "values": [0.7692891359329224, 0.7475786209106445, 0.517658531665802, 0.281294584274292], "delta": -0.48799455165863037}];
+const policyHeaders = ["P0", "P2", "P4", "P6"];
+const valueRows = [{"probe": "close_action", "type": "acc", "values": [0.995475172996521, 0.9819005131721497], "delta": -0.013574659824371338}, {"probe": "issue_action", "type": "acc", "values": [0.9482758641242981, 0.8793103098869324], "delta": -0.06896555423736572}, {"probe": "active_leading", "type": "acc", "values": [0.9311056733131409, 0.8612727522850037], "delta": -0.06983292102813721}, {"probe": "winning_player", "type": "acc", "values": [0.9001314043998718, 0.8287966847419739], "delta": -0.07133471965789795}, {"probe": "bid_action", "type": "acc", "values": [0.7291666865348816, 0.663194477558136], "delta": -0.0659722089767456}, {"probe": "invest_action", "type": "acc", "values": [0.8660968542098999, 0.6258309483528137], "delta": -0.24026590585708618}, {"probe": "ipo_action", "type": "acc", "values": [0.7956989407539368, 0.5483871102333069], "delta": -0.24731183052062988}, {"probe": "action_type", "type": "acc", "values": [0.8560165166854858, 0.5158625841140747], "delta": -0.34015393257141113}, {"probe": "acq_action", "type": "acc", "values": [0.7980226278305054, 0.5141242742538452], "delta": -0.28389835357666016}, {"probe": "phase", "type": "acc", "values": [0.9876102805137634, 0.40379199385643005], "delta": -0.5838182866573334}, {"probe": "model_top_action", "type": "acc", "values": [0.7345597743988037, 0.254364550113678], "delta": -0.48019522428512573}, {"probe": "model_value_p0", "type": "R\u00b2", "values": [0.9690656661987305, 0.9811559319496155], "delta": 0.01209026575088501}, {"probe": "nw_rank", "type": "R\u00b2", "values": [0.7677839398384094, 0.6796168088912964], "delta": -0.08816713094711304}, {"probe": "lead_margin", "type": "R\u00b2", "values": [0.9467504024505615, 0.595253586769104], "delta": -0.3514968156814575}, {"probe": "value_spread", "type": "R\u00b2", "values": [0.8485547304153442, 0.18443387746810913], "delta": -0.6641208529472351}, {"probe": "par_price_level", "type": "R\u00b2", "values": [0.766728937625885, 0.11348849534988403], "delta": -0.653240442276001}, {"probe": "dividend_level", "type": "R\u00b2", "values": [0.606627345085144, 0.06035494804382324], "delta": -0.5462723970413208}, {"probe": "total_shares", "type": "R\u00b2", "values": [0.8542527556419373, 0.0495033860206604], "delta": -0.8047493696212769}, {"probe": "corps_invested", "type": "R\u00b2", "values": [0.8754746913909912, 0.045798420906066895], "delta": -0.8296762704849243}, {"probe": "num_active_corps", "type": "R\u00b2", "values": [0.9488356113433838, 0.03834789991378784], "delta": -0.910487711429596}, {"probe": "policy_concentration", "type": "R\u00b2", "values": [0.5044971704483032, 0.03833436965942383], "delta": -0.4661628007888794}, {"probe": "companies_owned", "type": "R\u00b2", "values": [0.8263781666755676, 0.022663235664367676], "delta": -0.8037149310112}, {"probe": "model_entropy", "type": "R\u00b2", "values": [0.4382454752922058, 0.015898823738098145], "delta": -0.42234665155410767}, {"probe": "policy_margin", "type": "R\u00b2", "values": [0.3316461443901062, 0.015551388263702393], "delta": -0.3160947561264038}, {"probe": "game_progress", "type": "R\u00b2", "values": [0.8937177658081055, 0.0036028623580932617], "delta": -0.8901149034500122}];
+const valueHeaders = ["V0", "V2"];
+const comparisons = null;
+
+function heatColor(val, isAcc) {
+  if (val === null) return "transparent";
+  const base = isAcc ? 0.5 : 0.0;
+  const t = Math.max(0, Math.min(1, (val - base) / (1.0 - base)));
+  const l = 18 + t * 22;
+  return "hsl(150, 50%," + l + "%)";
+}
+
+function deltaSpan(d) {
+  const cls = d > 0.005 ? "delta-pos" : d < -0.005 ? "delta-neg" : "delta-flat";
+  const sign = d >= 0 ? "+" : "";
+  return '<span class="' + cls + '">' + sign + d.toFixed(4) + '</span>';
+}
+
+function buildTable(tblId, rows, headers) {
+  const tbl = document.getElementById(tblId);
+  if (!tbl || rows.length === 0) return;
+  const isAcc = (t) => t === "acc";
+  let html = '<tr><th>Probe</th><th>Type</th>';
+  for (const h of headers) html += '<th>' + h + '</th>';
+  html += '<th>&Delta;</th></tr>';
+  for (const r of rows) {
+    const tag = isAcc(r.type) ? '<span class="tag tag-acc">acc</span>' : '<span class="tag tag-r2">R&sup2;</span>';
+    html += '<tr><td>' + r.probe + '</td><td style="text-align:center">' + tag + '</td>';
+    for (const v of r.values) {
+      if (v === null) {
+        html += '<td>-</td>';
+      } else {
+        html += '<td style="background:' + heatColor(v, isAcc(r.type)) + '">' + v.toFixed(4) + '</td>';
+      }
+    }
+    html += '<td>' + deltaSpan(r.delta) + '</td></tr>';
+  }
+  tbl.innerHTML = html;
+}
+
+buildTable("tbl-trunk", trunkRows, trunkHeaders);
+
+if (policyRows.length > 0) {
+  const sec = document.getElementById("policy-section");
+  sec.innerHTML = '<h2>2. Policy Head Probes</h2>' +
+    '<p style="color:#888;font-size:0.85rem">Linear probes at each hidden layer within the policy head.</p>' +
+    '<table id="tbl-policy"></table>';
+  buildTable("tbl-policy", policyRows, policyHeaders);
+}
+
+if (valueRows.length > 0) {
+  const n = policyRows.length > 0 ? 3 : 2;
+  const sec = document.getElementById("value-section");
+  sec.innerHTML = '<h2>' + n + '. Value Head Probes</h2>' +
+    '<p style="color:#888;font-size:0.85rem">Linear probes at each hidden layer within the value head.</p>' +
+    '<table id="tbl-value"></table>';
+  buildTable("tbl-value", valueRows, valueHeaders);
+}
+
+if (comparisons) {
+  const n = (policyRows.length > 0 ? 3 : 2) + (valueRows.length > 0 ? 1 : 0);
+  const sec = document.getElementById("comp-section");
+  let html = '<h2>' + n + '. Linear vs MLP at trunk_norm</h2>' +
+    '<p style="color:#888;font-size:0.85rem">Compares linear probe to 128-unit MLP. Large gains indicate nonlinearly encoded information.</p>' +
+    '<table><tr><th>Probe</th><th>Type</th><th>Linear</th><th>MLP</th><th>&Delta;</th><th>Gain</th></tr>';
+  for (const c of comparisons) {
+    const d = c.mlp - c.linear;
+    const headroom = c.linear < 1.0 ? 1.0 - c.linear : 1.0;
+    const gain = headroom > 0.01 ? (d / headroom * 100).toFixed(1) + '%' : '-';
+    const tag = c.type === "acc" ? '<span class="tag tag-acc">acc</span>' : '<span class="tag tag-r2">R&sup2;</span>';
+    html += '<tr><td>' + c.probe + '</td><td style="text-align:center">' + tag + '</td>' +
+      '<td>' + c.linear.toFixed(4) + '</td><td>' + c.mlp.toFixed(4) + '</td>' +
+      '<td>' + deltaSpan(d) + '</td><td>' + gain + '</td></tr>';
+  }
+  html += '</table>';
+  sec.innerHTML = html;
+}
+</script>
+</body>
+</html>

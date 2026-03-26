@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Architecture Analysis — Epoch 375</title>
+<style>
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               Helvetica, Arial, sans-serif;
+  background: #1a1a2e; color: #e0e0e0;
+  margin: 2rem auto; max-width: 1100px; padding: 0 1rem;
+}
+h1 { color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }
+h2 { color: #ccc; font-size: 1.1rem; margin-top: 2rem;
+      border-bottom: 1px solid #333; padding-bottom: 0.3rem; }
+h3 { color: #aaa; font-size: 0.95rem; margin-top: 1rem; }
+.meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+table {
+  border-collapse: collapse; width: 100%;
+  font-size: 0.82rem; margin-bottom: 1.5rem;
+}
+th, td { padding: 5px 8px; border: 1px solid #2a2a4a; text-align: right; }
+th { background: #16213e; color: #aaa; font-weight: 600;
+     position: sticky; top: 0; z-index: 1; }
+th:first-child, td:first-child { text-align: left; }
+td:first-child {
+  font-family: "SF Mono", "Fira Code", Consolas, monospace;
+  font-size: 0.8rem; color: #ccc;
+}
+tr:hover td { border-color: #555; }
+.bar-container { display: inline-block; width: 120px; vertical-align: middle; }
+.bar {
+  display: inline-block; height: 12px; border-radius: 2px;
+  vertical-align: middle;
+}
+.bar-blue { background: #4a9eff; }
+.bar-green { background: #4ecca3; }
+.bar-orange { background: #e9a945; }
+.bar-red { background: #e94560; }
+.bar-yellow { background: #e9a945; }
+</style>
+</head>
+<body>
+<h1>Architecture Analysis — Epoch 375</h1>
+<div class="meta">26,633 states. hidden_dim=256.</div>
+<h2>1. Residual Block Contribution</h2>
+<p style="color:#888;font-size:0.85rem">||output - input|| / ||input|| per block. Higher = block changes the representation more.</p>
+<table id="tbl-contrib"></table>
+
+<div id="conductance-section"></div>
+<div id="head-conductance-section"></div>
+
+<h2 id="rank-header">Effective Rank (SVD)</h2>
+<p style="color:#888;font-size:0.85rem">Entropy-based effective dimensionality at each layer.</p>
+<table id="tbl-rank"></table>
+<script>
+const contribs = [{"block": 0.0, "mean": 0.07327287612106012, "std": 0.034097503749567805, "p95": 0.13248602449893945, "fc2_weight_norm": 75.30809783935547}, {"block": 1.0, "mean": 0.066869646501316, "std": 0.03014473099303219, "p95": 0.126182422041893, "fc2_weight_norm": 76.71012878417969}, {"block": 2.0, "mean": 0.05393755856624595, "std": 0.016807759415110923, "p95": 0.08566012680530548, "fc2_weight_norm": 77.43016052246094}, {"block": 3.0, "mean": 0.04684423533957961, "std": 0.014030065026066822, "p95": 0.0741533562541008, "fc2_weight_norm": 78.37759399414062}, {"block": 4.0, "mean": 0.04713626511093407, "std": 0.0172134731070099, "p95": 0.08164741843938828, "fc2_weight_norm": 78.61138916015625}, {"block": 5.0, "mean": 0.05365692278364596, "std": 0.022432556982592385, "p95": 0.09433334469795226, "fc2_weight_norm": 78.37027740478516}, {"block": 6.0, "mean": 0.05481260345486218, "std": 0.020961762062793998, "p95": 0.09354215860366817, "fc2_weight_norm": 75.48884582519531}, {"block": 7.0, "mean": 0.06772162452098422, "std": 0.03853457246353107, "p95": 0.15403808653354642, "fc2_weight_norm": 76.94364929199219}];
+const ranks = [{"layer": "input_preprocess[0] 1018\u2192768", "width": 768, "eff_rank": 369.73039800433, "utilization": 48.141978906813804, "eff_rank_1pct": 526, "top50_energy": 74.30561624877568, "top100_energy": 86.86808179903957, "top200_energy": 95.452856899266}, {"layer": "input_preprocess[2] 768\u2192256", "width": 256, "eff_rank": 123.95843267738891, "utilization": 48.421262764605046, "eff_rank_1pct": 239, "top50_energy": 94.36992616160262, "top100_energy": 98.32633050598186, "top200_energy": 99.85399674776598}, {"layer": "block_0.norm", "width": 256, "eff_rank": 138.21172583796982, "utilization": 53.98895540545696, "eff_rank_1pct": 235, "top50_energy": 89.5205854496853, "top100_energy": 97.35328231431582, "top200_energy": 99.88098914547392}, {"layer": "block_0.fc1 256\u2192256", "width": 256, "eff_rank": 86.23672231211798, "utilization": 33.68621965317109, "eff_rank_1pct": 138, "top50_energy": 96.55460828738524, "top100_energy": 99.69307291834156, "top200_energy": 99.99839701652323}, {"layer": "block_0.fc2 256\u2192256", "width": 256, "eff_rank": 128.79758131866106, "utilization": 50.31155520260198, "eff_rank_1pct": 197, "top50_energy": 92.04107515122406, "top100_energy": 97.75512715882455, "top200_energy": 99.94280738735911}, {"layer": "block_1.norm", "width": 256, "eff_rank": 147.07286923911442, "utilization": 57.45033954652907, "eff_rank_1pct": 243, "top50_energy": 88.3377493660303, "top100_energy": 96.57076715449536, "top200_energy": 99.80404163169632}, {"layer": "block_1.fc1 256\u2192256", "width": 256, "eff_rank": 93.02487726017785, "utilization": 36.337842679756974, "eff_rank_1pct": 153, "top50_energy": 95.88074161833937, "top100_energy": 99.51359199355713, "top200_energy": 99.99687824785275}, {"layer": "block_1.fc2 256\u2192256", "width": 256, "eff_rank": 126.08983738115114, "utilization": 49.25384272701216, "eff_rank_1pct": 198, "top50_energy": 92.27881153852097, "top100_energy": 97.88988058961844, "top200_energy": 99.949940000103}, {"layer": "block_2.norm", "width": 256, "eff_rank": 152.72185652239529, "utilization": 59.65697520406066, "eff_rank_1pct": 242, "top50_energy": 86.84181055620542, "top100_energy": 95.80822017786758, "top200_energy": 99.75674533240728}, {"layer": "block_2.fc1 256\u2192256", "width": 256, "eff_rank": 106.2074552228929, "utilization": 41.48728719644254, "eff_rank_1pct": 178, "top50_energy": 93.5444156961348, "top100_energy": 99.12004722383278, "top200_energy": 99.99391488975216}, {"layer": "block_2.fc2 256\u2192256", "width": 256, "eff_rank": 143.780996269174, "utilization": 56.1644516676461, "eff_rank_1pct": 228, "top50_energy": 86.80176653856493, "top100_energy": 96.42864830717703, "top200_energy": 99.91536763788508}, {"layer": "block_3.norm", "width": 256, "eff_rank": 156.6266512568783, "utilization": 61.18228564721808, "eff_rank_1pct": 245, "top50_energy": 86.0641902849371, "top100_energy": 95.36330973674168, "top200_energy": 99.72175878936572}, {"layer": "block_3.fc1 256\u2192256", "width": 256, "eff_rank": 111.69560928000156, "utilization": 43.63109737500061, "eff_rank_1pct": 189, "top50_energy": 92.62828467980358, "top100_energy": 98.82430175857064, "top200_energy": 99.99216040360147}, {"layer": "block_3.fc2 256\u2192256", "width": 256, "eff_rank": 142.11931430936465, "utilization": 55.51535715209557, "eff_rank_1pct": 227, "top50_energy": 87.18756608162403, "top100_energy": 96.59582827749847, "top200_energy": 99.91971145219142}, {"layer": "block_4.norm", "width": 256, "eff_rank": 158.90892535618548, "utilization": 62.073798967259954, "eff_rank_1pct": 251, "top50_energy": 86.0852552721845, "top100_energy": 95.15473863909043, "top200_energy": 99.65498770823716}, {"layer": "block_4.fc1 256\u2192256", "width": 256, "eff_rank": 108.88225685382409, "utilization": 42.532131583525036, "eff_rank_1pct": 187, "top50_energy": 93.54424446463823, "top100_energy": 98.94349873048752, "top200_energy": 99.99088829337289}, {"layer": "block_4.fc2 256\u2192256", "width": 256, "eff_rank": 131.80691934400727, "utilization": 51.48707786875284, "eff_rank_1pct": 210, "top50_energy": 90.31369789996435, "top100_energy": 97.49894575978203, "top200_energy": 99.94412458960662}, {"layer": "block_5.norm", "width": 256, "eff_rank": 160.4216271748178, "utilization": 62.6646981151632, "eff_rank_1pct": 254, "top50_energy": 86.70421441554224, "top100_energy": 95.2144687181465, "top200_energy": 99.55648723745993}, {"layer": "block_5.fc1 256\u2192256", "width": 256, "eff_rank": 103.63512255607768, "utilization": 40.48246974846784, "eff_rank_1pct": 176, "top50_energy": 94.88552040963934, "top100_energy": 99.12436421988563, "top200_energy": 99.99024399308716}, {"layer": "block_5.fc2 256\u2192256", "width": 256, "eff_rank": 114.8138225378218, "utilization": 44.84914942883664, "eff_rank_1pct": 191, "top50_energy": 93.97685611978144, "top100_energy": 98.55639714875902, "top200_energy": 99.97241228213254}, {"layer": "block_6.norm", "width": 256, "eff_rank": 158.50972146462502, "utilization": 61.91785994711915, "eff_rank_1pct": 254, "top50_energy": 87.98582390708548, "top100_energy": 95.56190275968794, "top200_energy": 99.49802402083392}, {"layer": "block_6.fc1 256\u2192256", "width": 256, "eff_rank": 93.97016451096795, "utilization": 36.707095512096856, "eff_rank_1pct": 165, "top50_energy": 96.62201550781569, "top100_energy": 99.41770878802413, "top200_energy": 99.99203394259322}, {"layer": "block_6.fc2 256\u2192256", "width": 256, "eff_rank": 115.59833967652813, "utilization": 45.1556014361438, "eff_rank_1pct": 200, "top50_energy": 93.4862595367575, "top100_energy": 98.53712737089718, "top200_energy": 99.97540790085196}, {"layer": "block_7.norm", "width": 256, "eff_rank": 155.90350392586296, "utilization": 60.89980622104022, "eff_rank_1pct": 254, "top50_energy": 88.86833229356216, "top100_energy": 95.84908826127703, "top200_energy": 99.5161124361885}, {"layer": "block_7.fc1 256\u2192256", "width": 256, "eff_rank": 88.57042754764893, "utilization": 34.59782326080037, "eff_rank_1pct": 153, "top50_energy": 97.35533331855261, "top100_energy": 99.53088727328024, "top200_energy": 99.99302925870019}, {"layer": "block_7.fc2 256\u2192256", "width": 256, "eff_rank": 87.7056766796312, "utilization": 34.260029952980936, "eff_rank_1pct": 131, "top50_energy": 97.53904792308164, "top100_energy": 99.54054787377261, "top200_energy": 99.99350513245217}, {"layer": "trunk_norm", "width": 256, "eff_rank": 137.4258825631748, "utilization": 53.68198537624016, "eff_rank_1pct": 254, "top50_energy": 92.92387187938853, "top100_energy": 97.44686971673428, "top200_energy": 99.68635731760006}, {"layer": "policy[0] 256\u2192256", "width": 256, "eff_rank": 76.39807711169486, "utilization": 29.842998871755803, "eff_rank_1pct": 149, "top50_energy": 98.45402506344666, "top100_energy": 99.74763873302548, "top200_energy": 99.9959579027278}, {"layer": "policy[2] 256\u2192256", "width": 256, "eff_rank": 92.90412527565314, "utilization": 36.29067393580201, "eff_rank_1pct": 169, "top50_energy": 96.8739745838628, "top100_energy": 99.36145125236, "top200_energy": 99.99037165845766}, {"layer": "policy[4] 256\u2192256", "width": 256, "eff_rank": 108.72884024227086, "utilization": 42.47220321963706, "eff_rank_1pct": 175, "top50_energy": 95.25359016525752, "top100_energy": 98.86179139065693, "top200_energy": 99.975864842342}, {"layer": "policy[6] 256\u2192183", "width": 183, "eff_rank": 68.28860818958461, "utilization": 37.31617933857083, "eff_rank_1pct": 125, "top50_energy": 98.35157073534684, "top100_energy": 99.74871128506031, "top200_energy": 100.0}, {"layer": "value[0] 256\u2192256", "width": 256, "eff_rank": 75.98861849201722, "utilization": 29.683054098444227, "eff_rank_1pct": 139, "top50_energy": 98.39555953809354, "top100_energy": 99.71819073141876, "top200_energy": 99.99541997261278}, {"layer": "value[2] 256\u21923", "width": 3, "eff_rank": 2.483345777488048, "utilization": 82.77819258293493, "eff_rank_1pct": 3, "top50_energy": 100.0, "top100_energy": 100.0, "top200_energy": 100.0}];
+const conductance = {"policy": [{"block": 0.0, "conductance": 11088.302734375, "pct": 18.377873972173575}, {"block": 1.0, "conductance": 8946.6025390625, "pct": 14.828196693466843}, {"block": 2.0, "conductance": 8266.87109375, "pct": 13.701602377264615}, {"block": 3.0, "conductance": 7576.50244140625, "pct": 12.55737783803193}, {"block": 4.0, "conductance": 7036.7998046875, "pct": 11.662868797498772}, {"block": 5.0, "conductance": 6345.74365234375, "pct": 10.51750478826256}, {"block": 6.0, "conductance": 5767.279296875, "pct": 9.558751652019067}, {"block": 7.0, "conductance": 5306.96630859375, "pct": 8.795823881282635}], "value": [{"block": 0.0, "conductance": 9.8375244140625, "pct": 18.98595190958311}, {"block": 1.0, "conductance": 7.6868157386779785, "pct": 14.835186964694783}, {"block": 2.0, "conductance": 7.182173728942871, "pct": 13.861252006557331}, {"block": 3.0, "conductance": 6.617488861083984, "pct": 12.771437202142453}, {"block": 4.0, "conductance": 6.216378211975098, "pct": 11.997312821468299}, {"block": 5.0, "conductance": 5.627410888671875, "pct": 10.860634038687712}, {"block": 6.0, "conductance": 4.938069820404053, "pct": 9.530238725744464}, {"block": 7.0, "conductance": 3.708893060684204, "pct": 7.157986331121845}]};
+const headCond = {"input_preprocess": [{"layer_idx": 0.0, "label": "input_preprocess[0] 1018\u2192768", "conductance": 22349.02734375, "pct": 61.74760082360699}, {"layer_idx": 1.0, "label": "input_preprocess[2] 768\u2192256", "conductance": 13845.1357421875, "pct": 38.25239917639301}], "policy": [{"layer_idx": 0.0, "label": "policy[0] 256\u2192256", "conductance": 3798.3740234375, "pct": 33.685943478968404}, {"layer_idx": 1.0, "label": "policy[2] 256\u2192256", "conductance": 4024.885009765625, "pct": 35.6947599451018}, {"layer_idx": 2.0, "label": "policy[4] 256\u2192256", "conductance": 2967.98046875, "pct": 26.32158436743789}, {"layer_idx": 3.0, "label": "policy[6] 256\u2192183", "conductance": 484.603271484375, "pct": 4.2977122084919}], "value": [{"layer_idx": 0.0, "label": "value[0] 256\u2192256", "conductance": 3.4702367782592773, "pct": 65.48380900505468}, {"layer_idx": 1.0, "label": "value[2] 256\u21923", "conductance": 1.8291445970535278, "pct": 34.51619099494532}]};
+const hiddenDim = 256;
+
+function makeBar(val, maxVal, cls) {
+  const pct = maxVal > 0 ? Math.min(val / maxVal * 100, 100) : 0;
+  return '<span class="bar-container"><span class="bar ' + cls + '" style="width:' + pct + '%"></span></span>';
+}
+
+// --- Block contribution table ---
+(function() {
+  const tbl = document.getElementById("tbl-contrib");
+  const maxMean = Math.max(...contribs.map(r => r.mean));
+  let html = '<tr><th>Block</th><th>||res||/||in||</th><th></th><th>Std</th><th>P95</th><th>fc2 ||W||</th></tr>';
+  for (const r of contribs) {
+    html += '<tr><td>Block ' + Math.round(r.block) + '</td>' +
+      '<td>' + r.mean.toFixed(4) + '</td>' +
+      '<td>' + makeBar(r.mean, maxMean, 'bar-blue') + '</td>' +
+      '<td>' + r.std.toFixed(4) + '</td>' +
+      '<td>' + r.p95.toFixed(4) + '</td>' +
+      '<td>' + r.fc2_weight_norm.toFixed(1) + '</td></tr>';
+  }
+  tbl.innerHTML = html;
+})();
+
+// --- Trunk conductance table ---
+if (conductance) {
+  const section = document.getElementById("conductance-section");
+  const maxPol = Math.max(...conductance.policy.map(r => r.conductance));
+  const maxVal = Math.max(...conductance.value.map(r => r.conductance));
+  let html = '<h2>2. Trunk Block Conductance</h2>' +
+    '<p style="color:#888;font-size:0.85rem">Integrated-gradient conductance toward each head. Shows which blocks each head relies on.</p>' +
+    '<table><tr><th>Block</th><th>Policy</th><th></th><th>Policy %</th><th>Value</th><th></th><th>Value %</th></tr>';
+  for (let i = 0; i < conductance.policy.length; i++) {
+    const p = conductance.policy[i];
+    const v = conductance.value[i];
+    html += '<tr><td>Block ' + Math.round(p.block) + '</td>' +
+      '<td>' + p.conductance.toFixed(1) + '</td>' +
+      '<td>' + makeBar(p.conductance, maxPol, 'bar-green') + '</td>' +
+      '<td>' + p.pct.toFixed(1) + '%</td>' +
+      '<td>' + v.conductance.toFixed(1) + '</td>' +
+      '<td>' + makeBar(v.conductance, maxVal, 'bar-orange') + '</td>' +
+      '<td>' + v.pct.toFixed(1) + '%</td></tr>';
+  }
+  html += '</table>';
+  section.innerHTML = html;
+}
+
+// --- Head-layer conductance table ---
+if (headCond) {
+  const section = document.getElementById("head-conductance-section");
+  let html = '<h2>Per-Layer Conductance</h2>' +
+    '<p style="color:#888;font-size:0.85rem">Conductance within each module\'s Linear layers. Shows which layer does the most work.</p>';
+
+  const colorMap = {'input_preprocess': 'bar-blue', 'policy': 'bar-green', 'value': 'bar-orange'};
+  const titleMap = {'input_preprocess': 'Input Preprocessing', 'policy': 'Policy Head', 'value': 'Value Head'};
+
+  for (const [headName, layers] of Object.entries(headCond)) {
+    const maxC = Math.max(...layers.map(r => r.conductance));
+    const cls = colorMap[headName] || 'bar-blue';
+    const title = titleMap[headName] || headName;
+    html += '<h3 style="color:#aaa;font-size:0.95rem;margin-top:1rem">' + title + '</h3>';
+    html += '<table><tr><th>Layer</th><th>Conductance</th><th></th><th>%</th></tr>';
+    for (const r of layers) {
+      html += '<tr><td>' + r.label + '</td>' +
+        '<td>' + r.conductance.toFixed(1) + '</td>' +
+        '<td>' + makeBar(r.conductance, maxC, cls) + '</td>' +
+        '<td>' + r.pct.toFixed(1) + '%</td></tr>';
+    }
+    html += '</table>';
+  }
+  section.innerHTML = html;
+}
+
+// --- Effective rank table ---
+(function() {
+  const tbl = document.getElementById("tbl-rank");
+  let html = '<tr><th>Layer</th><th>Width</th><th>Eff. Rank</th><th></th><th>Util%</th><th>Rank(1%)</th><th>Top-50</th><th>Top-100</th><th>Top-200</th></tr>';
+  for (const r of ranks) {
+    html += '<tr><td>' + r.layer + '</td>' +
+      '<td>' + r.width + '</td>' +
+      '<td>' + r.eff_rank.toFixed(1) + '</td>' +
+      '<td>' + makeBar(r.eff_rank, r.width, 'bar-blue') + '</td>' +
+      '<td>' + r.utilization.toFixed(1) + '%</td>' +
+      '<td>' + r.eff_rank_1pct + '</td>' +
+      '<td>' + r.top50_energy.toFixed(1) + '%</td>' +
+      '<td>' + r.top100_energy.toFixed(1) + '%</td>' +
+      '<td>' + r.top200_energy.toFixed(1) + '%</td></tr>';
+  }
+  tbl.innerHTML = html;
+})();
+
+// Renumber rank header based on what's shown
+document.getElementById("rank-header").textContent =
+  (conductance ? "3" : "2") + ". Effective Rank (SVD)";
+</script>
+</body>
+</html>

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Decision Attribution — Epoch 375</title>
+<style>
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               Helvetica, Arial, sans-serif;
+  background: #1a1a2e; color: #e0e0e0;
+  margin: 2rem auto; max-width: 1200px; padding: 0 1rem;
+}
+h1 { color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }
+h2 { color: #ccc; font-size: 1.1rem; margin-top: 2rem;
+      border-bottom: 1px solid #333; padding-bottom: 0.3rem; }
+h3 { color: #aaa; font-size: 0.95rem; margin-top: 1rem; }
+.meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+table {
+  border-collapse: collapse; width: 100%;
+  font-size: 0.82rem; margin-bottom: 1.5rem;
+}
+th, td { padding: 5px 8px; border: 1px solid #2a2a4a; text-align: right; }
+th { background: #16213e; color: #aaa; font-weight: 600;
+     position: sticky; top: 0; z-index: 1; }
+th:first-child, td:first-child { text-align: left; }
+td:first-child {
+  font-family: "SF Mono", "Fira Code", Consolas, monospace;
+  font-size: 0.8rem; color: #ccc;
+}
+tr:hover td { border-color: #555; }
+.decision {
+  background: #16213e; border: 1px solid #2a2a4a; border-radius: 6px;
+  padding: 1rem; margin-bottom: 1rem;
+}
+.decision-header {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 0.5rem;
+}
+.phase-tag {
+  background: #0f3460; color: #e0e0e0; padding: 2px 8px;
+  border-radius: 3px; font-size: 0.8rem; font-weight: 600;
+}
+.actions {
+  font-family: "SF Mono", "Fira Code", Consolas, monospace;
+  font-size: 0.85rem; margin: 0.5rem 0;
+}
+.action-a { color: #4ecca3; }
+.action-b { color: #e94560; }
+.features { font-size: 0.82rem; }
+.feat-row {
+  display: flex; align-items: center; margin: 2px 0;
+}
+.feat-name {
+  width: 220px; min-width: 220px; flex-shrink: 0;
+  font-family: monospace; font-size: 0.8rem; color: #aaa;
+}
+.feat-bar-container {
+  flex: 1; min-width: 0;
+}
+.feat-bar {
+  height: 14px; border-radius: 2px; min-width: 2px;
+}
+.feat-val { font-size: 0.75rem; color: #888; margin-left: 6px; flex-shrink: 0; }
+.bar-pos { background: #4ecca3; }
+.bar-neg { background: #e94560; }
+</style>
+</head>
+<body>
+<h1>Decision Attribution — Epoch 375</h1>
+<div class="meta">IntegratedGradients on critical decisions (top-2 margin &lt; threshold). 1705 critical states found in 26,633 total states. Showing top 15 most uncertain decisions.<br>Green bars = feature favors action A (top-1). Red bars = feature favors action B (top-2).</div>
+<h2>Decision Gallery</h2>
+<div id="gallery"></div>
+
+<h2>Aggregate Patterns by Phase</h2>
+<div id="patterns"></div>
+<script>
+const decisions = [{"phase": "IPO", "top1": "pass", "top2": "ipo corp=0", "top1_prob": 0.489, "top2_prob": 0.489, "margin": 0.0, "entropy": 0.79, "value": 0.738, "decisive": [{"name": "corp:cash", "val": 4.5818}, {"name": "player:is_president", "val": 4.2604}, {"name": "co:adj_incomes", "val": 2.3308}, {"name": "turn:active_company_stars", "val": -1.8964}, {"name": "turn:active_company_high_price", "val": -1.8637}, {"name": "corp:price_index_norm", "val": -1.8316}, {"name": "corp:owned_companies", "val": -1.593}, {"name": "phase", "val": 1.4803}, {"name": "auction_slot_info", "val": -1.3702}, {"name": "turn:active_company_face_value", "val": -1.3234}]}, {"phase": "INVEST", "top1": "pass", "top2": "buy_share corp=2", "top1_prob": 0.5, "top2_prob": 0.5, "margin": 0.0, "entropy": 0.693, "value": -0.941, "decisive": [{"name": "co:adj_incomes", "val": -3.55}, {"name": "market:available", "val": -3.071}, {"name": "player:net_worth", "val": 1.3861}, {"name": "corp:owned_companies", "val": 1.1263}, {"name": "corp:unissued_shares", "val": -0.9406}, {"name": "player:owned_companies", "val": -0.7863}, {"name": "player:is_president", "val": 0.7458}, {"name": "corp:cash", "val": -0.5434}, {"name": "coo_level", "val": -0.5211}, {"name": "co:for_auction", "val": 0.4955}]}, {"phase": "IPO", "top1": "pass", "top2": "ipo corp=3", "top1_prob": 0.5, "top2_prob": 0.5, "margin": 0.0, "entropy": 0.693, "value": 0.498, "decisive": [{"name": "co:removed", "val": 11.0764}, {"name": "player:is_president", "val": 7.5746}, {"name": "turn:active_company_income", "val": -4.3414}, {"name": "player:net_worth", "val": -3.7109}, {"name": "co:adj_incomes", "val": -3.477}, {"name": "corp:cash", "val": 3.3546}, {"name": "turn:active_company", "val": -2.9884}, {"name": "player:cash", "val": -2.6966}, {"name": "player:owned_shares", "val": 2.3721}, {"name": "turn:active_company_high_price", "val": -2.3465}]}, {"phase": "DIV", "top1": "dividend amt=0", "top2": "dividend amt=2", "top1_prob": 0.495, "top2_prob": 0.495, "margin": 0.0, "entropy": 0.76, "value": 0.249, "decisive": [{"name": "phase", "val": -5.5087}, {"name": "turn:dividend_impact", "val": 5.4643}, {"name": "player:net_worth", "val": -5.3559}, {"name": "player:owned_companies", "val": 4.1132}, {"name": "market:available", "val": 3.6751}, {"name": "turn:active_corp_stars", "val": 3.3862}, {"name": "turn:active_corp", "val": -2.9815}, {"name": "player:cash", "val": -2.9814}, {"name": "turn:active_corp_companies", "val": -2.5941}, {"name": "corp:income", "val": 2.4345}]}, {"phase": "INVEST", "top1": "auction slot=0 amt=4", "top2": "auction slot=1 amt=3", "top1_prob": 0.43, "top2_prob": 0.43, "margin": 0.0, "entropy": 1.479, "value": 0.022, "decisive": [{"name": "market:available", "val": 6.7495}, {"name": "coo_level", "val": -3.1494}, {"name": "co:for_auction", "val": -1.6021}, {"name": "player:cash", "val": -1.4464}, {"name": "player:turn_order", "val": 0.738}, {"name": "co:adj_incomes", "val": 0.7275}, {"name": "phase", "val": 0.6625}, {"name": "corp:unissued_shares", "val": -0.5456}, {"name": "turn:cards_remaining", "val": 0.4122}, {"name": "auction_slot_info", "val": 0.3281}]}, {"phase": "INVEST", "top1": "pass", "top2": "sell_share corp=7", "top1_prob": 0.485, "top2_prob": 0.485, "margin": 0.0, "entropy": 0.848, "value": -0.828, "decisive": [{"name": "market:available", "val": 15.1072}, {"name": "player:owned_shares", "val": -9.6184}, {"name": "auction_slot_info", "val": -9.2886}, {"name": "player:cash", "val": -8.8037}, {"name": "corp:issued_shares", "val": -7.3774}, {"name": "corp:owned_companies", "val": 6.7193}, {"name": "corp:share_price", "val": -5.8856}, {"name": "corp:unissued_shares", "val": 5.8082}, {"name": "corp:price_index_norm", "val": -5.5712}, {"name": "co:removed", "val": 4.8651}]}, {"phase": "DIV", "top1": "dividend amt=4", "top2": "dividend amt=2", "top1_prob": 0.341, "top2_prob": 0.341, "margin": 0.0, "entropy": 1.445, "value": 0.688, "decisive": [{"name": "turn:dividend_impact", "val": -5.0268}, {"name": "phase", "val": 4.2744}, {"name": "corp:owned_companies", "val": -3.2406}, {"name": "player:is_president", "val": 2.8678}, {"name": "co:removed", "val": -2.2589}, {"name": "turn:dividend_remaining", "val": -1.8751}, {"name": "market:available", "val": -1.7307}, {"name": "corp:unissued_shares", "val": -1.2282}, {"name": "player:owned_shares", "val": 1.0579}, {"name": "corp:active", "val": 1.025}]}, {"phase": "DIV", "top1": "dividend amt=1", "top2": "dividend amt=3", "top1_prob": 0.331, "top2_prob": 0.331, "margin": 0.0, "entropy": 1.213, "value": -0.447, "decisive": [{"name": "phase", "val": -10.1689}, {"name": "player:is_president", "val": -9.1237}, {"name": "co:removed", "val": 6.9334}, {"name": "corp:active", "val": -6.875}, {"name": "turn:dividend_remaining", "val": 5.9388}, {"name": "corp:price_index_norm", "val": -5.7562}, {"name": "turn:active_corp_share_price", "val": 5.5168}, {"name": "player:net_worth", "val": 5.3114}, {"name": "turn:dividend_impact", "val": 5.1526}, {"name": "market:available", "val": 4.8868}]}, {"phase": "BID", "top1": "leave_bid", "top2": "raise_bid amt=2", "top1_prob": 0.288, "top2_prob": 0.288, "margin": 0.0, "entropy": 2.082, "value": -0.887, "decisive": [{"name": "corp:unissued_shares", "val": -7.257}, {"name": "market:available", "val": 6.0172}, {"name": "player:net_worth", "val": 5.628}, {"name": "phase", "val": 4.7349}, {"name": "co:removed", "val": -4.232}, {"name": "coo_level", "val": 4.084}, {"name": "turn:auction_starter", "val": 3.4381}, {"name": "turn:active_company", "val": -3.3548}, {"name": "co:adj_incomes", "val": -2.7299}, {"name": "player:turn_order", "val": 2.7172}]}, {"phase": "INVEST", "top1": "auction slot=0 amt=4", "top2": "auction slot=1 amt=3", "top1_prob": 0.43, "top2_prob": 0.43, "margin": 0.0, "entropy": 1.479, "value": 0.022, "decisive": [{"name": "market:available", "val": 6.7495}, {"name": "coo_level", "val": -3.1494}, {"name": "co:for_auction", "val": -1.6021}, {"name": "player:cash", "val": -1.4464}, {"name": "player:turn_order", "val": 0.738}, {"name": "co:adj_incomes", "val": 0.7275}, {"name": "phase", "val": 0.6625}, {"name": "corp:unissued_shares", "val": -0.5456}, {"name": "turn:cards_remaining", "val": 0.4122}, {"name": "auction_slot_info", "val": 0.3281}]}, {"phase": "INVEST", "top1": "auction slot=0 amt=4", "top2": "auction slot=1 amt=3", "top1_prob": 0.43, "top2_prob": 0.43, "margin": 0.0, "entropy": 1.479, "value": 0.022, "decisive": [{"name": "market:available", "val": 6.7495}, {"name": "coo_level", "val": -3.1494}, {"name": "co:for_auction", "val": -1.6021}, {"name": "player:cash", "val": -1.4464}, {"name": "player:turn_order", "val": 0.738}, {"name": "co:adj_incomes", "val": 0.7275}, {"name": "phase", "val": 0.6625}, {"name": "corp:unissued_shares", "val": -0.5456}, {"name": "turn:cards_remaining", "val": 0.4122}, {"name": "auction_slot_info", "val": 0.3281}]}, {"phase": "INVEST", "top1": "sell_share corp=7", "top2": "sell_share corp=2", "top1_prob": 0.459, "top2_prob": 0.459, "margin": 0.0, "entropy": 0.988, "value": 0.703, "decisive": [{"name": "player:is_president", "val": -23.2471}, {"name": "market:available", "val": 22.2956}, {"name": "player:net_worth", "val": -19.2387}, {"name": "corp:owned_companies", "val": 17.2199}, {"name": "co:removed", "val": 14.5366}, {"name": "corp:active", "val": -12.2769}, {"name": "player:owned_shares", "val": -8.6449}, {"name": "player:cash", "val": -4.6506}, {"name": "co:adj_incomes", "val": 4.5127}, {"name": "corp:income", "val": 3.6384}]}, {"phase": "ACQ", "top1": "acq_price amt=0", "top2": "pass", "top1_prob": 0.433, "top2_prob": 0.433, "margin": 0.0, "entropy": 1.303, "value": 0.186, "decisive": [{"name": "turn:active_corp", "val": -15.0349}, {"name": "turn:active_corp_stars", "val": 8.9734}, {"name": "corp:owned_companies", "val": 7.8118}, {"name": "corp:active", "val": -7.0043}, {"name": "turn:active_company", "val": 6.2138}, {"name": "phase", "val": 6.0056}, {"name": "co:removed", "val": 5.4692}, {"name": "player:is_president", "val": -5.4691}, {"name": "auction_slot_info", "val": 5.0718}, {"name": "player:net_worth", "val": -4.5106}]}, {"phase": "INVEST", "top1": "auction slot=0 amt=4", "top2": "auction slot=1 amt=3", "top1_prob": 0.43, "top2_prob": 0.43, "margin": 0.0, "entropy": 1.479, "value": 0.022, "decisive": [{"name": "market:available", "val": 6.7495}, {"name": "coo_level", "val": -3.1494}, {"name": "co:for_auction", "val": -1.6021}, {"name": "player:cash", "val": -1.4464}, {"name": "player:turn_order", "val": 0.738}, {"name": "co:adj_incomes", "val": 0.7275}, {"name": "phase", "val": 0.6625}, {"name": "corp:unissued_shares", "val": -0.5456}, {"name": "turn:cards_remaining", "val": 0.4122}, {"name": "auction_slot_info", "val": 0.3281}]}, {"phase": "INVEST", "top1": "auction slot=0 amt=4", "top2": "auction slot=1 amt=3", "top1_prob": 0.43, "top2_prob": 0.43, "margin": 0.0, "entropy": 1.479, "value": 0.022, "decisive": [{"name": "market:available", "val": 6.7495}, {"name": "coo_level", "val": -3.1494}, {"name": "co:for_auction", "val": -1.6021}, {"name": "player:cash", "val": -1.4464}, {"name": "player:turn_order", "val": 0.738}, {"name": "co:adj_incomes", "val": 0.7275}, {"name": "phase", "val": 0.6625}, {"name": "corp:unissued_shares", "val": -0.5456}, {"name": "turn:cards_remaining", "val": 0.4122}, {"name": "auction_slot_info", "val": 0.3281}]}];
+const patterns = {"IPO": [{"name": "player:is_president", "mean": 5.9175, "count": 2}, {"name": "co:removed", "mean": 5.5931, "count": 2}, {"name": "corp:cash", "mean": 3.9682, "count": 2}, {"name": "co:adj_incomes", "mean": 2.9039, "count": 2}, {"name": "player:net_worth", "mean": 2.3505, "count": 2}, {"name": "turn:active_company_income", "mean": 2.2174, "count": 2}, {"name": "turn:active_company_high_price", "mean": 2.1051, "count": 2}, {"name": "corp:owned_companies", "mean": 1.959, "count": 2}, {"name": "phase", "mean": 1.8079, "count": 2}, {"name": "turn:active_company_stars", "mean": 1.778, "count": 2}, {"name": "turn:active_company", "mean": 1.6073, "count": 2}, {"name": "player:cash", "mean": 1.571, "count": 2}, {"name": "turn:active_company_face_value", "mean": 1.4815, "count": 2}, {"name": "corp:price_index_norm", "mean": 1.3028, "count": 2}, {"name": "player:owned_shares", "mean": 1.2998, "count": 2}], "INVEST": [{"name": "market:available", "mean": 9.2777, "count": 8}, {"name": "player:is_president", "mean": 3.446, "count": 8}, {"name": "corp:owned_companies", "mean": 3.1332, "count": 8}, {"name": "player:net_worth", "mean": 3.0142, "count": 8}, {"name": "player:cash", "mean": 2.6413, "count": 8}, {"name": "co:removed", "mean": 2.4605, "count": 8}, {"name": "player:owned_shares", "mean": 2.3294, "count": 8}, {"name": "coo_level", "mean": 2.2109, "count": 8}, {"name": "co:adj_incomes", "mean": 1.8924, "count": 8}, {"name": "corp:active", "mean": 1.7793, "count": 8}, {"name": "auction_slot_info", "mean": 1.6287, "count": 8}, {"name": "co:for_auction", "mean": 1.5377, "count": 8}, {"name": "corp:unissued_shares", "mean": 1.4516, "count": 8}, {"name": "corp:price_index_norm", "mean": 1.1228, "count": 8}, {"name": "corp:share_price", "mean": 1.0427, "count": 8}], "DIV": [{"name": "phase", "mean": 6.6507, "count": 3}, {"name": "turn:dividend_impact", "mean": 5.2146, "count": 3}, {"name": "player:is_president", "mean": 4.6682, "count": 3}, {"name": "player:net_worth", "mean": 3.8539, "count": 3}, {"name": "co:removed", "mean": 3.6806, "count": 3}, {"name": "market:available", "mean": 3.4309, "count": 3}, {"name": "turn:dividend_remaining", "mean": 2.7438, "count": 3}, {"name": "corp:active", "mean": 2.7413, "count": 3}, {"name": "turn:active_corp_share_price", "mean": 2.208, "count": 3}, {"name": "corp:price_index_norm", "mean": 2.1715, "count": 3}, {"name": "turn:active_corp_stars", "mean": 2.0859, "count": 3}, {"name": "player:owned_shares", "mean": 2.0324, "count": 3}, {"name": "corp:owned_companies", "mean": 2.0032, "count": 3}, {"name": "player:owned_companies", "mean": 1.8064, "count": 3}, {"name": "turn:active_corp", "mean": 1.5497, "count": 3}], "BID": [{"name": "corp:unissued_shares", "mean": 7.257, "count": 1}, {"name": "market:available", "mean": 6.0172, "count": 1}, {"name": "player:net_worth", "mean": 5.628, "count": 1}, {"name": "phase", "mean": 4.7349, "count": 1}, {"name": "co:removed", "mean": 4.232, "count": 1}, {"name": "coo_level", "mean": 4.084, "count": 1}, {"name": "turn:auction_starter", "mean": 3.4381, "count": 1}, {"name": "turn:active_company", "mean": 3.3548, "count": 1}, {"name": "co:adj_incomes", "mean": 2.7299, "count": 1}, {"name": "player:turn_order", "mean": 2.7172, "count": 1}, {"name": "co:revealed", "mean": 2.594, "count": 1}, {"name": "co:for_auction", "mean": 2.3286, "count": 1}, {"name": "turn:auction_price", "mean": 2.2617, "count": 1}, {"name": "auction_slot_info", "mean": 2.0209, "count": 1}, {"name": "player:owned_companies", "mean": 2.0181, "count": 1}], "ACQ": [{"name": "turn:active_corp", "mean": 15.0349, "count": 1}, {"name": "turn:active_corp_stars", "mean": 8.9734, "count": 1}, {"name": "corp:owned_companies", "mean": 7.8118, "count": 1}, {"name": "corp:active", "mean": 7.0043, "count": 1}, {"name": "turn:active_company", "mean": 6.2138, "count": 1}, {"name": "phase", "mean": 6.0056, "count": 1}, {"name": "co:removed", "mean": 5.4692, "count": 1}, {"name": "player:is_president", "mean": 5.4691, "count": 1}, {"name": "auction_slot_info", "mean": 5.0718, "count": 1}, {"name": "player:net_worth", "mean": 4.5106, "count": 1}, {"name": "co:adj_incomes", "mean": 4.5042, "count": 1}, {"name": "turn:active_corp_share_price", "mean": 4.131, "count": 1}, {"name": "turn:acq_synergy", "mean": 4.0824, "count": 1}, {"name": "corp:cash", "mean": 4.0143, "count": 1}, {"name": "turn:active_corp_income", "mean": 3.6471, "count": 1}]};
+
+const gallery = document.getElementById("gallery");
+for (const d of decisions) {
+  const div = document.createElement("div");
+  div.className = "decision";
+
+  // Find max |val| for bar scaling
+  const maxVal = Math.max(...d.decisive.map(f => Math.abs(f.val)), 0.001);
+
+  let featHtml = "";
+  for (const f of d.decisive) {
+    const pct = Math.abs(f.val) / maxVal * 100;
+    const cls = f.val >= 0 ? "bar-pos" : "bar-neg";
+    featHtml += '<div class="feat-row">' +
+      '<span class="feat-name">' + f.name + '</span>' +
+      '<div class="feat-bar-container"><div class="feat-bar ' + cls + '" style="width:' + pct + '%"></div></div>' +
+      '<span class="feat-val">' + (f.val >= 0 ? "+" : "") + f.val.toFixed(4) + '</span></div>';
+  }
+
+  div.innerHTML = '<div class="decision-header">' +
+    '<span class="phase-tag">' + d.phase + '</span>' +
+    '<span style="color:#888;font-size:0.8rem">entropy=' + d.entropy +
+    ' value=' + d.value + '</span></div>' +
+    '<div class="actions">' +
+    'A: <span class="action-a">' + d.top1 + '</span> (' + (d.top1_prob * 100).toFixed(1) + '%)' +
+    ' &nbsp; B: <span class="action-b">' + d.top2 + '</span> (' + (d.top2_prob * 100).toFixed(1) + '%)' +
+    '</div><div class="features">' + featHtml + '</div>';
+  gallery.appendChild(div);
+}
+
+const pDiv = document.getElementById("patterns");
+for (const [phase, feats] of Object.entries(patterns)) {
+  let html = '<h3>' + phase + '</h3><table><tr><th>Feature</th><th>Mean |diff|</th><th>Count</th></tr>';
+  for (const f of feats.slice(0, 10)) {
+    html += '<tr><td>' + f.name + '</td><td>' + f.mean.toFixed(4) + '</td><td>' + f.count + '</td></tr>';
+  }
+  html += '</table>';
+  pDiv.innerHTML += html;
+}
+</script>
+</body>
+</html>

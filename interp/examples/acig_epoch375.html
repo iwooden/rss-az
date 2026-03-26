@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Action-Conditioned Integrated Gradients — Epoch 375</title>
+<style>
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               Helvetica, Arial, sans-serif;
+  background: #1a1a2e; color: #e0e0e0;
+  margin: 2rem auto; max-width: 1400px; padding: 0 1rem;
+}
+h1 { color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }
+h2 { color: #ccc; font-size: 1.1rem; margin-top: 2rem;
+      border-bottom: 1px solid #333; padding-bottom: 0.3rem; }
+h3 { color: #aaa; font-size: 0.95rem; margin-top: 1rem; }
+.meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+table {
+  border-collapse: collapse; width: 100%;
+  font-size: 0.82rem; margin-bottom: 1.5rem;
+}
+th, td { padding: 5px 8px; border: 1px solid #2a2a4a; text-align: right; }
+th { background: #16213e; color: #aaa; font-weight: 600;
+     position: sticky; top: 0; z-index: 1; }
+th:first-child, td:first-child { text-align: left; }
+td:first-child {
+  font-family: "SF Mono", "Fira Code", Consolas, monospace;
+  font-size: 0.8rem; color: #ccc;
+}
+tr:hover td { border-color: #555; }
+.bucket-info { color: #888; font-size: 0.82rem; margin: 0.3rem 0 0.8rem 0; }
+.heatmap td {
+  min-width: 80px;
+  font-family: "SF Mono", "Fira Code", Consolas, monospace;
+  font-size: 0.78rem;
+}
+</style>
+</head>
+<body>
+<h1>Action-Conditioned Integrated Gradients — Epoch 375</h1>
+<div class="meta">Per-action-type feature attributions via IntegratedGradients. 26,633 total states. Signed means: positive = feature pushes logit for this action UP.<br>Green = positive attribution, red = negative, intensity = magnitude.</div>
+<div id="content"></div>
+<script>
+const phases = [{"name": "INVEST", "buckets": [{"name": "auction", "count": 1746}, {"name": "buy_share", "count": 833}, {"name": "pass", "count": 6594}, {"name": "sell_share", "count": 1357}], "features": ["market:available", "player:net_worth", "player:cash", "co:adj_incomes", "corp:owned_companies", "corp:cash", "corp:issued_shares", "co:removed", "corp:unissued_shares", "corp:in_receivership", "auction_slot_info", "corp:stars", "player:owned_shares", "invest:sell_impact", "corp:bank_shares", "corp:price_index_norm", "invest:buy_impact", "co:for_auction", "corp:active", "player:owned_companies"], "grid": {"market:available": {"auction": 2.0121, "buy_share": 3.2492, "pass": 1.0724, "sell_share": -1.5296}, "player:net_worth": {"auction": -0.6757, "buy_share": -3.0325, "pass": -0.9477, "sell_share": 2.2888}, "player:cash": {"auction": -0.5709, "buy_share": -2.6112, "pass": -0.5417, "sell_share": 1.0299}, "co:adj_incomes": {"auction": 0.5696, "buy_share": 1.4793, "pass": 0.613, "sell_share": 0.0802}, "corp:owned_companies": {"auction": 0.1878, "buy_share": 1.0483, "pass": -0.0639, "sell_share": -1.4349}, "corp:cash": {"auction": 0.1659, "buy_share": 1.4123, "pass": 0.8883, "sell_share": -1.0483}, "corp:issued_shares": {"auction": 0.0564, "buy_share": -0.6158, "pass": -0.1807, "sell_share": 1.1749}, "co:removed": {"auction": 0.7157, "buy_share": 0.513, "pass": -0.17, "sell_share": 1.17}, "corp:unissued_shares": {"auction": 0.6603, "buy_share": 1.1593, "pass": 0.67, "sell_share": -0.9901}, "corp:in_receivership": {"auction": -0.2245, "buy_share": 0.9105, "pass": 0.1927, "sell_share": 0.635}, "auction_slot_info": {"auction": 0.0234, "buy_share": -0.9041, "pass": 0.0595, "sell_share": 0.6317}, "corp:stars": {"auction": -0.019, "buy_share": 0.7866, "pass": 0.3072, "sell_share": -0.8776}, "player:owned_shares": {"auction": 0.1205, "buy_share": -0.6595, "pass": -0.5057, "sell_share": 0.8268}, "invest:sell_impact": {"auction": 0.2053, "buy_share": 0.4984, "pass": 0.282, "sell_share": -0.7304}, "corp:bank_shares": {"auction": 0.1029, "buy_share": 0.6239, "pass": 0.3185, "sell_share": -0.1802}, "corp:price_index_norm": {"auction": -0.5983, "buy_share": -0.4122, "pass": -0.2403, "sell_share": -0.1036}, "invest:buy_impact": {"auction": 0.1422, "buy_share": 0.0527, "pass": 0.1835, "sell_share": -0.5888}, "co:for_auction": {"auction": 0.5601, "buy_share": -0.1232, "pass": 0.118, "sell_share": 0.1658}, "corp:active": {"auction": 0.4588, "buy_share": -0.3865, "pass": 0.5524, "sell_share": 0.3935}, "player:owned_companies": {"auction": 0.5363, "buy_share": 0.1412, "pass": 0.2336, "sell_share": -0.1536}}, "discriminative": [{"name": "player:net_worth", "std": 1.8966, "per_bucket": {"auction": -0.6757, "buy_share": -3.0325, "pass": -0.9477, "sell_share": 2.2888}}, {"name": "market:available", "std": 1.7554, "per_bucket": {"auction": 2.0121, "buy_share": 3.2492, "pass": 1.0724, "sell_share": -1.5296}}, {"name": "player:cash", "std": 1.2927, "per_bucket": {"auction": -0.5709, "buy_share": -2.6112, "pass": -0.5417, "sell_share": 1.0299}}, {"name": "corp:cash", "std": 0.923, "per_bucket": {"auction": 0.1659, "buy_share": 1.4123, "pass": 0.8883, "sell_share": -1.0483}}, {"name": "corp:owned_companies", "std": 0.8916, "per_bucket": {"auction": 0.1878, "buy_share": 1.0483, "pass": -0.0639, "sell_share": -1.4349}}, {"name": "corp:unissued_shares", "std": 0.8135, "per_bucket": {"auction": 0.6603, "buy_share": 1.1593, "pass": 0.67, "sell_share": -0.9901}}, {"name": "corp:issued_shares", "std": 0.6611, "per_bucket": {"auction": 0.0564, "buy_share": -0.6158, "pass": -0.1807, "sell_share": 1.1749}}, {"name": "corp:stars", "std": 0.607, "per_bucket": {"auction": -0.019, "buy_share": 0.7866, "pass": 0.3072, "sell_share": -0.8776}}, {"name": "player:owned_shares", "std": 0.5867, "per_bucket": {"auction": 0.1205, "buy_share": -0.6595, "pass": -0.5057, "sell_share": 0.8268}}, {"name": "auction_slot_info", "std": 0.5503, "per_bucket": {"auction": 0.0234, "buy_share": -0.9041, "pass": 0.0595, "sell_share": 0.6317}}]}, {"name": "BID", "buckets": [{"name": "leave_bid", "count": 1013}, {"name": "raise_bid", "count": 423}], "features": ["player:cash", "market:available", "auction_slot_info", "player:net_worth", "turn:active_company_income", "corp:unissued_shares", "turn:active_company_stars", "co:for_auction", "turn:auction_price", "turn:active_company_high_price", "corp:active", "turn:active_company", "turn:active_company_face_value", "co:adj_incomes", "corp:owned_companies", "coo_level", "co:removed", "co:revealed", "player:owned_companies", "phase"], "grid": {"player:cash": {"leave_bid": 0.7596, "raise_bid": -2.2699}, "market:available": {"leave_bid": 0.2712, "raise_bid": 2.0891}, "auction_slot_info": {"leave_bid": 0.0903, "raise_bid": -1.9969}, "player:net_worth": {"leave_bid": 0.3606, "raise_bid": -1.7805}, "turn:active_company_income": {"leave_bid": -0.47, "raise_bid": 1.5758}, "corp:unissued_shares": {"leave_bid": -1.1923, "raise_bid": 0.4106}, "turn:active_company_stars": {"leave_bid": -0.291, "raise_bid": 1.1071}, "co:for_auction": {"leave_bid": 1.0637, "raise_bid": -0.0634}, "turn:auction_price": {"leave_bid": -0.2693, "raise_bid": -1.0015}, "turn:active_company_high_price": {"leave_bid": -0.1949, "raise_bid": 0.8654}, "corp:active": {"leave_bid": -0.3245, "raise_bid": 0.7621}, "turn:active_company": {"leave_bid": -0.1339, "raise_bid": 0.6639}, "turn:active_company_face_value": {"leave_bid": -0.1627, "raise_bid": 0.6614}, "co:adj_incomes": {"leave_bid": 0.22, "raise_bid": -0.6492}, "corp:owned_companies": {"leave_bid": -0.0135, "raise_bid": 0.5741}, "coo_level": {"leave_bid": 0.527, "raise_bid": 0.1701}, "co:removed": {"leave_bid": 0.3365, "raise_bid": -0.4763}, "co:revealed": {"leave_bid": -0.4336, "raise_bid": -0.1926}, "player:owned_companies": {"leave_bid": -0.4206, "raise_bid": 0.3189}, "phase": {"leave_bid": 0.4098, "raise_bid": 0.349}}, "discriminative": [{"name": "player:cash", "std": 1.5148, "per_bucket": {"leave_bid": 0.7596, "raise_bid": -2.2699}}, {"name": "player:net_worth", "std": 1.0706, "per_bucket": {"leave_bid": 0.3606, "raise_bid": -1.7805}}, {"name": "auction_slot_info", "std": 1.0436, "per_bucket": {"leave_bid": 0.0903, "raise_bid": -1.9969}}, {"name": "turn:active_company_income", "std": 1.0229, "per_bucket": {"leave_bid": -0.47, "raise_bid": 1.5758}}, {"name": "market:available", "std": 0.909, "per_bucket": {"leave_bid": 0.2712, "raise_bid": 2.0891}}, {"name": "corp:unissued_shares", "std": 0.8014, "per_bucket": {"leave_bid": -1.1923, "raise_bid": 0.4106}}, {"name": "turn:active_company_stars", "std": 0.6991, "per_bucket": {"leave_bid": -0.291, "raise_bid": 1.1071}}, {"name": "co:for_auction", "std": 0.5635, "per_bucket": {"leave_bid": 1.0637, "raise_bid": -0.0634}}, {"name": "corp:active", "std": 0.5433, "per_bucket": {"leave_bid": -0.3245, "raise_bid": 0.7621}}, {"name": "turn:active_company_high_price", "std": 0.5301, "per_bucket": {"leave_bid": -0.1949, "raise_bid": 0.8654}}]}, {"name": "ACQ", "buckets": [{"name": "acq_fi_buy", "count": 187}, {"name": "acq_price", "count": 1621}, {"name": "pass", "count": 1728}], "features": ["market:available", "corp:owned_companies", "co:removed", "player:net_worth", "turn:active_corp_companies", "corp:cash", "turn:active_corp_stars", "corp:active", "auction_slot_info", "corp:unissued_shares", "co:adj_incomes", "player:is_president", "turn:active_corp_share_price", "phase", "corp:issued_shares", "turn:active_company_income", "player:owned_companies", "corp:stars", "corp:bank_shares", "turn:active_company"], "grid": {"market:available": {"acq_fi_buy": 3.8698, "acq_price": 2.6161, "pass": 2.0673}, "corp:owned_companies": {"acq_fi_buy": 3.0389, "acq_price": 1.5231, "pass": 1.8646}, "co:removed": {"acq_fi_buy": 2.5602, "acq_price": 2.4978, "pass": -0.9892}, "player:net_worth": {"acq_fi_buy": -2.3831, "acq_price": -1.4316, "pass": 0.2246}, "turn:active_corp_companies": {"acq_fi_buy": -2.0685, "acq_price": -0.2873, "pass": -0.1553}, "corp:cash": {"acq_fi_buy": 1.7288, "acq_price": 0.928, "pass": 0.4504}, "turn:active_corp_stars": {"acq_fi_buy": -0.4956, "acq_price": 1.656, "pass": 0.4617}, "corp:active": {"acq_fi_buy": 0.0154, "acq_price": -1.4381, "pass": -0.2646}, "auction_slot_info": {"acq_fi_buy": -1.2235, "acq_price": 0.4022, "pass": -1.3307}, "corp:unissued_shares": {"acq_fi_buy": 1.2526, "acq_price": 0.5518, "pass": 0.7957}, "co:adj_incomes": {"acq_fi_buy": 1.2091, "acq_price": 0.9469, "pass": 0.1979}, "player:is_president": {"acq_fi_buy": 0.3492, "acq_price": -1.2049, "pass": 0.2854}, "turn:active_corp_share_price": {"acq_fi_buy": -0.0799, "acq_price": 0.8815, "pass": 0.1248}, "phase": {"acq_fi_buy": -0.8595, "acq_price": 0.321, "pass": -0.6054}, "corp:issued_shares": {"acq_fi_buy": -0.85, "acq_price": -0.4977, "pass": 0.224}, "turn:active_company_income": {"acq_fi_buy": 0.8148, "acq_price": -0.8467, "pass": -0.5211}, "player:owned_companies": {"acq_fi_buy": -0.818, "acq_price": -0.2848, "pass": -0.0616}, "corp:stars": {"acq_fi_buy": 0.8174, "acq_price": 0.6468, "pass": 0.3673}, "corp:bank_shares": {"acq_fi_buy": -0.1397, "acq_price": 0.7651, "pass": 0.2154}, "turn:active_company": {"acq_fi_buy": -0.5556, "acq_price": 0.0112, "pass": -0.7007}}, "discriminative": [{"name": "co:removed", "std": 1.6587, "per_bucket": {"acq_fi_buy": 2.5602, "acq_price": 2.4978, "pass": -0.9892}}, {"name": "player:net_worth", "std": 1.0775, "per_bucket": {"acq_fi_buy": -2.3831, "acq_price": -1.4316, "pass": 0.2246}}, {"name": "turn:active_corp_stars", "std": 0.8802, "per_bucket": {"acq_fi_buy": -0.4956, "acq_price": 1.656, "pass": 0.4617}}, {"name": "turn:active_corp_companies", "std": 0.8724, "per_bucket": {"acq_fi_buy": -2.0685, "acq_price": -0.2873, "pass": -0.1553}}, {"name": "auction_slot_info", "std": 0.7928, "per_bucket": {"acq_fi_buy": -1.2235, "acq_price": 0.4022, "pass": -1.3307}}, {"name": "market:available", "std": 0.7544, "per_bucket": {"acq_fi_buy": 3.8698, "acq_price": 2.6161, "pass": 2.0673}}, {"name": "turn:active_company_income", "std": 0.7189, "per_bucket": {"acq_fi_buy": 0.8148, "acq_price": -0.8467, "pass": -0.5211}}, {"name": "player:is_president", "std": 0.7181, "per_bucket": {"acq_fi_buy": 0.3492, "acq_price": -1.2049, "pass": 0.2854}}, {"name": "corp:owned_companies", "std": 0.6492, "per_bucket": {"acq_fi_buy": 3.0389, "acq_price": 1.5231, "pass": 1.8646}}, {"name": "corp:active", "std": 0.6296, "per_bucket": {"acq_fi_buy": 0.0154, "acq_price": -1.4381, "pass": -0.2646}}]}, {"name": "CLOSE", "buckets": [{"name": "close", "count": 40}, {"name": "pass", "count": 2168}], "features": ["co:removed", "turn:active_company_income", "turn:active_corp", "corp:owned_companies", "player:is_president", "co:adj_incomes", "turn:active_company", "phase", "corp:cash", "turn:active_corp_stars", "turn:active_company_stars", "player:net_worth", "turn:active_company_high_price", "turn:active_corp_share_price", "corp:in_receivership", "corp:active", "auction_slot_info", "market:available", "turn:active_corp_income", "player:owned_shares"], "grid": {"co:removed": {"close": 2.881, "pass": 0.1556}, "turn:active_company_income": {"close": 2.5311, "pass": -0.167}, "turn:active_corp": {"close": 1.6078, "pass": -0.1076}, "corp:owned_companies": {"close": -1.4523, "pass": 0.2829}, "player:is_president": {"close": -1.42, "pass": 0.1166}, "co:adj_incomes": {"close": 1.3558, "pass": -0.0821}, "turn:active_company": {"close": 1.1551, "pass": -0.0048}, "phase": {"close": -1.1418, "pass": 0.3029}, "corp:cash": {"close": -0.7977, "pass": -0.0383}, "turn:active_corp_stars": {"close": -0.6863, "pass": 0.2898}, "turn:active_company_stars": {"close": -0.6524, "pass": 0.1293}, "player:net_worth": {"close": 0.5856, "pass": 0.3742}, "turn:active_company_high_price": {"close": -0.5135, "pass": 0.1323}, "turn:active_corp_share_price": {"close": 0.4777, "pass": -0.0372}, "corp:in_receivership": {"close": 0.4105, "pass": -0.0972}, "corp:active": {"close": -0.3754, "pass": 0.1616}, "auction_slot_info": {"close": -0.3025, "pass": -0.1764}, "market:available": {"close": 0.1856, "pass": -0.2734}, "turn:active_corp_income": {"close": 0.241, "pass": 0.1526}, "player:owned_shares": {"close": 0.0484, "pass": -0.1909}}, "discriminative": [{"name": "co:removed", "std": 1.3627, "per_bucket": {"close": 2.881, "pass": 0.1556}}, {"name": "turn:active_company_income", "std": 1.349, "per_bucket": {"close": 2.5311, "pass": -0.167}}, {"name": "corp:owned_companies", "std": 0.8676, "per_bucket": {"close": -1.4523, "pass": 0.2829}}, {"name": "turn:active_corp", "std": 0.8577, "per_bucket": {"close": 1.6078, "pass": -0.1076}}, {"name": "player:is_president", "std": 0.7683, "per_bucket": {"close": -1.42, "pass": 0.1166}}, {"name": "phase", "std": 0.7223, "per_bucket": {"close": -1.1418, "pass": 0.3029}}, {"name": "co:adj_incomes", "std": 0.7189, "per_bucket": {"close": 1.3558, "pass": -0.0821}}, {"name": "turn:active_company", "std": 0.58, "per_bucket": {"close": 1.1551, "pass": -0.0048}}, {"name": "turn:active_corp_stars", "std": 0.488, "per_bucket": {"close": -0.6863, "pass": 0.2898}}, {"name": "turn:active_company_stars", "std": 0.3909, "per_bucket": {"close": -0.6524, "pass": 0.1293}}]}, {"name": "DIV", "buckets": [{"name": "dividend", "count": 3589}], "features": ["turn:dividend_remaining", "turn:dividend_impact", "market:available", "turn:active_corp_share_price", "player:is_president", "turn:active_corp", "corp:income", "corp:in_receivership", "co:removed", "phase", "corp:owned_companies", "player:owned_shares", "corp:unissued_shares", "co:for_auction", "player:net_worth"], "grid": {"turn:dividend_remaining": {"dividend": -1.9326}, "turn:dividend_impact": {"dividend": -1.9139}, "market:available": {"dividend": 0.8345}, "turn:active_corp_share_price": {"dividend": -0.595}, "player:is_president": {"dividend": 0.5671}, "turn:active_corp": {"dividend": 0.5405}, "corp:income": {"dividend": -0.5241}, "corp:in_receivership": {"dividend": -0.5085}, "co:removed": {"dividend": 0.4843}, "phase": {"dividend": 0.4838}, "corp:owned_companies": {"dividend": -0.4766}, "player:owned_shares": {"dividend": -0.3832}, "corp:unissued_shares": {"dividend": 0.3814}, "co:for_auction": {"dividend": -0.3647}, "player:net_worth": {"dividend": 0.3466}}, "discriminative": []}, {"name": "ISSUE", "buckets": [{"name": "div_low", "count": 277}, {"name": "pass", "count": 2332}], "features": ["turn:issue_remaining", "turn:active_corp_share_price", "turn:issue_cash_gain", "turn:issue_price_impact", "player:net_worth", "market:available", "player:is_president", "auction_slot_info", "player:owned_shares", "corp:active", "player:cash", "co:for_auction", "corp:cash", "phase", "corp:stars", "co:adj_incomes", "turn:active_corp_companies", "corp:income", "corp:bank_shares", "turn:active_corp_stars"], "grid": {"turn:issue_remaining": {"div_low": 1.3772, "pass": -0.4468}, "turn:active_corp_share_price": {"div_low": 1.245, "pass": -0.5871}, "turn:issue_cash_gain": {"div_low": 1.2302, "pass": -0.5156}, "turn:issue_price_impact": {"div_low": -1.2061, "pass": 0.8307}, "player:net_worth": {"div_low": 0.1799, "pass": 1.0299}, "market:available": {"div_low": -0.171, "pass": -0.9202}, "player:is_president": {"div_low": -0.912, "pass": 0.8913}, "auction_slot_info": {"div_low": 0.9032, "pass": -0.2639}, "player:owned_shares": {"div_low": -0.8813, "pass": 0.5898}, "corp:active": {"div_low": -0.394, "pass": 0.7877}, "player:cash": {"div_low": 0.6964, "pass": 0.2181}, "co:for_auction": {"div_low": 0.6429, "pass": 0.2286}, "corp:cash": {"div_low": 0.0501, "pass": -0.4469}, "phase": {"div_low": 0.3668, "pass": -0.3816}, "corp:stars": {"div_low": -0.0307, "pass": -0.369}, "co:adj_incomes": {"div_low": 0.362, "pass": 0.023}, "turn:active_corp_companies": {"div_low": -0.1259, "pass": 0.3071}, "corp:income": {"div_low": -0.2754, "pass": -0.2982}, "corp:bank_shares": {"div_low": 0.2815, "pass": -0.2201}, "turn:active_corp_stars": {"div_low": 0.254, "pass": -0.2013}}, "discriminative": [{"name": "turn:issue_price_impact", "std": 1.0184, "per_bucket": {"div_low": -1.2061, "pass": 0.8307}}, {"name": "turn:active_corp_share_price", "std": 0.916, "per_bucket": {"div_low": 1.245, "pass": -0.5871}}, {"name": "turn:issue_remaining", "std": 0.912, "per_bucket": {"div_low": 1.3772, "pass": -0.4468}}, {"name": "player:is_president", "std": 0.9016, "per_bucket": {"div_low": -0.912, "pass": 0.8913}}, {"name": "turn:issue_cash_gain", "std": 0.8729, "per_bucket": {"div_low": 1.2302, "pass": -0.5156}}, {"name": "player:owned_shares", "std": 0.7356, "per_bucket": {"div_low": -0.8813, "pass": 0.5898}}, {"name": "corp:active", "std": 0.5908, "per_bucket": {"div_low": -0.394, "pass": 0.7877}}, {"name": "auction_slot_info", "std": 0.5836, "per_bucket": {"div_low": 0.9032, "pass": -0.2639}}, {"name": "player:net_worth", "std": 0.425, "per_bucket": {"div_low": 0.1799, "pass": 1.0299}}, {"name": "market:available", "std": 0.3746, "per_bucket": {"div_low": -0.171, "pass": -0.9202}}]}, {"name": "IPO", "buckets": [{"name": "ipo", "count": 914}, {"name": "pass", "count": 945}], "features": ["market:available", "player:net_worth", "corp:unissued_shares", "corp:owned_companies", "co:removed", "corp:cash", "turn:active_company", "turn:active_company_income", "player:owned_companies", "co:for_auction", "player:cash", "phase", "player:owned_shares", "turn:active_company_high_price", "corp:income", "player:is_president", "auction_slot_info", "corp:stars", "co:adj_incomes", "coo_level"], "grid": {"market:available": {"ipo": 1.7634, "pass": 1.3618}, "player:net_worth": {"ipo": -0.6128, "pass": 1.6265}, "corp:unissued_shares": {"ipo": 1.5461, "pass": 0.4753}, "corp:owned_companies": {"ipo": 0.2478, "pass": -1.4278}, "co:removed": {"ipo": 1.3114, "pass": 0.1208}, "corp:cash": {"ipo": -0.1036, "pass": 1.185}, "turn:active_company": {"ipo": -1.0794, "pass": -0.4914}, "turn:active_company_income": {"ipo": -0.0745, "pass": -0.6773}, "player:owned_companies": {"ipo": -0.2857, "pass": -0.6504}, "co:for_auction": {"ipo": -0.6299, "pass": 0.3113}, "player:cash": {"ipo": -0.3726, "pass": -0.5563}, "phase": {"ipo": 0.057, "pass": 0.5496}, "player:owned_shares": {"ipo": -0.2039, "pass": 0.4799}, "turn:active_company_high_price": {"ipo": -0.0302, "pass": -0.4604}, "corp:income": {"ipo": -0.4566, "pass": 0.0807}, "player:is_president": {"ipo": 0.3636, "pass": 0.3888}, "auction_slot_info": {"ipo": 0.0307, "pass": -0.3854}, "corp:stars": {"ipo": -0.221, "pass": 0.3832}, "co:adj_incomes": {"ipo": 0.2827, "pass": 0.2999}, "coo_level": {"ipo": 0.2979, "pass": -0.152}}, "discriminative": [{"name": "player:net_worth", "std": 1.1196, "per_bucket": {"ipo": -0.6128, "pass": 1.6265}}, {"name": "corp:owned_companies", "std": 0.8378, "per_bucket": {"ipo": 0.2478, "pass": -1.4278}}, {"name": "corp:cash", "std": 0.6443, "per_bucket": {"ipo": -0.1036, "pass": 1.185}}, {"name": "co:removed", "std": 0.5953, "per_bucket": {"ipo": 1.3114, "pass": 0.1208}}, {"name": "corp:unissued_shares", "std": 0.5354, "per_bucket": {"ipo": 1.5461, "pass": 0.4753}}, {"name": "co:for_auction", "std": 0.4706, "per_bucket": {"ipo": -0.6299, "pass": 0.3113}}, {"name": "player:owned_shares", "std": 0.3419, "per_bucket": {"ipo": -0.2039, "pass": 0.4799}}, {"name": "corp:stars", "std": 0.3021, "per_bucket": {"ipo": -0.221, "pass": 0.3832}}, {"name": "turn:active_company_income", "std": 0.3014, "per_bucket": {"ipo": -0.0745, "pass": -0.6773}}, {"name": "turn:active_company", "std": 0.294, "per_bucket": {"ipo": -1.0794, "pass": -0.4914}}]}];
+
+function heatColor(val, maxAbs) {
+  if (maxAbs === 0) return "transparent";
+  const intensity = Math.min(Math.abs(val) / maxAbs, 1.0);
+  const alpha = intensity * 0.7;
+  if (val >= 0) return "rgba(78, 204, 163, " + alpha + ")";
+  return "rgba(233, 69, 96, " + alpha + ")";
+}
+
+const content = document.getElementById("content");
+for (const phase of phases) {
+  let html = "<h2>" + phase.name + "</h2>";
+  html += '<div class="bucket-info">';
+  html += phase.buckets.map(
+    function(b) { return b.name + ": " + b.count + " states"; }
+  ).join(" &middot; ");
+  html += "</div>";
+
+  // Attribution heatmap
+  html += "<h3>Feature Attributions by Action Type</h3>";
+  const bucketNames = phase.buckets.map(function(b) { return b.name; });
+  html += '<table class="heatmap"><tr><th>Feature</th>';
+  for (let bi = 0; bi < bucketNames.length; bi++)
+    html += "<th>" + bucketNames[bi] + "</th>";
+  html += "</tr>";
+
+  // Color scale: max abs across all cells in this phase
+  let maxAbs = 0;
+  for (let fi = 0; fi < phase.features.length; fi++) {
+    const feat = phase.features[fi];
+    const row = phase.grid[feat];
+    if (!row) continue;
+    for (let bi = 0; bi < bucketNames.length; bi++) {
+      const v = row[bucketNames[bi]];
+      if (v !== undefined && Math.abs(v) > maxAbs) maxAbs = Math.abs(v);
+    }
+  }
+
+  for (let fi = 0; fi < phase.features.length; fi++) {
+    const feat = phase.features[fi];
+    const row = phase.grid[feat] || {};
+    html += "<tr><td>" + feat + "</td>";
+    for (let bi = 0; bi < bucketNames.length; bi++) {
+      const v = row[bucketNames[bi]];
+      if (v !== undefined) {
+        const bg = heatColor(v, maxAbs);
+        const sign = v >= 0 ? "+" : "";
+        html += '<td style="background:' + bg + '">' + sign + v.toFixed(4) + "</td>";
+      } else {
+        html += '<td style="color:#555">&mdash;</td>';
+      }
+    }
+    html += "</tr>";
+  }
+  html += "</table>";
+
+  // Discriminative features
+  if (phase.discriminative.length > 0) {
+    html += "<h3>Most Discriminative Features (highest variance across actions)</h3>";
+    html += "<table><tr><th>Feature</th><th>Std</th>";
+    for (let bi = 0; bi < bucketNames.length; bi++)
+      html += "<th>" + bucketNames[bi] + "</th>";
+    html += "</tr>";
+
+    let discMax = 0;
+    for (let di = 0; di < phase.discriminative.length; di++) {
+      const d = phase.discriminative[di];
+      const vals = Object.values(d.per_bucket);
+      for (let vi = 0; vi < vals.length; vi++) {
+        if (Math.abs(vals[vi]) > discMax) discMax = Math.abs(vals[vi]);
+      }
+    }
+
+    for (let di = 0; di < phase.discriminative.length; di++) {
+      const d = phase.discriminative[di];
+      html += "<tr><td>" + d.name + "</td><td>" + d.std.toFixed(4) + "</td>";
+      for (let bi = 0; bi < bucketNames.length; bi++) {
+        const v = d.per_bucket[bucketNames[bi]];
+        if (v !== undefined) {
+          const bg = heatColor(v, discMax);
+          const sign = v >= 0 ? "+" : "";
+          html += '<td style="background:' + bg + '">' + sign + v.toFixed(4) + "</td>";
+        } else {
+          html += '<td style="color:#555">&mdash;</td>';
+        }
+      }
+      html += "</tr>";
+    }
+    html += "</table>";
+  }
+
+  content.innerHTML += html;
+}
+</script>
+</body>
+</html>
