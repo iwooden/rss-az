@@ -178,7 +178,7 @@ def process_game(json_path)
   )
 
   snapshots = [initial_record]
-  undo_stack = []  # popped snapshots, available for redo
+  undo_groups = []  # stack of groups; each group is an array of popped snapshots
 
   actions = data['actions'] || []
 
@@ -197,23 +197,32 @@ def process_game(json_path)
       # actions (including program_*) and reverts the undone action(s).
       game = Engine::Game.load(data, at_action: action_id)
 
-      # Move undone snapshots to the undo stack (available for redo).
+      # Move undone snapshots to the undo stack as a GROUP (available for redo).
+      # The 18xx engine's filtered_actions tracks undo groups: a single redo
+      # restores the entire group undone by the most recent undo.
+      group = []
       if raw_action['action_id']
         target_id = raw_action['action_id']
         while snapshots.size > 1 && snapshots.last[:action_id] > target_id
-          undo_stack.push(snapshots.pop)
+          group.push(snapshots.pop)
         end
       else
-        undo_stack.push(snapshots.pop) if snapshots.size > 1
+        group.push(snapshots.pop) if snapshots.size > 1
       end
+      undo_groups.push(group) unless group.empty?
       next
     end
 
     if action_type == 'redo'
-      # Restore the most recently undone snapshot with its original
-      # action_id, so the Python side sees a consistent action history.
+      # Restore the most recently undone GROUP of snapshots.
+      # The 18xx engine restores the entire group at once, not just one action.
       game = Engine::Game.load(data, at_action: action_id)
-      snapshots.push(undo_stack.pop) unless undo_stack.empty?
+      unless undo_groups.empty?
+        group = undo_groups.pop
+        # Group was pushed in reverse order (highest action_id first),
+        # so reverse to restore chronological order.
+        group.reverse.each { |s| snapshots.push(s) }
+      end
       next
     end
 

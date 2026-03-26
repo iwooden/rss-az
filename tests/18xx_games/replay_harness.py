@@ -515,6 +515,33 @@ class ReplayHarness:
         if self.verbose and acq_outcomes:
             print(f"  ACQ adapter: outcomes={acq_outcomes}")
 
+        # Pre-apply CLO closings for non-negative-income companies.
+        # The driver auto-advances through CLOSING and INCOME after ACQ when
+        # CLOSING has no player choices (no negative-income companies).  If the
+        # CLO round contains sell_company actions for zero/positive-income
+        # companies, the CLO adapter would never get a chance to pre-apply them.
+        # We must apply them NOW, before any ACQ action triggers auto-advance.
+        for i in range(idx, len(actions)):
+            action = actions[i]
+            action_id = action.get('id', -1)
+            if action_id in ref_by_action:
+                ref = ref_by_action[action_id]
+                round_name = ref.get('round', '')
+                if round_name == 'CLO' and action.get('type') == 'sell_company':
+                    company_name = action.get('company', '')
+                    company_id = COMPANY_NAME_TO_ID.get(company_name)
+                    if company_id is not None and COMPANIES[company_id].get_adjusted_income(state) >= 0:
+                        for corp_id in range(8):
+                            if CORPS[corp_id].is_active(state) and COMPANIES[company_id].is_owned_by_corp(state, corp_id):
+                                if corp_id == 0:  # JS = Junkyard Scrappers
+                                    CORPS[corp_id].add_cash(state, get_company_income(company_id) * 2)
+                                break
+                        COMPANIES[company_id].remove_from_game(state)
+                        if self.verbose:
+                            print(f"  ACQ adapter: pre-applied CLO close for {company_name} (non-negative income)")
+                elif round_name not in ('ACQ', 'CLO'):
+                    break
+
         # Pre-apply transfers that our engine intentionally excludes from its
         # action space (RULES.md constraint #1):
         #   - Cross-president corp-to-corp transfers
@@ -694,22 +721,24 @@ class ReplayHarness:
         before_corps = get_corp_companies(before_ref)
         after_corps = get_corp_companies(after_ref)
 
-        # Build price map from raw actions: company_name -> price
-        # Use the last offer price for each company (handles re-offers)
+        # Build price map from raw actions: (company, corp) -> price
+        # Multiple corps may offer for the same company at different prices.
+        # Key by (company, corporation) to get the winning corp's offer price.
         action_prices = {}
         for a in acq_actions:
             if a.get('type') == 'offer':
                 company_name = a.get('company', '')
+                corp_name = a.get('corporation', '')
                 price = int(a.get('price', 0))
-                action_prices[company_name] = price
+                action_prices[(company_name, corp_name)] = price
 
         # Find companies that moved TO a corp (new acquisitions)
         outcomes = {}
         for company_name, new_owner in after_corps.items():
             old_owner = before_corps.get(company_name)
             if old_owner != new_owner:
-                # This company was acquired by new_owner
-                price = action_prices.get(company_name, 0)
+                # This company was acquired by new_owner — use the winning corp's price
+                price = action_prices.get((company_name, new_owner), 0)
                 outcomes[company_name] = (new_owner, price)
 
         return outcomes
