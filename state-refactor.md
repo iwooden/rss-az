@@ -21,9 +21,32 @@ Changes to the visible state vector that need doc/test updates when complete.
 - `phases/dividends.pyx` — removed local `_calculate_price_move`, cimports from `entities.corp`
 - `tests/phases/conftest.py` — invariant added to `assert_invariants`
 
+### 2. Corp: income decomposition (4 per corp, +32 total; 4 in turn state)
+
+**Position:** After `pending_price_move`, before `owned_companies` in corp stride. Also 4 new fields in turn state active corp section after `active_corp_share_price`, before `active_corp_companies`.
+**Encoding:** All normalized by `ENTITY_INCOME_DIVISOR` (80.0).
+- `raw_revenue` — sum of base company incomes (before CoO/synergy/abilities)
+- `synergy_income` — synergy bonus income
+- `coo_cost` — **negative** CoO cost (always <= 0)
+- `ability_income` — corp-specific ability bonus (VM/PR/DA/S)
+
+**Identity:** `raw_revenue + synergy_income + coo_cost + ability_income == income`
+**Value:** All 0 for inactive corps.
+**Corp stride:** 48 → 52 (16 scalars + 36 company flags)
+**Turn state:** +4 fields (active_corp_raw_revenue, active_corp_synergy_income, active_corp_coo_cost, active_corp_ability_income)
+
+**Update triggers:** `calculate_income` (called from company transfers, CoO changes, income phase, float_corp).
+
+**Code changes:**
+- `core/state.pxd` — `CorpFieldOffsets` (+4), `TurnStateOffsets` (+4)
+- `core/state.pyx` — corp_stride, turn_size, all namedtuples, offset computations, `set_active_corp`/`clear_active_corp`, `LayoutInfo`
+- `entities/corp.pxd` — `IncomeBreakdown` struct, 4 cached offsets, `_calculate_income_nogil` returns struct
+- `entities/corp.pyx` — `_calculate_income_nogil` refactored to return breakdown, `calculate_income` stores components, derived `total_coo` from `raw_revenue - adjusted_income_sum` (removed per-company CoO calls)
+- `tests/phases/conftest.py` — invariants for decomposition sum and coo_cost <= 0
+
 ## Pending Updates (do when all changes are done)
 
-- [ ] `VECTORS.md` — corp stride, field table, field offsets, size table
+- [ ] `VECTORS.md` — corp stride, field table, field offsets, turn state fields, size table
 - [ ] `CLAUDE.md` — state layout summary, size table
 - [ ] `tests/test_state_layout.py` — expected sizes and corp_stride assertion
 - [ ] `nn/model_3p.py` — input size (if hardcoded)

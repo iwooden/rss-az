@@ -10,6 +10,13 @@ from core.state cimport GameState
 # LOW-LEVEL NOGIL ACCESSORS
 # =============================================================================
 
+cdef struct IncomeBreakdown:
+    int total
+    int raw_revenue
+    int synergy_income
+    int coo_cost          # negative value
+    int ability_income
+
 cdef struct CorpOffsets:
     # Offsets within a corporation's data block in the state vector
     int active
@@ -62,6 +69,10 @@ cdef class Corporation:
     cdef int _in_receivership_offset
     cdef int _price_index_norm_offset
     cdef int _pending_price_move_offset
+    cdef int _raw_revenue_offset
+    cdef int _synergy_income_offset
+    cdef int _coo_cost_offset
+    cdef int _ability_income_offset
     cdef int _owned_companies_offset
     cdef int _company_incomes_offset  # Global company_incomes array offset
 
@@ -121,7 +132,7 @@ cdef class Corporation:
     cpdef void update_pending_price_move(self, GameState state)
 
     # Income calculation
-    cdef int _calculate_income_nogil(self, float* data, int coo_level) noexcept nogil
+    cdef IncomeBreakdown _calculate_income_nogil(self, float* data, int coo_level) noexcept nogil
     cpdef int calculate_income(self, GameState state)
     cpdef void apply_income(self, GameState state, int income)
 

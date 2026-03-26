@@ -55,6 +55,7 @@ CorpFields = namedtuple('CorpFields', [
     'active', 'cash', 'unissued_shares', 'issued_shares', 'bank_shares',
     'income', 'stars', 'share_price', 'acquisition_proceeds',
     'in_receivership', 'price_index_norm', 'pending_price_move',
+    'raw_revenue', 'synergy_income', 'coo_cost', 'ability_income',
     'owned_companies',
 ])
 
@@ -70,6 +71,8 @@ TurnFields = namedtuple('TurnFields', [
     'active_company_income',
     'active_corp',
     'active_corp_income', 'active_corp_stars', 'active_corp_share_price',
+    'active_corp_raw_revenue', 'active_corp_synergy_income',
+    'active_corp_coo_cost', 'active_corp_ability_income',
     'active_corp_companies',
     'cards_remaining',
 ])
@@ -103,6 +106,10 @@ LayoutInfo = namedtuple('LayoutInfo', [
     'active_corp_income_offset',
     'active_corp_stars_offset',
     'active_corp_share_price_offset',
+    'active_corp_raw_revenue_offset',
+    'active_corp_synergy_income_offset',
+    'active_corp_coo_cost_offset',
+    'active_corp_ability_income_offset',
     'active_corp_companies_offset',
     # Convenience
     'num_players',
@@ -217,6 +224,10 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         1 +                 # in_receivership
         1 +                 # price_index_norm (normalized scalar: index / 26.0)
         1 +                 # pending_price_move (raw move assuming $0 dividend / IMPACT_DIVISOR)
+        1 +                 # raw_revenue (base company incomes / ENTITY_INCOME_DIVISOR)
+        1 +                 # synergy_income (synergy bonuses / ENTITY_INCOME_DIVISOR)
+        1 +                 # coo_cost (negative CoO cost / ENTITY_INCOME_DIVISOR)
+        1 +                 # ability_income (corp ability bonus / ENTITY_INCOME_DIVISOR)
         GameConstants.NUM_COMPANIES       # owned_companies
     )
     layout.corps_offset = offset
@@ -254,6 +265,10 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         1 +                              # active_corp_income
         1 +                              # active_corp_stars
         1 +                              # active_corp_share_price
+        1 +                              # active_corp_raw_revenue
+        1 +                              # active_corp_synergy_income
+        1 +                              # active_corp_coo_cost
+        1 +                              # active_corp_ability_income
         GameConstants.NUM_COMPANIES +     # active_corp_companies (owned company flags)
         # Deck
         1                                # cards_remaining
@@ -440,6 +455,14 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
     offset += 1
     t.active_corp_share_price = offset
     offset += 1
+    t.active_corp_raw_revenue = offset
+    offset += 1
+    t.active_corp_synergy_income = offset
+    offset += 1
+    t.active_corp_coo_cost = offset
+    offset += 1
+    t.active_corp_ability_income = offset
+    offset += 1
     t.active_corp_companies = offset
     offset += GameConstants.NUM_COMPANIES
 
@@ -536,6 +559,10 @@ def get_layout(int num_players):
         active_corp_income_offset=layout.turn_offset + turn.active_corp_income,
         active_corp_stars_offset=layout.turn_offset + turn.active_corp_stars,
         active_corp_share_price_offset=layout.turn_offset + turn.active_corp_share_price,
+        active_corp_raw_revenue_offset=layout.turn_offset + turn.active_corp_raw_revenue,
+        active_corp_synergy_income_offset=layout.turn_offset + turn.active_corp_synergy_income,
+        active_corp_coo_cost_offset=layout.turn_offset + turn.active_corp_coo_cost,
+        active_corp_ability_income_offset=layout.turn_offset + turn.active_corp_ability_income,
         active_corp_companies_offset=layout.turn_offset + turn.active_corp_companies,
         num_players=num_players,
     )
@@ -581,6 +608,10 @@ def get_corp_fields():
         in_receivership=c.in_receivership,
         price_index_norm=c.price_index_norm,
         pending_price_move=c.pending_price_move,
+        raw_revenue=c.raw_revenue,
+        synergy_income=c.synergy_income,
+        coo_cost=c.coo_cost,
+        ability_income=c.ability_income,
         owned_companies=c.owned_companies,
     )
 
@@ -616,6 +647,10 @@ def get_turn_fields(int num_players):
         active_corp_income=t.active_corp_income,
         active_corp_stars=t.active_corp_stars,
         active_corp_share_price=t.active_corp_share_price,
+        active_corp_raw_revenue=t.active_corp_raw_revenue,
+        active_corp_synergy_income=t.active_corp_synergy_income,
+        active_corp_coo_cost=t.active_corp_coo_cost,
+        active_corp_ability_income=t.active_corp_ability_income,
         active_corp_companies=t.active_corp_companies,
         cards_remaining=t.cards_remaining,
     )
@@ -649,6 +684,14 @@ cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil:
     c.price_index_norm = offset
     offset += 1
     c.pending_price_move = offset
+    offset += 1
+    c.raw_revenue = offset
+    offset += 1
+    c.synergy_income = offset
+    offset += 1
+    c.coo_cost = offset
+    offset += 1
+    c.ability_income = offset
     offset += 1
     c.owned_companies = offset
 
@@ -1234,10 +1277,14 @@ cdef class GameState:
         cdef int companies_base = turn_base + self._turn_offsets.active_corp_companies
         cdef float* corp = self._corp_ptr(corp_id)
         cdef int i
-        # Income, stars, and share_price (already normalized in corp data block)
+        # Income, stars, share_price, and income decomposition (already normalized in corp data block)
         self._data[turn_base + self._turn_offsets.active_corp_income] = corp[self._corp_fields.income]
         self._data[turn_base + self._turn_offsets.active_corp_stars] = corp[self._corp_fields.stars]
         self._data[turn_base + self._turn_offsets.active_corp_share_price] = corp[self._corp_fields.share_price]
+        self._data[turn_base + self._turn_offsets.active_corp_raw_revenue] = corp[self._corp_fields.raw_revenue]
+        self._data[turn_base + self._turn_offsets.active_corp_synergy_income] = corp[self._corp_fields.synergy_income]
+        self._data[turn_base + self._turn_offsets.active_corp_coo_cost] = corp[self._corp_fields.coo_cost]
+        self._data[turn_base + self._turn_offsets.active_corp_ability_income] = corp[self._corp_fields.ability_income]
         # Copy owned company flags (36 floats)
         for i in range(<int>GameConstants.NUM_COMPANIES):
             self._data[companies_base + i] = corp[self._corp_fields.owned_companies + i]
@@ -1253,6 +1300,10 @@ cdef class GameState:
         self._data[turn_base + self._turn_offsets.active_corp_income] = 0.0
         self._data[turn_base + self._turn_offsets.active_corp_stars] = 0.0
         self._data[turn_base + self._turn_offsets.active_corp_share_price] = 0.0
+        self._data[turn_base + self._turn_offsets.active_corp_raw_revenue] = 0.0
+        self._data[turn_base + self._turn_offsets.active_corp_synergy_income] = 0.0
+        self._data[turn_base + self._turn_offsets.active_corp_coo_cost] = 0.0
+        self._data[turn_base + self._turn_offsets.active_corp_ability_income] = 0.0
         for i in range(<int>GameConstants.NUM_COMPANIES):
             self._data[companies_base + i] = 0.0
 

@@ -102,6 +102,10 @@ cdef struct TurnStateOffsets:
     int active_corp_income
     int active_corp_stars
     int active_corp_share_price
+    int active_corp_raw_revenue
+    int active_corp_synergy_income
+    int active_corp_coo_cost
+    int active_corp_ability_income
     int active_corp_companies
     # Cards remaining in deck
     int cards_remaining
@@ -130,6 +134,10 @@ cdef struct CorpFieldOffsets:
     int in_receivership
     int price_index_norm
     int pending_price_move
+    int raw_revenue
+    int synergy_income
+    int coo_cost
+    int ability_income
     int owned_companies
 
 # =============================================================================

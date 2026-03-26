@@ -12,7 +12,7 @@ from libc.math cimport lround
 from core.state cimport GameState, StateLayout, CorpFieldOffsets
 from core.data cimport (
     GameConstants, CASH_DIVISOR, COMPANY_INCOME_DIVISOR, ENTITY_INCOME_DIVISOR, SHARE_PRICE_DIVISOR, SHARE_DIVISOR, CORP_STAR_DIVISOR, IMPACT_DIVISOR, MARKET_PRICES,
-    get_company_income, get_company_stars, get_cost_of_ownership,
+    get_company_income, get_company_stars,
     get_company_face_value, compute_synergy_bonuses, CorpIndices, get_corp_share_count,
     get_required_stars,
 )
@@ -180,6 +180,10 @@ cdef class Corporation:
         self._in_receivership_offset = self._base_offset + fields.in_receivership
         self._price_index_norm_offset = self._base_offset + fields.price_index_norm
         self._pending_price_move_offset = self._base_offset + fields.pending_price_move
+        self._raw_revenue_offset = self._base_offset + fields.raw_revenue
+        self._synergy_income_offset = self._base_offset + fields.synergy_income
+        self._coo_cost_offset = self._base_offset + fields.coo_cost
+        self._ability_income_offset = self._base_offset + fields.ability_income
         self._owned_companies_offset = self._base_offset + fields.owned_companies
         self._company_incomes_offset = layout.company_incomes_offset
 
@@ -458,12 +462,16 @@ cdef class Corporation:
     # INCOME CALCULATION
     # =========================================================================
 
-    cdef int _calculate_income_nogil(self, float* data, int coo_level) noexcept nogil:
+    cdef IncomeBreakdown _calculate_income_nogil(self, float* data, int coo_level) noexcept nogil:
         """
-        Calculate total income for corporation (nogil version).
+        Calculate income breakdown for corporation (nogil version).
 
-        Uses cached company_incomes array for base calculation, then applies
-        synergy bonuses and special abilities.
+        Returns an IncomeBreakdown struct with:
+        - raw_revenue: sum of base company incomes
+        - synergy_income: synergy bonuses
+        - coo_cost: negative CoO cost
+        - ability_income: corp-specific ability bonus
+        - total: sum of all components
 
         Special abilities per RULES.md:
         - PR (Prussian Railway): +1 per company owned
@@ -473,27 +481,20 @@ cdef class Corporation:
 
         NOTE: Junkyard Scrappers (JS) bonus is applied in CLOSING phase, not here.
         See closing.pyx - JS receives 2x printed income when closing its own company.
-
-        Args:
-            data: Pointer to state data array
-            coo_level: Current cost of ownership level (1-7)
-
-        Returns:
-            Total income (can be negative)
         """
-        cdef int company_id, base_income, stars, coo_value, fv
+        cdef int company_id, base_income, fv
         cdef int adjusted_income_sum = 0
-        cdef int total_coo = 0
+        cdef int raw_revenue_sum = 0
         cdef int company_count = 0
         cdef int highest_fv = 0
         cdef int highest_fv_income = 0
         cdef int company_ids[36]
         cdef int synergy_income = 0
         cdef int synergy_markers = 0
-        cdef int total_income
-        cdef bint is_vm = (self.corp_id == CorpIndices.CORP_VM)
+        cdef int total_coo, ability
+        cdef IncomeBreakdown result
 
-        # First pass: collect companies (owned + acquisition zone), sum cached adjusted incomes, track highest FV
+        # First pass: collect companies (owned + acquisition zone), sum incomes, track highest FV
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if self._owns_company_nogil(data, company_id) or \
                (data[self._hidden_company_locations_offset + company_id] == <float>LOC_CORP_ACQ and
@@ -504,8 +505,9 @@ cdef class Corporation:
                 # Sum cached adjusted income (base - CoO already applied)
                 adjusted_income_sum += <int>lround(data[self._company_incomes_offset + company_id] * COMPANY_INCOME_DIVISOR)
 
-                # Track highest FV for DA ability (need base income)
+                # Sum raw base incomes and track highest FV for DA
                 base_income = get_company_income(company_id)
+                raw_revenue_sum += base_income
                 fv = get_company_face_value(company_id)
                 if fv > highest_fv:
                     highest_fv = fv
@@ -513,38 +515,31 @@ cdef class Corporation:
                 elif fv == highest_fv and base_income > highest_fv_income:
                     highest_fv_income = base_income
 
-                # Only VM needs total_coo (to add back up to 10)
-                if is_vm:
-                    stars = get_company_stars(company_id)
-                    coo_value = get_cost_of_ownership(coo_level, stars)
-                    total_coo += coo_value
+        # Derive total CoO from the difference (avoids per-company get_cost_of_ownership calls)
+        total_coo = raw_revenue_sum - adjusted_income_sum
 
         # Compute synergy bonuses (corporations only per RULES.md)
         if company_count > 1:
             (synergy_income, synergy_markers) = compute_synergy_bonuses(company_ids, company_count)
 
-        # Base calculation: cached adjusted incomes + synergy
-        total_income = adjusted_income_sum + synergy_income
-
-        # VM ability: add back up to 10 of the CoO that was already subtracted
-        if is_vm:
-            if total_coo > 10:
-                total_income = total_income + 10
-            else:
-                total_income = total_income + total_coo
-
-        # Apply other special abilities
-        if self.corp_id == CorpIndices.CORP_PR:
-            # PR: +1 per company owned
-            total_income = total_income + company_count
+        # Compute ability income
+        ability = 0
+        if self.corp_id == CorpIndices.CORP_VM:
+            ability = total_coo if total_coo < 10 else 10
+        elif self.corp_id == CorpIndices.CORP_PR:
+            ability = company_count
         elif self.corp_id == CorpIndices.CORP_DA:
-            # DA: +printed income of highest FV company (effectively doubles it)
-            total_income = total_income + highest_fv_income
+            ability = highest_fv_income
         elif self.corp_id == CorpIndices.CORP_S:
-            # S: +1 per 2 synergy markers (rounded down)
-            total_income = total_income + (synergy_markers // 2)
+            ability = synergy_markers // 2
 
-        return total_income
+        result.raw_revenue = raw_revenue_sum
+        result.synergy_income = synergy_income
+        result.coo_cost = -total_coo
+        result.ability_income = ability
+        result.total = raw_revenue_sum - total_coo + synergy_income + ability
+
+        return result
 
     cpdef int calculate_income(self, GameState state):
         """
@@ -553,16 +548,20 @@ cdef class Corporation:
         This is a Python-accessible wrapper around _calculate_income_nogil.
         See _calculate_income_nogil for formula details and RULES.md compliance.
 
-        Eagerly stores the result in the visible income field so the NN always
-        sees fresh data.
+        Eagerly stores the aggregate and decomposition in the visible state
+        so the NN always sees fresh data.
 
         Returns:
             Total income (can be negative)
         """
         cdef int coo_level = turn_module.TURN.get_coo_level(state)
-        cdef int income = self._calculate_income_nogil(state._data, coo_level)
-        self.set_income(state, income)
-        return income
+        cdef IncomeBreakdown bd = self._calculate_income_nogil(state._data, coo_level)
+        self.set_income(state, bd.total)
+        state._data[self._raw_revenue_offset] = <float>bd.raw_revenue / ENTITY_INCOME_DIVISOR
+        state._data[self._synergy_income_offset] = <float>bd.synergy_income / ENTITY_INCOME_DIVISOR
+        state._data[self._coo_cost_offset] = <float>bd.coo_cost / ENTITY_INCOME_DIVISOR
+        state._data[self._ability_income_offset] = <float>bd.ability_income / ENTITY_INCOME_DIVISOR
+        return bd.total
 
     # =========================================================================
     # INCOME APPLICATION

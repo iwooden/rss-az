@@ -226,6 +226,31 @@ def assert_invariants(state, msg=""):
                 f"(stars={stars}, idx={idx}, issued={issued}, required={required}, move={move})"
             )
 
+    # Income decomposition consistency: components must sum to income
+    for corp_id in range(8):
+        corp = CORPS[corp_id]
+        base = layout.corps_offset + corp_id * layout.corp_stride
+        raw_rev = state._array[base + fields.raw_revenue]
+        syn_inc = state._array[base + fields.synergy_income]
+        coo = state._array[base + fields.coo_cost]
+        ability = state._array[base + fields.ability_income]
+        income_stored = state._array[base + fields.income]
+        if not corp.is_active(state):
+            assert raw_rev == 0.0 and syn_inc == 0.0 and coo == 0.0 and ability == 0.0, (
+                f"{msg}\nCorp {corp_id} inactive but income decomposition non-zero: "
+                f"raw={raw_rev}, syn={syn_inc}, coo={coo}, ability={ability}"
+            )
+        else:
+            component_sum = raw_rev + syn_inc + coo + ability
+            assert abs(component_sum - income_stored) < 1e-4, (
+                f"{msg}\nCorp {corp_id} income decomposition sum mismatch: "
+                f"raw({raw_rev}) + syn({syn_inc}) + coo({coo}) + ability({ability}) "
+                f"= {component_sum} != income({income_stored})"
+            )
+            assert coo <= 0.0, (
+                f"{msg}\nCorp {corp_id} coo_cost must be non-positive: {coo}"
+            )
+
     # Auction row size check
     auction_count = sum(
         1 for cid in range(36)
