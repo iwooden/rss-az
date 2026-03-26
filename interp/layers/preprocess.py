@@ -20,8 +20,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import platform
-import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +28,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from interp.html import BAR_CSS, html_page, open_file
 from interp.utils import (
     InterpDataset,
     batch_masked_softmax,
@@ -637,186 +636,135 @@ def format_html_report(
         for name, frac, kl in svd_result.feature_group_discarded
     ])
 
-    return f"""\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Preprocessing Analysis — Epoch {epoch}</title>
-<style>
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                 Helvetica, Arial, sans-serif;
-    background: #1a1a2e; color: #e0e0e0;
-    margin: 2rem auto; max-width: 1100px; padding: 0 1rem;
-  }}
-  h1 {{ color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }}
-  h2 {{ color: #ccc; font-size: 1.1rem; margin-top: 2rem;
-        border-bottom: 1px solid #333; padding-bottom: 0.3rem; }}
-  .meta {{ color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }}
-  table {{
-    border-collapse: collapse; width: 100%;
-    font-size: 0.82rem; margin-bottom: 1.5rem;
-  }}
-  th, td {{ padding: 5px 8px; border: 1px solid #2a2a4a; text-align: right; }}
-  th {{ background: #16213e; color: #aaa; font-weight: 600; }}
-  th:first-child, td:first-child {{ text-align: left; }}
-  td:first-child {{
-    font-family: "SF Mono", "Fira Code", Consolas, monospace;
-    font-size: 0.8rem; color: #ccc;
-  }}
-  tr:hover td {{ border-color: #555; }}
-  .bar-container {{ display: inline-block; width: 120px; vertical-align: middle; }}
-  .bar {{
-    display: inline-block; height: 12px; border-radius: 2px;
-    vertical-align: middle;
-  }}
-  .bar-blue {{ background: #4a9eff; }}
-  .bar-green {{ background: #4ecca3; }}
-  .bar-orange {{ background: #e9a945; }}
-  .highlight {{ background: rgba(233, 169, 69, 0.15); }}
-</style>
-</head>
-<body>
-<h1>Preprocessing Analysis — Epoch {epoch}</h1>
-<div class="meta">
-  {num_states:,} states from {num_games} games.
-</div>
+    body = (
+        '<h2>1. Signal Attenuation (768 &rarr; 256)</h2>\n'
+        '<p style="color:#888;font-size:0.85rem">\n'
+        '  Attenuation = delta_256 / delta_768 (1.0 = fully preserved). Lost Signal = policy_KL * (1 - attenuation). Sorted by lost signal descending.\n'
+        '</p>\n'
+        '<table id="tbl-attenuation"></table>\n'
+        '\n'
+        '<h2>2. Linear Probing Through Preprocessing</h2>\n'
+        '<p style="color:#888;font-size:0.85rem">\n'
+        '  Information tracked through raw_input (1018) &rarr; 768 &rarr; 256 &rarr; block_0 (256). Cells highlighted where delta(compression) &gt; 0.01.\n'
+        '</p>\n'
+        '<table id="tbl-probing"></table>\n'
+        '\n'
+        '<h2>3. SVD Projection Analysis</h2>\n'
+        '<p style="color:#888;font-size:0.85rem">\n'
+        '  How well the 768&rarr;256 weight matrix preserves each SVD component of the 768-dim activations.\n'
+        '</p>\n'
+        '<div id="svd-summary"></div>\n'
+        '<h3 style="color:#aaa;font-size:0.95rem;margin-top:1.5rem">Preservation by Singular Vector Range</h3>\n'
+        '<table id="tbl-svd-ranges"></table>\n'
+        '<h3 style="color:#aaa;font-size:0.95rem;margin-top:1.5rem">Feature Groups in Discarded Subspace</h3>\n'
+        '<table id="tbl-svd-groups"></table>'
+    )
 
-<h2>1. Signal Attenuation (768 &rarr; 256)</h2>
-<p style="color:#888;font-size:0.85rem">
-  Attenuation = delta_256 / delta_768 (1.0 = fully preserved). Lost Signal = policy_KL * (1 - attenuation). Sorted by lost signal descending.
-</p>
-<table id="tbl-attenuation"></table>
+    data_js = (
+        f"const attenuation = {attenuation_json};\n"
+        f"const probes = {probe_json};\n"
+        f"const svdSummary = {svd_summary_json};\n"
+        f"const svdGroups = {svd_groups_json};"
+    )
 
-<h2>2. Linear Probing Through Preprocessing</h2>
-<p style="color:#888;font-size:0.85rem">
-  Information tracked through raw_input (1018) &rarr; 768 &rarr; 256 &rarr; block_0 (256). Cells highlighted where delta(compression) &gt; 0.01.
-</p>
-<table id="tbl-probing"></table>
+    report_js = (
+        'function heatColor(val) {\n'
+        '  // 0.0 = deep red, 0.5 = yellow, 1.0 = green (HSL)\n'
+        '  const h = Math.max(0, Math.min(1, val)) * 120;\n'
+        "  return 'hsl(' + h + ', 70%, 25%)';\n"
+        '}\n'
+        '\n'
+        '// --- 1. Signal Attenuation table ---\n'
+        '(function() {\n'
+        '  const tbl = document.getElementById("tbl-attenuation");\n'
+        "  let html = '<tr><th>Feature</th><th>#</th><th>Policy KL</th><th>delta_768</th><th>delta_256</th><th>Attenuation</th><th>Lost Signal</th></tr>';\n"
+        '  for (const r of attenuation) {\n'
+        '    const bg = heatColor(r.attenuation);\n'
+        '    const barW = Math.max(0, Math.min(100, r.attenuation * 100));\n'
+        "    html += '<tr><td>' + r.name + '</td>' +\n"
+        "      '<td>' + r.num_features + '</td>' +\n"
+        "      '<td>' + r.policy_kl.toFixed(4) + '</td>' +\n"
+        "      '<td>' + r.delta_768.toFixed(4) + '</td>' +\n"
+        "      '<td>' + r.delta_256.toFixed(4) + '</td>' +\n"
+        '      \'<td style="text-align:left"><span class="bar-container" style="width:80px;background:#111;border-radius:2px">\' +\n'
+        "        '<span class=\"bar\" style=\"width:' + barW + '%;background:' + bg + '\"></span></span> ' +\n"
+        "        r.attenuation.toFixed(3) + '</td>' +\n"
+        "      '<td>' + r.lost_signal.toFixed(4) + '</td></tr>';\n"
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- 2. Probing table ---\n'
+        '(function() {\n'
+        '  const tbl = document.getElementById("tbl-probing");\n'
+        "  let html = '<tr><th>Probe</th><th>Type</th><th>Raw</th><th>768</th><th>256</th><th>B0</th><th>delta(compression)</th></tr>';\n"
+        '  for (const r of probes) {\n'
+        "    const cls = r.delta_compression > 0.01 ? ' class=\"highlight\"' : '';\n"
+        "    html += '<tr><td>' + r.probe_name + '</td>' +\n"
+        "      '<td>' + r.metric_name + '</td>' +\n"
+        "      '<td>' + r.raw_input.toFixed(4) + '</td>' +\n"
+        "      '<td>' + r.preprocess_768.toFixed(4) + '</td>' +\n"
+        "      '<td>' + r.preprocess_256.toFixed(4) + '</td>' +\n"
+        "      '<td>' + r.block_0.toFixed(4) + '</td>' +\n"
+        "      '<td' + cls + '>' + (r.delta_compression >= 0 ? '+' : '') + r.delta_compression.toFixed(4) + '</td></tr>';\n"
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- 3. SVD summary ---\n'
+        '(function() {\n'
+        '  const s = svdSummary;\n'
+        '  const div = document.getElementById("svd-summary");\n'
+        '  div.innerHTML =\n'
+        '    \'<table style="width:auto">\' +\n'
+        '    \'<tr><th style="text-align:left">Metric</th><th>768-dim</th><th>256-dim</th></tr>\' +\n'
+        "    '<tr><td>Effective rank</td><td>' + s.eff_rank_768.toFixed(1) + '</td><td>' + s.eff_rank_256.toFixed(1) + '</td></tr>' +\n"
+        "    '<tr><td>Top-50 energy</td><td>' + (s.top_50_energy_768 * 100).toFixed(1) + '%</td><td>' + (s.top_50_energy_256 * 100).toFixed(1) + '%</td></tr>' +\n"
+        "    '</table>';\n"
+        '})();\n'
+        '\n'
+        '// --- 3a. SV range preservation table ---\n'
+        '(function() {\n'
+        '  const tbl = document.getElementById("tbl-svd-ranges");\n'
+        '  const ranges = svdSummary.sv_ranges;\n'
+        "  let html = '<tr><th>SV Range</th><th>Mean Preservation</th><th></th></tr>';\n"
+        '  for (const r of ranges) {\n'
+        '    const barW = Math.max(0, Math.min(100, r.mean * 100));\n'
+        '    const bg = heatColor(r.mean);\n'
+        "    html += '<tr><td>' + r.range + '</td>' +\n"
+        "      '<td>' + r.mean.toFixed(3) + '</td>' +\n"
+        '      \'<td style="text-align:left"><span class="bar-container" style="background:#111;border-radius:2px">\' +\n'
+        "        '<span class=\"bar\" style=\"width:' + barW + '%;background:' + bg + '\"></span></span></td></tr>';\n"
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- 3b. Feature group discarded subspace table ---\n'
+        '(function() {\n'
+        '  const tbl = document.getElementById("tbl-svd-groups");\n'
+        "  let html = '<tr><th>Feature</th><th>% Discarded</th><th>Policy KL</th><th>Weighted</th></tr>';\n"
+        '  for (const r of svdGroups) {\n'
+        '    if (r.frac_discarded < 0.001 && r.policy_kl < 0.001) continue;\n'
+        '    const weighted = r.frac_discarded * r.policy_kl;\n'
+        "    html += '<tr><td>' + r.name + '</td>' +\n"
+        "      '<td>' + (r.frac_discarded * 100).toFixed(1) + '%</td>' +\n"
+        "      '<td>' + r.policy_kl.toFixed(4) + '</td>' +\n"
+        "      '<td>' + weighted.toFixed(4) + '</td></tr>';\n"
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();'
+    )
 
-<h2>3. SVD Projection Analysis</h2>
-<p style="color:#888;font-size:0.85rem">
-  How well the 768&rarr;256 weight matrix preserves each SVD component of the 768-dim activations.
-</p>
-<div id="svd-summary"></div>
-<h3 style="color:#aaa;font-size:0.95rem;margin-top:1.5rem">Preservation by Singular Vector Range</h3>
-<table id="tbl-svd-ranges"></table>
-<h3 style="color:#aaa;font-size:0.95rem;margin-top:1.5rem">Feature Groups in Discarded Subspace</h3>
-<table id="tbl-svd-groups"></table>
+    extra_css = BAR_CSS + "\n" + ".highlight { background: rgba(233, 169, 69, 0.15); }"
 
-<script>
-const attenuation = {attenuation_json};
-const probes = {probe_json};
-const svdSummary = {svd_summary_json};
-const svdGroups = {svd_groups_json};
-
-function heatColor(val) {{
-  // 0.0 = deep red, 0.5 = yellow, 1.0 = green (HSL)
-  const h = Math.max(0, Math.min(1, val)) * 120;
-  return 'hsl(' + h + ', 70%, 25%)';
-}}
-
-// --- 1. Signal Attenuation table ---
-(function() {{
-  const tbl = document.getElementById("tbl-attenuation");
-  let html = '<tr><th>Feature</th><th>#</th><th>Policy KL</th><th>delta_768</th><th>delta_256</th><th>Attenuation</th><th>Lost Signal</th></tr>';
-  for (const r of attenuation) {{
-    const bg = heatColor(r.attenuation);
-    const barW = Math.max(0, Math.min(100, r.attenuation * 100));
-    html += '<tr><td>' + r.name + '</td>' +
-      '<td>' + r.num_features + '</td>' +
-      '<td>' + r.policy_kl.toFixed(4) + '</td>' +
-      '<td>' + r.delta_768.toFixed(4) + '</td>' +
-      '<td>' + r.delta_256.toFixed(4) + '</td>' +
-      '<td style="text-align:left"><span class="bar-container" style="width:80px;background:#111;border-radius:2px">' +
-        '<span class="bar" style="width:' + barW + '%;background:' + bg + '"></span></span> ' +
-        r.attenuation.toFixed(3) + '</td>' +
-      '<td>' + r.lost_signal.toFixed(4) + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- 2. Probing table ---
-(function() {{
-  const tbl = document.getElementById("tbl-probing");
-  let html = '<tr><th>Probe</th><th>Type</th><th>Raw</th><th>768</th><th>256</th><th>B0</th><th>delta(compression)</th></tr>';
-  for (const r of probes) {{
-    const cls = r.delta_compression > 0.01 ? ' class="highlight"' : '';
-    html += '<tr><td>' + r.probe_name + '</td>' +
-      '<td>' + r.metric_name + '</td>' +
-      '<td>' + r.raw_input.toFixed(4) + '</td>' +
-      '<td>' + r.preprocess_768.toFixed(4) + '</td>' +
-      '<td>' + r.preprocess_256.toFixed(4) + '</td>' +
-      '<td>' + r.block_0.toFixed(4) + '</td>' +
-      '<td' + cls + '>' + (r.delta_compression >= 0 ? '+' : '') + r.delta_compression.toFixed(4) + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- 3. SVD summary ---
-(function() {{
-  const s = svdSummary;
-  const div = document.getElementById("svd-summary");
-  div.innerHTML =
-    '<table style="width:auto">' +
-    '<tr><th style="text-align:left">Metric</th><th>768-dim</th><th>256-dim</th></tr>' +
-    '<tr><td>Effective rank</td><td>' + s.eff_rank_768.toFixed(1) + '</td><td>' + s.eff_rank_256.toFixed(1) + '</td></tr>' +
-    '<tr><td>Top-50 energy</td><td>' + (s.top_50_energy_768 * 100).toFixed(1) + '%</td><td>' + (s.top_50_energy_256 * 100).toFixed(1) + '%</td></tr>' +
-    '</table>';
-}})();
-
-// --- 3a. SV range preservation table ---
-(function() {{
-  const tbl = document.getElementById("tbl-svd-ranges");
-  const ranges = svdSummary.sv_ranges;
-  let html = '<tr><th>SV Range</th><th>Mean Preservation</th><th></th></tr>';
-  for (const r of ranges) {{
-    const barW = Math.max(0, Math.min(100, r.mean * 100));
-    const bg = heatColor(r.mean);
-    html += '<tr><td>' + r.range + '</td>' +
-      '<td>' + r.mean.toFixed(3) + '</td>' +
-      '<td style="text-align:left"><span class="bar-container" style="background:#111;border-radius:2px">' +
-        '<span class="bar" style="width:' + barW + '%;background:' + bg + '"></span></span></td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- 3b. Feature group discarded subspace table ---
-(function() {{
-  const tbl = document.getElementById("tbl-svd-groups");
-  let html = '<tr><th>Feature</th><th>% Discarded</th><th>Policy KL</th><th>Weighted</th></tr>';
-  for (const r of svdGroups) {{
-    if (r.frac_discarded < 0.001 && r.policy_kl < 0.001) continue;
-    const weighted = r.frac_discarded * r.policy_kl;
-    html += '<tr><td>' + r.name + '</td>' +
-      '<td>' + (r.frac_discarded * 100).toFixed(1) + '%</td>' +
-      '<td>' + r.policy_kl.toFixed(4) + '</td>' +
-      '<td>' + weighted.toFixed(4) + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-</script>
-</body>
-</html>"""
-
-
-def _open_file(path: Path) -> None:
-    """Open a file with the platform's default handler."""
-    system = platform.system()
-    try:
-        if system == "Linux":
-            subprocess.Popen(
-                ["xdg-open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        elif system == "Darwin":
-            subprocess.Popen(
-                ["open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-    except OSError:
-        print(f"  Could not open browser. Open manually: {path}")
+    return html_page(
+        f"Preprocessing Analysis \u2014 Epoch {epoch}",
+        meta=f"{num_states:,} states from {num_games} games.",
+        body=body,
+        script=data_js + "\n\n" + report_js,
+        extra_css=extra_css,
+        max_width=1100,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -924,7 +872,7 @@ def main() -> None:
     print(f"\nHTML report written to {html_path}")
 
     if not args.no_open:
-        _open_file(html_path)
+        open_file(html_path)
 
 
 if __name__ == "__main__":

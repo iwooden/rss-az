@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import platform
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +24,7 @@ import torch
 from core.actions import decode_action_py
 from core.data import PY_COMPANY_PRICE_DIVISOR
 from core.state import get_corp_fields, get_layout, get_turn_fields
+from interp.html import BAR_CSS, HIST_BAR_CSS, JS_MAKE_BAR, STAT_BOX_CSS, html_page, open_file
 from interp.utils import (
     InterpDataset,
     batch_masked_softmax,
@@ -635,269 +634,207 @@ def format_html_report(
 
     uncertain_json = json.dumps(a.uncertain_examples)
 
-    return f"""\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Acquisition Phase Analysis — Epoch {epoch}</title>
-<style>
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                 Helvetica, Arial, sans-serif;
-    background: #1a1a2e; color: #e0e0e0;
-    margin: 2rem auto; max-width: 1100px; padding: 0 1rem;
-  }}
-  h1 {{ color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }}
-  h2 {{ color: #ccc; font-size: 1.1rem; margin-top: 2rem;
-        border-bottom: 1px solid #333; padding-bottom: 0.3rem; }}
-  h3 {{ color: #aaa; font-size: 0.95rem; margin-top: 1rem; }}
-  .meta {{ color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }}
-  table {{
-    border-collapse: collapse; width: 100%;
-    font-size: 0.82rem; margin-bottom: 1.5rem;
-  }}
-  th, td {{ padding: 5px 8px; border: 1px solid #2a2a4a; text-align: right; }}
-  th {{ background: #16213e; color: #aaa; font-weight: 600; }}
-  th:first-child, td:first-child {{ text-align: left; }}
-  td:first-child {{
-    font-family: "SF Mono", "Fira Code", Consolas, monospace;
-    font-size: 0.8rem; color: #ccc;
-  }}
-  tr:hover td {{ border-color: #555; }}
-  .bar-container {{ display: inline-block; width: 120px; vertical-align: middle; background: #111; border-radius: 2px; }}
-  .bar {{ display: inline-block; height: 12px; border-radius: 2px; vertical-align: middle; }}
-  .bar-blue {{ background: #4a9eff; }}
-  .bar-green {{ background: #4ecca3; }}
-  .bar-orange {{ background: #e9a945; }}
-  .bar-red {{ background: #e94560; }}
-  .stat-box {{
-    display: inline-block; background: #16213e; border: 1px solid #2a2a4a;
-    border-radius: 4px; padding: 8px 16px; margin: 4px 8px 4px 0;
-    font-size: 0.85rem;
-  }}
-  .stat-label {{ color: #888; font-size: 0.75rem; }}
-  .stat-value {{ color: #e0e0e0; font-size: 1.1rem; font-weight: 600; }}
-  .hist-bar {{
-    display: inline-block; background: #4a9eff; height: 16px;
-    border-radius: 1px; vertical-align: middle;
-  }}
-</style>
-</head>
-<body>
-<h1>Acquisition Phase Analysis — Epoch {epoch}</h1>
-<div class="meta">
-  {a.total_states} ACQ states from {num_states:,} total states ({num_games} games).
-</div>
+    body = (
+        '<h2>1. Action Distribution</h2>\n'
+        '<div id="action-stats"></div>\n'
+        '<table id="tbl-action-dist"></table>\n'
+        '<h3>Price Offset Breakdown (acq_price only)</h3>\n'
+        '<table id="tbl-offset-dist"></table>\n'
+        '<h3>Mean Probability Mass (all ACQ states)</h3>\n'
+        '<table id="tbl-prob-mass"></table>\n'
+        '\n'
+        '<h2>2. Price Offset Histogram</h2>\n'
+        '<p style="color:#888;font-size:0.85rem">Distribution of argmax price offsets for acq_price actions. Offset 0 = low price, offset = span = high price.</p>\n'
+        '<div id="histogram"></div>\n'
+        '\n'
+        '<h2>3. By Company Tier</h2>\n'
+        '<table id="tbl-tier"></table>\n'
+        '\n'
+        '<h2>4. By Game Stage</h2>\n'
+        '<table id="tbl-stage"></table>\n'
+        '\n'
+        '<h2>5. FI vs Corp Offers</h2>\n'
+        '<table id="tbl-offers"></table>\n'
+        '\n'
+        '<h3>FI Offer Detail (OS buys at face value, others at high price)</h3>\n'
+        '<table id="tbl-fi-detail"></table>\n'
+        '\n'
+        '<h2>6. Most Uncertain Decisions</h2>\n'
+        '<table id="tbl-uncertain"></table>'
+    )
 
-<h2>1. Action Distribution</h2>
-<div id="action-stats"></div>
-<table id="tbl-action-dist"></table>
-<h3>Price Offset Breakdown (acq_price only)</h3>
-<table id="tbl-offset-dist"></table>
-<h3>Mean Probability Mass (all ACQ states)</h3>
-<table id="tbl-prob-mass"></table>
+    data_js = (
+        f"const actionDist = {action_dist_json};\n"
+        f"const offsetDist = {offset_json};\n"
+        f"const probMass = {prob_mass_json};\n"
+        f"const histogram = {histogram_json};\n"
+        f"const tiers = {tier_json};\n"
+        f"const stages = {stage_json};\n"
+        f"const offers = {offer_json};\n"
+        f"const fiDetail = {fi_detail_json};\n"
+        f"const uncertain = {uncertain_json};"
+    )
 
-<h2>2. Price Offset Histogram</h2>
-<p style="color:#888;font-size:0.85rem">Distribution of argmax price offsets for acq_price actions. Offset 0 = low price, offset = span = high price.</p>
-<div id="histogram"></div>
+    report_js = (
+        JS_MAKE_BAR + "\n\n"
+        "function pct(n, d) { return d > 0 ? (n / d * 100).toFixed(1) + '%' : '\u2014'; }\n"
+        "\n"
+        "// --- 1. Action Distribution ---\n"
+        "(function() {\n"
+        '  const div = document.getElementById("action-stats");\n'
+        "  div.innerHTML =\n"
+        '    \'<div class="stat-box"><div class="stat-label">Total ACQ States</div><div class="stat-value">\' + actionDist.total + \'</div></div>\' +\n'
+        '    \'<div class="stat-box"><div class="stat-label">Pass</div><div class="stat-value">\' + pct(actionDist.pass, actionDist.total) + \'</div></div>\' +\n'
+        '    \'<div class="stat-box"><div class="stat-label">Price</div><div class="stat-value">\' + pct(actionDist.acq_price, actionDist.total) + \'</div></div>\' +\n'
+        '    \'<div class="stat-box"><div class="stat-label">FI Buy</div><div class="stat-value">\' + pct(actionDist.fi_buy, actionDist.total) + \'</div></div>\';\n'
+        "\n"
+        '  const tbl = document.getElementById("tbl-action-dist");\n'
+        "  const maxC = Math.max(actionDist.pass, actionDist.acq_price, actionDist.fi_buy);\n"
+        "  tbl.innerHTML =\n"
+        "    '<tr><th>Action</th><th>Count</th><th>%</th><th></th></tr>' +\n"
+        "    '<tr><td>pass</td><td>' + actionDist.pass + '</td><td>' + pct(actionDist.pass, actionDist.total) + '</td><td>' + makeBar(actionDist.pass, maxC, 'bar-blue') + '</td></tr>' +\n"
+        "    '<tr><td>acq_price</td><td>' + actionDist.acq_price + '</td><td>' + pct(actionDist.acq_price, actionDist.total) + '</td><td>' + makeBar(actionDist.acq_price, maxC, 'bar-green') + '</td></tr>' +\n"
+        "    '<tr><td>fi_buy</td><td>' + actionDist.fi_buy + '</td><td>' + pct(actionDist.fi_buy, actionDist.total) + '</td><td>' + makeBar(actionDist.fi_buy, maxC, 'bar-orange') + '</td></tr>';\n"
+        "\n"
+        "  // Offset dist\n"
+        '  const tbl2 = document.getElementById("tbl-offset-dist");\n'
+        "  const tp = offsetDist.total_price;\n"
+        "  const maxO = Math.max(offsetDist.low, offsetDist.high, offsetDist.mid);\n"
+        "  tbl2.innerHTML =\n"
+        "    '<tr><th>Category</th><th>Count</th><th>%</th><th></th></tr>' +\n"
+        "    '<tr><td>offset=0 (low price)</td><td>' + offsetDist.low + '</td><td>' + pct(offsetDist.low, tp) + '</td><td>' + makeBar(offsetDist.low, maxO, 'bar-green') + '</td></tr>' +\n"
+        "    '<tr><td>offset=max (high price)</td><td>' + offsetDist.high + '</td><td>' + pct(offsetDist.high, tp) + '</td><td>' + makeBar(offsetDist.high, maxO, 'bar-orange') + '</td></tr>' +\n"
+        "    '<tr><td>intermediate offsets</td><td>' + offsetDist.mid + '</td><td>' + pct(offsetDist.mid, tp) + '</td><td>' + makeBar(offsetDist.mid, maxO, 'bar-blue') + '</td></tr>';\n"
+        "\n"
+        "  // Prob mass\n"
+        '  const tbl3 = document.getElementById("tbl-prob-mass");\n'
+        "  tbl3.innerHTML =\n"
+        "    '<tr><th>Category</th><th>Mean Prob</th><th></th></tr>' +\n"
+        "    '<tr><td>pass</td><td>' + probMass.pass.toFixed(3) + '</td><td>' + makeBar(probMass.pass, 1.0, 'bar-blue') + '</td></tr>' +\n"
+        "    '<tr><td>price (low)</td><td>' + probMass.price_low.toFixed(3) + '</td><td>' + makeBar(probMass.price_low, 1.0, 'bar-green') + '</td></tr>' +\n"
+        "    '<tr><td>price (high)</td><td>' + probMass.price_high.toFixed(3) + '</td><td>' + makeBar(probMass.price_high, 1.0, 'bar-orange') + '</td></tr>' +\n"
+        "    '<tr><td>price (mid)</td><td>' + probMass.price_mid.toFixed(3) + '</td><td>' + makeBar(probMass.price_mid, 1.0, 'bar-blue') + '</td></tr>' +\n"
+        "    '<tr><td>fi_buy</td><td>' + probMass.fi_buy.toFixed(3) + '</td><td>' + makeBar(probMass.fi_buy, 1.0, 'bar-orange') + '</td></tr>';\n"
+        "})();\n"
+        "\n"
+        "// --- 2. Histogram ---\n"
+        "(function() {\n"
+        '  const div = document.getElementById("histogram");\n'
+        "  const maxC = Math.max(...histogram);\n"
+        '  if (maxC === 0) { div.innerHTML = \'<p style="color:#888">No acq_price actions</p>\'; return; }\n'
+        "  let html = '<table style=\"width:auto\"><tr><th>Offset</th><th>Count</th><th style=\"min-width:300px\"></th></tr>';\n"
+        "  for (let i = 0; i < histogram.length; i++) {\n"
+        "    if (histogram[i] > 0) {\n"
+        "      const w = histogram[i] / maxC * 280;\n"
+        "      html += '<tr><td>' + i + '</td><td>' + histogram[i] + '</td>' +\n"
+        '        \'<td style="text-align:left"><span class="hist-bar" style="width:\' + w + \'px"></span></td></tr>\';\n'
+        "    }\n"
+        "  }\n"
+        "  html += '</table>';\n"
+        "  div.innerHTML = html;\n"
+        "})();\n"
+        "\n"
+        "// --- 3. Tiers ---\n"
+        "(function() {\n"
+        '  const tbl = document.getElementById("tbl-tier");\n'
+        "  let html = '<tr><th>Tier</th><th>Count</th><th>%Pass</th><th>%Price</th><th>%FI</th><th>%Low</th><th>%High</th><th>Entropy</th><th>Span</th></tr>';\n"
+        "  for (const t of tiers) {\n"
+        "    html += '<tr><td>' + t.tier + '</td>' +\n"
+        "      '<td>' + t.count + '</td>' +\n"
+        "      '<td>' + (t.pct_pass * 100).toFixed(1) + '%</td>' +\n"
+        "      '<td>' + (t.pct_price * 100).toFixed(1) + '%</td>' +\n"
+        "      '<td>' + (t.pct_fi_buy * 100).toFixed(1) + '%</td>' +\n"
+        "      '<td>' + (t.pct_low * 100).toFixed(1) + '%</td>' +\n"
+        "      '<td>' + (t.pct_high * 100).toFixed(1) + '%</td>' +\n"
+        "      '<td>' + t.mean_entropy.toFixed(3) + '</td>' +\n"
+        "      '<td>' + t.mean_span.toFixed(1) + '</td></tr>';\n"
+        "  }\n"
+        "  tbl.innerHTML = html;\n"
+        "})();\n"
+        "\n"
+        "// --- 4. Stages ---\n"
+        "(function() {\n"
+        '  const tbl = document.getElementById("tbl-stage");\n'
+        "  let html = '<tr><th>Stage</th><th>Count</th><th>%Pass</th><th>%Price</th><th>%Low</th><th>%High</th><th>Entropy</th><th>V(p0)</th></tr>';\n"
+        "  for (const s of stages) {\n"
+        "    html += '<tr><td>' + s.stage + '</td>' +\n"
+        "      '<td>' + s.count + '</td>' +\n"
+        "      '<td>' + (s.pct_pass * 100).toFixed(1) + '%</td>' +\n"
+        "      '<td>' + (s.pct_price * 100).toFixed(1) + '%</td>' +\n"
+        "      '<td>' + (s.pct_low * 100).toFixed(1) + '%</td>' +\n"
+        "      '<td>' + (s.pct_high * 100).toFixed(1) + '%</td>' +\n"
+        "      '<td>' + s.mean_entropy.toFixed(3) + '</td>' +\n"
+        "      '<td>' + s.mean_value_p0.toFixed(4) + '</td></tr>';\n"
+        "  }\n"
+        "  tbl.innerHTML = html;\n"
+        "})();\n"
+        "\n"
+        "// --- 5. Offers ---\n"
+        "(function() {\n"
+        '  const tbl = document.getElementById("tbl-offers");\n'
+        "  let html = '<tr><th>Type</th><th>Count</th><th>%Pass</th><th>%Price</th><th>%FI Buy</th><th>Entropy</th></tr>';\n"
+        "  for (const [name, stats] of [['FI Offer', offers.fi], ['Corp Offer', offers.corp]]) {\n"
+        "    if (stats.count === 0) continue;\n"
+        "    html += '<tr><td>' + name + '</td>' +\n"
+        "      '<td>' + stats.count + '</td>' +\n"
+        "      '<td>' + (stats.pct_pass * 100).toFixed(1) + '%</td>' +\n"
+        "      '<td>' + ((stats.pct_price || 0) * 100).toFixed(1) + '%</td>' +\n"
+        "      '<td>' + ((stats.pct_fi_buy || 0) * 100).toFixed(1) + '%</td>' +\n"
+        "      '<td>' + stats.mean_entropy.toFixed(3) + '</td></tr>';\n"
+        "  }\n"
+        "  tbl.innerHTML = html;\n"
+        "})();\n"
+        "\n"
+        "// --- 5b. FI Detail ---\n"
+        "(function() {\n"
+        '  const tbl = document.getElementById("tbl-fi-detail");\n'
+        "  let html = '<tr><th>Category</th><th>Count</th><th>%Pass</th><th>%FI Buy</th><th>P(pass)</th><th>P(fi_buy)</th><th>Entropy</th><th>V(p0)</th></tr>';\n"
+        "  for (const key of ['all', 'os', 'non_os']) {\n"
+        "    const d = fiDetail[key];\n"
+        "    if (!d || d.count === 0) continue;\n"
+        "    html += '<tr><td>' + d.label + '</td>' +\n"
+        "      '<td>' + d.count + '</td>' +\n"
+        "      '<td>' + (d.pct_pass * 100).toFixed(1) + '%</td>' +\n"
+        "      '<td>' + (d.pct_fi_buy * 100).toFixed(1) + '%</td>' +\n"
+        "      '<td>' + d.mean_prob_pass.toFixed(3) + '</td>' +\n"
+        "      '<td>' + d.mean_prob_fi_buy.toFixed(3) + '</td>' +\n"
+        "      '<td>' + d.mean_entropy.toFixed(3) + '</td>' +\n"
+        "      '<td>' + d.mean_value_p0.toFixed(4) + '</td></tr>';\n"
+        "  }\n"
+        "  tbl.innerHTML = html;\n"
+        "})();\n"
+        "\n"
+        "// --- 6. Uncertainty ---\n"
+        "(function() {\n"
+        '  const tbl = document.getElementById("tbl-uncertain");\n'
+        "  let html = '<tr><th>Stars</th><th>Span</th><th>FI</th><th>Entropy</th><th>Top1%</th><th>Argmax</th><th>P(pass)</th><th>P(low)</th><th>P(high)</th><th>P(mid)</th></tr>';\n"
+        "  for (const ex of uncertain) {\n"
+        "    html += '<tr><td>' + ex.stars + '</td>' +\n"
+        "      '<td>' + ex.span + '</td>' +\n"
+        "      '<td>' + (ex.is_fi ? 'Y' : 'N') + '</td>' +\n"
+        "      '<td>' + ex.entropy.toFixed(3) + '</td>' +\n"
+        "      '<td>' + (ex.top1_prob * 100).toFixed(1) + '%</td>' +\n"
+        "      '<td>' + ex.argmax + '</td>' +\n"
+        "      '<td>' + ex.prob_pass.toFixed(3) + '</td>' +\n"
+        "      '<td>' + ex.prob_low.toFixed(3) + '</td>' +\n"
+        "      '<td>' + ex.prob_high.toFixed(3) + '</td>' +\n"
+        "      '<td>' + ex.prob_mid.toFixed(3) + '</td></tr>';\n"
+        "  }\n"
+        "  tbl.innerHTML = html;\n"
+        "})();"
+    )
 
-<h2>3. By Company Tier</h2>
-<table id="tbl-tier"></table>
+    meta = f"{a.total_states} ACQ states from {num_states:,} total states ({num_games} games)."
+    extra_css = BAR_CSS + "\n" + STAT_BOX_CSS + "\n" + HIST_BAR_CSS
 
-<h2>4. By Game Stage</h2>
-<table id="tbl-stage"></table>
-
-<h2>5. FI vs Corp Offers</h2>
-<table id="tbl-offers"></table>
-
-<h3>FI Offer Detail (OS buys at face value, others at high price)</h3>
-<table id="tbl-fi-detail"></table>
-
-<h2>6. Most Uncertain Decisions</h2>
-<table id="tbl-uncertain"></table>
-
-<script>
-const actionDist = {action_dist_json};
-const offsetDist = {offset_json};
-const probMass = {prob_mass_json};
-const histogram = {histogram_json};
-const tiers = {tier_json};
-const stages = {stage_json};
-const offers = {offer_json};
-const fiDetail = {fi_detail_json};
-const uncertain = {uncertain_json};
-
-function makeBar(val, maxVal, cls) {{
-  const pct = maxVal > 0 ? Math.min(val / maxVal * 100, 100) : 0;
-  return '<span class="bar-container"><span class="bar ' + cls + '" style="width:' + pct + '%"></span></span>';
-}}
-
-function pct(n, d) {{ return d > 0 ? (n / d * 100).toFixed(1) + '%' : '—'; }}
-
-// --- 1. Action Distribution ---
-(function() {{
-  const div = document.getElementById("action-stats");
-  div.innerHTML =
-    '<div class="stat-box"><div class="stat-label">Total ACQ States</div><div class="stat-value">' + actionDist.total + '</div></div>' +
-    '<div class="stat-box"><div class="stat-label">Pass</div><div class="stat-value">' + pct(actionDist.pass, actionDist.total) + '</div></div>' +
-    '<div class="stat-box"><div class="stat-label">Price</div><div class="stat-value">' + pct(actionDist.acq_price, actionDist.total) + '</div></div>' +
-    '<div class="stat-box"><div class="stat-label">FI Buy</div><div class="stat-value">' + pct(actionDist.fi_buy, actionDist.total) + '</div></div>';
-
-  const tbl = document.getElementById("tbl-action-dist");
-  const maxC = Math.max(actionDist.pass, actionDist.acq_price, actionDist.fi_buy);
-  tbl.innerHTML =
-    '<tr><th>Action</th><th>Count</th><th>%</th><th></th></tr>' +
-    '<tr><td>pass</td><td>' + actionDist.pass + '</td><td>' + pct(actionDist.pass, actionDist.total) + '</td><td>' + makeBar(actionDist.pass, maxC, 'bar-blue') + '</td></tr>' +
-    '<tr><td>acq_price</td><td>' + actionDist.acq_price + '</td><td>' + pct(actionDist.acq_price, actionDist.total) + '</td><td>' + makeBar(actionDist.acq_price, maxC, 'bar-green') + '</td></tr>' +
-    '<tr><td>fi_buy</td><td>' + actionDist.fi_buy + '</td><td>' + pct(actionDist.fi_buy, actionDist.total) + '</td><td>' + makeBar(actionDist.fi_buy, maxC, 'bar-orange') + '</td></tr>';
-
-  // Offset dist
-  const tbl2 = document.getElementById("tbl-offset-dist");
-  const tp = offsetDist.total_price;
-  const maxO = Math.max(offsetDist.low, offsetDist.high, offsetDist.mid);
-  tbl2.innerHTML =
-    '<tr><th>Category</th><th>Count</th><th>%</th><th></th></tr>' +
-    '<tr><td>offset=0 (low price)</td><td>' + offsetDist.low + '</td><td>' + pct(offsetDist.low, tp) + '</td><td>' + makeBar(offsetDist.low, maxO, 'bar-green') + '</td></tr>' +
-    '<tr><td>offset=max (high price)</td><td>' + offsetDist.high + '</td><td>' + pct(offsetDist.high, tp) + '</td><td>' + makeBar(offsetDist.high, maxO, 'bar-orange') + '</td></tr>' +
-    '<tr><td>intermediate offsets</td><td>' + offsetDist.mid + '</td><td>' + pct(offsetDist.mid, tp) + '</td><td>' + makeBar(offsetDist.mid, maxO, 'bar-blue') + '</td></tr>';
-
-  // Prob mass
-  const tbl3 = document.getElementById("tbl-prob-mass");
-  tbl3.innerHTML =
-    '<tr><th>Category</th><th>Mean Prob</th><th></th></tr>' +
-    '<tr><td>pass</td><td>' + probMass.pass.toFixed(3) + '</td><td>' + makeBar(probMass.pass, 1.0, 'bar-blue') + '</td></tr>' +
-    '<tr><td>price (low)</td><td>' + probMass.price_low.toFixed(3) + '</td><td>' + makeBar(probMass.price_low, 1.0, 'bar-green') + '</td></tr>' +
-    '<tr><td>price (high)</td><td>' + probMass.price_high.toFixed(3) + '</td><td>' + makeBar(probMass.price_high, 1.0, 'bar-orange') + '</td></tr>' +
-    '<tr><td>price (mid)</td><td>' + probMass.price_mid.toFixed(3) + '</td><td>' + makeBar(probMass.price_mid, 1.0, 'bar-blue') + '</td></tr>' +
-    '<tr><td>fi_buy</td><td>' + probMass.fi_buy.toFixed(3) + '</td><td>' + makeBar(probMass.fi_buy, 1.0, 'bar-orange') + '</td></tr>';
-}})();
-
-// --- 2. Histogram ---
-(function() {{
-  const div = document.getElementById("histogram");
-  const maxC = Math.max(...histogram);
-  if (maxC === 0) {{ div.innerHTML = '<p style="color:#888">No acq_price actions</p>'; return; }}
-  let html = '<table style="width:auto"><tr><th>Offset</th><th>Count</th><th style="min-width:300px"></th></tr>';
-  for (let i = 0; i < histogram.length; i++) {{
-    if (histogram[i] > 0) {{
-      const w = histogram[i] / maxC * 280;
-      html += '<tr><td>' + i + '</td><td>' + histogram[i] + '</td>' +
-        '<td style="text-align:left"><span class="hist-bar" style="width:' + w + 'px"></span></td></tr>';
-    }}
-  }}
-  html += '</table>';
-  div.innerHTML = html;
-}})();
-
-// --- 3. Tiers ---
-(function() {{
-  const tbl = document.getElementById("tbl-tier");
-  let html = '<tr><th>Tier</th><th>Count</th><th>%Pass</th><th>%Price</th><th>%FI</th><th>%Low</th><th>%High</th><th>Entropy</th><th>Span</th></tr>';
-  for (const t of tiers) {{
-    html += '<tr><td>' + t.tier + '</td>' +
-      '<td>' + t.count + '</td>' +
-      '<td>' + (t.pct_pass * 100).toFixed(1) + '%</td>' +
-      '<td>' + (t.pct_price * 100).toFixed(1) + '%</td>' +
-      '<td>' + (t.pct_fi_buy * 100).toFixed(1) + '%</td>' +
-      '<td>' + (t.pct_low * 100).toFixed(1) + '%</td>' +
-      '<td>' + (t.pct_high * 100).toFixed(1) + '%</td>' +
-      '<td>' + t.mean_entropy.toFixed(3) + '</td>' +
-      '<td>' + t.mean_span.toFixed(1) + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- 4. Stages ---
-(function() {{
-  const tbl = document.getElementById("tbl-stage");
-  let html = '<tr><th>Stage</th><th>Count</th><th>%Pass</th><th>%Price</th><th>%Low</th><th>%High</th><th>Entropy</th><th>V(p0)</th></tr>';
-  for (const s of stages) {{
-    html += '<tr><td>' + s.stage + '</td>' +
-      '<td>' + s.count + '</td>' +
-      '<td>' + (s.pct_pass * 100).toFixed(1) + '%</td>' +
-      '<td>' + (s.pct_price * 100).toFixed(1) + '%</td>' +
-      '<td>' + (s.pct_low * 100).toFixed(1) + '%</td>' +
-      '<td>' + (s.pct_high * 100).toFixed(1) + '%</td>' +
-      '<td>' + s.mean_entropy.toFixed(3) + '</td>' +
-      '<td>' + s.mean_value_p0.toFixed(4) + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- 5. Offers ---
-(function() {{
-  const tbl = document.getElementById("tbl-offers");
-  let html = '<tr><th>Type</th><th>Count</th><th>%Pass</th><th>%Price</th><th>%FI Buy</th><th>Entropy</th></tr>';
-  for (const [name, stats] of [['FI Offer', offers.fi], ['Corp Offer', offers.corp]]) {{
-    if (stats.count === 0) continue;
-    html += '<tr><td>' + name + '</td>' +
-      '<td>' + stats.count + '</td>' +
-      '<td>' + (stats.pct_pass * 100).toFixed(1) + '%</td>' +
-      '<td>' + ((stats.pct_price || 0) * 100).toFixed(1) + '%</td>' +
-      '<td>' + ((stats.pct_fi_buy || 0) * 100).toFixed(1) + '%</td>' +
-      '<td>' + stats.mean_entropy.toFixed(3) + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- 5b. FI Detail ---
-(function() {{
-  const tbl = document.getElementById("tbl-fi-detail");
-  let html = '<tr><th>Category</th><th>Count</th><th>%Pass</th><th>%FI Buy</th><th>P(pass)</th><th>P(fi_buy)</th><th>Entropy</th><th>V(p0)</th></tr>';
-  for (const key of ['all', 'os', 'non_os']) {{
-    const d = fiDetail[key];
-    if (!d || d.count === 0) continue;
-    html += '<tr><td>' + d.label + '</td>' +
-      '<td>' + d.count + '</td>' +
-      '<td>' + (d.pct_pass * 100).toFixed(1) + '%</td>' +
-      '<td>' + (d.pct_fi_buy * 100).toFixed(1) + '%</td>' +
-      '<td>' + d.mean_prob_pass.toFixed(3) + '</td>' +
-      '<td>' + d.mean_prob_fi_buy.toFixed(3) + '</td>' +
-      '<td>' + d.mean_entropy.toFixed(3) + '</td>' +
-      '<td>' + d.mean_value_p0.toFixed(4) + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- 6. Uncertainty ---
-(function() {{
-  const tbl = document.getElementById("tbl-uncertain");
-  let html = '<tr><th>Stars</th><th>Span</th><th>FI</th><th>Entropy</th><th>Top1%</th><th>Argmax</th><th>P(pass)</th><th>P(low)</th><th>P(high)</th><th>P(mid)</th></tr>';
-  for (const ex of uncertain) {{
-    html += '<tr><td>' + ex.stars + '</td>' +
-      '<td>' + ex.span + '</td>' +
-      '<td>' + (ex.is_fi ? 'Y' : 'N') + '</td>' +
-      '<td>' + ex.entropy.toFixed(3) + '</td>' +
-      '<td>' + (ex.top1_prob * 100).toFixed(1) + '%</td>' +
-      '<td>' + ex.argmax + '</td>' +
-      '<td>' + ex.prob_pass.toFixed(3) + '</td>' +
-      '<td>' + ex.prob_low.toFixed(3) + '</td>' +
-      '<td>' + ex.prob_high.toFixed(3) + '</td>' +
-      '<td>' + ex.prob_mid.toFixed(3) + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-</script>
-</body>
-</html>"""
-
-
-def _open_file(path: Path) -> None:
-    system = platform.system()
-    try:
-        if system == "Linux":
-            subprocess.Popen(
-                ["xdg-open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        elif system == "Darwin":
-            subprocess.Popen(
-                ["open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-    except OSError:
-        print(f"  Could not open browser. Open manually: {path}")
+    return html_page(
+        f"Acquisition Phase Analysis \u2014 Epoch {epoch}",
+        meta=meta,
+        body=body,
+        script=data_js + "\n\n" + report_js,
+        extra_css=extra_css,
+        max_width=1100,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -964,7 +901,7 @@ def main() -> None:
     print(f"\nHTML report written to {html_path}")
 
     if not args.no_open:
-        _open_file(html_path)
+        open_file(html_path)
 
 
 if __name__ == "__main__":

@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import platform
-import subprocess
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -27,6 +25,7 @@ import numpy as np
 import torch
 
 from core.actions import decode_action_py
+from interp.html import html_page, open_file
 from interp.decision_attr import (
     _ACTION_TYPE_NAMES,
     aggregate_to_groups,
@@ -259,6 +258,15 @@ def format_console(
     return "\n".join(lines)
 
 
+ACIG_CSS = """\
+.bucket-info { color: #888; font-size: 0.82rem; margin: 0.3rem 0 0.8rem 0; }
+.heatmap td {
+  min-width: 80px;
+  font-family: "SF Mono", "Fira Code", Consolas, monospace;
+  font-size: 0.78rem;
+}"""
+
+
 def format_html(
     attributions: PhaseAttrs,
     bucket_counts: BucketCounts,
@@ -321,77 +329,31 @@ def format_html(
 
     data_json = json.dumps(phases_js)
 
-    return f"""\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>ACIG Report — Epoch {epoch}</title>
-<style>
-body {{
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-               Helvetica, Arial, sans-serif;
-  background: #1a1a2e; color: #e0e0e0;
-  margin: 2rem auto; max-width: 1400px; padding: 0 1rem;
-}}
-h1 {{ color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }}
-h2 {{
-  color: #ccc; font-size: 1.1rem; margin-top: 2rem;
-  border-bottom: 1px solid #333; padding-bottom: 0.3rem;
-}}
-h3 {{ color: #aaa; font-size: 0.95rem; margin-top: 1.5rem; }}
-.meta {{ color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }}
-.bucket-info {{ color: #888; font-size: 0.82rem; margin: 0.3rem 0 0.8rem 0; }}
-table {{
-  border-collapse: collapse; width: 100%;
-  font-size: 0.82rem; margin-top: 0.5rem;
-}}
-th, td {{ padding: 4px 8px; border: 1px solid #2a2a4a; text-align: right; }}
-th {{ background: #16213e; color: #aaa; font-weight: 600; }}
-th:first-child, td:first-child {{ text-align: left; }}
-td:first-child {{
-  font-family: "SF Mono", "Fira Code", Consolas, monospace;
-  font-size: 0.8rem;
-}}
-.heatmap td {{
-  min-width: 80px;
-  font-family: "SF Mono", "Fira Code", Consolas, monospace;
-  font-size: 0.78rem;
-}}
-</style>
-</head>
-<body>
-<h1>Action-Conditioned Integrated Gradients — Epoch {epoch}</h1>
-<div class="meta">
-  Per-action-type feature attributions via IntegratedGradients.
-  {num_states:,} total states. Signed means: positive = feature pushes
-  logit for this action UP.
-  <br>Green = positive attribution, red = negative, intensity = magnitude.
-</div>
-<div id="content"></div>
-<script>
-const phases = {data_json};
+    body = '<div id="content"></div>'
 
-function heatColor(val, maxAbs) {{
+    data_js = f"const phases = {data_json};"
+
+    report_js = """\
+function heatColor(val, maxAbs) {
   if (maxAbs === 0) return "transparent";
   const intensity = Math.min(Math.abs(val) / maxAbs, 1.0);
   const alpha = intensity * 0.7;
   if (val >= 0) return "rgba(78, 204, 163, " + alpha + ")";
   return "rgba(233, 69, 96, " + alpha + ")";
-}}
+}
 
 const content = document.getElementById("content");
-for (const phase of phases) {{
+for (const phase of phases) {
   let html = "<h2>" + phase.name + "</h2>";
   html += '<div class="bucket-info">';
   html += phase.buckets.map(
-    function(b) {{ return b.name + ": " + b.count + " states"; }}
+    function(b) { return b.name + ": " + b.count + " states"; }
   ).join(" &middot; ");
   html += "</div>";
 
   // Attribution heatmap
   html += "<h3>Feature Attributions by Action Type</h3>";
-  const bucketNames = phase.buckets.map(function(b) {{ return b.name; }});
+  const bucketNames = phase.buckets.map(function(b) { return b.name; });
   html += '<table class="heatmap"><tr><th>Feature</th>';
   for (let bi = 0; bi < bucketNames.length; bi++)
     html += "<th>" + bucketNames[bi] + "</th>";
@@ -399,36 +361,36 @@ for (const phase of phases) {{
 
   // Color scale: max abs across all cells in this phase
   let maxAbs = 0;
-  for (let fi = 0; fi < phase.features.length; fi++) {{
+  for (let fi = 0; fi < phase.features.length; fi++) {
     const feat = phase.features[fi];
     const row = phase.grid[feat];
     if (!row) continue;
-    for (let bi = 0; bi < bucketNames.length; bi++) {{
+    for (let bi = 0; bi < bucketNames.length; bi++) {
       const v = row[bucketNames[bi]];
       if (v !== undefined && Math.abs(v) > maxAbs) maxAbs = Math.abs(v);
-    }}
-  }}
+    }
+  }
 
-  for (let fi = 0; fi < phase.features.length; fi++) {{
+  for (let fi = 0; fi < phase.features.length; fi++) {
     const feat = phase.features[fi];
-    const row = phase.grid[feat] || {{}};
+    const row = phase.grid[feat] || {};
     html += "<tr><td>" + feat + "</td>";
-    for (let bi = 0; bi < bucketNames.length; bi++) {{
+    for (let bi = 0; bi < bucketNames.length; bi++) {
       const v = row[bucketNames[bi]];
-      if (v !== undefined) {{
+      if (v !== undefined) {
         const bg = heatColor(v, maxAbs);
         const sign = v >= 0 ? "+" : "";
         html += '<td style="background:' + bg + '">' + sign + v.toFixed(4) + "</td>";
-      }} else {{
+      } else {
         html += '<td style="color:#555">&mdash;</td>';
-      }}
-    }}
+      }
+    }
     html += "</tr>";
-  }}
+  }
   html += "</table>";
 
   // Discriminative features
-  if (phase.discriminative.length > 0) {{
+  if (phase.discriminative.length > 0) {
     html += "<h3>Most Discriminative Features (highest variance across actions)</h3>";
     html += "<table><tr><th>Feature</th><th>Std</th>";
     for (let bi = 0; bi < bucketNames.length; bi++)
@@ -436,55 +398,50 @@ for (const phase of phases) {{
     html += "</tr>";
 
     let discMax = 0;
-    for (let di = 0; di < phase.discriminative.length; di++) {{
+    for (let di = 0; di < phase.discriminative.length; di++) {
       const d = phase.discriminative[di];
       const vals = Object.values(d.per_bucket);
-      for (let vi = 0; vi < vals.length; vi++) {{
+      for (let vi = 0; vi < vals.length; vi++) {
         if (Math.abs(vals[vi]) > discMax) discMax = Math.abs(vals[vi]);
-      }}
-    }}
+      }
+    }
 
-    for (let di = 0; di < phase.discriminative.length; di++) {{
+    for (let di = 0; di < phase.discriminative.length; di++) {
       const d = phase.discriminative[di];
       html += "<tr><td>" + d.name + "</td><td>" + d.std.toFixed(4) + "</td>";
-      for (let bi = 0; bi < bucketNames.length; bi++) {{
+      for (let bi = 0; bi < bucketNames.length; bi++) {
         const v = d.per_bucket[bucketNames[bi]];
-        if (v !== undefined) {{
+        if (v !== undefined) {
           const bg = heatColor(v, discMax);
           const sign = v >= 0 ? "+" : "";
           html += '<td style="background:' + bg + '">' + sign + v.toFixed(4) + "</td>";
-        }} else {{
+        } else {
           html += '<td style="color:#555">&mdash;</td>';
-        }}
-      }}
+        }
+      }
       html += "</tr>";
-    }}
+    }
     html += "</table>";
-  }}
+  }
 
   content.innerHTML += html;
-}}
-</script>
-</body>
-</html>"""
+}"""
 
+    meta = (
+        f"Per-action-type feature attributions via IntegratedGradients. "
+        f"{num_states:,} total states. Signed means: positive = feature pushes "
+        f"logit for this action UP."
+        f"<br>Green = positive attribution, red = negative, intensity = magnitude."
+    )
 
-def _open_file(path: Path) -> None:
-    """Open a file with the platform's default handler."""
-    system = platform.system()
-    try:
-        if system == "Linux":
-            subprocess.Popen(
-                ["xdg-open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        elif system == "Darwin":
-            subprocess.Popen(
-                ["open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-    except OSError:
-        print(f"  Could not open browser. Open manually: {path}")
+    return html_page(
+        f"Action-Conditioned Integrated Gradients \u2014 Epoch {epoch}",
+        meta=meta,
+        body=body,
+        script=data_js + "\n\n" + report_js,
+        extra_css=ACIG_CSS,
+        max_width=1400,
+    )
 
 
 def main() -> None:
@@ -564,7 +521,7 @@ def main() -> None:
     print(f"\nHTML report written to {html_path}")
 
     if not args.no_open:
-        _open_file(html_path)
+        open_file(html_path)
 
 
 if __name__ == "__main__":

@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import platform
-import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -25,6 +23,7 @@ import torch
 
 from core.actions import decode_action_py
 from interp.full_ablation import _PHASE_NAMES, _build_feature_groups
+from interp.html import html_page, open_file
 from interp.utils import (
     InterpDataset,
     batch_masked_softmax,
@@ -267,6 +266,44 @@ def aggregate_patterns(
     return aggregated
 
 
+DECISION_CSS = """\
+.decision {
+  background: #16213e; border: 1px solid #2a2a4a; border-radius: 6px;
+  padding: 1rem; margin-bottom: 1rem;
+}
+.decision-header {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 0.5rem;
+}
+.phase-tag {
+  background: #0f3460; color: #e0e0e0; padding: 2px 8px;
+  border-radius: 3px; font-size: 0.8rem; font-weight: 600;
+}
+.actions {
+  font-family: "SF Mono", "Fira Code", Consolas, monospace;
+  font-size: 0.85rem; margin: 0.5rem 0;
+}
+.action-a { color: #4ecca3; }
+.action-b { color: #e94560; }
+.features { font-size: 0.82rem; }
+.feat-row {
+  display: flex; align-items: center; margin: 2px 0;
+}
+.feat-name {
+  width: 220px; min-width: 220px; flex-shrink: 0;
+  font-family: monospace; font-size: 0.8rem; color: #aaa;
+}
+.feat-bar-container {
+  flex: 1; min-width: 0;
+}
+.feat-bar {
+  height: 14px; border-radius: 2px; min-width: 2px;
+}
+.feat-val { font-size: 0.75rem; color: #888; margin-left: 6px; flex-shrink: 0; }
+.bar-pos { background: #4ecca3; }
+.bar-neg { background: #e94560; }"""
+
+
 def format_html_report(
     results: list[dict[str, Any]],
     patterns: dict[str, list[tuple[str, float, int]]],
@@ -299,146 +336,75 @@ def format_html_report(
             for n, m, c in features[:15]
         ]
 
-    return f"""\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Decision Attribution — Epoch {epoch}</title>
-<style>
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                 Helvetica, Arial, sans-serif;
-    background: #1a1a2e; color: #e0e0e0;
-    margin: 2rem auto; max-width: 1200px; padding: 0 1rem;
-  }}
-  h1 {{ color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }}
-  h2 {{ color: #ccc; font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #333; padding-bottom: 0.3rem; }}
-  h3 {{ color: #aaa; font-size: 0.95rem; margin-top: 1.5rem; }}
-  .meta {{ color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }}
-  .decision {{
-    background: #16213e; border: 1px solid #2a2a4a; border-radius: 6px;
-    padding: 1rem; margin-bottom: 1rem;
-  }}
-  .decision-header {{
-    display: flex; justify-content: space-between; align-items: baseline;
-    margin-bottom: 0.5rem;
-  }}
-  .phase-tag {{
-    background: #0f3460; color: #e0e0e0; padding: 2px 8px;
-    border-radius: 3px; font-size: 0.8rem; font-weight: 600;
-  }}
-  .actions {{
-    font-family: "SF Mono", "Fira Code", Consolas, monospace;
-    font-size: 0.85rem; margin: 0.5rem 0;
-  }}
-  .action-a {{ color: #4ecca3; }}
-  .action-b {{ color: #e94560; }}
-  .features {{ font-size: 0.82rem; }}
-  .feat-row {{
-    display: flex; align-items: center; margin: 2px 0;
-  }}
-  .feat-name {{
-    width: 220px; min-width: 220px; flex-shrink: 0;
-    font-family: monospace; font-size: 0.8rem; color: #aaa;
-  }}
-  .feat-bar-container {{
-    flex: 1; min-width: 0;
-  }}
-  .feat-bar {{
-    height: 14px; border-radius: 2px; min-width: 2px;
-  }}
-  .feat-val {{ font-size: 0.75rem; color: #888; margin-left: 6px; flex-shrink: 0; }}
-  .bar-pos {{ background: #4ecca3; }}
-  .bar-neg {{ background: #e94560; }}
-  table {{
-    border-collapse: collapse; width: 100%;
-    font-size: 0.82rem; margin-top: 0.5rem;
-  }}
-  th, td {{ padding: 4px 8px; border: 1px solid #2a2a4a; text-align: right; }}
-  th {{ background: #16213e; color: #aaa; font-weight: 600; }}
-  th:first-child, td:first-child {{ text-align: left; }}
-  td:first-child {{ font-family: monospace; font-size: 0.8rem; }}
-</style>
-</head>
-<body>
-<h1>Decision Attribution — Epoch {epoch}</h1>
-<div class="meta">
-  IntegratedGradients on critical decisions (top-2 margin &lt; threshold).
-  {num_critical} critical states found in {num_states:,} total states.
-  Showing top {len(results)} most uncertain decisions.
-  <br>Green bars = feature favors action A (top-1). Red bars = feature favors action B (top-2).
-</div>
+    body = (
+        '<h2>Decision Gallery</h2>\n'
+        '<div id="gallery"></div>\n'
+        '\n'
+        '<h2>Aggregate Patterns by Phase</h2>\n'
+        '<div id="patterns"></div>'
+    )
 
-<h2>Decision Gallery</h2>
-<div id="gallery"></div>
+    data_js = (
+        f"const decisions = {json.dumps(decisions_js)};\n"
+        f"const patterns = {json.dumps(patterns_js)};"
+    )
 
-<h2>Aggregate Patterns by Phase</h2>
-<div id="patterns"></div>
+    report_js = (
+        'const gallery = document.getElementById("gallery");\n'
+        'for (const d of decisions) {\n'
+        '  const div = document.createElement("div");\n'
+        '  div.className = "decision";\n'
+        '\n'
+        '  // Find max |val| for bar scaling\n'
+        '  const maxVal = Math.max(...d.decisive.map(f => Math.abs(f.val)), 0.001);\n'
+        '\n'
+        '  let featHtml = "";\n'
+        '  for (const f of d.decisive) {\n'
+        '    const pct = Math.abs(f.val) / maxVal * 100;\n'
+        '    const cls = f.val >= 0 ? "bar-pos" : "bar-neg";\n'
+        '    featHtml += \'<div class="feat-row">\' +\n'
+        '      \'<span class="feat-name">\' + f.name + \'</span>\' +\n'
+        '      \'<div class="feat-bar-container"><div class="feat-bar \' + cls + \'" style="width:\' + pct + \'%"></div></div>\' +\n'
+        '      \'<span class="feat-val">\' + (f.val >= 0 ? "+" : "") + f.val.toFixed(4) + \'</span></div>\';\n'
+        '  }\n'
+        '\n'
+        '  div.innerHTML = \'<div class="decision-header">\' +\n'
+        '    \'<span class="phase-tag">\' + d.phase + \'</span>\' +\n'
+        '    \'<span style="color:#888;font-size:0.8rem">entropy=\' + d.entropy +\n'
+        '    \' value=\' + d.value + \'</span></div>\' +\n'
+        '    \'<div class="actions">\' +\n'
+        '    \'A: <span class="action-a">\' + d.top1 + \'</span> (\' + (d.top1_prob * 100).toFixed(1) + \'%)\' +\n'
+        '    \' &nbsp; B: <span class="action-b">\' + d.top2 + \'</span> (\' + (d.top2_prob * 100).toFixed(1) + \'%)\' +\n'
+        '    \'</div><div class="features">\' + featHtml + \'</div>\';\n'
+        '  gallery.appendChild(div);\n'
+        '}\n'
+        '\n'
+        'const pDiv = document.getElementById("patterns");\n'
+        'for (const [phase, feats] of Object.entries(patterns)) {\n'
+        '  let html = \'<h3>\' + phase + \'</h3><table><tr><th>Feature</th><th>Mean |diff|</th><th>Count</th></tr>\';\n'
+        '  for (const f of feats.slice(0, 10)) {\n'
+        '    html += \'<tr><td>\' + f.name + \'</td><td>\' + f.mean.toFixed(4) + \'</td><td>\' + f.count + \'</td></tr>\';\n'
+        '  }\n'
+        '  html += \'</table>\';\n'
+        '  pDiv.innerHTML += html;\n'
+        '}'
+    )
 
-<script>
-const decisions = {json.dumps(decisions_js)};
-const patterns = {json.dumps(patterns_js)};
+    meta = (
+        f"IntegratedGradients on critical decisions (top-2 margin &lt; threshold). "
+        f"{num_critical} critical states found in {num_states:,} total states. "
+        f"Showing top {len(results)} most uncertain decisions."
+        f"<br>Green bars = feature favors action A (top-1). Red bars = feature favors action B (top-2)."
+    )
 
-const gallery = document.getElementById("gallery");
-for (const d of decisions) {{
-  const div = document.createElement("div");
-  div.className = "decision";
-
-  // Find max |val| for bar scaling
-  const maxVal = Math.max(...d.decisive.map(f => Math.abs(f.val)), 0.001);
-
-  let featHtml = "";
-  for (const f of d.decisive) {{
-    const pct = Math.abs(f.val) / maxVal * 100;
-    const cls = f.val >= 0 ? "bar-pos" : "bar-neg";
-    featHtml += '<div class="feat-row">' +
-      '<span class="feat-name">' + f.name + '</span>' +
-      '<div class="feat-bar-container"><div class="feat-bar ' + cls + '" style="width:' + pct + '%"></div></div>' +
-      '<span class="feat-val">' + (f.val >= 0 ? "+" : "") + f.val.toFixed(4) + '</span></div>';
-  }}
-
-  div.innerHTML = '<div class="decision-header">' +
-    '<span class="phase-tag">' + d.phase + '</span>' +
-    '<span style="color:#888;font-size:0.8rem">entropy=' + d.entropy +
-    ' value=' + d.value + '</span></div>' +
-    '<div class="actions">' +
-    'A: <span class="action-a">' + d.top1 + '</span> (' + (d.top1_prob * 100).toFixed(1) + '%)' +
-    ' &nbsp; B: <span class="action-b">' + d.top2 + '</span> (' + (d.top2_prob * 100).toFixed(1) + '%)' +
-    '</div><div class="features">' + featHtml + '</div>';
-  gallery.appendChild(div);
-}}
-
-const pDiv = document.getElementById("patterns");
-for (const [phase, feats] of Object.entries(patterns)) {{
-  let html = '<h3>' + phase + '</h3><table><tr><th>Feature</th><th>Mean |diff|</th><th>Count</th></tr>';
-  for (const f of feats.slice(0, 10)) {{
-    html += '<tr><td>' + f.name + '</td><td>' + f.mean.toFixed(4) + '</td><td>' + f.count + '</td></tr>';
-  }}
-  html += '</table>';
-  pDiv.innerHTML += html;
-}}
-</script>
-</body>
-</html>"""
-
-
-def _open_file(path: Path) -> None:
-    """Open a file with the platform's default handler."""
-    system = platform.system()
-    try:
-        if system == "Linux":
-            subprocess.Popen(
-                ["xdg-open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        elif system == "Darwin":
-            subprocess.Popen(
-                ["open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-    except OSError:
-        print(f"  Could not open browser. Open manually: {path}")
+    return html_page(
+        f"Decision Attribution \u2014 Epoch {epoch}",
+        meta=meta,
+        body=body,
+        script=data_js + "\n\n" + report_js,
+        extra_css=DECISION_CSS,
+        max_width=1200,
+    )
 
 
 def main() -> None:
@@ -544,7 +510,7 @@ def main() -> None:
     print(f"\nHTML report written to {html_path}")
 
     if not args.no_open:
-        _open_file(html_path)
+        open_file(html_path)
 
 
 if __name__ == "__main__":

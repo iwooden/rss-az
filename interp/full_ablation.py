@@ -13,14 +13,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import platform
-import subprocess
+import json
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
 
+from interp.html import html_page, open_file
 from interp.utils import (
     InterpDataset,
     batch_masked_softmax,
@@ -145,8 +145,6 @@ def format_html_table(
     num_games: int,
 ) -> str:
     """Format results as an HTML heatmap page with policy, value, and overall tables."""
-    import json
-
     phase_names = [_PHASE_NAMES.get(pid, str(pid)) for pid in phase_ids]
     headers = ["Feature", "#", "Total"] + phase_names
 
@@ -160,141 +158,90 @@ def format_html_table(
     value_json = rows_to_json(value_rows)
     headers_json = json.dumps(headers)
 
-    return f"""\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>State Vector Sensitivity — Epoch {epoch}</title>
-<style>
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                 Helvetica, Arial, sans-serif;
-    background: #1a1a2e;
-    color: #e0e0e0;
-    margin: 2rem auto;
-    max-width: 1200px;
-    padding: 0 1rem;
-  }}
-  h1 {{ color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }}
-  h2 {{ color: #ccc; font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #333; padding-bottom: 0.3rem; }}
-  .meta {{ color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }}
-  table {{
-    border-collapse: collapse;
-    width: 100%;
-    font-size: 0.82rem;
-    table-layout: fixed;
-    margin-bottom: 2rem;
-  }}
-  th, td {{ padding: 5px 8px; border: 1px solid #2a2a4a; text-align: right; }}
-  th {{
-    background: #16213e; color: #aaa; font-weight: 600;
-    position: sticky; top: 0; z-index: 1;
-  }}
-  th:first-child, td:first-child {{ text-align: left; width: 200px; }}
-  td:first-child {{
-    font-family: "SF Mono", "Fira Code", Consolas, monospace;
-    font-size: 0.8rem; color: #ccc;
-  }}
-  td:nth-child(2) {{ color: #888; width: 45px; }}
-  tr:hover td {{ border-color: #555; }}
-</style>
-</head>
-<body>
-<h1>State Vector Sensitivity — Epoch {epoch}</h1>
-<div class="meta">
-  Feature group ablation (zero out each group, measure output change).
-  {num_states:,} states from {num_games} games.
-  Sorted by total metric (most sensitive first). Each table has independent color scaling.
-</div>
+    body = (
+        '<h2>Policy Head (KL Divergence)</h2>\n'
+        '<table id="tbl-policy"></table>\n'
+        '\n'
+        '<h2>Value Head (MSE)</h2>\n'
+        '<table id="tbl-value"></table>'
+    )
 
-<h2>Policy Head (KL Divergence)</h2>
-<table id="tbl-policy"></table>
+    data_js = (
+        f"const policyRows = {policy_json};\n"
+        f"const valueRows = {value_json};\n"
+        f"const headers = {headers_json};"
+    )
 
-<h2>Value Head (MSE)</h2>
-<table id="tbl-value"></table>
+    report_js = (
+        "function buildTable(tblId, rows) {\n"
+        "  let maxVal = 0;\n"
+        "  for (const r of rows)\n"
+        "    for (let i = 2; i < r.length; i++)\n"
+        "      if (r[i] > maxVal) maxVal = r[i];\n"
+        "\n"
+        "  function heatColor(v) {\n"
+        '    if (v === 0) return "rgba(0,0,0,0)";\n'
+        "    const t = v / maxVal;\n"
+        "    const h = t * 120;\n"
+        "    const s = 70 + t * -5;\n"
+        "    const l = 18 + t * 22;\n"
+        '    return "hsl(" + h + "," + s + "%," + l + "%)";\n'
+        "  }\n"
+        "\n"
+        "  function fmtVal(v) {\n"
+        '    if (v === 0) return "0";\n'
+        "    if (v < 0.0005) return v.toExponential(0);\n"
+        "    return v.toFixed(4);\n"
+        "  }\n"
+        "\n"
+        '  const tbl = document.getElementById(tblId);\n'
+        "  const thead = tbl.createTHead().insertRow();\n"
+        "  for (const h of headers) {\n"
+        '    const th = document.createElement("th");\n'
+        "    th.textContent = h;\n"
+        "    thead.appendChild(th);\n"
+        "  }\n"
+        "  const tbody = tbl.createTBody();\n"
+        "  for (const r of rows) {\n"
+        "    const tr = tbody.insertRow();\n"
+        "    for (let i = 0; i < r.length; i++) {\n"
+        "      const td = tr.insertCell();\n"
+        "      if (i <= 1) {\n"
+        "        td.textContent = r[i];\n"
+        "      } else {\n"
+        "        td.textContent = fmtVal(r[i]);\n"
+        "        td.style.backgroundColor = heatColor(r[i]);\n"
+        '        if (r[i] / maxVal > 0.45) td.style.color = "#fff";\n'
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+        "\n"
+        'buildTable("tbl-policy", policyRows);\n'
+        'buildTable("tbl-value", valueRows);'
+    )
 
-<script>
-const policyRows = {policy_json};
-const valueRows = {value_json};
-const headers = {headers_json};
+    meta = (
+        f"Feature group ablation (zero out each group, measure output change). "
+        f"{num_states:,} states from {num_games} games. "
+        f"Sorted by total metric (most sensitive first). "
+        f"Each table has independent color scaling."
+    )
 
-function buildTable(tblId, rows) {{
-  let maxVal = 0;
-  for (const r of rows)
-    for (let i = 2; i < r.length; i++)
-      if (r[i] > maxVal) maxVal = r[i];
+    extra_css = (
+        "table { table-layout: fixed; }\n"
+        "th:first-child, td:first-child { width: 200px; }\n"
+        "td:nth-child(2) { color: #888; width: 45px; }"
+    )
 
-  function heatColor(v) {{
-    if (v === 0) return "rgba(0,0,0,0)";
-    const t = v / maxVal;
-    const h = t * 120;
-    const s = 70 + t * -5;
-    const l = 18 + t * 22;
-    return "hsl(" + h + "," + s + "%," + l + "%)";
-  }}
-
-  function fmtVal(v) {{
-    if (v === 0) return "0";
-    if (v < 0.0005) return v.toExponential(0);
-    return v.toFixed(4);
-  }}
-
-  const tbl = document.getElementById(tblId);
-  const thead = tbl.createTHead().insertRow();
-  for (const h of headers) {{
-    const th = document.createElement("th");
-    th.textContent = h;
-    thead.appendChild(th);
-  }}
-  const tbody = tbl.createTBody();
-  for (const r of rows) {{
-    const tr = tbody.insertRow();
-    for (let i = 0; i < r.length; i++) {{
-      const td = tr.insertCell();
-      if (i <= 1) {{
-        td.textContent = r[i];
-      }} else {{
-        td.textContent = fmtVal(r[i]);
-        td.style.backgroundColor = heatColor(r[i]);
-        if (r[i] / maxVal > 0.45) td.style.color = "#fff";
-      }}
-    }}
-  }}
-}}
-
-buildTable("tbl-policy", policyRows);
-buildTable("tbl-value", valueRows);
-</script>
-</body>
-</html>"""
-
-
-def _open_file(path: Path) -> None:
-    """Open a file with the platform's default handler."""
-    system = platform.system()
-    try:
-        if system == "Linux":
-            subprocess.Popen(  # noqa: S603
-                ["xdg-open", str(path)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        elif system == "Darwin":
-            subprocess.Popen(  # noqa: S603
-                ["open", str(path)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        elif system == "Windows":
-            subprocess.Popen(  # noqa: S603
-                ["start", "", str(path)],
-                shell=True,  # noqa: S602
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-    except OSError:
-        print(f"  Could not open browser. Open manually: {path}")
+    return html_page(
+        f"State Vector Sensitivity \u2014 Epoch {epoch}",
+        meta=meta,
+        body=body,
+        script=data_js + "\n\n" + report_js,
+        extra_css=extra_css,
+        max_width=1200,
+    )
 
 
 def main() -> None:
@@ -370,7 +317,7 @@ def main() -> None:
     print(f"HTML heatmap written to {html_path}")
 
     if not args.no_open:
-        _open_file(html_path)
+        open_file(html_path)
 
 
 if __name__ == "__main__":

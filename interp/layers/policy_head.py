@@ -21,8 +21,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import platform
-import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +29,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from interp.html import BAR_CSS, JS_MAKE_BAR, STAT_BOX_CSS, html_page, open_file
 from interp.utils import (
     InterpDataset,
     batch_masked_softmax,
@@ -625,249 +624,182 @@ def format_html_report(
     neuron_json = json.dumps(neuron_data)
     necessity_json = json.dumps(necessity_data)
 
-    return f"""\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Policy Head Analysis — Epoch {epoch}</title>
-<style>
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                 Helvetica, Arial, sans-serif;
-    background: #1a1a2e; color: #e0e0e0;
-    margin: 2rem auto; max-width: 1100px; padding: 0 1rem;
-  }}
-  h1 {{ color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }}
-  h2 {{ color: #ccc; font-size: 1.1rem; margin-top: 2rem;
-        border-bottom: 1px solid #333; padding-bottom: 0.3rem; }}
-  h3 {{ color: #aaa; font-size: 0.95rem; margin-top: 1rem; }}
-  .meta {{ color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }}
-  table {{
-    border-collapse: collapse; width: 100%;
-    font-size: 0.82rem; margin-bottom: 1.5rem;
-  }}
-  th, td {{ padding: 5px 8px; border: 1px solid #2a2a4a; text-align: right; }}
-  th {{ background: #16213e; color: #aaa; font-weight: 600; }}
-  th:first-child, td:first-child {{ text-align: left; }}
-  td:first-child {{
-    font-family: "SF Mono", "Fira Code", Consolas, monospace;
-    font-size: 0.8rem; color: #ccc;
-  }}
-  tr:hover td {{ border-color: #555; }}
-  .bar-container {{ display: inline-block; width: 120px; vertical-align: middle; }}
-  .bar {{
-    display: inline-block; height: 12px; border-radius: 2px;
-    vertical-align: middle;
-  }}
-  .bar-blue {{ background: #4a9eff; }}
-  .bar-green {{ background: #4ecca3; }}
-  .bar-orange {{ background: #e9a945; }}
-  .stat-box {{
-    display: inline-block; background: #16213e; border: 1px solid #2a2a4a;
-    border-radius: 4px; padding: 8px 16px; margin: 4px 8px 4px 0;
-    font-size: 0.85rem;
-  }}
-  .stat-label {{ color: #888; font-size: 0.75rem; }}
-  .stat-value {{ color: #e0e0e0; font-size: 1.1rem; font-weight: 600; }}
-</style>
-</head>
-<body>
-<h1>Policy Head Analysis — Epoch {epoch}</h1>
-<div class="meta">
-  {num_states:,} states from {num_games} games.
-</div>
+    body = (
+        '<h2>1. Logit Lens</h2>\n'
+        '<p style="color:#888;font-size:0.85rem">Project intermediate policy representations through the final weight matrix. Shows when decisions crystallize.</p>\n'
+        '<h3>Summary</h3>\n'
+        '<table id="tbl-lens-summary"></table>\n'
+        '<h3>Per-Phase Argmax Agreement</h3>\n'
+        '<table id="tbl-lens-phase"></table>\n'
+        '\n'
+        '<h2>2. Neuron Specialization</h2>\n'
+        '<p style="color:#888;font-size:0.85rem">NeuronConductance per action type in the final hidden layer (256 neurons).</p>\n'
+        '<div id="neuron-stats"></div>\n'
+        '<h3>Neurons per Action Type</h3>\n'
+        '<table id="tbl-neuron-bar"></table>\n'
+        '<h3>Highly Specialized Neurons (score &gt; 0.6)</h3>\n'
+        '<table id="tbl-neuron-spec"></table>\n'
+        '\n'
+        '<h2>3. Layer Causal Necessity</h2>\n'
+        '<p style="color:#888;font-size:0.85rem">KL divergence when each Linear+GELU pair is replaced with identity.</p>\n'
+        '<h3>Overall</h3>\n'
+        '<table id="tbl-necessity-overall"></table>\n'
+        '<h3>Per-Phase KL Heatmap</h3>\n'
+        '<table id="tbl-necessity-phase"></table>'
+    )
 
-<h2>1. Logit Lens</h2>
-<p style="color:#888;font-size:0.85rem">Project intermediate policy representations through the final weight matrix. Shows when decisions crystallize.</p>
-<h3>Summary</h3>
-<table id="tbl-lens-summary"></table>
-<h3>Per-Phase Argmax Agreement</h3>
-<table id="tbl-lens-phase"></table>
+    data_js = f"const lens = {lens_json};\nconst neuron = {neuron_json};\nconst necessity = {necessity_json};"
 
-<h2>2. Neuron Specialization</h2>
-<p style="color:#888;font-size:0.85rem">NeuronConductance per action type in the final hidden layer (256 neurons).</p>
-<div id="neuron-stats"></div>
-<h3>Neurons per Action Type</h3>
-<table id="tbl-neuron-bar"></table>
-<h3>Highly Specialized Neurons (score &gt; 0.6)</h3>
-<table id="tbl-neuron-spec"></table>
+    report_js = (
+        'function heatColor(v, maxVal) {\n'
+        '  if (maxVal <= 0) return "transparent";\n'
+        '  const t = Math.min(v / maxVal, 1.0);\n'
+        '  return "hsl(" + (120 - t * 120) + ",70%," + (18 + t * 22) + "%)";\n'
+        '}\n'
+        '\n'
+        'function agreeColor(v) {\n'
+        '  return "hsl(" + (v * 120) + ",70%," + (18 + v * 22) + "%)";\n'
+        '}\n'
+        '\n'
+        '// --- 1. Logit Lens Summary ---\n'
+        '(function() {\n'
+        '  const tbl = document.getElementById("tbl-lens-summary");\n'
+        '  let html = \'<tr><th>Layer</th><th>Argmax Agreement</th><th>Mean KL</th><th>Final Act Prob</th></tr>\';\n'
+        '  for (const name of lens.layer_names) {\n'
+        '    const agree = lens.argmax_agreement[name];\n'
+        '    const kl = lens.mean_kl[name];\n'
+        '    const prob = lens.final_action_prob[name];\n'
+        "    html += '<tr><td>' + name + '</td>' +\n"
+        "      '<td>' + (agree * 100).toFixed(1) + '%</td>' +\n"
+        "      '<td>' + kl.toFixed(4) + '</td>' +\n"
+        "      '<td>' + (prob * 100).toFixed(1) + '%</td></tr>';\n"
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- 1b. Logit Lens Per-Phase Agreement Heatmap ---\n'
+        '(function() {\n'
+        '  const tbl = document.getElementById("tbl-lens-phase");\n'
+        '  const phases = lens.decision_phases;\n'
+        "  let html = '<tr><th>Layer</th>';\n"
+        '  for (const p of phases) {\n'
+        "    html += '<th>' + (lens.phase_names[String(p)] || p) + '</th>';\n"
+        '  }\n'
+        "  html += '</tr>';\n"
+        '  for (const name of lens.layer_names) {\n'
+        "    html += '<tr><td>' + name + '</td>';\n"
+        '    const pa = lens.phase_agreement[name];\n'
+        '    for (const p of phases) {\n'
+        '      const v = pa[String(p)] || 0;\n'
+        '      const bg = agreeColor(v);\n'
+        "      html += '<td style=\"background:' + bg + '\">' + (v * 100).toFixed(1) + '%</td>';\n"
+        '    }\n'
+        "    html += '</tr>';\n"
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- 2. Neuron Specialization Stats ---\n'
+        '(function() {\n'
+        '  const div = document.getElementById("neuron-stats");\n'
+        '  div.innerHTML =\n'
+        "    '<div class=\"stat-box\"><div class=\"stat-label\">Dead Neurons</div><div class=\"stat-value\">' +\n"
+        "    (neuron.dead_fraction * 100).toFixed(1) + '%</div></div>' +\n"
+        "    '<div class=\"stat-box\"><div class=\"stat-label\">Mean Specialization</div><div class=\"stat-value\">' +\n"
+        "    neuron.mean_specialization.toFixed(3) + '</div></div>' +\n"
+        "    '<div class=\"stat-box\"><div class=\"stat-label\">Median Specialization</div><div class=\"stat-value\">' +\n"
+        "    neuron.median_specialization.toFixed(3) + '</div></div>' +\n"
+        "    '<div class=\"stat-box\"><div class=\"stat-label\">Highly Specialized</div><div class=\"stat-value\">' +\n"
+        "    neuron.highly_specialized.length + ' / ' + neuron.num_neurons + '</div></div>';\n"
+        '})();\n'
+        '\n'
+        '// --- 2b. Neurons per Action Type (bar chart) ---\n'
+        '(function() {\n'
+        '  const tbl = document.getElementById("tbl-neuron-bar");\n'
+        '  const entries = Object.entries(neuron.neurons_per_action).sort((a, b) => b[1] - a[1]);\n'
+        '  const maxCount = entries.length > 0 ? entries[0][1] : 1;\n'
+        "  let html = '<tr><th>Action Type</th><th>Count</th><th></th><th>Fraction</th></tr>';\n"
+        '  for (const [name, count] of entries) {\n'
+        "    html += '<tr><td>' + name + '</td>' +\n"
+        "      '<td>' + count + ' / ' + neuron.num_neurons + '</td>' +\n"
+        "      '<td>' + makeBar(count, maxCount, 'bar-green') + '</td>' +\n"
+        "      '<td>' + (count / neuron.num_neurons * 100).toFixed(1) + '%</td></tr>';\n"
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- 2c. Highly Specialized Neurons ---\n'
+        '(function() {\n'
+        '  const tbl = document.getElementById("tbl-neuron-spec");\n'
+        "  let html = '<tr><th>Neuron</th><th>Dominant Action</th><th>Score</th></tr>';\n"
+        '  if (neuron.highly_specialized.length === 0) {\n'
+        '    html += \'<tr><td colspan="3" style="text-align:center;color:#888">None found</td></tr>\';\n'
+        '  } else {\n'
+        '    for (const n of neuron.highly_specialized) {\n'
+        "      html += '<tr><td>n' + n.neuron + '</td>' +\n"
+        "        '<td>' + n.action + '</td>' +\n"
+        "        '<td>' + n.score.toFixed(3) + '</td></tr>';\n"
+        '    }\n'
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- 3. Layer Causal Necessity Overall ---\n'
+        '(function() {\n'
+        '  const tbl = document.getElementById("tbl-necessity-overall");\n'
+        '  const maxKL = Math.max(...necessity.layer_names.map(n => necessity.overall_kl[n]));\n'
+        "  let html = '<tr><th>Layer</th><th>Overall KL</th><th></th></tr>';\n"
+        '  for (const name of necessity.layer_names) {\n'
+        '    const kl = necessity.overall_kl[name];\n'
+        "    html += '<tr><td>' + name + '</td>' +\n"
+        "      '<td>' + kl.toFixed(4) + '</td>' +\n"
+        "      '<td>' + makeBar(kl, maxKL, 'bar-orange') + '</td></tr>';\n"
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- 3b. Layer Causal Necessity Per-Phase Heatmap ---\n'
+        '(function() {\n'
+        '  const tbl = document.getElementById("tbl-necessity-phase");\n'
+        '  const phases = necessity.decision_phases;\n'
+        '  // Find max KL across all cells for color scaling\n'
+        '  let maxKL = 0;\n'
+        '  for (const name of necessity.layer_names) {\n'
+        '    const pk = necessity.phase_kl[name];\n'
+        '    for (const p of phases) {\n'
+        '      const v = pk[String(p)] || 0;\n'
+        '      if (v > maxKL) maxKL = v;\n'
+        '    }\n'
+        '  }\n'
+        "  let html = '<tr><th>Layer</th>';\n"
+        '  for (const p of phases) {\n'
+        "    html += '<th>' + (necessity.phase_names[String(p)] || p) + '</th>';\n"
+        '  }\n'
+        "  html += '</tr>';\n"
+        '  for (const name of necessity.layer_names) {\n'
+        "    html += '<tr><td>' + name + '</td>';\n"
+        '    const pk = necessity.phase_kl[name];\n'
+        '    for (const p of phases) {\n'
+        '      const v = pk[String(p)] || 0;\n'
+        '      const bg = heatColor(v, maxKL);\n'
+        "      html += '<td style=\"background:' + bg + '\">' + v.toFixed(4) + '</td>';\n"
+        '    }\n'
+        "    html += '</tr>';\n"
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();'
+    )
 
-<h2>3. Layer Causal Necessity</h2>
-<p style="color:#888;font-size:0.85rem">KL divergence when each Linear+GELU pair is replaced with identity.</p>
-<h3>Overall</h3>
-<table id="tbl-necessity-overall"></table>
-<h3>Per-Phase KL Heatmap</h3>
-<table id="tbl-necessity-phase"></table>
+    extra_css = BAR_CSS + "\n" + STAT_BOX_CSS
 
-<script>
-const lens = {lens_json};
-const neuron = {neuron_json};
-const necessity = {necessity_json};
-
-function heatColor(v, maxVal) {{
-  if (maxVal <= 0) return "transparent";
-  const t = Math.min(v / maxVal, 1.0);
-  return "hsl(" + (120 - t * 120) + ",70%," + (18 + t * 22) + "%)";
-}}
-
-function agreeColor(v) {{
-  return "hsl(" + (v * 120) + ",70%," + (18 + v * 22) + "%)";
-}}
-
-function makeBar(val, maxVal, cls) {{
-  const pct = maxVal > 0 ? val / maxVal * 100 : 0;
-  return '<span class="bar-container"><span class="bar ' + cls + '" style="width:' + pct + '%"></span></span>';
-}}
-
-// --- 1. Logit Lens Summary ---
-(function() {{
-  const tbl = document.getElementById("tbl-lens-summary");
-  let html = '<tr><th>Layer</th><th>Argmax Agreement</th><th>Mean KL</th><th>Final Act Prob</th></tr>';
-  for (const name of lens.layer_names) {{
-    const agree = lens.argmax_agreement[name];
-    const kl = lens.mean_kl[name];
-    const prob = lens.final_action_prob[name];
-    html += '<tr><td>' + name + '</td>' +
-      '<td>' + (agree * 100).toFixed(1) + '%</td>' +
-      '<td>' + kl.toFixed(4) + '</td>' +
-      '<td>' + (prob * 100).toFixed(1) + '%</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- 1b. Logit Lens Per-Phase Agreement Heatmap ---
-(function() {{
-  const tbl = document.getElementById("tbl-lens-phase");
-  const phases = lens.decision_phases;
-  let html = '<tr><th>Layer</th>';
-  for (const p of phases) {{
-    html += '<th>' + (lens.phase_names[String(p)] || p) + '</th>';
-  }}
-  html += '</tr>';
-  for (const name of lens.layer_names) {{
-    html += '<tr><td>' + name + '</td>';
-    const pa = lens.phase_agreement[name];
-    for (const p of phases) {{
-      const v = pa[String(p)] || 0;
-      const bg = agreeColor(v);
-      html += '<td style="background:' + bg + '">' + (v * 100).toFixed(1) + '%</td>';
-    }}
-    html += '</tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- 2. Neuron Specialization Stats ---
-(function() {{
-  const div = document.getElementById("neuron-stats");
-  div.innerHTML =
-    '<div class="stat-box"><div class="stat-label">Dead Neurons</div><div class="stat-value">' +
-    (neuron.dead_fraction * 100).toFixed(1) + '%</div></div>' +
-    '<div class="stat-box"><div class="stat-label">Mean Specialization</div><div class="stat-value">' +
-    neuron.mean_specialization.toFixed(3) + '</div></div>' +
-    '<div class="stat-box"><div class="stat-label">Median Specialization</div><div class="stat-value">' +
-    neuron.median_specialization.toFixed(3) + '</div></div>' +
-    '<div class="stat-box"><div class="stat-label">Highly Specialized</div><div class="stat-value">' +
-    neuron.highly_specialized.length + ' / ' + neuron.num_neurons + '</div></div>';
-}})();
-
-// --- 2b. Neurons per Action Type (bar chart) ---
-(function() {{
-  const tbl = document.getElementById("tbl-neuron-bar");
-  const entries = Object.entries(neuron.neurons_per_action).sort((a, b) => b[1] - a[1]);
-  const maxCount = entries.length > 0 ? entries[0][1] : 1;
-  let html = '<tr><th>Action Type</th><th>Count</th><th></th><th>Fraction</th></tr>';
-  for (const [name, count] of entries) {{
-    html += '<tr><td>' + name + '</td>' +
-      '<td>' + count + ' / ' + neuron.num_neurons + '</td>' +
-      '<td>' + makeBar(count, maxCount, 'bar-green') + '</td>' +
-      '<td>' + (count / neuron.num_neurons * 100).toFixed(1) + '%</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- 2c. Highly Specialized Neurons ---
-(function() {{
-  const tbl = document.getElementById("tbl-neuron-spec");
-  let html = '<tr><th>Neuron</th><th>Dominant Action</th><th>Score</th></tr>';
-  if (neuron.highly_specialized.length === 0) {{
-    html += '<tr><td colspan="3" style="text-align:center;color:#888">None found</td></tr>';
-  }} else {{
-    for (const n of neuron.highly_specialized) {{
-      html += '<tr><td>n' + n.neuron + '</td>' +
-        '<td>' + n.action + '</td>' +
-        '<td>' + n.score.toFixed(3) + '</td></tr>';
-    }}
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- 3. Layer Causal Necessity Overall ---
-(function() {{
-  const tbl = document.getElementById("tbl-necessity-overall");
-  const maxKL = Math.max(...necessity.layer_names.map(n => necessity.overall_kl[n]));
-  let html = '<tr><th>Layer</th><th>Overall KL</th><th></th></tr>';
-  for (const name of necessity.layer_names) {{
-    const kl = necessity.overall_kl[name];
-    html += '<tr><td>' + name + '</td>' +
-      '<td>' + kl.toFixed(4) + '</td>' +
-      '<td>' + makeBar(kl, maxKL, 'bar-orange') + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- 3b. Layer Causal Necessity Per-Phase Heatmap ---
-(function() {{
-  const tbl = document.getElementById("tbl-necessity-phase");
-  const phases = necessity.decision_phases;
-  // Find max KL across all cells for color scaling
-  let maxKL = 0;
-  for (const name of necessity.layer_names) {{
-    const pk = necessity.phase_kl[name];
-    for (const p of phases) {{
-      const v = pk[String(p)] || 0;
-      if (v > maxKL) maxKL = v;
-    }}
-  }}
-  let html = '<tr><th>Layer</th>';
-  for (const p of phases) {{
-    html += '<th>' + (necessity.phase_names[String(p)] || p) + '</th>';
-  }}
-  html += '</tr>';
-  for (const name of necessity.layer_names) {{
-    html += '<tr><td>' + name + '</td>';
-    const pk = necessity.phase_kl[name];
-    for (const p of phases) {{
-      const v = pk[String(p)] || 0;
-      const bg = heatColor(v, maxKL);
-      html += '<td style="background:' + bg + '">' + v.toFixed(4) + '</td>';
-    }}
-    html += '</tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-</script>
-</body>
-</html>"""
-
-
-def _open_file(path: Path) -> None:
-    """Open a file with the platform's default handler."""
-    system = platform.system()
-    try:
-        if system == "Linux":
-            subprocess.Popen(
-                ["xdg-open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        elif system == "Darwin":
-            subprocess.Popen(
-                ["open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-    except OSError:
-        print(f"  Could not open browser. Open manually: {path}")
+    return html_page(
+        f"Policy Head Analysis \u2014 Epoch {epoch}",
+        meta=f"{num_states:,} states from {num_games} games.",
+        body=body,
+        script=data_js + "\n\n" + JS_MAKE_BAR + "\n\n" + report_js,
+        extra_css=extra_css,
+        max_width=1100,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -985,7 +917,7 @@ def main() -> None:
     print(f"\nHTML report written to {html_path}")
 
     if not args.no_open:
-        _open_file(html_path)
+        open_file(html_path)
 
 
 if __name__ == "__main__":

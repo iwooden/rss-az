@@ -22,8 +22,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import platform
-import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +30,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from interp.html import BAR_CSS, JS_MAKE_BAR, STAT_BOX_CSS, html_page, open_file
 from interp.utils import (
     InterpDataset,
     collect_states,
@@ -588,208 +587,149 @@ def format_html_report(
         ],
     })
 
-    return f"""\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Value Head Analysis — Epoch {epoch}</title>
-<style>
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                 Helvetica, Arial, sans-serif;
-    background: #1a1a2e; color: #e0e0e0;
-    margin: 2rem auto; max-width: 1100px; padding: 0 1rem;
-  }}
-  h1 {{ color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }}
-  h2 {{ color: #ccc; font-size: 1.1rem; margin-top: 2rem;
-        border-bottom: 1px solid #333; padding-bottom: 0.3rem; }}
-  h3 {{ color: #aaa; font-size: 0.95rem; margin-top: 1rem; }}
-  .meta {{ color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }}
-  table {{
-    border-collapse: collapse; width: 100%;
-    font-size: 0.82rem; margin-bottom: 1.5rem;
-  }}
-  th, td {{ padding: 5px 8px; border: 1px solid #2a2a4a; text-align: right; }}
-  th {{ background: #16213e; color: #aaa; font-weight: 600; }}
-  th:first-child, td:first-child {{ text-align: left; }}
-  td:first-child {{
-    font-family: "SF Mono", "Fira Code", Consolas, monospace;
-    font-size: 0.8rem; color: #ccc;
-  }}
-  tr:hover td {{ border-color: #555; }}
-  .bar-container {{ display: inline-block; width: 120px; vertical-align: middle; }}
-  .bar {{
-    display: inline-block; height: 12px; border-radius: 2px;
-    vertical-align: middle;
-  }}
-  .bar-blue {{ background: #4a9eff; }}
-  .bar-green {{ background: #4ecca3; }}
-  .bar-orange {{ background: #e9a945; }}
-  .stat-box {{
-    display: inline-block; background: #16213e; border: 1px solid #2a2a4a;
-    border-radius: 4px; padding: 8px 16px; margin: 4px 8px 4px 0;
-    font-size: 0.85rem;
-  }}
-  .stat-label {{ color: #888; font-size: 0.75rem; }}
-  .stat-value {{ color: #e0e0e0; font-size: 1.1rem; font-weight: 600; }}
-</style>
-</head>
-<body>
-<h1>Value Head Analysis — Epoch {epoch}</h1>
-<div class="meta">
-  {num_states:,} states from {num_games} games.
-  Value head: Linear(256,256) &rarr; GELU &rarr; Linear(256,3) &rarr; Tanh.
-</div>
+    body = (
+        '<h2>1. Value Lens</h2>\n'
+        '<p style="color:#888;font-size:0.85rem">Compare trunk&rarr;V2 (skip V0+GELU) vs full value head output.</p>\n'
+        '<div id="lens-stats"></div>\n'
+        '<table id="tbl-lens"></table>\n'
+        '\n'
+        '<h2>2. Per-Player Neuron Specialization</h2>\n'
+        '<p style="color:#888;font-size:0.85rem">NeuronConductance at V0 GELU output toward each player\'s value.</p>\n'
+        '<div id="neuron-stats"></div>\n'
+        '<h3>Top-5 Neurons per Player</h3>\n'
+        '<table id="tbl-neurons"></table>\n'
+        '\n'
+        '<h2>3. Value Characteristics by Phase</h2>\n'
+        '<p style="color:#888;font-size:0.85rem">Value output statistics stratified by phase and game progress.</p>\n'
+        '<h3>By Phase</h3>\n'
+        '<table id="tbl-phase"></table>\n'
+        '<h3>By Game Progress</h3>\n'
+        '<table id="tbl-progress"></table>\n'
+        '\n'
+        '<h2>4. Layer Causal Necessity</h2>\n'
+        '<p style="color:#888;font-size:0.85rem">Value MSE when V0+GELU is replaced with identity.</p>\n'
+        '<div id="necessity-stats"></div>\n'
+        '<table id="tbl-necessity"></table>'
+    )
 
-<h2>1. Value Lens</h2>
-<p style="color:#888;font-size:0.85rem">Compare trunk&rarr;V2 (skip V0+GELU) vs full value head output.</p>
-<div id="lens-stats"></div>
-<table id="tbl-lens"></table>
+    data_js = (
+        f"const lens = {lens_json};\n"
+        f"const neuron = {neuron_json};\n"
+        f"const error = {error_json};\n"
+        f"const necessity = {necessity_json};"
+    )
 
-<h2>2. Per-Player Neuron Specialization</h2>
-<p style="color:#888;font-size:0.85rem">NeuronConductance at V0 GELU output toward each player's value.</p>
-<div id="neuron-stats"></div>
-<h3>Top-5 Neurons per Player</h3>
-<table id="tbl-neurons"></table>
+    report_js = (
+        '// --- 1. Value Lens ---\n'
+        '(function() {\n'
+        '  const div = document.getElementById("lens-stats");\n'
+        '  div.innerHTML =\n'
+        '    \'<div class="stat-box"><div class="stat-label">Overall MSE</div><div class="stat-value">\' +\n'
+        '    lens.overall_mse.toFixed(6) + \'</div></div>\' +\n'
+        '    \'<div class="stat-box"><div class="stat-label">Correlation</div><div class="stat-value">\' +\n'
+        '    lens.overall_corr.toFixed(4) + \'</div></div>\';\n'
+        '\n'
+        '  const tbl = document.getElementById("tbl-lens");\n'
+        '  let html = \'<tr><th>Player</th><th>MSE</th><th>Corr</th><th>Full Mean</th><th>Full Std</th><th>Direct Mean</th><th>Direct Std</th></tr>\';\n'
+        '  for (const p of lens.per_player) {\n'
+        '    html += \'<tr><td>Player \' + p.player + \'</td>\' +\n'
+        '      \'<td>\' + p.mse.toFixed(6) + \'</td>\' +\n'
+        '      \'<td>\' + p.corr.toFixed(4) + \'</td>\' +\n'
+        '      \'<td>\' + p.full_mean.toFixed(4) + \'</td>\' +\n'
+        '      \'<td>\' + p.full_std.toFixed(4) + \'</td>\' +\n'
+        '      \'<td>\' + p.direct_mean.toFixed(4) + \'</td>\' +\n'
+        '      \'<td>\' + p.direct_std.toFixed(4) + \'</td></tr>\';\n'
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- 2. Neuron Specialization ---\n'
+        '(function() {\n'
+        '  const div = document.getElementById("neuron-stats");\n'
+        '  div.innerHTML =\n'
+        '    \'<div class="stat-box"><div class="stat-label">Dead Neurons</div><div class="stat-value">\' +\n'
+        '    (neuron.dead_fraction * 100).toFixed(1) + \'%</div></div>\' +\n'
+        '    \'<div class="stat-box"><div class="stat-label">Mean Spec.</div><div class="stat-value">\' +\n'
+        '    neuron.mean_spec.toFixed(3) + \'</div></div>\' +\n'
+        '    \'<div class="stat-box"><div class="stat-label">Neurons P0/P1/P2</div><div class="stat-value">\' +\n'
+        '    neuron.neurons_per_player.join(\' / \') + \'</div></div>\';\n'
+        '\n'
+        '  const tbl = document.getElementById("tbl-neurons");\n'
+        '  let html = \'<tr><th>Player</th><th>#1</th><th>#2</th><th>#3</th><th>#4</th><th>#5</th></tr>\';\n'
+        '  for (let p = 0; p < 3; p++) {\n'
+        '    html += \'<tr><td>Player \' + p + \'</td>\';\n'
+        '    for (const n of neuron.top_neurons[p]) {\n'
+        '      html += \'<td>n\' + n.neuron + \' (\' + n.cond.toFixed(4) + \')</td>\';\n'
+        '    }\n'
+        '    html += \'</tr>\';\n'
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- 3. Phase stats ---\n'
+        '(function() {\n'
+        '  const tbl = document.getElementById("tbl-phase");\n'
+        '  let html = \'<tr><th>Phase</th><th>Count</th><th>Mean |V|</th><th>Spread</th><th>V(p0)</th><th>V(p1)</th><th>V(p2)</th></tr>\';\n'
+        '  for (const p of error.phases) {\n'
+        '    html += \'<tr><td>\' + p.phase + \'</td>\' +\n'
+        '      \'<td>\' + p.count + \'</td>\' +\n'
+        '      \'<td>\' + p.mean_abs.toFixed(4) + \'</td>\' +\n'
+        '      \'<td>\' + p.spread.toFixed(4) + \'</td>\' +\n'
+        '      \'<td>\' + p.mean_p0.toFixed(4) + \'</td>\' +\n'
+        '      \'<td>\' + p.mean_p1.toFixed(4) + \'</td>\' +\n'
+        '      \'<td>\' + p.mean_p2.toFixed(4) + \'</td></tr>\';\n'
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '\n'
+        '  const tbl2 = document.getElementById("tbl-progress");\n'
+        '  let html2 = \'<tr><th>Stage</th><th>Count</th><th>Mean |V|</th><th>Spread</th><th>Confidence</th></tr>\';\n'
+        '  for (const p of error.progress) {\n'
+        '    html2 += \'<tr><td>\' + p.stage + \'</td>\' +\n'
+        '      \'<td>\' + p.count + \'</td>\' +\n'
+        '      \'<td>\' + p.mean_abs.toFixed(4) + \'</td>\' +\n'
+        '      \'<td>\' + p.spread.toFixed(4) + \'</td>\' +\n'
+        '      \'<td>\' + p.confidence.toFixed(4) + \'</td></tr>\';\n'
+        '  }\n'
+        '  tbl2.innerHTML = html2;\n'
+        '})();\n'
+        '\n'
+        '// --- 4. Necessity ---\n'
+        '(function() {\n'
+        '  const div = document.getElementById("necessity-stats");\n'
+        '  div.innerHTML =\n'
+        '    \'<div class="stat-box"><div class="stat-label">Bypass MSE</div><div class="stat-value">\' +\n'
+        '    necessity.bypass_mse.toFixed(6) + \'</div></div>\' +\n'
+        '    \'<div class="stat-box"><div class="stat-label">Bypass Corr</div><div class="stat-value">\' +\n'
+        '    necessity.bypass_corr.toFixed(4) + \'</div></div>\';\n'
+        '\n'
+        '  const tbl = document.getElementById("tbl-necessity");\n'
+        '  const maxMSE = Math.max(...necessity.phases.map(p => p.mse));\n'
+        '  let html = \'<tr><th>Phase</th><th>MSE when bypassed</th><th></th></tr>\';\n'
+        '  for (const p of necessity.phases) {\n'
+        '    html += \'<tr><td>\' + p.phase + \'</td>\' +\n'
+        '      \'<td>\' + p.mse.toFixed(6) + \'</td>\' +\n'
+        '      \'<td>\' + makeBar(p.mse, maxMSE, \'bar-orange\') + \'</td></tr>\';\n'
+        '  }\n'
+        '  html += \'<tr style="border-top:2px solid #444"><td>Per-player</td><td colspan="2">\' +\n'
+        '    necessity.per_player.map((v,i) => \'P\' + i + \'=\' + v.toFixed(6)).join(\', \') + \'</td></tr>\';\n'
+        '  tbl.innerHTML = html;\n'
+        '})();'
+    )
 
-<h2>3. Value Characteristics by Phase</h2>
-<p style="color:#888;font-size:0.85rem">Value output statistics stratified by phase and game progress.</p>
-<h3>By Phase</h3>
-<table id="tbl-phase"></table>
-<h3>By Game Progress</h3>
-<table id="tbl-progress"></table>
+    extra_css = BAR_CSS + "\n" + STAT_BOX_CSS
+    meta = (
+        f"{num_states:,} states from {num_games} games.\n"
+        f"  Value head: Linear(256,256) &rarr; GELU &rarr; Linear(256,3) &rarr; Tanh."
+    )
 
-<h2>4. Layer Causal Necessity</h2>
-<p style="color:#888;font-size:0.85rem">Value MSE when V0+GELU is replaced with identity.</p>
-<div id="necessity-stats"></div>
-<table id="tbl-necessity"></table>
-
-<script>
-const lens = {lens_json};
-const neuron = {neuron_json};
-const error = {error_json};
-const necessity = {necessity_json};
-
-function makeBar(val, maxVal, cls) {{
-  const pct = maxVal > 0 ? Math.min(val / maxVal * 100, 100) : 0;
-  return '<span class="bar-container"><span class="bar ' + cls + '" style="width:' + pct + '%"></span></span>';
-}}
-
-// --- 1. Value Lens ---
-(function() {{
-  const div = document.getElementById("lens-stats");
-  div.innerHTML =
-    '<div class="stat-box"><div class="stat-label">Overall MSE</div><div class="stat-value">' +
-    lens.overall_mse.toFixed(6) + '</div></div>' +
-    '<div class="stat-box"><div class="stat-label">Correlation</div><div class="stat-value">' +
-    lens.overall_corr.toFixed(4) + '</div></div>';
-
-  const tbl = document.getElementById("tbl-lens");
-  let html = '<tr><th>Player</th><th>MSE</th><th>Corr</th><th>Full Mean</th><th>Full Std</th><th>Direct Mean</th><th>Direct Std</th></tr>';
-  for (const p of lens.per_player) {{
-    html += '<tr><td>Player ' + p.player + '</td>' +
-      '<td>' + p.mse.toFixed(6) + '</td>' +
-      '<td>' + p.corr.toFixed(4) + '</td>' +
-      '<td>' + p.full_mean.toFixed(4) + '</td>' +
-      '<td>' + p.full_std.toFixed(4) + '</td>' +
-      '<td>' + p.direct_mean.toFixed(4) + '</td>' +
-      '<td>' + p.direct_std.toFixed(4) + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- 2. Neuron Specialization ---
-(function() {{
-  const div = document.getElementById("neuron-stats");
-  div.innerHTML =
-    '<div class="stat-box"><div class="stat-label">Dead Neurons</div><div class="stat-value">' +
-    (neuron.dead_fraction * 100).toFixed(1) + '%</div></div>' +
-    '<div class="stat-box"><div class="stat-label">Mean Spec.</div><div class="stat-value">' +
-    neuron.mean_spec.toFixed(3) + '</div></div>' +
-    '<div class="stat-box"><div class="stat-label">Neurons P0/P1/P2</div><div class="stat-value">' +
-    neuron.neurons_per_player.join(' / ') + '</div></div>';
-
-  const tbl = document.getElementById("tbl-neurons");
-  let html = '<tr><th>Player</th><th>#1</th><th>#2</th><th>#3</th><th>#4</th><th>#5</th></tr>';
-  for (let p = 0; p < 3; p++) {{
-    html += '<tr><td>Player ' + p + '</td>';
-    for (const n of neuron.top_neurons[p]) {{
-      html += '<td>n' + n.neuron + ' (' + n.cond.toFixed(4) + ')</td>';
-    }}
-    html += '</tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- 3. Phase stats ---
-(function() {{
-  const tbl = document.getElementById("tbl-phase");
-  let html = '<tr><th>Phase</th><th>Count</th><th>Mean |V|</th><th>Spread</th><th>V(p0)</th><th>V(p1)</th><th>V(p2)</th></tr>';
-  for (const p of error.phases) {{
-    html += '<tr><td>' + p.phase + '</td>' +
-      '<td>' + p.count + '</td>' +
-      '<td>' + p.mean_abs.toFixed(4) + '</td>' +
-      '<td>' + p.spread.toFixed(4) + '</td>' +
-      '<td>' + p.mean_p0.toFixed(4) + '</td>' +
-      '<td>' + p.mean_p1.toFixed(4) + '</td>' +
-      '<td>' + p.mean_p2.toFixed(4) + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-
-  const tbl2 = document.getElementById("tbl-progress");
-  let html2 = '<tr><th>Stage</th><th>Count</th><th>Mean |V|</th><th>Spread</th><th>Confidence</th></tr>';
-  for (const p of error.progress) {{
-    html2 += '<tr><td>' + p.stage + '</td>' +
-      '<td>' + p.count + '</td>' +
-      '<td>' + p.mean_abs.toFixed(4) + '</td>' +
-      '<td>' + p.spread.toFixed(4) + '</td>' +
-      '<td>' + p.confidence.toFixed(4) + '</td></tr>';
-  }}
-  tbl2.innerHTML = html2;
-}})();
-
-// --- 4. Necessity ---
-(function() {{
-  const div = document.getElementById("necessity-stats");
-  div.innerHTML =
-    '<div class="stat-box"><div class="stat-label">Bypass MSE</div><div class="stat-value">' +
-    necessity.bypass_mse.toFixed(6) + '</div></div>' +
-    '<div class="stat-box"><div class="stat-label">Bypass Corr</div><div class="stat-value">' +
-    necessity.bypass_corr.toFixed(4) + '</div></div>';
-
-  const tbl = document.getElementById("tbl-necessity");
-  const maxMSE = Math.max(...necessity.phases.map(p => p.mse));
-  let html = '<tr><th>Phase</th><th>MSE when bypassed</th><th></th></tr>';
-  for (const p of necessity.phases) {{
-    html += '<tr><td>' + p.phase + '</td>' +
-      '<td>' + p.mse.toFixed(6) + '</td>' +
-      '<td>' + makeBar(p.mse, maxMSE, 'bar-orange') + '</td></tr>';
-  }}
-  html += '<tr style="border-top:2px solid #444"><td>Per-player</td><td colspan="2">' +
-    necessity.per_player.map((v,i) => 'P' + i + '=' + v.toFixed(6)).join(', ') + '</td></tr>';
-  tbl.innerHTML = html;
-}})();
-</script>
-</body>
-</html>"""
-
-
-def _open_file(path: Path) -> None:
-    system = platform.system()
-    try:
-        if system == "Linux":
-            subprocess.Popen(
-                ["xdg-open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        elif system == "Darwin":
-            subprocess.Popen(
-                ["open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-    except OSError:
-        print(f"  Could not open browser. Open manually: {path}")
+    return html_page(
+        f"Value Head Analysis \u2014 Epoch {epoch}",
+        meta=meta,
+        body=body,
+        script=data_js + "\n\n" + JS_MAKE_BAR + "\n\n" + report_js,
+        extra_css=extra_css,
+        max_width=1100,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -906,7 +846,7 @@ def main() -> None:
     print(f"\nHTML report written to {html_path}")
 
     if not args.no_open:
-        _open_file(html_path)
+        open_file(html_path)
 
 
 if __name__ == "__main__":

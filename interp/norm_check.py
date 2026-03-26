@@ -15,13 +15,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import platform
-import subprocess
 from pathlib import Path
 
 import numpy as np
 
 from interp.full_ablation import _PHASE_NAMES, _build_feature_groups
+from interp.html import BAR_CSS, JS_FMT_PCT, JS_FMT_VAL, JS_MAKE_BAR, TAG_CSS, html_page, open_file
 from interp.utils import InterpDataset, collect_states, load_model
 
 # Feature group name -> list of phase indices where the feature is active.
@@ -314,219 +313,169 @@ def _format_html_report(
     phase_rows_json = json.dumps(phase_rows)
     phase_specific_names_json = json.dumps(list(_PHASE_SPECIFIC_FEATURES.keys()))
 
-    return f"""\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Normalization Check — Epoch {epoch}</title>
-<style>
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                 Helvetica, Arial, sans-serif;
-    background: #1a1a2e; color: #e0e0e0;
-    margin: 2rem auto; max-width: 1200px; padding: 0 1rem;
-  }}
-  h1 {{ color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }}
-  h2 {{ color: #ccc; font-size: 1.1rem; margin-top: 2rem;
-        border-bottom: 1px solid #333; padding-bottom: 0.3rem; }}
-  .meta {{ color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }}
-  table {{
-    border-collapse: collapse; width: 100%;
-    font-size: 0.82rem; margin-bottom: 1.5rem;
-  }}
-  th, td {{ padding: 5px 8px; border: 1px solid #2a2a4a; text-align: right; }}
-  th {{ background: #16213e; color: #aaa; font-weight: 600; position: sticky; top: 0; z-index: 1; }}
-  th:first-child, td:first-child {{ text-align: left; width: 220px; }}
-  td:first-child {{
-    font-family: "SF Mono", "Fira Code", Consolas, monospace;
-    font-size: 0.8rem; color: #ccc;
-  }}
-  tr:hover td {{ border-color: #555; }}
-  .bar-container {{ display: inline-block; width: 100px; vertical-align: middle; }}
-  .bar {{
-    display: inline-block; height: 12px; border-radius: 2px;
-    vertical-align: middle;
-  }}
-  .bar-blue {{ background: #4a9eff; }}
-  .bar-red {{ background: #e94560; }}
-  .bar-yellow {{ background: #e9a945; }}
-  .bar-green {{ background: #4ecca3; }}
-  .tag {{
-    display: inline-block; padding: 1px 6px; border-radius: 3px;
-    font-size: 0.75rem; font-weight: 600;
-  }}
-  .tag-ok {{ background: #1a3a2a; color: #4ecca3; }}
-  .tag-warn {{ background: #3a2a1a; color: #e9a945; }}
-  .tag-bad {{ background: #3a1a1a; color: #e94560; }}
-  .tag-phase {{
-    display: inline-block; padding: 1px 5px; border-radius: 3px;
-    font-size: 0.7rem; font-weight: 600; margin: 1px 2px;
-    background: #1a2a3e; color: #4a9eff;
-  }}
-</style>
-</head>
-<body>
-<h1>Normalization Check — Epoch {epoch}</h1>
-<div class="meta">
-  {num_states:,} states from {num_games} games. {total_features} visible features across {len(rows)} groups.
-</div>
+    meta = (
+        f"{num_states:,} states from {num_games} games."
+        f" {total_features} visible features across {len(rows)} groups."
+    )
 
-<h2>1. All Feature Groups</h2>
-<p style="color:#888;font-size:0.85rem">Sorted by |Max| descending. Values outside [-1, +1] indicate the normalization divisor may be too small.</p>
-<table id="tbl-all"></table>
+    body = (
+        '<h2>1. All Feature Groups</h2>'
+        '<p style="color:#888;font-size:0.85rem">Sorted by |Max| descending.'
+        ' Values outside [-1, +1] indicate the normalization divisor may be too small.</p>'
+        '<table id="tbl-all"></table>'
 
-<h2>2. Out-of-Range Features</h2>
-<p style="color:#888;font-size:0.85rem">Features with values exceeding [-1, +1]. Bar shows % of values out of range.</p>
-<table id="tbl-oor"></table>
+        '<h2>2. Out-of-Range Features</h2>'
+        '<p style="color:#888;font-size:0.85rem">Features with values exceeding [-1, +1].'
+        ' Bar shows % of values out of range.</p>'
+        '<table id="tbl-oor"></table>'
 
-<h2>3. Sparse Features (&gt;90% zero)</h2>
-<p style="color:#888;font-size:0.85rem">Non-phase-specific features that are mostly zero. Phase-specific features are shown in table 4.</p>
-<table id="tbl-sparse"></table>
+        '<h2>3. Sparse Features (&gt;90% zero)</h2>'
+        '<p style="color:#888;font-size:0.85rem">Non-phase-specific features that are mostly zero.'
+        ' Phase-specific features are shown in table 4.</p>'
+        '<table id="tbl-sparse"></table>'
 
-<h2>4. Phase-Specific Features</h2>
-<p style="color:#888;font-size:0.85rem">Context-dependent features, stats filtered to only the phases where each feature is active. Zeroed outside these phases by design.</p>
-<table id="tbl-phase"></table>
+        '<h2>4. Phase-Specific Features</h2>'
+        '<p style="color:#888;font-size:0.85rem">Context-dependent features, stats filtered to'
+        ' only the phases where each feature is active.'
+        ' Zeroed outside these phases by design.</p>'
+        '<table id="tbl-phase"></table>'
+    )
 
-<script>
-const rows = {rows_json};
-const phaseRows = {phase_rows_json};
-const phaseSpecificNames = new Set({phase_specific_names_json});
+    data_js = (
+        f"const rows = {rows_json};\n"
+        f"const phaseRows = {phase_rows_json};\n"
+        f"const phaseSpecificNames = new Set({phase_specific_names_json});"
+    )
 
-function makeBar(val, maxVal, cls) {{
-  const pct = maxVal > 0 ? Math.min(val / maxVal * 100, 100) : 0;
-  return '<span class="bar-container"><span class="bar ' + cls + '" style="width:' + pct + '%"></span></span>';
-}}
+    report_js = (
+        'function statusTag(absMax) {\n'
+        '  if (absMax <= 1.0) return \'<span class="tag tag-ok">OK</span>\';\n'
+        '  if (absMax <= 1.5) return \'<span class="tag tag-warn">mild</span>\';\n'
+        '  return \'<span class="tag tag-bad">high</span>\';\n'
+        '}\n'
+        '\n'
+        'function phaseTags(phases) {\n'
+        '  return phases.split(\', \').map(p => \'<span class="tag-phase">\' + p + \'</span>\').join(\'\');\n'
+        '}\n'
+        '\n'
+        '// --- All features table ---\n'
+        '(function() {\n'
+        '  const sorted = rows.slice().sort((a, b) => b.abs_max - a.abs_max);\n'
+        '  const tbl = document.getElementById("tbl-all");\n'
+        '  let html = \'<tr><th>Feature</th><th>#</th><th>Min</th><th>Max</th><th>|Max|</th>\' +\n'
+        '    \'<th></th><th>Status</th><th>Mean</th><th>Std</th><th>%Zero</th><th>%Out</th></tr>\';\n'
+        '  const maxAbsMax = Math.max(...sorted.map(r => r.abs_max));\n'
+        '  for (const r of sorted) {\n'
+        '    const oorStr = r.n_outside > 0 ? fmtPct(r.outside_frac) : \'-\';\n'
+        '    const barCls = r.abs_max > 1.5 ? \'bar-red\' : r.abs_max > 1.0 ? \'bar-yellow\' : \'bar-green\';\n'
+        '    html += \'<tr><td>\' + r.name + \'</td>\' +\n'
+        '      \'<td>\' + r.n_features + \'</td>\' +\n'
+        '      \'<td>\' + fmtVal(r.min) + \'</td>\' +\n'
+        '      \'<td>\' + fmtVal(r.max) + \'</td>\' +\n'
+        '      \'<td>\' + fmtVal(r.abs_max) + \'</td>\' +\n'
+        '      \'<td>\' + makeBar(r.abs_max, maxAbsMax, barCls) + \'</td>\' +\n'
+        '      \'<td style="text-align:center">\' + statusTag(r.abs_max) + \'</td>\' +\n'
+        '      \'<td>\' + fmtVal(r.mean, 4) + \'</td>\' +\n'
+        '      \'<td>\' + fmtVal(r.std, 4) + \'</td>\' +\n'
+        '      \'<td>\' + (r.zero_frac * 100).toFixed(1) + \'%</td>\' +\n'
+        '      \'<td>\' + oorStr + \'</td></tr>\';\n'
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- Out-of-range table ---\n'
+        '(function() {\n'
+        '  const oor = rows.filter(r => r.n_outside > 0).sort((a, b) => b.abs_max - a.abs_max);\n'
+        '  const tbl = document.getElementById("tbl-oor");\n'
+        '  if (oor.length === 0) {\n'
+        '    tbl.innerHTML = \'<tr><td colspan="5" style="text-align:center;color:#4ecca3">No features outside [-1, +1]</td></tr>\';\n'
+        '    return;\n'
+        '  }\n'
+        '  const maxPct = Math.max(...oor.map(r => r.outside_frac));\n'
+        '  let html = \'<tr><th>Feature</th><th>|Max|</th><th># Out</th><th>% Out</th><th></th></tr>\';\n'
+        '  for (const r of oor) {\n'
+        '    html += \'<tr><td>\' + r.name + \'</td>\' +\n'
+        '      \'<td>\' + fmtVal(r.abs_max) + \'</td>\' +\n'
+        '      \'<td>\' + r.n_outside.toLocaleString() + \'</td>\' +\n'
+        '      \'<td>\' + fmtPct(r.outside_frac) + \'</td>\' +\n'
+        '      \'<td>\' + makeBar(r.outside_frac, maxPct, \'bar-red\') + \'</td></tr>\';\n'
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- Sparse features table (excluding phase-specific) ---\n'
+        '(function() {\n'
+        '  const sparse = rows.filter(r => r.zero_frac > 0.90 && r.n_nonzero > 0 && !phaseSpecificNames.has(r.name))\n'
+        '    .sort((a, b) => b.zero_frac - a.zero_frac);\n'
+        '  const tbl = document.getElementById("tbl-sparse");\n'
+        '  if (sparse.length === 0) {\n'
+        '    tbl.innerHTML = \'<tr><td colspan="4" style="text-align:center;color:#4ecca3">No sparse features</td></tr>\';\n'
+        '    return;\n'
+        '  }\n'
+        '  let html = \'<tr><th>Feature</th><th>% Zero</th><th>NZ Mean</th><th>NZ |Max|</th></tr>\';\n'
+        '  for (const r of sparse) {\n'
+        '    html += \'<tr><td>\' + r.name + \'</td>\' +\n'
+        '      \'<td>\' + (r.zero_frac * 100).toFixed(1) + \'%</td>\' +\n'
+        '      \'<td>\' + fmtVal(r.nz_mean, 4) + \'</td>\' +\n'
+        '      \'<td>\' + fmtVal(r.nz_absmax, 4) + \'</td></tr>\';\n'
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- Phase-specific features table ---\n'
+        '(function() {\n'
+        '  const sorted = phaseRows.slice().sort((a, b) => b.abs_max - a.abs_max);\n'
+        '  const tbl = document.getElementById("tbl-phase");\n'
+        '  if (sorted.length === 0) {\n'
+        '    tbl.innerHTML = \'<tr><td colspan="12" style="text-align:center;color:#4ecca3">No phase-specific features</td></tr>\';\n'
+        '    return;\n'
+        '  }\n'
+        '  let html = \'<tr><th>Feature</th><th>Phases</th><th># States</th><th>#</th>\' +\n'
+        '    \'<th>Min</th><th>Max</th><th>|Max|</th><th></th><th>Status</th>\' +\n'
+        '    \'<th>Mean</th><th>Std</th><th>%Zero</th><th>%Out</th></tr>\';\n'
+        '  const maxAbsMax = Math.max(...sorted.map(r => r.abs_max));\n'
+        '  for (const r of sorted) {\n'
+        '    const oorStr = r.n_outside > 0 ? fmtPct(r.outside_frac) : \'-\';\n'
+        '    const barCls = r.abs_max > 1.5 ? \'bar-red\' : r.abs_max > 1.0 ? \'bar-yellow\' : \'bar-green\';\n'
+        '    html += \'<tr><td>\' + r.name + \'</td>\' +\n'
+        '      \'<td style="text-align:left">\' + phaseTags(r.phases) + \'</td>\' +\n'
+        '      \'<td>\' + r.n_states.toLocaleString() + \'</td>\' +\n'
+        '      \'<td>\' + r.n_features + \'</td>\' +\n'
+        '      \'<td>\' + fmtVal(r.min) + \'</td>\' +\n'
+        '      \'<td>\' + fmtVal(r.max) + \'</td>\' +\n'
+        '      \'<td>\' + fmtVal(r.abs_max) + \'</td>\' +\n'
+        '      \'<td>\' + makeBar(r.abs_max, maxAbsMax, barCls) + \'</td>\' +\n'
+        '      \'<td style="text-align:center">\' + statusTag(r.abs_max) + \'</td>\' +\n'
+        '      \'<td>\' + fmtVal(r.mean, 4) + \'</td>\' +\n'
+        '      \'<td>\' + fmtVal(r.std, 4) + \'</td>\' +\n'
+        '      \'<td>\' + (r.zero_frac * 100).toFixed(1) + \'%</td>\' +\n'
+        '      \'<td>\' + oorStr + \'</td></tr>\';\n'
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();'
+    )
 
-function fmtPct(v) {{ return (v * 100).toFixed(1) + '%'; }}
-function fmtVal(v, d) {{ return v.toFixed(d === undefined ? 3 : d); }}
+    extra_css = BAR_CSS + "\n" + TAG_CSS + "\n" + (
+        '.tag-phase {\n'
+        '  display: inline-block; padding: 1px 5px; border-radius: 3px;\n'
+        '  font-size: 0.7rem; font-weight: 600; margin: 1px 2px;\n'
+        '  background: #1a2a3e; color: #4a9eff;\n'
+        '}'
+    )
 
-function statusTag(absMax) {{
-  if (absMax <= 1.0) return '<span class="tag tag-ok">OK</span>';
-  if (absMax <= 1.5) return '<span class="tag tag-warn">mild</span>';
-  return '<span class="tag tag-bad">high</span>';
-}}
+    script = (
+        data_js + "\n\n" + JS_MAKE_BAR + "\n" + JS_FMT_PCT + "\n" + JS_FMT_VAL
+        + "\n\n" + report_js
+    )
 
-function phaseTags(phases) {{
-  return phases.split(', ').map(p => '<span class="tag-phase">' + p + '</span>').join('');
-}}
-
-// --- All features table ---
-(function() {{
-  const sorted = rows.slice().sort((a, b) => b.abs_max - a.abs_max);
-  const tbl = document.getElementById("tbl-all");
-  let html = '<tr><th>Feature</th><th>#</th><th>Min</th><th>Max</th><th>|Max|</th>' +
-    '<th></th><th>Status</th><th>Mean</th><th>Std</th><th>%Zero</th><th>%Out</th></tr>';
-  const maxAbsMax = Math.max(...sorted.map(r => r.abs_max));
-  for (const r of sorted) {{
-    const oorStr = r.n_outside > 0 ? fmtPct(r.outside_frac) : '-';
-    const barCls = r.abs_max > 1.5 ? 'bar-red' : r.abs_max > 1.0 ? 'bar-yellow' : 'bar-green';
-    html += '<tr><td>' + r.name + '</td>' +
-      '<td>' + r.n_features + '</td>' +
-      '<td>' + fmtVal(r.min) + '</td>' +
-      '<td>' + fmtVal(r.max) + '</td>' +
-      '<td>' + fmtVal(r.abs_max) + '</td>' +
-      '<td>' + makeBar(r.abs_max, maxAbsMax, barCls) + '</td>' +
-      '<td style="text-align:center">' + statusTag(r.abs_max) + '</td>' +
-      '<td>' + fmtVal(r.mean, 4) + '</td>' +
-      '<td>' + fmtVal(r.std, 4) + '</td>' +
-      '<td>' + (r.zero_frac * 100).toFixed(1) + '%</td>' +
-      '<td>' + oorStr + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- Out-of-range table ---
-(function() {{
-  const oor = rows.filter(r => r.n_outside > 0).sort((a, b) => b.abs_max - a.abs_max);
-  const tbl = document.getElementById("tbl-oor");
-  if (oor.length === 0) {{
-    tbl.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#4ecca3">No features outside [-1, +1]</td></tr>';
-    return;
-  }}
-  const maxPct = Math.max(...oor.map(r => r.outside_frac));
-  let html = '<tr><th>Feature</th><th>|Max|</th><th># Out</th><th>% Out</th><th></th></tr>';
-  for (const r of oor) {{
-    html += '<tr><td>' + r.name + '</td>' +
-      '<td>' + fmtVal(r.abs_max) + '</td>' +
-      '<td>' + r.n_outside.toLocaleString() + '</td>' +
-      '<td>' + fmtPct(r.outside_frac) + '</td>' +
-      '<td>' + makeBar(r.outside_frac, maxPct, 'bar-red') + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- Sparse features table (excluding phase-specific) ---
-(function() {{
-  const sparse = rows.filter(r => r.zero_frac > 0.90 && r.n_nonzero > 0 && !phaseSpecificNames.has(r.name))
-    .sort((a, b) => b.zero_frac - a.zero_frac);
-  const tbl = document.getElementById("tbl-sparse");
-  if (sparse.length === 0) {{
-    tbl.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#4ecca3">No sparse features</td></tr>';
-    return;
-  }}
-  let html = '<tr><th>Feature</th><th>% Zero</th><th>NZ Mean</th><th>NZ |Max|</th></tr>';
-  for (const r of sparse) {{
-    html += '<tr><td>' + r.name + '</td>' +
-      '<td>' + (r.zero_frac * 100).toFixed(1) + '%</td>' +
-      '<td>' + fmtVal(r.nz_mean, 4) + '</td>' +
-      '<td>' + fmtVal(r.nz_absmax, 4) + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- Phase-specific features table ---
-(function() {{
-  const sorted = phaseRows.slice().sort((a, b) => b.abs_max - a.abs_max);
-  const tbl = document.getElementById("tbl-phase");
-  if (sorted.length === 0) {{
-    tbl.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#4ecca3">No phase-specific features</td></tr>';
-    return;
-  }}
-  let html = '<tr><th>Feature</th><th>Phases</th><th># States</th><th>#</th>' +
-    '<th>Min</th><th>Max</th><th>|Max|</th><th></th><th>Status</th>' +
-    '<th>Mean</th><th>Std</th><th>%Zero</th><th>%Out</th></tr>';
-  const maxAbsMax = Math.max(...sorted.map(r => r.abs_max));
-  for (const r of sorted) {{
-    const oorStr = r.n_outside > 0 ? fmtPct(r.outside_frac) : '-';
-    const barCls = r.abs_max > 1.5 ? 'bar-red' : r.abs_max > 1.0 ? 'bar-yellow' : 'bar-green';
-    html += '<tr><td>' + r.name + '</td>' +
-      '<td style="text-align:left">' + phaseTags(r.phases) + '</td>' +
-      '<td>' + r.n_states.toLocaleString() + '</td>' +
-      '<td>' + r.n_features + '</td>' +
-      '<td>' + fmtVal(r.min) + '</td>' +
-      '<td>' + fmtVal(r.max) + '</td>' +
-      '<td>' + fmtVal(r.abs_max) + '</td>' +
-      '<td>' + makeBar(r.abs_max, maxAbsMax, barCls) + '</td>' +
-      '<td style="text-align:center">' + statusTag(r.abs_max) + '</td>' +
-      '<td>' + fmtVal(r.mean, 4) + '</td>' +
-      '<td>' + fmtVal(r.std, 4) + '</td>' +
-      '<td>' + (r.zero_frac * 100).toFixed(1) + '%</td>' +
-      '<td>' + oorStr + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-</script>
-</body>
-</html>"""
-
-
-def _open_file(path: Path) -> None:
-    """Open a file with the platform's default handler."""
-    system = platform.system()
-    try:
-        if system == "Linux":
-            subprocess.Popen(
-                ["xdg-open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        elif system == "Darwin":
-            subprocess.Popen(
-                ["open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-    except OSError:
-        print(f"  Could not open browser. Open manually: {path}")
+    return html_page(
+        f"Normalization Check \u2014 Epoch {epoch}",
+        meta=meta,
+        body=body,
+        script=script,
+        extra_css=extra_css,
+        max_width=1200,
+    )
 
 
 def main() -> None:
@@ -605,7 +554,7 @@ def main() -> None:
     print(f"\nHTML report written to {html_path}")
 
     if not args.no_open:
-        _open_file(html_path)
+        open_file(html_path)
 
 
 if __name__ == "__main__":

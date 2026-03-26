@@ -15,8 +15,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import platform
-import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -24,6 +22,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from interp.html import BAR_CSS, JS_MAKE_BAR, html_page, open_file
 from interp.utils import InterpDataset, collect_states, load_model
 
 
@@ -452,51 +451,7 @@ def format_html_report(
     conductance_json = json.dumps(conductance) if conductance else "null"
     head_cond_json = json.dumps(head_conductance) if head_conductance else "null"
 
-    return f"""\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Architecture Analysis — Epoch {epoch}</title>
-<style>
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                 Helvetica, Arial, sans-serif;
-    background: #1a1a2e; color: #e0e0e0;
-    margin: 2rem auto; max-width: 1100px; padding: 0 1rem;
-  }}
-  h1 {{ color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }}
-  h2 {{ color: #ccc; font-size: 1.1rem; margin-top: 2rem;
-        border-bottom: 1px solid #333; padding-bottom: 0.3rem; }}
-  .meta {{ color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }}
-  table {{
-    border-collapse: collapse; width: 100%;
-    font-size: 0.82rem; margin-bottom: 1.5rem;
-  }}
-  th, td {{ padding: 5px 8px; border: 1px solid #2a2a4a; text-align: right; }}
-  th {{ background: #16213e; color: #aaa; font-weight: 600; }}
-  th:first-child, td:first-child {{ text-align: left; }}
-  td:first-child {{
-    font-family: "SF Mono", "Fira Code", Consolas, monospace;
-    font-size: 0.8rem; color: #ccc;
-  }}
-  tr:hover td {{ border-color: #555; }}
-  .bar-container {{ display: inline-block; width: 120px; vertical-align: middle; }}
-  .bar {{
-    display: inline-block; height: 12px; border-radius: 2px;
-    vertical-align: middle;
-  }}
-  .bar-blue {{ background: #4a9eff; }}
-  .bar-green {{ background: #4ecca3; }}
-  .bar-orange {{ background: #e9a945; }}
-</style>
-</head>
-<body>
-<h1>Architecture Analysis — Epoch {epoch}</h1>
-<div class="meta">
-  {num_states:,} states. hidden_dim={hidden_dim}.
-</div>
-
+    body = """\
 <h2>1. Residual Block Contribution</h2>
 <p style="color:#888;font-size:0.85rem">||output - input|| / ||input|| per block. Higher = block changes the representation more.</p>
 <table id="tbl-contrib"></table>
@@ -506,45 +461,41 @@ def format_html_report(
 
 <h2 id="rank-header">Effective Rank (SVD)</h2>
 <p style="color:#888;font-size:0.85rem">Entropy-based effective dimensionality at each layer.</p>
-<table id="tbl-rank"></table>
+<table id="tbl-rank"></table>"""
 
-<script>
+    data_js = f"""\
 const contribs = {contrib_json};
 const ranks = {ranks_json};
 const conductance = {conductance_json};
 const headCond = {head_cond_json};
-const hiddenDim = {hidden_dim};
+const hiddenDim = {hidden_dim};"""
 
-function makeBar(val, maxVal, cls) {{
-  const pct = maxVal > 0 ? val / maxVal * 100 : 0;
-  return '<span class="bar-container"><span class="bar ' + cls + '" style="width:' + pct + '%"></span></span>';
-}}
-
+    report_js = """\
 // --- Block contribution table ---
-(function() {{
+(function() {
   const tbl = document.getElementById("tbl-contrib");
   const maxMean = Math.max(...contribs.map(r => r.mean));
   let html = '<tr><th>Block</th><th>||res||/||in||</th><th></th><th>Std</th><th>P95</th><th>fc2 ||W||</th></tr>';
-  for (const r of contribs) {{
+  for (const r of contribs) {
     html += '<tr><td>Block ' + Math.round(r.block) + '</td>' +
       '<td>' + r.mean.toFixed(4) + '</td>' +
       '<td>' + makeBar(r.mean, maxMean, 'bar-blue') + '</td>' +
       '<td>' + r.std.toFixed(4) + '</td>' +
       '<td>' + r.p95.toFixed(4) + '</td>' +
       '<td>' + r.fc2_weight_norm.toFixed(1) + '</td></tr>';
-  }}
+  }
   tbl.innerHTML = html;
-}})();
+})();
 
 // --- Trunk conductance table ---
-if (conductance) {{
+if (conductance) {
   const section = document.getElementById("conductance-section");
   const maxPol = Math.max(...conductance.policy.map(r => r.conductance));
   const maxVal = Math.max(...conductance.value.map(r => r.conductance));
   let html = '<h2>2. Trunk Block Conductance</h2>' +
     '<p style="color:#888;font-size:0.85rem">Integrated-gradient conductance toward each head. Shows which blocks each head relies on.</p>' +
     '<table><tr><th>Block</th><th>Policy</th><th></th><th>Policy %</th><th>Value</th><th></th><th>Value %</th></tr>';
-  for (let i = 0; i < conductance.policy.length; i++) {{
+  for (let i = 0; i < conductance.policy.length; i++) {
     const p = conductance.policy[i];
     const v = conductance.value[i];
     html += '<tr><td>Block ' + Math.round(p.block) + '</td>' +
@@ -554,42 +505,42 @@ if (conductance) {{
       '<td>' + v.conductance.toFixed(1) + '</td>' +
       '<td>' + makeBar(v.conductance, maxVal, 'bar-orange') + '</td>' +
       '<td>' + v.pct.toFixed(1) + '%</td></tr>';
-  }}
+  }
   html += '</table>';
   section.innerHTML = html;
-}}
+}
 
 // --- Head-layer conductance table ---
-if (headCond) {{
+if (headCond) {
   const section = document.getElementById("head-conductance-section");
   let html = '<h2>Per-Layer Conductance</h2>' +
     '<p style="color:#888;font-size:0.85rem">Conductance within each module\\'s Linear layers. Shows which layer does the most work.</p>';
 
-  const colorMap = {{'input_preprocess': 'bar-blue', 'policy': 'bar-green', 'value': 'bar-orange'}};
-  const titleMap = {{'input_preprocess': 'Input Preprocessing', 'policy': 'Policy Head', 'value': 'Value Head'}};
+  const colorMap = {'input_preprocess': 'bar-blue', 'policy': 'bar-green', 'value': 'bar-orange'};
+  const titleMap = {'input_preprocess': 'Input Preprocessing', 'policy': 'Policy Head', 'value': 'Value Head'};
 
-  for (const [headName, layers] of Object.entries(headCond)) {{
+  for (const [headName, layers] of Object.entries(headCond)) {
     const maxC = Math.max(...layers.map(r => r.conductance));
     const cls = colorMap[headName] || 'bar-blue';
     const title = titleMap[headName] || headName;
     html += '<h3 style="color:#aaa;font-size:0.95rem;margin-top:1rem">' + title + '</h3>';
     html += '<table><tr><th>Layer</th><th>Conductance</th><th></th><th>%</th></tr>';
-    for (const r of layers) {{
+    for (const r of layers) {
       html += '<tr><td>' + r.label + '</td>' +
         '<td>' + r.conductance.toFixed(1) + '</td>' +
         '<td>' + makeBar(r.conductance, maxC, cls) + '</td>' +
         '<td>' + r.pct.toFixed(1) + '%</td></tr>';
-    }}
+    }
     html += '</table>';
-  }}
+  }
   section.innerHTML = html;
-}}
+}
 
 // --- Effective rank table ---
-(function() {{
+(function() {
   const tbl = document.getElementById("tbl-rank");
   let html = '<tr><th>Layer</th><th>Width</th><th>Eff. Rank</th><th></th><th>Util%</th><th>Rank(1%)</th><th>Top-50</th><th>Top-100</th><th>Top-200</th></tr>';
-  for (const r of ranks) {{
+  for (const r of ranks) {
     html += '<tr><td>' + r.layer + '</td>' +
       '<td>' + r.width + '</td>' +
       '<td>' + r.eff_rank.toFixed(1) + '</td>' +
@@ -599,34 +550,24 @@ if (headCond) {{
       '<td>' + r.top50_energy.toFixed(1) + '%</td>' +
       '<td>' + r.top100_energy.toFixed(1) + '%</td>' +
       '<td>' + r.top200_energy.toFixed(1) + '%</td></tr>';
-  }}
+  }
   tbl.innerHTML = html;
-}})();
+})();
 
 // Renumber rank header based on what's shown
 document.getElementById("rank-header").textContent =
-  (conductance ? "3" : "2") + ". Effective Rank (SVD)";
-</script>
-</body>
-</html>"""
+  (conductance ? "3" : "2") + ". Effective Rank (SVD)";"""
 
+    meta = f"{num_states:,} states. hidden_dim={hidden_dim}."
 
-def _open_file(path: Path) -> None:
-    """Open a file with the platform's default handler."""
-    system = platform.system()
-    try:
-        if system == "Linux":
-            subprocess.Popen(
-                ["xdg-open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        elif system == "Darwin":
-            subprocess.Popen(
-                ["open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-    except OSError:
-        print(f"  Could not open browser. Open manually: {path}")
+    return html_page(
+        f"Architecture Analysis \u2014 Epoch {epoch}",
+        meta=meta,
+        body=body,
+        script=data_js + "\n\n" + JS_MAKE_BAR + "\n\n" + report_js,
+        extra_css=BAR_CSS,
+        max_width=1100,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -813,7 +754,7 @@ def main() -> None:
     print(f"\nHTML report written to {html_path}")
 
     if not args.no_open:
-        _open_file(html_path)
+        open_file(html_path)
 
 
 if __name__ == "__main__":

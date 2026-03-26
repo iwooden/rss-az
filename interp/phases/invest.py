@@ -16,8 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import platform
-import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +33,7 @@ from core.data import (
     get_company_face_value,
 )
 from core.state import get_layout, get_player_fields, get_turn_fields
+from interp.html import BAR_CSS, HIST_BAR_CSS, JS_MAKE_BAR, STAT_BOX_CSS, html_page, open_file
 from interp.utils import (
     InterpDataset,
     collect_states,
@@ -600,268 +599,209 @@ def format_html_report(
     corp_names_json = json.dumps(CORP_NAMES)
     company_names_json = json.dumps(list(COMPANY_NAMES))
 
-    return f"""\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Invest Phase Analysis — Epoch {epoch}</title>
-<style>
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                 Helvetica, Arial, sans-serif;
-    background: #1a1a2e; color: #e0e0e0;
-    margin: 2rem auto; max-width: 1200px; padding: 0 1rem;
-  }}
-  h1 {{ color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }}
-  h2 {{ color: #ccc; font-size: 1.1rem; margin-top: 2rem;
-        border-bottom: 1px solid #333; padding-bottom: 0.3rem; }}
-  h3 {{ color: #aaa; font-size: 0.95rem; margin-top: 1rem; }}
-  .meta {{ color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }}
-  table {{
-    border-collapse: collapse; width: 100%;
-    font-size: 0.82rem; margin-bottom: 1.5rem;
-  }}
-  th, td {{ padding: 5px 8px; border: 1px solid #2a2a4a; text-align: right; }}
-  th {{ background: #16213e; color: #aaa; font-weight: 600; }}
-  th:first-child, td:first-child {{ text-align: left; }}
-  td:first-child {{
-    font-family: "SF Mono", "Fira Code", Consolas, monospace;
-    font-size: 0.8rem; color: #ccc;
-  }}
-  tr:hover td {{ border-color: #555; }}
-  .bar-container {{ display: inline-block; width: 120px; vertical-align: middle; background: #111; border-radius: 2px; }}
-  .bar {{ display: inline-block; height: 12px; border-radius: 2px; vertical-align: middle; }}
-  .bar-blue {{ background: #4a9eff; }}
-  .bar-green {{ background: #4ecca3; }}
-  .bar-orange {{ background: #e9a945; }}
-  .bar-red {{ background: #e94560; }}
-  .stat-box {{
-    display: inline-block; background: #16213e; border: 1px solid #2a2a4a;
-    border-radius: 4px; padding: 8px 16px; margin: 4px 8px 4px 0;
-    font-size: 0.85rem;
-  }}
-  .stat-label {{ color: #888; font-size: 0.75rem; }}
-  .stat-value {{ color: #e0e0e0; font-size: 1.1rem; font-weight: 600; }}
-  .hist-bar {{
-    display: inline-block; background: #4a9eff; height: 16px;
-    border-radius: 1px; vertical-align: middle;
-  }}
-  .positive {{ color: #4ecca3; }}
-  .negative {{ color: #e94560; }}
-</style>
-</head>
-<body>
-<h1>Invest Phase Analysis — Epoch {epoch}</h1>
-<div class="meta">
-  {num_states:,} total states from {num_games} games.
-</div>
-<div id="overview-stats"></div>
+    body = (
+        '<div id="overview-stats"></div>\n'
+        "\n"
+        "<h2>1. Auction Pricing</h2>\n"
+        "<h3>Opening Bid Offset Histogram</h3>\n"
+        '<div id="open-hist"></div>\n'
+        "<h3>By Company Tier</h3>\n"
+        '<table id="tbl-tier"></table>\n'
+        "<h3>Per-Company Detail</h3>\n"
+        '<table id="tbl-company"></table>\n'
+        "<h3>By Game Stage</h3>\n"
+        '<table id="tbl-auc-stage"></table>\n'
+        "\n"
+        "<h2>2. Share Trades</h2>\n"
+        "<h3>Per-Corp Breakdown</h3>\n"
+        '<table id="tbl-corp"></table>\n'
+        "<h3>By Game Stage</h3>\n"
+        '<table id="tbl-trade-stage"></table>\n'
+        "\n"
+        "<h2>3. Per-Turn Activity</h2>\n"
+        '<p style="color:#888;font-size:0.85rem">Share buys/sells per invest round, aggregated across all games.</p>\n'
+        '<table id="tbl-turns"></table>'
+    )
 
-<h2>1. Auction Pricing</h2>
-<h3>Opening Bid Offset Histogram</h3>
-<div id="open-hist"></div>
-<h3>By Company Tier</h3>
-<table id="tbl-tier"></table>
-<h3>Per-Company Detail</h3>
-<table id="tbl-company"></table>
-<h3>By Game Stage</h3>
-<table id="tbl-auc-stage"></table>
+    data_js = (
+        f"const stats = {stats_json};\n"
+        f"const openHist = {open_hist_json};\n"
+        f"const tiers = {tier_json};\n"
+        f"const companies = {company_json};\n"
+        f"const stageAuc = {stage_auc_json};\n"
+        f"const corps = {corp_json};\n"
+        f"const stageTrade = {stage_trade_json};\n"
+        f"const turns = {turn_json};\n"
+        f"const corpNames = {corp_names_json};\n"
+        f"const companyNames = {company_names_json};"
+    )
 
-<h2>2. Share Trades</h2>
-<h3>Per-Corp Breakdown</h3>
-<table id="tbl-corp"></table>
-<h3>By Game Stage</h3>
-<table id="tbl-trade-stage"></table>
+    report_js = (
+        '// --- Overview ---\n'
+        '(function() {\n'
+        '  const div = document.getElementById("overview-stats");\n'
+        '  const ac = stats.action_counts;\n'
+        '  const total = Object.values(ac).reduce((a,b) => a+b, 0);\n'
+        '  div.innerHTML =\n'
+        '    \'<div class="stat-box"><div class="stat-label">INVEST States</div><div class="stat-value">\' + stats.invest_states + \'</div></div>\' +\n'
+        '    \'<div class="stat-box"><div class="stat-label">BID States</div><div class="stat-value">\' + stats.bid_states + \'</div></div>\' +\n'
+        '    \'<div class="stat-box"><div class="stat-label">Auctions</div><div class="stat-value">\' + stats.total_auctions + \'</div></div>\' +\n'
+        '    \'<div class="stat-box"><div class="stat-label">Share Buys</div><div class="stat-value">\' + stats.total_buys + \'</div></div>\' +\n'
+        '    \'<div class="stat-box"><div class="stat-label">Share Sells</div><div class="stat-value">\' + stats.total_sells + \'</div></div>\';\n'
+        '})();\n'
+        '\n'
+        '// --- Open histogram ---\n'
+        '(function() {\n'
+        '  const div = document.getElementById("open-hist");\n'
+        '  const maxC = Math.max(...openHist);\n'
+        '  if (maxC === 0) { div.innerHTML = \'<p style="color:#888">No auctions</p>\'; return; }\n'
+        '  let html = \'<table style="width:auto"><tr><th>face+N</th><th>Count</th><th style="min-width:300px"></th></tr>\';\n'
+        '  for (let i = 0; i < openHist.length; i++) {\n'
+        '    if (openHist[i] > 0) {\n'
+        '      const w = openHist[i] / maxC * 280;\n'
+        '      html += \'<tr><td>face+\' + i + \'</td><td>\' + openHist[i] + \'</td>\' +\n'
+        '        \'<td style="text-align:left"><span class="hist-bar" style="width:\' + w + \'px"></span></td></tr>\';\n'
+        '    }\n'
+        '  }\n'
+        '  html += \'</table>\';\n'
+        '  div.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- Tier table ---\n'
+        '(function() {\n'
+        '  const tbl = document.getElementById("tbl-tier");\n'
+        '  let html = \'<tr><th>Tier</th><th>Count</th><th>Avg Open</th><th>Avg Rounds</th><th>Avg Over Face</th><th>Med Over Face</th><th>% @ Face</th></tr>\';\n'
+        '  for (const t of tiers) {\n'
+        '    html += \'<tr><td>\' + t.tier + \'</td>\' +\n'
+        '      \'<td>\' + t.count + \'</td>\' +\n'
+        '      \'<td>\' + t.mean_open_offset.toFixed(1) + \'</td>\' +\n'
+        '      \'<td>\' + t.mean_bid_rounds.toFixed(1) + \'</td>\' +\n'
+        '      \'<td>\' + t.mean_final_over_face.toFixed(1) + \'</td>\' +\n'
+        '      \'<td>\' + t.median_final_over_face.toFixed(1) + \'</td>\' +\n'
+        '      \'<td>\' + (t.pct_at_face * 100).toFixed(1) + \'%</td></tr>\';\n'
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- Company table ---\n'
+        '(function() {\n'
+        '  const tbl = document.getElementById("tbl-company");\n'
+        '  let html = \'<tr><th>Company</th><th>Face</th><th>Tier</th><th>#Auc</th><th>Avg Open</th><th>Rounds</th><th>Avg Final</th><th>Over Face</th><th>% @ Face</th></tr>\';\n'
+        '  for (const co of companies) {\n'
+        '    const coName = companyNames[co.company_id] || co.company_id;\n'
+        '    html += \'<tr><td>\' + coName + \' (\' + co.company_id + \')</td>\' +\n'
+        '      \'<td>\' + co.face_value + \'</td>\' +\n'
+        '      \'<td>\' + co.tier + \'</td>\' +\n'
+        '      \'<td>\' + co.count + \'</td>\' +\n'
+        '      \'<td>\' + co.mean_open_offset.toFixed(1) + \'</td>\' +\n'
+        '      \'<td>\' + co.mean_bid_rounds.toFixed(1) + \'</td>\' +\n'
+        '      \'<td>\' + co.mean_final_price.toFixed(1) + \'</td>\' +\n'
+        "      '<td>' + (co.mean_price_over_face >= 0 ? '+' : '') + co.mean_price_over_face.toFixed(1) + '</td>' +\n"
+        '      \'<td>\' + (co.pct_at_face * 100).toFixed(1) + \'%</td></tr>\';\n'
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- Auction stage table ---\n'
+        '(function() {\n'
+        '  const tbl = document.getElementById("tbl-auc-stage");\n'
+        '  let html = \'<tr><th>Stage</th><th>Count</th><th>Avg Open Offset</th><th>Avg Rounds</th><th>Avg Over Face</th></tr>\';\n'
+        '  for (const s of stageAuc) {\n'
+        '    html += \'<tr><td>\' + s.stage + \'</td>\' +\n'
+        '      \'<td>\' + s.count + \'</td>\' +\n'
+        '      \'<td>\' + s.mean_open_offset.toFixed(1) + \'</td>\' +\n'
+        '      \'<td>\' + s.mean_bid_rounds.toFixed(1) + \'</td>\' +\n'
+        '      \'<td>\' + s.mean_final_over_face.toFixed(1) + \'</td></tr>\';\n'
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- Corp trade table ---\n'
+        '(function() {\n'
+        '  const tbl = document.getElementById("tbl-corp");\n'
+        '  const maxTrade = Math.max(...corps.map(c => Math.max(c.buys, c.sells)));\n'
+        "  let html = '<tr><th>Corp</th><th>Buys</th><th></th><th>Sells</th><th></th><th>Net</th><th>Buy(Pres)</th><th>Buy(Non)</th><th>Sell(Pres)</th><th>Sell(Non)</th></tr>';\n"
+        '  for (const c of corps) {\n'
+        '    if (c.buys + c.sells === 0) continue;\n'
+        "    const netCls = c.net > 0 ? 'positive' : c.net < 0 ? 'negative' : '';\n"
+        "    html += '<tr><td>' + c.name + '</td>' +\n"
+        "      '<td>' + c.buys + '</td><td>' + makeBar(c.buys, maxTrade, 'bar-green') + '</td>' +\n"
+        "      '<td>' + c.sells + '</td><td>' + makeBar(c.sells, maxTrade, 'bar-red') + '</td>' +\n"
+        '      \'<td class="\' + netCls + \'">\' + (c.net > 0 ? \'+\' : \'\') + c.net + \'</td>\' +\n'
+        "      '<td>' + c.buys_as_pres + '</td><td>' + c.buys_as_non_pres + '</td>' +\n"
+        "      '<td>' + c.sells_as_pres + '</td><td>' + c.sells_as_non_pres + '</td></tr>';\n"
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- Trade stage table ---\n'
+        '(function() {\n'
+        '  const tbl = document.getElementById("tbl-trade-stage");\n'
+        "  let html = '<tr><th>Stage</th><th>Buys</th><th>Sells</th><th>Net</th></tr>';\n"
+        '  for (const s of stageTrade) {\n'
+        "    const netCls = s.net > 0 ? 'positive' : s.net < 0 ? 'negative' : '';\n"
+        "    html += '<tr><td>' + s.stage + '</td>' +\n"
+        "      '<td>' + s.buys + '</td><td>' + s.sells + '</td>' +\n"
+        '      \'<td class="\' + netCls + \'">\' + (s.net > 0 ? \'+\' : \'\') + s.net + \'</td></tr>\';\n'
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();\n'
+        '\n'
+        '// --- Per-turn activity ---\n'
+        '(function() {\n'
+        '  const tbl = document.getElementById("tbl-turns");\n'
+        '  // Find global max for bar scaling\n'
+        '  let maxVal = 1;\n'
+        '  for (const t of turns) {\n'
+        '    for (let c = 0; c < 8; c++) {\n'
+        '      maxVal = Math.max(maxVal, t.corp_buys[c], t.corp_sells[c]);\n'
+        '    }\n'
+        '  }\n'
+        "  let html = '<tr><th>Turn</th><th>Buys</th><th>Sells</th><th>Net</th>';\n"
+        "  for (const cn of corpNames) html += '<th style=\"min-width:80px\">' + cn + '</th>';\n"
+        "  html += '</tr>';\n"
+        '  for (const t of turns) {\n'
+        "    const netCls = t.net > 0 ? 'positive' : t.net < 0 ? 'negative' : '';\n"
+        "    html += '<tr><td>' + t.turn + '</td>' +\n"
+        "      '<td>' + t.buys + '</td><td>' + t.sells + '</td>' +\n"
+        '      \'<td class="\' + netCls + \'">\' + (t.net > 0 ? \'+\' : \'\') + t.net + \'</td>\';\n'
+        '    for (let c = 0; c < 8; c++) {\n'
+        '      const b = t.corp_buys[c];\n'
+        '      const s = t.corp_sells[c];\n'
+        '      if (b === 0 && s === 0) { html += \'<td style="color:#555">-</td>\'; }\n'
+        '      else {\n'
+        '        const bw = b / maxVal * 60;\n'
+        '        const sw = s / maxVal * 60;\n'
+        '        let cell = \'<td style="text-align:left;padding:2px 4px">\';\n'
+        '        if (b > 0) cell += \'<div style="display:inline-block;width:\' + bw + \'px;height:10px;background:#4ecca3;border-radius:1px;vertical-align:middle" title="Buy \' + b + \'"></div> \';\n'
+        '        if (s > 0) cell += \'<div style="display:inline-block;width:\' + sw + \'px;height:10px;background:#e94560;border-radius:1px;vertical-align:middle" title="Sell \' + s + \'"></div>\';\n'
+        "        if (b > 0 || s > 0) cell += '<br><span style=\"font-size:0.7rem;color:#888\">' + (b > 0 ? '+' + b : '') + (b > 0 && s > 0 ? '/' : '') + (s > 0 ? '-' + s : '') + '</span>';\n"
+        "        cell += '</td>';\n"
+        '        html += cell;\n'
+        '      }\n'
+        '    }\n'
+        "    html += '</tr>';\n"
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '})();'
+    )
 
-<h2>3. Per-Turn Activity</h2>
-<p style="color:#888;font-size:0.85rem">Share buys/sells per invest round, aggregated across all games.</p>
-<table id="tbl-turns"></table>
+    extra_css = (
+        BAR_CSS + "\n"
+        + STAT_BOX_CSS + "\n"
+        + HIST_BAR_CSS + "\n"
+        + ".positive { color: #4ecca3; }\n"
+        + ".negative { color: #e94560; }"
+    )
 
-<script>
-const stats = {stats_json};
-const openHist = {open_hist_json};
-const tiers = {tier_json};
-const companies = {company_json};
-const stageAuc = {stage_auc_json};
-const corps = {corp_json};
-const stageTrade = {stage_trade_json};
-const turns = {turn_json};
-const corpNames = {corp_names_json};
-const companyNames = {company_names_json};
-
-function makeBar(val, maxVal, cls) {{
-  const pct = maxVal > 0 ? Math.min(val / maxVal * 100, 100) : 0;
-  return '<span class="bar-container"><span class="bar ' + cls + '" style="width:' + pct + '%"></span></span>';
-}}
-
-// --- Overview ---
-(function() {{
-  const div = document.getElementById("overview-stats");
-  const ac = stats.action_counts;
-  const total = Object.values(ac).reduce((a,b) => a+b, 0);
-  div.innerHTML =
-    '<div class="stat-box"><div class="stat-label">INVEST States</div><div class="stat-value">' + stats.invest_states + '</div></div>' +
-    '<div class="stat-box"><div class="stat-label">BID States</div><div class="stat-value">' + stats.bid_states + '</div></div>' +
-    '<div class="stat-box"><div class="stat-label">Auctions</div><div class="stat-value">' + stats.total_auctions + '</div></div>' +
-    '<div class="stat-box"><div class="stat-label">Share Buys</div><div class="stat-value">' + stats.total_buys + '</div></div>' +
-    '<div class="stat-box"><div class="stat-label">Share Sells</div><div class="stat-value">' + stats.total_sells + '</div></div>';
-}})();
-
-// --- Open histogram ---
-(function() {{
-  const div = document.getElementById("open-hist");
-  const maxC = Math.max(...openHist);
-  if (maxC === 0) {{ div.innerHTML = '<p style="color:#888">No auctions</p>'; return; }}
-  let html = '<table style="width:auto"><tr><th>face+N</th><th>Count</th><th style="min-width:300px"></th></tr>';
-  for (let i = 0; i < openHist.length; i++) {{
-    if (openHist[i] > 0) {{
-      const w = openHist[i] / maxC * 280;
-      html += '<tr><td>face+' + i + '</td><td>' + openHist[i] + '</td>' +
-        '<td style="text-align:left"><span class="hist-bar" style="width:' + w + 'px"></span></td></tr>';
-    }}
-  }}
-  html += '</table>';
-  div.innerHTML = html;
-}})();
-
-// --- Tier table ---
-(function() {{
-  const tbl = document.getElementById("tbl-tier");
-  let html = '<tr><th>Tier</th><th>Count</th><th>Avg Open</th><th>Avg Rounds</th><th>Avg Over Face</th><th>Med Over Face</th><th>% @ Face</th></tr>';
-  for (const t of tiers) {{
-    html += '<tr><td>' + t.tier + '</td>' +
-      '<td>' + t.count + '</td>' +
-      '<td>' + t.mean_open_offset.toFixed(1) + '</td>' +
-      '<td>' + t.mean_bid_rounds.toFixed(1) + '</td>' +
-      '<td>' + t.mean_final_over_face.toFixed(1) + '</td>' +
-      '<td>' + t.median_final_over_face.toFixed(1) + '</td>' +
-      '<td>' + (t.pct_at_face * 100).toFixed(1) + '%</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- Company table ---
-(function() {{
-  const tbl = document.getElementById("tbl-company");
-  let html = '<tr><th>Company</th><th>Face</th><th>Tier</th><th>#Auc</th><th>Avg Open</th><th>Rounds</th><th>Avg Final</th><th>Over Face</th><th>% @ Face</th></tr>';
-  for (const co of companies) {{
-    const coName = companyNames[co.company_id] || co.company_id;
-    html += '<tr><td>' + coName + ' (' + co.company_id + ')</td>' +
-      '<td>' + co.face_value + '</td>' +
-      '<td>' + co.tier + '</td>' +
-      '<td>' + co.count + '</td>' +
-      '<td>' + co.mean_open_offset.toFixed(1) + '</td>' +
-      '<td>' + co.mean_bid_rounds.toFixed(1) + '</td>' +
-      '<td>' + co.mean_final_price.toFixed(1) + '</td>' +
-      '<td>' + (co.mean_price_over_face >= 0 ? '+' : '') + co.mean_price_over_face.toFixed(1) + '</td>' +
-      '<td>' + (co.pct_at_face * 100).toFixed(1) + '%</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- Auction stage table ---
-(function() {{
-  const tbl = document.getElementById("tbl-auc-stage");
-  let html = '<tr><th>Stage</th><th>Count</th><th>Avg Open Offset</th><th>Avg Rounds</th><th>Avg Over Face</th></tr>';
-  for (const s of stageAuc) {{
-    html += '<tr><td>' + s.stage + '</td>' +
-      '<td>' + s.count + '</td>' +
-      '<td>' + s.mean_open_offset.toFixed(1) + '</td>' +
-      '<td>' + s.mean_bid_rounds.toFixed(1) + '</td>' +
-      '<td>' + s.mean_final_over_face.toFixed(1) + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- Corp trade table ---
-(function() {{
-  const tbl = document.getElementById("tbl-corp");
-  const maxTrade = Math.max(...corps.map(c => Math.max(c.buys, c.sells)));
-  let html = '<tr><th>Corp</th><th>Buys</th><th></th><th>Sells</th><th></th><th>Net</th><th>Buy(Pres)</th><th>Buy(Non)</th><th>Sell(Pres)</th><th>Sell(Non)</th></tr>';
-  for (const c of corps) {{
-    if (c.buys + c.sells === 0) continue;
-    const netCls = c.net > 0 ? 'positive' : c.net < 0 ? 'negative' : '';
-    html += '<tr><td>' + c.name + '</td>' +
-      '<td>' + c.buys + '</td><td>' + makeBar(c.buys, maxTrade, 'bar-green') + '</td>' +
-      '<td>' + c.sells + '</td><td>' + makeBar(c.sells, maxTrade, 'bar-red') + '</td>' +
-      '<td class="' + netCls + '">' + (c.net > 0 ? '+' : '') + c.net + '</td>' +
-      '<td>' + c.buys_as_pres + '</td><td>' + c.buys_as_non_pres + '</td>' +
-      '<td>' + c.sells_as_pres + '</td><td>' + c.sells_as_non_pres + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- Trade stage table ---
-(function() {{
-  const tbl = document.getElementById("tbl-trade-stage");
-  let html = '<tr><th>Stage</th><th>Buys</th><th>Sells</th><th>Net</th></tr>';
-  for (const s of stageTrade) {{
-    const netCls = s.net > 0 ? 'positive' : s.net < 0 ? 'negative' : '';
-    html += '<tr><td>' + s.stage + '</td>' +
-      '<td>' + s.buys + '</td><td>' + s.sells + '</td>' +
-      '<td class="' + netCls + '">' + (s.net > 0 ? '+' : '') + s.net + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-
-// --- Per-turn activity ---
-(function() {{
-  const tbl = document.getElementById("tbl-turns");
-  // Find global max for bar scaling
-  let maxVal = 1;
-  for (const t of turns) {{
-    for (let c = 0; c < 8; c++) {{
-      maxVal = Math.max(maxVal, t.corp_buys[c], t.corp_sells[c]);
-    }}
-  }}
-  let html = '<tr><th>Turn</th><th>Buys</th><th>Sells</th><th>Net</th>';
-  for (const cn of corpNames) html += '<th style="min-width:80px">' + cn + '</th>';
-  html += '</tr>';
-  for (const t of turns) {{
-    const netCls = t.net > 0 ? 'positive' : t.net < 0 ? 'negative' : '';
-    html += '<tr><td>' + t.turn + '</td>' +
-      '<td>' + t.buys + '</td><td>' + t.sells + '</td>' +
-      '<td class="' + netCls + '">' + (t.net > 0 ? '+' : '') + t.net + '</td>';
-    for (let c = 0; c < 8; c++) {{
-      const b = t.corp_buys[c];
-      const s = t.corp_sells[c];
-      if (b === 0 && s === 0) {{ html += '<td style="color:#555">-</td>'; }}
-      else {{
-        const bw = b / maxVal * 60;
-        const sw = s / maxVal * 60;
-        let cell = '<td style="text-align:left;padding:2px 4px">';
-        if (b > 0) cell += '<div style="display:inline-block;width:' + bw + 'px;height:10px;background:#4ecca3;border-radius:1px;vertical-align:middle" title="Buy ' + b + '"></div> ';
-        if (s > 0) cell += '<div style="display:inline-block;width:' + sw + 'px;height:10px;background:#e94560;border-radius:1px;vertical-align:middle" title="Sell ' + s + '"></div>';
-        if (b > 0 || s > 0) cell += '<br><span style="font-size:0.7rem;color:#888">' + (b > 0 ? '+' + b : '') + (b > 0 && s > 0 ? '/' : '') + (s > 0 ? '-' + s : '') + '</span>';
-        cell += '</td>';
-        html += cell;
-      }}
-    }}
-    html += '</tr>';
-  }}
-  tbl.innerHTML = html;
-}})();
-</script>
-</body>
-</html>"""
-
-
-def _open_file(path: Path) -> None:
-    system = platform.system()
-    try:
-        if system == "Linux":
-            subprocess.Popen(
-                ["xdg-open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        elif system == "Darwin":
-            subprocess.Popen(
-                ["open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-    except OSError:
-        print(f"  Could not open browser. Open manually: {path}")
+    return html_page(
+        f"Invest Phase Analysis \u2014 Epoch {epoch}",
+        meta=f"{num_states:,} total states from {num_games} games.",
+        body=body,
+        script=data_js + "\n\n" + JS_MAKE_BAR + "\n\n" + report_js,
+        extra_css=extra_css,
+        max_width=1200,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -927,7 +867,7 @@ def main() -> None:
     print(f"\nHTML report written to {html_path}")
 
     if not args.no_open:
-        _open_file(html_path)
+        open_file(html_path)
 
 
 if __name__ == "__main__":

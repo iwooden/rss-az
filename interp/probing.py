@@ -22,8 +22,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import platform
-import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +37,7 @@ from sklearn.preprocessing import StandardScaler
 from core.actions import decode_action_py
 from core.data import GameConstants, PY_CASH_DIVISOR, PY_NET_WORTH_DIVISOR, PY_SHARE_DIVISOR
 from core.state import get_corp_fields, get_layout, get_player_fields
+from interp.html import html_page, open_file
 from interp.utils import batch_masked_softmax, forward_batched
 from interp.utils import InterpDataset, collect_states, load_model
 
@@ -933,6 +932,19 @@ def _results_to_json(
     return rows
 
 
+PROBING_CSS = """\
+th:first-child, td:first-child { width: 180px; }
+.delta-pos { color: #4ecca3; }
+.delta-neg { color: #e94560; }
+.delta-flat { color: #888; }
+.tag {
+  display: inline-block; padding: 1px 5px; border-radius: 3px;
+  font-size: 0.75rem; font-weight: 600;
+}
+.tag-acc { background: #1a2a3a; color: #4a9eff; }
+.tag-r2 { background: #1a3a2a; color: #4ecca3; }"""
+
+
 def _format_html_report(
     results: list[ProbeResult],
     layer_names: list[str],
@@ -958,164 +970,113 @@ def _format_html_report(
         for p, t, l, m in comparisons
     ]) if comparisons else "null"
 
-    return f"""\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Probing Classifiers — Epoch {epoch}</title>
-<style>
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                 Helvetica, Arial, sans-serif;
-    background: #1a1a2e; color: #e0e0e0;
-    margin: 2rem auto; max-width: 1400px; padding: 0 1rem;
-  }}
-  h1 {{ color: #f0f0f0; font-size: 1.4rem; margin-bottom: 0.3rem; }}
-  h2 {{ color: #ccc; font-size: 1.1rem; margin-top: 2rem;
-        border-bottom: 1px solid #333; padding-bottom: 0.3rem; }}
-  .meta {{ color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }}
-  table {{
-    border-collapse: collapse; width: 100%;
-    font-size: 0.82rem; margin-bottom: 1.5rem;
-  }}
-  th, td {{ padding: 5px 8px; border: 1px solid #2a2a4a; text-align: right; }}
-  th {{ background: #16213e; color: #aaa; font-weight: 600; position: sticky; top: 0; z-index: 1; }}
-  th:first-child, td:first-child {{ text-align: left; width: 180px; }}
-  td:first-child {{
-    font-family: "SF Mono", "Fira Code", Consolas, monospace;
-    font-size: 0.8rem; color: #ccc;
-  }}
-  tr:hover td {{ border-color: #555; }}
-  .delta-pos {{ color: #4ecca3; }}
-  .delta-neg {{ color: #e94560; }}
-  .delta-flat {{ color: #888; }}
-  .tag {{ display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 0.75rem; font-weight: 600; }}
-  .tag-acc {{ background: #1a2a3a; color: #4a9eff; }}
-  .tag-r2 {{ background: #1a3a2a; color: #4ecca3; }}
-</style>
-</head>
-<body>
-<h1>Probing Classifiers — Epoch {epoch}</h1>
-<div class="meta">
-  {num_states:,} states from {num_games} games. Train/test 80/20, linear probes.
-</div>
+    meta = f"{num_states:,} states from {num_games} games. Train/test 80/20, linear probes."
 
-<h2>1. Trunk Probes</h2>
-<p style="color:#888;font-size:0.85rem">Linear probe accuracy/R&sup2; at each trunk layer. &Delta;(deep) = trunk &minus; input.</p>
-<table id="tbl-trunk"></table>
+    body = (
+        '<h2>1. Trunk Probes</h2>\n'
+        '<p style="color:#888;font-size:0.85rem">Linear probe accuracy/R&sup2; at each trunk layer. &Delta;(deep) = trunk &minus; input.</p>\n'
+        '<table id="tbl-trunk"></table>\n'
+        '\n'
+        '<div id="policy-section"></div>\n'
+        '<div id="value-section"></div>\n'
+        '<div id="comp-section"></div>'
+    )
 
-<div id="policy-section"></div>
-<div id="value-section"></div>
-<div id="comp-section"></div>
+    data_js = (
+        f"const trunkRows = {json.dumps(trunk_rows)};\n"
+        f"const trunkHeaders = {json.dumps(trunk_headers)};\n"
+        f"const policyRows = {json.dumps(policy_rows)};\n"
+        f"const policyHeaders = {json.dumps(policy_headers)};\n"
+        f"const valueRows = {json.dumps(value_rows)};\n"
+        f"const valueHeaders = {json.dumps(value_headers)};\n"
+        f"const comparisons = {comp_json};"
+    )
 
-<script>
-const trunkRows = {json.dumps(trunk_rows)};
-const trunkHeaders = {json.dumps(trunk_headers)};
-const policyRows = {json.dumps(policy_rows)};
-const policyHeaders = {json.dumps(policy_headers)};
-const valueRows = {json.dumps(value_rows)};
-const valueHeaders = {json.dumps(value_headers)};
-const comparisons = {comp_json};
+    report_js = (
+        'function heatColor(val, isAcc) {\n'
+        '  if (val === null) return "transparent";\n'
+        '  const base = isAcc ? 0.5 : 0.0;\n'
+        '  const t = Math.max(0, Math.min(1, (val - base) / (1.0 - base)));\n'
+        '  const l = 18 + t * 22;\n'
+        '  return "hsl(150, 50%," + l + "%)";\n'
+        '}\n'
+        '\n'
+        'function deltaSpan(d) {\n'
+        '  const cls = d > 0.005 ? "delta-pos" : d < -0.005 ? "delta-neg" : "delta-flat";\n'
+        '  const sign = d >= 0 ? "+" : "";\n'
+        '  return \'<span class="\' + cls + \'">\' + sign + d.toFixed(4) + \'</span>\';\n'
+        '}\n'
+        '\n'
+        'function buildTable(tblId, rows, headers) {\n'
+        '  const tbl = document.getElementById(tblId);\n'
+        '  if (!tbl || rows.length === 0) return;\n'
+        '  const isAcc = (t) => t === "acc";\n'
+        '  let html = \'<tr><th>Probe</th><th>Type</th>\';\n'
+        '  for (const h of headers) html += \'<th>\' + h + \'</th>\';\n'
+        '  html += \'<th>&Delta;</th></tr>\';\n'
+        '  for (const r of rows) {\n'
+        '    const tag = isAcc(r.type) ? \'<span class="tag tag-acc">acc</span>\' : \'<span class="tag tag-r2">R&sup2;</span>\';\n'
+        '    html += \'<tr><td>\' + r.probe + \'</td><td style="text-align:center">\' + tag + \'</td>\';\n'
+        '    for (const v of r.values) {\n'
+        '      if (v === null) {\n'
+        '        html += \'<td>-</td>\';\n'
+        '      } else {\n'
+        '        html += \'<td style="background:\' + heatColor(v, isAcc(r.type)) + \'">\' + v.toFixed(4) + \'</td>\';\n'
+        '      }\n'
+        '    }\n'
+        '    html += \'<td>\' + deltaSpan(r.delta) + \'</td></tr>\';\n'
+        '  }\n'
+        '  tbl.innerHTML = html;\n'
+        '}\n'
+        '\n'
+        'buildTable("tbl-trunk", trunkRows, trunkHeaders);\n'
+        '\n'
+        'if (policyRows.length > 0) {\n'
+        '  const sec = document.getElementById("policy-section");\n'
+        '  sec.innerHTML = \'<h2>2. Policy Head Probes</h2>\' +\n'
+        '    \'<p style="color:#888;font-size:0.85rem">Linear probes at each hidden layer within the policy head.</p>\' +\n'
+        '    \'<table id="tbl-policy"></table>\';\n'
+        '  buildTable("tbl-policy", policyRows, policyHeaders);\n'
+        '}\n'
+        '\n'
+        'if (valueRows.length > 0) {\n'
+        '  const n = policyRows.length > 0 ? 3 : 2;\n'
+        '  const sec = document.getElementById("value-section");\n'
+        '  sec.innerHTML = \'<h2>\' + n + \'. Value Head Probes</h2>\' +\n'
+        '    \'<p style="color:#888;font-size:0.85rem">Linear probes at each hidden layer within the value head.</p>\' +\n'
+        '    \'<table id="tbl-value"></table>\';\n'
+        '  buildTable("tbl-value", valueRows, valueHeaders);\n'
+        '}\n'
+        '\n'
+        'if (comparisons) {\n'
+        '  const n = (policyRows.length > 0 ? 3 : 2) + (valueRows.length > 0 ? 1 : 0);\n'
+        '  const sec = document.getElementById("comp-section");\n'
+        '  let html = \'<h2>\' + n + \'. Linear vs MLP at trunk_norm</h2>\' +\n'
+        '    \'<p style="color:#888;font-size:0.85rem">Compares linear probe to 128-unit MLP. Large gains indicate nonlinearly encoded information.</p>\' +\n'
+        '    \'<table><tr><th>Probe</th><th>Type</th><th>Linear</th><th>MLP</th><th>&Delta;</th><th>Gain</th></tr>\';\n'
+        '  for (const c of comparisons) {\n'
+        '    const d = c.mlp - c.linear;\n'
+        '    const headroom = c.linear < 1.0 ? 1.0 - c.linear : 1.0;\n'
+        '    const gain = headroom > 0.01 ? (d / headroom * 100).toFixed(1) + \'%\' : \'-\';\n'
+        '    const tag = c.type === "acc" ? \'<span class="tag tag-acc">acc</span>\' : \'<span class="tag tag-r2">R&sup2;</span>\';\n'
+        '    html += \'<tr><td>\' + c.probe + \'</td><td style="text-align:center">\' + tag + \'</td>\' +\n'
+        '      \'<td>\' + c.linear.toFixed(4) + \'</td><td>\' + c.mlp.toFixed(4) + \'</td>\' +\n'
+        '      \'<td>\' + deltaSpan(d) + \'</td><td>\' + gain + \'</td></tr>\';\n'
+        '  }\n'
+        '  html += \'</table>\';\n'
+        '  sec.innerHTML = html;\n'
+        '}'
+    )
 
-function heatColor(val, isAcc) {{
-  if (val === null) return "transparent";
-  // Map [0..1] to luminosity. Higher = brighter green.
-  const base = isAcc ? 0.5 : 0.0;
-  const t = Math.max(0, Math.min(1, (val - base) / (1.0 - base)));
-  const l = 18 + t * 22;
-  return "hsl(150, 50%," + l + "%)";
-}}
+    return html_page(
+        f"Probing Classifiers \u2014 Epoch {epoch}",
+        meta=meta,
+        body=body,
+        script=data_js + "\n\n" + report_js,
+        extra_css=PROBING_CSS,
+        max_width=1400,
+    )
 
-function deltaSpan(d) {{
-  const cls = d > 0.005 ? "delta-pos" : d < -0.005 ? "delta-neg" : "delta-flat";
-  const sign = d >= 0 ? "+" : "";
-  return '<span class="' + cls + '">' + sign + d.toFixed(4) + '</span>';
-}}
-
-function buildTable(tblId, rows, headers) {{
-  const tbl = document.getElementById(tblId);
-  if (!tbl || rows.length === 0) return;
-  const isAcc = (t) => t === "acc";
-  let html = '<tr><th>Probe</th><th>Type</th>';
-  for (const h of headers) html += '<th>' + h + '</th>';
-  html += '<th>&Delta;</th></tr>';
-  for (const r of rows) {{
-    const tag = isAcc(r.type) ? '<span class="tag tag-acc">acc</span>' : '<span class="tag tag-r2">R&sup2;</span>';
-    html += '<tr><td>' + r.probe + '</td><td style="text-align:center">' + tag + '</td>';
-    for (const v of r.values) {{
-      if (v === null) {{
-        html += '<td>-</td>';
-      }} else {{
-        html += '<td style="background:' + heatColor(v, isAcc(r.type)) + '">' + v.toFixed(4) + '</td>';
-      }}
-    }}
-    html += '<td>' + deltaSpan(r.delta) + '</td></tr>';
-  }}
-  tbl.innerHTML = html;
-}}
-
-buildTable("tbl-trunk", trunkRows, trunkHeaders);
-
-// Policy head table
-if (policyRows.length > 0) {{
-  const sec = document.getElementById("policy-section");
-  sec.innerHTML = '<h2>2. Policy Head Probes</h2>' +
-    '<p style="color:#888;font-size:0.85rem">Linear probes at each hidden layer within the policy head.</p>' +
-    '<table id="tbl-policy"></table>';
-  buildTable("tbl-policy", policyRows, policyHeaders);
-}}
-
-// Value head table
-if (valueRows.length > 0) {{
-  const n = policyRows.length > 0 ? 3 : 2;
-  const sec = document.getElementById("value-section");
-  sec.innerHTML = '<h2>' + n + '. Value Head Probes</h2>' +
-    '<p style="color:#888;font-size:0.85rem">Linear probes at each hidden layer within the value head.</p>' +
-    '<table id="tbl-value"></table>';
-  buildTable("tbl-value", valueRows, valueHeaders);
-}}
-
-// Nonlinear comparison
-if (comparisons) {{
-  const n = (policyRows.length > 0 ? 3 : 2) + (valueRows.length > 0 ? 1 : 0);
-  const sec = document.getElementById("comp-section");
-  let html = '<h2>' + n + '. Linear vs MLP at trunk_norm</h2>' +
-    '<p style="color:#888;font-size:0.85rem">Compares linear probe to 128-unit MLP. Large gains indicate nonlinearly encoded information.</p>' +
-    '<table><tr><th>Probe</th><th>Type</th><th>Linear</th><th>MLP</th><th>&Delta;</th><th>Gain</th></tr>';
-  for (const c of comparisons) {{
-    const d = c.mlp - c.linear;
-    const headroom = c.linear < 1.0 ? 1.0 - c.linear : 1.0;
-    const gain = headroom > 0.01 ? (d / headroom * 100).toFixed(1) + '%' : '-';
-    const tag = c.type === "acc" ? '<span class="tag tag-acc">acc</span>' : '<span class="tag tag-r2">R&sup2;</span>';
-    html += '<tr><td>' + c.probe + '</td><td style="text-align:center">' + tag + '</td>' +
-      '<td>' + c.linear.toFixed(4) + '</td><td>' + c.mlp.toFixed(4) + '</td>' +
-      '<td>' + deltaSpan(d) + '</td><td>' + gain + '</td></tr>';
-  }}
-  html += '</table>';
-  sec.innerHTML = html;
-}}
-</script>
-</body>
-</html>"""
-
-
-def _open_file(path: Path) -> None:
-    """Open a file with the platform's default handler."""
-    system = platform.system()
-    try:
-        if system == "Linux":
-            subprocess.Popen(
-                ["xdg-open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        elif system == "Darwin":
-            subprocess.Popen(
-                ["open", str(path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-    except OSError:
-        print(f"  Could not open browser. Open manually: {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -1309,7 +1270,7 @@ def main() -> None:
     print(f"HTML report written to {html_path}")
 
     if not args.no_open:
-        _open_file(html_path)
+        open_file(html_path)
 
 
 if __name__ == "__main__":
