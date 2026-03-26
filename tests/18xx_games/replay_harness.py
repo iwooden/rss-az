@@ -23,6 +23,8 @@ from core.driver import DRIVER, STATUS_INVALID_PY as STATUS_INVALID
 from core.data import (
     COMPANY_NAME_TO_ID, CORP_NAME_TO_ID, COMPANY_NAMES, CORP_NAMES,
     GamePhases, get_company_low_price, get_company_income,
+    get_company_face_value, get_company_stars, get_par_price,
+    get_market_index, is_valid_par_price,
 )
 from core.actions import get_valid_action_mask
 from entities.deck import DECK
@@ -209,9 +211,18 @@ class ReplayHarness:
                     layout, ref_by_action,
                 )
 
-        # Final comparison at game end
-        if self._last_ref is not None:
-            self._compare_state(state, self._last_ref, "final")
+        # Final comparison at game end.
+        # When the engine auto-applied forced actions (e.g. dividends for corps
+        # with cash < issued_shares) and reached GAME_OVER, some 18xx actions
+        # remain unconsumed.  Scan them for the latest reference snapshot so
+        # the final comparison uses the true end-of-game state.
+        final_ref = self._last_ref
+        for remaining_idx in range(action_idx_in_stream, len(actions)):
+            remaining_id = actions[remaining_idx].get('id', -1)
+            if remaining_id >= 0 and remaining_id in ref_by_action:
+                final_ref = ref_by_action[remaining_id]
+        if final_ref is not None:
+            self._compare_state(state, final_ref, "final")
 
         return self.mismatches
 
@@ -251,6 +262,34 @@ class ReplayHarness:
         # CoO level is set correctly by draw() — if color-boundary cards
         # (e.g. MHE for red) are in the offering, CoO is bumped appropriately.
 
+    def _can_afford_any_par(self, state, company_id: int) -> bool:
+        """Check if the company's owner can afford any valid par price.
+
+        Mirrors the logic in _fill_ipo_mask: for each inactive corp, check
+        whether any par price is valid for the company's star tier, the
+        market space is free, and the player can cover the cost.
+        """
+        star_tier = get_company_stars(company_id)
+        face_value = get_company_face_value(company_id)
+        owner_id = COMPANIES[company_id].get_owner_id(state)
+        player_cash = PLAYERS[owner_id].get_cash(state)
+
+        for corp_id in range(8):
+            if CORPS[corp_id].is_active(state):
+                continue
+            for par_index in range(14):
+                if not is_valid_par_price(star_tier, par_index):
+                    continue
+                par_price = get_par_price(par_index)
+                market_index = get_market_index(par_price)
+                if market_index < 0 or not state.is_market_space_available(market_index):
+                    continue
+                player_shares = 1 if par_price >= face_value else 2
+                cost = (player_shares * par_price) - face_value
+                if cost <= player_cash:
+                    return True
+        return False
+
     def _get_phase_name(self, state) -> str:
         """Get human-readable phase name."""
         phase = TURN.get_phase(state)
@@ -289,7 +328,10 @@ class ReplayHarness:
                 and action.get('entity_type') == 'corporation'):
             corp_name = action.get('entity', '')
             corp_id = CORP_NAME_TO_ID.get(corp_name)
-            if corp_id is not None and CORPS[corp_id].get_cash(state) < CORPS[corp_id].get_issued_shares(state):
+            if corp_id is not None and (
+                CORPS[corp_id].get_cash(state) < CORPS[corp_id].get_issued_shares(state)
+                or not CORPS[corp_id].is_active(state)  # Bankrupt after auto-applied dividend
+            ):
                 if self.verbose:
                     print(f"  Skipping auto-applied dividend for {corp_name} (cash < issued shares)")
                 if has_ref:
@@ -308,6 +350,21 @@ class ReplayHarness:
                 if self.verbose:
                     print(f"  Skipping {ref_round}-round action {action_id} (engine already in {self._get_phase_name(state)})")
                 self._last_ref = None
+                return idx + 1
+
+        # Skip IPO pass actions where the player can't afford any par price —
+        # the engine auto-applied the forced pass.  Must check BEFORE comparison:
+        # our state already advanced past this company.
+        if (action.get('type') == 'pass'
+                and action.get('entity_type') == 'company'
+                and TURN.get_phase(state) == PHASE_IPO):
+            company_name = action.get('entity', '')
+            company_id = COMPANY_NAME_TO_ID.get(company_name)
+            if company_id is not None and not self._can_afford_any_par(state, company_id):
+                if self.verbose:
+                    print(f"  Skipping auto-applied IPO pass for {company_name} (can't afford any par)")
+                if has_ref:
+                    self._last_ref = ref_by_action[action_id]
                 return idx + 1
 
         # Compare BEFORE applying: our state should match the last reference
@@ -808,7 +865,10 @@ class ReplayHarness:
             # snapshot at the par still shows the *next* company's owner,
             # while our engine has already advanced further.
             ref_action_type = ref.get('action_type', '')
-            skip_active_player = (phase == PHASE_IPO and ref_action_type == 'par')
+            skip_active_player = (
+                (phase == PHASE_IPO and ref_action_type == 'par')
+                or ref_action_type == 'end_game'  # Platform-level game end (concession)
+            )
             if ref_active_player is not None and phase in (PHASE_INVEST, PHASE_BID, PHASE_IPO) and not skip_active_player:
                 our_active = state.get_active_player()
                 expected_idx = self._player_id_to_index.get(ref_active_player)

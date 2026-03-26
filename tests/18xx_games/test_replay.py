@@ -36,6 +36,16 @@ def _discover_game_ids():
 
 game_ids = _discover_game_ids()
 
+# Games with known 18xx.games engine bugs — skip with explanation.
+SKIP_GAMES = {
+    # 18xx bug: receivership corps only buy ONE company from FI per turn.
+    # Rules say "Repeat until cannot afford more" (RULES.md Phase 3).
+    # DA (receivership, cash=47) buys OL (high=20) but not HE (high=18)
+    # despite having 27 cash remaining.  Our engine correctly repeats.
+    # Tracked: rss-az-xwzk (submit PR to 18xx.games repo)
+    243592,
+}
+
 
 @pytest.fixture(scope="session", autouse=True)
 def _extract_ref_states():
@@ -46,6 +56,9 @@ def _extract_ref_states():
 @pytest.mark.parametrize("game_id", game_ids, ids=[str(g) for g in game_ids])
 def test_replay_game(game_id):
     """Replay an 18xx game and verify state matches at phase boundaries."""
+    if game_id in SKIP_GAMES:
+        pytest.skip(f"Known 18xx.games engine bug (game {game_id})")
+
     game_json = os.path.join(DATA_DIR, f"{game_id}.json")
 
     ref_states = load_ref_states(game_json)
