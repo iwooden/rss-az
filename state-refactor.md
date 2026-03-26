@@ -80,8 +80,8 @@ Changes to the visible state vector that need doc/test updates when complete.
 - `core/state.pyx` — companies_size (3→4 arrays), layout offset, `LayoutInfo`/`get_layout`
 - `entities/company.pxd` — `_acquired_offset`, `is_acquired` method
 - `entities/company.pyx` — cache offset, `is_acquired`, `_clear_visible_flag` handles `LOC_CORP_ACQ`, `transfer_to_corp_acquisition` sets visible flags
-- `tests/phases/conftest.py` — invariant for `LOC_CORP_ACQ` → `co:acquired` + `corp:owned_companies`
-- `tests/phases/test_acquisition.py` — updated assertions for eager `owned_companies`
+- `tests/phases/conftest.py` — invariant for `LOC_CORP_ACQ` → `co:acquired` + `corp:owned_companies`; phase invariant (acquired flags zero outside ACQ)
+- `tests/phases/test_acquisition.py` — updated assertions for eager `owned_companies`; set `PHASE_ACQUISITION` before all `setup_acquisition_phase_py` calls
 
 ## Pending Updates (do when all changes are done)
 
