@@ -379,6 +379,13 @@ def assert_invariants(state, msg=""):
             assert 0 <= owner_id < 8, (
                 f"{msg}\nCompany {cid} at LOC_CORP_ACQ has invalid owner_id: {owner_id}"
             )
+            assert company.is_acquired(state), (
+                f"{msg}\nCompany {cid} at LOC_CORP_ACQ but co:acquired flag not set"
+            )
+            assert CORPS[owner_id].owns_company(state, cid), (
+                f"{msg}\nCompany {cid} at LOC_CORP_ACQ owner={owner_id} "
+                f"but corp:owned_companies not set"
+            )
 
 
 class ApplyTrackResult:

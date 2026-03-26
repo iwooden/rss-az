@@ -409,13 +409,14 @@ class TestPhaseFlow:
         company.transfer_to_corp_acquisition(gs, 0)
 
         assert corp.has_acquisition_company(gs, 0)
-        assert not corp.owns_company(gs, 0)
+        # corp:owned_companies eagerly set during ACQ
+        assert corp.owns_company(gs, 0)
 
         TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         transition_to_closing_py(gs)
         assert_invariants(gs, "After transition_to_closing_py merges acquisition companies")
 
-        # Company moved from acquisition to owned
+        # Company moved from acquisition to owned (LOC_CORP_ACQ -> LOC_CORP)
         assert not corp.has_acquisition_company(gs, 0)
         assert corp.owns_company(gs, 0)
 
@@ -1154,15 +1155,18 @@ class TestZoneMerging:
         # Put company in acquisition zone
         company.transfer_to_corp_acquisition(gs, 0)
         assert corp.has_acquisition_company(gs, 0)
-        assert not corp.owns_company(gs, 0)
+        # corp:owned_companies eagerly set during ACQ
+        assert corp.owns_company(gs, 0)
+        assert company.is_acquired(gs)
 
         # Trigger merge
         merge_acquisition_zones_py(gs)
         assert_invariants(gs, "After merge_acquisition_zones_py companies to owned")
 
-        # Company moved from acquisition to owned
+        # Company moved from acquisition to owned (LOC_CORP_ACQ -> LOC_CORP)
         assert not corp.has_acquisition_company(gs, 0)
         assert corp.owns_company(gs, 0)
+        assert not company.is_acquired(gs)
 
     def test_zones_cleared_after_merge(self):
         """Acquisition zones are cleared (zeroed) after merge."""

@@ -87,7 +87,8 @@ LayoutInfo = namedtuple('LayoutInfo', [
     # Visible offsets
     'phase_offset', 'coo_offset', 'players_offset', 'fi_offset',
     'auction_companies_offset', 'revealed_companies_offset',
-    'removed_companies_offset', 'company_incomes_offset',
+    'removed_companies_offset', 'acquired_companies_offset',
+    'company_incomes_offset',
     'market_offset', 'corps_offset', 'turn_offset',
     'auction_slot_info_offset',
     'invest_impacts_offset',
@@ -192,13 +193,15 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     layout.fi_offset = offset
     offset += layout.fi_size
 
-    # Company locations (3 arrays)
-    layout.companies_size = GameConstants.NUM_COMPANIES * 3
+    # Company locations (4 arrays)
+    layout.companies_size = GameConstants.NUM_COMPANIES * 4
     layout.auction_companies_offset = offset
     offset += GameConstants.NUM_COMPANIES
     layout.revealed_companies_offset = offset
     offset += GameConstants.NUM_COMPANIES
     layout.removed_companies_offset = offset
+    offset += GameConstants.NUM_COMPANIES
+    layout.acquired_companies_offset = offset
     offset += GameConstants.NUM_COMPANIES
 
     # Company adjusted incomes (dynamic based on CoO level)
@@ -543,6 +546,7 @@ def get_layout(int num_players):
         auction_companies_offset=layout.auction_companies_offset,
         revealed_companies_offset=layout.revealed_companies_offset,
         removed_companies_offset=layout.removed_companies_offset,
+        acquired_companies_offset=layout.acquired_companies_offset,
         company_incomes_offset=layout.company_incomes_offset,
         market_offset=layout.market_offset,
         corps_offset=layout.corps_offset,

@@ -37,6 +37,7 @@ cdef class Company:
     cdef int _auction_offset          # companies_for_auction[company_id]
     cdef int _revealed_offset         # companies_revealed[company_id]
     cdef int _removed_offset          # companies_removed[company_id]
+    cdef int _acquired_offset         # companies_acquired[company_id]
     cdef int _fi_offset               # fi_companies[company_id]
     cdef int _income_offset           # company_incomes[company_id]
 
@@ -69,6 +70,7 @@ cdef class Company:
     cpdef bint is_owned_by_corp(self, GameState state, int corp_id)
     cpdef bint is_in_corp_acquisition(self, GameState state, int corp_id)
     cpdef bint is_removed(self, GameState state)
+    cpdef bint is_acquired(self, GameState state)
 
     # Internal helpers for hidden state location access
     cdef int _get_hidden_location(self, GameState state) noexcept nogil

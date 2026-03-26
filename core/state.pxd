@@ -35,6 +35,7 @@ cdef struct StateLayout:
     int auction_companies_offset
     int revealed_companies_offset
     int removed_companies_offset
+    int acquired_companies_offset
     int company_incomes_offset
     int market_offset
     int corps_offset

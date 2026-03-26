@@ -63,6 +63,26 @@ Changes to the visible state vector that need doc/test updates when complete.
 - `tests/phases/conftest.py` — non-negative invariant
 - `tests/test_mcts.py` — removed hardcoded player_stride, replaced with dynamic check
 
+### 4. Company: `companies_acquired` (36 flags, +36 total)
+
+**Position:** After `companies_removed`, before `company_incomes` in company locations block.
+**Encoding:** Binary flag per company. 1 = in a corp's acquisition zone this phase.
+**Company locations:** 3 arrays → 4 arrays (auction, revealed, removed, acquired)
+
+**Behavior changes:**
+- `transfer_to_corp_acquisition` now sets `co:acquired` visible flag AND eagerly sets `corp:owned_companies`
+- `_clear_visible_flag` handles `LOC_CORP_ACQ` (clears both acquired flag and corp:owned_companies)
+- `transfer_to_corp` at phase exit works idempotently (owned_companies already set, acquired flag cleared)
+- Model can cross-reference `co:acquired` + `corp:owned_companies` to identify acquiring corp
+
+**Code changes:**
+- `core/state.pxd` — `StateLayout.acquired_companies_offset`
+- `core/state.pyx` — companies_size (3→4 arrays), layout offset, `LayoutInfo`/`get_layout`
+- `entities/company.pxd` — `_acquired_offset`, `is_acquired` method
+- `entities/company.pyx` — cache offset, `is_acquired`, `_clear_visible_flag` handles `LOC_CORP_ACQ`, `transfer_to_corp_acquisition` sets visible flags
+- `tests/phases/conftest.py` — invariant for `LOC_CORP_ACQ` → `co:acquired` + `corp:owned_companies`
+- `tests/phases/test_acquisition.py` — updated assertions for eager `owned_companies`
+
 ## Pending Updates (do when all changes are done)
 
 - [ ] `VECTORS.md` — corp stride, field table, field offsets, turn state fields, size table

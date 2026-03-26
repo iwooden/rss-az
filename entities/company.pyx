@@ -94,6 +94,7 @@ cdef class Company:
         self._auction_offset = layout.auction_companies_offset + self.company_id
         self._revealed_offset = layout.revealed_companies_offset + self.company_id
         self._removed_offset = layout.removed_companies_offset + self.company_id
+        self._acquired_offset = layout.acquired_companies_offset + self.company_id
         self._fi_offset = layout.fi_offset + 2 + self.company_id  # +2 for fi_cash, fi_income
         self._income_offset = layout.company_incomes_offset + self.company_id
 
@@ -179,6 +180,10 @@ cdef class Company:
         """Check if company has been removed from the game."""
         return state._data[self._removed_offset] == 1.0
 
+    cpdef bint is_acquired(self, GameState state):
+        """Check if company is in a corporation's acquisition zone this phase."""
+        return state._data[self._acquired_offset] == 1.0
+
     # =========================================================================
     # TRANSFER OPERATIONS
     # =========================================================================
@@ -200,7 +205,11 @@ cdef class Company:
             state._data[self._players_offset + owner_id * self._player_stride + self._player_companies_field + self.company_id] = 0.0
         elif location == LOC_CORP:
             state._data[self._corps_offset + owner_id * self._corp_stride + self._corp_companies_field + self.company_id] = 0.0
-        # LOC_CORP_ACQ and LOC_DECK have no visible flag to clear
+        elif location == LOC_CORP_ACQ:
+            state._data[self._acquired_offset] = 0.0
+            # Also clear corp:owned_companies (eagerly set during ACQ)
+            state._data[self._corps_offset + owner_id * self._corp_stride + self._corp_companies_field + self.company_id] = 0.0
+        # LOC_DECK has no visible flag to clear
 
     cdef void _remove_from_deck_if_needed(self, GameState state):
         """If company is currently in the deck, remove it from the deck order array."""
@@ -263,13 +272,20 @@ cdef class Company:
             corp_module.CORPS[corp_id].calculate_income(state)
 
     cpdef void transfer_to_corp_acquisition(self, GameState state, int corp_id):
-        """Transfer company to corporation's acquisition pile (hidden state only)."""
+        """Transfer company to corporation's acquisition pile.
+
+        Sets co:acquired visible flag and eagerly updates corp:owned_companies
+        so the model can cross-reference to identify the acquiring corp.
+        """
         if corp_id < 0 or corp_id >= GameConstants.NUM_CORPS:
             return
         cdef int old_loc = self._get_hidden_location(state)
         cdef int old_owner = self._get_hidden_owner_id(state)
         self._remove_from_deck_if_needed(state)
         self._clear_visible_flag(state)
+        # Set visible flags: co:acquired + corp:owned_companies
+        state._data[self._acquired_offset] = 1.0
+        state._data[self._corps_offset + corp_id * self._corp_stride + self._corp_companies_field + self.company_id] = 1.0
         self._set_hidden_location(state, LOC_CORP_ACQ, corp_id)
         if old_loc == LOC_CORP and old_owner != corp_id and corp_module.CORPS[old_owner].is_active(state):
             corp_module.CORPS[old_owner].recalculate_stars(state)
