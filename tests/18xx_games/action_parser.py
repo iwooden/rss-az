@@ -52,7 +52,10 @@ IPO_ACTIONS = {'par', 'pass'}
 DIVIDEND_ACTIONS = {'dividend'}
 ISSUE_ACTIONS = {'sell_shares', 'pass'}  # sell_shares by corp entity = issue
 
-# Action types that carry no game-state meaning and should be dropped entirely
+# Action types that carry no game-state meaning and should be dropped entirely.
+# Undo/redo are resolved by the Ruby extractor (snapshots are truncated/replayed),
+# so the Python side never sees them.  program_* are auto-pass convenience
+# features; message is chat.
 SKIP_ACTIONS = {
     'program_share_pass',
     'program_close_pass',
@@ -69,72 +72,39 @@ AUCTION_CAP = 15  # Maximum bid offset above face value (per slot)
 # 1. FILTER ACTIONS
 # =============================================================================
 
-def filter_actions(actions: list) -> list:
+def filter_actions(actions: list, committed_ids: set | None = None) -> list:
     """
-    Remove skipped, undone, and meta actions from a raw 18xx action list.
+    Remove meta and undone actions from a raw 18xx action list.
 
-    Processing rules:
-    - Undo: 18xx undo actions have an 'action_id' field specifying the target
-      action to revert to. All committed actions with id > action_id are undone
-      (moved to the undo stack). If no action_id is present, only the most
-      recent committed action is undone.
-    - Redo: unmarks the most recently undone action so it is visible again.
-    - All actions whose type appears in SKIP_ACTIONS are removed.
-    - All actions flagged as undone are removed.
+    When *committed_ids* is provided (from the Ruby extractor's initial
+    record), only actions whose id is in that set are kept — this cleanly
+    handles all undo/redo without reimplementing the logic in Python.
+    Actions in SKIP_ACTIONS (program_*, message) are also removed, but
+    their auto_actions are preserved (they represent real pass actions
+    that count toward consecutive-pass tracking).
 
     Returns the cleaned list in original order.
     """
-    # We process in-order, maintaining a stack of "committed" action indices
-    # and a separate undo stack.
-    committed: list[int] = []   # indices into `result` that are live
-    undone: list[int] = []      # indices into `result` that were undone (for redo)
-    result: list[dict] = []     # all non-undo/non-redo actions seen so far
-
+    result = []
     for action in actions:
         atype = action.get('type', '')
+        action_id = action.get('id')
 
-        if atype == 'undo':
-            # 18xx undo specifies action_id: revert all actions after that id
-            target_id = action.get('action_id')
-            if target_id is not None:
-                while committed:
-                    top_idx = committed[-1]
-                    top_id = result[top_idx].get('id', -1)
-                    if top_id > target_id:
-                        committed.pop()
-                        undone.append(top_idx)
-                    else:
-                        break
-            elif committed:
-                # Fallback: pop one action (shouldn't happen in practice)
-                idx = committed.pop()
-                undone.append(idx)
-            continue
-
-        if atype == 'redo':
-            # Re-commit the most recently undone action
-            if undone:
-                idx = undone.pop()
-                committed.append(idx)
-            continue
-
+        # Handle SKIP_ACTIONS first — program_* actions aren't in
+        # committed_ids but may carry auto_actions we need to preserve.
         if atype in SKIP_ACTIONS:
-            # Skip the program action itself, but preserve any auto_actions
-            # it carries (e.g. program_share_pass generates an auto pass that
-            # our engine needs to count toward consecutive-pass tracking).
             for auto in action.get('auto_actions', []):
-                auto_idx = len(result)
                 result.append(auto)
-                committed.append(auto_idx)
             continue
 
-        idx = len(result)
-        result.append(action)
-        committed.append(idx)
+        # Drop undone actions (not in the committed set from the extractor)
+        if committed_ids is not None and action_id is not None:
+            if action_id not in committed_ids:
+                continue
 
-    # Collect only the committed (live) actions, in original order
-    committed_set = set(committed)
-    return [result[i] for i in sorted(committed_set)]
+        result.append(action)
+
+    return result
 
 
 # =============================================================================

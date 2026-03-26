@@ -67,9 +67,17 @@ Our Cython engine makes several intentional design choices that differ from the 
 
 **Our engine:** No undo/redo support. Actions are final once applied.
 
-**Replay handling:** `filter_actions()` processes undos by maintaining committed and undone stacks. An `undo` action reverts all committed actions after the specified `action_id`. A `redo` re-commits the most recently undone action. Only the final committed actions are included in the filtered stream.
+**Replay handling:** The Ruby extractor (`extract_states.rb`) resolves undo/redo at extraction time — undone snapshots are popped from the output, and redos restore them. The extractor emits `committed_action_ids` in the initial record, which `filter_actions()` uses to drop undone actions from the raw stream without reimplementing undo logic in Python.
 
-### 8. Round Label Timing in Extractor
+### 8. Auto-Applied Forced Actions
+
+**18xx:** Every action is explicit in the action stream, even when there's only one valid choice (e.g., dividend 0 for a corp with insufficient cash).
+
+**Our engine:** Forced actions (only one valid choice) are auto-applied without player input. This includes dividends when `cash < issued_shares` (only dividend 0 is valid), receivership dividends (always 0), and any single-option phase.
+
+**Replay handling:** The replay harness detects dividend actions for corps with `cash < issued_shares` and skips both the comparison and the action mapping. The engine already auto-applied the dividend (including share price adjustment), so applying it again would target the wrong corp.
+
+### 9. Round Label Timing in Extractor
 
 The Ruby extractor captures the round label **before** processing each action, not after. This ensures the last action of a round (which causes a phase transition) is labeled with the round it was *taken in*, not the round the engine transitions *to*.
 

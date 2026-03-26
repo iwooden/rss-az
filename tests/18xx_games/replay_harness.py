@@ -171,8 +171,11 @@ class ReplayHarness:
             if atype.startswith('program_'):
                 auto_pass.process_action(a)
 
-        # Filter and flatten
-        actions = filter_actions(raw_actions)
+        # Filter and flatten.  The extractor embeds committed_action_ids in the
+        # initial record so we can cleanly drop undone actions without
+        # reimplementing undo/redo logic in Python.
+        committed_ids = set(initial.get('committed_action_ids', []))
+        actions = filter_actions(raw_actions, committed_ids or None)
         actions = flatten_auto_actions(actions)
 
         # Replay loop
@@ -276,6 +279,37 @@ class ReplayHarness:
         action = actions[idx]
         action_id = action.get('id', -1)
         has_ref = action_id >= 0 and action_id in ref_by_action
+
+        # Skip dividend actions for corps that couldn't afford $1/share — the
+        # engine auto-applied the only valid dividend (0) when it advanced past
+        # the previous corp.  Must check BEFORE comparison: our state already
+        # includes the auto-applied dividend's share price adjustment.
+        # The engine may have already left DIVIDENDS (e.g. into ISSUE), so
+        # don't gate on the current phase.
+        if (action.get('type') == 'dividend'
+                and action.get('entity_type') == 'corporation'):
+            corp_name = action.get('entity', '')
+            corp_id = CORP_NAME_TO_ID.get(corp_name)
+            if corp_id is not None and CORPS[corp_id].get_cash(state) < CORPS[corp_id].get_issued_shares(state):
+                if self.verbose:
+                    print(f"  Skipping auto-applied dividend for {corp_name} (cash < issued shares)")
+                if has_ref:
+                    self._last_ref = ref_by_action[action_id]
+                return idx + 1
+
+        # Skip ACQ/CLO-round actions when the engine already advanced past
+        # those phases (e.g. no corps active, or all CLO offers were for
+        # non-negative-income companies that our engine doesn't offer).
+        # Must check BEFORE comparison: our state includes INCOME effects
+        # that the ACQ/CLO-round reference snapshots don't.
+        if has_ref:
+            ref_round = ref_by_action[action_id].get('round', '')
+            phase = TURN.get_phase(state)
+            if ref_round in ('ACQ', 'CLO') and phase not in (PHASE_ACQ, PHASE_CLOSING):
+                if self.verbose:
+                    print(f"  Skipping {ref_round}-round action {action_id} (engine already in {self._get_phase_name(state)})")
+                self._last_ref = None
+                return idx + 1
 
         # Compare BEFORE applying: our state should match the last reference
         if has_ref and self._last_ref is not None:

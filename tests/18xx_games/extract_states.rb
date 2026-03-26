@@ -178,28 +178,67 @@ def process_game(json_path)
   )
 
   snapshots = [initial_record]
+  undo_stack = []  # popped snapshots, available for redo
 
   actions = data['actions'] || []
+
+  # Action types that carry no game-state meaning for our engine.
+  # program_* are auto-pass convenience features; message is chat.
+  # These are skipped entirely (though their auto_actions are preserved
+  # by flattening on the Python side).
+  skip_types = Set.new(%w[program_share_pass program_close_pass program_disable message])
 
   actions.each do |raw_action|
     action_id   = raw_action['id']
     action_type = raw_action['type']
+
+    if action_type == 'undo'
+      # Let the engine handle the undo — it correctly processes all prior
+      # actions (including program_*) and reverts the undone action(s).
+      game = Engine::Game.load(data, at_action: action_id)
+
+      # Move undone snapshots to the undo stack (available for redo).
+      if raw_action['action_id']
+        target_id = raw_action['action_id']
+        while snapshots.size > 1 && snapshots.last[:action_id] > target_id
+          undo_stack.push(snapshots.pop)
+        end
+      else
+        undo_stack.push(snapshots.pop) if snapshots.size > 1
+      end
+      next
+    end
+
+    if action_type == 'redo'
+      # Restore the most recently undone snapshot with its original
+      # action_id, so the Python side sees a consistent action history.
+      game = Engine::Game.load(data, at_action: action_id)
+      snapshots.push(undo_stack.pop) unless undo_stack.empty?
+      next
+    end
 
     # Capture the round BEFORE processing: the snapshot records state AFTER
     # the action, but the round label should reflect WHEN the action was taken
     # (the last action in a round would otherwise show the next round's name).
     round_before = game.round.class.short_name
 
-    if action_type == 'undo' || action_type == 'redo'
-      game = Engine::Game.load(data, at_action: action_id)
-    else
-      result = game.process_action(raw_action)
-      game = result if result.is_a?(Engine::Game::Base)
-    end
+    result = game.process_action(raw_action)
+    game = result if result.is_a?(Engine::Game::Base)
+
+    # Skip snapshots for meta actions (program_*, message) — they don't
+    # change game state meaningfully, but they must still be processed above
+    # so the engine's auto-pass flags stay correct.
+    next if skip_types.include?(action_type)
 
     snapshots << build_snapshot(game, action_id: action_id, action_type: action_type,
                                 round_override: round_before)
   end
+
+  # Collect committed action IDs (everything except the initial record).
+  # The Python side uses this to filter the raw action stream — undone
+  # actions are excluded here but still present in the game JSON.
+  committed_ids = snapshots.drop(1).map { |s| s[:action_id] }
+  snapshots[0][:committed_action_ids] = committed_ids
 
   snapshots
 end
