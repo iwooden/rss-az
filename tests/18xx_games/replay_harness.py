@@ -311,6 +311,16 @@ class ReplayHarness:
                 self._last_ref = None
                 return idx + 1
 
+        # Auto-advance when the engine is stuck in a phase that doesn't
+        # match the action's round.  This happens when undone actions in the
+        # 18xx stream contained needed phase-transition passes (e.g. IPO
+        # passes that were undone/redone and aren't in the committed set).
+        if has_ref:
+            ref_round = ref_by_action[action_id].get('round', '')
+            phase = TURN.get_phase(state)
+            if self._should_auto_advance(phase, ref_round):
+                self._auto_advance_to_round(state, ref_round, layout, action_id)
+
         # Compare BEFORE applying: our state should match the last reference
         if has_ref and self._last_ref is not None:
             self._compare_state(state, self._last_ref, f"before action {action_id}")
@@ -676,6 +686,89 @@ class ReplayHarness:
         self._last_ref = None
 
         return end_idx
+
+    # Maps 18xx round names to the engine phases they correspond to.
+    _ROUND_TO_PHASES = {
+        'INV': {PHASE_INVEST, PHASE_BID},
+        'ACQ': {PHASE_ACQ},
+        'CLO': {PHASE_CLOSING},
+        'DIV': {PHASE_DIVIDENDS},
+        'ISS': {PHASE_ISSUE},
+        'IPO': {PHASE_IPO, PHASE_PAR},
+    }
+
+    def _should_auto_advance(self, phase: int, ref_round: str) -> bool:
+        """Check if the engine needs to auto-advance to reach the action's round.
+
+        Returns True when the engine is stuck in a phase that doesn't match
+        the action's expected round, and auto-advancing by applying passes
+        would be appropriate (e.g. IPO passes when engine is in IPO but
+        action is INV-round).
+        """
+        if not ref_round:
+            return False
+        expected_phases = self._ROUND_TO_PHASES.get(ref_round)
+        if expected_phases is None:
+            return False
+        if phase in expected_phases:
+            return False
+        # Only auto-advance from phases where applying pass is safe
+        if phase in (PHASE_IPO, PHASE_PAR, PHASE_ISSUE, PHASE_DIVIDENDS):
+            return True
+        return False
+
+    def _auto_advance_to_round(self, state, ref_round: str, layout, action_id: int):
+        """Auto-advance the engine by applying passes until it reaches the
+        phase matching ref_round.
+
+        Used when undone actions in the 18xx stream contained needed phase-
+        transition passes that aren't in the committed action set.
+        """
+        expected_phases = self._ROUND_TO_PHASES.get(ref_round, set())
+        max_iterations = 100
+        for _ in range(max_iterations):
+            phase = TURN.get_phase(state)
+            if phase in expected_phases or phase == PHASE_GAME_OVER:
+                break
+
+            # Find the pass action for the current phase
+            mask = get_valid_action_mask(state)
+            legal_count = sum(1 for v in mask if v > 0.5)
+
+            if legal_count == 0:
+                break
+            if legal_count == 1:
+                # Single legal action — apply it (forced)
+                for i, v in enumerate(mask):
+                    if v > 0.5:
+                        if self.verbose:
+                            print(f"  Auto-advance: forced action in {self._get_phase_name(state)}")
+                        DRIVER.apply_action(state, i)
+                        break
+            else:
+                # Multiple legal actions — apply pass
+                pass_action = self._find_pass_action(phase, layout)
+                if pass_action is not None:
+                    if self.verbose:
+                        print(f"  Auto-advance: pass in {self._get_phase_name(state)} "
+                              f"(targeting {ref_round}, aid={action_id})")
+                    DRIVER.apply_action(state, pass_action)
+                else:
+                    break  # Can't auto-advance
+
+        # Clear _last_ref since we auto-advanced through phases
+        self._last_ref = None
+
+    @staticmethod
+    def _find_pass_action(phase: int, layout) -> int | None:
+        """Return the pass action index for the given phase, or None."""
+        if phase == PHASE_IPO:
+            return layout.ipo_pass
+        if phase == PHASE_ISSUE:
+            return layout.issue_pass
+        if phase == PHASE_DIVIDENDS:
+            return layout.dividend_base  # dividend 0
+        return None
 
     def _pre_apply_close(self, state, company_id: int, company_name: str, context: str):
         """Pre-apply a company close that our engine won't offer.
