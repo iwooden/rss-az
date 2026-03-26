@@ -10,7 +10,7 @@ High-performance Cython game engine for "Rolling Stock Stars" board game, optimi
 
 **Key characteristics:**
 - 2-6 player support with dynamic state sizing
-- ~2195-2579 floats per game state (varies by player count)
+- ~2285-2641 floats per game state (varies by player count)
 - No Python object overhead in hot paths (nogil execution)
 - Benchmark target: thousands of games per minute
 
@@ -71,9 +71,9 @@ Central data structure: single contiguous float32 numpy array.
 **Sizes by player count:**
 | Players | Visible | Hidden | Total |
 |---------|---------|--------|-------|
-| 2 | 941 | 1254 | 2195 |
-| 3 | 1018 | 1270 | 2288 |
-| 6 | 1261 | 1318 | 2579 |
+| 2 | 1031 | 1254 | 2285 |
+| 3 | 1101 | 1270 | 2371 |
+| 6 | 1323 | 1318 | 2641 |
 
 ### Actions (`core/actions.pyx`)
 
@@ -154,7 +154,7 @@ Instead of soft-Z or game outcome, we use **A0GB** (Willemsen et al., 2022): fol
 
 ### NN Model (`nn/model_3p.py`)
 
-Residual MLP (~2.3M params): Input 1018 → preprocessing (768→256) → 8 residual blocks (256-dim, pre-LN, GELU) → policy head (3 hidden layers → 183 logits) + value head (→ 3 tanh). Kaiming init, zero-init residual fc2.
+Residual MLP (~2.3M params): Input 1101 → preprocessing (768→256) → 8 residual blocks (256-dim, pre-LN, GELU) → policy head (3 hidden layers → 183 logits) + value head (→ 3 tanh). Kaiming init, zero-init residual fc2.
 
 ## Self-Play Training
 
@@ -191,7 +191,7 @@ At each decision point: state (visible, rotated), legal_mask, policy_target (MCT
 
 **One-hot encodings:** Phase (12), Cost of ownership (7), Turn order (per player), Price index (27 per corp).
 
-**Layout:** `[Phase | CoO | Players (stride=64+num_players) | FI | Companies | Incomes | Market | Corps (stride=47) | Turn | Auction Slots | Invest Impacts | HIDDEN]`
+**Layout:** `[Phase | CoO | Players (stride=57+num_players) | FI | Companies | Incomes | Market | Corps (stride=52) | Turn | Auction Slots | Invest Impacts | HIDDEN]`
 
 **Context-dependent fields:** Many turn state fields zeroed when inactive phase. See `VECTORS.md` for exact offsets.
 

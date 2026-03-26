@@ -5,7 +5,7 @@ computed sizes. Uses core.state.get_layout() as the single source of truth.
 """
 import numpy as np
 import pytest
-from core.state import GameState, get_corp_fields, get_layout
+from core.state import GameState, get_corp_fields, get_layout, get_turn_fields
 from core.data import (
     get_company_stars, get_company_face_value,
     get_company_low_price, get_company_high_price,
@@ -25,11 +25,11 @@ class TestStateLayoutSizes:
     # Expected sizes - these MUST match VECTORS.md and CLAUDE.md
     # If these tests fail, update the documentation to match!
     EXPECTED_SIZES = {
-        2: {'visible': 941, 'hidden': 1254, 'total': 2195},
-        3: {'visible': 1018, 'hidden': 1270, 'total': 2288},
-        4: {'visible': 1097, 'hidden': 1286, 'total': 2383},
-        5: {'visible': 1178, 'hidden': 1302, 'total': 2480},
-        6: {'visible': 1261, 'hidden': 1318, 'total': 2579},
+        2: {'visible': 1031, 'hidden': 1254, 'total': 2285},
+        3: {'visible': 1101, 'hidden': 1270, 'total': 2371},
+        4: {'visible': 1173, 'hidden': 1286, 'total': 2459},
+        5: {'visible': 1247, 'hidden': 1302, 'total': 2549},
+        6: {'visible': 1323, 'hidden': 1318, 'total': 2641},
     }
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
@@ -64,23 +64,23 @@ class TestComponentSizes:
     """Verify individual component sizes."""
 
     def test_player_stride_formula(self):
-        """Player stride = 64 + num_players."""
+        """Player stride = 57 + num_players."""
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
-            assert layout.player_stride == 64 + num_players, (
-                f"{num_players} players: stride {layout.player_stride} != 64 + {num_players}"
+            assert layout.player_stride == 57 + num_players, (
+                f"{num_players} players: stride {layout.player_stride} != 57 + {num_players}"
             )
 
     def test_corp_stride_fixed(self):
-        """Corp stride = 109 (fixed for all player counts)."""
+        """Corp stride = 52 (fixed for all player counts)."""
         layout = get_layout(3)
-        assert layout.corp_stride == 47
+        assert layout.corp_stride == 52
 
     def test_turn_size_formula(self):
-        """Turn size = 209 + 3*num_players."""
+        """Turn size = 205 + 3*num_players."""
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
-            expected = 173 + 3 * num_players
+            expected = 205 + 3 * num_players
             assert layout.turn_size == expected, (
                 f"{num_players} players: turn size {layout.turn_size} != {expected}"
             )
@@ -339,8 +339,8 @@ class TestCardsRemaining:
         """Cards remaining should reflect deck after initial draws."""
         remaining = DECK.get_remaining_count(state)
         layout = get_layout(3)
-        # cards_remaining is the last field in turn state
-        cr_offset = layout.turn_offset + layout.turn_size - 1
+        tf = get_turn_fields(3)
+        cr_offset = layout.turn_offset + tf.cards_remaining
         stored = state._array[cr_offset]
         expected = remaining / 36.0
         assert abs(stored - expected) < 1e-6
@@ -352,6 +352,7 @@ class TestCardsRemaining:
         after = DECK.get_remaining_count(state)
         assert after == before - 1
         layout = get_layout(3)
-        cr_offset = layout.turn_offset + layout.turn_size - 1
+        tf = get_turn_fields(3)
+        cr_offset = layout.turn_offset + tf.cards_remaining
         stored = state._array[cr_offset]
         assert abs(stored - after / 36.0) < 1e-6

@@ -166,7 +166,7 @@ Changes to the visible state vector that need doc/test updates when complete.
 
 ## Pending Updates (do when all changes are done)
 
-- [ ] `VECTORS.md` — corp stride, field table, field offsets, turn state fields, size table
-- [ ] `CLAUDE.md` — state layout summary, size table
-- [ ] `tests/test_state_layout.py` — expected sizes and corp_stride assertion
-- [ ] `nn/model_3p.py` — input size (if hardcoded)
+- [x] `VECTORS.md` — corp stride, field table, field offsets, turn state fields, size table
+- [x] `CLAUDE.md` — state layout summary, size table
+- [x] `tests/test_state_layout.py` — expected sizes and corp_stride assertion
+- [x] `nn/model_3p.py` — input size not hardcoded (passed as `input_dim`), updated docstring in CLAUDE.md
