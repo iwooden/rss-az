@@ -347,8 +347,18 @@ def process_game(json_path)
     # (the last action in a round would otherwise show the next round's name).
     round_before = game.round.class.short_name
 
-    # Detect forced actions BEFORE processing — our Cython engine auto-applies
-    # these, so the Python replay harness needs to skip them.
+    # Annotate metadata BEFORE processing — captures state at the time the
+    # action was taken, which the Python replay harness uses for decisions.
+    extra = {}
+
+    # Tag sell_company (CLO) with adjusted_income so Python can detect
+    # non-negative-income closes without querying engine state.
+    if action_type == 'sell_company'
+      company = game.companies.find { |c| c.sym.to_s == raw_action['company'] }
+      extra[:adjusted_income] = game.company_income(company) if company
+    end
+
+    # Detect forced actions — our Cython engine auto-applies these.
     forced = false
     if action_type == 'dividend'
       corp = game.corporations.find { |c| c.name == raw_action['entity'] }
@@ -389,6 +399,7 @@ def process_game(json_path)
     snap = build_snapshot(game, action_id: action_id, action_type: action_type,
                           round_override: round_before)
     snap[:forced] = true if forced
+    snap.merge!(extra) unless extra.empty?
     snapshots << snap
   end
 

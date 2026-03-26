@@ -35,7 +35,7 @@ Our Cython engine makes several intentional design choices that differ from the 
 
 **Our engine:** Optional close offers are generated only for companies with **negative adjusted income** (income − cost of ownership < 0). Zero and positive income companies are never offered.
 
-**Replay handling:** The CLO adapter scans for `sell_company` actions in the CLO round. Companies with non-negative adjusted income that our engine won't offer are pre-applied as direct state patches (calling `remove_from_game()` with JS scrapping bonus if applicable).
+**Replay handling:** The Ruby extractor tags each `sell_company` snapshot with `adjusted_income` (revenue minus cost of ownership at the time of closing). The CLO adapter (and the ACQ adapter's CLO lookahead) checks `adjusted_income >= 0` to identify companies our engine won't offer, and pre-applies them as direct state patches (calling `remove_from_game()` with JS scrapping bonus if applicable).
 
 ### 4. Closing Offer Ordering
 
@@ -80,7 +80,7 @@ Our Cython engine makes several intentional design choices that differ from the 
 - PAR price selection when only one par price is valid for the company's star tier
 - Any single-option offer in ACQ/CLO phases
 
-**Replay handling:** The replay harness detects each case and skips both the comparison and the action mapping for actions the engine already auto-applied. For dividends, it checks `cash < issued_shares` or bankrupt status. For IPO, it checks whether the owner can afford any par. For PAR, it checks whether the engine already advanced past `PHASE_PAR`.
+**Replay handling:** The Ruby extractor tags forced actions with `forced: true` in the snapshot (dividends where `max_dividend_per_share == 0` or corp is in receivership; IPO passes where the owner can't afford any valid par price). The replay harness checks this flag and skips both the comparison and the action mapping. For PAR, it checks whether the engine already advanced past `PHASE_PAR`.
 
 ### 9. Round Label Timing in Extractor
 
@@ -92,7 +92,7 @@ The Ruby extractor captures the round label **before** processing each action, n
 
 **Our engine:** Uses contiguous levels 1-7. Level 6 = game end card front. Level 7 = game end card flipped.
 
-**Replay handling:** The state comparator remaps Ruby levels: 7 → 6, 8 → 7.
+**Replay handling:** The Ruby extractor normalizes levels at extraction time (7 → 6, 8 → 7), so the Python comparator receives our engine's numbering directly.
 
 ## State Comparison
 

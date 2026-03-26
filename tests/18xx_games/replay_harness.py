@@ -506,6 +506,7 @@ class ReplayHarness:
         # CLO round contains sell_company actions for zero/positive-income
         # companies, the CLO adapter would never get a chance to pre-apply them.
         # We must apply them NOW, before any ACQ action triggers auto-advance.
+        # The Ruby extractor tags sell_company snapshots with adjusted_income.
         for i in range(idx, len(actions)):
             action = actions[i]
             action_id = action.get('id', -1)
@@ -513,17 +514,11 @@ class ReplayHarness:
                 ref = ref_by_action[action_id]
                 round_name = ref.get('round', '')
                 if round_name == 'CLO' and action.get('type') == 'sell_company':
-                    company_name = action.get('company', '')
-                    company_id = COMPANY_NAME_TO_ID.get(company_name)
-                    if company_id is not None and COMPANIES[company_id].get_adjusted_income(state) >= 0:
-                        for corp_id in range(8):
-                            if CORPS[corp_id].is_active(state) and COMPANIES[company_id].is_owned_by_corp(state, corp_id):
-                                if corp_id == 0:  # JS = Junkyard Scrappers
-                                    CORPS[corp_id].add_cash(state, get_company_income(company_id) * 2)
-                                break
-                        COMPANIES[company_id].remove_from_game(state)
-                        if self.verbose:
-                            print(f"  ACQ adapter: pre-applied CLO close for {company_name} (non-negative income)")
+                    if ref.get('adjusted_income', -1) >= 0:
+                        company_name = action.get('company', '')
+                        company_id = COMPANY_NAME_TO_ID.get(company_name)
+                        if company_id is not None:
+                            self._pre_apply_close(state, company_id, company_name, "ACQ adapter")
                 elif round_name not in ('ACQ', 'CLO'):
                     break
 
@@ -626,23 +621,20 @@ class ReplayHarness:
 
         # Pre-apply closings for positive-income companies that our engine
         # won't offer (intentional scope constraint — see RULES.md CLO-14).
-        # Similar to cross-president ACQ transfer patching.
-        for company_name in list(closed_companies):
-            company_id = COMPANY_NAME_TO_ID.get(company_name)
-            if company_id is None:
+        # The Ruby extractor tags sell_company snapshots with adjusted_income.
+        for a in close_actions:
+            if a.get('type') != 'sell_company':
                 continue
-            if COMPANIES[company_id].get_adjusted_income(state) >= 0:
-                # Positive/zero adjusted income — our engine won't offer this.
-                # Check for JS scrapping bonus before removing.
-                for corp_id in range(8):
-                    if CORPS[corp_id].is_active(state) and COMPANIES[company_id].is_owned_by_corp(state, corp_id):
-                        if corp_id == 0:  # JS = Junkyard Scrappers
-                            CORPS[corp_id].add_cash(state, get_company_income(company_id) * 2)
-                        break
-                COMPANIES[company_id].remove_from_game(state)
-                closed_companies.discard(company_name)
-                if self.verbose:
-                    print(f"  CLO adapter: pre-applied positive-income close for {company_name}")
+            action_id = a.get('id', -1)
+            if action_id < 0 or action_id not in ref_by_action:
+                continue
+            ref = ref_by_action[action_id]
+            if ref.get('adjusted_income', -1) >= 0:
+                company_name = a.get('company', '')
+                company_id = COMPANY_NAME_TO_ID.get(company_name)
+                if company_id is not None:
+                    self._pre_apply_close(state, company_id, company_name, "CLO adapter")
+                    closed_companies.discard(company_name)
 
         # Walk our engine's offer buffer for remaining (negative-income) closings
         max_iterations = 200
@@ -684,6 +676,22 @@ class ReplayHarness:
         self._last_ref = None
 
         return end_idx
+
+    def _pre_apply_close(self, state, company_id: int, company_name: str, context: str):
+        """Pre-apply a company close that our engine won't offer.
+
+        Handles JS scrapping bonus (corp_id 0 = Junkyard Scrappers).
+        Used when the 18xx game closes a non-negative-income company
+        that our engine's closing scope constraint excludes.
+        """
+        for corp_id in range(8):
+            if CORPS[corp_id].is_active(state) and COMPANIES[company_id].is_owned_by_corp(state, corp_id):
+                if corp_id == 0:  # JS = Junkyard Scrappers
+                    CORPS[corp_id].add_cash(state, get_company_income(company_id) * 2)
+                break
+        COMPANIES[company_id].remove_from_game(state)
+        if self.verbose:
+            print(f"  {context}: pre-applied non-negative-income close for {company_name}")
 
     def _collect_phase_actions(self, actions, start_idx, round_name, ref_by_action):
         """Collect all actions belonging to the same 18xx round.
