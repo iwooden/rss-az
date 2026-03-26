@@ -452,9 +452,17 @@ class ReplayHarness:
         # Collect all 18xx acquisition actions until phase changes
         acq_actions, end_idx = self._collect_phase_actions(actions, idx, 'ACQ', ref_by_action)
 
-        # Build actual outcomes from reference state diff.
-        # Find the first ACQ ref and the first post-ACQ ref to diff.
-        acq_outcomes = self._build_acq_outcomes(acq_actions, ref_by_action)
+        # Read ACQ outcomes from the Ruby extractor's annotation on the
+        # last ACQ snapshot (computed from corp ownership diff at round boundary).
+        acq_outcomes: dict[str, tuple[str, int]] = {}
+        for a in reversed(acq_actions):
+            aid = a.get('id', -1)
+            if aid >= 0 and aid in ref_by_action:
+                ref = ref_by_action[aid]
+                if ref.get('round') == 'ACQ' and ref.get('acq_outcomes'):
+                    for o in ref['acq_outcomes']:
+                        acq_outcomes[o['company']] = (o['buyer'], o['price'])
+                    break
 
         if self.verbose and acq_outcomes:
             print(f"  ACQ adapter: outcomes={acq_outcomes}")
@@ -609,83 +617,6 @@ class ReplayHarness:
         self._last_ref = None
 
         return end_idx
-
-    def _build_acq_outcomes(self, acq_actions, ref_by_action):
-        """Build actual acquisition outcomes from reference state diffs.
-
-        Compares corp company ownership BEFORE the ACQ round vs AFTER to
-        determine which companies moved and to whom. The "before" snapshot
-        must be from a non-ACQ round (typically INV) because the 18xx ref
-        includes automated phase results (WRAP_UP, FI buying from offering)
-        in the first ACQ-round snapshot.
-
-        For non-FI purchases, gets the price from the raw action data.
-
-        Returns dict: company_name -> (acquiring_corp_name, price)
-        """
-        # Find the first and last ACQ reference snapshots
-        first_acq_aid = None
-        last_acq_aid = None
-        for a in acq_actions:
-            aid = a.get('id', -1)
-            if aid >= 0 and aid in ref_by_action:
-                ref = ref_by_action[aid]
-                if ref.get('round') == 'ACQ':
-                    if first_acq_aid is None:
-                        first_acq_aid = aid
-                    last_acq_aid = aid
-
-        if first_acq_aid is None:
-            return {}
-
-        # Find the last NON-ACQ reference state before the first ACQ action.
-        # We look back from first_acq_aid to find a ref with round != 'ACQ'.
-        # This captures changes from WRAP_UP (FI buying from offering) that
-        # the 18xx ref folds into the first ACQ snapshot.
-        before_ref = None
-        for aid_candidate in range(first_acq_aid - 1, -1, -1):
-            if aid_candidate in ref_by_action:
-                ref = ref_by_action[aid_candidate]
-                if ref.get('round') != 'ACQ':
-                    before_ref = ref
-                    break
-
-        after_ref = ref_by_action.get(last_acq_aid)
-        if before_ref is None or after_ref is None:
-            return {}
-
-        # Build company -> corp_owner maps for before and after
-        def get_corp_companies(ref):
-            result = {}
-            for corp in ref.get('corporations', []):
-                for comp in corp.get('companies', []):
-                    result[comp] = corp['name']
-            return result
-
-        before_corps = get_corp_companies(before_ref)
-        after_corps = get_corp_companies(after_ref)
-
-        # Build price map from raw actions: (company, corp) -> price
-        # Multiple corps may offer for the same company at different prices.
-        # Key by (company, corporation) to get the winning corp's offer price.
-        action_prices = {}
-        for a in acq_actions:
-            if a.get('type') == 'offer':
-                company_name = a.get('company', '')
-                corp_name = a.get('corporation', '')
-                price = int(a.get('price', 0))
-                action_prices[(company_name, corp_name)] = price
-
-        # Find companies that moved TO a corp (new acquisitions)
-        outcomes = {}
-        for company_name, new_owner in after_corps.items():
-            old_owner = before_corps.get(company_name)
-            if old_owner != new_owner:
-                # This company was acquired by new_owner — use the winning corp's price
-                price = action_prices.get((company_name, new_owner), 0)
-                outcomes[company_name] = (new_owner, price)
-
-        return outcomes
 
     def _run_closing_adapter(self, state, actions, idx, layout, ref_by_action):
         """Walk through closing phase, matching 18xx sell_company actions

@@ -288,6 +288,65 @@ def process_game(json_path)
   committed_ids = snapshots.drop(1).map { |s| s[:action_id] }
   snapshots[0][:committed_action_ids] = committed_ids
 
+  # Post-process: compute ACQ outcomes from the undo-pruned snapshot array.
+  # For each contiguous group of ACQ-round snapshots, diff corp ownership
+  # between the last pre-ACQ snapshot and the last ACQ snapshot.
+  # This avoids undo/redo complications that make inline tracking fragile.
+  committed_id_set = committed_ids.to_set
+
+  # Index raw offer actions by ID for fast lookup.
+  offer_actions_by_id = {}
+  (data['actions'] || []).each do |a|
+    next unless a['type'] == 'offer' && committed_id_set.include?(a['id'])
+    offer_actions_by_id[a['id']] = a
+  end
+
+  pre_acq = nil  # snapshot just before an ACQ group
+  acq_start_idx = nil
+  snapshots.each_with_index do |snap, idx|
+    if snap[:round] == 'ACQ'
+      acq_start_idx ||= idx
+    elsif acq_start_idx
+      # ACQ group ended — compute outcomes
+      start_snap = pre_acq || snapshots[acq_start_idx]
+      end_snap = snapshots[idx - 1]  # last ACQ snapshot
+
+      start_corps = {}
+      (start_snap[:corporations] || []).each do |c|
+        start_corps[c[:name]] = (c[:companies] || []).to_set
+      end
+      end_corps = {}
+      (end_snap[:corporations] || []).each do |c|
+        end_corps[c[:name]] = (c[:companies] || []).to_set
+      end
+
+      # Collect offer prices only from this ACQ group's action range.
+      acq_min_id = snapshots[acq_start_idx][:action_id]
+      acq_max_id = end_snap[:action_id]
+      round_offer_prices = {}  # company_sym -> { corp_name -> price }
+      offer_actions_by_id.each do |aid, a|
+        next unless aid >= acq_min_id && aid <= acq_max_id
+        comp = a['company']
+        corp = a['corporation']
+        round_offer_prices[comp] ||= {}
+        round_offer_prices[comp][corp] = a['price'].to_i
+      end
+
+      outcomes = []
+      end_corps.each do |corp_name, companies|
+        new_companies = companies - (start_corps[corp_name] || Set.new)
+        new_companies.each do |comp_sym|
+          price = (round_offer_prices[comp_sym] || {})[corp_name] || 0
+          outcomes << { company: comp_sym, buyer: corp_name, price: price }
+        end
+      end
+      end_snap[:acq_outcomes] = outcomes unless outcomes.empty?
+
+      acq_start_idx = nil
+    end
+    pre_acq = snap if snap[:round] != 'ACQ'
+  end
+
   snapshots
 end
 
