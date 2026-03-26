@@ -19,7 +19,7 @@ Our Cython engine makes several intentional design choices that differ from the 
 
 **Our engine:** Acquisition offers are constrained to same-president transactions. A corp can only acquire companies when its president also controls the selling entity (owns the private company, or is president of the selling corp). Cross-president offers are excluded from the action space.
 
-**Replay handling:** The ACQ adapter builds outcomes by diffing corp company ownership before vs after the 18xx ACQ round. Transfers that our engine wouldn't offer (cross-president corp-to-corp, player-to-different-president corp) are pre-applied as direct state patches before the engine's offer buffer is walked.
+**Replay handling:** The Ruby extractor post-processes snapshots to compute ACQ outcomes for each round — diffing corp company ownership before vs after, with offer prices scoped to the round's action ID range, seller info (type, name, player ID), and a `cross_president` flag. Cross-president transfers are pre-applied as direct state patches by the Python ACQ adapter before the engine's offer buffer is walked.
 
 ### 2. Acquisition Offer Ordering
 
@@ -27,7 +27,7 @@ Our Cython engine makes several intentional design choices that differ from the 
 
 **Our engine:** Offers are generated into a hidden buffer and presented one-by-one in a fixed priority order: OS→FI (face DESC) → Corp→FI (price DESC) → Corp→Corp → Corp→Player.
 
-**Replay handling:** The ACQ adapter matches our engine's offers against the computed outcomes, accepting or passing each offer based on whether it matches a reference transfer.
+**Replay handling:** The ACQ adapter reads Ruby-computed outcomes from the first ACQ snapshot, then matches our engine's offers against same-president outcomes, accepting or passing each offer based on whether it matches a reference transfer.
 
 ### 3. Closing Offer Scope
 

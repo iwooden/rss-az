@@ -162,6 +162,116 @@ def build_snapshot(game, action_id:, action_type:, round_override: nil)
   }
 end
 
+# Post-process snapshots to annotate each ACQ round's first snapshot with
+# the actual acquisition outcomes (which companies transferred and at what
+# price), including seller info and a cross_president flag.  This lets the
+# Python replay harness skip the expensive state-diffing and seller-detection
+# loops it previously had to do at replay time.
+def annotate_acq_outcomes(snapshots, raw_actions, committed_ids)
+  # Group ACQ-round snapshots by game turn
+  acq_by_turn = {}
+  snapshots.each do |s|
+    next unless s[:round] == 'ACQ'
+    (acq_by_turn[s[:turn]] ||= []) << s
+  end
+  return if acq_by_turn.empty?
+
+  # Index committed offer actions by ID for fast lookup per ACQ round.
+  offer_actions_by_id = {}
+  raw_actions.each do |a|
+    next unless a['type'] == 'offer' && committed_ids.include?(a['id'])
+    offer_actions_by_id[a['id']] = a
+  end
+
+  acq_by_turn.each do |_turn, acq_snaps|
+    first_acq = acq_snaps.first
+    last_acq  = acq_snaps.last
+
+    # Find last non-ACQ snapshot before first ACQ snapshot
+    first_idx = snapshots.index(first_acq)
+    before = nil
+    (first_idx - 1).downto(0) do |i|
+      unless snapshots[i][:round] == 'ACQ'
+        before = snapshots[i]
+        break
+      end
+    end
+    next unless before
+
+    # Scope offer prices to THIS ACQ round's action ID range
+    acq_min_id = first_acq[:action_id]
+    acq_max_id = last_acq[:action_id]
+    offer_prices = {}
+    offer_actions_by_id.each do |aid, a|
+      next unless aid >= acq_min_id && aid <= acq_max_id
+      offer_prices[[a['company'], a['corporation']]] = a['price'].to_i
+    end
+
+    # Build company -> corp_name maps (before and after)
+    before_corps = {}
+    before[:corporations].each do |c|
+      c[:companies].each { |comp| before_corps[comp.to_s] = c[:name] }
+    end
+
+    after_corps = {}
+    last_acq[:corporations].each do |c|
+      c[:companies].each { |comp| after_corps[comp.to_s] = c[:name] }
+    end
+
+    # Corp president map: corp_name -> president player name
+    presidents = {}
+    before[:corporations].each { |c| presidents[c[:name]] = c[:president] }
+
+    # Player company map: company -> {name:, id:}
+    player_companies = {}
+    before[:players].each do |p|
+      p[:companies].each { |comp| player_companies[comp.to_s] = { name: p[:name], id: p[:id] } }
+    end
+
+    # FI company set — include companies from BOTH the before (INV) snapshot
+    # and the first ACQ snapshot, because WRAP_UP (Phase 2) runs between INV
+    # and ACQ: FI buys from the offering during WRAP_UP, so those companies
+    # only appear in FI at the first ACQ snapshot, not the INV snapshot.
+    fi_companies = Set.new
+    (before[:foreign_investor][:companies] || []).each { |comp| fi_companies << comp.to_s }
+    (first_acq[:foreign_investor][:companies] || []).each { |comp| fi_companies << comp.to_s }
+
+    # Diff: companies that moved to a (different) corp
+    outcomes = []
+    after_corps.each do |company, new_owner|
+      old_corp = before_corps[company]
+      next if old_corp == new_owner
+
+      price = offer_prices[[company, new_owner]] || 0
+
+      if old_corp
+        # Corp-to-corp transfer
+        outcomes << {
+          company: company, buyer: new_owner, price: price,
+          seller_type: 'corp', seller: old_corp,
+          cross_president: presidents[old_corp] != presidents[new_owner],
+        }
+      elsif player_companies[company]
+        # Player-to-corp transfer
+        pi = player_companies[company]
+        outcomes << {
+          company: company, buyer: new_owner, price: price,
+          seller_type: 'player', seller: pi[:name], seller_id: pi[:id],
+          cross_president: pi[:name] != presidents[new_owner],
+        }
+      elsif fi_companies.include?(company)
+        # FI-to-corp transfer (engine handles these — never cross-president)
+        outcomes << {
+          company: company, buyer: new_owner, price: price,
+          seller_type: 'fi', cross_president: false,
+        }
+      end
+    end
+
+    first_acq[:acq_outcomes] = outcomes unless outcomes.empty?
+  end
+end
+
 # ---------------------------------------------------------------------------
 # 2.  Find games needing extraction
 # ---------------------------------------------------------------------------
@@ -288,64 +398,9 @@ def process_game(json_path)
   committed_ids = snapshots.drop(1).map { |s| s[:action_id] }
   snapshots[0][:committed_action_ids] = committed_ids
 
-  # Post-process: compute ACQ outcomes from the undo-pruned snapshot array.
-  # For each contiguous group of ACQ-round snapshots, diff corp ownership
-  # between the last pre-ACQ snapshot and the last ACQ snapshot.
-  # This avoids undo/redo complications that make inline tracking fragile.
-  committed_id_set = committed_ids.to_set
-
-  # Index raw offer actions by ID for fast lookup.
-  offer_actions_by_id = {}
-  (data['actions'] || []).each do |a|
-    next unless a['type'] == 'offer' && committed_id_set.include?(a['id'])
-    offer_actions_by_id[a['id']] = a
-  end
-
-  pre_acq = nil  # snapshot just before an ACQ group
-  acq_start_idx = nil
-  snapshots.each_with_index do |snap, idx|
-    if snap[:round] == 'ACQ'
-      acq_start_idx ||= idx
-    elsif acq_start_idx
-      # ACQ group ended — compute outcomes
-      start_snap = pre_acq || snapshots[acq_start_idx]
-      end_snap = snapshots[idx - 1]  # last ACQ snapshot
-
-      start_corps = {}
-      (start_snap[:corporations] || []).each do |c|
-        start_corps[c[:name]] = (c[:companies] || []).to_set
-      end
-      end_corps = {}
-      (end_snap[:corporations] || []).each do |c|
-        end_corps[c[:name]] = (c[:companies] || []).to_set
-      end
-
-      # Collect offer prices only from this ACQ group's action range.
-      acq_min_id = snapshots[acq_start_idx][:action_id]
-      acq_max_id = end_snap[:action_id]
-      round_offer_prices = {}  # company_sym -> { corp_name -> price }
-      offer_actions_by_id.each do |aid, a|
-        next unless aid >= acq_min_id && aid <= acq_max_id
-        comp = a['company']
-        corp = a['corporation']
-        round_offer_prices[comp] ||= {}
-        round_offer_prices[comp][corp] = a['price'].to_i
-      end
-
-      outcomes = []
-      end_corps.each do |corp_name, companies|
-        new_companies = companies - (start_corps[corp_name] || Set.new)
-        new_companies.each do |comp_sym|
-          price = (round_offer_prices[comp_sym] || {})[corp_name] || 0
-          outcomes << { company: comp_sym, buyer: corp_name, price: price }
-        end
-      end
-      end_snap[:acq_outcomes] = outcomes unless outcomes.empty?
-
-      acq_start_idx = nil
-    end
-    pre_acq = snap if snap[:round] != 'ACQ'
-  end
+  # Post-process: annotate ACQ outcomes with seller info and cross-president
+  # flags so the Python side can skip expensive seller-detection loops.
+  annotate_acq_outcomes(snapshots, actions, committed_ids.to_set)
 
   snapshots
 end
