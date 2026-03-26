@@ -259,7 +259,7 @@ Deep analysis of individual model components, beyond what the global arch_analys
 
 **Method:** Three analyses:
 1. **Signal attenuation** — for each feature group, measures activation delta at 768-dim and 256-dim when the group is ablated. Attenuation = delta_256/delta_768 (1.0 = preserved, <1.0 = lost). Cross-referenced with policy KL.
-2. **Expanded probing** — linear probes at raw input (1018), 768-dim intermediate, 256-dim output, and block_0. Tracks information loss through each step.
+2. **Expanded probing** — linear probes at raw input (1101), 768-dim intermediate, 256-dim output, and block_0. Tracks information loss through each step.
 3. **SVD projection** — identifies which 768-dim singular vectors the learned weight matrix preserves vs discards, and correlates with feature group importance.
 
 ```bash

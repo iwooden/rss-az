@@ -6,7 +6,7 @@ Three analyses to determine whether the 768->256 compression loses policy-releva
    survives the 768->256 step. Cross-reference with ablation KL to find features
    that matter AND lose signal.
 
-2. **Expanded Probing**: Probe at raw input (1018-dim), 768-dim intermediate, and
+2. **Expanded Probing**: Probe at raw input (1101-dim), 768-dim intermediate, and
    256-dim output to track information through preprocessing.
 
 3. **SVD Projection Analysis**: Identify which 768-dim singular vectors the learned
@@ -421,7 +421,7 @@ def analyze_svd_projection(
     discarded_mask = preservation < threshold
 
     groups = build_feature_groups(num_players)
-    W_first = model.input_preprocess[0].weight.detach().cpu().numpy()  # (768, 1018)
+    W_first = model.input_preprocess[0].weight.detach().cpu().numpy()  # (768, 1101)
     b_first = model.input_preprocess[0].bias.detach().cpu().numpy()  # (768,)
 
     print("  Computing per-feature-group projection into discarded subspace...")
@@ -505,7 +505,7 @@ def print_probing_report(results: list[PreprocessProbeResult]) -> None:
     print("\n" + "=" * 90)
     print("  2. LINEAR PROBING THROUGH PREPROCESSING")
     print("=" * 90)
-    print("  Tracks information through: raw_input (1018) -> 768 -> 256 -> block_0 (256)")
+    print("  Tracks information through: raw_input (1101) -> 768 -> 256 -> block_0 (256)")
     print()
     print(
         f"  {'Probe':<24s} {'Type':>4s} {'Raw':>8s} {'768':>8s} {'256':>8s} "
@@ -645,7 +645,7 @@ def format_html_report(
         '\n'
         '<h2>2. Linear Probing Through Preprocessing</h2>\n'
         '<p style="color:#888;font-size:0.85rem">\n'
-        '  Information tracked through raw_input (1018) &rarr; 768 &rarr; 256 &rarr; block_0 (256). Cells highlighted where delta(compression) &gt; 0.01.\n'
+        '  Information tracked through raw_input (1101) &rarr; 768 &rarr; 256 &rarr; block_0 (256). Cells highlighted where delta(compression) &gt; 0.01.\n'
         '</p>\n'
         '<table id="tbl-probing"></table>\n'
         '\n'

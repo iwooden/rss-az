@@ -49,7 +49,7 @@ def apply_amd_optimizations() -> dict[str, str]:
 
     # Disable the SDMA (System DMA) copy engine, forcing copies through
     # compute shaders instead.  Slightly lower bandwidth but lower latency
-    # for the small H2D/D2H transfers in our pipeline (~1018 floats).
+    # for the small H2D/D2H transfers in our pipeline (~1101 floats).
     enabled["HSA_ENABLE_SDMA"] = _setdefault_env("HSA_ENABLE_SDMA", "0")
 
     # Inductor max-autotune: when enabled (1), benchmarks multiple Triton

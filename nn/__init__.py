@@ -29,7 +29,7 @@ def create_model(
 
     Args:
         model_path: Dotted Python module path (e.g. "nn.model_3p").
-        input_dim: Visible state size (e.g. 1018 for 3 players).
+        input_dim: Visible state size (e.g. 1101 for 3 players).
         action_dim: Action space size (from get_total_action_count).
         value_dim: Number of players (e.g. 3).
     """

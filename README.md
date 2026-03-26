@@ -28,7 +28,7 @@ rss-az-cython2/
 
 ### Game Engine
 
-The entire game state lives in a single `float32` numpy array (2195–2579 floats depending on player count). This flat representation eliminates Python object overhead and enables `nogil` execution in Cython hot paths.
+The entire game state lives in a single `float32` numpy array (2285–2641 floats depending on player count). This flat representation eliminates Python object overhead and enables `nogil` execution in Cython hot paths.
 
 **State layout:** `[Phase | CoO | Players | FI | Companies | Incomes | Market | Corps | Turn | Auction | Hidden]`
 
