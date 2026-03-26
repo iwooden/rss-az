@@ -56,6 +56,7 @@ class TestOfferGeneration:
         CORPS[0].set_cash(gs, 50000)
 
         # Generate offers
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py FI offers")
 
@@ -81,6 +82,7 @@ class TestOfferGeneration:
         CORPS[2].set_cash(gs, 50000)
 
         # Generate offers
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py OS FI first")
 
@@ -109,6 +111,7 @@ class TestOfferGeneration:
         CORPS[1].set_cash(gs, 50000)
 
         # Generate offers (skip OS so we test non-OS sorting)
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py corp FI sorted by price")
 
@@ -134,6 +137,7 @@ class TestOfferGeneration:
         CORPS[1].set_cash(gs, 50000)
 
         # Generate offers
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py corp-corp same president")
 
@@ -156,6 +160,7 @@ class TestOfferGeneration:
         CORPS[1].set_cash(gs, 50000)
 
         # Generate offers
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py different president")
 
@@ -175,6 +180,7 @@ class TestOfferGeneration:
         CORPS[0].set_cash(gs, 50000)
 
         # Generate offers
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py player private offers")
 
@@ -203,6 +209,7 @@ class TestOfferGeneration:
         CORPS[1].set_cash(gs, 50000)
 
         # Generate offers
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py FI sorted by corp share price")
 
@@ -243,6 +250,7 @@ class TestOfferGeneration:
         # Player 0 is president of all three corps (same-president requirement)
 
         # Generate offers
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py corp-corp sorted by buyer price")
 
@@ -285,6 +293,7 @@ class TestOfferGeneration:
         # Player 0 is president of both corps
 
         # Generate offers
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py player private sorted")
 
@@ -333,6 +342,7 @@ class TestPhaseFlow:
         """Empty offer buffer is detected."""
         gs = GameState(3)
         gs.initialize_game()
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py empty offers")
         assert get_offer_count(gs) == 0
@@ -486,6 +496,8 @@ class TestValidation:
         face_value = get_company_face_value(0)
         CORPS[2].set_cash(gs, face_value)  # Exactly enough for face value
 
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
+
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py OS FI Buy test")
 
@@ -504,6 +516,8 @@ class TestValidation:
         float_corp_for_test(gs, 0)
         high_price = get_company_high_price(0)
         CORPS[0].set_cash(gs, high_price)  # Exactly enough for high price
+
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
 
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py non-OS FI Buy test")
@@ -539,6 +553,8 @@ class TestValidation:
 
         # Manually transfer company to corp's owned (not acquisition)
         COMPANIES[0].transfer_to_corp(gs, 0)
+
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
 
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py target already owned test")
@@ -672,6 +688,7 @@ class TestValidation:
         COMPANIES[company_id].transfer_to_player(gs, 0)
         float_corp_for_test(gs, 0)
         CORPS[0].set_cash(gs, 50000)
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py price offset test")
 
@@ -692,6 +709,7 @@ class TestValidation:
         COMPANIES[company_id].transfer_to_player(gs2, 0)
         float_corp_for_test(gs2, 0)
         CORPS[0].set_cash(gs2, 50000)
+        TURN.set_phase(gs2, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs2)
         assert_invariants(gs2, "After setup_acquisition_phase_py price offset max test")
 
@@ -708,6 +726,7 @@ class TestValidation:
         COMPANIES[company_id].transfer_to_player(gs3, 0)
         float_corp_for_test(gs3, 0)
         CORPS[0].set_cash(gs3, 50000)
+        TURN.set_phase(gs3, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs3)
         assert_invariants(gs3, "After setup_acquisition_phase_py price offset mid test")
 
@@ -772,6 +791,8 @@ class TestValidation:
         float_corp_for_test(gs, 1, player_id=0)
         CORPS[1].set_cash(gs, 50000)
 
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
+
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py seller with two companies")
 
@@ -789,6 +810,8 @@ class TestValidation:
         # Float corp 1 with same president, give it cash
         float_corp_for_test(gs, 1, player_id=0)
         CORPS[1].set_cash(gs, 50000)
+
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
 
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py seller with one company")
@@ -814,6 +837,8 @@ class TestValidation:
         float_corp_for_test(gs, 1, player_id=0)
         CORPS[1].set_cash(gs, 50000)
 
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
+
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py seller with one owned one acquisition")
 
@@ -834,6 +859,8 @@ class TestValidation:
         # Float corp with different company, give it cash
         float_corp_for_test(gs, 0)
         CORPS[0].set_cash(gs, 50000)
+
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
 
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py company in acquisition zone")
@@ -882,6 +909,8 @@ class TestActionIntegration:
         float_corp_for_test(gs, 0)
         CORPS[0].set_cash(gs, 50000)
 
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
+
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py FI buy high")
 
@@ -911,6 +940,8 @@ class TestActionIntegration:
         COMPANIES[0].transfer_to_fi(gs)
         float_corp_for_test(gs, 2)
         CORPS[2].set_cash(gs, 50000)
+
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
 
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py FI buy face")
@@ -957,6 +988,8 @@ class TestActionIntegration:
         float_corp_for_test(gs, 2)
         CORPS[2].set_cash(gs, 50000)
 
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
+
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py OS face value test")
 
@@ -997,6 +1030,8 @@ class TestActionIntegration:
         COMPANIES[1].transfer_to_player(gs, 0)
         float_corp_for_test(gs, 0)
         CORPS[0].set_cash(gs, 50000)
+
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
 
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py pass action test")
@@ -1051,6 +1086,7 @@ class TestActionIntegration:
         low_corp.set_cash(gs, 50000)
 
         # Generate offers
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py intervention test")
 
@@ -1198,6 +1234,7 @@ class TestEdgeCases:
         gs.initialize_game()
 
         # No corps activated
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py no active corps")
 
@@ -1211,6 +1248,8 @@ class TestEdgeCases:
         # Make corp active but FI has no companies
         float_corp_for_test(gs, 0)
         CORPS[0].set_cash(gs, 50000)
+
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
 
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py empty FI")
@@ -1226,6 +1265,8 @@ class TestEdgeCases:
         # Make corp active with cash but no player owns privates
         float_corp_for_test(gs, 0)
         CORPS[0].set_cash(gs, 50000)
+
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
 
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py no player privates")
@@ -1250,6 +1291,8 @@ class TestEdgeCases:
         float_corp_for_test(gs, 1, player_id=0)
         CORPS[1].set_cash(gs, 50000)
 
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
+
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py two corps same president")
 
@@ -1266,6 +1309,8 @@ class TestEdgeCases:
         # Float single corp - it has a company
         float_corp_for_test(gs, 0)
         CORPS[0].set_cash(gs, 50000)
+
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
 
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py single corp")
@@ -1285,6 +1330,8 @@ class TestEdgeCases:
         float_corp_for_test(gs, 1, player_id=0)
         CORPS[1].set_cash(gs, 50000)
 
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
+
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py same president")
 
@@ -1301,6 +1348,8 @@ class TestEdgeCases:
         # Float corp 1 with DIFFERENT president (player 1)
         float_corp_for_test(gs2, 1, player_id=1)
         CORPS[1].set_cash(gs2, 50000)
+
+        TURN.set_phase(gs2, GamePhases.PHASE_ACQUISITION)
 
         setup_acquisition_phase_py(gs2)
         assert_invariants(gs2, "After setup_acquisition_phase_py different presidents")
@@ -1338,6 +1387,7 @@ class TestReceivershipAutoBuy:
         fi_cash_before = FI.get_cash(gs)
 
         # Call setup_acquisition_phase_py to generate offers and trigger auto-buy
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py receivership auto-buy")
 
@@ -1368,6 +1418,7 @@ class TestReceivershipAutoBuy:
         fi_cash_before = FI.get_cash(gs)
 
         # Call setup_acquisition_phase_py
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py receivership skip unaffordable")
 
@@ -1394,6 +1445,7 @@ class TestReceivershipAutoBuy:
         PLAYERS[0].set_shares(gs, 0, 0)
 
         # Call setup_acquisition_phase_py
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py receivership skip non-FI")
 
@@ -1422,6 +1474,7 @@ class TestReceivershipAutoBuy:
         corp1.set_cash(gs, 50000)
 
         # Call setup_acquisition_phase_py
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py receivership cannot sell")
 
@@ -1465,6 +1518,7 @@ class TestReceivershipAutoBuy:
         fi_cash_before = FI.get_cash(gs)
 
         # Trigger auto-buy
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py receivership most expensive")
 
@@ -1512,6 +1566,7 @@ class TestReceivershipAutoBuy:
         fi_cash_before = FI.get_cash(gs)
 
         # Trigger auto-buy attempt
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py receivership insufficient for high")
 
@@ -1556,6 +1611,8 @@ class TestOSReceivershipFaceValue:
         corp_cash_before = corp.get_cash(gs)
         fi_cash_before = FI.get_cash(gs)
 
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
+
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py OS receivership face-value buy")
 
@@ -1593,6 +1650,8 @@ class TestOSReceivershipFaceValue:
 
         corp_cash_before = corp.get_cash(gs)
         fi_cash_before = FI.get_cash(gs)
+
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
 
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py OS receivership face-only affordable")
@@ -1804,6 +1863,7 @@ class TestNoOfferBoundsCheck:
         gs = GameState(3)
         gs.initialize_game()
         # No offers generated — acq_target_company defaults to -1
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py no offer price check")
         assert get_offer_count(gs) == 0
@@ -1813,6 +1873,7 @@ class TestNoOfferBoundsCheck:
         """ACTION_ACQ_FI_BUY with no active offer returns 1, not segfault."""
         gs = GameState(3)
         gs.initialize_game()
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         assert_invariants(gs, "After setup_acquisition_phase_py no offer FI buy check")
         assert apply_acquisition_action_py(gs, ACTION_ACQ_FI_BUY) == 1
@@ -1840,6 +1901,8 @@ class TestAcqSynergyValues:
 
         # Put target on FI so it can be offered
         COMPANIES[target_company_id].transfer_to_fi(gs)
+
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
 
         setup_acquisition_phase_py(gs)
 
@@ -1933,6 +1996,7 @@ class TestAcqSynergyValues:
         gs = GameState(3)
         gs.initialize_game()
         # No corps active, no offers possible
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
 
         for i in range(36):
@@ -1948,6 +2012,8 @@ class TestAcqSynergyValues:
         CORPS[0].set_cash(gs, 50000)
         COMPANIES[self.MAD].transfer_to_fi(gs)
         COMPANIES[self.FRA].transfer_to_fi(gs)
+
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
 
         setup_acquisition_phase_py(gs)
         assert get_offer_count(gs) >= 2
@@ -1982,6 +2048,8 @@ class TestActiveCompanyAcquisition:
         float_corp_for_test(gs, 0)
         CORPS[0].set_cash(gs, 50000)
 
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
+
         setup_acquisition_phase_py(gs)
 
         target = TURN.get_acq_target_company(gs)
@@ -2002,6 +2070,8 @@ class TestActiveCompanyAcquisition:
 
         float_corp_for_test(gs, 0)
         CORPS[0].set_cash(gs, 50000)
+
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
 
         setup_acquisition_phase_py(gs)
 
@@ -2024,6 +2094,7 @@ class TestActiveCompanyAcquisition:
         gs.initialize_game()
 
         # No corps active -> no offers -> immediate transition
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
         transition_to_closing_py(gs)
 
@@ -2052,6 +2123,8 @@ class TestActiveCorpAcquisition:
         float_corp_for_test(gs, 0)
         CORPS[0].set_cash(gs, 50000)
 
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
+
         setup_acquisition_phase_py(gs)
 
         corp_id = TURN.get_acq_active_corp(gs)
@@ -2071,6 +2144,7 @@ class TestActiveCorpAcquisition:
         gs.initialize_game()
 
         # No corps active -> no offers -> active corp cleared
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
         setup_acquisition_phase_py(gs)
 
         layout = get_layout(3)
@@ -2092,6 +2166,8 @@ class TestActiveCorpAcquisition:
         CORPS[0].set_cash(gs, 50000)
         float_corp_for_test(gs, 1, player_id=1)
         CORPS[1].set_cash(gs, 50000)
+
+        TURN.set_phase(gs, GamePhases.PHASE_ACQUISITION)
 
         setup_acquisition_phase_py(gs)
 

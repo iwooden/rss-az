@@ -99,6 +99,7 @@ def setup_player_private_offer(state, player_id, company_id, corp_id, corp_cash)
     COMPANIES[company_id].transfer_to_player(state, player_id)
     float_corp_for_test(state, corp_id, player_id=player_id)
     CORPS[corp_id].set_cash(state, corp_cash)
+    TURN.set_phase(state, GamePhases.PHASE_ACQUISITION)
     setup_acquisition_phase_py(state)
     assert_invariants(state, "After setup_player_private_offer")
 
@@ -385,6 +386,15 @@ def assert_invariants(state, msg=""):
             assert CORPS[owner_id].owns_company(state, cid), (
                 f"{msg}\nCompany {cid} at LOC_CORP_ACQ owner={owner_id} "
                 f"but corp:owned_companies not set"
+            )
+
+    # co:acquired flags must be zero outside ACQUISITION phase
+    phase = TURN.get_phase(state)
+    if phase != GamePhases.PHASE_ACQUISITION:
+        for cid in range(36):
+            assert not COMPANIES[cid].is_acquired(state), (
+                f"{msg}\nCompany {cid} has co:acquired flag set "
+                f"outside ACQUISITION phase (phase={phase})"
             )
 
 
