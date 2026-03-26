@@ -46,7 +46,7 @@ from core.data cimport (
 )
 
 PlayerFields = namedtuple('PlayerFields', [
-    'cash', 'net_worth', 'turn_order', 'owned_companies',
+    'cash', 'net_worth', 'liquidity', 'turn_order', 'owned_companies',
     'owned_shares', 'is_president', 'round_trips',
     'acquisition_proceeds', 'income',
 ])
@@ -174,6 +174,7 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     layout.player_stride = (
         1 +                 # cash
         1 +                 # net_worth
+        1 +                 # liquidity (iterative share liquidation value / NET_WORTH_DIVISOR)
         num_players +       # turn_order one-hot
         GameConstants.NUM_COMPANIES +     # owned_companies
         GameConstants.NUM_CORPS +         # owned_shares
@@ -486,6 +487,8 @@ cdef PlayerFieldOffsets compute_player_field_offsets(int num_players) noexcept n
     offset += 1
     p.net_worth = offset
     offset += 1
+    p.liquidity = offset
+    offset += 1
     p.turn_order = offset
     offset += num_players
     p.owned_companies = offset
@@ -578,6 +581,7 @@ def get_player_fields(int num_players):
     return PlayerFields(
         cash=p.cash,
         net_worth=p.net_worth,
+        liquidity=p.liquidity,
         turn_order=p.turn_order,
         owned_companies=p.owned_companies,
         owned_shares=p.owned_shares,
@@ -1351,6 +1355,7 @@ cdef class GameState:
             player_module.PLAYERS[i].set_cash(self, starting_cash)
             player_module.PLAYERS[i].set_turn_order(self, i)
             player_module.PLAYERS[i].set_net_worth(self, starting_cash)
+            player_module.PLAYERS[i].set_liquidity(self, starting_cash)
 
         # 3. Set Foreign Investor state
         fi_module.FI.set_cash(self, 4)

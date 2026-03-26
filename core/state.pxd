@@ -113,6 +113,7 @@ cdef struct TurnStateOffsets:
 cdef struct PlayerFieldOffsets:
     int cash
     int net_worth
+    int liquidity
     int turn_order
     int owned_companies
     int owned_shares

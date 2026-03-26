@@ -12,7 +12,7 @@ from libc.math cimport lround
 from core.state cimport GameState, StateLayout, PlayerFieldOffsets
 from core.data cimport (
     GameConstants, CASH_DIVISOR, NET_WORTH_DIVISOR, COMPANY_INCOME_DIVISOR, ENTITY_INCOME_DIVISOR,
-    SHARE_DIVISOR, MAX_ROUNDTRIPS, get_company_face_value
+    SHARE_DIVISOR, MAX_ROUNDTRIPS, get_company_face_value, MARKET_PRICES,
 )
 from entities.encoding cimport set_one_hot, get_one_hot_index
 
@@ -166,6 +166,8 @@ cdef class Player:
         # Cache absolute offsets for visible fields
         self._cash_offset = self._base_offset + fields.cash
         self._net_worth_offset = self._base_offset + fields.net_worth
+        self._liquidity_offset = self._base_offset + fields.liquidity
+        self._market_offset = layout.market_offset
         self._turn_order_offset = self._base_offset + fields.turn_order
         self._owned_companies_offset = self._base_offset + fields.owned_companies
         self._owned_shares_offset = self._base_offset + fields.owned_shares
@@ -255,8 +257,63 @@ cdef class Player:
         return total
 
     cpdef void update_net_worth(self, GameState state):
-        """Recalculate and store net worth."""
+        """Recalculate and store net worth and liquidity."""
         self.set_net_worth(state, self.calculate_net_worth(state))
+        self.set_liquidity(state, self.calculate_liquidity(state))
+
+    # =========================================================================
+    # LIQUIDITY
+    # =========================================================================
+
+    cpdef int get_liquidity(self, GameState state):
+        """Get player's stored liquidity (integer dollars)."""
+        return <int>(state._data[self._liquidity_offset] * NET_WORTH_DIVISOR + 0.5)
+
+    cpdef void set_liquidity(self, GameState state, int liquidity):
+        """Set player's liquidity (integer dollars)."""
+        state._data[self._liquidity_offset] = <float>liquidity / NET_WORTH_DIVISOR
+
+    cpdef int calculate_liquidity(self, GameState state):
+        """
+        Calculate player's total liquidation value.
+
+        Liquidity = cash + iterative proceeds from selling all held shares.
+        Sells are simulated in corp index order (0-7). Each sell moves the
+        corp's price to the next lower available market space. Cross-corp
+        effects are captured: selling corp 0's shares frees/occupies market
+        spaces that affect corp 1's simulation, etc.
+        """
+        cdef int total = self.get_cash(state)
+        cdef int corp_id, shares, sim_index, new_index, i
+        cdef float sim_market[27]
+
+        # Copy market availability for simulation
+        for i in range(27):
+            sim_market[i] = state._data[self._market_offset + i]
+
+        for corp_id in range(<int>GameConstants.NUM_CORPS):
+            if not state._data[state._layout.corps_offset + corp_id * state._layout.corp_stride] == 1.0:
+                continue  # Skip inactive corps
+            shares = self.get_shares(state, corp_id)
+            if shares <= 0:
+                continue
+
+            sim_index = <int>state._data[state._layout.hidden_corp_price_indices_offset + corp_id]
+            for _ in range(shares):
+                # Find next lower available space in simulated market
+                new_index = sim_index - 1
+                while new_index > 0 and sim_market[new_index] != 1.0:
+                    new_index -= 1
+                if new_index <= 0:
+                    break  # Bankruptcy — remaining shares worthless
+                total += MARKET_PRICES[new_index]
+                # Update simulated market: free old space, occupy new
+                if sim_index < 26:
+                    sim_market[sim_index] = 1.0
+                sim_market[new_index] = 0.0
+                sim_index = new_index
+
+        return total
 
     # =========================================================================
     # TURN ORDER

@@ -34,6 +34,8 @@ cdef class Player:
     # Cached field offsets (visible state)
     cdef int _cash_offset
     cdef int _net_worth_offset
+    cdef int _liquidity_offset
+    cdef int _market_offset
     cdef int _turn_order_offset
     cdef int _owned_companies_offset
     cdef int _owned_shares_offset
@@ -65,6 +67,11 @@ cdef class Player:
     cpdef void set_net_worth(self, GameState state, int net_worth)
     cpdef int calculate_net_worth(self, GameState state)
     cpdef void update_net_worth(self, GameState state)
+
+    # Liquidity
+    cpdef int get_liquidity(self, GameState state)
+    cpdef void set_liquidity(self, GameState state, int liquidity)
+    cpdef int calculate_liquidity(self, GameState state)
 
     # Turn order
     cpdef int get_turn_order(self, GameState state)

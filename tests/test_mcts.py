@@ -154,9 +154,12 @@ class TestLayout:
             layout = get_layout(n)
             assert layout.visible_size + layout.hidden_size == layout.total_size
 
-    def test_player_stride_3p(self):
-        layout = get_layout(3)
-        assert layout.player_stride == 67  # 64 + num_players
+    def test_player_stride_scales_with_players(self):
+        """Player stride = fixed fields + num_players (for turn_order one-hot)."""
+        base = get_layout(2).player_stride - 2
+        for n in range(3, 7):
+            layout = get_layout(n)
+            assert layout.player_stride == base + n
 
 
 # ---------------------------------------------------------------------------

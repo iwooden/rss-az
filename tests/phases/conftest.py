@@ -165,6 +165,11 @@ def assert_invariants(state, msg=""):
         net_worth = PLAYERS[p].get_net_worth(state)
         assert net_worth >= 0, f"{msg}\nPlayer {p} net worth negative: {net_worth}"
 
+    # Player liquidity non-negative (lazily updated like net_worth)
+    for p in range(num_players):
+        liq = PLAYERS[p].get_liquidity(state)
+        assert liq >= 0, f"{msg}\nPlayer {p} liquidity negative: {liq}"
+
     # Corp cash non-negative for active corps
     for corp_id in range(8):
         corp = CORPS[corp_id]

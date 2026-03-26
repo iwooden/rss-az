@@ -44,6 +44,25 @@ Changes to the visible state vector that need doc/test updates when complete.
 - `entities/corp.pyx` — `_calculate_income_nogil` refactored to return breakdown, `calculate_income` stores components, derived `total_coo` from `raw_revenue - adjusted_income_sum` (removed per-company CoO calls)
 - `tests/phases/conftest.py` — invariants for decomposition sum and coo_cost <= 0
 
+### 3. Player: `liquidity` (1 per player, +num_players total)
+
+**Position:** After `net_worth`, before `turn_order` in player stride.
+**Encoding:** Iterative share liquidation value / `NET_WORTH_DIVISOR` (200.0). Cash + simulated proceeds from selling all held shares one at a time, with each sell moving the corp's price to the next lower available market space.
+**Value:** Equals cash when player holds no shares.
+**Player stride:** 64 + num_players → 65 + num_players
+
+**Simulation details:** Sells simulated in corp index order (0-7). Cross-corp market effects captured — selling corp 0's shares frees/occupies spaces that affect corp 1's simulation. Uses local copy of market availability array.
+
+**Update triggers:** Lazily updated via `update_net_worth` (same call sites as net_worth).
+
+**Code changes:**
+- `core/state.pxd` — `PlayerFieldOffsets.liquidity`
+- `core/state.pyx` — player_stride, `PlayerFields`, `compute_player_field_offsets`, `get_player_fields`, `initialize_game`
+- `entities/player.pxd` — `_liquidity_offset`, `_market_offset`, liquidity methods
+- `entities/player.pyx` — `calculate_liquidity` with simulated market, `update_net_worth` calls it
+- `tests/phases/conftest.py` — non-negative invariant
+- `tests/test_mcts.py` — removed hardcoded player_stride, replaced with dynamic check
+
 ## Pending Updates (do when all changes are done)
 
 - [ ] `VECTORS.md` — corp stride, field table, field offsets, turn state fields, size table
