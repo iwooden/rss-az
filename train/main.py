@@ -724,12 +724,16 @@ def main() -> None:
                     _collect_record(record, game_idx)
                     games_collected = game_idx + 1
                     # Signal eval servers when few games remain so they
-                    # don't deadlock waiting for a full batch.
+                    # don't deadlock waiting for a full batch.  Use total
+                    # worker count (not partition size) because workers
+                    # across partitions don't finish at the same rate —
+                    # a partition could lose most of its workers while
+                    # games are still being collected from other partitions.
                     if (
                         epoch_ending_flag is not None
                         and not epoch_ending_flag.value
                         and config.games_per_epoch - games_collected
-                            < max_partition_size
+                            < config.num_workers
                     ):
                         epoch_ending_flag.value = True
                     if shutdown_event.is_set():
