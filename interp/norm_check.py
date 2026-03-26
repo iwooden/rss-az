@@ -47,11 +47,17 @@ _PHASE_SPECIFIC_FEATURES: dict[str, list[int]] = {
     "turn:active_corp_income": [3, 4, 6, 8, 10],
     "turn:active_corp_stars": [3, 4, 6, 8, 10],
     "turn:active_corp_share_price": [3, 4, 6, 8, 10],
+    "turn:active_corp_raw_revenue": [3, 4, 6, 8, 10],
+    "turn:active_corp_synergy_income": [3, 4, 6, 8, 10],
+    "turn:active_corp_coo_cost": [3, 4, 6, 8, 10],
+    "turn:active_corp_ability_income": [3, 4, 6, 8, 10],
     "turn:active_corp_companies": [3, 4, 6, 8, 10],
+    "turn:par_corp_treasury": [9, 10],               # IPO, PAR
+    "turn:par_shares": [9, 10],                      # IPO, PAR
     "invest:buy_impact": [0],                        # INVEST
     "invest:sell_impact": [0],                       # INVEST
     "player:round_trips": [0],                       # INVEST
-    "player:acq_proceeds": [3],                      # ACQ
+    "co:acquired": [3],                              # ACQ
     "corp:acq_proceeds": [3],                        # ACQ
 }
 

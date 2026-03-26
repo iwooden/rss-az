@@ -292,6 +292,7 @@ def build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
     NC = GameConstants.NUM_COMPANIES
     NK = GameConstants.NUM_CORPS
     MAX_DIV = GameConstants.MAX_DIVIDEND
+    N_PAR = GameConstants.NUM_PAR_PRICES
 
     groups: list[tuple[str, np.ndarray]] = []
 
@@ -303,6 +304,7 @@ def build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
     _player_groups = [
         ("player:cash", pf.cash, 1),
         ("player:net_worth", pf.net_worth, 1),
+        ("player:liquidity", pf.liquidity, 1),
         ("player:turn_order", pf.turn_order, num_players),
         ("player:owned_companies", pf.owned_companies, NC),
         ("player:owned_shares", pf.owned_shares, NK),
@@ -326,6 +328,7 @@ def build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
     groups.append(("co:for_auction", np.arange(layout.auction_companies_offset, layout.auction_companies_offset + NC)))
     groups.append(("co:revealed", np.arange(layout.revealed_companies_offset, layout.revealed_companies_offset + NC)))
     groups.append(("co:removed", np.arange(layout.removed_companies_offset, layout.removed_companies_offset + NC)))
+    groups.append(("co:acquired", np.arange(layout.acquired_companies_offset, layout.acquired_companies_offset + NC)))
 
     # --- Company adjusted incomes ---
     groups.append(("co:adj_incomes", np.arange(layout.company_incomes_offset, layout.company_incomes_offset + layout.company_incomes_size)))
@@ -346,6 +349,11 @@ def build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
         ("corp:acq_proceeds", cf.acquisition_proceeds, 1),
         ("corp:in_receivership", cf.in_receivership, 1),
         ("corp:price_index_norm", cf.price_index_norm, 1),
+        ("corp:pending_price_move", cf.pending_price_move, 1),
+        ("corp:raw_revenue", cf.raw_revenue, 1),
+        ("corp:synergy_income", cf.synergy_income, 1),
+        ("corp:coo_cost", cf.coo_cost, 1),
+        ("corp:ability_income", cf.ability_income, 1),
         ("corp:owned_companies", cf.owned_companies, NC),
     ]
     for name, rel, size in _corp_groups:
@@ -386,9 +394,16 @@ def build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
     groups.append(("turn:active_corp_income", np.array([t + tf.active_corp_income])))
     groups.append(("turn:active_corp_stars", np.array([t + tf.active_corp_stars])))
     groups.append(("turn:active_corp_share_price", np.array([t + tf.active_corp_share_price])))
+    groups.append(("turn:active_corp_raw_revenue", np.array([t + tf.active_corp_raw_revenue])))
+    groups.append(("turn:active_corp_synergy_income", np.array([t + tf.active_corp_synergy_income])))
+    groups.append(("turn:active_corp_coo_cost", np.array([t + tf.active_corp_coo_cost])))
+    groups.append(("turn:active_corp_ability_income", np.array([t + tf.active_corp_ability_income])))
     groups.append(("turn:active_corp_companies", np.arange(t + tf.active_corp_companies, t + tf.active_corp_companies + NC)))
 
     groups.append(("turn:cards_remaining", np.array([t + tf.cards_remaining])))
+
+    groups.append(("turn:par_corp_treasury", np.arange(t + tf.par_corp_treasury, t + tf.par_corp_treasury + N_PAR)))
+    groups.append(("turn:par_shares", np.arange(t + tf.par_shares, t + tf.par_shares + N_PAR)))
 
     # --- Auction slot info ---
     s = layout.auction_slot_info_offset
