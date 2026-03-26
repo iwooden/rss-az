@@ -25,6 +25,7 @@ cdef struct CorpOffsets:
 
 # Offset computation
 cdef CorpOffsets get_corp_offsets() noexcept nogil
+cpdef int calculate_price_move(int owned_stars, int required_stars) noexcept nogil
 
 # Corp state accessors (raw pointer, nogil)
 cdef bint is_corp_active(float* corp, CorpOffsets* c) noexcept nogil
@@ -60,6 +61,7 @@ cdef class Corporation:
     cdef int _acquisition_proceeds_offset
     cdef int _in_receivership_offset
     cdef int _price_index_norm_offset
+    cdef int _pending_price_move_offset
     cdef int _owned_companies_offset
     cdef int _company_incomes_offset  # Global company_incomes array offset
 
@@ -116,6 +118,7 @@ cdef class Corporation:
 
     # Star recalculation
     cpdef void recalculate_stars(self, GameState state)
+    cpdef void update_pending_price_move(self, GameState state)
 
     # Income calculation
     cdef int _calculate_income_nogil(self, float* data, int coo_level) noexcept nogil

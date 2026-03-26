@@ -264,6 +264,8 @@ pytest tests/
 
 **Patterns:** Validate action effects, check mask validity, verify phase transitions, assert invariants (cash conservation, share counts).
 
+**Derived visible state fields** (e.g. `pending_price_move`): Test via invariants in `assert_invariants()` (`tests/phases/conftest.py`), not dedicated test files. This validates correctness at every state transition across all phases and replay tests automatically. Only add a dedicated test file if the feature has complex standalone logic that isn't covered by invariant checks.
+
 **When a test fails, assume the implementation is broken** until proven otherwise. Only "fix" a test after confirming the implementation is correct and the test setup was invalid.
 
 **Status codes:** STATUS_OK (0), STATUS_INVALID (1), STATUS_GAME_OVER (2)

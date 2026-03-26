@@ -29,6 +29,7 @@ from core.data cimport (
     get_required_stars, get_max_dividend, MARKET_PRICES
 )
 from core.actions cimport ActionInfo, ACTION_DIVIDEND
+from entities.corp cimport calculate_price_move
 from entities import turn as turn_module
 from entities import corp as corp_module
 from entities import player as player_module
@@ -117,34 +118,6 @@ cdef void _pay_dividends(GameState state, int corp_id, int amount_per_share) noe
     corp_module.CORPS[corp_id].add_cash(state, -total_cost)
 
 
-cdef int _calculate_price_move(int owned_stars, int required_stars) noexcept:
-    """
-    Calculate price movement based on star comparison.
-
-    Per RULES.md lines 318-323:
-    - diff >= 2: up 2 tiers (+2)
-    - diff == 1: up 1 tier (+1)
-    - diff == 0: no change (0)
-    - diff == -1: down 1 tier (-1)
-    - diff <= -2: down 2 tiers (-2)
-
-    Returns:
-        Number of tiers to move (-2, -1, 0, +1, +2)
-    """
-    cdef int diff = owned_stars - required_stars
-
-    if diff >= 2:
-        return 2
-    elif diff == 1:
-        return 1
-    elif diff == 0:
-        return 0
-    elif diff == -1:
-        return -1
-    else:  # diff <= -2
-        return -2
-
-
 cdef int _find_target_index(GameState state, int current_index, int move) noexcept:
     """
     Find target price index after movement, sliding past occupied spaces.
@@ -208,7 +181,7 @@ cdef void _adjust_share_price(GameState state, int corp_id) noexcept:
     cdef int issued_shares = corp_module.CORPS[corp_id].get_issued_shares(state)
     cdef int owned_stars = corp_module.CORPS[corp_id].get_stars(state)
     cdef int required_stars = get_required_stars(current_index, issued_shares)
-    cdef int move = _calculate_price_move(owned_stars, required_stars)
+    cdef int move = calculate_price_move(owned_stars, required_stars)
     cdef int target_index
 
     if move == 0:
@@ -298,7 +271,7 @@ cdef void _compute_dividend_impacts(GameState state, int corp_id) noexcept:
         new_cash = corp_cash - (level * issued_shares)
         new_cash_stars = new_cash // 10 if new_cash > 0 else 0
         new_total_stars = base_stars + new_cash_stars + si_bonus
-        move = _calculate_price_move(new_total_stars, required_stars)
+        move = calculate_price_move(new_total_stars, required_stars)
         target_index = _find_target_index(state, current_index, move)
         impact = target_index - current_index
         turn_module.TURN.set_dividend_impact(state, level, impact)
@@ -445,8 +418,8 @@ def find_next_dividend_corp_py(GameState state):
 
 
 def calculate_price_move_py(int owned_stars, int required_stars):
-    """Python wrapper for _calculate_price_move."""
-    return _calculate_price_move(owned_stars, required_stars)
+    """Python wrapper for calculate_price_move."""
+    return calculate_price_move(owned_stars, required_stars)
 
 
 def find_target_index_py(GameState state, int current_index, int move):

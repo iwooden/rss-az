@@ -129,6 +129,7 @@ cdef struct CorpFieldOffsets:
     int acquisition_proceeds
     int in_receivership
     int price_index_norm
+    int pending_price_move
     int owned_companies
 
 # =============================================================================

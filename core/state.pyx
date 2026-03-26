@@ -54,7 +54,8 @@ PlayerFields = namedtuple('PlayerFields', [
 CorpFields = namedtuple('CorpFields', [
     'active', 'cash', 'unissued_shares', 'issued_shares', 'bank_shares',
     'income', 'stars', 'share_price', 'acquisition_proceeds',
-    'in_receivership', 'price_index_norm', 'owned_companies',
+    'in_receivership', 'price_index_norm', 'pending_price_move',
+    'owned_companies',
 ])
 
 TurnFields = namedtuple('TurnFields', [
@@ -215,6 +216,7 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         1 +                 # acquisition_proceeds
         1 +                 # in_receivership
         1 +                 # price_index_norm (normalized scalar: index / 26.0)
+        1 +                 # pending_price_move (raw move assuming $0 dividend / IMPACT_DIVISOR)
         GameConstants.NUM_COMPANIES       # owned_companies
     )
     layout.corps_offset = offset
@@ -578,6 +580,7 @@ def get_corp_fields():
         acquisition_proceeds=c.acquisition_proceeds,
         in_receivership=c.in_receivership,
         price_index_norm=c.price_index_norm,
+        pending_price_move=c.pending_price_move,
         owned_companies=c.owned_companies,
     )
 
@@ -644,6 +647,8 @@ cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil:
     c.in_receivership = offset
     offset += 1
     c.price_index_norm = offset
+    offset += 1
+    c.pending_price_move = offset
     offset += 1
     c.owned_companies = offset
 

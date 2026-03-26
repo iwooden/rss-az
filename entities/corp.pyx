@@ -11,9 +11,10 @@ from libc.math cimport lround
 
 from core.state cimport GameState, StateLayout, CorpFieldOffsets
 from core.data cimport (
-    GameConstants, CASH_DIVISOR, COMPANY_INCOME_DIVISOR, ENTITY_INCOME_DIVISOR, SHARE_PRICE_DIVISOR, SHARE_DIVISOR, CORP_STAR_DIVISOR, MARKET_PRICES,
+    GameConstants, CASH_DIVISOR, COMPANY_INCOME_DIVISOR, ENTITY_INCOME_DIVISOR, SHARE_PRICE_DIVISOR, SHARE_DIVISOR, CORP_STAR_DIVISOR, IMPACT_DIVISOR, MARKET_PRICES,
     get_company_income, get_company_stars, get_cost_of_ownership,
     get_company_face_value, compute_synergy_bonuses, CorpIndices, get_corp_share_count,
+    get_required_stars,
 )
 from core.data import CORP_NAMES
 from entities.encoding cimport set_one_hot, set_one_hot_with_compact
@@ -84,6 +85,20 @@ cdef CorpOffsets get_corp_offsets() noexcept nogil:
     c.in_receivership = offset
 
     return c
+
+
+cpdef int calculate_price_move(int owned_stars, int required_stars) noexcept nogil:
+    """
+    Calculate raw price movement based on star comparison.
+
+    Returns clamped diff in [-2, +2] per RULES.md lines 318-323.
+    """
+    cdef int diff = owned_stars - required_stars
+    if diff < -2:
+        return -2
+    if diff > 2:
+        return 2
+    return diff
 
 
 cdef inline bint is_corp_active(float* corp, CorpOffsets* c) noexcept nogil:
@@ -164,6 +179,7 @@ cdef class Corporation:
         self._acquisition_proceeds_offset = self._base_offset + fields.acquisition_proceeds
         self._in_receivership_offset = self._base_offset + fields.in_receivership
         self._price_index_norm_offset = self._base_offset + fields.price_index_norm
+        self._pending_price_move_offset = self._base_offset + fields.pending_price_move
         self._owned_companies_offset = self._base_offset + fields.owned_companies
         self._company_incomes_offset = layout.company_incomes_offset
 
@@ -269,6 +285,8 @@ cdef class Corporation:
     cpdef void set_issued_shares(self, GameState state, int shares):
         """Set number of issued shares."""
         state._data[self._issued_shares_offset] = <float>shares / SHARE_DIVISOR
+        if self.is_active(state):
+            self.update_pending_price_move(state)
 
     cpdef int get_bank_shares(self, GameState state):
         """Get number of shares held by the bank (sold by players)."""
@@ -324,6 +342,25 @@ cdef class Corporation:
             total += 2
 
         self.set_stars(state, total)
+        self.update_pending_price_move(state)
+
+    cpdef void update_pending_price_move(self, GameState state):
+        """
+        Recompute the pending price movement scalar assuming $0 dividend.
+
+        Raw movement (-2 to +2) from calculate_price_move, normalized by IMPACT_DIVISOR.
+        0 for inactive corps.
+        """
+        cdef int owned_stars, price_index, issued_shares, required, move
+        if not self.is_active(state):
+            state._data[self._pending_price_move_offset] = 0.0
+            return
+        owned_stars = self.get_stars(state)
+        price_index = self.get_price_index(state)
+        issued_shares = self.get_issued_shares(state)
+        required = get_required_stars(price_index, issued_shares)
+        move = calculate_price_move(owned_stars, required)
+        state._data[self._pending_price_move_offset] = <float>move / IMPACT_DIVISOR
 
     # =========================================================================
     # SHARE PRICE
@@ -342,7 +379,7 @@ cdef class Corporation:
         return <int>state._data[self._hidden_price_index_offset]
 
     cpdef void set_price_index(self, GameState state, int index):
-        """Set market price index. Updates normalized scalar, hidden compact, and share_price."""
+        """Set market price index. Updates normalized scalar, hidden compact, share_price, and pending_price_move."""
         # Update hidden compact storage for O(1) game logic access
         if 0 <= index < GameConstants.NUM_MARKET_SPACES:
             state._data[self._hidden_price_index_offset] = <float>index
@@ -352,6 +389,7 @@ cdef class Corporation:
         else:
             state._data[self._hidden_price_index_offset] = -1.0
             state._data[self._price_index_norm_offset] = 0.0
+        self.update_pending_price_move(state)
 
     # =========================================================================
     # ACQUISITION PROCEEDS

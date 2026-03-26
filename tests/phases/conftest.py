@@ -9,13 +9,16 @@ Fixture Usage Guide:
 """
 import pytest
 import numpy as np
-from core.state import GameState
+from core.state import GameState, get_corp_fields, get_layout
 from core.driver import DRIVER
 from core.actions import get_valid_action_mask, get_action_layout
-from core.data import GamePhases, CORP_NAMES, CorpIndices, get_corp_share_count, get_company_stars
+from core.data import (
+    GamePhases, CORP_NAMES, CorpIndices, get_corp_share_count, get_company_stars,
+    get_required_stars, PY_IMPACT_DIVISOR as IMPACT_DIVISOR,
+)
 from entities.turn import TURN
 from entities.player import PLAYERS, update_all_net_worths
-from entities.corp import CORPS
+from entities.corp import CORPS, calculate_price_move
 from entities.market import MARKET
 from entities.company import COMPANIES, CompanyLocation
 from entities.fi import FI
@@ -197,6 +200,30 @@ def assert_invariants(state, msg=""):
             assert stored == computed, (
                 f"{msg}\nCorp {corp_id} income mismatch: "
                 f"stored={stored} != computed={computed}"
+            )
+
+    # Pending price move consistency: must match expected from current state
+    layout = get_layout(num_players)
+    fields = get_corp_fields()
+    for corp_id in range(8):
+        corp = CORPS[corp_id]
+        offset = layout.corps_offset + corp_id * layout.corp_stride + fields.pending_price_move
+        stored = state._array[offset]
+        if not corp.is_active(state):
+            assert stored == 0.0, (
+                f"{msg}\nCorp {corp_id} inactive but pending_price_move={stored}"
+            )
+        else:
+            stars = corp.get_stars(state)
+            idx = corp.get_price_index(state)
+            issued = corp.get_issued_shares(state)
+            required = get_required_stars(idx, issued)
+            move = calculate_price_move(stars, required)
+            expected = move / IMPACT_DIVISOR
+            assert abs(stored - expected) < 1e-6, (
+                f"{msg}\nCorp {corp_id} pending_price_move mismatch: "
+                f"stored={stored} != expected={expected} "
+                f"(stars={stars}, idx={idx}, issued={issued}, required={required}, move={move})"
             )
 
     # Auction row size check
