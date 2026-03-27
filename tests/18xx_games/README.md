@@ -27,7 +27,7 @@ Our Cython engine makes several intentional design choices that differ from the 
 
 **Our engine:** Offers are generated into a hidden buffer and presented one-by-one in a fixed priority order: OS→FI (face DESC) → Corp→FI (price DESC) → Corp→Corp → Corp→Player.
 
-**Replay handling:** The ACQ adapter reads Ruby-computed outcomes from the first ACQ snapshot, then matches our engine's offers against same-president outcomes, accepting or passing each offer based on whether it matches a reference transfer.
+**Replay handling:** The ACQ adapter reads Ruby-computed outcomes from the first ACQ snapshot, then matches our engine's offers against same-president outcomes, accepting or passing each offer based on whether it matches a reference transfer. Same-president corp-to-corp transfers are pre-applied before the buffer walk (using `acquisition_proceeds` for correct cash flow), because the fixed ordering can interact with CLO pre-applies: closing a company before ACQ may reduce a corp's company count, causing the engine's `_is_offer_valid` to reject both directions of a swap due to the last-company rule. Pre-applying the transfers first avoids this — the engine silently skips them during the buffer walk since the companies already moved.
 
 ### 3. Closing Offer Scope
 
@@ -68,6 +68,8 @@ Our Cython engine makes several intentional design choices that differ from the 
 **Our engine:** No undo/redo support. Actions are final once applied.
 
 **Replay handling:** The Ruby extractor (`extract_states.rb`) resolves undo/redo at extraction time. It maintains an `engine_action_stack` that tracks all processed actions (including skip-types like `program_*`), so that each undo correctly identifies what the engine actually undid. When an undo reverts a skip-type action (which has no snapshot), no snapshot is popped — only real actions cause snapshot pops. Undo groups store both engine-stack entries and snapshots so that redo correctly restores both. The extractor emits `committed_action_ids` in the initial record (including committed skip-type IDs), which `filter_actions()` uses to drop undone actions from the raw stream without reimplementing undo logic in Python.
+
+The extractor mirrors the 18xx engine's `filtered_actions` semantics (base.rb line 804): new non-undo/redo actions clear `undo_groups` (the redo stack), and `undo action_id=X` always pushes a group (even if empty, when X is already the stack top). Without these, stale undo groups leak into subsequent redo operations and produce incorrect `committed_action_ids`.
 
 ### 8. Auto-Applied Forced Actions
 

@@ -343,7 +343,13 @@ def process_game(json_path)
         end
       end
 
-      undo_groups.push({ engine: engine_group, snaps: snap_group }) unless engine_group.empty?
+      # Always push a group when action_id is specified — even if nothing was
+      # popped.  The 18xx engine pushes an (empty) redo entry in this case, and
+      # subsequent redo must consume it instead of a stale earlier group.
+      # For simple undo (no action_id), only push if something was undone.
+      if !engine_group.empty? || raw_action['action_id']
+        undo_groups.push({ engine: engine_group, snaps: snap_group })
+      end
       next
     end
 
@@ -359,6 +365,11 @@ def process_game(json_path)
       end
       next
     end
+
+    # New (non-undo/redo) actions clear the redo stack in the 18xx engine
+    # (base.rb line 804: active_undos.clear).  Mirror this so that undone
+    # actions stored in undo_groups don't leak back via a later redo.
+    undo_groups.clear unless undo_groups.empty?
 
     # Capture the round BEFORE processing: the snapshot records state AFTER
     # the action, but the round label should reflect WHEN the action was taken

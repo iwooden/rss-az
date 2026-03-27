@@ -466,6 +466,7 @@ class ReplayHarness:
         # ACQ snapshot.  Each outcome includes seller info and a cross_president
         # flag, so we don't need to iterate over corps/players to detect sellers.
         acq_outcomes: dict[str, tuple[str, int]] = {}
+        acq_outcome_details: dict[str, dict] = {}  # Full outcome dicts for pre-apply fallback
         for a in acq_actions:
             aid = a.get('id', -1)
             if aid >= 0 and aid in ref_by_action:
@@ -474,6 +475,7 @@ class ReplayHarness:
                     for o in ref['acq_outcomes']:
                         if not o.get('cross_president', False):
                             acq_outcomes[o['company']] = (o['buyer'], o['price'])
+                            acq_outcome_details[o['company']] = o
                     # Pre-apply cross-president transfers (our engine excludes
                     # these from its action space — RULES.md constraint #1).
                     # Must happen BEFORE the offer buffer walk because the driver
@@ -506,6 +508,32 @@ class ReplayHarness:
                                     print(f"  ACQ adapter: pre-applied cross-president player transfer "
                                           f"player[{seller_idx}]->{o['buyer']} for {o['company']} at {price}")
                     break
+
+        # Pre-apply same-president corp-to-corp transfers.  Our engine's
+        # fixed offer ordering (buyer share price DESC) can interact badly
+        # with CLO pre-applies that reduce a corp's company count.  By
+        # pre-applying these transfers first, the engine's buffer walk will
+        # silently skip them (company already moved), and CLO pre-applies
+        # below won't break the last-company validation.  Cash flows use
+        # acquisition_proceeds which the engine finalizes at ACQ exit.
+        for company_name in list(acq_outcomes.keys()):
+            o = acq_outcome_details.get(company_name)
+            if o is None or o.get('seller_type') != 'corp':
+                continue
+            company_id = COMPANY_NAME_TO_ID.get(company_name)
+            buyer_corp_id = CORP_NAME_TO_ID.get(o['buyer'])
+            seller_corp_id = CORP_NAME_TO_ID.get(o.get('seller', ''))
+            if company_id is None or buyer_corp_id is None or seller_corp_id is None:
+                continue
+            price = o['price']
+            COMPANIES[company_id].transfer_to_corp(state, buyer_corp_id)
+            CORPS[buyer_corp_id].add_cash(state, -price)
+            current = CORPS[seller_corp_id].get_acquisition_proceeds(state)
+            CORPS[seller_corp_id].set_acquisition_proceeds(state, current + price)
+            del acq_outcomes[company_name]
+            if self.verbose:
+                print(f"  ACQ adapter: pre-applied corp-corp transfer "
+                      f"{o['seller']}->{o['buyer']} for {company_name} at {price}")
 
         if self.verbose and acq_outcomes:
             print(f"  ACQ adapter: outcomes={acq_outcomes}")
