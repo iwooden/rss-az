@@ -267,12 +267,21 @@ def _eval_server_serve(
         from train.gpu import GpuConfig
         GpuConfig(vendor=gpu_vendor).apply_optimizations()
 
+    # Temporary debug switch: force eval-server inference to run in fp32.
+    # This isolates ROCm/eager bf16 autocast as a potential source of the
+    # sporadic NaNs seen during self-play generation.
+    eval_autocast_dtype: torch.dtype | None = None
+
     # Optionally compile the model (per-process compilation).
     if not no_compile and use_cuda:
         ckw = compile_kwargs if compile_kwargs else {"dynamic": True}
         model = torch.compile(model, **ckw)  # type: ignore[assignment]
         model.eval()
-        with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
+        with torch.no_grad(), torch.autocast(
+            device.type,
+            dtype=eval_autocast_dtype,
+            enabled=eval_autocast_dtype is not None,
+        ):
             dummy = torch.randn(1, shared_bufs.visible_size, device=device)
             model(dummy)
             del dummy
@@ -350,11 +359,7 @@ def _eval_server_serve(
         gpu_s_batch = gpu_s[:padded_n]
         gpu_s_batch[:total_n].copy_(pin_s[:total_n], non_blocking=True)
         with torch.no_grad():
-            if use_cuda:
-                with torch.autocast(device.type, dtype=torch.bfloat16):
-                    policy_logits, values = model(gpu_s_batch)
-            else:
-                policy_logits, values = model(gpu_s_batch)
+            policy_logits, values = model(gpu_s_batch)
             pin_log[:total_n].copy_(
                 policy_logits[:total_n].float(), non_blocking=True,
             )
@@ -393,6 +398,20 @@ def _eval_server_serve(
     # event validation) has succeeded. This ensures workers won't be spawned
     # against a server that's about to die from e.g. a missing Cython rebuild.
     ready_event.set()
+
+    # Persistent autocast context — entered once for the entire serve loop
+    # rather than per-batch, to avoid accumulated context-manager state from
+    # thousands of enter/exit cycles.
+    _autocast_ctx = (
+        torch.autocast(
+            device.type,
+            dtype=eval_autocast_dtype,
+            enabled=eval_autocast_dtype is not None,
+        )
+        if use_cuda else None
+    )
+    if _autocast_ctx is not None:
+        _autocast_ctx.__enter__()
 
     if fixed_batch_workers is not None:
         # --- Fixed-batch accumulation loop ---
@@ -478,6 +497,9 @@ def _eval_server_serve(
                 num_requests,
             )
             _check_stats_report()
+
+    if _autocast_ctx is not None:
+        _autocast_ctx.__exit__(None, None, None)
 
 
 class EvaluationServer:
