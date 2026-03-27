@@ -63,9 +63,6 @@ class ResidualMLPBlock(nn.Module):
 class RSSAlphaZeroNet(nn.Module):
     """Residual MLP with multi-layer input preprocessing."""
 
-    _phase_starts: torch.Tensor
-    _phase_ends: torch.Tensor
-
     def __init__(self, cfg: RSSModelConfig) -> None:
         super().__init__()
         self.cfg = cfg
@@ -100,16 +97,10 @@ class RSSAlphaZeroNet(nn.Module):
         phase_starts = [action_layout[k] for k in phase_start_keys]
         phase_ends = phase_starts[1:] + [cfg.action_dim]
 
-        self.register_buffer(
-            '_phase_starts',
-            torch.tensor(phase_starts, dtype=torch.long),
-            persistent=False,
-        )
-        self.register_buffer(
-            '_phase_ends',
-            torch.tensor(phase_ends, dtype=torch.long),
-            persistent=False,
-        )
+        # Store as plain Python lists — these are constants, no need for GPU
+        # tensors (which would incur .item() sync overhead in the forward loop).
+        self._phase_starts: list[int] = phase_starts
+        self._phase_ends: list[int] = phase_ends
 
         self.phase_heads = nn.ModuleList([
             nn.Sequential(
@@ -163,19 +154,29 @@ class RSSAlphaZeroNet(nn.Module):
             h = block(h)
         h = self.trunk_norm(h)
 
-        # Phase dispatch: read phase from input one-hot (first 8 floats)
+        # Phase dispatch: sort batch by phase for contiguous head inputs.
+        # Single argsort + bincount replaces 8 boolean masks + 8 .any() syncs.
         phases = x[:, :8].argmax(dim=-1)
+        order = phases.argsort()
+        sorted_h = h[order]
+        counts = phases.bincount(minlength=8).tolist()
+
         policy_logits = torch.full(
             (x.shape[0], self.cfg.action_dim), -1e9,
             device=h.device, dtype=h.dtype,
         )
-        for phase_idx in range(8):
-            mask = phases == phase_idx
-            if mask.any():
-                start = self._phase_starts[phase_idx].item()
-                end = self._phase_ends[phase_idx].item()
-                phase_out = self.phase_heads[phase_idx](h[mask])
-                policy_logits[mask, start:end] = phase_out.to(policy_logits.dtype)
+        offset = 0
+        for phase_idx, head in enumerate(self.phase_heads):
+            n = counts[phase_idx]
+            if n == 0:
+                continue
+            start = self._phase_starts[phase_idx]
+            end = self._phase_ends[phase_idx]
+            phase_out = head(sorted_h[offset:offset + n])
+            policy_logits[order[offset:offset + n], start:end] = phase_out.to(
+                policy_logits.dtype
+            )
+            offset += n
 
         values = self.value_head(h)
         return policy_logits, values
@@ -213,8 +214,8 @@ if __name__ == "__main__":
     _phase_names = ["INVEST", "BID", "ACQ", "CLOSE", "DIV", "ISSUE", "IPO", "PAR"]
     for i, (name, head) in enumerate(zip(_phase_names, model.phase_heads)):
         hp = sum(p.numel() for p in head.parameters())
-        start = model._phase_starts[i].item()
-        end = model._phase_ends[i].item()
+        start = model._phase_starts[i]
+        end = model._phase_ends[i]
         print(f"    {name:>6} ({end - start:>2} actions): {hp:>10,}")
 
     # Smoke test with phase-aware input
