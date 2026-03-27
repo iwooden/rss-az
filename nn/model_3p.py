@@ -1,8 +1,12 @@
 """AlphaZero-style PyTorch model for Rolling Stock Stars (3 players).
 
 Architecture informed by interpretability analysis:
-- Two-layer input preprocessing (input -> 3*hidden -> hidden) instead of a single
-  linear projection, to avoid bottlenecking the input transform.
+- Three-layer input preprocessing (input -> 3*hidden -> 2*hidden -> hidden) with
+  LayerNorm at the output. SVD/probing analysis at epoch 375 showed the old two-layer
+  768->256 linear compression losing ~50% of signal (median attenuation 0.502) across
+  57/59 feature groups. Adding a nonlinear intermediate (768->512->256 with two GELUs)
+  gives the network a richer compression path. LayerNorm stabilizes the residual stream
+  entry point (matching pre-LN inside each block).
 - 8 residual blocks with expansion=1 (no inner expansion). SVD analysis showed
   expanded widths at 13-16% utilization — removing the expansion halves trunk
   parameters with no representational loss.
@@ -15,7 +19,7 @@ Architecture informed by interpretability analysis:
   - Value head: 1 hidden layer (hidden->hidden->value_dim). Trunk already computes value
     almost linearly (R^2=0.97); conductance is 45/55 split across both layers.
 
-~2.3M parameters.
+~2.6M parameters.
 """
 
 from __future__ import annotations
@@ -63,12 +67,15 @@ class RSSAlphaZeroNet(nn.Module):
         super().__init__()
         self.cfg = cfg
 
-        # Two-layer input preprocessing:
-        # input_dim -> 3*hidden_dim -> hidden_dim
+        # Three-layer input preprocessing with LayerNorm:
+        # input_dim -> 3*hidden_dim -> 2*hidden_dim -> hidden_dim -> LN
         self.input_preprocess = nn.Sequential(
             nn.Linear(cfg.input_dim, 3 * cfg.hidden_dim),
             nn.GELU(),
-            nn.Linear(3 * cfg.hidden_dim, cfg.hidden_dim),
+            nn.Linear(3 * cfg.hidden_dim, 2 * cfg.hidden_dim),
+            nn.GELU(),
+            nn.Linear(2 * cfg.hidden_dim, cfg.hidden_dim),
+            nn.LayerNorm(cfg.hidden_dim),
         )
 
         self.blocks = nn.ModuleList(
