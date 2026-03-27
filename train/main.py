@@ -52,6 +52,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--games-per-epoch", type=int)
     parser.add_argument("--num-epochs", type=int)
     parser.add_argument("--num-simulations", type=int)
+    parser.add_argument("--mcts-sims-start", type=int,
+                        help="Sim count at ramp start epoch (enables linear ramp)")
+    parser.add_argument("--mcts-sims-end", type=int,
+                        help="Sim count at ramp end epoch")
+    parser.add_argument("--mcts-ramp-start-epoch", type=int,
+                        help="Epoch where sim ramp begins")
+    parser.add_argument("--mcts-ramp-end-epoch", type=int,
+                        help="Epoch where sim ramp ends")
     parser.add_argument("--search-batch-size", type=int)
     parser.add_argument("--num-workers", type=int)
     parser.add_argument("--num-eval-servers", type=int)
@@ -113,6 +121,7 @@ def _build_parser() -> argparse.ArgumentParser:
 _CLI_FIELDS = (
     "model_path",
     "games_per_epoch", "num_epochs", "num_simulations", "search_batch_size",
+    "mcts_sims_start", "mcts_sims_end", "mcts_ramp_start_epoch", "mcts_ramp_end_epoch",
     "num_workers", "num_eval_servers", "eval_fixed_batch_workers",
     "checkpoint_dir", "tensorboard_dir", "seed",
     "temp_initial", "temp_anneal_start", "temp_anneal_end", "temp_final",
@@ -614,7 +623,7 @@ def main() -> None:
         from core.state import get_layout
 
         total_state_size = get_layout(config.num_players).total_size
-        state_pool = StatePool(2 * (config.num_simulations + 1), total_state_size)
+        state_pool = StatePool(2 * (config.max_simulations + 1), total_state_size)
 
     # --- Training loop ---
     avg_losses: dict[str, float] = {}
@@ -887,6 +896,7 @@ def main() -> None:
                     "buffer/utilization": len(buffer) / config.buffer_capacity,
                     "schedule/c_puct": epoch_cfg.c_puct,
                     "schedule/value_blend_alpha": epoch_cfg.value_blend_alpha,
+                    "schedule/num_simulations": epoch_cfg.num_simulations,
                     **net_worth_scalars,
                     **ownership_scalars,
                 },

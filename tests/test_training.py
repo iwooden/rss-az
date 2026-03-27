@@ -242,6 +242,51 @@ class TestConfig:
         assert ec.c_puct == pytest.approx(2.0)
         assert ec.value_blend_alpha == pytest.approx(1.0)
 
+    def test_compute_epoch_config_sim_ramp(self) -> None:
+        cfg = TrainingConfig(
+            num_simulations=800,
+            mcts_sims_start=800, mcts_sims_end=1600,
+            mcts_ramp_start_epoch=100, mcts_ramp_end_epoch=200,
+        )
+        # Before ramp: use start value
+        assert cfg.compute_epoch_config(0).num_simulations == 800
+        assert cfg.compute_epoch_config(50).num_simulations == 800
+        assert cfg.compute_epoch_config(100).num_simulations == 800
+
+        # During ramp: linear interpolation
+        assert cfg.compute_epoch_config(150).num_simulations == 1200
+
+        # After ramp: use end value
+        assert cfg.compute_epoch_config(200).num_simulations == 1600
+        assert cfg.compute_epoch_config(300).num_simulations == 1600
+
+    def test_compute_epoch_config_no_sim_ramp(self) -> None:
+        cfg = TrainingConfig(num_simulations=800)
+        # Without ramp fields, num_simulations stays fixed
+        assert cfg.compute_epoch_config(0).num_simulations == 800
+        assert cfg.compute_epoch_config(100).num_simulations == 800
+
+    def test_max_simulations_with_ramp(self) -> None:
+        cfg = TrainingConfig(
+            num_simulations=800,
+            mcts_sims_start=800, mcts_sims_end=1600,
+            mcts_ramp_start_epoch=100, mcts_ramp_end_epoch=200,
+        )
+        assert cfg.max_simulations == 1600
+
+    def test_max_simulations_without_ramp(self) -> None:
+        cfg = TrainingConfig(num_simulations=800)
+        assert cfg.max_simulations == 800
+
+    def test_to_mcts_config_num_simulations_override(self) -> None:
+        cfg = TrainingConfig(num_simulations=800)
+        mcts_cfg = cfg.to_mcts_config(num_simulations_override=1200)
+        assert mcts_cfg.num_simulations == 1200
+
+    def test_sim_ramp_partial_fields_raises(self) -> None:
+        with pytest.raises(ValueError, match="must all be set or all be None"):
+            TrainingConfig(mcts_sims_start=800, mcts_sims_end=1600)
+
     def test_to_mcts_config_dynamic_dirichlet(self) -> None:
         cfg = TrainingConfig(
             dirichlet_dynamic=True,

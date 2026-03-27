@@ -90,11 +90,16 @@ def play_game(
     if state_pool is None:
         from core.state import get_layout
         total_size = get_layout(config.num_players).total_size
-        state_pool = StatePool(2 * (config.num_simulations + 1), total_size)
+        state_pool = StatePool(2 * (config.max_simulations + 1), total_size)
 
-    # Use epoch-specific c_puct if provided
+    # Use epoch-specific overrides if provided
     c_puct_override = epoch_config.c_puct if epoch_config is not None else None
-    mcts_config = config.to_mcts_config(c_puct_override=c_puct_override)
+    sims_override = (epoch_config.num_simulations if epoch_config is not None
+                     and epoch_config.num_simulations > 0 else None)
+    mcts_config = config.to_mcts_config(
+        c_puct_override=c_puct_override,
+        num_simulations_override=sims_override,
+    )
 
     # Profile stats (None when --profile not set → zero overhead)
     search_stats: SearchStats | None = None
@@ -302,7 +307,7 @@ def self_play_worker(
     from core.state import get_layout
 
     total_size = get_layout(config.num_players).total_size
-    state_pool = StatePool(2 * (config.num_simulations + 1), total_size)
+    state_pool = StatePool(2 * (config.max_simulations + 1), total_size)
 
     try:
         while True:

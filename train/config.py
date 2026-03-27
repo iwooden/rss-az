@@ -63,6 +63,7 @@ class EpochConfig:
 
     c_puct: float
     value_blend_alpha: float  # 0.0 = pure game outcome, 1.0 = pure A0GB
+    num_simulations: int = 0  # 0 = use config default
 
 
 @dataclass
@@ -95,6 +96,16 @@ class TrainingConfig:
     temp_anneal_start: int = 60
     temp_anneal_end: int = 120
     temp_final: float = 0.5
+
+    # --- MCTS simulation ramp (linear) ---
+    # When set, num_simulations ramps linearly from mcts_sims_start to
+    # mcts_sims_end between mcts_ramp_start_epoch and mcts_ramp_end_epoch.
+    # Before start epoch: use mcts_sims_start. After end epoch: use mcts_sims_end.
+    # When None, num_simulations is used as a fixed value throughout training.
+    mcts_sims_start: int | None = None
+    mcts_sims_end: int | None = None
+    mcts_ramp_start_epoch: int | None = None
+    mcts_ramp_end_epoch: int | None = None
 
     # --- c_puct annealing ---
     # Linear interpolation from c_puct_initial to c_puct_final over the
@@ -174,6 +185,27 @@ class TrainingConfig:
         # MCTS fields
         if self.num_simulations < 1:
             raise ValueError(f"num_simulations must be >= 1, got {self.num_simulations}")
+        # Sim ramp: all four fields must be set together, or all None
+        ramp_fields = (self.mcts_sims_start, self.mcts_sims_end,
+                       self.mcts_ramp_start_epoch, self.mcts_ramp_end_epoch)
+        ramp_set = sum(f is not None for f in ramp_fields)
+        if ramp_set not in (0, 4):
+            raise ValueError(
+                "mcts_sims_start, mcts_sims_end, mcts_ramp_start_epoch, and "
+                "mcts_ramp_end_epoch must all be set or all be None"
+            )
+        if ramp_set == 4:
+            assert self.mcts_sims_start is not None and self.mcts_sims_end is not None
+            assert self.mcts_ramp_start_epoch is not None and self.mcts_ramp_end_epoch is not None
+            if self.mcts_sims_start < 1:
+                raise ValueError(f"mcts_sims_start must be >= 1, got {self.mcts_sims_start}")
+            if self.mcts_sims_end < 1:
+                raise ValueError(f"mcts_sims_end must be >= 1, got {self.mcts_sims_end}")
+            if self.mcts_ramp_start_epoch > self.mcts_ramp_end_epoch:
+                raise ValueError(
+                    f"mcts_ramp_start_epoch ({self.mcts_ramp_start_epoch}) must be <= "
+                    f"mcts_ramp_end_epoch ({self.mcts_ramp_end_epoch})"
+                )
         if self.search_batch_size < 1:
             raise ValueError(
                 f"search_batch_size must be >= 1, got {self.search_batch_size}"
@@ -264,6 +296,13 @@ class TrainingConfig:
                 f"batch_size ({self.batch_size})"
             )
 
+    @property
+    def max_simulations(self) -> int:
+        """Maximum possible num_simulations (for StatePool sizing)."""
+        if self.mcts_sims_end is not None:
+            return max(self.num_simulations, self.mcts_sims_end)
+        return self.num_simulations
+
     def compute_epoch_config(self, epoch: int) -> EpochConfig:
         """Compute per-epoch dynamic values for annealing schedules.
 
@@ -286,19 +325,43 @@ class TrainingConfig:
             span = self.value_blend_end_epoch - self.value_blend_start_epoch
             value_blend_alpha = (epoch - self.value_blend_start_epoch) / max(span, 1)
 
+        # MCTS simulation count ramp
+        if (self.mcts_sims_start is not None and self.mcts_sims_end is not None
+                and self.mcts_ramp_start_epoch is not None
+                and self.mcts_ramp_end_epoch is not None):
+            if epoch <= self.mcts_ramp_start_epoch:
+                num_sims = self.mcts_sims_start
+            elif epoch >= self.mcts_ramp_end_epoch:
+                num_sims = self.mcts_sims_end
+            else:
+                span = self.mcts_ramp_end_epoch - self.mcts_ramp_start_epoch
+                t = (epoch - self.mcts_ramp_start_epoch) / max(span, 1)
+                num_sims = round(
+                    self.mcts_sims_start + t * (self.mcts_sims_end - self.mcts_sims_start)
+                )
+        else:
+            num_sims = self.num_simulations
+
         return EpochConfig(
             c_puct=c_puct,
             value_blend_alpha=value_blend_alpha,
+            num_simulations=num_sims,
         )
 
-    def to_mcts_config(self, c_puct_override: float | None = None) -> MCTSConfig:
+    def to_mcts_config(
+        self,
+        c_puct_override: float | None = None,
+        num_simulations_override: int | None = None,
+    ) -> MCTSConfig:
         """Create an MCTSConfig from the relevant training fields.
 
         Args:
             c_puct_override: If provided, use this c_puct instead of c_puct_final.
+            num_simulations_override: If provided, use this instead of self.num_simulations.
         """
         return MCTSConfig(
-            num_simulations=self.num_simulations,
+            num_simulations=(num_simulations_override if num_simulations_override is not None
+                             else self.num_simulations),
             c_puct=c_puct_override if c_puct_override is not None else self.c_puct_final,
             dirichlet_alpha=self.dirichlet_alpha,
             dirichlet_epsilon=self.dirichlet_epsilon,
