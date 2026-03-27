@@ -867,6 +867,10 @@ cdef class GameState:
         """Get active player ID (Python-accessible)."""
         return self._get_active_player()
 
+    cpdef void set_active_player(self, int player_id):
+        """Set active player ID (Python-accessible)."""
+        self._set_active_player(player_id)
+
     cpdef int get_num_players(self):
         """Get number of players (Python-accessible)."""
         return self._num_players

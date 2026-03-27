@@ -127,6 +127,9 @@ class ReplayHarness:
     # Companies already pre-applied by the look-ahead; the ACQ adapter
     # must skip these to avoid double-applying.
     _lookahead_applied: set = field(default_factory=set, repr=False)
+    # Correct player order computed before look-ahead pre-applies modify
+    # player cash.  Applied after the engine cascades through WRAP_UP.
+    _pending_player_order: list | None = field(default=None, repr=False)
 
     def run(self) -> list[Mismatch]:
         """Run the full replay. Returns list of mismatches (empty = success)."""
@@ -389,6 +392,11 @@ class ReplayHarness:
                     context=f"engine_action={ea}, 18xx_type={action.get('type')}",
                 ))
                 break
+
+        # If the look-ahead pre-applied cross-president player transfers
+        # (modifying player cash before WRAP_UP), patch the turn order now
+        # that the cascade is complete.
+        self._apply_pending_player_order(state)
 
         # Update reference for next comparison
         if has_ref:
@@ -899,9 +907,14 @@ class ReplayHarness:
                     elif o['seller_type'] == 'player':
                         seller_idx = self._player_id_to_index.get(o.get('seller_id'))
                         if seller_idx is not None:
+                            # Compute correct player order BEFORE modifying
+                            # player cash — WRAP_UP will sort by cash and
+                            # would see the pre-applied proceeds otherwise.
+                            if self._pending_player_order is None:
+                                self._pending_player_order = self._compute_player_order(state)
                             COMPANIES[company_id].transfer_to_corp(state, buyer_corp_id)
                             CORPS[buyer_corp_id].add_cash(state, -price)
-                            PLAYERS[seller_idx].add_acquisition_proceeds(state, price)
+                            PLAYERS[seller_idx].add_cash(state, price)
                             self._lookahead_applied.add(o['company'])
                             if self.verbose:
                                 print(f"  Look-ahead: pre-applied cross-president player transfer "
@@ -1210,6 +1223,39 @@ class ReplayHarness:
         if idx is not None:
             return idx
         raise ValueError(f"Player {player_id_18xx} not found in player_order")
+
+    def _compute_player_order(self, state) -> list[int]:
+        """Compute player order from current cash (same algorithm as WRAP_UP).
+
+        Returns list of player IDs sorted by descending cash, ties broken
+        by current turn order position (lower position wins).
+        """
+        num_players = state.get_num_players()
+        players = []
+        for i in range(num_players):
+            cash = PLAYERS[i].get_cash(state)
+            order = PLAYERS[i].get_turn_order(state)
+            players.append((i, cash, order))
+        players.sort(key=lambda x: (-x[1], x[2]))
+        return [p[0] for p in players]
+
+    def _apply_pending_player_order(self, state):
+        """Apply stored player order to state and clear pending.
+
+        If the engine already cascaded into INVEST, also fixes the active
+        player to position 0 in the corrected order.
+        """
+        if self._pending_player_order is None:
+            return
+        order = self._pending_player_order
+        self._pending_player_order = None
+        for position, player_id in enumerate(order):
+            PLAYERS[player_id].set_turn_order(state, position)
+        if TURN.get_phase(state) == PHASE_INVEST:
+            state.set_active_player(order[0])
+            state._populate_invest_impacts()
+        if self.verbose:
+            print(f"  Patched player order: {order}")
 
 
 def format_mismatches(mismatches: list[Mismatch]) -> str:

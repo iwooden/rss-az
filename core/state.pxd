@@ -172,6 +172,7 @@ cdef class GameState:
 
     # Active player and num_players access (Python-accessible)
     cpdef int get_active_player(self)
+    cpdef void set_active_player(self, int player_id)
     cpdef int get_num_players(self)
 
     # Phase access (setter via TurnState entity to avoid duplication)
