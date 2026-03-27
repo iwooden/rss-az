@@ -374,10 +374,9 @@ class TrainingConfig:
     def to_json(self) -> str:
         """Serialize to JSON for checkpoint storage."""
         d = asdict(self)
-        # Remove computed/operational fields — they'll be recomputed on load
+        # Remove computed fields — they'll be recomputed on load
         d.pop("action_dim", None)
         d.pop("visible_size", None)
-        d.pop("profile", None)
         return json.dumps(d, indent=2)
 
     @classmethod
@@ -387,7 +386,6 @@ class TrainingConfig:
         # Drop computed fields if present (they're recomputed in __post_init__)
         d.pop("action_dim", None)
         d.pop("visible_size", None)
-        d.pop("profile", None)
 
         # Backward compat: map old field names to new
         if "temp_threshold" in d:
