@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 @dataclass(frozen=True)
@@ -154,17 +155,15 @@ class RSSAlphaZeroNet(nn.Module):
             h = block(h)
         h = self.trunk_norm(h)
 
-        # Phase dispatch: sort batch by phase for contiguous head inputs.
-        # Single argsort + bincount replaces 8 boolean masks + 8 .any() syncs.
+        # Phase dispatch: sort batch by phase for contiguous head inputs,
+        # pad each head's output to full action width, cat, then unsort.
+        # No in-place ops — clean autograd graph for training backward pass.
         phases = x[:, :8].argmax(dim=-1)
         order = phases.argsort()
         sorted_h = h[order]
         counts = phases.bincount(minlength=8).tolist()
 
-        policy_logits = torch.full(
-            (x.shape[0], self.cfg.action_dim), -1e9,
-            device=h.device, dtype=h.dtype,
-        )
+        phase_logits: list[torch.Tensor] = []
         offset = 0
         for phase_idx, head in enumerate(self.phase_heads):
             n = counts[phase_idx]
@@ -173,10 +172,11 @@ class RSSAlphaZeroNet(nn.Module):
             start = self._phase_starts[phase_idx]
             end = self._phase_ends[phase_idx]
             phase_out = head(sorted_h[offset:offset + n])
-            policy_logits[order[offset:offset + n], start:end] = phase_out.to(
-                policy_logits.dtype
-            )
+            padded = F.pad(phase_out, (start, self.cfg.action_dim - end), value=-1e9)
+            phase_logits.append(padded)
             offset += n
+
+        policy_logits = torch.cat(phase_logits, dim=0)[order.argsort()]
 
         values = self.value_head(h)
         return policy_logits, values
