@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+from mcts.mcts_core import expand_node as _expand_node
 
 
 class MCTSNode:
@@ -106,16 +107,4 @@ class MCTSNode:
             default_value: NN value output for this node, shape (num_players,).
                 Used as FPU (First Play Urgency) virtual visit for each action.
         """
-        actions = np.nonzero(legal_mask)[0].astype(np.int32)
-        n = len(actions)
-        self.legal_actions = actions
-        self.priors = policy_priors[actions].astype(np.float32).copy()
-        self.default_value = default_value.copy()
-        # Zero-init: unvisited actions use default_value as Q estimate
-        # (FPU), divided by max(1, visit_count) in select_child.  On the
-        # first real visit, _backup *sets* value_sums to the child's value
-        # instead of adding, eliminating the old "averaging with FPU" distortion.
-        self.visit_counts = np.zeros(n, dtype=np.int32)
-        self.value_sums = np.broadcast_to(
-            default_value, (n, num_players)
-        ).astype(np.float32).copy()
+        _expand_node(self, policy_priors, legal_mask, num_players, default_value)
