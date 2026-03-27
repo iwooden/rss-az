@@ -68,26 +68,24 @@ class Trainer:
         policy_targets = batch["policy_targets"].to(self.device, non_blocking=nb)
         value_targets = batch["value_targets"].to(self.device, non_blocking=nb)
 
-        # Forward pass + loss in bfloat16 on CUDA (backward auto-casts gradients)
-        with torch.autocast(self.device.type, dtype=torch.bfloat16,
-                            enabled=self.device.type == "cuda"):
-            policy_logits, values = self.model(states)
-            policy_logits.masked_fill_(legal_masks <= 0, -1e9)
+        # Forward + loss in float32 (inference uses bfloat16 autocast separately)
+        policy_logits, values = self.model(states)
+        policy_logits.masked_fill_(legal_masks <= 0, -1e9)
 
-            # Policy loss: cross-entropy with MCTS target distribution
-            log_probs = F.log_softmax(policy_logits, dim=-1)
-            policy_loss = -(policy_targets * log_probs).sum(dim=-1).mean()
+        # Policy loss: cross-entropy with MCTS target distribution
+        log_probs = F.log_softmax(policy_logits, dim=-1)
+        policy_loss = -(policy_targets * log_probs).sum(dim=-1).mean()
 
-            # Value loss: MSE
-            value_loss = F.mse_loss(values, value_targets)
+        # Value loss: MSE
+        value_loss = F.mse_loss(values, value_targets)
 
-            # Combined loss
-            total_loss = (
-                self.config.policy_loss_weight * policy_loss
-                + self.config.value_loss_weight * value_loss
-            )
+        # Combined loss
+        total_loss = (
+            self.config.policy_loss_weight * policy_loss
+            + self.config.value_loss_weight * value_loss
+        )
 
-        # Backward + optimize (outside autocast, gradients in float32)
+        # Backward + optimize
         self.optimizer.zero_grad()
         total_loss.backward()
         torch.nn.utils.clip_grad_norm_(
