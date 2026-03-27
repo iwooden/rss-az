@@ -294,7 +294,13 @@ def process_game(json_path)
   )
 
   snapshots = [initial_record]
-  undo_groups = []  # stack of groups; each group is an array of popped snapshots
+  undo_groups = []  # stack of {engine: [...], snaps: [...]} hashes
+
+  # Track ALL processed action IDs+types (including skip_types like program_*)
+  # so that undo can determine what the engine actually undoes.  Snapshots only
+  # exist for non-skip actions, so we need this parallel stack to avoid popping
+  # a snapshot when the engine undoes a skip_type action.
+  engine_action_stack = []
 
   actions = data['actions'] || []
 
@@ -313,31 +319,43 @@ def process_game(json_path)
       # actions (including program_*) and reverts the undone action(s).
       game = Engine::Game.load(data, at_action: action_id)
 
-      # Move undone snapshots to the undo stack as a GROUP (available for redo).
-      # The 18xx engine's filtered_actions tracks undo groups: a single redo
-      # restores the entire group undone by the most recent undo.
-      group = []
+      # Pop from engine_action_stack to find what the engine actually undid,
+      # and only pop a snapshot if the undone action produced one.
+      engine_group = []
+      snap_group = []
+
       if raw_action['action_id']
         target_id = raw_action['action_id']
+        while engine_action_stack.size > 0 && engine_action_stack.last[:id] > target_id
+          engine_group.push(engine_action_stack.pop)
+        end
         while snapshots.size > 1 && snapshots.last[:action_id] > target_id
-          group.push(snapshots.pop)
+          snap_group.push(snapshots.pop)
         end
       else
-        group.push(snapshots.pop) if snapshots.size > 1
+        if engine_action_stack.size > 0
+          undone = engine_action_stack.pop
+          engine_group.push(undone)
+          # Only pop a snapshot if the undone action was a real (non-skip) action
+          if !skip_types.include?(undone[:type]) && snapshots.size > 1
+            snap_group.push(snapshots.pop)
+          end
+        end
       end
-      undo_groups.push(group) unless group.empty?
+
+      undo_groups.push({ engine: engine_group, snaps: snap_group }) unless engine_group.empty?
       next
     end
 
     if action_type == 'redo'
-      # Restore the most recently undone GROUP of snapshots.
-      # The 18xx engine restores the entire group at once, not just one action.
+      # Restore the most recently undone group (engine actions + snapshots).
       game = Engine::Game.load(data, at_action: action_id)
       unless undo_groups.empty?
         group = undo_groups.pop
-        # Group was pushed in reverse order (highest action_id first),
+        # Groups were pushed in reverse order (highest action_id first),
         # so reverse to restore chronological order.
-        group.reverse.each { |s| snapshots.push(s) }
+        group[:engine].reverse.each { |a| engine_action_stack.push(a) }
+        group[:snaps].reverse.each { |s| snapshots.push(s) }
       end
       next
     end
@@ -391,6 +409,10 @@ def process_game(json_path)
     result = game.process_action(raw_action)
     game = result if result.is_a?(Engine::Game::Base)
 
+    # Track on engine action stack (ALL actions including skip_types)
+    # so that undo can determine what was undone.
+    engine_action_stack.push({ id: action_id, type: action_type })
+
     # Skip snapshots for meta actions (program_*, message) — they don't
     # change game state meaningfully, but they must still be processed above
     # so the engine's auto-pass flags stay correct.
@@ -403,10 +425,14 @@ def process_game(json_path)
     snapshots << snap
   end
 
-  # Collect committed action IDs (everything except the initial record).
-  # The Python side uses this to filter the raw action stream — undone
-  # actions are excluded here but still present in the game JSON.
+  # Collect ALL committed action IDs: snapshot IDs (for real actions) plus
+  # engine_action_stack IDs for skip_type actions (program_*, message) that
+  # remain committed but never produce snapshots.  The Python side needs
+  # both to correctly filter auto_actions from undone program_* actions.
   committed_ids = snapshots.drop(1).map { |s| s[:action_id] }
+  engine_action_stack.each do |entry|
+    committed_ids << entry[:id] if skip_types.include?(entry[:type])
+  end
   snapshots[0][:committed_action_ids] = committed_ids
 
   # Post-process: annotate ACQ outcomes with seller info and cross-president

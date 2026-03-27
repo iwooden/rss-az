@@ -90,9 +90,15 @@ def filter_actions(actions: list, committed_ids: set | None = None) -> list:
         atype = action.get('type', '')
         action_id = action.get('id')
 
-        # Handle SKIP_ACTIONS first — program_* actions aren't in
-        # committed_ids but may carry auto_actions we need to preserve.
+        # Handle SKIP_ACTIONS (program_*, message): the action itself is
+        # always dropped, but its auto_actions are preserved ONLY if the
+        # action is committed.  Undone program_* actions must not leak
+        # auto_action passes into the stream — that would advance the
+        # active player and desync the replay.
         if atype in SKIP_ACTIONS:
+            if committed_ids is not None and action_id is not None:
+                if action_id not in committed_ids:
+                    continue  # Undone — skip entirely including auto_actions
             for auto in action.get('auto_actions', []):
                 result.append(auto)
             continue

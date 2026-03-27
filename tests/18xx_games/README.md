@@ -59,7 +59,7 @@ Our Cython engine makes several intentional design choices that differ from the 
 
 **Our engine:** No auto-pass concept. Every pass is an explicit action.
 
-**Replay handling:** Program actions are filtered out by `filter_actions()` (in `SKIP_ACTIONS`). The auto-actions they generate are flattened into the main stream by `flatten_auto_actions()` and replayed as normal pass actions. An `AutoPassTracker` is maintained for potential future use but is not currently queried.
+**Replay handling:** Program actions are filtered out by `filter_actions()` (in `SKIP_ACTIONS`). Their auto-actions are preserved only if the program action itself is committed (not undone) — undone program actions must not leak auto-action passes into the stream, as that would advance the active player and desync the replay. The Ruby extractor includes committed skip-type action IDs in `committed_action_ids` so the Python side can distinguish committed from undone program actions. Committed auto-actions are flattened into the main stream by `flatten_auto_actions()` and replayed as normal pass actions. An `AutoPassTracker` is maintained for potential future use but is not currently queried.
 
 ### 7. Undo / Redo
 
@@ -67,7 +67,7 @@ Our Cython engine makes several intentional design choices that differ from the 
 
 **Our engine:** No undo/redo support. Actions are final once applied.
 
-**Replay handling:** The Ruby extractor (`extract_states.rb`) resolves undo/redo at extraction time — undone snapshots are popped from the output, and redos restore them. The extractor emits `committed_action_ids` in the initial record, which `filter_actions()` uses to drop undone actions from the raw stream without reimplementing undo logic in Python.
+**Replay handling:** The Ruby extractor (`extract_states.rb`) resolves undo/redo at extraction time. It maintains an `engine_action_stack` that tracks all processed actions (including skip-types like `program_*`), so that each undo correctly identifies what the engine actually undid. When an undo reverts a skip-type action (which has no snapshot), no snapshot is popped — only real actions cause snapshot pops. Undo groups store both engine-stack entries and snapshots so that redo correctly restores both. The extractor emits `committed_action_ids` in the initial record (including committed skip-type IDs), which `filter_actions()` uses to drop undone actions from the raw stream without reimplementing undo logic in Python.
 
 ### 8. Auto-Applied Forced Actions
 
@@ -120,6 +120,8 @@ All scripts operate on extract files (`data/<game_id>_extract.json`) and/or raw 
 | `show_actions.py` | Show raw 18xx actions with committed/undone status | `python ... 210560 --range 278-290 --expand-autos` |
 | `show_round.py` | Show all snapshots for a round type (ACQ, CLO, etc.) | `python ... 210560 ACQ --range 260-290` |
 | `find_gaps.py` | Find phase-transition gaps from undone actions | `python ... 213447` |
+| `check_committed_ids.py` | Compare old vs new undo tracking to find affected games | `python ... 213447` or `python ...` (all) |
+| `replay_to_action.py` | Replay to a specific action and dump engine state | `python ... 213447 322` |
 
 ### Common workflows
 
