@@ -12,14 +12,14 @@ Architecture informed by interpretability analysis:
   parameters with no representational loss.
 - hidden_dim=256. Multiple of 64 for GPU tensor core alignment.
 - Asymmetric heads informed by probing + conductance analysis:
-  - Policy head: 3 hidden layers, all hidden_dim wide (hidden->hidden->hidden->hidden->action).
-    Conductance showed the first layer doing 57.6% of policy work through a single
-    nonlinear transform, while SVD showed 14.5% utilization of the expanded width —
-    the bottleneck is depth (not enough nonlinear transforms), not width.
+  - Policy: 8 phase-specific heads, each 3 hidden layers at hidden_dim wide
+    (hidden->hidden->hidden->hidden->phase_action_count). Replaces a single shared
+    head where 63% of neurons were dominated by acq_price and 27.3% were dead.
+    Phase dispatch reads the 8-wide phase one-hot from the input state.
   - Value head: 1 hidden layer (hidden->hidden->value_dim). Trunk already computes value
     almost linearly (R^2=0.97); conductance is 45/55 split across both layers.
 
-~2.6M parameters.
+~4.1M parameters.
 """
 
 from __future__ import annotations
@@ -63,6 +63,9 @@ class ResidualMLPBlock(nn.Module):
 class RSSAlphaZeroNet(nn.Module):
     """Residual MLP with multi-layer input preprocessing."""
 
+    _phase_starts: torch.Tensor
+    _phase_ends: torch.Tensor
+
     def __init__(self, cfg: RSSModelConfig) -> None:
         super().__init__()
         self.cfg = cfg
@@ -83,15 +86,43 @@ class RSSAlphaZeroNet(nn.Module):
         )
         self.trunk_norm = nn.LayerNorm(cfg.hidden_dim)
 
-        self.policy_head = nn.Sequential(
-            nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
-            nn.GELU(),
-            nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
-            nn.GELU(),
-            nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
-            nn.GELU(),
-            nn.Linear(cfg.hidden_dim, cfg.action_dim),
+        # Phase-specific policy heads: each outputs only its phase's action count.
+        # Eliminates cross-phase interference (epoch 375: 63% of shared-head neurons
+        # dominated by acq_price, 27.3% dead, phase identity 99%->83% through head).
+        from core.actions import get_action_layout
+
+        num_players = cfg.value_dim
+        action_layout = get_action_layout(num_players)
+        phase_start_keys = [
+            'invest_start', 'bid_start', 'acquisition_start', 'closing_start',
+            'dividends_start', 'issue_start', 'ipo_start', 'par_start',
+        ]
+        phase_starts = [action_layout[k] for k in phase_start_keys]
+        phase_ends = phase_starts[1:] + [cfg.action_dim]
+
+        self.register_buffer(
+            '_phase_starts',
+            torch.tensor(phase_starts, dtype=torch.long),
+            persistent=False,
         )
+        self.register_buffer(
+            '_phase_ends',
+            torch.tensor(phase_ends, dtype=torch.long),
+            persistent=False,
+        )
+
+        self.phase_heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
+                nn.GELU(),
+                nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
+                nn.GELU(),
+                nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
+                nn.GELU(),
+                nn.Linear(cfg.hidden_dim, end - start),
+            )
+            for start, end in zip(phase_starts, phase_ends)
+        ])
 
         self.value_head = nn.Sequential(
             nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
@@ -132,7 +163,20 @@ class RSSAlphaZeroNet(nn.Module):
             h = block(h)
         h = self.trunk_norm(h)
 
-        policy_logits = self.policy_head(h)
+        # Phase dispatch: read phase from input one-hot (first 8 floats)
+        phases = x[:, :8].argmax(dim=-1)
+        policy_logits = torch.full(
+            (x.shape[0], self.cfg.action_dim), -1e9,
+            device=h.device, dtype=h.dtype,
+        )
+        for phase_idx in range(8):
+            mask = phases == phase_idx
+            if mask.any():
+                start = self._phase_starts[phase_idx].item()
+                end = self._phase_ends[phase_idx].item()
+                phase_out = self.phase_heads[phase_idx](h[mask])
+                policy_logits[mask, start:end] = phase_out.to(policy_logits.dtype)
+
         values = self.value_head(h)
         return policy_logits, values
 
@@ -143,8 +187,9 @@ def count_parameters(model: nn.Module) -> int:
 
 
 if __name__ == "__main__":
-    from core.actions import get_total_action_count
+    from core.actions import get_action_layout, get_total_action_count
     from core.state import get_layout
+
     _layout = get_layout(3)
     cfg = RSSModelConfig(input_dim=_layout.visible_size, action_dim=get_total_action_count(3), value_dim=3)
     model = RSSAlphaZeroNet(cfg)
@@ -155,22 +200,48 @@ if __name__ == "__main__":
     preprocess_params = sum(p.numel() for p in model.input_preprocess.parameters())
     block_params = sum(p.numel() for p in model.blocks.parameters())
     norm_params = sum(p.numel() for p in model.trunk_norm.parameters())
-    policy_params = sum(p.numel() for p in model.policy_head.parameters())
+    policy_params = sum(p.numel() for p in model.phase_heads.parameters())
     value_params = sum(p.numel() for p in model.value_head.parameters())
 
     print(f"\nParameter breakdown:")
     print(f"  Input preprocess: {preprocess_params:>12,}  ({preprocess_params/total*100:.1f}%)")
     print(f"  Residual blocks:  {block_params:>12,}  ({block_params/total*100:.1f}%)")
     print(f"  Trunk norm:       {norm_params:>12,}  ({norm_params/total*100:.1f}%)")
-    print(f"  Policy head:      {policy_params:>12,}  ({policy_params/total*100:.1f}%)")
+    print(f"  Phase heads:      {policy_params:>12,}  ({policy_params/total*100:.1f}%)")
     print(f"  Value head:       {value_params:>12,}  ({value_params/total*100:.1f}%)")
 
-    # Smoke test
-    batch_size = 4
+    _phase_names = ["INVEST", "BID", "ACQ", "CLOSE", "DIV", "ISSUE", "IPO", "PAR"]
+    for i, (name, head) in enumerate(zip(_phase_names, model.phase_heads)):
+        hp = sum(p.numel() for p in head.parameters())
+        start = model._phase_starts[i].item()
+        end = model._phase_ends[i].item()
+        print(f"    {name:>6} ({end - start:>2} actions): {hp:>10,}")
+
+    # Smoke test with phase-aware input
+    batch_size = 8
     x = torch.randn(batch_size, cfg.input_dim)
+    x[:, :8] = 0
+    for i in range(batch_size):
+        x[i, i % 8] = 1.0
+
     policy_logits, values = model(x)
 
     print(f"\npolicy_logits: {tuple(policy_logits.shape)}")
     print(f"values: {tuple(values.shape)}")
     assert values.min() >= -1.0 and values.max() <= 1.0, "tanh output out of range"
     print("all values in [-1, 1]: ok")
+
+    # Verify phase dispatch: only the correct phase slice has real logits
+    al = get_action_layout(3)
+    starts = [al['invest_start'], al['bid_start'], al['acquisition_start'],
+              al['closing_start'], al['dividends_start'], al['issue_start'],
+              al['ipo_start'], al['par_start']]
+    ends = starts[1:] + [cfg.action_dim]
+    for i in range(batch_size):
+        phase = i % 8
+        for j in range(8):
+            if j == phase:
+                assert policy_logits[i, starts[j]:ends[j]].max() > -1e8
+            else:
+                assert (policy_logits[i, starts[j]:ends[j]] <= -1e8).all()
+    print("phase dispatch verified: ok")

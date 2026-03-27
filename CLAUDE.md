@@ -154,7 +154,7 @@ Instead of soft-Z or game outcome, we use **A0GB** (Willemsen et al., 2022): fol
 
 ### NN Model (`nn/model_3p.py`)
 
-Residual MLP (~2.7M params): Input 1101 → preprocessing (768→512→256 + LayerNorm) → 8 residual blocks (256-dim, pre-LN, GELU) → policy head (3 hidden layers → 183 logits) + value head (→ 3 tanh). Kaiming init, zero-init residual fc2.
+Residual MLP (~4.1M params): Input 1101 → preprocessing (768→512→256 + LayerNorm) → 8 residual blocks (256-dim, pre-LN, GELU) → 8 phase-specific policy heads (3 hidden layers each, dispatch by phase one-hot) + value head (→ 3 tanh). Kaiming init, zero-init residual fc2.
 
 ## Self-Play Training
 
