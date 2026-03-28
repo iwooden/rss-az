@@ -9,6 +9,8 @@ import torch.nn.functional as F
 
 from train.config import TrainingConfig
 
+_PHASE_NAMES = ["invest", "bid", "acq", "close", "div", "issue", "ipo", "par"]
+
 
 class Trainer:
     """Handles optimizer, LR schedule, and training steps."""
@@ -85,7 +87,8 @@ class Trainer:
 
         # Policy loss: cross-entropy with MCTS target distribution
         log_probs = F.log_softmax(policy_logits, dim=-1)
-        policy_loss = -(policy_targets * log_probs).sum(dim=-1).mean()
+        per_example_policy_loss = -(policy_targets * log_probs).sum(dim=-1)
+        policy_loss = per_example_policy_loss.mean()
 
         # Value loss: MSE
         value_loss = F.mse_loss(values, value_targets)
@@ -107,11 +110,20 @@ class Trainer:
 
         self._global_step += 1
 
-        return {
+        # Per-phase policy loss (detached, no grad impact)
+        phases = states[:, :8].argmax(dim=-1)
+        per_phase = per_example_policy_loss.detach()
+        result: dict[str, float] = {
             "policy_loss": policy_loss.item(),
             "value_loss": value_loss.item(),
             "total_loss": total_loss.item(),
         }
+        for phase_idx, name in enumerate(_PHASE_NAMES):
+            mask = phases == phase_idx
+            if mask.any():
+                result[f"policy_loss_{name}"] = per_phase[mask].mean().item()
+
+        return result
 
     @property
     def global_step(self) -> int:

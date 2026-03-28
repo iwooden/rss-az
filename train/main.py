@@ -333,6 +333,7 @@ def main() -> None:
 
     # --- GPU vendor detection and optimizations ---
     torch.set_float32_matmul_precision("high")  # TF32 matmul where available
+    torch.backends.cuda.matmul.allow_tf32 = True
     from train.gpu import detect_gpu
 
     gpu = detect_gpu(device.type)
@@ -967,14 +968,15 @@ def main() -> None:
                 avg_losses = {k: sum(v) / len(v) for k, v in epoch_losses.items()}
 
                 # Epoch-level Tensorboard
-                logger.log_scalars(
-                    epoch_num,
-                    {
-                        "epoch/total_loss_avg": avg_losses["total_loss"],
-                        "epoch/policy_loss_avg": avg_losses["policy_loss"],
-                        "epoch/value_loss_avg": avg_losses["value_loss"],
-                    },
-                )
+                epoch_scalars = {
+                    "epoch/total_loss_avg": avg_losses["total_loss"],
+                    "epoch/policy_loss_avg": avg_losses["policy_loss"],
+                    "epoch/value_loss_avg": avg_losses["value_loss"],
+                }
+                for k, v in avg_losses.items():
+                    if k.startswith("policy_loss_"):
+                        epoch_scalars[f"epoch/{k}_avg"] = v
+                logger.log_scalars(epoch_num, epoch_scalars)
             else:
                 avg_losses = {}
                 print(
