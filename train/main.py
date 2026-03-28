@@ -363,12 +363,14 @@ def main() -> None:
 
     # --- Config ---
     if cp is not None:
-        # Resume: restore checkpointed config, apply operational overrides only
+        # Resume: checkpoint config as base, then JSON overrides, then CLI overrides
         config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
+        if args.config:
+            changes = config.apply_json_overrides(Path(args.config).read_text())
+            for c in changes:
+                print(f"  Config override: {c}")
         _apply_overrides(config, args, log_changes=True)
         config.validate()
-        if args.config:
-            print("  Warning: --config ignored on resume (using checkpointed config)")
     elif args.config:
         config = TrainingConfig.from_json(Path(args.config).read_text())
         _apply_overrides(config, args)

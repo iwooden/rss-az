@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -379,15 +380,12 @@ class TrainingConfig:
         d.pop("visible_size", None)
         return json.dumps(d, indent=2)
 
-    @classmethod
-    def from_json(cls, json_str: str) -> TrainingConfig:
-        """Deserialize from JSON, with backward compatibility for old configs."""
-        d = json.loads(json_str)
-        # Drop computed fields if present (they're recomputed in __post_init__)
+    @staticmethod
+    def _normalize_json(d: dict[str, Any]) -> dict[str, Any]:
+        """Apply backward compat renames and drop computed/unknown fields."""
         d.pop("action_dim", None)
         d.pop("visible_size", None)
 
-        # Backward compat: map old field names to new
         if "temp_threshold" in d:
             if "temp_anneal_start" not in d:
                 d["temp_anneal_start"] = d.pop("temp_threshold")
@@ -398,14 +396,30 @@ class TrainingConfig:
                 d["c_puct_final"] = d.pop("c_puct")
             else:
                 d.pop("c_puct")
-        # model_arch -> model_path (old checkpoints stored "v1" or "v2")
         if "model_arch" in d:
             d.pop("model_arch")
             if "model_path" not in d:
-                d["model_path"] = "nn.model_3p"  # both v1/v2 map to the single model
+                d["model_path"] = "nn.model_3p"
 
-        # Drop any fields not in the dataclass (future-proofing)
-        valid = set(cls.__dataclass_fields__)
-        d = {k: v for k, v in d.items() if k in valid}
+        valid = set(TrainingConfig.__dataclass_fields__)
+        return {k: v for k, v in d.items() if k in valid}
 
+    @classmethod
+    def from_json(cls, json_str: str) -> TrainingConfig:
+        """Deserialize from JSON, with backward compatibility for old configs."""
+        d = cls._normalize_json(json.loads(json_str))
         return cls(**d)
+
+    def apply_json_overrides(self, json_str: str) -> list[str]:
+        """Apply fields from a JSON config on top of this config.
+
+        Returns a list of "field = new_value (was old_value)" strings for logging.
+        """
+        d = self._normalize_json(json.loads(json_str))
+        changes: list[str] = []
+        for k, v in d.items():
+            old = getattr(self, k)
+            if old != v:
+                setattr(self, k, v)
+                changes.append(f"{k} = {v} (was {old})")
+        return changes
