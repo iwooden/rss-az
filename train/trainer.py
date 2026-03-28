@@ -24,11 +24,22 @@ class Trainer:
         self.device = device
         self._global_step = 0
 
-        self.optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=config.learning_rate,
-            weight_decay=config.weight_decay,
-        )
+        # Exclude LayerNorm params and all biases from weight decay —
+        # regularizing these hurts more than it helps.
+        decay_params = []
+        no_decay_params = []
+        for module in model.modules():
+            for pname, param in module.named_parameters(recurse=False):
+                if not param.requires_grad:
+                    continue
+                if isinstance(module, torch.nn.LayerNorm) or pname == "bias":
+                    no_decay_params.append(param)
+                else:
+                    decay_params.append(param)
+        self.optimizer = torch.optim.AdamW([
+            {"params": decay_params, "weight_decay": config.weight_decay},
+            {"params": no_decay_params, "weight_decay": 0.0},
+        ], lr=config.learning_rate)
 
         # Decay spans lr_decay_end_epoch epochs (default: all epochs).
         # If early epochs skip training (buffer not ready), the cosine decay
