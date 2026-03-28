@@ -81,6 +81,7 @@ cdef struct TurnStateOffsets:
     int end_card_flipped
     int consecutive_passes
     int auction_price
+    int auction_price_offset
     int auction_high_bidder
     int auction_starter
     int auction_passed
@@ -98,11 +99,18 @@ cdef struct TurnStateOffsets:
     int active_company_face_value
     int active_company_high_price
     int active_company_income
-    # Active corp: one-hot (8) + 3 individual scalars + owned companies (36 flags)
+    # Active corp: one-hot (8) + scalars + owned companies (36 flags)
     int active_corp
+    int active_corp_cash
+    int active_corp_unissued_shares
+    int active_corp_issued_shares
+    int active_corp_bank_shares
     int active_corp_income
     int active_corp_stars
     int active_corp_share_price
+    int active_corp_acquisition_proceeds
+    int active_corp_price_index_norm
+    int active_corp_pending_price_move
     int active_corp_raw_revenue
     int active_corp_synergy_income
     int active_corp_coo_cost

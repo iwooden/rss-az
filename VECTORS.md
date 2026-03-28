@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | 1031         | 1254        | 2285       |
-| 3       | 1101         | 1270        | 2371       |
-| 4       | 1173         | 1286        | 2459       |
-| 5       | 1247         | 1302        | 2549       |
-| 6       | 1323         | 1318        | 2641       |
+| 2       | 1039         | 1254        | 2293       |
+| 3       | 1109         | 1270        | 2379       |
+| 4       | 1181         | 1286        | 2467       |
+| 5       | 1255         | 1302        | 2557       |
+| 6       | 1331         | 1318        | 2649       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 
@@ -54,6 +54,7 @@ Many fields in the visible state are only meaningful during specific game phases
 | Field | Type | Relevant Phases |
 |-------|------|-----------------|
 | `auction_price` | scalar | BID |
+| `auction_price_offset` | scalar | BID |
 | `auction_high_bidder` | one-hot | BID |
 | `auction_starter` | one-hot | BID |
 | `auction_passed` | flags | BID |
@@ -74,9 +75,16 @@ Many fields in the visible state are only meaningful during specific game phases
 | `active_company_high_price` | scalar | BID, ACQ, CLOSING, IPO, PAR |
 | `active_company_income` | scalar | BID, ACQ, CLOSING, IPO, PAR |
 | `active_corp` | one-hot | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
+| `active_corp_cash` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
+| `active_corp_unissued_shares` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
+| `active_corp_issued_shares` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
+| `active_corp_bank_shares` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
 | `active_corp_income` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
 | `active_corp_stars` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
 | `active_corp_share_price` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
+| `active_corp_acquisition_proceeds` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
+| `active_corp_price_index_norm` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
+| `active_corp_pending_price_move` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
 | `active_corp_raw_revenue` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
 | `active_corp_synergy_income` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
 | `active_corp_coo_cost` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
@@ -226,7 +234,7 @@ Corp stride = `16 + 36` = `52`
 
 ### Turn State
 
-Size varies with player count: `205 + (3 * num_players)`
+Size varies with player count: `213 + (3 * num_players)`
 
 | Field | Size | Encoding | Notes |
 |-------|------|----------|-------|
@@ -234,6 +242,7 @@ Size varies with player count: `205 + (3 * num_players)`
 | `consecutive_passes` | 1 | normalized | / num_players, INVEST phase |
 | **Auction:** | | | |
 | `auction_price` | 1 | normalized | / COMPANY_PRICE_DIVISOR. 0 when no auction |
+| `auction_price_offset` | 1 | normalized | (price - low_price) / AUCTION_CAP. Mirrors bid action encoding. 0 when no auction |
 | `auction_high_bidder` | num_players | one-hot | 0 when no auction |
 | `auction_starter` | num_players | one-hot | 0 when no auction |
 | `auction_passed` | num_players | flags | Player left auction. 0 when no auction |
@@ -256,9 +265,16 @@ Size varies with player count: `205 + (3 * num_players)`
 | `active_company_income` | 1 | normalized | Adjusted income / COMPANY_INCOME_DIVISOR. 0 when inactive. |
 | **Active Corp:** | | | |
 | `active_corp` | 8 | one-hot | Corp under consideration in DIVIDENDS, ISSUE, ACQ, CLOSING (corp-owned offers only). 0 when inactive or player-owned. |
+| `active_corp_cash` | 1 | normalized | / CASH_DIVISOR. 0 when inactive. |
+| `active_corp_unissued_shares` | 1 | normalized | / SHARE_DIVISOR. 0 when inactive. |
+| `active_corp_issued_shares` | 1 | normalized | / SHARE_DIVISOR. 0 when inactive. |
+| `active_corp_bank_shares` | 1 | normalized | / SHARE_DIVISOR. 0 when inactive. |
 | `active_corp_income` | 1 | normalized | / ENTITY_INCOME_DIVISOR. 0 when inactive. |
 | `active_corp_stars` | 1 | normalized | / CORP_STAR_DIVISOR. 0 when inactive. |
 | `active_corp_share_price` | 1 | normalized | / SHARE_PRICE_DIVISOR. 0 when inactive. |
+| `active_corp_acquisition_proceeds` | 1 | normalized | / CASH_DIVISOR. 0 when inactive. |
+| `active_corp_price_index_norm` | 1 | normalized | Market position index / 26.0. 0 when inactive. |
+| `active_corp_pending_price_move` | 1 | normalized | / IMPACT_DIVISOR. 0 when inactive. |
 | `active_corp_raw_revenue` | 1 | normalized | / ENTITY_INCOME_DIVISOR. 0 when inactive. |
 | `active_corp_synergy_income` | 1 | normalized | / ENTITY_INCOME_DIVISOR. 0 when inactive. |
 | `active_corp_coo_cost` | 1 | normalized | / ENTITY_INCOME_DIVISOR. Always ≤ 0. 0 when inactive. |

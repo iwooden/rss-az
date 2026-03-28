@@ -10,8 +10,11 @@ Provides clean getter/setter access to turn-specific state including:
 
 from core.state cimport GameState, StateLayout, TurnStateOffsets
 from libc.math cimport lround
-from core.data cimport GameConstants, GamePhases, CASH_DIVISOR, COMPANY_INCOME_DIVISOR, COMPANY_PRICE_DIVISOR, SHARE_PRICE_DIVISOR, IMPACT_DIVISOR, get_adjusted_company_income, get_company_stars, COMPANY_SYNERGY
-from entities.company cimport Company, LOC_REMOVED
+from core.data cimport GameConstants, GamePhases, CASH_DIVISOR, COMPANY_INCOME_DIVISOR, COMPANY_PRICE_DIVISOR, SHARE_PRICE_DIVISOR, IMPACT_DIVISOR, get_adjusted_company_income, get_company_stars, get_company_low_price, COMPANY_SYNERGY
+
+# Local copy of AUCTION_CAP to avoid circular import with core.actions
+cdef float _AUCTION_CAP = 15.0
+from entities.company cimport Company, LOC_REMOVED, LOC_CORP_ACQ
 from entities import player as player_module
 from entities import company as company_module
 from entities import corp as corp_module
@@ -197,6 +200,7 @@ cdef class TurnState:
 
         # Auction
         self._auction_price_offset = self._turn_offset + turn.auction_price
+        self._auction_price_offset_offset = self._turn_offset + turn.auction_price_offset
         self._auction_high_bidder_offset = self._turn_offset + turn.auction_high_bidder
         self._auction_starter_offset = self._turn_offset + turn.auction_starter
         self._auction_passed_offset = self._turn_offset + turn.auction_passed
@@ -392,11 +396,23 @@ cdef class TurnState:
         return <int>(val * COMPANY_PRICE_DIVISOR + 0.5)
 
     cpdef void set_auction_price(self, GameState state, int price):
-        """Set current auction price. Use 0 or negative to clear."""
+        """Set current auction price. Use 0 or negative to clear.
+
+        Also updates auction_price_offset: (price - low_price) / AUCTION_CAP,
+        mirroring the bid action encoding.
+        """
+        cdef int company_id, low_price
         if price <= 0:
             state._data[self._auction_price_offset] = 0.0
+            state._data[self._auction_price_offset_offset] = 0.0
         else:
             state._data[self._auction_price_offset] = <float>price / COMPANY_PRICE_DIVISOR
+            company_id = <int>state._data[self._hidden_auction_company_offset]
+            if company_id >= 0:
+                low_price = get_company_low_price(company_id)
+                state._data[self._auction_price_offset_offset] = <float>(price - low_price) / _AUCTION_CAP
+            else:
+                state._data[self._auction_price_offset_offset] = 0.0
 
     cpdef int get_auction_high_bidder(self, GameState state):
         """Get current high bidder. Uses hidden compact storage for O(1) access. Returns -1 if none."""
@@ -732,20 +748,28 @@ cdef class TurnState:
     cpdef void populate_acq_synergy_values(self, GameState state, int corp_id, int target_company_id):
         """Compute and set synergy values for the current acquisition offer.
 
-        For each company i, if the buying corp owns company i, sets the value to
-        (COMPANY_SYNERGY[i][target] + COMPANY_SYNERGY[target][i]) / COMPANY_INCOME_DIVISOR.
-        Otherwise 0.
+        For each company i, if the buying corp owns or has acquired company i,
+        sets the value to (COMPANY_SYNERGY[i][target] + COMPANY_SYNERGY[target][i])
+        / COMPANY_INCOME_DIVISOR.  Otherwise 0.
+
+        Includes acquisition-zone companies so the NN sees accurate synergy
+        previews when the corp has already acquired earlier in this phase.
         """
         cdef int i, bonus
         cdef int offset = self._acq_synergy_values_offset
+        cdef float* data = state._data
         cdef float* corp = state._corp_ptr(corp_id)
         cdef int owned_offset = state._corp_fields.owned_companies
+        cdef int loc_offset = state._layout.hidden_company_locations_offset
+        cdef int owner_offset = state._layout.hidden_company_owner_ids_offset
         for i in range(<int>GameConstants.NUM_COMPANIES):
-            if corp[owned_offset + i] == 1.0:
+            if corp[owned_offset + i] == 1.0 or \
+               (data[loc_offset + i] == <float>LOC_CORP_ACQ and
+                <int>data[owner_offset + i] == corp_id):
                 bonus = COMPANY_SYNERGY[i][target_company_id] + COMPANY_SYNERGY[target_company_id][i]
-                state._data[offset + i] = <float>bonus / COMPANY_INCOME_DIVISOR
+                data[offset + i] = <float>bonus / COMPANY_INCOME_DIVISOR
             else:
-                state._data[offset + i] = 0.0
+                data[offset + i] = 0.0
 
     cpdef void clear_acq_synergy_values(self, GameState state):
         """Clear all synergy values to 0 (non-active)."""

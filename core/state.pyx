@@ -61,7 +61,8 @@ CorpFields = namedtuple('CorpFields', [
 
 TurnFields = namedtuple('TurnFields', [
     'end_card_flipped', 'consecutive_passes',
-    'auction_price', 'auction_high_bidder', 'auction_starter', 'auction_passed',
+    'auction_price', 'auction_price_offset',
+    'auction_high_bidder', 'auction_starter', 'auction_passed',
     'dividend_impact', 'dividend_remaining',
     'issue_remaining', 'issue_price_impact', 'issue_cash_gain',
     'acq_is_fi_offer', 'acq_synergy_values',
@@ -70,7 +71,11 @@ TurnFields = namedtuple('TurnFields', [
     'active_company_face_value', 'active_company_high_price',
     'active_company_income',
     'active_corp',
+    'active_corp_cash', 'active_corp_unissued_shares',
+    'active_corp_issued_shares', 'active_corp_bank_shares',
     'active_corp_income', 'active_corp_stars', 'active_corp_share_price',
+    'active_corp_acquisition_proceeds',
+    'active_corp_price_index_norm', 'active_corp_pending_price_move',
     'active_corp_raw_revenue', 'active_corp_synergy_income',
     'active_corp_coo_cost', 'active_corp_ability_income',
     'active_corp_companies',
@@ -105,9 +110,16 @@ LayoutInfo = namedtuple('LayoutInfo', [
     'active_company_income_offset',
     # Active corp offsets (absolute, within turn state)
     'active_corp_offset',
+    'active_corp_cash_offset',
+    'active_corp_unissued_shares_offset',
+    'active_corp_issued_shares_offset',
+    'active_corp_bank_shares_offset',
     'active_corp_income_offset',
     'active_corp_stars_offset',
     'active_corp_share_price_offset',
+    'active_corp_acquisition_proceeds_offset',
+    'active_corp_price_index_norm_offset',
+    'active_corp_pending_price_move_offset',
     'active_corp_raw_revenue_offset',
     'active_corp_synergy_income_offset',
     'active_corp_coo_cost_offset',
@@ -244,6 +256,7 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         1 +                 # consecutive_passes (for INVEST phase)
         # Auction
         1 +                 # auction_price
+        1 +                 # auction_price_offset (price - low_price) / AUCTION_CAP
         num_players +       # auction_high_bidder
         num_players +       # auction_starter
         num_players +       # auction_passed
@@ -266,9 +279,16 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
         1 +                              # active_company_income
         # Active corp
         GameConstants.NUM_CORPS +         # active_corp (one-hot)
+        1 +                              # active_corp_cash
+        1 +                              # active_corp_unissued_shares
+        1 +                              # active_corp_issued_shares
+        1 +                              # active_corp_bank_shares
         1 +                              # active_corp_income
         1 +                              # active_corp_stars
         1 +                              # active_corp_share_price
+        1 +                              # active_corp_acquisition_proceeds
+        1 +                              # active_corp_price_index_norm
+        1 +                              # active_corp_pending_price_move
         1 +                              # active_corp_raw_revenue
         1 +                              # active_corp_synergy_income
         1 +                              # active_corp_coo_cost
@@ -412,6 +432,8 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
     # Auction
     t.auction_price = offset
     offset += 1
+    t.auction_price_offset = offset
+    offset += 1
     t.auction_high_bidder = offset
     offset += num_players
     t.auction_starter = offset
@@ -453,14 +475,28 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
     t.active_company_income = offset
     offset += 1
 
-    # Active corp: one-hot (8) + 3 individual scalars + owned companies (36 flags)
+    # Active corp: one-hot (8) + scalars + owned companies (36 flags)
     t.active_corp = offset
     offset += GameConstants.NUM_CORPS
+    t.active_corp_cash = offset
+    offset += 1
+    t.active_corp_unissued_shares = offset
+    offset += 1
+    t.active_corp_issued_shares = offset
+    offset += 1
+    t.active_corp_bank_shares = offset
+    offset += 1
     t.active_corp_income = offset
     offset += 1
     t.active_corp_stars = offset
     offset += 1
     t.active_corp_share_price = offset
+    offset += 1
+    t.active_corp_acquisition_proceeds = offset
+    offset += 1
+    t.active_corp_price_index_norm = offset
+    offset += 1
+    t.active_corp_pending_price_move = offset
     offset += 1
     t.active_corp_raw_revenue = offset
     offset += 1
@@ -570,9 +606,16 @@ def get_layout(int num_players):
         active_company_high_price_offset=layout.turn_offset + turn.active_company_high_price,
         active_company_income_offset=layout.turn_offset + turn.active_company_income,
         active_corp_offset=layout.turn_offset + turn.active_corp,
+        active_corp_cash_offset=layout.turn_offset + turn.active_corp_cash,
+        active_corp_unissued_shares_offset=layout.turn_offset + turn.active_corp_unissued_shares,
+        active_corp_issued_shares_offset=layout.turn_offset + turn.active_corp_issued_shares,
+        active_corp_bank_shares_offset=layout.turn_offset + turn.active_corp_bank_shares,
         active_corp_income_offset=layout.turn_offset + turn.active_corp_income,
         active_corp_stars_offset=layout.turn_offset + turn.active_corp_stars,
         active_corp_share_price_offset=layout.turn_offset + turn.active_corp_share_price,
+        active_corp_acquisition_proceeds_offset=layout.turn_offset + turn.active_corp_acquisition_proceeds,
+        active_corp_price_index_norm_offset=layout.turn_offset + turn.active_corp_price_index_norm,
+        active_corp_pending_price_move_offset=layout.turn_offset + turn.active_corp_pending_price_move,
         active_corp_raw_revenue_offset=layout.turn_offset + turn.active_corp_raw_revenue,
         active_corp_synergy_income_offset=layout.turn_offset + turn.active_corp_synergy_income,
         active_corp_coo_cost_offset=layout.turn_offset + turn.active_corp_coo_cost,
@@ -641,6 +684,7 @@ def get_turn_fields(int num_players):
         end_card_flipped=t.end_card_flipped,
         consecutive_passes=t.consecutive_passes,
         auction_price=t.auction_price,
+        auction_price_offset=t.auction_price_offset,
         auction_high_bidder=t.auction_high_bidder,
         auction_starter=t.auction_starter,
         auction_passed=t.auction_passed,
@@ -658,9 +702,16 @@ def get_turn_fields(int num_players):
         active_company_high_price=t.active_company_high_price,
         active_company_income=t.active_company_income,
         active_corp=t.active_corp,
+        active_corp_cash=t.active_corp_cash,
+        active_corp_unissued_shares=t.active_corp_unissued_shares,
+        active_corp_issued_shares=t.active_corp_issued_shares,
+        active_corp_bank_shares=t.active_corp_bank_shares,
         active_corp_income=t.active_corp_income,
         active_corp_stars=t.active_corp_stars,
         active_corp_share_price=t.active_corp_share_price,
+        active_corp_acquisition_proceeds=t.active_corp_acquisition_proceeds,
+        active_corp_price_index_norm=t.active_corp_price_index_norm,
+        active_corp_pending_price_move=t.active_corp_pending_price_move,
         active_corp_raw_revenue=t.active_corp_raw_revenue,
         active_corp_synergy_income=t.active_corp_synergy_income,
         active_corp_coo_cost=t.active_corp_coo_cost,
@@ -1297,10 +1348,20 @@ cdef class GameState:
         cdef int companies_base = turn_base + self._turn_offsets.active_corp_companies
         cdef float* corp = self._corp_ptr(corp_id)
         cdef int i
-        # Income, stars, share_price, and income decomposition (already normalized in corp data block)
+        # Financial position (already normalized in corp data block)
+        self._data[turn_base + self._turn_offsets.active_corp_cash] = corp[self._corp_fields.cash]
+        self._data[turn_base + self._turn_offsets.active_corp_unissued_shares] = corp[self._corp_fields.unissued_shares]
+        self._data[turn_base + self._turn_offsets.active_corp_issued_shares] = corp[self._corp_fields.issued_shares]
+        self._data[turn_base + self._turn_offsets.active_corp_bank_shares] = corp[self._corp_fields.bank_shares]
+        # Income, stars, share_price, and income decomposition
         self._data[turn_base + self._turn_offsets.active_corp_income] = corp[self._corp_fields.income]
         self._data[turn_base + self._turn_offsets.active_corp_stars] = corp[self._corp_fields.stars]
         self._data[turn_base + self._turn_offsets.active_corp_share_price] = corp[self._corp_fields.share_price]
+        # Acquisition proceeds, price mechanics
+        self._data[turn_base + self._turn_offsets.active_corp_acquisition_proceeds] = corp[self._corp_fields.acquisition_proceeds]
+        self._data[turn_base + self._turn_offsets.active_corp_price_index_norm] = corp[self._corp_fields.price_index_norm]
+        self._data[turn_base + self._turn_offsets.active_corp_pending_price_move] = corp[self._corp_fields.pending_price_move]
+        # Income decomposition
         self._data[turn_base + self._turn_offsets.active_corp_raw_revenue] = corp[self._corp_fields.raw_revenue]
         self._data[turn_base + self._turn_offsets.active_corp_synergy_income] = corp[self._corp_fields.synergy_income]
         self._data[turn_base + self._turn_offsets.active_corp_coo_cost] = corp[self._corp_fields.coo_cost]
@@ -1317,9 +1378,16 @@ cdef class GameState:
         cdef int turn_base = self._layout.turn_offset
         cdef int companies_base = turn_base + self._turn_offsets.active_corp_companies
         cdef int i
+        self._data[turn_base + self._turn_offsets.active_corp_cash] = 0.0
+        self._data[turn_base + self._turn_offsets.active_corp_unissued_shares] = 0.0
+        self._data[turn_base + self._turn_offsets.active_corp_issued_shares] = 0.0
+        self._data[turn_base + self._turn_offsets.active_corp_bank_shares] = 0.0
         self._data[turn_base + self._turn_offsets.active_corp_income] = 0.0
         self._data[turn_base + self._turn_offsets.active_corp_stars] = 0.0
         self._data[turn_base + self._turn_offsets.active_corp_share_price] = 0.0
+        self._data[turn_base + self._turn_offsets.active_corp_acquisition_proceeds] = 0.0
+        self._data[turn_base + self._turn_offsets.active_corp_price_index_norm] = 0.0
+        self._data[turn_base + self._turn_offsets.active_corp_pending_price_move] = 0.0
         self._data[turn_base + self._turn_offsets.active_corp_raw_revenue] = 0.0
         self._data[turn_base + self._turn_offsets.active_corp_synergy_income] = 0.0
         self._data[turn_base + self._turn_offsets.active_corp_coo_cost] = 0.0

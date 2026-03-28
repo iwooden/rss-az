@@ -10,7 +10,7 @@ High-performance Cython game engine for "Rolling Stock Stars" board game, optimi
 
 **Key characteristics:**
 - 2-6 player support with dynamic state sizing
-- ~2285-2641 floats per game state (varies by player count)
+- ~2293-2649 floats per game state (varies by player count)
 - No Python object overhead in hot paths (nogil execution)
 - Benchmark target: thousands of games per minute
 
@@ -71,9 +71,9 @@ Central data structure: single contiguous float32 numpy array.
 **Sizes by player count:**
 | Players | Visible | Hidden | Total |
 |---------|---------|--------|-------|
-| 2 | 1031 | 1254 | 2285 |
-| 3 | 1101 | 1270 | 2371 |
-| 6 | 1323 | 1318 | 2641 |
+| 2 | 1039 | 1254 | 2293 |
+| 3 | 1109 | 1270 | 2379 |
+| 6 | 1331 | 1318 | 2649 |
 
 ### Actions (`core/actions.pyx`)
 
@@ -154,7 +154,7 @@ Instead of soft-Z or game outcome, we use **A0GB** (Willemsen et al., 2022): fol
 
 ### NN Model (`nn/model_3p.py`)
 
-Residual MLP (~4.1M params): Input 1101 → preprocessing (768→512→256 + LayerNorm) → 8 residual blocks (256-dim, pre-LN, GELU) → 8 phase-specific policy heads (3 hidden layers each, dispatch by phase one-hot) + value head (→ 3 tanh). Kaiming init, zero-init residual fc2.
+Residual MLP (~4.1M params): Input 1109 → preprocessing (768→512→256 + LayerNorm) → 8 residual blocks (256-dim, pre-LN, GELU) → 8 phase-specific policy heads (3 hidden layers each, dispatch by phase one-hot) + value head (→ 3 tanh). Kaiming init, zero-init residual fc2.
 
 ## Self-Play Training
 

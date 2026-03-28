@@ -25,11 +25,11 @@ class TestStateLayoutSizes:
     # Expected sizes - these MUST match VECTORS.md and CLAUDE.md
     # If these tests fail, update the documentation to match!
     EXPECTED_SIZES = {
-        2: {'visible': 1031, 'hidden': 1254, 'total': 2285},
-        3: {'visible': 1101, 'hidden': 1270, 'total': 2371},
-        4: {'visible': 1173, 'hidden': 1286, 'total': 2459},
-        5: {'visible': 1247, 'hidden': 1302, 'total': 2549},
-        6: {'visible': 1323, 'hidden': 1318, 'total': 2641},
+        2: {'visible': 1039, 'hidden': 1254, 'total': 2293},
+        3: {'visible': 1109, 'hidden': 1270, 'total': 2379},
+        4: {'visible': 1181, 'hidden': 1286, 'total': 2467},
+        5: {'visible': 1255, 'hidden': 1302, 'total': 2557},
+        6: {'visible': 1331, 'hidden': 1318, 'total': 2649},
     }
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
@@ -77,10 +77,10 @@ class TestComponentSizes:
         assert layout.corp_stride == 52
 
     def test_turn_size_formula(self):
-        """Turn size = 205 + 3*num_players."""
+        """Turn size = 213 + 3*num_players."""
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
-            expected = 205 + 3 * num_players
+            expected = 213 + 3 * num_players
             assert layout.turn_size == expected, (
                 f"{num_players} players: turn size {layout.turn_size} != {expected}"
             )
@@ -213,6 +213,17 @@ class TestActiveCorp:
         gs.initialize_game(seed=42)
         return gs
 
+    ACTIVE_CORP_SCALAR_OFFSETS = (
+        'active_corp_cash_offset', 'active_corp_unissued_shares_offset',
+        'active_corp_issued_shares_offset', 'active_corp_bank_shares_offset',
+        'active_corp_income_offset', 'active_corp_stars_offset',
+        'active_corp_share_price_offset',
+        'active_corp_acquisition_proceeds_offset',
+        'active_corp_price_index_norm_offset', 'active_corp_pending_price_move_offset',
+        'active_corp_raw_revenue_offset', 'active_corp_synergy_income_offset',
+        'active_corp_coo_cost_offset', 'active_corp_ability_income_offset',
+    )
+
     def test_active_corp_zeroed_on_init(self, state):
         """Active corp one-hot, scalars, and companies should be zero after init."""
         layout = get_layout(3)
@@ -220,14 +231,13 @@ class TestActiveCorp:
         co_base = layout.active_corp_companies_offset
         for i in range(8):
             assert state._array[oh_base + i] == 0.0, f"active_corp_oh[{i}] != 0.0 at init"
-        for offset_name in ('active_corp_income_offset', 'active_corp_stars_offset',
-                            'active_corp_share_price_offset'):
+        for offset_name in self.ACTIVE_CORP_SCALAR_OFFSETS:
             assert state._array[getattr(layout, offset_name)] == 0.0, f"{offset_name} != 0.0 at init"
         for i in range(36):
             assert state._array[co_base + i] == 0.0, f"active_corp_companies[{i}] != 0.0 at init"
 
     def test_set_active_corp(self, state):
-        """set_active_corp should populate scalars and owned companies from corp data."""
+        """set_active_corp should populate all scalars and owned companies from corp data."""
         layout = get_layout(3)
         cf = get_corp_fields()
         # Float a corp first so it has meaningful data
@@ -236,15 +246,31 @@ class TestActiveCorp:
 
         state.set_active_corp(0)
         co_base = layout.active_corp_companies_offset
-
-        # Individual scalars: income, stars, share_price (already normalized in corp data)
         corp_base = layout.corps_offset + 0 * layout.corp_stride
-        corp_ptr_income = state._array[corp_base + cf.income]
-        corp_ptr_stars = state._array[corp_base + cf.stars]
-        corp_ptr_price = state._array[corp_base + cf.share_price]
-        assert abs(state._array[layout.active_corp_income_offset] - corp_ptr_income) < 1e-6
-        assert abs(state._array[layout.active_corp_stars_offset] - corp_ptr_stars) < 1e-6
-        assert abs(state._array[layout.active_corp_share_price_offset] - corp_ptr_price) < 1e-6
+
+        # All scalars should match their per-corp data block counterparts
+        FIELD_MAP = {
+            'active_corp_cash_offset': cf.cash,
+            'active_corp_unissued_shares_offset': cf.unissued_shares,
+            'active_corp_issued_shares_offset': cf.issued_shares,
+            'active_corp_bank_shares_offset': cf.bank_shares,
+            'active_corp_income_offset': cf.income,
+            'active_corp_stars_offset': cf.stars,
+            'active_corp_share_price_offset': cf.share_price,
+            'active_corp_acquisition_proceeds_offset': cf.acquisition_proceeds,
+            'active_corp_price_index_norm_offset': cf.price_index_norm,
+            'active_corp_pending_price_move_offset': cf.pending_price_move,
+            'active_corp_raw_revenue_offset': cf.raw_revenue,
+            'active_corp_synergy_income_offset': cf.synergy_income,
+            'active_corp_coo_cost_offset': cf.coo_cost,
+            'active_corp_ability_income_offset': cf.ability_income,
+        }
+        for offset_name, corp_field in FIELD_MAP.items():
+            active_val = state._array[getattr(layout, offset_name)]
+            corp_val = state._array[corp_base + corp_field]
+            assert abs(active_val - corp_val) < 1e-6, (
+                f"{offset_name}: active={active_val} != corp={corp_val}"
+            )
 
         # Owned companies should match corp's owned_companies block
         corp_owned_offset = corp_base + cf.owned_companies
@@ -254,7 +280,7 @@ class TestActiveCorp:
             )
 
     def test_clear_active_corp(self, state):
-        """clear_active_corp should zero out scalars and owned companies."""
+        """clear_active_corp should zero out all scalars and owned companies."""
         layout = get_layout(3)
         from tests.phases.conftest import float_corp_for_test
         float_corp_for_test(state, corp_id=0, par_index=10, player_id=0)
@@ -262,8 +288,7 @@ class TestActiveCorp:
         state.clear_active_corp()
 
         co_base = layout.active_corp_companies_offset
-        for offset_name in ('active_corp_income_offset', 'active_corp_stars_offset',
-                            'active_corp_share_price_offset'):
+        for offset_name in self.ACTIVE_CORP_SCALAR_OFFSETS:
             assert state._array[getattr(layout, offset_name)] == 0.0, f"{offset_name} != 0.0 after clear"
         for i in range(36):
             assert state._array[co_base + i] == 0.0, f"active_corp_companies[{i}] != 0.0 after clear"

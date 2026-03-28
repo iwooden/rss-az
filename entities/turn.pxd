@@ -61,6 +61,7 @@ cdef class TurnState:
 
     # Auction offsets
     cdef int _auction_price_offset
+    cdef int _auction_price_offset_offset
     cdef int _auction_high_bidder_offset
     cdef int _auction_starter_offset
     cdef int _auction_passed_offset
