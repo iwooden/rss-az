@@ -77,6 +77,9 @@ class TrainingConfig:
     # --- Game ---
     num_players: int = 3
 
+    # --- Inference ---
+    eval_dtype: str | None = None  # None = no autocast; "bfloat16" or "float16"
+
     # --- Self-Play ---
     games_per_epoch: int = 1000
     num_simulations: int = 800
@@ -182,6 +185,13 @@ class TrainingConfig:
         # Model path — must be a non-empty dotted module path
         if not self.model_path or not isinstance(self.model_path, str):
             raise ValueError(f"model_path must be a non-empty string, got {self.model_path!r}")
+
+        # Eval dtype
+        if self.eval_dtype is not None and self.eval_dtype not in ("bfloat16", "float16"):
+            raise ValueError(
+                f"eval_dtype must be None, 'bfloat16', or 'float16', "
+                f"got {self.eval_dtype!r}"
+            )
 
         # MCTS fields
         if self.num_simulations < 1:

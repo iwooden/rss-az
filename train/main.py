@@ -115,11 +115,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-compile", action="store_true", default=False,
         help="Disable torch.compile model optimization",
     )
+    parser.add_argument(
+        "--eval-dtype", type=str, choices=["bfloat16", "float16"],
+        help="Enable autocast for eval inference (default: disabled, fp32)",
+    )
     return parser
 
 
 _CLI_FIELDS = (
-    "model_path",
+    "model_path", "eval_dtype",
     "games_per_epoch", "num_epochs", "num_simulations", "search_batch_size",
     "mcts_sims_start", "mcts_sims_end", "mcts_ramp_start_epoch", "mcts_ramp_end_epoch",
     "num_workers", "num_eval_servers", "eval_fixed_batch_workers",
@@ -515,6 +519,7 @@ def main() -> None:
                 gpu_vendor=gpu.vendor,
                 fixed_batch_workers=effective_fbw,
                 epoch_ending_flag=epoch_ending_flag,
+                eval_dtype=config.eval_dtype,
             )
             server.start()
             eval_servers.append(server)
@@ -623,6 +628,7 @@ def main() -> None:
         evaluator = NNEvaluator(
             model, device, num_players=config.num_players,
             terminal_rank_weight=config.terminal_blend,
+            eval_dtype=config.eval_dtype,
         )
         from core.state import get_layout
 

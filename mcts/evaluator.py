@@ -266,13 +266,16 @@ class NNEvaluator(BaseEvaluator):
     and value un-rotation to canonical player order.
     """
 
+    _DTYPE_MAP = {"bfloat16": torch.bfloat16, "float16": torch.float16}
+
     def __init__(self, model: torch.nn.Module, device: torch.device,
                  num_players: int = 3, *,
-                 terminal_rank_weight: float = 0.5) -> None:
+                 terminal_rank_weight: float = 0.5,
+                 eval_dtype: str | None = None) -> None:
         super().__init__(num_players, terminal_rank_weight)
         self.model = model
         self.device = device
-        self._autocast_dtype = torch.bfloat16 if device.type == "cuda" else None
+        self._autocast_dtype = self._DTYPE_MAP.get(eval_dtype) if eval_dtype else None
         self.model.eval()
 
         # Reusable rotation buffer for batch evaluation, grows as needed

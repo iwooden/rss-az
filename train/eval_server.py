@@ -197,6 +197,7 @@ def _eval_server_main(
     gpu_vendor: str = "cpu",
     fixed_batch_workers: int | None = None,
     epoch_ending_flag: Any = None,
+    eval_dtype: str | None = None,
 ) -> None:
     """Eval server process entry point.
 
@@ -216,6 +217,7 @@ def _eval_server_main(
             gpu_vendor=gpu_vendor,
             fixed_batch_workers=fixed_batch_workers,
             epoch_ending_flag=epoch_ending_flag,
+            eval_dtype=eval_dtype,
         )
     except Exception:
         import traceback
@@ -240,6 +242,7 @@ def _eval_server_serve(
     gpu_vendor: str = "cpu",
     fixed_batch_workers: int | None = None,
     epoch_ending_flag: Any = None,
+    eval_dtype: str | None = None,
 ) -> None:
     """Inner serve loop for an eval server process.
 
@@ -267,9 +270,8 @@ def _eval_server_serve(
         from train.gpu import GpuConfig
         GpuConfig(vendor=gpu_vendor).apply_optimizations()
 
-    # bfloat16 autocast produces sporadic NaNs on this model (confirmed
-    # 2026-03-29 with ROCm 7.2.0 / RX 9070 XT, --no-compile).
-    eval_autocast_dtype: torch.dtype | None = None
+    _dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16}
+    eval_autocast_dtype: torch.dtype | None = _dtype_map.get(eval_dtype) if eval_dtype else None
 
     # Optionally compile the model (per-process compilation).
     if not no_compile and use_cuda:
@@ -531,6 +533,7 @@ class EvaluationServer:
         gpu_vendor: str = "cpu",
         fixed_batch_workers: int | None = None,
         epoch_ending_flag: Any = None,
+        eval_dtype: str | None = None,
     ) -> None:
         import multiprocessing
         ctx = mp_context or multiprocessing
@@ -556,6 +559,7 @@ class EvaluationServer:
             "gpu_vendor": gpu_vendor,
             "fixed_batch_workers": fixed_batch_workers,
             "epoch_ending_flag": epoch_ending_flag,
+            "eval_dtype": eval_dtype,
         }
         self._mp_context = ctx
         self._server_id = server_id
