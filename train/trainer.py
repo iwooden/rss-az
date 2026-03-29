@@ -99,6 +99,12 @@ class Trainer:
             + self.config.value_loss_weight * value_loss
         )
 
+        if torch.isnan(total_loss):
+            raise RuntimeError(
+                f"NaN loss at step {self._global_step}: "
+                f"policy={policy_loss.item()}, value={value_loss.item()}"
+            )
+
         # Backward + optimize
         self.optimizer.zero_grad()
         total_loss.backward()

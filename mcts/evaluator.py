@@ -6,10 +6,13 @@ neural network inference, and value un-rotation to canonical player order.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import numpy as np
 import torch
+
+logger = logging.getLogger(__name__)
 
 from core.state import LayoutInfo, get_layout as _get_layout_uncached
 from mcts.mcts_core import (
@@ -207,11 +210,28 @@ class BaseEvaluator:
             net_worths, self.num_players, self.terminal_rank_weight
         )
 
+    def _check_nan(self, logits: np.ndarray, values: np.ndarray) -> None:
+        """Raise if NN output contains NaN."""
+        has_nan_logits = np.isnan(logits).any()
+        has_nan_values = np.isnan(values).any()
+        if has_nan_logits or has_nan_values:
+            parts: list[str] = []
+            if has_nan_logits:
+                nan_count = int(np.isnan(logits).sum())
+                parts.append(f"logits ({nan_count}/{logits.size} NaN)")
+            if has_nan_values:
+                nan_count = int(np.isnan(values).sum())
+                parts.append(f"values ({nan_count}/{values.size} NaN)")
+            msg = f"NaN in NN eval output: {', '.join(parts)}"
+            logger.error(msg)
+            raise RuntimeError(msg)
+
     def _finalize_single(
         self, logits: np.ndarray, values: np.ndarray,
         mask: np.ndarray, active_player_id: int,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Apply mask+softmax and unrotate values for a single state."""
+        self._check_nan(logits, values)
         policy_probs = apply_mask_softmax(logits, mask)
         canonical_values = unrotate_values(values, active_player_id)
         return policy_probs, canonical_values, mask
@@ -232,6 +252,7 @@ class BaseEvaluator:
         active_player_ids: list[int],
     ) -> list[tuple[np.ndarray, np.ndarray]]:
         """Unrotate values for a batch of leaves (logits returned raw)."""
+        self._check_nan(logits_np, values_np)
         return [
             (logits_np[i], unrotate_values(values_np[i], active_player_ids[i]))
             for i in range(len(active_player_ids))

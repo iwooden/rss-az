@@ -267,9 +267,8 @@ def _eval_server_serve(
         from train.gpu import GpuConfig
         GpuConfig(vendor=gpu_vendor).apply_optimizations()
 
-    # Temporary debug switch: force eval-server inference to run in fp32.
-    # This isolates ROCm/eager bf16 autocast as a potential source of the
-    # sporadic NaNs seen during self-play generation.
+    # bfloat16 autocast produces sporadic NaNs on this model (confirmed
+    # 2026-03-29 with ROCm 7.2.0 / RX 9070 XT, --no-compile).
     eval_autocast_dtype: torch.dtype | None = None
 
     # Optionally compile the model (per-process compilation).
