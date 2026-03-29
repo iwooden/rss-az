@@ -15,7 +15,7 @@ class MCTSConfig:
     c_puct: float = 2.5
     dirichlet_alpha: float = 0.8
     dirichlet_epsilon: float = 0.25
-    dirichlet_dynamic: bool = False
+    dirichlet_dynamic: bool = True
     dirichlet_alpha_numerator: float = 10.0
     num_players: int = 3
     search_batch_size: int = 1
@@ -81,13 +81,13 @@ class TrainingConfig:
     eval_dtype: str | None = None  # None = no autocast; "bfloat16" or "float16"
 
     # --- Self-Play ---
-    games_per_epoch: int = 1000
+    games_per_epoch: int = 500
     num_simulations: int = 800
     dirichlet_alpha: float = 0.8
     dirichlet_epsilon: float = 0.25
-    dirichlet_dynamic: bool = False
+    dirichlet_dynamic: bool = True
     dirichlet_alpha_numerator: float = 10.0
-    search_batch_size: int = 1
+    search_batch_size: int = 8
     num_workers: int = 4
     num_eval_servers: int = 1
     eval_fixed_batch_workers: int | None = None
@@ -123,12 +123,12 @@ class TrainingConfig:
     # Pure game outcome for epochs < value_blend_start_epoch,
     # linear ramp to pure A0GB by value_blend_end_epoch.
     value_blend_start_epoch: int = 10
-    value_blend_end_epoch: int = 40
+    value_blend_end_epoch: int = 200
 
     # --- Terminal reward blending ---
     # Blend between rank-based rewards (1.0) and net-worth-margin rewards (0.0).
     # Default 0.5 = equal blend. Set to 1.0 for pure [-1, 0, +1] rank rewards.
-    terminal_blend: float = 0.5
+    terminal_blend: float = 0.75
 
     # --- Replay Buffer ---
     buffer_capacity: int = 500_000
@@ -145,7 +145,7 @@ class TrainingConfig:
     # Cosine annealing with linear warmup
     warmup_steps: int = 1000
     lr_min: float = 1e-4
-    lr_decay_end_epoch: int | None = None  # epoch where LR reaches lr_min (default: num_epochs)
+    lr_decay_end_epoch: int | None = 200  # epoch where LR reaches lr_min (default: num_epochs)
 
     # --- Loss ---
     value_loss_weight: float = 1.0
@@ -161,7 +161,7 @@ class TrainingConfig:
     log_interval: int = 100
 
     # --- Overall ---
-    num_epochs: int = 100
+    num_epochs: int = 500
     seed: int = 42
 
     # --- Profiling (operational, not checkpointed) ---
