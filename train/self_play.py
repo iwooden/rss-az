@@ -42,6 +42,7 @@ class GameRecord:
     nw_shares_pct: list[float]  # % of net worth from owned shares (count * price)
     avg_active_corp_price: float  # Average share price of active corps
     corps_in_receivership: int  # Number of corps in receivership
+    has_max_price_corp: bool  # Whether any active corp finished at max share price (75)
     duration_secs: float  # Wall-clock time
     policy_entropy_mean: float = 0.0  # Mean entropy of MCTS policy targets (nats)
     top1_visit_fraction: float = 0.0  # Mean fraction of visits on top action
@@ -225,6 +226,7 @@ def play_game(
             if CORPS[c].is_in_receivership(state):
                 corps_in_receivership += 1
     avg_active_corp_price = sum(active_prices) / len(active_prices) if active_prices else 0.0
+    has_max_price_corp = any(p == 75 for p in active_prices)
 
     # Pre-stack training data into contiguous arrays (4 large arrays instead
     # of N×4 small ones) so pickle through mp.Queue is a fast memcpy.
@@ -274,6 +276,7 @@ def play_game(
         nw_shares_pct=nw_shares_pct,
         avg_active_corp_price=avg_active_corp_price,
         corps_in_receivership=corps_in_receivership,
+        has_max_price_corp=has_max_price_corp,
         duration_secs=time.perf_counter() - t0,
         policy_entropy_mean=entropy_sum / max(move_count, 1),
         top1_visit_fraction=top1_sum / max(move_count, 1),

@@ -656,12 +656,14 @@ def main() -> None:
             total_nw_shares_pct = [0.0] * num_players
             total_avg_corp_price = 0.0
             total_corps_in_receivership = 0
+            games_with_max_price_corp = 0
             game_profiles: list[GameProfileData] = []
 
             def _collect_record(record: object, game_idx: int) -> None:
                 nonlocal total_examples, total_moves, total_duration
                 nonlocal total_entropy, total_top1
                 nonlocal total_avg_corp_price, total_corps_in_receivership
+                nonlocal games_with_max_price_corp
                 buffer.add_stacked(  # type: ignore[union-attr]
                     record.states, record.legal_masks,  # type: ignore[union-attr]
                     record.policy_targets, record.value_targets,  # type: ignore[union-attr]
@@ -688,6 +690,8 @@ def main() -> None:
                     total_nw_shares_pct[rank] += record.nw_shares_pct[p]  # type: ignore[index]
                 total_avg_corp_price += record.avg_active_corp_price  # type: ignore[union-attr]
                 total_corps_in_receivership += record.corps_in_receivership  # type: ignore[union-attr]
+                if record.has_max_price_corp:  # type: ignore[union-attr]
+                    games_with_max_price_corp += 1
                 if record.profile is not None:  # type: ignore[union-attr]
                     game_profiles.append(record.profile)  # type: ignore[union-attr]
                 n = game_idx + 1
@@ -875,6 +879,7 @@ def main() -> None:
                 "self_play/total_companies": sum(avg_companies),
                 "self_play/avg_active_corp_price": total_avg_corp_price / n_games,
                 "self_play/corps_in_receivership": total_corps_in_receivership / n_games,
+                "self_play/pct_games_max_price_corp": games_with_max_price_corp / n_games,
             }
             for k, s, c, psv, nw_cash, nw_co, nw_sh in zip(
                 rank_labels, avg_shares, avg_companies, avg_pres_share_values,
