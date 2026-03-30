@@ -6,7 +6,7 @@ by the Ruby state extractor.
 
 Game JSON files are discovered dynamically from the data/ directory.
 Reference states are pre-extracted to {game_id}_extract.json files by
-the Ruby batch extractor (runs once per session if any are missing).
+the Ruby extractor (runs once per session if any are missing or stale).
 """
 
 import glob
@@ -56,7 +56,7 @@ SKIP_GAMES = {
 
 @pytest.fixture(scope="session", autouse=True)
 def _extract_ref_states():
-    """Ensure all reference state extracts exist before any replay test runs."""
+    """Ensure all reference state extracts exist and are up to date."""
     ensure_extracts(DATA_DIR)
 
 

@@ -82,26 +82,62 @@ class Mismatch:
 
 
 def ensure_extracts(data_dir: str) -> None:
-    """Run the Ruby batch extractor to generate any missing _extract.json files.
+    """Generate any missing or stale ``_extract.json`` files.
 
-    This is a no-op if all extracts already exist on disk.
+    Extracts are refreshed when they predate the Ruby extractor or any Ruby
+    source file under the vendored 18xx.games engine tree. This keeps the
+    checked-in fixtures aligned with extractor and engine changes without
+    forcing a full refresh on every test run.
     """
     import subprocess
 
-    extractor = str(Path(__file__).parent / "extract_states.rb")
+    base_dir = Path(__file__).parent
+    data_path = Path(data_dir)
+    extractor = base_dir / "extract_states.rb"
+    engine_root = base_dir / "18xx" / "lib" / "engine"
+
+    dependency_mtime_ns = extractor.stat().st_mtime_ns
+    for source in engine_root.rglob("*.rb"):
+        dependency_mtime_ns = max(dependency_mtime_ns, source.stat().st_mtime_ns)
+
+    pending: list[tuple[Path, Path]] = []
+    for game_path in sorted(data_path.glob("*.json")):
+        if game_path.name.endswith("_extract.json"):
+            continue
+        extract_path = game_path.with_name(f"{game_path.stem}_extract.json")
+        if (
+            not extract_path.exists()
+            or extract_path.stat().st_mtime_ns < dependency_mtime_ns
+        ):
+            pending.append((game_path, extract_path))
+
+    if not pending:
+        return
+
     try:
-        result = subprocess.run(
-            ["ruby", extractor, data_dir],
-            capture_output=True, text=True, timeout=600,
-        )
+        failures = []
+        for game_path, extract_path in pending:
+            result = subprocess.run(
+                ["ruby", str(extractor), str(game_path)],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            if result.returncode != 0:
+                failures.append(
+                    f"{game_path.name} (exit {result.returncode}):\n{result.stderr}"
+                )
+                continue
+            extract_path.write_text(result.stdout, encoding="utf-8")
     except FileNotFoundError:
         raise RuntimeError(
             "Ruby not found. Install Ruby to run 18xx replay tests."
         )
 
-    if result.returncode != 0:
+    if failures:
         raise RuntimeError(
-            f"State extractor failed (exit {result.returncode}):\n{result.stderr}"
+            "State extractor failed for one or more games:\n"
+            + "\n\n".join(failures)
         )
 
 
