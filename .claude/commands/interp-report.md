@@ -59,9 +59,9 @@ Read the generated markdown and console output from each analysis. The key files
 - Norm check console output — normalization issues, out-of-range features
 - Decision attribution console output — what drives uncertain decisions
 - ACIG console output — action-conditioned feature importance
-- Architecture analysis console output — block contribution, conductance, SVD/effective rank
+- Architecture analysis console output — preprocessing contribution, block contribution, per-phase head conductance, SVD/effective rank
 - TB summary console output — training curves, self-play stats
-- `interp/data/probing_epoch<N>.md` — linear probing results
+- `interp/data/probing_epoch<N>.md` — linear probing results (trunk, per-phase policy head, value head tables)
 
 Read ALL output carefully before producing the analysis.
 

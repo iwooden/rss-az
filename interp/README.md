@@ -27,7 +27,7 @@ All scripts auto-detect the latest checkpoint. Use `--checkpoint path/to/file.pt
 
 **Question:** Which input features does the model rely on, and in which phases?
 
-**Method:** Zeros out each feature group and measures both policy KL divergence and value MSE. Higher KL/MSE = the model's output changes more = more reliant on that feature. Separate heatmaps for policy and value heads show which features each head depends on.
+**Method:** Zeros out each feature group and measures both policy KL divergence and value MSE. Higher KL/MSE = the model's output changes more = more reliant on that feature. Separate heatmaps for policy and value heads show which features each head depends on. The `phase` feature is filtered from policy KL tables since it determines head routing and dominates color scaling.
 
 **Output:** Markdown table (policy KL only) + HTML heatmap with separate policy/value tables. Both written automatically.
 
@@ -106,11 +106,12 @@ All scripts auto-detect the latest checkpoint. Use `--checkpoint path/to/file.pt
 
 **Question:** Is the model using its depth and width efficiently? Should we add/remove blocks? Are the heads sized correctly?
 
-**Method:** Four analyses:
-1. **Block contribution** — how much each residual block changes the representation (||residual|| / ||input||)
-2. **Trunk block conductance** (optional) — Captum-based measurement of each trunk block's importance to policy/value heads
-3. **Head-layer conductance** (optional) — Captum conductance within each head's and input preprocessing's Linear layers, showing which layer does the most work
-4. **Effective rank** (SVD) — dimensionality utilization at each layer, including head layers and optionally per-sublayer within each residual block
+**Method:** Five analyses:
+1. **Preprocessing contribution** — signal gain/attenuation through each input preprocessing layer (||output|| / ||input||)
+2. **Block contribution** — how much each residual block changes the representation (||residual|| / ||input||)
+3. **Trunk block conductance** (optional) — Captum-based measurement of each trunk block's importance to policy/value heads
+4. **Head-layer conductance** (optional) — Captum conductance within each per-phase policy head's, value head's, and input preprocessing's Linear layers, showing which layer does the most work. Phase heads are filtered to only use states that route to that head.
+5. **Effective rank** (SVD) — dimensionality utilization at each layer, including per-phase policy head and value head layers, and optionally per-sublayer within each residual block
 
 **Output:** Console summary + HTML report with bar charts.
 
@@ -141,7 +142,8 @@ All scripts auto-detect the latest checkpoint. Use `--checkpoint path/to/file.pt
 
 *Head-layer conductance:*
 - **Uneven split** — if the first layer does >50% of the work, it's the bottleneck. Consider adding depth (more nonlinear transforms) rather than width
-- **Policy vs value balance** — the value head should be evenly split (simple task); the policy head may be imbalanced (complex task)
+- **Per-phase variation** — each phase head has its own conductance profile. Phases with more complex action spaces (INVEST, ACQ) may show different patterns than simpler ones (CLOSE, ISSUE)
+- **Policy vs value balance** — the value head should be evenly split (simple task); individual phase heads may be imbalanced (complex action spaces)
 
 **Key options:**
 - `--skip-heads` — skip head-specific analyses (head conductance + head SVD)
@@ -161,7 +163,7 @@ All scripts auto-detect the latest checkpoint. Use `--checkpoint path/to/file.pt
 
 **Method:** Trains linear probes (logistic regression / ridge regression) on intermediate activations at each layer to predict game-relevant quantities. If a probe at block 2 predicts as well as at block 5, the later blocks aren't contributing to that type of understanding.
 
-**Output:** Console summary + HTML report with separate tables for trunk, policy head, and value head layers.
+**Output:** Console summary + HTML report with separate tables for trunk layers, per-phase policy head layers (each phase probed independently using only matching states), and value head layers.
 
 ```bash
 .venv/bin/python -m interp.probing --load-data interp/data/states.npz
@@ -196,15 +198,16 @@ Note: requires ~10K+ states for reliable MLP probes. With <3K states the MLPs ov
 - **Accuracy improving through blocks** — trunk depth helps policy
 - **Accuracy flat or declining** — trunk doesn't help policy; the policy head's nonlinear layers are doing the work. Consider a deeper/wider policy head instead of a deeper trunk
 - **action_type vs model_top_action gap** — if action_type (broad category) is well-predicted but exact action isn't, the trunk knows the strategy but specifics require nonlinear computation
+- **Per-phase head variation** — each phase head is probed independently with its own states. Some heads (e.g., INVEST with 4 action types) may show stronger probe accuracy than simpler phases
 
 *Game state probes:*
 - **Declining from input to trunk** — expected. The model transforms raw features into abstract representations. Raw features get harder to linearly decode
 - **Already high at input** — the input preprocessing layer handles this concept easily (e.g., who's winning)
 
-**Reference results (v2, epoch 50, 6 blocks):**
+**Reference results (v2, epoch 50, 6 blocks, single policy head):**
 - `model_value_p0`: R² 0.89 → 0.97 (value climbs through all blocks)
 - `invest_action`: 0.80 → 0.80 (flat — policy doesn't benefit from depth)
-- Conclusion: trunk serves value; deeper policy head needed → expanded to 2 hidden layers
+- Conclusion: trunk serves value; deeper policy head needed → expanded to per-phase heads with 3 hidden layers each
 
 ---
 
@@ -267,6 +270,8 @@ Deep analysis of individual model components, beyond what the global arch_analys
 ```
 
 ### 7b. Policy Head (`layers/policy_head.py`)
+
+> **Note:** This script references `model.policy_head` (pre-per-phase architecture) and needs updating to work with the current `model.phase_heads` per-phase policy heads.
 
 **Question:** How does the policy head organize its computation? Does it have enough depth/width for all action types?
 
