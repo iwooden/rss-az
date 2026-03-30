@@ -44,13 +44,14 @@ SKIP_GAMES = {
     # despite having 27 cash remaining.  Our engine correctly repeats.
     # Tracked: rss-az-xwzk (submit PR to 18xx.games repo)
     243592,
-    # 18xx receivership FI buying: OS special ability priority unclear.
-    # Our engine gives OS first priority for FI purchases (special ability:
-    # "always considered highest share price"). 18xx uses actual share price
-    # ordering for receivership, ignoring OS special. Need to clarify.
+    # Current vendored 18xx engine does let OS buy from FI at company face
+    # value, but its "always considered highest share price" special does not
+    # appear to be applied consistently during receivership FI auto-buy
+    # ordering. These replays diverge when OS loses priority to another
+    # receivership corp before the later ACQ state catches up.
     # Tracked: rss-az-76nd
     210560,
-    210896,  # Same OS receivership FI priority issue (rss-az-76nd)
+    210896,
 }
 
 
