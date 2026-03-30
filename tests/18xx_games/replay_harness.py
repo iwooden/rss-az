@@ -94,7 +94,7 @@ def ensure_extracts(data_dir: str) -> None:
     base_dir = Path(__file__).parent
     data_path = Path(data_dir)
     extractor = base_dir / "extract_states.rb"
-    engine_root = base_dir / "18xx" / "lib" / "engine"
+    engine_root = base_dir.parent.parent / "submodules" / "18xx" / "lib" / "engine"
 
     dependency_mtime_ns = extractor.stat().st_mtime_ns
     for source in engine_root.rglob("*.rb"):
