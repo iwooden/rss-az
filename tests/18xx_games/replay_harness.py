@@ -160,12 +160,22 @@ class ReplayHarness:
     ref_states: list = field(default_factory=list)
     verbose: bool = False
     mismatches: list = field(default_factory=list)
-    # Companies already pre-applied by the look-ahead; the ACQ adapter
-    # must skip these to avoid double-applying.
-    _lookahead_applied: set = field(default_factory=set, repr=False)
-    # Correct player order computed before look-ahead pre-applies modify
-    # player cash.  Applied after the engine cascades through WRAP_UP.
-    _pending_player_order: list | None = field(default=None, repr=False)
+    # ACQ/CLO action IDs already handled by the look-ahead. Used to avoid
+    # re-running the same round pre-apply logic on later actions in that round.
+    _lookahead_handled_round_actions: set[int] = field(default_factory=set, repr=False)
+    # Round-local set of ACQ company names pre-applied by the look-ahead.
+    # Keyed by the first ACQ snapshot's action_id for that round.
+    _lookahead_preapplied_companies_by_round: dict[int, set[str]] = field(default_factory=dict, repr=False)
+    # Pending player-cash credits from look-ahead cross-president transfers.
+    # Ownership must be patched before the driver auto-cascades through ACQ/CLO,
+    # but crediting the seller immediately can change the current INVEST round's
+    # end-of-round logic. Apply the cash only after the triggering action settles.
+    _pending_player_cash_by_player: dict[int, int] = field(default_factory=dict, repr=False)
+    # When we skip an ACQ/CLO block because the engine already jumped forward,
+    # the next flattened auto-pass can be a bookkeeping placeholder rather than
+    # a real INVEST decision. Preserve turn order across that one pass so it
+    # does not trigger a spurious WRAP_UP reorder.
+    _preserve_order_on_next_auto_invest_pass: bool = field(default=False, repr=False)
 
     def run(self) -> list[Mismatch]:
         """Run the full replay. Returns list of mismatches (empty = success)."""
@@ -328,6 +338,44 @@ class ReplayHarness:
 
         action = actions[idx]
         action_id = action.get('id', -1)
+        phase = TURN.get_phase(state)
+
+        if (
+            self._preserve_order_on_next_auto_invest_pass
+            and action_id < 0
+            and action.get('type') == 'pass'
+            and phase == PHASE_INVEST
+        ):
+            saved_order = [PLAYERS[i].get_turn_order(state) for i in range(state.get_num_players())]
+            self._preserve_order_on_next_auto_invest_pass = False
+
+            next_idx = self._replay_simple_action_core(state, actions, idx, layout, ref_by_action)
+
+            for player_id, position in enumerate(saved_order):
+                PLAYERS[player_id].set_turn_order(state, position)
+
+            return next_idx
+
+        before_mismatches = len(self.mismatches)
+        next_idx = self._replay_simple_action_core(state, actions, idx, layout, ref_by_action)
+
+        if action_id >= 0 and action_id in ref_by_action:
+            ref_round = ref_by_action[action_id].get('round', '')
+            if (
+                ref_round in ('ACQ', 'CLO')
+                and phase == PHASE_INVEST
+                and next_idx == idx + 1
+                and self._last_ref is None
+                and len(self.mismatches) == before_mismatches
+            ):
+                self._preserve_order_on_next_auto_invest_pass = True
+
+        return next_idx
+
+    def _replay_simple_action_core(self, state, actions, idx, layout, ref_by_action):
+        """Replay a single non-ACQ/CLO action without placeholder-pass wrapping."""
+        action = actions[idx]
+        action_id = action.get('id', -1)
         has_ref = action_id >= 0 and action_id in ref_by_action
 
         # Skip forced dividend actions — the Ruby extractor tags dividends as
@@ -394,6 +442,11 @@ class ReplayHarness:
                     print(f"  Skipping {ref_round}-round action {action_id} (engine already advanced)")
                 self._last_ref = None
                 return idx + 1
+            if ref_round in ('DIV', 'ISS', 'IPO') and TURN.get_phase(state) in (PHASE_INVEST, PHASE_BID):
+                if self.verbose:
+                    print(f"  Skipping {ref_round}-round action {action_id} (engine already in {self._get_phase_name(state)})")
+                self._last_ref = None
+                return idx + 1
             if self.verbose:
                 print(f"  Skipping unmappable action {action_id}: {action.get('type')}")
             if has_ref:
@@ -429,10 +482,9 @@ class ReplayHarness:
                 ))
                 break
 
-        # If the look-ahead pre-applied cross-president player transfers
-        # (modifying player cash before WRAP_UP), patch the turn order now
-        # that the cascade is complete.
-        self._apply_pending_player_order(state)
+        # Look-ahead player-seller transfers defer the cash credit until the
+        # triggering action has finished auto-advancing through the engine.
+        self._apply_pending_player_cash(state)
 
         # Update reference for next comparison
         if has_ref:
@@ -515,57 +567,34 @@ class ReplayHarness:
         Returns new index into actions stream (past all acquisition actions).
         """
         # Collect all 18xx acquisition actions until phase changes
-        acq_actions, end_idx = self._collect_phase_actions(actions, idx, 'ACQ', ref_by_action)
+        _, end_idx = self._collect_phase_actions(actions, idx, 'ACQ', ref_by_action)
 
         # Read ACQ outcomes from the Ruby extractor's annotation on the first
-        # ACQ snapshot.  Each outcome includes seller info and a cross_president
-        # flag, so we don't need to iterate over corps/players to detect sellers.
+        # ACQ snapshot for this round. We may enter the round late (for
+        # example on an auto-action pass), so scan backwards to recover the
+        # round's first annotated snapshot instead of relying on start_idx.
         acq_outcomes: dict[str, tuple[str, int]] = {}
         acq_outcome_details: dict[str, dict] = {}  # Full outcome dicts for pre-apply fallback
-        for a in acq_actions:
-            aid = a.get('id', -1)
-            if aid >= 0 and aid in ref_by_action:
-                ref = ref_by_action[aid]
-                if ref.get('acq_outcomes') is not None:
-                    for o in ref['acq_outcomes']:
-                        if not o.get('cross_president', False):
-                            acq_outcomes[o['company']] = (o['buyer'], o['price'])
-                            acq_outcome_details[o['company']] = o
-                    # Pre-apply cross-president transfers (our engine excludes
-                    # these from its action space — RULES.md constraint #1).
-                    # Must happen BEFORE the offer buffer walk because the driver
-                    # auto-advances through CLOSING+INCOME after ACQ.
-                    # Skip companies already pre-applied by the look-ahead.
-                    for o in ref['acq_outcomes']:
-                        if not o.get('cross_president', False):
-                            continue
-                        if o['company'] in self._lookahead_applied:
-                            continue
-                        company_id = COMPANY_NAME_TO_ID.get(o['company'])
-                        buyer_corp_id = CORP_NAME_TO_ID.get(o['buyer'])
-                        if company_id is None or buyer_corp_id is None:
-                            continue
-                        price = o['price']
-                        if o['seller_type'] == 'corp':
-                            seller_corp_id = CORP_NAME_TO_ID.get(o.get('seller', ''))
-                            if seller_corp_id is not None:
-                                COMPANIES[company_id].transfer_to_corp(state, buyer_corp_id)
-                                CORPS[buyer_corp_id].add_cash(state, -price)
-                                current = CORPS[seller_corp_id].get_acquisition_proceeds(state)
-                                CORPS[seller_corp_id].set_acquisition_proceeds(state, current + price)
-                                if self.verbose:
-                                    print(f"  ACQ adapter: pre-applied cross-president corp transfer "
-                                          f"{o['seller']}->{o['buyer']} for {o['company']} at {price}")
-                        elif o['seller_type'] == 'player':
-                            seller_idx = self._player_id_to_index.get(o.get('seller_id'))
-                            if seller_idx is not None:
-                                COMPANIES[company_id].transfer_to_corp(state, buyer_corp_id)
-                                CORPS[buyer_corp_id].add_cash(state, -price)
-                                PLAYERS[seller_idx].add_cash(state, price)
-                                if self.verbose:
-                                    print(f"  ACQ adapter: pre-applied cross-president player transfer "
-                                          f"player[{seller_idx}]->{o['buyer']} for {o['company']} at {price}")
-                    break
+        first_acq_ref, _, _ = self._get_first_round_snapshot(actions, idx, 'ACQ', ref_by_action)
+        preapplied_companies = set()
+        if first_acq_ref is not None:
+            round_key = first_acq_ref['action_id']
+            preapplied_companies = self._lookahead_preapplied_companies_by_round.get(round_key, set())
+            outcomes = first_acq_ref.get('acq_outcomes') or []
+            for outcome in outcomes:
+                if outcome['company'] in preapplied_companies:
+                    continue
+                if not outcome.get('cross_president', False):
+                    acq_outcomes[outcome['company']] = (outcome['buyer'], outcome['price'])
+                    acq_outcome_details[outcome['company']] = outcome
+            # Pre-apply cross-president transfers (our engine excludes these
+            # from its action space — RULES.md constraint #1).
+            for outcome in outcomes:
+                if not outcome.get('cross_president', False):
+                    continue
+                if outcome['company'] in preapplied_companies:
+                    continue
+                self._pre_apply_acq_outcome(state, outcome, "ACQ adapter")
 
         # Pre-apply same-president corp-to-corp transfers.  Our engine's
         # fixed offer ordering (buyer share price DESC) can interact badly
@@ -872,13 +901,137 @@ class ReplayHarness:
         if self.verbose:
             print(f"  {context}: pre-applied non-negative-income close for {company_name}")
 
+    def _find_round_bounds(self, actions, anchor_idx, round_name: str, ref_by_action):
+        """Return the contiguous action-index window for a round around anchor_idx."""
+        start = anchor_idx
+        while start > 0:
+            prev_id = actions[start - 1].get('id', -1)
+            prev_ref = ref_by_action.get(prev_id)
+            if prev_ref is not None and prev_ref.get('round', '') != round_name:
+                break
+            start -= 1
+
+        end = anchor_idx
+        while end < len(actions):
+            action_id = actions[end].get('id', -1)
+            ref = ref_by_action.get(action_id)
+            if ref is not None and ref.get('round', '') != round_name:
+                break
+            end += 1
+
+        return start, end
+
+    def _get_first_round_snapshot(self, actions, anchor_idx, round_name: str, ref_by_action):
+        """Return the first reference snapshot for the nearest round block.
+
+        The anchor may already be inside the target round, immediately before
+        it (look-ahead), or after it (late ACQ/CLO entry on a later auto-pass).
+        Prefer the nearest matching round at or before the anchor, then fall
+        back to the nearest one after it.
+        """
+        candidate_idx = None
+
+        for i in range(anchor_idx, -1, -1):
+            action_id = actions[i].get('id', -1)
+            ref = ref_by_action.get(action_id)
+            if ref is not None and ref.get('round', '') == round_name:
+                candidate_idx = i
+                break
+
+        if candidate_idx is None:
+            for i in range(anchor_idx + 1, len(actions)):
+                action_id = actions[i].get('id', -1)
+                ref = ref_by_action.get(action_id)
+                if ref is not None and ref.get('round', '') == round_name:
+                    candidate_idx = i
+                    break
+
+        if candidate_idx is None:
+            return None, anchor_idx, anchor_idx
+
+        start, end = self._find_round_bounds(actions, candidate_idx, round_name, ref_by_action)
+        for i in range(start, end):
+            action_id = actions[i].get('id', -1)
+            ref = ref_by_action.get(action_id)
+            if ref is not None and ref.get('round', '') == round_name:
+                return ref, start, end
+        return None, start, end
+
+    def _get_round_preapplied_companies(self, round_key: int) -> set[str]:
+        """Get or create the look-ahead pre-applied company set for a round."""
+        return self._lookahead_preapplied_companies_by_round.setdefault(round_key, set())
+
+    def _pre_apply_acq_outcome(
+        self,
+        state,
+        outcome: dict,
+        context: str,
+        *,
+        round_key: int | None = None,
+        defer_player_cash: bool = False,
+    ) -> bool:
+        """Pre-apply an ACQ outcome directly to state."""
+        company_name = outcome.get('company', '')
+        preapplied_companies = None
+        if round_key is not None:
+            preapplied_companies = self._get_round_preapplied_companies(round_key)
+            if company_name in preapplied_companies:
+                return False
+
+        company_id = COMPANY_NAME_TO_ID.get(company_name)
+        buyer_corp_id = CORP_NAME_TO_ID.get(outcome.get('buyer', ''))
+        if company_id is None or buyer_corp_id is None:
+            return False
+
+        price = outcome.get('price', 0)
+        seller_type = outcome.get('seller_type')
+
+        if seller_type == 'corp':
+            seller_corp_id = CORP_NAME_TO_ID.get(outcome.get('seller', ''))
+            if seller_corp_id is None:
+                return False
+            COMPANIES[company_id].transfer_to_corp(state, buyer_corp_id)
+            CORPS[buyer_corp_id].add_cash(state, -price)
+            current = CORPS[seller_corp_id].get_acquisition_proceeds(state)
+            CORPS[seller_corp_id].set_acquisition_proceeds(state, current + price)
+            seller_label = outcome.get('seller', '?')
+        elif seller_type == 'player':
+            seller_idx = self._player_id_to_index.get(outcome.get('seller_id'))
+            if seller_idx is None:
+                return False
+            COMPANIES[company_id].transfer_to_corp(state, buyer_corp_id)
+            CORPS[buyer_corp_id].add_cash(state, -price)
+            if defer_player_cash:
+                current = self._pending_player_cash_by_player.get(seller_idx, 0)
+                self._pending_player_cash_by_player[seller_idx] = current + price
+            else:
+                PLAYERS[seller_idx].add_cash(state, price)
+            seller_label = f"player[{seller_idx}]"
+        elif seller_type == 'fi':
+            COMPANIES[company_id].transfer_to_corp(state, buyer_corp_id)
+            CORPS[buyer_corp_id].add_cash(state, -price)
+            FI.add_cash(state, price)
+            seller_label = "FI"
+        else:
+            return False
+
+        if preapplied_companies is not None:
+            preapplied_companies.add(company_name)
+
+        if self.verbose:
+            print(
+                f"  {context}: pre-applied {seller_type} transfer "
+                f"{seller_label}->{outcome.get('buyer', '?')} for {company_name} at {price}"
+            )
+        return True
+
     def _maybe_pre_apply_upcoming_acq(self, state, actions, idx, ref_by_action):
         """Look ahead for an upcoming ACQ round and pre-apply transfers.
 
         When the engine is about to auto-advance through ACQ (e.g. the last
-        INVEST pass triggers WRAP_UP→ACQ→CLO→INCOME), cross-president
-        transfers and non-negative-income CLO closes must be applied BEFORE
-        the cascade so INCOME sees correct company ownership.
+        INVEST pass triggers WRAP_UP→ACQ→CLO→INCOME), acquisition transfers
+        and non-negative-income CLO closes must be applied BEFORE the cascade
+        so INCOME sees correct company ownership.
 
         Only fires when the next action in the stream is ACQ-round and
         hasn't been pre-applied yet.  Uses acquisition_proceeds (not direct
@@ -895,7 +1048,7 @@ class ReplayHarness:
         if next_round not in ('ACQ', 'CLO'):
             return
         # Don't re-apply if we already handled this round
-        if next_id in self._lookahead_applied:
+        if next_id in self._lookahead_handled_round_actions:
             return
 
         # Mark all ACQ+CLO action IDs in this round as handled
@@ -905,57 +1058,30 @@ class ReplayHarness:
             if aid >= 0 and aid in ref_by_action:
                 r = ref_by_action[aid].get('round', '')
                 if r in ('ACQ', 'CLO'):
-                    self._lookahead_applied.add(aid)
+                    self._lookahead_handled_round_actions.add(aid)
                 else:
                     break
 
-        # Find acq_outcomes from the first ACQ snapshot and pre-apply
-        # cross-president transfers.
-        for i in range(idx + 1, len(actions)):
-            a = actions[i]
-            aid = a.get('id', -1)
-            if aid < 0 or aid not in ref_by_action:
-                continue
-            ref = ref_by_action[aid]
-            if ref.get('round', '') not in ('ACQ', 'CLO'):
-                break
-            outcomes = ref.get('acq_outcomes')
-            if outcomes is not None:
-                for o in outcomes:
-                    if not o.get('cross_president', False):
-                        continue
-                    company_id = COMPANY_NAME_TO_ID.get(o['company'])
-                    buyer_corp_id = CORP_NAME_TO_ID.get(o['buyer'])
-                    if company_id is None or buyer_corp_id is None:
-                        continue
-                    price = o['price']
-                    if o['seller_type'] == 'corp':
-                        seller_corp_id = CORP_NAME_TO_ID.get(o.get('seller', ''))
-                        if seller_corp_id is not None:
-                            COMPANIES[company_id].transfer_to_corp(state, buyer_corp_id)
-                            CORPS[buyer_corp_id].add_cash(state, -price)
-                            current = CORPS[seller_corp_id].get_acquisition_proceeds(state)
-                            CORPS[seller_corp_id].set_acquisition_proceeds(state, current + price)
-                            self._lookahead_applied.add(o['company'])
-                            if self.verbose:
-                                print(f"  Look-ahead: pre-applied cross-president corp transfer "
-                                      f"{o['seller']}->{o['buyer']} for {o['company']} at {price}")
-                    elif o['seller_type'] == 'player':
-                        seller_idx = self._player_id_to_index.get(o.get('seller_id'))
-                        if seller_idx is not None:
-                            # Compute correct player order BEFORE modifying
-                            # player cash — WRAP_UP will sort by cash and
-                            # would see the pre-applied proceeds otherwise.
-                            if self._pending_player_order is None:
-                                self._pending_player_order = self._compute_player_order(state)
-                            COMPANIES[company_id].transfer_to_corp(state, buyer_corp_id)
-                            CORPS[buyer_corp_id].add_cash(state, -price)
-                            PLAYERS[seller_idx].add_cash(state, price)
-                            self._lookahead_applied.add(o['company'])
-                            if self.verbose:
-                                print(f"  Look-ahead: pre-applied cross-president player transfer "
-                                      f"player[{seller_idx}]->{o['buyer']} for {o['company']} at {price}")
-                break  # Only process acq_outcomes from the first ACQ snapshot
+        # Find acq_outcomes from the first ACQ snapshot and pre-apply only the
+        # transfers our engine cannot represent in its ACQ action space.
+        #
+        # Same-president offers must still be left for the ACQ adapter when the
+        # engine actually enters ACQ. Pre-applying them here can empty the
+        # offer buffer, causing the driver to blow past ACQ/CLO and skip the
+        # real DIV/ISS/IPO rounds entirely.
+        first_acq_ref, _, _ = self._get_first_round_snapshot(actions, idx + 1, 'ACQ', ref_by_action)
+        if first_acq_ref is not None:
+            round_key = first_acq_ref['action_id']
+            for outcome in first_acq_ref.get('acq_outcomes') or []:
+                if not outcome.get('cross_president', False):
+                    continue
+                self._pre_apply_acq_outcome(
+                    state,
+                    outcome,
+                    "Look-ahead",
+                    round_key=round_key,
+                    defer_player_cash=True,
+                )
 
         # Pre-apply CLO non-negative-income closes
         for i in range(idx + 1, len(actions)):
@@ -1260,38 +1386,16 @@ class ReplayHarness:
             return idx
         raise ValueError(f"Player {player_id_18xx} not found in player_order")
 
-    def _compute_player_order(self, state) -> list[int]:
-        """Compute player order from current cash (same algorithm as WRAP_UP).
-
-        Returns list of player IDs sorted by descending cash, ties broken
-        by current turn order position (lower position wins).
-        """
-        num_players = state.get_num_players()
-        players = []
-        for i in range(num_players):
-            cash = PLAYERS[i].get_cash(state)
-            order = PLAYERS[i].get_turn_order(state)
-            players.append((i, cash, order))
-        players.sort(key=lambda x: (-x[1], x[2]))
-        return [p[0] for p in players]
-
-    def _apply_pending_player_order(self, state):
-        """Apply stored player order to state and clear pending.
-
-        If the engine already cascaded into INVEST, also fixes the active
-        player to position 0 in the corrected order.
-        """
-        if self._pending_player_order is None:
+    def _apply_pending_player_cash(self, state):
+        """Apply deferred player-cash credits from look-ahead ACQ transfers."""
+        if not self._pending_player_cash_by_player:
             return
-        order = self._pending_player_order
-        self._pending_player_order = None
-        for position, player_id in enumerate(order):
-            PLAYERS[player_id].set_turn_order(state, position)
-        if TURN.get_phase(state) == PHASE_INVEST:
-            state.set_active_player(order[0])
-            state._populate_invest_impacts()
+        pending = self._pending_player_cash_by_player
+        self._pending_player_cash_by_player = {}
+        for player_id, amount in pending.items():
+            PLAYERS[player_id].add_cash(state, amount)
         if self.verbose:
-            print(f"  Patched player order: {order}")
+            print(f"  Applied deferred player cash: {pending}")
 
 
 def format_mismatches(mismatches: list[Mismatch]) -> str:
