@@ -22,11 +22,12 @@ import numpy as np
 import torch
 
 from core.actions import decode_action_py
-from interp.full_ablation import _PHASE_NAMES, _build_feature_groups
 from interp.html import html_page, open_file
 from interp.utils import (
+    PHASE_NAMES,
     InterpDataset,
     batch_masked_softmax,
+    build_feature_groups,
     collect_states,
     forward_batched,
     load_model,
@@ -94,7 +95,7 @@ def find_critical_states(
             critical.append({
                 "idx": i,
                 "phase": int(phases[i]),
-                "phase_name": _PHASE_NAMES.get(int(phases[i]), str(phases[i])),
+                "phase_name": PHASE_NAMES.get(int(phases[i]), str(phases[i])),
                 "top1_action": top1_idx,
                 "top2_action": top2_idx,
                 "top1_prob": top1_prob,
@@ -192,7 +193,7 @@ def run_decision_attribution(
     phase_counts = Counter(c["phase_name"] for c in critical)
     print(f"  Phase distribution: {dict(phase_counts)}")
 
-    groups = _build_feature_groups(num_players)
+    groups = build_feature_groups(num_players)
     selected = critical[:top_k]
 
     print(f"  Computing attributions for top {len(selected)} states...")

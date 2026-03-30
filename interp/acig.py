@@ -31,16 +31,16 @@ from interp.decision_attr import (
     aggregate_to_groups,
     compute_attributions,
 )
-from interp.full_ablation import _PHASE_NAMES, _build_feature_groups
 from interp.utils import (
+    DECISION_PHASE_ORDER,
+    DECISION_PHASES,
+    PHASE_NAMES,
     InterpDataset,
+    build_feature_groups,
     collect_states,
     forward_batched,
     load_model,
 )
-
-# Phases with player decisions (skip automated: WRAP_UP, INCOME, END_CARD, GAME_OVER)
-_DECISION_PHASES = {"INVEST", "BID", "ACQ", "CLOSE", "DIV", "ISSUE", "IPO", "PAR"}
 
 # Dividend sub-grouping boundaries
 _DIV_LOW_MAX = 8
@@ -49,7 +49,7 @@ _DIV_MID_MAX = 17
 
 def _bucket_name(action_type: int, amount: int) -> str:
     """Readable bucket name, sub-grouping dividends by amount range."""
-    if action_type == 10:  # ACTION_DIVIDEND
+    if action_type == 9:  # ACTION_DIVIDEND
         if amount == 0:
             return "div_zero"
         elif amount <= _DIV_LOW_MAX:
@@ -87,7 +87,7 @@ def _classify_states(
         _, action_type, _, _, amount = decode_action_py(
             int(action_indices[i]), num_players
         )
-        phase_names.append(_PHASE_NAMES.get(phase_id, str(phase_id)))
+        phase_names.append(PHASE_NAMES.get(phase_id, str(phase_id)))
         bucket_names.append(_bucket_name(action_type, amount))
 
     return action_indices, phase_names, bucket_names
@@ -123,7 +123,7 @@ def run_acig(
     # Group state indices by (phase, bucket)
     buckets: dict[tuple[str, str], list[int]] = defaultdict(list)
     for i in range(len(dataset.states)):
-        if phase_names[i] in _DECISION_PHASES:
+        if phase_names[i] in DECISION_PHASES:
             buckets[(phase_names[i], bucket_names[i])].append(i)
 
     bucket_counts: BucketCounts = defaultdict(dict)
@@ -148,7 +148,7 @@ def run_acig(
         print(f"  Skipped {skipped} buckets with < {min_bucket_size} states")
     print(f"\n  Running IG on {total_ig} sampled states (~{total_ig * 0.5:.0f}s)...")
 
-    groups = _build_feature_groups(num_players)
+    groups = build_feature_groups(num_players)
     num_features = len(groups)
 
     # Run IG and accumulate per-bucket
@@ -225,7 +225,7 @@ def format_console(
     lines.append(f"  ACIG SUMMARY (epoch {epoch}, {num_states:,} states)")
     lines.append(f"{'='*70}")
 
-    phase_order = ["INVEST", "BID", "ACQ", "CLOSE", "DIV", "ISSUE", "IPO"]
+    phase_order = DECISION_PHASE_ORDER
     for phase in phase_order:
         if phase not in attributions:
             continue
@@ -275,7 +275,7 @@ def format_html(
 ) -> str:
     """Generate self-contained HTML report."""
     phases_js: list[dict[str, object]] = []
-    phase_order = ["INVEST", "BID", "ACQ", "CLOSE", "DIV", "ISSUE", "IPO"]
+    phase_order = DECISION_PHASE_ORDER
 
     for phase in phase_order:
         if phase not in attributions:

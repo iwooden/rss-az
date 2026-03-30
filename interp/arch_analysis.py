@@ -23,7 +23,7 @@ import numpy as np
 import torch
 
 from interp.html import BAR_CSS, JS_MAKE_BAR, html_page, open_file
-from interp.utils import InterpDataset, collect_states, load_model
+from interp.utils import DECISION_PHASE_ORDER, InterpDataset, collect_states, load_model
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +71,58 @@ def analyze_block_contributions(
             "std": float(r.std()),
             "p95": float(np.percentile(r, 95)),
             "fc2_weight_norm": float(block.fc2.weight.data.norm().item()),
+        })
+    return results
+
+
+def analyze_preprocess_contributions(
+    model: Any,
+    device: torch.device,
+    states: np.ndarray,
+    batch_size: int = 256,
+) -> list[dict[str, float]]:
+    """Measure ||output|| / ||input|| for each Linear layer in input_preprocess."""
+    model.eval()
+    layer_ratios: list[list[float]] = []
+    layer_info: list[tuple[int, int, int]] = []  # (seq_idx, in_feat, out_feat)
+
+    handles = []
+    for seq_idx, layer in enumerate(model.input_preprocess):
+        if not isinstance(layer, torch.nn.Linear):
+            continue
+        ratios: list[float] = []
+        layer_ratios.append(ratios)
+        layer_info.append((seq_idx, layer.in_features, layer.out_features))
+
+        def hook(
+            _module: torch.nn.Module,  # noqa: ARG001
+            inp: tuple[torch.Tensor, ...],
+            out: torch.Tensor,
+            _ratios: list[float] = ratios,
+        ) -> None:
+            x_in = inp[0].detach()
+            ratio = out.detach().norm(dim=-1) / (x_in.norm(dim=-1) + 1e-8)
+            _ratios.extend(ratio.cpu().tolist())
+
+        handles.append(layer.register_forward_hook(hook))
+
+    with torch.no_grad():
+        for i in range(0, states.shape[0], batch_size):
+            j = min(i + batch_size, states.shape[0])
+            model(torch.from_numpy(states[i:j]).to(device))
+
+    for h in handles:
+        h.remove()
+
+    results: list[dict[str, float]] = []
+    for ratios, (seq_idx, in_feat, out_feat) in zip(layer_ratios, layer_info):
+        r = np.array(ratios)
+        results.append({
+            "label": f"preprocess[{seq_idx}] {in_feat}\u2192{out_feat}",  # type: ignore[dict-item]
+            "mean": float(r.mean()),
+            "std": float(r.std()),
+            "p95": float(np.percentile(r, 95)),
+            "weight_norm": float(model.input_preprocess[seq_idx].weight.data.norm().item()),
         })
     return results
 
@@ -128,7 +180,7 @@ def analyze_layer_conductance(
             assert isinstance(attr, torch.Tensor)
             conductances.append(float(attr.abs().sum(dim=-1).mean().item()))
             elapsed = time.perf_counter() - t0
-            print(f"    {head_name} block {i}/9 ({elapsed:.1f}s)")
+            print(f"    {head_name} block {i}/{len(model.blocks)} ({elapsed:.1f}s)")
 
         total = sum(conductances)
         for i, c in enumerate(conductances):
@@ -185,17 +237,36 @@ def analyze_head_conductance(
         p, v = model(x)
         return p.sum(dim=-1) + v.sum(dim=-1)
 
-    results: dict[str, list[dict[str, float]]] = {
-        "input_preprocess": [], "policy": [], "value": [],
-    }
+    results: dict[str, list[dict[str, float]]] = {"input_preprocess": []}
 
     modules_to_analyze: list[tuple[str, Any, Any]] = [
         ("input_preprocess", model.input_preprocess, total_forward),
-        ("policy", model.policy_head, policy_forward),
-        ("value", model.value_head, value_forward),
     ]
+    for head_idx, head in enumerate(model.phase_heads):
+        key = f"phase:{DECISION_PHASE_ORDER[head_idx]}"
+        results[key] = []
+        modules_to_analyze.append((key, head, policy_forward))
+    results["value"] = []
+    modules_to_analyze.append(("value", model.value_head, value_forward))
 
     for section_name, module, fwd_fn in modules_to_analyze:
+        # Phase heads: filter inputs to states that route to this head
+        if section_name.startswith("phase:"):
+            head_idx = next(
+                i for i, name in enumerate(DECISION_PHASE_ORDER)
+                if section_name == f"phase:{name}"
+            )
+            phase_mask = states[:, head_idx] > 0.5
+            n_phase = int(phase_mask.sum())
+            if n_phase == 0:
+                print(f"    {section_name}: no matching states, skipping")
+                continue
+            section_inputs = torch.from_numpy(states[phase_mask]).to(device).requires_grad_(True)
+            section_batch_size = 2 * n_phase
+        else:
+            section_inputs = inputs
+            section_batch_size = internal_batch_size
+
         linear_layers: list[tuple[int, torch.nn.Module]] = [
             (i, layer) for i, layer in enumerate(module)
             if isinstance(layer, torch.nn.Linear)
@@ -213,8 +284,8 @@ def analyze_head_conductance(
 
             lc = LayerConductance(fwd_fn, layer)
             attr = lc.attribute(
-                inputs, n_steps=n_steps,
-                internal_batch_size=internal_batch_size,
+                section_inputs, n_steps=n_steps,
+                internal_batch_size=section_batch_size,
             )
             assert isinstance(attr, torch.Tensor)
             conductances.append(float(attr.abs().sum(dim=-1).mean().item()))
@@ -248,9 +319,8 @@ def analyze_effective_rank(
     """SVD-based effective rank after input_proj, each block, trunk_norm, and optionally head/block-internal layers."""
     model.eval()
 
-    # Collection points — detect v1 (input_proj) vs v2 (input_preprocess)
-    input_name = "input_preprocess" if hasattr(model, "input_preprocess") else "input_proj"
-    input_module = getattr(model, input_name)
+    input_name = "input_preprocess"
+    input_module = model.input_preprocess
 
     layer_names: list[str] = []
     activations: dict[str, list[torch.Tensor]] = {}
@@ -300,13 +370,22 @@ def analyze_effective_rank(
 
     # Head layers (Linear only, skip activations like GELU/Tanh)
     if include_heads:
-        for head_name, head_module in [("policy", model.policy_head), ("value", model.value_head)]:
-            for seq_idx, layer in enumerate(head_module):
+        # Per-phase policy heads
+        for head_idx, head in enumerate(model.phase_heads):
+            phase_name = DECISION_PHASE_ORDER[head_idx]
+            for seq_idx, layer in enumerate(head):
                 if isinstance(layer, torch.nn.Linear):
-                    label = f"{head_name}[{seq_idx}] {layer.in_features}→{layer.out_features}"
+                    label = f"phase:{phase_name}[{seq_idx}] {layer.in_features}→{layer.out_features}"
                     layer_names.append(label)
                     activations[label] = []
                     handles.append(layer.register_forward_hook(make_hook(label)))
+        # Value head
+        for seq_idx, layer in enumerate(model.value_head):
+            if isinstance(layer, torch.nn.Linear):
+                label = f"value[{seq_idx}] {layer.in_features}→{layer.out_features}"
+                layer_names.append(label)
+                activations[label] = []
+                handles.append(layer.register_forward_hook(make_hook(label)))
 
     with torch.no_grad():
         for i in range(0, states.shape[0], batch_size):
@@ -356,6 +435,17 @@ def analyze_effective_rank(
 # Printing
 # ---------------------------------------------------------------------------
 
+def _print_preprocess_contributions(rows: list[dict[str, float]]) -> None:
+    print(f"\n  {'Layer':<30}  {'||out||/||in||':>14}  {'std':>8}  {'p95':>8}  {'||W||':>10}")
+    print(f"  {'-'*30}  {'-'*14}  {'-'*8}  {'-'*8}  {'-'*10}")
+    for r in rows:
+        bar = chr(0x2588) * int(r["mean"] * 20)
+        print(
+            f"  {r['label']:<30}  {r['mean']:>14.4f}  {r['std']:>8.4f}  "
+            f"{r['p95']:>8.4f}  {r['weight_norm']:>10.4f}  {bar}"
+        )
+
+
 def _print_contributions(rows: list[dict[str, float]]) -> None:
     print(f"\n  {'Block':>5}  {'||res||/||in||':>14}  {'std':>8}  {'p95':>8}  {'fc2 ||W||':>10}")
     print(f"  {'-'*5}  {'-'*14}  {'-'*8}  {'-'*8}  {'-'*10}")
@@ -385,16 +475,11 @@ def _print_conductance(data: dict[str, list[dict[str, float]]]) -> None:
 
 
 def _print_head_conductance(data: dict[str, list[dict[str, float]]]) -> None:
-    section_titles = {
-        "input_preprocess": "Input Preprocessing",
-        "policy": "Policy Head",
-        "value": "Value Head",
-    }
-    for section_name in ["input_preprocess", "policy", "value"]:
-        layers = data.get(section_name, [])
+    _titles = {"input_preprocess": "Input Preprocessing", "value": "Value Head"}
+    for section_name, layers in data.items():
         if not layers:
             continue
-        title = section_titles.get(section_name, section_name)
+        title = _titles.get(section_name, section_name.replace("phase:", "Phase Head: "))
         print(f"\n  {title}:")
         print(f"    {'Layer':<35}  {'Cond':>10}  {'%':>7}")
         print(f"    {'-'*35}  {'-'*10}  {'-'*7}")
@@ -438,6 +523,7 @@ def _print_ranks(rows: list[dict[str, object]], hidden_dim: int) -> None:
 
 def format_html_report(
     contributions: list[dict[str, float]],
+    preprocess: list[dict[str, float]],
     ranks: list[dict[str, object]],
     hidden_dim: int,
     epoch: int,
@@ -447,13 +533,20 @@ def format_html_report(
 ) -> str:
     """Generate a self-contained HTML report for architecture analysis."""
     contrib_json = json.dumps(contributions)
+    preprocess_json = json.dumps(preprocess)
     ranks_json = json.dumps(ranks)
     conductance_json = json.dumps(conductance) if conductance else "null"
     head_cond_json = json.dumps(head_conductance) if head_conductance else "null"
 
     body = """\
-<h2>1. Residual Block Contribution</h2>
-<p style="color:#888;font-size:0.85rem">||output - input|| / ||input|| per block. Higher = block changes the representation more.</p>
+<h2>1. Layer Contribution</h2>
+
+<h3 style="color:#aaa;font-size:0.95rem">Input Preprocessing \u2014 ||output|| / ||input||</h3>
+<p style="color:#888;font-size:0.85rem">Signal gain/attenuation through each preprocessing layer.</p>
+<table id="tbl-preprocess"></table>
+
+<h3 style="color:#aaa;font-size:0.95rem;margin-top:1.5rem">Residual Blocks \u2014 ||residual|| / ||input||</h3>
+<p style="color:#888;font-size:0.85rem">How much each block changes the representation. Higher = more active.</p>
 <table id="tbl-contrib"></table>
 
 <div id="conductance-section"></div>
@@ -465,12 +558,29 @@ def format_html_report(
 
     data_js = f"""\
 const contribs = {contrib_json};
+const preprocess = {preprocess_json};
 const ranks = {ranks_json};
 const conductance = {conductance_json};
 const headCond = {head_cond_json};
 const hiddenDim = {hidden_dim};"""
 
     report_js = """\
+// --- Input preprocessing table ---
+(function() {
+  const tbl = document.getElementById("tbl-preprocess");
+  const maxMean = Math.max(...preprocess.map(r => r.mean));
+  let html = '<tr><th>Layer</th><th>||out||/||in||</th><th></th><th>Std</th><th>P95</th><th>||W||</th></tr>';
+  for (const r of preprocess) {
+    html += '<tr><td>' + r.label + '</td>' +
+      '<td>' + r.mean.toFixed(4) + '</td>' +
+      '<td>' + makeBar(r.mean, maxMean, 'bar-blue') + '</td>' +
+      '<td>' + r.std.toFixed(4) + '</td>' +
+      '<td>' + r.p95.toFixed(4) + '</td>' +
+      '<td>' + r.weight_norm.toFixed(1) + '</td></tr>';
+  }
+  tbl.innerHTML = html;
+})();
+
 // --- Block contribution table ---
 (function() {
   const tbl = document.getElementById("tbl-contrib");
@@ -516,13 +626,13 @@ if (headCond) {
   let html = '<h2>Per-Layer Conductance</h2>' +
     '<p style="color:#888;font-size:0.85rem">Conductance within each module\\'s Linear layers. Shows which layer does the most work.</p>';
 
-  const colorMap = {'input_preprocess': 'bar-blue', 'policy': 'bar-green', 'value': 'bar-orange'};
-  const titleMap = {'input_preprocess': 'Input Preprocessing', 'policy': 'Policy Head', 'value': 'Value Head'};
+  const colorMap = {'input_preprocess': 'bar-blue', 'value': 'bar-orange'};
+  const titleMap = {'input_preprocess': 'Input Preprocessing', 'value': 'Value Head'};
 
   for (const [headName, layers] of Object.entries(headCond)) {
     const maxC = Math.max(...layers.map(r => r.conductance));
-    const cls = colorMap[headName] || 'bar-blue';
-    const title = titleMap[headName] || headName;
+    const cls = colorMap[headName] || (headName.startsWith('phase:') ? 'bar-green' : 'bar-blue');
+    const title = titleMap[headName] || (headName.startsWith('phase:') ? 'Phase Head: ' + headName.slice(6) : headName);
     html += '<h3 style="color:#aaa;font-size:0.95rem;margin-top:1rem">' + title + '</h3>';
     html += '<table><tr><th>Layer</th><th>Conductance</th><th></th><th>%</th></tr>';
     for (const r of layers) {
@@ -626,11 +736,20 @@ def main() -> None:
         if args.save_data:
             dataset.save(args.save_data)
 
-    # --- 1. Block contribution ---
+    # --- 1. Layer contribution ---
     print("\n" + "=" * 65)
-    print("  1. RESIDUAL BLOCK CONTRIBUTION")
+    print("  1. LAYER CONTRIBUTION")
     print("=" * 65)
-    print("  ||output - input|| / ||input|| per block (higher = more active)")
+
+    print("\n  Input preprocessing: ||output|| / ||input|| per layer")
+    t0 = time.perf_counter()
+    preprocess = analyze_preprocess_contributions(
+        model, device, dataset.states, batch_size=args.batch_size,
+    )
+    print(f"  ({time.perf_counter() - t0:.1f}s)")
+    _print_preprocess_contributions(preprocess)
+
+    print("\n  Residual blocks: ||residual|| / ||input|| per block (higher = more active)")
     t0 = time.perf_counter()
     contributions = analyze_block_contributions(
         model, device, dataset.states, batch_size=args.batch_size,
@@ -746,7 +865,7 @@ def main() -> None:
     html_path.parent.mkdir(parents=True, exist_ok=True)
 
     html = format_html_report(
-        contributions, ranks, hidden_dim, epoch, dataset.num_states,
+        contributions, preprocess, ranks, hidden_dim, epoch, dataset.num_states,
         conductance=conductance,
         head_conductance=head_conductance,
     )

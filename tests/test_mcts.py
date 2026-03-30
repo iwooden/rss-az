@@ -97,7 +97,7 @@ class TestMCTSConfig:
         assert cfg.c_puct == 2.5
         assert cfg.dirichlet_alpha == 0.8
         assert cfg.dirichlet_epsilon == 0.25
-        assert cfg.dirichlet_dynamic is False
+        assert cfg.dirichlet_dynamic is True
         assert cfg.dirichlet_alpha_numerator == 10.0
         assert cfg.num_players == 3
         assert cfg.search_batch_size == 1

@@ -206,7 +206,7 @@ class TestConfig:
         assert mcts_cfg.num_simulations == 100
         assert mcts_cfg.c_puct == 3.0
         assert mcts_cfg.action_dim == _ACT
-        assert mcts_cfg.dirichlet_dynamic is False
+        assert mcts_cfg.dirichlet_dynamic is True
         assert mcts_cfg.dirichlet_alpha_numerator == 10.0
 
     def test_to_mcts_config_c_puct_override(self) -> None:

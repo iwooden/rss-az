@@ -22,6 +22,27 @@ import torch
 
 from core.data import GameConstants, GamePhases
 from core.driver import DRIVER, STATUS_GAME_OVER_PY
+
+# Decision phase ID → short display name (8 phases with player actions).
+# Keyed by GamePhases constants so the mapping stays valid if enum values change.
+# Auto phases (WRAP_UP, INCOME, END_CARD) and GAME_OVER are excluded — they
+# never appear in collected interp data or the 8-wide visible phase one-hot.
+PHASE_NAMES: dict[int, str] = {
+    GamePhases.PHASE_INVEST: "INVEST",
+    GamePhases.PHASE_BID_IN_AUCTION: "BID",
+    GamePhases.PHASE_ACQUISITION: "ACQ",
+    GamePhases.PHASE_CLOSING: "CLOSE",
+    GamePhases.PHASE_DIVIDENDS: "DIV",
+    GamePhases.PHASE_ISSUE_SHARES: "ISSUE",
+    GamePhases.PHASE_IPO: "IPO",
+    GamePhases.PHASE_PAR: "PAR",
+}
+
+# Ordered list of decision phase display names, matching model.phase_heads index order
+# (sorted by raw phase ID: INVEST=0, BID=1, ACQ=3, CLOSE=4, DIV=6, ISSUE=8, IPO=9, PAR=10)
+DECISION_PHASE_ORDER: list[str] = [PHASE_NAMES[pid] for pid in sorted(PHASE_NAMES)]
+DECISION_PHASES: set[str] = set(DECISION_PHASE_ORDER)
+
 from core.state import (
     GameState,
     get_corp_fields,
@@ -59,19 +80,13 @@ def forward_batched(
     """Run model forward on states in batches. Returns (logits, values)."""
     logits_list: list[np.ndarray] = []
     values_list: list[np.ndarray] = []
-    autocast_dtype = torch.bfloat16 if device.type == "cuda" else None
 
     model.eval()
     with torch.no_grad():
         for i in range(0, states.shape[0], batch_size):
             j = min(i + batch_size, states.shape[0])
             x = torch.from_numpy(states[i:j]).to(device)
-            with torch.autocast(
-                device.type,
-                dtype=autocast_dtype,
-                enabled=autocast_dtype is not None,
-            ):
-                lo, va = model(x)
+            lo, va = model(x)
             logits_list.append(lo.float().cpu().numpy())
             values_list.append(va.float().cpu().numpy())
 
@@ -369,6 +384,7 @@ def build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
     groups.append(("turn:consec_passes", np.array([t + tf.consecutive_passes])))
 
     groups.append(("turn:auction_price", np.array([t + tf.auction_price])))
+    groups.append(("turn:auction_price_offset", np.array([t + tf.auction_price_offset])))
     groups.append(("turn:auction_high_bidder", np.arange(t + tf.auction_high_bidder, t + tf.auction_high_bidder + num_players)))
     groups.append(("turn:auction_starter", np.arange(t + tf.auction_starter, t + tf.auction_starter + num_players)))
     groups.append(("turn:auction_passed", np.arange(t + tf.auction_passed, t + tf.auction_passed + num_players)))
@@ -391,9 +407,16 @@ def build_feature_groups(num_players: int) -> list[tuple[str, np.ndarray]]:
     groups.append(("turn:active_company_income", np.array([t + tf.active_company_income])))
 
     groups.append(("turn:active_corp", np.arange(t + tf.active_corp, t + tf.active_corp + NK)))
+    groups.append(("turn:active_corp_cash", np.array([t + tf.active_corp_cash])))
+    groups.append(("turn:active_corp_unissued_shares", np.array([t + tf.active_corp_unissued_shares])))
+    groups.append(("turn:active_corp_issued_shares", np.array([t + tf.active_corp_issued_shares])))
+    groups.append(("turn:active_corp_bank_shares", np.array([t + tf.active_corp_bank_shares])))
     groups.append(("turn:active_corp_income", np.array([t + tf.active_corp_income])))
     groups.append(("turn:active_corp_stars", np.array([t + tf.active_corp_stars])))
     groups.append(("turn:active_corp_share_price", np.array([t + tf.active_corp_share_price])))
+    groups.append(("turn:active_corp_acq_proceeds", np.array([t + tf.active_corp_acquisition_proceeds])))
+    groups.append(("turn:active_corp_price_index_norm", np.array([t + tf.active_corp_price_index_norm])))
+    groups.append(("turn:active_corp_pending_price_move", np.array([t + tf.active_corp_pending_price_move])))
     groups.append(("turn:active_corp_raw_revenue", np.array([t + tf.active_corp_raw_revenue])))
     groups.append(("turn:active_corp_synergy_income", np.array([t + tf.active_corp_synergy_income])))
     groups.append(("turn:active_corp_coo_cost", np.array([t + tf.active_corp_coo_cost])))

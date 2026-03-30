@@ -19,46 +19,65 @@ from pathlib import Path
 
 import numpy as np
 
-from interp.full_ablation import _PHASE_NAMES, _build_feature_groups
+from core.data import GamePhases
 from interp.html import BAR_CSS, JS_FMT_PCT, JS_FMT_VAL, JS_MAKE_BAR, TAG_CSS, html_page, open_file
-from interp.utils import InterpDataset, collect_states, load_model
+from interp.utils import PHASE_NAMES, InterpDataset, build_feature_groups, collect_states, load_model
 
-# Feature group name -> list of phase indices where the feature is active.
-# Derived from the "Context-Dependent Fields" table in VECTORS.md.
+# Phase groups for context-dependent features (from VECTORS.md)
+_BID = [GamePhases.PHASE_BID_IN_AUCTION]
+_ACQ = [GamePhases.PHASE_ACQUISITION]
+_DIV = [GamePhases.PHASE_DIVIDENDS]
+_ISSUE = [GamePhases.PHASE_ISSUE_SHARES]
+_INVEST = [GamePhases.PHASE_INVEST]
+_ACTIVE_CO = [GamePhases.PHASE_BID_IN_AUCTION, GamePhases.PHASE_ACQUISITION,
+              GamePhases.PHASE_CLOSING, GamePhases.PHASE_IPO, GamePhases.PHASE_PAR]
+_ACTIVE_CORP = [GamePhases.PHASE_ACQUISITION, GamePhases.PHASE_CLOSING,
+                GamePhases.PHASE_DIVIDENDS, GamePhases.PHASE_ISSUE_SHARES, GamePhases.PHASE_PAR]
+_PAR = [GamePhases.PHASE_IPO, GamePhases.PHASE_PAR]
+
+# Feature group name -> list of phase IDs where the feature is active.
 _PHASE_SPECIFIC_FEATURES: dict[str, list[int]] = {
-    "turn:auction_price": [1],                       # BID
-    "turn:auction_high_bidder": [1],                 # BID
-    "turn:auction_starter": [1],                     # BID
-    "turn:auction_passed": [1],                      # BID
-    "turn:dividend_impact": [6],                     # DIV
-    "turn:dividend_remaining": [6],                  # DIV
-    "turn:issue_remaining": [8],                     # ISSUE
-    "turn:issue_price_impact": [8],                  # ISSUE
-    "turn:issue_cash_gain": [8],                     # ISSUE
-    "turn:acq_is_fi_offer": [3],                     # ACQ
-    "turn:acq_synergy": [3],                         # ACQ
-    "turn:active_company": [1, 3, 4, 9, 10],         # BID, ACQ, CLOSE, IPO, PAR
-    "turn:active_company_stars": [1, 3, 4, 9, 10],
-    "turn:active_company_low_price": [1, 3, 4, 9, 10],
-    "turn:active_company_face_value": [1, 3, 4, 9, 10],
-    "turn:active_company_high_price": [1, 3, 4, 9, 10],
-    "turn:active_company_income": [1, 3, 4, 9, 10],
-    "turn:active_corp": [3, 4, 6, 8, 10],            # ACQ, CLOSE, DIV, ISSUE, PAR
-    "turn:active_corp_income": [3, 4, 6, 8, 10],
-    "turn:active_corp_stars": [3, 4, 6, 8, 10],
-    "turn:active_corp_share_price": [3, 4, 6, 8, 10],
-    "turn:active_corp_raw_revenue": [3, 4, 6, 8, 10],
-    "turn:active_corp_synergy_income": [3, 4, 6, 8, 10],
-    "turn:active_corp_coo_cost": [3, 4, 6, 8, 10],
-    "turn:active_corp_ability_income": [3, 4, 6, 8, 10],
-    "turn:active_corp_companies": [3, 4, 6, 8, 10],
-    "turn:par_corp_treasury": [9, 10],               # IPO, PAR
-    "turn:par_shares": [9, 10],                      # IPO, PAR
-    "invest:buy_impact": [0],                        # INVEST
-    "invest:sell_impact": [0],                       # INVEST
-    "player:round_trips": [0],                       # INVEST
-    "co:acquired": [3],                              # ACQ
-    "corp:acq_proceeds": [3],                        # ACQ
+    "turn:auction_price": _BID,
+    "turn:auction_price_offset": _BID,
+    "turn:auction_high_bidder": _BID,
+    "turn:auction_starter": _BID,
+    "turn:auction_passed": _BID,
+    "turn:dividend_impact": _DIV,
+    "turn:dividend_remaining": _DIV,
+    "turn:issue_remaining": _ISSUE,
+    "turn:issue_price_impact": _ISSUE,
+    "turn:issue_cash_gain": _ISSUE,
+    "turn:acq_is_fi_offer": _ACQ,
+    "turn:acq_synergy": _ACQ,
+    "turn:active_company": _ACTIVE_CO,
+    "turn:active_company_stars": _ACTIVE_CO,
+    "turn:active_company_low_price": _ACTIVE_CO,
+    "turn:active_company_face_value": _ACTIVE_CO,
+    "turn:active_company_high_price": _ACTIVE_CO,
+    "turn:active_company_income": _ACTIVE_CO,
+    "turn:active_corp": _ACTIVE_CORP,
+    "turn:active_corp_cash": _ACTIVE_CORP,
+    "turn:active_corp_unissued_shares": _ACTIVE_CORP,
+    "turn:active_corp_issued_shares": _ACTIVE_CORP,
+    "turn:active_corp_bank_shares": _ACTIVE_CORP,
+    "turn:active_corp_income": _ACTIVE_CORP,
+    "turn:active_corp_stars": _ACTIVE_CORP,
+    "turn:active_corp_share_price": _ACTIVE_CORP,
+    "turn:active_corp_acq_proceeds": _ACTIVE_CORP,
+    "turn:active_corp_price_index_norm": _ACTIVE_CORP,
+    "turn:active_corp_pending_price_move": _ACTIVE_CORP,
+    "turn:active_corp_raw_revenue": _ACTIVE_CORP,
+    "turn:active_corp_synergy_income": _ACTIVE_CORP,
+    "turn:active_corp_coo_cost": _ACTIVE_CORP,
+    "turn:active_corp_ability_income": _ACTIVE_CORP,
+    "turn:active_corp_companies": _ACTIVE_CORP,
+    "turn:par_corp_treasury": _PAR,
+    "turn:par_shares": _PAR,
+    "invest:buy_impact": _INVEST,
+    "invest:sell_impact": _INVEST,
+    "player:round_trips": _INVEST,
+    "co:acquired": _ACQ,
+    "corp:acq_proceeds": _ACQ,
 }
 
 
@@ -126,7 +145,7 @@ def _phase_specific_stats(
         abs_max = float(np.max(np.abs(flat))) if n_total > 0 else 0.0
 
         phase_labels = ", ".join(
-            _PHASE_NAMES.get(p, str(p)) for p in sorted(phase_ids)
+            PHASE_NAMES.get(p, str(p)) for p in sorted(phase_ids)
         )
 
         rows.append({
@@ -254,8 +273,6 @@ def _print_feature_detail(
     phases: np.ndarray,
 ) -> None:
     """Print detailed stats for a single feature group."""
-    from interp.full_ablation import _PHASE_NAMES
-
     vals = states[:, indices]
     print(f"\n{'='*70}")
     print(f"  DETAIL: {name} ({len(indices)} features, indices [{indices[0]}..{indices[-1]}])")
@@ -287,7 +304,7 @@ def _print_feature_detail(
         pvals = vals[mask]
         pflat = pvals.ravel()
         pnz = np.count_nonzero(pflat)
-        pname = _PHASE_NAMES.get(pid, str(pid))
+        pname = PHASE_NAMES.get(pid, str(pid))
         if pnz > 0:
             pnz_vals = pflat[pflat != 0]
             print(
@@ -529,7 +546,7 @@ def main() -> None:
         if args.save_data:
             dataset.save(args.save_data)
 
-    groups = _build_feature_groups(config.num_players)
+    groups = build_feature_groups(config.num_players)
     rows = _group_stats(dataset.states, groups)
     phase_rows = _phase_specific_stats(dataset.states, groups, dataset.phases)
 

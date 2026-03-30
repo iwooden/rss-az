@@ -22,6 +22,7 @@ import torch
 
 from interp.html import html_page, open_file
 from interp.utils import (
+    PHASE_NAMES,
     InterpDataset,
     batch_masked_softmax,
     build_feature_groups,
@@ -30,23 +31,6 @@ from interp.utils import (
     kl_divergence_batch,
     load_model,
 )
-
-_PHASE_NAMES = {
-    0: "INVEST",
-    1: "BID",
-    2: "WRAP_UP",
-    3: "ACQ",
-    4: "CLOSE",
-    5: "INCOME",
-    6: "DIV",
-    7: "END_CARD",
-    8: "ISSUE",
-    9: "IPO",
-    10: "PAR",
-    11: "GAME_OVER",
-}
-
-_build_feature_groups = build_feature_groups  # backward compat alias
 
 
 # Row type: (name, num_features, total_metric, {phase_id: metric})
@@ -66,7 +50,7 @@ def run_full_ablation(
     Each row: (name, num_features, total_metric, {phase_id: metric}).
     Combined rows use policy KL (same as before, for backward compat).
     """
-    groups = _build_feature_groups(num_players)
+    groups = build_feature_groups(num_players)
     phase_ids = sorted(set(dataset.phases))
 
     # Original outputs (computed once)
@@ -116,7 +100,7 @@ def format_markdown_table(
     phase_ids: list[int],
 ) -> str:
     """Format results as a markdown table."""
-    phase_names = [_PHASE_NAMES.get(pid, str(pid)) for pid in phase_ids]
+    phase_names = [PHASE_NAMES.get(pid, str(pid)) for pid in phase_ids]
 
     lines: list[str] = []
 
@@ -145,7 +129,7 @@ def format_html_table(
     num_games: int,
 ) -> str:
     """Format results as an HTML heatmap page with policy, value, and overall tables."""
-    phase_names = [_PHASE_NAMES.get(pid, str(pid)) for pid in phase_ids]
+    phase_names = [PHASE_NAMES.get(pid, str(pid)) for pid in phase_ids]
     headers = ["Feature", "#", "Total"] + phase_names
 
     def rows_to_json(rows: list[AblationRow]) -> str:
@@ -290,6 +274,11 @@ def main() -> None:
     policy_rows, value_rows, combined_rows, phase_ids = run_full_ablation(
         model, device, dataset, config.num_players, batch_size=args.batch_size,
     )
+
+    # Phase determines which policy head is used, so it dominates KL divergence
+    # and drowns out color scaling for other features. Filter it from policy tables.
+    policy_rows = [r for r in policy_rows if r[0] != "phase"]
+    combined_rows = [r for r in combined_rows if r[0] != "phase"]
 
     table = format_markdown_table(combined_rows, phase_ids)
 

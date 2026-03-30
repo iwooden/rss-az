@@ -35,10 +35,10 @@ from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.preprocessing import StandardScaler
 
 from core.actions import decode_action_py
-from core.data import GameConstants, PY_CASH_DIVISOR, PY_NET_WORTH_DIVISOR, PY_SHARE_DIVISOR
+from core.data import GameConstants, GamePhases, PY_CASH_DIVISOR, PY_NET_WORTH_DIVISOR, PY_SHARE_DIVISOR
 from core.state import get_corp_fields, get_layout, get_player_fields
 from interp.html import html_page, open_file
-from interp.utils import batch_masked_softmax, forward_batched
+from interp.utils import DECISION_PHASE_ORDER, PHASE_NAMES, batch_masked_softmax, forward_batched
 from interp.utils import InterpDataset, collect_states, load_model
 
 # Action type names for readable output
@@ -178,14 +178,14 @@ def _extract_model_targets(
     # mask stored as (_<probe_name>_mask, "_index_mask") for activation subsetting.
 
     # INVEST: pass=0, auction=1, buy=2, sell=3
-    invest_mask = phases == 0
+    invest_mask = phases == GamePhases.PHASE_INVEST
     if np.sum(invest_mask) >= 50:
         invest_types = action_types[invest_mask]
         targets["invest_action"] = (invest_types, "classification")
         targets["_invest_action_mask"] = (invest_mask, "_index_mask")
 
     # BID: leave=0, raise=1
-    bid_mask = phases == 1
+    bid_mask = phases == GamePhases.PHASE_BID_IN_AUCTION
     if np.sum(bid_mask) >= 50:
         bid_types = action_types[bid_mask]
         # leave_bid=4 → 0, raise_bid=5 → 1
@@ -194,7 +194,7 @@ def _extract_model_targets(
         targets["_bid_action_mask"] = (bid_mask, "_index_mask")
 
     # ACQ: acq_price=0, acq_fi_buy=1, pass=2
-    acq_mask = phases == 3
+    acq_mask = phases == GamePhases.PHASE_ACQUISITION
     if np.sum(acq_mask) >= 50:
         acq_types = action_types[acq_mask]
         acq_actions = np.where(acq_types == 6, 0,
@@ -203,7 +203,7 @@ def _extract_model_targets(
         targets["_acq_action_mask"] = (acq_mask, "_index_mask")
 
     # IPO: pass=0, ipo=1
-    ipo_mask = phases == 9
+    ipo_mask = phases == GamePhases.PHASE_IPO
     if np.sum(ipo_mask) >= 50:
         ipo_types = action_types[ipo_mask]
         ipo_actions = (ipo_types == 11).astype(np.int32)
@@ -211,7 +211,7 @@ def _extract_model_targets(
         targets["_ipo_action_mask"] = (ipo_mask, "_index_mask")
 
     # ISSUE: pass=0, issue=1
-    issue_mask = phases == 8
+    issue_mask = phases == GamePhases.PHASE_ISSUE_SHARES
     if np.sum(issue_mask) >= 50:
         issue_types = action_types[issue_mask]
         issue_actions = (issue_types == 10).astype(np.int32)
@@ -219,29 +219,29 @@ def _extract_model_targets(
         targets["_issue_action_mask"] = (issue_mask, "_index_mask")
 
     # DIVIDENDS: chosen dividend level (regression, normalized 0-1)
-    div_mask = phases == 6
+    div_mask = phases == GamePhases.PHASE_DIVIDENDS
     if np.sum(div_mask) >= 50:
         div_action_indices = top_actions[div_mask]
         div_amounts = np.array([
             decode_action_py(int(a), num_players)[4]
             for a in div_action_indices
-        ], dtype=np.float32) / 25.0
+        ], dtype=np.float32) / (GameConstants.MAX_DIVIDEND - 1)
         targets["dividend_level"] = (div_amounts, "regression")
         targets["_dividend_level_mask"] = (div_mask, "_index_mask")
 
     # PAR: chosen par price index (regression, normalized 0-1)
-    par_mask = phases == 10
+    par_mask = phases == GamePhases.PHASE_PAR
     if np.sum(par_mask) >= 50:
         par_action_indices = top_actions[par_mask]
         par_levels = np.array([
             decode_action_py(int(a), num_players)[2]  # par index is in 'slot' field
             for a in par_action_indices
-        ], dtype=np.float32) / 13.0  # 14 par prices, indices 0-13
+        ], dtype=np.float32) / (GameConstants.NUM_PAR_PRICES - 1)
         targets["par_price_level"] = (par_levels, "regression")
         targets["_par_price_level_mask"] = (par_mask, "_index_mask")
 
     # CLOSING: close=1, pass=0
-    close_mask = phases == 4
+    close_mask = phases == GamePhases.PHASE_CLOSING
     if np.sum(close_mask) >= 50:
         close_types = action_types[close_mask]
         close_actions = (close_types == 8).astype(np.int32)
@@ -282,23 +282,21 @@ def collect_activations(
     """Collect activations at each layer via hooks.
 
     If include_heads is True, also hooks into each Linear layer within
-    the policy_head and value_head Sequential modules.
+    the per-phase policy heads and value_head Sequential modules.
     """
     model.eval()
 
-    input_name = "input_preprocess" if hasattr(model, "input_preprocess") else "input_proj"
-    input_module = getattr(model, input_name)
+    # Input preprocessing: per-Linear-layer breakdown
+    layer_names: list[str] = []
+    for i, layer in enumerate(model.input_preprocess):
+        if isinstance(layer, torch.nn.Linear):
+            layer_names.append(f"preprocess[{i}] {layer.in_features}\u2192{layer.out_features}")
 
-    layer_names = (
-        [input_name]
-        + [f"block_{i}" for i in range(len(model.blocks))]
-        + ["trunk_norm"]
-    )
+    # Trunk blocks + final norm
+    layer_names += [f"block_{i}" for i in range(len(model.blocks))]
+    layer_names.append("trunk_norm")
 
     if include_heads:
-        for i, layer in enumerate(model.policy_head):
-            if isinstance(layer, torch.nn.Linear):
-                layer_names.append(f"policy_{i}")
         for i, layer in enumerate(model.value_head):
             if isinstance(layer, torch.nn.Linear):
                 layer_names.append(f"value_{i}")
@@ -315,15 +313,15 @@ def collect_activations(
             activations[name].append(out.detach().cpu())
         return hook
 
-    handles.append(input_module.register_forward_hook(make_hook(input_name)))
+    for i, layer in enumerate(model.input_preprocess):
+        if isinstance(layer, torch.nn.Linear):
+            label = f"preprocess[{i}] {layer.in_features}\u2192{layer.out_features}"
+            handles.append(layer.register_forward_hook(make_hook(label)))
     for i, block in enumerate(model.blocks):
         handles.append(block.register_forward_hook(make_hook(f"block_{i}")))
     handles.append(model.trunk_norm.register_forward_hook(make_hook("trunk_norm")))
 
     if include_heads:
-        for i, layer in enumerate(model.policy_head):
-            if isinstance(layer, torch.nn.Linear):
-                handles.append(layer.register_forward_hook(make_hook(f"policy_{i}")))
         for i, layer in enumerate(model.value_head):
             if isinstance(layer, torch.nn.Linear):
                 handles.append(layer.register_forward_hook(make_hook(f"value_{i}")))
@@ -332,6 +330,54 @@ def collect_activations(
         for i in range(0, states.shape[0], batch_size):
             j = min(i + batch_size, states.shape[0])
             model(torch.from_numpy(states[i:j]).to(device))
+
+    for h in handles:
+        h.remove()
+
+    return {name: torch.cat(acts, dim=0).numpy() for name, acts in activations.items()}
+
+
+def collect_phase_activations(
+    model: Any,
+    device: torch.device,
+    phase_states: np.ndarray,
+    head_idx: int,
+    batch_size: int = 256,
+) -> dict[str, np.ndarray]:
+    """Collect activations from a specific phase head's Linear layers.
+
+    phase_states must contain only states matching this phase head.
+    Since all states route to the same head, the model's internal phase
+    dispatch preserves their order.
+    """
+    model.eval()
+    phase_name = DECISION_PHASE_ORDER[head_idx]
+    head = model.phase_heads[head_idx]
+
+    layer_names: list[str] = []
+    activations: dict[str, list[torch.Tensor]] = {}
+    handles = []
+
+    def make_hook(name: str):  # noqa: ANN202
+        def hook(
+            _mod: torch.nn.Module,  # noqa: ARG001
+            _inp: tuple[torch.Tensor, ...],  # noqa: ARG001
+            out: torch.Tensor,
+        ) -> None:
+            activations[name].append(out.detach().cpu())
+        return hook
+
+    for i, layer in enumerate(head):
+        if isinstance(layer, torch.nn.Linear):
+            name = f"phase:{phase_name}[{i}]"
+            layer_names.append(name)
+            activations[name] = []
+            handles.append(layer.register_forward_hook(make_hook(name)))
+
+    with torch.no_grad():
+        for i in range(0, phase_states.shape[0], batch_size):
+            j = min(i + batch_size, phase_states.shape[0])
+            model(torch.from_numpy(phase_states[i:j]).to(device))
 
     for h in handles:
         h.remove()
@@ -403,8 +449,14 @@ def _standardize_gpu(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Standardize features using train statistics (matches sklearn StandardScaler)."""
     mean = X_train.mean(dim=0)
-    std = X_train.std(dim=0, correction=0).clamp(min=1e-7)
-    return (X_train - mean) / std, (X_test - mean) / std
+    std = X_train.std(dim=0, correction=0)
+    # Zero out near-constant features instead of dividing by tiny std
+    # (wider preprocessing layers can have dead/constant activation dims)
+    alive = std > 1e-6
+    safe_std = std.clamp(min=1.0)  # avoid div-by-zero; masked out anyway
+    X_tr = (X_train - mean) / safe_std * alive
+    X_te = (X_test - mean) / safe_std * alive
+    return X_tr, X_te
 
 
 @torch.no_grad()
@@ -418,10 +470,12 @@ def _fit_ridge_gpu(
     # Center target — intercept = y_mean (since X is zero-mean after standardization)
     y_mean = y_train.mean()
     y_c = y_train - y_mean
-    # Normal equations: w = (X'X + αI)⁻¹ X'y
-    A = X_tr.T @ X_tr
-    A.diagonal().add_(alpha)
-    w = torch.linalg.solve(A, (X_tr.T @ y_c).unsqueeze(-1)).squeeze(-1)
+    # Tikhonov: augment [X; √α·I] and [y; 0] then solve via lstsq
+    # lstsq handles rank-deficient matrices (dead activation dims) gracefully
+    d = X_tr.shape[1]
+    X_aug = torch.cat([X_tr, (alpha ** 0.5) * torch.eye(d, device=X_tr.device)], dim=0)
+    y_aug = torch.cat([y_c, torch.zeros(d, device=y_c.device)])
+    w = torch.linalg.lstsq(X_aug, y_aug).solution
     y_pred = X_te @ w + y_mean
     ss_res = ((y_test - y_pred) ** 2).sum()
     ss_tot = ((y_test - y_test.mean()) ** 2).sum()
@@ -738,14 +792,19 @@ def train_nonlinear_comparison(
 
 
 def _short_layer_name(name: str) -> str:
+    if name.startswith("preprocess["):
+        # "preprocess[0] 1109→768" → "P0 1109→768"
+        bracket_end = name.index("]")
+        idx = name[len("preprocess["):bracket_end]
+        suffix = name[bracket_end + 1:]  # " 1109→768"
+        return f"P{idx}{suffix}"
     if name.startswith("block_"):
         return f"B{name[6:]}"
     if name == "trunk_norm":
         return "trunk"
-    if name in ("input_preprocess", "input_proj"):
-        return "input"
-    if name.startswith("policy_"):
-        return f"P{name[7:]}"
+    if name.startswith("phase:"):
+        # "phase:INVEST[0]" → "INVEST[0]"
+        return name[6:]
     if name.startswith("value_"):
         return f"V{name[6:]}"
     return name[:6]
@@ -821,52 +880,74 @@ def format_nonlinear_table(
 def format_markdown(
     results: list[ProbeResult],
     layer_names: list[str],
+    phase_probe_data: list[dict[str, Any]],
     comparisons: list[tuple[str, str, float, float]] | None,
     epoch: int,
     num_states: int,
     num_games: int,
 ) -> str:
     """Generate a full markdown report."""
-    probes: dict[str, dict[str, float]] = {}
-    probe_meta: dict[str, str] = {}
-    for r in results:
-        if r.probe_name not in probes:
-            probes[r.probe_name] = {}
-            probe_meta[r.probe_name] = r.metric_name
-        probes[r.probe_name][r.layer_name] = r.metric
-
-    short_names = [_short_layer_name(ln) for ln in layer_names]
+    trunk_layers, _, value_layers = _split_layer_groups(layer_names)
 
     lines = [
         f"# Probing Classifier Results (epoch {epoch})\n",
         f"{num_states} states from {num_games} games, train/test 80/20, linear probes.\n",
     ]
 
-    # Main table
-    cols = ["Probe", "Type"] + short_names + ["Δ(deep)"]
-    lines.append("| " + " | ".join(cols) + " |")
-    aligns = [":---", ":---:"] + ["---:"] * (len(short_names) + 1)
-    lines.append("| " + " | ".join(aligns) + " |")
+    def _add_table(
+        probe_results: list[ProbeResult], layers: list[str],
+    ) -> None:
+        probes: dict[str, dict[str, float]] = {}
+        probe_meta: dict[str, str] = {}
+        for r in probe_results:
+            if r.layer_name not in layers:
+                continue
+            if r.probe_name not in probes:
+                probes[r.probe_name] = {}
+                probe_meta[r.probe_name] = r.metric_name
+            probes[r.probe_name][r.layer_name] = r.metric
 
-    probe_order = sorted(probes.keys(), key=lambda p: (
-        0 if probe_meta[p] == "acc" else 1,
-        -probes[p].get(layer_names[-1], 0),
-    ))
+        short = [_short_layer_name(ln) for ln in layers]
+        cols = ["Probe", "Type"] + short + ["\u0394(deep)"]
+        lines.append("| " + " | ".join(cols) + " |")
+        aligns = [":---", ":---:"] + ["---:"] * (len(short) + 1)
+        lines.append("| " + " | ".join(aligns) + " |")
 
-    for pname in probe_order:
-        metrics = probes[pname]
-        mtype = probe_meta[pname]
-        vals = [metrics.get(ln, float("nan")) for ln in layer_names]
-        delta = vals[-1] - vals[0]
-        sign = "+" if delta >= 0 else ""
-        cells = [pname, mtype] + [f"{v:.4f}" for v in vals] + [f"{sign}{delta:.4f}"]
-        lines.append("| " + " | ".join(cells) + " |")
+        probe_order = sorted(probes.keys(), key=lambda p: (
+            0 if probe_meta[p] == "acc" else 1,
+            -probes[p].get(layers[-1], 0),
+        ))
+        for pname in probe_order:
+            metrics = probes[pname]
+            mtype = probe_meta[pname]
+            vals = [metrics.get(ln, float("nan")) for ln in layers]
+            delta = vals[-1] - vals[0]
+            sign = "+" if delta >= 0 else ""
+            cells = [pname, mtype] + [f"{v:.4f}" for v in vals] + [f"{sign}{delta:.4f}"]
+            lines.append("| " + " | ".join(cells) + " |")
+
+    # Trunk table
+    if trunk_layers:
+        lines.append("## Trunk\n")
+        _add_table(results, trunk_layers)
+
+    # Per-phase tables
+    for pdata in phase_probe_data:
+        lines.append("")
+        lines.append(f"## {pdata['name']} Head ({pdata['n_states']} states)\n")
+        _add_table(pdata["results"], pdata["layer_names"])
+
+    # Value head table
+    if value_layers:
+        lines.append("")
+        lines.append("## Value Head\n")
+        _add_table(results, value_layers)
 
     # Nonlinear comparison table
     if comparisons:
         lines.append("")
         lines.append("## Linear vs MLP at trunk_norm\n")
-        lines.append("| Probe | Type | Linear | MLP | Δ | Gain |")
+        lines.append("| Probe | Type | Linear | MLP | \u0394 | Gain |")
         lines.append("| :--- | :---: | ---: | ---: | ---: | ---: |")
         for probe_name, metric_name, linear, mlp in comparisons:
             delta = mlp - linear
@@ -890,8 +971,8 @@ def _split_layer_groups(
     layer_names: list[str],
 ) -> tuple[list[str], list[str], list[str]]:
     """Split layer names into trunk, policy-head, and value-head groups."""
-    trunk = [n for n in layer_names if not n.startswith(("policy_", "value_"))]
-    policy = [n for n in layer_names if n.startswith("policy_")]
+    trunk = [n for n in layer_names if not n.startswith(("phase:", "value_"))]
+    policy = [n for n in layer_names if n.startswith("phase:")]
     value = [n for n in layer_names if n.startswith("value_")]
     return trunk, policy, value
 
@@ -948,19 +1029,17 @@ th:first-child, td:first-child { width: 180px; }
 def _format_html_report(
     results: list[ProbeResult],
     layer_names: list[str],
+    phase_probe_data: list[dict[str, Any]],
     comparisons: list[tuple[str, str, float, float]] | None,
     epoch: int,
     num_states: int,
     num_games: int,
 ) -> str:
     """Generate a self-contained HTML report for probing results."""
-    trunk_layers, policy_layers, value_layers = _split_layer_groups(layer_names)
+    trunk_layers, _policy_layers, value_layers = _split_layer_groups(layer_names)
 
     trunk_rows = _results_to_json(results, trunk_layers)
     trunk_headers = [_short_layer_name(n) for n in trunk_layers]
-
-    policy_rows = _results_to_json(results, policy_layers) if policy_layers else []
-    policy_headers = [_short_layer_name(n) for n in policy_layers]
 
     value_rows = _results_to_json(results, value_layers) if value_layers else []
     value_headers = [_short_layer_name(n) for n in value_layers]
@@ -969,6 +1048,12 @@ def _format_html_report(
         {"probe": p, "type": t, "linear": l, "mlp": m}
         for p, t, l, m in comparisons
     ]) if comparisons else "null"
+
+    phase_json = json.dumps([
+        {"name": pd["name"], "nStates": pd["n_states"],
+         "headers": pd["headers"], "rows": pd["rows"]}
+        for pd in phase_probe_data
+    ])
 
     meta = f"{num_states:,} states from {num_games} games. Train/test 80/20, linear probes."
 
@@ -985,8 +1070,7 @@ def _format_html_report(
     data_js = (
         f"const trunkRows = {json.dumps(trunk_rows)};\n"
         f"const trunkHeaders = {json.dumps(trunk_headers)};\n"
-        f"const policyRows = {json.dumps(policy_rows)};\n"
-        f"const policyHeaders = {json.dumps(policy_headers)};\n"
+        f"const phaseData = {phase_json};\n"
         f"const valueRows = {json.dumps(value_rows)};\n"
         f"const valueHeaders = {json.dumps(value_headers)};\n"
         f"const comparisons = {comp_json};"
@@ -1031,16 +1115,24 @@ def _format_html_report(
         '\n'
         'buildTable("tbl-trunk", trunkRows, trunkHeaders);\n'
         '\n'
-        'if (policyRows.length > 0) {\n'
+        'if (phaseData.length > 0) {\n'
         '  const sec = document.getElementById("policy-section");\n'
-        '  sec.innerHTML = \'<h2>2. Policy Head Probes</h2>\' +\n'
-        '    \'<p style="color:#888;font-size:0.85rem">Linear probes at each hidden layer within the policy head.</p>\' +\n'
-        '    \'<table id="tbl-policy"></table>\';\n'
-        '  buildTable("tbl-policy", policyRows, policyHeaders);\n'
+        '  let html = \'<h2>2. Policy Head Probes</h2>\' +\n'
+        '    \'<p style="color:#888;font-size:0.85rem">Per-phase linear probes using only matching game states. &Delta; = last layer &minus; first layer.</p>\';\n'
+        '  for (const pd of phaseData) {\n'
+        '    const tblId = "tbl-phase-" + pd.name;\n'
+        '    html += \'<h3 style="color:#aaa;font-size:0.95rem;margin-top:1rem">\' + pd.name +\n'
+        '      \' <span style="color:#666;font-size:0.8rem">(\' + pd.nStates.toLocaleString() + \' states)</span></h3>\';\n'
+        '    html += \'<table id="\' + tblId + \'"></table>\';\n'
+        '  }\n'
+        '  sec.innerHTML = html;\n'
+        '  for (const pd of phaseData) {\n'
+        '    buildTable("tbl-phase-" + pd.name, pd.rows, pd.headers);\n'
+        '  }\n'
         '}\n'
         '\n'
         'if (valueRows.length > 0) {\n'
-        '  const n = policyRows.length > 0 ? 3 : 2;\n'
+        '  const n = phaseData.length > 0 ? 3 : 2;\n'
         '  const sec = document.getElementById("value-section");\n'
         '  sec.innerHTML = \'<h2>\' + n + \'. Value Head Probes</h2>\' +\n'
         '    \'<p style="color:#888;font-size:0.85rem">Linear probes at each hidden layer within the value head.</p>\' +\n'
@@ -1049,7 +1141,7 @@ def _format_html_report(
         '}\n'
         '\n'
         'if (comparisons) {\n'
-        '  const n = (policyRows.length > 0 ? 3 : 2) + (valueRows.length > 0 ? 1 : 0);\n'
+        '  const n = (phaseData.length > 0 ? 3 : 2) + (valueRows.length > 0 ? 1 : 0);\n'
         '  const sec = document.getElementById("comp-section");\n'
         '  let html = \'<h2>\' + n + \'. Linear vs MLP at trunk_norm</h2>\' +\n'
         '    \'<p style="color:#888;font-size:0.85rem">Compares linear probe to 128-unit MLP. Large gains indicate nonlinearly encoded information.</p>\' +\n'
@@ -1177,31 +1269,30 @@ def main() -> None:
         else:
             print(f"  {name}: {task_type}, mean={np.mean(target):.3f}, std={np.std(target):.3f}")
 
-    # --- Collect activations ---
-    include_heads = args.heads_only or True  # always collect head layers now
-    print("\nCollecting activations...")
+    # --- Collect trunk + value head activations ---
+    print("\nCollecting trunk + value head activations...")
     t0 = time.perf_counter()
     activations = collect_activations(
-        model, device, dataset.states, args.batch_size, include_heads=include_heads,
+        model, device, dataset.states, args.batch_size, include_heads=True,
     )
     all_layer_names = list(activations.keys())
     print(f"  {len(all_layer_names)} layers in {time.perf_counter() - t0:.1f}s")
 
-    # If --heads-only, only probe head layers (keep trunk_norm as baseline)
+    # If --heads-only, only probe trunk_norm + value head (skip trunk blocks)
     if args.heads_only:
         probe_layers = {n: activations[n] for n in all_layer_names
-                        if n.startswith(("policy_", "value_")) or n == "trunk_norm"}
+                        if n.startswith("value_") or n == "trunk_norm"}
     else:
         probe_layers = activations
 
     probe_layer_names = list(probe_layers.keys())
 
-    # --- Train linear probes ---
+    # --- Train trunk + value probes ---
     active_count = sum(
         1 for name, (_, tt) in targets.items()
         if not tt.startswith("_") and (enabled_probes is None or name in enabled_probes)
     )
-    print(f"\nTraining {active_count * len(probe_layer_names)} linear probes...")
+    print(f"\nTraining {active_count * len(probe_layer_names)} trunk/value linear probes...")
     t0 = time.perf_counter()
     if device.type == "cuda":
         results = train_probes_gpu(
@@ -1210,6 +1301,59 @@ def main() -> None:
     else:
         results = train_probes(probe_layers, targets, enabled_probes, seed=args.seed)
     print(f"  Done in {time.perf_counter() - t0:.1f}s")
+
+    # --- Per-phase policy head probes ---
+    sorted_phase_ids = sorted(PHASE_NAMES.keys())
+    phase_probe_data: list[dict[str, Any]] = []
+
+    print("\nPer-phase policy head probes:")
+    for head_idx, phase_name in enumerate(DECISION_PHASE_ORDER):
+        phase_id = sorted_phase_ids[head_idx]
+        phase_mask = dataset.phases == phase_id
+        n_phase = int(phase_mask.sum())
+        if n_phase < 100:
+            print(f"  {phase_name}: {n_phase} states (too few, skipping)")
+            continue
+
+        phase_states = dataset.states[phase_mask]
+        phase_legal_masks = dataset.legal_masks[phase_mask]
+        phase_phases = dataset.phases[phase_mask]
+
+        # Extract targets for this phase subset
+        phase_targets = _extract_game_targets(phase_states, config.num_players)
+        phase_model_targets = _extract_model_targets(
+            model, device, phase_states, phase_legal_masks,
+            phase_phases, config.num_players, args.batch_size,
+        )
+        phase_targets.update(phase_model_targets)
+
+        # Collect phase head activations
+        t0 = time.perf_counter()
+        phase_acts = collect_phase_activations(
+            model, device, phase_states, head_idx, args.batch_size,
+        )
+        phase_layer_names = list(phase_acts.keys())
+
+        # Train probes
+        if device.type == "cuda":
+            phase_results = train_probes_gpu(
+                phase_acts, phase_targets, device, enabled_probes, seed=args.seed,
+            )
+        else:
+            phase_results = train_probes(
+                phase_acts, phase_targets, enabled_probes, seed=args.seed,
+            )
+        elapsed = time.perf_counter() - t0
+        print(f"  {phase_name}: {n_phase} states, {len(phase_layer_names)} layers ({elapsed:.1f}s)")
+
+        phase_probe_data.append({
+            "name": phase_name,
+            "n_states": n_phase,
+            "headers": [_short_layer_name(n) for n in phase_layer_names],
+            "rows": _results_to_json(phase_results, phase_layer_names),
+            "results": phase_results,
+            "layer_names": phase_layer_names,
+        })
 
     # --- Nonlinear comparison ---
     comparisons: list[tuple[str, str, float, float]] | None = None
@@ -1220,8 +1364,7 @@ def main() -> None:
         print(f"  Done in {time.perf_counter() - t0:.1f}s")
 
     # --- Print results ---
-    # Split into trunk vs head layer groups for display
-    trunk_layers, policy_head_layers, value_head_layers = _split_layer_groups(probe_layer_names)
+    trunk_layers, _, value_head_layers = _split_layer_groups(probe_layer_names)
 
     print(f"\n{'=' * 100}")
     print(f"  PROBING CLASSIFIER RESULTS (epoch {epoch})")
@@ -1232,11 +1375,11 @@ def main() -> None:
     if trunk_layers:
         print(format_results_table(results, trunk_layers))
 
-    if policy_head_layers:
+    for pdata in phase_probe_data:
         print(f"\n{'=' * 70}")
-        print("  POLICY HEAD LAYERS")
+        print(f"  {pdata['name']} HEAD ({pdata['n_states']} states)")
         print(f"{'=' * 70}\n")
-        print(format_results_table(results, policy_head_layers))
+        print(format_results_table(pdata["results"], pdata["layer_names"]))
 
     if value_head_layers:
         print(f"\n{'=' * 70}")
@@ -1256,14 +1399,15 @@ def main() -> None:
     md_path = Path(args.output) if args.output else Path("interp/data") / f"probing_epoch{epoch}.md"
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text(format_markdown(
-        results, probe_layer_names, comparisons, epoch, dataset.num_states, dataset.num_games,
+        results, probe_layer_names, phase_probe_data,
+        comparisons, epoch, dataset.num_states, dataset.num_games,
     ))
     print(f"Markdown written to {md_path}")
 
     # --- Write HTML ---
     html_path = md_path.with_suffix(".html")
     html = _format_html_report(
-        results, probe_layer_names, comparisons, epoch,
+        results, probe_layer_names, phase_probe_data, comparisons, epoch,
         dataset.num_states, dataset.num_games,
     )
     html_path.write_text(html)
