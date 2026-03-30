@@ -343,6 +343,11 @@ def analyze_effective_rank(
                 layer_names.append(label)
                 activations[label] = []
                 handles.append(layer.register_forward_hook(make_hook(label)))
+            elif isinstance(layer, torch.nn.LayerNorm):
+                label = f"input_norm"
+                layer_names.append(label)
+                activations[label] = []
+                handles.append(layer.register_forward_hook(make_hook(label)))
     else:
         layer_names.append(input_name)
         activations[input_name] = []

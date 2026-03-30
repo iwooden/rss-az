@@ -510,6 +510,105 @@ def print_necessity_report(result: ValueNecessityResult) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Markdown report
+# ---------------------------------------------------------------------------
+
+
+def format_markdown_report(
+    lens: ValueLensResult,
+    neuron: ValueNeuronResult,
+    error: ValueErrorResult,
+    necessity: ValueNecessityResult,
+    epoch: int,
+    num_states: int,
+    num_games: int,
+) -> str:
+    """Generate a machine-readable markdown report with all value head data."""
+    lines: list[str] = [
+        f"# Value Head Analysis (epoch {epoch})\n",
+        f"{num_states:,} states from {num_games} games.",
+        f"Value head: Linear(256,256) -> GELU -> Linear(256,3) -> Tanh.\n",
+    ]
+
+    # --- 1. Value Lens ---
+    lines.append("## 1. Value Lens\n")
+    lines.append(f"Direct projection (trunk -> V2, skip V0+GELU) vs full head output.\n")
+    lines.append(f"- **Overall MSE:** {lens.overall_mse:.6f}")
+    lines.append(f"- **Overall correlation:** {lens.overall_corr:.4f}\n")
+
+    lines.append("| Player | MSE | Corr | Full mean | Full std | Direct mean | Direct std |")
+    lines.append("| :--- | ---: | ---: | ---: | ---: | ---: | ---: |")
+    for p in range(3):
+        lines.append(
+            f"| Player {p} | {lens.direct_vs_full_mse[p]:.6f} | {lens.direct_vs_full_corr[p]:.4f} "
+            f"| {lens.full_values_mean[p]:.4f} | {lens.full_values_std[p]:.4f} "
+            f"| {lens.direct_values_mean[p]:.4f} | {lens.direct_values_std[p]:.4f} |"
+        )
+
+    # --- 2. Neuron Specialization ---
+    lines.append("")
+    lines.append("## 2. Per-Player Neuron Specialization\n")
+    lines.append(f"- **Dead neurons:** {neuron.dead_fraction:.1%}")
+    lines.append(f"- **Mean specialization:** {neuron.specialization_scores.mean():.3f}")
+    lines.append(f"- **Neurons per player:** P0={neuron.neurons_per_player[0]}, "
+                 f"P1={neuron.neurons_per_player[1]}, P2={neuron.neurons_per_player[2]}\n")
+
+    lines.append("| Player | #1 | #2 | #3 | #4 | #5 |")
+    lines.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
+    for p in range(3):
+        col = neuron.conductance_matrix[:, p]
+        top5 = np.argsort(col)[-5:][::-1]
+        cells = [f"n{n}={col[n]:.4f}" for n in top5]
+        lines.append(f"| Player {p} | " + " | ".join(cells) + " |")
+
+    # --- 3. Phase-Stratified Value Characteristics ---
+    lines.append("")
+    lines.append("## 3. Value Characteristics by Phase\n")
+    lines.append(f"- **Overall mean |v|:** {error.overall_mean_abs:.4f}")
+    lines.append(f"- **Overall spread:** {error.overall_spread:.4f}\n")
+
+    decision_phases = [p for p in sorted(error.phase_stats.keys()) if p in _PHASE_NAMES]
+
+    lines.append("| Phase | Count | mean |v| | Spread | V(p0) | V(p1) | V(p2) |")
+    lines.append("| :--- | ---: | ---: | ---: | ---: | ---: | ---: |")
+    for pid in decision_phases:
+        s = error.phase_stats[pid]
+        sp = error.phase_spread[pid]
+        lines.append(
+            f"| {_PHASE_NAMES[pid]} | {s['count']} | {s['mean_abs']:.4f} | {sp:.4f} "
+            f"| {s['mean_p0']:.4f} | {s['mean_p1']:.4f} | {s['mean_p2']:.4f} |"
+        )
+
+    lines.append("")
+    lines.append("### Game Progress\n")
+    lines.append("| Stage | Count | mean |v| | Spread | Confidence |")
+    lines.append("| :--- | ---: | ---: | ---: | ---: |")
+    for name in ["early", "mid", "late"]:
+        s = error.progress_stats[name]
+        lines.append(
+            f"| {name} | {s['count']} | {s['mean_abs']:.4f} | {s['spread']:.4f} "
+            f"| {s['confidence']:.4f} |"
+        )
+
+    # --- 4. Layer Causal Necessity ---
+    lines.append("")
+    lines.append("## 4. Layer Causal Necessity\n")
+    lines.append(f"Bypass V0+GELU with identity.\n")
+    lines.append(f"- **Bypass MSE:** {necessity.bypass_mse:.6f}")
+    lines.append(f"- **Bypass correlation:** {necessity.bypass_corr:.4f}")
+    lines.append(f"- **Per-player MSE:** P0={necessity.per_player_mse[0]:.6f}, "
+                 f"P1={necessity.per_player_mse[1]:.6f}, P2={necessity.per_player_mse[2]:.6f}\n")
+
+    lines.append("| Phase | MSE |")
+    lines.append("| :--- | ---: |")
+    for pid in decision_phases:
+        lines.append(f"| {_PHASE_NAMES[pid]} | {necessity.phase_mse[pid]:.6f} |")
+
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
 # HTML report
 # ---------------------------------------------------------------------------
 
@@ -834,16 +933,23 @@ def main() -> None:
     print(f"    Bypass MSE: {necessity_result.bypass_mse:.6f}")
     print(f"    Bypass corr: {necessity_result.bypass_corr:.4f}")
 
-    # --- HTML report ---
-    html_path = Path("interp/data") / f"value_head_epoch{epoch}.html"
-    html_path.parent.mkdir(parents=True, exist_ok=True)
+    # --- Write markdown ---
+    md_path = Path("interp/data") / f"value_head_epoch{epoch}.md"
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    md_path.write_text(format_markdown_report(
+        lens_result, neuron_result, error_result, necessity_result,
+        epoch=epoch, num_states=dataset.num_states, num_games=dataset.num_games,
+    ))
+    print(f"\nMarkdown written to {md_path}")
 
+    # --- Write HTML ---
+    html_path = md_path.with_suffix(".html")
     html = format_html_report(
         lens_result, neuron_result, error_result, necessity_result,
         epoch=epoch, num_states=dataset.num_states, num_games=dataset.num_games,
     )
     html_path.write_text(html)
-    print(f"\nHTML report written to {html_path}")
+    print(f"HTML report written to {html_path}")
 
     if not args.no_open:
         open_file(html_path)

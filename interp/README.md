@@ -258,15 +258,18 @@ Deep analysis of individual model components, beyond what the global arch_analys
 
 ### 7a. Input Preprocessing (`layers/preprocess.py`)
 
-**Question:** Is the 768->256 compression losing policy-relevant signal? Should we add an intermediate layer?
+**Question:** Is the 768->512->256 compression losing policy-relevant signal?
 
 **Method:** Three analyses:
-1. **Signal attenuation** — for each feature group, measures activation delta at 768-dim and 256-dim when the group is ablated. Attenuation = delta_256/delta_768 (1.0 = preserved, <1.0 = lost). Cross-referenced with policy KL.
-2. **Expanded probing** — linear probes at raw input (1101), 768-dim intermediate, 256-dim output, and block_0. Tracks information loss through each step.
-3. **SVD projection** — identifies which 768-dim singular vectors the learned weight matrix preserves vs discards, and correlates with feature group importance.
+1. **Signal attenuation** — for each feature group, measures activation delta at 768-dim, 512-dim, and 256-dim when the group is ablated. Attenuation = delta_256/delta_768 (1.0 = preserved, <1.0 = lost). Cross-referenced with policy KL.
+2. **Expanded probing** — linear probes at raw input, 768-dim, 512-dim, 256-dim (post-LN), and block_0. Tracks information loss through each step.
+3. **SVD projection** — effective rank at each intermediate dimension. Identifies which 768-dim singular vectors the 768->512 weight matrix preserves vs discards, and correlates with feature group importance.
+
+**Output:** Console summary + markdown report + HTML report.
 
 ```bash
 .venv/bin/python -m interp.layers.preprocess --load-data interp/data/states.npz
+# Writes: interp/data/preprocess_epoch<N>.md and .html
 ```
 
 ### 7b. Policy Head (`layers/policy_head.py`)
@@ -294,8 +297,11 @@ Deep analysis of individual model components, beyond what the global arch_analys
 3. **Phase-stratified value characteristics** — value magnitude, spread, and per-player means by phase and game progress (early/mid/late).
 4. **Layer causal necessity** — bypasses V0+GELU, measures value MSE change per phase.
 
+**Output:** Console summary + markdown report + HTML report.
+
 ```bash
 .venv/bin/python -m interp.layers.value_head --load-data interp/data/states.npz
+# Writes: interp/data/value_head_epoch<N>.md and .html
 ```
 
 ---

@@ -1,16 +1,18 @@
 """Input preprocessing analysis: signal attenuation, expanded probing, SVD projection.
 
-Three analyses to determine whether the 768->256 compression loses policy-relevant signal:
+Three analyses to determine whether the 768->512->256 compression loses
+policy-relevant signal:
 
 1. **Signal Attenuation**: For each feature group, measure how much of its signal
-   survives the 768->256 step. Cross-reference with ablation KL to find features
-   that matter AND lose signal.
+   survives each compression step (768->512->256). Cross-reference with ablation KL
+   to find features that matter AND lose signal.
 
-2. **Expanded Probing**: Probe at raw input (1101-dim), 768-dim intermediate, and
-   256-dim output to track information through preprocessing.
+2. **Expanded Probing**: Probe at raw input, 768-dim, 512-dim, 256-dim (post-LN),
+   and block_0 to track information through preprocessing.
 
-3. **SVD Projection Analysis**: Identify which 768-dim singular vectors the learned
-   768->256 weight matrix preserves vs discards, and correlate with feature groups.
+3. **SVD Projection Analysis**: Effective rank and energy at each intermediate
+   dimension. Identify which 768-dim singular vectors the learned 768->512 weight
+   matrix preserves vs discards, and correlate with feature groups.
 
 Usage:
     .venv/bin/python -m interp.layers.preprocess --load-data interp/data/states.npz
@@ -50,42 +52,44 @@ def _collect_preprocessing_activations(
     device: torch.device,
     states: np.ndarray,
     batch_size: int = 256,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Collect activations at the 768-dim intermediate and 256-dim output.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Collect activations at the 768-dim, 512-dim, and 256-dim stages.
 
-    Returns (h768, h256) as numpy arrays, shape (N, dim).
+    Preprocessing layout: [0] Linear(→768), [1] GELU, [2] Linear(768→512),
+    [3] GELU, [4] Linear(512→256), [5] LayerNorm(256).
+
+    Returns (h768, h512, h256) as numpy arrays, shape (N, dim).
+    h768 = post-GELU[1], h512 = post-GELU[3], h256 = post-LayerNorm[5].
     """
     model.eval()
-    h768_list: list[torch.Tensor] = []
-    h256_list: list[torch.Tensor] = []
+    acts: dict[str, list[torch.Tensor]] = {"768": [], "512": [], "256": []}
 
-    # Hook after GELU (index 1) for 768-dim, after Linear (index 2) for 256-dim
+    def make_hook(key: str):  # noqa: ANN202
+        def hook(
+            _mod: torch.nn.Module, _inp: tuple[torch.Tensor, ...], out: torch.Tensor
+        ) -> None:
+            acts[key].append(out.detach().cpu())
+        return hook
+
     preprocess = model.input_preprocess
-
-    def hook_768(
-        _mod: torch.nn.Module, _inp: tuple[torch.Tensor, ...], out: torch.Tensor
-    ) -> None:
-        h768_list.append(out.detach().cpu())
-
-    def hook_256(
-        _mod: torch.nn.Module, _inp: tuple[torch.Tensor, ...], out: torch.Tensor
-    ) -> None:
-        h256_list.append(out.detach().cpu())
-
-    handle_768 = preprocess[1].register_forward_hook(hook_768)  # GELU output
-    handle_256 = preprocess[2].register_forward_hook(hook_256)  # Linear output
+    handles = [
+        preprocess[1].register_forward_hook(make_hook("768")),  # post-GELU (768-dim)
+        preprocess[3].register_forward_hook(make_hook("512")),  # post-GELU (512-dim)
+        preprocess[5].register_forward_hook(make_hook("256")),  # post-LayerNorm (256-dim)
+    ]
 
     with torch.no_grad():
         for i in range(0, states.shape[0], batch_size):
             j = min(i + batch_size, states.shape[0])
             model(torch.from_numpy(states[i:j]).to(device))
 
-    handle_768.remove()
-    handle_256.remove()
+    for h in handles:
+        h.remove()
 
     return (
-        torch.cat(h768_list, dim=0).numpy(),
-        torch.cat(h256_list, dim=0).numpy(),
+        torch.cat(acts["768"], dim=0).numpy(),
+        torch.cat(acts["512"], dim=0).numpy(),
+        torch.cat(acts["256"], dim=0).numpy(),
     )
 
 
@@ -102,8 +106,9 @@ class AttenuationRow:
     num_features: int
     policy_kl: float
     delta_768: float
+    delta_512: float
     delta_256: float
-    attenuation: float  # delta_256 / delta_768
+    attenuation: float  # delta_256 / delta_768 (overall)
     lost_signal: float  # policy_kl * (1 - attenuation)
 
 
@@ -115,10 +120,10 @@ def analyze_signal_attenuation(
     batch_size: int = 256,
 ) -> list[AttenuationRow]:
     """Measure how much each feature group's signal is preserved vs lost
-    in the 768->256 compression step.
+    through the 768->512->256 compression.
 
     For each feature group:
-    - Zero it out, forward pass, measure activation delta at 768 and 256 dims
+    - Zero it out, forward pass, measure activation delta at 768, 512, and 256 dims
     - Compute attenuation = delta_256 / delta_768
     - Cross-reference with policy KL from full forward pass
     """
@@ -126,7 +131,7 @@ def analyze_signal_attenuation(
 
     # Get original activations and policy
     print("  Computing original activations...")
-    h768_orig, h256_orig = _collect_preprocessing_activations(
+    h768_orig, h512_orig, h256_orig = _collect_preprocessing_activations(
         model, device, dataset.states, batch_size
     )
     orig_logits, _ = forward_batched(model, device, dataset.states, batch_size)
@@ -134,6 +139,7 @@ def analyze_signal_attenuation(
 
     # Norms for relative delta
     norm_768 = np.linalg.norm(h768_orig, axis=1, keepdims=True).mean()
+    norm_512 = np.linalg.norm(h512_orig, axis=1, keepdims=True).mean()
     norm_256 = np.linalg.norm(h256_orig, axis=1, keepdims=True).mean()
 
     rows: list[AttenuationRow] = []
@@ -144,12 +150,13 @@ def analyze_signal_attenuation(
         ablated[:, indices] = 0.0
 
         # Get ablated activations
-        h768_abl, h256_abl = _collect_preprocessing_activations(
+        h768_abl, h512_abl, h256_abl = _collect_preprocessing_activations(
             model, device, ablated, batch_size
         )
 
         # Signal deltas (relative to mean norm)
         d768 = float(np.linalg.norm(h768_orig - h768_abl, axis=1).mean() / norm_768)
+        d512 = float(np.linalg.norm(h512_orig - h512_abl, axis=1).mean() / norm_512)
         d256 = float(np.linalg.norm(h256_orig - h256_abl, axis=1).mean() / norm_256)
 
         # Policy KL
@@ -165,6 +172,7 @@ def analyze_signal_attenuation(
             num_features=len(indices),
             policy_kl=kl,
             delta_768=d768,
+            delta_512=d512,
             delta_256=d256,
             attenuation=attn,
             lost_signal=lost,
@@ -192,36 +200,27 @@ def collect_preprocessing_layer_activations(
     states: np.ndarray,
     batch_size: int = 256,
 ) -> dict[str, np.ndarray]:
-    """Collect activations at raw input, 768-dim, 256-dim, and block_0.
+    """Collect activations at raw input, 768-dim, 512-dim, 256-dim, and block_0.
 
-    Returns dict with keys: "raw_input", "preprocess_768", "preprocess_256", "block_0".
+    Returns dict with keys: "raw_input", "preprocess_768", "preprocess_512",
+    "preprocess_256", "block_0".
     """
     model.eval()
-    h768_list: list[torch.Tensor] = []
-    h256_list: list[torch.Tensor] = []
-    b0_list: list[torch.Tensor] = []
+    acts: dict[str, list[torch.Tensor]] = {"768": [], "512": [], "256": [], "b0": []}
+
+    def make_hook(key: str):  # noqa: ANN202
+        def hook(
+            _mod: torch.nn.Module, _inp: tuple[torch.Tensor, ...], out: torch.Tensor
+        ) -> None:
+            acts[key].append(out.detach().cpu())
+        return hook
 
     preprocess = model.input_preprocess
-
-    def hook_768(
-        _mod: torch.nn.Module, _inp: tuple[torch.Tensor, ...], out: torch.Tensor
-    ) -> None:
-        h768_list.append(out.detach().cpu())
-
-    def hook_256(
-        _mod: torch.nn.Module, _inp: tuple[torch.Tensor, ...], out: torch.Tensor
-    ) -> None:
-        h256_list.append(out.detach().cpu())
-
-    def hook_b0(
-        _mod: torch.nn.Module, _inp: tuple[torch.Tensor, ...], out: torch.Tensor
-    ) -> None:
-        b0_list.append(out.detach().cpu())
-
     handles = [
-        preprocess[1].register_forward_hook(hook_768),
-        preprocess[2].register_forward_hook(hook_256),
-        model.blocks[0].register_forward_hook(hook_b0),
+        preprocess[1].register_forward_hook(make_hook("768")),  # post-GELU (768-dim)
+        preprocess[3].register_forward_hook(make_hook("512")),  # post-GELU (512-dim)
+        preprocess[5].register_forward_hook(make_hook("256")),  # post-LayerNorm (256-dim)
+        model.blocks[0].register_forward_hook(make_hook("b0")),
     ]
 
     with torch.no_grad():
@@ -234,9 +233,10 @@ def collect_preprocessing_layer_activations(
 
     return {
         "raw_input": states,
-        "preprocess_768": torch.cat(h768_list, dim=0).numpy(),
-        "preprocess_256": torch.cat(h256_list, dim=0).numpy(),
-        "block_0": torch.cat(b0_list, dim=0).numpy(),
+        "preprocess_768": torch.cat(acts["768"], dim=0).numpy(),
+        "preprocess_512": torch.cat(acts["512"], dim=0).numpy(),
+        "preprocess_256": torch.cat(acts["256"], dim=0).numpy(),
+        "block_0": torch.cat(acts["b0"], dim=0).numpy(),
     }
 
 
@@ -249,9 +249,10 @@ class PreprocessProbeResult:
     metric_name: str
     raw_input: float
     preprocess_768: float
+    preprocess_512: float
     preprocess_256: float
     block_0: float
-    delta_compression: float  # preprocess_768 - preprocess_256
+    delta_compression: float  # preprocess_768 - preprocess_256 (overall)
 
 
 def run_preprocessing_probes(
@@ -315,6 +316,7 @@ def run_preprocessing_probes(
         task_type, metric_name = probe_meta[probe_name]
         raw = layer_scores.get("raw_input", 0.0)
         h768 = layer_scores.get("preprocess_768", 0.0)
+        h512 = layer_scores.get("preprocess_512", 0.0)
         h256 = layer_scores.get("preprocess_256", 0.0)
         b0 = layer_scores.get("block_0", 0.0)
         output.append(PreprocessProbeResult(
@@ -323,6 +325,7 @@ def run_preprocessing_probes(
             metric_name=metric_name,
             raw_input=raw,
             preprocess_768=h768,
+            preprocess_512=h512,
             preprocess_256=h256,
             block_0=b0,
             delta_compression=h768 - h256,
@@ -339,16 +342,31 @@ def run_preprocessing_probes(
 
 @dataclass
 class SVDProjectionResult:
-    """How well the 768->256 weight matrix preserves each SVD component."""
+    """How well the 768->512 weight matrix preserves each SVD component."""
 
     eff_rank_768: float
+    eff_rank_512: float
     eff_rank_256: float
     top_50_energy_768: float
+    top_50_energy_512: float
     top_50_energy_256: float
-    # Per singular vector: how much of its energy is preserved
+    # Per singular vector: how much of its energy is preserved by 768->512 step
     preservation_by_sv: np.ndarray  # (768,) — preservation ratio per SV
     # Per feature group: fraction of signal in discarded subspace
     feature_group_discarded: list[tuple[str, float, float]]  # (name, frac_discarded, policy_kl)
+
+
+def _svd_stats(h: np.ndarray, svd_idx: np.ndarray) -> tuple[float, float, np.ndarray, np.ndarray]:
+    """Compute effective rank, top-50 energy, singular values, and right SVs."""
+    centered = h - h.mean(axis=0, keepdims=True)
+    sub = centered[svd_idx]
+    _, S, Vt = np.linalg.svd(sub, full_matrices=False)
+    s_norm = S / S.sum()
+    s_safe = s_norm[s_norm > 1e-10]
+    eff_rank = float(np.exp(-np.sum(s_safe * np.log(s_safe))))
+    total_energy = float((S ** 2).sum())
+    top_50 = float((S[:50] ** 2).sum() / total_energy) if total_energy > 0 else 0.0
+    return eff_rank, top_50, S, Vt
 
 
 def analyze_svd_projection(
@@ -359,89 +377,53 @@ def analyze_svd_projection(
     policy_kl_map: dict[str, float] | None = None,
     batch_size: int = 256,
 ) -> SVDProjectionResult:
-    """Analyze which 768-dim components the 768->256 weight matrix preserves.
+    """Analyze which 768-dim components the 768->512 weight matrix preserves.
 
-    1. SVD of 768-dim activations -> identify principal subspace
-    2. For each singular vector, measure how well W_256 preserves it
+    1. SVD of 768/512/256-dim activations -> effective rank at each stage
+    2. For each 768-dim singular vector, measure how well W_512 preserves it
     3. Per feature group, measure what fraction of signal lands in discarded dims
     """
-    print("  Collecting 768-dim activations...")
-    h768, h256 = _collect_preprocessing_activations(model, device, states, batch_size)
+    print("  Collecting preprocessing activations...")
+    h768, h512, h256 = _collect_preprocessing_activations(model, device, states, batch_size)
 
-    # SVD of 768-dim activations (centered)
-    print("  Computing SVD of 768-dim activations...")
-    h768_centered = h768 - h768.mean(axis=0, keepdims=True)
-    # Use a subsample for SVD if dataset is large
+    # Subsample for SVD if dataset is large
     rng = np.random.default_rng(42)
-    if h768_centered.shape[0] > 5000:
-        svd_idx = rng.choice(h768_centered.shape[0], 5000, replace=False)
-        h768_sub = h768_centered[svd_idx]
-    else:
-        svd_idx = np.arange(h768_centered.shape[0])
-        h768_sub = h768_centered
+    n = h768.shape[0]
+    svd_idx = rng.choice(n, min(5000, n), replace=False) if n > 5000 else np.arange(n)
 
-    U, S, Vt = np.linalg.svd(h768_sub, full_matrices=False)
-    # S: (768,) singular values, Vt: (768, 768) right singular vectors
+    print("  Computing SVD at each intermediate dimension...")
+    eff_rank_768, top_50_768, S768, Vt768 = _svd_stats(h768, svd_idx)
+    eff_rank_512, top_50_512, _, _ = _svd_stats(h512, svd_idx)
+    eff_rank_256, top_50_256, _, _ = _svd_stats(h256, svd_idx)
 
-    # Effective rank (entropy-based)
-    s_norm = S / S.sum()
-    s_safe = s_norm[s_norm > 1e-10]
-    eff_rank_768 = float(np.exp(-np.sum(s_safe * np.log(s_safe))))
-
-    # Top-50 energy
-    total_energy = float((S ** 2).sum())
-    top_50_energy = float((S[:50] ** 2).sum() / total_energy)
-
-    # SVD of 256-dim activations
-    h256_centered = h256 - h256.mean(axis=0, keepdims=True)
-    h256_sub = h256_centered[svd_idx]
-    _, S256, _ = np.linalg.svd(h256_sub, full_matrices=False)
-    s256_norm = S256 / S256.sum()
-    s256_safe = s256_norm[s256_norm > 1e-10]
-    eff_rank_256 = float(np.exp(-np.sum(s256_safe * np.log(s256_safe))))
-    total_energy_256 = float((S256 ** 2).sum())
-    top_50_energy_256 = float((S256[:50] ** 2).sum() / total_energy_256)
-
-    # How well does the 768->256 weight matrix preserve each SV?
-    W = model.input_preprocess[2].weight.detach().cpu().numpy()  # (256, 768)
-    # For each right singular vector v_i of the 768-dim activations,
-    # compute ||W @ v_i|| / max(||W @ v_j||) to see relative preservation
-    preservation = np.zeros(min(S.shape[0], Vt.shape[0]))
+    # How well does the 768->512 weight matrix preserve each SV?
+    W = model.input_preprocess[2].weight.detach().cpu().numpy()  # (512, 768)
+    preservation = np.zeros(min(S768.shape[0], Vt768.shape[0]))
     for i in range(preservation.shape[0]):
-        v_i = Vt[i]  # (768,)
-        preservation[i] = float(np.linalg.norm(W @ v_i))
-    # Normalize by max preservation
+        preservation[i] = float(np.linalg.norm(W @ Vt768[i]))
     max_pres = preservation.max()
     if max_pres > 0:
         preservation = preservation / max_pres
 
     # Per feature group: what fraction of signal lands in the poorly-preserved subspace?
-    # "Poorly preserved" = bottom half of preservation scores
-    threshold = np.median(preservation[:min(365, len(preservation))])  # ~eff_rank cutoff
+    threshold = np.median(preservation[:min(365, len(preservation))])
     discarded_mask = preservation < threshold
 
     groups = build_feature_groups(num_players)
-    W_first = model.input_preprocess[0].weight.detach().cpu().numpy()  # (768, 1101)
-    b_first = model.input_preprocess[0].bias.detach().cpu().numpy()  # (768,)
+    W_first = model.input_preprocess[0].weight.detach().cpu().numpy()  # (768, input_dim)
 
     print("  Computing per-feature-group projection into discarded subspace...")
     group_discarded: list[tuple[str, float, float]] = []
     for name, indices in groups:
-        # Create a unit-scale input perturbation for this group
-        # Project through first layer to get 768-dim direction
         delta_input = np.zeros(states.shape[1], dtype=np.float32)
-        # Use actual mean values for these features as the perturbation magnitude
         delta_input[indices] = np.abs(states[:, indices]).mean(axis=0) + 1e-8
 
-        # Linear projection through first layer (no GELU, approximation)
-        delta_768 = W_first @ delta_input  # (768,)
-        delta_768_norm = np.linalg.norm(delta_768)
-        if delta_768_norm < 1e-8:
+        delta_768 = W_first @ delta_input
+        if np.linalg.norm(delta_768) < 1e-8:
             group_discarded.append((name, 0.0, policy_kl_map.get(name, 0.0) if policy_kl_map else 0.0))
             continue
 
-        # Project onto SVD basis and compute fraction in discarded subspace
-        coeffs = Vt @ delta_768  # (768,) coefficients in SVD basis
+        coeffs = Vt768 @ delta_768
         energy_total = float((coeffs ** 2).sum())
         energy_discarded = float((coeffs[discarded_mask[:len(coeffs)]] ** 2).sum())
         frac_discarded = energy_discarded / energy_total if energy_total > 0 else 0.0
@@ -449,14 +431,15 @@ def analyze_svd_projection(
         kl = policy_kl_map.get(name, 0.0) if policy_kl_map else 0.0
         group_discarded.append((name, frac_discarded, kl))
 
-    # Sort by KL-weighted discarded fraction
     group_discarded.sort(key=lambda x: -(x[1] * x[2]))
 
     return SVDProjectionResult(
         eff_rank_768=eff_rank_768,
+        eff_rank_512=eff_rank_512,
         eff_rank_256=eff_rank_256,
-        top_50_energy_768=top_50_energy,
-        top_50_energy_256=top_50_energy_256,
+        top_50_energy_768=top_50_768,
+        top_50_energy_512=top_50_512,
+        top_50_energy_256=top_50_256,
         preservation_by_sv=preservation,
         feature_group_discarded=group_discarded,
     )
@@ -469,14 +452,14 @@ def analyze_svd_projection(
 
 def print_attenuation_report(rows: list[AttenuationRow]) -> None:
     """Print signal attenuation results to console."""
-    print("\n" + "=" * 90)
-    print("  1. FEATURE GROUP SIGNAL ATTENUATION (768 -> 256)")
-    print("=" * 90)
+    print("\n" + "=" * 100)
+    print("  1. FEATURE GROUP SIGNAL ATTENUATION (768 -> 512 -> 256)")
+    print("=" * 100)
     print("  Attenuation = delta_256 / delta_768 (1.0 = fully preserved, <1.0 = signal lost)")
     print("  Lost Signal = policy_KL * (1 - attenuation)")
     print()
-    print(f"  {'Feature':<30s} {'#':>3s} {'Pol KL':>8s} {'d768':>8s} {'d256':>8s} {'Atten':>7s} {'Lost':>8s}")
-    print(f"  {'-' * 30} {'-' * 3} {'-' * 8} {'-' * 8} {'-' * 8} {'-' * 7} {'-' * 8}")
+    print(f"  {'Feature':<30s} {'#':>3s} {'Pol KL':>8s} {'d768':>8s} {'d512':>8s} {'d256':>8s} {'Atten':>7s} {'Lost':>8s}")
+    print(f"  {'-' * 30} {'-' * 3} {'-' * 8} {'-' * 8} {'-' * 8} {'-' * 8} {'-' * 7} {'-' * 8}")
 
     for r in rows[:30]:  # Top 30 by lost signal
         atten_str = f"{r.attenuation:.3f}"
@@ -484,7 +467,7 @@ def print_attenuation_report(rows: list[AttenuationRow]) -> None:
             atten_str = f"{r.attenuation:.3f} !"
         print(
             f"  {r.name:<30s} {r.num_features:>3d} "
-            f"{r.policy_kl:>8.4f} {r.delta_768:>8.4f} {r.delta_256:>8.4f} "
+            f"{r.policy_kl:>8.4f} {r.delta_768:>8.4f} {r.delta_512:>8.4f} {r.delta_256:>8.4f} "
             f"{atten_str:>7s} {r.lost_signal:>8.4f}"
         )
 
@@ -502,17 +485,17 @@ def print_attenuation_report(rows: list[AttenuationRow]) -> None:
 
 def print_probing_report(results: list[PreprocessProbeResult]) -> None:
     """Print preprocessing probing results to console."""
-    print("\n" + "=" * 90)
+    print("\n" + "=" * 100)
     print("  2. LINEAR PROBING THROUGH PREPROCESSING")
-    print("=" * 90)
-    print("  Tracks information through: raw_input (1101) -> 768 -> 256 -> block_0 (256)")
+    print("=" * 100)
+    print("  Tracks information through: raw_input -> 768 -> 512 -> 256 (post-LN) -> block_0")
     print()
     print(
-        f"  {'Probe':<24s} {'Type':>4s} {'Raw':>8s} {'768':>8s} {'256':>8s} "
+        f"  {'Probe':<24s} {'Type':>4s} {'Raw':>8s} {'768':>8s} {'512':>8s} {'256':>8s} "
         f"{'B0':>8s} {'d(comp)':>8s}"
     )
     print(
-        f"  {'-' * 24} {'-' * 4} {'-' * 8} {'-' * 8} {'-' * 8} "
+        f"  {'-' * 24} {'-' * 4} {'-' * 8} {'-' * 8} {'-' * 8} {'-' * 8} "
         f"{'-' * 8} {'-' * 8}"
     )
 
@@ -522,7 +505,7 @@ def print_probing_report(results: list[PreprocessProbeResult]) -> None:
             delta_str += " !"  # lost in compression
         print(
             f"  {r.probe_name:<24s} {r.metric_name:>4s} "
-            f"{r.raw_input:>8.4f} {r.preprocess_768:>8.4f} "
+            f"{r.raw_input:>8.4f} {r.preprocess_768:>8.4f} {r.preprocess_512:>8.4f} "
             f"{r.preprocess_256:>8.4f} {r.block_0:>8.4f} {delta_str:>8s}"
         )
 
@@ -536,20 +519,21 @@ def print_probing_report(results: list[PreprocessProbeResult]) -> None:
 
 def print_svd_report(result: SVDProjectionResult) -> None:
     """Print SVD projection analysis to console."""
-    print("\n" + "=" * 90)
+    print("\n" + "=" * 100)
     print("  3. SVD PROJECTION ANALYSIS")
-    print("=" * 90)
+    print("=" * 100)
 
-    print(f"\n  768-dim intermediate:")
-    print(f"    Effective rank: {result.eff_rank_768:.1f} / 768 ({result.eff_rank_768 / 768 * 100:.1f}%)")
-    print(f"    Top-50 energy: {result.top_50_energy_768 * 100:.1f}%")
-
-    print(f"\n  256-dim output:")
-    print(f"    Effective rank: {result.eff_rank_256:.1f} / 256 ({result.eff_rank_256 / 256 * 100:.1f}%)")
-    print(f"    Top-50 energy: {result.top_50_energy_256 * 100:.1f}%")
+    for label, dim, eff, top50 in [
+        ("768-dim (post-GELU)", 768, result.eff_rank_768, result.top_50_energy_768),
+        ("512-dim (post-GELU)", 512, result.eff_rank_512, result.top_50_energy_512),
+        ("256-dim (post-LN)",   256, result.eff_rank_256, result.top_50_energy_256),
+    ]:
+        print(f"\n  {label}:")
+        print(f"    Effective rank: {eff:.1f} / {dim} ({eff / dim * 100:.1f}%)")
+        print(f"    Top-50 energy: {top50 * 100:.1f}%")
 
     p = result.preservation_by_sv
-    print(f"\n  Weight matrix preservation of 768-dim singular vectors:")
+    print(f"\n  768->512 weight matrix preservation of 768-dim singular vectors:")
     print(f"    SVs 1-10:   mean={p[:10].mean():.3f}")
     print(f"    SVs 11-50:  mean={p[10:50].mean():.3f}")
     print(f"    SVs 51-100: mean={p[50:100].mean():.3f}")
@@ -557,7 +541,6 @@ def print_svd_report(result: SVDProjectionResult) -> None:
     print(f"    SVs 201-365: mean={p[200:365].mean():.3f}")
     print(f"    SVs 366+:   mean={p[365:].mean():.3f}")
 
-    # How many SVs are well-preserved vs discarded?
     well_preserved = np.sum(p[:365] > 0.5)
     poorly_preserved = np.sum(p[:365] < 0.3)
     print(f"\n    Well-preserved (>0.5): {well_preserved} / 365 effective dims")
@@ -570,6 +553,97 @@ def print_svd_report(result: SVDProjectionResult) -> None:
         if frac < 0.001 and kl < 0.001:
             continue
         print(f"  {name:<30s} {frac * 100:>9.1f}% {kl:>10.4f} {frac * kl:>10.4f}")
+
+
+# ---------------------------------------------------------------------------
+# Markdown report
+# ---------------------------------------------------------------------------
+
+
+def format_markdown_report(
+    attenuation_rows: list[AttenuationRow],
+    probe_results: list[PreprocessProbeResult],
+    svd_result: SVDProjectionResult,
+    epoch: int,
+    num_states: int,
+    num_games: int,
+) -> str:
+    """Generate a machine-readable markdown report for preprocessing analysis."""
+    lines: list[str] = [
+        f"# Preprocessing Analysis (epoch {epoch})\n",
+        f"{num_states:,} states from {num_games} games.",
+        f"Preprocessing: Linear(input->768) -> GELU -> Linear(768->512) -> GELU -> Linear(512->256) -> LayerNorm.\n",
+    ]
+
+    # --- 1. Signal Attenuation ---
+    lines.append("## 1. Signal Attenuation (768 -> 512 -> 256)\n")
+    lines.append("Attenuation = delta_256 / delta_768 (1.0 = fully preserved). Sorted by lost signal.\n")
+
+    lines.append("| Feature | # | Policy KL | d768 | d512 | d256 | Atten | Lost |")
+    lines.append("| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    for r in attenuation_rows:
+        lines.append(
+            f"| {r.name} | {r.num_features} | {r.policy_kl:.4f} "
+            f"| {r.delta_768:.4f} | {r.delta_512:.4f} | {r.delta_256:.4f} "
+            f"| {r.attenuation:.3f} | {r.lost_signal:.4f} |"
+        )
+
+    attenuations = [r.attenuation for r in attenuation_rows if r.delta_768 > 0.001]
+    if attenuations:
+        lines.append("")
+        lines.append(f"- **Mean attenuation:** {np.mean(attenuations):.3f}")
+        lines.append(f"- **Median attenuation:** {np.median(attenuations):.3f}")
+        lines.append(f"- **Total lost signal:** {sum(r.lost_signal for r in attenuation_rows):.4f}")
+
+    # --- 2. Probing ---
+    lines.append("")
+    lines.append("## 2. Linear Probing Through Preprocessing\n")
+
+    lines.append("| Probe | Type | Raw | 768 | 512 | 256 | B0 | d(comp) |")
+    lines.append("| :--- | :---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    for r in probe_results:
+        sign = "+" if r.delta_compression >= 0 else ""
+        lines.append(
+            f"| {r.probe_name} | {r.metric_name} | {r.raw_input:.4f} "
+            f"| {r.preprocess_768:.4f} | {r.preprocess_512:.4f} "
+            f"| {r.preprocess_256:.4f} | {r.block_0:.4f} | {sign}{r.delta_compression:.4f} |"
+        )
+
+    # --- 3. SVD ---
+    lines.append("")
+    lines.append("## 3. SVD Projection Analysis\n")
+
+    lines.append("| Dimension | Effective Rank | Utilization | Top-50 Energy |")
+    lines.append("| :--- | ---: | ---: | ---: |")
+    for label, dim, eff, top50 in [
+        ("768 (post-GELU)", 768, svd_result.eff_rank_768, svd_result.top_50_energy_768),
+        ("512 (post-GELU)", 512, svd_result.eff_rank_512, svd_result.top_50_energy_512),
+        ("256 (post-LN)",   256, svd_result.eff_rank_256, svd_result.top_50_energy_256),
+    ]:
+        lines.append(f"| {label} | {eff:.1f} / {dim} | {eff / dim * 100:.1f}% | {top50 * 100:.1f}% |")
+
+    p = svd_result.preservation_by_sv
+    lines.append("")
+    lines.append("### 768->512 Weight Matrix SV Preservation\n")
+    lines.append("| SV Range | Mean Preservation |")
+    lines.append("| :--- | ---: |")
+    for label, sl in [
+        ("1-10", slice(0, 10)), ("11-50", slice(10, 50)), ("51-100", slice(50, 100)),
+        ("101-200", slice(100, 200)), ("201-365", slice(200, 365)), ("366+", slice(365, None)),
+    ]:
+        lines.append(f"| SVs {label} | {p[sl].mean():.3f} |")
+
+    lines.append("")
+    lines.append("### Feature Groups in Discarded Subspace\n")
+    lines.append("| Feature | % Discarded | Policy KL | Weighted |")
+    lines.append("| :--- | ---: | ---: | ---: |")
+    for name, frac, kl in svd_result.feature_group_discarded:
+        if frac < 0.001 and kl < 0.001:
+            continue
+        lines.append(f"| {name} | {frac * 100:.1f}% | {kl:.4f} | {frac * kl:.4f} |")
+
+    lines.append("")
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -592,6 +666,7 @@ def format_html_report(
             "num_features": r.num_features,
             "policy_kl": r.policy_kl,
             "delta_768": r.delta_768,
+            "delta_512": r.delta_512,
             "delta_256": r.delta_256,
             "attenuation": r.attenuation,
             "lost_signal": r.lost_signal,
@@ -606,6 +681,7 @@ def format_html_report(
             "metric_name": r.metric_name,
             "raw_input": r.raw_input,
             "preprocess_768": r.preprocess_768,
+            "preprocess_512": r.preprocess_512,
             "preprocess_256": r.preprocess_256,
             "block_0": r.block_0,
             "delta_compression": r.delta_compression,
@@ -625,8 +701,10 @@ def format_html_report(
     ]
     svd_summary_json = json.dumps({
         "eff_rank_768": svd_result.eff_rank_768,
+        "eff_rank_512": svd_result.eff_rank_512,
         "eff_rank_256": svd_result.eff_rank_256,
         "top_50_energy_768": svd_result.top_50_energy_768,
+        "top_50_energy_512": svd_result.top_50_energy_512,
         "top_50_energy_256": svd_result.top_50_energy_256,
         "sv_ranges": sv_ranges,
     })
@@ -637,7 +715,7 @@ def format_html_report(
     ])
 
     body = (
-        '<h2>1. Signal Attenuation (768 &rarr; 256)</h2>\n'
+        '<h2>1. Signal Attenuation (768 &rarr; 512 &rarr; 256)</h2>\n'
         '<p style="color:#888;font-size:0.85rem">\n'
         '  Attenuation = delta_256 / delta_768 (1.0 = fully preserved). Lost Signal = policy_KL * (1 - attenuation). Sorted by lost signal descending.\n'
         '</p>\n'
@@ -645,13 +723,13 @@ def format_html_report(
         '\n'
         '<h2>2. Linear Probing Through Preprocessing</h2>\n'
         '<p style="color:#888;font-size:0.85rem">\n'
-        '  Information tracked through raw_input (1101) &rarr; 768 &rarr; 256 &rarr; block_0 (256). Cells highlighted where delta(compression) &gt; 0.01.\n'
+        '  Information tracked through raw_input &rarr; 768 &rarr; 512 &rarr; 256 (post-LN) &rarr; block_0. Cells highlighted where delta(compression) &gt; 0.01.\n'
         '</p>\n'
         '<table id="tbl-probing"></table>\n'
         '\n'
         '<h2>3. SVD Projection Analysis</h2>\n'
         '<p style="color:#888;font-size:0.85rem">\n'
-        '  How well the 768&rarr;256 weight matrix preserves each SVD component of the 768-dim activations.\n'
+        '  Effective rank at each preprocessing stage. 768&rarr;512 weight matrix SV preservation.\n'
         '</p>\n'
         '<div id="svd-summary"></div>\n'
         '<h3 style="color:#aaa;font-size:0.95rem;margin-top:1.5rem">Preservation by Singular Vector Range</h3>\n'
@@ -677,7 +755,7 @@ def format_html_report(
         '// --- 1. Signal Attenuation table ---\n'
         '(function() {\n'
         '  const tbl = document.getElementById("tbl-attenuation");\n'
-        "  let html = '<tr><th>Feature</th><th>#</th><th>Policy KL</th><th>delta_768</th><th>delta_256</th><th>Attenuation</th><th>Lost Signal</th></tr>';\n"
+        "  let html = '<tr><th>Feature</th><th>#</th><th>Policy KL</th><th>d768</th><th>d512</th><th>d256</th><th>Attenuation</th><th>Lost Signal</th></tr>';\n"
         '  for (const r of attenuation) {\n'
         '    const bg = heatColor(r.attenuation);\n'
         '    const barW = Math.max(0, Math.min(100, r.attenuation * 100));\n'
@@ -685,6 +763,7 @@ def format_html_report(
         "      '<td>' + r.num_features + '</td>' +\n"
         "      '<td>' + r.policy_kl.toFixed(4) + '</td>' +\n"
         "      '<td>' + r.delta_768.toFixed(4) + '</td>' +\n"
+        "      '<td>' + r.delta_512.toFixed(4) + '</td>' +\n"
         "      '<td>' + r.delta_256.toFixed(4) + '</td>' +\n"
         '      \'<td style="text-align:left"><span class="bar-container" style="width:80px;background:#111;border-radius:2px">\' +\n'
         "        '<span class=\"bar\" style=\"width:' + barW + '%;background:' + bg + '\"></span></span> ' +\n"
@@ -697,13 +776,14 @@ def format_html_report(
         '// --- 2. Probing table ---\n'
         '(function() {\n'
         '  const tbl = document.getElementById("tbl-probing");\n'
-        "  let html = '<tr><th>Probe</th><th>Type</th><th>Raw</th><th>768</th><th>256</th><th>B0</th><th>delta(compression)</th></tr>';\n"
+        "  let html = '<tr><th>Probe</th><th>Type</th><th>Raw</th><th>768</th><th>512</th><th>256</th><th>B0</th><th>d(comp)</th></tr>';\n"
         '  for (const r of probes) {\n'
         "    const cls = r.delta_compression > 0.01 ? ' class=\"highlight\"' : '';\n"
         "    html += '<tr><td>' + r.probe_name + '</td>' +\n"
         "      '<td>' + r.metric_name + '</td>' +\n"
         "      '<td>' + r.raw_input.toFixed(4) + '</td>' +\n"
         "      '<td>' + r.preprocess_768.toFixed(4) + '</td>' +\n"
+        "      '<td>' + r.preprocess_512.toFixed(4) + '</td>' +\n"
         "      '<td>' + r.preprocess_256.toFixed(4) + '</td>' +\n"
         "      '<td>' + r.block_0.toFixed(4) + '</td>' +\n"
         "      '<td' + cls + '>' + (r.delta_compression >= 0 ? '+' : '') + r.delta_compression.toFixed(4) + '</td></tr>';\n"
@@ -717,9 +797,9 @@ def format_html_report(
         '  const div = document.getElementById("svd-summary");\n'
         '  div.innerHTML =\n'
         '    \'<table style="width:auto">\' +\n'
-        '    \'<tr><th style="text-align:left">Metric</th><th>768-dim</th><th>256-dim</th></tr>\' +\n'
-        "    '<tr><td>Effective rank</td><td>' + s.eff_rank_768.toFixed(1) + '</td><td>' + s.eff_rank_256.toFixed(1) + '</td></tr>' +\n"
-        "    '<tr><td>Top-50 energy</td><td>' + (s.top_50_energy_768 * 100).toFixed(1) + '%</td><td>' + (s.top_50_energy_256 * 100).toFixed(1) + '%</td></tr>' +\n"
+        '    \'<tr><th style="text-align:left">Metric</th><th>768-dim</th><th>512-dim</th><th>256-dim</th></tr>\' +\n'
+        "    '<tr><td>Effective rank</td><td>' + s.eff_rank_768.toFixed(1) + '</td><td>' + s.eff_rank_512.toFixed(1) + '</td><td>' + s.eff_rank_256.toFixed(1) + '</td></tr>' +\n"
+        "    '<tr><td>Top-50 energy</td><td>' + (s.top_50_energy_768 * 100).toFixed(1) + '%</td><td>' + (s.top_50_energy_512 * 100).toFixed(1) + '%</td><td>' + (s.top_50_energy_256 * 100).toFixed(1) + '%</td></tr>' +\n"
         "    '</table>';\n"
         '})();\n'
         '\n'
@@ -835,9 +915,9 @@ def main() -> None:
     )
     print_svd_report(svd_result)
 
-    print(f"\n{'=' * 90}")
+    print(f"\n{'=' * 100}")
     print(f"  SUMMARY")
-    print(f"{'=' * 90}")
+    print(f"{'=' * 100}")
 
     # Key findings
     total_lost = sum(r.lost_signal for r in attenuation_rows)
@@ -854,22 +934,29 @@ def main() -> None:
 
     compression_losses = [r for r in probe_results if r.delta_compression > 0.005]
     if compression_losses:
-        print(f"\n  Probes losing information in 768->256 compression:")
+        print(f"\n  Probes losing information in 768->512->256 compression:")
         for r in sorted(compression_losses, key=lambda x: -x.delta_compression):
             print(f"    {r.probe_name}: 768={r.preprocess_768:.4f} -> 256={r.preprocess_256:.4f} (d={r.delta_compression:+.4f})")
     else:
-        print(f"\n  No probes show significant information loss in 768->256 compression.")
+        print(f"\n  No probes show significant information loss in 768->512->256 compression.")
 
-    # --- HTML report ---
-    html_path = Path("interp/data") / f"preprocess_epoch{epoch}.html"
-    html_path.parent.mkdir(parents=True, exist_ok=True)
+    # --- Write markdown ---
+    md_path = Path("interp/data") / f"preprocess_epoch{epoch}.md"
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    md_path.write_text(format_markdown_report(
+        attenuation_rows, probe_results, svd_result,
+        epoch=epoch, num_states=dataset.num_states, num_games=dataset.num_games,
+    ))
+    print(f"\nMarkdown written to {md_path}")
 
+    # --- Write HTML ---
+    html_path = md_path.with_suffix(".html")
     html = format_html_report(
         attenuation_rows, probe_results, svd_result,
         epoch=epoch, num_states=dataset.num_states, num_games=dataset.num_games,
     )
     html_path.write_text(html)
-    print(f"\nHTML report written to {html_path}")
+    print(f"HTML report written to {html_path}")
 
     if not args.no_open:
         open_file(html_path)
