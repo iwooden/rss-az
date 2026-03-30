@@ -272,19 +272,26 @@ Deep analysis of individual model components, beyond what the global arch_analys
 # Writes: interp/data/preprocess_epoch<N>.md and .html
 ```
 
-### 7b. Policy Head (`layers/policy_head.py`)
+### 7b. Policy Heads (`layers/policy_head.py`)
 
-> **Note:** This script references `model.policy_head` (pre-per-phase architecture) and needs updating to work with the current `model.phase_heads` per-phase policy heads.
+**Question:** How does each per-phase policy head organize its computation? Does each head use its depth/width efficiently?
 
-**Question:** How does the policy head organize its computation? Does it have enough depth/width for all action types?
+**Method:** Three analyses applied independently to each of the 8 per-phase heads:
+1. **Logit lens** — projects intermediate head representations through that head's final weight matrix to get "early logits." Shows when decisions crystallize within each head.
+2. **Neuron specialization** — NeuronConductance per action type reveals which neurons serve which actions within each head. Measures functional width utilization.
+3. **Layer causal necessity** — replaces each Linear+GELU pair within a head with identity, measuring the causal effect on that phase's policy.
 
-**Method:** Three analyses:
-1. **Logit lens** — projects intermediate policy representations through the final weight matrix to get "early logits." Shows when decisions crystallize and whether later layers refine or fight earlier commitments.
-2. **Neuron specialization** — NeuronConductance per action type reveals which neurons serve which actions. Measures functional width utilization vs structural (SVD) utilization.
-3. **Layer causal necessity** — replaces each layer with a skip connection per phase, measuring the causal effect on policy. Identifies which layers are critical for which phases.
+**Output:** Console summary + markdown report + HTML report with tabbed per-phase views.
 
 ```bash
 .venv/bin/python -m interp.layers.policy_head --load-data interp/data/states.npz
+# Writes: interp/data/policy_head_epoch<N>.md and .html
+
+# Skip neuron specialization (slowest analysis):
+.venv/bin/python -m interp.layers.policy_head --load-data interp/data/states.npz --skip-neurons
+
+# Analyze specific phases only:
+.venv/bin/python -m interp.layers.policy_head --load-data interp/data/states.npz --phases INVEST ACQ DIV
 ```
 
 ### 7c. Value Head (`layers/value_head.py`)
