@@ -1,7 +1,7 @@
 """Game session: synchronize 18xx game_data with a Cython GameState.
 
 Replays the full action history from scratch on each sync call.
-Uses the shared action mapping from 18xx_utils.action_parser.
+Uses the shared action mapping from utils_18xx.action_parser.
 The Ruby extractor runs once per game to get deck order; the Cython
 replay of hundreds of actions takes only milliseconds.
 """

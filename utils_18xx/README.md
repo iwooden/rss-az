@@ -1,4 +1,4 @@
-# 18xx_utils — Human vs AI Play Server
+# utils_18xx — Human vs AI Play Server
 
 Play Rolling Stock Stars against trained AlphaZero checkpoints using the
 18xx.games web UI as the frontend.
@@ -25,7 +25,7 @@ intents that the bridge translates into proper 18xx Engine::Action objects.
 
 ```bash
 # Terminal 1: Start the AI server
-.venv/bin/python -m 18xx_utils.server latest --simulations 400
+.venv/bin/python -m utils_18xx.server latest --simulations 400
 
 # Terminal 2: Start the 18xx frontend (Docker)
 cd submodules/18xx && make dev_up_b
@@ -65,9 +65,9 @@ BID (raise/leave), IPO, PAR, DIVIDENDS, ISSUE, ACQUISITION, CLOSING.
 
 Synchronizes 18xx `game_data` JSON with a Cython `GameState` by replaying
 the full action history from scratch on each call. Uses the same
-forward-mapping functions from `tests/18xx_games/action_parser.py` that
+forward-mapping functions from `utils_18xx/action_parser.py` that
 the replay harness uses (battle-tested against 143 real games). The Ruby
-extractor (`tests/18xx_games/extract_states.rb`) runs once per game to
+extractor (`utils_18xx/extract_states.rb`) runs once per game to
 get deck order; subsequent replays are pure Cython (~ms).
 
 ### `server.py`

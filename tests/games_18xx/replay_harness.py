@@ -5,11 +5,11 @@ engine with the 18xx deck order, and replays actions — comparing state at
 phase boundaries to catch discrepancies.
 
 Usage:
-    from tests.18xx_games.replay_harness import ReplayHarness
+    from tests.games_18xx.replay_harness import ReplayHarness
 
     harness = ReplayHarness(
-        "tests/18xx_games/data/224885.json",
-        "tests/18xx_games/data/224885_states.json",
+        "tests/games_18xx/data/224885.json",
+        "tests/games_18xx/data/224885_states.json",
     )
     mismatches = harness.run()
 """
@@ -17,8 +17,6 @@ Usage:
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-
-import importlib
 
 from core.state import GameState
 from core.driver import DRIVER, STATUS_INVALID_PY as STATUS_INVALID
@@ -36,27 +34,28 @@ from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.fi import FI
 
-_ap = importlib.import_module("18xx_utils.action_parser")
-ActionLayout = _ap.ActionLayout
-AutoPassTracker = _ap.AutoPassTracker
-filter_actions = _ap.filter_actions
-flatten_auto_actions = _ap.flatten_auto_actions
-entity_to_player_index = _ap.entity_to_player_index
-find_auction_slot = _ap.find_auction_slot
-map_action = _ap.map_action
-override_deck_and_offering = _ap.override_deck_and_offering
-PHASE_INVEST = _ap.PHASE_INVEST
-PHASE_BID = _ap.PHASE_BID
-PHASE_WRAP_UP = _ap.PHASE_WRAP_UP
-PHASE_ACQ = _ap.PHASE_ACQ
-PHASE_CLOSING = _ap.PHASE_CLOSING
-PHASE_INCOME = _ap.PHASE_INCOME
-PHASE_DIVIDENDS = _ap.PHASE_DIVIDENDS
-PHASE_END_CARD = _ap.PHASE_END_CARD
-PHASE_ISSUE = _ap.PHASE_ISSUE
-PHASE_IPO = _ap.PHASE_IPO
-PHASE_PAR = _ap.PHASE_PAR
-PHASE_GAME_OVER = _ap.PHASE_GAME_OVER
+from utils_18xx.action_parser import (
+    ActionLayout,
+    AutoPassTracker,
+    filter_actions,
+    flatten_auto_actions,
+    entity_to_player_index,
+    find_auction_slot,
+    map_action,
+    override_deck_and_offering,
+    PHASE_INVEST,
+    PHASE_BID,
+    PHASE_WRAP_UP,
+    PHASE_ACQ,
+    PHASE_CLOSING,
+    PHASE_INCOME,
+    PHASE_DIVIDENDS,
+    PHASE_END_CARD,
+    PHASE_ISSUE,
+    PHASE_IPO,
+    PHASE_PAR,
+    PHASE_GAME_OVER,
+)
 
 
 @dataclass
@@ -89,7 +88,7 @@ def ensure_extracts(data_dir: str) -> None:
     base_dir = Path(__file__).parent
     data_path = Path(data_dir)
     repo_root = base_dir.parent.parent
-    extractor = repo_root / "18xx_utils" / "extract_states.rb"
+    extractor = repo_root / "utils_18xx" / "extract_states.rb"
     engine_root = repo_root / "submodules" / "18xx" / "lib" / "engine"
 
     dependency_mtime_ns = extractor.stat().st_mtime_ns
@@ -143,7 +142,7 @@ def load_ref_states(game_json_path: str) -> list[dict]:
     if not Path(extract_path).exists():
         raise FileNotFoundError(
             f"Extract file not found: {extract_path}\n"
-            f"Run: ruby 18xx_utils/extract_states.rb tests/18xx_games/data/"
+            f"Run: ruby utils_18xx/extract_states.rb tests/games_18xx/data/"
         )
     return json.loads(Path(extract_path).read_text())
 

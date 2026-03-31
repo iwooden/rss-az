@@ -5,9 +5,9 @@ The 18xx.games frontend sends game_data, and this server returns
 intent dicts that the frontend translates into Engine::Action objects.
 
 Usage:
-    .venv/bin/python -m 18xx_utils.server latest
-    .venv/bin/python -m 18xx_utils.server latest --simulations 400
-    .venv/bin/python -m 18xx_utils.server checkpoints/checkpoint_epoch_0010.pt
+    .venv/bin/python -m utils_18xx.server latest
+    .venv/bin/python -m utils_18xx.server latest --simulations 400
+    .venv/bin/python -m utils_18xx.server checkpoints/checkpoint_epoch_0010.pt
 """
 
 from __future__ import annotations

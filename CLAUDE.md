@@ -31,7 +31,7 @@ rss-az-cython2/
 ├── nn/                # Neural network: model_3p.py (residual MLP, policy + value heads)
 ├── train/             # Self-play training: config, eval_server, self_play, replay_buffer, trainer, checkpoint, logging, main
 │   └── gpu/           # Vendor-specific GPU optimizations: nvidia.py, amd.py (auto-detected)
-├── tests/             # Test suite: phases/, 18xx_games/ replay tests, conftest.py
+├── tests/             # Test suite: phases/, games_18xx/ replay tests, conftest.py
 ├── interp/            # Interpretability analysis (see interp/README.md)
 ├── RULES.md           # Complete game rules (authoritative)
 ├── VECTORS.md         # State/action vector documentation
@@ -278,7 +278,7 @@ Key files: `extract_states.rb` (state extraction), `action_parser.py` (action ma
 
 **Action space differences:** Our engine doesn't support: (1) player-owned corp-to-corp ACQ transfers, (2) closing companies with positive income. Check for these before investigating engine bugs if replay fails.
 
-**Adding a game:** Export JSON → save to `tests/18xx_games/data/<id>.json` → add to `@pytest.mark.parametrize` in `test_replay.py`.
+**Adding a game:** Export JSON → save to `tests/games_18xx/data/<id>.json` → add to `@pytest.mark.parametrize` in `test_replay.py`.
 
 ## Key Files by Task
 

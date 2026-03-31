@@ -49,7 +49,7 @@ When docs disagree, trust these in roughly this order:
 - `tests/`
   - `tests/phases/`: rules / phase coverage.
   - `tests/test_mcts.py`, `tests/test_training.py`, `tests/test_state_layout.py`: search, training, layout.
-  - `tests/18xx_games/`: replay tests against 18xx.games plus reusable debug scripts.
+  - `tests/games_18xx/`: replay tests against 18xx.games plus reusable debug scripts.
 - `interp/`
   - Interpretability tooling. Start with `interp/README.md` if the task touches analysis or reports.
 
@@ -94,10 +94,10 @@ When docs disagree, trust these in roughly this order:
   - `interp/README.md`
   - specific scripts under `interp/`
 - Replay mismatch against 18xx.games:
-  - `tests/18xx_games/README.md`
-  - `tests/18xx_games/replay_harness.py`
-  - `tests/18xx_games/action_parser.py`
-  - existing scripts in `tests/18xx_games/debug/`
+  - `tests/games_18xx/README.md`
+  - `tests/games_18xx/replay_harness.py`
+  - `tests/games_18xx/action_parser.py`
+  - existing scripts in `tests/games_18xx/debug/`
 
 ## Build And Verification
 
@@ -135,7 +135,7 @@ pyright <path>
 - `tests/phases/conftest.py` is important. Its fixtures and `assert_invariants(...)` cover many derived-state expectations, so not every feature needs a dedicated test file.
 - For engine/rules changes, run the relevant phase tests first, then `pytest tests/`.
 - For MCTS or training changes, start with `tests/test_mcts.py` and `tests/test_training.py`, then run the full suite.
-- Replay tests in `tests/18xx_games/` require Ruby and the checked-in `18xx/` submodule content. Read that README before assuming a replay mismatch is an engine bug.
+- Replay tests in `tests/games_18xx/` require Ruby and the checked-in `18xx/` submodule content. Read that README before assuming a replay mismatch is an engine bug.
 - Existing replay debug scripts are usually better than ad-hoc one-off scripts.
 
 ## Environment / Workflow Gotchas

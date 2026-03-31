@@ -15,4 +15,4 @@ interp/data/
 backups/
 gamelog.md
 *.tar.gz
-tests/18xx_games/data/*.json
+tests/games_18xx/data/*.json

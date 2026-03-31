@@ -25,7 +25,7 @@ The vendored `18xx/` submodule is the full 18xx.games repository. For Rolling St
 - `dividend.rb` for explicit vs forced dividends
 - `issue_shares.rb` for ISSUE behavior, including receivership auto-issue
 - `ipo_company.rb` for IPO/PAR semantics and player cash cost to convert
-- **`18xx/public/fixtures/RollingStockStars/`** — upstream sample game exports from 18xx.games. Useful as Ruby-side reference examples, but our replay tests use the local ignored files under `tests/18xx_games/data/`.
+- **`18xx/public/fixtures/RollingStockStars/`** — upstream sample game exports from 18xx.games. Useful as Ruby-side reference examples, but our replay tests use the local ignored files under `tests/games_18xx/data/`.
 
 If you are debugging a replay mismatch, read the Ruby game flow in this order:
 
@@ -138,7 +138,7 @@ The harness compares these fields at action boundaries (before applying each act
 
 The `debug/` directory contains reusable scripts for investigating replay failures. **Always prefer extending these over writing ad-hoc inline scripts.** If you need a new debug pattern, add it as a script here.
 
-All scripts operate on extract files (`data/<game_id>_extract.json`) and/or raw game JSONs (`data/<game_id>.json`). Run from the repo root with `python tests/18xx_games/debug/<script>.py`.
+All scripts operate on extract files (`data/<game_id>_extract.json`) and/or raw game JSONs (`data/<game_id>.json`). Run from the repo root with `python tests/games_18xx/debug/<script>.py`.
 
 | Script | Purpose | Example |
 |--------|---------|---------|

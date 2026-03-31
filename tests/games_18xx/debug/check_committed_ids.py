@@ -5,7 +5,7 @@ Simulates both the old and new Ruby extractor undo tracking logic
 on raw action streams to find games where the fix changes committed_ids.
 
 Usage:
-    python tests/18xx_games/debug/check_committed_ids.py [game_id...]
+    python tests/games_18xx/debug/check_committed_ids.py [game_id...]
 """
 
 import json

@@ -10,16 +10,16 @@ the Ruby extractor (runs once per session if any are missing or stale).
 """
 
 import glob
-import importlib
 import os
 
 import pytest
 
-_harness = importlib.import_module("tests.18xx_games.replay_harness")
-ReplayHarness = _harness.ReplayHarness
-ensure_extracts = _harness.ensure_extracts
-load_ref_states = _harness.load_ref_states
-format_mismatches = _harness.format_mismatches
+from tests.games_18xx.replay_harness import (
+    ReplayHarness,
+    ensure_extracts,
+    load_ref_states,
+    format_mismatches,
+)
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 

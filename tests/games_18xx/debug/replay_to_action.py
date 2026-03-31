@@ -2,13 +2,12 @@
 """Replay a game up to a specific action and dump engine state.
 
 Usage:
-    python tests/18xx_games/debug/replay_to_action.py <game_id> <stop_before_action_id>
+    python tests/games_18xx/debug/replay_to_action.py <game_id> <stop_before_action_id>
 """
 
 import json
 import sys
 import os
-import importlib
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
@@ -29,15 +28,13 @@ from entities.fi import FI
 LOC_AUCTION = CompanyLocation.LOC_AUCTION
 LOC_REVEALED = CompanyLocation.LOC_REVEALED
 
-_harness_mod = importlib.import_module("tests.18xx_games.replay_harness")
-ReplayHarness = _harness_mod.ReplayHarness
-load_ref_states = _harness_mod.load_ref_states
-
-_ap = importlib.import_module("18xx_utils.action_parser")
-ActionLayout = _ap.ActionLayout
-AutoPassTracker = _ap.AutoPassTracker
-filter_actions = _ap.filter_actions
-flatten_auto_actions = _ap.flatten_auto_actions
+from tests.games_18xx.replay_harness import ReplayHarness, load_ref_states
+from utils_18xx.action_parser import (
+    ActionLayout,
+    AutoPassTracker,
+    filter_actions,
+    flatten_auto_actions,
+)
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'data')
 

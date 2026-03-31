@@ -218,7 +218,7 @@ Plays a random game and prints a human-readable move-by-move trace.
 | [`RULES.md`](RULES.md) | Complete game rules (authoritative) |
 | [`VECTORS.md`](VECTORS.md) | State and action vector layouts with offsets and normalization |
 | [`interp/README.md`](interp/README.md) | Interpretability analysis pipeline |
-| [`tests/18xx_games/README.md`](tests/18xx_games/README.md) | Integration tests against 18xx.games replays |
+| [`tests/games_18xx/README.md`](tests/games_18xx/README.md) | Integration tests against 18xx.games replays |
 
 ## Dependencies
 
