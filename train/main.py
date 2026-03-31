@@ -88,6 +88,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--terminal-blend", type=float,
         help="Rank vs margin weight for terminal rewards (0=margin, 1=rank, default 0.5)",
     )
+    parser.add_argument("--lr-min", type=float, help="Minimum learning rate for cosine decay")
     parser.add_argument(
         "--lr-decay-end-epoch", type=int,
         help="Epoch at which LR reaches lr_min and stays constant (default: num_epochs)",
@@ -131,7 +132,7 @@ _CLI_FIELDS = (
     "temp_initial", "temp_anneal_start", "temp_anneal_end", "temp_final",
     "c_puct_initial", "c_puct_final", "c_puct_anneal_epochs",
     "value_blend_start_epoch", "value_blend_end_epoch",
-    "terminal_blend", "lr_decay_end_epoch",
+    "terminal_blend", "lr_min", "lr_decay_end_epoch",
     "dirichlet_alpha", "dirichlet_dynamic", "dirichlet_alpha_numerator",
 )
 
@@ -549,10 +550,10 @@ def main() -> None:
             model = cast(torch.nn.Module, torch.compile(model, **train_compile_kwargs))  # type: ignore[call-overload]
             # Warmup pass — triggers Inductor compilation (and graph capture
             # in reduce-overhead mode).  Use actual batch size so the graph
-            # matches training dimensions.
+            # matches training dimensions.  No autocast: training runs fp32.
             warmup_bs = gpu.warmup_batch_size(config.batch_size)
             model.train()
-            with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
+            with torch.no_grad():
                 dummy = torch.randn(warmup_bs, config.visible_size, device=device)
                 model(dummy)
                 del dummy
@@ -602,7 +603,7 @@ def main() -> None:
             print(f"Compiling model with torch.compile ({sp_compile_kwargs})...")
             model = cast(torch.nn.Module, torch.compile(model, **sp_compile_kwargs))  # type: ignore[call-overload]
             model.train()
-            with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
+            with torch.no_grad():
                 dummy = torch.randn(1, config.visible_size, device=device)
                 model(dummy)
                 del dummy

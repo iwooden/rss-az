@@ -47,7 +47,9 @@ def apply_nvidia_optimizations() -> dict[str, str]:
     cap = get_compute_capability()
     if cap is not None:
         enabled["compute_capability"] = f"{cap[0]}.{cap[1]}"
-        if cap[0] >= 9:
+        if cap[0] >= 10:
+            enabled["architecture"] = "Blackwell"
+        elif cap[0] >= 9:
             enabled["architecture"] = "Hopper (GH200/H100)"
         elif cap[0] >= 8:
             enabled["architecture"] = "Ampere (A100/A10)"
