@@ -33,7 +33,7 @@ _harness_mod = importlib.import_module("tests.18xx_games.replay_harness")
 ReplayHarness = _harness_mod.ReplayHarness
 load_ref_states = _harness_mod.load_ref_states
 
-_ap = importlib.import_module("tests.18xx_games.action_parser")
+_ap = importlib.import_module("18xx_utils.action_parser")
 ActionLayout = _ap.ActionLayout
 AutoPassTracker = _ap.AutoPassTracker
 filter_actions = _ap.filter_actions

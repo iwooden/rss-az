@@ -1,58 +1,33 @@
 """Game session: synchronize 18xx game_data with a Cython GameState.
 
 Replays the full action history from scratch on each sync call.
-Uses the same mapping logic as the replay harness (tests/18xx_games/).
+Uses the shared action mapping from 18xx_utils.action_parser.
 The Ruby extractor runs once per game to get deck order; the Cython
 replay of hundreds of actions takes only milliseconds.
 """
 
 from __future__ import annotations
 
-import importlib
 import json
 import subprocess
 import tempfile
 from pathlib import Path
 
-from core.data import (
-    COMPANY_NAME_TO_ID,
-    GamePhases,
-)
 from core.driver import DRIVER, STATUS_INVALID_PY as STATUS_INVALID
 from core.state import GameState
-from entities.company import COMPANIES, CompanyLocation
-from entities.deck import DECK
 from entities.turn import TURN
 
-LOC_AUCTION = CompanyLocation.LOC_AUCTION
-LOC_REVEALED = CompanyLocation.LOC_REVEALED
+from .action_parser import (
+    ActionLayout,
+    filter_actions,
+    flatten_auto_actions,
+    map_action,
+    override_deck_and_offering,
+    PHASE_GAME_OVER,
+    PHASE_PAR,
+)
 
-# Reuse the battle-tested action mapping from the replay harness.
-_ap = importlib.import_module("tests.18xx_games.action_parser")
-ActionLayout = _ap.ActionLayout
-filter_actions = _ap.filter_actions
-flatten_auto_actions = _ap.flatten_auto_actions
-map_invest_action = _ap.map_invest_action
-map_bid_action = _ap.map_bid_action
-map_ipo_action = _ap.map_ipo_action
-map_dividend_action = _ap.map_dividend_action
-map_issue_action = _ap.map_issue_action
-
-PHASE_INVEST = GamePhases.PHASE_INVEST
-PHASE_BID = GamePhases.PHASE_BID_IN_AUCTION
-PHASE_WRAP_UP = GamePhases.PHASE_WRAP_UP
-PHASE_ACQ = GamePhases.PHASE_ACQUISITION
-PHASE_CLOSING = GamePhases.PHASE_CLOSING
-PHASE_INCOME = GamePhases.PHASE_INCOME
-PHASE_DIVIDENDS = GamePhases.PHASE_DIVIDENDS
-PHASE_END_CARD = GamePhases.PHASE_END_CARD
-PHASE_ISSUE = GamePhases.PHASE_ISSUE_SHARES
-PHASE_IPO = GamePhases.PHASE_IPO
-PHASE_PAR = GamePhases.PHASE_PAR
-PHASE_GAME_OVER = GamePhases.PHASE_GAME_OVER
-
-REPO_ROOT = Path(__file__).parent.parent
-EXTRACTOR_PATH = REPO_ROOT / "tests" / "18xx_games" / "extract_states.rb"
+EXTRACTOR_PATH = Path(__file__).parent / "extract_states.rb"
 
 
 class GameSession:
@@ -91,7 +66,7 @@ class GameSession:
         state = GameState(self.num_players)
         state.initialize_game(seed=42)
         self.state = state
-        self._override_deck_and_offering(self._deck_order, self._offering)
+        override_deck_and_offering(state, self._deck_order, self._offering)
 
         # Process actions using the same logic as the replay harness
         raw_actions = game_data.get("actions", [])
@@ -105,7 +80,7 @@ class GameSession:
                 break
 
             action = actions[idx]
-            engine_action = self._map_action(action, phase)
+            engine_action = map_action(state, action, phase, self.layout)
 
             if engine_action is None:
                 idx += 1
@@ -200,78 +175,3 @@ class GameSession:
 
         return initial
 
-    def _override_deck_and_offering(
-        self, deck_order_names: list[str], offering_names: list[str]
-    ) -> None:
-        """Override deck/offering to match the 18xx game's initial state."""
-        assert self.state is not None
-        state = self.state
-
-        for cid in range(36):
-            loc = COMPANIES[cid].get_location(state)
-            if loc == LOC_AUCTION:
-                state.set_company_for_auction(cid, False)
-                COMPANIES[cid].exclude_from_game(state)
-            elif loc == LOC_REVEALED:
-                COMPANIES[cid].exclude_from_game(state)
-
-        remaining_ids = [COMPANY_NAME_TO_ID[n] for n in reversed(deck_order_names)]
-        offering_ids = [COMPANY_NAME_TO_ID[n] for n in reversed(offering_names)]
-        full_deck = remaining_ids + offering_ids
-        DECK.set_order(state, full_deck)
-
-        for _ in range(len(offering_names)):
-            cid = DECK.draw(state)
-            COMPANIES[cid].move_to_auction(state)
-
-    # Same _map_action as replay_harness.py — reuses the same per-phase
-    # mapping functions from action_parser.py.
-    def _map_action(self, action: dict, phase: int) -> int | list[int] | None:
-        """Map a single 18xx action to engine action index(es).
-
-        Returns None for actions that don't need engine application
-        (auto-applied by engine, or belong to a phase already passed).
-        """
-        assert self.state is not None
-        atype = action.get("type", "")
-        entity_type = action.get("entity_type", "")
-
-        if phase == PHASE_INVEST:
-            if atype in ("bid", "buy_shares", "sell_shares", "pass"):
-                if entity_type != "player":
-                    return None
-                return map_invest_action(self.state, action, self.layout)
-            return None
-
-        if phase == PHASE_BID:
-            if atype in ("bid", "pass"):
-                return map_bid_action(action, self.layout)
-            return None
-
-        if phase == PHASE_IPO:
-            if atype in ("par", "pass"):
-                if entity_type != "company":
-                    return None
-                return map_ipo_action(action, self.layout)
-            return None
-
-        if phase == PHASE_DIVIDENDS:
-            if atype == "dividend":
-                if entity_type != "corporation":
-                    return None
-                return map_dividend_action(action, self.layout)
-            return None
-
-        if phase == PHASE_ISSUE:
-            if atype in ("sell_shares", "pass"):
-                if entity_type != "corporation":
-                    return None
-                return map_issue_action(action, self.layout)
-            return None
-
-        # Automated phases — no player actions needed
-        if phase in (PHASE_WRAP_UP, PHASE_INCOME, PHASE_END_CARD,
-                     PHASE_ACQ, PHASE_CLOSING):
-            return None
-
-        return None

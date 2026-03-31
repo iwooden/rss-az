@@ -18,50 +18,45 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import importlib
+
 from core.state import GameState
 from core.driver import DRIVER, STATUS_INVALID_PY as STATUS_INVALID
 from core.data import (
     COMPANY_NAME_TO_ID, CORP_NAME_TO_ID, COMPANY_NAMES, CORP_NAMES,
-    GamePhases, get_company_low_price, get_company_income,
+    get_company_low_price, get_company_income,
 )
 from core.actions import get_valid_action_mask
 from entities.deck import DECK
 from entities.turn import TURN
 from entities.company import COMPANIES, CompanyLocation
-
 LOC_AUCTION = CompanyLocation.LOC_AUCTION
 LOC_REVEALED = CompanyLocation.LOC_REVEALED
 from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.fi import FI
 
-import importlib
-_ap = importlib.import_module("tests.18xx_games.action_parser")
+_ap = importlib.import_module("18xx_utils.action_parser")
 ActionLayout = _ap.ActionLayout
 AutoPassTracker = _ap.AutoPassTracker
 filter_actions = _ap.filter_actions
 flatten_auto_actions = _ap.flatten_auto_actions
 entity_to_player_index = _ap.entity_to_player_index
 find_auction_slot = _ap.find_auction_slot
-map_invest_action = _ap.map_invest_action
-map_bid_action = _ap.map_bid_action
-map_ipo_action = _ap.map_ipo_action
-map_dividend_action = _ap.map_dividend_action
-map_issue_action = _ap.map_issue_action
-
-# Phase constants
-PHASE_INVEST = GamePhases.PHASE_INVEST
-PHASE_BID = GamePhases.PHASE_BID_IN_AUCTION
-PHASE_WRAP_UP = GamePhases.PHASE_WRAP_UP
-PHASE_ACQ = GamePhases.PHASE_ACQUISITION
-PHASE_CLOSING = GamePhases.PHASE_CLOSING
-PHASE_INCOME = GamePhases.PHASE_INCOME
-PHASE_DIVIDENDS = GamePhases.PHASE_DIVIDENDS
-PHASE_END_CARD = GamePhases.PHASE_END_CARD
-PHASE_ISSUE = GamePhases.PHASE_ISSUE_SHARES
-PHASE_IPO = GamePhases.PHASE_IPO
-PHASE_PAR = GamePhases.PHASE_PAR
-PHASE_GAME_OVER = GamePhases.PHASE_GAME_OVER
+map_action = _ap.map_action
+override_deck_and_offering = _ap.override_deck_and_offering
+PHASE_INVEST = _ap.PHASE_INVEST
+PHASE_BID = _ap.PHASE_BID
+PHASE_WRAP_UP = _ap.PHASE_WRAP_UP
+PHASE_ACQ = _ap.PHASE_ACQ
+PHASE_CLOSING = _ap.PHASE_CLOSING
+PHASE_INCOME = _ap.PHASE_INCOME
+PHASE_DIVIDENDS = _ap.PHASE_DIVIDENDS
+PHASE_END_CARD = _ap.PHASE_END_CARD
+PHASE_ISSUE = _ap.PHASE_ISSUE
+PHASE_IPO = _ap.PHASE_IPO
+PHASE_PAR = _ap.PHASE_PAR
+PHASE_GAME_OVER = _ap.PHASE_GAME_OVER
 
 
 @dataclass
@@ -93,8 +88,9 @@ def ensure_extracts(data_dir: str) -> None:
 
     base_dir = Path(__file__).parent
     data_path = Path(data_dir)
-    extractor = base_dir / "extract_states.rb"
-    engine_root = base_dir.parent.parent / "submodules" / "18xx" / "lib" / "engine"
+    repo_root = base_dir.parent.parent
+    extractor = repo_root / "18xx_utils" / "extract_states.rb"
+    engine_root = repo_root / "submodules" / "18xx" / "lib" / "engine"
 
     dependency_mtime_ns = extractor.stat().st_mtime_ns
     for source in engine_root.rglob("*.rb"):
@@ -147,7 +143,7 @@ def load_ref_states(game_json_path: str) -> list[dict]:
     if not Path(extract_path).exists():
         raise FileNotFoundError(
             f"Extract file not found: {extract_path}\n"
-            f"Run: ruby tests/18xx_games/extract_states.rb tests/18xx_games/data/"
+            f"Run: ruby 18xx_utils/extract_states.rb tests/18xx_games/data/"
         )
     return json.loads(Path(extract_path).read_text())
 
@@ -207,7 +203,7 @@ class ReplayHarness:
         # Initialize our engine and override deck/offering to match 18xx game
         state = GameState(num_players)
         state.initialize_game(seed=42)  # seed doesn't matter, we override below
-        self._override_deck_and_offering(state, deck_order_names, offering_names)
+        override_deck_and_offering(state, deck_order_names, offering_names)
 
         # Verify initial state matches
         self._compare_state(state, initial, "initial")
@@ -275,42 +271,6 @@ class ReplayHarness:
             self._compare_state(state, final_ref, "final")
 
         return self.mismatches
-
-    def _override_deck_and_offering(self, state, deck_order_names, offering_names):
-        """Override the deck and offering to match the 18xx game's initial state.
-
-        After initialize_game(), the engine has a valid game state but with the
-        wrong deck order and offering (from the random seed). We patch the state
-        to match the 18xx reference by:
-        1. Clearing stale auction/revealed company locations from the seed init
-        2. Setting the correct deck order
-        3. Drawing and auctioning the correct offering companies
-        """
-        # 1. Reset companies that init put into auction or revealed
-        #    back to excluded (hidden-only, no visible flag leak)
-        for cid in range(36):
-            loc = COMPANIES[cid].get_location(state)
-            if loc == LOC_AUCTION:
-                state.set_company_for_auction(cid, False)
-                COMPANIES[cid].exclude_from_game(state)
-            elif loc == LOC_REVEALED:
-                COMPANIES[cid].exclude_from_game(state)
-
-        # 2. Build full deck (offering on top, remaining below) and set it.
-        #    Ruby deck_order is top-to-bottom; our set_order is bottom-to-top.
-        remaining_ids = [COMPANY_NAME_TO_ID[n] for n in reversed(deck_order_names)]
-        offering_ids = [COMPANY_NAME_TO_ID[n] for n in reversed(offering_names)]
-        full_deck = remaining_ids + offering_ids
-        DECK.set_order(state, full_deck)
-
-        # 3. Draw offering cards and move them to auction (same pattern as
-        #    initialize_game: draw() marks revealed, move_to_auction() fixes it)
-        for _ in range(len(offering_names)):
-            cid = DECK.draw(state)
-            COMPANIES[cid].move_to_auction(state)
-
-        # CoO level is set correctly by draw() — if color-boundary cards
-        # (e.g. MHE for red) are in the offering, CoO is bumped appropriately.
 
     def _get_phase_name(self, state) -> str:
         """Get human-readable phase name."""
@@ -416,7 +376,7 @@ class ReplayHarness:
             self._compare_state(state, self._last_ref, f"before action {action_id}")
 
         try:
-            engine_action = self._map_action(state, action, TURN.get_phase(state), layout)
+            engine_action = map_action(state, action, TURN.get_phase(state), layout)
         except (ValueError, KeyError, IndexError) as e:
             self.mismatches.append(Mismatch(
                 action_id=action_id,
@@ -497,60 +457,6 @@ class ReplayHarness:
             self._last_ref = None
 
         return idx + 1
-
-    def _map_action(self, state, action, phase, layout):
-        """Map a single 18xx action to our engine action index.
-
-        Uses entity_type from the 18xx action to detect phase mismatches:
-        - 'player': INVEST/BID actions
-        - 'company': IPO actions
-        - 'corporation': DIVIDENDS/ISSUE actions
-
-        When the engine auto-advances past forced phases, the current phase
-        may not match the action's intended phase. We skip actions that
-        belong to a phase the engine has already processed.
-        """
-        atype = action.get('type', '')
-        entity_type = action.get('entity_type', '')
-
-        if phase == PHASE_INVEST:
-            if atype in ('bid', 'buy_shares', 'sell_shares', 'pass'):
-                if entity_type != 'player':
-                    return None  # Not an INVEST action; engine auto-advanced past
-                return map_invest_action(state, action, layout)
-            return None
-
-        if phase == PHASE_BID:
-            if atype in ('bid', 'pass'):
-                return map_bid_action(action, layout)
-            return None
-
-        if phase == PHASE_IPO:
-            if atype in ('par', 'pass'):
-                if entity_type != 'company':
-                    return None  # Not an IPO action; engine auto-advanced past
-                return map_ipo_action(action, layout)
-            return None
-
-        if phase == PHASE_DIVIDENDS:
-            if atype == 'dividend':
-                if entity_type != 'corporation':
-                    return None  # Not a DIVIDENDS action
-                return map_dividend_action(action, layout)
-            return None
-
-        if phase == PHASE_ISSUE:
-            if atype in ('sell_shares', 'pass'):
-                if entity_type != 'corporation':
-                    return None  # Not an ISSUE action
-                return map_issue_action(action, layout)
-            return None
-
-        # Automated phases — no player actions needed
-        if phase in (PHASE_WRAP_UP, PHASE_INCOME, PHASE_END_CARD):
-            return None
-
-        return None
 
     def _run_acquisition_adapter(self, state, actions, idx, layout, ref_by_action):
         """Walk through acquisition phase, matching 18xx offer/respond actions

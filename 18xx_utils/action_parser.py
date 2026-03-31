@@ -3,19 +3,42 @@
 Converts the action stream from 18xx.games JSON exports into the integer
 action indices used by our Cython game engine. Handles undo/redo processing,
 auto-action flattening, program_* auto-pass tracking, and per-phase mapping.
+
+Also provides shared utilities for synchronizing engine state with 18xx games:
+deck/offering override and simple-phase action dispatch.
 """
+
+from __future__ import annotations
 
 from core.data import (
     COMPANY_NAME_TO_ID,
     CORP_NAME_TO_ID,
     COMPANY_NAMES,
+    GamePhases,
     get_company_face_value,
     get_par_price,
 )
 from core.actions import get_action_layout
+from core.state import GameState
 from entities.company import COMPANIES, CompanyLocation
+from entities.deck import DECK
 
 LOC_AUCTION = CompanyLocation.LOC_AUCTION
+LOC_REVEALED = CompanyLocation.LOC_REVEALED
+
+# Phase constants — shared by game_session, replay_harness, etc.
+PHASE_INVEST = GamePhases.PHASE_INVEST
+PHASE_BID = GamePhases.PHASE_BID_IN_AUCTION
+PHASE_WRAP_UP = GamePhases.PHASE_WRAP_UP
+PHASE_ACQ = GamePhases.PHASE_ACQUISITION
+PHASE_CLOSING = GamePhases.PHASE_CLOSING
+PHASE_INCOME = GamePhases.PHASE_INCOME
+PHASE_DIVIDENDS = GamePhases.PHASE_DIVIDENDS
+PHASE_END_CARD = GamePhases.PHASE_END_CARD
+PHASE_ISSUE = GamePhases.PHASE_ISSUE_SHARES
+PHASE_IPO = GamePhases.PHASE_IPO
+PHASE_PAR = GamePhases.PHASE_PAR
+PHASE_GAME_OVER = GamePhases.PHASE_GAME_OVER
 
 
 # =============================================================================
@@ -474,3 +497,99 @@ def map_issue_action(action: dict, layout: ActionLayout) -> int:
         return layout.issue_pass
 
     raise ValueError(f"Unrecognised issue action type: {atype!r}")
+
+
+# =============================================================================
+# 11. SHARED GAME SETUP
+# =============================================================================
+
+def override_deck_and_offering(
+    state: GameState,
+    deck_order_names: list[str],
+    offering_names: list[str],
+) -> None:
+    """Override deck/offering to match an 18xx game's initial state.
+
+    After initialize_game(), the engine has a valid state but with the wrong
+    deck order and offering (from the random seed). This patches the state to
+    match the 18xx reference by:
+    1. Clearing stale auction/revealed company locations from the seed init
+    2. Setting the correct deck order
+    3. Drawing and auctioning the correct offering companies
+    """
+    for cid in range(36):
+        loc = COMPANIES[cid].get_location(state)
+        if loc == LOC_AUCTION:
+            state.set_company_for_auction(cid, False)
+            COMPANIES[cid].exclude_from_game(state)
+        elif loc == LOC_REVEALED:
+            COMPANIES[cid].exclude_from_game(state)
+
+    remaining_ids = [COMPANY_NAME_TO_ID[n] for n in reversed(deck_order_names)]
+    offering_ids = [COMPANY_NAME_TO_ID[n] for n in reversed(offering_names)]
+    full_deck = remaining_ids + offering_ids
+    DECK.set_order(state, full_deck)
+
+    for _ in range(len(offering_names)):
+        cid = DECK.draw(state)
+        COMPANIES[cid].move_to_auction(state)
+
+
+# =============================================================================
+# 12. SHARED ACTION DISPATCH
+# =============================================================================
+
+def map_action(
+    state: GameState,
+    action: dict,
+    phase: int,
+    layout: ActionLayout,
+) -> int | list[int] | None:
+    """Map a single 18xx action to engine action index(es).
+
+    Dispatches to the per-phase mappers for simple phases (INVEST, BID, IPO,
+    DIVIDENDS, ISSUE). Returns None for automated phases (WRAP_UP, INCOME,
+    END_CARD, ACQ, CLOSING) and for actions that don't match the current phase.
+    """
+    atype = action.get("type", "")
+    entity_type = action.get("entity_type", "")
+
+    if phase == PHASE_INVEST:
+        if atype in ("bid", "buy_shares", "sell_shares", "pass"):
+            if entity_type != "player":
+                return None
+            return map_invest_action(state, action, layout)
+        return None
+
+    if phase == PHASE_BID:
+        if atype in ("bid", "pass"):
+            return map_bid_action(action, layout)
+        return None
+
+    if phase == PHASE_IPO:
+        if atype in ("par", "pass"):
+            if entity_type != "company":
+                return None
+            return map_ipo_action(action, layout)
+        return None
+
+    if phase == PHASE_DIVIDENDS:
+        if atype == "dividend":
+            if entity_type != "corporation":
+                return None
+            return map_dividend_action(action, layout)
+        return None
+
+    if phase == PHASE_ISSUE:
+        if atype in ("sell_shares", "pass"):
+            if entity_type != "corporation":
+                return None
+            return map_issue_action(action, layout)
+        return None
+
+    # Automated phases — no player actions needed
+    if phase in (PHASE_WRAP_UP, PHASE_INCOME, PHASE_END_CARD,
+                 PHASE_ACQ, PHASE_CLOSING):
+        return None
+
+    return None
