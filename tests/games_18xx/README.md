@@ -4,33 +4,33 @@ Validates our Cython game engine against completed games from [18xx.games](https
 
 ## Architecture
 
-- **`extract_states.rb`** — Ruby script that replays a game through the 18xx engine and extracts a state snapshot after every action. Requires the 18xx engine submodule at `18xx/`. This is the **preferred place for preprocessing** — the Ruby side has direct access to the 18xx engine's internal state, making it much easier to annotate snapshots with metadata (forced actions, round labels, etc.) than reconstructing that information on the Python side.
-- **`action_parser.py`** — Converts 18xx action streams into our engine's integer action indices. Handles committed-action filtering (via IDs from the extractor), auto-action flattening, and per-phase mapping.
+- **`utils_18xx/extract_states.rb`** — Ruby script that replays a game through the 18xx engine and extracts a state snapshot after every action. Requires the 18xx engine submodule at `submodules/18xx/`. This is the **preferred place for preprocessing** — the Ruby side has direct access to the 18xx engine's internal state, making it much easier to annotate snapshots with metadata (forced actions, round labels, etc.) than reconstructing that information on the Python side.
+- **`utils_18xx/action_parser.py`** — Converts 18xx action streams into our engine's integer action indices. Handles committed-action filtering (via IDs from the extractor), auto-action flattening, per-phase mapping, and shared utilities (deck override, action dispatch).
 - **`replay_harness.py`** — Orchestrates replay: initializes our engine with the 18xx deck order, replays actions through the parser, and compares state snapshots.
 - **`test_replay.py`** — Pytest entry point. Dynamically discovers game JSON files in `data/`.
 
 ## 18xx.games Submodule Orientation
 
-The vendored `18xx/` submodule is the full 18xx.games repository. For Rolling Stock Stars replay work, most of it is irrelevant. Start with these files:
+The vendored `submodules/18xx/` submodule is the full 18xx.games repository. For Rolling Stock Stars replay work, most of it is irrelevant. Start with these files:
 
-- **`18xx/lib/engine.rb`** — top-level loader that requires all game definitions and resolves game titles.
-- **`18xx/lib/engine/game/base.rb`** — `Engine::Game.load(...)`, which `extract_states.rb` uses to load a JSON export at a given action boundary.
-- **`18xx/lib/engine/game/g_rolling_stock/game.rb`** — the base Rolling Stock implementation. This is the main source for round sequencing, wrap-up / FI buying, ACQ, CLO, INCOME, DIV, ISSUE, and IPO behavior.
-- **`18xx/lib/engine/game/g_rolling_stock_stars/game.rb`** — Rolling Stock Stars overrides on top of base Rolling Stock: market, par table, cost-of-ownership table, phase count, and star-price movement.
-- **`18xx/lib/engine/game/g_rolling_stock/round/*.rb`** — round labels and round-local control flow. In replay work, `investment.rb`, `acquisition.rb`, `closing.rb`, `dividends.rb`, `issue.rb`, and `ipo.rb` are the important ones because the extractor records `round.class.short_name`.
-- **`18xx/lib/engine/game/g_rolling_stock/step/*.rb`** — action semantics. The most relevant files are:
-- `buy_sell_shares_bid_companies.rb` for INVEST and auction behavior
-- `propose_and_purchase.rb` and `receiver_propose_and_purchase.rb` for ACQ offers, right-of-first-refusal, and receivership FI buying
-- `close_companies.rb` for CLO behavior and program close-pass handling
-- `dividend.rb` for explicit vs forced dividends
-- `issue_shares.rb` for ISSUE behavior, including receivership auto-issue
-- `ipo_company.rb` for IPO/PAR semantics and player cash cost to convert
-- **`18xx/public/fixtures/RollingStockStars/`** — upstream sample game exports from 18xx.games. Useful as Ruby-side reference examples, but our replay tests use the local ignored files under `tests/games_18xx/data/`.
+- **`submodules/18xx/lib/engine.rb`** — top-level loader that requires all game definitions and resolves game titles.
+- **`submodules/18xx/lib/engine/game/base.rb`** — `Engine::Game.load(...)`, which `extract_states.rb` uses to load a JSON export at a given action boundary.
+- **`submodules/18xx/lib/engine/game/g_rolling_stock/game.rb`** — the base Rolling Stock implementation. This is the main source for round sequencing, wrap-up / FI buying, ACQ, CLO, INCOME, DIV, ISSUE, and IPO behavior.
+- **`submodules/18xx/lib/engine/game/g_rolling_stock_stars/game.rb`** — Rolling Stock Stars overrides on top of base Rolling Stock: market, par table, cost-of-ownership table, phase count, and star-price movement.
+- **`submodules/18xx/lib/engine/game/g_rolling_stock/round/*.rb`** — round labels and round-local control flow. In replay work, `investment.rb`, `acquisition.rb`, `closing.rb`, `dividends.rb`, `issue.rb`, and `ipo.rb` are the important ones because the extractor records `round.class.short_name`.
+- **`submodules/18xx/lib/engine/game/g_rolling_stock/step/*.rb`** — action semantics. The most relevant files are:
+  - `buy_sell_shares_bid_companies.rb` for INVEST and auction behavior
+  - `propose_and_purchase.rb` and `receiver_propose_and_purchase.rb` for ACQ offers, right-of-first-refusal, and receivership FI buying
+  - `close_companies.rb` for CLO behavior and program close-pass handling
+  - `dividend.rb` for explicit vs forced dividends
+  - `issue_shares.rb` for ISSUE behavior, including receivership auto-issue
+  - `ipo_company.rb` for IPO/PAR semantics and player cash cost to convert
+- **`submodules/18xx/public/fixtures/RollingStockStars/`** — upstream sample game exports from 18xx.games. Useful as Ruby-side reference examples, but our replay tests use the local ignored files under `tests/games_18xx/data/`.
 
 If you are debugging a replay mismatch, read the Ruby game flow in this order:
 
-1. `extract_states.rb`
-2. `18xx/lib/engine/game/g_rolling_stock/game.rb`
+1. `utils_18xx/extract_states.rb`
+2. `submodules/18xx/lib/engine/game/g_rolling_stock/game.rb`
 3. the specific `round/*.rb` file for the mismatch round
 4. the specific `step/*.rb` file that processes the action type
 
@@ -167,6 +167,6 @@ All scripts operate on extract files (`data/<game_id>_extract.json`) and/or raw 
 ## Adding a Game
 
 1. Export game JSON from 18xx.games → save to `data/<game_id>.json`
-2. Extracts are auto-generated: the pytest session fixture refreshes any missing or stale `_extract.json` files before tests run. You can also run `ruby extract_states.rb data/<game_id>.json > data/<game_id>_extract.json` manually to regenerate a specific extract.
+2. Extracts are auto-generated: the pytest session fixture refreshes any missing or stale `_extract.json` files before tests run. You can also run `ruby utils_18xx/extract_states.rb tests/games_18xx/data/<game_id>.json > tests/games_18xx/data/<game_id>_extract.json` manually to regenerate a specific extract.
 3. The test auto-discovers all game JSONs in `data/` (excluding `*_extract.json`).
 4. If a game exposes a confirmed **18xx.games engine bug** (not a bug in our engine), add its ID to `SKIP_GAMES` in `test_replay.py` with a comment explaining the bug.
