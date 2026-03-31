@@ -1303,6 +1303,69 @@ class TestSelfPlay:
             for s in servers:
                 s.stop()
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    def test_eval_server_sees_weight_updates_with_autocast(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        """Eval server with bfloat16 autocast sees in-place weight updates.
+
+        Regression test for a bug where the persistent autocast context in
+        the eval server cached bf16 weight casts, making optimizer.step()
+        weight updates via CUDA IPC invisible for the entire training run.
+        """
+        import torch.multiprocessing as mp
+
+        from core.state import GameState
+        from train.eval_server import EvaluationServer, RemoteEvaluator, SharedEvalBuffers
+
+        device = torch.device("cuda")
+        model = small_model.to(device)
+        model.eval()
+        num_players = tiny_config.num_players
+        ctx = mp.get_context("spawn")
+
+        shared_bufs = SharedEvalBuffers(
+            num_workers=1,
+            batch_size=tiny_config.search_batch_size,
+            visible_size=tiny_config.visible_size,
+            action_dim=tiny_config.action_dim,
+            num_players=num_players,
+        )
+        shared_bufs.init_bitmap([(0, 1)], ctx)
+        server = EvaluationServer(
+            model, device, shared_bufs,
+            worker_start=0, worker_end=1,
+            mp_context=ctx, no_compile=True,
+            eval_dtype="bfloat16",
+        )
+        server.start()
+        try:
+            remote_eval = RemoteEvaluator(num_players, shared_bufs, 0)
+
+            state = GameState(num_players)
+            state.initialize_game(seed=42)
+
+            # Get baseline output with original weights
+            _, values_before, _ = remote_eval.evaluate(state)
+
+            # Simulate optimizer.step(): zero out all weights in-place
+            with torch.no_grad():
+                for p in model.parameters():
+                    p.zero_()
+
+            # Eval server must see the zeroed weights
+            _, values_after, _ = remote_eval.evaluate(state)
+
+            # With all-zero weights, the value head outputs tanh(0) = 0
+            # for all players. If the autocast cache is stale, values_after
+            # would still match values_before (non-zero).
+            assert not np.allclose(values_before, values_after, atol=1e-3), (
+                "Eval server did not see weight update — autocast cache is stale"
+            )
+            np.testing.assert_allclose(values_after, 0.0, atol=1e-3)
+        finally:
+            server.stop()
+
 
 # ---------------------------------------------------------------------------
 # End-to-End Integration Test

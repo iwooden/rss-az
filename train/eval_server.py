@@ -403,11 +403,19 @@ def _eval_server_serve(
     # Persistent autocast context — entered once for the entire serve loop
     # rather than per-batch, to avoid accumulated context-manager state from
     # thousands of enter/exit cycles.
+    #
+    # cache_enabled=False is critical: the autocast cache stores bf16 weight
+    # casts keyed by TensorImpl* and only clears on __exit__ (which never
+    # happens here).  Since the main process updates fp32 weights in-place
+    # via CUDA IPC (optimizer.step()), a stale cache makes weight updates
+    # invisible to the eval server — the model would use epoch-0 weights
+    # for the entire training run.
     _autocast_ctx = (
         torch.autocast(
             device.type,
             dtype=eval_autocast_dtype,
             enabled=eval_autocast_dtype is not None,
+            cache_enabled=False,
         )
         if use_cuda else None
     )
