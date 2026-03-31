@@ -1,8 +1,9 @@
 """Game session: synchronize 18xx game_data with a Cython GameState.
 
-Maintains a persistent GameState that tracks the 18xx frontend's hotseat
-game. On first call, runs the Ruby extractor to get deck order, then
-replays all actions. On subsequent calls, replays only new actions.
+Replays the full action history from scratch on each sync call.
+Uses the same mapping logic as the replay harness (tests/18xx_games/).
+The Ruby extractor runs once per game to get deck order; the Cython
+replay of hundreds of actions takes only milliseconds.
 """
 
 from __future__ import annotations
@@ -26,9 +27,9 @@ from entities.turn import TURN
 LOC_AUCTION = CompanyLocation.LOC_AUCTION
 LOC_REVEALED = CompanyLocation.LOC_REVEALED
 
+# Reuse the battle-tested action mapping from the replay harness.
 _ap = importlib.import_module("tests.18xx_games.action_parser")
 ActionLayout = _ap.ActionLayout
-AutoPassTracker = _ap.AutoPassTracker
 filter_actions = _ap.filter_actions
 flatten_auto_actions = _ap.flatten_auto_actions
 map_invest_action = _ap.map_invest_action
@@ -36,7 +37,6 @@ map_bid_action = _ap.map_bid_action
 map_ipo_action = _ap.map_ipo_action
 map_dividend_action = _ap.map_dividend_action
 map_issue_action = _ap.map_issue_action
-entity_to_player_index = _ap.entity_to_player_index
 
 PHASE_INVEST = GamePhases.PHASE_INVEST
 PHASE_BID = GamePhases.PHASE_BID_IN_AUCTION
@@ -56,40 +56,51 @@ EXTRACTOR_PATH = REPO_ROOT / "tests" / "18xx_games" / "extract_states.rb"
 
 
 class GameSession:
-    """Maintains a Cython GameState synchronized with an 18xx hotseat game."""
+    """Maintains a Cython GameState synchronized with an 18xx hotseat game.
+
+    On each sync() call, replays the full action history from scratch.
+    This avoids state drift between the engine and the frontend — the
+    Cython engine replays hundreds of actions in <10ms.
+
+    The Ruby extractor runs once per game_id to get the deck order and
+    initial offering, then is cached for subsequent replays.
+    """
 
     def __init__(self, num_players: int = 3):
         self.num_players = num_players
         self.layout = ActionLayout(num_players)
         self.state: GameState | None = None
         self.game_id: str | None = None
-        self.replayed_action_count: int = 0
         self._player_id_to_index: dict[int, int] = {}
+        # Cached from the Ruby extractor (per game_id)
+        self._deck_order: list[str] = []
+        self._offering: list[str] = []
 
     def sync(self, game_data: dict) -> GameState:
-        """Synchronize engine state with the frontend's game_data.
+        """Replay the full game from scratch and return the current state.
 
-        On first call (or game_id change), initializes from scratch using
-        the Ruby extractor for deck order. On subsequent calls, replays
-        only new actions incrementally.
-
-        Returns the current GameState after all actions have been applied.
+        Always creates a fresh GameState and replays all actions. This
+        ensures the engine state exactly matches the frontend regardless
+        of what happened in previous sync/AI-move cycles.
         """
         gid = game_data.get("id", "")
-        if self.state is None or gid != self.game_id:
-            self._initialize(game_data)
+        if gid != self.game_id:
+            self._init_game_metadata(game_data)
 
-        assert self.state is not None
+        # Fresh state every time
+        state = GameState(self.num_players)
+        state.initialize_game(seed=42)
+        self.state = state
+        self._override_deck_and_offering(self._deck_order, self._offering)
 
-        # Process new actions
+        # Process actions using the same logic as the replay harness
         raw_actions = game_data.get("actions", [])
         actions = filter_actions(raw_actions)
         actions = flatten_auto_actions(actions)
 
-        # Apply only actions we haven't seen yet
-        idx = self.replayed_action_count
+        idx = 0
         while idx < len(actions):
-            phase = TURN.get_phase(self.state)
+            phase = TURN.get_phase(state)
             if phase == PHASE_GAME_OVER:
                 break
 
@@ -102,9 +113,9 @@ class GameSession:
 
             action_list = engine_action if isinstance(engine_action, list) else [engine_action]
             for i, ea in enumerate(action_list):
-                if i > 0 and TURN.get_phase(self.state) != PHASE_PAR:
+                if i > 0 and TURN.get_phase(state) != PHASE_PAR:
                     break
-                result = DRIVER.apply_action(self.state, ea)
+                result = DRIVER.apply_action(state, ea)
                 if result == STATUS_INVALID:
                     raise RuntimeError(
                         f"Invalid action {ea} at action stream index {idx}, "
@@ -113,21 +124,17 @@ class GameSession:
 
             idx += 1
 
-        self.replayed_action_count = idx
-        return self.state
+        return state
 
     def get_active_player(self) -> int:
-        """Get the engine's active player index (0-based)."""
         assert self.state is not None
         return self.state.get_active_player()
 
     def get_phase(self) -> int:
-        """Get the engine's current phase."""
         assert self.state is not None
         return TURN.get_phase(self.state)
 
     def is_game_over(self) -> bool:
-        """Check if the game is over."""
         assert self.state is not None
         return TURN.get_phase(self.state) == PHASE_GAME_OVER
 
@@ -144,8 +151,8 @@ class GameSession:
             raise RuntimeError(f"Invalid engine action {action_idx}")
         return history
 
-    def _initialize(self, game_data: dict) -> None:
-        """Initialize engine state from game_data using Ruby extractor."""
+    def _init_game_metadata(self, game_data: dict) -> None:
+        """Extract and cache deck order / offering via Ruby extractor."""
         self.game_id = game_data.get("id", "")
         num_players = len(game_data.get("players", []))
         if num_players != self.num_players:
@@ -154,32 +161,17 @@ class GameSession:
                 f"game={num_players}"
             )
 
-        # Run Ruby extractor to get initial state (deck order, offering)
         initial = self._extract_initial_state(game_data)
 
-        # Build player ID → engine index mapping
         self._player_id_to_index = {}
         for idx, pid in enumerate(initial["player_order"]):
             self._player_id_to_index[pid] = idx
 
-        # Create and initialize engine state
-        state = GameState(self.num_players)
-        state.initialize_game(seed=42)  # seed irrelevant, we override
-        self.state = state
-
-        # Override deck and offering to match the 18xx game
-        deck_order_names = initial["deck_order"]
-        offering_names = initial["initial_offering"]
-        self._override_deck_and_offering(deck_order_names, offering_names)
-
-        self.replayed_action_count = 0
+        self._deck_order = initial["deck_order"]
+        self._offering = initial["initial_offering"]
 
     def _extract_initial_state(self, game_data: dict) -> dict:
-        """Run Ruby extractor subprocess to get initial deck/offering state.
-
-        Writes game_data to a temp file, runs extract_states.rb, and
-        returns the initial record (action_id=0).
-        """
+        """Run Ruby extractor subprocess to get initial deck/offering state."""
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False
         ) as f:
@@ -215,7 +207,6 @@ class GameSession:
         assert self.state is not None
         state = self.state
 
-        # Reset companies that init put into auction/revealed
         for cid in range(36):
             loc = COMPANIES[cid].get_location(state)
             if loc == LOC_AUCTION:
@@ -224,18 +215,17 @@ class GameSession:
             elif loc == LOC_REVEALED:
                 COMPANIES[cid].exclude_from_game(state)
 
-        # Build full deck (offering on top, remaining below)
-        # Ruby deck_order is top-to-bottom; our set_order is bottom-to-top
         remaining_ids = [COMPANY_NAME_TO_ID[n] for n in reversed(deck_order_names)]
         offering_ids = [COMPANY_NAME_TO_ID[n] for n in reversed(offering_names)]
         full_deck = remaining_ids + offering_ids
         DECK.set_order(state, full_deck)
 
-        # Draw offering cards and move them to auction
         for _ in range(len(offering_names)):
             cid = DECK.draw(state)
             COMPANIES[cid].move_to_auction(state)
 
+    # Same _map_action as replay_harness.py — reuses the same per-phase
+    # mapping functions from action_parser.py.
     def _map_action(self, action: dict, phase: int) -> int | list[int] | None:
         """Map a single 18xx action to engine action index(es).
 

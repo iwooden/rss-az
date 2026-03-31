@@ -169,6 +169,30 @@ class AIServer:
         # Determine which players are AI
         settings = game_data.get("settings") or {}
         human_idx = settings.get("human_player_index", 0)
+
+        # Check if the 18xx frontend is in ACQ/CLOSING but our engine
+        # has auto-advanced past it. Our engine doesn't support cross-
+        # president acquisitions and auto-processes these phases, but
+        # the 18xx frontend blocks waiting for player pass actions.
+        frontend_round = game_data.get("round", "")
+        acting = game_data.get("acting") or []
+        ai_acting_ids = [pid for pid in acting if pid != human_idx]
+
+        if frontend_round in ("Acquisition", "Closing") and ai_acting_ids:
+            phase = TURN.get_phase(state)
+            if phase not in (
+                GamePhases.PHASE_ACQUISITION,
+                GamePhases.PHASE_CLOSING,
+            ):
+                # Engine already advanced past ACQ/CLO — return passes
+                # for all AI players so the frontend can catch up.
+                logger.info(
+                    f"Frontend in {frontend_round} but engine at phase "
+                    f"{phase} — returning passes for AI players {ai_acting_ids}"
+                )
+                pass_actions = [{"type": "pass"} for _ in ai_acting_ids]
+                return {"actions": pass_actions, "search_info": {"auto_pass": True}}
+
         active = state.get_active_player()
 
         if active == human_idx:
@@ -177,6 +201,13 @@ class AIServer:
         phase = TURN.get_phase(state)
         actions: list[dict] = []
         search_info: dict = {}
+
+        from tests.debug_trace import format_action, format_state_compact
+        logger.info(
+            f"AI move request: phase={phase}, active=P{active}, "
+            f"human=P{human_idx}, state={format_state_compact(state)}, "
+            f"n_actions={len(game_data.get('actions', []))}"
+        )
 
         if phase in (GamePhases.PHASE_ACQUISITION, GamePhases.PHASE_CLOSING):
             # Run through all AI offers in this phase
@@ -188,6 +219,10 @@ class AIServer:
             # Single action phases
             action_idx, info = self._search_and_pick(state)
             intent = engine_action_to_18xx(action_idx, state, self.num_players)
+            logger.info(
+                f"AI chose: {format_action(action_idx, self.num_players, state)} "
+                f"-> intent={intent}"
+            )
             session.apply_engine_action(action_idx)
             actions = [intent]
             search_info = info
@@ -388,7 +423,7 @@ def main() -> None:
 
     app = create_app(server)
     logger.info(f"Starting AI server on {args.host}:{args.port}")
-    app.run(host=args.host, port=args.port, debug=False)
+    app.run(host=args.host, port=args.port, debug=False, threaded=False)
 
 
 if __name__ == "__main__":
