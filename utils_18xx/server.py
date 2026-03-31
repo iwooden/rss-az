@@ -169,6 +169,8 @@ class AIServer:
         # Determine which players are AI
         settings = game_data.get("settings") or {}
         human_idx = settings.get("human_player_index", 0)
+        # -1 means spectator mode (no human player)
+        spectator = human_idx == -1
 
         # Check if the 18xx frontend is in ACQ/CLOSING but our engine
         # has auto-advanced past it. Our engine doesn't support cross-
@@ -195,7 +197,7 @@ class AIServer:
 
         active = state.get_active_player()
 
-        if active == human_idx:
+        if not spectator and active == human_idx:
             return {"actions": [], "info": "Human's turn"}
 
         phase = TURN.get_phase(state)
