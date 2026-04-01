@@ -798,6 +798,8 @@ cdef class GameState:
             raise ValueError(f"num_players must be 2-{GameConstants.MAX_PLAYERS}")
 
         self._num_players = num_players
+        self.step_mode = False
+        self.allow_closing_positive_income = False
 
         # Look up precomputed layouts (struct copy, ~160 bytes)
         self._layout = _cached_layouts[num_players]

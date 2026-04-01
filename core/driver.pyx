@@ -305,6 +305,10 @@ cdef class GameDriver:
         if state.get_phase() == PHASE_GAME_OVER:
             return STATUS_GAME_OVER
 
+        # Step mode: return immediately after applying one action
+        if state.step_mode:
+            return STATUS_OK
+
         # Auto-apply forced actions
         iterations = 0
         while iterations < MAX_FORCED_ITERATIONS:
@@ -344,6 +348,33 @@ cdef class GameDriver:
             Numpy float32 array where 1.0 = valid action, 0.0 = invalid
         """
         return get_valid_action_mask(state)
+
+    cpdef bint is_non_player_phase(self, GameState state):
+        """Check if the current phase is a non-player (deterministic) phase.
+
+        Used in step_mode to let callers decide when to advance through
+        non-player phases (WRAP_UP, INCOME, END_CARD, etc.).
+        """
+        return _is_non_player_phase_check(state, state.get_phase())
+
+    cpdef int advance_phase(self, GameState state, object history=None):
+        """Execute one non-player phase and return.
+
+        Only valid when is_non_player_phase() returns True.
+        Used in step_mode to give the caller explicit control over
+        phase advancement.
+
+        Returns:
+            STATUS_OK (0) if phase executed, more phases may follow
+            STATUS_GAME_OVER (2) if game ended
+            STATUS_INVALID (1) if current phase is not a non-player phase
+        """
+        if not _is_non_player_phase_check(state, state.get_phase()):
+            return STATUS_INVALID
+        _execute_non_player_phase(state, history)
+        if state.get_phase() == PHASE_GAME_OVER:
+            return STATUS_GAME_OVER
+        return STATUS_OK
 
 
 # Global singleton instance (stateless pattern)

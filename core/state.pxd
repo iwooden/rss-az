@@ -171,6 +171,10 @@ cdef class GameState:
     cdef CorpFieldOffsets _corp_fields
     cdef int _num_players
 
+    # Driver config flags (Python-level, not in float array)
+    cdef public bint step_mode
+    cdef public bint allow_closing_positive_income
+
     # Internal pointer access
     cdef float* _player_ptr(self, int player_id) noexcept nogil
     cdef float* _corp_ptr(self, int corp_id) noexcept nogil

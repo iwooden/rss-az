@@ -167,7 +167,7 @@ cdef int _collect_player_close_offers(
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if not player_module.PLAYERS[player_id].owns_company(state, company_id):
                 continue
-            if not _has_negative_adjusted_income(state, company_id):
+            if not state.allow_closing_positive_income and not _has_negative_adjusted_income(state, company_id):
                 continue
 
             idx = start_idx + count
@@ -208,7 +208,7 @@ cdef int _collect_corp_close_offers(
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if not corp_module.CORPS[corp_id].owns_company(state, company_id):
                 continue
-            if not _has_negative_adjusted_income(state, company_id):
+            if not state.allow_closing_positive_income and not _has_negative_adjusted_income(state, company_id):
                 continue
 
             idx = start_idx + count
