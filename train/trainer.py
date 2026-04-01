@@ -148,8 +148,11 @@ class Trainer:
         }
 
     def load_state_dict(self, state: dict[str, object]) -> None:
-        """Restore from checkpoint."""
-        self.optimizer.load_state_dict(state["optimizer"])  # type: ignore[arg-type]
-        self.scheduler.load_state_dict(state["scheduler"])  # type: ignore[arg-type]
+        """Restore from checkpoint.  Tolerates missing optimizer/scheduler
+        (e.g. after model surgery) — they just start fresh."""
+        if "optimizer" in state:
+            self.optimizer.load_state_dict(state["optimizer"])  # type: ignore[arg-type]
+        if "scheduler" in state:
+            self.scheduler.load_state_dict(state["scheduler"])  # type: ignore[arg-type]
         assert isinstance(state["global_step"], int)
         self._global_step = state["global_step"]
