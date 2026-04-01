@@ -18,10 +18,8 @@ from core.actions import (
     ACTION_ACQ_PRICE_PY as ACTION_ACQ_PRICE,
     ACTION_ACQ_FI_BUY_PY as ACTION_ACQ_FI_BUY,
     ACTION_CLOSE_PY as ACTION_CLOSE,
-    ACTION_DIVIDEND_PY as ACTION_DIVIDEND,
     ACTION_ISSUE_PY as ACTION_ISSUE,
     ACTION_IPO_PY as ACTION_IPO,
-    ACTION_PAR_PY as ACTION_PAR,
 )
 from core.data import (
     COMPANY_NAMES,
@@ -124,7 +122,10 @@ def engine_action_to_18xx(
         if atype == ACTION_ISSUE:
             return {"type": "issue"}
 
-    # ACQUISITION phase
+    # ACQUISITION phase — 18xx uses offer + respond; our engine collapses
+    # these into a single decision.  We emit the 18xx-native "offer" type
+    # here; the server is responsible for appending "respond(accept=true)"
+    # when appropriate.
     if phase == GamePhases.PHASE_ACQUISITION:
         if atype == ACTION_ACQ_PRICE:
             acq_company = TURN.get_acq_target_company(state)
@@ -132,7 +133,7 @@ def engine_action_to_18xx(
             price = low + amount
             buyer_corp = TURN.get_acq_active_corp(state)
             return {
-                "type": "acquire",
+                "type": "offer",
                 "corporation": CORP_NAMES[buyer_corp],
                 "company": COMPANY_NAMES[acq_company],
                 "price": price,
@@ -141,12 +142,13 @@ def engine_action_to_18xx(
             acq_company = TURN.get_acq_target_company(state)
             buyer_corp = TURN.get_acq_active_corp(state)
             return {
-                "type": "acquire_fi",
+                "type": "offer",
                 "corporation": CORP_NAMES[buyer_corp],
                 "company": COMPANY_NAMES[acq_company],
+                "price": get_company_face_value(acq_company),
             }
         if atype == ACTION_PASS:
-            return {"type": "acq_pass"}
+            return {"type": "pass"}
 
     # CLOSING phase
     if phase == GamePhases.PHASE_CLOSING:
@@ -157,7 +159,7 @@ def engine_action_to_18xx(
                 "company": COMPANY_NAMES[closing_company],
             }
         if atype == ACTION_PASS:
-            return {"type": "close_pass"}
+            return {"type": "pass"}
 
     raise ValueError(
         f"Unknown action: idx={action_idx}, phase={phase}, type={atype}, "

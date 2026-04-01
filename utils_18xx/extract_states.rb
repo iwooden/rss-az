@@ -38,10 +38,10 @@ $stdout.reopen('/dev/null', 'w')
 # Resolve the path to the 18xx engine lib directory relative to this script,
 # regardless of the working directory when the script is invoked.
 SCRIPT_DIR = File.dirname(File.expand_path(__FILE__))
-REPO_ROOT = File.expand_path('../..', SCRIPT_DIR)
+REPO_ROOT = File.expand_path('..', SCRIPT_DIR)
 $LOAD_PATH.unshift(File.join(REPO_ROOT, 'submodules', '18xx', 'lib'))
 
-require_relative '../../submodules/18xx/lib/engine'
+require_relative '../submodules/18xx/lib/engine'
 
 # Restore real stdout for our JSON output.
 $stdout.reopen(real_stdout)

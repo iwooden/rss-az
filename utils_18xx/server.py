@@ -22,8 +22,11 @@ import torch
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-from core.data import GamePhases
+from core.data import COMPANY_NAMES, CORP_NAMES, GamePhases
 from core.state import get_layout
+from entities.company import COMPANIES, CompanyLocation
+from entities.corp import CORPS
+from entities.player import PLAYERS
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool, run_search
@@ -35,6 +38,17 @@ from .action_mapper import engine_action_to_18xx
 from .game_session import GameSession
 
 logger = logging.getLogger(__name__)
+
+# Map 18xx frontend round names to the engine phases they correspond to.
+# When the frontend round doesn't match our engine phase, we send passes.
+_ROUND_TO_PHASES: dict[str, set[int]] = {
+    "Investment": {GamePhases.PHASE_INVEST, GamePhases.PHASE_BID_IN_AUCTION},
+    "Acquisition": {GamePhases.PHASE_ACQUISITION},
+    "Closing": {GamePhases.PHASE_CLOSING},
+    "Dividends": {GamePhases.PHASE_DIVIDENDS},
+    "Issue Shares": {GamePhases.PHASE_ISSUE_SHARES},
+    "IPO": {GamePhases.PHASE_IPO, GamePhases.PHASE_PAR},
+}
 
 
 class AIServer:
@@ -151,7 +165,9 @@ class AIServer:
             self._sessions[gid] = GameSession(self.num_players)
         return self._sessions[gid]
 
-    def get_ai_move(self, game_data: dict) -> dict:
+    def get_ai_move(
+        self, game_data: dict, state_checksum: dict | None = None,
+    ) -> dict:
         """Process a game state and return the AI's move(s).
 
         Returns a dict with:
@@ -163,6 +179,9 @@ class AIServer:
         session = self.get_session(game_data)
         state = session.sync(game_data)
 
+        if state_checksum:
+            self._compare_checksum(state, state_checksum, session.num_players)
+
         if session.is_game_over():
             return {"actions": [], "error": "Game is over"}
 
@@ -172,22 +191,18 @@ class AIServer:
         # -1 means spectator mode (no human player)
         spectator = human_idx == -1
 
-        # Check if the 18xx frontend is in ACQ/CLOSING but our engine
-        # has auto-advanced past it. Our engine doesn't support cross-
-        # president acquisitions and auto-processes these phases, but
-        # the 18xx frontend blocks waiting for player pass actions.
+        # Detect phase mismatch between the 18xx frontend and our engine.
+        # State divergence from ACQ/CLO handling can cause the engines to
+        # be in different phases.  When this happens, send passes so the
+        # frontend can advance to catch up.
         frontend_round = game_data.get("round", "")
         acting = game_data.get("acting") or []
         ai_acting_ids = [pid for pid in acting if pid != human_idx]
 
-        if frontend_round in ("Acquisition", "Closing") and ai_acting_ids:
+        if frontend_round and ai_acting_ids:
             phase = TURN.get_phase(state)
-            if phase not in (
-                GamePhases.PHASE_ACQUISITION,
-                GamePhases.PHASE_CLOSING,
-            ):
-                # Engine already advanced past ACQ/CLO — return passes
-                # for all AI players so the frontend can catch up.
+            expected_phases = _ROUND_TO_PHASES.get(frontend_round)
+            if expected_phases is not None and phase not in expected_phases:
                 logger.info(
                     f"Frontend in {frontend_round} but engine at phase "
                     f"{phase} — returning passes for AI players {ai_acting_ids}"
@@ -212,8 +227,10 @@ class AIServer:
         )
 
         if phase in (GamePhases.PHASE_ACQUISITION, GamePhases.PHASE_CLOSING):
-            # Run through all AI offers in this phase
-            actions, search_info = self._run_phase_sequence(session, state, human_idx)
+            # Process ONE offer at a time so the frontend can resync
+            # between each.  This avoids state divergence from the 18xx
+            # engine's receivership step and right-of-first-refusal.
+            actions, search_info = self._run_single_offer(session, state)
         elif phase == GamePhases.PHASE_IPO:
             # IPO might need PAR follow-up
             actions, search_info = self._run_ipo_par(session, state)
@@ -296,26 +313,98 @@ class AIServer:
 
         return [combined], {**info, "par_search": par_info}
 
-    def _run_phase_sequence(
-        self, session, state, human_idx: int,
+    def _compare_checksum(
+        self, state, checksum: dict, num_players: int,
+    ) -> None:
+        """Compare frontend state checksum against our engine state."""
+        mismatches: list[str] = []
+
+        for i, p_info in enumerate(checksum.get("players", [])):
+            if i >= num_players:
+                break
+            engine_cash = PLAYERS[i].get_cash(state)
+            engine_nw = PLAYERS[i].get_net_worth(state)
+            fe_cash = p_info.get("cash", 0)
+            fe_nw = p_info.get("value", 0)
+            if engine_cash != fe_cash:
+                mismatches.append(
+                    f"P{i} cash: engine={engine_cash} frontend={fe_cash}"
+                )
+            if engine_nw != fe_nw:
+                mismatches.append(
+                    f"P{i} net_worth: engine={engine_nw} frontend={fe_nw}"
+                )
+            # Compare owned companies
+            engine_cos: list[str] = sorted(
+                COMPANY_NAMES[cid]
+                for cid in range(36)
+                if COMPANIES[cid].get_location(state)
+                == CompanyLocation.LOC_PLAYER
+                and COMPANIES[cid].get_owner_id(state) == i
+            )
+            fe_cos = sorted(p_info.get("companies", []))
+            if engine_cos != fe_cos:
+                mismatches.append(
+                    f"P{i} companies: engine={engine_cos} frontend={fe_cos}"
+                )
+
+        for c_info in checksum.get("corps", []):
+            corp_name = c_info.get("name", "")
+            corp_id = next(
+                (j for j in range(8) if CORP_NAMES[j] == corp_name), -1
+            )
+            if corp_id < 0:
+                continue
+            corp = CORPS[corp_id]
+            if not corp.is_active(state):
+                mismatches.append(f"{corp_name}: floated in frontend but not engine")
+                continue
+            engine_cash = corp.get_cash(state)
+            engine_sp = corp.get_share_price(state)
+            fe_cash = c_info.get("cash", 0)
+            fe_sp = c_info.get("share_price", 0)
+            if engine_cash != fe_cash:
+                mismatches.append(
+                    f"{corp_name} cash: engine={engine_cash} frontend={fe_cash}"
+                )
+            if engine_sp != fe_sp:
+                mismatches.append(
+                    f"{corp_name} share_price: engine={engine_sp} frontend={fe_sp}"
+                )
+            engine_cos = sorted(
+                COMPANY_NAMES[cid]
+                for cid in range(36)
+                if COMPANIES[cid].get_location(state)
+                in (CompanyLocation.LOC_CORP, CompanyLocation.LOC_CORP_ACQ)
+                and COMPANIES[cid].get_owner_id(state) == corp_id
+            )
+            fe_cos = sorted(c_info.get("companies", []))
+            if engine_cos != fe_cos:
+                mismatches.append(
+                    f"{corp_name} companies: engine={engine_cos} frontend={fe_cos}"
+                )
+
+        if mismatches:
+            logger.warning(
+                "STATE CHECKSUM MISMATCH:\n  " + "\n  ".join(mismatches)
+            )
+        else:
+            logger.debug("State checksum OK")
+
+    def _run_single_offer(
+        self, session, state,
     ) -> tuple[list[dict], dict]:
-        """Run through ACQ/CLOSING phase, collecting all AI actions."""
-        actions: list[dict] = []
-        total_info: dict = {"steps": []}
-        start_phase = TURN.get_phase(state)
+        """Process ONE ACQ/CLO offer and return it.
 
-        while (
-            TURN.get_phase(state) == start_phase
-            and not session.is_game_over()
-            and state.get_active_player() != human_idx
-        ):
-            action_idx, info = self._search_and_pick(state)
-            intent = engine_action_to_18xx(action_idx, state, self.num_players)
-            session.apply_engine_action(action_idx)
-            actions.append(intent)
-            total_info["steps"].append(info)
-
-        return actions, total_info
+        Returning a single action per call lets the frontend apply it,
+        resync state (including 18xx receivership auto-buys), and then
+        ask for the next action.  This prevents state divergence from
+        the 18xx engine's two-step ACQ round.
+        """
+        action_idx, info = self._search_and_pick(state)
+        intent = engine_action_to_18xx(action_idx, state, self.num_players)
+        session.apply_engine_action(action_idx)
+        return [intent], info
 
 
 def create_app(server: AIServer) -> Flask:
@@ -330,7 +419,10 @@ def create_app(server: AIServer) -> Flask:
             return jsonify({"error": "Missing game_data"}), 400
 
         try:
-            result = server.get_ai_move(data["game_data"])
+            result = server.get_ai_move(
+                data["game_data"],
+                state_checksum=data.get("state_checksum"),
+            )
             return jsonify(result)
         except Exception as e:
             logger.exception("Error processing AI move")

@@ -13,6 +13,12 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from core.data import (
+    COMPANY_NAME_TO_ID,
+    CORP_NAME_TO_ID,
+    GamePhases,
+    get_company_low_price,
+)
 from core.driver import DRIVER, STATUS_INVALID_PY as STATUS_INVALID
 from core.state import GameState
 from entities.turn import TURN
@@ -26,6 +32,9 @@ from .action_parser import (
     PHASE_GAME_OVER,
     PHASE_PAR,
 )
+
+PHASE_ACQ = GamePhases.PHASE_ACQUISITION
+PHASE_CLO = GamePhases.PHASE_CLOSING
 
 EXTRACTOR_PATH = Path(__file__).parent / "extract_states.rb"
 
@@ -83,6 +92,13 @@ class GameSession:
             engine_action = map_action(state, action, phase, self.layout)
 
             if engine_action is None:
+                # map_action returns None for ACQ/CLO phases — handle them
+                # here so the engine can advance past these phases during
+                # replay of actions we previously sent to the frontend.
+                if phase == PHASE_ACQ:
+                    self._sync_acq_action(state, action)
+                elif phase == PHASE_CLO:
+                    self._sync_clo_action(state, action)
                 idx += 1
                 continue
 
@@ -98,6 +114,10 @@ class GameSession:
                     )
 
             idx += 1
+
+        # Drain any remaining ACQ/CLO offers that weren't in the stream
+        # (our engine may have more offers than the 18xx frontend saw).
+        self._drain_acq_clo(state)
 
         return state
 
@@ -125,6 +145,82 @@ class GameSession:
         if result == STATUS_INVALID:
             raise RuntimeError(f"Invalid engine action {action_idx}")
         return history
+
+    # -----------------------------------------------------------------
+    # ACQ / CLO replay helpers
+    # -----------------------------------------------------------------
+    # Our engine presents offers in a fixed buffer order. The 18xx action
+    # stream contains the offer/respond/pass actions we previously sent
+    # to the frontend.  Walk the engine's offer buffer, passing until we
+    # reach the offer that matches, then apply the chosen price.
+
+    def _sync_acq_action(self, state: GameState, action: dict) -> None:
+        atype = action.get("type")
+        if atype == "respond":
+            return  # no-op — our engine already applied the offer
+        if atype == "pass":
+            # Pass actions in ACQ are for the 18xx frontend (receivership
+            # declines, ProposeAndPurchase round-end passes).  They don't
+            # map to specific offers in our engine's buffer — ignore them.
+            return
+        if atype == "offer":
+            corp_name = action["corporation"]
+            company_name = action["company"]
+            price = action["price"]
+            target_corp = CORP_NAME_TO_ID[corp_name]
+            target_company = COMPANY_NAME_TO_ID[company_name]
+            # Walk engine's offer buffer, passing non-matching offers
+            max_iter = 200
+            for _ in range(max_iter):
+                if TURN.get_phase(state) != PHASE_ACQ:
+                    break
+                cur_corp = TURN.get_acq_active_corp(state)
+                cur_company = TURN.get_acq_target_company(state)
+                if cur_corp == target_corp and cur_company == target_company:
+                    # Found the matching offer — apply the price
+                    if TURN.is_acq_fi_offer(state):
+                        DRIVER.apply_action(state, self.layout.acq_fi_buy)
+                    else:
+                        low = get_company_low_price(target_company)
+                        offset = price - low
+                        DRIVER.apply_action(
+                            state, self.layout.acq_price_base + offset
+                        )
+                    return
+                # Not this offer — pass it
+                DRIVER.apply_action(state, self.layout.acq_pass)
+
+    def _sync_clo_action(self, state: GameState, action: dict) -> None:
+        atype = action.get("type")
+        if atype == "pass":
+            # Pass actions in CLO are for the 18xx frontend round-end.
+            # They don't map to specific offers in our engine — ignore.
+            return
+        if atype in ("sell_company", "close"):
+            company_name = action["company"]
+            target_company = COMPANY_NAME_TO_ID[company_name]
+            # Walk engine's offer buffer, passing non-matching offers
+            max_iter = 200
+            for _ in range(max_iter):
+                if TURN.get_phase(state) != PHASE_CLO:
+                    break
+                cur_company = TURN.get_closing_company(state)
+                if cur_company == target_company:
+                    DRIVER.apply_action(state, self.layout.close_action)
+                    return
+                DRIVER.apply_action(state, self.layout.close_pass)
+
+    def _drain_acq_clo(self, state: GameState) -> None:
+        """Auto-pass through any remaining ACQ/CLO offers after replay."""
+        max_iter = 500
+        for _ in range(max_iter):
+            phase = TURN.get_phase(state)
+            if phase == PHASE_ACQ:
+                DRIVER.apply_action(state, self.layout.acq_pass)
+            elif phase == PHASE_CLO:
+                DRIVER.apply_action(state, self.layout.close_pass)
+            else:
+                break
 
     def _init_game_metadata(self, game_data: dict) -> None:
         """Extract and cache deck order / offering via Ruby extractor."""
