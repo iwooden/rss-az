@@ -236,6 +236,8 @@ Both phases use **one-by-one offer presentation**: offers generated into hidden 
 
 **Pyright:** Use `pyright` (system-installed at `/usr/bin/pyright`), NOT `.venv/bin/pyright`.
 
+**Submodules:** When running commands in `submodules/18xx/`, use absolute paths or `cd /home/icebreaker/rss-az-cython2/submodules/18xx && ...` in a single Bash call. Do NOT `cd` into a submodule and forget — subsequent commands will run in the wrong directory.
+
 ```bash
 # Build Cython extensions (required before running any Python code)
 .venv/bin/python setup.py build_ext --inplace 2>&1 | grep -E "(warning|error)" || true

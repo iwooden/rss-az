@@ -7,7 +7,7 @@ Play Rolling Stock Stars against trained AlphaZero checkpoints using the
 
 ```
 Browser (18xx.games, localhost:9292)
-    │  POST /api/ai-move  { game_data: {...} }
+    │  POST /api/ai-move  { game_data: {...}, state_checksum: {...} }
     │  ← 200 OK           { actions: [...] }
 Python API Server (localhost:5050)
     ├── server.py         Flask API, MCTS search, checkpoint loading
@@ -61,6 +61,10 @@ Reverse maps engine action indices to simplified intent dicts using
 `decode_action_py()`. Covers all phases: INVEST (bid/buy/sell/pass),
 BID (raise/leave), IPO, PAR, DIVIDENDS, ISSUE, ACQUISITION, CLOSING.
 
+ACQ actions use the 18xx-native `offer` type. Our engine collapses the
+18xx offer+respond flow into a single decision; for same-president offers,
+the 18xx engine auto-accepts the offer so no `respond` is needed.
+
 ### `game_session.py`
 
 Synchronizes 18xx `game_data` JSON with a Cython `GameState` by replaying
@@ -70,16 +74,26 @@ the replay harness uses (battle-tested against 143 real games). The Ruby
 extractor (`utils_18xx/extract_states.rb`) runs once per game to
 get deck order; subsequent replays are pure Cython (~ms).
 
+ACQ/CLO actions require special handling because `action_parser.map_action`
+returns None for these phases (the replay harness has its own adapter).
+The session walks the engine's offer buffer to match `offer` actions from
+the stream, ignores `pass`/`respond` actions (frontend-only), and drains
+remaining offers after replay.
+
 ### `server.py`
 
 Flask API with `POST /api/ai-move`. Handles:
 
 - **Simple phases** (INVEST, BID, DIVIDENDS, ISSUE): single MCTS search
 - **IPO + PAR**: two sequential MCTS searches, combined into one `par` intent
-- **ACQ / CLOSING sequences**: loops MCTS until phase ends or human acts
-- **Phase mismatch**: when the 18xx frontend is in ACQ/CLOSING but our
-  engine has auto-advanced past it (our engine doesn't support cross-president
-  acquisitions), returns pass actions so the frontend can catch up
+- **ACQ / CLOSING**: one offer per call so the frontend can resync between
+  each (avoids state divergence from the 18xx receivership step and
+  right-of-first-refusal)
+- **Phase mismatch**: generalized detection via `_ROUND_TO_PHASES` mapping —
+  when the frontend round doesn't match our engine phase (from ACQ/CLO state
+  divergence), returns passes so the frontend can catch up
+- **State checksum**: compares player/corp cash, net worth, companies, and
+  share prices between engines to detect divergence early
 
 ## 18xx submodule changes (branch `rss-az`)
 
@@ -107,9 +121,14 @@ All changes are on the `rss-az` branch of `submodules/18xx`
 
 ### `assets/app/view/game/ai_bridge.rb` (new)
 - Detects when an AI player is acting in a hotseat game.
-- POSTs game_data to the Python server.
+- POSTs game_data + state checksum to the Python server.
 - Translates intent dicts into proper `Engine::Action` hashes
   (`action_from_h`), resolving share IDs and entity references
   from the live game state.
+- Handles ACQ `offer` intents (builds 18xx offer action) and `respond`
+  intents (builds 18xx respond action).
+- Detects `ReceiverProposeAndPurchase` step (receivership right-of-first-
+  refusal) and auto-declines intervention via `respond(accept=false)`.
 - Applies actions with a 600ms delay between moves.
 - Guards against duplicate requests via `@ai_pending` flag.
+- Re-triggers AI move loop when an action is skipped (nil action_h).
