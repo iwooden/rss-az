@@ -56,9 +56,8 @@ class SharedEvalBuffers:
     """Pre-allocated shared memory for zero-copy worker <-> server communication.
 
     Input states are float32 so workers can write with pure numpy slice
-    assignment (no torch overhead).  Output logits are bfloat16 to halve
-    scatter bandwidth.  Output values are float32 — the model outputs bf16
-    under autocast, but the server upcasts during D2H copy.
+    assignment (no torch overhead). Output logits and values are float32 so
+    workers can read zero-copy numpy views and apply Cython mask+softmax.
 
     Each worker gets a fixed slot in shared tensors. Workers write rotated
     states into their input slot; the server reads them directly. The server
@@ -275,7 +274,7 @@ def _eval_server_serve(
 
     # Optionally compile the model (per-process compilation).
     if not no_compile and use_cuda:
-        ckw = compile_kwargs if compile_kwargs else {"dynamic": True}
+        ckw = compile_kwargs if compile_kwargs is not None else {}
         model = torch.compile(model, **ckw)  # type: ignore[assignment]
         model.eval()
         with torch.no_grad(), torch.autocast(

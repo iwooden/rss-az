@@ -66,16 +66,7 @@ def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
     eliminating kernel launch overhead (~60 kernels per MLP forward pass).
 
     Args:
-        for_training: If True, returns kwargs for training (fixed batch size).
-                     If False, returns kwargs for eval servers (variable batch sizes).
+        for_training: Unused today; retained so callers can keep a stable API.
     """
-    if for_training:
-        # Fixed batch size in training — CUDA graphs without dynamic shapes.
-        # The graph is captured once for batch_size and replayed every step.
-        return {"mode": "reduce-overhead"}
-    else:
-        # Eval servers see variable batch sizes (1 to num_workers * search_batch_size).
-        # The CUDA graph tree captures graphs for observed sizes and pads
-        # new sizes to match existing graphs. After warmup, all common sizes
-        # are cached and every call is a graph replay.
-        return {"mode": "reduce-overhead", "dynamic": True}
+    del for_training
+    return {"mode": "reduce-overhead"}

@@ -70,10 +70,7 @@ def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
     eliminating kernel launch overhead.
 
     Args:
-        for_training: If True, returns kwargs for training (fixed batch size).
-                     If False, returns kwargs for eval servers (variable batch sizes).
+        for_training: Unused today; retained so callers can keep a stable API.
     """
-    if for_training:
-        return {"mode": "reduce-overhead"}
-    else:
-        return {"mode": "reduce-overhead", "dynamic": True}
+    del for_training
+    return {"mode": "reduce-overhead"}

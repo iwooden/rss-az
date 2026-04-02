@@ -66,11 +66,11 @@ def _build_parser() -> argparse.ArgumentParser:
     batch_group = parser.add_mutually_exclusive_group()
     batch_group.add_argument(
         "--eval-fixed-batch-workers", type=int,
-        help="Fixed number of workers per GPU batch (default: auto from compilation)",
+        help="Fixed number of workers per GPU batch (default: greedy batching)",
     )
     batch_group.add_argument(
         "--eval-no-fixed-batch", action="store_true", default=False,
-        help="Disable fixed batching (override checkpoint config, use greedy dynamic)",
+        help="Force greedy batching (override checkpoint config)",
     )
     parser.add_argument("--checkpoint-dir", type=str)
     parser.add_argument("--tensorboard-dir", type=str)
@@ -389,8 +389,8 @@ def main() -> None:
     if args.profile:
         config.profile = True
 
-    # --eval-no-fixed-batch: force greedy dynamic batching even if checkpoint
-    # has eval_fixed_batch_workers set or torch.compile would auto-enable it.
+    # --eval-no-fixed-batch: force greedy batching even if the checkpoint
+    # saved a fixed worker count.
     no_fixed_batch = getattr(args, "eval_no_fixed_batch", False)
     if no_fixed_batch:
         if config.eval_fixed_batch_workers is not None:
@@ -488,15 +488,9 @@ def main() -> None:
 
         shared_bufs.init_bitmap(partitions, ctx)
 
-        # Resolve fixed_batch_workers: explicit > auto (compiled) > None (greedy).
-        max_partition_size = max(we - ws for ws, we in partitions)
-        if config.eval_fixed_batch_workers is not None:
-            effective_fbw: int | None = config.eval_fixed_batch_workers
-        elif no_fixed_batch or args.no_compile:
-            effective_fbw = None
-        else:
-            # Auto: greatest power of 2 <= partition size
-            effective_fbw = 1 << (max_partition_size.bit_length() - 1)
+        # Fixed batching is now opt-in only. Greedy mode remains the default,
+        # even when torch.compile is enabled.
+        effective_fbw = config.eval_fixed_batch_workers
 
         # Epoch-ending flag for fixed-batch servers (prevents deadlock at
         # end of epoch when fewer workers are active than the target).
@@ -596,8 +590,7 @@ def main() -> None:
         print("Wrote procids.txt")
     else:
         # Single-process: compile for both training and self-play evaluation.
-        # Use dynamic=True here since both inference (variable batch) and
-        # training (fixed batch) share the same compiled model.
+        # Let torch.compile manage any needed dynamism automatically.
         if not args.no_compile and device.type == "cuda":
             sp_compile_kwargs = gpu.get_compile_kwargs(for_training=False)
             print(f"Compiling model with torch.compile ({sp_compile_kwargs})...")

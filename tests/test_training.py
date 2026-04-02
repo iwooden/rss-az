@@ -14,6 +14,10 @@ import pytest
 import torch
 
 from nn.model_3p import RSSAlphaZeroNet, RSSModelConfig
+from nn.model_3p_plus import RSSAlphaZeroNet as RSSAlphaZeroNetPlus
+from nn.model_3p_plus import RSSModelConfig as RSSModelConfigPlus
+from train.gpu.amd import get_compile_kwargs as get_amd_compile_kwargs
+from train.gpu.nvidia import get_compile_kwargs as get_nvidia_compile_kwargs
 from train.checkpoint import (
     cleanup_checkpoints,
     find_latest_checkpoint,
@@ -118,6 +122,18 @@ def small_model() -> RSSAlphaZeroNet:
         num_blocks=1,
     )
     return RSSAlphaZeroNet(cfg)
+
+
+@pytest.fixture
+def small_model_plus() -> RSSAlphaZeroNetPlus:
+    cfg = RSSModelConfigPlus(
+        input_dim=_VIS,
+        action_dim=_ACT,
+        value_dim=3,
+        hidden_dim=32,
+        num_blocks=1,
+    )
+    return RSSAlphaZeroNetPlus(cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -1479,6 +1495,111 @@ class TestCLIOverrides:
         args = parser.parse_args([])
         _apply_overrides(config, args)
         assert config.games_per_epoch == original_games
+
+
+class TestCompileConfig:
+    def test_gpu_compile_kwargs_do_not_force_dynamic_shapes(self) -> None:
+        assert get_nvidia_compile_kwargs(for_training=False) == {"mode": "reduce-overhead"}
+        assert get_nvidia_compile_kwargs(for_training=True) == {"mode": "reduce-overhead"}
+        assert get_amd_compile_kwargs(for_training=False) == {"mode": "reduce-overhead"}
+        assert get_amd_compile_kwargs(for_training=True) == {"mode": "reduce-overhead"}
+
+
+class TestModelForward:
+    def test_forward_does_not_call_tensor_tolist(
+        self, small_model: RSSAlphaZeroNet
+    ) -> None:
+        x = torch.randn(8, small_model.cfg.input_dim)
+        x[:, :8] = 0.0
+        for i in range(8):
+            x[i, i] = 1.0
+
+        original_tolist = torch.Tensor.tolist
+
+        def _forbid_tolist(self: torch.Tensor) -> list[object]:
+            raise AssertionError("model forward should not call Tensor.tolist()")
+
+        try:
+            torch.Tensor.tolist = _forbid_tolist  # type: ignore[method-assign]
+            policy_logits, values = small_model(x)
+        finally:
+            torch.Tensor.tolist = original_tolist  # type: ignore[method-assign]
+
+        assert policy_logits.shape == (8, small_model.cfg.action_dim)
+        assert values.shape == (8, small_model.cfg.value_dim)
+
+    def test_forward_plus_does_not_call_tensor_tolist(
+        self, small_model_plus: RSSAlphaZeroNetPlus
+    ) -> None:
+        x = torch.randn(8, small_model_plus.cfg.input_dim)
+        x[:, :8] = 0.0
+        for i in range(8):
+            x[i, i] = 1.0
+
+        original_tolist = torch.Tensor.tolist
+
+        def _forbid_tolist(self: torch.Tensor) -> list[object]:
+            raise AssertionError("model forward should not call Tensor.tolist()")
+
+        try:
+            torch.Tensor.tolist = _forbid_tolist  # type: ignore[method-assign]
+            policy_logits, values = small_model_plus(x)
+        finally:
+            torch.Tensor.tolist = original_tolist  # type: ignore[method-assign]
+
+        assert policy_logits.shape == (8, small_model_plus.cfg.action_dim)
+        assert values.shape == (8, small_model_plus.cfg.value_dim)
+
+    def test_forward_skips_empty_phase_heads(
+        self, small_model: RSSAlphaZeroNet
+    ) -> None:
+        x = torch.randn(8, small_model.cfg.input_dim)
+        x[:, :8] = 0.0
+        x[:, 0] = 1.0
+
+        original_forwards = [head.forward for head in small_model.phase_heads]
+
+        def _wrap_forward(idx: int):
+            original = original_forwards[idx]
+
+            def _forward(t: torch.Tensor) -> torch.Tensor:
+                if t.shape[0] == 0:
+                    raise AssertionError(f"phase head {idx} received empty input")
+                return original(t)
+
+            return _forward
+
+        try:
+            for idx, head in enumerate(small_model.phase_heads):
+                head.forward = _wrap_forward(idx)  # type: ignore[method-assign]
+            policy_logits, values = small_model(x)
+        finally:
+            for head, original in zip(small_model.phase_heads, original_forwards):
+                head.forward = original  # type: ignore[method-assign]
+
+        assert policy_logits.shape == (8, small_model.cfg.action_dim)
+        assert values.shape == (8, small_model.cfg.value_dim)
+
+    def test_forward_allows_mixed_head_dtype(
+        self, small_model: RSSAlphaZeroNet
+    ) -> None:
+        x = torch.randn(8, small_model.cfg.input_dim)
+        x[:, :8] = 0.0
+        x[:, 0] = 1.0
+
+        original_forward = small_model.phase_heads[0].forward
+
+        def _bf16_forward(t: torch.Tensor) -> torch.Tensor:
+            return original_forward(t).to(torch.bfloat16)
+
+        try:
+            small_model.phase_heads[0].forward = _bf16_forward  # type: ignore[method-assign]
+            policy_logits, values = small_model(x)
+        finally:
+            small_model.phase_heads[0].forward = original_forward  # type: ignore[method-assign]
+
+        assert policy_logits.dtype == torch.bfloat16
+        assert values.shape == (8, small_model.cfg.value_dim)
 
 
 # ---------------------------------------------------------------------------

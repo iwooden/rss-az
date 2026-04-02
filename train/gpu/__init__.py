@@ -48,7 +48,7 @@ class GpuConfig:
             from train.gpu.amd import get_compile_kwargs
 
             return get_compile_kwargs(for_training=for_training)
-        return {"dynamic": True}
+        return {}
 
     def warmup_batch_size(self, training_batch_size: int) -> int:
         """Return batch size for the torch.compile warmup pass.
