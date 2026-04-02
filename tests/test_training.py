@@ -34,10 +34,14 @@ from train.trainer import Trainer
 from core.actions import get_total_action_count
 from core.state import get_layout
 
-# Computed layout constants for 3-player tests (single source of truth)
+# Computed layout constants (single source of truth)
 _L3 = get_layout(3)
 _VIS = _L3.visible_size
 _ACT = get_total_action_count(3)
+
+_L4 = get_layout(4)
+_VIS4 = _L4.visible_size
+_ACT4 = get_total_action_count(4)
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +315,40 @@ class TestConfig:
         mcts_cfg = cfg.to_mcts_config()
         assert mcts_cfg.dirichlet_dynamic is True
         assert mcts_cfg.dirichlet_alpha_numerator == 15.0
+
+    # --- Auto model path and multi-player support ---
+
+    def test_auto_model_path_3p(self) -> None:
+        cfg = TrainingConfig(num_players=3)
+        assert cfg.model_path == "nn.model_3p"
+
+    def test_auto_model_path_4p(self) -> None:
+        cfg = TrainingConfig(num_players=4)
+        assert cfg.model_path == "nn.model_4p"
+
+    def test_explicit_model_path_preserved(self) -> None:
+        cfg = TrainingConfig(num_players=4, model_path="nn.model_custom")
+        assert cfg.model_path == "nn.model_custom"
+
+    def test_computed_properties_4p(self) -> None:
+        cfg = TrainingConfig(num_players=4)
+        assert cfg.action_dim == _ACT4
+        assert cfg.visible_size == _VIS4
+        assert cfg.action_dim != _ACT, "4p action_dim should differ from 3p"
+        assert cfg.visible_size != _VIS, "4p visible_size should differ from 3p"
+
+    def test_json_roundtrip_4p(self) -> None:
+        cfg = TrainingConfig(num_players=4)
+        restored = TrainingConfig.from_json(cfg.to_json())
+        assert restored.num_players == 4
+        assert restored.model_path == "nn.model_4p"
+        assert restored.action_dim == _ACT4
+        assert restored.visible_size == _VIS4
+
+    def test_json_roundtrip_preserves_explicit_model_path(self) -> None:
+        cfg = TrainingConfig(num_players=3, model_path="nn.model_3p_plus")
+        restored = TrainingConfig.from_json(cfg.to_json())
+        assert restored.model_path == "nn.model_3p_plus"
 
 
 # ---------------------------------------------------------------------------
@@ -1495,6 +1533,67 @@ class TestCLIOverrides:
         args = parser.parse_args([])
         _apply_overrides(config, args)
         assert config.games_per_epoch == original_games
+
+    def test_num_players_override_recomputes(self) -> None:
+        config = TrainingConfig()  # defaults: num_players=3, model_path="auto" → "nn.model_3p"
+        assert config.model_path == "nn.model_3p"
+        assert config.action_dim == _ACT
+        assert config.visible_size == _VIS
+
+        parser = _build_parser()
+        args = parser.parse_args(["--num-players", "4"])
+        _apply_overrides(config, args)
+        config.validate()
+
+        assert config.num_players == 4
+        assert config.model_path == "nn.model_4p"
+        assert config.action_dim == _ACT4
+        assert config.visible_size == _VIS4
+
+    def test_num_players_override_with_explicit_model_path(self) -> None:
+        config = TrainingConfig()
+        parser = _build_parser()
+        args = parser.parse_args([
+            "--num-players", "4",
+            "--model-path", "nn.model_custom",
+        ])
+        _apply_overrides(config, args)
+        config.validate()
+
+        assert config.num_players == 4
+        assert config.model_path == "nn.model_custom"
+        assert config.action_dim == _ACT4
+
+
+# ---------------------------------------------------------------------------
+# Model Creation Tests
+# ---------------------------------------------------------------------------
+
+
+class TestModelCreation:
+    """Verify create_model produces working models for different player counts."""
+
+    @pytest.mark.parametrize("num_players,vis,act", [
+        (3, _VIS, _ACT),
+        (4, _VIS4, _ACT4),
+    ])
+    def test_create_model(self, num_players: int, vis: int, act: int) -> None:
+        from nn import create_model
+        model = create_model(
+            f"nn.model_{num_players}p",
+            input_dim=vis,
+            action_dim=act,
+            value_dim=num_players,
+        )
+        # Smoke test: forward pass with phase-aware input
+        x = torch.randn(2, vis)
+        x[:, :8] = 0
+        x[0, 0] = 1.0  # INVEST phase
+        x[1, 1] = 1.0  # BID phase
+        policy, values = model(x)
+        assert policy.shape == (2, act)
+        assert values.shape == (2, num_players)
+        assert values.min() >= -1.0 and values.max() <= 1.0
 
 
 class TestCompileConfig:

@@ -4,15 +4,12 @@ import importlib
 
 import torch.nn as nn
 
-from nn.model_3p import RSSAlphaZeroNet, RSSModelConfig, count_parameters
+__all__ = ["create_model", "default_model_path"]
 
-__all__ = [
-    "RSSAlphaZeroNet", "RSSModelConfig",
-    "count_parameters", "create_model",
-]
 
-# Default model module path (used by --model-path CLI arg)
-DEFAULT_MODEL_PATH = "nn.model_3p"
+def default_model_path(num_players: int) -> str:
+    """Return the default model module path for a given player count."""
+    return f"nn.model_{num_players}p"
 
 
 def create_model(
@@ -28,10 +25,10 @@ def create_model(
     (an ``nn.Module`` subclass that takes the config).
 
     Args:
-        model_path: Dotted Python module path (e.g. "nn.model_3p").
-        input_dim: Visible state size (e.g. 1101 for 3 players).
+        model_path: Dotted Python module path (e.g. "nn.model_3p", "nn.model_4p").
+        input_dim: Visible state size (from get_layout).
         action_dim: Action space size (from get_total_action_count).
-        value_dim: Number of players (e.g. 3).
+        value_dim: Number of players.
     """
     mod = importlib.import_module(model_path)
 

@@ -72,7 +72,7 @@ class TrainingConfig:
     """All hyperparameters for the self-play training loop."""
 
     # --- Model ---
-    model_path: str = "nn.model_3p"  # dotted module path to model definition
+    model_path: str = "auto"  # "auto" = nn.model_{num_players}p; or explicit dotted path
 
     # --- Game ---
     num_players: int = 3
@@ -172,16 +172,25 @@ class TrainingConfig:
     visible_size: int = field(init=False)
 
     def __post_init__(self) -> None:
-        from core.actions import get_total_action_count
-        from core.state import get_layout
-
-        self.action_dim = get_total_action_count(self.num_players)
-
-        self.visible_size = get_layout(self.num_players).visible_size
         self.validate()
 
     def validate(self) -> None:
-        """Validate all fields. Called from __post_init__ and after CLI overrides."""
+        """Validate all fields and recompute derived state.
+
+        Called from __post_init__ and after CLI/JSON overrides.
+        """
+        from core.actions import get_total_action_count
+        from core.state import get_layout
+
+        # Resolve "auto" model path based on num_players
+        if self.model_path == "auto":
+            from nn import default_model_path
+            self.model_path = default_model_path(self.num_players)
+
+        # Recompute derived fields (num_players may have changed via override)
+        self.action_dim = get_total_action_count(self.num_players)
+        self.visible_size = get_layout(self.num_players).visible_size
+
         # Model path — must be a non-empty dotted module path
         if not self.model_path or not isinstance(self.model_path, str):
             raise ValueError(f"model_path must be a non-empty string, got {self.model_path!r}")
@@ -409,7 +418,7 @@ class TrainingConfig:
         if "model_arch" in d:
             d.pop("model_arch")
             if "model_path" not in d:
-                d["model_path"] = "nn.model_3p"
+                d["model_path"] = "nn.model_3p"  # ancient configs were always 3p
 
         valid = set(TrainingConfig.__dataclass_fields__)
         return {k: v for k, v in d.items() if k in valid}
@@ -432,4 +441,8 @@ class TrainingConfig:
             if old != v:
                 setattr(self, k, v)
                 changes.append(f"{k} = {v} (was {old})")
+        # If num_players changed but model_path wasn't in the overrides,
+        # reset to "auto" so validate() re-derives for the new player count.
+        if "num_players" in d and "model_path" not in d:
+            self.model_path = "auto"
         return changes

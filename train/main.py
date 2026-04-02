@@ -47,7 +47,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", type=str, help="Force device: cuda, cpu")
     parser.add_argument(
         "--model-path", type=str,
-        help="Dotted module path to model definition (default: nn.model_3p)",
+        help="Dotted module path to model definition (default: nn.model_{num_players}p)",
     )
     parser.add_argument("--num-players", type=int,
                         help="Number of players (default: 3)")
@@ -214,6 +214,12 @@ def _apply_overrides(
                 if old != val:
                     print(f"  CLI override: {field} = {val} (was {old})")
             setattr(config, field, val)
+
+    # If num_players changed but model_path wasn't explicitly set, reset to
+    # "auto" so validate() re-derives the model path for the new player count.
+    if (getattr(args, "num_players", None) is not None
+            and getattr(args, "model_path", None) is None):
+        config.model_path = "auto"
 
 
 def _capture_rng_state(master_rng: np.random.Generator) -> dict[str, object]:
