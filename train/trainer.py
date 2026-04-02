@@ -7,6 +7,8 @@ import math
 import torch
 import torch.nn.functional as F
 
+from core.state import LayoutInfo
+from train.augment import apply_player_permutation, random_player_permutation
 from train.config import TrainingConfig
 
 _PHASE_NAMES = ["invest", "bid", "acq", "close", "div", "issue", "ipo", "par"]
@@ -20,11 +22,18 @@ class Trainer:
         model: torch.nn.Module,
         config: TrainingConfig,
         device: torch.device,
+        layout: LayoutInfo | None = None,
     ) -> None:
         self.model = model
         self.config = config
         self.device = device
         self._global_step = 0
+
+        # Layout for player-slot permutation augmentation.
+        if layout is None:
+            from core.state import get_layout
+            layout = get_layout(config.num_players)
+        self._layout: LayoutInfo = layout
 
         # Exclude LayerNorm params and all biases from weight decay —
         # regularizing these hurts more than it helps.
@@ -80,6 +89,13 @@ class Trainer:
         legal_masks = batch["legal_masks"].to(self.device, non_blocking=nb)
         policy_targets = batch["policy_targets"].to(self.device, non_blocking=nb)
         value_targets = batch["value_targets"].to(self.device, non_blocking=nb)
+
+        # Player-slot permutation augmentation: randomly shuffle inactive
+        # player slots (1..N-1) to teach slot-order invariance.
+        perm = random_player_permutation(
+            self._layout.num_players, states.device
+        )
+        apply_player_permutation(states, value_targets, perm, self._layout)
 
         # Forward + loss in float32 (inference uses bfloat16 autocast separately)
         policy_logits, values = self.model(states)
