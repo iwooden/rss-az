@@ -152,6 +152,10 @@ class GameSession:
 
         Returns the driver history list of ``(state_copy, action_or_sentinel)``
         entries, including any auto-applied forced actions.
+
+        STATUS_PAUSED is a valid outcome when the action auto-chains into
+        an ACQ/CLO transition with pause flags set.  The caller (server)
+        discards this state on the next sync, so the pause is benign.
         """
         assert self.state is not None
         history: list[tuple[object, int]] = []
@@ -267,10 +271,8 @@ class GameSession:
                 accept=True,
             )
             if not matched:
-                raise RuntimeError(
-                    "Accepted ACQ offer never appeared in engine buffer: "
-                    f"{offer}"
-                )
+                # Engine buffer exhausted (paused) — fall through to defer.
+                deferred_transfers.append((buyer_corp_id, company_id, price))
             return
 
         deferred_transfers.append((buyer_corp_id, company_id, price))

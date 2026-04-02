@@ -21,6 +21,9 @@ from phases.closing import is_closing_transition_pending_py
 
 from .action_parser import map_action, override_deck_and_offering
 
+PHASE_ACQ = GamePhases.PHASE_ACQUISITION
+PHASE_CLO = GamePhases.PHASE_CLOSING
+
 LOC_PLAYER = CompanyLocation.LOC_PLAYER
 LOC_FI = CompanyLocation.LOC_FI
 LOC_CORP = CompanyLocation.LOC_CORP
@@ -45,10 +48,31 @@ def initialize_replay_state(
     return state
 
 
+def _should_pause(state: GameState) -> bool:
+    """Check whether the engine is at a pause boundary.
+
+    Replicates the logic of ``_should_pause_before_phase_execution`` in
+    ``core/driver.pyx`` using Python-accessible attributes so that
+    higher-level replay helpers can respect pause flags.
+    """
+    phase = TURN.get_phase(state)
+    if phase == PHASE_ACQ and state.pause_before_acq_transition:
+        return True
+    if (
+        phase == PHASE_CLO
+        and state.pause_before_closing_transition
+        and is_closing_transition_pending(state)
+    ):
+        return True
+    return False
+
+
 def settle_to_player_choice(state: GameState) -> int:
-    """Advance deterministic phases until a player decision or game end."""
+    """Advance deterministic phases until a player decision, pause, or game end."""
     result = STATUS_OK
     while DRIVER.is_non_player_phase(state):
+        if _should_pause(state):
+            return STATUS_PAUSED
         result = DRIVER.advance_phase(state)
         if result == STATUS_GAME_OVER:
             break
@@ -226,6 +250,10 @@ def replay_acquisition_offer(
             return False
 
         cur_corp = TURN.get_acq_active_corp(state)
+        if cur_corp < 0:
+            # Engine offer buffer exhausted (paused at ACQ transition).
+            return False
+
         cur_company = TURN.get_acq_target_company(state)
         if cur_corp == buyer_corp_id and cur_company == company_id:
             if accept:
@@ -266,8 +294,16 @@ def drain_offer_phases(state: GameState, layout, max_iterations: int = 500) -> N
         phase = TURN.get_phase(state)
 
         if phase == GamePhases.PHASE_ACQUISITION:
+            if DRIVER.is_non_player_phase(state):
+                # Paused at ACQ transition — no deferred patches during drain.
+                DRIVER.advance_phase(state)
+                continue
             result = DRIVER.apply_action(state, layout.acq_pass)
         elif phase == GamePhases.PHASE_CLOSING:
+            if DRIVER.is_non_player_phase(state):
+                # Paused at CLO transition — no deferred patches during drain.
+                DRIVER.advance_phase(state)
+                continue
             result = DRIVER.apply_action(state, layout.close_pass)
         else:
             return
