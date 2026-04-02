@@ -277,12 +277,20 @@ def _eval_server_serve(
         ckw = compile_kwargs if compile_kwargs is not None else {}
         model = torch.compile(model, **ckw)  # type: ignore[assignment]
         model.eval()
+        # reduce-overhead / cudagraphs benefit most when the warmup batch size
+        # matches the steady-state inference shape. In fixed-batch mode we pad
+        # to a constant GPU batch size, so warm up with that size here.
+        warmup_n = (
+            fixed_batch_workers * shared_bufs.batch_size
+            if fixed_batch_workers is not None
+            else 1
+        )
         with torch.inference_mode(), torch.autocast(
             device.type,
             dtype=eval_autocast_dtype,
             enabled=eval_autocast_dtype is not None,
         ):
-            dummy = torch.randn(1, shared_bufs.visible_size, device=device)
+            dummy = torch.randn(warmup_n, shared_bufs.visible_size, device=device)
             model(dummy)
             del dummy
         torch.cuda.synchronize()
