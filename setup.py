@@ -4,6 +4,16 @@ import numpy as np
 import os
 import shutil
 import glob
+import sys
+import sysconfig
+
+
+RELEASE_FLAG = '--release'
+RELEASE_BUILD = RELEASE_FLAG in sys.argv
+
+# Strip our custom flag before setuptools parses argv.
+if RELEASE_BUILD:
+    sys.argv = [arg for arg in sys.argv if arg != RELEASE_FLAG]
 
 class TraceGameCommand(Command):
     """Trace a random game with human-readable output."""
@@ -117,7 +127,7 @@ class CleanCommand(Command):
 
         print('Clean complete.')
 
-# Compiler directives for maximum performance
+# Compiler directives for the default build profile.
 compiler_directives = {
     'language_level': '3',
     'boundscheck': False,
@@ -128,6 +138,13 @@ compiler_directives = {
     'overflowcheck': False,
     'embedsignature': True,  # Useful for debugging
 }
+
+if RELEASE_BUILD:
+    # Release builds trade Python introspection for faster generated code.
+    compiler_directives.update({
+        'binding': False,
+        'embedsignature': False,
+    })
 
 # Find all .pyx files in specific directories
 def find_pyx_files(directory):
@@ -147,10 +164,51 @@ pyx_files += [f for f in os.listdir('.') if f.endswith('.pyx')]
 
 extensions = []
 
-# Extra compile args to suppress benign Cython-generated warnings
-# -Wno-unused-function: Cython generates enum-to-Python converter functions
-#   that are often unused when enums are only used in cdef code
-extra_compile_args = ['-Wno-unused-function']
+def get_extra_compile_args():
+    args = ['-Wno-unused-function']
+    if not RELEASE_BUILD:
+        return args
+
+    if os.name == 'nt':
+        args.extend(['/O2', '/GL'])
+    else:
+        args.extend(['-O3', '-march=native', get_lto_flag()])
+    return args
+
+
+def get_extra_link_args():
+    if not RELEASE_BUILD:
+        return []
+
+    if os.name == 'nt':
+        return ['/O2', '/LTCG']
+    return ['-O3', get_lto_flag()]
+
+
+def get_define_macros():
+    macros = [("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")]
+    if RELEASE_BUILD:
+        macros.append(("CYTHON_WITHOUT_ASSERTIONS", "1"))
+    return macros
+
+
+def get_lto_flag():
+    cc = (sysconfig.get_config_var('CC') or '').lower()
+    # GCC 13 on this toolchain ICEs with plain -flto but succeeds with -flto=auto.
+    if 'gcc' in cc and 'clang' not in cc:
+        return '-flto=auto'
+    return '-flto'
+
+
+extra_compile_args = get_extra_compile_args()
+extra_link_args = get_extra_link_args()
+define_macros = get_define_macros()
+
+if RELEASE_BUILD:
+    print(
+        'Configuring release build: '
+        f'-O3, -march=native, {get_lto_flag()}, Cython assertions off'
+    )
 
 for pyx_file in pyx_files:
     # Convert path to module name: cython_core/state.pyx -> cython_core.state
@@ -160,8 +218,9 @@ for pyx_file in pyx_files:
         module_name,
         [pyx_file],
         include_dirs=[np.get_include()],
-        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        define_macros=define_macros,
         extra_compile_args=extra_compile_args,
+        extra_link_args=extra_link_args,
     ))
 
 setup(
