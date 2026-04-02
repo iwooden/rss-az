@@ -277,7 +277,7 @@ def _eval_server_serve(
         ckw = compile_kwargs if compile_kwargs is not None else {}
         model = torch.compile(model, **ckw)  # type: ignore[assignment]
         model.eval()
-        with torch.no_grad(), torch.autocast(
+        with torch.inference_mode(), torch.autocast(
             device.type,
             dtype=eval_autocast_dtype,
             enabled=eval_autocast_dtype is not None,
@@ -358,10 +358,10 @@ def _eval_server_serve(
 
         gpu_s_batch = gpu_s[:padded_n]
         gpu_s_batch[:total_n].copy_(pin_s[:total_n], non_blocking=True)
-        with torch.no_grad():
+        with torch.inference_mode():
             policy_logits, values = model(gpu_s_batch)
             pin_log[:total_n].copy_(
-                policy_logits[:total_n].float(), non_blocking=True,
+                policy_logits[:total_n], non_blocking=True,
             )
             pin_val[:total_n].copy_(values[:total_n], non_blocking=True)
             if use_cuda:

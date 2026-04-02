@@ -555,7 +555,7 @@ def main() -> None:
             # matches training dimensions.  No autocast: training runs fp32.
             warmup_bs = gpu.warmup_batch_size(config.batch_size)
             model.train()
-            with torch.no_grad():
+            with torch.inference_mode():
                 dummy = torch.randn(warmup_bs, config.visible_size, device=device)
                 model(dummy)
                 del dummy
@@ -604,7 +604,7 @@ def main() -> None:
             print(f"Compiling model with torch.compile ({sp_compile_kwargs})...")
             model = cast(torch.nn.Module, torch.compile(model, **sp_compile_kwargs))  # type: ignore[call-overload]
             model.train()
-            with torch.no_grad():
+            with torch.inference_mode():
                 dummy = torch.randn(1, config.visible_size, device=device)
                 model(dummy)
                 del dummy

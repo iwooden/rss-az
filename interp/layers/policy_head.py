@@ -135,7 +135,7 @@ def _collect_head_activations(
             acts[label] = []
             handles.append(head[idx].register_forward_hook(make_hook(label)))
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for i in range(0, phase_states.shape[0], batch_size):
             j = min(i + batch_size, phase_states.shape[0])
             model(torch.from_numpy(phase_states[i:j]).to(device))

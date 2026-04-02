@@ -81,7 +81,7 @@ def _collect_preprocessing_activations(
         preprocess[5].register_forward_hook(make_hook("256_post")), # post-LayerNorm (256-dim)
     ]
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for i in range(0, states.shape[0], batch_size):
             j = min(i + batch_size, states.shape[0])
             model(torch.from_numpy(states[i:j]).to(device))
@@ -227,7 +227,7 @@ def collect_preprocessing_layer_activations(
         model.blocks[0].register_forward_hook(make_hook("b0")),
     ]
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for i in range(0, states.shape[0], batch_size):
             j = min(i + batch_size, states.shape[0])
             model(torch.from_numpy(states[i:j]).to(device))

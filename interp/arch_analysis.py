@@ -54,7 +54,7 @@ def analyze_block_contributions(
 
         handles.append(block.register_forward_hook(hook))
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for i in range(0, states.shape[0], batch_size):
             j = min(i + batch_size, states.shape[0])
             model(torch.from_numpy(states[i:j]).to(device))
@@ -106,7 +106,7 @@ def analyze_preprocess_contributions(
 
         handles.append(layer.register_forward_hook(hook))
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for i in range(0, states.shape[0], batch_size):
             j = min(i + batch_size, states.shape[0])
             model(torch.from_numpy(states[i:j]).to(device))
@@ -392,7 +392,7 @@ def analyze_effective_rank(
                 activations[label] = []
                 handles.append(layer.register_forward_hook(make_hook(label)))
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for i in range(0, states.shape[0], batch_size):
             j = min(i + batch_size, states.shape[0])
             model(torch.from_numpy(states[i:j]).to(device))

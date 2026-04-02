@@ -1417,7 +1417,7 @@ class TestSelfPlay:
             _, values_before, _ = remote_eval.evaluate(state)
 
             # Simulate optimizer.step(): zero out all weights in-place
-            with torch.no_grad():
+            with torch.inference_mode():
                 for p in model.parameters():
                     p.zero_()
 

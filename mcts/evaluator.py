@@ -307,7 +307,7 @@ class NNEvaluator(BaseEvaluator):
             self._rotation_buf = buf
         return buf[:n]
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def evaluate(self, state: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Evaluate a game state with the neural network.
 
@@ -346,7 +346,7 @@ class NNEvaluator(BaseEvaluator):
         values = value_output.float().squeeze(0).cpu().numpy()
         return self._finalize_single(logits, values, mask_np, active_player)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def evaluate_batch(
         self, states: list[Any],
     ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
@@ -385,7 +385,7 @@ class NNEvaluator(BaseEvaluator):
         values = value_output.float().cpu().numpy()
         return self._finalize_batch(logits, values, masks, active_players)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def evaluate_leaves(
         self,
         state_arrays: list[np.ndarray],

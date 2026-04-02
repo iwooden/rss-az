@@ -78,7 +78,7 @@ def _collect_value_activations(
     handles.append(model.trunk_norm.register_forward_hook(hook_trunk))
     handles.append(model.value_head[1].register_forward_hook(hook_v0))  # GELU
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for i in range(0, states.shape[0], batch_size):
             j = min(i + batch_size, states.shape[0])
             model(torch.from_numpy(states[i:j]).to(device))

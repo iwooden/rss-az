@@ -82,7 +82,7 @@ def forward_batched(
     values_list: list[np.ndarray] = []
 
     model.eval()
-    with torch.no_grad():
+    with torch.inference_mode():
         for i in range(0, states.shape[0], batch_size):
             j = min(i + batch_size, states.shape[0])
             x = torch.from_numpy(states[i:j]).to(device)

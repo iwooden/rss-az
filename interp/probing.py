@@ -326,7 +326,7 @@ def collect_activations(
             if isinstance(layer, torch.nn.Linear):
                 handles.append(layer.register_forward_hook(make_hook(f"value_{i}")))
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for i in range(0, states.shape[0], batch_size):
             j = min(i + batch_size, states.shape[0])
             model(torch.from_numpy(states[i:j]).to(device))
@@ -374,7 +374,7 @@ def collect_phase_activations(
             activations[name] = []
             handles.append(layer.register_forward_hook(make_hook(name)))
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for i in range(0, phase_states.shape[0], batch_size):
             j = min(i + batch_size, phase_states.shape[0])
             model(torch.from_numpy(phase_states[i:j]).to(device))
@@ -459,7 +459,7 @@ def _standardize_gpu(
     return X_tr, X_te
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def _fit_ridge_gpu(
     X_train: torch.Tensor, y_train: torch.Tensor,
     X_test: torch.Tensor, y_test: torch.Tensor,
@@ -525,7 +525,7 @@ def _fit_logreg_gpu(
 
     opt.step(closure)
 
-    with torch.no_grad():
+    with torch.inference_mode():
         logits = X_te @ W + b
         return float((logits.argmax(dim=1) == y_test).float().mean().item())
 
