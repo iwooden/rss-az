@@ -22,7 +22,13 @@ import torch
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-from core.data import COMPANY_NAMES, CORP_NAMES, GamePhases
+from core.data import (
+    COMPANY_NAME_TO_ID,
+    COMPANY_NAMES,
+    CORP_NAME_TO_ID,
+    CORP_NAMES,
+    GamePhases,
+)
 from core.state import get_layout
 from entities.company import COMPANIES, CompanyLocation
 from entities.corp import CORPS
@@ -166,7 +172,10 @@ class AIServer:
         return self._sessions[gid]
 
     def get_ai_move(
-        self, game_data: dict, state_checksum: dict | None = None,
+        self,
+        game_data: dict,
+        state_checksum: dict | None = None,
+        preemption: dict | None = None,
     ) -> dict:
         """Process a game state and return the AI's move(s).
 
@@ -184,6 +193,10 @@ class AIServer:
 
         if session.is_game_over():
             return {"actions": [], "error": "Game is over"}
+
+        # FI right-of-first-refusal: use MCTS to decide preemption.
+        if preemption:
+            return self._run_preemption_query(session, state, preemption)
 
         # Determine which players are AI
         settings = game_data.get("settings") or {}
@@ -406,6 +419,86 @@ class AIServer:
         session.apply_engine_action(action_idx)
         return [intent], info
 
+    def _run_preemption_query(
+        self, session: GameSession, state, preemption: dict,
+    ) -> dict:
+        """Decide whether a corp should preempt an FI purchase via MCTS.
+
+        Walks the engine's ACQ offer buffer (passing non-target offers)
+        until the preempting corp's offer for the target company appears,
+        then runs MCTS to decide buy vs pass.
+        """
+        preempting_corp_name = preemption["preempting_corp"]
+        company_name = preemption["company"]
+        original_corp_name = preemption["corporation"]
+
+        preempting_corp_id = CORP_NAME_TO_ID[preempting_corp_name]
+        company_id = COMPANY_NAME_TO_ID[company_name]
+
+        phase = TURN.get_phase(state)
+        if phase != GamePhases.PHASE_ACQUISITION:
+            logger.warning(
+                f"Preemption query but engine not in ACQ (phase={phase})"
+            )
+            return self._preemption_decline(original_corp_name, company_name)
+
+        layout = session.layout
+        for _ in range(200):
+            if TURN.get_phase(state) != GamePhases.PHASE_ACQUISITION:
+                break
+
+            acq_corp = TURN.get_acq_active_corp(state)
+            if acq_corp < 0:
+                break  # Offer buffer exhausted
+
+            acq_company = TURN.get_acq_target_company(state)
+
+            if acq_corp == preempting_corp_id and acq_company == company_id:
+                # Target offer found — let MCTS decide buy vs pass
+                action_idx, info = self._search_and_pick(state)
+                intent = engine_action_to_18xx(
+                    action_idx, state, self.num_players,
+                )
+                session.apply_engine_action(action_idx)
+
+                accepted = intent["type"] == "offer"
+                logger.info(
+                    f"Preemption: {preempting_corp_name} "
+                    f"{'buys' if accepted else 'passes on'} "
+                    f"{company_name} from FI"
+                )
+                return {
+                    "actions": [{
+                        "type": "respond",
+                        "corporation": original_corp_name,
+                        "company": company_name,
+                        "accept": str(accepted).lower(),
+                    }],
+                    "search_info": {**info, "preemption": "resolved"},
+                }
+
+            # Not the target — pass to advance through the buffer
+            session.apply_engine_action(layout.acq_pass)
+
+        logger.warning(
+            f"Preemption target not found: "
+            f"{preempting_corp_name} + {company_name}"
+        )
+        return self._preemption_decline(original_corp_name, company_name)
+
+    @staticmethod
+    def _preemption_decline(corp_name: str, company_name: str) -> dict:
+        """Return a decline response for a preemption that couldn't be resolved."""
+        return {
+            "actions": [{
+                "type": "respond",
+                "corporation": corp_name,
+                "company": company_name,
+                "accept": "false",
+            }],
+            "search_info": {"preemption": "target_not_found"},
+        }
+
 
 def create_app(server: AIServer) -> Flask:
     """Create Flask app with the AI move endpoint."""
@@ -422,6 +515,7 @@ def create_app(server: AIServer) -> Flask:
             result = server.get_ai_move(
                 data["game_data"],
                 state_checksum=data.get("state_checksum"),
+                preemption=data.get("preemption"),
             )
             return jsonify(result)
         except Exception as e:
