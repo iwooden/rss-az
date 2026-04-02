@@ -16,6 +16,8 @@ import torch
 from nn.model_3p import RSSAlphaZeroNet, RSSModelConfig
 from nn.model_3p_plus import RSSAlphaZeroNet as RSSAlphaZeroNetPlus
 from nn.model_3p_plus import RSSModelConfig as RSSModelConfigPlus
+from nn.model_4p import RSSAlphaZeroNet as RSSAlphaZeroNet4P
+from nn.model_4p import RSSModelConfig as RSSModelConfig4P
 from train.gpu.amd import get_compile_kwargs as get_amd_compile_kwargs
 from train.gpu.nvidia import get_compile_kwargs as get_nvidia_compile_kwargs
 from train.checkpoint import (
@@ -138,6 +140,18 @@ def small_model_plus() -> RSSAlphaZeroNetPlus:
         num_blocks=1,
     )
     return RSSAlphaZeroNetPlus(cfg)
+
+
+@pytest.fixture
+def small_model_4p() -> RSSAlphaZeroNet4P:
+    cfg = RSSModelConfig4P(
+        input_dim=_VIS4,
+        action_dim=_ACT4,
+        value_dim=4,
+        hidden_dim=32,
+        num_blocks=1,
+    )
+    return RSSAlphaZeroNet4P(cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -1648,6 +1662,28 @@ class TestModelForward:
 
         assert policy_logits.shape == (8, small_model_plus.cfg.action_dim)
         assert values.shape == (8, small_model_plus.cfg.value_dim)
+
+    def test_forward_4p_does_not_call_tensor_tolist(
+        self, small_model_4p: RSSAlphaZeroNet4P
+    ) -> None:
+        x = torch.randn(8, small_model_4p.cfg.input_dim)
+        x[:, :8] = 0.0
+        for i in range(8):
+            x[i, i] = 1.0
+
+        original_tolist = torch.Tensor.tolist
+
+        def _forbid_tolist(self: torch.Tensor) -> list[object]:
+            raise AssertionError("model forward should not call Tensor.tolist()")
+
+        try:
+            torch.Tensor.tolist = _forbid_tolist  # type: ignore[method-assign]
+            policy_logits, values = small_model_4p(x)
+        finally:
+            torch.Tensor.tolist = original_tolist  # type: ignore[method-assign]
+
+        assert policy_logits.shape == (8, small_model_4p.cfg.action_dim)
+        assert values.shape == (8, small_model_4p.cfg.value_dim)
 
     def test_forward_skips_empty_phase_heads(
         self, small_model: RSSAlphaZeroNet
