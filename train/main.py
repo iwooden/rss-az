@@ -49,6 +49,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--model-path", type=str,
         help="Dotted module path to model definition (default: nn.model_3p)",
     )
+    parser.add_argument("--num-players", type=int,
+                        help="Number of players (default: 3)")
     parser.add_argument("--games-per-epoch", type=int)
     parser.add_argument("--num-epochs", type=int)
     parser.add_argument("--num-simulations", type=int)
@@ -124,7 +126,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 _CLI_FIELDS = (
-    "model_path", "eval_dtype",
+    "model_path", "num_players", "eval_dtype",
     "games_per_epoch", "num_epochs", "num_simulations", "search_batch_size",
     "mcts_sims_start", "mcts_sims_end", "mcts_ramp_start_epoch", "mcts_ramp_end_epoch",
     "num_workers", "num_eval_servers", "eval_fixed_batch_workers",

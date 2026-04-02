@@ -1,6 +1,6 @@
 """Tournament between model checkpoints.
 
-Play round-robin 3-player games between different training checkpoints
+Play round-robin games between different training checkpoints
 to evaluate relative model strength over time.
 
 Usage:
@@ -110,23 +110,32 @@ def _play_game(
 # ---------------------------------------------------------------------------
 
 def _generate_schedule(
-    num_models: int, min_games_per_pair: int,
+    num_models: int, min_games_per_pair: int, num_players: int,
 ) -> list[tuple[tuple[int, ...], int]]:
-    """Generate tournament schedule as (model_triple, num_games) pairs.
+    """Generate tournament schedule as (model_group, num_games) pairs.
 
-    For N=2, duplicates one model to fill the 3rd seat.
-    For N>=3, uses all C(N,3) combinations with enough games
-    so every pair plays together at least ``min_games_per_pair`` times.
+    For num_models < num_players, duplicates models to fill seats.
+    For num_models >= num_players, uses all C(N, num_players) combinations
+    with enough games so every pair plays together at least
+    ``min_games_per_pair`` times.
     """
-    if num_models == 2:
-        half = min_games_per_pair // 2
-        rest = min_games_per_pair - half
-        return [((0, 1, 0), half), ((0, 1, 1), rest)]
+    if num_models < num_players:
+        # Fill seats by cycling models (e.g. 2 models in a 4-player game)
+        groups: list[tuple[tuple[int, ...], int]] = []
+        base = list(range(num_models))
+        while len(base) < num_players:
+            base.append(base[len(base) % num_models])
+        perms = list(set(itertools.permutations(base)))
+        games_each = max(1, math.ceil(min_games_per_pair / len(perms)))
+        for p in perms:
+            groups.append((p, games_each))
+        return groups
 
-    triples = list(itertools.combinations(range(num_models), 3))
-    # Each pair co-occurs in (N-2) triples
-    games_per_triple = math.ceil(min_games_per_pair / (num_models - 2))
-    return [(t, games_per_triple) for t in triples]
+    combos = list(itertools.combinations(range(num_models), num_players))
+    # Each pair co-occurs in C(N-2, num_players-2) combos
+    co_occurrence = math.comb(num_models - 2, num_players - 2) if num_models > 2 else 1
+    games_per_combo = math.ceil(min_games_per_pair / max(co_occurrence, 1))
+    return [(c, games_per_combo) for c in combos]
 
 
 def _rank_players(net_worths: list[int]) -> list[int]:
@@ -148,7 +157,7 @@ def _rank_players(net_worths: list[int]) -> list[int]:
 @dataclass
 class PairStats:
     """Head-to-head results for one ordered model pair (a vs b)."""
-    finishes: list[int] = field(default_factory=lambda: [0, 0, 0])  # 1st, 2nd, 3rd
+    finishes: list[int] = field(default_factory=list)  # per-place counts (1st, 2nd, ...)
     wins: int = 0   # times a ranked strictly better than b
     games: int = 0  # games where both a and b played
 
@@ -163,14 +172,14 @@ class GameResult:
 
 
 def _collect_pair_stats(
-    results: list[GameResult], num_models: int,
+    results: list[GameResult], num_models: int, num_players: int,
 ) -> dict[tuple[int, int], PairStats]:
     """Aggregate per-pair statistics from game results."""
     stats: dict[tuple[int, int], PairStats] = {}
     for a in range(num_models):
         for b in range(num_models):
             if a != b:
-                stats[(a, b)] = PairStats()
+                stats[(a, b)] = PairStats(finishes=[0] * num_players)
 
     for gr in results:
         # Map model -> best rank achieved in this game
@@ -189,7 +198,7 @@ def _collect_pair_stats(
                 # Update a vs b
                 ps = stats[(model_a, model_b)]
                 ps.games += 1
-                if rank_a <= 3:
+                if rank_a <= num_players:
                     ps.finishes[rank_a - 1] += 1
                 if rank_a < rank_b:
                     ps.wins += 1
@@ -197,7 +206,7 @@ def _collect_pair_stats(
                 # Update b vs a
                 ps = stats[(model_b, model_a)]
                 ps.games += 1
-                if rank_b <= 3:
+                if rank_b <= num_players:
                     ps.finishes[rank_b - 1] += 1
                 if rank_b < rank_a:
                     ps.wins += 1
@@ -214,10 +223,12 @@ def _format_report(
     results: list[GameResult],
     stats: dict[tuple[int, int], PairStats],
     elapsed: float,
+    num_players: int,
 ) -> str:
     """Format tournament results as a readable report."""
     lines: list[str] = []
     total_games = len(results)
+    rank_labels = ["1st", "2nd", "3rd", "4th", "5th", "6th"][:num_players]
 
     lines.append(f"# Tournament Report ({total_games} games, {elapsed:.1f}s)")
     lines.append("")
@@ -229,8 +240,10 @@ def _format_report(
     for i, entry in enumerate(entries):
         lines.append(f"## [{i}] {entry.label}")
         lines.append("")
-        lines.append(f"  {'Opponent':<30s}  {'1st':>5s}  {'2nd':>5s}  {'3rd':>5s}  {'Better':>10s}  {'Games':>5s}")
-        lines.append(f"  {'-' * 30}  {'-' * 5}  {'-' * 5}  {'-' * 5}  {'-' * 10}  {'-' * 5}")
+        rank_hdr = "  ".join(f"{lbl:>5s}" for lbl in rank_labels)
+        lines.append(f"  {'Opponent':<30s}  {rank_hdr}  {'Better':>10s}  {'Games':>5s}")
+        rank_sep = "  ".join("-" * 5 for _ in rank_labels)
+        lines.append(f"  {'-' * 30}  {rank_sep}  {'-' * 10}  {'-' * 5}")
         for j, opp in enumerate(entries):
             if i == j:
                 continue
@@ -238,9 +251,9 @@ def _format_report(
             if ps.games == 0:
                 continue
             better_str = f"{ps.wins}/{ps.games}"
+            rank_vals = "  ".join(f"{ps.finishes[k]:>5d}" for k in range(num_players))
             lines.append(
-                f"  {f'[{j}] {opp.label}':<30s}  {ps.finishes[0]:>5d}  "
-                f"{ps.finishes[1]:>5d}  {ps.finishes[2]:>5d}  "
+                f"  {f'[{j}] {opp.label}':<30s}  {rank_vals}  "
                 f"{better_str:>10s}  {ps.games:>5d}"
             )
         lines.append("")
@@ -272,7 +285,7 @@ def run_tournament(
     state_pool = StatePool(2 * (mcts_config.num_simulations + 1), layout.total_size)
     rng = np.random.default_rng(base_seed)
 
-    schedule = _generate_schedule(len(entries), min_games_per_pair)
+    schedule = _generate_schedule(len(entries), min_games_per_pair, num_players)
     total_games = sum(g for _, g in schedule)
 
     print(f"Tournament: {len(entries)} models, {total_games} games scheduled")
@@ -428,8 +441,8 @@ def main() -> None:
     )
 
     # Build report
-    stats = _collect_pair_stats(results, len(entries))
-    report = _format_report(entries, results, stats, elapsed)
+    stats = _collect_pair_stats(results, len(entries), ref_config.num_players)
+    report = _format_report(entries, results, stats, elapsed, ref_config.num_players)
 
     if args.output:
         with open(args.output, "w") as f:
