@@ -60,9 +60,9 @@ Our Cython engine makes several intentional design choices that differ from the 
 
 **18xx:** During Phase 4 (Closing), any player or president may close any company they control, regardless of income. Companies with positive, zero, or negative adjusted income can all be closed.
 
-**Our engine:** By default, optional close offers are generated only for companies with **negative adjusted income** (income − cost of ownership < 0). For replay, the harness enables `allow_closing_positive_income`, so the engine offers the full 18xx closing scope instead of only negative-income companies.
+**Our engine:** By default, optional close offers are generated only for companies with **negative adjusted income** (income − cost of ownership < 0). Positive-income companies are not offered directly in the CLO action space used by the current replay path.
 
-**Replay handling:** The extractor emits a CLO round summary containing `closed_companies`. The CLO adapter uses that summary to decide which offers to take while walking our engine's close-offer buffer. No direct close pre-apply or CLO look-ahead is needed when replay runs with `allow_closing_positive_income`.
+**Replay handling:** The extractor emits a CLO round summary containing `closed_companies`. The CLO adapter walks our engine's normal negative-income close-offer buffer, then uses `pause_before_closing_transition` to stop at the end of the round before mandatory close / INCOME. Any remaining companies in `closed_companies` are patched directly at that paused boundary, after which the harness resumes the engine's normal CLO finalization.
 
 ### 4. Closing Offer Ordering
 
@@ -70,7 +70,7 @@ Our Cython engine makes several intentional design choices that differ from the 
 
 **Our engine:** Close offers are sorted by face value ascending and presented one-by-one from a hidden buffer.
 
-**Replay handling:** The CLO adapter reads `closed_companies` from the extractor's round summary, then matches that set against our engine's ordered offer buffer.
+**Replay handling:** The CLO adapter reads `closed_companies` from the extractor's round summary, matches negative-income closes against our engine's ordered offer buffer, and patches any leftover closes at the paused CLO boundary.
 
 ### 5. IPO / PAR Phase Split
 

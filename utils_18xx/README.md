@@ -78,15 +78,18 @@ ACQ/CLO actions use the shared helpers in `replay_state.py` rather than
 ad hoc per-phase loops. The session enables the same replay flags as the
 harness:
 
-- `allow_closing_positive_income=True` so CLO offer scope matches 18xx
 - `pause_before_acq_transition=True` so non-representable ACQ outcomes can
   be patched before the engine auto-advances into CLO
+- `pause_before_closing_transition=True` so CLO can patch any closes that
+  were valid in 18xx but never appeared in our negative-income offer buffer
 
 For ACQ, the session tracks pending `offer` actions, waits for the matching
 `respond`, replays representable offers through the engine buffer, and
 patches accepted cross-president outcomes at the paused ACQ boundary. For
-CLO, it matches `sell_company` / `close` actions against the engine's
-close-offer buffer and then drains any remaining offer phases after replay.
+CLO, it matches `sell_company` / `close` actions against the engine's normal
+negative-income close-offer buffer, then patches any remaining closes at the
+paused CLO boundary before resuming the engine's mandatory close / INCOME
+transition.
 
 ### `server.py`
 

@@ -17,11 +17,11 @@ State size varies by player count due to player-indexed arrays:
 
 | Players | Visible Size | Hidden Size | Total Size |
 |---------|--------------|-------------|------------|
-| 2       | 1039         | 1254        | 2293       |
-| 3       | 1109         | 1270        | 2379       |
-| 4       | 1181         | 1286        | 2467       |
-| 5       | 1255         | 1302        | 2557       |
-| 6       | 1331         | 1318        | 2649       |
+| 2       | 1039         | 1255        | 2294       |
+| 3       | 1109         | 1271        | 2380       |
+| 4       | 1181         | 1287        | 2468       |
+| 5       | 1255         | 1303        | 2558       |
+| 6       | 1331         | 1319        | 2650       |
 
 Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
 
@@ -314,7 +314,7 @@ Shown for all active corps regardless of affordability or share ownership. Recom
 
 ## Hidden State Layout
 
-Hidden state starts at `visible_size` offset. Total hidden size = `1222 + 16 * num_players`.
+Hidden state starts at `visible_size` offset. Total hidden size = `1223 + 16 * num_players`.
 
 The hidden state serves several purposes:
 - **Information hiding**: Data the NN shouldn't see (deck order, active player before rotation, turn number)
@@ -342,13 +342,14 @@ The hidden state serves several purposes:
 | `acq_active_corp` | 1106 | 1 | Compact storage for O(1) access |
 | `acq_target_company` | 1107 | 1 | Compact storage for O(1) access |
 | `closing_company` | 1108 | 1 | Compact storage for O(1) access |
-| `dividend_corp` | 1109 | 1 | Compact storage for O(1) access |
-| `issue_corp` | 1110 | 1 | Compact storage for O(1) access |
-| `ipo_company` | 1111 | 1 | Compact storage for O(1) access |
-| `par_corp` | 1112 | 1 | Compact storage for O(1) access (selected corp during PAR phase) |
-| `turn_number` | 1113 | 1 | / 50.0 (moved from visible turn state) |
-| `share_buys` | 1114 | num_players × 8 | Per-player buy counts / (MAX_ROUNDTRIPS * 2) |
-| `share_sells` | 1114 + np×8 | num_players × 8 | Per-player sell counts / (MAX_ROUNDTRIPS * 2) |
+| `closing_transition_pending` | 1109 | 1 | Hidden CLO substage marker: offers finished, mandatory close / INCOME still pending |
+| `dividend_corp` | 1110 | 1 | Compact storage for O(1) access |
+| `issue_corp` | 1111 | 1 | Compact storage for O(1) access |
+| `ipo_company` | 1112 | 1 | Compact storage for O(1) access |
+| `par_corp` | 1113 | 1 | Compact storage for O(1) access (selected corp during PAR phase) |
+| `turn_number` | 1114 | 1 | / 50.0 (moved from visible turn state) |
+| `share_buys` | 1115 | num_players × 8 | Per-player buy counts / (MAX_ROUNDTRIPS * 2) |
+| `share_sells` | 1115 + np×8 | num_players × 8 | Per-player sell counts / (MAX_ROUNDTRIPS * 2) |
 | `company_locations` | varies | 36 | CompanyLocation enum per company (O(1) clearing) |
 | `company_owner_ids` | varies | 36 | Owner ID per company (-1 if N/A, player_id or corp_id) |
 | `ipo_remaining` | varies | 36 | IPO processing flags (moved from visible) |

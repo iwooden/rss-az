@@ -10,7 +10,7 @@ High-performance Cython game engine for "Rolling Stock Stars" board game, optimi
 
 **Key characteristics:**
 - 2-6 player support with dynamic state sizing
-- ~2293-2649 floats per game state (varies by player count)
+- ~2294-2650 floats per game state (varies by player count)
 - No Python object overhead in hot paths (nogil execution)
 - Benchmark target: thousands of games per minute
 
@@ -71,9 +71,9 @@ Central data structure: single contiguous float32 numpy array.
 **Sizes by player count:**
 | Players | Visible | Hidden | Total |
 |---------|---------|--------|-------|
-| 2 | 1039 | 1254 | 2293 |
-| 3 | 1109 | 1270 | 2379 |
-| 6 | 1331 | 1318 | 2649 |
+| 2 | 1039 | 1255 | 2294 |
+| 3 | 1109 | 1271 | 2380 |
+| 6 | 1331 | 1319 | 2650 |
 
 ### Actions (`core/actions.pyx`)
 
@@ -221,7 +221,7 @@ Both phases use **one-by-one offer presentation**: offers generated into hidden 
 
 **ACQUISITION:** Priority: OS→FI (face value DESC) → Corp→FI (price DESC) → Corp→Corp → Corp→Player. Receivership corps auto-buy from FI at HIGH if affordable, auto-pass otherwise. Actions: 51 price offsets, FI_BUY, PASS.
 
-**CLOSING:** Two stages: (1) auto-close (FI negative-income, receivership red/orange above CoO), (2) player offers sorted by face value ASC. Actions: CLOSE, PASS. Mandatory close at end if player has negative income+cash.
+**CLOSING:** Two stages: (1) auto-close (FI negative-income, receivership red/orange above CoO), (2) player offers sorted by face value ASC. Actions: CLOSE, PASS. Mandatory close at end if player has negative income+cash. Hidden state now includes a `closing_transition_pending` marker so the driver can distinguish initial CLO entry from the post-offer boundary before mandatory close / INCOME.
 
 ## Code Conventions
 

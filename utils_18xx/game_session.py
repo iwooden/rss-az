@@ -20,7 +20,11 @@ from core.data import (
     CORP_NAMES,
     GamePhases,
 )
-from core.driver import DRIVER, STATUS_INVALID_PY as STATUS_INVALID
+from core.driver import (
+    DRIVER,
+    STATUS_INVALID_PY as STATUS_INVALID,
+    STATUS_PAUSED_PY as STATUS_PAUSED,
+)
 from core.state import GameState
 from entities.turn import TURN
 
@@ -35,11 +39,12 @@ from .replay_state import (
     align_to_action,
     apply_action_sequence,
     apply_external_acquisition_transfer,
+    apply_external_close,
     drain_offer_phases,
     initialize_replay_state,
+    is_closing_transition_pending,
     is_representable_acquisition_offer,
     replay_acquisition_offer,
-    replay_closing_offer,
 )
 
 PHASE_ACQ = GamePhases.PHASE_ACQUISITION
@@ -84,8 +89,8 @@ class GameSession:
             self.num_players,
             self._deck_order,
             self._offering,
-            allow_closing_positive_income=True,
             pause_before_acq_transition=True,
+            pause_before_closing_transition=True,
         )
         self.state = state
 
@@ -277,6 +282,8 @@ class GameSession:
         idx: int,
     ) -> int:
         """Replay one CLO round from raw close/pass actions."""
+        closed_companies: set[int] = set()
+
         while idx < len(actions) and TURN.get_phase(state) == PHASE_CLO:
             action = actions[idx]
             atype = action.get("type")
@@ -286,22 +293,54 @@ class GameSession:
                 continue
 
             if atype in ("sell_company", "close"):
-                company_id = COMPANY_NAME_TO_ID[action["company"]]
-                matched = replay_closing_offer(
-                    state,
-                    self.layout,
-                    company_id,
-                    close=True,
-                )
-                if not matched:
-                    raise RuntimeError(
-                        "Closing action never appeared in engine buffer: "
-                        f"{action}"
-                    )
+                closed_companies.add(COMPANY_NAME_TO_ID[action["company"]])
                 idx += 1
                 continue
 
             break
+
+        max_iterations = 200
+        for _ in range(max_iterations):
+            if TURN.get_phase(state) != PHASE_CLO:
+                break
+
+            closing_company = TURN.get_closing_company(state)
+            if closing_company < 0:
+                if DRIVER.is_non_player_phase(state) and not is_closing_transition_pending(state):
+                    DRIVER.advance_phase(state)
+                    continue
+                break
+
+            action_idx = (
+                self.layout.close_action
+                if closing_company in closed_companies
+                else self.layout.close_pass
+            )
+            result = DRIVER.apply_action(state, action_idx)
+            if result == STATUS_INVALID:
+                raise RuntimeError(
+                    f"Invalid CLO replay action for company={COMPANY_NAMES[closing_company]}"
+                )
+            if closing_company in closed_companies and result != STATUS_INVALID:
+                closed_companies.discard(closing_company)
+            if result == STATUS_PAUSED:
+                break
+
+        if TURN.get_phase(state) == PHASE_CLO and is_closing_transition_pending(state):
+            for company_id in sorted(closed_companies):
+                if not apply_external_close(state, company_id):
+                    raise RuntimeError(
+                        "Failed to patch deferred CLO close for "
+                        f"{COMPANY_NAMES[company_id]}"
+                    )
+            closed_companies.clear()
+            DRIVER.advance_phase(state)
+
+        if closed_companies:
+            raise RuntimeError(
+                "CLO close actions never resolved in engine buffer: "
+                + ", ".join(COMPANY_NAMES[company_id] for company_id in sorted(closed_companies))
+            )
 
         return idx
 

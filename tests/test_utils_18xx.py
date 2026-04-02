@@ -92,3 +92,32 @@ def test_sync_acq_round_patches_cross_president_acceptance() -> None:
     assert CORPS[buyer_corp_id].get_cash(state) == 40 - price
     assert PLAYERS[seller_player_id].get_cash(state) == seller_cash_before + price
     assert_invariants(state, "After cross-president ACQ patch replay")
+
+
+def test_sync_clo_round_patches_positive_income_close_at_pause_boundary() -> None:
+    """Positive-income closes should patch at the paused CLO boundary."""
+    state = GameState(3)
+    state.initialize_game()
+    state.pause_before_closing_transition = True
+    TURN.set_coo_level(state, 1)
+
+    company_id = 0
+    COMPANIES[company_id].transfer_to_player(state, 0)
+    assert COMPANIES[company_id].get_adjusted_income(state) > 0
+
+    TURN.set_phase(state, GamePhases.PHASE_CLOSING)
+
+    session = GameSession(3)
+    actions = [
+        {
+            "type": "sell_company",
+            "company": COMPANY_NAMES[company_id],
+        },
+    ]
+
+    next_idx = session._sync_clo_round(state, actions, 0)
+
+    assert next_idx == 1
+    assert TURN.get_phase(state) == GamePhases.PHASE_INCOME
+    assert COMPANIES[company_id].is_removed(state)
+    assert_invariants(state, "After positive-income CLO patch replay")

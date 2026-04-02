@@ -22,7 +22,12 @@ from phases.invest cimport apply_invest_action
 from phases.bid cimport apply_bid_action
 from phases.wrap_up cimport apply_wrap_up
 from phases.acquisition cimport apply_acquisition_action, _transition_to_closing
-from phases.closing cimport apply_closing_auto, apply_closing_action
+from phases.closing cimport (
+    apply_closing_auto,
+    apply_closing_action,
+    finalize_closing_transition,
+    is_closing_transition_pending,
+)
 from phases.income cimport apply_income
 from phases.dividends cimport apply_dividend_action
 from phases.end_card cimport apply_end_card
@@ -122,6 +127,8 @@ cdef bint _should_pause_before_phase_execution(GameState state, int phase) noexc
     """
     if phase == PHASE_ACQUISITION:
         return state.pause_before_acq_transition
+    if phase == PHASE_CLOSING:
+        return state.pause_before_closing_transition and is_closing_transition_pending(state)
     return False
 
 
@@ -153,7 +160,10 @@ cdef void _execute_non_player_phase(GameState state, object history):
     elif phase == PHASE_ACQUISITION:
         _transition_to_closing(state)
     elif phase == PHASE_CLOSING:
-        apply_closing_auto(state)
+        if is_closing_transition_pending(state):
+            finalize_closing_transition(state)
+        else:
+            apply_closing_auto(state)
     elif phase == PHASE_INCOME:
         apply_income(state)
     elif phase == PHASE_END_CARD:

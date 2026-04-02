@@ -335,12 +335,13 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     # [1106] acq_active_corp (compact)
     # [1107] acq_target_company (compact)
     # [1108] closing_company (compact)
-    # [1109] dividend_corp (compact)
-    # [1110] issue_corp (compact)
-    # [1111] ipo_company (compact)
-    # [1112] par_corp (compact)
-    # [1113] turn_number
-    # [1113..] share_buys (num_players * 8)
+    # [1109] closing_transition_pending
+    # [1110] dividend_corp (compact)
+    # [1111] issue_corp (compact)
+    # [1112] ipo_company (compact)
+    # [1113] par_corp (compact)
+    # [1114] turn_number
+    # [1114..] share_buys (num_players * 8)
     # [...] share_sells (num_players * 8)
     # Then: company_locations (36), company_owner_ids (36), ipo_remaining (36)
     layout.hidden_active_player_offset = offset
@@ -383,6 +384,8 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     layout.hidden_acq_target_company_offset = offset
     offset += 1
     layout.hidden_closing_company_offset = offset
+    offset += 1
+    layout.hidden_closing_transition_pending_offset = offset
     offset += 1
     layout.hidden_dividend_corp_offset = offset
     offset += 1
@@ -801,6 +804,7 @@ cdef class GameState:
         self.step_mode = False
         self.allow_closing_positive_income = False
         self.pause_before_acq_transition = False
+        self.pause_before_closing_transition = False
 
         # Look up precomputed layouts (struct copy, ~160 bytes)
         self._layout = _cached_layouts[num_players]

@@ -25,11 +25,11 @@ class TestStateLayoutSizes:
     # Expected sizes - these MUST match VECTORS.md and CLAUDE.md
     # If these tests fail, update the documentation to match!
     EXPECTED_SIZES = {
-        2: {'visible': 1039, 'hidden': 1254, 'total': 2293},
-        3: {'visible': 1109, 'hidden': 1270, 'total': 2379},
-        4: {'visible': 1181, 'hidden': 1286, 'total': 2467},
-        5: {'visible': 1255, 'hidden': 1302, 'total': 2557},
-        6: {'visible': 1331, 'hidden': 1318, 'total': 2649},
+        2: {'visible': 1039, 'hidden': 1255, 'total': 2294},
+        3: {'visible': 1109, 'hidden': 1271, 'total': 2380},
+        4: {'visible': 1181, 'hidden': 1287, 'total': 2468},
+        5: {'visible': 1255, 'hidden': 1303, 'total': 2558},
+        6: {'visible': 1331, 'hidden': 1319, 'total': 2650},
     }
 
     @pytest.mark.parametrize("num_players", [2, 3, 4, 5, 6])
@@ -86,10 +86,10 @@ class TestComponentSizes:
             )
 
     def test_hidden_size_formula(self):
-        """Hidden size = 1186 + 16*num_players (per-player share tracking)."""
+        """Hidden size = 1223 + 16*num_players."""
         for num_players in [2, 3, 4, 5, 6]:
             layout = get_layout(num_players)
-            expected = 1222 + 16 * num_players
+            expected = 1223 + 16 * num_players
             assert layout.hidden_size == expected, (
                 f"{num_players} players: hidden size {layout.hidden_size} != {expected}"
             )

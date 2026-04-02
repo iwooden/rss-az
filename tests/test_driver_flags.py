@@ -484,6 +484,76 @@ class TestPauseBeforeAcqTransition:
         assert history[0][1] == -101
 
 
+class TestPauseBeforeClosingTransition:
+    """Tests for GameState.pause_before_closing_transition flag."""
+
+    def _make_single_offer_closing_state(self) -> tuple[GameState, int]:
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+        state.pause_before_closing_transition = True
+        TURN.set_coo_level(state, 7)
+
+        company_id = None
+        for cid in range(36):
+            if COMPANIES[cid].get_location(state) != 0:
+                continue
+            if COMPANIES[cid].get_adjusted_income(state) < 0:
+                company_id = cid
+                break
+
+        assert company_id is not None
+        COMPANIES[company_id].transfer_to_player(state, 0)
+        TURN.set_phase(state, PHASE_CLOSING)
+        return state, company_id
+
+    def test_default_is_false(self):
+        """pause_before_closing_transition defaults to False."""
+        state = GameState(num_players=3)
+        assert state.pause_before_closing_transition is False
+
+    def test_set_flag(self):
+        """pause_before_closing_transition can be enabled."""
+        state = GameState(num_players=3)
+        state.pause_before_closing_transition = True
+        assert state.pause_before_closing_transition is True
+
+    def test_apply_action_pauses_before_closing_transition(self):
+        """Driver returns STATUS_PAUSED before CLO finalizes into INCOME."""
+        state, company_id = self._make_single_offer_closing_state()
+        layout = get_action_layout(3)
+
+        history = []
+        assert DRIVER.advance_phase(state, history=history) == STATUS_OK
+        assert TURN.get_phase(state) == PHASE_CLOSING
+        assert TURN.get_closing_company(state) == company_id
+
+        result = DRIVER.apply_action(state, layout["close_action"], history=history)
+        assert result == STATUS_PAUSED
+        assert TURN.get_phase(state) == PHASE_CLOSING
+        assert TURN.get_closing_company(state) == -1
+        assert DRIVER.is_non_player_phase(state) is True
+
+        action_values = [entry[1] for entry in history]
+        assert action_values.count(-102) == 1
+        assert action_values[-1] == layout["close_action"]
+
+    def test_advance_phase_resumes_after_pause(self):
+        """advance_phase() continues CLO transition after a paused return."""
+        state, _ = self._make_single_offer_closing_state()
+        layout = get_action_layout(3)
+
+        assert DRIVER.advance_phase(state) == STATUS_OK
+        assert DRIVER.apply_action(state, layout["close_action"]) == STATUS_PAUSED
+        assert TURN.get_phase(state) == PHASE_CLOSING
+
+        history = []
+        result = DRIVER.advance_phase(state, history=history)
+        assert result == STATUS_OK
+        assert TURN.get_phase(state) == PHASE_INCOME
+        assert len(history) == 1
+        assert history[0][1] == -102
+
+
 class TestFlagsCombined:
     """Tests for both flags working together."""
 
@@ -493,14 +563,17 @@ class TestFlagsCombined:
         state.step_mode = True
         state.allow_closing_positive_income = True
         state.pause_before_acq_transition = True
+        state.pause_before_closing_transition = True
         assert state.step_mode is True
         assert state.allow_closing_positive_income is True
         assert state.pause_before_acq_transition is True
+        assert state.pause_before_closing_transition is True
 
         state.step_mode = False
         assert state.step_mode is False
         assert state.allow_closing_positive_income is True
         assert state.pause_before_acq_transition is True
+        assert state.pause_before_closing_transition is True
 
     def test_flags_do_not_affect_state_array(self):
         """Flags are Python-level only, don't change the float array."""
@@ -512,6 +585,7 @@ class TestFlagsCombined:
         state2.step_mode = True
         state2.allow_closing_positive_income = True
         state2.pause_before_acq_transition = True
+        state2.pause_before_closing_transition = True
 
         # Arrays should be identical
         np.testing.assert_array_equal(state1._array, state2._array)

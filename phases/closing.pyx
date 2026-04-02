@@ -89,6 +89,16 @@ cdef void _close_player_company(GameState state, int company_id, int player_id) 
     company_module.COMPANIES[company_id].remove_from_game(state)
 
 
+cdef bint is_closing_transition_pending(GameState state) noexcept:
+    """Return whether CLO has finished offers and is waiting to finalize."""
+    return state._data[state._layout.hidden_closing_transition_pending_offset] == 1.0
+
+
+cdef void _set_closing_transition_pending(GameState state, bint pending) noexcept:
+    """Set the hidden CLO finalization marker."""
+    state._data[state._layout.hidden_closing_transition_pending_offset] = 1.0 if pending else 0.0
+
+
 cdef void _process_mandatory_close(GameState state) noexcept:
     """
     Auto-close player private companies to prevent negative cash in INCOME.
@@ -350,6 +360,13 @@ cdef void _transition_to_income(GameState state) noexcept:
     turn_module.TURN.set_phase(state, PHASE_INCOME)
 
 
+cdef void finalize_closing_transition(GameState state) noexcept:
+    """Apply mandatory close and leave CLO after offer handling is complete."""
+    _set_closing_transition_pending(state, False)
+    _process_mandatory_close(state)
+    _transition_to_income(state)
+
+
 cdef void _present_next_close_offer(GameState state) noexcept:
     """
     Advance to next valid offer and update visible state.
@@ -401,13 +418,17 @@ cdef void _present_next_close_offer(GameState state) noexcept:
             state._set_active_player(president if president >= 0 else 0)
         return
 
-    # No more valid offers - process mandatory close then transition
+    # No more valid offers. When replay wants to patch state at the CLO
+    # boundary, leave a non-player pending substage for the driver to pause on.
+    # Otherwise preserve the original behavior and finalize immediately.
     turn_module.TURN.clear_closing_company(state)
     state.clear_active_company()
     turn_module.TURN.clear_active_corp_one_hot(state)
     state.clear_active_corp()
-    _process_mandatory_close(state)  # CLO-14, CLO-15: mandatory close before transition
-    _transition_to_income(state)
+    if state.pause_before_closing_transition:
+        _set_closing_transition_pending(state, True)
+    else:
+        finalize_closing_transition(state)
 
 
 cdef void _process_fi_auto_close(GameState state) noexcept:
@@ -595,6 +616,7 @@ cdef int apply_closing_auto(GameState state) noexcept:
 
     Returns: 0 always (deterministic entry, no failure modes)
     """
+    _set_closing_transition_pending(state, False)
     _process_fi_auto_close(state)
     _process_receivership_auto_close(state)
 
@@ -615,6 +637,11 @@ cdef int apply_closing_auto(GameState state) noexcept:
 def apply_closing_auto_py(GameState state):
     """Python wrapper for testing."""
     return apply_closing_auto(state)
+
+
+def is_closing_transition_pending_py(GameState state):
+    """Python wrapper for the post-offer CLO transition marker."""
+    return is_closing_transition_pending(state)
 
 
 def apply_closing_action_py(GameState state, int action_type):

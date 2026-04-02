@@ -62,6 +62,7 @@ cdef struct StateLayout:
     int hidden_acq_active_corp_offset
     int hidden_acq_target_company_offset
     int hidden_closing_company_offset
+    int hidden_closing_transition_pending_offset
     int hidden_dividend_corp_offset
     int hidden_issue_corp_offset
     int hidden_ipo_company_offset
@@ -175,6 +176,7 @@ cdef class GameState:
     cdef public bint step_mode
     cdef public bint allow_closing_positive_income
     cdef public bint pause_before_acq_transition
+    cdef public bint pause_before_closing_transition
 
     # Internal pointer access
     cdef float* _player_ptr(self, int player_id) noexcept nogil

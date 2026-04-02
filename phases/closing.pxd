@@ -6,6 +6,8 @@ from core.actions cimport ActionInfo
 
 cdef int apply_closing_auto(GameState state) noexcept
 cdef int apply_closing_action(GameState state, ActionInfo* info) noexcept
+cdef bint is_closing_transition_pending(GameState state) noexcept
+cdef void finalize_closing_transition(GameState state) noexcept
 cdef void _handle_close_accept(GameState state) noexcept
 cdef void _handle_close_pass(GameState state) noexcept
 cdef void _generate_close_offers(GameState state) noexcept

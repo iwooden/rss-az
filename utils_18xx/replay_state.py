@@ -10,13 +10,14 @@ from core.driver import (
     STATUS_PAUSED_PY as STATUS_PAUSED,
 )
 from core.actions import get_valid_action_mask
-from core.data import GamePhases, get_company_low_price
+from core.data import CorpIndices, GamePhases, get_company_income, get_company_low_price
 from core.state import GameState
 from entities.company import COMPANIES, CompanyLocation
 from entities.corp import CORPS
 from entities.fi import FI
 from entities.player import PLAYERS
 from entities.turn import TURN
+from phases.closing import is_closing_transition_pending_py
 
 from .action_parser import map_action, override_deck_and_offering
 
@@ -33,6 +34,7 @@ def initialize_replay_state(
     step_mode: bool = False,
     allow_closing_positive_income: bool = False,
     pause_before_acq_transition: bool = False,
+    pause_before_closing_transition: bool = False,
 ) -> GameState:
     """Create a GameState configured for step-by-step 18xx replay."""
     state = GameState(num_players)
@@ -40,6 +42,7 @@ def initialize_replay_state(
     state.step_mode = step_mode
     state.allow_closing_positive_income = allow_closing_positive_income
     state.pause_before_acq_transition = pause_before_acq_transition
+    state.pause_before_closing_transition = pause_before_closing_transition
     override_deck_and_offering(state, deck_order_names, offering_names)
     return state
 
@@ -174,6 +177,41 @@ def apply_external_acquisition_transfer(
     return True
 
 
+def is_closing_transition_pending(state: GameState) -> bool:
+    """Return whether CLO is waiting on mandatory close / INCOME transition."""
+    return bool(is_closing_transition_pending_py(state))
+
+
+def apply_external_close(
+    state: GameState,
+    company_id: int,
+) -> bool:
+    """Apply a close that the current CLO offer buffer did not represent."""
+    if COMPANIES[company_id].is_removed(state):
+        return False
+
+    owner_loc = COMPANIES[company_id].get_location(state)
+    owner_id = COMPANIES[company_id].get_owner_id(state)
+
+    if owner_loc == LOC_PLAYER:
+        COMPANIES[company_id].remove_from_game(state)
+        return True
+
+    if owner_loc == LOC_CORP:
+        if owner_id < 0 or CORPS[owner_id].count_companies(state) < 2:
+            return False
+        if owner_id == CorpIndices.CORP_JS:
+            CORPS[owner_id].add_cash(state, get_company_income(company_id) * 2)
+        COMPANIES[company_id].remove_from_game(state)
+        return True
+
+    if owner_loc == LOC_FI:
+        COMPANIES[company_id].remove_from_game(state)
+        return True
+
+    return False
+
+
 def replay_acquisition_offer(
     state: GameState,
     layout,
@@ -221,41 +259,6 @@ def replay_acquisition_offer(
             return False
 
     raise RuntimeError("Exceeded ACQ replay iteration limit")
-
-
-def replay_closing_offer(
-    state: GameState,
-    layout,
-    company_id: int,
-    *,
-    close: bool,
-    max_iterations: int = 200,
-) -> bool:
-    """Walk the CLO offer buffer until the target company is reached."""
-    for _ in range(max_iterations):
-        if TURN.get_phase(state) != GamePhases.PHASE_CLOSING:
-            return False
-
-        cur_company = TURN.get_closing_company(state)
-        if cur_company == company_id:
-            action_idx = layout.close_action if close else layout.close_pass
-            result = DRIVER.apply_action(state, action_idx)
-            if result == STATUS_INVALID:
-                raise RuntimeError(
-                    f"Invalid CLO replay action for company={company_id}, "
-                    f"close={close}"
-                )
-            return True
-
-        result = DRIVER.apply_action(state, layout.close_pass)
-        if result == STATUS_INVALID:
-            raise RuntimeError(
-                f"Invalid CLO pass while searching for company={company_id}"
-            )
-        if result == STATUS_GAME_OVER:
-            return False
-
-    raise RuntimeError("Exceeded CLO replay iteration limit")
 
 
 def drain_offer_phases(state: GameState, layout, max_iterations: int = 500) -> None:
