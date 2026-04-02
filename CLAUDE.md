@@ -278,7 +278,7 @@ Validate our engine against completed games from 18xx.games by replaying every a
 
 Key files: `extract_states.rb` (state extraction), `action_parser.py` (action mapping with undo/redo handling), `replay_harness.py` (replay + comparison), `test_replay.py` (pytest entry).
 
-**Action space differences:** Our engine doesn't support: (1) player-owned corp-to-corp ACQ transfers, (2) closing companies with positive income. Check for these before investigating engine bugs if replay fails.
+**Action space differences:** Our engine doesn't support: (1) cross-president ACQ transfers, (2) directly offering positive-income company closes in CLO. Check for these before investigating engine bugs if replay fails.
 
 **Adding a game:** Export JSON → save to `tests/games_18xx/data/<id>.json` → add to `@pytest.mark.parametrize` in `test_replay.py`.
 

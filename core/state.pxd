@@ -174,7 +174,6 @@ cdef class GameState:
 
     # Driver config flags (Python-level, not in float array)
     cdef public bint step_mode
-    cdef public bint allow_closing_positive_income
     cdef public bint pause_before_acq_transition
     cdef public bint pause_before_closing_transition
 

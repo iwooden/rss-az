@@ -12,10 +12,6 @@ from core.data import GamePhases
 from entities.turn import TURN
 from entities.corp import CORPS
 from entities.company import COMPANIES
-from entities.fi import FI
-from phases.closing import (
-    generate_close_offers_py, get_close_offer_count_py, get_close_offer_py,
-)
 from tests.phases.conftest import float_corp_for_test
 
 
@@ -260,169 +256,6 @@ class TestStepModeFlag:
         assert history[0][1] < 0  # Sentinel values are negative
 
 
-class TestAllowClosingPositiveIncome:
-    """Tests for GameState.allow_closing_positive_income flag."""
-
-    def test_default_is_false(self):
-        """allow_closing_positive_income defaults to False."""
-        state = GameState(num_players=3)
-        assert state.allow_closing_positive_income is False
-
-    def test_set_flag(self):
-        """allow_closing_positive_income can be set to True."""
-        state = GameState(num_players=3)
-        state.allow_closing_positive_income = True
-        assert state.allow_closing_positive_income is True
-
-    def _make_closing_state_with_companies(self, *, positive_income_company_id, negative_income_company_id):
-        """Create a state in CLOSING phase with both positive and negative income companies.
-
-        Returns (state, player_id) where player_id owns both companies.
-        """
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-
-        player_id = 0
-
-        # Transfer both companies to the player
-        COMPANIES[positive_income_company_id].transfer_to_player(state, player_id)
-        COMPANIES[negative_income_company_id].transfer_to_player(state, player_id)
-
-        # Set high CoO to make the negative company actually negative
-        TURN.set_coo_level(state, 7)
-
-        # Verify income assumptions
-        pos_income = COMPANIES[positive_income_company_id].get_adjusted_income(state)
-        neg_income = COMPANIES[negative_income_company_id].get_adjusted_income(state)
-        assert pos_income >= 0, f"Expected positive income, got {pos_income}"
-        assert neg_income < 0, f"Expected negative income, got {neg_income}"
-
-        return state, player_id
-
-    def _find_positive_and_negative_companies(self, state):
-        """Find a company with positive adjusted income and one with negative."""
-        positive_id = None
-        negative_id = None
-        for cid in range(36):
-            if COMPANIES[cid].get_location(state) != 0:  # Skip non-deck companies
-                continue
-            adj = COMPANIES[cid].get_adjusted_income(state)
-            if adj >= 0 and positive_id is None:
-                positive_id = cid
-            elif adj < 0 and negative_id is None:
-                negative_id = cid
-            if positive_id is not None and negative_id is not None:
-                break
-        return positive_id, negative_id
-
-    def test_default_excludes_positive_income(self):
-        """By default, closing offers exclude positive-income companies."""
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-        TURN.set_coo_level(state, 7)
-
-        pos_id, neg_id = self._find_positive_and_negative_companies(state)
-        assert pos_id is not None and neg_id is not None
-
-        # Give both to player 0
-        COMPANIES[pos_id].transfer_to_player(state, 0)
-        COMPANIES[neg_id].transfer_to_player(state, 0)
-
-        TURN.set_phase(state, PHASE_CLOSING)
-        generate_close_offers_py(state)
-        count = get_close_offer_count_py(state)
-
-        # Should only have the negative-income company
-        offered_companies = set()
-        for i in range(count):
-            _, _, cid = get_close_offer_py(state, i)
-            offered_companies.add(cid)
-
-        assert neg_id in offered_companies, "Negative income company should be offered"
-        assert pos_id not in offered_companies, "Positive income company should NOT be offered"
-
-    def test_flag_includes_positive_income(self):
-        """With flag enabled, closing offers include positive-income companies."""
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-        state.allow_closing_positive_income = True
-        TURN.set_coo_level(state, 7)
-
-        pos_id, neg_id = self._find_positive_and_negative_companies(state)
-        assert pos_id is not None and neg_id is not None
-
-        # Give both to player 0
-        COMPANIES[pos_id].transfer_to_player(state, 0)
-        COMPANIES[neg_id].transfer_to_player(state, 0)
-
-        TURN.set_phase(state, PHASE_CLOSING)
-        generate_close_offers_py(state)
-        count = get_close_offer_count_py(state)
-
-        offered_companies = set()
-        for i in range(count):
-            _, _, cid = get_close_offer_py(state, i)
-            offered_companies.add(cid)
-
-        assert neg_id in offered_companies, "Negative income company should be offered"
-        assert pos_id in offered_companies, "Positive income company should also be offered"
-
-    def test_flag_includes_positive_income_corp_companies(self):
-        """Flag also works for corp-owned companies."""
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-        state.allow_closing_positive_income = True
-        TURN.set_coo_level(state, 7)
-
-        pos_id, neg_id = self._find_positive_and_negative_companies(state)
-        assert pos_id is not None and neg_id is not None
-
-        # Float a corp and give it both companies
-        float_corp_for_test(state, corp_id=0, company_id=pos_id, player_id=0)
-        COMPANIES[neg_id].transfer_to_corp(state, 0)
-
-        TURN.set_phase(state, PHASE_CLOSING)
-        generate_close_offers_py(state)
-        count = get_close_offer_count_py(state)
-
-        offered_companies = set()
-        for i in range(count):
-            _, _, cid = get_close_offer_py(state, i)
-            offered_companies.add(cid)
-
-        assert neg_id in offered_companies, "Negative income corp company should be offered"
-        assert pos_id in offered_companies, "Positive income corp company should also be offered"
-
-    def test_flag_does_not_affect_fi_auto_close(self):
-        """FI auto-close is unaffected by the flag (it only closes negative income)."""
-        state = GameState(num_players=3)
-        state.initialize_game(seed=42)
-        state.allow_closing_positive_income = True
-        TURN.set_coo_level(state, 7)
-
-        # Find a high-income company (positive adjusted income even at CoO 7)
-        high_income_id = None
-        for cid in range(36):
-            if COMPANIES[cid].get_location(state) != 0:
-                continue
-            if COMPANIES[cid].get_adjusted_income(state) > 0:
-                high_income_id = cid
-                break
-        assert high_income_id is not None
-
-        # Give to FI
-        COMPANIES[high_income_id].transfer_to_fi(state)
-        assert FI.owns_company(state, high_income_id)
-
-        # FI auto-close should NOT close positive-income companies
-        from phases.closing import apply_closing_auto_py
-        TURN.set_phase(state, PHASE_CLOSING)
-        apply_closing_auto_py(state)
-
-        # Company should still be owned by FI (not removed)
-        assert FI.owns_company(state, high_income_id)
-
-
 class TestPauseBeforeAcqTransition:
     """Tests for GameState.pause_before_acq_transition flag."""
 
@@ -555,23 +388,20 @@ class TestPauseBeforeClosingTransition:
 
 
 class TestFlagsCombined:
-    """Tests for both flags working together."""
+    """Tests for the remaining driver control flags."""
 
     def test_both_flags_independent(self):
-        """All driver control flags can be set independently."""
+        """Driver control flags can be set independently."""
         state = GameState(num_players=3)
         state.step_mode = True
-        state.allow_closing_positive_income = True
         state.pause_before_acq_transition = True
         state.pause_before_closing_transition = True
         assert state.step_mode is True
-        assert state.allow_closing_positive_income is True
         assert state.pause_before_acq_transition is True
         assert state.pause_before_closing_transition is True
 
         state.step_mode = False
         assert state.step_mode is False
-        assert state.allow_closing_positive_income is True
         assert state.pause_before_acq_transition is True
         assert state.pause_before_closing_transition is True
 
@@ -583,7 +413,6 @@ class TestFlagsCombined:
         state2 = GameState(num_players=3)
         state2.initialize_game(seed=42)
         state2.step_mode = True
-        state2.allow_closing_positive_income = True
         state2.pause_before_acq_transition = True
         state2.pause_before_closing_transition = True
 

@@ -802,7 +802,6 @@ cdef class GameState:
 
         self._num_players = num_players
         self.step_mode = False
-        self.allow_closing_positive_income = False
         self.pause_before_acq_transition = False
         self.pause_before_closing_transition = False
 

@@ -32,7 +32,6 @@ def initialize_replay_state(
     offering_names: list[str],
     *,
     step_mode: bool = False,
-    allow_closing_positive_income: bool = False,
     pause_before_acq_transition: bool = False,
     pause_before_closing_transition: bool = False,
 ) -> GameState:
@@ -40,7 +39,6 @@ def initialize_replay_state(
     state = GameState(num_players)
     state.initialize_game(seed=42)
     state.step_mode = step_mode
-    state.allow_closing_positive_income = allow_closing_positive_income
     state.pause_before_acq_transition = pause_before_acq_transition
     state.pause_before_closing_transition = pause_before_closing_transition
     override_deck_and_offering(state, deck_order_names, offering_names)
