@@ -550,9 +550,9 @@ def main() -> None:
             train_compile_kwargs = gpu.get_compile_kwargs(for_training=True)
             print(f"Compiling model with torch.compile ({train_compile_kwargs})...")
             model = cast(torch.nn.Module, torch.compile(model, **train_compile_kwargs))  # type: ignore[call-overload]
-            # Warmup pass — triggers Inductor compilation (and graph capture
-            # in reduce-overhead mode).  Use actual batch size so the graph
-            # matches training dimensions.  No autocast: training runs fp32.
+            # Warmup pass — triggers Inductor compilation and any autotuning /
+            # graph recording for the actual training batch shape. No autocast:
+            # training runs fp32.
             warmup_bs = gpu.warmup_batch_size(config.batch_size)
             model.train()
             with torch.inference_mode():

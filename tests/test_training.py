@@ -1611,9 +1611,11 @@ class TestModelCreation:
 
 
 class TestCompileConfig:
-    def test_gpu_compile_kwargs_do_not_force_dynamic_shapes(self) -> None:
-        assert get_nvidia_compile_kwargs(for_training=False) == {"mode": "reduce-overhead"}
-        assert get_nvidia_compile_kwargs(for_training=True) == {"mode": "reduce-overhead"}
+    def test_gpu_compile_kwargs_match_vendor_paths(self) -> None:
+        assert get_nvidia_compile_kwargs(
+            for_training=False
+        ) == {"mode": "max-autotune-no-cudagraphs"}
+        assert get_nvidia_compile_kwargs(for_training=True) == {"mode": "max-autotune"}
         assert get_amd_compile_kwargs(for_training=False) == {"mode": "reduce-overhead"}
         assert get_amd_compile_kwargs(for_training=True) == {"mode": "reduce-overhead"}
 

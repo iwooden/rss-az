@@ -277,9 +277,9 @@ def _eval_server_serve(
         ckw = compile_kwargs if compile_kwargs is not None else {}
         model = torch.compile(model, **ckw)  # type: ignore[assignment]
         model.eval()
-        # reduce-overhead / cudagraphs benefit most when the warmup batch size
-        # matches the steady-state inference shape. In fixed-batch mode we pad
-        # to a constant GPU batch size, so warm up with that size here.
+        # Compile caches and any graph recording benefit most when the warmup
+        # batch size matches the steady-state inference shape. In fixed-batch
+        # mode we pad to a constant GPU batch size, so warm up with that size.
         warmup_n = (
             fixed_batch_workers * shared_bufs.batch_size
             if fixed_batch_workers is not None

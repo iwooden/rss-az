@@ -6,10 +6,10 @@ When running on NVIDIA hardware, these optimizations are applied:
    with minimal precision loss (19-bit mantissa vs 23-bit). Affects the float32
    backward pass and any non-autocast matmuls.
 
-2. **torch.compile mode="reduce-overhead"** (CUDA graphs): Can cut kernel
-   launch overhead when Inductor is able to record stable-shape CUDA graphs.
-   This is most effective for the eval server when batch shapes are kept
-   consistent (for example via fixed-batch mode).
+2. **torch.compile autotuning**: use `max-autotune-no-cudagraphs` for the
+   eval server, where greedy batching produces many input sizes, and
+   `max-autotune` for the fixed-shape training path. This avoids CUDA-graph
+   churn in self-play while still letting Inductor tune GEMMs.
 
 3. **non_blocking H2D transfers**: Allows CPU work to overlap with GPU DMA.
    Especially beneficial on GH200 with NVLink-C2C (900 GB/s).
@@ -62,12 +62,16 @@ def apply_nvidia_optimizations() -> dict[str, str]:
 def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
     """Return torch.compile kwargs optimized for NVIDIA GPUs.
 
-    Uses mode='reduce-overhead', which enables CUDA graph capture via
-    Inductor when the workload has stable shapes. This is primarily aimed at
-    the self-play eval server's small-batch inference path.
+    Use separate modes for the two NVIDIA hot paths:
+
+    - Eval server: greedy batching produces many distinct batch sizes, so use
+      ``max-autotune-no-cudagraphs`` to avoid recording a CUDA graph per size.
+    - Training: batch shape is stable, so use ``max-autotune`` and keep
+      cudagraphs enabled alongside GEMM autotuning.
 
     Args:
-        for_training: Unused today; retained so callers can keep a stable API.
+        for_training: Select training vs eval-server compile settings.
     """
-    del for_training
-    return {"mode": "reduce-overhead"}
+    if for_training:
+        return {"mode": "max-autotune"}
+    return {"mode": "max-autotune-no-cudagraphs"}

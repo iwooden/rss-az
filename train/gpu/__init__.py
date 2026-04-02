@@ -53,9 +53,9 @@ class GpuConfig:
     def warmup_batch_size(self, training_batch_size: int) -> int:
         """Return batch size for the torch.compile warmup pass.
 
-        reduce-overhead mode (NVIDIA CUDA graphs / AMD HIP graphs)
-        benefits from warming up at the actual training batch size so
-        the graph is captured at the right dimensions.
+        Vendor GPU compile paths benefit from warming up at the actual
+        training batch size so compilation, autotuning, and any graph
+        recording see the steady-state dimensions.
         """
         if self.vendor in ("nvidia", "amd"):
             return training_batch_size
