@@ -17,7 +17,7 @@ from core.actions cimport (
 )
 from core.actions import get_valid_action_mask
 from core.data cimport GamePhases, GameConstants, PHASE_INVEST, PHASE_BID_IN_AUCTION, PHASE_GAME_OVER, PHASE_WRAP_UP, PHASE_ACQUISITION, PHASE_CLOSING, PHASE_INCOME, PHASE_DIVIDENDS, PHASE_END_CARD, PHASE_ISSUE_SHARES, PHASE_IPO, PHASE_PAR
-from core.driver cimport ActionStatus, STATUS_OK, STATUS_INVALID, STATUS_GAME_OVER, ForcedActionResult
+from core.driver cimport ActionStatus, STATUS_OK, STATUS_INVALID, STATUS_GAME_OVER, STATUS_PAUSED, ForcedActionResult
 from phases.invest cimport apply_invest_action
 from phases.bid cimport apply_bid_action
 from phases.wrap_up cimport apply_wrap_up
@@ -110,6 +110,18 @@ cdef bint _is_non_player_phase_check(GameState state, int phase) noexcept:
     if phase == PHASE_END_CARD:
         return True
 
+    return False
+
+
+cdef bint _should_pause_before_phase_execution(GameState state, int phase) noexcept:
+    """
+    Check whether auto-chaining should pause before executing a non-player phase.
+
+    Used by replay/integration code that needs to patch state at specific phase
+    boundaries before the engine continues auto-advancing.
+    """
+    if phase == PHASE_ACQUISITION:
+        return state.pause_before_acq_transition
     return False
 
 
@@ -290,12 +302,13 @@ cdef class GameDriver:
             STATUS_OK (0) if action applied successfully (2+ choices now available)
             STATUS_INVALID (1) if action is invalid for current state
             STATUS_GAME_OVER (2) if game ended after this action
+            STATUS_PAUSED (3) if auto-chaining paused before a non-player phase
 
         Raises:
             ForcedActionLoopError: If auto-apply exceeds 100 iterations
             ZeroLegalActionsError: If zero legal actions exist outside GAME_OVER
         """
-        cdef int result, iterations
+        cdef int result, iterations, phase
         cdef ForcedActionResult forced
 
         # Apply the user's action
@@ -316,7 +329,10 @@ cdef class GameDriver:
 
             if forced.count == 0:
                 # Check if this is a non-player phase (0 actions is valid)
-                if _is_non_player_phase_check(state, state.get_phase()):
+                phase = state.get_phase()
+                if _is_non_player_phase_check(state, phase):
+                    if _should_pause_before_phase_execution(state, phase):
+                        return STATUS_PAUSED
                     _execute_non_player_phase(state, history)
                     if state.get_phase() == PHASE_GAME_OVER:
                         return STATUS_GAME_OVER
@@ -384,3 +400,4 @@ DRIVER = GameDriver()
 STATUS_OK_PY = STATUS_OK
 STATUS_INVALID_PY = STATUS_INVALID
 STATUS_GAME_OVER_PY = STATUS_GAME_OVER
+STATUS_PAUSED_PY = STATUS_PAUSED

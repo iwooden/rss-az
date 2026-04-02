@@ -52,6 +52,7 @@ real_stdout.close
 LOGGER.level = ::Logger::FATAL
 
 require 'json'
+require 'set'
 
 # ---------------------------------------------------------------------------
 # 1.  Helpers
@@ -169,11 +170,13 @@ end
 # Python replay harness skip the expensive state-diffing and seller-detection
 # loops it previously had to do at replay time.
 def annotate_acq_outcomes(snapshots, raw_actions, committed_ids)
-  # Group ACQ-round snapshots by game turn
+  # Group ACQ-round snapshots by the turn they were taken in, not the
+  # post-action turn stored in the snapshot. The last ACQ action can auto-
+  # advance through CLO/INCOME and increment the visible turn.
   acq_by_turn = {}
   snapshots.each do |s|
     next unless s[:round] == 'ACQ'
-    (acq_by_turn[s[:turn]] ||= []) << s
+    (acq_by_turn[s[:round_turn] || s[:turn]] ||= []) << s
   end
   return if acq_by_turn.empty?
 
@@ -271,6 +274,91 @@ def annotate_acq_outcomes(snapshots, raw_actions, committed_ids)
 
     first_acq[:acq_outcomes] = outcomes unless outcomes.empty?
   end
+end
+
+def build_round_summary(round_name, snaps, raw_actions, committed_ids)
+  summary = {}
+  start_action_id = snaps.first[:action_id]
+  end_action_id = snaps.last[:action_id]
+
+  if round_name == 'ACQ'
+    outcomes = snaps.first[:acq_outcomes]
+    summary[:acq_outcomes] = outcomes unless outcomes.nil? || outcomes.empty?
+  elsif round_name == 'CLO'
+    close_actions = raw_actions.select do |action|
+      action_id = action['id']
+      committed_ids.include?(action_id) &&
+        action_id >= start_action_id &&
+        action_id <= end_action_id &&
+        action['type'] == 'sell_company'
+    end
+
+    unless close_actions.empty?
+      summary[:closed_companies] = close_actions.map { |action| action['company'] }
+      summary[:sell_company_action_ids] = close_actions.map { |action| action['id'] }
+      summary[:had_player_close_decision] = true
+    end
+  end
+
+  summary
+end
+
+def annotate_round_metadata(snapshots, raw_actions, committed_ids)
+  rounds = []
+  current_snaps = []
+  current_round = nil
+  current_round_turn = nil
+  round_seq = 0
+
+  finalize_round = lambda do
+    next if current_snaps.empty?
+
+    round_seq += 1
+    start_action_id = current_snaps.first[:action_id]
+    end_action_id = current_snaps.last[:action_id]
+    summary = build_round_summary(current_round, current_snaps, raw_actions, committed_ids)
+
+    round_info = {
+      seq: round_seq,
+      round: current_round,
+      turn: current_round_turn,
+      start_action_id: start_action_id,
+      end_action_id: end_action_id,
+      first_snapshot_action_id: start_action_id,
+      last_snapshot_action_id: end_action_id,
+      compare_after_action_id: end_action_id,
+    }
+    round_info[:summary] = summary unless summary.empty?
+    rounds << round_info
+
+    current_snaps.each_with_index do |snap, idx|
+      snap[:round_seq] = round_seq
+      snap[:round_start_action_id] = start_action_id
+      snap[:round_end_action_id] = end_action_id
+      snap[:round_first_snapshot] = (idx == 0)
+      snap[:round_final_snapshot] = (idx == current_snaps.length - 1)
+    end
+  end
+
+  snapshots.drop(1).each do |snap|
+    snap_round = snap[:round]
+    snap_round_turn = snap[:round_turn] || snap[:turn]
+
+    if current_snaps.empty?
+      current_round = snap_round
+      current_round_turn = snap_round_turn
+    elsif snap_round != current_round || snap_round_turn != current_round_turn
+      finalize_round.call
+      current_snaps = []
+      current_round = snap_round
+      current_round_turn = snap_round_turn
+    end
+
+    current_snaps << snap
+  end
+
+  finalize_round.call
+  snapshots[0][:rounds] = rounds unless rounds.empty?
 end
 
 # ---------------------------------------------------------------------------
@@ -376,6 +464,7 @@ def process_game(json_path)
     # the action, but the round label should reflect WHEN the action was taken
     # (the last action in a round would otherwise show the next round's name).
     round_before = game.round.class.short_name
+    round_turn_before = game.turn
 
     # Annotate metadata BEFORE processing — captures state at the time the
     # action was taken, which the Python replay harness uses for decisions.
@@ -432,6 +521,7 @@ def process_game(json_path)
 
     snap = build_snapshot(game, action_id: action_id, action_type: action_type,
                           round_override: round_before)
+    snap[:round_turn] = round_turn_before
     snap[:forced] = true if forced
     snap.merge!(extra) unless extra.empty?
     snapshots << snap
@@ -450,6 +540,7 @@ def process_game(json_path)
   # Post-process: annotate ACQ outcomes with seller info and cross-president
   # flags so the Python side can skip expensive seller-detection loops.
   annotate_acq_outcomes(snapshots, actions, committed_ids.to_set)
+  annotate_round_metadata(snapshots, actions, committed_ids.to_set)
 
   snapshots
 end

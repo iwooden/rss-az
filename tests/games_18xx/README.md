@@ -4,7 +4,7 @@ Validates our Cython game engine against completed games from [18xx.games](https
 
 ## Architecture
 
-- **`utils_18xx/extract_states.rb`** — Ruby script that replays a game through the 18xx engine and extracts a state snapshot after every action. Requires the 18xx engine submodule at `submodules/18xx/`. This is the **preferred place for preprocessing** — the Ruby side has direct access to the 18xx engine's internal state, making it much easier to annotate snapshots with metadata (forced actions, round labels, etc.) than reconstructing that information on the Python side.
+- **`utils_18xx/extract_states.rb`** — Ruby script that replays a game through the 18xx engine and extracts a state snapshot after every action. Requires the 18xx engine submodule at `submodules/18xx/`. This is the **preferred place for preprocessing** — the Ruby side has direct access to the 18xx engine's internal state, making it much easier to annotate snapshots with metadata (forced actions, round labels, round summaries, etc.) than reconstructing that information on the Python side.
 - **`utils_18xx/action_parser.py`** — Converts 18xx action streams into our engine's integer action indices. Handles committed-action filtering (via IDs from the extractor), auto-action flattening, per-phase mapping, and shared utilities (deck override, action dispatch).
 - **`replay_harness.py`** — Orchestrates replay: initializes our engine with the 18xx deck order, replays actions through the parser, and compares state snapshots.
 - **`test_replay.py`** — Pytest entry point. Dynamically discovers game JSON files in `data/`.
@@ -46,7 +46,7 @@ Our Cython engine makes several intentional design choices that differ from the 
 
 **Our engine:** Acquisition offers are constrained to same-president transactions. A corp can only acquire companies when its president also controls the selling entity (owns the private company, or is president of the selling corp). Cross-president offers are excluded from the action space.
 
-**Replay handling:** The Ruby extractor post-processes snapshots to compute ACQ outcomes for each round — diffing corp company ownership before vs after, with offer prices scoped to the round's action ID range, seller info (type, name, player ID), and a `cross_president` flag. Cross-president transfers are pre-applied as direct state patches by the Python ACQ adapter before the engine's offer buffer is walked.
+**Replay handling:** The Ruby extractor post-processes snapshots to compute ACQ outcomes for each round — diffing corp company ownership before vs after, with offer prices scoped to the round's action ID range, seller info (type, name, player ID), and a `cross_president` flag. The Python ACQ adapter replays same-president offers normally, pauses at the ACQ->CLO boundary, then patches unresolved cross-president outcomes into the acquisition zone before resuming phase advancement.
 
 ### 2. Acquisition Offer Ordering
 
@@ -54,15 +54,15 @@ Our Cython engine makes several intentional design choices that differ from the 
 
 **Our engine:** Offers are generated into a hidden buffer and presented one-by-one in a fixed priority order: OS→FI (face DESC) → Corp→FI (price DESC) → Corp→Corp → Corp→Player.
 
-**Replay handling:** The ACQ adapter reads Ruby-computed outcomes from the first ACQ snapshot, then matches our engine's offers against same-president outcomes, accepting or passing each offer based on whether it matches a reference transfer. Same-president corp-to-corp transfers are pre-applied before the buffer walk (using `acquisition_proceeds` for correct cash flow), because the fixed ordering can interact with CLO pre-applies: closing a company before ACQ may reduce a corp's company count, causing the engine's `_is_offer_valid` to reject both directions of a swap due to the last-company rule. Pre-applying the transfers first avoids this — the engine silently skips them during the buffer walk since the companies already moved.
+**Replay handling:** The extractor emits ACQ round summaries, and the ACQ adapter consumes those summaries round-by-round rather than rediscovering boundaries from the flat action stream. Same-president corp-to-corp transfers are still pre-applied before the buffer walk (using `acquisition_proceeds` for correct cash flow), because fixed offer ordering can otherwise diverge. The adapter then walks the remaining offer buffer, accepts or passes offers based on the round summary, pauses at ACQ exhaustion, patches deferred outcomes, and only then advances into CLO.
 
 ### 3. Closing Offer Scope
 
 **18xx:** During Phase 4 (Closing), any player or president may close any company they control, regardless of income. Companies with positive, zero, or negative adjusted income can all be closed.
 
-**Our engine:** Optional close offers are generated only for companies with **negative adjusted income** (income − cost of ownership < 0). Zero and positive income companies are never offered.
+**Our engine:** By default, optional close offers are generated only for companies with **negative adjusted income** (income − cost of ownership < 0). For replay, the harness enables `allow_closing_positive_income`, so the engine offers the full 18xx closing scope instead of only negative-income companies.
 
-**Replay handling:** The Ruby extractor tags each `sell_company` snapshot with `adjusted_income` (revenue minus cost of ownership at the time of closing). The CLO adapter (and the ACQ adapter's CLO lookahead) checks `adjusted_income >= 0` to identify companies our engine won't offer, and pre-applies them as direct state patches (calling `remove_from_game()` with JS scrapping bonus if applicable).
+**Replay handling:** The extractor emits a CLO round summary containing `closed_companies`. The CLO adapter uses that summary to decide which offers to take while walking our engine's close-offer buffer. No direct close pre-apply or CLO look-ahead is needed when replay runs with `allow_closing_positive_income`.
 
 ### 4. Closing Offer Ordering
 
@@ -70,7 +70,7 @@ Our Cython engine makes several intentional design choices that differ from the 
 
 **Our engine:** Close offers are sorted by face value ascending and presented one-by-one from a hidden buffer.
 
-**Replay handling:** The CLO adapter builds a set of closed company names from the reference, then matches against our engine's ordered offer buffer.
+**Replay handling:** The CLO adapter reads `closed_companies` from the extractor's round summary, then matches that set against our engine's ordered offer buffer.
 
 ### 5. IPO / PAR Phase Split
 
@@ -86,7 +86,7 @@ Our Cython engine makes several intentional design choices that differ from the 
 
 **Our engine:** No auto-pass concept. Every pass is an explicit action.
 
-**Replay handling:** Program actions are filtered out by `filter_actions()` (in `SKIP_ACTIONS`). Their auto-actions are preserved only if the program action itself is committed (not undone) — undone program actions must not leak auto-action passes into the stream, as that would advance the active player and desync the replay. The Ruby extractor includes committed skip-type action IDs in `committed_action_ids` so the Python side can distinguish committed from undone program actions. Committed auto-actions are flattened into the main stream by `flatten_auto_actions()` and replayed as normal pass actions. An `AutoPassTracker` is maintained for potential future use but is not currently queried.
+**Replay handling:** Program actions are filtered out by `filter_actions()` (in `SKIP_ACTIONS`). Their auto-actions are preserved only if the program action itself is committed (not undone) — undone program actions must not leak auto-action passes into the stream, as that would advance the active player and desync the replay. The Ruby extractor includes committed skip-type action IDs in `committed_action_ids` so the Python side can distinguish committed from undone program actions. Committed auto-actions are flattened into the main stream by `flatten_auto_actions()` and replayed as normal pass actions.
 
 ### 7. Undo / Redo
 
@@ -114,6 +114,13 @@ The extractor mirrors the 18xx engine's `filtered_actions` semantics (base.rb li
 ### 9. Round Label Timing in Extractor
 
 The Ruby extractor captures the round label **before** processing each action, not after. This ensures the last action of a round (which causes a phase transition) is labeled with the round it was *taken in*, not the round the engine transitions *to*.
+
+The extractor also emits explicit round metadata so replay can operate at the round level instead of rescanning the flat action stream:
+
+- `round_seq` on snapshots to distinguish adjacent rounds of the same type
+- `round_start_action_id` / `round_end_action_id` and `round_final_snapshot`
+- top-level `rounds` entries with `compare_after_action_id`
+- round summaries such as `acq_outcomes` and `closed_companies`
 
 ### 10. Cost of Ownership Level Numbering
 

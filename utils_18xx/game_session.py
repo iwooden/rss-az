@@ -15,9 +15,10 @@ from pathlib import Path
 
 from core.data import (
     COMPANY_NAME_TO_ID,
+    COMPANY_NAMES,
     CORP_NAME_TO_ID,
+    CORP_NAMES,
     GamePhases,
-    get_company_low_price,
 )
 from core.driver import DRIVER, STATUS_INVALID_PY as STATUS_INVALID
 from core.state import GameState
@@ -28,9 +29,17 @@ from .action_parser import (
     filter_actions,
     flatten_auto_actions,
     map_action,
-    override_deck_and_offering,
     PHASE_GAME_OVER,
-    PHASE_PAR,
+)
+from .replay_state import (
+    align_to_action,
+    apply_action_sequence,
+    apply_external_acquisition_transfer,
+    drain_offer_phases,
+    initialize_replay_state,
+    is_representable_acquisition_offer,
+    replay_acquisition_offer,
+    replay_closing_offer,
 )
 
 PHASE_ACQ = GamePhases.PHASE_ACQUISITION
@@ -55,7 +64,6 @@ class GameSession:
         self.layout = ActionLayout(num_players)
         self.state: GameState | None = None
         self.game_id: str | None = None
-        self._player_id_to_index: dict[int, int] = {}
         # Cached from the Ruby extractor (per game_id)
         self._deck_order: list[str] = []
         self._offering: list[str] = []
@@ -71,11 +79,15 @@ class GameSession:
         if gid != self.game_id:
             self._init_game_metadata(game_data)
 
-        # Fresh state every time
-        state = GameState(self.num_players)
-        state.initialize_game(seed=42)
+        # Fresh state every time.
+        state = initialize_replay_state(
+            self.num_players,
+            self._deck_order,
+            self._offering,
+            allow_closing_positive_income=True,
+            pause_before_acq_transition=True,
+        )
         self.state = state
-        override_deck_and_offering(state, self._deck_order, self._offering)
 
         # Process actions using the same logic as the replay harness
         raw_actions = game_data.get("actions", [])
@@ -84,40 +96,37 @@ class GameSession:
 
         idx = 0
         while idx < len(actions):
+            action = actions[idx]
+            align_to_action(state, action, self.layout)
+
             phase = TURN.get_phase(state)
             if phase == PHASE_GAME_OVER:
                 break
 
-            action = actions[idx]
-            engine_action = map_action(state, action, phase, self.layout)
+            if phase == PHASE_ACQ:
+                idx = self._sync_acq_round(state, actions, idx)
+                continue
+            if phase == PHASE_CLO:
+                idx = self._sync_clo_round(state, actions, idx)
+                continue
 
+            engine_action = map_action(state, action, phase, self.layout)
             if engine_action is None:
-                # map_action returns None for ACQ/CLO phases — handle them
-                # here so the engine can advance past these phases during
-                # replay of actions we previously sent to the frontend.
-                if phase == PHASE_ACQ:
-                    self._sync_acq_action(state, action)
-                elif phase == PHASE_CLO:
-                    self._sync_clo_action(state, action)
                 idx += 1
                 continue
 
-            action_list = engine_action if isinstance(engine_action, list) else [engine_action]
-            for i, ea in enumerate(action_list):
-                if i > 0 and TURN.get_phase(state) != PHASE_PAR:
-                    break
-                result = DRIVER.apply_action(state, ea)
-                if result == STATUS_INVALID:
-                    raise RuntimeError(
-                        f"Invalid action {ea} at action stream index {idx}, "
-                        f"phase={phase}, 18xx_type={action.get('type')}"
-                    )
+            result = apply_action_sequence(state, engine_action)
+            if result == STATUS_INVALID:
+                raise RuntimeError(
+                    f"Invalid action {engine_action} at action stream index {idx}, "
+                    f"phase={phase}, 18xx_type={action.get('type')}"
+                )
 
             idx += 1
 
         # Drain any remaining ACQ/CLO offers that weren't in the stream
         # (our engine may have more offers than the 18xx frontend saw).
-        self._drain_acq_clo(state)
+        drain_offer_phases(state, self.layout)
 
         return state
 
@@ -133,14 +142,14 @@ class GameSession:
         assert self.state is not None
         return TURN.get_phase(self.state) == PHASE_GAME_OVER
 
-    def apply_engine_action(self, action_idx: int) -> list[tuple[int, int]]:
+    def apply_engine_action(self, action_idx: int) -> list[tuple[object, int]]:
         """Apply an engine action directly (for AI moves).
 
-        Returns the history list of (phase, action) tuples including
-        any auto-applied forced actions.
+        Returns the driver history list of ``(state_copy, action_or_sentinel)``
+        entries, including any auto-applied forced actions.
         """
         assert self.state is not None
-        history: list[tuple[int, int]] = []
+        history: list[tuple[object, int]] = []
         result = DRIVER.apply_action(self.state, action_idx, history=history)
         if result == STATUS_INVALID:
             raise RuntimeError(f"Invalid engine action {action_idx}")
@@ -149,78 +158,152 @@ class GameSession:
     # -----------------------------------------------------------------
     # ACQ / CLO replay helpers
     # -----------------------------------------------------------------
-    # Our engine presents offers in a fixed buffer order. The 18xx action
-    # stream contains the offer/respond/pass actions we previously sent
-    # to the frontend.  Walk the engine's offer buffer, passing until we
-    # reach the offer that matches, then apply the chosen price.
+    def _sync_acq_round(
+        self,
+        state: GameState,
+        actions: list[dict],
+        idx: int,
+    ) -> int:
+        """Replay one ACQ round from raw offer/respond/pass actions."""
+        pending_offer: dict | None = None
+        deferred_transfers: list[tuple[int, int, int]] = []
 
-    def _sync_acq_action(self, state: GameState, action: dict) -> None:
-        atype = action.get("type")
-        if atype == "respond":
-            return  # no-op — our engine already applied the offer
-        if atype == "pass":
-            # Pass actions in ACQ are for the 18xx frontend (receivership
-            # declines, ProposeAndPurchase round-end passes).  They don't
-            # map to specific offers in our engine's buffer — ignore them.
+        while idx < len(actions) and TURN.get_phase(state) == PHASE_ACQ:
+            action = actions[idx]
+            atype = action.get("type")
+
+            if atype == "offer":
+                if pending_offer is not None:
+                    self._resolve_acq_offer(
+                        state,
+                        pending_offer,
+                        accepted=True,
+                        deferred_transfers=deferred_transfers,
+                    )
+                pending_offer = action
+                idx += 1
+                continue
+
+            if atype == "respond":
+                if pending_offer is not None:
+                    accepted = str(action.get("accept", "")).lower() == "true"
+                    self._resolve_acq_offer(
+                        state,
+                        pending_offer,
+                        accepted=accepted,
+                        deferred_transfers=deferred_transfers,
+                    )
+                    pending_offer = None
+                idx += 1
+                continue
+
+            if atype == "pass":
+                idx += 1
+                continue
+
+            break
+
+        if pending_offer is not None and TURN.get_phase(state) == PHASE_ACQ:
+            self._resolve_acq_offer(
+                state,
+                pending_offer,
+                accepted=True,
+                deferred_transfers=deferred_transfers,
+            )
+
+        if TURN.get_phase(state) == PHASE_ACQ and DRIVER.is_non_player_phase(state):
+            for buyer_corp_id, company_id, price in deferred_transfers:
+                if not apply_external_acquisition_transfer(
+                    state,
+                    buyer_corp_id,
+                    company_id,
+                    price,
+                ):
+                    raise RuntimeError(
+                        "Failed to patch deferred ACQ transfer for "
+                        f"{CORP_NAMES[buyer_corp_id]} -> {COMPANY_NAMES[company_id]}"
+                    )
+            DRIVER.advance_phase(state)
+
+        return idx
+
+    def _resolve_acq_offer(
+        self,
+        state: GameState,
+        offer: dict,
+        *,
+        accepted: bool,
+        deferred_transfers: list[tuple[int, int, int]],
+    ) -> None:
+        """Resolve a single ACQ offer from the live 18xx action stream."""
+        buyer_corp_id = CORP_NAME_TO_ID[offer["corporation"]]
+        company_id = COMPANY_NAME_TO_ID[offer["company"]]
+        price = int(offer["price"])
+
+        if not accepted:
+            if is_representable_acquisition_offer(state, buyer_corp_id, company_id):
+                replay_acquisition_offer(
+                    state,
+                    self.layout,
+                    buyer_corp_id,
+                    company_id,
+                    price,
+                    accept=False,
+                )
             return
-        if atype == "offer":
-            corp_name = action["corporation"]
-            company_name = action["company"]
-            price = action["price"]
-            target_corp = CORP_NAME_TO_ID[corp_name]
-            target_company = COMPANY_NAME_TO_ID[company_name]
-            # Walk engine's offer buffer, passing non-matching offers
-            max_iter = 200
-            for _ in range(max_iter):
-                if TURN.get_phase(state) != PHASE_ACQ:
-                    break
-                cur_corp = TURN.get_acq_active_corp(state)
-                cur_company = TURN.get_acq_target_company(state)
-                if cur_corp == target_corp and cur_company == target_company:
-                    # Found the matching offer — apply the price
-                    if TURN.is_acq_fi_offer(state):
-                        DRIVER.apply_action(state, self.layout.acq_fi_buy)
-                    else:
-                        low = get_company_low_price(target_company)
-                        offset = price - low
-                        DRIVER.apply_action(
-                            state, self.layout.acq_price_base + offset
-                        )
-                    return
-                # Not this offer — pass it
-                DRIVER.apply_action(state, self.layout.acq_pass)
 
-    def _sync_clo_action(self, state: GameState, action: dict) -> None:
-        atype = action.get("type")
-        if atype == "pass":
-            # Pass actions in CLO are for the 18xx frontend round-end.
-            # They don't map to specific offers in our engine — ignore.
+        if is_representable_acquisition_offer(state, buyer_corp_id, company_id):
+            matched = replay_acquisition_offer(
+                state,
+                self.layout,
+                buyer_corp_id,
+                company_id,
+                price,
+                accept=True,
+            )
+            if not matched:
+                raise RuntimeError(
+                    "Accepted ACQ offer never appeared in engine buffer: "
+                    f"{offer}"
+                )
             return
-        if atype in ("sell_company", "close"):
-            company_name = action["company"]
-            target_company = COMPANY_NAME_TO_ID[company_name]
-            # Walk engine's offer buffer, passing non-matching offers
-            max_iter = 200
-            for _ in range(max_iter):
-                if TURN.get_phase(state) != PHASE_CLO:
-                    break
-                cur_company = TURN.get_closing_company(state)
-                if cur_company == target_company:
-                    DRIVER.apply_action(state, self.layout.close_action)
-                    return
-                DRIVER.apply_action(state, self.layout.close_pass)
 
-    def _drain_acq_clo(self, state: GameState) -> None:
-        """Auto-pass through any remaining ACQ/CLO offers after replay."""
-        max_iter = 500
-        for _ in range(max_iter):
-            phase = TURN.get_phase(state)
-            if phase == PHASE_ACQ:
-                DRIVER.apply_action(state, self.layout.acq_pass)
-            elif phase == PHASE_CLO:
-                DRIVER.apply_action(state, self.layout.close_pass)
-            else:
-                break
+        deferred_transfers.append((buyer_corp_id, company_id, price))
+
+    def _sync_clo_round(
+        self,
+        state: GameState,
+        actions: list[dict],
+        idx: int,
+    ) -> int:
+        """Replay one CLO round from raw close/pass actions."""
+        while idx < len(actions) and TURN.get_phase(state) == PHASE_CLO:
+            action = actions[idx]
+            atype = action.get("type")
+
+            if atype == "pass":
+                idx += 1
+                continue
+
+            if atype in ("sell_company", "close"):
+                company_id = COMPANY_NAME_TO_ID[action["company"]]
+                matched = replay_closing_offer(
+                    state,
+                    self.layout,
+                    company_id,
+                    close=True,
+                )
+                if not matched:
+                    raise RuntimeError(
+                        "Closing action never appeared in engine buffer: "
+                        f"{action}"
+                    )
+                idx += 1
+                continue
+
+            break
+
+        return idx
 
     def _init_game_metadata(self, game_data: dict) -> None:
         """Extract and cache deck order / offering via Ruby extractor."""
@@ -233,10 +316,6 @@ class GameSession:
             )
 
         initial = self._extract_initial_state(game_data)
-
-        self._player_id_to_index = {}
-        for idx, pid in enumerate(initial["player_order"]):
-            self._player_id_to_index[pid] = idx
 
         self._deck_order = initial["deck_order"]
         self._offering = initial["initial_offering"]
@@ -270,4 +349,3 @@ class GameSession:
             raise RuntimeError("Expected initial record with action_id=0")
 
         return initial
-

@@ -8,6 +8,7 @@ cdef enum ActionStatus:
     STATUS_OK = 0           # Action applied successfully
     STATUS_INVALID = 1      # Invalid action for current state
     STATUS_GAME_OVER = 2    # Game ended after this action
+    STATUS_PAUSED = 3       # Driver paused before auto-transition phase execution
 
 # Result struct for forced action checking
 cdef struct ForcedActionResult:

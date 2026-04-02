@@ -174,6 +174,7 @@ cdef class GameState:
     # Driver config flags (Python-level, not in float array)
     cdef public bint step_mode
     cdef public bint allow_closing_positive_income
+    cdef public bint pause_before_acq_transition
 
     # Internal pointer access
     cdef float* _player_ptr(self, int player_id) noexcept nogil

@@ -1,7 +1,12 @@
-"""Tests for driver config flags: step_mode and allow_closing_positive_income."""
+"""Tests for driver config flags and paused auto-transition behavior."""
 import numpy as np
 from core.state import GameState
-from core.driver import DRIVER, STATUS_OK_PY as STATUS_OK, STATUS_INVALID_PY as STATUS_INVALID
+from core.driver import (
+    DRIVER,
+    STATUS_OK_PY as STATUS_OK,
+    STATUS_INVALID_PY as STATUS_INVALID,
+    STATUS_PAUSED_PY as STATUS_PAUSED,
+)
 from core.actions import get_valid_action_mask, get_action_layout
 from core.data import GamePhases
 from entities.turn import TURN
@@ -418,20 +423,84 @@ class TestAllowClosingPositiveIncome:
         assert FI.owns_company(state, high_income_id)
 
 
+class TestPauseBeforeAcqTransition:
+    """Tests for GameState.pause_before_acq_transition flag."""
+
+    def test_default_is_false(self):
+        """pause_before_acq_transition defaults to False."""
+        state = GameState(num_players=3)
+        assert state.pause_before_acq_transition is False
+
+    def test_set_flag(self):
+        """pause_before_acq_transition can be enabled."""
+        state = GameState(num_players=3)
+        state.pause_before_acq_transition = True
+        assert state.pause_before_acq_transition is True
+
+    def test_apply_action_pauses_before_acq_transition(self):
+        """Driver returns STATUS_PAUSED before auto-transitioning out of ACQ."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+        state.pause_before_acq_transition = True
+
+        layout = get_action_layout(3)
+        pass_action = layout["pass_invest"]
+
+        for _ in range(2):
+            result = DRIVER.apply_action(state, pass_action)
+            assert result == STATUS_OK
+
+        history = []
+        result = DRIVER.apply_action(state, pass_action, history=history)
+        assert result == STATUS_PAUSED
+        assert TURN.get_phase(state) == PHASE_ACQ
+        assert TURN.get_acq_active_corp(state) == -1
+        assert DRIVER.is_non_player_phase(state) is True
+
+        action_values = [entry[1] for entry in history]
+        assert pass_action in action_values
+        assert -100 in action_values, "WRAP_UP sentinel should be in history"
+        assert -101 not in action_values, "ACQ transition should not have executed"
+
+    def test_advance_phase_resumes_after_pause(self):
+        """advance_phase() continues ACQ transition after a paused return."""
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+        state.pause_before_acq_transition = True
+
+        layout = get_action_layout(3)
+        pass_action = layout["pass_invest"]
+        for _ in range(2):
+            DRIVER.apply_action(state, pass_action)
+
+        assert DRIVER.apply_action(state, pass_action) == STATUS_PAUSED
+        assert TURN.get_phase(state) == PHASE_ACQ
+
+        history = []
+        result = DRIVER.advance_phase(state, history=history)
+        assert result == STATUS_OK
+        assert TURN.get_phase(state) == PHASE_CLOSING
+        assert len(history) == 1
+        assert history[0][1] == -101
+
+
 class TestFlagsCombined:
     """Tests for both flags working together."""
 
     def test_both_flags_independent(self):
-        """Both flags can be set independently."""
+        """All driver control flags can be set independently."""
         state = GameState(num_players=3)
         state.step_mode = True
         state.allow_closing_positive_income = True
+        state.pause_before_acq_transition = True
         assert state.step_mode is True
         assert state.allow_closing_positive_income is True
+        assert state.pause_before_acq_transition is True
 
         state.step_mode = False
         assert state.step_mode is False
         assert state.allow_closing_positive_income is True
+        assert state.pause_before_acq_transition is True
 
     def test_flags_do_not_affect_state_array(self):
         """Flags are Python-level only, don't change the float array."""
@@ -442,6 +511,7 @@ class TestFlagsCombined:
         state2.initialize_game(seed=42)
         state2.step_mode = True
         state2.allow_closing_positive_income = True
+        state2.pause_before_acq_transition = True
 
         # Arrays should be identical
         np.testing.assert_array_equal(state1._array, state2._array)

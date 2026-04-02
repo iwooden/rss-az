@@ -800,6 +800,7 @@ cdef class GameState:
         self._num_players = num_players
         self.step_mode = False
         self.allow_closing_positive_income = False
+        self.pause_before_acq_transition = False
 
         # Look up precomputed layouts (struct copy, ~160 bytes)
         self._layout = _cached_layouts[num_players]

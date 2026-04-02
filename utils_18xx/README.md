@@ -74,11 +74,19 @@ the replay harness uses (battle-tested against 143 real games). The Ruby
 extractor (`utils_18xx/extract_states.rb`) runs once per game to
 get deck order; subsequent replays are pure Cython (~ms).
 
-ACQ/CLO actions require special handling because `action_parser.map_action`
-returns None for these phases (the replay harness has its own adapter).
-The session walks the engine's offer buffer to match `offer` actions from
-the stream, ignores `pass`/`respond` actions (frontend-only), and drains
-remaining offers after replay.
+ACQ/CLO actions use the shared helpers in `replay_state.py` rather than
+ad hoc per-phase loops. The session enables the same replay flags as the
+harness:
+
+- `allow_closing_positive_income=True` so CLO offer scope matches 18xx
+- `pause_before_acq_transition=True` so non-representable ACQ outcomes can
+  be patched before the engine auto-advances into CLO
+
+For ACQ, the session tracks pending `offer` actions, waits for the matching
+`respond`, replays representable offers through the engine buffer, and
+patches accepted cross-president outcomes at the paused ACQ boundary. For
+CLO, it matches `sell_company` / `close` actions against the engine's
+close-offer buffer and then drains any remaining offer phases after replay.
 
 ### `server.py`
 
