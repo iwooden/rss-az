@@ -8,7 +8,7 @@
   "num_eval_servers": 2,
   "dirichlet_dynamic": true,
   "temp_initial": 1.0,
-  "temp_final": 0.5,
+  "temp_final": 0.8,
   "temp_anneal_start": 60,
   "temp_anneal_end": 120,
   "c_puct_initial": 3.5,
