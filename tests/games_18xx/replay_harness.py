@@ -101,44 +101,33 @@ def ensure_extracts(data_dir: str) -> None:
     for source in engine_root.rglob("*.rb"):
         dependency_mtime_ns = max(dependency_mtime_ns, source.stat().st_mtime_ns)
 
-    pending: list[tuple[Path, Path]] = []
+    # Delete stale extracts so Ruby's batch mode sees them as missing.
     for game_path in sorted(data_path.glob("*.json")):
         if game_path.name.endswith("_extract.json"):
             continue
         extract_path = game_path.with_name(f"{game_path.stem}_extract.json")
         if (
-            not extract_path.exists()
-            or extract_path.stat().st_mtime_ns < dependency_mtime_ns
+            extract_path.exists()
+            and extract_path.stat().st_mtime_ns < dependency_mtime_ns
         ):
-            pending.append((game_path, extract_path))
+            extract_path.unlink()
 
-    if not pending:
-        return
-
+    # Single Ruby process handles all missing/stale extracts at once.
     try:
-        failures = []
-        for game_path, extract_path in pending:
-            result = subprocess.run(
-                ["ruby", str(extractor), str(game_path)],
-                capture_output=True,
-                text=True,
-                timeout=600,
-            )
-            if result.returncode != 0:
-                failures.append(
-                    f"{game_path.name} (exit {result.returncode}):\n{result.stderr}"
-                )
-                continue
-            extract_path.write_text(result.stdout, encoding="utf-8")
+        result = subprocess.run(
+            ["ruby", str(extractor), str(data_path)],
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
     except FileNotFoundError:
         raise RuntimeError(
             "Ruby not found. Install Ruby to run 18xx replay tests."
         )
 
-    if failures:
+    if result.returncode != 0:
         raise RuntimeError(
-            "State extractor failed for one or more games:\n"
-            + "\n\n".join(failures)
+            "State extractor failed:\n" + result.stderr
         )
 
 

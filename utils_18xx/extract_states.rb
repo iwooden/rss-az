@@ -564,6 +564,7 @@ if File.directory?(target)
     $stderr.puts "All #{game_files.size} games already extracted."
   else
     $stderr.puts "Extracting #{pending.size} of #{game_files.size} games..."
+    failures = []
     pending.each_with_index do |json_path, idx|
       game_id = File.basename(json_path, '.json')
       $stderr.print "  [#{idx + 1}/#{pending.size}] #{game_id}..."
@@ -576,7 +577,11 @@ if File.directory?(target)
         $stderr.puts " OK (#{snapshots.size} snapshots)"
       rescue => e
         $stderr.puts " FAILED: #{e.message}"
+        failures << "#{game_id}: #{e.message}"
       end
+    end
+    unless failures.empty?
+      exit 1
     end
   end
 else
