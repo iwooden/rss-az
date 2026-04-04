@@ -21,6 +21,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+_GELU_APPROXIMATE = "tanh"
+
 
 @dataclass(frozen=True)
 class RSSModelConfig:
@@ -46,7 +48,7 @@ class ResidualMLPBlock(nn.Module):
         super().__init__()
         self.norm = nn.LayerNorm(hidden_dim)
         self.fc1 = nn.Linear(hidden_dim, hidden_dim)
-        self.act = nn.GELU()
+        self.act = nn.GELU(approximate=_GELU_APPROXIMATE)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -104,11 +106,11 @@ class PackedPhaseHeads(nn.Module):
     def forward_packed(self, packed: torch.Tensor) -> torch.Tensor:
         """Run the packed (P, M, H) phase buckets through all 4 layers."""
         packed = self._batched_linear(packed, self.w1, self.b1)
-        packed = F.gelu(packed)
+        packed = F.gelu(packed, approximate=_GELU_APPROXIMATE)
         packed = self._batched_linear(packed, self.w2, self.b2)
-        packed = F.gelu(packed)
+        packed = F.gelu(packed, approximate=_GELU_APPROXIMATE)
         packed = self._batched_linear(packed, self.w3, self.b3)
-        packed = F.gelu(packed)
+        packed = F.gelu(packed, approximate=_GELU_APPROXIMATE)
         return self._batched_linear(packed, self.w4, self.b4)
 
 
@@ -123,9 +125,9 @@ class RSSAlphaZeroNet(nn.Module):
         # input_dim -> 3*hidden_dim -> 2*hidden_dim -> hidden_dim -> LN
         self.input_preprocess = nn.Sequential(
             nn.Linear(cfg.input_dim, 3 * cfg.hidden_dim),
-            nn.GELU(),
+            nn.GELU(approximate=_GELU_APPROXIMATE),
             nn.Linear(3 * cfg.hidden_dim, 2 * cfg.hidden_dim),
-            nn.GELU(),
+            nn.GELU(approximate=_GELU_APPROXIMATE),
             nn.Linear(2 * cfg.hidden_dim, cfg.hidden_dim),
             nn.LayerNorm(cfg.hidden_dim),
         )
@@ -234,7 +236,10 @@ class RSSAlphaZeroNet(nn.Module):
         """Build a head with num_hidden hidden layers (each hidden_dim wide)."""
         layers: list[nn.Module] = []
         for _ in range(num_hidden):
-            layers += [nn.Linear(hidden_dim, hidden_dim), nn.GELU()]
+            layers += [
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.GELU(approximate=_GELU_APPROXIMATE),
+            ]
         layers.append(nn.Linear(hidden_dim, output_dim))
         return nn.Sequential(*layers)
 
