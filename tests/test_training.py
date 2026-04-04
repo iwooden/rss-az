@@ -1685,56 +1685,19 @@ class TestModelForward:
         assert policy_logits.shape == (8, small_model_4p.cfg.action_dim)
         assert values.shape == (8, small_model_4p.cfg.value_dim)
 
-    def test_forward_skips_empty_phase_heads(
+    def test_grouped_forward_all_phases(
         self, small_model: RSSAlphaZeroNet
     ) -> None:
-        x = torch.randn(8, small_model.cfg.input_dim)
+        """Grouped bmm forward handles all 8 phases in one batch."""
+        x = torch.randn(16, small_model.cfg.input_dim)
         x[:, :8] = 0.0
-        x[:, 0] = 1.0
+        for i in range(16):
+            x[i, i % 8] = 1.0
 
-        original_forwards = [head.forward for head in small_model.phase_heads]
-
-        def _wrap_forward(idx: int):
-            original = original_forwards[idx]
-
-            def _forward(t: torch.Tensor) -> torch.Tensor:
-                if t.shape[0] == 0:
-                    raise AssertionError(f"phase head {idx} received empty input")
-                return original(t)
-
-            return _forward
-
-        try:
-            for idx, head in enumerate(small_model.phase_heads):
-                head.forward = _wrap_forward(idx)  # type: ignore[method-assign]
-            policy_logits, values = small_model(x)
-        finally:
-            for head, original in zip(small_model.phase_heads, original_forwards):
-                head.forward = original  # type: ignore[method-assign]
-
-        assert policy_logits.shape == (8, small_model.cfg.action_dim)
-        assert values.shape == (8, small_model.cfg.value_dim)
-
-    def test_forward_allows_mixed_head_dtype(
-        self, small_model: RSSAlphaZeroNet
-    ) -> None:
-        x = torch.randn(8, small_model.cfg.input_dim)
-        x[:, :8] = 0.0
-        x[:, 0] = 1.0
-
-        original_forward = small_model.phase_heads[0].forward
-
-        def _bf16_forward(t: torch.Tensor) -> torch.Tensor:
-            return original_forward(t).to(torch.bfloat16)
-
-        try:
-            small_model.phase_heads[0].forward = _bf16_forward  # type: ignore[method-assign]
-            policy_logits, values = small_model(x)
-        finally:
-            small_model.phase_heads[0].forward = original_forward  # type: ignore[method-assign]
-
-        assert policy_logits.dtype == torch.bfloat16
-        assert values.shape == (8, small_model.cfg.value_dim)
+        policy_logits, values = small_model(x)
+        assert policy_logits.shape == (16, small_model.cfg.action_dim)
+        assert values.shape == (16, small_model.cfg.value_dim)
+        assert torch.isfinite(policy_logits).all()
 
 
 # ---------------------------------------------------------------------------

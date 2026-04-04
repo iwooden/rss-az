@@ -13,10 +13,13 @@ Architecture:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 @dataclass(frozen=True)
@@ -78,7 +81,9 @@ class RSSAlphaZeroNet(nn.Module):
         )
         self.trunk_norm = nn.LayerNorm(cfg.hidden_dim)
 
-        # Phase-specific policy heads: each outputs only its phase's action count.
+        # Phase-specific policy heads with full-width outputs for grouped execution.
+        # Each head outputs the full action_dim; non-phase logits are masked out by
+        # the legal action mask before softmax. Uniform shape enables torch.bmm.
         from core.actions import get_action_layout
 
         num_players = cfg.value_dim
@@ -90,14 +95,13 @@ class RSSAlphaZeroNet(nn.Module):
         phase_starts = [action_layout[k] for k in phase_start_keys]
         phase_ends = phase_starts[1:] + [cfg.action_dim]
 
-        # Store as plain Python lists — these are constants, no need for GPU
-        # tensors (which would incur .item() sync overhead in the forward loop).
+        # Phase action boundaries — used by checkpoint migration hook.
         self._phase_starts: list[int] = phase_starts
         self._phase_ends: list[int] = phase_ends
 
         self.phase_heads = nn.ModuleList([
-            self._make_head(cfg.hidden_dim, end - start, 3)
-            for start, end in zip(phase_starts, phase_ends)
+            self._make_head(cfg.hidden_dim, cfg.action_dim, 3)
+            for _ in range(len(phase_starts))
         ])
 
         self.value_head = nn.Sequential(
@@ -106,6 +110,37 @@ class RSSAlphaZeroNet(nn.Module):
         )
 
         self._init_weights()
+        self.register_load_state_dict_pre_hook(self._migrate_phase_heads_hook)
+
+    def _migrate_phase_heads_hook(
+        self,
+        _module: nn.Module,
+        state_dict: Mapping[str, Any],
+        prefix: str,
+        *_args: object,
+        **_kwargs: object,
+    ) -> None:
+        """Expand narrow per-phase output layers to full action_dim in-place."""
+        for i, (start, end) in enumerate(
+            zip(self._phase_starts, self._phase_ends)
+        ):
+            key_w = f"{prefix}phase_heads.{i}.6.weight"
+            key_b = f"{prefix}phase_heads.{i}.6.bias"
+            old_w = state_dict.get(key_w)
+            if old_w is None or not isinstance(old_w, torch.Tensor):
+                continue
+            old_width = end - start
+            if old_w.shape[0] == old_width and old_width < self.cfg.action_dim:
+                new_w = torch.zeros(
+                    self.cfg.action_dim, old_w.shape[1], dtype=old_w.dtype,
+                )
+                new_w[start:end] = old_w
+                state_dict[key_w] = new_w  # type: ignore[index]
+                old_b = state_dict[key_b]
+                assert isinstance(old_b, torch.Tensor)
+                new_b = torch.zeros(self.cfg.action_dim, dtype=old_b.dtype)
+                new_b[start:end] = old_b
+                state_dict[key_b] = new_b  # type: ignore[index]
 
     @staticmethod
     def _make_head(hidden_dim: int, output_dim: int, num_hidden: int) -> nn.Sequential:
@@ -146,26 +181,63 @@ class RSSAlphaZeroNet(nn.Module):
             h = block(h)
         h = self.trunk_norm(h)
 
-        # Phase dispatch by gathering examples for each phase directly on-device.
         phases = x[:, :8].argmax(dim=-1)
-        policy_logits: torch.Tensor | None = None
-        for phase_idx, head in enumerate(self.phase_heads):
-            phase_rows = torch.nonzero(phases == phase_idx, as_tuple=True)[0]
-            if phase_rows.numel() == 0:
-                continue
-            start = self._phase_starts[phase_idx]
-            end = self._phase_ends[phase_idx]
-            phase_out = head(h.index_select(0, phase_rows))
-            if policy_logits is None:
-                # Lazy init from phase_out so dtype matches under autocast.
-                policy_logits = phase_out.new_full(
-                    (h.shape[0], self.cfg.action_dim), -1e9,
-                )
-            policy_logits[phase_rows, start:end] = phase_out  # pyright: ignore[reportOptionalSubscript]
-        assert policy_logits is not None
+        policy_logits = self._grouped_policy_forward(h, phases)
 
         values = self.value_head(h)
         return policy_logits, values
+
+    def _grouped_policy_forward(
+        self, h: torch.Tensor, phases: torch.Tensor,
+    ) -> torch.Tensor:
+        """Grouped bmm policy forward. Packs by phase, runs 4 batched matmuls."""
+        B, H = h.shape
+        P = len(self.phase_heads)
+        A = self.cfg.action_dim
+        heads = [self.phase_heads[p] for p in range(P)]
+
+        # Stack weights from individual heads for batched matmul.
+        w1 = torch.stack([heads[p][0].weight for p in range(P)])  # type: ignore[index]
+        b1 = torch.stack([heads[p][0].bias for p in range(P)])  # type: ignore[index]
+        w2 = torch.stack([heads[p][2].weight for p in range(P)])  # type: ignore[index]
+        b2 = torch.stack([heads[p][2].bias for p in range(P)])  # type: ignore[index]
+        w3 = torch.stack([heads[p][4].weight for p in range(P)])  # type: ignore[index]
+        b3 = torch.stack([heads[p][4].bias for p in range(P)])  # type: ignore[index]
+        w4 = torch.stack([heads[p][6].weight for p in range(P)])  # type: ignore[index]
+        b4 = torch.stack([heads[p][6].bias for p in range(P)])  # type: ignore[index]
+
+        # Sort by phase for contiguous packing.
+        sorted_idx = torch.argsort(phases, stable=True)
+        sorted_phases = phases[sorted_idx]
+        sorted_h = h[sorted_idx]
+
+        # Count per phase, compute max bucket size.
+        counts = torch.bincount(sorted_phases, minlength=P)
+        M = int(counts.max().item())
+
+        if M == 0:
+            return h.new_full((B, A), -1e9)
+
+        # Pack into (P, M, H) — zero-padded for phases with fewer samples.
+        packed = sorted_h.new_zeros(P, M, H)
+        offsets = counts.cumsum(0).roll(1)
+        offsets[0] = 0
+        within_phase = torch.arange(B, device=h.device) - offsets[sorted_phases]
+        packed[sorted_phases, within_phase] = sorted_h
+
+        # 4 layers via batched matmul + GELU.
+        packed = torch.bmm(packed, w1.transpose(1, 2)) + b1.unsqueeze(1)
+        packed = F.gelu(packed)
+        packed = torch.bmm(packed, w2.transpose(1, 2)) + b2.unsqueeze(1)
+        packed = F.gelu(packed)
+        packed = torch.bmm(packed, w3.transpose(1, 2)) + b3.unsqueeze(1)
+        packed = F.gelu(packed)
+        packed = torch.bmm(packed, w4.transpose(1, 2)) + b4.unsqueeze(1)
+
+        # Unpack back to (B, A). Init from packed so dtype follows autocast.
+        policy_logits = packed.new_full((B, A), -1e9)
+        policy_logits[sorted_idx] = packed[sorted_phases, within_phase]
+        return policy_logits
 
 
 def count_parameters(model: nn.Module) -> int:
@@ -175,7 +247,7 @@ def count_parameters(model: nn.Module) -> int:
 
 def run_smoke_test(num_players: int, config_cls: type[RSSModelConfig]) -> None:
     """Standalone smoke test for a model variant. Run via `python -m nn.model_Xp`."""
-    from core.actions import get_action_layout, get_total_action_count
+    from core.actions import get_total_action_count
     from core.state import get_layout
 
     layout = get_layout(num_players)
@@ -225,17 +297,5 @@ def run_smoke_test(num_players: int, config_cls: type[RSSModelConfig]) -> None:
     assert values.min() >= -1.0 and values.max() <= 1.0, "tanh output out of range"
     print("all values in [-1, 1]: ok")
 
-    # Verify phase dispatch: only the correct phase slice has real logits
-    al = get_action_layout(num_players)
-    starts = [al['invest_start'], al['bid_start'], al['acquisition_start'],
-              al['closing_start'], al['dividends_start'], al['issue_start'],
-              al['ipo_start'], al['par_start']]
-    ends = starts[1:] + [cfg.action_dim]
-    for i in range(batch_size):
-        phase = i % 8
-        for j in range(8):
-            if j == phase:
-                assert policy_logits[i, starts[j]:ends[j]].max() > -1e8
-            else:
-                assert (policy_logits[i, starts[j]:ends[j]] <= -1e8).all()
-    print("phase dispatch verified: ok")
+    assert torch.isfinite(policy_logits).all(), "non-finite logits"
+    print("all logits finite: ok")
