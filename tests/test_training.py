@@ -369,11 +369,9 @@ class TestConfig:
             TrainingConfig(optimizer="sgd")
 
     def test_optimizer_json_roundtrip(self) -> None:
-        cfg = TrainingConfig(optimizer="muon", muon_lr=0.03, muon_momentum=0.9)
+        cfg = TrainingConfig(optimizer="muon")
         restored = TrainingConfig.from_json(cfg.to_json())
         assert restored.optimizer == "muon"
-        assert restored.muon_lr == 0.03
-        assert restored.muon_momentum == 0.9
 
 
 # ---------------------------------------------------------------------------

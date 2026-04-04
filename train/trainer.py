@@ -89,7 +89,11 @@ class Trainer:
     def _setup_muon(
         self, model: torch.nn.Module, config: TrainingConfig
     ) -> None:
-        """Muon for 2D weights, auxiliary AdamW for 1D params."""
+        """Muon for 2D weights, auxiliary AdamW for 1D params.
+
+        Uses adjust_lr_fn="match_rms_adamw" (Moonshot) so Muon reuses
+        the same LR and weight decay as AdamW — no separate tuning needed.
+        """
         muon_params: list[torch.nn.Parameter] = []
         adam_decay: list[torch.nn.Parameter] = []
         adam_no_decay: list[torch.nn.Parameter] = []
@@ -106,9 +110,9 @@ class Trainer:
 
         self.optimizer = torch.optim.Muon(
             muon_params,
-            lr=config.muon_lr,
-            momentum=config.muon_momentum,
-            weight_decay=0.0,
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay,
+            adjust_lr_fn="match_rms_adamw",
         )
 
         aux_groups: list[dict[str, object]] = []
@@ -180,10 +184,6 @@ class Trainer:
             self._aux_optimizer.zero_grad()
 
         total_loss.backward()
-
-        torch.nn.utils.clip_grad_norm_(
-            self.model.parameters(), self.config.max_grad_norm
-        )
 
         self.optimizer.step()
         self.scheduler.step()
