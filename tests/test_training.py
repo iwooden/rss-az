@@ -1699,6 +1699,37 @@ class TestModelForward:
         assert values.shape == (16, small_model.cfg.value_dim)
         assert torch.isfinite(policy_logits).all()
 
+    def test_load_state_dict_migrates_sequential_phase_heads_to_packed(
+        self, small_model: RSSAlphaZeroNet
+    ) -> None:
+        state = small_model.state_dict()
+        old_state = {
+            k: v.clone() for k, v in state.items() if not k.startswith("phase_heads.")
+        }
+        layer_map = [
+            (0, "w1", "b1"),
+            (2, "w2", "b2"),
+            (4, "w3", "b3"),
+            (6, "w4", "b4"),
+        ]
+        for i in range(len(small_model.phase_heads)):
+            for layer_idx, packed_w, packed_b in layer_map:
+                old_state[f"phase_heads.{i}.{layer_idx}.weight"] = state[
+                    f"phase_heads.{packed_w}"
+                ][i].clone()
+                old_state[f"phase_heads.{i}.{layer_idx}.bias"] = state[
+                    f"phase_heads.{packed_b}"
+                ][i].clone()
+
+        restored = RSSAlphaZeroNet(small_model.cfg)
+        result = restored.load_state_dict(old_state)
+        assert result.missing_keys == []
+        assert result.unexpected_keys == []
+
+        restored_state = restored.state_dict()
+        for key, value in state.items():
+            torch.testing.assert_close(restored_state[key], value)
+
 
 # ---------------------------------------------------------------------------
 # Duration Formatting Tests
