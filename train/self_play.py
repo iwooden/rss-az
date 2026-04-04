@@ -135,8 +135,8 @@ def play_game(
         temp = _compute_temperature(move_count, config)
         action_probs = get_action_probabilities(root, temp, config.action_dim)
 
-        # Track policy concentration stats (action selection distribution)
-        nonzero = action_probs[action_probs > 0]
+        # Track policy concentration stats (raw visit proportions)
+        nonzero = policy_target[policy_target > 0]
         entropy_sum += float(-np.sum(nonzero * np.log(nonzero)))
         top1_sum += float(np.max(action_probs))
 
