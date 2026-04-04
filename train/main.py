@@ -95,6 +95,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--lr-decay-end-epoch", type=int,
         help="Epoch at which LR reaches lr_min and stays constant (default: num_epochs)",
     )
+    parser.add_argument(
+        "--optimizer", type=str, choices=["adamw", "muon"],
+        help="Optimizer type (default: adamw)",
+    )
+    parser.add_argument("--muon-lr", type=float, help="Muon learning rate (default: 0.02)")
+    parser.add_argument("--muon-momentum", type=float, help="Muon momentum (default: 0.95)")
     parser.add_argument("--dirichlet-alpha", type=float)
     dyn_group = parser.add_mutually_exclusive_group()
     dyn_group.add_argument(
@@ -135,6 +141,7 @@ _CLI_FIELDS = (
     "c_puct_initial", "c_puct_final", "c_puct_anneal_epochs",
     "value_blend_start_epoch", "value_blend_end_epoch",
     "terminal_blend", "lr_min", "lr_decay_end_epoch",
+    "optimizer", "muon_lr", "muon_momentum",
     "dirichlet_alpha", "dirichlet_dynamic", "dirichlet_alpha_numerator",
 )
 

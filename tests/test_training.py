@@ -364,6 +364,17 @@ class TestConfig:
         restored = TrainingConfig.from_json(cfg.to_json())
         assert restored.model_path == "nn.model_3p_plus"
 
+    def test_optimizer_validation(self) -> None:
+        with pytest.raises(ValueError, match="optimizer"):
+            TrainingConfig(optimizer="sgd")
+
+    def test_optimizer_json_roundtrip(self) -> None:
+        cfg = TrainingConfig(optimizer="muon", muon_lr=0.03, muon_momentum=0.9)
+        restored = TrainingConfig.from_json(cfg.to_json())
+        assert restored.optimizer == "muon"
+        assert restored.muon_lr == 0.03
+        assert restored.muon_momentum == 0.9
+
 
 # ---------------------------------------------------------------------------
 # Bitmap Signaling Tests
@@ -714,6 +725,80 @@ class TestTrainer:
         trainer2 = Trainer(small_model, tiny_config, device)
         trainer2.load_state_dict(state)
         assert trainer2.global_step == 2
+
+    def test_muon_train_step_runs(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        device = torch.device("cpu")
+        tiny_config.optimizer = "muon"
+        tiny_config.validate()
+        trainer = Trainer(small_model, tiny_config, device)
+        batch = _make_batch(4, _VIS, _ACT, 3)
+        losses = trainer.train_step(batch)
+        assert all(np.isfinite(v) for v in losses.values())
+        assert trainer.global_step == 1
+
+    def test_muon_param_split(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        device = torch.device("cpu")
+        tiny_config.optimizer = "muon"
+        tiny_config.validate()
+        trainer = Trainer(small_model, tiny_config, device)
+        # Muon should have all 2D weights
+        muon_count = sum(
+            p.numel() for g in trainer.optimizer.param_groups for p in g["params"]
+        )
+        # Aux AdamW should have all 1D params (biases + LayerNorm)
+        assert trainer._aux_optimizer is not None
+        adam_count = sum(
+            p.numel() for g in trainer._aux_optimizer.param_groups for p in g["params"]
+        )
+        total = sum(p.numel() for p in small_model.parameters())
+        assert muon_count + adam_count == total
+        assert muon_count > adam_count  # 2D weights dominate
+
+    def test_muon_state_dict_roundtrip(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        device = torch.device("cpu")
+        tiny_config.optimizer = "muon"
+        tiny_config.validate()
+        trainer = Trainer(small_model, tiny_config, device)
+        batch = _make_batch(4, _VIS, _ACT, 3)
+        trainer.train_step(batch)
+        state = trainer.state_dict()
+        assert "aux_optimizer" in state
+        assert "aux_scheduler" in state
+        assert state["global_step"] == 1
+        trainer2 = Trainer(small_model, tiny_config, device)
+        trainer2.load_state_dict(state)
+        assert trainer2.global_step == 1
+        assert abs(trainer2.lr - trainer.lr) < 1e-8
+
+    def test_muon_adamw_cross_resume(
+        self, small_model: RSSAlphaZeroNet, tiny_config: TrainingConfig
+    ) -> None:
+        """AdamW checkpoint loaded into Muon trainer: warns but doesn't crash."""
+        device = torch.device("cpu")
+        # Create AdamW checkpoint
+        trainer_adamw = Trainer(small_model, tiny_config, device)
+        batch = _make_batch(4, _VIS, _ACT, 3)
+        trainer_adamw.train_step(batch)
+        trainer_adamw.train_step(batch)
+        adamw_state = trainer_adamw.state_dict()
+        # Load into Muon trainer
+        tiny_config.optimizer = "muon"
+        tiny_config.validate()
+        trainer_muon = Trainer(small_model, tiny_config, device)
+        import warnings
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            trainer_muon.load_state_dict(adamw_state)
+        # Should have warned about optimizer mismatch
+        assert any("optimizer" in str(warning.message).lower() for warning in w)
+        # Global step should still be preserved
+        assert trainer_muon.global_step == 2
 
 
 # ---------------------------------------------------------------------------

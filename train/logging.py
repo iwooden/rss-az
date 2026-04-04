@@ -230,7 +230,18 @@ class TrainingLogger:
         table.add_row("Training steps/epoch", f"{config.training_steps_per_epoch:,}")
         table.add_row("Batch size", str(config.batch_size))
         decay_end = config.lr_decay_end_epoch or config.num_epochs
-        lr_desc = f"{config.learning_rate:.1e} \u2192 {config.lr_min:.1e} (decay to epoch {decay_end})"
+        if config.optimizer == "muon":
+            lr_desc = (
+                f"Muon {config.muon_lr:.1e}, "
+                f"AdamW {config.learning_rate:.1e} "
+                f"(decay to epoch {decay_end})"
+            )
+        else:
+            lr_desc = (
+                f"{config.learning_rate:.1e} \u2192 {config.lr_min:.1e} "
+                f"(decay to epoch {decay_end})"
+            )
+        table.add_row("Optimizer", config.optimizer.upper())
         table.add_row("LR", lr_desc)
         table.add_row("Weight decay", f"{config.weight_decay:.1e}")
         table.add_row("Buffer capacity", f"{config.buffer_capacity:,}")

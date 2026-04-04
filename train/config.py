@@ -136,10 +136,13 @@ class TrainingConfig:
 
     # --- Training ---
     batch_size: int = 256
+    optimizer: str = "adamw"        # "adamw" or "muon"
     learning_rate: float = 1e-3
     weight_decay: float = 1e-3
     max_grad_norm: float = 1.0
     training_steps_per_epoch: int = 1000
+    muon_lr: float = 0.02           # Muon learning rate for 2D weight matrices
+    muon_momentum: float = 0.95     # Muon momentum coefficient
 
     # --- LR Schedule ---
     # Cosine annealing with linear warmup
@@ -276,6 +279,18 @@ class TrainingConfig:
         # Game fields
         if self.num_players < 2:
             raise ValueError(f"num_players must be >= 2, got {self.num_players}")
+
+        # Optimizer
+        if self.optimizer not in ("adamw", "muon"):
+            raise ValueError(
+                f"optimizer must be 'adamw' or 'muon', got {self.optimizer!r}"
+            )
+        if self.muon_lr <= 0:
+            raise ValueError(f"muon_lr must be > 0, got {self.muon_lr}")
+        if not 0.0 < self.muon_momentum < 1.0:
+            raise ValueError(
+                f"muon_momentum must be in (0, 1), got {self.muon_momentum}"
+            )
 
         # Training fields
         if self.num_workers < 0:

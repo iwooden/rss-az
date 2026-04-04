@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 
 import torch
 import torch.nn.functional as F
@@ -35,26 +36,13 @@ class Trainer:
             layout = get_layout(config.num_players)
         self._layout: LayoutInfo = layout
 
-        # Exclude LayerNorm params and all biases from weight decay —
-        # regularizing these hurts more than it helps.
-        decay_params = []
-        no_decay_params = []
-        for module in model.modules():
-            for pname, param in module.named_parameters(recurse=False):
-                if not param.requires_grad:
-                    continue
-                if isinstance(module, torch.nn.LayerNorm) or pname == "bias":
-                    no_decay_params.append(param)
-                else:
-                    decay_params.append(param)
-        self.optimizer = torch.optim.AdamW([
-            {"params": decay_params, "weight_decay": config.weight_decay},
-            {"params": no_decay_params, "weight_decay": 0.0},
-        ], lr=config.learning_rate)
+        # --- Optimizer setup ---
+        if config.optimizer == "muon":
+            self._setup_muon(model, config)
+        else:
+            self._setup_adamw(model, config)
 
-        # Decay spans lr_decay_end_epoch epochs (default: all epochs).
-        # If early epochs skip training (buffer not ready), the cosine decay
-        # stretches slightly — acceptable since at most 1 epoch is skipped.
+        # --- LR schedule (shared shape for all optimizers) ---
         decay_epochs = config.lr_decay_end_epoch or config.num_epochs
         total_steps = decay_epochs * config.training_steps_per_epoch
         warmup_steps = config.warmup_steps
@@ -70,6 +58,71 @@ class Trainer:
 
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer, lr_lambda
+        )
+        if self._aux_optimizer is not None:
+            self._aux_scheduler: torch.optim.lr_scheduler.LRScheduler | None = (
+                torch.optim.lr_scheduler.LambdaLR(self._aux_optimizer, lr_lambda)
+            )
+        else:
+            self._aux_scheduler = None
+
+    def _setup_adamw(
+        self, model: torch.nn.Module, config: TrainingConfig
+    ) -> None:
+        """Standard AdamW with decay/no-decay param groups."""
+        decay_params = []
+        no_decay_params = []
+        for module in model.modules():
+            for pname, param in module.named_parameters(recurse=False):
+                if not param.requires_grad:
+                    continue
+                if isinstance(module, torch.nn.LayerNorm) or pname == "bias":
+                    no_decay_params.append(param)
+                else:
+                    decay_params.append(param)
+        self.optimizer: torch.optim.Optimizer = torch.optim.AdamW([
+            {"params": decay_params, "weight_decay": config.weight_decay},
+            {"params": no_decay_params, "weight_decay": 0.0},
+        ], lr=config.learning_rate)
+        self._aux_optimizer: torch.optim.Optimizer | None = None
+
+    def _setup_muon(
+        self, model: torch.nn.Module, config: TrainingConfig
+    ) -> None:
+        """Muon for 2D weights, auxiliary AdamW for 1D params."""
+        muon_params: list[torch.nn.Parameter] = []
+        adam_decay: list[torch.nn.Parameter] = []
+        adam_no_decay: list[torch.nn.Parameter] = []
+        for module in model.modules():
+            for pname, param in module.named_parameters(recurse=False):
+                if not param.requires_grad:
+                    continue
+                if param.ndim >= 2 and not isinstance(module, torch.nn.LayerNorm):
+                    muon_params.append(param)
+                elif isinstance(module, torch.nn.LayerNorm) or pname == "bias":
+                    adam_no_decay.append(param)
+                else:
+                    adam_decay.append(param)
+
+        self.optimizer = torch.optim.Muon(
+            muon_params,
+            lr=config.muon_lr,
+            momentum=config.muon_momentum,
+            weight_decay=0.0,
+        )
+
+        aux_groups: list[dict[str, object]] = []
+        if adam_decay:
+            aux_groups.append({
+                "params": adam_decay, "weight_decay": config.weight_decay,
+            })
+        if adam_no_decay:
+            aux_groups.append({
+                "params": adam_no_decay, "weight_decay": 0.0,
+            })
+        self._aux_optimizer = (
+            torch.optim.AdamW(aux_groups, lr=config.learning_rate)
+            if aux_groups else None
         )
 
     def train_step(self, batch: dict[str, torch.Tensor]) -> dict[str, float]:
@@ -123,12 +176,21 @@ class Trainer:
 
         # Backward + optimize
         self.optimizer.zero_grad()
+        if self._aux_optimizer is not None:
+            self._aux_optimizer.zero_grad()
+
         total_loss.backward()
+
         torch.nn.utils.clip_grad_norm_(
             self.model.parameters(), self.config.max_grad_norm
         )
+
         self.optimizer.step()
         self.scheduler.step()
+        if self._aux_optimizer is not None:
+            self._aux_optimizer.step()
+        if self._aux_scheduler is not None:
+            self._aux_scheduler.step()
 
         self._global_step += 1
 
@@ -155,20 +217,60 @@ class Trainer:
     def lr(self) -> float:
         return self.optimizer.param_groups[0]["lr"]
 
+    @property
+    def aux_lr(self) -> float | None:
+        if self._aux_optimizer is not None:
+            return self._aux_optimizer.param_groups[0]["lr"]
+        return None
+
     def state_dict(self) -> dict[str, object]:
         """Return state for checkpointing."""
-        return {
+        state: dict[str, object] = {
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict(),
             "global_step": self._global_step,
         }
+        if self._aux_optimizer is not None:
+            state["aux_optimizer"] = self._aux_optimizer.state_dict()
+        if self._aux_scheduler is not None:
+            state["aux_scheduler"] = self._aux_scheduler.state_dict()
+        return state
 
     def load_state_dict(self, state: dict[str, object]) -> None:
-        """Restore from checkpoint.  Tolerates missing optimizer/scheduler
-        (e.g. after model surgery) — they just start fresh."""
+        """Restore from checkpoint.  Tolerates missing or mismatched
+        optimizer/scheduler (e.g. after optimizer type change) — they
+        just start fresh with a warning."""
         if "optimizer" in state:
-            self.optimizer.load_state_dict(state["optimizer"])  # type: ignore[arg-type]
+            try:
+                self.optimizer.load_state_dict(state["optimizer"])  # type: ignore[arg-type]
+            except (ValueError, KeyError):
+                warnings.warn(
+                    "Could not restore optimizer state (optimizer type may have "
+                    "changed). Starting optimizer from scratch."
+                )
         if "scheduler" in state:
-            self.scheduler.load_state_dict(state["scheduler"])  # type: ignore[arg-type]
+            try:
+                self.scheduler.load_state_dict(state["scheduler"])  # type: ignore[arg-type]
+            except (ValueError, KeyError):
+                warnings.warn(
+                    "Could not restore scheduler state. "
+                    "Starting scheduler from scratch."
+                )
+        if self._aux_optimizer is not None and "aux_optimizer" in state:
+            try:
+                self._aux_optimizer.load_state_dict(state["aux_optimizer"])  # type: ignore[arg-type]
+            except (ValueError, KeyError):
+                warnings.warn(
+                    "Could not restore aux optimizer state. "
+                    "Starting aux optimizer from scratch."
+                )
+        if self._aux_scheduler is not None and "aux_scheduler" in state:
+            try:
+                self._aux_scheduler.load_state_dict(state["aux_scheduler"])  # type: ignore[arg-type]
+            except (ValueError, KeyError):
+                warnings.warn(
+                    "Could not restore aux scheduler state. "
+                    "Starting aux scheduler from scratch."
+                )
         assert isinstance(state["global_step"], int)
         self._global_step = state["global_step"]
