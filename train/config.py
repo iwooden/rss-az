@@ -137,7 +137,7 @@ class TrainingConfig:
     # --- Training ---
     batch_size: int = 256
     learning_rate: float = 1e-3
-    weight_decay: float = 1e-4
+    weight_decay: float = 1e-3
     max_grad_norm: float = 1.0
     training_steps_per_epoch: int = 1000
 
