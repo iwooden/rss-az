@@ -127,15 +127,18 @@ def play_game(
             profile=search_stats,
         )
 
-        # Temperature schedule (linear ramp)
-        temp = _compute_temperature(move_count, config)
-        policy = get_action_probabilities(root, temp, config.action_dim)
+        # Policy target: raw visit count proportions (no temperature scaling)
+        policy_target = get_action_probabilities(root, 1.0, config.action_dim)
         value_target = get_greedy_leaf_value(root, config.num_players)
 
-        # Track policy concentration stats
-        nonzero = policy[policy > 0]
+        # Temperature-scaled distribution for action selection only
+        temp = _compute_temperature(move_count, config)
+        action_probs = get_action_probabilities(root, temp, config.action_dim)
+
+        # Track policy concentration stats (action selection distribution)
+        nonzero = action_probs[action_probs > 0]
         entropy_sum += float(-np.sum(nonzero * np.log(nonzero)))
-        top1_sum += float(np.max(policy))
+        top1_sum += float(np.max(action_probs))
 
         # Store training example with rotated state and values
         rotated_state = rotate_visible_state(
@@ -146,14 +149,14 @@ def play_game(
             TrainingExample(
                 state=rotated_state,
                 legal_mask=legal_mask,
-                policy_target=policy,
+                policy_target=policy_target,
                 value_target=rotated_value,
             )
         )
         active_player_ids.append(active_player)
 
         # Sample and apply action
-        action_idx = int(rng.choice(config.action_dim, p=policy))
+        action_idx = int(rng.choice(config.action_dim, p=action_probs))
         status = DRIVER.apply_action(state, action_idx)
         move_count += 1
 
