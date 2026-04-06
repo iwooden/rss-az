@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-High-performance Cython game engine for "Rolling Stock Stars" board game, optimized for AlphaZero-style self-play training. Game state is stored as a single contiguous float32 array that can be passed directly to PyTorch without serialization overhead.
+High-performance Cython game engine for "Rolling Stock Stars" board game, optimized for AlphaZero-style self-play training. Game state is stored as a single contiguous int16 numpy array. Per-token features for the NN are produced lazily by `get_token_data()`, separate from state storage.
 
 **Important:** "Rolling Stock Stars" is a different game than "Rolling Stock". They share similarities but many rules differ. Do NOT rely on knowledge of "Rolling Stock" — always consult `RULES.md` as the authoritative source for game rules.
 
 **Key characteristics:**
 - 2-6 player support with dynamic state sizing
-- ~2294-2650 floats per game state (varies by player count)
+- 444-600 int16 values per game state (3p = 483)
 - No Python object overhead in hot paths (nogil execution)
 - Benchmark target: thousands of games per minute
 
@@ -62,18 +62,19 @@ Low-level (`cdef` nogil) wraps high-level (cpdef/def) with no code duplication.
 
 ### GameState (`core/state.pyx`)
 
-Central data structure: single contiguous float32 numpy array.
-
-**Two-part layout:**
-- **Visible state**: NN input (player-rotated so active player first)
-- **Hidden state**: Internal bookkeeping (truncated before NN sees state) — information hiding (deck order, canonical active player), offer buffers, compact O(1) one-hot storage
+Single contiguous int16 numpy array. Raw integers only — no normalization, no one-hot encoding, no visible/hidden split.
 
 **Sizes by player count:**
-| Players | Visible | Hidden | Total |
-|---------|---------|--------|-------|
-| 2 | 1039 | 1255 | 2294 |
-| 3 | 1109 | 1271 | 2380 |
-| 6 | 1331 | 1319 | 2650 |
+
+| Players | total_size | player_stride | corp_stride |
+|---------|-----------|---------------|-------------|
+| 2 | 444 | 38 | 16 |
+| 3 | 483 | 38 | 16 |
+| 6 | 600 | 38 | 16 |
+
+`GameState` exposes only structural primitives publicly: `_player_ptr` / `_corp_ptr` / `_turn_ptr` (cdef nogil), the cached layout structs (`_layout`, `_player_fields`, `_corp_fields`, `_turn_offsets`), `get_active_player` / `set_active_player`, `get_num_players`, and `initialize_game`. All field-level reads and writes go through entity handles in `entities/`.
+
+**`GameState._layout`** is a Cython `cdef` struct — NOT accessible from Python. Use `core.state.get_layout(num_players)` for a Python-accessible `LayoutInfo` namedtuple. See `VECTORS.md` for the full layout.
 
 ### Actions (`core/actions.pyx`)
 
@@ -95,34 +96,11 @@ Stateless game loop: `apply_action(state, action_idx, history)` dispatches to ph
 
 ### Data (`core/data.pyx`)
 
-Static game constants: 36 companies, 8 corporations, 27 market prices.
-
-**Normalization divisors:**
-- `CASH_DIVISOR = 150.0` (player/corp/FI cash, acquisition proceeds)
-- `NET_WORTH_DIVISOR = 200.0` (player net worth)
-- `COMPANY_INCOME_DIVISOR = 10.0` (per-company incomes, synergy values)
-- `ENTITY_INCOME_DIVISOR = 80.0` (player/corp/FI aggregate income)
-- `COMPANY_PRICE_DIVISOR = 80.0` (company face/low/high prices, auction price)
-- `SHARE_PRICE_DIVISOR = 75.0` (corp share prices, issue cash gain)
-- `SHARE_DIVISOR = 7.0` (share counts)
-- `COMPANY_STAR_DIVISOR = 5.0` (per-company star ratings)
-- `CORP_STAR_DIVISOR = 40.0` (corporation aggregate stars)
-- `MAX_ROUNDTRIPS = 2.0` (buy/sell tracking)
-- `IMPACT_DIVISOR = 5.0` (dividend/issue/invest price index deltas)
+Static game constants: 36 companies, 8 corporations, 27 market prices, plus the `GamePhases` and `CompanyLocation`-related enums.
 
 ## MCTS Search
 
 Pure-Python AlphaZero-style MCTS for 3-player games. MCTSConfig lives in `train/config.py`.
-
-### State Rotation
-
-The NN always sees the active player at slot 0. Before inference, visible state is rotated; after, values are un-rotated to canonical order.
-
-**Rotated:** Player data blocks (each `player_stride` floats) + per-player turn fields (`auction_high_bidder`, `auction_starter`, `auction_passed`)
-
-**NOT rotated:** phase, CoO, FI, companies, corporations, market, static data
-
-**Important:** `GameState._layout` is a Cython `cdef` struct — NOT accessible from Python. Use `core.state.get_layout(num_players)` for a Python-accessible `LayoutInfo` namedtuple (cached wrapper at `mcts.evaluator.get_layout()`).
 
 ### Value Representation
 
@@ -176,7 +154,7 @@ All hyperparameters in `TrainingConfig` dataclass (`train/config.py`). `Training
 
 ### Training Examples & Loss
 
-At each decision point: state (visible, rotated), legal_mask, policy_target (MCTS visits), value_target (A0GB, rotated to active-player-first via `np.roll(canonical, -active_player_id)`).
+At each decision point: state, legal_mask, policy_target (MCTS visits), value_target (A0GB).
 
 **Loss:** Policy cross-entropy with MCTS targets + Value MSE with A0GB targets.
 
@@ -187,13 +165,12 @@ At each decision point: state (visible, rotated), legal_mask, policy_target (MCT
 
 ## State Representation
 
-**Normalization:** Integers divided by divisor before storage, retrieved by `<int>(value * DIVISOR + 0.5)`.
+See `VECTORS.md` for the full buffer layout. Key points:
 
-**One-hot encodings:** Phase (12), Cost of ownership (7), Turn order (per player), Price index (27 per corp).
-
-**Layout:** `[Phase | CoO | Players (stride=57+num_players) | FI | Companies | Incomes | Market | Corps (stride=52) | Turn | Auction Slots | Invest Impacts | HIDDEN]`
-
-**Context-dependent fields:** Many turn state fields zeroed when inactive phase. See `VECTORS.md` for exact offsets.
+- Single contiguous int16 array per `GameState`. Raw integers, no normalization, no one-hot encoding, no visible/hidden split.
+- Sections in order: `metadata (5) | players (38 × N) | FI (2) | company_incomes (36) | market (27) | corps (16 × 8) | turn (59 + N) | deck (37) | company_locations (36) | company_owner_ids (36)`.
+- All per-player data (cash, shares, presidencies, this-turn share buys/sells) lives inside one player block, so `_player_ptr(i)` reaches everything for player `i` in a single pointer hop.
+- `company_locations` (`CompanyLocation` enum, 0–8) plus `company_owner_ids` are the single source of truth for "who owns what". `LOC_DECK = 0` is the zero-init default; `__cinit__` explicitly seeds `company_owner_ids` to `-1`.
 
 ## Game Flow & Phases
 
@@ -217,18 +194,17 @@ At each decision point: state (visible, rotated), legal_mask, policy_target (MCT
 
 ### Offer Buffer Pattern (acquisition.pyx, closing.pyx)
 
-Both phases use **one-by-one offer presentation**: offers generated into hidden buffer at phase entry, sorted by priority, presented sequentially, re-validated dynamically. Keeps action space constant.
+Both phases use **one-by-one offer presentation**: offers generated at phase entry, sorted by priority, presented sequentially, re-validated dynamically. Keeps action space constant.
 
 **ACQUISITION:** Priority: OS→FI (face value DESC) → Corp→FI (price DESC) → Corp→Corp → Corp→Player. Receivership corps auto-buy from FI at HIGH if affordable, auto-pass otherwise. Actions: 51 price offsets, FI_BUY, PASS.
 
-**CLOSING:** Two stages: (1) auto-close (FI negative-income, receivership red/orange above CoO), (2) player offers sorted by face value ASC. Actions: CLOSE, PASS. Mandatory close at end if player has negative income+cash. Hidden state now includes a `closing_transition_pending` marker so the driver can distinguish initial CLO entry from the post-offer boundary before mandatory close / INCOME.
+**CLOSING:** Two stages: (1) auto-close (FI negative-income, receivership red/orange above CoO), (2) player offers sorted by face value ASC. Actions: CLOSE, PASS. Mandatory close at end if player has negative income+cash.
 
 ## Code Conventions
 
-- **Naming:** `corp_id`/`company_id`/`player_id` = indices; `CORPS[i]`/`PLAYERS[i]` = singletons; `PHASE_*` from `GamePhases`
-- **Normalization:** `state[offset] = cash / CASH_DIVISOR` (store), `<int>(state[offset] * CASH_DIVISOR + 0.5)` (retrieve)
-- **One-hot:** `set_one_hot(array, offset, index, size)` to set; loop `array[offset + i] == 1.0` to find
-- **Pointer safety:** `nogil` functions take pointers/offsets; `_player_ptr()`/`_corp_ptr()` helpers; entities cache offsets
+- **Naming:** `corp_id`/`company_id`/`player_id` = indices; `CORPS[i]`/`PLAYERS[i]` = singletons; `PHASE_*` from `GamePhases`; `LOC_*` from `CompanyLocation`
+- **Field access:** Use entity handles (`PLAYERS[i].get_cash(state)`, `CORPS[c].get_share_price(state)`) for all field reads/writes. `GameState` exposes only structural primitives.
+- **Pointer safety:** `nogil` functions take pointers/offsets; `_player_ptr()`/`_corp_ptr()`/`_turn_ptr()` helpers; entities cache offsets
 
 ## Build Commands
 
@@ -266,7 +242,7 @@ pytest tests/
 
 **Patterns:** Validate action effects, check mask validity, verify phase transitions, assert invariants (cash conservation, share counts).
 
-**Derived visible state fields** (e.g. `pending_price_move`): Test via invariants in `assert_invariants()` (`tests/phases/conftest.py`), not dedicated test files. This validates correctness at every state transition across all phases and replay tests automatically. Only add a dedicated test file if the feature has complex standalone logic that isn't covered by invariant checks.
+**Derived state fields** (e.g. `pending_price_move`): Test via invariants in `assert_invariants()` (`tests/phases/conftest.py`), not dedicated test files. This validates correctness at every state transition across all phases and replay tests automatically. Only add a dedicated test file if the feature has complex standalone logic that isn't covered by invariant checks.
 
 **When a test fails, assume the implementation is broken** until proven otherwise. Only "fix" a test after confirming the implementation is correct and the test setup was invalid.
 

@@ -373,8 +373,8 @@ All four simplifications follow the same pattern: the MLP needed a small, fixed 
 ## Implementation Phases
 
 ### Phase 1: Compact state + token extraction (core/)
-- Redesign `GameState` as a single compact array (no visible/hidden split)
-- Delete one-hot encoding, normalization-on-write, entity duplication
+- Redesign `GameState` as a single compact array (no visible/hidden split) — **done in `09e5048`** (`core/state.{pxd,pyx}` reduced to structural primitives + entity-handle delegation; player block now contains all per-player tracking incl. share buys/sells)
+- Delete one-hot encoding, normalization-on-write, entity duplication — **done in `09e5048`** (state-side; entity handles still pending update)
 - Implement `get_token_data()` in Cython — fills eval buffer from compact state
 - Update entity handles (Player, Corp, etc.) for new offset layout
 - Target: 3p only

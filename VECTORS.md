@@ -1,382 +1,233 @@
 # Cython Core Vector Documentation
 
-This document describes the state vector (neural network input) and action vector (neural network output) layouts for the Cython game engine.
+This document describes the in-memory game state layout. The state is the engine's only authoritative game data; per-token features for the neural network are produced lazily by `get_token_data()` (a separate path).
 
 ---
 
-## State Vector
+## State Buffer
 
-The game state is stored as a contiguous `float32` array organized as:
-```
-[VISIBLE STATE (for NN)] [HIDDEN STATE (internal only)]
-```
+`GameState` wraps a single contiguous `int16` numpy array. All values are raw signed integers — no normalization, no one-hot encoding, no visible/hidden split. `int16` is sufficient for every game quantity (player net worth maxes around 400, share counts are single digits, `-1` sentinels fit in the negative range).
 
-### Size Calculation
+### Sizes by player count
 
-State size varies by player count due to player-indexed arrays:
+| Players | total_size | player_stride | corp_stride | turn_size |
+|---------|-----------|---------------|-------------|-----------|
+| 2       | 444       | 38            | 16          | 61        |
+| 3       | 483       | 38            | 16          | 62        |
+| 4       | 522       | 38            | 16          | 63        |
+| 5       | 561       | 38            | 16          | 64        |
+| 6       | 600       | 38            | 16          | 65        |
 
-| Players | Visible Size | Hidden Size | Total Size |
-|---------|--------------|-------------|------------|
-| 2       | 1039         | 1255        | 2294       |
-| 3       | 1109         | 1271        | 2380       |
-| 4       | 1181         | 1287        | 2468       |
-| 5       | 1255         | 1303        | 2558       |
-| 6       | 1331         | 1319        | 2650       |
+`player_stride` and `corp_stride` are fixed across player counts. `turn_size` grows by 1 per player (the `auction_passed` flag array). `total_size` grows by `player_stride + 1 = 39` per player.
 
-Use `get_state_size(num_players)` and `get_visible_size(num_players)` for exact values.
-
-### Normalization Constants
-
-| Constant | Value | Used For |
-|----------|-------|----------|
-| `CASH_DIVISOR` | 150.0 | Player/corp/FI cash, corp acquisition proceeds |
-| `NET_WORTH_DIVISOR` | 200.0 | Player net worth |
-| `COMPANY_INCOME_DIVISOR` | 10.0 | Per-company adjusted incomes, synergy values, active company income, auction slot income |
-| `ENTITY_INCOME_DIVISOR` | 80.0 | Player/corp/FI aggregate income |
-| `COMPANY_PRICE_DIVISOR` | 80.0 | Company prices (face/low/high), auction price |
-| `SHARE_PRICE_DIVISOR` | 75.0 | Corp share prices, issue cash gain |
-| `SHARE_DIVISOR` | 7.0 | Share counts |
-| `COMPANY_STAR_DIVISOR` | 5.0 | Per-company star ratings (1-5) |
-| `CORP_STAR_DIVISOR` | 40.0 | Corporation aggregate star totals |
-| `MAX_ROUNDTRIPS` | 2.0 | Round-trip limit (visible scalar = max across corps / MAX_ROUNDTRIPS) |
-| `IMPACT_DIVISOR` | 5.0 | Dividend/issue/invest price index deltas |
-
-### Context-Dependent Fields
-
-Many fields in the visible state are only meaningful during specific game phases (e.g., auction info during BID, active corp during DIVIDENDS). When their context is inactive, these fields are **zeroed out** so the model can distinguish "no active context" from valid data.
-
-**Convention:**
-- **Binary fields** (one-hots, flags): all elements set to **0** when inactive. This is distinct from a valid one-hot (which has exactly one 1) or valid flags (which may have any combination of 1s).
-- **Data scalars** (cash, prices, counts): set to **0** when inactive.
-
-**Context-dependent fields and their relevant phases:**
-
-| Field | Type | Relevant Phases |
-|-------|------|-----------------|
-| `auction_price` | scalar | BID |
-| `auction_price_offset` | scalar | BID |
-| `auction_high_bidder` | one-hot | BID |
-| `auction_starter` | one-hot | BID |
-| `auction_passed` | flags | BID |
-| `dividend_impact` | values | DIVIDENDS |
-| `dividend_remaining` | flags | DIVIDENDS |
-| `issue_remaining` | flags | ISSUE |
-| `issue_price_impact` | scalar | ISSUE |
-| `issue_cash_gain` | scalar | ISSUE |
-| `invest_buy_impact` | values | INVEST |
-| `invest_sell_impact` | values | INVEST |
-| `acq_is_fi_offer` | flag | ACQUISITION |
-| `acq_synergy_values` | values | ACQUISITION |
-| `companies_acquired` | flags | ACQUISITION |
-| `active_company` | one-hot | BID, ACQ, CLOSING, IPO, PAR |
-| `active_company_stars` | scalar | BID, ACQ, CLOSING, IPO, PAR |
-| `active_company_low_price` | scalar | BID, ACQ, CLOSING, IPO, PAR |
-| `active_company_face_value` | scalar | BID, ACQ, CLOSING, IPO, PAR |
-| `active_company_high_price` | scalar | BID, ACQ, CLOSING, IPO, PAR |
-| `active_company_income` | scalar | BID, ACQ, CLOSING, IPO, PAR |
-| `active_corp` | one-hot | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
-| `active_corp_cash` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
-| `active_corp_unissued_shares` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
-| `active_corp_issued_shares` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
-| `active_corp_bank_shares` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
-| `active_corp_income` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
-| `active_corp_stars` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
-| `active_corp_share_price` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
-| `active_corp_acquisition_proceeds` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
-| `active_corp_price_index_norm` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
-| `active_corp_pending_price_move` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
-| `active_corp_raw_revenue` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
-| `active_corp_synergy_income` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
-| `active_corp_coo_cost` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
-| `active_corp_ability_income` | scalar | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
-| `active_corp_companies` | flags | DIVIDENDS, ISSUE, ACQ, CLOSING, PAR |
-| `par_corp_treasury` | values | IPO, PAR |
-| `par_shares` | values | IPO, PAR |
-
-**Non-context-dependent fields** (always valid regardless of phase): `phase`, `coo`, all player fields (except `round_trips`), FI fields, company location flags (except `companies_acquired`), company adjusted incomes, market availability, corporation data blocks, `end_card_flipped`, `consecutive_passes`, `cards_remaining`, auction slot info.
+Use `core.state.get_layout(num_players)` for a Python-accessible `LayoutInfo` namedtuple. Cython code can call `compute_layout()` directly for `nogil` access to the underlying struct.
 
 ---
 
-## Visible State Layout
+## Top-level Layout
 
-### Phase & CoO (Offset 0)
+| Section | Size | Description |
+|---------|------|-------------|
+| Metadata | 5 | active_player, num_players, phase, coo_level, turn_number |
+| Players | `player_stride * num_players` | Per-player blocks (see [Player block](#player-block)) |
+| FI | 2 | Foreign investor cash, income |
+| Company incomes | 36 | Per-company adjusted income (base − CoO cost) |
+| Market | 27 | Per-price availability flags |
+| Corps | `corp_stride * 8` | Per-corp blocks (see [Corp block](#corp-block)) |
+| Turn | `turn_size` | Turn-scoped state (see [Turn block](#turn-block)) |
+| Deck | 1 + 36 | `deck_top` index + `deck_order` |
+| Company tracking | 36 + 36 | `company_locations` + `company_owner_ids` |
 
-| Field | Size | Encoding | Notes |
-|-------|------|----------|-------|
-| `phase` | 8 | one-hot | Decision phases only; auto/terminal phases produce all-zeros |
-| `coo` | 7 | one-hot | Cost of ownership level 1-7 |
-
-**Phase Visible Indices:**
-| Visible Index | Phase |
-|-------|-------|
-| 0 | INVEST (0) |
-| 1 | BID_IN_AUCTION (1) |
-| 2 | ACQUISITION (3) |
-| 3 | CLOSING (4) |
-| 4 | DIVIDENDS (6) |
-| 5 | ISSUE_SHARES (8) |
-| 6 | IPO (9) |
-| 7 | PAR (10) |
-
-Auto phases (WRAP_UP, INCOME, END_CARD) and GAME_OVER are not encoded in the visible one-hot. Hidden state still stores the original phase index 0-11.
-
-### Players (repeated `num_players` times)
-
-Player stride = `3 + num_players + 36 + 18` = `57 + num_players`
-
-| Field | Size | Encoding | Notes |
-|-------|------|----------|-------|
-| `cash` | 1 | normalized | / CASH_DIVISOR |
-| `net_worth` | 1 | normalized | / NET_WORTH_DIVISOR |
-| `liquidity` | 1 | normalized | Iterative share liquidation value / NET_WORTH_DIVISOR. Equals cash when no shares held. |
-| `turn_order` | num_players | one-hot | Position 0 = first to act |
-| `owned_companies` | 36 | flags | 1 per company |
-| `owned_shares` | 8 | normalized | / SHARE_DIVISOR |
-| `is_president` | 8 | flags | 1 per corp |
-| `round_trips` | 1 | normalized | max(min(buys, sells) across all corps) / MAX_ROUNDTRIPS. Context-dependent: zeroed outside INVEST |
-| `income` | 1 | normalized | Total income from owned private companies / ENTITY_INCOME_DIVISOR |
-
-**Player Field Offsets (within player stride):**
-| Field | Offset |
-|-------|--------|
-| cash | 0 |
-| net_worth | 1 |
-| liquidity | 2 |
-| turn_order | 3 |
-| owned_companies | 3 + num_players |
-| owned_shares | 39 + num_players |
-| is_president | 47 + num_players |
-| round_trips | 55 + num_players |
-| income | 56 + num_players |
-
-### Foreign Investor
-
-| Field | Size | Encoding | Notes |
-|-------|------|----------|-------|
-| `fi_cash` | 1 | normalized | / CASH_DIVISOR |
-| `fi_income` | 1 | normalized | Total income including +5 base bonus / ENTITY_INCOME_DIVISOR |
-| `fi_companies` | 36 | flags | Companies owned by FI |
-
-### Company Locations
-
-| Field | Size | Encoding | Notes |
-|-------|------|----------|-------|
-| `companies_for_auction` | 36 | flags | Available to buy |
-| `companies_revealed` | 36 | flags | Drawn this turn (unavailable) |
-| `companies_removed` | 36 | flags | Closed/out of game |
-| `companies_acquired` | 36 | flags | In a corp's acquisition zone this phase. Context-dependent: zeroed outside ACQ |
-
-### Company Adjusted Incomes
-
-| Field | Size | Encoding | Notes |
-|-------|------|----------|-------|
-| `company_incomes` | 36 | normalized | / COMPANY_INCOME_DIVISOR, updated when CoO changes |
-
-These are the companies' adjusted incomes (base income minus cost of ownership). They are automatically updated whenever the CoO level changes via `set_coo_level()`.
-
-### Market Availability
-
-| Field | Size | Encoding | Notes |
-|-------|------|----------|-------|
-| `market_available` | 27 | flags | 1=available, 0=taken by corp |
-
-**Market Price Table (index -> price):**
-```
-0->0, 1->5, 2->6, 3->7, 4->8, 5->9, 6->10, 7->11, 8->12, 9->13,
-10->14, 11->16, 12->18, 13->20, 14->22, 15->24, 16->27, 17->30,
-18->33, 19->37, 20->41, 21->45, 22->50, 23->55, 24->61, 25->68, 26->75
-```
-
-### Corporations (repeated 8 times)
-
-Corp stride = `16 + 36` = `52`
-
-| Field | Size | Encoding | Notes |
-|-------|------|----------|-------|
-| `active` | 1 | flag | Has been IPO'd |
-| `cash` | 1 | normalized | / CASH_DIVISOR |
-| `unissued_shares` | 1 | normalized | / SHARE_DIVISOR |
-| `issued_shares` | 1 | normalized | / SHARE_DIVISOR |
-| `bank_shares` | 1 | normalized | Issued but not player-owned |
-| `income` | 1 | normalized | Derived from companies / ENTITY_INCOME_DIVISOR |
-| `stars` | 1 | normalized | / CORP_STAR_DIVISOR |
-| `share_price` | 1 | normalized | / SHARE_PRICE_DIVISOR |
-| `acquisition_proceeds` | 1 | normalized | Pending this phase |
-| `in_receivership` | 1 | flag | |
-| `price_index_norm` | 1 | normalized | Market position index / 26.0 |
-| `pending_price_move` | 1 | normalized | Predicted price move assuming $0 dividend / IMPACT_DIVISOR. 0 for inactive corps |
-| `raw_revenue` | 1 | normalized | Sum of base company incomes / ENTITY_INCOME_DIVISOR. 0 for inactive corps |
-| `synergy_income` | 1 | normalized | Synergy bonus income / ENTITY_INCOME_DIVISOR. 0 for inactive corps |
-| `coo_cost` | 1 | normalized | CoO cost (always ≤ 0) / ENTITY_INCOME_DIVISOR. 0 for inactive corps |
-| `ability_income` | 1 | normalized | Corp ability bonus / ENTITY_INCOME_DIVISOR. 0 for inactive corps |
-| `owned_companies` | 36 | flags | Companies owned |
-
-**Corp Field Offsets (within corp stride):**
-| Field | Offset |
-|-------|--------|
-| active | 0 |
-| cash | 1 |
-| unissued_shares | 2 |
-| issued_shares | 3 |
-| bank_shares | 4 |
-| income | 5 |
-| stars | 6 |
-| share_price | 7 |
-| acquisition_proceeds | 8 |
-| in_receivership | 9 |
-| price_index_norm | 10 |
-| pending_price_move | 11 |
-| raw_revenue | 12 |
-| synergy_income | 13 |
-| coo_cost | 14 |
-| ability_income | 15 |
-| owned_companies | 16 |
-
-### Turn State
-
-Size varies with player count: `213 + (3 * num_players)`
-
-| Field | Size | Encoding | Notes |
-|-------|------|----------|-------|
-| `end_card_flipped` | 1 | flag | |
-| `consecutive_passes` | 1 | normalized | / num_players, INVEST phase |
-| **Auction:** | | | |
-| `auction_price` | 1 | normalized | / COMPANY_PRICE_DIVISOR. 0 when no auction |
-| `auction_price_offset` | 1 | normalized | (price - low_price) / AUCTION_CAP. Mirrors bid action encoding. 0 when no auction |
-| `auction_high_bidder` | num_players | one-hot | 0 when no auction |
-| `auction_starter` | num_players | one-hot | 0 when no auction |
-| `auction_passed` | num_players | flags | Player left auction. 0 when no auction |
-| **Dividends:** | | | |
-| `dividend_impact` | 26 | normalized | Price index delta per dividend level / IMPACT_DIVISOR. 0 for invalid levels |
-| `dividend_remaining` | 8 | flags | Corps left to process |
-| **Issue:** | | | |
-| `issue_remaining` | 8 | flags | Corps left to process |
-| `issue_price_impact` | 1 | normalized | Price index delta if issuing / IMPACT_DIVISOR. 0 outside ISSUE. |
-| `issue_cash_gain` | 1 | normalized | Cash corp receives if issuing / SHARE_PRICE_DIVISOR. 0 outside ISSUE. |
-| **Acquisition:** | | | |
-| `acq_is_fi_offer` | 1 | flag | 1=FI target |
-| `acq_synergy_values` | 36 | normalized | Synergy income bonus per company / COMPANY_INCOME_DIVISOR, 0 if corp doesn't own |
-| **Active Company:** | | | |
-| `active_company` | 36 | one-hot | Company under consideration in BID, ACQ, CLOSING, IPO, PAR. 0 when inactive. |
-| `active_company_stars` | 1 | normalized | / COMPANY_STAR_DIVISOR. 0 when inactive. |
-| `active_company_low_price` | 1 | normalized | / COMPANY_PRICE_DIVISOR. 0 when inactive. |
-| `active_company_face_value` | 1 | normalized | / COMPANY_PRICE_DIVISOR. 0 when inactive. |
-| `active_company_high_price` | 1 | normalized | / COMPANY_PRICE_DIVISOR. 0 when inactive. |
-| `active_company_income` | 1 | normalized | Adjusted income / COMPANY_INCOME_DIVISOR. 0 when inactive. |
-| **Active Corp:** | | | |
-| `active_corp` | 8 | one-hot | Corp under consideration in DIVIDENDS, ISSUE, ACQ, CLOSING (corp-owned offers only). 0 when inactive or player-owned. |
-| `active_corp_cash` | 1 | normalized | / CASH_DIVISOR. 0 when inactive. |
-| `active_corp_unissued_shares` | 1 | normalized | / SHARE_DIVISOR. 0 when inactive. |
-| `active_corp_issued_shares` | 1 | normalized | / SHARE_DIVISOR. 0 when inactive. |
-| `active_corp_bank_shares` | 1 | normalized | / SHARE_DIVISOR. 0 when inactive. |
-| `active_corp_income` | 1 | normalized | / ENTITY_INCOME_DIVISOR. 0 when inactive. |
-| `active_corp_stars` | 1 | normalized | / CORP_STAR_DIVISOR. 0 when inactive. |
-| `active_corp_share_price` | 1 | normalized | / SHARE_PRICE_DIVISOR. 0 when inactive. |
-| `active_corp_acquisition_proceeds` | 1 | normalized | / CASH_DIVISOR. 0 when inactive. |
-| `active_corp_price_index_norm` | 1 | normalized | Market position index / 26.0. 0 when inactive. |
-| `active_corp_pending_price_move` | 1 | normalized | / IMPACT_DIVISOR. 0 when inactive. |
-| `active_corp_raw_revenue` | 1 | normalized | / ENTITY_INCOME_DIVISOR. 0 when inactive. |
-| `active_corp_synergy_income` | 1 | normalized | / ENTITY_INCOME_DIVISOR. 0 when inactive. |
-| `active_corp_coo_cost` | 1 | normalized | / ENTITY_INCOME_DIVISOR. Always ≤ 0. 0 when inactive. |
-| `active_corp_ability_income` | 1 | normalized | / ENTITY_INCOME_DIVISOR. 0 when inactive. |
-| `active_corp_companies` | 36 | flags | Owned company flags copied from corp data block. 0 when inactive. |
-| **Deck:** | | | |
-| `cards_remaining` | 1 | normalized | Cards remaining in deck / NUM_COMPANIES |
-| **PAR Info:** | | | |
-| `par_corp_treasury` | 14 | normalized | Resulting corp cash if floated at each par price / CASH_DIVISOR. 0 for invalid slots. Context-dependent: IPO/PAR only. |
-| `par_shares` | 14 | normalized | 0.5 for 2 shares (FV ≤ par), 1.0 for 4 shares (FV > par). 0 for invalid slots. Context-dependent: IPO/PAR only. |
-
-### Auction Slot Info (5 × num_players)
-
-Per slot (5 floats, ordered by auction slot index):
-| Field | Size | Encoding | Notes |
-|-------|------|----------|-------|
-| `stars` | 1 | normalized | / COMPANY_STAR_DIVISOR |
-| `low_price` | 1 | normalized | / COMPANY_PRICE_DIVISOR |
-| `face_value` | 1 | normalized | / COMPANY_PRICE_DIVISOR |
-| `high_price` | 1 | normalized | / COMPANY_PRICE_DIVISOR |
-| `income` | 1 | normalized | Adjusted income / COMPANY_INCOME_DIVISOR (reflects current CoO) |
-
-Updated when auction row changes (init, auction resolution, WRAP_UP). Empty slots are zero-filled.
-
-### Invest Impacts (16)
-
-Price index delta from buying/selling each corp's share. Context-dependent: zeroed outside INVEST phase.
-
-| Field | Size | Encoding | Notes |
-|-------|------|----------|-------|
-| `buy_impact` | 8 | normalized | `(new_index - current_index) / IMPACT_DIVISOR` per corp. Positive (price steps up). 0 for inactive corps |
-| `sell_impact` | 8 | normalized | `(new_index - current_index) / IMPACT_DIVISOR` per corp. Negative (price steps down). 0 for inactive corps |
-
-Shown for all active corps regardless of affordability or share ownership. Recomputed on active player change during INVEST. Buy uses next higher market space, sell uses next lower.
+Section start offsets are exposed via `LayoutInfo` as `players_offset`, `fi_offset`, `company_incomes_offset`, `market_offset`, `corps_offset`, `turn_offset`, `deck_top_offset`, `deck_order_offset`, `company_locations_offset`, `company_owner_ids_offset`.
 
 ---
 
-## Hidden State Layout
+## Metadata (offsets 0–4)
 
-Hidden state starts at `visible_size` offset. Total hidden size = `1223 + 16 * num_players`.
-
-The hidden state serves several purposes:
-- **Information hiding**: Data the NN shouldn't see (deck order, active player before rotation, turn number)
-- **Bookkeeping**: Offer buffers for acquisition/closing phases, per-player share buy/sell tracking
-- **Performance**: Compact storage for O(1) access to one-hot values and company locations
-
-| Field | Offset | Size | Notes |
-|-------|--------|------|-------|
-| `active_player` | 0 | 1 | Canonical player index |
-| `num_players` | 1 | 1 | Player count |
-| `deck_top` | 2 | 1 | Index of top card (-1 = empty) |
-| `deck_order` | 3 | 36 | Company IDs in draw order |
-| `phase` | 39 | 1 | Compact phase storage |
-| `coo_level` | 40 | 1 | Compact CoO storage |
-| `auction_company` | 41 | 1 | Compact auction company |
-| `auction_high_bidder` | 42 | 1 | Compact high bidder |
-| `auction_starter` | 43 | 1 | Compact auction starter |
-| `corp_price_indices` | 44 | 8 | Compact price indices per corp |
-| `offer_count` | 52 | 1 | Number of acquisition offers |
-| `offer_index` | 53 | 1 | Current acquisition offer |
-| `offer_buffer` | 54 | 750 | Acquisition offers (owner_type, corp_id, company_id) - 250 offers × 3 floats |
-| `close_offer_count` | 804 | 1 | Number of close offers |
-| `close_offer_index` | 805 | 1 | Current close offer |
-| `close_offer_buffer` | 806 | 300 | Close offers (owner_type, owner_id, company_id) - 100 offers × 3 floats |
-| `acq_active_corp` | 1106 | 1 | Compact storage for O(1) access |
-| `acq_target_company` | 1107 | 1 | Compact storage for O(1) access |
-| `closing_company` | 1108 | 1 | Compact storage for O(1) access |
-| `closing_transition_pending` | 1109 | 1 | Hidden CLO substage marker: offers finished, mandatory close / INCOME still pending |
-| `dividend_corp` | 1110 | 1 | Compact storage for O(1) access |
-| `issue_corp` | 1111 | 1 | Compact storage for O(1) access |
-| `ipo_company` | 1112 | 1 | Compact storage for O(1) access |
-| `par_corp` | 1113 | 1 | Compact storage for O(1) access (selected corp during PAR phase) |
-| `turn_number` | 1114 | 1 | / 50.0 (moved from visible turn state) |
-| `share_buys` | 1115 | num_players × 8 | Per-player buy counts / (MAX_ROUNDTRIPS * 2) |
-| `share_sells` | 1115 + np×8 | num_players × 8 | Per-player sell counts / (MAX_ROUNDTRIPS * 2) |
-| `company_locations` | varies | 36 | CompanyLocation enum per company (O(1) clearing) |
-| `company_owner_ids` | varies | 36 | Owner ID per company (-1 if N/A, player_id or corp_id) |
-| `ipo_remaining` | varies | 36 | IPO processing flags (moved from visible) |
-
-**CompanyLocation Enum:**
-| Value | Location | Notes |
-|-------|----------|-------|
-| 0 | LOC_DECK | In draw deck (default) |
-| 1 | LOC_AUCTION | Available for auction |
-| 2 | LOC_REVEALED | Drawn this turn but not auctionable |
-| 3 | LOC_PLAYER | Owned by player (owner_id = player_id) |
-| 4 | LOC_FI | Owned by Foreign Investor |
-| 5 | LOC_CORP | Owned by corporation (owner_id = corp_id) |
-| 6 | LOC_CORP_ACQ | In corporation's acquisition pile (owner_id = corp_id) |
-| 7 | LOC_REMOVED | Closed/removed from game |
+| Offset | Field | Notes |
+|--------|-------|-------|
+| 0 | active_player | Canonical player_id |
+| 1 | num_players | 2–6 |
+| 2 | phase | 0–11, see [Phase enum](#phase-enum) |
+| 3 | coo_level | 1–7 |
+| 4 | turn_number | 1+ |
 
 ---
 
-## Passing Mechanisms
+## Player block
 
-Different phases use different mechanisms for tracking passes:
+Stride: **38**. Player `i` lives at `players_offset + i * 38`. Field offsets via `core.state.get_player_fields()` (`PlayerFields` namedtuple), or `compute_player_field_offsets()` from Cython.
 
-| Phase | Mechanism | Location | Description |
-|-------|-----------|----------|-------------|
-| **INVEST** | `consecutive_passes` counter | Turn State | Counts consecutive passes. Clears when any action is taken. Phase ends when counter >= num_players. |
-| **BID_IN_AUCTION** | `auction_passed[num_players]` flags | Turn State | Per-player flags tracking who has left the auction. Auction resolves when only one player remains. |
-| **CLOSING** | Offer-based flow | Turn State | Companies are offered one at a time via `closing_company`. Player can close or pass each offer. |
+| Relative offset | Field | Size | Notes |
+|----------------|-------|------|-------|
+| 0  | cash            | 1 | |
+| 1  | net_worth       | 1 | |
+| 2  | liquidity       | 1 | Iterative share liquidation value (cash + value of shares + companies) |
+| 3  | turn_order      | 1 | Position 0 = first to act |
+| 4  | owned_shares    | 8 | Per-corp share count |
+| 12 | is_president    | 8 | Per-corp president flag |
+| 20 | round_trips     | 1 | `max(min(buys[c], sells[c]) for c in corps)` this turn |
+| 21 | income          | 1 | Income from owned private companies |
+| 22 | share_buys      | 8 | Per-corp buy counts (this turn) |
+| 30 | share_sells     | 8 | Per-corp sell counts (this turn) |
+
+All per-player tracking lives inside one player block, so `_player_ptr(i)` reaches everything for player `i` in a single pointer hop.
+
+---
+
+## Foreign Investor (size 2)
+
+| Relative offset | Field |
+|----------------|-------|
+| 0 | cash |
+| 1 | income |
+
+FI ownership of companies is tracked via `company_locations` (`LOC_FI`), not via flags on the FI block.
+
+---
+
+## Company adjusted incomes (size 36)
+
+Per-company income after CoO is applied (`base_income − coo_cost(coo_level)`). Recomputed when the CoO level changes.
+
+---
+
+## Market availability (size 27)
+
+One flag per market price slot at `market_offset + i`. `1` = available, `0` = claimed by a corp.
+
+| Index → price (slot index → dollar value) |
+|---|
+| 0→0, 1→5, 2→6, 3→7, 4→8, 5→9, 6→10, 7→11, 8→12, 9→13, 10→14, 11→16, 12→18, 13→20, 14→22, 15→24, 16→27, 17→30, 18→33, 19→37, 20→41, 21→45, 22→50, 23→55, 24→61, 25→68, 26→75 |
+
+---
+
+## Corp block
+
+Stride: **16**. Corp `c` lives at `corps_offset + c * 16`. Field offsets via `core.state.get_corp_fields()` (`CorpFields` namedtuple), or `compute_corp_field_offsets()` from Cython.
+
+| Relative offset | Field | Notes |
+|----------------|-------|-------|
+| 0  | active                | `1` once floated |
+| 1  | cash                  | |
+| 2  | unissued_shares       | |
+| 3  | issued_shares         | |
+| 4  | bank_shares           | |
+| 5  | income                | `raw_revenue + synergy_income − coo_cost + ability_income` |
+| 6  | stars                 | Aggregate star total across owned companies |
+| 7  | share_price           | Cached from `price_index` |
+| 8  | acquisition_proceeds  | Pending payment, written and consumed during ACQ |
+| 9  | in_receivership       | flag |
+| 10 | price_index           | Market position 0–26 |
+| 11 | pending_price_move    | Predicted index delta assuming $0 dividend |
+| 12 | raw_revenue           | Sum of base company incomes |
+| 13 | synergy_income        | |
+| 14 | coo_cost              | Always ≤ 0 |
+| 15 | ability_income        | |
+
+---
+
+## Turn block
+
+Sub-offsets via `core.state.get_turn_fields(num_players)` (`TurnFields` namedtuple), or `compute_turn_offsets()` from Cython. Block size is `59 + num_players`.
+
+| Relative offset | Field | Size | Notes |
+|----------------|-------|------|-------|
+| 0      | end_card_flipped     | 1 | flag |
+| 1      | consecutive_passes   | 1 | INVEST pass counter; phase ends when this reaches `num_players` |
+| 2      | cards_remaining      | 1 | |
+| 3      | auction_price        | 1 | 0 when no auction |
+| 4      | auction_company      | 1 | `company_id` or `-1` |
+| 5      | auction_high_bidder  | 1 | `player_id` or `-1` |
+| 6      | auction_starter      | 1 | `player_id` or `-1` |
+| 7      | auction_passed       | N | Per-player left-auction flags (`N = num_players`) |
+| 7+N    | dividend_remaining   | 8 | Per-corp pending flag |
+| 15+N   | issue_remaining      | 8 | Per-corp pending flag |
+| 23+N   | ipo_remaining        | 36 | Per-company pending flag |
+
+---
+
+## Deck
+
+| Offset | Field | Size | Notes |
+|--------|-------|------|-------|
+| `deck_top_offset`   | deck_top   | 1  | Index of next card to draw; `-1` = empty |
+| `deck_order_offset` | deck_order | 36 | Shuffled company IDs |
+
+Companies excluded for the current player count are placed outside the active draw range and marked `LOC_EXCLUDED` in `company_locations`.
+
+---
+
+## Company tracking
+
+Two parallel 36-element arrays.
+
+### `company_locations` (size 36)
+
+One `CompanyLocation` enum value per company.
+
+| Value | Name          | Owner field meaning |
+|-------|---------------|---------------------|
+| 0 | LOC_DECK      | none (`owner_id = -1`) |
+| 1 | LOC_AUCTION   | none |
+| 2 | LOC_REVEALED  | none |
+| 3 | LOC_PLAYER    | `player_id` |
+| 4 | LOC_FI        | none |
+| 5 | LOC_CORP      | `corp_id` |
+| 6 | LOC_CORP_ACQ  | `corp_id` (in corp's acquisition pile) |
+| 7 | LOC_REMOVED   | none — closed during play |
+| 8 | LOC_EXCLUDED  | none — never dealt for this player count |
+
+`LOC_REMOVED` and `LOC_EXCLUDED` are kept distinct so excluded companies do not leak deck composition.
+
+### `company_owner_ids` (size 36)
+
+Owner ID per company. `-1` when the location has no meaningful owner. Initialized to `-1` for all companies in `__cinit__` (zero-init would otherwise mark every company as owned by player 0).
+
+---
+
+## Phase enum
+
+Stored as a raw integer in `phase_offset`. Defined in `core/data.pxd` (`GamePhases`).
+
+| Value | Name |
+|-------|------|
+| 0  | PHASE_INVEST |
+| 1  | PHASE_BID_IN_AUCTION |
+| 2  | PHASE_WRAP_UP |
+| 3  | PHASE_ACQUISITION |
+| 4  | PHASE_CLOSING |
+| 5  | PHASE_INCOME |
+| 6  | PHASE_DIVIDENDS |
+| 7  | PHASE_END_CARD |
+| 8  | PHASE_ISSUE_SHARES |
+| 9  | PHASE_IPO |
+| 10 | PHASE_PAR |
+| 11 | PHASE_GAME_OVER |
+
+---
+
+## Pass tracking
+
+| Phase | Mechanism | Location |
+|-------|-----------|----------|
+| INVEST            | `consecutive_passes` counter | turn block |
+| BID_IN_AUCTION    | `auction_passed[num_players]` flags | turn block |
+| CLOSING / ACQUISITION | per-offer accept/pass via offer surface | (engine, not state) |
+
+---
+
+## Construction surface
+
+| Method | Behavior |
+|--------|----------|
+| `GameState(num_players)` | Allocate a fresh zero-initialized buffer; seed `num_players` and `company_owner_ids` to `-1`. |
+| `GameState.from_array(arr, num_players)` | Allocate and copy `arr` into the new state. |
+| `GameState.from_buffer(buf, num_players)` | Wrap an existing C-contiguous int16 buffer zero-copy. Buffer must already contain valid state — does **not** seed `company_owner_ids`. |
+| `state.rebind(buf)` | Repoint an existing `GameState` at a different backing buffer. Used in MCTS hot paths. |
+| `state.initialize_game(seed=-1)` | Set up players, FI, corps, market, deck, turn state, and active player. `seed=-1` uses current time. |
+
+`GameState` exposes only structural primitives publicly: `_player_ptr` / `_corp_ptr` / `_turn_ptr` (cdef nogil, used by entity handles), the cached layout structs (`_layout`, `_player_fields`, `_corp_fields`, `_turn_offsets`), `get_active_player` / `set_active_player`, `get_num_players`, and `initialize_game`. All field-level reads and writes go through the entity handles in `entities/`.
 
 ---
 
