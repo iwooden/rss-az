@@ -98,34 +98,39 @@ class CleanCommand(Command):
         # Patterns to clean
         patterns = [
             '*.c',
+            '*.cpp',
             '*.so',
             '*.html',
             '**/*.c',
+            '**/*.cpp',
             '**/*.so',
         ]
         # Clean Cython-generated .html annotation files, but NOT interp reports
         cython_html_dirs = ['core', 'entities', 'phases', 'mcts']
 
+        files_removed = 0
+        dirs_removed = 0
+
         for pattern in patterns:
             for path in glob.glob(pattern, recursive=True):
-                print(f'Removing {path}')
                 os.remove(path)
+                files_removed += 1
         for d in cython_html_dirs:
             for path in glob.glob(f'{d}/**/*.html', recursive=True):
-                print(f'Removing {path}')
                 os.remove(path)
+                files_removed += 1
 
         # Remove build directory
         if os.path.exists('build'):
-            print('Removing build/')
             shutil.rmtree('build')
+            dirs_removed += 1
 
         # Remove egg-info
         for path in glob.glob('*.egg-info'):
-            print(f'Removing {path}')
             shutil.rmtree(path)
+            dirs_removed += 1
 
-        print('Clean complete.')
+        print(f'Clean complete: {files_removed} files, {dirs_removed} directories removed.')
 
 # Compiler directives for the default build profile.
 compiler_directives = {
@@ -223,14 +228,23 @@ for pyx_file in pyx_files:
         extra_link_args=extra_link_args,
     ))
 
-setup(
-    name="rss-cython-core",
-    packages=['phases', 'entities', 'core', 'mcts'],
-    ext_modules=cythonize(
+# Skip cythonize for commands that don't need built extensions. Without this
+# guard, even `setup.py clean` triggers a full Cython compile at module-load
+# time, which fails (and blocks the clean) whenever any .pyx is mid-refactor.
+SKIP_CYTHONIZE_COMMANDS = {'clean', 'trace_game', 'benchmark'}
+if any(cmd in sys.argv for cmd in SKIP_CYTHONIZE_COMMANDS):
+    ext_modules = []
+else:
+    ext_modules = cythonize(
         extensions,
         compiler_directives=compiler_directives,
         annotate=False,  # Generates HTML annotation files showing Python interaction
-    ),
+    )
+
+setup(
+    name="rss-cython-core",
+    packages=['phases', 'entities', 'core', 'mcts'],
+    ext_modules=ext_modules,
     cmdclass={
         'benchmark': BenchmarkCommand,
         'clean': CleanCommand,
