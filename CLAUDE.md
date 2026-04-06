@@ -96,7 +96,7 @@ Stateless game loop: `apply_action(state, action_idx, history)` dispatches to ph
 
 ### Data (`core/data.pyx`)
 
-Static game constants: 36 companies, 8 corporations, 27 market prices, plus the `GamePhases` and `CompanyLocation`-related enums.
+Pure data + constants module. Holds the static game tables (36 companies, 8 corporations, 27 market prices, par/CoO tables, synergy matrix), the shared enums (`GameConstants`, `GamePhases`, `CorpIndices`), and the normalization divisors used by NN token extraction. **No accessor functions** — other modules `cimport` the underlying arrays directly. All gamestate reads/writes go through entity handles, never through helpers in `core/data`.
 
 ## MCTS Search
 
@@ -203,7 +203,7 @@ Both phases use **one-by-one offer presentation**: offers generated at phase ent
 ## Code Conventions
 
 - **Naming:** `corp_id`/`company_id`/`player_id` = indices; `CORPS[i]`/`PLAYERS[i]` = singletons; `PHASE_*` from `GamePhases`; `LOC_*` from `CompanyLocation`
-- **Field access:** Use entity handles (`PLAYERS[i].get_cash(state)`, `CORPS[c].get_share_price(state)`) for all field reads/writes. `GameState` exposes only structural primitives.
+- **Field access:** Use entity handles (`PLAYERS[i].get_cash(state)`, `CORPS[c].get_share_price(state)`) for all field reads/writes. `GameState` exposes only structural primitives. `core/data.{pxd,pyx}` is data-only (static arrays + enums + normalization constants) — there are no field-level helpers there; modules that need static game data `cimport` the underlying arrays directly.
 - **Pointer safety:** `nogil` functions take pointers/offsets; `_player_ptr()`/`_corp_ptr()`/`_turn_ptr()` helpers; entities cache offsets
 
 ## Build Commands

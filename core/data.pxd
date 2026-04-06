@@ -1,10 +1,15 @@
 # cython: language_level=3
 """
 Declaration file for static game data.
-Allows other Cython modules to cimport the data arrays and accessor functions.
+
+Exposes the raw game-data arrays, enums, and normalization constants used by
+the engine and the token-extraction layer. This file is data-only — there are
+no field-level accessor functions; entity handles own all reads/writes against
+GameState, and other modules cimport the underlying arrays directly when they
+need static game data.
 """
 
-from libc.stdint cimport uint8_t, uint16_t, uint64_t, int8_t
+from libc.stdint cimport uint8_t, int8_t
 
 # Constants enum - use GameConstants.NUM_COMPANIES etc.
 cpdef enum GameConstants:
@@ -47,8 +52,8 @@ cpdef enum CorpIndices:
     CORP_VM = 6 # Gets min(10, total_cost_of_ownership) bonus
     CORP_SI = 7 # Gets +2 share price movement after dividends
 
-# Normalization constants
-# Note: These are declared as extern here, defined in data.pyx
+# Normalization constants used during token extraction for NN input.
+# Defined in data.pyx; cimported by the token-extraction layer.
 cdef float CASH_DIVISOR
 cdef float NET_WORTH_DIVISOR
 cdef float COMPANY_INCOME_DIVISOR
@@ -81,29 +86,3 @@ cdef uint8_t[5][14] PAR_PRICE_VALID
 
 # Cost of ownership
 cdef int[7][5] COST_OF_OWNERSHIP
-
-# Accessor functions
-cpdef int get_company_face_value(int company_id) noexcept nogil
-cpdef int get_company_low_price(int company_id) noexcept nogil
-cpdef int get_company_high_price(int company_id) noexcept nogil
-cpdef int get_company_stars(int company_id) noexcept nogil
-cpdef int get_company_income(int company_id) noexcept nogil
-cpdef int get_company_synergy(int company_id, int target_id) noexcept nogil
-cpdef bint is_last_in_group(int company_id) noexcept nogil
-
-cpdef int get_corp_share_count(int corp_id) noexcept nogil
-
-cpdef int get_market_price(int index) noexcept nogil
-cpdef int get_market_index(int price) noexcept nogil
-cpdef int get_max_dividend(int price_index) noexcept nogil
-cpdef int get_required_stars(int price_index, int issued_shares) noexcept nogil
-
-cpdef int get_cost_of_ownership(int coo_level, int star_tier) noexcept nogil
-cpdef int get_adjusted_company_income(int company_id, int coo_level) noexcept nogil
-
-# Synergy calculation
-cdef (int, int) compute_synergy_bonuses(int* company_ids, int num_companies) noexcept nogil
-
-cpdef bint is_valid_par_price(int star_tier, int par_index) noexcept nogil
-cpdef int get_par_price(int par_index) noexcept nogil
-cpdef int get_par_index_for_slot(int star_tier, int par_slot) noexcept nogil

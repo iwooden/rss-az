@@ -27,7 +27,7 @@ from collections import namedtuple
 from core.data cimport (
     GameConstants,
     GamePhases,
-    get_corp_share_count,
+    CORP_SHARE_COUNT,
 )
 
 # Python-accessible namedtuples for layout introspection
@@ -621,7 +621,7 @@ cdef class GameState:
         # 4. Initialize corporations (only non-zero: unissued shares)
         for corp_id in range(<int>GameConstants.NUM_CORPS):
             corp = self._corp_ptr(corp_id)
-            corp[self._corp_fields.unissued_shares] = <int16_t>get_corp_share_count(corp_id)
+            corp[self._corp_fields.unissued_shares] = <int16_t>CORP_SHARE_COUNT[corp_id]
 
         # 5. Initialize market - all spaces available
         for i in range(<int>GameConstants.NUM_MARKET_SPACES):

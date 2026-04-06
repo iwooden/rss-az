@@ -2,17 +2,29 @@
 """
 Static game data for Rolling Stock Stars.
 
-All company/corp/market data as C arrays for nogil access.
-Companies are indexed 0-35, sorted by face_value (matching Python's all_companies_sorted).
-Corps are indexed 0-7 in fixed order: JS, S, OS, SM, PR, DA, VM, SI.
+Pure data module: company / corp / market arrays, normalization constants used
+by token extraction, and the enums shared across the engine. There are no
+accessor functions here — entity handles own all reads/writes against
+GameState, and computational helpers (synergy aggregation, cost of ownership,
+par-price logic, etc.) live in the modules that use them. Other Cython modules
+cimport the underlying arrays directly when they need static game data.
+
+Companies are indexed 0-35, sorted by face_value (matching Python's
+all_companies_sorted). Corps are indexed 0-7 in fixed order:
+JS, S, OS, SM, PR, DA, VM, SI.
 """
 
 cimport cython
-from libc.stdint cimport uint8_t, uint16_t, uint64_t, int8_t
+from libc.stdint cimport uint8_t, int8_t
 
 # =============================================================================
 # NORMALIZATION CONSTANTS
 # =============================================================================
+#
+# These divisors are applied during token extraction (get_token_data) to bring
+# raw int16 game-state values into roughly the [-1, 1] range expected by the
+# transformer's input projections. They are NOT applied during state storage —
+# the state array always holds raw integers.
 
 cdef float CASH_DIVISOR = 150.0
 cdef float NET_WORTH_DIVISOR = 200.0
@@ -26,7 +38,9 @@ cdef float CORP_STAR_DIVISOR = 40.0
 cdef float MAX_ROUNDTRIPS = 2.0
 cdef float IMPACT_DIVISOR = 5.0
 
-# Python-accessible versions
+# Python-accessible mirrors of the normalization constants. Useful for the
+# Python-side token extraction tests and for inspecting the divisors from
+# notebooks without dropping into Cython.
 PY_CASH_DIVISOR = CASH_DIVISOR
 PY_NET_WORTH_DIVISOR = NET_WORTH_DIVISOR
 PY_COMPANY_PRICE_DIVISOR = COMPANY_PRICE_DIVISOR
@@ -173,8 +187,8 @@ cdef int[14] ALL_PAR_PRICES = [
 ]
 
 # Par price validity by star tier
-# PAR_VALID[star-1][par_price_index] = 1 if valid for that tier
-cdef bint[5][14] PAR_PRICE_VALID = [
+# PAR_PRICE_VALID[star-1][par_price_index] = 1 if valid for that tier
+cdef uint8_t[5][14] PAR_PRICE_VALID = [
     # Star 1 (reds): 10-14
     [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     # Star 2 (oranges): 10-20
@@ -202,177 +216,6 @@ cdef int[7][5] COST_OF_OWNERSHIP = [
     [7, 7, 7, 0, 0],  # Level 6: reds/oranges/yellows cost 7 - End card face-up
     [10, 10, 10, 10, 0],  # Level 7: all but blues cost 10 - End card flipped
 ]
-
-# =============================================================================
-# ACCESSOR FUNCTIONS (nogil)
-# =============================================================================
-
-cpdef inline int get_company_face_value(int company_id) noexcept nogil:
-    return COMPANY_FACE_VALUE[company_id]
-
-cpdef inline int get_company_low_price(int company_id) noexcept nogil:
-    return COMPANY_LOW_PRICE[company_id]
-
-cpdef inline int get_company_high_price(int company_id) noexcept nogil:
-    return COMPANY_HIGH_PRICE[company_id]
-
-cpdef inline int get_company_stars(int company_id) noexcept nogil:
-    return COMPANY_STARS[company_id]
-
-cpdef inline int get_company_income(int company_id) noexcept nogil:
-    return COMPANY_INCOME[company_id]
-
-cpdef inline int get_company_synergy(int company_id, int target_id) noexcept nogil:
-    return COMPANY_SYNERGY[company_id][target_id]
-
-cpdef inline bint is_last_in_group(int company_id) noexcept nogil:
-    return COMPANY_LAST_IN_GROUP[company_id] != 0
-
-cpdef inline int get_corp_share_count(int corp_id) noexcept nogil:
-    return CORP_SHARE_COUNT[corp_id]
-
-cpdef inline int get_market_price(int index) noexcept nogil:
-    return MARKET_PRICES[index]
-
-cpdef inline int get_market_index(int price) noexcept nogil:
-    if price < 0 or price >= 76:
-        return -1
-    return PRICE_TO_MARKET_INDEX[price]
-
-cpdef inline int get_cost_of_ownership(int coo_level, int star_tier) noexcept nogil:
-    """Get cost of ownership for a company with given stars at given CoO level."""
-    if coo_level < 1 or coo_level > 7 or star_tier < 1 or star_tier > 5:
-        return 0
-    return COST_OF_OWNERSHIP[coo_level - 1][star_tier - 1]
-
-cpdef inline int get_adjusted_company_income(int company_id, int coo_level) noexcept nogil:
-    """Get company income after cost of ownership."""
-    cdef int base_income = COMPANY_INCOME[company_id]
-    cdef int stars = COMPANY_STARS[company_id]
-    cdef int cost = get_cost_of_ownership(coo_level, stars)
-    return base_income - cost
-
-
-cpdef inline bint is_valid_par_price(int star_tier, int par_index) noexcept nogil:
-    """Check if par price at index is valid for given star tier."""
-    if star_tier < 1 or star_tier > 5 or par_index < 0 or par_index >= 14:
-        return False
-    return PAR_PRICE_VALID[star_tier - 1][par_index] != 0
-
-cpdef inline int get_par_price(int par_index) noexcept nogil:
-    """Get par price at index."""
-    if par_index < 0 or par_index >= 14:
-        return -1
-    return ALL_PAR_PRICES[par_index]
-
-cpdef inline int get_par_index_for_slot(int star_tier, int par_slot) noexcept nogil:
-    """
-    Return par_index for Nth valid par price of star tier, or -1.
-
-    Par slots map to valid par prices for a given star tier.
-    For example, if star_tier=3 has valid par indices [2,3,4,5,6,7],
-    then slot 0 maps to index 2, slot 1 to index 3, etc.
-    """
-    cdef int count = 0
-    cdef int par_index
-    for par_index in range(<int>GameConstants.NUM_PAR_PRICES):
-        if is_valid_par_price(star_tier, <int>par_index):
-            if count == par_slot:
-                return par_index
-            count += 1
-    return -1
-
-cpdef inline int get_required_stars(int price_index, int issued_shares) noexcept nogil:
-    """
-    Get required star count for a corporation to maintain its share price.
-
-    Formula: round(issued_shares * price / 10)
-    Source: 18xx.games RSS implementation (target_stars function)
-
-    Args:
-        price_index: Market price index (0-26)
-        issued_shares: Number of issued shares (2-7)
-
-    Returns:
-        Required star count, or 0 for invalid inputs
-    """
-    cdef int price
-    if price_index < 1 or price_index > 26:
-        return 0
-    if issued_shares < 2 or issued_shares > 7:
-        return 0
-    price = MARKET_PRICES[price_index]
-    # Round to nearest integer: (x + 0.5) truncated
-    return <int>(issued_shares * price / 10.0 + 0.5)
-
-cpdef inline int get_max_dividend(int price_index) noexcept nogil:
-    """
-    Get maximum dividend per share for a given share price.
-
-    Formula: price // 3
-    Source: 18xx.games Rolling Stock implementation (max_dividend_per_share function)
-
-    Args:
-        price_index: Market price index (0-26)
-
-    Returns:
-        Maximum dividend per share, or 0 for invalid/bankrupt price
-    """
-    cdef int price
-    if price_index < 1 or price_index > 26:
-        return 0
-    price = MARKET_PRICES[price_index]
-    return price // 3
-
-cdef inline (int, int) compute_synergy_bonuses(
-    int* company_ids,
-    int num_companies
-) noexcept nogil:
-    """
-    Compute synergy bonuses for companies owned by a corporation.
-
-    Counts each pair exactly once per RULES.md line 569.
-
-    Args:
-        company_ids: Array of company IDs (0-35) owned by corporation
-        num_companies: Number of companies in array
-
-    Returns:
-        (total_income, marker_count): Total synergy income and number of pairs
-    """
-    cdef int i, j
-    cdef int total_income = 0
-    cdef int marker_count = 0
-    cdef int bonus_a_to_b, bonus_b_to_a
-    cdef int has_synergy
-
-    for i in range(num_companies):
-        for j in range(i + 1, num_companies):
-            has_synergy = 0
-
-            bonus_a_to_b = COMPANY_SYNERGY[company_ids[i]][company_ids[j]]
-            if bonus_a_to_b > 0:
-                total_income += bonus_a_to_b
-                has_synergy = 1
-
-            bonus_b_to_a = COMPANY_SYNERGY[company_ids[j]][company_ids[i]]
-            if bonus_b_to_a > 0:
-                total_income += bonus_b_to_a
-                has_synergy = 1
-
-            if has_synergy:
-                marker_count += 1
-
-    return (total_income, marker_count)
-
-def py_compute_synergy_bonuses(list company_ids):
-    """Python wrapper for testing compute_synergy_bonuses."""
-    cdef int[36] ids
-    cdef int n = len(company_ids)
-    cdef int i
-    for i in range(n):
-        ids[i] = company_ids[i]
-    return compute_synergy_bonuses(ids, n)
 
 # =============================================================================
 # MODULE INITIALIZATION
