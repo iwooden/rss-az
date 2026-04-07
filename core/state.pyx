@@ -77,10 +77,8 @@ LayoutInfo = namedtuple('LayoutInfo', [
 
 # Import entity modules for their global instances
 from entities import player as player_module
-from entities import fi as fi_module
 from entities import corp as corp_module
 from entities import company as company_module
-from entities import market as market_module
 from entities import turn as turn_module
 from entities import deck as deck_module
 
@@ -604,13 +602,12 @@ cdef class GameState:
         cdef int16_t* corp
 
         # 1. Initialize entity handles that still cache anything from the
-        # layout. Company and Market are fully stateless now and read
-        # LAYOUT directly, so they have no initialize step. Other handles
-        # will be migrated to the same pattern in subsequent slices and
-        # dropped from this loop one by one.
+        # layout. Company, Market, and FI are fully stateless now and
+        # read LAYOUT directly, so they have no initialize step. Other
+        # handles will be migrated to the same pattern in subsequent
+        # slices and dropped from this loop one by one.
         for i in range(self._num_players):
             player_module.PLAYERS[i].initialize(self)
-        fi_module.FI.initialize(self)
         for c in corp_module.CORPS:
             c.initialize(self)
         turn_module.TURN.initialize(self)
