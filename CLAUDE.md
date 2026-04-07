@@ -218,6 +218,8 @@ Both phases use **one-by-one offer presentation**: offers generated at phase ent
 
 ## Build Commands
 
+> ⚠️ **Refactor in progress:** A breaking refactor of `core/state.*` and `entities/` is underway. `setup.py` currently only builds `core/state.pyx` and `entities/*.pyx` — `phases/`, `mcts/`, and root-level `.pyx` files are intentionally excluded and will not compile against the new state layout. The build target list will be expanded as each refactor phase lands. For this period, ignore everything outside `core/state.*` and `entities/` unless explicitly told otherwise; tests, training, and benchmarks are also expected to be broken until later phases.
+
 **Python binary:** Always use `.venv/bin/python` (not `python` or `python3`). The venv may not be activated in the shell.
 
 **Pyright:** Use `pyright` (system-installed at `/usr/bin/pyright`), NOT `.venv/bin/pyright`.

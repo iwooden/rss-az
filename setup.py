@@ -162,10 +162,10 @@ def find_pyx_files(directory):
                 pyx_files.append(os.path.join(root, file))
     return pyx_files
 
-# Get pyx files from subdirectories and root level
-pyx_files = find_pyx_files('phases') + find_pyx_files('core') + find_pyx_files('entities') + find_pyx_files('mcts')
-# Add root level pyx files (non-recursive)
-pyx_files += [f for f in os.listdir('.') if f.endswith('.pyx')]
+# Refactor in progress: only build core/data.pyx + core/state.pyx and
+# entities/*.pyx for now. data.pyx is a pure data/constants module that
+# state and every entity cimport from, so it must be in the build set.
+pyx_files = ['core/data.pyx', 'core/state.pyx'] + find_pyx_files('entities')
 
 extensions = []
 
