@@ -2,59 +2,47 @@
 """
 Company entity declarations.
 
-Companies can exist in exactly one location at a time. The Company handle
-tracks where it currently exists in the state vector and provides efficient
-transfer operations that update both the old and new locations atomically.
+Each company exists in exactly one location at any time. The Company handle
+caches the offsets it needs into the compact GameState array and provides
+atomic transfer operations that update both the location enum and the owner
+id together.
 """
 
 from core.state cimport GameState
 
 
-# =============================================================================
-# LOW-LEVEL FUNCTIONS (for nogil performance)
-# =============================================================================
-
-cdef int get_auction_company_for_slot(GameState state, int slot) noexcept nogil
-
-
 # Location type enum (cpdef for Python access in tests)
+#
+# LOC_DECK = 0 is the zero-init default — a freshly allocated int16 state
+# starts with every company "in the deck". LOC_EXCLUDED is the explicit
+# sentinel for companies that are not part of the deck for the current
+# player count; it must be set explicitly during deck setup so the engine
+# can distinguish "in the live deck" from "removed from the game before it
+# started".
 cpdef enum CompanyLocation:
-    LOC_DECK = 0        # In the draw deck (not visible in any flag)
+    LOC_DECK = 0        # In the draw deck (zero-init default)
     LOC_AUCTION = 1     # Available for auction
-    LOC_REVEALED = 2    # Drawn this turn but not auctionable
-    LOC_PLAYER = 3      # Owned by a player
-    LOC_FI = 4          # Owned by Foreign Investor
-    LOC_CORP = 5        # Owned by a corporation
-    LOC_CORP_ACQ = 6    # In a corporation's acquisition pile
-    LOC_REMOVED = 7     # Closed/removed from game
+    LOC_REVEALED = 2    # Drawn this turn but not yet auctionable
+    LOC_PLAYER = 3      # Owned by a player (owner_id = player_id)
+    LOC_FI = 4          # Owned by Foreign Investor (owner_id = -1)
+    LOC_CORP = 5        # Owned by a corporation (owner_id = corp_id)
+    LOC_CORP_ACQ = 6    # In a corporation's acquisition pile (owner_id = corp_id)
+    LOC_REMOVED = 7     # Closed during the game
+    LOC_EXCLUDED = 8    # Excluded from the deck at game setup (player count)
 
 
 cdef class Company:
     cdef readonly int company_id
     cdef readonly str name
 
-    # Cached offsets into state vector
-    cdef int _auction_offset          # companies_for_auction[company_id]
-    cdef int _revealed_offset         # companies_revealed[company_id]
-    cdef int _removed_offset          # companies_removed[company_id]
-    cdef int _acquired_offset         # companies_acquired[company_id]
-    cdef int _fi_offset               # fi_companies[company_id]
+    # Cached absolute offsets into the compact state array. Companies are
+    # tracked entirely through company_locations and company_owner_ids —
+    # there are no longer any per-section ownership flags to update.
+    cdef int _location_offset         # company_locations[company_id]
+    cdef int _owner_id_offset         # company_owner_ids[company_id]
     cdef int _income_offset           # company_incomes[company_id]
 
-    # For player/corp ownership, we need base offsets + strides
-    cdef int _players_offset          # Start of players section
-    cdef int _player_stride           # Size of each player's data
-    cdef int _player_companies_field  # Offset to owned_companies within player stride
-
-    cdef int _corps_offset            # Start of corps section
-    cdef int _corp_stride             # Size of each corp's data
-    cdef int _corp_companies_field    # Offset to owned_companies within corp stride
-
     cdef int _num_players
-
-    # Hidden state offsets for O(1) location access
-    cdef int _hidden_location_offset  # Offset to this company's location in hidden state
-    cdef int _hidden_owner_id_offset  # Offset to this company's owner_id in hidden state
 
     # Initialization
     cpdef void initialize(self, GameState state)
@@ -63,6 +51,7 @@ cdef class Company:
     cpdef int get_location(self, GameState state)
     cpdef int get_owner_id(self, GameState state)
     cpdef bint is_in_deck(self, GameState state)
+    cpdef bint is_excluded(self, GameState state)
     cpdef bint is_for_auction(self, GameState state)
     cpdef bint is_revealed(self, GameState state)
     cpdef bint is_owned_by_player(self, GameState state, int player_id)
@@ -72,14 +61,15 @@ cdef class Company:
     cpdef bint is_removed(self, GameState state)
     cpdef bint is_acquired(self, GameState state)
 
-    # Internal helpers for hidden state location access
-    cdef int _get_hidden_location(self, GameState state) noexcept nogil
-    cdef int _get_hidden_owner_id(self, GameState state) noexcept nogil
-    cdef void _set_hidden_location(self, GameState state, int location, int owner_id) noexcept nogil
-    cdef void _clear_visible_flag(self, GameState state) noexcept nogil
+    # Internal helpers
+    cdef int _get_location(self, GameState state) noexcept nogil
+    cdef int _get_owner_id(self, GameState state) noexcept nogil
+    cdef void _set_location(self, GameState state, int location, int owner_id) noexcept nogil
     cdef void _remove_from_deck_if_needed(self, GameState state)
+    cdef void _recalc_after_change(self, GameState state, int location, int owner_id)
+    cdef void _move(self, GameState state, int new_loc, int new_owner)
 
-    # Transfer operations (clear old flag, set new flag, update hidden state)
+    # Transfer operations (update location + owner, recalc downstream entities)
     cpdef void transfer_to_player(self, GameState state, int player_id)
     cpdef void transfer_to_fi(self, GameState state)
     cpdef void transfer_to_corp(self, GameState state, int corp_id)
@@ -89,7 +79,7 @@ cdef class Company:
     cpdef void remove_from_game(self, GameState state)
     cpdef void exclude_from_game(self, GameState state)
 
-    # Static company data (from data.pyx)
+    # Static company data (read directly from core.data arrays)
     cpdef int get_face_value(self)
     cpdef int get_low_price(self)
     cpdef int get_high_price(self)
@@ -98,6 +88,6 @@ cdef class Company:
     cpdef bint is_last_in_group(self)
     cpdef int get_synergy_with(self, int other_company_id)
 
-    # Dynamic data from state
+    # Dynamic data from state (raw int16, no normalization)
     cpdef int get_adjusted_income(self, GameState state)
     cpdef void set_adjusted_income(self, GameState state, int income)
