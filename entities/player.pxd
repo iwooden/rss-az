@@ -42,6 +42,7 @@ cdef class Player:
     cdef int _is_president_offset
     cdef int _round_trips_offset
     cdef int _income_offset
+    cdef int _auction_passed_offset
     # Cached field offsets (hidden state — share buy/sell tracking)
     cdef int _hidden_share_buys_offset
     cdef int _hidden_share_sells_offset
@@ -99,3 +100,7 @@ cdef class Player:
     cpdef int get_income(self, GameState state)
     cpdef void set_income(self, GameState state, int income)
     cpdef void calculate_income(self, GameState state)
+
+    # Auction-passed flag (per-player; was previously a turn-state array)
+    cpdef bint has_passed_auction(self, GameState state)
+    cpdef void set_passed_auction(self, GameState state, bint passed)

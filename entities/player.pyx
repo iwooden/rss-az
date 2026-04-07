@@ -8,6 +8,7 @@ code paths (e.g., action mask generation in actions.pyx).
 """
 
 from libc.math cimport lround
+from libc.stdint cimport int16_t
 
 from core.state cimport GameState, StateLayout, PlayerFieldOffsets
 from core.data cimport (
@@ -174,6 +175,7 @@ cdef class Player:
         self._is_president_offset = self._base_offset + fields.is_president
         self._round_trips_offset = self._base_offset + fields.round_trips
         self._income_offset = self._base_offset + fields.income
+        self._auction_passed_offset = self._base_offset + fields.auction_passed
 
         # Cache absolute offsets for hidden share buy/sell tracking
         self._hidden_share_buys_offset = layout.hidden_share_buys_offset + self.player_id * <int>GameConstants.NUM_CORPS
@@ -460,6 +462,22 @@ cdef class Player:
             if state._data[self._owned_companies_offset + company_id] == 1.0:
                 total += <int>lround(state._data[company_incomes_offset + company_id] * COMPANY_INCOME_DIVISOR)
         self.set_income(state, total)
+
+    # =========================================================================
+    # AUCTION-PASSED FLAG
+    # =========================================================================
+
+    cpdef bint has_passed_auction(self, GameState state):
+        """Return True if this player has left the current auction.
+
+        Stored as a per-player int16 flag in the player block (previously
+        lived as a num_players-wide array in the turn block).
+        """
+        return state._data[self._auction_passed_offset] == 1
+
+    cpdef void set_passed_auction(self, GameState state, bint passed):
+        """Mark whether this player has left the current auction."""
+        state._data[self._auction_passed_offset] = <int16_t>(1 if passed else 0)
 
 
 # =============================================================================

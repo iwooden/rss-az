@@ -2,108 +2,67 @@
 """
 Turn state entity declarations.
 
-Includes phase, cost-of-ownership, and all turn-specific tracking state.
+Turn state in the compact GameState is split between metadata
+(phase, coo_level, turn_number — single integer slots stored at the top
+of the state array) and the turn block (per-turn tracking such as
+end_card_flipped, consecutive_passes, cards_remaining, auction state,
+and the dividend/issue/IPO "remaining" flag arrays).
+
+All values are raw int16 — no one-hot encoding, no NN-side duplication of
+active corp/company features, no normalization. Phase-specific context
+the transformer needs (dividend impacts, par price tables, synergy
+previews, etc.) is reconstructed by the token-extraction layer instead of
+being maintained as engine state.
 """
 
 from core.state cimport GameState
 
 
-# =============================================================================
-# LOW-LEVEL NOGIL ACCESSORS
-# =============================================================================
-
-cdef struct TurnOffsets:
-    # Offsets within turn state data block in the state vector
-    int acq_is_fi_offer
-    int active_corp
-
-# Offset computation
-cdef TurnOffsets get_turn_offsets(int num_players) noexcept nogil
-
-# Turn state accessors (raw pointer, nogil)
-cdef int get_active_corp_nogil(float* turn, TurnOffsets* t) noexcept nogil
-cdef bint is_acq_fi_offer_nogil(float* turn, TurnOffsets* t) noexcept nogil
-
-
-# =============================================================================
-# HIGH-LEVEL ENTITY CLASS
-# =============================================================================
-
 cdef class TurnState:
     cdef int _num_players
 
-    # Phase & CoO offsets (at start of state vector, one-hot encoded)
+    # Metadata (single-slot integer fields outside the turn block)
     cdef int _phase_offset
-    cdef int _coo_offset
-
-    # Hidden state offsets (compact integer storage for fast O(1) access)
-    cdef int _hidden_phase_offset
-    cdef int _hidden_coo_level_offset
-    cdef int _hidden_auction_company_offset
-    cdef int _hidden_auction_high_bidder_offset
-    cdef int _hidden_auction_starter_offset
-    cdef int _hidden_acq_active_corp_offset
-    cdef int _hidden_acq_target_company_offset
-    cdef int _hidden_acq_is_fi_offer_offset  # One-hot offset (single value, already O(1))
-    cdef int _hidden_dividend_corp_offset
-    cdef int _hidden_issue_corp_offset
-    cdef int _hidden_ipo_company_offset
-    cdef int _hidden_par_corp_offset
-    cdef int _hidden_closing_company_offset
+    cdef int _coo_level_offset
+    cdef int _turn_number_offset
 
     # Turn state base offset
     cdef int _turn_offset
 
-    # Turn state field offsets (relative to turn_offset)
-    cdef int _turn_number_offset
+    # Cached absolute offsets for turn block fields
     cdef int _end_card_flipped_offset
     cdef int _consecutive_passes_offset
+    cdef int _cards_remaining_offset
 
-    # Auction offsets
+    # Auction
     cdef int _auction_price_offset
-    cdef int _auction_price_offset_offset
+    cdef int _auction_company_offset
     cdef int _auction_high_bidder_offset
     cdef int _auction_starter_offset
-    cdef int _auction_passed_offset
 
-    # Dividends offsets
-    cdef int _dividend_impact_offset
+    # Phase remaining tracking
     cdef int _dividend_remaining_offset
-
-    # Issue offsets
     cdef int _issue_remaining_offset
-    cdef int _issue_price_impact_offset
-    cdef int _issue_cash_gain_offset
-
-    # IPO/PAR offsets
     cdef int _ipo_remaining_offset
-    cdef int _par_corp_treasury_offset
-    cdef int _par_shares_offset
-
-    # Acquisition offsets
-    cdef int _acq_is_fi_offer_offset
-    cdef int _acq_synergy_values_offset
-
-    # Active corp one-hot offset (shared by dividend/issue/acq/closing)
-    cdef int _active_corp_offset
-
-    # Active company one-hot offset (shared by auction/acq/closing/ipo)
-    cdef int _active_company_offset
 
     # Initialization
     cpdef void initialize(self, GameState state)
 
-    # Phase (one-hot, 11 values)
+    # Low-level (nogil) accessors used by hot paths inside the engine.
+    cdef int _get_phase(self, GameState state) noexcept nogil
+    cdef int _get_coo_level(self, GameState state) noexcept nogil
+    cdef int _get_auction_price(self, GameState state) noexcept nogil
+
+    # Phase
     cpdef int get_phase(self, GameState state)
     cpdef void set_phase(self, GameState state, int phase)
 
-    # Cost of ownership level (one-hot, 7 values, 1-indexed in game terms)
+    # Cost of ownership level (1-7 in game terms)
     cpdef int get_coo_level(self, GameState state)
     cpdef void set_coo_level(self, GameState state, int level)
     cdef void _update_all_company_incomes(self, GameState state, int coo_level)
     cdef void _update_all_corp_incomes(self, GameState state)
     cdef void _update_all_player_incomes(self, GameState state)
-    cdef void _mark_excluded_companies_removed(self, GameState state, int coo_level)
 
     # Turn number
     cpdef int get_turn_number(self, GameState state)
@@ -119,7 +78,11 @@ cdef class TurnState:
     cpdef void increment_consecutive_passes(self, GameState state)
     cpdef void clear_consecutive_passes(self, GameState state)
 
-    # Auction state (compact-only, one-hot now in active_company)
+    # Cards remaining (deck mirror)
+    cpdef int get_cards_remaining(self, GameState state)
+    cpdef void set_cards_remaining(self, GameState state, int count)
+
+    # Auction state
     cpdef int get_auction_company(self, GameState state)
     cpdef void set_auction_company(self, GameState state, int company_id)
     cpdef void clear_auction_company(self, GameState state)
@@ -135,93 +98,17 @@ cdef class TurnState:
     cpdef void set_auction_starter(self, GameState state, int player_id)
     cpdef void clear_auction_starter(self, GameState state)
 
-    cpdef bint has_player_passed_auction(self, GameState state, int player_id)
-    cpdef void set_player_passed_auction(self, GameState state, int player_id, bint passed)
-    cpdef void clear_auction_passed(self, GameState state)
-
-    # Dividends state
-    cpdef int get_dividend_corp(self, GameState state)
-    cpdef void set_dividend_corp(self, GameState state, int corp_id)
-    cpdef void clear_dividend_corp(self, GameState state)
-
-    cpdef int get_dividend_impact(self, GameState state, int level)
-    cpdef void set_dividend_impact(self, GameState state, int level, int impact)
-    cpdef void clear_dividend_impacts(self, GameState state)
-
+    # Phase-remaining flag arrays
     cpdef bint is_dividend_remaining(self, GameState state, int corp_id)
     cpdef void set_dividend_remaining(self, GameState state, int corp_id, bint remaining)
-
-    # Issue state
-    cpdef int get_issue_corp(self, GameState state)
-    cpdef void set_issue_corp(self, GameState state, int corp_id)
-    cpdef void clear_issue_corp(self, GameState state)
 
     cpdef bint is_issue_remaining(self, GameState state, int corp_id)
     cpdef void set_issue_remaining(self, GameState state, int corp_id, bint remaining)
 
-    cpdef float get_issue_price_impact(self, GameState state)
-    cpdef void set_issue_price_impact(self, GameState state, int impact)
-    cpdef float get_issue_cash_gain(self, GameState state)
-    cpdef void set_issue_cash_gain(self, GameState state, int cash)
-    cpdef void clear_issue_impact(self, GameState state)
-
-    # IPO state (compact-only, one-hot now in active_company)
-    cpdef int get_ipo_company(self, GameState state)
-    cpdef void set_ipo_company(self, GameState state, int company_id)
-    cpdef void clear_ipo_company(self, GameState state)
-
-    # PAR state (sets active_corp one-hot + hidden compact)
-    cpdef int get_par_corp(self, GameState state)
-    cpdef void set_par_corp(self, GameState state, int corp_id)
-    cpdef void clear_par_corp(self, GameState state)
-
     cpdef bint is_ipo_remaining(self, GameState state, int company_id)
     cpdef void set_ipo_remaining(self, GameState state, int company_id, bint remaining)
-
-    # PAR info (context-dependent: IPO/PAR phases only)
-    cpdef void set_par_corp_treasury(self, GameState state, int par_index, int treasury)
-    cpdef void set_par_shares(self, GameState state, int par_index, float value)
-    cpdef void clear_par_info(self, GameState state)
-
-    # Acquisition state (compact-only for target, one-hot now in active_company)
-    cpdef int get_acq_active_corp(self, GameState state)
-    cpdef void set_acq_active_corp(self, GameState state, int corp_id)
-    cpdef void clear_acq_active_corp(self, GameState state)
-
-    cpdef int get_acq_target_company(self, GameState state)
-    cpdef void set_acq_target_company(self, GameState state, int company_id)
-    cpdef void clear_acq_target_company(self, GameState state)
-
-    cpdef bint is_acq_fi_offer(self, GameState state)
-    cpdef void set_acq_fi_offer(self, GameState state, bint is_fi)
-
-    # Acquisition synergy values
-    cpdef void populate_acq_synergy_values(self, GameState state, int corp_id, int target_company_id)
-    cpdef void clear_acq_synergy_values(self, GameState state)
-    cpdef float get_acq_synergy_value(self, GameState state, int company_id)
-
-    # Closing state (compact-only, one-hot now in active_company)
-    cpdef int get_closing_company(self, GameState state)
-    cpdef void set_closing_company(self, GameState state, int company_id)
-    cpdef void clear_closing_company(self, GameState state)
-
-    # Active corp one-hot (for phases without their own hidden compact, e.g. CLOSING)
-    cpdef void set_active_corp_one_hot(self, GameState state, int corp_id)
-    cpdef void clear_active_corp_one_hot(self, GameState state)
 
     # Turn order navigation
     cpdef int find_player_at_position(self, GameState state, int position)
     cpdef void advance_to_next_bidder(self, GameState state)
     cpdef void set_active_player_after(self, GameState state, int player_id)
-
-    # Nogil accessors (for mask generation in actions.pyx)
-    cdef inline int _get_acq_active_corp_nogil(self, float* data) noexcept nogil
-    cdef inline int _get_acq_target_company_nogil(self, float* data) noexcept nogil
-    cdef inline bint _is_acq_fi_offer_nogil(self, float* data) noexcept nogil
-    cdef inline int _get_dividend_corp_nogil(self, float* data) noexcept nogil
-    cdef inline int _get_issue_corp_nogil(self, float* data) noexcept nogil
-    cdef inline int _get_ipo_company_nogil(self, float* data) noexcept nogil
-    cdef inline int _get_par_corp_nogil(self, float* data) noexcept nogil
-    cdef inline int _get_closing_company_nogil(self, float* data) noexcept nogil
-    cdef inline int _get_auction_price_nogil(self, float* data) noexcept nogil
-    cdef inline int _get_coo_level_nogil(self, float* data) noexcept nogil

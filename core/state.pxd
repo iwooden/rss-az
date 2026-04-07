@@ -67,7 +67,6 @@ cdef struct TurnStateOffsets:
     int auction_company          # company_id or -1
     int auction_high_bidder      # player_id or -1
     int auction_starter          # player_id or -1
-    int auction_passed           # N flags
     # Phase remaining tracking
     int dividend_remaining       # 8 corp flags
     int issue_remaining          # 8 corp flags
@@ -87,6 +86,7 @@ cdef struct PlayerFieldOffsets:
     int income
     int share_buys               # 8 per-corp buy counts (this turn)
     int share_sells              # 8 per-corp sell counts (this turn)
+    int auction_passed           # 1 flag (has this player left the current auction)
     # Total size of one player's data block (single source of truth for stride)
     int stride
 
@@ -116,7 +116,7 @@ cdef struct CorpFieldOffsets:
 # =============================================================================
 
 cdef StateLayout compute_layout(int num_players) noexcept nogil
-cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil
+cdef TurnStateOffsets compute_turn_offsets() noexcept nogil
 cdef PlayerFieldOffsets compute_player_field_offsets() noexcept nogil
 cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil
 

@@ -35,7 +35,7 @@ from core.data cimport (
 PlayerFields = namedtuple('PlayerFields', [
     'cash', 'net_worth', 'liquidity', 'turn_order',
     'owned_shares', 'is_president', 'round_trips', 'income',
-    'share_buys', 'share_sells',
+    'share_buys', 'share_sells', 'auction_passed',
 ])
 
 CorpFields = namedtuple('CorpFields', [
@@ -48,7 +48,7 @@ CorpFields = namedtuple('CorpFields', [
 TurnFields = namedtuple('TurnFields', [
     'end_card_flipped', 'consecutive_passes', 'cards_remaining',
     'auction_price', 'auction_company', 'auction_high_bidder',
-    'auction_starter', 'auction_passed',
+    'auction_starter',
     'dividend_remaining', 'issue_remaining', 'ipo_remaining',
 ])
 
@@ -101,7 +101,7 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     # function never needs to know the field list.
     cdef PlayerFieldOffsets player_fields = compute_player_field_offsets()
     cdef CorpFieldOffsets corp_fields = compute_corp_field_offsets()
-    cdef TurnStateOffsets turn_offsets = compute_turn_offsets(num_players)
+    cdef TurnStateOffsets turn_offsets = compute_turn_offsets()
 
     layout.player_stride = player_fields.stride
     layout.corp_stride = corp_fields.stride
@@ -163,12 +163,14 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
 # TURN STATE SUB-OFFSETS
 # =============================================================================
 
-cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
+cdef TurnStateOffsets compute_turn_offsets() noexcept nogil:
     """Compute sub-offsets within turn state section.
 
-    The final `t.size` field is the total length of the turn block — used
-    by compute_layout to size the section without duplicating the field
-    list.
+    The turn block is fixed-size — it no longer scales with player count
+    now that the per-player auction-passed flag lives inside each player's
+    block. The final `t.size` field is the total length of the turn block
+    and is used by compute_layout to size the section without duplicating
+    the field list.
     """
     cdef TurnStateOffsets t
     cdef int offset = 0
@@ -189,8 +191,6 @@ cdef TurnStateOffsets compute_turn_offsets(int num_players) noexcept nogil:
     offset += 1
     t.auction_starter = offset
     offset += 1
-    t.auction_passed = offset
-    offset += num_players
 
     # Phase remaining tracking
     t.dividend_remaining = offset
@@ -241,6 +241,8 @@ cdef PlayerFieldOffsets compute_player_field_offsets() noexcept nogil:
     offset += GameConstants.NUM_CORPS
     p.share_sells = offset
     offset += GameConstants.NUM_CORPS
+    p.auction_passed = offset
+    offset += 1
 
     p.stride = offset
     return p
@@ -349,6 +351,7 @@ def get_player_fields():
         income=p.income,
         share_buys=p.share_buys,
         share_sells=p.share_sells,
+        auction_passed=p.auction_passed,
     )
 
 
@@ -379,13 +382,14 @@ def get_corp_fields():
     )
 
 
-def get_turn_fields(int num_players):
+def get_turn_fields():
     """Python-accessible turn state sub-offsets within the turn block.
 
     Returns a TurnFields namedtuple with relative offsets (add to
-    turn_offset to get absolute position).
+    turn_offset to get absolute position). The turn block is fixed-size —
+    no num_players argument needed.
     """
-    cdef TurnStateOffsets t = compute_turn_offsets(num_players)
+    cdef TurnStateOffsets t = compute_turn_offsets()
     return TurnFields(
         end_card_flipped=t.end_card_flipped,
         consecutive_passes=t.consecutive_passes,
@@ -394,7 +398,6 @@ def get_turn_fields(int num_players):
         auction_company=t.auction_company,
         auction_high_bidder=t.auction_high_bidder,
         auction_starter=t.auction_starter,
-        auction_passed=t.auction_passed,
         dividend_remaining=t.dividend_remaining,
         issue_remaining=t.issue_remaining,
         ipo_remaining=t.ipo_remaining,
@@ -405,10 +408,12 @@ def get_turn_fields(int num_players):
 # CACHED LAYOUT TABLES (computed once, reused by all GameState instances)
 # =============================================================================
 
-# Indexed by num_players (slots 0-1 unused, 2-6 valid)
+# Indexed by num_players (slots 0-1 unused, 2-6 valid).
+# Turn / player / corp field tables are fixed across player counts now,
+# so they're cached as single structs rather than per-N arrays.
 cdef StateLayout _cached_layouts[7]
-cdef TurnStateOffsets _cached_turns[7]
-cdef PlayerFieldOffsets _cached_player_fields  # Fixed stride, same for all player counts
+cdef TurnStateOffsets _cached_turn_offsets
+cdef PlayerFieldOffsets _cached_player_fields
 cdef CorpFieldOffsets _cached_corp_fields
 
 
@@ -416,9 +421,9 @@ cdef void _populate_layout_cache() noexcept nogil:
     cdef int n
     for n in range(2, 7):
         _cached_layouts[n] = compute_layout(n)
-        _cached_turns[n] = compute_turn_offsets(n)
 
 
+_cached_turn_offsets = compute_turn_offsets()
 _cached_player_fields = compute_player_field_offsets()
 _cached_corp_fields = compute_corp_field_offsets()
 _populate_layout_cache()
@@ -445,7 +450,7 @@ cdef class GameState:
 
         # Look up precomputed layouts
         self._layout = _cached_layouts[num_players]
-        self._turn_offsets = _cached_turns[num_players]
+        self._turn_offsets = _cached_turn_offsets
         self._player_fields = _cached_player_fields
         self._corp_fields = _cached_corp_fields
 
