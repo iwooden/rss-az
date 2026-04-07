@@ -13,41 +13,18 @@ active corp/company features, no normalization. Phase-specific context
 the transformer needs (dividend impacts, par price tables, synergy
 previews, etc.) is reconstructed by the token-extraction layer instead of
 being maintained as engine state.
+
+The TurnState handle is fully stateless: there is no per-instance offset
+cache and no initialize() step. Each access derives its slot inline from
+the module-level ``LAYOUT`` and ``TURN_OFFSETS`` constants on
+``core.state``. Player-id bounds checks read ``state._num_players``
+directly so the singleton instance can be reused with any GameState.
 """
 
 from core.state cimport GameState
 
 
 cdef class TurnState:
-    cdef int _num_players
-
-    # Metadata (single-slot integer fields outside the turn block)
-    cdef int _phase_offset
-    cdef int _coo_level_offset
-    cdef int _turn_number_offset
-
-    # Turn state base offset
-    cdef int _turn_offset
-
-    # Cached absolute offsets for turn block fields
-    cdef int _end_card_flipped_offset
-    cdef int _consecutive_passes_offset
-    cdef int _cards_remaining_offset
-
-    # Auction
-    cdef int _auction_price_offset
-    cdef int _auction_company_offset
-    cdef int _auction_high_bidder_offset
-    cdef int _auction_starter_offset
-
-    # Phase remaining tracking
-    cdef int _dividend_remaining_offset
-    cdef int _issue_remaining_offset
-    cdef int _ipo_remaining_offset
-
-    # Initialization
-    cpdef void initialize(self, GameState state)
-
     # Low-level (nogil) accessors used by hot paths inside the engine.
     cdef int _get_phase(self, GameState state) noexcept nogil
     cdef int _get_coo_level(self, GameState state) noexcept nogil

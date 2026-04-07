@@ -6,18 +6,19 @@ The Deck manages the company draw pile inside the compact GameState. Two
 int16 slots back it: a top-of-deck index and a 36-slot order array. Cards
 that did not make it into the live deck for the active player count are
 marked LOC_EXCLUDED during setup.
+
+The handle is stateless: every read derives its slot inline from the
+module-level ``LAYOUT`` constant on ``core.state``. There is no
+per-instance offset cache and no initialize() step.
 """
 
 from core.state cimport GameState
 
 
 cdef class Deck:
-    # Cached absolute offsets into the compact state array.
-    cdef int _deck_top_offset      # Index of top card (-1 = empty)
-    cdef int _deck_order_offset    # Array of 36 company IDs in draw order
-
-    # Initialization
-    cpdef void initialize(self, GameState state)
+    # No per-instance offset cache. The deck top index lives at
+    # LAYOUT.deck_top_offset and the 36-slot order array starts at
+    # LAYOUT.deck_order_offset; both are constants.
 
     # Basic operations
     cpdef int draw(self, GameState state)

@@ -25,11 +25,18 @@ buckets:
 `set_coo_level` is the one method that does meaningful work beyond a
 field write: it cascades the new CoO into adjusted company incomes and
 re-derives every player/corp/FI income.
+
+Layout offsets come from the module-level ``LAYOUT`` and ``TURN_OFFSETS``
+constants on ``core.state``. Single-slot metadata lives at
+``LAYOUT.<name>_offset``; turn-block fields live at
+``LAYOUT.turn_offset + TURN_OFFSETS.<name>``. The handle has no
+per-instance state at all — the singleton TURN can be reused with any
+GameState at any player count.
 """
 
 from libc.stdint cimport int16_t
 
-from core.state cimport GameState
+from core.state cimport GameState, LAYOUT, TURN_OFFSETS
 from core.data cimport (
     GameConstants,
     COMPANY_INCOME,
@@ -46,65 +53,24 @@ cdef class TurnState:
     """
     Entity handle for accessing turn state.
 
-    There is only one TurnState instance, created at module load. The
-    cached absolute offsets are populated on the first call to
-    `initialize()`. All methods take a GameState as the first argument so
-    the handle stays stateless.
+    There is only one TurnState instance, created at module load. It has
+    no per-instance state; every access reads its slot inline from the
+    module-level ``LAYOUT`` / ``TURN_OFFSETS`` constants. All methods
+    take a GameState as the first argument.
     """
-
-    def __cinit__(self):
-        self._num_players = 0
-        self._phase_offset = -1
-        self._coo_level_offset = -1
-        self._turn_number_offset = -1
-        self._turn_offset = -1
-        self._end_card_flipped_offset = -1
-        self._consecutive_passes_offset = -1
-        self._cards_remaining_offset = -1
-        self._auction_price_offset = -1
-        self._auction_company_offset = -1
-        self._auction_high_bidder_offset = -1
-        self._auction_starter_offset = -1
-        self._dividend_remaining_offset = -1
-        self._issue_remaining_offset = -1
-        self._ipo_remaining_offset = -1
-
-    cpdef void initialize(self, GameState state):
-        """Cache absolute offsets from the GameState layout."""
-        self._num_players = state._num_players
-
-        # Metadata fields (single integer slots at the top of the state array)
-        self._phase_offset = state._layout.phase_offset
-        self._coo_level_offset = state._layout.coo_level_offset
-        self._turn_number_offset = state._layout.turn_number_offset
-
-        # Turn block base + per-field absolute offsets
-        self._turn_offset = state._layout.turn_offset
-        self._end_card_flipped_offset = self._turn_offset + state._turn_offsets.end_card_flipped
-        self._consecutive_passes_offset = self._turn_offset + state._turn_offsets.consecutive_passes
-        self._cards_remaining_offset = self._turn_offset + state._turn_offsets.cards_remaining
-
-        self._auction_price_offset = self._turn_offset + state._turn_offsets.auction_price
-        self._auction_company_offset = self._turn_offset + state._turn_offsets.auction_company
-        self._auction_high_bidder_offset = self._turn_offset + state._turn_offsets.auction_high_bidder
-        self._auction_starter_offset = self._turn_offset + state._turn_offsets.auction_starter
-
-        self._dividend_remaining_offset = self._turn_offset + state._turn_offsets.dividend_remaining
-        self._issue_remaining_offset = self._turn_offset + state._turn_offsets.issue_remaining
-        self._ipo_remaining_offset = self._turn_offset + state._turn_offsets.ipo_remaining
 
     # =========================================================================
     # LOW-LEVEL (NOGIL) ACCESSORS
     # =========================================================================
 
     cdef inline int _get_phase(self, GameState state) noexcept nogil:
-        return <int>state._data[self._phase_offset]
+        return <int>state._data[LAYOUT.phase_offset]
 
     cdef inline int _get_coo_level(self, GameState state) noexcept nogil:
-        return <int>state._data[self._coo_level_offset]
+        return <int>state._data[LAYOUT.coo_level_offset]
 
     cdef inline int _get_auction_price(self, GameState state) noexcept nogil:
-        return <int>state._data[self._auction_price_offset]
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_price]
 
     # =========================================================================
     # PHASE
@@ -118,7 +84,7 @@ cdef class TurnState:
         """Set the current game phase."""
         assert 0 <= phase < <int>GameConstants.NUM_PHASES, \
             f"phase {phase} out of range [0, {<int>GameConstants.NUM_PHASES})"
-        state._data[self._phase_offset] = <int16_t>phase
+        state._data[LAYOUT.phase_offset] = <int16_t>phase
 
     # =========================================================================
     # COST OF OWNERSHIP LEVEL
@@ -138,7 +104,7 @@ cdef class TurnState:
         """
         assert 1 <= level <= <int>GameConstants.NUM_COO_LEVELS, \
             f"coo_level {level} out of range [1, {<int>GameConstants.NUM_COO_LEVELS}]"
-        state._data[self._coo_level_offset] = <int16_t>level
+        state._data[LAYOUT.coo_level_offset] = <int16_t>level
         self._update_all_company_incomes(state, level)
         self._update_all_corp_incomes(state)
         self._update_all_player_incomes(state)
@@ -170,7 +136,7 @@ cdef class TurnState:
     cdef void _update_all_player_incomes(self, GameState state):
         """Recalculate income for every player."""
         cdef int player_id
-        for player_id in range(self._num_players):
+        for player_id in range(state._num_players):
             player_module.PLAYERS[player_id].calculate_income(state)
 
     # =========================================================================
@@ -179,11 +145,11 @@ cdef class TurnState:
 
     cpdef int get_turn_number(self, GameState state):
         """Return the current turn number (1-indexed)."""
-        return <int>state._data[self._turn_number_offset]
+        return <int>state._data[LAYOUT.turn_number_offset]
 
     cpdef void set_turn_number(self, GameState state, int turn):
         """Set the current turn number."""
-        state._data[self._turn_number_offset] = <int16_t>turn
+        state._data[LAYOUT.turn_number_offset] = <int16_t>turn
 
     # =========================================================================
     # END CARD FLIPPED
@@ -191,11 +157,11 @@ cdef class TurnState:
 
     cpdef bint is_end_card_flipped(self, GameState state):
         """Return True if the end card has been flipped."""
-        return state._data[self._end_card_flipped_offset] == 1
+        return state._data[LAYOUT.turn_offset + TURN_OFFSETS.end_card_flipped] == 1
 
     cpdef void set_end_card_flipped(self, GameState state, bint flipped):
         """Set whether the end card has been flipped."""
-        state._data[self._end_card_flipped_offset] = <int16_t>(1 if flipped else 0)
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.end_card_flipped] = <int16_t>(1 if flipped else 0)
 
     # =========================================================================
     # CONSECUTIVE PASSES (INVEST phase)
@@ -203,21 +169,20 @@ cdef class TurnState:
 
     cpdef int get_consecutive_passes(self, GameState state):
         """Return the consecutive-pass count for the INVEST phase."""
-        return <int>state._data[self._consecutive_passes_offset]
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.consecutive_passes]
 
     cpdef void set_consecutive_passes(self, GameState state, int passes):
         """Set the consecutive-pass count."""
-        state._data[self._consecutive_passes_offset] = <int16_t>passes
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.consecutive_passes] = <int16_t>passes
 
     cpdef void increment_consecutive_passes(self, GameState state):
         """Increment the consecutive-pass count by one."""
-        state._data[self._consecutive_passes_offset] = <int16_t>(
-            <int>state._data[self._consecutive_passes_offset] + 1
-        )
+        cdef int slot = LAYOUT.turn_offset + TURN_OFFSETS.consecutive_passes
+        state._data[slot] = <int16_t>(<int>state._data[slot] + 1)
 
     cpdef void clear_consecutive_passes(self, GameState state):
         """Reset the consecutive-pass count to zero (any non-pass action)."""
-        state._data[self._consecutive_passes_offset] = 0
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.consecutive_passes] = 0
 
     # =========================================================================
     # CARDS REMAINING (deck mirror)
@@ -225,7 +190,7 @@ cdef class TurnState:
 
     cpdef int get_cards_remaining(self, GameState state):
         """Return the number of cards left in the live deck."""
-        return <int>state._data[self._cards_remaining_offset]
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.cards_remaining]
 
     cpdef void set_cards_remaining(self, GameState state, int count):
         """Set the cards-remaining mirror.
@@ -234,7 +199,7 @@ cdef class TurnState:
         pushes out so phases / NN tokens can read deck size without
         touching the deck array directly.
         """
-        state._data[self._cards_remaining_offset] = <int16_t>count
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.cards_remaining] = <int16_t>count
 
     # =========================================================================
     # AUCTION STATE
@@ -242,17 +207,17 @@ cdef class TurnState:
 
     cpdef int get_auction_company(self, GameState state):
         """Return the company currently being auctioned, or -1 if none."""
-        return <int>state._data[self._auction_company_offset]
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_company]
 
     cpdef void set_auction_company(self, GameState state, int company_id):
         """Set the company currently being auctioned."""
         assert 0 <= company_id < <int>GameConstants.NUM_COMPANIES, \
             f"company_id {company_id} out of range [0, {<int>GameConstants.NUM_COMPANIES})"
-        state._data[self._auction_company_offset] = <int16_t>company_id
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_company] = <int16_t>company_id
 
     cpdef void clear_auction_company(self, GameState state):
         """Clear the auction company sentinel."""
-        state._data[self._auction_company_offset] = -1
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_company] = -1
 
     cpdef int get_auction_price(self, GameState state):
         """Return the current auction price (0 when no auction is active)."""
@@ -260,35 +225,35 @@ cdef class TurnState:
 
     cpdef void set_auction_price(self, GameState state, int price):
         """Set the current auction price."""
-        state._data[self._auction_price_offset] = <int16_t>price
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_price] = <int16_t>price
 
     cpdef int get_auction_high_bidder(self, GameState state):
         """Return the current high bidder, or -1 if none."""
-        return <int>state._data[self._auction_high_bidder_offset]
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_high_bidder]
 
     cpdef void set_auction_high_bidder(self, GameState state, int player_id):
         """Set the current auction high bidder."""
-        assert 0 <= player_id < self._num_players, \
-            f"player_id {player_id} out of range [0, {self._num_players})"
-        state._data[self._auction_high_bidder_offset] = <int16_t>player_id
+        assert 0 <= player_id < state._num_players, \
+            f"player_id {player_id} out of range [0, {state._num_players})"
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_high_bidder] = <int16_t>player_id
 
     cpdef void clear_auction_high_bidder(self, GameState state):
         """Clear the high-bidder sentinel."""
-        state._data[self._auction_high_bidder_offset] = -1
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_high_bidder] = -1
 
     cpdef int get_auction_starter(self, GameState state):
         """Return the player who started the current auction, or -1 if none."""
-        return <int>state._data[self._auction_starter_offset]
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_starter]
 
     cpdef void set_auction_starter(self, GameState state, int player_id):
         """Set the player who started the current auction."""
-        assert 0 <= player_id < self._num_players, \
-            f"player_id {player_id} out of range [0, {self._num_players})"
-        state._data[self._auction_starter_offset] = <int16_t>player_id
+        assert 0 <= player_id < state._num_players, \
+            f"player_id {player_id} out of range [0, {state._num_players})"
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_starter] = <int16_t>player_id
 
     cpdef void clear_auction_starter(self, GameState state):
         """Clear the auction-starter sentinel."""
-        state._data[self._auction_starter_offset] = -1
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_starter] = -1
 
     # =========================================================================
     # PHASE-REMAINING FLAGS
@@ -298,37 +263,37 @@ cdef class TurnState:
         """Return True if the corp still needs dividend processing."""
         assert 0 <= corp_id < <int>GameConstants.NUM_CORPS, \
             f"corp_id {corp_id} out of range [0, {<int>GameConstants.NUM_CORPS})"
-        return state._data[self._dividend_remaining_offset + corp_id] == 1
+        return state._data[LAYOUT.turn_offset + TURN_OFFSETS.dividend_remaining + corp_id] == 1
 
     cpdef void set_dividend_remaining(self, GameState state, int corp_id, bint remaining):
         """Set whether the corp still needs dividend processing."""
         assert 0 <= corp_id < <int>GameConstants.NUM_CORPS, \
             f"corp_id {corp_id} out of range [0, {<int>GameConstants.NUM_CORPS})"
-        state._data[self._dividend_remaining_offset + corp_id] = <int16_t>(1 if remaining else 0)
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.dividend_remaining + corp_id] = <int16_t>(1 if remaining else 0)
 
     cpdef bint is_issue_remaining(self, GameState state, int corp_id):
         """Return True if the corp still needs issue processing."""
         assert 0 <= corp_id < <int>GameConstants.NUM_CORPS, \
             f"corp_id {corp_id} out of range [0, {<int>GameConstants.NUM_CORPS})"
-        return state._data[self._issue_remaining_offset + corp_id] == 1
+        return state._data[LAYOUT.turn_offset + TURN_OFFSETS.issue_remaining + corp_id] == 1
 
     cpdef void set_issue_remaining(self, GameState state, int corp_id, bint remaining):
         """Set whether the corp still needs issue processing."""
         assert 0 <= corp_id < <int>GameConstants.NUM_CORPS, \
             f"corp_id {corp_id} out of range [0, {<int>GameConstants.NUM_CORPS})"
-        state._data[self._issue_remaining_offset + corp_id] = <int16_t>(1 if remaining else 0)
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.issue_remaining + corp_id] = <int16_t>(1 if remaining else 0)
 
     cpdef bint is_ipo_remaining(self, GameState state, int company_id):
         """Return True if the company still needs IPO processing."""
         assert 0 <= company_id < <int>GameConstants.NUM_COMPANIES, \
             f"company_id {company_id} out of range [0, {<int>GameConstants.NUM_COMPANIES})"
-        return state._data[self._ipo_remaining_offset + company_id] == 1
+        return state._data[LAYOUT.turn_offset + TURN_OFFSETS.ipo_remaining + company_id] == 1
 
     cpdef void set_ipo_remaining(self, GameState state, int company_id, bint remaining):
         """Set whether the company still needs IPO processing."""
         assert 0 <= company_id < <int>GameConstants.NUM_COMPANIES, \
             f"company_id {company_id} out of range [0, {<int>GameConstants.NUM_COMPANIES})"
-        state._data[self._ipo_remaining_offset + company_id] = <int16_t>(1 if remaining else 0)
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.ipo_remaining + company_id] = <int16_t>(1 if remaining else 0)
 
     # =========================================================================
     # TURN ORDER NAVIGATION

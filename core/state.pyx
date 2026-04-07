@@ -79,7 +79,6 @@ LayoutInfo = namedtuple('LayoutInfo', [
 from entities import player as player_module
 from entities import corp as corp_module
 from entities import company as company_module
-from entities import turn as turn_module
 from entities import deck as deck_module
 
 cnp.import_array()
@@ -601,17 +600,15 @@ cdef class GameState:
         cdef int16_t* player
         cdef int16_t* corp
 
-        # 1. Initialize entity handles that still cache anything from the
-        # layout. Company, Market, and FI are fully stateless now and
-        # read LAYOUT directly, so they have no initialize step. Other
-        # handles will be migrated to the same pattern in subsequent
-        # slices and dropped from this loop one by one.
+        # 1. Initialize the entity handles that still cache layout offsets
+        # per-instance. Only Player and Corp remain on this list; every
+        # other handle reads LAYOUT / TURN_OFFSETS / PLAYER_FIELDS /
+        # CORP_FIELDS directly and has no initialize step. These last two
+        # will be migrated in subsequent slices and the loop will go away.
         for i in range(self._num_players):
             player_module.PLAYERS[i].initialize(self)
         for c in corp_module.CORPS:
             c.initialize(self)
-        turn_module.TURN.initialize(self)
-        deck_module.DECK.initialize(self)
 
         # 2. Set player starting state (raw integers, no normalization)
         starting_cash = 25 if self._num_players == 6 else 30
