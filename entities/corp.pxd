@@ -1,13 +1,31 @@
 # cython: language_level=3
 """
 Corporation entity declarations.
+
+Stateless handle around the per-corp block in the compact GameState.
+Every read/write derives its slot inline from the module-level
+``LAYOUT`` and ``CORP_FIELDS`` constants on ``core.state``; there is
+no per-instance offset cache and no initialize() step. The handle's
+only state is its ``corp_id`` and display ``name``, so a single
+``CORPS`` list can be reused with any GameState at any player count.
+Player-id bounds checks read ``state._num_players`` directly.
+
+All values are raw int16 — no normalization, no one-hot encoding.
+Company ownership is read from the shared ``company_locations`` /
+``company_owner_ids`` arrays via ``LOC_CORP`` / ``LOC_CORP_ACQ``;
+there is no per-corp owned_companies bitmap any more.
+
+The synergy bonus aggregation, the required-stars table, and the
+ability-income formulas live as private cdef helpers inside
+``corp.pyx`` — they are pure functions of corp + company state and
+do not belong on ``core.data``, which is data-only.
 """
 
 from core.state cimport GameState
 
 
 # =============================================================================
-# LOW-LEVEL NOGIL ACCESSORS
+# INCOME BREAKDOWN
 # =============================================================================
 
 cdef struct IncomeBreakdown:
@@ -17,71 +35,35 @@ cdef struct IncomeBreakdown:
     int coo_cost          # negative value
     int ability_income
 
-cdef struct CorpOffsets:
-    # Offsets within a corporation's data block in the state vector
-    int active
-    int cash
-    int unissued_shares
-    int issued_shares
-    int bank_shares
-    int income
-    int stars
-    int share_price
-    int acquisition_proceeds
-    int in_receivership
 
-# Offset computation
-cdef CorpOffsets get_corp_offsets() noexcept nogil
+# =============================================================================
+# PRICE-MOVEMENT HELPER (pure function, no GameState required)
+# =============================================================================
+
 cpdef int calculate_price_move(int owned_stars, int required_stars) noexcept nogil
-
-# Corp state accessors (raw pointer, nogil)
-cdef bint is_corp_active(float* corp, CorpOffsets* c) noexcept nogil
-cdef int get_corp_cash(float* corp, CorpOffsets* c) noexcept nogil
-cdef int get_corp_bank_shares(float* corp, CorpOffsets* c) noexcept nogil
-cdef int get_corp_unissued_shares(float* corp, CorpOffsets* c) noexcept nogil
-cdef int get_corp_issued_shares(float* corp, CorpOffsets* c) noexcept nogil
-cdef bint is_corp_in_receivership(float* corp, CorpOffsets* c) noexcept nogil
 
 
 # =============================================================================
-# HIGH-LEVEL ENTITY CLASS
+# CORPORATION CLASS
 # =============================================================================
 
 cdef class Corporation:
     cdef readonly int corp_id
     cdef readonly str name
-    cdef int _base_offset      # Cached offset to this corp's data in state array
-    cdef int _num_players      # Cached player count
 
-    # Hidden state offset for fast price index access
-    cdef int _hidden_price_index_offset
+    # Slot helper (constant-offset arithmetic)
+    cdef inline int _slot(self, int field) noexcept nogil
 
-    # Field offsets within corp stride (cached on first use)
-    cdef int _active_offset
-    cdef int _cash_offset
-    cdef int _unissued_shares_offset
-    cdef int _issued_shares_offset
-    cdef int _bank_shares_offset
-    cdef int _income_offset
-    cdef int _stars_offset
-    cdef int _share_price_offset
-    cdef int _acquisition_proceeds_offset
-    cdef int _in_receivership_offset
-    cdef int _price_index_norm_offset
-    cdef int _pending_price_move_offset
-    cdef int _raw_revenue_offset
-    cdef int _synergy_income_offset
-    cdef int _coo_cost_offset
-    cdef int _ability_income_offset
-    cdef int _owned_companies_offset
-    cdef int _company_incomes_offset  # Global company_incomes array offset
-
-    # Hidden state offsets for acquisition company lookups
-    cdef int _hidden_company_locations_offset
-    cdef int _hidden_company_owner_ids_offset
-
-    # Initialization
-    cpdef void initialize(self, GameState state)
+    # Low-level (nogil) accessors used by hot paths inside the engine.
+    cdef int _get_cash(self, GameState state) noexcept nogil
+    cdef int _get_bank_shares(self, GameState state) noexcept nogil
+    cdef int _get_unissued_shares(self, GameState state) noexcept nogil
+    cdef int _get_issued_shares(self, GameState state) noexcept nogil
+    cdef int _get_price_index(self, GameState state) noexcept nogil
+    cdef bint _is_active(self, GameState state) noexcept nogil
+    cdef bint _is_in_receivership(self, GameState state) noexcept nogil
+    cdef bint _owns_company(self, GameState state, int company_id) noexcept nogil
+    cdef bint _has_acquisition_company(self, GameState state, int company_id) noexcept nogil
 
     # Active status
     cpdef bint is_active(self, GameState state)
@@ -108,7 +90,7 @@ cdef class Corporation:
     cpdef int get_stars(self, GameState state)
     cpdef void set_stars(self, GameState state, int stars)
 
-    # Share price
+    # Share price / market index
     cpdef int get_share_price(self, GameState state)
     cpdef void set_share_price(self, GameState state, int price)
     cpdef int get_price_index(self, GameState state)
@@ -122,25 +104,23 @@ cdef class Corporation:
     cpdef bint is_in_receivership(self, GameState state)
     cpdef void set_in_receivership(self, GameState state, bint in_recv)
 
-    # Company ownership (use Company.transfer_to_corp() to set)
+    # Company ownership
     cpdef bint owns_company(self, GameState state, int company_id)
-    cdef inline bint _owns_company_nogil(self, float* data, int company_id) noexcept nogil
     cpdef int count_companies(self, GameState state, bint include_acquisition=*)
 
-    # Star recalculation
+    # Star / pending-move recalculation
     cpdef void recalculate_stars(self, GameState state)
     cpdef void update_pending_price_move(self, GameState state)
 
     # Income calculation
-    cdef IncomeBreakdown _calculate_income_nogil(self, float* data, int coo_level) noexcept nogil
     cpdef int calculate_income(self, GameState state)
     cpdef void apply_income(self, GameState state, int income)
 
     # Bankruptcy
     cpdef void go_bankrupt(self, GameState state)
 
-    # President
+    # President lookup
     cpdef int get_president_id(self, GameState state)
 
-    # Acquisition pile (use Company.transfer_to_corp_acquisition() to set)
+    # Acquisition pile
     cpdef bint has_acquisition_company(self, GameState state, int company_id)

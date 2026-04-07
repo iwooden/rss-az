@@ -186,19 +186,6 @@ cdef class Player:
     def __cinit__(self, int player_id):
         self.player_id = player_id
 
-    def initialize(self, GameState state):
-        """Deprecated no-op kept for the legacy initialize loop in
-        ``core.state.GameState.initialize_game``.
-
-        The Player handle no longer caches anything per-instance; offsets
-        come from the module-level ``LAYOUT`` / ``PLAYER_FIELDS`` constants.
-        ``state.pyx`` still iterates over PLAYERS and CORPS and calls
-        ``initialize`` on each — that loop will disappear in the corp slice
-        once Corp is also stateless. Until then, this stub keeps state
-        initialization working.
-        """
-        pass
-
     # =========================================================================
     # SLOT HELPER (constant-offset arithmetic)
     # =========================================================================

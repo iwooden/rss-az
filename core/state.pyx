@@ -76,8 +76,6 @@ LayoutInfo = namedtuple('LayoutInfo', [
 ])
 
 # Import entity modules for their global instances
-from entities import player as player_module
-from entities import corp as corp_module
 from entities import company as company_module
 from entities import deck as deck_module
 
@@ -589,8 +587,9 @@ cdef class GameState:
             seed: Random seed for deck shuffling. If -1, uses current time.
 
         Sets up players, FI, corporations, market, deck, and turn state.
-        Entity handles must be updated to match the compact layout before
-        this method produces correct results.
+        All entity handles are stateless and read offsets directly from
+        the module-level layout constants, so no per-handle initialization
+        step is required.
         """
         cdef int i, corp_id, company_id
         cdef int actual_seed
@@ -600,17 +599,7 @@ cdef class GameState:
         cdef int16_t* player
         cdef int16_t* corp
 
-        # 1. Initialize the entity handles that still cache layout offsets
-        # per-instance. Only Player and Corp remain on this list; every
-        # other handle reads LAYOUT / TURN_OFFSETS / PLAYER_FIELDS /
-        # CORP_FIELDS directly and has no initialize step. These last two
-        # will be migrated in subsequent slices and the loop will go away.
-        for i in range(self._num_players):
-            player_module.PLAYERS[i].initialize(self)
-        for c in corp_module.CORPS:
-            c.initialize(self)
-
-        # 2. Set player starting state (raw integers, no normalization)
+        # 1. Set player starting state (raw integers, no normalization)
         starting_cash = 25 if self._num_players == 6 else 30
         for i in range(self._num_players):
             player = self._player_ptr(i)
@@ -619,20 +608,20 @@ cdef class GameState:
             player[PLAYER_FIELDS.liquidity] = <int16_t>starting_cash
             player[PLAYER_FIELDS.turn_order] = <int16_t>i
 
-        # 3. Set Foreign Investor state (raw integers)
+        # 2. Set Foreign Investor state (raw integers)
         self._data[LAYOUT.fi_offset] = 4       # cash
         self._data[LAYOUT.fi_offset + 1] = 5   # income (base +5)
 
-        # 4. Initialize corporations (only non-zero: unissued shares)
+        # 3. Initialize corporations (only non-zero: unissued shares)
         for corp_id in range(<int>GameConstants.NUM_CORPS):
             corp = self._corp_ptr(corp_id)
             corp[CORP_FIELDS.unissued_shares] = <int16_t>CORP_SHARE_COUNT[corp_id]
 
-        # 5. Initialize market - all spaces available
+        # 4. Initialize market - all spaces available
         for i in range(<int>GameConstants.NUM_MARKET_SPACES):
             self._data[LAYOUT.market_offset + i] = 1
 
-        # 6. Build and shuffle deck (also marks excluded companies as LOC_EXCLUDED)
+        # 5. Build and shuffle deck (also marks excluded companies as LOC_EXCLUDED)
         if seed < 0:
             clock_gettime(CLOCK_MONOTONIC, &ts)
             actual_seed = <int>(ts.tv_sec ^ ts.tv_nsec)
@@ -640,21 +629,21 @@ cdef class GameState:
             actual_seed = seed
         deck_module.DECK.setup(self, self._num_players, actual_seed)
 
-        # 7. Draw initial companies (move_to_auction clears the revealed flag)
+        # 6. Draw initial companies (move_to_auction clears the revealed flag)
         for i in range(self._num_players):
             company_id = deck_module.DECK.draw(self)
             company_module.COMPANIES[company_id].move_to_auction(self)
 
-        # 8. Set turn state (raw integers)
+        # 7. Set turn state (raw integers)
         self._data[LAYOUT.phase_offset] = <int16_t>GamePhases.PHASE_INVEST
         self._data[LAYOUT.coo_level_offset] = 1
         self._data[LAYOUT.turn_number_offset] = 1
 
-        # 9. Initialize "no selection" auction sentinels to -1
+        # 8. Initialize "no selection" auction sentinels to -1
         turn = self._turn_ptr()
         turn[TURN_OFFSETS.auction_company] = -1
         turn[TURN_OFFSETS.auction_high_bidder] = -1
         turn[TURN_OFFSETS.auction_starter] = -1
 
-        # 10. Set active player
+        # 9. Set active player
         self._set_active_player(0)

@@ -373,11 +373,11 @@ All four simplifications follow the same pattern: the MLP needed a small, fixed 
 ## Implementation Phases
 
 ### Phase 1: Compact state + token extraction (core/)
-- Redesign `GameState` as a single compact array (no visible/hidden split) — **done in `09e5048`** (`core/state.{pxd,pyx}` reduced to structural primitives + entity-handle delegation; player block now contains all per-player tracking incl. share buys/sells)
-- Delete one-hot encoding, normalization-on-write, entity duplication — **done in `09e5048`** (state-side; entity handles still pending update)
-- Reduce `core/data.{pxd,pyx}` to pure data + constants — **done.** All field-level accessors removed; the file now exposes only the static arrays (company/corp/market/CoO/par tables, synergy matrix), the shared enums (`GameConstants`, `GamePhases`, `CorpIndices`), and the normalization divisors used by token extraction. `state.pyx` reads `CORP_SHARE_COUNT` directly, and other modules will be updated to do the same as the rest of Phase 1 lands.
-- Implement `get_token_data()` in Cython — fills eval buffer from compact state
-- Update entity handles (Player, Corp, etc.) for new offset layout
+- Redesign `GameState` as a single compact array (no visible/hidden split) — **done in `09e5048`** (`core/state.{pxd,pyx}` reduced to structural primitives + entity-handle delegation; player block now contains all per-player tracking incl. share buys/sells).
+- Delete one-hot encoding, normalization-on-write, entity duplication — **done in `09e5048`**.
+- Reduce `core/data.{pxd,pyx}` to pure data + constants — **done.** All field-level accessors removed; the file exposes only the static arrays (company/corp/market/CoO/par tables, synergy matrix), the shared enums (`GameConstants`, `GamePhases`, `CorpIndices`), and the normalization divisors used by token extraction. Computational helpers that used to live here (synergy aggregation, required stars, cost-of-ownership lookup, par-price validity) now live as private cdef functions in the module that uses them.
+- Update entity handles (Player, Corp, Company, FI, Market, Deck, TurnState) for the new offset layout — **done.** Every handle is fully stateless: no per-instance offset cache, no `initialize()` step, no normalization-on-read. Each accessor reads its slot inline from the module-level `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` constants, so the singletons in `PLAYERS` / `CORPS` / `COMPANIES` are reused with any `GameState` at any player count. Company ownership is read from the shared `company_locations` / `company_owner_ids` arrays — the per-player and per-corp `owned_companies` bitmaps are gone.
+- Implement `get_token_data()` in Cython — fills eval buffer from compact state. **Pending** — this is the next chunk of Phase 1 work.
 - Target: 3p only
 
 ### Phase 2: Action space refactor (core/actions.pyx)
