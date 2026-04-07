@@ -2,124 +2,140 @@
 """
 Market entity implementation.
 
-Provides clean getter/setter access to market space availability in the game
-state vector. The market has 27 spaces (indices 0-26) with corresponding prices.
-Index 0 is the bankruptcy space (price 0).
+Provides clean access to market space availability in the compact game
+state array. The market has 27 spaces (indices 0-26) with corresponding
+share prices: index 0 is the bankruptcy space ($0), index 26 is the
+maximum ($75).
+
+Availability flags are stored as raw 0/1 int16 values inside the state
+buffer; static price data (prices, reverse lookup) lives in core.data and
+is read directly via cimported arrays — there are no helper functions to
+wrap.
 """
 
-from core.state cimport GameState, StateLayout
-from core.data cimport get_market_price, get_market_index, GameConstants
+from libc.stdint cimport int16_t
+
+from core.state cimport GameState
+from core.data cimport (
+    GameConstants,
+    MARKET_PRICES,
+    PRICE_TO_MARKET_INDEX,
+)
 
 
 cdef class Market:
     """
     Entity handle for accessing market state.
 
-    There is only one Market instance, created at module load.
-    Offsets are computed on first access to a GameState via initialize().
-    All methods take GameState as first argument for stateless operation.
+    There is only one Market instance, created at module load. The cached
+    absolute offset is populated on the first call to `initialize()`. All
+    methods take a GameState as the first argument so the handle stays
+    stateless.
     """
 
     def __cinit__(self):
-        self._market_offset = 0
+        self._market_offset = -1
 
     cpdef void initialize(self, GameState state):
-        """
-        Initialize offsets from state layout. Call once when starting a new game.
-
-        This must be called before using any other methods on this Market instance.
-        """
-        cdef StateLayout layout = state._layout
-        self._market_offset = layout.market_offset
+        """Cache the absolute market offset from the GameState layout."""
+        self._market_offset = state._layout.market_offset
 
     # =========================================================================
-    # SPACE AVAILABILITY
+    # SPACE AVAILABILITY (low-level, nogil)
+    # =========================================================================
+
+    cdef inline bint _is_space_available(self, GameState state, int index) noexcept nogil:
+        return state._data[self._market_offset + index] == 1
+
+    cdef inline void _set_space_available(self, GameState state, int index, bint available) noexcept nogil:
+        state._data[self._market_offset + index] = <int16_t>(1 if available else 0)
+
+    # =========================================================================
+    # SPACE AVAILABILITY (Python-accessible wrappers)
     # =========================================================================
 
     cpdef bint is_space_available(self, GameState state, int index):
-        """Check if a market space is available (not occupied by a corp)."""
-        if index < 0 or index >= GameConstants.NUM_MARKET_SPACES:
-            return False
-        return state._data[self._market_offset + index] == 1.0
+        """Return True if the given market space is unoccupied."""
+        assert 0 <= index < <int>GameConstants.NUM_MARKET_SPACES, \
+            f"market index {index} out of range [0, {<int>GameConstants.NUM_MARKET_SPACES})"
+        return self._is_space_available(state, index)
 
     cpdef void set_space_available(self, GameState state, int index, bint available):
-        """Set whether a market space is available."""
-        if index >= 0 and index < GameConstants.NUM_MARKET_SPACES:
-            state._data[self._market_offset + index] = 1.0 if available else 0.0
+        """Set whether the given market space is available."""
+        assert 0 <= index < <int>GameConstants.NUM_MARKET_SPACES, \
+            f"market index {index} out of range [0, {<int>GameConstants.NUM_MARKET_SPACES})"
+        self._set_space_available(state, index, available)
 
     # =========================================================================
-    # PRICE LOOKUPS
+    # PRICE LOOKUPS (static data from core.data)
     # =========================================================================
 
     cpdef int get_price_at_index(self, int index):
-        """
-        Get the price at a market index.
+        """Return the share price ($) at the given market index.
 
         Index 0 = $0 (bankruptcy), Index 26 = $75 (maximum).
         """
-        return get_market_price(index)
+        assert 0 <= index < <int>GameConstants.NUM_MARKET_SPACES, \
+            f"market index {index} out of range [0, {<int>GameConstants.NUM_MARKET_SPACES})"
+        return MARKET_PRICES[index]
 
     cpdef int get_index_for_price(self, int price):
-        """
-        Get the market index for a given price.
+        """Return the market index for the given price.
 
-        Returns -1 if the price is not a valid market price.
+        Returns -1 if `price` is not a valid market price (e.g. $4 or $99
+        within the lookup range). The -1 sentinel is genuine business logic
+        — callers use it to detect "not a market price" — so it is kept
+        even with the new assert-on-bad-input convention; the assert only
+        guards against indexing outside the static lookup table.
         """
-        return get_market_index(price)
+        assert 0 <= price < 76, f"price {price} outside lookup range [0, 76)"
+        return PRICE_TO_MARKET_INDEX[price]
 
     # =========================================================================
     # PRICE MOVEMENT HELPERS
     # =========================================================================
 
-    cpdef int find_next_higher_space(self, GameState state, int current_index):
-        """
-        Find next available higher market space for price movement.
+    cdef int _find_next_higher_space(self, GameState state, int current_index) noexcept nogil:
+        """Find next available higher market space.
 
-        Searches from current_index + 1 upward for the first available space.
-
-        INVARIANT: Index 26 ($75) is always available. Per RULES.md, when no
-        higher card is available, the corp takes no card and has price $75.
-        Multiple corps can share this "no card" state, so it's never occupied.
-
-        Args:
-            state: Game state
-            current_index: Current price index (0-26)
-
-        Returns:
-            Index of next available higher space (guaranteed valid)
+        INVARIANT: Index 26 ($75) is always available. Per RULES.md, when
+        no higher card is available, the corp takes no card and has price
+        $75. Multiple corps can share this "no card" state, so it is never
+        marked occupied.
         """
         cdef int index
-        cdef int max_index = GameConstants.NUM_MARKET_SPACES - 1  # 26
-        # Check indices up to (but not including) max_index
+        cdef int max_index = <int>GameConstants.NUM_MARKET_SPACES - 1  # 26
         for index in range(current_index + 1, max_index):
-            if state._data[self._market_offset + index] == 1.0:
+            if state._data[self._market_offset + index] == 1:
                 return index
         # Index 26 ($75) is always available per game rules
         return max_index
 
-    cpdef int find_next_lower_space(self, GameState state, int current_index):
-        """
-        Find next available lower market space for price movement.
+    cdef int _find_next_lower_space(self, GameState state, int current_index) noexcept nogil:
+        """Find next available lower market space.
 
-        Searches from current_index - 1 downward for the first available space.
-
-        INVARIANT: Index 0 ($0, bankruptcy) is always available. When a corp
-        lands on index 0, it goes bankrupt and is removed from the market,
-        immediately freeing the space.
-
-        Args:
-            state: Game state
-            current_index: Current price index (0-26)
-
-        Returns:
-            Index of next available lower space (guaranteed valid)
+        INVARIANT: Index 0 ($0, bankruptcy) is always available. When a
+        corp lands on index 0 it goes bankrupt and is removed from the
+        market, immediately freeing the space.
         """
         cdef int index
         for index in range(current_index - 1, -1, -1):
-            if state._data[self._market_offset + index] == 1.0:
+            if state._data[self._market_offset + index] == 1:
                 return index
         # Index 0 ($0) is always available per game rules
         return 0
+
+    cpdef int find_next_higher_space(self, GameState state, int current_index):
+        """Python wrapper around `_find_next_higher_space`."""
+        assert 0 <= current_index < <int>GameConstants.NUM_MARKET_SPACES, \
+            f"current_index {current_index} out of range [0, {<int>GameConstants.NUM_MARKET_SPACES})"
+        return self._find_next_higher_space(state, current_index)
+
+    cpdef int find_next_lower_space(self, GameState state, int current_index):
+        """Python wrapper around `_find_next_lower_space`."""
+        assert 0 <= current_index < <int>GameConstants.NUM_MARKET_SPACES, \
+            f"current_index {current_index} out of range [0, {<int>GameConstants.NUM_MARKET_SPACES})"
+        return self._find_next_lower_space(state, current_index)
 
 
 # =============================================================================
