@@ -2,14 +2,15 @@
 """
 Deck entity declarations.
 
-The Deck manages the company draw pile inside the compact GameState. Two
-int16 slots back it: a top-of-deck index and a 36-slot order array. Cards
+The Deck manages the company draw pile inside the compact GameState. The
+deck section holds a top-of-deck index and a 36-slot order array; both
+are reachable via ``LAYOUT.deck_offset + DECK_OFFSETS.<field>``. Cards
 that did not make it into the live deck for the active player count are
 marked LOC_EXCLUDED during setup.
 
 The handle is stateless: every read derives its slot inline from the
-module-level ``LAYOUT`` constant on ``core.state``. There is no
-per-instance offset cache and no initialize() step.
+module-level ``LAYOUT`` and ``DECK_OFFSETS`` constants on ``core.state``.
+There is no per-instance offset cache and no initialize() step.
 """
 
 from core.state cimport GameState
@@ -17,8 +18,9 @@ from core.state cimport GameState
 
 cdef class Deck:
     # No per-instance offset cache. The deck top index lives at
-    # LAYOUT.deck_top_offset and the 36-slot order array starts at
-    # LAYOUT.deck_order_offset; both are constants.
+    # LAYOUT.deck_offset + DECK_OFFSETS.top and the 36-slot order array
+    # starts at LAYOUT.deck_offset + DECK_OFFSETS.order; both are
+    # constants.
 
     # Basic operations
     cpdef int draw(self, GameState state)

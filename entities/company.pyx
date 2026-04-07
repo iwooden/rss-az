@@ -4,10 +4,12 @@ Company entity implementation.
 
 Companies live in exactly one place at a time. The compact GameState array
 tracks every company's location and owner directly via two parallel int16
-sub-arrays:
+sub-arrays inside the companies section:
 
-  state._data[LAYOUT.company_locations_offset + cid]  -- CompanyLocation enum
-  state._data[LAYOUT.company_owner_ids_offset  + cid]  -- player_id / corp_id / -1
+  state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.locations + cid]
+      -- CompanyLocation enum
+  state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids + cid]
+      -- player_id / corp_id / -1
 
 There are no separate "for auction", "revealed", "removed", FI- or
 player-side ownership flags anymore — those queries are derived from the
@@ -15,13 +17,14 @@ location enum. Transfer operations atomically update the location and
 owner_id, then trigger downstream recalculation on the entities whose
 income or star totals changed.
 
-Layout offsets are constants pulled from the module-level ``LAYOUT`` on
-``core.state``: there is no per-instance offset cache and no initialize()
-step. The handle's only state is its ``company_id`` and ``name``.
+Layout offsets are constants pulled from the module-level ``LAYOUT`` and
+``COMPANY_OFFSETS`` on ``core.state``: there is no per-instance offset
+cache and no initialize() step. The handle's only state is its
+``company_id`` and ``name``.
 """
 
 from libc.stdint cimport int16_t
-from core.state cimport GameState, LAYOUT
+from core.state cimport GameState, LAYOUT, COMPANY_OFFSETS
 from core.data cimport (
     GameConstants,
     COMPANY_FACE_VALUE,
@@ -64,14 +67,14 @@ cdef class Company:
     # =========================================================================
 
     cdef inline int _get_location(self, GameState state) noexcept nogil:
-        return <int>state._data[LAYOUT.company_locations_offset + self.company_id]
+        return <int>state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.locations + self.company_id]
 
     cdef inline int _get_owner_id(self, GameState state) noexcept nogil:
-        return <int>state._data[LAYOUT.company_owner_ids_offset + self.company_id]
+        return <int>state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids + self.company_id]
 
     cdef inline void _set_location(self, GameState state, int location, int owner_id) noexcept nogil:
-        state._data[LAYOUT.company_locations_offset + self.company_id] = <int16_t>location
-        state._data[LAYOUT.company_owner_ids_offset + self.company_id] = <int16_t>owner_id
+        state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.locations + self.company_id] = <int16_t>location
+        state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids + self.company_id] = <int16_t>owner_id
 
     # =========================================================================
     # LOCATION QUERIES
@@ -243,10 +246,10 @@ cdef class Company:
 
     cpdef int get_adjusted_income(self, GameState state):
         """Adjusted income (after cost of ownership). Stored as a raw int16."""
-        return <int>state._data[LAYOUT.company_incomes_offset + self.company_id]
+        return <int>state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.incomes + self.company_id]
 
     cpdef void set_adjusted_income(self, GameState state, int income):
-        state._data[LAYOUT.company_incomes_offset + self.company_id] = <int16_t>income
+        state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.incomes + self.company_id] = <int16_t>income
 
 # =============================================================================
 # GLOBAL COMPANY INSTANCES

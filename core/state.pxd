@@ -26,19 +26,13 @@ cdef struct StateLayout:
     #     LAYOUT.players_offset + LAYOUT.player_stride * num_players
     # Every other offset is a constant shared across all player counts.
 
-    # Metadata offsets
-    int active_player_offset
-    int num_players_offset
-    int phase_offset             # raw integer (0-11), not one-hot
-    int coo_level_offset         # raw integer (1-7), not one-hot
-    int turn_number_offset
-
     # Foreign investor section (cash + income only — ownership lives in
-    # company_locations / company_owner_ids)
+    # the companies section's locations / owner_ids sub-arrays)
     int fi_offset
 
-    # Company adjusted incomes (36 raw integers)
-    int company_incomes_offset
+    # Companies section (adjusted incomes + locations + owner_ids).
+    # Sub-offsets live in the CompanyOffsets struct.
+    int companies_offset
 
     # Market availability (27 flags)
     int market_offset
@@ -49,13 +43,9 @@ cdef struct StateLayout:
     # Turn state section
     int turn_offset
 
-    # Deck section
-    int deck_top_offset
-    int deck_order_offset        # 36 company IDs
-
-    # Company tracking (36 each, enum/integer)
-    int company_locations_offset
-    int company_owner_ids_offset
+    # Deck section (top index + 36-slot order array). Sub-offsets live
+    # in the DeckOffsets struct.
+    int deck_offset
 
     # Player section (LAST: only num_players-dependent slice).
     # Includes share_buys / share_sells / auction_passed per player.
@@ -63,6 +53,13 @@ cdef struct StateLayout:
 
 
 cdef struct TurnStateOffsets:
+    # Metadata (formerly stored at the top of the state buffer; folded into
+    # the turn block so StateLayout only describes section offsets)
+    int active_player
+    int num_players
+    int phase                    # raw integer (0-11), not one-hot
+    int coo_level                # raw integer (1-7), not one-hot
+    int turn_number
     # Global
     int end_card_flipped
     int consecutive_passes
@@ -96,6 +93,23 @@ cdef struct PlayerFieldOffsets:
     int stride
 
 
+cdef struct CompanyOffsets:
+    # Sub-offsets within the companies section.
+    int incomes                  # 36 adjusted income slots (raw int16)
+    int locations                # 36 CompanyLocation enum values
+    int owner_ids                # 36 owner IDs (player_id / corp_id / -1)
+    # Total size of the companies section (used by compute_layout to size it)
+    int size
+
+
+cdef struct DeckOffsets:
+    # Sub-offsets within the deck section.
+    int top                      # 1 slot: index of top card (-1 = empty)
+    int order                    # 36 slots: shuffled company IDs
+    # Total size of the deck section (used by compute_layout to size it)
+    int size
+
+
 cdef struct CorpFieldOffsets:
     int active
     int cash
@@ -124,6 +138,8 @@ cdef StateLayout compute_layout() noexcept nogil
 cdef TurnStateOffsets compute_turn_offsets() noexcept nogil
 cdef PlayerFieldOffsets compute_player_field_offsets() noexcept nogil
 cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil
+cdef CompanyOffsets compute_company_offsets() noexcept nogil
+cdef DeckOffsets compute_deck_offsets() noexcept nogil
 
 
 # =============================================================================
@@ -142,6 +158,8 @@ cdef StateLayout LAYOUT
 cdef TurnStateOffsets TURN_OFFSETS
 cdef PlayerFieldOffsets PLAYER_FIELDS
 cdef CorpFieldOffsets CORP_FIELDS
+cdef CompanyOffsets COMPANY_OFFSETS
+cdef DeckOffsets DECK_OFFSETS
 
 
 cdef class GameState:

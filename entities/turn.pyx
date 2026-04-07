@@ -64,10 +64,10 @@ cdef class TurnState:
     # =========================================================================
 
     cdef inline int _get_phase(self, GameState state) noexcept nogil:
-        return <int>state._data[LAYOUT.phase_offset]
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
 
     cdef inline int _get_coo_level(self, GameState state) noexcept nogil:
-        return <int>state._data[LAYOUT.coo_level_offset]
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.coo_level]
 
     cdef inline int _get_auction_price(self, GameState state) noexcept nogil:
         return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_price]
@@ -84,7 +84,7 @@ cdef class TurnState:
         """Set the current game phase."""
         assert 0 <= phase < <int>GameConstants.NUM_PHASES, \
             f"phase {phase} out of range [0, {<int>GameConstants.NUM_PHASES})"
-        state._data[LAYOUT.phase_offset] = <int16_t>phase
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase] = <int16_t>phase
 
     # =========================================================================
     # COST OF OWNERSHIP LEVEL
@@ -104,7 +104,7 @@ cdef class TurnState:
         """
         assert 1 <= level <= <int>GameConstants.NUM_COO_LEVELS, \
             f"coo_level {level} out of range [1, {<int>GameConstants.NUM_COO_LEVELS}]"
-        state._data[LAYOUT.coo_level_offset] = <int16_t>level
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.coo_level] = <int16_t>level
         self._update_all_company_incomes(state, level)
         self._update_all_corp_incomes(state)
         self._update_all_player_incomes(state)
@@ -145,11 +145,11 @@ cdef class TurnState:
 
     cpdef int get_turn_number(self, GameState state):
         """Return the current turn number (1-indexed)."""
-        return <int>state._data[LAYOUT.turn_number_offset]
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.turn_number]
 
     cpdef void set_turn_number(self, GameState state, int turn):
         """Set the current turn number."""
-        state._data[LAYOUT.turn_number_offset] = <int16_t>turn
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.turn_number] = <int16_t>turn
 
     # =========================================================================
     # END CARD FLIPPED

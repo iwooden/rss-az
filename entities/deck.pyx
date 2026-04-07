@@ -23,7 +23,7 @@ deck" from "filtered out at setup for this player count".
 from libc.stdint cimport int16_t
 from libc.stdlib cimport rand, srand
 
-from core.state cimport GameState, LAYOUT
+from core.state cimport GameState, LAYOUT, DECK_OFFSETS
 from core.data cimport (
     GameConstants,
     COMPANY_STARS,
@@ -60,13 +60,15 @@ cdef class Deck:
     Entity handle for the company draw deck.
 
     The deck is stored in the compact state as:
-    - deck_top: index of the top card in deck_order (-1 if empty)
-    - deck_order[36]: company IDs in draw order; top of deck at
-      deck_order[deck_top]
+    - top: index of the top card in order (-1 if empty)
+    - order[36]: company IDs in draw order; top of deck at order[top]
+
+    Both live inside the deck section, reached via
+    ``LAYOUT.deck_offset + DECK_OFFSETS.<field>``.
 
     There is only one Deck instance, created at module load. It is
     stateless — every read derives its slot inline from the module-level
-    ``LAYOUT`` constant on ``core.state``.
+    ``LAYOUT`` and ``DECK_OFFSETS`` constants on ``core.state``.
     """
 
     # =========================================================================
@@ -74,8 +76,8 @@ cdef class Deck:
     # =========================================================================
 
     cdef void _sync_cards_remaining(self, GameState state):
-        """Mirror deck_top into TurnState.cards_remaining."""
-        cdef int top = <int>state._data[LAYOUT.deck_top_offset]
+        """Mirror deck top into TurnState.cards_remaining."""
+        cdef int top = <int>state._data[LAYOUT.deck_offset + DECK_OFFSETS.top]
         cdef int remaining = top + 1 if top >= 0 else 0
         turn_module.TURN.set_cards_remaining(state, remaining)
 
@@ -98,7 +100,9 @@ cdef class Deck:
         Returns the company_id of the drawn card, or -1 if the deck is
         empty.
         """
-        cdef int top = <int>state._data[LAYOUT.deck_top_offset]
+        cdef int top_slot = LAYOUT.deck_offset + DECK_OFFSETS.top
+        cdef int order_base = LAYOUT.deck_offset + DECK_OFFSETS.order
+        cdef int top = <int>state._data[top_slot]
         cdef int company_id
         cdef int current_coo
         cdef int new_top
@@ -107,24 +111,24 @@ cdef class Deck:
         if top < 0:
             return -1  # Deck is empty
 
-        company_id = <int>state._data[LAYOUT.deck_order_offset + top]
+        company_id = <int>state._data[order_base + top]
 
         # Mark revealed first — Company.mark_revealed routes through
         # Deck.remove(), which splices the card out and syncs
-        # cards_remaining. We must NOT pre-decrement deck_top here, or
+        # cards_remaining. We must NOT pre-decrement deck top here, or
         # the splice would assert (the card would no longer be visible
         # in the live deck range).
         company_module.COMPANIES[company_id].mark_revealed(state)
 
         # Re-read the (post-splice) top to decide whether the colour
         # tier changed.
-        new_top = <int>state._data[LAYOUT.deck_top_offset]
+        new_top = <int>state._data[top_slot]
         if new_top < 0:
             # Deck exhausted — game-end card exposed
             current_coo = turn_module.TURN.get_coo_level(state)
             turn_module.TURN.set_coo_level(state, current_coo + 1)
         else:
-            next_company_id = <int>state._data[LAYOUT.deck_order_offset + new_top]
+            next_company_id = <int>state._data[order_base + new_top]
             if COMPANY_STARS[company_id] != COMPANY_STARS[next_company_id]:
                 current_coo = turn_module.TURN.get_coo_level(state)
                 turn_module.TURN.set_coo_level(state, current_coo + 1)
@@ -137,19 +141,19 @@ cdef class Deck:
 
         Returns the company_id of the top card, or -1 if deck is empty.
         """
-        cdef int top = <int>state._data[LAYOUT.deck_top_offset]
+        cdef int top = <int>state._data[LAYOUT.deck_offset + DECK_OFFSETS.top]
         if top < 0:
             return -1
-        return <int>state._data[LAYOUT.deck_order_offset + top]
+        return <int>state._data[LAYOUT.deck_offset + DECK_OFFSETS.order + top]
 
     cpdef int get_remaining_count(self, GameState state):
         """Return the number of cards remaining in the deck."""
-        cdef int top = <int>state._data[LAYOUT.deck_top_offset]
+        cdef int top = <int>state._data[LAYOUT.deck_offset + DECK_OFFSETS.top]
         return top + 1 if top >= 0 else 0
 
     cpdef bint is_empty(self, GameState state):
         """Return True if the deck has no cards left."""
-        return <int>state._data[LAYOUT.deck_top_offset] < 0
+        return <int>state._data[LAYOUT.deck_offset + DECK_OFFSETS.top] < 0
 
     cpdef void remove(self, GameState state, int company_id):
         """Splice a specific company out of the live deck order array.
@@ -163,11 +167,13 @@ cdef class Deck:
         assert 0 <= company_id < <int>GameConstants.NUM_COMPANIES, \
             f"company_id {company_id} out of range [0, {<int>GameConstants.NUM_COMPANIES})"
 
-        cdef int top = <int>state._data[LAYOUT.deck_top_offset]
+        cdef int top_slot = LAYOUT.deck_offset + DECK_OFFSETS.top
+        cdef int order_base = LAYOUT.deck_offset + DECK_OFFSETS.order
+        cdef int top = <int>state._data[top_slot]
         cdef int i, found = -1
 
         for i in range(top + 1):
-            if <int>state._data[LAYOUT.deck_order_offset + i] == company_id:
+            if <int>state._data[order_base + i] == company_id:
                 found = i
                 break
 
@@ -176,11 +182,11 @@ cdef class Deck:
 
         # Shift remaining cards left to fill the hole
         for i in range(found, top):
-            state._data[LAYOUT.deck_order_offset + i] = state._data[LAYOUT.deck_order_offset + i + 1]
+            state._data[order_base + i] = state._data[order_base + i + 1]
 
-        # Clear the vacated top slot and decrement deck_top
-        state._data[LAYOUT.deck_order_offset + top] = <int16_t>-1
-        state._data[LAYOUT.deck_top_offset] = <int16_t>(top - 1)
+        # Clear the vacated top slot and decrement deck top
+        state._data[order_base + top] = <int16_t>-1
+        state._data[top_slot] = <int16_t>(top - 1)
         self._sync_cards_remaining(state)
 
     # =========================================================================
@@ -211,6 +217,8 @@ cdef class Deck:
         cdef int deck_size = 0
         cdef int i, company_id
         cdef int red_count, orange_count, yellow_count, green_count, blue_count
+        cdef int top_slot = LAYOUT.deck_offset + DECK_OFFSETS.top
+        cdef int order_base = LAYOUT.deck_offset + DECK_OFFSETS.order
 
         # Determine counts per color
         if num_players == 6:
@@ -256,13 +264,13 @@ cdef class Deck:
         deck_size = self._add_color_group(deck_cards, deck_size, RED_START, RED_END, RED_LAST, red_count)
 
         # Write the deck into state
-        state._data[LAYOUT.deck_top_offset] = <int16_t>(deck_size - 1)
+        state._data[top_slot] = <int16_t>(deck_size - 1)
         for i in range(deck_size):
-            state._data[LAYOUT.deck_order_offset + i] = <int16_t>deck_cards[i]
+            state._data[order_base + i] = <int16_t>deck_cards[i]
 
         # Clear remaining slots (not strictly necessary but clean)
         for i in range(deck_size, 36):
-            state._data[LAYOUT.deck_order_offset + i] = <int16_t>-1
+            state._data[order_base + i] = <int16_t>-1
 
         self._sync_cards_remaining(state)
 
@@ -345,12 +353,13 @@ cdef class Deck:
 
         Returns list of company IDs from bottom to top of deck.
         """
-        cdef int top = <int>state._data[LAYOUT.deck_top_offset]
+        cdef int top = <int>state._data[LAYOUT.deck_offset + DECK_OFFSETS.top]
+        cdef int order_base = LAYOUT.deck_offset + DECK_OFFSETS.order
         cdef list result = []
         cdef int i
 
         for i in range(top + 1):
-            result.append(<int>state._data[LAYOUT.deck_order_offset + i])
+            result.append(<int>state._data[order_base + i])
 
         return result
 
@@ -366,41 +375,47 @@ cdef class Deck:
         cdef int i, cid
         cdef int size = len(order)
         cdef int old_top
+        cdef int top_slot = LAYOUT.deck_offset + DECK_OFFSETS.top
+        cdef int order_base = LAYOUT.deck_offset + DECK_OFFSETS.order
 
         # Find companies being removed from the deck
         new_order = set(order)
-        old_top = <int>state._data[LAYOUT.deck_top_offset]
+        old_top = <int>state._data[top_slot]
         for i in range(old_top + 1):
-            cid = <int>state._data[LAYOUT.deck_order_offset + i]
+            cid = <int>state._data[order_base + i]
             if cid not in new_order:
                 company_module.COMPANIES[cid].exclude_from_game(state)
 
-        state._data[LAYOUT.deck_top_offset] = <int16_t>(size - 1)
+        state._data[top_slot] = <int16_t>(size - 1)
 
         for i in range(size):
-            state._data[LAYOUT.deck_order_offset + i] = <int16_t>order[i]
+            state._data[order_base + i] = <int16_t>order[i]
 
         # Clear remaining slots
         for i in range(size, 36):
-            state._data[LAYOUT.deck_order_offset + i] = <int16_t>-1
+            state._data[order_base + i] = <int16_t>-1
 
         self._sync_cards_remaining(state)
 
     cpdef list get_ghost_entries(self, GameState state):
         """
-        Get company IDs in deck slots past deck_top (for invariant testing).
+        Get company IDs in deck slots past the top index (for invariant
+        testing).
 
-        These are slots that held companies before they were drawn. They should
-        never contain a company that still has LOC_DECK as its location.
+        These are slots that held companies before they were drawn. They
+        should never contain a company that still has LOC_DECK as its
+        location.
 
-        Returns list of (slot_index, company_id) for valid entries past deck_top.
+        Returns list of (slot_index, company_id) for valid entries past
+        the current top index.
         """
-        cdef int top = <int>state._data[LAYOUT.deck_top_offset]
+        cdef int top = <int>state._data[LAYOUT.deck_offset + DECK_OFFSETS.top]
+        cdef int order_base = LAYOUT.deck_offset + DECK_OFFSETS.order
         cdef list result = []
         cdef int i, val
 
         for i in range(top + 1, 36):
-            val = <int>state._data[LAYOUT.deck_order_offset + i]
+            val = <int>state._data[order_base + i]
             if val >= 0:
                 result.append((i, val))
 

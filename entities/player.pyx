@@ -15,8 +15,8 @@ Layout summary (per-player block, all raw int16):
   is_president (8), round_trips, income, share_buys (8), share_sells (8),
   auction_passed (1).
 
-Company ownership lives in the shared ``company_locations`` /
-``company_owner_ids`` arrays — there is no per-player owned_companies
+Company ownership lives in the shared locations / owner_ids sub-arrays
+of the companies section — there is no per-player owned_companies
 bitmap. ``owns_company`` checks LOC_PLAYER + matching owner_id directly.
 
 The handle still calls into the corp entity for share-price /
@@ -28,7 +28,7 @@ offset layout yet; that happens in a later slice.
 
 from libc.stdint cimport int16_t
 
-from core.state cimport GameState, LAYOUT, PLAYER_FIELDS
+from core.state cimport GameState, LAYOUT, PLAYER_FIELDS, COMPANY_OFFSETS
 from core.data cimport (
     GameConstants,
     COMPANY_FACE_VALUE,
@@ -213,12 +213,13 @@ cdef class Player:
     cdef inline bint _owns_company(self, GameState state, int company_id) noexcept nogil:
         """Check if this player owns the given company.
 
-        Reads the shared company_locations / company_owner_ids arrays —
-        there is no per-player owned_companies bitmap any more.
+        Reads the shared companies-section locations / owner_ids
+        sub-arrays — there is no per-player owned_companies bitmap any
+        more.
         """
         return (
-            state._data[LAYOUT.company_locations_offset + company_id] == <int>LOC_PLAYER
-            and state._data[LAYOUT.company_owner_ids_offset + company_id] == self.player_id
+            state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.locations + company_id] == <int>LOC_PLAYER
+            and state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids + company_id] == self.player_id
         )
 
     # =========================================================================
@@ -260,13 +261,13 @@ cdef class Player:
         cdef int company_id, corp_id
         cdef int shares
         cdef int loc_player = <int>LOC_PLAYER
-        cdef int locations_offset = LAYOUT.company_locations_offset
-        cdef int owners_offset = LAYOUT.company_owner_ids_offset
+        cdef int locations_base = LAYOUT.companies_offset + COMPANY_OFFSETS.locations
+        cdef int owners_base = LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids
 
         # Add face value of owned private companies
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
-            if (state._data[locations_offset + company_id] == loc_player
-                    and state._data[owners_offset + company_id] == self.player_id):
+            if (state._data[locations_base + company_id] == loc_player
+                    and state._data[owners_base + company_id] == self.player_id):
                 total += COMPANY_FACE_VALUE[company_id]
 
         # Add value of corporation shares
@@ -476,19 +477,20 @@ cdef class Player:
     cpdef void calculate_income(self, GameState state):
         """Recalculate and store total income from player's private companies.
 
-        Uses the cached company_incomes array (updated when CoO changes).
-        Note: Only player-owned privates, NOT corp subsidiaries.
+        Uses the cached companies-section incomes sub-array (updated when
+        CoO changes). Note: Only player-owned privates, NOT corp
+        subsidiaries.
         """
         cdef int total = 0
         cdef int company_id
-        cdef int company_incomes_offset = LAYOUT.company_incomes_offset
-        cdef int locations_offset = LAYOUT.company_locations_offset
-        cdef int owners_offset = LAYOUT.company_owner_ids_offset
+        cdef int incomes_base = LAYOUT.companies_offset + COMPANY_OFFSETS.incomes
+        cdef int locations_base = LAYOUT.companies_offset + COMPANY_OFFSETS.locations
+        cdef int owners_base = LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids
         cdef int loc_player = <int>LOC_PLAYER
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
-            if (state._data[locations_offset + company_id] == loc_player
-                    and state._data[owners_offset + company_id] == self.player_id):
-                total += <int>state._data[company_incomes_offset + company_id]
+            if (state._data[locations_base + company_id] == loc_player
+                    and state._data[owners_base + company_id] == self.player_id):
+                total += <int>state._data[incomes_base + company_id]
         self.set_income(state, total)
 
     # =========================================================================
