@@ -54,7 +54,7 @@ FI = ForeignInvestor()  # Foreign investor
 Each entity provides:
 - **cdef methods** (nogil): Direct pointer arithmetic, max performance
 - **cpdef methods**: Python-accessible wrappers for testing
-- **Access pattern**: `entity.get_field(state)` reads from cached offset
+- **Access pattern**: `entity.get_field(state)` indexes the state buffer at a constant offset derived from the module-level `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` structs on `core.state`. Most handles (Company, TurnState, Market, FI, Deck) carry no per-instance state and the singleton works against any `GameState`. Player and Corp still cache offsets via an `initialize()` step and will be migrated next.
 
 Low-level (`cdef` nogil) wraps high-level (cpdef/def) with no code duplication.
 
@@ -68,13 +68,22 @@ Single contiguous int16 numpy array. Raw integers only — no normalization, no 
 
 | Players | total_size | player_stride | corp_stride |
 |---------|-----------|---------------|-------------|
-| 2 | 444 | 38 | 16 |
-| 3 | 483 | 38 | 16 |
-| 6 | 600 | 38 | 16 |
+| 2 | 444 | 39 | 16 |
+| 3 | 483 | 39 | 16 |
+| 6 | 600 | 39 | 16 |
 
-`GameState` exposes only structural primitives publicly: `_player_ptr` / `_corp_ptr` / `_turn_ptr` (cdef nogil), the cached layout structs (`_layout`, `_player_fields`, `_corp_fields`, `_turn_offsets`), `get_active_player` / `set_active_player`, `get_num_players`, and `initialize_game`. All field-level reads and writes go through entity handles in `entities/`.
+The fixed prefix (everything except the players section) is **366** int16 slots and is identical across player counts. Only `total_size` scales: `total_size = 366 + 39 * num_players`. The players section lives at the end of the buffer for exactly this reason — every other section's offset is constant.
 
-**`GameState._layout`** is a Cython `cdef` struct — NOT accessible from Python. Use `core.state.get_layout(num_players)` for a Python-accessible `LayoutInfo` namedtuple. See `VECTORS.md` for the full layout.
+`GameState` exposes only structural primitives publicly: `_player_ptr` / `_corp_ptr` / `_turn_ptr` (cdef nogil), `_num_players` (cdef int, readable from cdef code), `get_active_player` / `set_active_player`, `get_num_players`, and `initialize_game`. There are no per-instance layout fields — entity handles read offsets directly from the module-level constants below. All field-level reads and writes go through entity handles in `entities/`.
+
+**Module-level layout constants** on `core.state` (computed once at import, shared by every `GameState`):
+
+- `LAYOUT` — `cdef StateLayout`: top-level section offsets (`players_offset`, `fi_offset`, `corps_offset`, `turn_offset`, …) plus `player_stride` and `corp_stride`. `total_size` is *not* in this struct because it depends on `num_players`; compute it inline as `LAYOUT.players_offset + LAYOUT.player_stride * num_players` at the few sites that need it (allocation, length validation).
+- `PLAYER_FIELDS` — `cdef PlayerFieldOffsets`: relative offsets within a player block (`cash`, `owned_shares`, `auction_passed`, `stride`, …).
+- `CORP_FIELDS` — `cdef CorpFieldOffsets`: relative offsets within a corp block.
+- `TURN_OFFSETS` — `cdef TurnStateOffsets`: relative offsets within the (fixed-size) turn block.
+
+These are Cython `cdef` structs — **NOT accessible from Python directly**. Cython code uses `from core.state cimport LAYOUT, PLAYER_FIELDS, CORP_FIELDS, TURN_OFFSETS`. Python code uses the namedtuple accessors `core.state.get_layout(num_players)`, `get_player_fields()`, `get_corp_fields()`, `get_turn_fields()`. See `VECTORS.md` for the full layout.
 
 ### Actions (`core/actions.pyx`)
 
@@ -168,8 +177,8 @@ At each decision point: state, legal_mask, policy_target (MCTS visits), value_ta
 See `VECTORS.md` for the full buffer layout. Key points:
 
 - Single contiguous int16 array per `GameState`. Raw integers, no normalization, no one-hot encoding, no visible/hidden split.
-- Sections in order: `metadata (5) | players (38 × N) | FI (2) | company_incomes (36) | market (27) | corps (16 × 8) | turn (59 + N) | deck (37) | company_locations (36) | company_owner_ids (36)`.
-- All per-player data (cash, shares, presidencies, this-turn share buys/sells) lives inside one player block, so `_player_ptr(i)` reaches everything for player `i` in a single pointer hop.
+- Sections in order: `metadata (5) | FI (2) | company_incomes (36) | market (27) | corps (16 × 8) | turn (59) | deck (37) | company_locations (36) | company_owner_ids (36) | players (39 × N)`. The players section is **last** because it is the only section whose size depends on `num_players`; every other offset is constant.
+- All per-player data — cash, shares, presidencies, this-turn share buys/sells, and the per-player `auction_passed` flag — lives inside one player block, so `_player_ptr(i)` reaches everything for player `i` in a single pointer hop. The turn block carries no per-player data and is fixed at 59 slots.
 - `company_locations` (`CompanyLocation` enum, 0–8) plus `company_owner_ids` are the single source of truth for "who owns what". `LOC_DECK = 0` is the zero-init default; `__cinit__` explicitly seeds `company_owner_ids` to `-1`.
 
 ## Game Flow & Phases
@@ -204,8 +213,8 @@ Both phases use **one-by-one offer presentation**: offers generated at phase ent
 
 - **Naming:** `corp_id`/`company_id`/`player_id` = indices; `CORPS[i]`/`PLAYERS[i]` = singletons; `PHASE_*` from `GamePhases`; `LOC_*` from `CompanyLocation`
 - **Field access:** Use entity handles (`PLAYERS[i].get_cash(state)`, `CORPS[c].get_share_price(state)`) for all field reads/writes. `GameState` exposes only structural primitives. `core/data.{pxd,pyx}` is data-only (static arrays + enums + normalization constants) — there are no field-level helpers there; modules that need static game data `cimport` the underlying arrays directly.
-- **Pointer safety:** `nogil` functions take pointers/offsets; `_player_ptr()`/`_corp_ptr()`/`_turn_ptr()` helpers; entities cache offsets
-- **Guard with `assert`, not silent fallbacks:** In Cython code, validate parameters and invariants with `assert` rather than `if ...: return`/`return False`/`return 0` style guards. Out-of-range IDs, inactive entities that should be active, malformed state — all of these should crash loudly in development. Silently propagating a default value hides the real bug at the call site and lets corrupt state spread. `assert` statements compile out under `python -O`, so there is zero overhead in production. Examples: `assert 0 <= player_id < self._num_players`, `assert corp.is_active(state)`. Include a descriptive f-string message so failures are debuggable. This rule does *not* apply to genuine business-logic branches (e.g. "this player can't afford the share, so the action is illegal") — those still return cleanly. The rule is about *defensive* checks for things that should never happen if callers are correct.
+- **Pointer safety:** `nogil` functions take pointers/offsets; `_player_ptr()`/`_corp_ptr()`/`_turn_ptr()` helpers compute their slot from the module-level `LAYOUT` constant. Entity handles read offsets directly from `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` (cimported from `core.state`); they do not cache anything per-instance, except for Player and Corp which still maintain an `initialize()` step pending their migration.
+- **Guard with `assert`, not silent fallbacks:** In Cython code, validate parameters and invariants with `assert` rather than `if ...: return`/`return False`/`return 0` style guards. Out-of-range IDs, inactive entities that should be active, malformed state — all of these should crash loudly in development. Silently propagating a default value hides the real bug at the call site and lets corrupt state spread. `assert` statements compile out under `python -O`, so there is zero overhead in production. Examples: `assert 0 <= player_id < state._num_players`, `assert corp.is_active(state)`. Read `num_players` directly from the `GameState` rather than caching it on the entity handle — the singleton handle is reused across game instances of any player count. Include a descriptive f-string message so failures are debuggable. This rule does *not* apply to genuine business-logic branches (e.g. "this player can't afford the share, so the action is illegal") — those still return cleanly. The rule is about *defensive* checks for things that should never happen if callers are correct.
 
 ## Build Commands
 
