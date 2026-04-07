@@ -2,9 +2,21 @@
 """
 Player entity declarations.
 
-Provides the Player class for accessing player state in the game vector.
-The class uses cached offsets for efficient nogil access in performance-critical
-code paths (e.g., action mask generation in actions.pyx).
+The Player handle is fully stateless: every read/write derives its slot
+inline from the module-level ``LAYOUT`` and ``PLAYER_FIELDS`` constants
+on ``core.state``. Player handles only carry their own ``player_id``;
+the singletons can be reused with any GameState at any player count
+(up to MAX_PLAYERS). Player-id bounds checks read ``state._num_players``
+directly so the singleton instance can be reused with any GameState.
+
+All values are raw int16 — no normalization, no one-hot encoding (turn
+order is now a single integer slot, not a per-player one-hot). Company
+ownership is read from the shared ``company_locations`` /
+``company_owner_ids`` arrays via ``LOC_PLAYER``; there is no per-player
+owned_companies bitmap any more. Per-turn share buy/sell tracking and
+the auction-passed flag live inside the player block, so
+``_player_ptr(i)`` reaches everything for player ``i`` in one pointer
+hop.
 """
 
 from core.state cimport GameState
@@ -22,40 +34,15 @@ cdef void update_all_player_net_worths(GameState state, int num_players) noexcep
 # =============================================================================
 
 cdef class Player:
-    """
-    Entity handle for accessing player state.
-    Uses cached offsets for efficient nogil access in performance-critical paths.
-    """
     cdef readonly int player_id
-    cdef int _base_offset
-    cdef int _num_players
-    cdef bint _initialized
 
-    # Cached field offsets (visible state)
-    cdef int _cash_offset
-    cdef int _net_worth_offset
-    cdef int _liquidity_offset
-    cdef int _market_offset
-    cdef int _turn_order_offset
-    cdef int _owned_companies_offset
-    cdef int _owned_shares_offset
-    cdef int _is_president_offset
-    cdef int _round_trips_offset
-    cdef int _income_offset
-    cdef int _auction_passed_offset
-    # Cached field offsets (hidden state — share buy/sell tracking)
-    cdef int _hidden_share_buys_offset
-    cdef int _hidden_share_sells_offset
-
-    # Initialization
-    cpdef void initialize(self, GameState state)
-
-    # Nogil methods (use cached offsets for performance)
-    cdef inline int _get_cash_nogil(self, float* data) noexcept nogil
-    cdef inline int _get_shares_nogil(self, float* data, int corp_id) noexcept nogil
-    cdef inline int _get_share_buys_nogil(self, float* data, int corp_id) noexcept nogil
-    cdef inline int _get_share_sells_nogil(self, float* data, int corp_id) noexcept nogil
-    cdef inline bint _owns_company_nogil(self, float* data, int company_id) noexcept nogil
+    # Low-level (nogil) accessors used by hot paths inside the engine.
+    cdef int _get_cash(self, GameState state) noexcept nogil
+    cdef int _get_shares(self, GameState state, int corp_id) noexcept nogil
+    cdef int _get_share_buys(self, GameState state, int corp_id) noexcept nogil
+    cdef int _get_share_sells(self, GameState state, int corp_id) noexcept nogil
+    cdef bint _owns_company(self, GameState state, int company_id) noexcept nogil
+    cdef inline int _slot(self, int field) noexcept nogil
 
     # Cash
     cpdef int get_cash(self, GameState state)
@@ -73,7 +60,7 @@ cdef class Player:
     cpdef void set_liquidity(self, GameState state, int liquidity)
     cpdef int calculate_liquidity(self, GameState state)
 
-    # Turn order
+    # Turn order (single integer, not one-hot)
     cpdef int get_turn_order(self, GameState state)
     cpdef void set_turn_order(self, GameState state, int order)
 
@@ -84,15 +71,15 @@ cdef class Player:
     cpdef int get_shares(self, GameState state, int corp_id)
     cpdef void set_shares(self, GameState state, int corp_id, int shares)
 
-    # President status (read-only - presidency is derived from share ownership)
+    # President status (read-only — presidency is derived from share ownership)
     cpdef bint is_president_of(self, GameState state, int corp_id)
 
-    # Round-trip tracking (hidden: buys/sells, visible: round_trips)
+    # Round-trip tracking (per-corp buy/sell counts inside the player block)
     cpdef int get_share_buys(self, GameState state, int corp_id)
     cpdef void increment_share_buys(self, GameState state, int corp_id)
     cpdef int get_share_sells(self, GameState state, int corp_id)
     cpdef void increment_share_sells(self, GameState state, int corp_id)
-    cdef void _update_visible_roundtrips(self, GameState state)
+    cdef void _update_roundtrips(self, GameState state)
     cpdef int get_roundtrips(self, GameState state, int corp_id)
     cpdef void clear_roundtrip_tracking(self, GameState state)
 
@@ -101,6 +88,6 @@ cdef class Player:
     cpdef void set_income(self, GameState state, int income)
     cpdef void calculate_income(self, GameState state)
 
-    # Auction-passed flag (per-player; was previously a turn-state array)
+    # Auction-passed flag (per-player; lives inside the player block)
     cpdef bint has_passed_auction(self, GameState state)
     cpdef void set_passed_auction(self, GameState state, bint passed)
