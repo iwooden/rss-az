@@ -15,7 +15,7 @@ wrap.
 
 from libc.stdint cimport int16_t
 
-from core.state cimport GameState
+from core.state cimport GameState, LAYOUT
 from core.data cimport (
     GameConstants,
     MARKET_PRICES,
@@ -27,28 +27,22 @@ cdef class Market:
     """
     Entity handle for accessing market state.
 
-    There is only one Market instance, created at module load. The cached
-    absolute offset is populated on the first call to `initialize()`. All
-    methods take a GameState as the first argument so the handle stays
-    stateless.
+    There is only one Market instance, created at module load. It is
+    stateless: every read derives its slot inline from
+    ``LAYOUT.market_offset`` on ``core.state``, so the same handle works
+    against any GameState. All methods take a GameState as the first
+    argument.
     """
-
-    def __cinit__(self):
-        self._market_offset = -1
-
-    cpdef void initialize(self, GameState state):
-        """Cache the absolute market offset from the GameState layout."""
-        self._market_offset = state._layout.market_offset
 
     # =========================================================================
     # SPACE AVAILABILITY (low-level, nogil)
     # =========================================================================
 
     cdef inline bint _is_space_available(self, GameState state, int index) noexcept nogil:
-        return state._data[self._market_offset + index] == 1
+        return state._data[LAYOUT.market_offset + index] == 1
 
     cdef inline void _set_space_available(self, GameState state, int index, bint available) noexcept nogil:
-        state._data[self._market_offset + index] = <int16_t>(1 if available else 0)
+        state._data[LAYOUT.market_offset + index] = <int16_t>(1 if available else 0)
 
     # =========================================================================
     # SPACE AVAILABILITY (Python-accessible wrappers)
@@ -106,7 +100,7 @@ cdef class Market:
         cdef int index
         cdef int max_index = <int>GameConstants.NUM_MARKET_SPACES - 1  # 26
         for index in range(current_index + 1, max_index):
-            if state._data[self._market_offset + index] == 1:
+            if state._data[LAYOUT.market_offset + index] == 1:
                 return index
         # Index 26 ($75) is always available per game rules
         return max_index
@@ -120,7 +114,7 @@ cdef class Market:
         """
         cdef int index
         for index in range(current_index - 1, -1, -1):
-            if state._data[self._market_offset + index] == 1:
+            if state._data[LAYOUT.market_offset + index] == 1:
                 return index
         # Index 0 ($0) is always available per game rules
         return 0

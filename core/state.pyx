@@ -604,16 +604,15 @@ cdef class GameState:
         cdef int16_t* corp
 
         # 1. Initialize entity handles that still cache anything from the
-        # layout. Company is fully stateless now and reads LAYOUT directly,
-        # so it has no initialize step. Other handles will be migrated to
-        # the same pattern in subsequent slices and dropped from this loop
-        # one by one.
+        # layout. Company and Market are fully stateless now and read
+        # LAYOUT directly, so they have no initialize step. Other handles
+        # will be migrated to the same pattern in subsequent slices and
+        # dropped from this loop one by one.
         for i in range(self._num_players):
             player_module.PLAYERS[i].initialize(self)
         fi_module.FI.initialize(self)
         for c in corp_module.CORPS:
             c.initialize(self)
-        market_module.MARKET.initialize(self)
         turn_module.TURN.initialize(self)
         deck_module.DECK.initialize(self)
 

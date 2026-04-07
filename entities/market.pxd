@@ -5,19 +5,16 @@ Market entity declarations.
 The market is a flat array of 27 availability flags inside the compact
 GameState — one per share-price space ($0 / $5 / ... / $75). Static price
 data lives in core.data and is read directly via cimported arrays.
+
+The handle is stateless: every read derives its slot inline from
+``LAYOUT.market_offset`` on ``core.state``. There is no per-instance
+offset cache and no initialize() step.
 """
 
 from core.state cimport GameState
 
 
 cdef class Market:
-    # Cached absolute offset to the market availability flags inside the
-    # compact state array.
-    cdef int _market_offset
-
-    # Initialization
-    cpdef void initialize(self, GameState state)
-
     # Low-level (nogil) accessors used by hot paths inside the engine.
     cdef bint _is_space_available(self, GameState state, int index) noexcept nogil
     cdef void _set_space_available(self, GameState state, int index, bint available) noexcept nogil
