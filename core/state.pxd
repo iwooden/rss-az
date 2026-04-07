@@ -17,10 +17,14 @@ cimport numpy as cnp
 # =============================================================================
 
 cdef struct StateLayout:
-    # Sizes
+    # Strides
     int player_stride
     int corp_stride
-    int total_size
+
+    # NOTE: total_size is intentionally NOT in this struct. It is the only
+    # value that depends on num_players, and is computed inline as
+    #     LAYOUT.players_offset + LAYOUT.player_stride * num_players
+    # Every other offset is a constant shared across all player counts.
 
     # Metadata offsets
     int active_player_offset
@@ -28,9 +32,6 @@ cdef struct StateLayout:
     int phase_offset             # raw integer (0-11), not one-hot
     int coo_level_offset         # raw integer (1-7), not one-hot
     int turn_number_offset
-
-    # Player section (includes share_buys / share_sells per player)
-    int players_offset
 
     # Foreign investor section (cash + income only — ownership lives in
     # company_locations / company_owner_ids)
@@ -55,6 +56,10 @@ cdef struct StateLayout:
     # Company tracking (36 each, enum/integer)
     int company_locations_offset
     int company_owner_ids_offset
+
+    # Player section (LAST: only num_players-dependent slice).
+    # Includes share_buys / share_sells / auction_passed per player.
+    int players_offset
 
 
 cdef struct TurnStateOffsets:
@@ -115,18 +120,33 @@ cdef struct CorpFieldOffsets:
 # LAYOUT COMPUTATION FUNCTIONS
 # =============================================================================
 
-cdef StateLayout compute_layout(int num_players) noexcept nogil
+cdef StateLayout compute_layout() noexcept nogil
 cdef TurnStateOffsets compute_turn_offsets() noexcept nogil
 cdef PlayerFieldOffsets compute_player_field_offsets() noexcept nogil
 cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil
 
+
+# =============================================================================
+# MODULE-LEVEL LAYOUT CONSTANTS
+# =============================================================================
+#
+# Every offset that does not depend on num_players is constant across all
+# player counts, so the layout structs can live as singletons at module
+# scope. Other modules (entity handles, token extraction, etc.) cimport
+# these directly and read offsets without going through a GameState
+# instance. The only num_players-dependent quantity is the total buffer
+# size, which is `LAYOUT.players_offset + LAYOUT.player_stride * num_players`
+# and is computed at the small handful of sites that need it.
+
+cdef StateLayout LAYOUT
+cdef TurnStateOffsets TURN_OFFSETS
+cdef PlayerFieldOffsets PLAYER_FIELDS
+cdef CorpFieldOffsets CORP_FIELDS
+
+
 cdef class GameState:
     cdef int16_t* _data
     cdef public object _array
-    cdef StateLayout _layout
-    cdef TurnStateOffsets _turn_offsets
-    cdef PlayerFieldOffsets _player_fields
-    cdef CorpFieldOffsets _corp_fields
     cdef int _num_players
 
     # Driver config flags (Python-level, not in state array)

@@ -3,9 +3,11 @@
 Company entity declarations.
 
 Each company exists in exactly one location at any time. The Company handle
-caches the offsets it needs into the compact GameState array and provides
-atomic transfer operations that update both the location enum and the owner
-id together.
+is a thin stateless wrapper around two parallel sub-arrays in the compact
+GameState (locations + owner ids) plus a per-company adjusted income slot.
+All offsets are computed inline from the module-level ``LAYOUT`` constant on
+``core.state`` — there is no per-instance offset cache and no initialize()
+step. The handle's only state is its ``company_id`` and display ``name``.
 """
 
 from core.state cimport GameState
@@ -35,17 +37,11 @@ cdef class Company:
     cdef readonly int company_id
     cdef readonly str name
 
-    # Cached absolute offsets into the compact state array. Companies are
-    # tracked entirely through company_locations and company_owner_ids —
-    # there are no longer any per-section ownership flags to update.
-    cdef int _location_offset         # company_locations[company_id]
-    cdef int _owner_id_offset         # company_owner_ids[company_id]
-    cdef int _income_offset           # company_incomes[company_id]
-
-    cdef int _num_players
-
-    # Initialization
-    cpdef void initialize(self, GameState state)
+    # No per-instance offset cache: every read derives its slot inline from
+    # the module-level ``LAYOUT`` constant on ``core.state``. Companies are
+    # tracked entirely through company_locations and company_owner_ids;
+    # adjusted income lives in company_incomes. Player-id bounds checks
+    # read ``state._num_players`` directly.
 
     # Location queries
     cpdef int get_location(self, GameState state)

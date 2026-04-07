@@ -7,13 +7,21 @@ raw signed integers (no normalization divisors). The NN never reads this array
 directly; get_token_data() extracts per-entity features into float eval buffers.
 
 Layout:
-  [metadata | players | fi | company_incomes | market | corps | turn |
-   deck | company_tracking]
+  [metadata | fi | company_incomes | market | corps | turn |
+   deck | company_tracking | players]
 
-The players section is the only one that still varies with player count;
-all per-player tracking (cash, shares, presidencies, share buys/sells) lives
-inside one player_stride block, so `_player_ptr(i)` reaches everything for
-player `i` in a single pointer hop.
+The players section is the only one that still varies with player count, so
+it lives at the very end of the buffer. Every other offset is constant
+across all player counts and is exposed through module-level constants
+(`LAYOUT`, `TURN_OFFSETS`, `PLAYER_FIELDS`, `CORP_FIELDS`) that entity
+handles and token extraction can `cimport` directly. The only
+num_players-dependent quantity is the total buffer size, computed inline
+as `LAYOUT.players_offset + LAYOUT.player_stride * num_players` at the
+small handful of sites that need it (allocation and length validation).
+All per-player tracking (cash, shares, presidencies, share buys/sells,
+the auction-passed flag) lives inside one player_stride block, so
+`_player_ptr(i)` reaches everything for player `i` in a single pointer
+hop.
 """
 
 cimport cython
@@ -83,22 +91,28 @@ cnp.import_array()
 # LAYOUT COMPUTATION
 # =============================================================================
 
-cdef StateLayout compute_layout(int num_players) noexcept nogil:
-    """Compute complete state layout for given player count.
+cdef StateLayout compute_layout() noexcept nogil:
+    """Compute the fixed state-buffer layout.
 
-    All values are stored as raw integers/flags — no normalization.
-    No visible/hidden distinction.
+    Every offset in the returned struct is constant across all player
+    counts. The only num_players-dependent value is the total buffer
+    size, computed inline as
+        LAYOUT.players_offset + LAYOUT.player_stride * num_players
+    at the few sites that need it (allocation and length validation).
 
-    Section sizes (player stride, corp stride, turn block) are derived from
-    the dedicated offset-computation functions to avoid any duplication.
-    Adding a new field in one of those functions automatically resizes the
-    enclosing section here.
+    Section sizes (player stride, corp stride, turn block) are derived
+    from the dedicated offset-computation functions so this layout
+    function never needs to know the field list.
+
+    The players section lives at the **end** of the buffer because it
+    is the only section whose size depends on `num_players`. Every
+    other offset stays constant, which lets entity handles, token
+    extraction, and tests reference offsets directly from the module-
+    level `LAYOUT` constant without re-computing per game.
     """
     cdef StateLayout layout
     cdef int offset = 0
 
-    # Pull strides/sizes from the per-section computations so this layout
-    # function never needs to know the field list.
     cdef PlayerFieldOffsets player_fields = compute_player_field_offsets()
     cdef CorpFieldOffsets corp_fields = compute_corp_field_offsets()
     cdef TurnStateOffsets turn_offsets = compute_turn_offsets()
@@ -117,10 +131,6 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     offset += 1
     layout.turn_number_offset = offset
     offset += 1
-
-    # --- Players ---
-    layout.players_offset = offset
-    offset += layout.player_stride * num_players
 
     # --- Foreign Investor: cash, income (ownership lives in
     # company_locations / company_owner_ids) ---
@@ -155,7 +165,12 @@ cdef StateLayout compute_layout(int num_players) noexcept nogil:
     layout.company_owner_ids_offset = offset
     offset += GameConstants.NUM_COMPANIES  # 36 owner IDs (-1 = none)
 
-    layout.total_size = offset
+    # --- Players (LAST: only num_players-dependent section). The actual
+    # length of this region depends on num_players and is *not* recorded
+    # here — callers compute total_size on demand from
+    # players_offset + player_stride * num_players.
+    layout.players_offset = offset
+
     return layout
 
 
@@ -307,28 +322,31 @@ def get_layout(int num_players):
 
     Returns a LayoutInfo namedtuple with all sizes, offsets, and strides
     needed by Python code (tests, evaluator). Cython code should
-    use the cdef structs directly for nogil performance.
+    `cimport LAYOUT` directly for nogil performance.
+
+    Only ``total_size`` depends on ``num_players``; every other field is
+    a constant pulled straight from the module-level ``LAYOUT`` struct.
     """
-    cdef StateLayout layout = compute_layout(num_players)
+    cdef int total_size = LAYOUT.players_offset + LAYOUT.player_stride * num_players
     return LayoutInfo(
-        total_size=layout.total_size,
-        player_stride=layout.player_stride,
-        corp_stride=layout.corp_stride,
-        active_player_offset=layout.active_player_offset,
-        num_players_offset=layout.num_players_offset,
-        phase_offset=layout.phase_offset,
-        coo_level_offset=layout.coo_level_offset,
-        turn_number_offset=layout.turn_number_offset,
-        players_offset=layout.players_offset,
-        fi_offset=layout.fi_offset,
-        company_incomes_offset=layout.company_incomes_offset,
-        market_offset=layout.market_offset,
-        corps_offset=layout.corps_offset,
-        turn_offset=layout.turn_offset,
-        deck_top_offset=layout.deck_top_offset,
-        deck_order_offset=layout.deck_order_offset,
-        company_locations_offset=layout.company_locations_offset,
-        company_owner_ids_offset=layout.company_owner_ids_offset,
+        total_size=total_size,
+        player_stride=LAYOUT.player_stride,
+        corp_stride=LAYOUT.corp_stride,
+        active_player_offset=LAYOUT.active_player_offset,
+        num_players_offset=LAYOUT.num_players_offset,
+        phase_offset=LAYOUT.phase_offset,
+        coo_level_offset=LAYOUT.coo_level_offset,
+        turn_number_offset=LAYOUT.turn_number_offset,
+        players_offset=LAYOUT.players_offset,
+        fi_offset=LAYOUT.fi_offset,
+        company_incomes_offset=LAYOUT.company_incomes_offset,
+        market_offset=LAYOUT.market_offset,
+        corps_offset=LAYOUT.corps_offset,
+        turn_offset=LAYOUT.turn_offset,
+        deck_top_offset=LAYOUT.deck_top_offset,
+        deck_order_offset=LAYOUT.deck_order_offset,
+        company_locations_offset=LAYOUT.company_locations_offset,
+        company_owner_ids_offset=LAYOUT.company_owner_ids_offset,
         num_players=num_players,
     )
 
@@ -339,19 +357,18 @@ def get_player_fields():
     Returns a PlayerFields namedtuple with relative offsets (add to
     players_offset + p * player_stride to get absolute position).
     """
-    cdef PlayerFieldOffsets p = compute_player_field_offsets()
     return PlayerFields(
-        cash=p.cash,
-        net_worth=p.net_worth,
-        liquidity=p.liquidity,
-        turn_order=p.turn_order,
-        owned_shares=p.owned_shares,
-        is_president=p.is_president,
-        round_trips=p.round_trips,
-        income=p.income,
-        share_buys=p.share_buys,
-        share_sells=p.share_sells,
-        auction_passed=p.auction_passed,
+        cash=PLAYER_FIELDS.cash,
+        net_worth=PLAYER_FIELDS.net_worth,
+        liquidity=PLAYER_FIELDS.liquidity,
+        turn_order=PLAYER_FIELDS.turn_order,
+        owned_shares=PLAYER_FIELDS.owned_shares,
+        is_president=PLAYER_FIELDS.is_president,
+        round_trips=PLAYER_FIELDS.round_trips,
+        income=PLAYER_FIELDS.income,
+        share_buys=PLAYER_FIELDS.share_buys,
+        share_sells=PLAYER_FIELDS.share_sells,
+        auction_passed=PLAYER_FIELDS.auction_passed,
     )
 
 
@@ -361,24 +378,23 @@ def get_corp_fields():
     Returns a CorpFields namedtuple with relative offsets (add to
     corps_offset + c * corp_stride to get absolute position).
     """
-    cdef CorpFieldOffsets c = compute_corp_field_offsets()
     return CorpFields(
-        active=c.active,
-        cash=c.cash,
-        unissued_shares=c.unissued_shares,
-        issued_shares=c.issued_shares,
-        bank_shares=c.bank_shares,
-        income=c.income,
-        stars=c.stars,
-        share_price=c.share_price,
-        acquisition_proceeds=c.acquisition_proceeds,
-        in_receivership=c.in_receivership,
-        price_index=c.price_index,
-        pending_price_move=c.pending_price_move,
-        raw_revenue=c.raw_revenue,
-        synergy_income=c.synergy_income,
-        coo_cost=c.coo_cost,
-        ability_income=c.ability_income,
+        active=CORP_FIELDS.active,
+        cash=CORP_FIELDS.cash,
+        unissued_shares=CORP_FIELDS.unissued_shares,
+        issued_shares=CORP_FIELDS.issued_shares,
+        bank_shares=CORP_FIELDS.bank_shares,
+        income=CORP_FIELDS.income,
+        stars=CORP_FIELDS.stars,
+        share_price=CORP_FIELDS.share_price,
+        acquisition_proceeds=CORP_FIELDS.acquisition_proceeds,
+        in_receivership=CORP_FIELDS.in_receivership,
+        price_index=CORP_FIELDS.price_index,
+        pending_price_move=CORP_FIELDS.pending_price_move,
+        raw_revenue=CORP_FIELDS.raw_revenue,
+        synergy_income=CORP_FIELDS.synergy_income,
+        coo_cost=CORP_FIELDS.coo_cost,
+        ability_income=CORP_FIELDS.ability_income,
     )
 
 
@@ -389,44 +405,33 @@ def get_turn_fields():
     turn_offset to get absolute position). The turn block is fixed-size —
     no num_players argument needed.
     """
-    cdef TurnStateOffsets t = compute_turn_offsets()
     return TurnFields(
-        end_card_flipped=t.end_card_flipped,
-        consecutive_passes=t.consecutive_passes,
-        cards_remaining=t.cards_remaining,
-        auction_price=t.auction_price,
-        auction_company=t.auction_company,
-        auction_high_bidder=t.auction_high_bidder,
-        auction_starter=t.auction_starter,
-        dividend_remaining=t.dividend_remaining,
-        issue_remaining=t.issue_remaining,
-        ipo_remaining=t.ipo_remaining,
+        end_card_flipped=TURN_OFFSETS.end_card_flipped,
+        consecutive_passes=TURN_OFFSETS.consecutive_passes,
+        cards_remaining=TURN_OFFSETS.cards_remaining,
+        auction_price=TURN_OFFSETS.auction_price,
+        auction_company=TURN_OFFSETS.auction_company,
+        auction_high_bidder=TURN_OFFSETS.auction_high_bidder,
+        auction_starter=TURN_OFFSETS.auction_starter,
+        dividend_remaining=TURN_OFFSETS.dividend_remaining,
+        issue_remaining=TURN_OFFSETS.issue_remaining,
+        ipo_remaining=TURN_OFFSETS.ipo_remaining,
     )
 
 
 # =============================================================================
-# CACHED LAYOUT TABLES (computed once, reused by all GameState instances)
+# MODULE-LEVEL LAYOUT CONSTANTS
 # =============================================================================
+#
+# Computed once at import time. Every offset is constant across all player
+# counts (only the total buffer size depends on num_players, computed
+# inline where needed). Other modules cimport these directly from
+# `core.state` rather than reaching through a GameState instance.
 
-# Indexed by num_players (slots 0-1 unused, 2-6 valid).
-# Turn / player / corp field tables are fixed across player counts now,
-# so they're cached as single structs rather than per-N arrays.
-cdef StateLayout _cached_layouts[7]
-cdef TurnStateOffsets _cached_turn_offsets
-cdef PlayerFieldOffsets _cached_player_fields
-cdef CorpFieldOffsets _cached_corp_fields
-
-
-cdef void _populate_layout_cache() noexcept nogil:
-    cdef int n
-    for n in range(2, 7):
-        _cached_layouts[n] = compute_layout(n)
-
-
-_cached_turn_offsets = compute_turn_offsets()
-_cached_player_fields = compute_player_field_offsets()
-_cached_corp_fields = compute_corp_field_offsets()
-_populate_layout_cache()
+LAYOUT = compute_layout()
+TURN_OFFSETS = compute_turn_offsets()
+PLAYER_FIELDS = compute_player_field_offsets()
+CORP_FIELDS = compute_corp_field_offsets()
 
 
 # =============================================================================
@@ -437,9 +442,11 @@ cdef class GameState:
     """
     Game state container (compact layout).
 
-    Holds the raw memory buffer and layout information.
-    All values stored as raw integers/flags — no normalization.
-    Logic is delegated to Entity handles and Phase classes.
+    Holds the raw memory buffer plus the player count. Layout offsets are
+    *not* stored per-instance — they're constants on the module
+    (`LAYOUT`, `TURN_OFFSETS`, `PLAYER_FIELDS`, `CORP_FIELDS`). The only
+    num_players-dependent value is the total buffer size, computed inline
+    where needed. Logic is delegated to Entity handles and Phase classes.
     """
     def __cinit__(self, unsigned int num_players, bint _alloc=True):
         if num_players < 2 or num_players > GameConstants.MAX_PLAYERS:
@@ -448,28 +455,24 @@ cdef class GameState:
         self._num_players = num_players
         self.step_mode = False
 
-        # Look up precomputed layouts
-        self._layout = _cached_layouts[num_players]
-        self._turn_offsets = _cached_turn_offsets
-        self._player_fields = _cached_player_fields
-        self._corp_fields = _cached_corp_fields
-
         if not _alloc:
             # Caller will set _array and _data (used by from_buffer)
             return
 
+        cdef int total_size = LAYOUT.players_offset + LAYOUT.player_stride * <int>num_players
+
         # Allocate array (zero-initialized)
-        self._array = np.zeros(self._layout.total_size, dtype=np.int16)
+        self._array = np.zeros(total_size, dtype=np.int16)
         self._data = <int16_t*>cnp.PyArray_DATA(self._array)
 
         # Initialize constant metadata
-        self._data[self._layout.num_players_offset] = <int16_t>num_players
+        self._data[LAYOUT.num_players_offset] = <int16_t>num_players
 
         # Initialize company owner_ids to -1 (no owner when in deck)
         # Company locations are already 0 (LOC_DECK) from zero-initialization
         cdef int i
         for i in range(<int>GameConstants.NUM_COMPANIES):
-            self._data[self._layout.company_owner_ids_offset + i] = -1
+            self._data[LAYOUT.company_owner_ids_offset + i] = -1
 
     @staticmethod
     def from_array(array, int num_players):
@@ -484,11 +487,12 @@ cdef class GameState:
         """
         state = GameState(num_players)
         cdef cnp.ndarray arr = np.asarray(array)
+        cdef int expected_size = LAYOUT.players_offset + LAYOUT.player_stride * num_players
         if arr.dtype != np.int16:
             raise ValueError(f"Expected int16 array, got {arr.dtype}")
-        if arr.ndim != 1 or <int>arr.shape[0] != state._layout.total_size:
+        if arr.ndim != 1 or <int>arr.shape[0] != expected_size:
             raise ValueError(
-                f"Expected 1-D array of length {state._layout.total_size}, "
+                f"Expected 1-D array of length {expected_size}, "
                 f"got ndim={arr.ndim} len={<int>arr.shape[0]}"
             )
         np.copyto(state._array, arr)
@@ -517,11 +521,12 @@ cdef class GameState:
         """
         state = GameState(num_players, _alloc=False)
         cdef cnp.ndarray buf = np.asarray(buffer)
+        cdef int expected_size = LAYOUT.players_offset + LAYOUT.player_stride * num_players
         if buf.dtype != np.int16:
             raise ValueError(f"Expected int16 array, got {buf.dtype}")
-        if buf.ndim != 1 or <int>buf.shape[0] != state._layout.total_size:
+        if buf.ndim != 1 or <int>buf.shape[0] != expected_size:
             raise ValueError(
-                f"Expected 1-D array of length {state._layout.total_size}, "
+                f"Expected 1-D array of length {expected_size}, "
                 f"got ndim={buf.ndim} len={<int>buf.shape[0]}"
             )
         if not buf.flags['C_CONTIGUOUS']:
@@ -545,23 +550,23 @@ cdef class GameState:
 
     cdef int16_t* _player_ptr(self, int player_id) noexcept nogil:
         """Get pointer to player data block."""
-        return self._data + self._layout.players_offset + (player_id * self._layout.player_stride)
+        return self._data + LAYOUT.players_offset + (player_id * LAYOUT.player_stride)
 
     cdef int16_t* _corp_ptr(self, int corp_id) noexcept nogil:
         """Get pointer to corporation data block."""
-        return self._data + self._layout.corps_offset + (corp_id * self._layout.corp_stride)
+        return self._data + LAYOUT.corps_offset + (corp_id * LAYOUT.corp_stride)
 
     cdef int16_t* _turn_ptr(self) noexcept nogil:
         """Get pointer to turn state."""
-        return self._data + self._layout.turn_offset
+        return self._data + LAYOUT.turn_offset
 
     cdef int _get_active_player(self) noexcept nogil:
         """Get active player ID from metadata."""
-        return self._data[self._layout.active_player_offset]
+        return self._data[LAYOUT.active_player_offset]
 
     cdef void _set_active_player(self, int player_id) noexcept nogil:
         """Set active player ID in metadata."""
-        self._data[self._layout.active_player_offset] = <int16_t>player_id
+        self._data[LAYOUT.active_player_offset] = <int16_t>player_id
 
     cpdef int get_active_player(self):
         """Get active player ID (Python-accessible)."""
@@ -598,13 +603,15 @@ cdef class GameState:
         cdef int16_t* player
         cdef int16_t* corp
 
-        # 1. Initialize all entity handles (they cache offsets from layout)
+        # 1. Initialize entity handles that still cache anything from the
+        # layout. Company is fully stateless now and reads LAYOUT directly,
+        # so it has no initialize step. Other handles will be migrated to
+        # the same pattern in subsequent slices and dropped from this loop
+        # one by one.
         for i in range(self._num_players):
             player_module.PLAYERS[i].initialize(self)
         fi_module.FI.initialize(self)
         for c in corp_module.CORPS:
-            c.initialize(self)
-        for c in company_module.COMPANIES:
             c.initialize(self)
         market_module.MARKET.initialize(self)
         turn_module.TURN.initialize(self)
@@ -614,23 +621,23 @@ cdef class GameState:
         starting_cash = 25 if self._num_players == 6 else 30
         for i in range(self._num_players):
             player = self._player_ptr(i)
-            player[self._player_fields.cash] = <int16_t>starting_cash
-            player[self._player_fields.net_worth] = <int16_t>starting_cash
-            player[self._player_fields.liquidity] = <int16_t>starting_cash
-            player[self._player_fields.turn_order] = <int16_t>i
+            player[PLAYER_FIELDS.cash] = <int16_t>starting_cash
+            player[PLAYER_FIELDS.net_worth] = <int16_t>starting_cash
+            player[PLAYER_FIELDS.liquidity] = <int16_t>starting_cash
+            player[PLAYER_FIELDS.turn_order] = <int16_t>i
 
         # 3. Set Foreign Investor state (raw integers)
-        self._data[self._layout.fi_offset] = 4       # cash
-        self._data[self._layout.fi_offset + 1] = 5   # income (base +5)
+        self._data[LAYOUT.fi_offset] = 4       # cash
+        self._data[LAYOUT.fi_offset + 1] = 5   # income (base +5)
 
         # 4. Initialize corporations (only non-zero: unissued shares)
         for corp_id in range(<int>GameConstants.NUM_CORPS):
             corp = self._corp_ptr(corp_id)
-            corp[self._corp_fields.unissued_shares] = <int16_t>CORP_SHARE_COUNT[corp_id]
+            corp[CORP_FIELDS.unissued_shares] = <int16_t>CORP_SHARE_COUNT[corp_id]
 
         # 5. Initialize market - all spaces available
         for i in range(<int>GameConstants.NUM_MARKET_SPACES):
-            self._data[self._layout.market_offset + i] = 1
+            self._data[LAYOUT.market_offset + i] = 1
 
         # 6. Build and shuffle deck (also marks excluded companies as LOC_EXCLUDED)
         if seed < 0:
@@ -646,15 +653,15 @@ cdef class GameState:
             company_module.COMPANIES[company_id].move_to_auction(self)
 
         # 8. Set turn state (raw integers)
-        self._data[self._layout.phase_offset] = <int16_t>GamePhases.PHASE_INVEST
-        self._data[self._layout.coo_level_offset] = 1
-        self._data[self._layout.turn_number_offset] = 1
+        self._data[LAYOUT.phase_offset] = <int16_t>GamePhases.PHASE_INVEST
+        self._data[LAYOUT.coo_level_offset] = 1
+        self._data[LAYOUT.turn_number_offset] = 1
 
         # 9. Initialize "no selection" auction sentinels to -1
         turn = self._turn_ptr()
-        turn[self._turn_offsets.auction_company] = -1
-        turn[self._turn_offsets.auction_high_bidder] = -1
-        turn[self._turn_offsets.auction_starter] = -1
+        turn[TURN_OFFSETS.auction_company] = -1
+        turn[TURN_OFFSETS.auction_high_bidder] = -1
+        turn[TURN_OFFSETS.auction_starter] = -1
 
         # 10. Set active player
         self._set_active_player(0)
