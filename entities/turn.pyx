@@ -43,10 +43,11 @@ from core.data cimport (
     COMPANY_STARS,
     COST_OF_OWNERSHIP,
 )
-from entities import player as player_module
-from entities import company as company_module
-from entities import corp as corp_module
-from entities import fi as fi_module
+# Late entity imports live below the class definition + ``TURN`` singleton
+# creation. This is intentional: peer entity modules eagerly cast the
+# ``TURN`` singleton at their own module-init time, so the attribute must
+# already exist on this module by the time Python kicks off any cyclic
+# imports of player / company / corp / fi.
 
 
 cdef class TurnState:
@@ -71,6 +72,37 @@ cdef class TurnState:
 
     cdef inline int _get_auction_price(self, GameState state) noexcept nogil:
         return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_price]
+
+    cdef inline int _get_active_player(self, GameState state) noexcept nogil:
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
+
+    cdef inline void _set_active_player(self, GameState state, int player_id) noexcept nogil:
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_player] = <int16_t>player_id
+
+    cdef inline int _get_num_players(self, GameState state) noexcept nogil:
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.num_players]
+
+    # =========================================================================
+    # ACTIVE PLAYER (state-level metadata, lives in the turn block)
+    # =========================================================================
+
+    cpdef int get_active_player(self, GameState state):
+        """Return the active player ID."""
+        return self._get_active_player(state)
+
+    cpdef void set_active_player(self, GameState state, int player_id):
+        """Set the active player ID."""
+        assert 0 <= player_id < self._get_num_players(state), \
+            f"player_id {player_id} out of range [0, {self._get_num_players(state)})"
+        self._set_active_player(state, player_id)
+
+    # =========================================================================
+    # NUMBER OF PLAYERS
+    # =========================================================================
+
+    cpdef int get_num_players(self, GameState state):
+        """Return the number of players in this game."""
+        return self._get_num_players(state)
 
     # =========================================================================
     # PHASE
@@ -136,7 +168,7 @@ cdef class TurnState:
     cdef void _update_all_player_incomes(self, GameState state):
         """Recalculate income for every player."""
         cdef int player_id
-        for player_id in range(state._num_players):
+        for player_id in range(self._get_num_players(state)):
             player_module.PLAYERS[player_id].calculate_income(state)
 
     # =========================================================================
@@ -233,8 +265,8 @@ cdef class TurnState:
 
     cpdef void set_auction_high_bidder(self, GameState state, int player_id):
         """Set the current auction high bidder."""
-        assert 0 <= player_id < state._num_players, \
-            f"player_id {player_id} out of range [0, {state._num_players})"
+        assert 0 <= player_id < self._get_num_players(state), \
+            f"player_id {player_id} out of range [0, {self._get_num_players(state)})"
         state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_high_bidder] = <int16_t>player_id
 
     cpdef void clear_auction_high_bidder(self, GameState state):
@@ -247,8 +279,8 @@ cdef class TurnState:
 
     cpdef void set_auction_starter(self, GameState state, int player_id):
         """Set the player who started the current auction."""
-        assert 0 <= player_id < state._num_players, \
-            f"player_id {player_id} out of range [0, {state._num_players})"
+        assert 0 <= player_id < self._get_num_players(state), \
+            f"player_id {player_id} out of range [0, {self._get_num_players(state)})"
         state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_starter] = <int16_t>player_id
 
     cpdef void clear_auction_starter(self, GameState state):
@@ -306,10 +338,10 @@ cdef class TurnState:
         — every valid position has exactly one player by construction, so
         the post-loop assert is purely defensive.
         """
-        assert 0 <= position < state._num_players, \
-            f"position {position} out of range [0, {state._num_players})"
+        assert 0 <= position < self._get_num_players(state), \
+            f"position {position} out of range [0, {self._get_num_players(state)})"
         cdef int player_id
-        for player_id in range(state._num_players):
+        for player_id in range(self._get_num_players(state)):
             if player_module.PLAYERS[player_id].get_turn_order(state) == position:
                 return player_id
         raise AssertionError(f"no player found at turn-order position {position}")
@@ -319,17 +351,17 @@ cdef class TurnState:
 
         Used during auction bidding to skip players who have left.
         """
-        cdef int current_player = state._get_active_player()
+        cdef int current_player = self._get_active_player(state)
         cdef int current_position = player_module.PLAYERS[current_player].get_turn_order(state)
         cdef int next_position, candidate
         cdef int checked = 0
 
-        while checked < state._num_players:
-            next_position = (current_position + 1) % state._num_players
+        while checked < self._get_num_players(state):
+            next_position = (current_position + 1) % self._get_num_players(state)
             candidate = self.find_player_at_position(state, next_position)
 
             if not player_module.PLAYERS[candidate].has_passed_auction(state):
-                state._set_active_player(candidate)
+                self._set_active_player(state, candidate)
                 return
 
             current_position = next_position
@@ -340,17 +372,34 @@ cdef class TurnState:
 
     cpdef void set_active_player_after(self, GameState state, int player_id):
         """Set the active player to the next player after `player_id`."""
-        assert 0 <= player_id < state._num_players, \
-            f"player_id {player_id} out of range [0, {state._num_players})"
+        assert 0 <= player_id < self._get_num_players(state), \
+            f"player_id {player_id} out of range [0, {self._get_num_players(state)})"
         cdef int position = player_module.PLAYERS[player_id].get_turn_order(state)
-        cdef int next_position = (position + 1) % state._num_players
+        cdef int next_position = (position + 1) % self._get_num_players(state)
         cdef int next_player = self.find_player_at_position(state, next_position)
-        state._set_active_player(next_player)
+        self._set_active_player(state, next_player)
 
 
 # =============================================================================
 # GLOBAL TURN STATE INSTANCE
 # =============================================================================
 
-# Single TurnState instance
+# Single TurnState instance — must be created BEFORE the entity imports below
+# so peer modules (player / company / corp / fi) can take a typed cdef
+# reference to it during their own initialization, even mid-cycle.
 TURN = TurnState()
+
+
+# =============================================================================
+# LATE ENTITY IMPORTS
+# =============================================================================
+#
+# Methods on TurnState reach into other entity modules (player, company, corp,
+# fi) at *call* time, so the imports can live below the class definition and
+# the singleton creation. Placing them here keeps ``TURN`` populated before
+# any cyclic load of those entity modules begins.
+
+from entities import player as player_module
+from entities import company as company_module
+from entities import corp as corp_module
+from entities import fi as fi_module

@@ -17,8 +17,9 @@ being maintained as engine state.
 The TurnState handle is fully stateless: there is no per-instance offset
 cache and no initialize() step. Each access derives its slot inline from
 the module-level ``LAYOUT`` and ``TURN_OFFSETS`` constants on
-``core.state``. Player-id bounds checks read ``state._num_players``
-directly so the singleton instance can be reused with any GameState.
+``core.state``. Player-id bounds checks call ``self._get_num_players(state)``
+(which reads the canonical slot inside the turn block) so the singleton
+instance can be reused with any GameState.
 """
 
 from core.state cimport GameState
@@ -29,6 +30,16 @@ cdef class TurnState:
     cdef int _get_phase(self, GameState state) noexcept nogil
     cdef int _get_coo_level(self, GameState state) noexcept nogil
     cdef int _get_auction_price(self, GameState state) noexcept nogil
+    cdef int _get_active_player(self, GameState state) noexcept nogil
+    cdef void _set_active_player(self, GameState state, int player_id) noexcept nogil
+    cdef int _get_num_players(self, GameState state) noexcept nogil
+
+    # Active player (state-level metadata; lives in the turn block)
+    cpdef int get_active_player(self, GameState state)
+    cpdef void set_active_player(self, GameState state, int player_id)
+
+    # Number of players (state-level metadata; lives in the turn block)
+    cpdef int get_num_players(self, GameState state)
 
     # Phase
     cpdef int get_phase(self, GameState state)
@@ -89,3 +100,5 @@ cdef class TurnState:
     cpdef int find_player_at_position(self, GameState state, int position)
     cpdef void advance_to_next_bidder(self, GameState state)
     cpdef void set_active_player_after(self, GameState state, int player_id)
+
+

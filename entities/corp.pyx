@@ -43,12 +43,16 @@ from core.data cimport (
 )
 from core.data import CORP_NAMES
 from entities.company cimport LOC_CORP, LOC_CORP_ACQ
+from entities.turn cimport TurnState
 
 # Late imports to avoid circular dependencies (resolved at runtime)
 from entities import turn as turn_module
 from entities import company as company_module
 from entities import market as market_module
 from entities import player as player_module
+
+# Typed reference to the TURN singleton for fast cdef nogil method dispatch.
+cdef TurnState TURN = turn_module.TURN
 
 
 # =============================================================================
@@ -591,7 +595,7 @@ cdef class Corporation:
 
         # Step 2: Return all shares to unissued — clear player shares.
         # set_shares(0) auto-moves each player's shares to bank.
-        for player_id in range(state._num_players):
+        for player_id in range(TURN._get_num_players(state)):
             player_module.PLAYERS[player_id].set_shares(state, self.corp_id, 0)
 
         # Step 3: Reset corp share counts (bank accumulated player shares above).
@@ -625,7 +629,7 @@ cdef class Corporation:
     cpdef int get_president_id(self, GameState state):
         """Return player_id of the corp's president, or -1 if in receivership."""
         cdef int player_id
-        for player_id in range(state._num_players):
+        for player_id in range(TURN._get_num_players(state)):
             if player_module.PLAYERS[player_id].is_president_of(state, self.corp_id):
                 return player_id
         return -1

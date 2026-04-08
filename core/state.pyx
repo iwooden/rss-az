@@ -93,6 +93,7 @@ LayoutInfo = namedtuple('LayoutInfo', [
 # Import entity modules for their global instances
 from entities import company as company_module
 from entities import deck as deck_module
+from entities import turn as turn_module
 
 cnp.import_array()
 
@@ -536,11 +537,12 @@ cdef class GameState:
         if num_players < 2 or num_players > GameConstants.MAX_PLAYERS:
             raise ValueError(f"num_players must be 2-{GameConstants.MAX_PLAYERS}")
 
-        self._num_players = num_players
         self.step_mode = False
 
         if not _alloc:
-            # Caller will set _array and _data (used by from_buffer)
+            # Caller will set _array and _data (used by from_buffer). The
+            # canonical num_players slot inside the turn block is assumed
+            # to already be populated in the supplied buffer.
             return
 
         cdef int total_size = LAYOUT.players_offset + LAYOUT.player_stride * <int>num_players
@@ -630,42 +632,6 @@ cdef class GameState:
         self._data = <int16_t*>cnp.PyArray_DATA(buffer)
 
     # =========================================================================
-    # INTERNAL POINTER ACCESS
-    # =========================================================================
-
-    cdef int16_t* _player_ptr(self, int player_id) noexcept nogil:
-        """Get pointer to player data block."""
-        return self._data + LAYOUT.players_offset + (player_id * LAYOUT.player_stride)
-
-    cdef int16_t* _corp_ptr(self, int corp_id) noexcept nogil:
-        """Get pointer to corporation data block."""
-        return self._data + LAYOUT.corps_offset + (corp_id * LAYOUT.corp_stride)
-
-    cdef int16_t* _turn_ptr(self) noexcept nogil:
-        """Get pointer to turn state."""
-        return self._data + LAYOUT.turn_offset
-
-    cdef int _get_active_player(self) noexcept nogil:
-        """Get active player ID from the turn block."""
-        return self._data[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
-
-    cdef void _set_active_player(self, int player_id) noexcept nogil:
-        """Set active player ID in the turn block."""
-        self._data[LAYOUT.turn_offset + TURN_OFFSETS.active_player] = <int16_t>player_id
-
-    cpdef int get_active_player(self):
-        """Get active player ID (Python-accessible)."""
-        return self._get_active_player()
-
-    cpdef void set_active_player(self, int player_id):
-        """Set active player ID (Python-accessible)."""
-        self._set_active_player(player_id)
-
-    cpdef int get_num_players(self):
-        """Get number of players (Python-accessible)."""
-        return self._num_players
-
-    # =========================================================================
     # GAME INITIALIZATION
     # =========================================================================
 
@@ -688,11 +654,12 @@ cdef class GameState:
         cdef int16_t* turn
         cdef int16_t* player
         cdef int16_t* corp
+        cdef int num_players = turn_module.TURN.get_num_players(self)
 
         # 1. Set player starting state (raw integers, no normalization)
-        starting_cash = 25 if self._num_players == 6 else 30
-        for i in range(self._num_players):
-            player = self._player_ptr(i)
+        starting_cash = 25 if num_players == 6 else 30
+        for i in range(num_players):
+            player = self._data + LAYOUT.players_offset + i * LAYOUT.player_stride
             player[PLAYER_FIELDS.cash] = <int16_t>starting_cash
             player[PLAYER_FIELDS.net_worth] = <int16_t>starting_cash
             player[PLAYER_FIELDS.liquidity] = <int16_t>starting_cash
@@ -704,7 +671,7 @@ cdef class GameState:
 
         # 3. Initialize corporations (only non-zero: unissued shares)
         for corp_id in range(<int>GameConstants.NUM_CORPS):
-            corp = self._corp_ptr(corp_id)
+            corp = self._data + LAYOUT.corps_offset + corp_id * LAYOUT.corp_stride
             corp[CORP_FIELDS.unissued_shares] = <int16_t>CORP_SHARE_COUNT[corp_id]
 
         # 4. Initialize market - all spaces available
@@ -717,15 +684,15 @@ cdef class GameState:
             actual_seed = <int>(ts.tv_sec ^ ts.tv_nsec)
         else:
             actual_seed = seed
-        deck_module.DECK.setup(self, self._num_players, actual_seed)
+        deck_module.DECK.setup(self, num_players, actual_seed)
 
         # 6. Draw initial companies (move_to_auction clears the revealed flag)
-        for i in range(self._num_players):
+        for i in range(num_players):
             company_id = deck_module.DECK.draw(self)
             company_module.COMPANIES[company_id].move_to_auction(self)
 
         # 7. Set turn state (raw integers; metadata lives inside the turn block)
-        turn = self._turn_ptr()
+        turn = self._data + LAYOUT.turn_offset
         turn[TURN_OFFSETS.phase] = <int16_t>GamePhases.PHASE_INVEST
         turn[TURN_OFFSETS.coo_level] = 1
         turn[TURN_OFFSETS.turn_number] = 1
@@ -736,4 +703,4 @@ cdef class GameState:
         turn[TURN_OFFSETS.auction_starter] = -1
 
         # 9. Set active player
-        self._set_active_player(0)
+        turn_module.TURN.set_active_player(self, 0)

@@ -8,7 +8,8 @@ Every read/write derives its slot inline from the module-level
 no per-instance offset cache and no initialize() step. The handle's
 only state is its ``corp_id`` and display ``name``, so a single
 ``CORPS`` list can be reused with any GameState at any player count.
-Player-id bounds checks read ``state._num_players`` directly.
+Player-id bounds checks call ``TURN._get_num_players(state)`` (the
+canonical slot inside the turn block).
 
 All values are raw int16 — no normalization, no one-hot encoding.
 Company ownership is read from the shared ``company_locations`` /

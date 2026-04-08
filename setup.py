@@ -98,6 +98,7 @@ class CleanCommand(Command):
         # Patterns to clean
         patterns = [
             '*.c',
+            '*.h',
             '*.cpp',
             '*.so',
             '*.html',

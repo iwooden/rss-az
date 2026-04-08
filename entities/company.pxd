@@ -43,7 +43,8 @@ cdef class Company:
     # ``core.state``. Companies are tracked entirely through the
     # locations and owner_ids sub-arrays of the companies section;
     # adjusted income lives in the same section's incomes sub-array.
-    # Player-id bounds checks read ``state._num_players`` directly.
+    # Player-id bounds checks call ``TURN._get_num_players(state)`` (the
+    # canonical slot inside the turn block).
 
     # Location queries
     cpdef int get_location(self, GameState state)

@@ -6,8 +6,9 @@ The Player handle is fully stateless: every read/write derives its slot
 inline from the module-level ``LAYOUT`` and ``PLAYER_FIELDS`` constants
 on ``core.state``. Player handles only carry their own ``player_id``;
 the singletons can be reused with any GameState at any player count
-(up to MAX_PLAYERS). Player-id bounds checks read ``state._num_players``
-directly so the singleton instance can be reused with any GameState.
+(up to MAX_PLAYERS). Player-id bounds checks call
+``TURN._get_num_players(state)``, which reads the canonical slot inside
+the turn block, so the singleton instance can be reused with any GameState.
 
 All values are raw int16 — no normalization, no one-hot encoding (turn
 order is now a single integer slot, not a per-player one-hot). Company

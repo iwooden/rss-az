@@ -6,6 +6,7 @@
 **/*.so
 **/*.o
 **/*.c
+**/*.h
 **/*.cpp
 **/*.html
 !interp/examples/*.html

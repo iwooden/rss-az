@@ -25,6 +25,7 @@ cache and no initialize() step. The handle's only state is its
 
 from libc.stdint cimport int16_t
 from core.state cimport GameState, LAYOUT, COMPANY_OFFSETS
+from entities.turn cimport TurnState
 from core.data cimport (
     GameConstants,
     COMPANY_FACE_VALUE,
@@ -37,10 +38,14 @@ from core.data cimport (
 )
 
 from core.data import COMPANY_NAMES
+from entities import turn as turn_module
 from entities import deck as deck_module
 from entities import corp as corp_module
 from entities import player as player_module
 from entities import fi as fi_module
+
+# Typed reference to the TURN singleton for fast cdef nogil method dispatch.
+cdef TurnState TURN = turn_module.TURN
 
 
 # =============================================================================
@@ -102,8 +107,8 @@ cdef class Company:
         return self._get_location(state) == LOC_REVEALED
 
     cpdef bint is_owned_by_player(self, GameState state, int player_id):
-        assert 0 <= player_id < state._num_players, \
-            f"player_id {player_id} out of range [0, {state._num_players})"
+        assert 0 <= player_id < TURN._get_num_players(state), \
+            f"player_id {player_id} out of range [0, {TURN._get_num_players(state)})"
         return (self._get_location(state) == LOC_PLAYER and
                 self._get_owner_id(state) == player_id)
 
@@ -171,8 +176,8 @@ cdef class Company:
 
     cpdef void transfer_to_player(self, GameState state, int player_id):
         """Transfer company to player ownership."""
-        assert 0 <= player_id < state._num_players, \
-            f"player_id {player_id} out of range [0, {state._num_players})"
+        assert 0 <= player_id < TURN._get_num_players(state), \
+            f"player_id {player_id} out of range [0, {TURN._get_num_players(state)})"
         self._move(state, LOC_PLAYER, player_id)
 
     cpdef void transfer_to_fi(self, GameState state):

@@ -161,26 +161,12 @@ cdef CorpFieldOffsets CORP_FIELDS
 cdef CompanyOffsets COMPANY_OFFSETS
 cdef DeckOffsets DECK_OFFSETS
 
-
 cdef class GameState:
     cdef int16_t* _data
     cdef public object _array
-    cdef int _num_players
 
     # Driver config flags (Python-level, not in state array)
     cdef public bint step_mode
-
-    # Internal pointer access (used by entity handles)
-    cdef int16_t* _player_ptr(self, int player_id) noexcept nogil
-    cdef int16_t* _corp_ptr(self, int corp_id) noexcept nogil
-    cdef int16_t* _turn_ptr(self) noexcept nogil
-    cdef int _get_active_player(self) noexcept nogil
-    cdef void _set_active_player(self, int player_id) noexcept nogil
-
-    # State-level metadata (active player, num_players are not entity-owned)
-    cpdef int get_active_player(self)
-    cpdef void set_active_player(self, int player_id)
-    cpdef int get_num_players(self)
 
     # Game initialization
     cpdef void initialize_game(self, int seed=*)
