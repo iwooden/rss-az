@@ -1,731 +1,547 @@
 # cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
 """
-Action vector implementation.
+Per-phase action encoding — skeleton implementation.
 
-Defines the action space for the neural network output layer:
-- Dynamic action count based on player count (see get_total_actions_for_players)
-- Valid action mask generation
-- Action decoding (index -> ActionInfo)
+See ``core/actions.pxd`` for the full contract. This file supplies:
+
+  - concrete encode/decode arithmetic for every decision phase
+  - the engine → decision phase bridge
+  - *stub* legal-action enumeration (returns 0, asserts if called for now)
+  - Python-accessible wrappers for tests
+
+The legal-enumeration helpers (``_enumerate_invest``, ``_enumerate_bid``, …)
+are intentionally empty. They are the second-pass work that ports mask
+generation out of ``actions-old.pyx`` into phase-local sparse form. The
+encoding layer defined here is frozen and must stay in lockstep with
+``nn/transformer.py::PHASE_ACTION_SIZES``; a startup-time assertion guards
+against drift.
 """
 
 cimport cython
 import numpy as np
 cimport numpy as cnp
-from libc.string cimport memset, memcpy
 
-from core.state cimport GameState
-from core.data cimport (
-    GameConstants, GamePhases, MAX_DIVIDEND, NUM_PAR_PRICES,
-    get_company_face_value, get_company_low_price, get_company_high_price,
-    get_company_stars, get_par_price, get_market_index, get_market_price,
-    get_max_dividend, is_valid_par_price, get_par_index_for_slot, CORP_OS
-)
+from libc.stdint cimport uint16_t
 
-# Import types and functions from our own pxd
-from core.actions cimport (
-    ActionLayout, ActionInfo, ActionType,
-    ACTION_PASS, ACTION_AUCTION, ACTION_BUY_SHARE, ACTION_SELL_SHARE,
-    ACTION_LEAVE_AUCTION, ACTION_RAISE_BID, ACTION_ACQ_PRICE, ACTION_ACQ_FI_BUY,
-    ACTION_CLOSE, ACTION_DIVIDEND, ACTION_ISSUE, ACTION_IPO, ACTION_PAR,
-    AUCTION_CAP, MAX_PAR_SLOTS, ACQ_PRICE_RANGE
-)
+from core.state cimport GameState, LAYOUT, TURN_OFFSETS
+from core.data cimport GameConstants, GamePhases
 
-# Use constants from data module (imported above as GameConstants and GamePhases)
-
-# Import Player entity for cached offset access
-from entities.player cimport Player
-from entities.player import PLAYERS
-from entities.company cimport get_auction_company_for_slot
-from entities.corp cimport (
-    CorpOffsets, get_corp_offsets,
-    is_corp_active, get_corp_cash, get_corp_bank_shares,
-    get_corp_unissued_shares, get_corp_issued_shares, is_corp_in_receivership
-)
-from entities.turn cimport TurnState
-from entities.turn import TURN
-
-# Maximum action count (6 players): 165 + (1 + 6) * AUCTION_CAP
-# Update this if AUCTION_CAP or max player count changes.
-DEF MAX_ACTION_COUNT = 270
-
-# Module-level mask buffer (pre-allocated, cleared before each use)
-# NOTE: Not thread-safe. For parallel execution, use multiprocessing (separate
-# address spaces) rather than threading. If threading is required, replace with
-# thread-local storage (__thread) or per-call allocation.
-cdef float _mask_buffer[MAX_ACTION_COUNT]
-
-
-cdef int get_total_actions_for_players(int num_players) noexcept nogil:
-    """
-    Calculate total action count for a given player count.
-
-    123 fixed non-auction actions + (1 + num_players) * AUCTION_CAP
-    The +1 accounts for BID phase raise actions (AUCTION_CAP - 1 raises + 1 leave).
-    """
-    # 123 = pass(1) + buy(8) + sell(8) + leave(1) + acq(53) + close(2) + div(26) + issue(2) + ipo(9) + par(14)
-    #   ipo(9) = 1 pass + 8 corp selections
-    #   par(14) = 14 par price indices (no pass)
-    return 123 + (1 + num_players) * AUCTION_CAP
-
-
-cdef ActionLayout compute_action_layout(int num_players) noexcept nogil:
-    """Compute action layout with all offsets based on player count."""
-    cdef ActionLayout layout
-    cdef int offset = 0
-    cdef int auction_slots = num_players  # One slot per player (max companies for auction)
-
-    layout.total_size = get_total_actions_for_players(num_players)
-
-    # INVEST phase: dynamic based on num_players
-    layout.invest_start = offset
-    layout.pass_invest = offset
-    offset += 1
-    layout.auction_base = offset  # slot * AUCTION_CAP + bid_offset
-    offset += auction_slots * AUCTION_CAP  # num_players * 15
-    layout.buy_share_base = offset  # +corp_id
-    offset += GameConstants.NUM_CORPS  # 8
-    layout.sell_share_base = offset  # +corp_id
-    offset += GameConstants.NUM_CORPS  # 8
-    # Total invest: 1 + (num_players * 15) + 8 + 8
-
-    # BID phase (15 actions)
-    layout.bid_start = offset
-    layout.leave_auction = offset
-    offset += 1
-    layout.raise_bid_base = offset  # +bid_offset (0-13)
-    offset += AUCTION_CAP - 1  # 14
-    # Total bid: 1 + 14 = 15
-
-    # ACQUISITION phase (53 actions)
-    layout.acquisition_start = offset
-    layout.acq_price_base = offset  # +price_offset (0-50)
-    offset += ACQ_PRICE_RANGE  # 51
-    layout.acq_fi_buy = offset
-    offset += 1
-    layout.acq_pass = offset
-    offset += 1
-    # Total acquisition: 51 + 1 + 1 = 53
-
-    # CLOSING phase (2 actions)
-    layout.closing_start = offset
-    layout.close_action = offset
-    offset += 1
-    layout.close_pass = offset
-    offset += 1
-    # Total closing: 2
-
-    # DIVIDENDS phase (26 actions)
-    layout.dividends_start = offset
-    layout.dividend_base = offset  # +amount (0-25)
-    offset += MAX_DIVIDEND
-    # Total dividends: 26
-
-    # ISSUE phase (2 actions)
-    layout.issue_start = offset
-    layout.issue_pass = offset
-    offset += 1
-    layout.issue_action = offset
-    offset += 1
-    # Total issue: 2
-
-    # IPO phase (9 actions: 1 pass + 8 corp selections)
-    layout.ipo_start = offset
-    layout.ipo_pass = offset
-    offset += 1
-    layout.ipo_base = offset  # +corp_id (0-7)
-    offset += GameConstants.NUM_CORPS  # 8
-    # Total IPO: 1 + 8 = 9
-
-    # PAR phase (14 actions: par price indices, no pass)
-    layout.par_start = offset
-    layout.par_base = offset  # +par_index (0-13)
-    offset += NUM_PAR_PRICES  # 14
-    # Total PAR: 14
-
-    return layout
+cnp.import_array()
 
 
 # =============================================================================
-# ACTION DECODING
+# PHASE_ACTION_SIZES TABLE
 # =============================================================================
 
-cdef ActionInfo decode_action(ActionLayout* layout, int action_idx) noexcept nogil:
-    """Decode an action index into an ActionInfo struct."""
+# Populated at module import by ``_init_phase_action_sizes``. The pxd
+# declares this as ``cdef int PHASE_ACTION_SIZES[8]``; the init function
+# fills it from the ``ACTION_SIZE_*`` enum constants so phase sizes are
+# readable via a single indexed lookup rather than a switch.
+cdef void _init_phase_action_sizes() noexcept nogil:
+    PHASE_ACTION_SIZES[<int>DPHASE_INVEST] = ACTION_SIZE_INVEST
+    PHASE_ACTION_SIZES[<int>DPHASE_BID] = ACTION_SIZE_BID
+    PHASE_ACTION_SIZES[<int>DPHASE_ACQUISITION] = ACTION_SIZE_ACQUISITION
+    PHASE_ACTION_SIZES[<int>DPHASE_ACQ_OFFER] = ACTION_SIZE_ACQ_OFFER
+    PHASE_ACTION_SIZES[<int>DPHASE_CLOSING] = ACTION_SIZE_CLOSING
+    PHASE_ACTION_SIZES[<int>DPHASE_DIVIDENDS] = ACTION_SIZE_DIVIDENDS
+    PHASE_ACTION_SIZES[<int>DPHASE_ISSUE] = ACTION_SIZE_ISSUE
+    PHASE_ACTION_SIZES[<int>DPHASE_IPO] = ACTION_SIZE_IPO
+
+
+_init_phase_action_sizes()
+
+
+# =============================================================================
+# ENCODE FROM ActionInfo (inverse of decode_action)
+# =============================================================================
+
+cdef int encode_action(ActionInfo info) noexcept nogil:
+    """Repack an ``ActionInfo`` into its phase-local action id.
+
+    Used by the encode/decode roundtrip test and by replay diagnostics. The
+    decoder is the canonical direction in production code; this function
+    exists to let tests verify the inverse is well-defined.
+
+    Asserts on illegal combinations — an ``ActionInfo`` with a phase and
+    action_type that do not correspond (e.g. phase=INVEST, type=CLOSE) is a
+    programmer error and should crash loudly.
+    """
+    cdef int phase = info.phase
+
+    if phase == DPHASE_INVEST:
+        if info.action_type == ACTION_PASS:
+            return encode_invest_pass()
+        if info.action_type == ACTION_AUCTION:
+            return encode_invest_auction(info.company_id, info.amount)
+        if info.action_type == ACTION_BUY_SHARE:
+            return encode_invest_buy(info.corp_id)
+        if info.action_type == ACTION_SELL_SHARE:
+            return encode_invest_sell(info.corp_id)
+
+    elif phase == DPHASE_BID:
+        if info.action_type == ACTION_LEAVE:
+            return encode_bid_leave()
+        if info.action_type == ACTION_RAISE:
+            return encode_bid_raise(info.amount)
+
+    elif phase == DPHASE_ACQUISITION:
+        if info.action_type == ACTION_PASS:
+            return encode_acquisition_pass()
+        if info.action_type == ACTION_ACQ_PRICE:
+            return encode_acquisition_price(info.corp_id, info.company_id, info.amount)
+        if info.action_type == ACTION_ACQ_FI_BUY:
+            return encode_acquisition_fi_buy(info.corp_id, info.company_id)
+
+    elif phase == DPHASE_ACQ_OFFER:
+        if info.action_type == ACTION_PASS:
+            return encode_acq_offer_pass()
+        if info.action_type == ACTION_ACQ_OFFER_BUY:
+            return encode_acq_offer_buy()
+
+    elif phase == DPHASE_CLOSING:
+        if info.action_type == ACTION_PASS:
+            return encode_closing_pass()
+        if info.action_type == ACTION_CLOSE:
+            return encode_closing_close(info.company_id)
+
+    elif phase == DPHASE_DIVIDENDS:
+        if info.action_type == ACTION_DIVIDEND:
+            return encode_dividends(info.amount)
+
+    elif phase == DPHASE_ISSUE:
+        if info.action_type == ACTION_PASS:
+            return encode_issue_pass()
+        if info.action_type == ACTION_ISSUE:
+            return encode_issue_issue()
+
+    elif phase == DPHASE_IPO:
+        if info.action_type == ACTION_PASS:
+            return encode_ipo_pass()
+        if info.action_type == ACTION_IPO:
+            return encode_ipo(info.corp_id, info.amount)
+
+    # Unreachable for a well-formed ActionInfo. The assert fires under
+    # debug builds; under -O it falls through to -1 which callers treat
+    # as a decoding error.
+    with gil:
+        raise AssertionError(
+            f"encode_action: illegal (phase={phase}, type={info.action_type})"
+        )
+
+
+# =============================================================================
+# DECODE
+# =============================================================================
+
+cdef ActionInfo decode_action(int phase_id, int action_id) noexcept nogil:
+    """Decode a phase-local action id into an ``ActionInfo`` struct.
+
+    Inverse of the ``encode_*`` helpers. The returned struct has all fields
+    populated; fields that don't apply for the action type are set to -1.
+    """
     cdef ActionInfo info
-    cdef int auction_offset, ipo_offset
+    cdef int idx, pair, k
 
-    info.phase = -1
+    info.phase = phase_id
     info.action_type = ACTION_PASS
-    info.slot = -1
     info.corp_id = -1
+    info.company_id = -1
     info.amount = -1
 
-    # Check bounds
-    if action_idx < 0 or action_idx >= layout.total_size:
-        return info
-
-    # INVEST phase
-    if action_idx < layout.bid_start:
-        info.phase = GamePhases.PHASE_INVEST
-        if action_idx == layout.pass_invest:
+    # --- INVEST -----------------------------------------------------------
+    if phase_id == DPHASE_INVEST:
+        if action_id == 0:
             info.action_type = ACTION_PASS
-        elif action_idx < layout.buy_share_base:
-            # Auction action
+        elif action_id < 541:
+            # Auction: 1 + company_id * 15 + bid_offset
             info.action_type = ACTION_AUCTION
-            auction_offset = action_idx - layout.auction_base
-            info.slot = auction_offset // AUCTION_CAP
-            info.amount = auction_offset % AUCTION_CAP  # bid_offset
-        elif action_idx < layout.sell_share_base:
-            # Buy share
-            info.action_type = ACTION_BUY_SHARE
-            info.corp_id = action_idx - layout.buy_share_base
+            idx = action_id - 1
+            info.company_id = idx // 15
+            info.amount = idx % 15
         else:
-            # Sell share
-            info.action_type = ACTION_SELL_SHARE
-            info.corp_id = action_idx - layout.sell_share_base
+            # Trade: 541 + corp_id * 2 + {0=buy, 1=sell}
+            idx = action_id - 541
+            info.corp_id = idx // 2
+            if (idx & 1) == 0:
+                info.action_type = ACTION_BUY_SHARE
+            else:
+                info.action_type = ACTION_SELL_SHARE
         return info
 
-    # BID phase
-    if action_idx < layout.acquisition_start:
-        info.phase = GamePhases.PHASE_BID_IN_AUCTION
-        if action_idx == layout.leave_auction:
-            info.action_type = ACTION_LEAVE_AUCTION
+    # --- BID --------------------------------------------------------------
+    if phase_id == DPHASE_BID:
+        if action_id == 0:
+            info.action_type = ACTION_LEAVE
         else:
-            info.action_type = ACTION_RAISE_BID
-            info.amount = action_idx - layout.raise_bid_base  # 0-13 -> bid face+1 to face+14
+            info.action_type = ACTION_RAISE
+            info.amount = action_id - 1
         return info
 
-    # ACQUISITION phase
-    if action_idx < layout.closing_start:
-        info.phase = GamePhases.PHASE_ACQUISITION
-        if action_idx < layout.acq_fi_buy:
+    # --- ACQUISITION ------------------------------------------------------
+    if phase_id == DPHASE_ACQUISITION:
+        if action_id == 0:
+            info.action_type = ACTION_PASS
+            return info
+        idx = action_id - 1
+        pair = idx // 52            # corp * 36 + company
+        k = idx % 52
+        info.corp_id = pair // 36
+        info.company_id = pair % 36
+        if k < 51:
             info.action_type = ACTION_ACQ_PRICE
-            info.amount = action_idx - layout.acq_price_base  # 0-50
-        elif action_idx == layout.acq_fi_buy:
+            info.amount = k
+        else:
             info.action_type = ACTION_ACQ_FI_BUY
-        else:
-            info.action_type = ACTION_PASS
         return info
 
-    # CLOSING phase
-    if action_idx < layout.dividends_start:
-        info.phase = GamePhases.PHASE_CLOSING
-        if action_idx == layout.close_action:
+    # --- ACQ_OFFER --------------------------------------------------------
+    if phase_id == DPHASE_ACQ_OFFER:
+        if action_id == 0:
+            info.action_type = ACTION_PASS
+        else:
+            info.action_type = ACTION_ACQ_OFFER_BUY
+        return info
+
+    # --- CLOSING ----------------------------------------------------------
+    if phase_id == DPHASE_CLOSING:
+        if action_id == 0:
+            info.action_type = ACTION_PASS
+        else:
             info.action_type = ACTION_CLOSE
-        else:
-            info.action_type = ACTION_PASS
+            info.company_id = action_id - 1
         return info
 
-    # DIVIDENDS phase
-    if action_idx < layout.issue_start:
-        info.phase = GamePhases.PHASE_DIVIDENDS
+    # --- DIVIDENDS --------------------------------------------------------
+    if phase_id == DPHASE_DIVIDENDS:
         info.action_type = ACTION_DIVIDEND
-        info.amount = action_idx - layout.dividend_base  # 0-25
+        info.amount = action_id
         return info
 
-    # ISSUE phase
-    if action_idx < layout.ipo_start:
-        info.phase = GamePhases.PHASE_ISSUE_SHARES
-        if action_idx == layout.issue_pass:
+    # --- ISSUE ------------------------------------------------------------
+    if phase_id == DPHASE_ISSUE:
+        if action_id == 0:
             info.action_type = ACTION_PASS
         else:
             info.action_type = ACTION_ISSUE
         return info
 
-    # IPO phase
-    if action_idx < layout.par_start:
-        info.phase = GamePhases.PHASE_IPO
-        if action_idx == layout.ipo_pass:
+    # --- IPO --------------------------------------------------------------
+    if phase_id == DPHASE_IPO:
+        if action_id == 0:
             info.action_type = ACTION_PASS
-        else:
-            info.action_type = ACTION_IPO
-            info.corp_id = action_idx - layout.ipo_base
+            return info
+        idx = action_id - 1
+        info.action_type = ACTION_IPO
+        info.corp_id = idx // 14
+        info.amount = idx % 14
         return info
 
-    # PAR phase
-    info.phase = GamePhases.PHASE_PAR
-    info.action_type = ACTION_PAR
-    info.slot = action_idx - layout.par_base  # par_index (0-13)
-    return info
+    # Unknown phase — caller error.
+    with gil:
+        raise AssertionError(f"decode_action: unknown phase {phase_id}")
 
 
 # =============================================================================
-# MASK GENERATION HELPERS - nogil accessors
+# DECISION PHASE BRIDGE
 # =============================================================================
 
-cdef inline int get_corp_price_index_nogil(GameState state, int corp_id) noexcept nogil:
-    """Get corp price index from hidden state without GIL."""
-    return <int>state._data[state._layout.hidden_corp_price_indices_offset + corp_id]
+# Lookup table from engine GamePhases -> DecisionPhase. -1 marks phases
+# that are automated or terminal (driver fast-forwards, no action needed).
+cdef int _ENGINE_TO_DECISION[12]
+
+cdef void _init_engine_to_decision() noexcept nogil:
+    cdef int i
+    for i in range(12):
+        _ENGINE_TO_DECISION[i] = -1
+    _ENGINE_TO_DECISION[<int>GamePhases.PHASE_INVEST] = DPHASE_INVEST
+    _ENGINE_TO_DECISION[<int>GamePhases.PHASE_BID_IN_AUCTION] = DPHASE_BID
+    _ENGINE_TO_DECISION[<int>GamePhases.PHASE_ACQUISITION] = DPHASE_ACQUISITION
+    _ENGINE_TO_DECISION[<int>GamePhases.PHASE_ACQ_OFFER] = DPHASE_ACQ_OFFER
+    _ENGINE_TO_DECISION[<int>GamePhases.PHASE_CLOSING] = DPHASE_CLOSING
+    _ENGINE_TO_DECISION[<int>GamePhases.PHASE_DIVIDENDS] = DPHASE_DIVIDENDS
+    _ENGINE_TO_DECISION[<int>GamePhases.PHASE_ISSUE_SHARES] = DPHASE_ISSUE
+    _ENGINE_TO_DECISION[<int>GamePhases.PHASE_IPO] = DPHASE_IPO
 
 
-cdef inline int get_auction_company_nogil(GameState state) noexcept nogil:
-    """Get auction company from hidden state without GIL."""
-    return <int>state._data[state._layout.hidden_auction_company_offset]
+_init_engine_to_decision()
 
 
-cdef inline bint is_market_space_available_nogil(GameState state, int index) noexcept nogil:
-    """Check if market space is available without GIL."""
-    return state._data[state._layout.market_offset + index] == 1.0
+cdef int get_decision_phase(GameState state) noexcept nogil:
+    """Read the engine phase from ``state`` and map it to a DecisionPhase.
 
+    Returns -1 for automated/terminal engine phases (WRAP_UP, INCOME,
+    END_CARD, GAME_OVER). Callers are expected to only invoke enumeration /
+    decoding for phases where the driver actually asks for an action.
 
-# =============================================================================
-# MASK GENERATION HELPERS - phase-specific fill functions
-# =============================================================================
-
-cdef void _fill_invest_mask(GameState state, ActionLayout* layout, float* mask, Player active_player) noexcept nogil:
-    """Fill mask for INVEST phase actions."""
-    cdef int slot, company_id, bid_offset, corp_id
-    cdef int face_value, player_cash, bank_shares, player_shares
-    cdef int num_auction_slots = state._num_players  # Dynamic based on player count
-    # Buy/sell tracking - limits trades to prevent model training loops
-    cdef int buys, sells, roundtrips
-    cdef bint roundtrip_blocked
-    # Low-level corp access
-    cdef CorpOffsets co = get_corp_offsets()
-    cdef float* corp
-    cdef float* data = state._data
-
-    # Pass is always valid
-    mask[layout.pass_invest] = 1.0
-
-    # Auction: slot-based indexing (num_players slots)
-    player_cash = active_player._get_cash_nogil(data)
-    for slot in range(num_auction_slots):
-        company_id = get_auction_company_for_slot(state, slot)
-        if company_id < 0:
-            break  # No more slots
-        face_value = get_company_face_value(company_id)
-        for bid_offset in range(AUCTION_CAP):
-            if face_value + bid_offset <= player_cash:
-                mask[layout.auction_base + slot * AUCTION_CAP + bid_offset] = 1.0
-            else:
-                break  # Can't afford higher bids
-
-    # Buy/Sell share: corp_id indexing
-    cdef int current_price_index, buy_index, buy_price
-    cdef float* market_ptr = data + state._layout.market_offset
-    for corp_id in range(<int>GameConstants.NUM_CORPS):
-        # Round-trip limit check - prevents model training loops
-        # Uses min(buys, sells) so multiple buys or sells alone don't block
-        buys = active_player._get_share_buys_nogil(data, corp_id)
-        sells = active_player._get_share_sells_nogil(data, corp_id)
-        roundtrips = buys if buys < sells else sells  # min(buys, sells)
-        roundtrip_blocked = roundtrips >= 2  # MAX_ROUNDTRIPS
-
-        # Buy: corp is active, has bank shares, player can afford, not roundtrip blocked
-        corp = state._corp_ptr(corp_id)
-        if is_corp_active(corp, &co) and not roundtrip_blocked:
-            bank_shares = get_corp_bank_shares(corp, &co)
-            if bank_shares > 0:
-                # Check if player can afford the buy price (next higher index)
-                current_price_index = get_corp_price_index_nogil(state, corp_id)
-                # Find next higher available market space
-                buy_index = current_price_index + 1
-                while buy_index < GameConstants.NUM_MARKET_SPACES and market_ptr[buy_index] != 1.0:
-                    buy_index += 1
-                if buy_index >= GameConstants.NUM_MARKET_SPACES:
-                    buy_index = GameConstants.NUM_MARKET_SPACES - 1  # Max index
-                buy_price = get_market_price(buy_index)
-                if player_cash >= buy_price:
-                    mask[layout.buy_share_base + corp_id] = 1.0
-
-        # Sell: player owns shares, not roundtrip blocked
-        if not roundtrip_blocked:
-            player_shares = active_player._get_shares_nogil(data, corp_id)
-            if player_shares > 0:
-                mask[layout.sell_share_base + corp_id] = 1.0
-
-
-cdef void _fill_bid_mask(GameState state, ActionLayout* layout, float* mask, Player active_player, TurnState turn) noexcept nogil:
-    """Fill mask for BID_IN_AUCTION phase actions."""
-    cdef int player_cash = active_player._get_cash_nogil(state._data)
-    cdef int company_id = get_auction_company_nogil(state)
-    cdef int current_bid = turn._get_auction_price_nogil(state._data)
-    cdef int face_value, bid_offset, new_bid
-
-    # Leave auction is always valid
-    mask[layout.leave_auction] = 1.0
-
-    if company_id < 0:
-        return
-
-    face_value = get_company_face_value(company_id)
-
-    # Raise bid: offset 0-13 represents bid face+1 to face+14
-    # Must beat current bid
-    for bid_offset in range(AUCTION_CAP - 1):
-        new_bid = face_value + bid_offset + 1  # +1 because min raise is face+1
-        if new_bid > current_bid and new_bid <= player_cash:
-            mask[layout.raise_bid_base + bid_offset] = 1.0
-
-
-cdef void _fill_acquisition_mask(GameState state, ActionLayout* layout, float* mask, TurnState turn) noexcept nogil:
-    """Fill mask for ACQUISITION phase actions."""
-    cdef CorpOffsets co = get_corp_offsets()
-    cdef float* corp
-    cdef float* data = state._data
-    cdef int corp_id = turn._get_acq_active_corp_nogil(data)
-    cdef int company_id = turn._get_acq_target_company_nogil(data)
-    cdef int low_price, high_price, corp_cash, offset, price, fi_price
-
-    if corp_id < 0 or company_id < 0:
-        return
-
-    # Pass is always valid
-    mask[layout.acq_pass] = 1.0
-
-    corp = state._corp_ptr(corp_id)
-
-    if turn._is_acq_fi_offer_nogil(data):
-        # FI offer: OS buys at face value, others at high price
-        if corp_id == CORP_OS:
-            fi_price = get_company_face_value(company_id)
-        else:
-            fi_price = get_company_high_price(company_id)
-        if get_corp_cash(corp, &co) >= fi_price:
-            mask[layout.acq_fi_buy] = 1.0
-    else:
-        # General acquisition: price offsets based on affordability
-        low_price = get_company_low_price(company_id)
-        high_price = get_company_high_price(company_id)
-        corp_cash = get_corp_cash(corp, &co)
-        for offset in range(high_price - low_price + 1):
-            price = low_price + offset
-            if price <= corp_cash:
-                mask[layout.acq_price_base + offset] = 1.0
-
-
-cdef void _fill_closing_mask(GameState state, ActionLayout* layout, float* mask, TurnState turn) noexcept nogil:
-    """Fill mask for CLOSING phase actions."""
-    cdef int company_id = turn._get_closing_company_nogil(state._data)
-    if company_id >= 0:
-        mask[layout.close_action] = 1.0
-        mask[layout.close_pass] = 1.0
-
-
-cdef void _fill_dividends_mask(GameState state, ActionLayout* layout, float* mask, TurnState turn) noexcept nogil:
-    """Fill mask for DIVIDENDS phase actions."""
-    cdef CorpOffsets co = get_corp_offsets()
-    cdef int corp_id = turn._get_dividend_corp_nogil(state._data)
-    cdef float* corp
-    cdef int amount
-    cdef int max_dividend
-    cdef int price_index
-    cdef int card_max
-    cdef int afford_max
-
-    if corp_id < 0:
-        return  # No active corp
-
-    corp = state._corp_ptr(corp_id)
-
-    # Get price index for share price card constraint
-    price_index = get_corp_price_index_nogil(state, corp_id)
-    card_max = get_max_dividend(price_index)
-
-    # Calculate affordability constraint (corp cash / issued shares)
-    cdef int corp_cash = get_corp_cash(corp, &co)
-    cdef int issued_shares = get_corp_issued_shares(corp, &co)
-    if issued_shares > 0:
-        afford_max = corp_cash // issued_shares
-    else:
-        afford_max = 0
-
-    # Use the more restrictive of the two constraints
-    max_dividend = card_max if card_max < afford_max else afford_max
-
-    # Mark valid dividend amounts
-    for amount in range(min(max_dividend + 1, MAX_DIVIDEND)):
-        mask[layout.dividend_base + amount] = 1.0
-
-
-cdef void _fill_issue_mask(GameState state, ActionLayout* layout, float* mask, TurnState turn) noexcept nogil:
-    """Fill mask for ISSUE_SHARES phase actions."""
-    cdef CorpOffsets co = get_corp_offsets()
-    cdef int corp_id = turn._get_issue_corp_nogil(state._data)
-
-    if corp_id < 0:
-        return
-
-    cdef float* corp = state._corp_ptr(corp_id)
-
-    # Check if corp has unissued shares
-    if get_corp_unissued_shares(corp, &co) > 0:
-        mask[layout.issue_action] = 1.0
-
-    # Pass is always valid (unless in receivership with unissued shares)
-    if not is_corp_in_receivership(corp, &co) or get_corp_unissued_shares(corp, &co) == 0:
-        mask[layout.issue_pass] = 1.0
-
-
-cdef void _fill_ipo_mask(GameState state, ActionLayout* layout, float* mask, Player active_player, TurnState turn) noexcept nogil:
-    """Fill mask for IPO phase actions (corp selection).
-
-    For each inactive corp, check if ANY valid par price exists (valid for
-    star tier, market space available, player can afford). If so, unmask
-    the corp selection action.
+    Reads the phase slot directly from the state buffer — no Python
+    singleton access — so the whole function stays nogil.
     """
-    cdef CorpOffsets co = get_corp_offsets()
-    cdef float* corp
-    cdef int company_id, corp_id, par_index, par_price, market_index
-    cdef int star_tier, face_value, player_cash, cost, player_shares
-    cdef bint has_valid_par
-
-    # Pass is always valid
-    mask[layout.ipo_pass] = 1.0
-
-    company_id = turn._get_ipo_company_nogil(state._data)
-    if company_id < 0:
-        return  # No active company
-
-    star_tier = get_company_stars(company_id)
-    face_value = get_company_face_value(company_id)
-    player_cash = active_player._get_cash_nogil(state._data)
-
-    for corp_id in range(<int>GameConstants.NUM_CORPS):
-        corp = state._corp_ptr(corp_id)
-        if is_corp_active(corp, &co):
-            continue  # Skip active corps
-
-        # Check if this corp has any valid par price for the current company
-        has_valid_par = False
-        for par_index in range(<int>GameConstants.NUM_PAR_PRICES):
-            if not is_valid_par_price(star_tier, par_index):
-                continue
-
-            par_price = get_par_price(par_index)
-            market_index = get_market_index(par_price)
-
-            if market_index < 0 or not is_market_space_available_nogil(state, market_index):
-                continue
-
-            if par_price >= face_value:
-                player_shares = 1
-            else:
-                player_shares = 2
-            cost = (player_shares * par_price) - face_value
-
-            if cost <= player_cash:
-                has_valid_par = True
-                break  # One valid par is enough to unmask this corp
-
-        if has_valid_par:
-            mask[layout.ipo_base + corp_id] = 1.0
-
-
-cdef void _fill_par_mask(GameState state, ActionLayout* layout, float* mask, Player active_player, TurnState turn) noexcept nogil:
-    """Fill mask for PAR phase actions (par price selection).
-
-    Uses the stored par corp from hidden state and the active company's star
-    tier to determine which of the 14 par prices are valid.
-    """
-    cdef int company_id, par_index, par_price, market_index
-    cdef int star_tier, face_value, player_cash, cost, player_shares
-
-    company_id = turn._get_ipo_company_nogil(state._data)
-    if company_id < 0:
-        return
-
-    star_tier = get_company_stars(company_id)
-    face_value = get_company_face_value(company_id)
-    player_cash = active_player._get_cash_nogil(state._data)
-
-    for par_index in range(<int>GameConstants.NUM_PAR_PRICES):
-        if not is_valid_par_price(star_tier, par_index):
-            continue
-
-        par_price = get_par_price(par_index)
-        market_index = get_market_index(par_price)
-
-        if market_index < 0 or not is_market_space_available_nogil(state, market_index):
-            continue
-
-        if par_price >= face_value:
-            player_shares = 1
-        else:
-            player_shares = 2
-        cost = (player_shares * par_price) - face_value
-
-        if cost <= player_cash:
-            mask[layout.par_base + par_index] = 1.0
-
-
-cdef void _fill_mask_for_phase(GameState state, int phase, ActionLayout* layout, float* mask, Player active_player, TurnState turn) noexcept nogil:
-    """Fill mask based on current phase. Central dispatch to avoid duplication."""
-    if phase == GamePhases.PHASE_INVEST:
-        _fill_invest_mask(state, layout, mask, active_player)
-    elif phase == GamePhases.PHASE_BID_IN_AUCTION:
-        _fill_bid_mask(state, layout, mask, active_player, turn)
-    elif phase == GamePhases.PHASE_ACQUISITION:
-        _fill_acquisition_mask(state, layout, mask, turn)
-    elif phase == GamePhases.PHASE_CLOSING:
-        _fill_closing_mask(state, layout, mask, turn)
-    elif phase == GamePhases.PHASE_DIVIDENDS:
-        _fill_dividends_mask(state, layout, mask, turn)
-    elif phase == GamePhases.PHASE_ISSUE_SHARES:
-        _fill_issue_mask(state, layout, mask, turn)
-    elif phase == GamePhases.PHASE_IPO:
-        _fill_ipo_mask(state, layout, mask, active_player, turn)
-    elif phase == GamePhases.PHASE_PAR:
-        _fill_par_mask(state, layout, mask, active_player, turn)
+    cdef int engine_phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
+    if engine_phase < 0 or engine_phase >= 12:
+        return -1
+    return _ENGINE_TO_DECISION[engine_phase]
 
 
 # =============================================================================
-# INTERNAL HELPERS (no numpy allocation)
+# SPARSE LEGAL-ACTION ENUMERATION (skeleton)
 # =============================================================================
+#
+# The actual rule-level legality logic is deferred to a follow-up pass. For
+# now each helper is a stub that writes nothing and returns 0. The driver
+# and eval server should treat "0 legal actions" as "engine rewrite for
+# this phase is incomplete" and refuse to proceed, rather than mistaking it
+# for a legitimate stuck state.
+#
+# When the second pass lands, these stubs become the central point of
+# truth for legality. Port the mask-generation logic out of
+# ``core/actions-old.pyx`` into these helpers, re-keyed to the new sparse
+# encoding. Keep the enumeration order deterministic and documented per
+# phase (replay targets depend on it).
 
-cdef void _fill_action_mask(GameState state):
+cdef int _enumerate_invest(
+    GameState state, uint16_t* ids,
+) noexcept nogil:
+    return 0
+
+
+cdef int _enumerate_bid(
+    GameState state, uint16_t* ids,
+) noexcept nogil:
+    return 0
+
+
+cdef int _enumerate_acquisition(
+    GameState state, uint16_t* ids,
+) noexcept nogil:
+    return 0
+
+
+cdef int _enumerate_acq_offer(
+    GameState state, uint16_t* ids,
+) noexcept nogil:
+    return 0
+
+
+cdef int _enumerate_closing(
+    GameState state, uint16_t* ids,
+) noexcept nogil:
+    return 0
+
+
+cdef int _enumerate_dividends(
+    GameState state, uint16_t* ids,
+) noexcept nogil:
+    return 0
+
+
+cdef int _enumerate_issue(
+    GameState state, uint16_t* ids,
+) noexcept nogil:
+    return 0
+
+
+cdef int _enumerate_ipo(
+    GameState state, uint16_t* ids,
+) noexcept nogil:
+    return 0
+
+
+cdef int enumerate_legal_actions(
+    GameState state,
+    int phase_id,
+    uint16_t* action_ids,
+) noexcept nogil:
+    """Fill ``action_ids`` with legal phase-local IDs; return the count.
+
+    Dispatches to a phase-specific ``_enumerate_*`` helper. The helpers
+    own the per-phase enumeration order contract.
     """
-    Fill _mask_buffer for current state without numpy allocation.
+    cdef int count = 0
 
-    Used by driver.pyx for forced-action detection and validation to avoid
-    redundant numpy array creation in the hot loop.
+    if phase_id == DPHASE_INVEST:
+        count = _enumerate_invest(state, action_ids)
+    elif phase_id == DPHASE_BID:
+        count = _enumerate_bid(state, action_ids)
+    elif phase_id == DPHASE_ACQUISITION:
+        count = _enumerate_acquisition(state, action_ids)
+    elif phase_id == DPHASE_ACQ_OFFER:
+        count = _enumerate_acq_offer(state, action_ids)
+    elif phase_id == DPHASE_CLOSING:
+        count = _enumerate_closing(state, action_ids)
+    elif phase_id == DPHASE_DIVIDENDS:
+        count = _enumerate_dividends(state, action_ids)
+    elif phase_id == DPHASE_ISSUE:
+        count = _enumerate_issue(state, action_ids)
+    elif phase_id == DPHASE_IPO:
+        count = _enumerate_ipo(state, action_ids)
+
+    # Overflow is a bug, not a recoverable condition. Kmax is sized to
+    # the worst-case legal set across all phases; exceeding it means the
+    # enumerator or the bound is wrong.
+    assert count <= MAX_LEGAL_ACTIONS, \
+        "legal action count exceeds MAX_LEGAL_ACTIONS — bump Kmax or fix enumerator"
+    return count
+
+
+cdef (int, bint) get_forced_action(GameState state) noexcept nogil:
+    """Return ``(action_id, True)`` if exactly one action is legal.
+
+    Used by the driver to fast-forward through single-choice decision
+    points. Returns ``(-1, False)`` for zero or multiple legal actions.
     """
-    cdef int num_players = state._num_players
-    cdef ActionLayout layout = compute_action_layout(num_players)
-    cdef int total_actions = layout.total_size
-
-    memset(_mask_buffer, 0, total_actions * sizeof(float))
-
-    cdef int player_id = state._get_active_player()
-    cdef Player active_player = <Player>PLAYERS[player_id]
-    cdef TurnState turn = <TurnState>TURN
-
-    cdef int phase = state.get_phase()
-    _fill_mask_for_phase(state, phase, &layout, _mask_buffer, active_player, turn)
-
-
-cdef bint _is_action_valid_in_buffer(int action_idx, int total_actions) noexcept nogil:
-    """Check if action is valid in the current _mask_buffer contents."""
-    if action_idx < 0 or action_idx >= total_actions:
-        return False
-    return _mask_buffer[action_idx] == 1.0
-
-
-# =============================================================================
-# PUBLIC FUNCTIONS
-# =============================================================================
-
-cpdef int get_total_action_count(int num_players):
-    """Return total action space size for given player count."""
-    return get_total_actions_for_players(num_players)
-
-
-cpdef object get_valid_action_mask(GameState state):
-    """
-    Generate valid action mask for current game state.
-
-    Returns numpy float32 array where:
-    - 1.0 = valid action
-    - 0.0 = invalid action
-
-    Size depends on player count (see get_total_action_count).
-    """
-    _fill_action_mask(state)
-
-    cdef int total_actions = get_total_actions_for_players(state._num_players)
-
-    # Copy to numpy array for return (required for Python interface)
-    cdef cnp.ndarray mask = np.empty(total_actions, dtype=np.float32)
-    cdef float* mask_ptr = <float*>cnp.PyArray_DATA(mask)
-    memcpy(mask_ptr, _mask_buffer, total_actions * sizeof(float))
-
-    return mask
-
-
-cpdef tuple get_forced_action(GameState state):
-    """
-    Check if there's only one valid action (forced move).
-
-    Returns:
-        (action_idx, True) if exactly one valid action (forced)
-        (-1, False) if zero or multiple valid actions
-    """
-    _fill_action_mask(state)
-
-    cdef int total_actions = get_total_actions_for_players(state._num_players)
-    cdef int i, count, single_action
-
-    count = 0
-    single_action = -1
-    for i in range(total_actions):
-        if _mask_buffer[i] == 1.0:
-            count += 1
-            if count == 1:
-                single_action = i
-            elif count > 1:
-                return (-1, False)  # Multiple valid actions
-
+    cdef uint16_t scratch[256]   # MAX_LEGAL_ACTIONS
+    cdef int phase_id = get_decision_phase(state)
+    if phase_id < 0:
+        return (-1, False)
+    cdef int count = enumerate_legal_actions(state, phase_id, scratch)
     if count == 1:
-        return (single_action, True)
+        return (<int>scratch[0], True)
     return (-1, False)
 
 
-cpdef tuple decode_action_py(int action_idx, int num_players):
+# =============================================================================
+# PYTHON-ACCESSIBLE WRAPPERS
+# =============================================================================
+
+cpdef int get_phase_action_size(int phase_id):
+    """Return the action-space size for a given DecisionPhase."""
+    if phase_id < 0 or phase_id >= <int>GameConstants.NUM_DECISION_PHASES:
+        raise ValueError(f"invalid decision phase: {phase_id}")
+    return PHASE_ACTION_SIZES[phase_id]
+
+
+cpdef tuple decode_action_py(int phase_id, int action_id):
+    """Python wrapper around ``decode_action``.
+
+    Returns a tuple ``(phase, action_type, corp_id, company_id, amount)``.
     """
-    Python-accessible action decoding.
+    if phase_id < 0 or phase_id >= <int>GameConstants.NUM_DECISION_PHASES:
+        raise ValueError(f"invalid decision phase: {phase_id}")
+    if action_id < 0 or action_id >= PHASE_ACTION_SIZES[phase_id]:
+        raise ValueError(
+            f"action_id {action_id} out of range for phase {phase_id} "
+            f"(size {PHASE_ACTION_SIZES[phase_id]})"
+        )
+    cdef ActionInfo info = decode_action(phase_id, action_id)
+    return (info.phase, info.action_type, info.corp_id, info.company_id, info.amount)
 
-    Returns tuple: (phase, action_type, slot, corp_id, amount)
+
+cpdef object enumerate_legal_actions_py(GameState state, int phase_id=-1):
+    """Python wrapper around ``enumerate_legal_actions``.
+
+    If ``phase_id`` is -1 (default), the current decision phase is read
+    from ``state`` via ``get_decision_phase``. Returns a tuple
+    ``(phase_id, action_ids_array)`` where ``action_ids_array`` is a
+    uint16 numpy array of length ``count``.
     """
-    cdef ActionLayout layout = compute_action_layout(num_players)
-    cdef ActionInfo info = decode_action(&layout, action_idx)
-    return (info.phase, info.action_type, info.slot, info.corp_id, info.amount)
+    cdef int dphase
+    if phase_id < 0:
+        dphase = get_decision_phase(state)
+    else:
+        dphase = phase_id
+    if dphase < 0:
+        return (-1, np.empty(0, dtype=np.uint16))
+
+    cdef cnp.ndarray buf = np.empty(MAX_LEGAL_ACTIONS, dtype=np.uint16)
+    cdef uint16_t* buf_ptr = <uint16_t*>cnp.PyArray_DATA(buf)
+    cdef int count = enumerate_legal_actions(state, dphase, buf_ptr)
+    return (dphase, buf[:count].copy())
 
 
-cpdef dict get_action_layout(int num_players):
-    """Get action layout as a dictionary for Python access."""
-    cdef ActionLayout layout = compute_action_layout(num_players)
-    return {
-        'total_size': layout.total_size,
-        'invest_start': layout.invest_start,
-        'bid_start': layout.bid_start,
-        'acquisition_start': layout.acquisition_start,
-        'closing_start': layout.closing_start,
-        'dividends_start': layout.dividends_start,
-        'issue_start': layout.issue_start,
-        'ipo_start': layout.ipo_start,
-        'pass_invest': layout.pass_invest,
-        'auction_base': layout.auction_base,
-        'buy_share_base': layout.buy_share_base,
-        'sell_share_base': layout.sell_share_base,
-        'leave_auction': layout.leave_auction,
-        'raise_bid_base': layout.raise_bid_base,
-        'acq_price_base': layout.acq_price_base,
-        'acq_fi_buy': layout.acq_fi_buy,
-        'acq_pass': layout.acq_pass,
-        'close_action': layout.close_action,
-        'close_pass': layout.close_pass,
-        'dividend_base': layout.dividend_base,
-        'issue_pass': layout.issue_pass,
-        'issue_action': layout.issue_action,
-        'ipo_pass': layout.ipo_pass,
-        'ipo_base': layout.ipo_base,
-        'par_start': layout.par_start,
-        'par_base': layout.par_base,
-    }
+cpdef tuple get_forced_action_py(GameState state):
+    """Python wrapper around ``get_forced_action``. Returns ``(action_id, found)``."""
+    cdef int action_id
+    cdef bint found
+    (action_id, found) = get_forced_action(state)
+    return (action_id, bool(found))
 
 
-def get_constants():
-    """Get constants for Python tests."""
-    return {
-        'AUCTION_CAP': AUCTION_CAP,
-        'MAX_PAR_SLOTS': MAX_PAR_SLOTS,
-        'ACQ_PRICE_RANGE': ACQ_PRICE_RANGE,
-        'MAX_DIVIDEND': MAX_DIVIDEND,
-    }
+# =============================================================================
+# MODULE-LEVEL PYTHON CONSTANTS (for tests / external inspection)
+# =============================================================================
 
+# Expose DecisionPhase values as plain Python ints so tests can import them
+# without cimporting the enum. Matches the naming in nn/transformer.py.
+PHASE_INVEST = DPHASE_INVEST
+PHASE_BID = DPHASE_BID
+PHASE_ACQUISITION = DPHASE_ACQUISITION
+PHASE_ACQ_OFFER = DPHASE_ACQ_OFFER
+PHASE_CLOSING = DPHASE_CLOSING
+PHASE_DIVIDENDS = DPHASE_DIVIDENDS
+PHASE_ISSUE = DPHASE_ISSUE
+PHASE_IPO = DPHASE_IPO
 
-# Python-accessible action type constants for testing
+PHASE_ACTION_SIZES_PY = [
+    ACTION_SIZE_INVEST,
+    ACTION_SIZE_BID,
+    ACTION_SIZE_ACQUISITION,
+    ACTION_SIZE_ACQ_OFFER,
+    ACTION_SIZE_CLOSING,
+    ACTION_SIZE_DIVIDENDS,
+    ACTION_SIZE_ISSUE,
+    ACTION_SIZE_IPO,
+]
+
+MAX_LEGAL_ACTIONS_PY = MAX_LEGAL_ACTIONS
+MAX_ACTION_SIZE_PY = MAX_ACTION_SIZE
+
 ACTION_PASS_PY = ACTION_PASS
 ACTION_AUCTION_PY = ACTION_AUCTION
 ACTION_BUY_SHARE_PY = ACTION_BUY_SHARE
 ACTION_SELL_SHARE_PY = ACTION_SELL_SHARE
-ACTION_LEAVE_AUCTION_PY = ACTION_LEAVE_AUCTION
-ACTION_RAISE_BID_PY = ACTION_RAISE_BID
+ACTION_LEAVE_PY = ACTION_LEAVE
+ACTION_RAISE_PY = ACTION_RAISE
 ACTION_ACQ_PRICE_PY = ACTION_ACQ_PRICE
 ACTION_ACQ_FI_BUY_PY = ACTION_ACQ_FI_BUY
+ACTION_ACQ_OFFER_BUY_PY = ACTION_ACQ_OFFER_BUY
 ACTION_CLOSE_PY = ACTION_CLOSE
 ACTION_DIVIDEND_PY = ACTION_DIVIDEND
 ACTION_ISSUE_PY = ACTION_ISSUE
 ACTION_IPO_PY = ACTION_IPO
-ACTION_PAR_PY = ACTION_PAR
+
+
+# =============================================================================
+# IMPORT-TIME SELF-CHECK
+# =============================================================================
+#
+# Catch encoding drift immediately: verify the computed per-phase max
+# action id equals ``size - 1`` for every phase. Any mismatch means the
+# ``encode_*`` formulae and the pxd size constants have fallen out of
+# sync, which will silently corrupt replay alignment later.
+
+def _verify_encoding_consistency():
+    from nn.transformer import PHASE_ACTION_SIZES as NN_SIZES
+
+    local = list(PHASE_ACTION_SIZES_PY)
+    nn = list(NN_SIZES)
+    assert local == nn, (
+        f"core/actions.pyx PHASE_ACTION_SIZES {local} disagrees with "
+        f"nn/transformer.py {nn}. Keep them in lockstep or replay "
+        f"targets will silently misalign with policy logits."
+    )
+
+    # Spot-check each phase's highest encodable id.
+    assert encode_invest_sell(7) == ACTION_SIZE_INVEST - 1
+    assert encode_bid_raise(13) == ACTION_SIZE_BID - 1
+    assert encode_acquisition_fi_buy(7, 35) == ACTION_SIZE_ACQUISITION - 1
+    assert encode_acq_offer_buy() == ACTION_SIZE_ACQ_OFFER - 1
+    assert encode_closing_close(35) == ACTION_SIZE_CLOSING - 1
+    assert encode_dividends(25) == ACTION_SIZE_DIVIDENDS - 1
+    assert encode_issue_issue() == ACTION_SIZE_ISSUE - 1
+    assert encode_ipo(7, 13) == ACTION_SIZE_IPO - 1
+
+
+try:
+    _verify_encoding_consistency()
+except ImportError:
+    # nn/transformer.py imports torch; environments without torch (early
+    # CI / static analysis) still get the self-consistency checks above,
+    # just not the cross-module comparison.
+    assert encode_invest_sell(7) == ACTION_SIZE_INVEST - 1
+    assert encode_bid_raise(13) == ACTION_SIZE_BID - 1
+    assert encode_acquisition_fi_buy(7, 35) == ACTION_SIZE_ACQUISITION - 1
+    assert encode_acq_offer_buy() == ACTION_SIZE_ACQ_OFFER - 1
+    assert encode_closing_close(35) == ACTION_SIZE_CLOSING - 1
+    assert encode_dividends(25) == ACTION_SIZE_DIVIDENDS - 1
+    assert encode_issue_issue() == ACTION_SIZE_ISSUE - 1
+    assert encode_ipo(7, 13) == ACTION_SIZE_IPO - 1

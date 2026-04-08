@@ -1,118 +1,256 @@
 # cython: language_level=3
 """
-Declaration file for action vector.
+Per-phase action encoding for the transformer refactor.
 
-Defines the action space layout, action decoding, and mask generation for
-the NN output layer.
+Replaces the old global action vector with **phase-local** action IDs. The
+encoding defined here is the single source of truth for:
+
+  - what integer represents what game action in each decision phase
+  - how replay buffers serialize ``(phase_id, action_id)`` pairs
+  - how the engine decodes a sparse legal candidate into a phase handler call
+  - how ``nn/transformer.py`` interprets its policy head outputs
+
+The per-phase action counts **must** match
+``nn/transformer.py::PHASE_ACTION_SIZES`` exactly. Any divergence silently
+misaligns replay targets with model logits. Encode/decode roundtrips are
+tested at import time; changing the layout here requires a matching change
+to the model module.
+
+See ``transformers.md`` and ``sparse-refactor.md`` for motivation.
+
+Conventions
+-----------
+
+- **Decision phases** are the 8 phases the model sees, distinct from the
+  engine's 12 ``GamePhases`` — notably the engine's ``ACQUISITION`` splits
+  into ``DPHASE_ACQUISITION`` + ``DPHASE_ACQ_OFFER``, and ``IPO`` / ``PAR``
+  collapse into ``DPHASE_IPO``.
+- Action IDs are **phase-local**: the same integer means different things in
+  different phases. Callers must always carry the ``phase_id`` alongside the
+  ``action_id``.
+- Action IDs fit comfortably in ``uint16`` (max 14,977 for ``ACQUISITION``).
+- The sparse legal-action path is the only public contract. There is no
+  dense per-phase mask surface; any dense consumer should scatter from the
+  sparse list.
 """
+
+from libc.stdint cimport uint16_t
 
 from core.state cimport GameState
 
+
 # =============================================================================
-# CONSTANTS
+# DECISION PHASES (what the model sees)
+# =============================================================================
+
+cdef enum DecisionPhase:
+    DPHASE_INVEST = 0
+    DPHASE_BID = 1
+    DPHASE_ACQUISITION = 2
+    DPHASE_ACQ_OFFER = 3
+    DPHASE_CLOSING = 4
+    DPHASE_DIVIDENDS = 5
+    DPHASE_ISSUE = 6
+    DPHASE_IPO = 7
+    NUM_DECISION_PHASES = 8
+
+
+# =============================================================================
+# ACTION SPACE SIZES (must match nn/transformer.py::PHASE_ACTION_SIZES)
 # =============================================================================
 
 cdef enum:
-    # Action space dimensions (game constants like NUM_CORPS are in data.pxd)
-    AUCTION_CAP = 15         # Max bid offset over face value
-    MAX_PAR_SLOTS = 8        # Max valid par prices per star tier
-    ACQ_PRICE_RANGE = 51     # 0-50 price offset
+    ACTION_SIZE_INVEST = 557        # 1 pass + 36*15 auction + 8*2 trade
+    ACTION_SIZE_BID = 15            # 1 leave + 14 raises
+    ACTION_SIZE_ACQUISITION = 14977 # 1 pass + 8*36*52 corp x company x {51 price + FI_BUY}
+    ACTION_SIZE_ACQ_OFFER = 2       # pass + buy
+    ACTION_SIZE_CLOSING = 37        # 1 pass + 36 company closes
+    ACTION_SIZE_DIVIDENDS = 26      # dividend amounts 0..25
+    ACTION_SIZE_ISSUE = 2           # pass + issue
+    ACTION_SIZE_IPO = 113           # 1 pass + 8*14 corp x par index
+
+    MAX_ACTION_SIZE = 14977         # max over all phases (ACQUISITION)
+
+    # Padded-sparse buffer width. Every replay/IPC tensor pads to this size.
+    # Legal counts above this are considered a bug (see sparse-refactor.md).
+    # Kmax=256 is the Phase-1 default; revisit after legal-count profiling.
+    MAX_LEGAL_ACTIONS = 256
+
+
+# Module-level C array of per-phase sizes, indexed by DecisionPhase. Filled
+# in at import time from the constants above so callers can look sizes up
+# without a switch.
+cdef int PHASE_ACTION_SIZES[8]
 
 
 # =============================================================================
-# ACTION TYPE ENUM
+# ACTION TYPE ENUM (decoded action semantics)
 # =============================================================================
 
 cdef enum ActionType:
     ACTION_PASS = 0
-    ACTION_AUCTION = 1        # Start auction: (slot, bid_offset)
-    ACTION_BUY_SHARE = 2      # Buy share: corp_id
-    ACTION_SELL_SHARE = 3     # Sell share: corp_id
-    ACTION_LEAVE_AUCTION = 4  # Leave auction
-    ACTION_RAISE_BID = 5      # Raise bid: bid_offset
-    ACTION_ACQ_PRICE = 6      # Acquire at price: price_offset
-    ACTION_ACQ_FI_BUY = 7     # FI buy (OS=face value, others=high price)
-    ACTION_CLOSE = 8          # Close current company
-    ACTION_DIVIDEND = 9       # Pay dividend: amount
-    ACTION_ISSUE = 10         # Issue share
-    ACTION_IPO = 11           # IPO: select corp (corp_id)
-    ACTION_PAR = 12           # PAR: select par price (par_index)
+    ACTION_AUCTION = 1         # INVEST: start auction on company_id at face+amount
+    ACTION_BUY_SHARE = 2       # INVEST: buy corp_id
+    ACTION_SELL_SHARE = 3      # INVEST: sell corp_id
+    ACTION_LEAVE = 4           # BID: leave the current auction
+    ACTION_RAISE = 5           # BID: raise current bid by (face + 1 + amount)
+    ACTION_ACQ_PRICE = 6       # ACQUISITION: corp_id acquires company_id at low+amount
+    ACTION_ACQ_FI_BUY = 7      # ACQUISITION: corp_id buys company_id from FI at fixed price
+    ACTION_ACQ_OFFER_BUY = 8   # ACQ_OFFER: preempting corp takes the offered company
+    ACTION_CLOSE = 9           # CLOSING: close company_id
+    ACTION_DIVIDEND = 10       # DIVIDENDS: pay dividend of amount
+    ACTION_ISSUE = 11          # ISSUE: issue one share
+    ACTION_IPO = 12            # IPO: start corp_id at par index amount
 
 
 # =============================================================================
-# ACTION LAYOUT STRUCT
-# =============================================================================
-
-cdef struct ActionLayout:
-    int total_size
-    # Phase boundaries (start indices)
-    int invest_start          # 0
-    int bid_start             # 107
-    int acquisition_start     # 122
-    int closing_start         # 176
-    int dividends_start       # 178
-    int issue_start           # 204
-    int ipo_start             # 206
-    # INVEST sub-offsets
-    int pass_invest           # 0
-    int auction_base          # 1 (slot * AUCTION_CAP + bid_offset)
-    int buy_share_base        # 91 (+corp_id)
-    int sell_share_base       # 99 (+corp_id)
-    # BID sub-offsets
-    int leave_auction         # 107
-    int raise_bid_base        # 108 (+bid_offset, 0-13 = new bid face+1 to face+14)
-    # ACQUISITION sub-offsets
-    int acq_price_base        # 122 (+price_offset 0-50)
-    int acq_fi_buy            # 173
-    int acq_pass              # 174
-    # CLOSING sub-offsets
-    int close_action          # 176
-    int close_pass            # 177
-    # DIVIDENDS sub-offsets
-    int dividend_base         # 178 (+amount 0-25)
-    # ISSUE sub-offsets
-    int issue_pass            # 204
-    int issue_action          # 205
-    # IPO sub-offsets
-    int ipo_pass              # 206
-    int ipo_base              # 207 (+corp_id)
-    # PAR sub-offsets
-    int par_start             # 215
-    int par_base              # 215 (+par_index, 0-13)
-
-
-# =============================================================================
-# ACTION INFO STRUCT
+# ACTION INFO STRUCT (result of decode_action)
 # =============================================================================
 
 cdef struct ActionInfo:
-    int phase           # PHASE_* constant
-    int action_type     # ActionType enum
-    int slot            # auction_slot, par_slot (needs mapping to actual ID)
+    int phase           # DecisionPhase
+    int action_type     # ActionType
     int corp_id         # -1 if not applicable
-    int amount          # price_offset, bid_offset, dividend amount
+    int company_id      # -1 if not applicable
+    int amount          # bid_offset / price_offset / dividend / par_index / raise_offset / -1
 
 
 # =============================================================================
-# FUNCTION DECLARATIONS
+# ENCODE HELPERS (pure arithmetic, no state)
+# =============================================================================
+#
+# Each phase exposes one encode function per action kind. All inputs are
+# assumed valid (asserts guard bounds). The functions are ``inline`` nogil
+# so Cython can fold them away in hot paths.
+
+cdef inline int encode_invest_pass() noexcept nogil:
+    return 0
+
+cdef inline int encode_invest_auction(int company_id, int bid_offset) noexcept nogil:
+    return 1 + company_id * 15 + bid_offset
+
+cdef inline int encode_invest_buy(int corp_id) noexcept nogil:
+    return 541 + corp_id * 2
+
+cdef inline int encode_invest_sell(int corp_id) noexcept nogil:
+    return 541 + corp_id * 2 + 1
+
+cdef inline int encode_bid_leave() noexcept nogil:
+    return 0
+
+cdef inline int encode_bid_raise(int raise_offset) noexcept nogil:
+    return 1 + raise_offset
+
+cdef inline int encode_acquisition_pass() noexcept nogil:
+    return 0
+
+cdef inline int encode_acquisition_price(int corp_id, int company_id, int price_offset) noexcept nogil:
+    return 1 + (corp_id * 36 + company_id) * 52 + price_offset
+
+cdef inline int encode_acquisition_fi_buy(int corp_id, int company_id) noexcept nogil:
+    return 1 + (corp_id * 36 + company_id) * 52 + 51
+
+cdef inline int encode_acq_offer_pass() noexcept nogil:
+    return 0
+
+cdef inline int encode_acq_offer_buy() noexcept nogil:
+    return 1
+
+cdef inline int encode_closing_pass() noexcept nogil:
+    return 0
+
+cdef inline int encode_closing_close(int company_id) noexcept nogil:
+    return 1 + company_id
+
+cdef inline int encode_dividends(int amount) noexcept nogil:
+    return amount
+
+cdef inline int encode_issue_pass() noexcept nogil:
+    return 0
+
+cdef inline int encode_issue_issue() noexcept nogil:
+    return 1
+
+cdef inline int encode_ipo_pass() noexcept nogil:
+    return 0
+
+cdef inline int encode_ipo(int corp_id, int par_index) noexcept nogil:
+    return 1 + corp_id * 14 + par_index
+
+
+# Reverse of decode_action: pack an ActionInfo back into its phase-local id.
+# Used by the import-time roundtrip tests and by any code path that builds
+# an ActionInfo programmatically (e.g. replay diagnostics). Asserts on
+# invalid combinations.
+cdef int encode_action(ActionInfo info) noexcept nogil
+
+
+# =============================================================================
+# DECODE
+# =============================================================================
+#
+# The ``phase_id`` argument is required — action IDs are phase-local, so the
+# decoder has to know which encoding to invert. Returns a fully-populated
+# ``ActionInfo`` with unused fields set to -1.
+
+cdef ActionInfo decode_action(int phase_id, int action_id) noexcept nogil
+
+
+# =============================================================================
+# DECISION PHASE BRIDGE
+# =============================================================================
+#
+# Maps engine ``GamePhases`` to the 8-phase decision space. The engine now
+# distinguishes ``ACQUISITION`` from ``ACQ_OFFER`` directly in its phase
+# enum, so this is a straight 1:1 table lookup. Engine phases without a
+# corresponding decision phase (WRAP_UP, INCOME, END_CARD, GAME_OVER) are
+# automated/terminal and return -1 — the driver auto-applies those without
+# consulting the action module.
+
+cdef int get_decision_phase(GameState state) noexcept nogil
+
+
+# =============================================================================
+# SPARSE LEGAL-ACTION ENUMERATION
+# =============================================================================
+#
+# Writes legal phase-local action IDs into ``action_ids`` in a deterministic,
+# phase-specific order and returns the count. The buffer must hold at least
+# ``MAX_LEGAL_ACTIONS`` slots. An assert fires if a phase produces more legal
+# actions than ``MAX_LEGAL_ACTIONS`` — that is a configuration bug.
+#
+# The caller owns ``phase_id`` lookup (usually via ``get_decision_phase``).
+# Keeping it explicit lets callers scope enumeration to a specific phase
+# without re-reading the state.
+#
+# NOTE: This is the skeleton. Phase-specific legality logic lives in
+# ``_enumerate_*`` helpers in ``actions.pyx`` and will be filled in a
+# follow-up. The contract (return count, fill buffer in deterministic
+# order) is the stable piece.
+
+cdef int enumerate_legal_actions(
+    GameState state,
+    int phase_id,
+    uint16_t* action_ids,
+) noexcept nogil
+
+
+# Forced-action helper. Enumerates into a temporary buffer; if exactly one
+# legal action is found, returns ``(action_id, 1)``. Otherwise returns
+# ``(-1, 0)``. Used by the driver to fast-forward through single-choice
+# decision points.
+#
+# Declared as ``cdef`` (not ``cpdef``) and with a ``noexcept`` return so it
+# can live on the nogil hot path. A Python wrapper is provided below.
+
+cdef (int, bint) get_forced_action(GameState state) noexcept nogil
+
+
+# =============================================================================
+# PYTHON-ACCESSIBLE WRAPPERS
 # =============================================================================
 
-# Layout computation (dynamic based on player count)
-cdef ActionLayout compute_action_layout(int num_players) noexcept nogil
-
-# Total action count for a given player count
-cdef int get_total_actions_for_players(int num_players) noexcept nogil
-
-# Action decoding
-cdef ActionInfo decode_action(ActionLayout* layout, int action_idx) noexcept nogil
-
-# Forced action check (returns single valid action if only one exists)
-cpdef tuple get_forced_action(GameState state)
-
-# Pre-allocated mask buffer: 165 + (1 + 6) * AUCTION_CAP
-# Update if AUCTION_CAP or max player count changes.
-cdef float _mask_buffer[270]
-
-# Internal mask helpers (no numpy allocation)
-cdef void _fill_action_mask(GameState state)
-cdef bint _is_action_valid_in_buffer(int action_idx, int total_actions) noexcept nogil
+cpdef int get_phase_action_size(int phase_id)
+cpdef tuple decode_action_py(int phase_id, int action_id)
+cpdef object enumerate_legal_actions_py(GameState state, int phase_id=*)
+cpdef tuple get_forced_action_py(GameState state)

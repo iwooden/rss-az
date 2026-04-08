@@ -163,10 +163,15 @@ def find_pyx_files(directory):
                 pyx_files.append(os.path.join(root, file))
     return pyx_files
 
-# Refactor in progress: only build core/data.pyx + core/state.pyx and
-# entities/*.pyx for now. data.pyx is a pure data/constants module that
-# state and every entity cimport from, so it must be in the build set.
-pyx_files = ['core/data.pyx', 'core/state.pyx'] + find_pyx_files('entities')
+# Refactor in progress: build core/data.pyx, core/state.pyx, core/actions.pyx
+# and entities/*.pyx. data.pyx is a pure data/constants module that state,
+# actions, and every entity cimport from, so it must be in the build set.
+# actions.pyx is the per-phase action encoding skeleton (legality logic
+# deferred to a follow-up).
+pyx_files = (
+    ['core/data.pyx', 'core/state.pyx', 'core/actions.pyx']
+    + find_pyx_files('entities')
+)
 
 extensions = []
 
