@@ -39,7 +39,7 @@ NUM_PHASES = 8
 # Action counts per phase
 PHASE_ACTION_SIZES: list[int] = [
     557,  # INVEST:      1 pass + 36*15 auction + 8*2 trade
-    15,   # BID:         1 leave + 14 raises
+    15,   # BID:         1 pass + 14 raises (pass = leave the auction)
     14977,  # ACQUISITION: 1 pass + 8*36*52 corp x company x offset/action
     2,    # ACQ_OFFER:   buy + pass
     37,   # CLOSING:     1 pass + 36 company closes
@@ -301,10 +301,10 @@ class RSSTransformerNet(nn.Module):
         return torch.cat([pass_logit, auction.reshape(n, -1), trade.reshape(n, -1)], dim=-1)
 
     def _policy_bid(self, t: torch.Tensor) -> torch.Tensor:
-        """BID: leave(1) + raises(14) = 15."""
-        leave = self.pass_head(t[:, self._pass_idx])                          # (n, 1)
+        """BID: pass(1) + raises(14) = 15. Pass = leave the auction."""
+        pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
         raises = self.auction_raise_head(t[:, self._auction_idx])             # (n, 14)
-        return torch.cat([leave, raises], dim=-1)
+        return torch.cat([pass_logit, raises], dim=-1)
 
     def _policy_acquisition(self, t: torch.Tensor) -> torch.Tensor:
         """ACQUISITION: pass(1) + corp*company*offset(8*36*52=14976) = 14977."""

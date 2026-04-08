@@ -61,7 +61,7 @@ cdef enum DecisionPhase:
 
 cdef enum:
     ACTION_SIZE_INVEST = 557        # 1 pass + 36*15 auction + 8*2 trade
-    ACTION_SIZE_BID = 15            # 1 leave + 14 raises
+    ACTION_SIZE_BID = 15            # 1 pass (= leave auction) + 14 raises
     ACTION_SIZE_ACQUISITION = 14977 # 1 pass + 8*36*52 corp x company x {51 price + FI_BUY}
     ACTION_SIZE_ACQ_OFFER = 2       # pass + buy
     ACTION_SIZE_CLOSING = 37        # 1 pass + 36 company closes
@@ -88,19 +88,21 @@ cdef int PHASE_ACTION_SIZES[8]
 # =============================================================================
 
 cdef enum ActionType:
+    # ACTION_PASS is the universal "opt out" for every phase that has one:
+    # INVEST pass, BID leave-auction, ACQUISITION pass, ACQ_OFFER pass,
+    # CLOSING pass, ISSUE pass, IPO pass. They all decode to ACTION_PASS.
     ACTION_PASS = 0
     ACTION_AUCTION = 1         # INVEST: start auction on company_id at face+amount
     ACTION_BUY_SHARE = 2       # INVEST: buy corp_id
     ACTION_SELL_SHARE = 3      # INVEST: sell corp_id
-    ACTION_LEAVE = 4           # BID: leave the current auction
-    ACTION_RAISE = 5           # BID: raise current bid by (face + 1 + amount)
-    ACTION_ACQ_PRICE = 6       # ACQUISITION: corp_id acquires company_id at low+amount
-    ACTION_ACQ_FI_BUY = 7      # ACQUISITION: corp_id buys company_id from FI at fixed price
-    ACTION_ACQ_OFFER_BUY = 8   # ACQ_OFFER: preempting corp takes the offered company
-    ACTION_CLOSE = 9           # CLOSING: close company_id
-    ACTION_DIVIDEND = 10       # DIVIDENDS: pay dividend of amount
-    ACTION_ISSUE = 11          # ISSUE: issue one share
-    ACTION_IPO = 12            # IPO: start corp_id at par index amount
+    ACTION_RAISE = 4           # BID: raise current bid by (face + 1 + amount)
+    ACTION_ACQ_PRICE = 5       # ACQUISITION: corp_id acquires company_id at low+amount
+    ACTION_ACQ_FI_BUY = 6      # ACQUISITION: corp_id buys company_id from FI at fixed price
+    ACTION_ACQ_OFFER_BUY = 7   # ACQ_OFFER: preempting corp takes the offered company
+    ACTION_CLOSE = 8           # CLOSING: close company_id
+    ACTION_DIVIDEND = 9        # DIVIDENDS: pay dividend of amount
+    ACTION_ISSUE = 10          # ISSUE: issue one share
+    ACTION_IPO = 11            # IPO: start corp_id at par index amount
 
 
 # =============================================================================
@@ -135,7 +137,8 @@ cdef inline int encode_invest_buy(int corp_id) noexcept nogil:
 cdef inline int encode_invest_sell(int corp_id) noexcept nogil:
     return 541 + corp_id * 2 + 1
 
-cdef inline int encode_bid_leave() noexcept nogil:
+cdef inline int encode_bid_pass() noexcept nogil:
+    # "Leave the current auction" is a pass-class action.
     return 0
 
 cdef inline int encode_bid_raise(int raise_offset) noexcept nogil:

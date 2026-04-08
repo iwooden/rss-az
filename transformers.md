@@ -35,7 +35,7 @@ The feature lists below are planning sketches, not frozen interfaces. The exact 
 | Issue | 1 | ~11 | issue_remaining (8), issue_price_impact (1), issue_cash_gain (1), active corp flag. Zeroed when not in ISSUE phase. |
 | PAR | 1 | 28 | par_corp_treasury (14), par_shares (14). Zeroed when not in IPO phase. These are global (not per-corp) — they depend on market availability, company face value, and player cash. |
 | Acq Offer | 1 | 3 | offer_price (1, normalized — face value for OS, high value for others), is_os_offer (1), acq_is_fi_offer (1). Zeroed when not in ACQ_OFFER sub-phase. Produces buy/pass logits for FI preemption offers. |
-| Pass | 1 | 0 | No input features — representation is purely the learned type embedding, shaped by attention. Produces the pass/leave logit for INVEST, BID (leave), ACQUISITION, CLOSING, ISSUE, and IPO phases. |
+| Pass | 1 | 0 | No input features — representation is purely the learned type embedding, shaped by attention. Produces the pass logit for INVEST, BID (pass = leave the auction), ACQUISITION, CLOSING, ISSUE, and IPO phases. |
 
 **Total: 53 + N tokens** (56 for 3p, 59 for 6p)
 
@@ -133,7 +133,7 @@ The legal action mask zeros out non-auctionable companies, corps you can't buy/s
 
 | Phase | Entity → logits |
 |-------|----------------|
-| BID | **Pass token** → [leave] (1); **Auction token** → [raise_0 ... raise_13] (14) |
+| BID | **Pass token** → [pass] (1, = leave auction); **Auction token** → [raise_0 ... raise_13] (14) |
 | ACQUISITION | **Pass token** → [pass] (1); corp×company pair head → [corp_0_company_0_offset_0 ...] (14976) |
 | ACQ_OFFER | **Pass token** → [pass] (1); **Acq Offer token** → [buy] (1) |
 | CLOSING | **Pass token** → [pass] (1); Company 0..35 → [close] (36, most masked) |
@@ -141,7 +141,7 @@ The legal action mask zeros out non-auctionable companies, corps you can't buy/s
 | ISSUE | **Pass token** → [pass] (1); **Issue token** → [issue] (1) |
 | IPO | **Pass token** → [pass] (1); Corp 0..7 → [par_0 ... par_13] (112, most masked) |
 
-INVEST, CLOSING, and IPO use multi-entity readout (company/corp tokens + pass). ACQUISITION builds a shared representation for each `(corp, company)` pair, then reads 52 logits per pair (51 price offsets + FI buy). ACQ_OFFER uses Pass (pass) + Acq Offer token (buy). DIVIDENDS reads solely from its dedicated phase token. BID splits between Pass (leave) and Auction (raises).
+INVEST, CLOSING, and IPO use multi-entity readout (company/corp tokens + pass). ACQUISITION builds a shared representation for each `(corp, company)` pair, then reads 52 logits per pair (51 price offsets + FI buy). ACQ_OFFER uses Pass (pass) + Acq Offer token (buy). DIVIDENDS reads solely from its dedicated phase token. BID splits between Pass (leave the auction) and Auction (raises).
 
 ### Action space size
 
@@ -149,7 +149,7 @@ The new action layout (for any player count):
 
 ```
 INVEST:      1 (pass) + 36*15 (auction) + 8*2 (buy/sell) = 557
-BID:         15 (leave + 14 raises)
+BID:         15 (pass + 14 raises; pass = leave the auction)
 ACQUISITION: 14977 (pass + 8*36*52 corp×company×offset/action)
 ACQ_OFFER:   2 (pass + buy)
 CLOSE:       37 (36 company close + pass)
@@ -190,7 +190,7 @@ self.corp_trade_head = nn.Sequential(
     nn.Linear(d_model // 2, 2),  # buy, sell
 )
 
-# Pass token → single pass/leave logit (shared across all phases that use it)
+# Pass token → single pass logit (shared across all phases that use it; BID's pass = leave the auction)
 self.pass_head = nn.Linear(d_model, 1)
 
 # Phase-specific context tokens → policy logits (read directly from token)

@@ -79,8 +79,8 @@ cdef int encode_action(ActionInfo info) noexcept nogil:
             return encode_invest_sell(info.corp_id)
 
     elif phase == DPHASE_BID:
-        if info.action_type == ACTION_LEAVE:
-            return encode_bid_leave()
+        if info.action_type == ACTION_PASS:
+            return encode_bid_pass()
         if info.action_type == ACTION_RAISE:
             return encode_bid_raise(info.amount)
 
@@ -171,7 +171,8 @@ cdef ActionInfo decode_action(int phase_id, int action_id) noexcept nogil:
     # --- BID --------------------------------------------------------------
     if phase_id == DPHASE_BID:
         if action_id == 0:
-            info.action_type = ACTION_LEAVE
+            # "Leave the auction" is a pass-class action.
+            info.action_type = ACTION_PASS
         else:
             info.action_type = ACTION_RAISE
             info.amount = action_id - 1
@@ -489,7 +490,6 @@ ACTION_PASS_PY = ACTION_PASS
 ACTION_AUCTION_PY = ACTION_AUCTION
 ACTION_BUY_SHARE_PY = ACTION_BUY_SHARE
 ACTION_SELL_SHARE_PY = ACTION_SELL_SHARE
-ACTION_LEAVE_PY = ACTION_LEAVE
 ACTION_RAISE_PY = ACTION_RAISE
 ACTION_ACQ_PRICE_PY = ACTION_ACQ_PRICE
 ACTION_ACQ_FI_BUY_PY = ACTION_ACQ_FI_BUY
