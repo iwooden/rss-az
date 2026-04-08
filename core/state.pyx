@@ -529,6 +529,55 @@ DECK_OFFSETS = compute_deck_offsets()
 # GAME STATE CLASS
 # =============================================================================
 
+cdef inline int _expected_size(int num_players) noexcept nogil:
+    return LAYOUT.players_offset + LAYOUT.player_stride * num_players
+
+
+cdef void _seed_zeroed_storage(GameState state, int num_players):
+    """Seed zero-initialized storage with the non-zero sentinels we require."""
+    cdef int i
+    cdef int owner_ids_base = LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids
+
+    # num_players is canonical engine metadata and must always match the
+    # backing-buffer size this GameState was initialized for.
+    state._data[LAYOUT.turn_offset + TURN_OFFSETS.num_players] = <int16_t>num_players
+
+    # Company locations default to LOC_DECK from zero-init, but owner_ids must
+    # be -1 or a freshly allocated state would read as "all companies owned by
+    # player 0".
+    for i in range(<int>GameConstants.NUM_COMPANIES):
+        state._data[owner_ids_base + i] = -1
+
+
+cdef void _reset_storage(GameState state, int num_players):
+    """Reset this GameState to a zeroed buffer for `num_players`.
+
+    Reuses the current backing buffer when it already has the right size so a
+    wrapped external buffer keeps its zero-copy behavior. If the requested
+    player count needs a different size, a fresh numpy buffer is allocated and
+    bound instead.
+    """
+    cdef int expected_size = _expected_size(num_players)
+    cdef cnp.ndarray arr
+
+    if state._array is not None:
+        arr = np.asarray(state._array)
+        if (arr.dtype == np.int16
+                and arr.ndim == 1
+                and <int>arr.shape[0] == expected_size
+                and arr.flags['C_CONTIGUOUS']):
+            arr.fill(0)
+            state._array = arr
+            state._data = <int16_t*>cnp.PyArray_DATA(arr)
+            _seed_zeroed_storage(state, num_players)
+            return
+
+    arr = np.zeros(expected_size, dtype=np.int16)
+    state._array = arr
+    state._data = <int16_t*>cnp.PyArray_DATA(arr)
+    _seed_zeroed_storage(state, num_players)
+
+
 cdef inline _bind_buffer(GameState state, object buffer, int num_players):
     """Validate `buffer` and point `state` at it as its backing store.
 
@@ -539,15 +588,21 @@ cdef inline _bind_buffer(GameState state, object buffer, int num_players):
     is a no-op when the caller already passes in a numpy array.
     """
     cdef cnp.ndarray buf = np.asarray(buffer)
-    cdef int expected_size = LAYOUT.players_offset + LAYOUT.player_stride * num_players
+    cdef int expected_size = _expected_size(num_players)
+    cdef int16_t* data
+    cdef int canonical_num_players
     assert buf.dtype == np.int16, \
         f"Expected int16 array, got {buf.dtype}"
     assert buf.ndim == 1 and <int>buf.shape[0] == expected_size, \
         f"Expected 1-D array of length {expected_size}, " \
         f"got ndim={buf.ndim} len={<int>buf.shape[0]}"
     assert buf.flags['C_CONTIGUOUS'], "Buffer must be C-contiguous"
+    data = <int16_t*>cnp.PyArray_DATA(buf)
+    canonical_num_players = <int>data[LAYOUT.turn_offset + TURN_OFFSETS.num_players]
+    assert canonical_num_players == num_players, \
+        f"buffer canonical num_players {canonical_num_players} != claimed {num_players}"
     state._array = buf
-    state._data = <int16_t*>cnp.PyArray_DATA(buf)
+    state._data = data
 
 
 cdef class GameState:
@@ -573,21 +628,7 @@ cdef class GameState:
             # to already be populated in the supplied buffer.
             return
 
-        cdef int total_size = LAYOUT.players_offset + LAYOUT.player_stride * <int>num_players
-
-        # Allocate array (zero-initialized)
-        self._array = np.zeros(total_size, dtype=np.int16)
-        self._data = <int16_t*>cnp.PyArray_DATA(self._array)
-
-        # Initialize constant metadata (lives inside the turn block)
-        self._data[LAYOUT.turn_offset + TURN_OFFSETS.num_players] = <int16_t>num_players
-
-        # Initialize company owner_ids to -1 (no owner when in deck)
-        # Company locations are already 0 (LOC_DECK) from zero-initialization
-        cdef int i
-        cdef int owner_ids_base = LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids
-        for i in range(<int>GameConstants.NUM_COMPANIES):
-            self._data[owner_ids_base + i] = -1
+        _reset_storage(self, <int>num_players)
 
     @staticmethod
     def from_array(array, int num_players):
@@ -600,9 +641,10 @@ cdef class GameState:
         Returns:
             New GameState with copied array data
         """
-        state = GameState(num_players)
         cdef cnp.ndarray arr = np.asarray(array)
-        cdef int expected_size = LAYOUT.players_offset + LAYOUT.player_stride * num_players
+        cdef int expected_size = _expected_size(num_players)
+        cdef int16_t* data
+        cdef int canonical_num_players
         if arr.dtype != np.int16:
             raise ValueError(f"Expected int16 array, got {arr.dtype}")
         if arr.ndim != 1 or <int>arr.shape[0] != expected_size:
@@ -610,6 +652,13 @@ cdef class GameState:
                 f"Expected 1-D array of length {expected_size}, "
                 f"got ndim={arr.ndim} len={<int>arr.shape[0]}"
             )
+        data = <int16_t*>cnp.PyArray_DATA(arr)
+        canonical_num_players = <int>data[LAYOUT.turn_offset + TURN_OFFSETS.num_players]
+        if canonical_num_players != num_players:
+            raise ValueError(
+                f"array canonical num_players {canonical_num_players} != claimed {num_players}"
+            )
+        state = GameState(num_players)
         np.copyto(state._array, arr)
         return state
 
@@ -624,8 +673,8 @@ cdef class GameState:
         Note: unlike the default constructor, this path does NOT seed
         ``company_owner_ids`` to -1 — the buffer is assumed to already
         contain valid game state (e.g. cloned from another GameState via
-        the MCTS state pool). Passing in a freshly zero-initialized
-        buffer would silently mark every company as owned by player 0.
+        the MCTS state pool). The canonical ``turn.num_players`` slot in
+        that buffer must already match the claimed ``num_players``.
 
         Args:
             buffer: numpy int16 array of correct size (not copied)
@@ -653,11 +702,12 @@ cdef class GameState:
     # GAME INITIALIZATION
     # =========================================================================
 
-    cpdef void initialize_game(self, int seed=-1):
+    cpdef void initialize_game(self, int num_players, int seed=-1):
         """
         Initialize a new game with all starting state.
 
         Args:
+            num_players: Player count for the new game.
             seed: Random seed for deck shuffling. If -1, uses current time.
 
         Sets up players, FI, corporations, market, deck, and turn state.
@@ -672,7 +722,10 @@ cdef class GameState:
         cdef int16_t* turn
         cdef int16_t* player
         cdef int16_t* corp
-        cdef int num_players = turn_module.TURN.get_num_players(self)
+        if num_players < 2 or num_players > <int>GameConstants.MAX_PLAYERS:
+            raise ValueError(f"num_players must be 2-{GameConstants.MAX_PLAYERS}")
+
+        _reset_storage(self, num_players)
 
         # 1. Set player starting state (raw integers, no normalization)
         starting_cash = 25 if num_players == 6 else 30

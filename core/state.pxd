@@ -175,4 +175,4 @@ cdef class GameState:
     cdef public bint step_mode
 
     # Game initialization
-    cpdef void initialize_game(self, int seed=*)
+    cpdef void initialize_game(self, int num_players, int seed=*)
