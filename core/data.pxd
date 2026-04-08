@@ -16,6 +16,9 @@ cpdef enum GameConstants:
     NUM_COMPANIES = 36
     NUM_CORPS = 8
     NUM_MARKET_SPACES = 27
+    # 8 decision phases + 4 automated/terminal phases:
+    # INV, BID, ACQUISITION, ACQ_OFFER, CLOSING, DIVIDENDS, ISSUE, IPO
+    # plus WRAP_UP, INCOME, END_CARD, GAME_OVER.
     NUM_PHASES = 12
     NUM_DECISION_PHASES = 8
     NUM_COO_LEVELS = 7
@@ -32,13 +35,13 @@ cpdef enum GamePhases:
     PHASE_BID_IN_AUCTION = 1
     PHASE_WRAP_UP = 2
     PHASE_ACQUISITION = 3
-    PHASE_CLOSING = 4
-    PHASE_INCOME = 5
-    PHASE_DIVIDENDS = 6
-    PHASE_END_CARD = 7
-    PHASE_ISSUE_SHARES = 8
-    PHASE_IPO = 9
-    PHASE_PAR = 10
+    PHASE_ACQ_OFFER = 4
+    PHASE_CLOSING = 5
+    PHASE_INCOME = 6
+    PHASE_DIVIDENDS = 7
+    PHASE_END_CARD = 8
+    PHASE_ISSUE_SHARES = 9
+    PHASE_IPO = 10
     PHASE_GAME_OVER = 11
 
 # Corp indices for special ability checks
