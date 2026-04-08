@@ -349,7 +349,9 @@ cdef class TurnState:
     cpdef void advance_to_next_bidder(self, GameState state):
         """Advance the active player to the next non-passed bidder.
 
-        Used during auction bidding to skip players who have left.
+        Used during auction bidding to skip players who have left. Asserts
+        that at least one non-passed bidder exists — callers are expected
+        to guarantee this invariant before calling.
         """
         cdef int current_player = self._get_active_player(state)
         cdef int current_position = player_module.PLAYERS[current_player].get_turn_order(state)
@@ -367,8 +369,7 @@ cdef class TurnState:
             current_position = next_position
             checked += 1
 
-        # Should never reach here — caller invariants ensure at least one
-        # active bidder remains when this method runs.
+        raise AssertionError("advance_to_next_bidder called with no active bidders")
 
     cpdef void set_active_player_after(self, GameState state, int player_id):
         """Set the active player to the next player after `player_id`."""

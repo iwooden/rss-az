@@ -19,11 +19,10 @@ Company ownership lives in the shared locations / owner_ids sub-arrays
 of the companies section — there is no per-player owned_companies
 bitmap. ``owns_company`` checks LOC_PLAYER + matching owner_id directly.
 
-The handle still calls into the corp entity for share-price /
-share-bank / receivership bookkeeping. Those calls (``corp_module.CORPS[
-corp_id].xxx(state)``) deliberately keep the existing corp API surface
-because the corp entity itself has not been migrated to the constant-
-offset layout yet; that happens in a later slice.
+The handle reaches into the corp entity for share-bank / receivership
+bookkeeping during share transfers and presidency recalculation. The
+corp entity is itself a stateless constant-offset handle, so these
+calls are thin cdef dispatches once typed.
 """
 
 from libc.stdint cimport int16_t
@@ -36,6 +35,7 @@ from core.data cimport (
 )
 from entities.company cimport LOC_PLAYER
 from entities.turn cimport TurnState
+from entities.corp cimport Corporation
 
 # Late imports to avoid circular dependencies (resolved at runtime)
 from entities import turn as turn_module
@@ -66,10 +66,8 @@ cdef void _recalculate_presidency(GameState state, int corp_id):
     cdef int player_id, shares, max_shares, president_id, current_president
     cdef int incumbent_shares, incumbent_position, position, checked, candidate
     cdef int pres_slot
-    cdef object corp, turn
-
-    corp = corp_module.CORPS[corp_id]
-    turn = turn_module.TURN
+    cdef int num_players = TURN._get_num_players(state)
+    cdef Corporation corp = <Corporation>corp_module.CORPS[corp_id]
 
     # Skip inactive corporations
     if not corp.is_active(state):
@@ -77,14 +75,14 @@ cdef void _recalculate_presidency(GameState state, int corp_id):
 
     # Find current president (if any)
     current_president = -1
-    for player_id in range(TURN._get_num_players(state)):
+    for player_id in range(num_players):
         if (<Player>PLAYERS[player_id]).is_president_of(state, corp_id):
             current_president = player_id
             break
 
     # Find maximum share count across all players
     max_shares = 0
-    for player_id in range(TURN._get_num_players(state)):
+    for player_id in range(num_players):
         shares = (<Player>PLAYERS[player_id]).get_shares(state, corp_id)
         if shares > max_shares:
             max_shares = shares
@@ -96,7 +94,7 @@ cdef void _recalculate_presidency(GameState state, int corp_id):
         # No player owns shares - corporation enters receivership
         corp.set_in_receivership(state, True)
         # Clear all president flags
-        for player_id in range(TURN._get_num_players(state)):
+        for player_id in range(num_players):
             pres_slot = (
                 LAYOUT.players_offset
                 + player_id * LAYOUT.player_stride
@@ -122,17 +120,17 @@ cdef void _recalculate_presidency(GameState state, int corp_id):
 
             checked = 0
             position = incumbent_position
-            while checked < TURN._get_num_players(state):
-                position = (position + 1) % TURN._get_num_players(state)
-                candidate = turn.find_player_at_position(state, position)
+            while checked < num_players:
+                position = (position + 1) % num_players
+                candidate = TURN.find_player_at_position(state, position)
                 if (<Player>PLAYERS[candidate]).get_shares(state, corp_id) == max_shares:
                     president_id = candidate
                     break
                 checked += 1
     else:
         # No current president - first player by turn order with max shares
-        for position in range(TURN._get_num_players(state)):
-            candidate = turn.find_player_at_position(state, position)
+        for position in range(num_players):
+            candidate = TURN.find_player_at_position(state, position)
             if (<Player>PLAYERS[candidate]).get_shares(state, corp_id) == max_shares:
                 president_id = candidate
                 break

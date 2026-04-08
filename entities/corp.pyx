@@ -214,12 +214,12 @@ cdef class Corporation:
         Float corporation via IPO.
 
         This encapsulates the full IPO procedure for the corporation:
-        1. Transfer company to corp (enforces "corp must own >= 1 company")
-        2. Set corp active
-        3. Set stars from founding company
-        4. Claim market space and set price
-        5. Set share distribution (unissued, issued, bank)
-        6. Give player their shares (triggers automatic presidency)
+        1. Set corp active (so downstream recalcs run against a live corp)
+        2. Transfer company to corp — triggers automatic stars and income
+           recalculation on the now-active corp
+        3. Claim market space and set price
+        4. Set share distribution (unissued, issued, bank)
+        5. Give player their shares (triggers automatic presidency)
 
         Player payment is NOT handled here — that's phase-specific.
         """
@@ -227,26 +227,24 @@ cdef class Corporation:
         cdef int issued = float_shares * 2  # Player + bank each get float_shares
         cdef int unissued_shares = total_shares - issued
 
-        # 1. Transfer company to corporation
-        company_module.COMPANIES[company_id].transfer_to_corp(state, self.corp_id)
-
-        # 2. Set corp active, then compute initial stars and income (corp wasn't
-        #    active during transfer_to_corp, so the auto-recalculates were skipped)
+        # 1. Activate the corp first so the transfer's downstream recalcs
+        #    (recalculate_stars + calculate_income) see an active corp.
         self.set_active(state, True)
-        self.recalculate_stars(state)
-        self.calculate_income(state)
+
+        # 2. Transfer company to corporation (auto-recalculates stars + income)
+        company_module.COMPANIES[company_id].transfer_to_corp(state, self.corp_id)
 
         # 3. Claim market space and set price
         market_module.MARKET.set_space_available(state, par_index, False)
         self.set_price_index(state, par_index)
 
-        # 5. Set share distribution
+        # 4. Set share distribution
         self.set_unissued_shares(state, unissued_shares)
         self.set_issued_shares(state, issued)
         # Bank starts with all issued shares; set_shares() moves float_shares to player
         self.set_bank_shares(state, issued)
 
-        # 6. Give player their shares (auto-adjusts bank shares and presidency)
+        # 5. Give player their shares (auto-adjusts bank shares and presidency)
         player_module.PLAYERS[player_id].set_shares(state, self.corp_id, float_shares)
 
     # =========================================================================
@@ -384,18 +382,11 @@ cdef class Corporation:
         return self._get_price_index(state)
 
     cpdef void set_price_index(self, GameState state, int index):
-        """Set market price index, share price, and pending price move.
-
-        Out-of-range indices store -1 as a sentinel and leave share price
-        untouched (callers that need the slot zeroed should do it
-        explicitly).
-        """
-        cdef int slot = self._slot(CORP_FIELDS.price_index)
-        if 0 <= index < <int>GameConstants.NUM_MARKET_SPACES:
-            state._data[slot] = <int16_t>index
-            self.set_share_price(state, MARKET_PRICES[index])
-        else:
-            state._data[slot] = -1
+        """Set market price index, share price, and pending price move."""
+        assert 0 <= index < <int>GameConstants.NUM_MARKET_SPACES, \
+            f"price index {index} out of range [0, {<int>GameConstants.NUM_MARKET_SPACES})"
+        state._data[self._slot(CORP_FIELDS.price_index)] = <int16_t>index
+        self.set_share_price(state, MARKET_PRICES[index])
         self.update_pending_price_move(state)
 
     # =========================================================================

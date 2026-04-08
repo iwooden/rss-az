@@ -128,20 +128,12 @@ cdef uint8_t[36] COMPANY_LAST_IN_GROUP = [
 # =============================================================================
 
 # Synergy matrix: SYNERGY[i][j] = bonus that company i gets when paired with company j
-# Most entries are 0, so this is sparse in practice
-# Using int8 since max synergy bonus is 16
+# Most entries are 0, so this is sparse in practice. Module-scope cdef arrays
+# are zero-initialized by the C runtime, so no explicit clear step is needed.
+# Using int8 since max synergy bonus is 16.
 cdef int8_t[36][36] COMPANY_SYNERGY
 
-# Initialize synergy matrix (called at module load)
-cdef void _init_synergies() noexcept nogil:
-    cdef int i, j
-    # Zero out the matrix
-    for i in range(36):
-        for j in range(36):
-            COMPANY_SYNERGY[i][j] = 0
-
-# We'll populate this from Python at module init since the data is complex
-# Helper to set synergy from Python
+# Populated from Python at module init since the data is complex
 def _set_synergy(int company_id, int target_id, int bonus):
     """Set synergy bonus that company_id gets when paired with target_id."""
     COMPANY_SYNERGY[company_id][target_id] = bonus
@@ -223,7 +215,6 @@ cdef int[7][5] COST_OF_OWNERSHIP = [
 
 def _init_module():
     """Initialize static data. Called once at module import."""
-    _init_synergies()
     _init_price_lookup()
     _populate_synergies()
 
