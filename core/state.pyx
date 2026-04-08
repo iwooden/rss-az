@@ -749,7 +749,12 @@ cdef class GameState:
         for i in range(<int>GameConstants.NUM_MARKET_SPACES):
             self._data[LAYOUT.market_offset + i] = 1
 
-        # 5. Build and shuffle deck (also marks excluded companies as LOC_EXCLUDED)
+        # 5. Seed baseline CoO through the TurnState entity so the adjusted
+        #    company-income cache and all dependent income fields start from a
+        #    coherent state before any setup-time draws/transfers occur.
+        turn_module.TURN.set_coo_level(self, 1)
+
+        # 6. Build and shuffle deck (also marks excluded companies as LOC_EXCLUDED)
         if seed < 0:
             clock_gettime(CLOCK_MONOTONIC, &ts)
             actual_seed = <int>(ts.tv_sec ^ ts.tv_nsec)
@@ -757,21 +762,21 @@ cdef class GameState:
             actual_seed = seed
         deck_module.DECK.setup(self, num_players, actual_seed)
 
-        # 6. Draw initial companies (move_to_auction clears the revealed flag)
+        # 7. Draw initial companies (move_to_auction clears the revealed flag)
         for i in range(num_players):
             company_id = deck_module.DECK.draw(self)
             company_module.COMPANIES[company_id].move_to_auction(self)
 
-        # 7. Set turn state (raw integers; metadata lives inside the turn block)
+        # 8. Set remaining turn-state scalars (CoO already seeded above and may
+        #    have advanced during the initial setup draws).
         turn = self._data + LAYOUT.turn_offset
         turn[TURN_OFFSETS.phase] = <int16_t>GamePhases.PHASE_INVEST
-        turn[TURN_OFFSETS.coo_level] = 1
         turn[TURN_OFFSETS.turn_number] = 1
 
-        # 8. Initialize "no selection" auction sentinels to -1
+        # 9. Initialize "no selection" auction sentinels to -1
         turn[TURN_OFFSETS.auction_company] = -1
         turn[TURN_OFFSETS.auction_high_bidder] = -1
         turn[TURN_OFFSETS.auction_starter] = -1
 
-        # 9. Set active player
+        # 10. Set active player
         turn_module.TURN.set_active_player(self, 0)
