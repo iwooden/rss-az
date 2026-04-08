@@ -44,8 +44,18 @@ from entities import corp as corp_module
 from entities import player as player_module
 from entities import fi as fi_module
 
-# Typed reference to the TURN singleton for fast cdef nogil method dispatch.
-cdef TurnState TURN = turn_module.TURN
+# Lazy accessor for the TURN singleton. See the corresponding comment in
+# player.pyx — caching at module init would force entities.turn to be fully
+# loaded before this module finished its own init, so we defer the lookup
+# to first call. After that it's a cached pointer return under the GIL
+# (every callsite is in a cpdef/def context, never inside nogil).
+cdef TurnState _TURN_CACHED = None
+
+cdef TurnState _TURN():
+    global _TURN_CACHED
+    if _TURN_CACHED is None:
+        _TURN_CACHED = <TurnState>turn_module.TURN
+    return _TURN_CACHED
 
 
 # =============================================================================
@@ -107,8 +117,8 @@ cdef class Company:
         return self._get_location(state) == LOC_REVEALED
 
     cpdef bint is_owned_by_player(self, GameState state, int player_id):
-        assert 0 <= player_id < TURN._get_num_players(state), \
-            f"player_id {player_id} out of range [0, {TURN._get_num_players(state)})"
+        assert 0 <= player_id < _TURN()._get_num_players(state), \
+            f"player_id {player_id} out of range [0, {_TURN()._get_num_players(state)})"
         return (self._get_location(state) == LOC_PLAYER and
                 self._get_owner_id(state) == player_id)
 
@@ -176,8 +186,8 @@ cdef class Company:
 
     cpdef void transfer_to_player(self, GameState state, int player_id):
         """Transfer company to player ownership."""
-        assert 0 <= player_id < TURN._get_num_players(state), \
-            f"player_id {player_id} out of range [0, {TURN._get_num_players(state)})"
+        assert 0 <= player_id < _TURN()._get_num_players(state), \
+            f"player_id {player_id} out of range [0, {_TURN()._get_num_players(state)})"
         self._move(state, LOC_PLAYER, player_id)
 
     cpdef void transfer_to_fi(self, GameState state):

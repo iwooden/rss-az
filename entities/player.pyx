@@ -41,10 +41,21 @@ from entities.corp cimport Corporation
 from entities import turn as turn_module
 from entities import corp as corp_module
 
-# Typed reference to the TURN singleton (kept as a Python module attribute on
-# entities.turn). The cdef-typed cast lets us call cdef nogil methods like
-# ``TURN._get_num_players(state)`` without Python dispatch.
-cdef TurnState TURN = turn_module.TURN
+# Lazy accessor for the TURN singleton. We deliberately do NOT cache it at
+# module init (``cdef TurnState TURN = turn_module.TURN``) because that
+# pattern required entities.turn to be fully initialized *before* this
+# module finishes its own init, which forced a fragile cross-module load
+# order. Instead we look it up on first call and cache the typed reference.
+# Every callsite runs under the GIL (cpdef methods or cdef-void methods,
+# not inside nogil blocks), so the lookup is always safe. After the first
+# call this costs a single None-check + pointer return.
+cdef TurnState _TURN_CACHED = None
+
+cdef TurnState _TURN():
+    global _TURN_CACHED
+    if _TURN_CACHED is None:
+        _TURN_CACHED = <TurnState>turn_module.TURN
+    return _TURN_CACHED
 
 
 # =============================================================================
@@ -66,7 +77,8 @@ cdef void _recalculate_presidency(GameState state, int corp_id):
     cdef int player_id, shares, max_shares, president_id, current_president
     cdef int incumbent_shares, incumbent_position, position, checked, candidate
     cdef int pres_slot
-    cdef int num_players = TURN._get_num_players(state)
+    cdef TurnState turn = _TURN()
+    cdef int num_players = turn._get_num_players(state)
     cdef Corporation corp = <Corporation>corp_module.CORPS[corp_id]
 
     # Skip inactive corporations
@@ -122,7 +134,7 @@ cdef void _recalculate_presidency(GameState state, int corp_id):
             position = incumbent_position
             while checked < num_players:
                 position = (position + 1) % num_players
-                candidate = TURN.find_player_at_position(state, position)
+                candidate = turn.find_player_at_position(state, position)
                 if (<Player>PLAYERS[candidate]).get_shares(state, corp_id) == max_shares:
                     president_id = candidate
                     break
@@ -130,7 +142,7 @@ cdef void _recalculate_presidency(GameState state, int corp_id):
     else:
         # No current president - first player by turn order with max shares
         for position in range(num_players):
-            candidate = TURN.find_player_at_position(state, position)
+            candidate = turn.find_player_at_position(state, position)
             if (<Player>PLAYERS[candidate]).get_shares(state, corp_id) == max_shares:
                 president_id = candidate
                 break
@@ -169,7 +181,7 @@ cdef void update_all_player_net_worths(GameState state, int num_players) noexcep
 
 def update_all_net_worths(GameState state):
     """Update net worth for all players. Python-accessible wrapper."""
-    update_all_player_net_worths(state, TURN._get_num_players(state))
+    update_all_player_net_worths(state, _TURN()._get_num_players(state))
 
 
 # =============================================================================
@@ -365,8 +377,8 @@ cdef class Player:
 
     cpdef void set_turn_order(self, GameState state, int order):
         """Set player's position in turn order."""
-        assert 0 <= order < TURN._get_num_players(state), \
-            f"turn order {order} out of range [0, {TURN._get_num_players(state)})"
+        assert 0 <= order < _TURN()._get_num_players(state), \
+            f"turn order {order} out of range [0, {_TURN()._get_num_players(state)})"
         state._data[self._slot(PLAYER_FIELDS.turn_order)] = <int16_t>order
 
     # =========================================================================

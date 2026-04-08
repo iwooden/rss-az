@@ -44,10 +44,13 @@ from core.data cimport (
     COST_OF_OWNERSHIP,
 )
 # Late entity imports live below the class definition + ``TURN`` singleton
-# creation. This is intentional: peer entity modules eagerly cast the
-# ``TURN`` singleton at their own module-init time, so the attribute must
-# already exist on this module by the time Python kicks off any cyclic
-# imports of player / company / corp / fi.
+# creation. Peer modules (player / company / corp / fi) use a lazy
+# ``_TURN()`` accessor that defers the ``turn_module.TURN`` lookup to first
+# call, so import order between peers is unconstrained. The late imports
+# below are still needed because TurnState methods reach into the other
+# entity modules at call time (e.g. ``set_coo_level`` cascades into
+# player / corp / fi income recalcs) — but they no longer dictate a
+# cross-module load order.
 
 
 cdef class TurnState:
