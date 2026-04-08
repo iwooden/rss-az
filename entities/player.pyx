@@ -411,14 +411,36 @@ cdef class Player:
         to/from bank) and recalculates presidency. This mirrors the in-game
         mechanic where shares always transfer between player and bank.
         """
+        cdef Corporation corp
         cdef int slot = self._slot(PLAYER_FIELDS.owned_shares) + corp_id
         cdef int old_shares = <int>state._data[slot]
+        cdef int issued_shares
+        cdef int bank_shares
         cdef int delta = shares - old_shares
+        cdef int new_bank_shares
+
+        assert 0 <= self.player_id < _TURN()._get_num_players(state), \
+            f"player_id {self.player_id} out of range [0, {_TURN()._get_num_players(state)})"
+        assert 0 <= corp_id < <int>GameConstants.NUM_CORPS, \
+            f"corp_id {corp_id} out of range [0, {<int>GameConstants.NUM_CORPS})"
+        assert shares >= 0, f"shares must be non-negative, got {shares}"
+
+        corp = <Corporation>corp_module.CORPS[corp_id]
+        assert corp._is_active(state), \
+            f"cannot assign shares of inactive corp {corp_id}"
+        issued_shares = corp._get_issued_shares(state)
+        assert shares <= issued_shares, \
+            f"player {self.player_id} shares {shares} exceed issued shares {issued_shares} for corp {corp_id}"
+
+        bank_shares = corp._get_bank_shares(state)
+        new_bank_shares = bank_shares - delta
+        assert 0 <= new_bank_shares <= issued_shares, \
+            f"share transfer would leave bank_shares={new_bank_shares} outside [0, {issued_shares}] for corp {corp_id}"
+
         state._data[slot] = <int16_t>shares
         # Adjust bank shares by inverse delta
         if delta != 0:
-            corp_module.CORPS[corp_id].set_bank_shares(
-                state, corp_module.CORPS[corp_id].get_bank_shares(state) - delta)
+            corp.set_bank_shares(state, new_bank_shares)
         _recalculate_presidency(state, corp_id)
 
     # =========================================================================
