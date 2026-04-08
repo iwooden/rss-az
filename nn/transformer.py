@@ -7,8 +7,8 @@ Key differences from the MLP model (nn/template.py):
   - Input: (batch, num_tokens, token_dim) token features, not flat state vector
   - No state rotation: active player marked with is_active flag
   - Entity-readout policy: each entity token produces its own action logits
-  - Bilinear heads for ACQ_SELECT (corp x company) and IPO (corp x PAR price)
-  - Per-phase action indices (max 557 for INVEST), not global action vector
+  - Unified ACQ pair-feature head (corp x company x price)
+  - Per-phase action indices (max 14,977 for ACQ), not a global action vector
   - Value read from player tokens directly (no un-rotation needed)
 """
 
@@ -25,31 +25,29 @@ import torch.nn.functional as F
 # Constants
 # ---------------------------------------------------------------------------
 
-# Phase indices (9 decision phases)
+# Phase indices (8 decision phases)
 PHASE_INVEST = 0
 PHASE_BID = 1
 PHASE_ACQ_SELECT = 2
 PHASE_ACQ_OFFER = 3
-PHASE_ACQ_PRICE = 4
-PHASE_CLOSING = 5
-PHASE_DIVIDENDS = 6
-PHASE_ISSUE = 7
-PHASE_IPO = 8
-NUM_PHASES = 9
+PHASE_CLOSING = 4
+PHASE_DIVIDENDS = 5
+PHASE_ISSUE = 6
+PHASE_IPO = 7
+NUM_PHASES = 8
 
 # Action counts per phase
 PHASE_ACTION_SIZES: list[int] = [
     557,  # INVEST:      1 pass + 36*15 auction + 8*2 trade
     15,   # BID:         1 leave + 14 raises
-    289,  # ACQ_SELECT:  1 pass + 8*36 corp x company
+    14977,  # ACQ_SELECT: 1 pass + 8*36*52 corp x company x price
     2,    # ACQ_OFFER:   buy + pass
-    52,   # ACQ_PRICE:   51 price offsets + FI buy
     37,   # CLOSING:     1 pass + 36 company closes
     26,   # DIVIDENDS:   26 amounts
     2,    # ISSUE:       1 pass + 1 issue
     113,  # IPO:         1 pass + 8*14 corp x par price
 ]
-MAX_ACTIONS = max(PHASE_ACTION_SIZES)  # 557
+MAX_ACTIONS = max(PHASE_ACTION_SIZES)  # 14977
 
 # Token type IDs (13 types)
 TYPE_PLAYER = 0
@@ -81,10 +79,10 @@ class TransformerConfig:
     # Core architecture
     num_players: int = 3
     d_model: int = 128
-    num_heads: int = 4
+    num_heads: int = 2
     num_layers: int = 10
     ff_mult: float = 2.67  # FFN inner dimension = ceil(ff_mult * d_model)
-    d_bilinear: int = 64   # Key dimension for bilinear policy heads
+    d_bilinear: int = 64   # Hidden width for the unified ACQ pair-feature policy head
 
     token_dim: int = 63    # Raw feature width per token (all zero-padded to same size)
 
@@ -217,26 +215,38 @@ class RSSTransformerNet(nn.Module):
             nn.Linear(d // 2, 26),  # 26 dividend levels
         )
         self.issue_head = nn.Linear(d, 1)  # issue logit (pass from pass_head)
-        # ACQ is the least-settled policy design in this prototype. The current
-        # split across ACQ_SELECT / ACQ_OFFER / ACQ_PRICE is a pragmatic dense
-        # interface for smoke testing, not necessarily the final design.
+        # ACQ is still the least-settled policy design in this prototype. We
+        # now read corp/company/price jointly in ACQ_SELECT, but the remaining
+        # dense interface is still provisional pending the sparse candidate
+        # path outlined in /home/icebreaker/rss-az-cython2/sparse-refactor.md.
         self.acq_offer_head = nn.Linear(d, 1)  # buy logit (pass from pass_head)
-        self.acq_price_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 52),  # 51 price offsets + FI buy
-        )
 
         # ACQ_SELECT is also likely to change once the sparse candidate-scoring
-        # path is implemented. See /home/icebreaker/rss-az-cython2/sparse-refactor.md
-        # for the planned sparse replay / evaluator / trainer interface.
+        # path is implemented. For now, we build a shared feature for each
+        # (corp, company) pair, then read the 52 price/FI-buy logits from that
+        # pair representation.
         #
-        # Bilinear heads for ACQ_SELECT and IPO
+        # A lower-rank trilinear alternative would be:
+        #   score(c, t, p) = sum_r q_c[r] * k_t[r] * e_p[r]
+        # with corp/company projections q_c and k_t plus a learned price
+        # embedding e_p. That is smaller, but less expressive than the current
+        # pair-feature head.
         dk = cfg.d_bilinear
         self.acq_select_corp_proj = nn.Linear(d, dk)
         self.acq_select_company_proj = nn.Linear(d, dk)
-        self.corp_ipo_proj = nn.Linear(d, dk)
-        self.par_price_proj = nn.Linear(d, 14 * dk)  # PAR token -> 14 price key vectors
-        self._bilinear_scale = 1.0 / math.sqrt(dk)
+        self.acq_select_pair_head = nn.Sequential(
+            nn.Linear(3 * dk, dk),
+            nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(dk, 52),  # 51 price offsets + FI buy
+        )
+
+        # IPO now reads par-price logits directly from each corp token. This is
+        # a cleaner entity-readout signal than routing the decision through the
+        # PAR token projection.
+        self.corp_ipo_head = nn.Sequential(
+            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d // 2, 14),  # 14 par prices per corp
+        )
 
         # --- Value head (applied per player token) ---
         self.value_head = nn.Sequential(
@@ -301,13 +311,15 @@ class RSSTransformerNet(nn.Module):
         return torch.cat([leave, raises], dim=-1)
 
     def _policy_acq_select(self, t: torch.Tensor) -> torch.Tensor:
-        """ACQ_SELECT: pass(1) + corp*company(8*36=288) = 289."""
+        """ACQ_SELECT: pass(1) + corp*company*price(8*36*52=14976) = 14977."""
         n = t.shape[0]
         pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
-        corp_q = self.acq_select_corp_proj(t[:, self._corp_slice])            # (n, 8, dk)
-        comp_k = self.acq_select_company_proj(t[:, self._company_slice])      # (n, 36, dk)
-        select = torch.bmm(corp_q, comp_k.transpose(1, 2))                   # (n, 8, 36)
-        select = select * self._bilinear_scale
+        corp_h = self.acq_select_corp_proj(t[:, self._corp_slice])            # (n, 8, dk)
+        comp_h = self.acq_select_company_proj(t[:, self._company_slice])      # (n, 36, dk)
+        corp_h = corp_h.unsqueeze(2).expand(-1, -1, 36, -1)                   # (n, 8, 36, dk)
+        comp_h = comp_h.unsqueeze(1).expand(-1, 8, -1, -1)                    # (n, 8, 36, dk)
+        pair_h = torch.cat([corp_h, comp_h, corp_h * comp_h], dim=-1)         # (n, 8, 36, 3*dk)
+        select = self.acq_select_pair_head(pair_h)                            # (n, 8, 36, 52)
         return torch.cat([pass_logit, select.reshape(n, -1)], dim=-1)
 
     def _policy_acq_offer(self, t: torch.Tensor) -> torch.Tensor:
@@ -315,10 +327,6 @@ class RSSTransformerNet(nn.Module):
         pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
         buy = self.acq_offer_head(t[:, self._acq_offer_idx])                  # (n, 1)
         return torch.cat([pass_logit, buy], dim=-1)
-
-    def _policy_acq_price(self, t: torch.Tensor) -> torch.Tensor:
-        """ACQ_PRICE: 51 price offsets + FI buy = 52."""
-        return self.acq_price_head(t[:, self._acq_price_idx])                # (n, 52)
 
     def _policy_closing(self, t: torch.Tensor) -> torch.Tensor:
         """CLOSING: pass(1) + company_close(36) = 37."""
@@ -337,15 +345,10 @@ class RSSTransformerNet(nn.Module):
         return torch.cat([pass_logit, issue], dim=-1)
 
     def _policy_ipo(self, t: torch.Tensor) -> torch.Tensor:
-        """IPO: pass(1) + corp*par_price(8*14=112) = 113."""
+        """IPO: pass(1) + per-corp par_price logits(8*14=112) = 113."""
         n = t.shape[0]
         pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
-        corp_q = self.corp_ipo_proj(t[:, self._corp_slice])                   # (n, 8, dk)
-        par_tok = t[:, self._par_idx]                                         # (n, d_model)
-        dk = corp_q.shape[-1]
-        par_keys = self.par_price_proj(par_tok).reshape(n, 14, dk)            # (n, 14, dk)
-        ipo = torch.bmm(corp_q, par_keys.transpose(1, 2))                    # (n, 8, 14)
-        ipo = ipo * self._bilinear_scale
+        ipo = self.corp_ipo_head(t[:, self._corp_slice])                      # (n, 8, 14)
         return torch.cat([pass_logit, ipo.reshape(n, -1)], dim=-1)
 
     # ------------------------------------------------------------------
@@ -359,7 +362,7 @@ class RSSTransformerNet(nn.Module):
 
         Args:
             tokens: (batch, num_tokens, d_model) final token representations.
-            phase_ids: (batch,) int tensor, phase index 0-8.
+            phase_ids: (batch,) int tensor, phase index 0-7.
         Returns:
             (batch, MAX_ACTIONS) logits. Positions beyond a phase's action count
             are filled with -1e9 so they vanish after masking + softmax.
@@ -368,15 +371,16 @@ class RSSTransformerNet(nn.Module):
         # This dense padded `(B, MAX_ACTIONS)` interface is intentionally simple
         # for the prototype, but it is not the long-term design. Mixed-phase
         # batches pay for boolean indexing, per-phase dispatch, and stitching
-        # small outputs back into one padded tensor. Once the sparse per-phase
-        # policy path is wired through the evaluator / replay / trainer stack,
-        # this method should be replaced with phase-local candidate scoring.
+        # small outputs back into one padded tensor. Unified ACQ makes that
+        # padded width especially wasteful. Once the sparse per-phase policy
+        # path is wired through the evaluator / replay / trainer stack, this
+        # method should be replaced with phase-local candidate scoring.
         logits = tokens.new_full((B, MAX_ACTIONS), -1e9)
 
         dispatch = [
             self._policy_invest, self._policy_bid, self._policy_acq_select,
-            self._policy_acq_offer, self._policy_acq_price, self._policy_closing,
-            self._policy_dividends, self._policy_issue, self._policy_ipo,
+            self._policy_acq_offer, self._policy_closing, self._policy_dividends,
+            self._policy_issue, self._policy_ipo,
         ]
         for phase_id in range(NUM_PHASES):
             mask = phase_ids == phase_id
@@ -398,7 +402,7 @@ class RSSTransformerNet(nn.Module):
 
         Args:
             x: (batch, num_tokens, token_dim) token features, zero-padded.
-            phase_ids: (batch,) int tensor, decision phase index 0-8.
+            phase_ids: (batch,) int tensor, decision phase index 0-7.
 
         Returns:
             policy_logits: (batch, MAX_ACTIONS) raw logits (-1e9 beyond phase range).
@@ -474,9 +478,10 @@ if __name__ == "__main__":
     policy_modules = [
         model.pass_head, model.company_auction_head, model.corp_trade_head,
         model.company_close_head, model.auction_raise_head, model.dividend_head,
-        model.issue_head, model.acq_offer_head, model.acq_price_head,
+        model.issue_head, model.acq_offer_head,
         model.acq_select_corp_proj, model.acq_select_company_proj,
-        model.corp_ipo_proj, model.par_price_proj,
+        model.acq_select_pair_head,
+        model.corp_ipo_head,
     ]
     policy_params = sum(sum(p.numel() for p in m.parameters()) for m in policy_modules)
     value_params = sum(p.numel() for p in model.value_head.parameters())
@@ -492,7 +497,7 @@ if __name__ == "__main__":
         print(f"  {name + ':':22s} {count:>10,}  ({count / total * 100:.1f}%)")
 
     phase_names = [
-        "INVEST", "BID", "ACQ_SELECT", "ACQ_OFFER", "ACQ_PRICE",
+        "INVEST", "BID", "ACQ_SELECT", "ACQ_OFFER",
         "CLOSING", "DIVIDENDS", "ISSUE", "IPO",
     ]
     print()
