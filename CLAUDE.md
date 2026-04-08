@@ -68,11 +68,11 @@ Single contiguous int16 numpy array. Raw integers only — no normalization, no 
 
 | Players | total_size | player_stride | corp_stride |
 |---------|-----------|---------------|-------------|
-| 2 | 444 | 39 | 16 |
-| 3 | 483 | 39 | 16 |
-| 6 | 600 | 39 | 16 |
+| 2 | 460 | 39 | 18 |
+| 3 | 499 | 39 | 18 |
+| 6 | 616 | 39 | 18 |
 
-The fixed prefix (everything except the players section) is **366** int16 slots and is identical across player counts. Only `total_size` scales: `total_size = 366 + 39 * num_players`. The players section lives at the end of the buffer for exactly this reason — every other section's offset is constant.
+The fixed prefix (everything except the players section) is **382** int16 slots and is identical across player counts. Only `total_size` scales: `total_size = 382 + 39 * num_players`. The players section lives at the end of the buffer for exactly this reason — every other section's offset is constant.
 
 `GameState` exposes only structural primitives publicly: `_player_ptr` / `_corp_ptr` / `_turn_ptr` (cdef nogil), `_num_players` (cdef int, readable from cdef code), `get_active_player` / `set_active_player`, `get_num_players`, and `initialize_game`. There are no per-instance layout fields — entity handles read offsets directly from the module-level constants below. All field-level reads and writes go through entity handles in `entities/`.
 
@@ -177,9 +177,22 @@ At each decision point: state, legal_mask, policy_target (MCTS visits), value_ta
 See `VECTORS.md` for the full buffer layout. Key points:
 
 - Single contiguous int16 array per `GameState`. Raw integers, no normalization, no one-hot encoding, no visible/hidden split.
-- Sections in order: `metadata (5) | FI (2) | company_incomes (36) | market (27) | corps (16 × 8) | turn (59) | deck (37) | company_locations (36) | company_owner_ids (36) | players (39 × N)`. The players section is **last** because it is the only section whose size depends on `num_players`; every other offset is constant.
-- All per-player data — cash, shares, presidencies, this-turn share buys/sells, and the per-player `auction_passed` flag — lives inside one player block, so `_player_ptr(i)` reaches everything for player `i` in a single pointer hop. The turn block carries no per-player data and is fixed at 59 slots.
+- Sections in order: `FI (2) | companies (108) | market (27) | corps (18 × 8) | turn (64) | deck (37) | players (39 × N)`. The players section is **last** because it is the only section whose size depends on `num_players`; every other offset is constant.
+- The companies section packs three parallel 36-slot sub-arrays — `incomes`, `locations`, `owner_ids` — reachable via `LAYOUT.companies_offset + COMPANY_OFFSETS.<field>`. The deck section packs `top` (1) + `order` (36) reachable via `LAYOUT.deck_offset + DECK_OFFSETS.<field>`.
+- The turn block (64 slots, fixed across player counts) carries the game-wide metadata at the front (`active_player`, `num_players`, `phase`, `coo_level`, `turn_number`) followed by global scalars and the phase-remaining flag arrays. The per-player `auction_passed` flag lives in the player block, not the turn block.
+- The corp block carries its star count split into three slots (`total_stars`, `cash_stars`, `company_stars`) so cash mutations don't trigger a full 36-company recompute — see [Corp stars](#corp-stars) below.
+- All per-player data — cash, shares, presidencies, this-turn share buys/sells, and the per-player `auction_passed` flag — lives inside one player block, so `_player_ptr(i)` reaches everything for player `i` in a single pointer hop.
 - `company_locations` (`CompanyLocation` enum, 0–8) plus `company_owner_ids` are the single source of truth for "who owns what". `LOC_DECK = 0` is the zero-init default; `__cinit__` explicitly seeds `company_owner_ids` to `-1`.
+
+### Corp stars
+
+`Corporation` tracks three star slots instead of one:
+
+- `company_stars` — sum of `COMPANY_STARS` over the corp's owned + acquisition-zone companies. Refreshed by `recalculate_company_stars(state)`, which is called from `Company._recalc_after_change` whenever ownership transitions in or out of the corp.
+- `cash_stars` — `floor(cash / 10)` clamped at 0. Refreshed by `recalculate_cash_stars(state)`, which `set_cash` calls on every cash mutation (active corps only). This is the fast path — no 36-company iteration.
+- `total_stars` — `company_stars + cash_stars + (2 if corp_id == SI else 0)`. Refreshed by the private `_refresh_total_stars(state)` helper which both refresh paths call at the end; it also triggers `update_pending_price_move`.
+
+`get_total_stars(state)` is the "what the old `get_stars` returned" accessor; `get_cash_stars` / `get_company_stars` expose the breakdown. There is no public setter — the slots are always derived from cash and company ownership. `go_bankrupt` clears all three slots explicitly so an inactive SI corp doesn't carry a residual +2 bonus.
 
 ## Game Flow & Phases
 
