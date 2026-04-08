@@ -85,11 +85,19 @@ cdef class Corporation:
     cpdef int get_bank_shares(self, GameState state)
     cpdef void set_bank_shares(self, GameState state, int shares)
 
-    # Income and stars
+    # Income
     cpdef int get_income(self, GameState state)
     cpdef void set_income(self, GameState state, int income)
-    cpdef int get_stars(self, GameState state)
-    cpdef void set_stars(self, GameState state, int stars)
+
+    # Stars (split: total = company + cash + ability bonus). Setters are
+    # private — total/cash/company stars are derived from cash and company
+    # ownership and refresh themselves automatically through the
+    # recalculate_* helpers below. Callers should never poke the slots
+    # directly outside of go_bankrupt's explicit cleanup.
+    cpdef int get_total_stars(self, GameState state)
+    cpdef int get_cash_stars(self, GameState state)
+    cpdef int get_company_stars(self, GameState state)
+    cdef void _refresh_total_stars(self, GameState state)
 
     # Share price / market index
     cpdef int get_share_price(self, GameState state)
@@ -110,7 +118,8 @@ cdef class Corporation:
     cpdef int count_companies(self, GameState state, bint include_acquisition=*)
 
     # Star / pending-move recalculation
-    cpdef void recalculate_stars(self, GameState state)
+    cpdef void recalculate_cash_stars(self, GameState state)
+    cpdef void recalculate_company_stars(self, GameState state)
     cpdef void update_pending_price_move(self, GameState state)
 
     # Income calculation

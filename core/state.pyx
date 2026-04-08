@@ -57,7 +57,8 @@ PlayerFields = namedtuple('PlayerFields', [
 
 CorpFields = namedtuple('CorpFields', [
     'active', 'cash', 'unissued_shares', 'issued_shares', 'bank_shares',
-    'income', 'stars', 'share_price', 'acquisition_proceeds',
+    'income', 'total_stars', 'cash_stars', 'company_stars',
+    'share_price', 'acquisition_proceeds',
     'in_receivership', 'price_index', 'pending_price_move',
     'raw_revenue', 'synergy_income', 'coo_cost', 'ability_income',
 ])
@@ -346,7 +347,11 @@ cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil:
     offset += 1
     c.income = offset
     offset += 1
-    c.stars = offset
+    c.total_stars = offset
+    offset += 1
+    c.cash_stars = offset
+    offset += 1
+    c.company_stars = offset
     offset += 1
     c.share_price = offset
     offset += 1
@@ -435,7 +440,9 @@ def get_corp_fields():
         issued_shares=CORP_FIELDS.issued_shares,
         bank_shares=CORP_FIELDS.bank_shares,
         income=CORP_FIELDS.income,
-        stars=CORP_FIELDS.stars,
+        total_stars=CORP_FIELDS.total_stars,
+        cash_stars=CORP_FIELDS.cash_stars,
+        company_stars=CORP_FIELDS.company_stars,
         share_price=CORP_FIELDS.share_price,
         acquisition_proceeds=CORP_FIELDS.acquisition_proceeds,
         in_receivership=CORP_FIELDS.in_receivership,

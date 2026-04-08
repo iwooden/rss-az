@@ -117,7 +117,13 @@ cdef struct CorpFieldOffsets:
     int issued_shares
     int bank_shares
     int income
-    int stars
+    # Stars are split into three slots so cash mutations don't require a
+    # full 36-company recompute. company_stars is the sum of COMPANY_STARS
+    # over the corp's owned + acquisition-zone companies; cash_stars is
+    # floor(cash / 10); total_stars folds those plus the SI ability bonus.
+    int total_stars
+    int cash_stars
+    int company_stars
     int share_price
     int acquisition_proceeds
     int in_receivership

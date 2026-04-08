@@ -228,7 +228,7 @@ cdef class Corporation:
         cdef int unissued_shares = total_shares - issued
 
         # 1. Activate the corp first so the transfer's downstream recalcs
-        #    (recalculate_stars + calculate_income) see an active corp.
+        #    (recalculate_company_stars + calculate_income) see an active corp.
         self.set_active(state, True)
 
         # 2. Transfer company to corporation (auto-recalculates stars + income)
@@ -256,10 +256,14 @@ cdef class Corporation:
         return self._get_cash(state)
 
     cpdef void set_cash(self, GameState state, int cash):
-        """Set corp cash (raw integer dollars). Auto-recalculates stars."""
+        """Set corp cash (raw integer dollars). Refreshes the cash component
+        of the star breakdown — only the floor(cash / 10) contribution
+        changes, so we can skip the 36-company iteration that company
+        ownership changes need.
+        """
         state._data[self._slot(CORP_FIELDS.cash)] = <int16_t>cash
         if self._is_active(state):
-            self.recalculate_stars(state)
+            self.recalculate_cash_stars(state)
 
     cpdef void add_cash(self, GameState state, int amount):
         """Add to corp cash (negative `amount` subtracts)."""
@@ -296,7 +300,7 @@ cdef class Corporation:
         state._data[self._slot(CORP_FIELDS.bank_shares)] = <int16_t>shares
 
     # =========================================================================
-    # INCOME AND STARS
+    # INCOME
     # =========================================================================
 
     cpdef int get_income(self, GameState state):
@@ -307,25 +311,55 @@ cdef class Corporation:
         """Set corp income (raw integer dollars)."""
         state._data[self._slot(CORP_FIELDS.income)] = <int16_t>income
 
-    cpdef int get_stars(self, GameState state):
-        """Return total owned stars."""
-        return <int>state._data[self._slot(CORP_FIELDS.stars)]
+    # =========================================================================
+    # STARS
+    # =========================================================================
+    #
+    # The star count is split into three slots so that the two inputs that
+    # drive it can refresh independently:
+    #
+    #   company_stars  = sum(COMPANY_STARS) over owned + acq-zone companies
+    #                    (only changes on company ownership transitions)
+    #   cash_stars     = floor(cash / 10), 0 when cash <= 0
+    #                    (only changes on cash mutations)
+    #   total_stars    = company_stars + cash_stars + (SI ability bonus)
+    #
+    # set_cash refreshes only cash_stars + total_stars (no 36-company loop);
+    # company ownership changes route through Company._recalc_after_change,
+    # which calls recalculate_company_stars on the affected corp.
 
-    cpdef void set_stars(self, GameState state, int stars):
-        """Set total owned stars."""
-        state._data[self._slot(CORP_FIELDS.stars)] = <int16_t>stars
+    cpdef int get_total_stars(self, GameState state):
+        """Return total owned stars (company + cash + SI ability bonus)."""
+        return <int>state._data[self._slot(CORP_FIELDS.total_stars)]
 
-    cpdef void recalculate_stars(self, GameState state):
+    cpdef int get_cash_stars(self, GameState state):
+        """Return the cash component of the star total (floor(cash / 10))."""
+        return <int>state._data[self._slot(CORP_FIELDS.cash_stars)]
+
+    cpdef int get_company_stars(self, GameState state):
+        """Return the owned-companies component of the star total."""
+        return <int>state._data[self._slot(CORP_FIELDS.company_stars)]
+
+    cpdef void recalculate_cash_stars(self, GameState state):
+        """Refresh cash_stars + total_stars + pending_price_move from cash.
+
+        Cheap path: no company iteration. Called automatically by
+        ``set_cash`` whenever the corp is active.
         """
-        Recompute and store total owned stars from current state.
+        cdef int cash = self._get_cash(state)
+        cdef int cash_stars = cash // 10 if cash > 0 else 0
+        state._data[self._slot(CORP_FIELDS.cash_stars)] = <int16_t>cash_stars
+        self._refresh_total_stars(state)
 
-        Owned stars = sum(company star ratings) + floor(cash / 10) + SI bonus.
-        Includes both owned and acquisition-zone companies so the NN sees
-        accurate values during the ACQUISITION phase. Call this after any
-        change to company ownership or corporation cash.
+    cpdef void recalculate_company_stars(self, GameState state):
+        """Refresh company_stars + total_stars + pending_price_move from
+        the corp's owned and acquisition-zone companies.
+
+        O(36) — only called when company ownership transitions in or out
+        of this corp (via Company._recalc_after_change).
         """
-        cdef int total = 0
-        cdef int company_id, cash, loc, owner
+        cdef int company_stars = 0
+        cdef int company_id, loc, owner
         cdef int locations_base = LAYOUT.companies_offset + COMPANY_OFFSETS.locations
         cdef int owners_base = LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids
         cdef int loc_corp = <int>LOC_CORP
@@ -335,16 +369,26 @@ cdef class Corporation:
             loc = state._data[locations_base + company_id]
             owner = state._data[owners_base + company_id]
             if (loc == loc_corp or loc == loc_corp_acq) and owner == self.corp_id:
-                total += COMPANY_STARS[company_id]
+                company_stars += COMPANY_STARS[company_id]
 
-        cash = self._get_cash(state)
-        if cash > 0:
-            total += cash // 10
+        state._data[self._slot(CORP_FIELDS.company_stars)] = <int16_t>company_stars
+        self._refresh_total_stars(state)
 
+    cdef void _refresh_total_stars(self, GameState state):
+        """Recompute total_stars from the cached parts and refresh price move.
+
+        total_stars = cash_stars + company_stars + (2 if SI corp else 0).
+        The SI ability is a permanent +2 bonus per RULES.md and shows up
+        in price-movement math via this slot. Always followed by a
+        pending_price_move refresh so price reactions stay coherent.
+        """
+        cdef int total = (
+            <int>state._data[self._slot(CORP_FIELDS.cash_stars)]
+            + <int>state._data[self._slot(CORP_FIELDS.company_stars)]
+        )
         if self.corp_id == <int>CorpIndices.CORP_SI:
             total += 2
-
-        self.set_stars(state, total)
+        state._data[self._slot(CORP_FIELDS.total_stars)] = <int16_t>total
         self.update_pending_price_move(state)
 
     cpdef void update_pending_price_move(self, GameState state):
@@ -358,7 +402,7 @@ cdef class Corporation:
         if not self._is_active(state):
             state._data[slot] = 0
             return
-        owned_stars = self.get_stars(state)
+        owned_stars = self.get_total_stars(state)
         price_index = self._get_price_index(state)
         issued_shares = self._get_issued_shares(state)
         required = _required_stars(price_index, issued_shares)
@@ -602,12 +646,16 @@ cdef class Corporation:
         if current_index > 0:
             market_module.MARKET.set_space_available(state, current_index, True)
 
-        # Step 6: Deactivate corp and clear remaining state.
+        # Step 6: Deactivate corp and clear remaining state. Stars are
+        # split into three slots — clear them all so an inactive corp
+        # never carries a residual SI ability bonus or stale cash share.
         self.set_active(state, False)
         self.set_price_index(state, 0)
         self.set_in_receivership(state, False)
         self.set_income(state, 0)
-        self.set_stars(state, 0)
+        state._data[self._slot(CORP_FIELDS.total_stars)] = 0
+        state._data[self._slot(CORP_FIELDS.cash_stars)] = 0
+        state._data[self._slot(CORP_FIELDS.company_stars)] = 0
         self.set_acquisition_proceeds(state, 0)
 
         # Update net worth for all players (shares wiped, price gone).

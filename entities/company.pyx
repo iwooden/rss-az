@@ -157,7 +157,7 @@ cdef class Company:
         if location == LOC_CORP or location == LOC_CORP_ACQ:
             assert corp_module.CORPS[owner_id].is_active(state), \
                 f"company {self.company_id} associated with inactive corp {owner_id} (loc={location})"
-            corp_module.CORPS[owner_id].recalculate_stars(state)
+            corp_module.CORPS[owner_id].recalculate_company_stars(state)
             corp_module.CORPS[owner_id].calculate_income(state)
         elif location == LOC_PLAYER:
             player_module.PLAYERS[owner_id].calculate_income(state)
