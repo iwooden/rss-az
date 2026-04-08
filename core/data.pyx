@@ -25,22 +25,13 @@ from libc.stdint cimport uint8_t, int8_t
 # raw int16 game-state values into roughly the [-1, 1] range expected by the
 # transformer's input projections. They are NOT applied during state storage —
 # the state array always holds raw integers.
+#
+# The cdef constants themselves live in data.pxd as ``cdef extern from *``
+# C #defines so every cimporting module gets them as compile-time literals
+# that the C compiler can fold directly into multiplies/divisions. Only
+# the Python-visible mirrors live here, for tests and notebooks that want
+# to inspect the divisors without dropping into Cython.
 
-cdef float CASH_DIVISOR = 150.0
-cdef float NET_WORTH_DIVISOR = 200.0
-cdef float COMPANY_INCOME_DIVISOR = 10.0
-cdef float ENTITY_INCOME_DIVISOR = 80.0
-cdef float SHARE_DIVISOR = 7.0
-cdef float COMPANY_PRICE_DIVISOR = 80.0
-cdef float SHARE_PRICE_DIVISOR = 75.0
-cdef float COMPANY_STAR_DIVISOR = 5.0
-cdef float CORP_STAR_DIVISOR = 40.0
-cdef float MAX_ROUNDTRIPS = 2.0
-cdef float IMPACT_DIVISOR = 5.0
-
-# Python-accessible mirrors of the normalization constants. Useful for the
-# Python-side token extraction tests and for inspecting the divisors from
-# notebooks without dropping into Cython.
 PY_CASH_DIVISOR = CASH_DIVISOR
 PY_NET_WORTH_DIVISOR = NET_WORTH_DIVISOR
 PY_COMPANY_PRICE_DIVISOR = COMPANY_PRICE_DIVISOR

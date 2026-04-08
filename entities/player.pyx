@@ -267,6 +267,7 @@ cdef class Player:
         cdef int loc_player = <int>LOC_PLAYER
         cdef int locations_base = LAYOUT.companies_offset + COMPANY_OFFSETS.locations
         cdef int owners_base = LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids
+        cdef Corporation corp
 
         # Add face value of owned private companies
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
@@ -274,11 +275,15 @@ cdef class Player:
                     and state._data[owners_base + company_id] == self.player_id):
                 total += COMPANY_FACE_VALUE[company_id]
 
-        # Add value of corporation shares
+        # Add value of corporation shares. Typed Corporation handle lets
+        # Cython dispatch via cdef instead of Python attribute lookups.
         for corp_id in range(<int>GameConstants.NUM_CORPS):
             shares = self._get_shares(state, corp_id)
-            if shares > 0 and corp_module.CORPS[corp_id].is_active(state):
-                total += shares * corp_module.CORPS[corp_id].get_share_price(state)
+            if shares <= 0:
+                continue
+            corp = <Corporation>corp_module.CORPS[corp_id]
+            if corp._is_active(state):
+                total += shares * corp.get_share_price(state)
 
         return total
 
@@ -313,19 +318,23 @@ cdef class Player:
         cdef int corp_id, shares, sim_index, new_index, i
         cdef int market_offset = LAYOUT.market_offset
         cdef int16_t sim_market[27]
+        cdef Corporation corp
 
         # Copy market availability for simulation
         for i in range(27):
             sim_market[i] = state._data[market_offset + i]
 
+        # Typed Corporation handle lets Cython dispatch via cdef instead
+        # of Python attribute lookups inside the inner simulation loop.
         for corp_id in range(<int>GameConstants.NUM_CORPS):
-            if not corp_module.CORPS[corp_id].is_active(state):
+            corp = <Corporation>corp_module.CORPS[corp_id]
+            if not corp._is_active(state):
                 continue
             shares = self._get_shares(state, corp_id)
             if shares <= 0:
                 continue
 
-            sim_index = corp_module.CORPS[corp_id].get_price_index(state)
+            sim_index = corp._get_price_index(state)
             for _ in range(shares):
                 # Find next lower available space in simulated market
                 new_index = sim_index - 1

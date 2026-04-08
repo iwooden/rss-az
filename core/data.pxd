@@ -53,18 +53,35 @@ cpdef enum CorpIndices:
     CORP_SI = 7 # Gets +2 share price movement after dividends
 
 # Normalization constants used during token extraction for NN input.
-# Defined in data.pyx; cimported by the token-extraction layer.
-cdef float CASH_DIVISOR
-cdef float NET_WORTH_DIVISOR
-cdef float COMPANY_INCOME_DIVISOR
-cdef float ENTITY_INCOME_DIVISOR
-cdef float SHARE_DIVISOR
-cdef float COMPANY_PRICE_DIVISOR
-cdef float SHARE_PRICE_DIVISOR
-cdef float COMPANY_STAR_DIVISOR
-cdef float CORP_STAR_DIVISOR
-cdef float MAX_ROUNDTRIPS
-cdef float IMPACT_DIVISOR
+# Exposed as C #defines so the values are compile-time constants in every
+# module that cimports them — the C compiler can fold them directly into
+# multiplies/divisions in the token-extraction hot path instead of
+# loading a module-level global at every use.
+cdef extern from *:
+    """
+    #define CASH_DIVISOR 150.0f
+    #define NET_WORTH_DIVISOR 200.0f
+    #define COMPANY_INCOME_DIVISOR 10.0f
+    #define ENTITY_INCOME_DIVISOR 80.0f
+    #define SHARE_DIVISOR 7.0f
+    #define COMPANY_PRICE_DIVISOR 80.0f
+    #define SHARE_PRICE_DIVISOR 75.0f
+    #define COMPANY_STAR_DIVISOR 5.0f
+    #define CORP_STAR_DIVISOR 40.0f
+    #define MAX_ROUNDTRIPS 2.0f
+    #define IMPACT_DIVISOR 5.0f
+    """
+    const float CASH_DIVISOR
+    const float NET_WORTH_DIVISOR
+    const float COMPANY_INCOME_DIVISOR
+    const float ENTITY_INCOME_DIVISOR
+    const float SHARE_DIVISOR
+    const float COMPANY_PRICE_DIVISOR
+    const float SHARE_PRICE_DIVISOR
+    const float COMPANY_STAR_DIVISOR
+    const float CORP_STAR_DIVISOR
+    const float MAX_ROUNDTRIPS
+    const float IMPACT_DIVISOR
 
 # Company data arrays
 cdef int[36] COMPANY_FACE_VALUE
