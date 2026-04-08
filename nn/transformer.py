@@ -81,7 +81,7 @@ class TransformerConfig:
     d_model: int = 128
     num_heads: int = 2
     num_layers: int = 10
-    ff_mult: float = 2.67  # FFN inner dimension = ceil(ff_mult * d_model)
+    ff_mult: float = 3.0  # FFN inner dimension = ceil(ff_mult * d_model)
     d_bilinear: int = 64   # Hidden width for the unified ACQ pair-feature policy head
 
     token_dim: int = 63    # Raw feature width per token (all zero-padded to same size)
