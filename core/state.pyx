@@ -522,6 +522,27 @@ DECK_OFFSETS = compute_deck_offsets()
 # GAME STATE CLASS
 # =============================================================================
 
+cdef inline _bind_buffer(GameState state, object buffer, int num_players):
+    """Validate `buffer` and point `state` at it as its backing store.
+
+    Shared body of ``from_buffer`` (which constructs a new wrapper) and
+    ``rebind`` (which repoints an existing wrapper). Validation is
+    ``assert``-based so the checks compile out under ``python -O`` for
+    the MCTS hot path. The buffer is wrapped via ``np.asarray``, which
+    is a no-op when the caller already passes in a numpy array.
+    """
+    cdef cnp.ndarray buf = np.asarray(buffer)
+    cdef int expected_size = LAYOUT.players_offset + LAYOUT.player_stride * num_players
+    assert buf.dtype == np.int16, \
+        f"Expected int16 array, got {buf.dtype}"
+    assert buf.ndim == 1 and <int>buf.shape[0] == expected_size, \
+        f"Expected 1-D array of length {expected_size}, " \
+        f"got ndim={buf.ndim} len={<int>buf.shape[0]}"
+    assert buf.flags['C_CONTIGUOUS'], "Buffer must be C-contiguous"
+    state._array = buf
+    state._data = <int16_t*>cnp.PyArray_DATA(buf)
+
+
 cdef class GameState:
     """
     Game state container (compact layout).
@@ -607,29 +628,19 @@ cdef class GameState:
             GameState backed by the provided buffer
         """
         state = GameState(num_players, _alloc=False)
-        cdef cnp.ndarray buf = np.asarray(buffer)
-        cdef int expected_size = LAYOUT.players_offset + LAYOUT.player_stride * num_players
-        if buf.dtype != np.int16:
-            raise ValueError(f"Expected int16 array, got {buf.dtype}")
-        if buf.ndim != 1 or <int>buf.shape[0] != expected_size:
-            raise ValueError(
-                f"Expected 1-D array of length {expected_size}, "
-                f"got ndim={buf.ndim} len={<int>buf.shape[0]}"
-            )
-        if not buf.flags['C_CONTIGUOUS']:
-            raise ValueError("Buffer must be C-contiguous")
-        state._array = buf
-        state._data = <int16_t*>cnp.PyArray_DATA(buf)
+        _bind_buffer(state, buffer, num_players)
         return state
 
-    def rebind(self, buffer):
-        """Rebind this GameState to a different backing buffer (zero-copy).
+    def rebind(self, buffer, int num_players):
+        """Repoint this GameState at a different backing buffer (zero-copy).
 
-        Avoids allocating a new GameState wrapper when only the underlying
-        data changes. Used in MCTS search hot paths.
+        Reuses the existing wrapper instead of allocating a new one. Used
+        in MCTS search hot paths to swap a scratch GameState across rows
+        of a state pool. The new buffer may have a different player count
+        than the current one — caller passes `num_players` explicitly so
+        the size validation matches the new buffer.
         """
-        self._array = buffer
-        self._data = <int16_t*>cnp.PyArray_DATA(buffer)
+        _bind_buffer(self, buffer, num_players)
 
     # =========================================================================
     # GAME INITIALIZATION
