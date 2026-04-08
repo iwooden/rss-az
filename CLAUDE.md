@@ -25,17 +25,15 @@ High-performance Cython game engine for "Rolling Stock Stars" board game, optimi
 ```
 rss-az-cython2/
 ├── core/              # Low-level engine: state.pyx, driver.pyx, actions.pyx, data.pyx
-├── entities/          # Entity handles: player, corp, company, deck, turn, market, fi, encoding
+├── entities/          # Entity handles: player, corp, company, deck, turn, market, fi
 ├── phases/            # Phase handlers: invest, bid, acquisition, closing, dividends, income, issue, ipo, wrap_up, end_card
 ├── mcts/              # MCTS search: node.py, evaluator.py, search.py, mcts_core.pyx (Cython hot functions + signaling)
 ├── nn/                # Neural network: model_3p.py (residual MLP, policy + value heads)
 ├── train/             # Self-play training: config, eval_server, self_play, replay_buffer, trainer, checkpoint, logging, main
 │   └── gpu/           # Vendor-specific GPU optimizations: nvidia.py, amd.py (auto-detected)
 ├── tests/             # Test suite: phases/, games_18xx/ replay tests, conftest.py
-├── interp/            # Interpretability analysis (see interp/README.md)
 ├── RULES.md           # Complete game rules (authoritative)
 ├── VECTORS.md         # State/action vector documentation
-└── RSS.pdf            # Original board game rulebook
 ```
 
 ## Architecture Overview
@@ -74,7 +72,7 @@ Single contiguous int16 numpy array. Raw integers only — no normalization, no 
 
 The fixed prefix (everything except the players section) is **382** int16 slots and is identical across player counts. Only `total_size` scales: `total_size = 382 + 39 * num_players`. The players section lives at the end of the buffer for exactly this reason — every other section's offset is constant.
 
-`GameState` exposes only structural primitives publicly: `_player_ptr` / `_corp_ptr` / `_turn_ptr` (cdef nogil), `_num_players` (cdef int, readable from cdef code), `get_active_player` / `set_active_player`, `get_num_players`, and `initialize_game`. There are no per-instance layout fields — entity handles read offsets directly from the module-level constants below. All field-level reads and writes go through entity handles in `entities/`.
+`GameState` is basically just a thin wrapper around the state vector. There are no per-instance layout fields — entity handles read offsets directly from the module-level constants below. All field-level reads and writes go through entity handles in `entities/`.
 
 **Module-level layout constants** on `core.state` (computed once at import, shared by every `GameState`):
 
@@ -87,17 +85,7 @@ These are Cython `cdef` structs — **NOT accessible from Python directly**. Cyt
 
 ### Actions (`core/actions.pyx`)
 
-Dynamic action space: `123 + (1 + num_players) * AUCTION_CAP` total actions. Use `get_total_action_count(num_players)` for the exact size.
-
-**Action layout by phase:**
-- INVEST: 1 pass + auction slots + 8 buy + 8 sell
-- BID: 1 leave + 14 raise bid amounts
-- ACQUISITION: 51 price offsets + 1 FI buy + 1 pass
-- CLOSING: 1 close + 1 pass
-- DIVIDENDS: 26 dividend amounts
-- ISSUE: 1 issue + 1 pass
-- IPO: 1 pass + 8 corp selections
-- PAR: 14 par price indices (no pass)
+**Subject to change** as part of the transformers refactor.
 
 ### Driver (`core/driver.pyx`)
 
@@ -113,9 +101,9 @@ Pure-Python AlphaZero-style MCTS for 3-player games. MCTSConfig lives in `train/
 
 ### Value Representation
 
-Value head outputs 3 scalars in [-1, 1] via tanh: `[v_active, v_next, v_next_next]`. Un-rotated to canonical order via `np.roll(values, active_player_id)`.
+Value head outputs scalars in [-1, 1] for each player via tanh: `[v_player0, v_player1, ... ]`. 
 
-**Terminal values:** Blend of rank-based and zero-sum net-worth-deviation rewards (`--terminal-blend`, default 0.5). Rank: `linspace(+1, -1)` by placement. Margin: `(n/(n-1)) * (nw_i - mean_nw) / max_nw`. Both zero-sum, stays in [-1, +1]. Use `--terminal-blend 1.0` for pure rank.
+**Terminal values:** Blend of rank-based and zero-sum net-worth-deviation rewards (`--terminal-blend`, default 0.75). Rank: `linspace(+1, -1)` by placement. Margin: `(n/(n-1)) * (nw_i - mean_nw) / max_nw`. Both zero-sum, stays in [-1, +1]. Use `--terminal-blend 1.0` for pure rank.
 
 ### PUCT Selection
 
@@ -139,9 +127,9 @@ Instead of soft-Z or game outcome, we use **A0GB** (Willemsen et al., 2022): fol
 
 **Memory:** States NOT stored in tree nodes — root cloned and actions replayed to reach leaves.
 
-### NN Model (`nn/model_3p.py`)
+### NN Model (`nn/transformer.py`)
 
-Residual MLP (~4.1M params): Input 1109 → preprocessing (768→512→256 + LayerNorm) → 8 residual blocks (256-dim, pre-LN, GELU) → 8 phase-specific policy heads (3 hidden layers each, dispatch by phase one-hot) + value head (→ 3 tanh). Kaiming init, zero-init residual fc2.
+**Subject to change** as part of the transformers refactor.
 
 ## Self-Play Training
 
@@ -180,19 +168,9 @@ See `VECTORS.md` for the full buffer layout. Key points:
 - Sections in order: `FI (2) | companies (108) | market (27) | corps (18 × 8) | turn (64) | deck (37) | players (39 × N)`. The players section is **last** because it is the only section whose size depends on `num_players`; every other offset is constant.
 - The companies section packs three parallel 36-slot sub-arrays — `incomes`, `locations`, `owner_ids` — reachable via `LAYOUT.companies_offset + COMPANY_OFFSETS.<field>`. The deck section packs `top` (1) + `order` (36) reachable via `LAYOUT.deck_offset + DECK_OFFSETS.<field>`.
 - The turn block (64 slots, fixed across player counts) carries the game-wide metadata at the front (`active_player`, `num_players`, `phase`, `coo_level`, `turn_number`) followed by global scalars and the phase-remaining flag arrays. The per-player `auction_passed` flag lives in the player block, not the turn block.
-- The corp block carries its star count split into three slots (`total_stars`, `cash_stars`, `company_stars`) so cash mutations don't trigger a full 36-company recompute — see [Corp stars](#corp-stars) below.
+- The corp block carries its star count split into three slots (`total_stars`, `cash_stars`, `company_stars`) so cash mutations don't trigger a full 36-company recompute.
 - All per-player data — cash, shares, presidencies, this-turn share buys/sells, and the per-player `auction_passed` flag — lives inside one player block, so `_player_ptr(i)` reaches everything for player `i` in a single pointer hop.
 - `company_locations` (`CompanyLocation` enum, 0–8) plus `company_owner_ids` are the single source of truth for "who owns what". `LOC_DECK = 0` is the zero-init default; `__cinit__` explicitly seeds `company_owner_ids` to `-1`.
-
-### Corp stars
-
-`Corporation` tracks three star slots instead of one:
-
-- `company_stars` — sum of `COMPANY_STARS` over the corp's owned + acquisition-zone companies. Refreshed by `recalculate_company_stars(state)`, which is called from `Company._recalc_after_change` whenever ownership transitions in or out of the corp.
-- `cash_stars` — `floor(cash / 10)` clamped at 0. Refreshed by `recalculate_cash_stars(state)`, which `set_cash` calls on every cash mutation (active corps only). This is the fast path — no 36-company iteration.
-- `total_stars` — `company_stars + cash_stars + (2 if corp_id == SI else 0)`. Refreshed by the private `_refresh_total_stars(state)` helper which both refresh paths call at the end; it also triggers `update_pending_price_move`.
-
-`get_total_stars(state)` is the "what the old `get_stars` returned" accessor; `get_cash_stars` / `get_company_stars` expose the breakdown. There is no public setter — the slots are always derived from cash and company ownership. `go_bankrupt` clears all three slots explicitly so an inactive SI corp doesn't carry a residual +2 bonus.
 
 ## Game Flow & Phases
 
@@ -226,8 +204,8 @@ Both phases use **one-by-one offer presentation**: offers generated at phase ent
 
 - **Naming:** `corp_id`/`company_id`/`player_id` = indices; `CORPS[i]`/`PLAYERS[i]` = singletons; `PHASE_*` from `GamePhases`; `LOC_*` from `CompanyLocation`
 - **Field access:** Use entity handles (`PLAYERS[i].get_cash(state)`, `CORPS[c].get_share_price(state)`) for all field reads/writes. `GameState` exposes only structural primitives. `core/data.{pxd,pyx}` is data-only (static arrays + enums + normalization constants) — there are no field-level helpers there; modules that need static game data `cimport` the underlying arrays directly.
-- **Pointer safety:** `nogil` functions take pointers/offsets; `_player_ptr()`/`_corp_ptr()`/`_turn_ptr()` helpers compute their slot from the module-level `LAYOUT` constant. Every entity handle reads offsets directly from `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` (cimported from `core.state`) and caches nothing per-instance. Player and Corp use a small inline `_slot(field)` helper that computes `LAYOUT.<section>_offset + id * LAYOUT.<section>_stride + field` — Cython inlines it away in nogil hot paths.
-- **Guard with `assert`, not silent fallbacks:** In Cython code, validate parameters and invariants with `assert` rather than `if ...: return`/`return False`/`return 0` style guards. Out-of-range IDs, inactive entities that should be active, malformed state — all of these should crash loudly in development. Silently propagating a default value hides the real bug at the call site and lets corrupt state spread. `assert` statements compile out under `python -O`, so there is zero overhead in production. Examples: `assert 0 <= player_id < state._num_players`, `assert corp.is_active(state)`. Read `num_players` directly from the `GameState` rather than caching it on the entity handle — the singleton handle is reused across game instances of any player count. Include a descriptive f-string message so failures are debuggable. This rule does *not* apply to genuine business-logic branches (e.g. "this player can't afford the share, so the action is illegal") — those still return cleanly. The rule is about *defensive* checks for things that should never happen if callers are correct.
+- **Pointer safety:** `nogil` functions take pointers/offsets. Every entity handle reads offsets directly from `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` (cimported from `core.state`) and caches nothing per-instance. Player and Corp use a small inline `_slot(field)` helper that computes `LAYOUT.<section>_offset + id * LAYOUT.<section>_stride + field` — Cython inlines it away in nogil hot paths.
+- **Guard with `assert`, not silent fallbacks:** In Cython code, validate parameters and invariants with `assert` rather than `if ...: return`/`return False`/`return 0` style guards. Out-of-range IDs, inactive entities that should be active, malformed state — all of these should crash loudly in development. Silently propagating a default value hides the real bug at the call site and lets corrupt state spread. `assert` statements compile out under `python -O`, so there is zero overhead in production. Examples: `assert 0 <= player_id < state._num_players`, `assert corp.is_active(state)`. Include a descriptive f-string message so failures are debuggable. This rule does *not* apply to genuine business-logic branches (e.g. "this player can't afford the share, so the action is illegal") — those still return cleanly. The rule is about *defensive* checks for things that should never happen if callers are correct.
 
 ## Build Commands
 
@@ -259,7 +237,7 @@ pytest tests/
 
 **Warning-free builds:** No compiler warnings expected. If warnings appear, create a beads issue.
 
-**Pyright errors:** Fix before moving on. Run `pyright <file>` via Bash for definitive results (auto-injected diagnostics can be stale).
+**Pyright errors:** Fix before moving on. Run `pyright <file>` via Bash for definitive results (auto-injected diagnostics can be stale). Note: if you encounter a Pyright error, don't ignore it just because it wasn't caused by your change - fix pre-existing errors to keep the codebase clean!
 
 ## Testing Approach
 
@@ -316,7 +294,7 @@ Use subtasks (`bd create --parent=<id> --title="..." --type=task`) for related w
 
 ## Ad-hoc Test Scripts
 
-Write ad-hoc scripts to the scratchpad directory (path in system prompt), not inline in Bash. Use `Edit` for iteration. Always prepend `PYTHONPATH=/home/icebreaker/rss-az-cython2` when running.
+Write ad-hoc scripts to the project `scratchpad` directory, not inline in Bash. Use `Edit` for iteration. Always prepend `PYTHONPATH=/home/icebreaker/rss-az-cython2` when running. This will save you a ton of tokens by making sure you don't have to write 100-line scripts from scratch on each invocation!
 
 ## Verification Before Closing
 
