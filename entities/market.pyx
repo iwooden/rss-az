@@ -23,6 +23,12 @@ from core.data cimport (
 )
 
 
+cdef void copy_market_availability(GameState state, int16_t* out_flags) noexcept nogil:
+    cdef int index
+    for index in range(<int>GameConstants.NUM_MARKET_SPACES):
+        out_flags[index] = state._data[LAYOUT.market_offset + index]
+
+
 cdef class Market:
     """
     Entity handle for accessing market state.

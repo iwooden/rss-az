@@ -11,7 +11,11 @@ The handle is stateless: every read derives its slot inline from
 offset cache and no initialize() step.
 """
 
+from libc.stdint cimport int16_t
 from core.state cimport GameState
+
+
+cdef void copy_market_availability(GameState state, int16_t* out_flags) noexcept nogil
 
 
 cdef class Market:

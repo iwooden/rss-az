@@ -15,9 +15,10 @@ Layout summary (per-player block, all raw int16):
   is_president (8), round_trips, income, share_buys (8), share_sells (8),
   auction_passed (1).
 
-Company ownership lives in the shared locations / owner_ids sub-arrays
-of the companies section — there is no per-player owned_companies
-bitmap. ``owns_company`` checks LOC_PLAYER + matching owner_id directly.
+Company ownership lives in the companies section, but player code reads
+it through company-module query helpers rather than duplicating the
+companies layout details locally. There is no per-player owned_companies
+bitmap.
 
 The handle reaches into the corp entity for share-bank / receivership
 bookkeeping during share transfers and presidency recalculation. The
@@ -27,15 +28,19 @@ calls are thin cdef dispatches once typed.
 
 from libc.stdint cimport int16_t
 
-from core.state cimport GameState, LAYOUT, PLAYER_FIELDS, COMPANY_OFFSETS
+from core.state cimport GameState, LAYOUT, PLAYER_FIELDS
 from core.data cimport (
     GameConstants,
-    COMPANY_FACE_VALUE,
     MARKET_PRICES,
 )
-from entities.company cimport LOC_PLAYER
+from entities.company cimport (
+    company_owned_by_player,
+    company_sum_player_face_value,
+    company_sum_player_adjusted_income,
+)
 from entities.turn cimport TurnState
 from entities.corp cimport Corporation
+from entities.market cimport copy_market_availability
 
 # Late imports to avoid circular dependencies (resolved at runtime)
 from entities import turn as turn_module
@@ -229,14 +234,10 @@ cdef class Player:
     cdef inline bint _owns_company(self, GameState state, int company_id) noexcept nogil:
         """Check if this player owns the given company.
 
-        Reads the shared companies-section locations / owner_ids
-        sub-arrays — there is no per-player owned_companies bitmap any
-        more.
+        Delegates to the company module, which owns the companies
+        section storage and its layout details.
         """
-        return (
-            state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.locations + company_id] == <int>LOC_PLAYER
-            and state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids + company_id] == self.player_id
-        )
+        return company_owned_by_player(state, company_id, self.player_id)
 
     # =========================================================================
     # CASH OPERATIONS
@@ -274,18 +275,12 @@ cdef class Player:
         Net worth = cash + sum(company face values) + sum(shares * share_price)
         """
         cdef int total = self._get_cash(state)
-        cdef int company_id, corp_id
+        cdef int corp_id
         cdef int shares
-        cdef int loc_player = <int>LOC_PLAYER
-        cdef int locations_base = LAYOUT.companies_offset + COMPANY_OFFSETS.locations
-        cdef int owners_base = LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids
         cdef Corporation corp
 
         # Add face value of owned private companies
-        for company_id in range(<int>GameConstants.NUM_COMPANIES):
-            if (state._data[locations_base + company_id] == loc_player
-                    and state._data[owners_base + company_id] == self.player_id):
-                total += COMPANY_FACE_VALUE[company_id]
+        total += company_sum_player_face_value(state, self.player_id)
 
         # Add value of corporation shares. Typed Corporation handle lets
         # Cython dispatch via cdef instead of Python attribute lookups.
@@ -328,13 +323,11 @@ cdef class Player:
         """
         cdef int total = self._get_cash(state)
         cdef int corp_id, shares, sim_index, new_index, i
-        cdef int market_offset = LAYOUT.market_offset
         cdef int16_t sim_market[27]
         cdef Corporation corp
 
         # Copy market availability for simulation
-        for i in range(27):
-            sim_market[i] = state._data[market_offset + i]
+        copy_market_availability(state, sim_market)
 
         # Typed Corporation handle lets Cython dispatch via cdef instead
         # of Python attribute lookups inside the inner simulation loop.
@@ -528,17 +521,7 @@ cdef class Player:
         CoO changes). Note: Only player-owned privates, NOT corp
         subsidiaries.
         """
-        cdef int total = 0
-        cdef int company_id
-        cdef int incomes_base = LAYOUT.companies_offset + COMPANY_OFFSETS.incomes
-        cdef int locations_base = LAYOUT.companies_offset + COMPANY_OFFSETS.locations
-        cdef int owners_base = LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids
-        cdef int loc_player = <int>LOC_PLAYER
-        for company_id in range(<int>GameConstants.NUM_COMPANIES):
-            if (state._data[locations_base + company_id] == loc_player
-                    and state._data[owners_base + company_id] == self.player_id):
-                total += <int>state._data[incomes_base + company_id]
-        self.set_income(state, total)
+        self.set_income(state, company_sum_player_adjusted_income(state, self.player_id))
 
     # =========================================================================
     # AUCTION-PASSED FLAG

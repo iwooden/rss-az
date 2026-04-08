@@ -6,20 +6,20 @@ The FI is a special entity that buys companies (at face value when OS has
 the priority slot, otherwise at high price) and holds them until
 corporations acquire them. In the compact state layout the FI block is
 just two raw int16 slots — cash at ``LAYOUT.fi_offset`` and income at
-``LAYOUT.fi_offset + 1``. Ownership of companies lives in the shared
-locations / owner_ids sub-arrays of the companies section via LOC_FI,
-so this handle no longer iterates a per-FI ownership flag array.
+``LAYOUT.fi_offset + 1``. Ownership of companies lives in the companies
+section via LOC_FI, but FI logic reads that state through company-module
+query helpers instead of touching the companies layout directly.
 
-The handle is fully stateless: every read computes its slot inline from
-the module-level ``LAYOUT`` and ``COMPANY_OFFSETS`` constants on
-``core.state``. No per-instance offset cache, no initialize() step.
+The handle is fully stateless: its own cash/income slots live at fixed
+offsets under ``LAYOUT.fi_offset``. No per-instance offset cache, no
+initialize() step.
 """
 
 from libc.stdint cimport int16_t
 
-from core.state cimport GameState, LAYOUT, COMPANY_OFFSETS
+from core.state cimport GameState, LAYOUT
 from core.data cimport GameConstants
-from entities.company cimport LOC_FI
+from entities.company cimport company_owned_by_fi, company_sum_fi_adjusted_income
 
 
 cdef class ForeignInvestor:
@@ -65,12 +65,12 @@ cdef class ForeignInvestor:
     cpdef bint owns_company(self, GameState state, int company_id):
         """Return True if FI currently owns the given company.
 
-        Backed by the shared companies-section locations sub-array —
-        there is no FI-side ownership flag to keep in sync.
+        Delegates to the company module, which owns the companies
+        section storage and its layout details.
         """
         assert 0 <= company_id < <int>GameConstants.NUM_COMPANIES, \
             f"company_id {company_id} out of range [0, {<int>GameConstants.NUM_COMPANIES})"
-        return state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.locations + company_id] == <int>LOC_FI
+        return company_owned_by_fi(state, company_id)
 
     # =========================================================================
     # INCOME (low-level, nogil)
@@ -105,14 +105,7 @@ cdef class ForeignInvestor:
         Returns:
             Total income (always positive due to CLOSING phase rules).
         """
-        cdef int total = 0
-        cdef int company_id
-        cdef int incomes_base = LAYOUT.companies_offset + COMPANY_OFFSETS.incomes
-        cdef int locations_base = LAYOUT.companies_offset + COMPANY_OFFSETS.locations
-        cdef int loc_fi = <int>LOC_FI
-        for company_id in range(<int>GameConstants.NUM_COMPANIES):
-            if state._data[locations_base + company_id] == loc_fi:
-                total += <int>state._data[incomes_base + company_id]
+        cdef int total = company_sum_fi_adjusted_income(state)
         # FI always gets +5 bonus (RULES.md line 354)
         total += 5
         self._set_income(state, total)

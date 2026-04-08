@@ -15,11 +15,10 @@ Layout summary (per-corp block, all raw int16):
   price_index, pending_price_move, raw_revenue, synergy_income,
   coo_cost, ability_income.
 
-Company ownership and acquisition-pile membership live in the shared
-locations / owner_ids sub-arrays of the companies section — there is
-no per-corp owned_companies bitmap. Membership tests check ``LOC_CORP``
-or ``LOC_CORP_ACQ`` plus a matching ``owner_id`` and walk the global
-arrays directly.
+Company ownership and acquisition-pile membership live in the companies
+section — there is no per-corp owned_companies bitmap. Corp logic goes
+through company-module query helpers for bulk ownership scans rather
+than reaching into the companies layout directly.
 
 The synergy aggregation, the required-stars table, and the per-corp
 ability-income formulas live as private cdef helpers below; they are
@@ -30,7 +29,7 @@ will get their own copies when their slices land.
 
 from libc.stdint cimport int16_t
 
-from core.state cimport GameState, LAYOUT, CORP_FIELDS, COMPANY_OFFSETS
+from core.state cimport GameState, LAYOUT, CORP_FIELDS
 from core.data cimport (
     GameConstants,
     CorpIndices,
@@ -42,7 +41,12 @@ from core.data cimport (
     MARKET_PRICES,
 )
 from core.data import CORP_NAMES
-from entities.company cimport LOC_CORP, LOC_CORP_ACQ
+from entities.company cimport (
+    company_adjusted_income,
+    company_fill_corp_company_ids,
+    company_in_corp_acquisition,
+    company_owned_by_corp,
+)
 from entities.turn cimport TurnState
 
 # Late imports to avoid circular dependencies (resolved at runtime)
@@ -190,21 +194,14 @@ cdef class Corporation:
     cdef inline bint _owns_company(self, GameState state, int company_id) noexcept nogil:
         """Check if this corp currently owns the given company.
 
-        Reads the shared companies-section locations / owner_ids
-        sub-arrays — there is no per-corp owned_companies bitmap any
-        more.
+        Delegates to the company module, which owns the companies
+        section storage and its layout details.
         """
-        return (
-            state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.locations + company_id] == <int>LOC_CORP
-            and state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids + company_id] == self.corp_id
-        )
+        return company_owned_by_corp(state, company_id, self.corp_id)
 
     cdef inline bint _has_acquisition_company(self, GameState state, int company_id) noexcept nogil:
         """Check if this corp has the given company in its acquisition pile."""
-        return (
-            state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.locations + company_id] == <int>LOC_CORP_ACQ
-            and state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids + company_id] == self.corp_id
-        )
+        return company_in_corp_acquisition(state, company_id, self.corp_id)
 
     # =========================================================================
     # ACTIVE STATUS
@@ -369,17 +366,13 @@ cdef class Corporation:
         of this corp (via Company._recalc_after_change).
         """
         cdef int company_stars = 0
-        cdef int company_id, loc, owner
-        cdef int locations_base = LAYOUT.companies_offset + COMPANY_OFFSETS.locations
-        cdef int owners_base = LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids
-        cdef int loc_corp = <int>LOC_CORP
-        cdef int loc_corp_acq = <int>LOC_CORP_ACQ
+        cdef int company_id, i
+        cdef int company_ids[36]
+        cdef int company_count = company_fill_corp_company_ids(state, self.corp_id, True, company_ids)
 
-        for company_id in range(<int>GameConstants.NUM_COMPANIES):
-            loc = state._data[locations_base + company_id]
-            owner = state._data[owners_base + company_id]
-            if (loc == loc_corp or loc == loc_corp_acq) and owner == self.corp_id:
-                company_stars += COMPANY_STARS[company_id]
+        for i in range(company_count):
+            company_id = company_ids[i]
+            company_stars += COMPANY_STARS[company_id]
 
         state._data[self._slot(CORP_FIELDS.company_stars)] = <int16_t>company_stars
         self._refresh_total_stars(state)
@@ -489,24 +482,8 @@ cdef class Corporation:
         in this corp's acquisition pile (which will become owned once
         the phase ends).
         """
-        cdef int count = 0
-        cdef int company_id, loc, owner
-        cdef int locations_base = LAYOUT.companies_offset + COMPANY_OFFSETS.locations
-        cdef int owners_base = LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids
-        cdef int loc_corp = <int>LOC_CORP
-        cdef int loc_corp_acq = <int>LOC_CORP_ACQ
-
-        for company_id in range(<int>GameConstants.NUM_COMPANIES):
-            loc = state._data[locations_base + company_id]
-            owner = state._data[owners_base + company_id]
-            if owner != self.corp_id:
-                continue
-            if loc == loc_corp:
-                count += 1
-            elif include_acquisition and loc == loc_corp_acq:
-                count += 1
-
-        return count
+        return company_fill_corp_company_ids(
+            state, self.corp_id, include_acquisition, <int*>NULL)
 
     # =========================================================================
     # INCOME CALCULATION
@@ -537,37 +514,24 @@ cdef class Corporation:
         not here. See closing.pyx — JS receives 2x printed income when
         closing its own company.
         """
-        cdef int company_id, base_income, fv, loc, owner
+        cdef int company_id, base_income, fv, i
         cdef int adjusted_income_sum = 0
         cdef int raw_revenue_sum = 0
-        cdef int company_count = 0
         cdef int highest_fv = 0
         cdef int highest_fv_income = 0
         cdef int company_ids[36]
         cdef int synergy_income = 0
         cdef int synergy_markers = 0
         cdef int total_coo, ability, total
-        cdef int locations_base = LAYOUT.companies_offset + COMPANY_OFFSETS.locations
-        cdef int owners_base = LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids
-        cdef int incomes_base = LAYOUT.companies_offset + COMPANY_OFFSETS.incomes
-        cdef int loc_corp = <int>LOC_CORP
-        cdef int loc_corp_acq = <int>LOC_CORP_ACQ
+        cdef int company_count = company_fill_corp_company_ids(
+            state, self.corp_id, True, company_ids)
 
         # First pass: collect companies (owned + acquisition zone), sum
         # incomes, track highest face value for the DA ability.
-        for company_id in range(<int>GameConstants.NUM_COMPANIES):
-            loc = state._data[locations_base + company_id]
-            owner = state._data[owners_base + company_id]
-            if owner != self.corp_id:
-                continue
-            if loc != loc_corp and loc != loc_corp_acq:
-                continue
-
-            company_ids[company_count] = company_id
-            company_count += 1
-
+        for i in range(company_count):
+            company_id = company_ids[i]
             # Cached adjusted income (base - CoO already applied)
-            adjusted_income_sum += <int>state._data[incomes_base + company_id]
+            adjusted_income_sum += company_adjusted_income(state, company_id)
 
             # Sum raw base incomes and track highest face value for DA
             base_income = COMPANY_INCOME[company_id]

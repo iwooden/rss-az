@@ -59,6 +59,97 @@ cdef TurnState _TURN():
 
 
 # =============================================================================
+# COMPANIES-SECTION STORAGE ACCESS
+# =============================================================================
+
+cdef inline int _location_at(GameState state, int company_id) noexcept nogil:
+    return <int>state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.locations + company_id]
+
+
+cdef inline int _owner_at(GameState state, int company_id) noexcept nogil:
+    return <int>state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids + company_id]
+
+
+cdef inline void _set_location_owner(GameState state, int company_id, int location, int owner_id) noexcept nogil:
+    state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.locations + company_id] = <int16_t>location
+    state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids + company_id] = <int16_t>owner_id
+
+
+cdef inline int _adjusted_income_at(GameState state, int company_id) noexcept nogil:
+    return <int>state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.incomes + company_id]
+
+
+cdef inline void _set_adjusted_income_at(GameState state, int company_id, int income) noexcept nogil:
+    state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.incomes + company_id] = <int16_t>income
+
+
+# =============================================================================
+# COMPANIES-SECTION QUERY HELPERS
+# =============================================================================
+
+cdef bint company_owned_by_player(GameState state, int company_id, int player_id) noexcept nogil:
+    return _location_at(state, company_id) == <int>LOC_PLAYER and _owner_at(state, company_id) == player_id
+
+
+cdef bint company_owned_by_fi(GameState state, int company_id) noexcept nogil:
+    return _location_at(state, company_id) == <int>LOC_FI
+
+
+cdef bint company_owned_by_corp(GameState state, int company_id, int corp_id) noexcept nogil:
+    return _location_at(state, company_id) == <int>LOC_CORP and _owner_at(state, company_id) == corp_id
+
+
+cdef bint company_in_corp_acquisition(GameState state, int company_id, int corp_id) noexcept nogil:
+    return _location_at(state, company_id) == <int>LOC_CORP_ACQ and _owner_at(state, company_id) == corp_id
+
+
+cdef int company_adjusted_income(GameState state, int company_id) noexcept nogil:
+    return _adjusted_income_at(state, company_id)
+
+
+cdef int company_sum_player_face_value(GameState state, int player_id) noexcept nogil:
+    cdef int company_id
+    cdef int total = 0
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
+        if company_owned_by_player(state, company_id, player_id):
+            total += COMPANY_FACE_VALUE[company_id]
+    return total
+
+
+cdef int company_sum_player_adjusted_income(GameState state, int player_id) noexcept nogil:
+    cdef int company_id
+    cdef int total = 0
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
+        if company_owned_by_player(state, company_id, player_id):
+            total += _adjusted_income_at(state, company_id)
+    return total
+
+
+cdef int company_sum_fi_adjusted_income(GameState state) noexcept nogil:
+    cdef int company_id
+    cdef int total = 0
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
+        if company_owned_by_fi(state, company_id):
+            total += _adjusted_income_at(state, company_id)
+    return total
+
+
+cdef int company_fill_corp_company_ids(GameState state, int corp_id, bint include_acquisition, int* out_ids) noexcept nogil:
+    cdef int company_id
+    cdef int count = 0
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
+        if company_owned_by_corp(state, company_id, corp_id):
+            if out_ids != NULL:
+                out_ids[count] = company_id
+            count += 1
+        elif include_acquisition and company_in_corp_acquisition(state, company_id, corp_id):
+            if out_ids != NULL:
+                out_ids[count] = company_id
+            count += 1
+    return count
+
+
+# =============================================================================
 # COMPANY CLASS
 # =============================================================================
 
@@ -82,14 +173,13 @@ cdef class Company:
     # =========================================================================
 
     cdef inline int _get_location(self, GameState state) noexcept nogil:
-        return <int>state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.locations + self.company_id]
+        return _location_at(state, self.company_id)
 
     cdef inline int _get_owner_id(self, GameState state) noexcept nogil:
-        return <int>state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids + self.company_id]
+        return _owner_at(state, self.company_id)
 
     cdef inline void _set_location(self, GameState state, int location, int owner_id) noexcept nogil:
-        state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.locations + self.company_id] = <int16_t>location
-        state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids + self.company_id] = <int16_t>owner_id
+        _set_location_owner(state, self.company_id, location, owner_id)
 
     # =========================================================================
     # LOCATION QUERIES
@@ -119,23 +209,20 @@ cdef class Company:
     cpdef bint is_owned_by_player(self, GameState state, int player_id):
         assert 0 <= player_id < _TURN()._get_num_players(state), \
             f"player_id {player_id} out of range [0, {_TURN()._get_num_players(state)})"
-        return (self._get_location(state) == LOC_PLAYER and
-                self._get_owner_id(state) == player_id)
+        return company_owned_by_player(state, self.company_id, player_id)
 
     cpdef bint is_owned_by_fi(self, GameState state):
-        return self._get_location(state) == LOC_FI
+        return company_owned_by_fi(state, self.company_id)
 
     cpdef bint is_owned_by_corp(self, GameState state, int corp_id):
         assert 0 <= corp_id < <int>GameConstants.NUM_CORPS, \
             f"corp_id {corp_id} out of range [0, {<int>GameConstants.NUM_CORPS})"
-        return (self._get_location(state) == LOC_CORP and
-                self._get_owner_id(state) == corp_id)
+        return company_owned_by_corp(state, self.company_id, corp_id)
 
     cpdef bint is_in_corp_acquisition(self, GameState state, int corp_id):
         assert 0 <= corp_id < <int>GameConstants.NUM_CORPS, \
             f"corp_id {corp_id} out of range [0, {<int>GameConstants.NUM_CORPS})"
-        return (self._get_location(state) == LOC_CORP_ACQ and
-                self._get_owner_id(state) == corp_id)
+        return company_in_corp_acquisition(state, self.company_id, corp_id)
 
     cpdef bint is_removed(self, GameState state):
         return self._get_location(state) == LOC_REMOVED
@@ -261,10 +348,10 @@ cdef class Company:
 
     cpdef int get_adjusted_income(self, GameState state):
         """Adjusted income (after cost of ownership). Stored as a raw int16."""
-        return <int>state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.incomes + self.company_id]
+        return _adjusted_income_at(state, self.company_id)
 
     cpdef void set_adjusted_income(self, GameState state, int income):
-        state._data[LAYOUT.companies_offset + COMPANY_OFFSETS.incomes + self.company_id] = <int16_t>income
+        _set_adjusted_income_at(state, self.company_id, income)
 
 # =============================================================================
 # GLOBAL COMPANY INSTANCES

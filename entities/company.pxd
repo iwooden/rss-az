@@ -34,6 +34,25 @@ cpdef enum CompanyLocation:
     LOC_EXCLUDED = 8    # Excluded from the deck at game setup (player count)
 
 
+# =============================================================================
+# COMPANY-SECTION QUERY HELPERS
+# =============================================================================
+#
+# These helpers are the owner-module API for bulk reads over the companies
+# section. Peer entities should use them instead of cimporting
+# ``COMPANY_OFFSETS`` or reaching directly into the companies slice.
+
+cdef bint company_owned_by_player(GameState state, int company_id, int player_id) noexcept nogil
+cdef bint company_owned_by_fi(GameState state, int company_id) noexcept nogil
+cdef bint company_owned_by_corp(GameState state, int company_id, int corp_id) noexcept nogil
+cdef bint company_in_corp_acquisition(GameState state, int company_id, int corp_id) noexcept nogil
+cdef int company_adjusted_income(GameState state, int company_id) noexcept nogil
+cdef int company_sum_player_face_value(GameState state, int player_id) noexcept nogil
+cdef int company_sum_player_adjusted_income(GameState state, int player_id) noexcept nogil
+cdef int company_sum_fi_adjusted_income(GameState state) noexcept nogil
+cdef int company_fill_corp_company_ids(GameState state, int corp_id, bint include_acquisition, int* out_ids) noexcept nogil
+
+
 cdef class Company:
     cdef readonly int company_id
     cdef readonly str name
