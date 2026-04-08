@@ -633,9 +633,13 @@ cdef class Corporation:
         """
         cdef int company_id, player_id, current_index
 
-        # Step 1: Remove all owned companies from game (clears ownership).
+        # Step 1: Remove all companies attached to the corp from game.
+        # In normal rules flow a bankrupt corp should not still have an
+        # acquisition pile, but we clean up LOC_CORP_ACQ defensively so the
+        # foundation layer never leaves companies attached to an inactive corp.
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
-            if self._owns_company(state, company_id):
+            if (self._owns_company(state, company_id)
+                    or self._has_acquisition_company(state, company_id)):
                 company_module.COMPANIES[company_id].remove_from_game(state)
 
         # Step 2: Return all shares to unissued — clear player shares.
