@@ -29,7 +29,7 @@ will get their own copies when their slices land.
 
 from libc.stdint cimport int16_t
 
-from core.state cimport GameState, LAYOUT, CORP_FIELDS
+from core.state cimport GameState, LAYOUT, CORP_FIELDS, TURN_OFFSETS
 from core.data cimport (
     GameConstants,
     CorpIndices,
@@ -70,6 +70,36 @@ cdef TurnState _TURN():
     if _TURN_CACHED is None:
         _TURN_CACHED = <TurnState>turn_module.TURN
     return _TURN_CACHED
+
+
+# =============================================================================
+# CORPORATION CACHE DIRTY MASK
+# =============================================================================
+
+cdef inline int _corp_cache_dirty_slot() noexcept nogil:
+    return LAYOUT.turn_offset + TURN_OFFSETS.corp_cache_dirty
+
+
+cdef inline int _all_corps_mask() noexcept nogil:
+    return (1 << <int>GameConstants.NUM_CORPS) - 1
+
+
+cdef inline bint _cache_dirty(GameState state, int corp_id) noexcept nogil:
+    return (<int>state._data[_corp_cache_dirty_slot()] & (1 << corp_id)) != 0
+
+
+cdef inline void _clear_cache_dirty(GameState state, int corp_id) noexcept nogil:
+    cdef int slot = _corp_cache_dirty_slot()
+    state._data[slot] = <int16_t>(<int>state._data[slot] & ~(1 << corp_id))
+
+
+cdef void invalidate_corp_cache(GameState state, int corp_id) noexcept nogil:
+    cdef int slot = _corp_cache_dirty_slot()
+    state._data[slot] = <int16_t>(<int>state._data[slot] | (1 << corp_id))
+
+
+cdef void invalidate_all_corp_caches(GameState state) noexcept nogil:
+    state._data[_corp_cache_dirty_slot()] = <int16_t>_all_corps_mask()
 
 
 # =============================================================================
@@ -141,6 +171,18 @@ cdef inline (int, int) _aggregate_synergies(int* company_ids, int num_companies)
                 marker_count += 1
 
     return (total_income, marker_count)
+
+
+# =============================================================================
+# CACHE FLUSH COMPATIBILITY HELPERS
+# =============================================================================
+
+cdef void update_all_corp_caches(GameState state) noexcept:
+    cdef int corp_id
+    cdef Corporation corp
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
+        corp = <Corporation>CORPS[corp_id]
+        corp._refresh_cache(state)
 
 
 # =============================================================================
@@ -219,7 +261,12 @@ cdef class Corporation:
         cdef bint old_active = self._is_active(state)
         state._data[self._slot(CORP_FIELDS.active)] = <int16_t>(1 if active else 0)
         if old_active != active:
-            invalidate_all_player_caches(state)
+            if active:
+                invalidate_corp_cache(state, self.corp_id)
+                invalidate_all_player_caches(state)
+            else:
+                self._clear_cache(state)
+                invalidate_all_player_caches(state)
 
     cpdef void float_corp(self, GameState state, int player_id, int company_id,
                           int par_index, int float_shares=1):
@@ -227,9 +274,8 @@ cdef class Corporation:
         Float corporation via IPO.
 
         This encapsulates the full IPO procedure for the corporation:
-        1. Set corp active (so downstream recalcs run against a live corp)
-        2. Transfer company to corp — triggers automatic stars and income
-           recalculation on the now-active corp
+        1. Set corp active
+        2. Transfer company to corp
         3. Claim market space and set price
         4. Set share distribution (unissued, issued, bank)
         5. Give player their shares (triggers automatic presidency)
@@ -240,11 +286,11 @@ cdef class Corporation:
         cdef int issued = float_shares * 2  # Player + bank each get float_shares
         cdef int unissued_shares = total_shares - issued
 
-        # 1. Activate the corp first so the transfer's downstream recalcs
-        #    (recalculate_company_stars + calculate_income) see an active corp.
+        # 1. Activate the corp first so the subsequent ownership and price
+        #    writes can mark this corp's derived cache dirty.
         self.set_active(state, True)
 
-        # 2. Transfer company to corporation (auto-recalculates stars + income)
+        # 2. Transfer company to corporation (marks the corp cache dirty)
         company_module.COMPANIES[company_id].transfer_to_corp(state, self.corp_id)
 
         # 3. Claim market space and set price
@@ -269,14 +315,9 @@ cdef class Corporation:
         return self._get_cash(state)
 
     cpdef void set_cash(self, GameState state, int cash):
-        """Set corp cash (raw integer dollars). Refreshes the cash component
-        of the star breakdown — only the floor(cash / 10) contribution
-        changes, so we can skip the 36-company iteration that company
-        ownership changes need.
-        """
+        """Set corp cash (raw integer dollars)."""
         state._data[self._slot(CORP_FIELDS.cash)] = <int16_t>cash
-        if self._is_active(state):
-            self.recalculate_cash_stars(state)
+        invalidate_corp_cache(state, self.corp_id)
 
     cpdef void add_cash(self, GameState state, int amount):
         """Add to corp cash (negative `amount` subtracts)."""
@@ -293,6 +334,7 @@ cdef class Corporation:
     cpdef void set_unissued_shares(self, GameState state, int shares):
         """Set number of unissued shares."""
         state._data[self._slot(CORP_FIELDS.unissued_shares)] = <int16_t>shares
+        invalidate_corp_cache(state, self.corp_id)
 
     cpdef int get_issued_shares(self, GameState state):
         """Return number of issued shares (held by players + bank)."""
@@ -301,8 +343,7 @@ cdef class Corporation:
     cpdef void set_issued_shares(self, GameState state, int shares):
         """Set number of issued shares."""
         state._data[self._slot(CORP_FIELDS.issued_shares)] = <int16_t>shares
-        if self._is_active(state):
-            self.update_pending_price_move(state)
+        invalidate_corp_cache(state, self.corp_id)
 
     cpdef int get_bank_shares(self, GameState state):
         """Return number of shares held by the bank (sold by players)."""
@@ -311,112 +352,89 @@ cdef class Corporation:
     cpdef void set_bank_shares(self, GameState state, int shares):
         """Set number of bank shares."""
         state._data[self._slot(CORP_FIELDS.bank_shares)] = <int16_t>shares
+        invalidate_corp_cache(state, self.corp_id)
 
     # =========================================================================
     # INCOME
     # =========================================================================
 
     cpdef int get_income(self, GameState state):
-        """Return stored corp income (raw integer dollars)."""
+        """Return cached corp income (raw integer dollars)."""
+        if _cache_dirty(state, self.corp_id):
+            self._refresh_cache(state)
         return <int>state._data[self._slot(CORP_FIELDS.income)]
 
     cpdef void set_income(self, GameState state, int income):
-        """Set corp income (raw integer dollars)."""
+        """Set cached corp income (raw integer dollars)."""
         state._data[self._slot(CORP_FIELDS.income)] = <int16_t>income
+
+    cpdef int get_raw_revenue(self, GameState state):
+        """Return cached raw revenue before CoO and bonuses."""
+        if _cache_dirty(state, self.corp_id):
+            self._refresh_cache(state)
+        return <int>state._data[self._slot(CORP_FIELDS.raw_revenue)]
+
+    cpdef int get_synergy_income(self, GameState state):
+        """Return cached synergy-income component."""
+        if _cache_dirty(state, self.corp_id):
+            self._refresh_cache(state)
+        return <int>state._data[self._slot(CORP_FIELDS.synergy_income)]
+
+    cpdef int get_coo_cost(self, GameState state):
+        """Return cached CoO component (stored as a non-positive value)."""
+        if _cache_dirty(state, self.corp_id):
+            self._refresh_cache(state)
+        return <int>state._data[self._slot(CORP_FIELDS.coo_cost)]
+
+    cpdef int get_ability_income(self, GameState state):
+        """Return cached ability-income component."""
+        if _cache_dirty(state, self.corp_id):
+            self._refresh_cache(state)
+        return <int>state._data[self._slot(CORP_FIELDS.ability_income)]
 
     # =========================================================================
     # STARS
     # =========================================================================
     #
-    # The star count is split into three slots so that the two inputs that
-    # drive it can refresh independently:
-    #
-    #   company_stars  = sum(COMPANY_STARS) over owned + acq-zone companies
-    #                    (only changes on company ownership transitions)
-    #   cash_stars     = floor(cash / 10), 0 when cash <= 0
-    #                    (only changes on cash mutations)
-    #   total_stars    = company_stars + cash_stars + (SI ability bonus)
-    #
-    # set_cash refreshes only cash_stars + total_stars (no 36-company loop);
-    # company ownership changes route through Company._recalc_after_change,
-    # which calls recalculate_company_stars on the affected corp.
+    cpdef int get_stars(self, GameState state):
+        """Compatibility alias for total cached stars."""
+        return self.get_total_stars(state)
 
     cpdef int get_total_stars(self, GameState state):
-        """Return total owned stars (company + cash + SI ability bonus)."""
+        """Return total cached stars (company + cash + SI ability bonus)."""
+        if _cache_dirty(state, self.corp_id):
+            self._refresh_cache(state)
         return <int>state._data[self._slot(CORP_FIELDS.total_stars)]
 
     cpdef int get_cash_stars(self, GameState state):
-        """Return the cash component of the star total (floor(cash / 10))."""
+        """Return cached cash-stars component."""
+        if _cache_dirty(state, self.corp_id):
+            self._refresh_cache(state)
         return <int>state._data[self._slot(CORP_FIELDS.cash_stars)]
 
     cpdef int get_company_stars(self, GameState state):
-        """Return the owned-companies component of the star total."""
+        """Return cached company-stars component."""
+        if _cache_dirty(state, self.corp_id):
+            self._refresh_cache(state)
         return <int>state._data[self._slot(CORP_FIELDS.company_stars)]
 
     cpdef void recalculate_cash_stars(self, GameState state):
-        """Refresh cash_stars + total_stars + pending_price_move from cash.
-
-        Cheap path: no company iteration. Called automatically by
-        ``set_cash`` whenever the corp is active.
-        """
-        cdef int cash = self._get_cash(state)
-        cdef int cash_stars = cash // 10 if cash > 0 else 0
-        state._data[self._slot(CORP_FIELDS.cash_stars)] = <int16_t>cash_stars
-        self._refresh_total_stars(state)
+        """Compatibility wrapper that refreshes the full corp cache."""
+        self._refresh_cache(state)
 
     cpdef void recalculate_company_stars(self, GameState state):
-        """Refresh company_stars + total_stars + pending_price_move from
-        the corp's owned and acquisition-zone companies.
-
-        O(36) — only called when company ownership transitions in or out
-        of this corp (via Company._recalc_after_change).
-        """
-        cdef int company_stars = 0
-        cdef int company_id, i
-        cdef int company_ids[36]
-        cdef int company_count = company_fill_corp_company_ids(state, self.corp_id, True, company_ids)
-
-        for i in range(company_count):
-            company_id = company_ids[i]
-            company_stars += COMPANY_STARS[company_id]
-
-        state._data[self._slot(CORP_FIELDS.company_stars)] = <int16_t>company_stars
-        self._refresh_total_stars(state)
-
-    cdef void _refresh_total_stars(self, GameState state):
-        """Recompute total_stars from the cached parts and refresh price move.
-
-        total_stars = cash_stars + company_stars + (2 if SI corp else 0).
-        The SI ability is a permanent +2 bonus per RULES.md and shows up
-        in price-movement math via this slot. Always followed by a
-        pending_price_move refresh so price reactions stay coherent.
-        """
-        cdef int total = (
-            <int>state._data[self._slot(CORP_FIELDS.cash_stars)]
-            + <int>state._data[self._slot(CORP_FIELDS.company_stars)]
-        )
-        if self.corp_id == <int>CorpIndices.CORP_SI:
-            total += 2
-        state._data[self._slot(CORP_FIELDS.total_stars)] = <int16_t>total
-        self.update_pending_price_move(state)
+        """Compatibility wrapper that refreshes the full corp cache."""
+        self._refresh_cache(state)
 
     cpdef void update_pending_price_move(self, GameState state):
-        """
-        Recompute the pending price-movement scalar assuming a $0 dividend.
+        """Compatibility wrapper that refreshes the full corp cache."""
+        self._refresh_cache(state)
 
-        Stored as the raw clamped move (-2..+2). 0 for inactive corps.
-        """
-        cdef int owned_stars, price_index, issued_shares, required, move
-        cdef int slot = self._slot(CORP_FIELDS.pending_price_move)
-        if not self._is_active(state):
-            state._data[slot] = 0
-            return
-        owned_stars = self.get_total_stars(state)
-        price_index = self._get_price_index(state)
-        issued_shares = self._get_issued_shares(state)
-        required = _required_stars(price_index, issued_shares)
-        move = calculate_price_move(owned_stars, required)
-        state._data[slot] = <int16_t>move
+    cpdef int get_pending_price_move(self, GameState state):
+        """Return cached pending price-movement scalar."""
+        if _cache_dirty(state, self.corp_id):
+            self._refresh_cache(state)
+        return <int>state._data[self._slot(CORP_FIELDS.pending_price_move)]
 
     # =========================================================================
     # SHARE PRICE / MARKET INDEX
@@ -432,6 +450,7 @@ cdef class Corporation:
         cdef int old_price = <int>state._data[slot]
         state._data[slot] = <int16_t>price
         if old_price != price:
+            invalidate_corp_cache(state, self.corp_id)
             invalidate_all_player_caches(state)
 
     cpdef int get_price_index(self, GameState state):
@@ -439,12 +458,11 @@ cdef class Corporation:
         return self._get_price_index(state)
 
     cpdef void set_price_index(self, GameState state, int index):
-        """Set market price index, share price, and pending price move."""
+        """Set market price index and share price."""
         assert 0 <= index < <int>GameConstants.NUM_MARKET_SPACES, \
             f"price index {index} out of range [0, {<int>GameConstants.NUM_MARKET_SPACES})"
         state._data[self._slot(CORP_FIELDS.price_index)] = <int16_t>index
         self.set_share_price(state, MARKET_PRICES[index])
-        self.update_pending_price_move(state)
 
     # =========================================================================
     # ACQUISITION PROCEEDS
@@ -496,54 +514,61 @@ cdef class Corporation:
             state, self.corp_id, include_acquisition, <int*>NULL)
 
     # =========================================================================
-    # INCOME CALCULATION
+    # DERIVED CACHE REFRESH
     # =========================================================================
 
-    cpdef int calculate_income(self, GameState state):
+    cdef void _clear_cache(self, GameState state) noexcept:
+        state._data[self._slot(CORP_FIELDS.income)] = 0
+        state._data[self._slot(CORP_FIELDS.total_stars)] = 0
+        state._data[self._slot(CORP_FIELDS.cash_stars)] = 0
+        state._data[self._slot(CORP_FIELDS.company_stars)] = 0
+        state._data[self._slot(CORP_FIELDS.pending_price_move)] = 0
+        state._data[self._slot(CORP_FIELDS.raw_revenue)] = 0
+        state._data[self._slot(CORP_FIELDS.synergy_income)] = 0
+        state._data[self._slot(CORP_FIELDS.coo_cost)] = 0
+        state._data[self._slot(CORP_FIELDS.ability_income)] = 0
+        _clear_cache_dirty(state, self.corp_id)
+
+    cdef void _refresh_cache(self, GameState state):
         """
-        Recompute and store total income for this corporation.
+        Recompute all derived corporation fields from authoritative state.
 
-        Total income = raw revenue (sum of base company incomes)
-                       - cost of ownership (derived from cached adjusted
-                         incomes vs base incomes)
-                       + synergy bonuses (RULES.md line 569; corps only)
-                       + ability income.
-
-        The four components are also stored individually in the corp's
-        raw_revenue / synergy_income / coo_cost / ability_income slots so
-        the NN tokens can read the breakdown directly.
-
-        Special abilities per RULES.md:
-        - PR (Prussian Railway): +1 per company owned
-        - DA (Doppler AG): double printed income of highest face-value company
-        - S  (Synergistic):    +1 per 2 synergy markers (rounded down)
-        - VM (Vintage Machinery): reduce total Cost of Ownership by up to 10
-                                  (minimum 0)
-
-        NOTE: Junkyard Scrappers (JS) bonus is applied in CLOSING phase,
-        not here. See closing.pyx — JS receives 2x printed income when
-        closing its own company.
+        This folds stars, pending price move, and the full income
+        breakdown behind a single dirty bit. When the cache is clean,
+        getters can read the stored slots directly.
         """
         cdef int company_id, base_income, fv, i
         cdef int adjusted_income_sum = 0
         cdef int raw_revenue_sum = 0
         cdef int highest_fv = 0
         cdef int highest_fv_income = 0
+        cdef int company_stars = 0
+        cdef int cash_stars = 0
+        cdef int total_stars = 0
+        cdef int price_index
+        cdef int issued_shares
+        cdef int required
+        cdef int pending_move = 0
         cdef int company_ids[36]
         cdef int synergy_income = 0
         cdef int synergy_markers = 0
         cdef int total_coo, ability, total
-        cdef int company_count = company_fill_corp_company_ids(
+        cdef int company_count
+
+        if not self._is_active(state):
+            self._clear_cache(state)
+            return
+
+        company_count = company_fill_corp_company_ids(
             state, self.corp_id, True, company_ids)
 
-        # First pass: collect companies (owned + acquisition zone), sum
-        # incomes, track highest face value for the DA ability.
+        # Single ownership scan drives both star totals and the income
+        # breakdown, so all corp-derived fields stay coherent together.
         for i in range(company_count):
             company_id = company_ids[i]
-            # Cached adjusted income (base - CoO already applied)
+            company_stars += COMPANY_STARS[company_id]
             adjusted_income_sum += company_adjusted_income(state, company_id)
 
-            # Sum raw base incomes and track highest face value for DA
             base_income = COMPANY_INCOME[company_id]
             raw_revenue_sum += base_income
             fv = COMPANY_FACE_VALUE[company_id]
@@ -553,15 +578,21 @@ cdef class Corporation:
             elif fv == highest_fv and base_income > highest_fv_income:
                 highest_fv_income = base_income
 
-        # Derive total CoO from the difference (avoids per-company CoO
-        # table lookups; the cached company_incomes already paid the cost).
+        cash_stars = self._get_cash(state) // 10 if self._get_cash(state) > 0 else 0
+        total_stars = company_stars + cash_stars
+        if self.corp_id == <int>CorpIndices.CORP_SI:
+            total_stars += 2
+
+        price_index = self._get_price_index(state)
+        issued_shares = self._get_issued_shares(state)
+        required = _required_stars(price_index, issued_shares)
+        pending_move = calculate_price_move(total_stars, required)
+
         total_coo = raw_revenue_sum - adjusted_income_sum
 
-        # Compute synergy bonuses (corporations only, RULES.md line 569).
         if company_count > 1:
             (synergy_income, synergy_markers) = _aggregate_synergies(company_ids, company_count)
 
-        # Compute ability income
         ability = 0
         if self.corp_id == <int>CorpIndices.CORP_VM:
             ability = total_coo if total_coo < 10 else 10
@@ -574,20 +605,16 @@ cdef class Corporation:
 
         total = raw_revenue_sum - total_coo + synergy_income + ability
 
-        self.set_income(state, total)
+        state._data[self._slot(CORP_FIELDS.income)] = <int16_t>total
+        state._data[self._slot(CORP_FIELDS.total_stars)] = <int16_t>total_stars
+        state._data[self._slot(CORP_FIELDS.cash_stars)] = <int16_t>cash_stars
+        state._data[self._slot(CORP_FIELDS.company_stars)] = <int16_t>company_stars
+        state._data[self._slot(CORP_FIELDS.pending_price_move)] = <int16_t>pending_move
         state._data[self._slot(CORP_FIELDS.raw_revenue)] = <int16_t>raw_revenue_sum
         state._data[self._slot(CORP_FIELDS.synergy_income)] = <int16_t>synergy_income
         state._data[self._slot(CORP_FIELDS.coo_cost)] = <int16_t>(-total_coo)
         state._data[self._slot(CORP_FIELDS.ability_income)] = <int16_t>ability
-        return total
-
-    # =========================================================================
-    # INCOME APPLICATION
-    # =========================================================================
-
-    cpdef void apply_income(self, GameState state, int income):
-        """Apply calculated income to corporation cash (stars auto-updated)."""
-        self.add_cash(state, income)
+        _clear_cache_dirty(state, self.corp_id)
 
     # =========================================================================
     # BANKRUPTCY
@@ -634,20 +661,13 @@ cdef class Corporation:
         if current_index > 0:
             market_module.MARKET.set_space_available(state, current_index, True)
 
-        # Step 6: Deactivate corp and clear remaining state. Stars are
-        # split into three slots — clear them all so an inactive corp
-        # never carries a residual SI ability bonus or stale cash share.
-        self.set_active(state, False)
+        # Step 6: Clear remaining state and deactivate. Reset the market
+        # price before deactivation so the final set_active(False) leaves
+        # the derived cache clean and zeroed.
         self.set_price_index(state, 0)
         self.set_in_receivership(state, False)
-        self.set_income(state, 0)
-        state._data[self._slot(CORP_FIELDS.total_stars)] = 0
-        state._data[self._slot(CORP_FIELDS.cash_stars)] = 0
-        state._data[self._slot(CORP_FIELDS.company_stars)] = 0
         self.set_acquisition_proceeds(state, 0)
-
-        # Update net worth for all players (shares wiped, price gone).
-        player_module.update_all_net_worths(state)
+        self.set_active(state, False)
 
     # =========================================================================
     # PRESIDENT

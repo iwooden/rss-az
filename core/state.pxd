@@ -76,6 +76,9 @@ cdef struct TurnStateOffsets:
     # Internal dirty mask for derived player finance caches.
     # Bit i corresponds to player i (0 <= i < MAX_PLAYERS).
     int player_cache_dirty
+    # Internal dirty mask for derived corporation caches.
+    # Bit i corresponds to corporation i (0 <= i < NUM_CORPS).
+    int corp_cache_dirty
     # Total size of the turn state block (single source of truth for layout)
     int size
 

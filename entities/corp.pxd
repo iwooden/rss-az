@@ -26,6 +26,15 @@ from core.state cimport GameState
 
 
 # =============================================================================
+# CORPORATION CACHE
+# =============================================================================
+
+cdef void invalidate_corp_cache(GameState state, int corp_id) noexcept nogil
+cdef void invalidate_all_corp_caches(GameState state) noexcept nogil
+cdef void update_all_corp_caches(GameState state) noexcept
+
+
+# =============================================================================
 # INCOME BREAKDOWN
 # =============================================================================
 
@@ -65,6 +74,8 @@ cdef class Corporation:
     cdef bint _is_in_receivership(self, GameState state) noexcept nogil
     cdef bint _owns_company(self, GameState state, int company_id) noexcept nogil
     cdef bint _has_acquisition_company(self, GameState state, int company_id) noexcept nogil
+    cdef void _refresh_cache(self, GameState state)
+    cdef void _clear_cache(self, GameState state) noexcept
 
     # Active status
     cpdef bint is_active(self, GameState state)
@@ -88,22 +99,24 @@ cdef class Corporation:
     # Income
     cpdef int get_income(self, GameState state)
     cpdef void set_income(self, GameState state, int income)
+    cpdef int get_raw_revenue(self, GameState state)
+    cpdef int get_synergy_income(self, GameState state)
+    cpdef int get_coo_cost(self, GameState state)
+    cpdef int get_ability_income(self, GameState state)
 
-    # Stars (split: total = company + cash + ability bonus). Setters are
-    # private — total/cash/company stars are derived from cash and company
-    # ownership and refresh themselves automatically through the
-    # recalculate_* helpers below. Callers should never poke the slots
-    # directly outside of go_bankrupt's explicit cleanup.
+    # Stars (split: total = company + cash + ability bonus). These are
+    # derived cache fields refreshed lazily behind the corp cache dirty bit.
+    cpdef int get_stars(self, GameState state)
     cpdef int get_total_stars(self, GameState state)
     cpdef int get_cash_stars(self, GameState state)
     cpdef int get_company_stars(self, GameState state)
-    cdef void _refresh_total_stars(self, GameState state)
 
     # Share price / market index
     cpdef int get_share_price(self, GameState state)
     cpdef void set_share_price(self, GameState state, int price)
     cpdef int get_price_index(self, GameState state)
     cpdef void set_price_index(self, GameState state, int index)
+    cpdef int get_pending_price_move(self, GameState state)
 
     # Acquisition proceeds
     cpdef int get_acquisition_proceeds(self, GameState state)
@@ -117,14 +130,10 @@ cdef class Corporation:
     cpdef bint owns_company(self, GameState state, int company_id)
     cpdef int count_companies(self, GameState state, bint include_acquisition=*)
 
-    # Star / pending-move recalculation
+    # Cache-refresh compatibility wrappers
     cpdef void recalculate_cash_stars(self, GameState state)
     cpdef void recalculate_company_stars(self, GameState state)
     cpdef void update_pending_price_move(self, GameState state)
-
-    # Income calculation
-    cpdef int calculate_income(self, GameState state)
-    cpdef void apply_income(self, GameState state, int income)
 
     # Bankruptcy
     cpdef void go_bankrupt(self, GameState state)

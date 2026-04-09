@@ -23,9 +23,8 @@ buckets:
    which corps/companies still need to act in DIV / ISSUE / IPO.
 
 `set_coo_level` is the one method that does meaningful work beyond a
-field write: it cascades the new CoO into adjusted company incomes and
-re-derives corp/FI income while marking player finance caches dirty for
-lazy refresh on the next read.
+field write: it cascades the new CoO into adjusted company incomes,
+marks corp/player derived caches dirty, and refreshes FI income.
 
 Layout offsets come from the module-level ``LAYOUT`` and ``TURN_OFFSETS``
 constants on ``core.state``. Single-slot metadata lives at
@@ -44,6 +43,7 @@ from core.data cimport (
     COMPANY_STARS,
     COST_OF_OWNERSHIP,
 )
+from entities.corp cimport invalidate_all_corp_caches
 from entities.player cimport invalidate_all_player_caches
 # Late entity imports live below the class definition + ``TURN`` singleton
 # creation. Peer modules (player / company / corp / fi) use a lazy
@@ -135,16 +135,15 @@ cdef class TurnState:
         """Set the cost-of-ownership level and cascade adjusted incomes.
 
         Updating CoO changes every company's adjusted income, which in
-        turn changes every active corp's income, every player's cached
-        income, and the Foreign Investor's income. Corp/FI values are
-        refreshed eagerly; player finance stays lazy behind the single
-        cache-dirty bit.
+        turn changes every active corp's cached income and stars,
+        every player's cached income, and the Foreign Investor's income.
+        Corp/player finance stays lazy behind single cache-dirty bits.
         """
         assert 1 <= level <= <int>GameConstants.NUM_COO_LEVELS, \
             f"coo_level {level} out of range [1, {<int>GameConstants.NUM_COO_LEVELS}]"
         state._data[LAYOUT.turn_offset + TURN_OFFSETS.coo_level] = <int16_t>level
         self._update_all_company_incomes(state, level)
-        self._update_all_corp_incomes(state)
+        invalidate_all_corp_caches(state)
         invalidate_all_player_caches(state)
         fi_module.FI.calculate_income(state)
 
@@ -163,13 +162,6 @@ cdef class TurnState:
                 - COST_OF_OWNERSHIP[level_index][COMPANY_STARS[company_id] - 1]
             )
             company_module.COMPANIES[company_id].set_adjusted_income(state, adjusted)
-
-    cdef void _update_all_corp_incomes(self, GameState state):
-        """Recalculate income for every active corporation."""
-        cdef int corp_id
-        for corp_id in range(<int>GameConstants.NUM_CORPS):
-            if corp_module.CORPS[corp_id].is_active(state):
-                corp_module.CORPS[corp_id].calculate_income(state)
 
     # =========================================================================
     # TURN NUMBER
@@ -402,5 +394,4 @@ TURN = TurnState()
 
 from entities import player as player_module
 from entities import company as company_module
-from entities import corp as corp_module
 from entities import fi as fi_module

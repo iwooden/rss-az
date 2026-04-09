@@ -230,14 +230,11 @@ def assert_invariants(state, msg=""):
             )
 
     # Pending price move consistency: must match expected from current state
-    layout = get_layout(num_players)
-    fields = get_corp_fields()
     for corp_id in range(8):
         corp = CORPS[corp_id]
-        offset = layout.corps_offset + corp_id * layout.corp_stride + fields.pending_price_move
-        stored = state._array[offset]
+        stored = corp.get_pending_price_move(state)
         if not corp.is_active(state):
-            assert stored == 0.0, (
+            assert stored == 0, (
                 f"{msg}\nCorp {corp_id} inactive but pending_price_move={stored}"
             )
         else:
@@ -246,10 +243,9 @@ def assert_invariants(state, msg=""):
             issued = corp.get_issued_shares(state)
             required = get_required_stars(idx, issued)
             move = calculate_price_move(stars, required)
-            expected = move / IMPACT_DIVISOR
-            assert abs(stored - expected) < 1e-6, (
+            assert stored == move, (
                 f"{msg}\nCorp {corp_id} pending_price_move mismatch: "
-                f"stored={stored} != expected={expected} "
+                f"stored={stored} != expected={move} "
                 f"(stars={stars}, idx={idx}, issued={issued}, required={required}, move={move})"
             )
 
@@ -330,20 +326,19 @@ def assert_invariants(state, msg=""):
     # Income decomposition consistency: components must sum to income
     for corp_id in range(8):
         corp = CORPS[corp_id]
-        base = layout.corps_offset + corp_id * layout.corp_stride
-        raw_rev = state._array[base + fields.raw_revenue]
-        syn_inc = state._array[base + fields.synergy_income]
-        coo = state._array[base + fields.coo_cost]
-        ability = state._array[base + fields.ability_income]
-        income_stored = state._array[base + fields.income]
+        raw_rev = corp.get_raw_revenue(state)
+        syn_inc = corp.get_synergy_income(state)
+        coo = corp.get_coo_cost(state)
+        ability = corp.get_ability_income(state)
+        income_stored = corp.get_income(state)
         if not corp.is_active(state):
-            assert raw_rev == 0.0 and syn_inc == 0.0 and coo == 0.0 and ability == 0.0, (
+            assert raw_rev == 0 and syn_inc == 0 and coo == 0 and ability == 0, (
                 f"{msg}\nCorp {corp_id} inactive but income decomposition non-zero: "
                 f"raw={raw_rev}, syn={syn_inc}, coo={coo}, ability={ability}"
             )
         else:
             component_sum = raw_rev + syn_inc + coo + ability
-            assert abs(component_sum - income_stored) < 1e-4, (
+            assert component_sum == income_stored, (
                 f"{msg}\nCorp {corp_id} income decomposition sum mismatch: "
                 f"raw({raw_rev}) + syn({syn_inc}) + coo({coo}) + ability({ability}) "
                 f"= {component_sum} != income({income_stored})"

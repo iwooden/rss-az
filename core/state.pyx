@@ -223,6 +223,9 @@ cdef TurnStateOffsets compute_turn_offsets() noexcept nogil:
     # Internal derived-cache dirty mask (one bit per player).
     t.player_cache_dirty = offset
     offset += 1
+    # Internal derived-cache dirty mask (one bit per corporation).
+    t.corp_cache_dirty = offset
+    offset += 1
 
     t.size = offset
     return t
@@ -788,3 +791,6 @@ cdef class GameState:
         # Player finance caches are already valid in the freshly seeded state:
         # players have starting cash, no shares, and no owned companies.
         turn[TURN_OFFSETS.player_cache_dirty] = 0
+        # Corporation derived caches are also valid in the freshly seeded
+        # state: all corps start inactive with zeroed derived fields.
+        turn[TURN_OFFSETS.corp_cache_dirty] = 0

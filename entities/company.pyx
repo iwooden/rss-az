@@ -31,6 +31,7 @@ cache and no initialize() step. The handle's only state is its
 from libc.stdint cimport int16_t
 from core.state cimport GameState, LAYOUT, COMPANY_OFFSETS
 from entities.turn cimport TurnState
+from entities.corp cimport invalidate_corp_cache
 from entities.player cimport invalidate_player_cache
 from core.data cimport (
     GameConstants,
@@ -253,8 +254,7 @@ cdef class Company:
         if location == LOC_CORP or location == LOC_CORP_ACQ:
             assert corp_module.CORPS[owner_id].is_active(state), \
                 f"company {self.company_id} associated with inactive corp {owner_id} (loc={location})"
-            corp_module.CORPS[owner_id].recalculate_company_stars(state)
-            corp_module.CORPS[owner_id].calculate_income(state)
+            invalidate_corp_cache(state, owner_id)
         elif location == LOC_PLAYER:
             invalidate_player_cache(state, owner_id)
         elif location == LOC_FI:
