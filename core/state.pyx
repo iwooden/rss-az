@@ -58,7 +58,7 @@ PlayerFields = namedtuple('PlayerFields', [
 CorpFields = namedtuple('CorpFields', [
     'active', 'cash', 'unissued_shares', 'issued_shares', 'bank_shares',
     'income', 'total_stars', 'cash_stars', 'company_stars',
-    'share_price', 'acquisition_proceeds',
+    'acquisition_proceeds',
     'in_receivership', 'price_index', 'pending_price_move',
     'raw_revenue', 'synergy_income', 'coo_cost', 'ability_income',
 ])
@@ -360,8 +360,6 @@ cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil:
     offset += 1
     c.company_stars = offset
     offset += 1
-    c.share_price = offset
-    offset += 1
     c.acquisition_proceeds = offset
     offset += 1
     c.in_receivership = offset
@@ -450,7 +448,6 @@ def get_corp_fields():
         total_stars=CORP_FIELDS.total_stars,
         cash_stars=CORP_FIELDS.cash_stars,
         company_stars=CORP_FIELDS.company_stars,
-        share_price=CORP_FIELDS.share_price,
         acquisition_proceeds=CORP_FIELDS.acquisition_proceeds,
         in_receivership=CORP_FIELDS.in_receivership,
         price_index=CORP_FIELDS.price_index,
@@ -604,6 +601,7 @@ cdef inline _bind_buffer(GameState state, object buffer, int num_players):
         f"Expected 1-D array of length {expected_size}, " \
         f"got ndim={buf.ndim} len={<int>buf.shape[0]}"
     assert buf.flags['C_CONTIGUOUS'], "Buffer must be C-contiguous"
+    assert buf.flags['WRITEABLE'], "Buffer must be writeable"
     data = <int16_t*>cnp.PyArray_DATA(buf)
     canonical_num_players = <int>data[LAYOUT.turn_offset + TURN_OFFSETS.num_players]
     assert canonical_num_players == num_players, \
@@ -650,7 +648,6 @@ cdef class GameState:
         """
         cdef cnp.ndarray arr = np.asarray(array)
         cdef int expected_size = _expected_size(num_players)
-        cdef int16_t* data
         cdef int canonical_num_players
         if arr.dtype != np.int16:
             raise ValueError(f"Expected int16 array, got {arr.dtype}")
@@ -659,8 +656,9 @@ cdef class GameState:
                 f"Expected 1-D array of length {expected_size}, "
                 f"got ndim={arr.ndim} len={<int>arr.shape[0]}"
             )
-        data = <int16_t*>cnp.PyArray_DATA(arr)
-        canonical_num_players = <int>data[LAYOUT.turn_offset + TURN_OFFSETS.num_players]
+        canonical_num_players = <int>arr[
+            LAYOUT.turn_offset + TURN_OFFSETS.num_players
+        ]
         if canonical_num_players != num_players:
             raise ValueError(
                 f"array canonical num_players {canonical_num_players} != claimed {num_players}"

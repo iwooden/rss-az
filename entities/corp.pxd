@@ -113,7 +113,6 @@ cdef class Corporation:
 
     # Share price / market index
     cpdef int get_share_price(self, GameState state)
-    cpdef void set_share_price(self, GameState state, int price)
     cpdef int get_price_index(self, GameState state)
     cpdef void set_price_index(self, GameState state, int index)
     cpdef int get_pending_price_move(self, GameState state)

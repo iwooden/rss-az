@@ -11,9 +11,9 @@ player count.
 
 Layout summary (per-corp block, all raw int16):
   active, cash, unissued_shares, issued_shares, bank_shares, income,
-  stars, share_price, acquisition_proceeds, in_receivership,
-  price_index, pending_price_move, raw_revenue, synergy_income,
-  coo_cost, ability_income.
+  stars, acquisition_proceeds, in_receivership, price_index,
+  pending_price_move, raw_revenue, synergy_income, coo_cost,
+  ability_income.
 
 Company ownership and acquisition-pile membership live in the companies
 section — there is no per-corp owned_companies bitmap. Corp logic goes
@@ -441,28 +441,23 @@ cdef class Corporation:
     # =========================================================================
 
     cpdef int get_share_price(self, GameState state):
-        """Return current share price (raw integer dollars)."""
-        return <int>state._data[self._slot(CORP_FIELDS.share_price)]
-
-    cpdef void set_share_price(self, GameState state, int price):
-        """Set share price (raw integer dollars)."""
-        cdef int slot = self._slot(CORP_FIELDS.share_price)
-        cdef int old_price = <int>state._data[slot]
-        state._data[slot] = <int16_t>price
-        if old_price != price:
-            invalidate_corp_cache(state, self.corp_id)
-            invalidate_all_player_caches(state)
+        """Return current share price derived from the market index."""
+        return MARKET_PRICES[self._get_price_index(state)]
 
     cpdef int get_price_index(self, GameState state):
         """Return market price index (0-26, where 0 is bankruptcy)."""
         return self._get_price_index(state)
 
     cpdef void set_price_index(self, GameState state, int index):
-        """Set market price index and share price."""
+        """Set the canonical market price index."""
+        cdef int old_index
         assert 0 <= index < <int>GameConstants.NUM_MARKET_SPACES, \
             f"price index {index} out of range [0, {<int>GameConstants.NUM_MARKET_SPACES})"
+        old_index = self._get_price_index(state)
         state._data[self._slot(CORP_FIELDS.price_index)] = <int16_t>index
-        self.set_share_price(state, MARKET_PRICES[index])
+        if old_index != index:
+            invalidate_corp_cache(state, self.corp_id)
+            invalidate_all_player_caches(state)
 
     # =========================================================================
     # ACQUISITION PROCEEDS

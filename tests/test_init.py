@@ -142,6 +142,17 @@ class TestMarket:
         for i in range(GameConstants.NUM_MARKET_SPACES):
             assert MARKET.is_space_available(gs, i)
 
+    @pytest.mark.parametrize("index", [0, GameConstants.NUM_MARKET_SPACES - 1])
+    def test_boundary_spaces_cannot_be_marked_unavailable(self, index):
+        """Boundary sentinel spaces remain available by API contract."""
+        gs = GameState(4)
+        gs.initialize_game()
+
+        with pytest.raises(AssertionError, match="must remain available"):
+            MARKET.set_space_available(gs, index, False)
+
+        assert MARKET.is_space_available(gs, index)
+
 
 class TestDeckAndDraw:
     """Deck building and initial draw."""

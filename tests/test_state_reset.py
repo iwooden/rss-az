@@ -39,3 +39,28 @@ def test_from_buffer_rejects_num_players_mismatch():
 
     with pytest.raises(AssertionError, match="canonical num_players"):
         GameState.from_buffer(buffer, 4)
+
+
+def test_from_buffer_rejects_readonly_buffer():
+    layout = get_layout(4)
+    turn_fields = get_turn_fields()
+    buffer = np.zeros(layout.total_size, dtype=np.int16)
+    buffer[layout.turn_offset + turn_fields.num_players] = 4
+    buffer.setflags(write=False)
+
+    with pytest.raises(AssertionError, match="writeable"):
+        GameState.from_buffer(buffer, 4)
+
+
+def test_from_array_accepts_noncontiguous_view():
+    state = GameState(4)
+    state.initialize_game(4, seed=42)
+
+    doubled = np.zeros(len(state._array) * 2, dtype=np.int16)
+    doubled[::2] = state._array
+    view = doubled[::2]
+
+    cloned = GameState.from_array(view, 4)
+
+    assert np.array_equal(cloned._array, state._array)
+    assert TURN.get_num_players(cloned) == 4

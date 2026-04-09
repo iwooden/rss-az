@@ -10,7 +10,7 @@ High-performance Cython game engine for "Rolling Stock Stars" board game, optimi
 
 **Key characteristics:**
 - 2-6 player support with dynamic state sizing
-- 444-600 int16 values per game state (3p = 483)
+- 454-610 int16 values per game state (3p = 493)
 - No Python object overhead in hot paths (nogil execution)
 - Benchmark target: thousands of games per minute
 
@@ -66,13 +66,17 @@ Single contiguous int16 numpy array. Raw integers only — no normalization, no 
 
 | Players | total_size | player_stride | corp_stride |
 |---------|-----------|---------------|-------------|
-| 2 | 460 | 39 | 18 |
-| 3 | 499 | 39 | 18 |
-| 6 | 616 | 39 | 18 |
+| 2 | 454 | 39 | 17 |
+| 3 | 493 | 39 | 17 |
+| 4 | 532 | 39 | 17 |
+| 5 | 571 | 39 | 17 |
+| 6 | 610 | 39 | 17 |
 
-The fixed prefix (everything except the players section) is **382** int16 slots and is identical across player counts. Only `total_size` scales: `total_size = 382 + 39 * num_players`. The players section lives at the end of the buffer for exactly this reason — every other section's offset is constant.
+The fixed prefix (everything except the players section) is **376** int16 slots and is identical across player counts. Only `total_size` scales: `total_size = 376 + 39 * num_players`. The players section lives at the end of the buffer for exactly this reason — every other section's offset is constant.
 
 `GameState` is basically just a thin wrapper around the state vector. There are no per-instance layout fields — entity handles read offsets directly from the module-level constants below. All field-level reads and writes go through entity handles in `entities/`.
+
+`GameState.from_array(array, num_players)` is the copy-in path and accepts non-contiguous 1-D `int16` views. `GameState.from_buffer(buffer, num_players)` and `state.rebind(buffer, num_players)` are the zero-copy paths and require writable C-contiguous `int16` buffers whose canonical `turn.num_players` slot already matches the claimed player count.
 
 **Module-level layout constants** on `core.state` (computed once at import, shared by every `GameState`):
 
@@ -125,7 +129,7 @@ Instead of soft-Z or game outcome, we use **A0GB** (Willemsen et al., 2022): fol
 
 **Subtree reuse:** Child subtree becomes new root after action. `prepare_reuse_root()` compacts state pool. Saves 40-60% GPU evals. Always enabled.
 
-**Memory:** States NOT stored in tree nodes — root cloned and actions replayed to reach leaves.
+**Memory:** Search uses a preallocated `StatePool`; nodes store `state_idx` values into pool rows, and expansion rebinds one scratch `GameState` across those rows instead of allocating wrappers per node.
 
 ### NN Model (`nn/transformer.py`)
 
@@ -165,12 +169,12 @@ At each decision point: state, legal_mask, policy_target (MCTS visits), value_ta
 See `VECTORS.md` for the full buffer layout. Key points:
 
 - Single contiguous int16 array per `GameState`. Raw integers, no normalization, no one-hot encoding, no visible/hidden split.
-- Sections in order: `FI (2) | companies (108) | market (27) | corps (18 × 8) | turn (64) | deck (37) | players (39 × N)`. The players section is **last** because it is the only section whose size depends on `num_players`; every other offset is constant.
+- Sections in order: `FI (2) | companies (108) | market (27) | corps (17 × 8) | turn (66) | deck (37) | players (39 × N)`. The players section is **last** because it is the only section whose size depends on `num_players`; every other offset is constant.
 - The companies section packs three parallel 36-slot sub-arrays — `incomes`, `locations`, `owner_ids` — reachable via `LAYOUT.companies_offset + COMPANY_OFFSETS.<field>`. The deck section packs `top` (1) + `order` (36) reachable via `LAYOUT.deck_offset + DECK_OFFSETS.<field>`.
-- The turn block (64 slots, fixed across player counts) carries the game-wide metadata at the front (`active_player`, `num_players`, `phase`, `coo_level`, `turn_number`) followed by global scalars and the phase-remaining flag arrays. The per-player `auction_passed` flag lives in the player block, not the turn block.
-- The corp block carries its star count split into three slots (`total_stars`, `cash_stars`, `company_stars`) so cash mutations don't trigger a full 36-company recompute.
+- The turn block (66 slots, fixed across player counts) carries the game-wide metadata at the front (`active_player`, `num_players`, `phase`, `coo_level`, `turn_number`) followed by global scalars, the phase-remaining flag arrays, and two internal dirty-mask slots for the lazy player/corp caches. The per-player `auction_passed` flag lives in the player block, not the turn block.
+- The corp block carries its star count split into three slots (`total_stars`, `cash_stars`, `company_stars`) and stores other derived corp values lazily behind a dirty bit. `share_price` is not stored; it is derived from `price_index`.
 - All per-player data — cash, shares, presidencies, this-turn share buys/sells, and the per-player `auction_passed` flag — lives inside one player block, so `_player_ptr(i)` reaches everything for player `i` in a single pointer hop.
-- `company_locations` (`CompanyLocation` enum, 0–8) plus `company_owner_ids` are the single source of truth for "who owns what". `LOC_DECK = 0` is the zero-init default; `__cinit__` explicitly seeds `company_owner_ids` to `-1`.
+- `companies.locations` (`CompanyLocation` enum, 0–8) plus `companies.owner_ids` are the single source of truth for "who owns what". `LOC_DECK = 0` is the zero-init default; `__cinit__` explicitly seeds `companies.owner_ids` to `-1`.
 
 ## Game Flow & Phases
 
@@ -209,7 +213,7 @@ Both phases use **one-by-one offer presentation**: offers generated at phase ent
 
 ## Build Commands
 
-> ⚠️ **Refactor in progress:** A breaking refactor of `core/state.*` and `entities/` is underway. `setup.py` currently only builds `core/state.pyx` and `entities/*.pyx` — `phases/`, `mcts/`, and root-level `.pyx` files are intentionally excluded and will not compile against the new state layout. The build target list will be expanded as each refactor phase lands. For this period, ignore everything outside `core/state.*` and `entities/` unless explicitly told otherwise; tests, training, and benchmarks are also expected to be broken until later phases.
+> ⚠️ **Refactor in progress:** A breaking refactor of `core/state.*` and `entities/` is underway. `setup.py` currently builds `core/data.pyx`, `core/state.pyx`, `core/actions.pyx`, and `entities/*.pyx`; `phases/`, `mcts/`, and root-level `.pyx` files are intentionally excluded and will not compile against the new state layout. The build target list will be expanded as each refactor phase lands. For this period, ignore everything outside `core/state.*`, `core/data.*`, `core/actions.*`, and `entities/` unless explicitly told otherwise; tests, training, and benchmarks are also expected to be broken until later phases.
 
 **Python binary:** Always use `.venv/bin/python` (not `python` or `python3`). The venv may not be activated in the shell.
 

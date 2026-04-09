@@ -64,8 +64,11 @@ cdef class Market:
     cpdef void set_space_available(self, GameState state, int index, bint available):
         """Set whether the given market space is available."""
         cdef bint old_available
+        cdef int max_index = <int>GameConstants.NUM_MARKET_SPACES - 1
         assert 0 <= index < <int>GameConstants.NUM_MARKET_SPACES, \
             f"market index {index} out of range [0, {<int>GameConstants.NUM_MARKET_SPACES})"
+        assert available or (index != 0 and index != max_index), \
+            "Market boundary spaces 0 ($0) and 26 ($75) must remain available"
         old_available = self._is_space_available(state, index)
         self._set_space_available(state, index, available)
         if old_available != available:

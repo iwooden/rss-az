@@ -1,5 +1,5 @@
 from core.data import CorpIndices
-from core.state import GameState
+from core.state import GameState, get_corp_fields
 from entities.company import COMPANIES
 from entities.corp import CORPS, calculate_price_move
 from entities.deck import DECK
@@ -109,6 +109,19 @@ class TestCorpCacheFreshness:
         CORPS[0].set_price_index(state, 11)
 
         assert_corp_cache_fresh(state, "After direct corp price mutation")
+
+    def test_share_price_is_derived_from_price_index(self):
+        state = GameState(num_players=3)
+        state.initialize_game(3, seed=42)
+
+        first_company = DECK.draw(state)
+        CORPS[0].float_corp(state, 0, first_company, 10, 2)
+
+        assert not hasattr(get_corp_fields(), "share_price")
+        assert CORPS[0].get_price_index(state) == 10
+        assert CORPS[0].get_share_price(state) == 14
+        CORPS[0].set_price_index(state, 11)
+        assert CORPS[0].get_share_price(state) == 16
 
     def test_coo_change_self_heals_all_corp_caches(self):
         state = GameState(num_players=3)

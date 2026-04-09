@@ -130,7 +130,6 @@ cdef struct CorpFieldOffsets:
     int total_stars
     int cash_stars
     int company_stars
-    int share_price
     int acquisition_proceeds
     int in_receivership
     int price_index              # raw integer (0-26)
