@@ -23,7 +23,7 @@ cimport numpy as cnp
 
 from libc.stdint cimport uint16_t
 
-from core.state cimport GameState, LAYOUT, TURN_OFFSETS
+from core.state cimport GameState
 from core.data cimport (
     GameConstants,
     GamePhases,
@@ -44,9 +44,64 @@ from core.data cimport (
     DPHASE_ISSUE,
     DPHASE_IPO,
     ENGINE_TO_DECISION_PHASE,
+    COMPANY_FACE_VALUE,
+    MARKET_PRICES,
 )
+from entities.player cimport Player
+from entities.corp cimport Corporation
+from entities.company cimport Company, LOC_AUCTION
+from entities.market cimport Market
+from entities.turn cimport TurnState
 
 cnp.import_array()
+
+
+# =============================================================================
+# CACHED TYPED ENTITY SINGLETON REFERENCES
+# =============================================================================
+#
+# The legal-action enumerators below dispatch through entity handles for
+# every state read. Cython does not allow C arrays of ``cdef class``
+# instances ("Array element cannot be a Python object"), so we split the
+# caching:
+#
+# - Single-instance entities (``TurnState``, ``Market``) live in
+#   typed module-level ``cdef class`` variables — cheap to access and
+#   safe to call ``cdef nogil`` methods on without GIL.
+# - Multi-instance entities (players, corps, companies) are reached
+#   through the entity module's own Python singleton lists inside the
+#   ``with gil:`` block of each enumerator. Indexing those lists needs
+#   GIL for refcount bookkeeping, but the per-entry cost is amortized
+#   against the full enumeration pass.
+
+cdef TurnState _TURN_REF
+cdef Market _MARKET_REF
+
+
+# Late Python-level imports of the entity modules so we can reach the
+# singleton instances during ``_init_entity_refs`` and inside enumerator
+# ``with gil:`` blocks. No cycle — no entity module imports from
+# ``core.actions``.
+from entities import player as _player_module
+from entities import corp as _corp_module
+from entities import company as _company_module
+from entities import market as _market_module
+from entities import turn as _turn_module
+
+
+cdef void _init_entity_refs() except *:
+    """Populate the single-instance entity reference caches.
+
+    Runs once at module import. Assignment increments the Python refcount
+    for each cached reference, so the singletons are kept alive for the
+    process lifetime.
+    """
+    global _TURN_REF, _MARKET_REF
+    _TURN_REF = <TurnState>_turn_module.TURN
+    _MARKET_REF = <Market>_market_module.MARKET
+
+
+_init_entity_refs()
 
 
 # =============================================================================
@@ -275,11 +330,11 @@ cdef int get_decision_phase(GameState state) noexcept nogil:
     END_CARD, GAME_OVER). Callers are expected to only invoke enumeration /
     decoding for phases where the driver actually asks for an action.
 
-    Reads the phase slot directly from the state buffer and indexes the
-    ``ENGINE_TO_DECISION_PHASE`` table cimported from ``core.data`` — no
-    Python singleton access, the whole function stays nogil.
+    Dispatches through the cached ``TurnState`` reference so the engine
+    phase read goes through the entity handle (``_get_phase``) instead of
+    indexing the state buffer directly — the whole function stays nogil.
     """
-    cdef int engine_phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
+    cdef int engine_phase = _TURN_REF._get_phase(state)
     if engine_phase < 0 or engine_phase >= 12:
         return -1
     return ENGINE_TO_DECISION_PHASE[engine_phase]
@@ -301,10 +356,111 @@ cdef int get_decision_phase(GameState state) noexcept nogil:
 # encoding. Keep the enumeration order deterministic and documented per
 # phase (replay targets depend on it).
 
-cdef int _enumerate_invest(
-    GameState state, uint16_t* ids,
-) noexcept nogil:
-    return 0
+cdef int _enumerate_invest(GameState state, uint16_t* ids):
+    """Emit every legal DPHASE_INVEST action in deterministic order.
+
+    Ordering (phase-local IDs match the ``encode_invest_*`` helpers in
+    ``core/actions.pxd``):
+
+      1. ``id 0``: pass (always legal)
+      2. ``ids 1..540``: auction starts, ``1 + company_id * 15 + bid_offset``.
+         Emitted for each LOC_AUCTION company, for each affordable bid offset.
+         Offsets are monotone in cost so the inner loop breaks as soon as
+         ``face_value + offset`` exceeds the active player's cash.
+      3. ``ids 541..556``: trade actions, ``541 + corp_id * 2 + {0=buy,1=sell}``.
+         Emitted for each active corp, gated on the round-trip limit
+         (per-player ``min(buys, sells) < 2`` over that corp), then on
+         buy/sell-specific legality:
+           - BUY: bank has a share AND player can afford the *next higher*
+             market price after price movement.
+           - SELL: player owns a share.
+
+    Returns the number of IDs written.
+
+    Practical upper bound: ``1 + num_players * 15 + 16``. Worst case at
+    the game's maximum of 6 players is 107 — well under
+    ``MAX_LEGAL_ACTIONS = 256``. The naive bound of 557 is unreachable
+    because only ``num_players`` companies are LOC_AUCTION at any time.
+
+    All state access goes through entity handles: ``_TURN_REF`` and
+    ``_MARKET_REF`` are module-level typed singletons; players / corps /
+    companies are indexed out of the entity modules' singleton lists and
+    cast to their handle type.
+
+    This function is NOT declared ``nogil`` — Cython does not allow
+    ``cdef class`` locals (needed to dispatch the entity methods) inside
+    a nogil function, and it does not allow module-level C arrays of
+    ``cdef class`` references either. Callers from nogil context
+    (``enumerate_legal_actions``) acquire the GIL around the call. The
+    body itself runs with the GIL held but every accessor method it
+    invokes is ``cdef nogil``, so the method dispatch is still a direct
+    C call with no Python-attribute-lookup overhead.
+    """
+    cdef int count = 0
+    cdef Player active_player_handle
+    cdef Corporation corp
+    cdef Company company
+    cdef int player_cash
+    cdef int company_id, bid_offset, face_value
+    cdef int corp_id, buys, sells, buy_index
+
+    active_player_handle = <Player>_player_module.PLAYERS[
+        _TURN_REF._get_active_player(state)
+    ]
+    player_cash = active_player_handle._get_cash(state)
+
+    # --- id 0: pass ---------------------------------------------------------
+    ids[count] = <uint16_t>encode_invest_pass()
+    count += 1
+
+    # --- ids 1..540: auctions ----------------------------------------------
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
+        company = <Company>_company_module.COMPANIES[company_id]
+        if company._get_location(state) != <int>LOC_AUCTION:
+            continue
+        face_value = COMPANY_FACE_VALUE[company_id]
+        if face_value > player_cash:
+            # Can't afford even the opening bid; no legal offset exists.
+            continue
+        for bid_offset in range(15):
+            if face_value + bid_offset > player_cash:
+                # Monotone in offset — once unaffordable, every higher
+                # offset is also unaffordable.
+                break
+            ids[count] = <uint16_t>encode_invest_auction(company_id, bid_offset)
+            count += 1
+
+    # --- ids 541..556: buy / sell ------------------------------------------
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
+        corp = <Corporation>_corp_module.CORPS[corp_id]
+
+        # Round-trip gate applies to *both* buy and sell: a player who has
+        # already completed 2 paired buy/sells against this corp is locked
+        # out of further trades on it for the rest of the INVEST phase.
+        buys = active_player_handle._get_share_buys(state, corp_id)
+        sells = active_player_handle._get_share_sells(state, corp_id)
+        if (buys if buys < sells else sells) >= 2:
+            continue
+
+        if not corp._is_active(state):
+            # Inactive corps have no tradable shares.
+            continue
+
+        # --- BUY ------------------------------------------------------------
+        if corp._get_bank_shares(state) > 0:
+            buy_index = _MARKET_REF._find_next_higher_space(
+                state, corp._get_price_index(state)
+            )
+            if player_cash >= MARKET_PRICES[buy_index]:
+                ids[count] = <uint16_t>encode_invest_buy(corp_id)
+                count += 1
+
+        # --- SELL -----------------------------------------------------------
+        if active_player_handle._get_shares(state, corp_id) > 0:
+            ids[count] = <uint16_t>encode_invest_sell(corp_id)
+            count += 1
+
+    return count
 
 
 cdef int _enumerate_bid(
@@ -358,11 +514,18 @@ cdef int enumerate_legal_actions(
 
     Dispatches to a phase-specific ``_enumerate_*`` helper. The helpers
     own the per-phase enumeration order contract.
+
+    The fully-implemented enumerators dispatch through entity handles and
+    therefore can't be declared ``nogil`` (Cython forbids ``cdef class``
+    locals inside nogil functions). For those phases the dispatcher
+    acquires the GIL around the call. Stub enumerators still marked
+    nogil are called directly.
     """
     cdef int count = 0
 
     if phase_id == DPHASE_INVEST:
-        count = _enumerate_invest(state, action_ids)
+        with gil:
+            count = _enumerate_invest(state, action_ids)
     elif phase_id == DPHASE_BID:
         count = _enumerate_bid(state, action_ids)
     elif phase_id == DPHASE_ACQUISITION:

@@ -163,14 +163,14 @@ def find_pyx_files(directory):
                 pyx_files.append(os.path.join(root, file))
     return pyx_files
 
-# Refactor in progress: build core/data.pyx, core/state.pyx, core/actions.pyx
-# and entities/*.pyx. data.pyx is a pure data/constants module that state,
-# actions, and every entity cimport from, so it must be in the build set.
-# actions.pyx is the per-phase action encoding skeleton (legality logic
-# deferred to a follow-up).
+# Refactor in progress: build core/data.pyx, core/state.pyx, core/actions.pyx,
+# entities/*.pyx, and the phase handlers that have been rewritten for the new
+# compact state layout. Phase files are listed explicitly (not globbed) so the
+# build set is a fast visual check of which phases are currently live.
 pyx_files = (
     ['core/data.pyx', 'core/state.pyx', 'core/actions.pyx']
     + find_pyx_files('entities')
+    + ['phases/invest.pyx']
 )
 
 extensions = []
