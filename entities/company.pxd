@@ -9,6 +9,10 @@ into the companies section. All offsets are computed inline from the
 module-level ``LAYOUT`` and ``COMPANY_OFFSETS`` constants on ``core.state``
 — there is no per-instance offset cache and no initialize() step. The
 handle's only state is its ``company_id`` and display ``name``.
+
+The company entity owns semantic company state only. The deck entity owns
+all mutations of the live deck array, so company transitions assert if a
+caller tries to move a company still marked ``LOC_DECK``.
 """
 
 from core.state cimport GameState
@@ -83,7 +87,6 @@ cdef class Company:
     cdef int _get_location(self, GameState state) noexcept nogil
     cdef int _get_owner_id(self, GameState state) noexcept nogil
     cdef void _set_location(self, GameState state, int location, int owner_id) noexcept nogil
-    cdef void _remove_from_deck_if_needed(self, GameState state)
     cdef void _recalc_after_change(self, GameState state, int location, int owner_id)
     cdef void _move(self, GameState state, int new_loc, int new_owner)
 

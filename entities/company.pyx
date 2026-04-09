@@ -17,6 +17,11 @@ location enum. Transfer operations atomically update the location and
 owner_id, then trigger downstream recalculation on the entities whose
 income or star totals changed.
 
+The company entity owns semantic company state only. The live deck array
+is owned exclusively by the deck entity; company transitions assert if a
+caller tries to move a company still marked ``LOC_DECK`` instead of
+routing that change through ``DECK`` first.
+
 Layout offsets are constants pulled from the module-level ``LAYOUT`` and
 ``COMPANY_OFFSETS`` on ``core.state``: there is no per-instance offset
 cache and no initialize() step. The handle's only state is its
@@ -39,7 +44,6 @@ from core.data cimport (
 
 from core.data import COMPANY_NAMES
 from entities import turn as turn_module
-from entities import deck as deck_module
 from entities import corp as corp_module
 from entities import player as player_module
 from entities import fi as fi_module
@@ -235,11 +239,6 @@ cdef class Company:
     # TRANSFER OPERATIONS
     # =========================================================================
 
-    cdef void _remove_from_deck_if_needed(self, GameState state):
-        """If the company is currently in the live deck, splice it out."""
-        if self._get_location(state) == LOC_DECK:
-            deck_module.DECK.remove(state, self.company_id)
-
     cdef void _recalc_after_change(self, GameState state, int location, int owner_id):
         """Recalculate downstream entity fields after a location change.
 
@@ -262,10 +261,17 @@ cdef class Company:
             fi_module.FI.calculate_income(state)
 
     cdef void _move(self, GameState state, int new_loc, int new_owner):
-        """Splice out of the deck, flip location/owner, and refresh both sides."""
+        """Update semantic company state after deck membership is already settled.
+
+        The deck entity owns the live deck array. Callers must route any
+        company still marked ``LOC_DECK`` through ``DECK`` first (for
+        example, ``DECK.draw``) and only then update the semantic company
+        location here.
+        """
         cdef int old_loc = self._get_location(state)
         cdef int old_owner = self._get_owner_id(state)
-        self._remove_from_deck_if_needed(state)
+        assert old_loc != LOC_DECK, \
+            f"company {self.company_id} still marked LOC_DECK; mutate deck via DECK first"
         self._set_location(state, new_loc, new_owner)
         if old_loc != new_loc or old_owner != new_owner:
             self._recalc_after_change(state, old_loc, old_owner)
@@ -313,7 +319,7 @@ cdef class Company:
         during play". This is set during deck setup for companies that
         do not appear in the live deck.
         """
-        self._set_location(state, LOC_EXCLUDED, -1)
+        self._move(state, LOC_EXCLUDED, -1)
 
     # =========================================================================
     # STATIC COMPANY DATA

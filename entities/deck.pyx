@@ -2,10 +2,10 @@
 """
 Deck entity implementation.
 
-Manages the company draw pile inside the compact GameState. Drawing a card
-routes through the Company handle (`mark_revealed`), which calls back into
-`Deck.remove()` to splice the card out of the order array; the deck never
-manually decrements the top pointer in parallel. Crossing a colour
+Manages the company draw pile inside the compact GameState. The deck
+entity owns all mutations of the deck section itself (`top` + `order[]`):
+draws pop here, arbitrary removals splice here, and test-helper deck
+rewrites normalize live-deck company locations here. Crossing a colour
 boundary on draw increments the cost-of-ownership level on TurnState.
 
 Deck setup rules (from RULES.md):
@@ -28,6 +28,7 @@ from core.data cimport (
     GameConstants,
     COMPANY_STARS,
 )
+from entities.company cimport Company, LOC_DECK, LOC_REVEALED, LOC_EXCLUDED
 from entities import company as company_module
 from entities import turn as turn_module
 
@@ -87,9 +88,9 @@ cdef class Deck:
 
         Drawn companies are always marked LOC_REVEALED (unavailable for
         auction) until they are explicitly made available at the end of
-        the WRAP_UP phase. The company handle's `mark_revealed` is what
-        actually splices the card out of the deck order array (via
-        `_remove_from_deck_if_needed` → `Deck.remove`).
+        the WRAP_UP phase. The deck pops the top card itself before
+        updating the company's semantic location, so draw no longer
+        depends on company-side location state to keep the deck coherent.
 
         Cost of Ownership is determined by the back of the top deck card
         (RULES.md §10). When drawing causes the new top card to be a
@@ -112,13 +113,21 @@ cdef class Deck:
             return -1  # Deck is empty
 
         company_id = <int>state._data[order_base + top]
+        assert (<Company>company_module.COMPANIES[company_id])._get_location(state) == LOC_DECK, \
+            f"deck.draw(): top company {company_id} not marked LOC_DECK"
 
-        # Mark revealed first — Company.mark_revealed routes through
-        # Deck.remove(), which splices the card out and syncs
-        # cards_remaining. We must NOT pre-decrement deck top here, or
-        # the splice would assert (the card would no longer be visible
-        # in the live deck range).
-        company_module.COMPANIES[company_id].mark_revealed(state)
+        # Pop the top card directly. The deck entity owns the deck array,
+        # so draw updates top/order here instead of relying on a company
+        # transition to call back into Deck.remove().
+        state._data[order_base + top] = <int16_t>-1
+        state._data[top_slot] = <int16_t>(top - 1)
+        self._sync_cards_remaining(state)
+
+        # Now that the card is detached from the live deck, flip its
+        # semantic state to REVEALED via the owner entity for company
+        # locations.
+        (<Company>company_module.COMPANIES[company_id])._set_location(
+            state, LOC_REVEALED, -1)
 
         # Re-read the (post-splice) top to decide whether the colour
         # tier changed.
@@ -160,9 +169,8 @@ cdef class Deck:
 
         Finds the company in deck_order[0..deck_top], shifts the cards
         above it down to fill the gap, clears the vacated top slot, and
-        decrements deck_top. Asserts that the company is currently in the
-        live deck range — callers must only invoke this for companies in
-        LOC_DECK (Company._remove_from_deck_if_needed gates this).
+        decrements deck_top. This mutates only the deck section; callers
+        are responsible for any semantic company-location change.
         """
         assert 0 <= company_id < <int>GameConstants.NUM_COMPANIES, \
             f"company_id {company_id} out of range [0, {<int>GameConstants.NUM_COMPANIES})"
@@ -283,7 +291,8 @@ cdef class Deck:
             included[deck_cards[i]] = True
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
             if not included[company_id]:
-                company_module.COMPANIES[company_id].exclude_from_game(state)
+                (<Company>company_module.COMPANIES[company_id])._set_location(
+                    state, LOC_EXCLUDED, -1)
 
     cdef int _add_color_group(self, int* deck_cards, int deck_size, int start, int end, int last_idx, int count):
         """
@@ -368,23 +377,19 @@ cdef class Deck:
         Set the deck order from a Python list (for testing).
 
         Order should be from bottom to top (index 0 = bottom, last = top).
-        Companies that drop out of the deck have their location updated
-        via `exclude_from_game` so subsequent draws / queries see them as
-        LOC_EXCLUDED.
+        Semantic deck membership is normalized to match the rewritten live
+        deck: included companies become LOC_DECK, and companies removed
+        from the live deck are flipped to LOC_EXCLUDED only if they were
+        previously LOC_DECK.
         """
         cdef int i, cid
         cdef int size = len(order)
-        cdef int old_top
+        cdef int location
+        cdef Company company
         cdef int top_slot = LAYOUT.deck_offset + DECK_OFFSETS.top
         cdef int order_base = LAYOUT.deck_offset + DECK_OFFSETS.order
 
-        # Find companies being removed from the deck
         new_order = set(order)
-        old_top = <int>state._data[top_slot]
-        for i in range(old_top + 1):
-            cid = <int>state._data[order_base + i]
-            if cid not in new_order:
-                company_module.COMPANIES[cid].exclude_from_game(state)
 
         state._data[top_slot] = <int16_t>(size - 1)
 
@@ -396,6 +401,21 @@ cdef class Deck:
             state._data[order_base + i] = <int16_t>-1
 
         self._sync_cards_remaining(state)
+
+        # Normalize semantic deck membership to match the rewritten live
+        # deck. Included cards become LOC_DECK even if the fresh
+        # initialized state had already drawn or excluded them. Cards
+        # removed from the live deck are only flipped to LOC_EXCLUDED if
+        # they were previously LOC_DECK; other semantic locations are
+        # preserved.
+        for cid in range(<int>GameConstants.NUM_COMPANIES):
+            company = <Company>company_module.COMPANIES[cid]
+            if cid in new_order:
+                company._set_location(state, LOC_DECK, -1)
+            else:
+                location = company._get_location(state)
+                if location == LOC_DECK:
+                    company._set_location(state, LOC_EXCLUDED, -1)
 
     cpdef list get_ghost_entries(self, GameState state):
         """
