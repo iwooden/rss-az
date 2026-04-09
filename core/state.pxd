@@ -97,8 +97,8 @@ cdef struct PlayerFieldOffsets:
     int share_buys               # 8 per-corp buy counts (this turn)
     int share_sells              # 8 per-corp sell counts (this turn)
     int has_passed               # 1 flag (has this player passed in the current phase)
-    # Total size of one player's data block (single source of truth for stride)
-    int stride
+    # Total size of one player's data block
+    int size
 
 
 cdef struct CompanyOffsets:
@@ -140,8 +140,8 @@ cdef struct CorpFieldOffsets:
     int synergy_income
     int coo_cost
     int ability_income
-    # Total size of one corp's data block (single source of truth for stride)
-    int stride
+    # Total size of one corp's data block
+    int size
 
 # =============================================================================
 # LAYOUT COMPUTATION FUNCTIONS

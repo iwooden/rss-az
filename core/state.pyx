@@ -132,8 +132,8 @@ cdef StateLayout compute_layout() noexcept nogil:
     cdef CompanyOffsets company_offsets = compute_company_offsets()
     cdef DeckOffsets deck_offsets = compute_deck_offsets()
 
-    layout.player_stride = player_fields.stride
-    layout.corp_stride = corp_fields.stride
+    layout.player_stride = player_fields.size
+    layout.corp_stride = corp_fields.size
 
     # --- Foreign Investor: cash, income ---
     layout.fi_offset = offset
@@ -248,7 +248,7 @@ cdef PlayerFieldOffsets compute_player_field_offsets() noexcept nogil:
     integer, not a one-hot. All per-player tracking (including share
     buy/sell counts for the current turn) lives inside the player block,
     so `_player_ptr(i)` reaches everything for player `i` in one pointer
-    hop. The final `p.stride` field is the total block size, used by
+    hop. The final `p.size` field is the total block size, used by
     compute_layout to size the players section.
     """
     cdef PlayerFieldOffsets p
@@ -277,7 +277,7 @@ cdef PlayerFieldOffsets compute_player_field_offsets() noexcept nogil:
     p.has_passed = offset
     offset += 1
 
-    p.stride = offset
+    p.size = offset
     return p
 
 
@@ -342,7 +342,7 @@ cdef DeckOffsets compute_deck_offsets() noexcept nogil:
 cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil:
     """Compute field offsets within a corp's data block.
 
-    The final `c.stride` field is the total block size, used by
+    The final `c.size` field is the total block size, used by
     compute_layout to size the corps section.
     """
     cdef CorpFieldOffsets c
@@ -383,7 +383,7 @@ cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil:
     c.ability_income = offset
     offset += 1
 
-    c.stride = offset
+    c.size = offset
     return c
 
 
