@@ -13,7 +13,7 @@ buckets:
 1. **Single-slot scalars**: active player, active corp/company context,
    phase, coo_level, turn_number,
    end_card_flipped, consecutive_passes, cards_remaining.
-2. **Auction tracking**: auction_company / price / high_bidder / starter
+2. **Auction tracking**: active_company plus auction price / high_bidder / starter
    (single integers with -1 sentinels) plus the per-player passed flags.
 3. **Compatibility aliases**: older phase-specific names like
    `ipo_company` and `acq_active_corp` now map to the generic active
@@ -261,20 +261,6 @@ cdef class TurnState:
     # =========================================================================
     # AUCTION STATE
     # =========================================================================
-
-    cpdef int get_auction_company(self, GameState state):
-        """Return the company currently being auctioned, or -1 if none."""
-        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_company]
-
-    cpdef void set_auction_company(self, GameState state, int company_id):
-        """Set the company currently being auctioned."""
-        assert 0 <= company_id < <int>GameConstants.NUM_COMPANIES, \
-            f"company_id {company_id} out of range [0, {<int>GameConstants.NUM_COMPANIES})"
-        state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_company] = <int16_t>company_id
-
-    cpdef void clear_auction_company(self, GameState state):
-        """Clear the auction company sentinel."""
-        state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_company] = -1
 
     cpdef int get_auction_price(self, GameState state):
         """Return the current auction price (0 when no auction is active)."""

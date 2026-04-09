@@ -76,7 +76,7 @@ TurnFields = namedtuple('TurnFields', [
     'active_player', 'active_corp', 'active_company', 'num_players',
     'phase', 'coo_level', 'turn_number',
     'end_card_flipped', 'consecutive_passes', 'cards_remaining',
-    'auction_price', 'auction_company', 'auction_high_bidder',
+    'auction_price', 'auction_high_bidder',
     'auction_starter',
     'dividend_remaining', 'issue_remaining', 'ipo_remaining',
 ])
@@ -207,8 +207,6 @@ cdef TurnStateOffsets compute_turn_offsets() noexcept nogil:
 
     # Auction
     t.auction_price = offset
-    offset += 1
-    t.auction_company = offset
     offset += 1
     t.auction_high_bidder = offset
     offset += 1
@@ -508,7 +506,6 @@ def get_turn_fields():
         consecutive_passes=TURN_OFFSETS.consecutive_passes,
         cards_remaining=TURN_OFFSETS.cards_remaining,
         auction_price=TURN_OFFSETS.auction_price,
-        auction_company=TURN_OFFSETS.auction_company,
         auction_high_bidder=TURN_OFFSETS.auction_high_bidder,
         auction_starter=TURN_OFFSETS.auction_starter,
         dividend_remaining=TURN_OFFSETS.dividend_remaining,
@@ -786,7 +783,6 @@ cdef class GameState:
         # 9. Initialize "no selection" turn-context sentinels to -1
         turn[TURN_OFFSETS.active_corp] = -1
         turn[TURN_OFFSETS.active_company] = -1
-        turn[TURN_OFFSETS.auction_company] = -1
         turn[TURN_OFFSETS.auction_high_bidder] = -1
         turn[TURN_OFFSETS.auction_starter] = -1
 

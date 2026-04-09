@@ -73,10 +73,6 @@ cdef class TurnState:
     cpdef void set_cards_remaining(self, GameState state, int count)
 
     # Auction state
-    cpdef int get_auction_company(self, GameState state)
-    cpdef void set_auction_company(self, GameState state, int company_id)
-    cpdef void clear_auction_company(self, GameState state)
-
     cpdef int get_auction_price(self, GameState state)
     cpdef void set_auction_price(self, GameState state, int price)
 

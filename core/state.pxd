@@ -64,7 +64,6 @@ cdef struct TurnStateOffsets:
     int cards_remaining
     # Auction
     int auction_price
-    int auction_company          # company_id or -1
     int auction_high_bidder      # player_id or -1
     int auction_starter          # player_id or -1
     # Phase remaining tracking
