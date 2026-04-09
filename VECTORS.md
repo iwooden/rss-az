@@ -1,6 +1,6 @@
 # Cython Core Vector Documentation
 
-This document describes the in-memory game state layout. The state is the engine's only authoritative game data; per-token features for the neural network are produced lazily by `get_token_data()` (a separate path).
+This document describes the in-memory game state layout. The state is the engine's only authoritative game data; per-token features for the neural network are produced lazily by `get_token_data()` (a separate path, still to be written as part of the transformer refactor — see `CLAUDE.md`).
 
 ---
 
@@ -12,24 +12,26 @@ This document describes the in-memory game state layout. The state is the engine
 
 | Players | total_size | player_stride | corp_stride | turn_size |
 |---------|-----------|---------------|-------------|-----------|
-| 2       | 456       | 39            | 17          | 68        |
-| 3       | 495       | 39            | 17          | 68        |
-| 4       | 534       | 39            | 17          | 68        |
-| 5       | 573       | 39            | 17          | 68        |
-| 6       | 612       | 39            | 17          | 68        |
+| 2       | 431       | 39            | 14          | 67        |
+| 3       | 470       | 39            | 14          | 67        |
+| 4       | 509       | 39            | 14          | 67        |
+| 5       | 548       | 39            | 14          | 67        |
+| 6       | 587       | 39            | 14          | 67        |
 
-`player_stride`, `corp_stride`, and `turn_size` are all fixed across player counts. The players section is the **only** part of the buffer whose size depends on `num_players`, so `total_size = 378 + 39 * num_players` — the constant 378 is the fixed prefix, and only the trailing players section grows.
+`player_stride`, `corp_stride`, and `turn_size` are all fixed across player counts. The players section is the **only** part of the buffer whose size depends on `num_players`, so `total_size = 353 + 39 * num_players` — the constant 353 is the fixed prefix, and only the trailing players section grows.
 
 Layout offsets are computed once at module load and exposed as Cython `cdef` structs at module scope on `core.state`:
 
-- `LAYOUT` (`cdef StateLayout`) — top-level section offsets (`fi_offset`, `companies_offset`, `market_offset`, `corps_offset`, `turn_offset`, `deck_offset`, `players_offset`) and the two strides (`player_stride`, `corp_stride`). `total_size` is intentionally not in this struct because it depends on `num_players`; compute it inline as `LAYOUT.players_offset + LAYOUT.player_stride * num_players` at the few sites that need it.
-- `TURN_OFFSETS` (`cdef TurnStateOffsets`) — relative offsets within the (fixed-size) turn block.
-- `PLAYER_FIELDS` (`cdef PlayerFieldOffsets`) — relative offsets within a player block.
-- `CORP_FIELDS` (`cdef CorpFieldOffsets`) — relative offsets within a corp block.
-- `COMPANY_OFFSETS` (`cdef CompanyOffsets`) — relative offsets of the companies-section sub-arrays (`incomes`, `locations`, `owner_ids`).
-- `DECK_OFFSETS` (`cdef DeckOffsets`) — relative offsets of the deck-section sub-arrays (`top`, `order`).
+- `LAYOUT` (`cdef StateLayout`) — top-level section offsets only: `fi_offset`, `companies_offset`, `market_offset`, `corps_offset`, `turn_offset`, `deck_offset`, `players_offset`. **Strides are not on this struct** — each section's block size lives on its own field-offset struct as a trailing `size` slot (`PLAYER_FIELDS.size`, `CORP_FIELDS.size`, `TURN_OFFSETS.size`, `COMPANY_OFFSETS.size`, `DECK_OFFSETS.size`). `total_size` is intentionally not in `StateLayout` either because it depends on `num_players`; compute it inline as `LAYOUT.players_offset + PLAYER_FIELDS.size * num_players` at the few sites that need it.
+- `TURN_OFFSETS` (`cdef TurnStateOffsets`) — relative offsets within the (fixed-size) turn block, plus `size`.
+- `PLAYER_FIELDS` (`cdef PlayerFieldOffsets`) — relative offsets within a player block, plus `size`.
+- `CORP_FIELDS` (`cdef CorpFieldOffsets`) — relative offsets within a corp block, plus `size`.
+- `COMPANY_OFFSETS` (`cdef CompanyOffsets`) — relative offsets of the companies-section sub-arrays (`incomes`, `locations`, `owner_ids`), plus `size`.
+- `DECK_OFFSETS` (`cdef DeckOffsets`) — relative offsets of the deck-section sub-arrays (`top`, `order`), plus `size`.
 
 Cython code reads them directly via `from core.state cimport LAYOUT, TURN_OFFSETS, PLAYER_FIELDS, CORP_FIELDS, COMPANY_OFFSETS, DECK_OFFSETS`. Python code uses the namedtuple accessors `core.state.get_layout(num_players)`, `get_player_fields()`, `get_corp_fields()`, `get_turn_fields()`, `get_company_fields()`, `get_deck_fields()` (none of the field accessors take a `num_players` argument since the fields are fixed-size).
+
+> **Direct layout access is for entity handles only.** See `CLAUDE.md` "Code Conventions". Phase handlers, MCTS code, trainer code, tests, and anything outside `entities/` should go through the handle methods (`PLAYERS[i].get_cash(state)`, etc.) rather than cimporting these constants or indexing `state._data` directly.
 
 `get_turn_fields()` exposes only the public turn-state slots. The final two turn-block slots (`TURN_OFFSETS.player_cache_dirty` and `TURN_OFFSETS.corp_cache_dirty`) are internal dirty masks used by the lazy derived-state caches and remain Cython-only.
 
@@ -42,10 +44,10 @@ Cython code reads them directly via `from core.state cimport LAYOUT, TURN_OFFSET
 | FI        | 0   | 2   | Foreign investor cash, income |
 | Companies | 2   | 108 | Three parallel 36-slot sub-arrays: `incomes`, `locations`, `owner_ids` (see [Companies section](#companies-section)) |
 | Market    | 110 | 27  | Per-price availability flags |
-| Corps     | 137 | 136 | Per-corp blocks: `corp_stride (17) * 8` (see [Corp block](#corp-block)) |
-| Turn      | 273 | 68  | Turn-scoped state including game-wide metadata, active corp/company selectors, plus two internal cache-dirty masks (see [Turn block](#turn-block)) |
-| Deck      | 341 | 37  | `top` (1) + `order` (36) — see [Deck section](#deck-section) |
-| Players   | 378 | `player_stride * num_players` | Per-player blocks (see [Player block](#player-block)) |
+| Corps     | 137 | 112 | Per-corp blocks: `corp_stride (14) * 8` (see [Corp block](#corp-block)) |
+| Turn      | 249 | 67  | Turn-scoped state including game-wide metadata, active corp/company selectors, plus two internal cache-dirty masks (see [Turn block](#turn-block)) |
+| Deck      | 316 | 37  | `top` (1) + `order` (36) — see [Deck section](#deck-section) |
+| Players   | 353 | `player_stride * num_players` | Per-player blocks (see [Player block](#player-block)) |
 
 Every offset above is **constant across all player counts** — the players section lives at the end of the buffer for exactly this reason. The "Start offset" column is identical for every player count up to and including the players section start.
 
@@ -71,7 +73,7 @@ Stride: **39**. Player `i` lives at `players_offset + i * 39`. Field offsets via
 | 30 | share_sells     | 8 | Per-corp sell counts (this turn) |
 | 38 | has_passed      | 1 | `1` once this player has passed in the current phase |
 
-All per-player tracking lives inside one player block, so `_player_ptr(i)` reaches everything for player `i` in a single pointer hop. The generic `has_passed` flag previously lived in the turn block as an auction-specific per-player array; moving it into the player block makes the player block fully self-contained and the turn block fixed-size.
+All per-player tracking lives inside one player block, so a single pointer hop reaches everything for player `i`. The generic `has_passed` flag previously lived in the turn block as an auction-specific per-player array; moving it into the player block makes the player block fully self-contained and the turn block fixed-size.
 
 ---
 
@@ -82,7 +84,7 @@ All per-player tracking lives inside one player block, so `_player_ptr(i)` reach
 | 0 | cash |
 | 1 | income |
 
-FI ownership of companies is tracked via `company_locations` (`LOC_FI`), not via flags on the FI block.
+FI ownership of companies is tracked via `companies.locations` (`LOC_FI`), not via flags on the FI block.
 
 ---
 
@@ -96,7 +98,7 @@ Block size: **108**. Sub-offsets via `core.state.get_company_fields()` (`Company
 | 36 | `locations`  | 36 | `CompanyLocation` enum — see [Company tracking](#company-tracking). |
 | 72 | `owner_ids`  | 36 | Owner ID per company (`player_id`, `corp_id`, or `-1`). Seeded to `-1` in `__cinit__`. |
 
-`locations` + `owner_ids` are the single source of truth for "who owns what". The old top-level "company tracking" section has been folded in here — there is no per-player or per-corp `owned_companies` bitmap any more; entity handles read from these arrays directly.
+`locations` + `owner_ids` are the single source of truth for "who owns what". There is no per-player or per-corp `owned_companies` bitmap — entity handles scan these arrays directly.
 
 ---
 
@@ -114,7 +116,7 @@ State invariant: index `0` (`$0`, bankruptcy) and index `26` (`$75`, max price) 
 
 ## Corp block
 
-Stride: **17**. Corp `c` lives at `corps_offset + c * 17`. Field offsets via `core.state.get_corp_fields()` (`CorpFields` namedtuple) for Python, or `from core.state cimport CORP_FIELDS` for Cython.
+Stride: **14**. Corp `c` lives at `corps_offset + c * 14`. Field offsets via `core.state.get_corp_fields()` (`CorpFields` namedtuple) for Python, or `from core.state cimport CORP_FIELDS` for Cython.
 
 | Relative offset | Field | Notes |
 |----------------|-------|-------|
@@ -124,43 +126,44 @@ Stride: **17**. Corp `c` lives at `corps_offset + c * 17`. Field offsets via `co
 | 3  | issued_shares         | |
 | 4  | bank_shares           | |
 | 5  | income                | `raw_revenue + synergy_income − coo_cost + ability_income` |
-| 6  | total_stars           | Cached `company_stars + cash_stars + (2 if SI else 0)` |
-| 7  | cash_stars            | Cached `floor(cash / 10)` clamped at 0 |
-| 8  | company_stars         | Cached sum of `COMPANY_STARS` over owned + acq-zone companies |
-| 9  | acquisition_proceeds  | Pending payment, written and consumed during ACQ |
-| 10 | in_receivership       | flag |
-| 11 | price_index           | Market position 0–26 |
-| 12 | pending_price_move    | Predicted index delta assuming $0 dividend |
-| 13 | raw_revenue           | Sum of base company incomes |
-| 14 | synergy_income        | |
-| 15 | coo_cost              | Always ≤ 0 |
-| 16 | ability_income        | |
+| 6  | company_stars         | Cached sum of `COMPANY_STARS` over owned + acq-zone companies |
+| 7  | acquisition_proceeds  | Pending payment, written and consumed during ACQ |
+| 8  | in_receivership       | flag |
+| 9  | price_index           | Market position 0–26 |
+| 10 | raw_revenue           | Sum of base company incomes |
+| 11 | synergy_income        | |
+| 12 | coo_cost              | Always ≤ 0 |
+| 13 | ability_income        | |
 
 `share_price` is **not stored** in the corp block. It is derived from `price_index` via `MARKET_PRICES[price_index]`; use `CORPS[c].get_share_price(state)` rather than expecting a backing slot.
 
+`total_stars`, `cash_stars`, and `pending_price_move` are **not stored** either. They are all derived on demand:
+
+- `cash_stars = floor(cash / 10)` clamped at 0.
+- `total_stars = company_stars + cash_stars + (2 if corp_id == CORP_SI else 0)`.
+- `pending_price_move` is predicted on demand by the corp handle when asked.
+
+Only `company_stars` — the expensive part of the total that depends on owned-company scans — is cached in the block.
+
 ### Derived corp cache
 
-Several corp-block fields are stored but derived: `income`, `total_stars`, `cash_stars`, `company_stars`, `pending_price_move`, `raw_revenue`, `synergy_income`, `coo_cost`, and `ability_income`.
+Several corp-block fields are stored but derived from authoritative state: `income`, `company_stars`, `raw_revenue`, `synergy_income`, `coo_cost`, and `ability_income`.
 
-- Mutations of authoritative corp state mark the corporation dirty via the internal `TURN_OFFSETS.corp_cache_dirty` bitmask.
+- Mutations of authoritative corp state mark the corporation dirty via the internal `TURN_OFFSETS.corp_cache_dirty` bitmask (one bit per corp).
 - The first read through any derived getter (`get_income`, `get_total_stars`, `get_pending_price_move`, etc.) runs one `_refresh_cache(state)` pass, recomputing the full derived bundle coherently from authoritative state.
-- `cash_stars` is still `floor(cash / 10)` clamped at 0.
-- `company_stars` is still the sum of `COMPANY_STARS` across owned and acquisition-zone companies.
-- `total_stars` is still `cash_stars + company_stars + (2 if corp_id == CORP_SI else 0)`.
-
-`get_stars(state)` remains as a compatibility alias for `get_total_stars(state)`. The `recalculate_cash_stars`, `recalculate_company_stars`, and `update_pending_price_move` methods are compatibility wrappers that force the same full refresh; correctness no longer depends on callers remembering to invoke them after writes.
+- Cache invalidation happens through the entity handles' published mutators — don't touch the backing slots directly, because direct writes bypass the dirty-mask bookkeeping and leave the corp's derived view inconsistent.
 
 ---
 
 ## Turn block
 
-Block size: **68**, fixed across player counts. Sub-offsets via `core.state.get_turn_fields()` (`TurnFields` namedtuple) for Python, or `from core.state cimport TURN_OFFSETS` for Cython. The turn block now starts with active player plus the generic active corp/company selectors, then the remaining game-wide metadata and phase state.
+Block size: **67**, fixed across player counts. Sub-offsets via `core.state.get_turn_fields()` (`TurnFields` namedtuple) for Python, or `from core.state cimport TURN_OFFSETS` for Cython. The turn block starts with the active player plus the generic active corp/company selectors, then the remaining game-wide metadata and phase state.
 
 | Relative offset | Field | Size | Notes |
 |----------------|-------|------|-------|
 | 0  | active_player        | 1  | Canonical player_id |
 | 1  | active_corp          | 1  | Active corp for issue/dividend/acquisition context, or `-1` |
-| 2  | active_company       | 1  | Active company for bid/IPO/closing/acquisition context, or `-1` |
+| 2  | active_company       | 1  | Active company for bid/IPO/closing/acquisition/auction context, or `-1` |
 | 3  | num_players          | 1  | 2–6, seeded in `__cinit__` |
 | 4  | phase                | 1  | 0–11, see [Phase enum](#phase-enum) |
 | 5  | coo_level            | 1  | 1–7 |
@@ -169,16 +172,15 @@ Block size: **68**, fixed across player counts. Sub-offsets via `core.state.get_
 | 8  | consecutive_passes   | 1  | INVEST pass counter; phase ends when this reaches `num_players` |
 | 9  | cards_remaining      | 1  | |
 | 10 | auction_price        | 1  | 0 when no auction |
-| 11 | auction_company      | 1  | `company_id` or `-1` |
-| 12 | auction_high_bidder  | 1  | `player_id` or `-1` |
-| 13 | auction_starter      | 1  | `player_id` or `-1` |
-| 14 | dividend_remaining   | 8  | Per-corp pending flag |
-| 22 | issue_remaining      | 8  | Per-corp pending flag |
-| 30 | ipo_remaining        | 36 | Per-company pending flag |
+| 11 | auction_high_bidder  | 1  | `player_id` or `-1` |
+| 12 | auction_starter      | 1  | `player_id` or `-1` |
+| 13 | dividend_remaining   | 8  | Per-corp pending flag |
+| 21 | issue_remaining      | 8  | Per-corp pending flag |
+| 29 | ipo_remaining        | 36 | Per-company pending flag |
 
-Internal slots at relative offsets `66` and `67` hold the player-finance and corp-derived dirty masks used by the lazy cache system. These offsets exist in `TURN_OFFSETS` for Cython code but are intentionally omitted from the Python `TurnFields` namedtuple.
+Internal slots at relative offsets `65` and `66` hold the player-finance (`player_cache_dirty`) and corp-derived (`corp_cache_dirty`) dirty masks used by the lazy cache system. These offsets exist in `TURN_OFFSETS` for Cython code but are intentionally omitted from the Python `TurnFields` namedtuple.
 
-The per-player `has_passed` flag used to live in the turn block as an auction-specific array. It now lives in the player block, and the turn block is fully fixed-size.
+There is no dedicated `auction_company` slot — the generic `active_company` selector at offset 2 carries that role during BID, and likewise covers the active-company context for IPO, CLOSING, and ACQUISITION. The per-player `has_passed` flag used to live in the turn block as an auction-specific array; it now lives in the player block, so the turn block is fully fixed-size.
 
 ---
 
@@ -207,7 +209,7 @@ The `locations` and `owner_ids` sub-arrays live inside the [companies section](#
 | 1 | LOC_AUCTION   | none |
 | 2 | LOC_REVEALED  | none |
 | 3 | LOC_PLAYER    | `player_id` |
-| 4 | LOC_FI        | none |
+| 4 | LOC_FI        | none (`owner_id = -1`) |
 | 5 | LOC_CORP      | `corp_id` |
 | 6 | LOC_CORP_ACQ  | `corp_id` (in corp's acquisition pile) |
 | 7 | LOC_REMOVED   | none — closed during play |
@@ -221,20 +223,22 @@ The `locations` and `owner_ids` sub-arrays live inside the [companies section](#
 
 Stored as a raw integer at `LAYOUT.turn_offset + TURN_OFFSETS.phase`. Defined in `core/data.pxd` (`GamePhases`).
 
-| Value | Name |
-|-------|------|
-| 0  | PHASE_INVEST |
-| 1  | PHASE_BID_IN_AUCTION |
-| 2  | PHASE_WRAP_UP |
-| 3  | PHASE_ACQUISITION |
-| 4  | PHASE_CLOSING |
-| 5  | PHASE_INCOME |
-| 6  | PHASE_DIVIDENDS |
-| 7  | PHASE_END_CARD |
-| 8  | PHASE_ISSUE_SHARES |
-| 9  | PHASE_IPO |
-| 10 | PHASE_PAR |
-| 11 | PHASE_GAME_OVER |
+| Value | Name | Notes |
+|-------|------|-------|
+| 0  | PHASE_INVEST         | Buy/sell shares, start auctions |
+| 1  | PHASE_BID_IN_AUCTION | Bidding for a company |
+| 2  | PHASE_WRAP_UP        | Automated: FI buys companies at face value |
+| 3  | PHASE_ACQUISITION    | Corps acquiring companies |
+| 4  | PHASE_ACQ_OFFER      | FI preemption sub-phase (higher-priority corps get first shot) |
+| 5  | PHASE_CLOSING        | Player-owned companies closing |
+| 6  | PHASE_INCOME         | Automated: income payouts |
+| 7  | PHASE_DIVIDENDS      | Dividend declaration |
+| 8  | PHASE_END_CARD       | Automated: game end card trigger |
+| 9  | PHASE_ISSUE_SHARES   | Corp issuing a share |
+| 10 | PHASE_IPO            | Select corp charter + par price in one action |
+| 11 | PHASE_GAME_OVER      | Terminal state |
+
+**PAR is gone.** The old separate `PHASE_PAR` is merged into `PHASE_IPO`: each IPO decision picks `(corp, par_index)` in a single action. `PHASE_ACQ_OFFER` is a first-class engine phase for FI preemption; it used to be a hidden sub-state of `PHASE_ACQUISITION`.
 
 ---
 
@@ -242,9 +246,9 @@ Stored as a raw integer at `LAYOUT.turn_offset + TURN_OFFSETS.phase`. Defined in
 
 | Phase | Mechanism | Location |
 |-------|-----------|----------|
-| INVEST            | `consecutive_passes` counter | turn block |
-| BID_IN_AUCTION    | per-player `has_passed` flag | player block |
-| CLOSING / ACQUISITION | per-offer accept/pass via offer surface | (engine, not state) |
+| INVEST            | `consecutive_passes` counter | turn block (slot 8) |
+| BID_IN_AUCTION    | per-player `has_passed` flag | player block (slot 38) |
+| CLOSING / ACQUISITION / IPO / ISSUE | per-phase, handled by the decision-phase enumeration + pass action | engine, not a dedicated state slot |
 
 ---
 
@@ -258,134 +262,105 @@ Stored as a raw integer at `LAYOUT.turn_offset + TURN_OFFSETS.phase`. Defined in
 | `state.rebind(buf, num_players)` | Repoint an existing `GameState` at a different writable C-contiguous buffer. Used in MCTS hot paths. |
 | `state.initialize_game(num_players, seed=-1)` | Reset to a fresh game state for the requested player count, then set up players, FI, corps, market, deck, turn state, and active player. `num_players` is required; `seed=-1` uses current time. |
 
-`GameState` exposes only structural primitives publicly: `_player_ptr` / `_corp_ptr` / `_turn_ptr` (cdef nogil, used by entity handles), `_num_players` (cdef int, readable from cdef code for assertions), `get_active_player` / `set_active_player`, `get_num_players`, and `initialize_game`. There are no per-instance layout-offset fields — every entity handle reads offsets directly from the module-level `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` constants on `core.state`. All field-level reads and writes go through the entity handles in `entities/`.
+`GameState` exposes only structural primitives publicly: `_player_ptr` / `_corp_ptr` / `_turn_ptr` (cdef nogil, used by entity handles), `_num_players` (cdef int, readable from cdef code for assertions), `get_active_player` / `set_active_player`, `get_num_players`, and `initialize_game`. There are no per-instance layout-offset fields — every entity handle reads offsets directly from the module-level `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` / `COMPANY_OFFSETS` / `DECK_OFFSETS` constants on `core.state`. All field-level reads and writes go through the entity handles in `entities/`.
 
 ---
 
-## Action Vector
+## Action Space
 
-Action space size varies by player count:
+The old global dense `action_dim` vector is gone. The new action space is **per-phase and phase-local**: the same integer means different things in different phases, so callers must always carry `phase_id` alongside `action_id`. Encoding lives in `core/actions.{pyx,pxd}`; it is the single source of truth, and the values below must stay in lockstep with `nn/transformer.py::PHASE_ACTION_SIZES` (an import-time assertion guards against drift).
 
-| Players | Auction Actions | Total Actions |
-|---------|-----------------|---------------|
-| 3       | 45 (3 x 15)     | 183           |
-| 4       | 60 (4 x 15)     | 198           |
-| 5       | 75 (5 x 15)     | 213           |
-| 6       | 90 (6 x 15)     | 228           |
+### Decision phases
 
-Formula: `138 + num_players * 15`
+The engine has 12 `GamePhases`; the model only sees the 8 decision phases where a real choice is needed. `get_decision_phase(state)` reads the engine phase from the state buffer and maps it to a `DecisionPhase`, returning `-1` for automated/terminal engine phases (`WRAP_UP`, `INCOME`, `END_CARD`, `GAME_OVER`).
 
-Use `get_total_action_count(num_players)` for the exact size.
+| DecisionPhase       | ID | Action count | Layout |
+|---------------------|----|-------------:|--------|
+| `DPHASE_INVEST`     | 0  | 557   | 1 pass + 36×15 auction (company-indexed) + 8×2 trade (buy/sell) |
+| `DPHASE_BID`        | 1  | 15    | 1 pass (= leave auction) + 14 raise offsets |
+| `DPHASE_ACQUISITION`| 2  | 14977 | 1 pass + 8×36×52 corp × company × {51 price offsets + FI_BUY} |
+| `DPHASE_ACQ_OFFER`  | 3  | 2     | pass + buy (FI preemption) |
+| `DPHASE_CLOSING`    | 4  | 37    | 1 pass + 36 per-company close |
+| `DPHASE_DIVIDENDS`  | 5  | 26    | dividend amounts 0–25 |
+| `DPHASE_ISSUE`      | 6  | 2     | pass + issue |
+| `DPHASE_IPO`        | 7  | 113   | 1 pass + 8×14 corp × par index (merged IPO+PAR) |
 
-### Constants
+Max action id fits comfortably in `uint16`. `MAX_ACTION_SIZE = 14977` (ACQUISITION). The sparse legal-action buffer width is `MAX_LEGAL_ACTIONS = 256`; any enumeration that exceeds this is a bug and `enumerate_legal_actions` asserts on overflow.
 
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `AUCTION_CAP` | 15 | Max bid offset over face value |
-| `MAX_PAR_SLOTS` | 8 | Max valid par prices per star tier (legacy) |
-| `NUM_PAR_PRICES` | 14 | Total par price count (used by PAR phase) |
-| `ACQ_PRICE_RANGE` | 51 | Price offsets 0-50 |
-| `MAX_DIVIDEND` | 26 | Dividend amounts 0-25 |
-| `NUM_CORPS` | 8 | Corporation count |
-| `NUM_COMPANIES` | 36 | Company count |
-| `NUM_PAR_PRICES` | 14 | Valid par price count |
+### Encode / decode contract
 
-### Action Layout by Phase (for 3 players)
+`core/actions.pxd` exposes one `encode_*` helper per action kind per phase (all `cdef inline nogil`) plus a single `decode_action(phase_id, action_id) → ActionInfo` inverse. `encode_action(ActionInfo)` is the tested roundtrip. All encoders use pure arithmetic, no state reads.
 
-| Phase | Actions | Count | Indices |
-|-------|---------|-------|---------|
-| **INVEST** | pass, auction[3x15], buy[8], sell[8] | 62 | 0-61 |
-| **BID_IN_AUCTION** | leave, raise_bid[14] | 15 | 62-76 |
-| **ACQUISITION** | price[51], fi_buy, pass | 53 | 77-129 |
-| **CLOSING** | close, pass | 2 | 130-131 |
-| **DIVIDENDS** | dividend[26] | 26 | 132-157 |
-| **ISSUE_SHARES** | pass, issue | 2 | 158-159 |
-| **IPO** | pass, corp[8] | 9 | 160-168 |
-| **PAR** | par[14] | 14 | 169-182 |
+Highlighted encoder layouts:
 
-### Detailed Action Indices (for N players)
+```
+INVEST:
+  0                                    = pass
+  1 + company_id*15 + bid_offset       = start auction on company at face + (bid_offset + 0..14)
+  541 + corp_id*2                      = buy share in corp
+  541 + corp_id*2 + 1                  = sell share in corp
 
-#### INVEST Phase (0 to 16 + N*15)
+BID:
+  0                                    = leave auction (pass-class action)
+  1 + raise_offset                     = raise by (face + 1 + raise_offset)
 
-| Index | Action | Decoding |
-|-------|--------|----------|
-| 0 | Pass | - |
-| 1 to N*15 | Auction | `slot = (idx-1) // 15`, `bid_offset = (idx-1) % 15` |
-| N*15+1 to N*15+8 | Buy Share | `corp_id = idx - (N*15+1)` |
-| N*15+9 to N*15+16 | Sell Share | `corp_id = idx - (N*15+9)` |
+ACQUISITION:
+  0                                    = pass
+  1 + (corp_id*36 + company_id)*52 + k = acquire (corp, company) at:
+                                           k < 51  → low_price + k  (normal)
+                                           k == 51 → FI_BUY (special price)
 
-**Auction slot mapping:** Slot N maps to the Nth available-for-auction company (ordered by company_id). Use `get_auction_company_for_slot(state, slot)` to resolve.
+ACQ_OFFER:
+  0 = pass
+  1 = preempting corp takes the offered company
 
-#### BID_IN_AUCTION Phase (+15 actions)
+CLOSING:
+  0             = pass
+  1 + company_id = close company
 
-| Index | Action | Decoding |
-|-------|--------|----------|
-| +0 | Leave Auction | - |
-| +1 to +14 | Raise Bid | `bid_offset = idx - base - 1` (new bid = face + offset + 1) |
+DIVIDENDS:
+  amount  (0..25, per share)
 
-#### ACQUISITION Phase (+53 actions)
+ISSUE:
+  0 = pass
+  1 = issue one share
 
-| Index | Action | Decoding |
-|-------|--------|----------|
-| +0 to +50 | Price Offer | `price = low_price + (idx - base)` |
-| +51 | FI Buy | Buy FI company (OS=face value, others=high price) |
-| +52 | Pass | Decline acquisition |
+IPO:
+  0                              = pass
+  1 + corp_id*14 + par_index     = start corp at par price ALL_PAR_PRICES[par_index]
+```
 
-#### CLOSING Phase (+2 actions)
+### Sparse legal-action interface
 
-| Index | Action | Decoding |
-|-------|--------|----------|
-| +0 | Close | Close current company |
-| +1 | Pass | Keep current company |
+Legal-action enumeration is sparse: `enumerate_legal_actions(state, phase_id, uint16_t* ids)` writes deterministic phase-local ids into the buffer and returns the count. Per-phase helpers live in `core/actions.pyx` as `_enumerate_*`. **Right now these helpers are all empty stubs** (tracked as rss-az-848a); the rule-level legality logic needs to be ported out of the old `actions-old.pyx` on `main` into these helpers as part of the refactor. Until that lands, `enumerate_legal_actions` returns 0 for every phase and `get_forced_action` always returns `(-1, False)`.
 
-#### DIVIDENDS Phase (+26 actions)
+Python-accessible wrappers (for tests + diagnostics):
 
-| Index | Action | Decoding |
-|-------|--------|----------|
-| +0 to +25 | Pay Dividend | `amount = idx - base` (per share) |
+| Function | Returns |
+|----------|---------|
+| `get_phase_action_size(phase_id)` | Per-phase action count from `PHASE_ACTION_SIZES_PY` |
+| `decode_action_py(phase_id, action_id)` | Tuple `(phase, action_type, corp_id, company_id, amount)` |
+| `enumerate_legal_actions_py(state, phase_id=-1)` | Tuple `(phase_id, uint16 ndarray of legal ids)` — empty until enumerators land |
+| `get_forced_action_py(state)` | Tuple `(action_id, found)` — `(-1, False)` until enumerators land |
 
-#### ISSUE_SHARES Phase (+2 actions)
+### ActionType enum (decoded semantics)
 
-| Index | Action | Decoding |
-|-------|--------|----------|
-| +0 | Pass | Don't issue |
-| +1 | Issue | Issue one share |
+`decode_action` populates an `ActionInfo` struct with `phase`, `action_type`, `corp_id`, `company_id`, and `amount` (unused fields = -1).
 
-#### IPO Phase (+9 actions)
-
-| Index | Action | Decoding |
-|-------|--------|----------|
-| +0 | Pass | Don't IPO |
-| +1 to +8 | Select Corp | `corp_id = idx - base - 1` |
-
-Selecting a corp transitions to the PAR sub-phase.
-
-#### PAR Phase (+14 actions)
-
-| Index | Action | Decoding |
-|-------|--------|----------|
-| +0 to +13 | Select Par Price | `par_index = idx - base` |
-
-No pass action — once a corp is selected, a par price must be chosen.
-Par index maps directly to `ALL_PAR_PRICES[par_index]`. Invalid prices for the company's star tier are masked out.
-
-### Action Types Enum
-
-| Value | Type | Description |
-|-------|------|-------------|
-| 0 | ACTION_PASS | Pass/decline |
-| 1 | ACTION_AUCTION | Start auction (slot, bid_offset) |
-| 2 | ACTION_BUY_SHARE | Buy share (corp_id) |
-| 3 | ACTION_SELL_SHARE | Sell share (corp_id) |
-| 4 | ACTION_LEAVE_AUCTION | Leave auction |
-| 5 | ACTION_RAISE_BID | Raise bid (bid_offset) |
-| 6 | ACTION_ACQ_PRICE | Acquire at price (price_offset) |
-| 7 | ACTION_ACQ_FI_BUY | FI buy (OS=face, others=high) |
-| 8 | ACTION_CLOSE | Close current company |
-| 9 | ACTION_DIVIDEND | Pay dividend (amount) |
-| 10 | ACTION_ISSUE | Issue share |
-| 11 | ACTION_IPO | IPO: select corp (corp_id) |
-| 12 | ACTION_PAR | PAR: select par price (par_index) |
+| Value | Type | Used by | Meaning |
+|-------|------|---------|---------|
+| 0  | `ACTION_PASS`          | INVEST, BID, ACQUISITION, ACQ_OFFER, CLOSING, ISSUE, IPO | Universal pass/opt-out. In BID this means "leave the auction". |
+| 1  | `ACTION_AUCTION`       | INVEST     | Start auction on `company_id` at face + `amount` (bid_offset) |
+| 2  | `ACTION_BUY_SHARE`     | INVEST     | Buy share in `corp_id` |
+| 3  | `ACTION_SELL_SHARE`    | INVEST     | Sell share in `corp_id` |
+| 4  | `ACTION_RAISE`         | BID        | Raise current bid by (face + 1 + `amount`) |
+| 5  | `ACTION_ACQ_PRICE`     | ACQUISITION| `corp_id` acquires `company_id` at low_price + `amount` |
+| 6  | `ACTION_ACQ_FI_BUY`    | ACQUISITION| `corp_id` buys `company_id` from FI at fixed price (OS=face, others=high) |
+| 7  | `ACTION_ACQ_OFFER_BUY` | ACQ_OFFER  | Preempting corp takes the offered company |
+| 8  | `ACTION_CLOSE`         | CLOSING    | Close `company_id` |
+| 9  | `ACTION_DIVIDEND`      | DIVIDENDS  | Pay dividend of `amount` per share |
+| 10 | `ACTION_ISSUE`         | ISSUE      | Issue one share |
+| 11 | `ACTION_IPO`           | IPO        | Start `corp_id` at par price `ALL_PAR_PRICES[amount]` |
 
 ---
 
@@ -395,18 +370,23 @@ Par index maps directly to `ALL_PAR_PRICES[par_index]`. Invalid prices for the c
 
 ```python
 from core.state import GameState, get_layout, get_player_fields
-from core.actions import get_valid_action_mask, get_total_action_count
+from core.actions import (
+    PHASE_ACTION_SIZES_PY,
+    decode_action_py,
+    enumerate_legal_actions_py,
+    get_phase_action_size,
+)
 from entities.player import PLAYERS
 
 # State buffer
 state = GameState(num_players=3)
 state.initialize_game(3, seed=42)
-print(f"buffer length = {len(state._array)}")  # 495 for 3p
+print(f"buffer length = {len(state._array)}")  # 470 for 3p
 
 # Layout introspection
 layout = get_layout(3)            # LayoutInfo namedtuple
-print(layout.players_offset)      # 378 (constant across player counts)
-print(layout.total_size)          # 495
+print(layout.players_offset)      # 353 (constant across player counts)
+print(layout.total_size)          # 470
 
 pf = get_player_fields()          # PlayerFields namedtuple
 print(pf.cash, pf.has_passed)     # 0 38
@@ -414,10 +394,13 @@ print(pf.cash, pf.has_passed)     # 0 38
 # Field access goes through entity handles, not raw buffer indexing
 print(PLAYERS[0].get_cash(state))
 
-# Action vector
-total_actions = get_total_action_count(3)
-mask = get_valid_action_mask(state)
-valid_actions = mask.nonzero()[0]
+# Per-phase action space
+print(PHASE_ACTION_SIZES_PY)          # [557, 15, 14977, 2, 37, 26, 2, 113]
+print(get_phase_action_size(2))       # 14977 (ACQUISITION)
+print(decode_action_py(0, 0))         # (0, 0, -1, -1, -1) — INVEST pass
+
+# Sparse legal actions (currently returns empty until enumerators land)
+phase_id, legal_ids = enumerate_legal_actions_py(state)
 ```
 
 ### Cython Access
@@ -431,10 +414,10 @@ cdef GameState state = GameState(3)
 # Read a player field directly via the module-level constants
 cdef int16_t cash = state._player_ptr(0)[PLAYER_FIELDS.cash]
 
-# Read a turn-block field (phase lives at the front of the turn block;
+# Read a turn-block field (phase lives inside the turn block;
 # there is no stand-alone LAYOUT.phase_offset slot)
 cdef int phase = state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
 cdef int auction_price = state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_price]
 ```
 
-In practice, every field read/write should go through an entity handle (`PLAYERS[i].get_cash(state)`, `TURN.get_auction_price(state)`, etc.) — the snippets above show what the handles do under the hood.
+**The snippets above are what entity handle implementations do under the hood — they are not examples of application code.** Every phase handler, MCTS path, trainer call site, and test should go through handle methods (`PLAYERS[i].get_cash(state)`, `TURN.get_auction_price(state)`, `CORPS[c].get_share_price(state)`, etc.) rather than cimporting layout constants or indexing `state._data` directly. The direct-indexing pattern is reserved for the entity modules themselves.

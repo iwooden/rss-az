@@ -10,9 +10,97 @@ High-performance Cython game engine for "Rolling Stock Stars" board game, optimi
 
 **Key characteristics:**
 - 2-6 player support with dynamic state sizing
-- 454-610 int16 values per game state (3p = 493)
+- Single compact int16 state vector (sizes per player count are in `VECTORS.md`)
 - No Python object overhead in hot paths (nogil execution)
 - Benchmark target: thousands of games per minute
+
+## Transformer Refactor (where we are right now)
+
+We are mid-refactor on the `transformer-refactor` branch. The old MLP-era implementation (flat visible/hidden state, rotated per active player, dense global action vector, phase-specific MLP heads) has been **torn out**. The new design in one paragraph: each game entity is its own transformer token, the engine stores a compact int16 state with no rotation and no pre-normalization, `get_token_data()` is the sole engine→NN interface, action encodings are phase-local and sparse, and policy logits are read directly from the relevant entity tokens.
+
+### Why we are doing this
+
+- **No state rotation.** The MLP needed the active player at slot 0, which forced per-evaluation rotation of the state vector and per-player un-rotation of values. A transformer is permutation-equivariant over its input tokens, so the active player is just marked with an `is_active=1` flag on their player token. Rotation logic disappears from both the evaluator and the state builder.
+- **Entity-readout policy heads.** Instead of phase-specific MLP heads that emit a dense action vector, each entity token emits only its own logits — corp tokens emit buy/sell and par logits, company tokens emit auction/close logits, dedicated phase-context tokens emit dividend/issue/acq_offer/bid-raise logits. Heads are weight-shared across tokens of the same type, so parameter counts stay low and the inductive bias matches the game structure.
+- **Sparse legal-action interface.** The old engine/trainer bolted a single global dense action vector onto every surface (masks, replay targets, IPC, trainer softmax). ACQUISITION's full `(corp × company × offset)` space is 14,977 actions — feasible inside the model, painful as a dense runtime interface. The new stack is `(phase_id, num_legal, action_ids[:num_legal], policy_targets[:num_legal])`: the engine enumerates legal actions, the model scores just those, and MCTS/replay/trainer all operate over that legal set. Standard AlphaZero masking semantics — invalid actions are excluded from the softmax competition set, not trained with `-inf` logits.
+- **Long-term: one model for 2-6p.** A transformer can handle a variable number of player tokens. The 3p prototype validates the architecture first; Phase 6 revisits multi-player-count batching.
+
+### What the transformer looks like (summary of `nn/transformer.py` + `transformers.md`)
+
+**Tokens** (3p: 56 total). All tokens are projected from a shared `token_dim` (default 63, zero-padded) through type-specific linear layers, then added to a learned type embedding. Token order is fixed for implementation convenience, but the model has no positional encoding — identity comes from type embeddings plus explicit ID features on the entity tokens.
+
+| Type | Count (3p) | Carries |
+|------|-----------|---------|
+| Player | 3 | identity, cash, net worth, income, turn order, owned shares + presidencies, round trips, `is_active` flag |
+| Corporation | 8 | identity, active flag, cash, shares, income, stars, price index, pending price move, owned companies, receivership flag, invest buy/sell impacts, `is_phase_active` flag |
+| Company | 36 | identity, location flags, income, static features (face/low/high/stars), 36-dim synergy vector, `is_phase_active` flag |
+| FI | 1 | cash, income, owned companies |
+| Market | 1 | 27 availability flags |
+| Global | 1 | phase one-hot, CoO one-hot, end-card flipped, cards remaining, consecutive passes |
+| Auction (phase ctx) | 1 | price, starter, high bidder, passed flags. Zeroed outside BID. |
+| Dividend (phase ctx) | 1 | dividend impact, corp-remaining flags. Zeroed outside DIVIDENDS. Policy logits read from here. |
+| Issue (phase ctx) | 1 | corp-remaining flags, price impact, cash gain. Zeroed outside ISSUE. |
+| PAR (phase ctx) | 1 | par treasury + share availability, shared across all corps. Zeroed outside IPO. |
+| Acq Offer (phase ctx) | 1 | offer price, OS-flag, FI-flag. Zeroed outside ACQ_OFFER. |
+| Pass | 1 | no input features — representation is the type embedding. Emits the shared pass logit. |
+
+**Architecture.** Pre-RMSNorm transformer blocks with SwiGLU FFN (three weight matrices, `ff_mult=3.0`), `d_model=128`, `num_layers=10`, `num_heads=2`. No positional encoding. ~2.3M params at default config.
+
+**Policy heads** (entity-readout, weight-shared within a type):
+
+| Phase | Readout |
+|-------|---------|
+| INVEST | pass token → pass (1); each company → 15 auction offset logits (540); each corp → buy/sell (16). **557 total.** |
+| BID | pass token → leave-auction (1); auction token → 14 raise offsets. **15.** |
+| ACQUISITION | pass token → pass (1); shared corp/company pair head → 52 logits per pair (51 price offsets + FI buy). **14,977.** |
+| ACQ_OFFER | pass token → pass (1); acq_offer token → buy (1). **2.** |
+| CLOSING | pass token → pass (1); each company → close logit (36). **37.** |
+| DIVIDENDS | dividend token → 26 amounts. **26.** |
+| ISSUE | pass token → pass (1); issue token → issue (1). **2.** |
+| IPO | pass token → pass (1); each corp → 14 par-price logits (112). **113.** (The merged IPO+PAR phase.) |
+
+These `PHASE_ACTION_SIZES` must stay in lockstep with `core/actions.pxd`. Both files have import-time self-checks against this, so drift fails fast.
+
+**Value head.** A small `(d_model → d_model/2 → 1 → tanh)` MLP shared across all player tokens. Each player token emits its own value in `[-1, 1]`. Because player tokens aren't slot-rotated, the output values are already in canonical order (player 0's token → v_0, etc.) — no un-rotation.
+
+### What that implies for the engine
+
+- **Compact state, `get_token_data()` is the only NN interface.** No visible/hidden split, no pre-normalization in setters, no one-hot encoding in the state vector, no duplicated "active entity" blobs. `get_token_data(state, buffer, num_tokens, token_dim)` fills the eval buffer with raw/lightly-normalized features from the compact state, in nogil Cython. This helper is still pending — it's the missing link between Phase 1 and Phase 4.
+- **Per-phase action indices, phase-local.** Same integer means different things in different phases. Callers must always carry the `phase_id` alongside the `action_id`. Max legal-action set per phase is capped at `MAX_LEGAL_ACTIONS = 256` for the sparse buffer width; over-cap is a bug, not a graceful-degradation case.
+- **PAR folded into IPO.** The old two-step IPO (pick corp) → PAR (pick price) collapses into one `(corp, par_index)` action on the merged IPO phase.
+- **Engine phase graph gains `ACQ_OFFER`.** What used to be a hidden sub-state of ACQUISITION is now a first-class engine phase for FI preemption / receivership offers. Both `ACQUISITION` and `ACQ_OFFER` are separate decision phases from the model's perspective.
+- **Action-space simplifications are on the table.** Under the transformer refactor, several engine indirections that existed to keep the MLP's action space small are candidates for removal:
+  - **Auction slots.** Replaced by company-indexed auction actions (`company_id × 15 + offset`).
+  - **Acquisition / closing offer buffers.** The old one-by-one offer presentation could be replaced with direct `(corp, company, offset)` masking plus a pass. Receivership auto-acquisitions stay as forced actions.
+  - **Cross-player/cross-corp acquisition transfers.** Currently not supported by our engine, tracked as a known divergence from 18xx.games replays.
+  Which of these land and which stay is still being worked out during the rewrite. The old phase handlers on `main` implement the full one-by-one flow if you need it as a reference for rule intent.
+- **3-player only.** The token shape and replay buffer are sized for 3p. Multi-player-count support is explicitly out of scope for the prototype.
+
+### Reference docs
+
+`transformers.md` (architecture design doc) and `sparse-refactor.md` (sparse policy/replay design doc) have the full rationale, alternatives considered, and implementation-phase breakdown. Most sessions should not need them — everything above is enough to work against. Dip into them only when you need the fuller "why" behind a specific decision.
+
+Backwards compatibility with the old implementation is **not** a goal. Anything outside `core/state.*`, `core/data.*`, `core/actions.*`, and `entities/` is either waiting to be rewritten or already stale. The pre-refactor code is preserved on the `main` branch for reference, but do not treat it as a contract — many of its internal structures, action indices, and phase handlers are intentionally being replaced.
+
+### What currently builds and imports
+
+`setup.py` only compiles `core/data.pyx`, `core/state.pyx`, `core/actions.pyx`, and `entities/*.pyx`. Anything else listed below that depends on those modules either hasn't been touched yet or is a stub.
+
+| Area | Status |
+|------|--------|
+| `core/data.{pyx,pxd}` | ✅ Pure data + enums + normalization divisors. No accessor helpers. |
+| `core/state.{pyx,pxd}` | ✅ Compact int16 layout with module-level `LAYOUT`/`*_OFFSETS`/`*_FIELDS` constants. |
+| `core/actions.{pyx,pxd}` | ✅ Phase-local encode/decode + engine→decision bridge. ⚠ Legal-action enumeration helpers are still **empty stubs** (rss-az-848a). |
+| `core/driver.{pyx,pxd}` | ❌ Pre-refactor code. Imports from `phases/*` which no longer exist. Not in the build. Will be rewritten against the new action/phase graph. |
+| `entities/*.pyx` | ✅ All 7 entity handles (`player`, `corp`, `company`, `turn`, `fi`, `market`, `deck`) rewritten to be fully stateless against the module-level LAYOUT constants. |
+| `phases/` | ❌ Empty package (just a stub `__init__.pyx`). Every phase handler (`invest`, `bid`, `acquisition`, `acq_offer`, `closing`, `dividends`, `income`, `issue`, `ipo`, `wrap_up`, `end_card`) needs to be rewritten. |
+| `nn/transformer.py` | ✅ Token-based transformer (~2.3M params). Already done and imports cleanly. `nn/model_3p.py` is gone. |
+| `mcts/` | ❌ `search.py`, `node.py`, `evaluator.py`, and `mcts_core.pyx` are pre-refactor. `mcts_core.pyx` is not in `setup.py`'s build set. Will be re-plumbed once driver + eval buffers exist. |
+| `train/` | 🟡 Leaf modules (`config.py`, `replay_buffer.py`, `trainer.py`, `checkpoint.py`, `logging.py`, `augment.py`, `tb_reader.py`, `profile_stats.py`) still import cleanly. `eval_server.py`, `self_play.py`, `main.py`, `analyze_game.py`, `tournament.py` all depend on `core.driver` or `mcts.mcts_core` and are currently broken. |
+| `tests/` | 🟡 Only `tests/games_18xx/` remains. The replay harness currently imports `core.driver` and therefore doesn't run; it'll come back online after the driver is rebuilt. No `conftest.py`, no `tests/phases/`. |
+| `interp/` | ❌ Removed. |
+
+When you reach for something on the broken list, the rule is: **rewrite it against the new `core/state` + `core/actions` + `entities/` contract.** The old file on `main` is fine as a reference for rules/intent, but its function signatures, offsets, and action indices are out of date and should not be copied verbatim.
 
 ## Devbox Hardware
 
@@ -24,16 +112,20 @@ High-performance Cython game engine for "Rolling Stock Stars" board game, optimi
 
 ```
 rss-az-cython2/
-├── core/              # Low-level engine: state.pyx, driver.pyx, actions.pyx, data.pyx
+├── core/              # Low-level engine: state.pyx, data.pyx, actions.pyx (driver.pyx = stale)
 ├── entities/          # Entity handles: player, corp, company, deck, turn, market, fi
-├── phases/            # Phase handlers: invest, bid, acquisition, closing, dividends, income, issue, ipo, wrap_up, end_card
-├── mcts/              # MCTS search: node.py, evaluator.py, search.py, mcts_core.pyx (Cython hot functions + signaling)
-├── nn/                # Neural network: model_3p.py (residual MLP, policy + value heads)
-├── train/             # Self-play training: config, eval_server, self_play, replay_buffer, trainer, checkpoint, logging, main
+├── phases/            # Empty stub package — all phase handlers await rewrite
+├── mcts/              # Stale pre-refactor MCTS (node.py, search.py, evaluator.py, mcts_core.pyx)
+├── nn/                # nn/transformer.py — token-based transformer (rewritten)
+├── train/             # Self-play training scaffolding; many files still reference the old driver/mcts_core
 │   └── gpu/           # Vendor-specific GPU optimizations: nvidia.py, amd.py (auto-detected)
-├── tests/             # Test suite: phases/, games_18xx/ replay tests, conftest.py
+├── tests/
+│   └── games_18xx/    # 18xx.games replay tests (currently broken — depends on core.driver)
+├── scratchpad/        # Ad-hoc scripts (see Agent Instructions)
 ├── RULES.md           # Complete game rules (authoritative)
-├── VECTORS.md         # State/action vector documentation
+├── VECTORS.md         # State buffer layout (authoritative)
+├── transformers.md    # Transformer refactor design doc (large; deep reference only)
+├── sparse-refactor.md # Sparse policy / replay refactor design doc (large; deep reference only)
 ```
 
 ## Architecture Overview
@@ -43,16 +135,19 @@ rss-az-cython2/
 Global singleton instances provide clean access to state array regions:
 
 ```python
-PLAYERS = [Player(i) for i in range(6)]  # Player handles
-CORPS = [Corporation(i) for i in range(8)]  # Corporation handles
-TURN = TurnState()  # Turn tracking
-FI = ForeignInvestor()  # Foreign investor
+PLAYERS = [Player(i) for i in range(6)]       # Player handles
+CORPS = [Corporation(i) for i in range(8)]    # Corporation handles
+COMPANIES = [Company(i) for i in range(36)]   # Company handles
+TURN = TurnState()                            # Turn tracking
+FI = ForeignInvestor()                        # Foreign investor
+MARKET = Market()                             # Stock market availability
+DECK = Deck()                                 # Draw deck
 ```
 
 Each entity provides:
 - **cdef methods** (nogil): Direct pointer arithmetic, max performance
 - **cpdef methods**: Python-accessible wrappers for testing
-- **Access pattern**: `entity.get_field(state)` indexes the state buffer at a constant offset derived from the module-level `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` structs on `core.state`. **Every** handle (Player, Corp, Company, TurnState, Market, FI, Deck) is fully stateless — no per-instance offset cache, no `initialize()` step. The singleton handles in `PLAYERS` / `CORPS` / `COMPANIES` are reused with any `GameState` at any player count; the only per-instance fields are display identifiers (`player_id`, `corp_id`, `name`).
+- **Access pattern**: `entity.get_field(state)` indexes the state buffer at a constant offset derived from the module-level `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` / `COMPANY_OFFSETS` / `DECK_OFFSETS` structs on `core.state`. **Every** handle is fully stateless — no per-instance offset cache, no `initialize()` step. The singletons are reused with any `GameState` at any player count; the only per-instance fields are display identifiers (`player_id`, `corp_id`, `name`).
 
 Low-level (`cdef` nogil) wraps high-level (cpdef/def) with no code duplication.
 
@@ -60,19 +155,7 @@ Low-level (`cdef` nogil) wraps high-level (cpdef/def) with no code duplication.
 
 ### GameState (`core/state.pyx`)
 
-Single contiguous int16 numpy array. Raw integers only — no normalization, no one-hot encoding, no visible/hidden split.
-
-**Sizes by player count:**
-
-| Players | total_size | player_stride | corp_stride |
-|---------|-----------|---------------|-------------|
-| 2 | 456 | 39 | 17 |
-| 3 | 495 | 39 | 17 |
-| 4 | 534 | 39 | 17 |
-| 5 | 573 | 39 | 17 |
-| 6 | 612 | 39 | 17 |
-
-The fixed prefix (everything except the players section) is **378** int16 slots and is identical across player counts. Only `total_size` scales: `total_size = 378 + 39 * num_players`. The players section lives at the end of the buffer for exactly this reason — every other section's offset is constant.
+Single contiguous int16 numpy array. Raw integers only — no normalization, no one-hot encoding, no visible/hidden split. See `VECTORS.md` for the full authoritative layout (section order, strides, field offsets, sizes per player count).
 
 `GameState` is basically just a thin wrapper around the state vector. There are no per-instance layout fields — entity handles read offsets directly from the module-level constants below. All field-level reads and writes go through entity handles in `entities/`.
 
@@ -80,140 +163,85 @@ The fixed prefix (everything except the players section) is **378** int16 slots 
 
 **Module-level layout constants** on `core.state` (computed once at import, shared by every `GameState`):
 
-- `LAYOUT` — `cdef StateLayout`: top-level section offsets (`players_offset`, `fi_offset`, `corps_offset`, `turn_offset`, …) plus `player_stride` and `corp_stride`. `total_size` is *not* in this struct because it depends on `num_players`; compute it inline as `LAYOUT.players_offset + LAYOUT.player_stride * num_players` at the few sites that need it (allocation, length validation).
-- `PLAYER_FIELDS` — `cdef PlayerFieldOffsets`: relative offsets within a player block (`cash`, `owned_shares`, `has_passed`, `stride`, …).
-- `CORP_FIELDS` — `cdef CorpFieldOffsets`: relative offsets within a corp block.
-- `TURN_OFFSETS` — `cdef TurnStateOffsets`: relative offsets within the (fixed-size) turn block.
+- `LAYOUT` — `cdef StateLayout`: top-level section offsets (`fi_offset`, `companies_offset`, `market_offset`, `corps_offset`, `turn_offset`, `deck_offset`, `players_offset`). `total_size` is *not* in this struct because it depends on `num_players`; compute it inline as `LAYOUT.players_offset + PLAYER_FIELDS.size * num_players` at the few sites that need it (allocation, length validation). Section sizes live inside their respective field structs (`PLAYER_FIELDS.size`, `CORP_FIELDS.size`, `TURN_OFFSETS.size`, `COMPANY_OFFSETS.size`, `DECK_OFFSETS.size`), not on the top-level layout.
+- `PLAYER_FIELDS` — `cdef PlayerFieldOffsets`: relative offsets within a player block (`cash`, `owned_shares`, `has_passed`, `share_buys`, `share_sells`, …, plus `size`).
+- `CORP_FIELDS` — `cdef CorpFieldOffsets`: relative offsets within a corp block (`active`, `cash`, `company_stars`, `price_index`, …, plus `size`).
+- `TURN_OFFSETS` — `cdef TurnStateOffsets`: relative offsets within the (fixed-size) turn block, plus `size`.
+- `COMPANY_OFFSETS` — `cdef CompanyOffsets`: sub-offsets for the three parallel 36-slot arrays (`incomes`, `locations`, `owner_ids`), plus `size`.
+- `DECK_OFFSETS` — `cdef DeckOffsets`: sub-offsets for `top` (1) + `order` (36), plus `size`.
 
-These are Cython `cdef` structs — **NOT accessible from Python directly**. Cython code uses `from core.state cimport LAYOUT, PLAYER_FIELDS, CORP_FIELDS, TURN_OFFSETS`. Python code uses the namedtuple accessors `core.state.get_layout(num_players)`, `get_player_fields()`, `get_corp_fields()`, `get_turn_fields()`. See `VECTORS.md` for the full layout.
+These are Cython `cdef` structs — **NOT accessible from Python directly**. Cython code uses `from core.state cimport LAYOUT, TURN_OFFSETS, PLAYER_FIELDS, CORP_FIELDS, COMPANY_OFFSETS, DECK_OFFSETS`. Python code uses the namedtuple accessors `core.state.get_layout(num_players)`, `get_player_fields()`, `get_corp_fields()`, `get_turn_fields()`, `get_company_fields()`, `get_deck_fields()`.
 
-### Actions (`core/actions.pyx`)
+All per-player tracking — cash, net_worth, liquidity, turn order, owned shares, presidencies, round trips, income, per-turn share buys/sells, and the per-phase `has_passed` flag — lives inside one player block, so a single pointer hop reaches everything for player `i`.
 
-**Subject to change** as part of the transformers refactor.
+The corp block carries a single cached `company_stars` slot; total stars and cash stars are derived on demand. `share_price` is not stored; it is derived from `price_index`. Corps cache derived values (revenue, synergy income, CoO cost, ability income) lazily behind a per-corp dirty bit; `LAYOUT.turn_offset + TURN_OFFSETS.corp_cache_dirty` holds the mask. Players have an analogous `player_cache_dirty` mask.
 
-### Driver (`core/driver.pyx`)
+`companies.locations` (`CompanyLocation` enum) plus `companies.owner_ids` are the single source of truth for "who owns what" — there are no per-player or per-corp ownership bitmaps. `LOC_DECK = 0` is the zero-init default; `__cinit__` explicitly seeds `companies.owner_ids` to `-1`.
 
-Stateless game loop: `apply_action(state, action_idx, history)` dispatches to phase handlers, auto-applies forced actions. Returns `STATUS_OK`, `STATUS_INVALID`, or `STATUS_GAME_OVER`.
+### Actions (`core/actions.{pyx,pxd}`)
+
+**Per-phase, phase-local action encoding.** Replaces the old single global dense action vector. `core/actions.pxd` is the source of truth for the contract — read it directly, it's short.
+
+- 8 decision phases: `DPHASE_INVEST`, `DPHASE_BID`, `DPHASE_ACQUISITION`, `DPHASE_ACQ_OFFER`, `DPHASE_CLOSING`, `DPHASE_DIVIDENDS`, `DPHASE_ISSUE`, `DPHASE_IPO`. These are what the model sees; the engine's 12 `GamePhases` fold down into them via `get_decision_phase`.
+- **Action counts per phase:** `[557, 15, 14977, 2, 37, 26, 2, 113]`. These must stay in lockstep with `nn/transformer.py::PHASE_ACTION_SIZES`; an import-time assertion guards against drift.
+- **Encode/decode:** each decision phase has a family of `encode_*` `cdef inline` helpers and a single `decode_action(phase_id, action_id)` inverse. `encode_action(ActionInfo)` is the tested roundtrip.
+- **Engine → decision bridge:** `get_decision_phase(state)` reads the engine phase from the state buffer and maps it to a `DecisionPhase`, or returns `-1` for automated/terminal phases (`WRAP_UP`, `INCOME`, `END_CARD`, `GAME_OVER`).
+- **Sparse legal-action enumeration:** `enumerate_legal_actions(state, phase_id, uint16_t* ids)` is the public contract. Every phase has a `_enumerate_*` helper that writes phase-local ids in a deterministic order and returns the count. **Right now these helpers are all empty stubs** (tracked as rss-az-848a). The mask-generation logic has to be ported out of the old `actions-old.pyx` on `main` and re-keyed to the new encoding.
+- **Buffer width:** legal-action buffers pad to `MAX_LEGAL_ACTIONS = 256` (revisit after profiling). An over-cap enumeration is a bug, not a recoverable condition, and `enumerate_legal_actions` asserts on overflow.
+
+### Driver (`core/driver.pyx`) — STALE
+
+The current `core/driver.pyx` is the pre-refactor driver. It imports from `phases/*.pyx` (which don't exist anymore) and uses the old dense action layout, so it is **not in the build set** and does not compile. The rewritten driver will route decision-phase actions through `enumerate_legal_actions` + `decode_action`, auto-apply forced actions, and dispatch to new phase handlers once those land. Until that happens, there is no runnable game loop.
 
 ### Data (`core/data.pyx`)
 
 Pure data + constants module. Holds the static game tables (36 companies, 8 corporations, 27 market prices, par/CoO tables, synergy matrix), the shared enums (`GameConstants`, `GamePhases`, `CorpIndices`), and the normalization divisors used by NN token extraction. **No accessor functions, no computational helpers** — other modules `cimport` the underlying arrays directly. All gamestate reads/writes go through entity handles, never through helpers in `core/data`. Computational helpers (synergy aggregation, required-stars formula, cost-of-ownership lookup, par-price validity, etc.) live as private cdef functions in the module that uses them — e.g. `_aggregate_synergies` and `_required_stars` are inlined in `entities/corp.pyx`. If a helper ends up needed by multiple modules, promote it to a `cimport`-able symbol in whichever entity owns the concept rather than recreating an accessor layer in `core/data`.
 
-## MCTS Search
-
-Pure-Python AlphaZero-style MCTS for 3-player games. MCTSConfig lives in `train/config.py`.
-
-### Value Representation
-
-Value head outputs scalars in [-1, 1] for each player via tanh: `[v_player0, v_player1, ... ]`. 
-
-**Terminal values:** Blend of rank-based and zero-sum net-worth-deviation rewards (`--terminal-blend`, default 0.75). Rank: `linspace(+1, -1)` by placement. Margin: `(n/(n-1)) * (nw_i - mean_nw) / max_nw`. Both zero-sum, stays in [-1, +1]. Use `--terminal-blend 1.0` for pure rank.
-
-### PUCT Selection
-
-```
-UCB(a) = Q(a) + c_puct * P(a) * sqrt(N_parent) / (1 + N(a))
-```
-
-Q(a) is the mean value for the **active player** at the parent node.
-
-### A0GB Greedy Backup (Value Targets)
-
-Instead of soft-Z or game outcome, we use **A0GB** (Willemsen et al., 2022): follow max-visit child from root to leaf/terminal, return that node's value as training target. Removes exploration bias, converges faster. Implementation: `get_greedy_leaf_value(root)` in `search.py`. Stops when best child has `visit_count == 0`.
-
-### Search Flow
-
-1. **Root setup:** Evaluate with NN, expand, add Dirichlet noise
-2. **Per batch** (`search_batch_size` leaves): Select via PUCT → lock leaf (Q=-inf prevents re-selection) → batch evaluate → unlock + expand + backup
-3. **Output:** `get_action_probabilities(root, temperature)` → policy target
-
-**Subtree reuse:** Child subtree becomes new root after action. `prepare_reuse_root()` compacts state pool. Saves 40-60% GPU evals. Always enabled.
-
-**Memory:** Search uses a preallocated `StatePool`; nodes store `state_idx` values into pool rows, and expansion rebinds one scratch `GameState` across those rows instead of allocating wrappers per node.
-
 ### NN Model (`nn/transformer.py`)
 
-**Subject to change** as part of the transformers refactor.
+Token-based transformer (~2.3M params at default config). See the "What the transformer looks like" subsection above for the full token/head/architecture summary — that section replaces the need to consult `transformers.md` for day-to-day work. Token order in the eval buffer is `[players..., corps..., companies..., FI, market, global, auction, dividend, issue, par, acq_offer, pass]`.
 
-## Self-Play Training
-
-AlphaZero-style loop in `train/`. Each epoch: play N games via MCTS → store in replay buffer → train NN → checkpoint.
-
-### Architecture
-
-Worker processes (MCTS is CPU-bound, need own GIL) send states to eval server processes via shared memory (`SharedEvalBuffers`). Model shared zero-copy via CUDA IPC. `spawn` context, `torch.compile` per-process, daemon workers. `num_workers=0` for single-process debug.
-
-**Worker ↔ eval server communication** uses per-server uint64 bitmaps for lockfree request submission and per-worker `mp.Event`s for done signaling. Workers atomically set a bit in their server's bitmap (`fetch_or`, release); servers atomically exchange the bitmap to zero (`exchange`, acquire) to claim all pending work in O(1). A per-server doorbell `mp.Event` wakes idle servers. Each server owns a static partition of workers `[worker_start, worker_end)` — max 64 workers per partition (bitmap width). Gather/scatter between per-worker slots and contiguous inference buffers uses Cython `nogil` memcpy. Signaling primitives live in `mcts/mcts_core.pyx`.
-
-Key files: `train/eval_server.py` (EvaluationServer + RemoteEvaluator), `train/self_play.py` (play_game + worker entry), `train/main.py` (orchestration).
-
-### Configuration
-
-All hyperparameters in `TrainingConfig` dataclass (`train/config.py`). `TrainingConfig.to_mcts_config()` creates MCTSConfig. `--resume latest` to continue from checkpoint. Config validation enforces `num_eval_servers <= num_workers` and max 64 workers per eval server partition (uint64 bitmap width).
-
-**Replay buffer** (3p, 500K capacity): ~4.2 GB. Saved to `checkpoints/replay_buffer/` via `ReplayBuffer.save()/load()`.
-
-### Training Examples & Loss
-
-At each decision point: state, legal_mask, policy_target (MCTS visits), value_target (A0GB).
-
-**Loss:** Policy cross-entropy with MCTS targets + Value MSE with A0GB targets.
-
-### Graceful Shutdown
-
-- **Ctrl-C**: Hard exit
-- **q + Enter**: Graceful — drains workers, saves checkpoint + replay buffer, then exits
-
-## State Representation
-
-See `VECTORS.md` for the full buffer layout. Key points:
-
-- Single contiguous int16 array per `GameState`. Raw integers, no normalization, no one-hot encoding, no visible/hidden split.
-- Sections in order: `FI (2) | companies (108) | market (27) | corps (17 × 8) | turn (68) | deck (37) | players (39 × N)`. The players section is **last** because it is the only section whose size depends on `num_players`; every other offset is constant.
-- The companies section packs three parallel 36-slot sub-arrays — `incomes`, `locations`, `owner_ids` — reachable via `LAYOUT.companies_offset + COMPANY_OFFSETS.<field>`. The deck section packs `top` (1) + `order` (36) reachable via `LAYOUT.deck_offset + DECK_OFFSETS.<field>`.
-- The turn block (68 slots, fixed across player counts) carries the game-wide metadata and active context at the front (`active_player`, `active_corp`, `active_company`, `num_players`, `phase`, `coo_level`, `turn_number`) followed by global scalars, the phase-remaining flag arrays, and two internal dirty-mask slots for the lazy player/corp caches. The per-player `has_passed` flag lives in the player block, not the turn block.
-- The corp block carries its star count split into three slots (`total_stars`, `cash_stars`, `company_stars`) and stores other derived corp values lazily behind a dirty bit. `share_price` is not stored; it is derived from `price_index`.
-- All per-player data — cash, shares, presidencies, this-turn share buys/sells, and the per-player `has_passed` flag — lives inside one player block, so `_player_ptr(i)` reaches everything for player `i` in a single pointer hop.
-- `companies.locations` (`CompanyLocation` enum, 0–8) plus `companies.owner_ids` are the single source of truth for "who owns what". `LOC_DECK = 0` is the zero-init default; `__cinit__` explicitly seeds `companies.owner_ids` to `-1`.
+The model is ahead of the engine: it already expects `(batch, num_tokens, token_dim)` token features and per-phase action indices, but nothing actually produces those yet — `get_token_data()` is the missing Phase-1 link. The transformer is the reason the rest of the refactor is happening; don't change its action-space contract without also updating `core/actions.pxd` (the import-time assert will catch drift).
 
 ## Game Flow & Phases
 
-**12 Phases** (indices 0-11):
+**12 engine phases** (`GamePhases`):
+
 | Index | Phase | Description |
 |-------|-------|-------------|
 | 0 | INVEST | Buy/sell shares, start auctions |
 | 1 | BID_IN_AUCTION | Bidding for a company |
-| 2 | WRAP_UP | FI buying companies at face value |
+| 2 | WRAP_UP | Automated: FI buys companies at face value |
 | 3 | ACQUISITION | Corps acquiring companies |
-| 4 | CLOSING | Player-owned companies closing |
-| 5 | INCOME | Dividend payments |
-| 6 | DIVIDENDS | Dividend calculation |
-| 7 | END_CARD | Game end triggered |
-| 8 | ISSUE_SHARES | Corp issuing shares |
-| 9 | IPO | Select corp charter for company |
-| 10 | PAR | Select par price for new corp |
+| 4 | ACQ_OFFER | FI preemption sub-phase (higher-priority corps get first shot) |
+| 5 | CLOSING | Player-owned companies closing |
+| 6 | INCOME | Automated: income payouts |
+| 7 | DIVIDENDS | Dividend declaration |
+| 8 | END_CARD | Automated: game end card trigger |
+| 9 | ISSUE_SHARES | Corp issuing a share |
+| 10 | IPO | Select corp charter for company **and** par price in one action |
 | 11 | GAME_OVER | Terminal state |
 
-**Automated phases** (no player input): WRAP_UP, INCOME, END_CARD
+**Automated phases** (no player input): `WRAP_UP`, `INCOME`, `END_CARD`.
 
-### Offer Buffer Pattern (acquisition.pyx, closing.pyx)
+**PAR is gone.** The old IPO → PAR two-step is merged into a single `PHASE_IPO` that selects `(corp, par_index)` in one action. `ACQ_OFFER` has taken the slot PAR used to occupy in the engine phase enum.
 
-Both phases use **one-by-one offer presentation**: offers generated at phase entry, sorted by priority, presented sequentially, re-validated dynamically. Keeps action space constant.
+**8 decision phases** (what the model sees, defined in `core/actions.pxd` as `DecisionPhase`): INVEST, BID, ACQUISITION, ACQ_OFFER, CLOSING, DIVIDENDS, ISSUE, IPO. `get_decision_phase(state)` maps from the engine phase to this compressed space.
 
-**ACQUISITION:** Priority: OS→FI (face value DESC) → Corp→FI (price DESC) → Corp→Corp → Corp→Player. Receivership corps auto-buy from FI at HIGH if affordable, auto-pass otherwise. Actions: 51 price offsets, FI_BUY, PASS.
-
-**CLOSING:** Two stages: (1) auto-close (FI negative-income, receivership red/orange above CoO), (2) player offers sorted by face value ASC. Actions: CLOSE, PASS. Mandatory close at end if player has negative income+cash.
+The old **offer-buffer pattern** (pre-generate sorted offers for ACQUISITION and CLOSING, present one-by-one with CLOSE/BUY/PASS actions) is a candidate for removal under the transformer refactor — it existed to keep the MLP's action space small, and the transformer's entity-readout makes it plausible to expose the full `(corp, company, offset)` space directly via masking. Whether the new engine keeps, partially keeps, or drops that indirection is still being worked out; the old phase code on `main` implements the one-by-one flow if you need it as a reference for rule intent.
 
 ## Code Conventions
 
-- **Naming:** `corp_id`/`company_id`/`player_id` = indices; `CORPS[i]`/`PLAYERS[i]` = singletons; `PHASE_*` from `GamePhases`; `LOC_*` from `CompanyLocation`
-- **Field access:** Use entity handles (`PLAYERS[i].get_cash(state)`, `CORPS[c].get_share_price(state)`) for all field reads/writes. `GameState` exposes only structural primitives. `core/data.{pxd,pyx}` is data-only (static arrays + enums + normalization constants) — there are no field-level helpers there; modules that need static game data `cimport` the underlying arrays directly.
-- **Pointer safety:** `nogil` functions take pointers/offsets. Every entity handle reads offsets directly from `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` (cimported from `core.state`) and caches nothing per-instance. Player and Corp use a small inline `_slot(field)` helper that computes `LAYOUT.<section>_offset + id * LAYOUT.<section>_stride + field` — Cython inlines it away in nogil hot paths.
+- **Naming:** `corp_id`/`company_id`/`player_id` = indices; `CORPS[i]`/`PLAYERS[i]`/`COMPANIES[i]` = singletons; `PHASE_*` from `GamePhases` (engine) or `DPHASE_*` from `DecisionPhase` (model); `LOC_*` from `CompanyLocation`.
+- **ALL game state access goes through entity handles.** This is non-negotiable, especially for phase handlers. Use `PLAYERS[i].get_cash(state)` / `PLAYERS[i].set_cash(state, x)`, `CORPS[c].get_share_price(state)`, `COMPANIES[i].get_location(state)`, etc. Do **not** import `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` / `COMPANY_OFFSETS` / `DECK_OFFSETS` from `core.state` outside the entity modules themselves. Do **not** index into `state._data` directly. Do **not** write new ad-hoc field accessors in phase code. The entity handles are the single source of truth for layout knowledge, and their invariants (dirty-mask invalidation, cached-star bookkeeping, ownership-location synchronization) are only correct when callers go through their published methods. Reaching around them is how state corruption enters the codebase.
+- **Entity handle method surfaces are mostly finalized — ask before extending.** If you are implementing a phase handler and find yourself wanting a method that doesn't exist on an entity handle (e.g. "I need a `Corporation.net_treasury()` helper" or "I need a `Player.can_afford_share(corp_id)` check"), **stop and ask the user first**. Do not silently bolt on new cpdef/cdef methods to entity modules. Most of the accessors you need already exist; the ones that don't are design decisions the user wants to make deliberately, not drive-by additions from phase code. Same rule applies to modifying existing methods' semantics — check in before changing behavior.
+- **`GameState` exposes only structural primitives.** `core/data.{pxd,pyx}` is data-only (static arrays + enums + normalization constants); there are no field-level helpers there. Modules that need static game data (company face values, synergy matrix, par-price tables, etc.) `cimport` the underlying arrays from `core.data` directly.
+- **Pointer safety:** `nogil` functions take pointers/offsets. Every entity handle reads offsets directly from `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` / `COMPANY_OFFSETS` / `DECK_OFFSETS` (cimported from `core.state`) and caches nothing per-instance. Player and Corp use a small inline `_slot(field)` helper that computes `<section_offset> + id * <section_stride> + field` — Cython inlines it away in nogil hot paths. **This is the only code that should be cimporting those layout constants.**
 - **Guard with `assert`, not silent fallbacks:** In Cython code, validate parameters and invariants with `assert` rather than `if ...: return`/`return False`/`return 0` style guards. Out-of-range IDs, inactive entities that should be active, malformed state — all of these should crash loudly in development. Silently propagating a default value hides the real bug at the call site and lets corrupt state spread. `assert` statements compile out under `python -O`, so there is zero overhead in production. Examples: `assert 0 <= player_id < state._num_players`, `assert corp.is_active(state)`. Include a descriptive f-string message so failures are debuggable. This rule does *not* apply to genuine business-logic branches (e.g. "this player can't afford the share, so the action is illegal") — those still return cleanly. The rule is about *defensive* checks for things that should never happen if callers are correct.
 
 ## Build Commands
 
-> ⚠️ **Refactor in progress:** A breaking refactor of `core/state.*` and `entities/` is underway. `setup.py` currently builds `core/data.pyx`, `core/state.pyx`, `core/actions.pyx`, and `entities/*.pyx`; `phases/`, `mcts/`, and root-level `.pyx` files are intentionally excluded and will not compile against the new state layout. The build target list will be expanded as each refactor phase lands. For this period, ignore everything outside `core/state.*`, `core/data.*`, `core/actions.*`, and `entities/` unless explicitly told otherwise; tests, training, and benchmarks are also expected to be broken until later phases.
+> ⚠️ **Refactor in progress.** `setup.py` currently only builds `core/data.pyx`, `core/state.pyx`, `core/actions.pyx`, and `entities/*.pyx`. `core/driver.pyx`, `phases/*.pyx`, `mcts/mcts_core.pyx`, and any other root-level `.pyx` files are intentionally excluded and will not compile against the new state layout. The build target list grows as each refactor phase lands. For this period, ignore anything outside the build set unless explicitly told otherwise; tests, training, and benchmarks are expected to be broken until later phases.
 
 **Python binary:** Always use `.venv/bin/python` (not `python` or `python3`). The venv may not be activated in the shell.
 
@@ -225,58 +253,57 @@ Both phases use **one-by-one offer presentation**: offers generated at phase ent
 # Build Cython extensions (required before running any Python code)
 .venv/bin/python setup.py build_ext --inplace 2>&1 | grep -E "(warning|error)" || true
 
-# Run all tests
-pytest tests/
-
 # Clean build artifacts
 .venv/bin/python setup.py clean
-
-# Run self-play training
-.venv/bin/python -m train --device cuda --num-workers 4 --search-batch-size 8
-.venv/bin/python -m train --num-workers 0 --games-per-epoch 10  # single-process debug
-
-# Run MCTS benchmark
-.venv/bin/python setup.py benchmark --device=cuda --batch-size=4
 ```
+
+`pytest tests/`, `python -m train`, and `setup.py benchmark` all require pieces of the engine that aren't building yet — don't expect them to run until the driver + phases + MCTS are back online.
 
 **Warning-free builds:** No compiler warnings expected. If warnings appear, create a beads issue.
 
-**Pyright errors:** Fix before moving on. Run `pyright <file>` via Bash for definitive results (auto-injected diagnostics can be stale). Note: if you encounter a Pyright error, don't ignore it just because it wasn't caused by your change - fix pre-existing errors to keep the codebase clean!
+**Pyright errors:** Fix before moving on. Run `pyright <file>` via Bash for definitive results (auto-injected diagnostics can be stale). Note: if you encounter a Pyright error, don't ignore it just because it wasn't caused by your change — fix pre-existing errors to keep the codebase clean.
 
 ## Testing Approach
 
-**Key fixtures** (conftest.py): `game_state` (3-player, seed=42), `invest_state`, `bid_state`, `trade_state`, `apply_and_track`.
+Most of the old test suite (`tests/conftest.py`, `tests/phases/`) has been deleted as part of the refactor. The surviving test code lives in `tests/games_18xx/` and currently doesn't import because its harness depends on `core.driver`. Expect to rewrite the test suite piece by piece as each refactor phase lands — there is no "all tests pass" gate to run against right now.
 
-**Patterns:** Validate action effects, check mask validity, verify phase transitions, assert invariants (cash conservation, share counts).
+When adding new tests during the refactor:
 
-**Derived state fields** (e.g. `pending_price_move`): Test via invariants in `assert_invariants()` (`tests/phases/conftest.py`), not dedicated test files. This validates correctness at every state transition across all phases and replay tests automatically. Only add a dedicated test file if the feature has complex standalone logic that isn't covered by invariant checks.
-
-**When a test fails, assume the implementation is broken** until proven otherwise. Only "fix" a test after confirming the implementation is correct and the test setup was invalid.
-
-**Status codes:** STATUS_OK (0), STATUS_INVALID (1), STATUS_GAME_OVER (2)
+- Prefer invariant-style assertions (cash conservation, share counts, ownership consistency) applied at every state transition over narrowly scoped unit tests for individual fields. See the old `tests/phases/conftest.py::assert_invariants` on `main` for the pattern.
+- **When a test fails, assume the implementation is broken** until proven otherwise. Only "fix" a test after confirming the implementation is correct and the test setup was invalid.
 
 ### 18xx.games Replay Tests
 
-Validate our engine against completed games from 18xx.games by replaying every action and comparing state. **Requires Ruby** — `extract_states.rb` runs as subprocess.
+The replay harness (`tests/games_18xx/`) validates our engine against completed games from 18xx.games by replaying every action and comparing state at phase boundaries. **Requires Ruby** — `extract_states.rb` runs as a subprocess. Key files: `extract_states.rb`, `action_parser.py`, `replay_harness.py`, `test_replay.py`.
 
-Key files: `extract_states.rb` (state extraction), `action_parser.py` (action mapping with undo/redo handling), `replay_harness.py` (replay + comparison), `test_replay.py` (pytest entry).
+This is currently broken because the harness imports `core.driver`. Once the new driver is in place, it comes back online.
 
-**Action space differences:** Our engine doesn't support: (1) cross-president ACQ transfers, (2) directly offering positive-income company closes in CLO. Check for these before investigating engine bugs if replay fails.
+**Known action-space differences** (carried over from the old engine — verify these still apply after rewrite): (1) cross-president ACQ transfers, (2) directly offering positive-income company closes in CLO. Check for these before investigating engine bugs if replay fails.
 
-**Adding a game:** Export JSON → save to `tests/games_18xx/data/<id>.json` → add to `@pytest.mark.parametrize` in `test_replay.py`.
+**Adding a game:** Export JSON → save to `tests/games_18xx/data/<id>.json` → add to the `@pytest.mark.parametrize` in `test_replay.py`.
+
+## MCTS and Self-Play (deferred)
+
+The old MCTS (`mcts/search.py`, `mcts/node.py`, `mcts/evaluator.py`, `mcts/mcts_core.pyx`) and training orchestration (`train/eval_server.py`, `train/self_play.py`, `train/main.py`) are all pre-refactor. They describe the target architecture but do not run against the new state/action layout. Read them as reference for the intended shape of the pipeline:
+
+- Pure-Python AlphaZero MCTS (PUCT selection, Dirichlet root noise, A0GB greedy-backup value targets, subtree reuse via `StatePool`).
+- Tanh per-player value head in `[-1, 1]`.
+- Self-play workers (CPU, per-process GIL) talking to eval-server processes via shared memory; per-server uint64 bitmaps for lockfree request submission, per-worker `mp.Event` for done signaling; gather/scatter via Cython `nogil` memcpy in `mcts/mcts_core.pyx`.
+- Replay buffer stores `(state tokens, legal mask, policy target, value target)`; value targets are A0GB leaves, policy targets are MCTS visit distributions. Under the new sparse design this becomes `(phase_id, action_ids[:num_legal], policy_targets[:num_legal], value_target)` — the "Transformer Refactor" section above covers the contract.
+
+When these pieces are rebuilt, they will have to talk to the new token eval buffers, per-phase action indices, and sparse legal-action enumeration. The *mechanics* (shared memory layout, `StatePool`, A0GB, subtree reuse, graceful `q+Enter` shutdown) stay the same; the *interfaces* all change. Look at the files on `main` for the current implementation when rewriting, but don't blindly copy — the buffer layouts and action indices all differ.
 
 ## Key Files by Task
 
 | Task | Primary Files | Secondary Files |
 |------|---------------|-----------------|
-| Add game rule | `phases/*.pyx` | `core/data.pyx`, `RULES.md` |
-| Modify action space | `core/actions.pyx` | `core/driver.pyx`, `phases/*.pyx` |
-| Debug state | `core/state.pyx`, `VECTORS.md` | Entity files |
-| Optimize performance | Any `.pyx` | Check compiler directives, nogil |
-| Fix bug | Tests first | Phase/entity files |
-| MCTS / search | `mcts/search.py`, `mcts/node.py` | `mcts/evaluator.py`, `train/config.py` |
-| Self-play / training | `train/main.py`, `train/config.py` | `train/self_play.py`, `train/eval_server.py`, `mcts/mcts_core.pyx` |
-| Interpretability | `interp/README.md` | `interp/*.py` |
+| Layout / field offsets | `core/state.{pyx,pxd}`, `VECTORS.md` | `entities/*.pxd` |
+| Static game data / synergies / CoO | `core/data.{pyx,pxd}` | `RULES.md` |
+| Action encoding / decoding | `core/actions.{pyx,pxd}` | `nn/transformer.py::PHASE_ACTION_SIZES` |
+| Entity field access | `entities/<entity>.{pyx,pxd}` | — |
+| Model architecture | `nn/transformer.py` | "Transformer Refactor" section above |
+| Rewriting driver / phases | (currently TBD) | old files on `main` + `RULES.md` |
+| Phase implementation | entity handle methods + `core/actions.pyx::_enumerate_*` | `RULES.md`; ask user before adding handle methods |
 
 ---
 
@@ -285,6 +312,10 @@ Key files: `extract_states.rb` (state extraction), `action_parser.py` (action ma
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
 **Before working on any game logic**, read `RULES.md` — authoritative source for rules.
+
+**Before working on state layout or entity handles**, read `VECTORS.md` — authoritative source for the compact state layout.
+
+The refactor design docs (`transformers.md`, `sparse-refactor.md`) are large. Don't auto-load them into context — the "Transformer Refactor" section above pulls out the parts you need day-to-day. Dip into the full docs only if you need the fuller "why" behind a specific decision that isn't covered here.
 
 ## Agent Work Standards
 
@@ -300,23 +331,33 @@ Use subtasks (`bd create --parent=<id> --title="..." --type=task`) for related w
 
 Write ad-hoc scripts to the project `scratchpad` directory, not inline in Bash. Use `Edit` for iteration. Always prepend `PYTHONPATH=/home/icebreaker/rss-az-cython2` when running. This will save you a ton of tokens by making sure you don't have to write 100-line scripts from scratch on each invocation!
 
+## Referencing the old implementation
+
+The pre-refactor implementation lives on the `main` branch. It is a useful reference for:
+
+- Game rule intent and edge cases (when `RULES.md` is ambiguous)
+- The shape of the old phase handlers, driver loop, and MCTS plumbing
+- Legality logic that needs to be ported into the new `_enumerate_*` helpers in `core/actions.pyx`
+
+It is **not** a reference for: state layout, field offsets, action indices, or any struct/function signature. Those have all changed. Do not copy code verbatim from `main` — translate it into the new contract.
+
 ## Verification Before Closing
+
+Right now there is no full "build + test" gate to run:
 
 ```bash
 .venv/bin/python setup.py clean && .venv/bin/python setup.py build_ext --inplace 2>&1 | grep -E "(warning|error)" || true
-pytest tests/
 ```
 
-**IMPORTANT:** Always run `pytest tests/` without `--ignore`. All tests must pass.
+That's the minimum. `pytest tests/` and `python -m train` do not currently run; don't pretend they do. As the refactor progresses and pieces come back online, re-add them to the verification checklist.
 
 ## Landing the Plane (Session Completion)
 
-Work is NOT complete until `git push` succeeds. **MANDATORY:**
+This branch is ephemeral and has no upstream — code is merged to `main` locally, not pushed. Session close looks like:
 
-1. File issues for remaining work
-2. Run quality gates (tests, builds)
-3. Update issue status (`bd close`)
-4. Push: `git pull --rebase && bd sync && git push && git status`
-5. Verify all changes committed AND pushed
+1. File issues for remaining work (`bd create`)
+2. Run the build gate above
+3. Update issue status (`bd close`, `bd update --status=in_progress`, etc.)
+4. `git status` → `git add <files>` → `bd sync --from-main` → `git commit`
 
-**NEVER stop before pushing. NEVER say "ready to push when you are" — YOU must push.**
+Follow the beads session-close protocol at the top of every session.
