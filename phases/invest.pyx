@@ -174,6 +174,28 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     cdef int player_id = turn_module.TURN.get_active_player(state)
     cdef int current_index, new_index, sell_price, current_shares
 
+    # Peek at the price-index transition first so we can short-circuit into
+    # bankruptcy without any intermediate state mutation. go_bankrupt() is
+    # the single source of truth for bankruptcy cleanup (market-space free,
+    # company removal, share return, corp deactivation); we call it with
+    # the corp still sitting at its current pre-sell state so it can free
+    # the right market slot on its own.
+    current_index = corp_module.CORPS[corp_id].get_price_index(state)
+    new_index = market_module.MARKET.find_next_lower_space(state, current_index)
+
+    if new_index == 0:
+        # Bankruptcy. Skip the share transfer and the $0 payment —
+        # go_bankrupt() zeros all player shares for this corp as part of
+        # its normal teardown, and MARKET_PRICES[0] == 0 so there is no
+        # cash to pay. No round-trip tracking: the corp no longer exists
+        # and there is no corp_id to track against.
+        corp_module.CORPS[corp_id].go_bankrupt(state)
+        turn_module.TURN.clear_consecutive_passes(state)
+        _advance_active_player(state)
+        return
+
+    # Normal case: transfer the share, move the price, pay the player.
+    #
     # Transfer the share FIRST. Important because set_shares(0) may flip
     # the corp into receivership when the last president sells out; that
     # flip has to be visible before any downstream reads look at the corp.
@@ -182,30 +204,14 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
 
     # Move price down BEFORE paying the player — the player receives the
     # *new* (lower) price, not the old one.
-    current_index = corp_module.CORPS[corp_id].get_price_index(state)
-    new_index = market_module.MARKET.find_next_lower_space(state, current_index)
     market_module.MARKET.set_space_available(state, current_index, True)
     corp_module.CORPS[corp_id].set_price_index(state, new_index)
+    market_module.MARKET.set_space_available(state, new_index, False)
 
     sell_price = MARKET_PRICES[new_index]
     player_module.PLAYERS[player_id].add_cash(state, sell_price)
 
-    # Bankruptcy: landing on index 0 triggers the full corp teardown.
-    # go_bankrupt() handles its own market-space cleanup (frees the
-    # current index before setting price to 0), removes companies,
-    # returns shares, zeros cash, and deactivates the corp.
-    if new_index == 0:
-        corp_module.CORPS[corp_id].go_bankrupt(state)
-        turn_module.TURN.clear_consecutive_passes(state)
-        _advance_active_player(state)
-        return
-
-    # Normal case: occupy the new market space.
-    market_module.MARKET.set_space_available(state, new_index, False)
-
-    # Round-trip tracking (INVEST scratch). Not tracked on the bankruptcy
-    # path above — the corp no longer exists so there is no corp_id to
-    # track against.
+    # Round-trip tracking (INVEST scratch).
     player_module.PLAYERS[player_id].increment_share_sells(state, corp_id)
 
     turn_module.TURN.clear_consecutive_passes(state)
