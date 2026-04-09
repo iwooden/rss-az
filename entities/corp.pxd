@@ -31,7 +31,6 @@ from core.state cimport GameState
 
 cdef void invalidate_corp_cache(GameState state, int corp_id) noexcept nogil
 cdef void invalidate_all_corp_caches(GameState state) noexcept nogil
-cdef void update_all_corp_caches(GameState state) noexcept
 
 
 # =============================================================================
@@ -104,9 +103,9 @@ cdef class Corporation:
     cpdef int get_coo_cost(self, GameState state)
     cpdef int get_ability_income(self, GameState state)
 
-    # Stars (split: total = company + cash + ability bonus). These are
-    # derived cache fields refreshed lazily behind the corp cache dirty bit.
-    cpdef int get_stars(self, GameState state)
+    # Stars. company_stars is cached behind the corp dirty bit; cash stars,
+    # total stars, and pending price move are derived on demand from the
+    # cached company value plus current cash / price state.
     cpdef int get_total_stars(self, GameState state)
     cpdef int get_cash_stars(self, GameState state)
     cpdef int get_company_stars(self, GameState state)
@@ -128,11 +127,6 @@ cdef class Corporation:
     # Company ownership
     cpdef bint owns_company(self, GameState state, int company_id)
     cpdef int count_companies(self, GameState state, bint include_acquisition=*)
-
-    # Cache-refresh compatibility wrappers
-    cpdef void recalculate_cash_stars(self, GameState state)
-    cpdef void recalculate_company_stars(self, GameState state)
-    cpdef void update_pending_price_move(self, GameState state)
 
     # Bankruptcy
     cpdef void go_bankrupt(self, GameState state)

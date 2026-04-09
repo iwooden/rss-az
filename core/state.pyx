@@ -58,9 +58,9 @@ PlayerFields = namedtuple('PlayerFields', [
 
 CorpFields = namedtuple('CorpFields', [
     'active', 'cash', 'unissued_shares', 'issued_shares', 'bank_shares',
-    'income', 'total_stars', 'cash_stars', 'company_stars',
+    'income', 'company_stars',
     'acquisition_proceeds',
-    'in_receivership', 'price_index', 'pending_price_move',
+    'in_receivership', 'price_index',
     'raw_revenue', 'synergy_income', 'coo_cost', 'ability_income',
 ])
 
@@ -355,10 +355,6 @@ cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil:
     offset += 1
     c.income = offset
     offset += 1
-    c.total_stars = offset
-    offset += 1
-    c.cash_stars = offset
-    offset += 1
     c.company_stars = offset
     offset += 1
     c.acquisition_proceeds = offset
@@ -366,8 +362,6 @@ cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil:
     c.in_receivership = offset
     offset += 1
     c.price_index = offset
-    offset += 1
-    c.pending_price_move = offset
     offset += 1
     c.raw_revenue = offset
     offset += 1
@@ -446,13 +440,10 @@ def get_corp_fields():
         issued_shares=CORP_FIELDS.issued_shares,
         bank_shares=CORP_FIELDS.bank_shares,
         income=CORP_FIELDS.income,
-        total_stars=CORP_FIELDS.total_stars,
-        cash_stars=CORP_FIELDS.cash_stars,
         company_stars=CORP_FIELDS.company_stars,
         acquisition_proceeds=CORP_FIELDS.acquisition_proceeds,
         in_receivership=CORP_FIELDS.in_receivership,
         price_index=CORP_FIELDS.price_index,
-        pending_price_move=CORP_FIELDS.pending_price_move,
         raw_revenue=CORP_FIELDS.raw_revenue,
         synergy_income=CORP_FIELDS.synergy_income,
         coo_cost=CORP_FIELDS.coo_cost,
