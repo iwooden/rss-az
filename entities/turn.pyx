@@ -24,7 +24,8 @@ buckets:
 
 `set_coo_level` is the one method that does meaningful work beyond a
 field write: it cascades the new CoO into adjusted company incomes and
-re-derives every player/corp/FI income.
+re-derives corp/FI income while marking player finance caches dirty for
+lazy refresh on the next read.
 
 Layout offsets come from the module-level ``LAYOUT`` and ``TURN_OFFSETS``
 constants on ``core.state``. Single-slot metadata lives at
@@ -43,6 +44,7 @@ from core.data cimport (
     COMPANY_STARS,
     COST_OF_OWNERSHIP,
 )
+from entities.player cimport invalidate_all_player_caches
 # Late entity imports live below the class definition + ``TURN`` singleton
 # creation. Peer modules (player / company / corp / fi) use a lazy
 # ``_TURN()`` accessor that defers the ``turn_module.TURN`` lookup to first
@@ -133,16 +135,17 @@ cdef class TurnState:
         """Set the cost-of-ownership level and cascade adjusted incomes.
 
         Updating CoO changes every company's adjusted income, which in
-        turn changes every active corp's income, every player's income,
-        and the Foreign Investor's income. The cascades happen here so
-        callers don't have to remember to invoke them by hand.
+        turn changes every active corp's income, every player's cached
+        income, and the Foreign Investor's income. Corp/FI values are
+        refreshed eagerly; player finance stays lazy behind the single
+        cache-dirty bit.
         """
         assert 1 <= level <= <int>GameConstants.NUM_COO_LEVELS, \
             f"coo_level {level} out of range [1, {<int>GameConstants.NUM_COO_LEVELS}]"
         state._data[LAYOUT.turn_offset + TURN_OFFSETS.coo_level] = <int16_t>level
         self._update_all_company_incomes(state, level)
         self._update_all_corp_incomes(state)
-        self._update_all_player_incomes(state)
+        invalidate_all_player_caches(state)
         fi_module.FI.calculate_income(state)
 
     cdef void _update_all_company_incomes(self, GameState state, int coo_level):
@@ -167,12 +170,6 @@ cdef class TurnState:
         for corp_id in range(<int>GameConstants.NUM_CORPS):
             if corp_module.CORPS[corp_id].is_active(state):
                 corp_module.CORPS[corp_id].calculate_income(state)
-
-    cdef void _update_all_player_incomes(self, GameState state):
-        """Recalculate income for every player."""
-        cdef int player_id
-        for player_id in range(self._get_num_players(state)):
-            player_module.PLAYERS[player_id].calculate_income(state)
 
     # =========================================================================
     # TURN NUMBER

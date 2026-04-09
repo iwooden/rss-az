@@ -21,6 +21,7 @@ from core.data cimport (
     MARKET_PRICES,
     PRICE_TO_MARKET_INDEX,
 )
+from entities.player cimport invalidate_all_player_caches
 
 
 cdef void copy_market_availability(GameState state, int16_t* out_flags) noexcept nogil:
@@ -62,9 +63,13 @@ cdef class Market:
 
     cpdef void set_space_available(self, GameState state, int index, bint available):
         """Set whether the given market space is available."""
+        cdef bint old_available
         assert 0 <= index < <int>GameConstants.NUM_MARKET_SPACES, \
             f"market index {index} out of range [0, {<int>GameConstants.NUM_MARKET_SPACES})"
+        old_available = self._is_space_available(state, index)
         self._set_space_available(state, index, available)
+        if old_available != available:
+            invalidate_all_player_caches(state)
 
     # =========================================================================
     # PRICE LOOKUPS (static data from core.data)

@@ -47,6 +47,9 @@ from entities.company cimport (
     company_in_corp_acquisition,
     company_owned_by_corp,
 )
+from entities.player cimport (
+    invalidate_all_player_caches,
+)
 from entities.turn cimport TurnState
 
 # Late imports to avoid circular dependencies (resolved at runtime)
@@ -213,7 +216,10 @@ cdef class Corporation:
 
     cpdef void set_active(self, GameState state, bint active):
         """Set whether the corp is active."""
+        cdef bint old_active = self._is_active(state)
         state._data[self._slot(CORP_FIELDS.active)] = <int16_t>(1 if active else 0)
+        if old_active != active:
+            invalidate_all_player_caches(state)
 
     cpdef void float_corp(self, GameState state, int player_id, int company_id,
                           int par_index, int float_shares=1):
@@ -422,7 +428,11 @@ cdef class Corporation:
 
     cpdef void set_share_price(self, GameState state, int price):
         """Set share price (raw integer dollars)."""
-        state._data[self._slot(CORP_FIELDS.share_price)] = <int16_t>price
+        cdef int slot = self._slot(CORP_FIELDS.share_price)
+        cdef int old_price = <int>state._data[slot]
+        state._data[slot] = <int16_t>price
+        if old_price != price:
+            invalidate_all_player_caches(state)
 
     cpdef int get_price_index(self, GameState state):
         """Return market price index (0-26, where 0 is bankruptcy)."""

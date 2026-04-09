@@ -21,6 +21,7 @@ from entities.corp import CORPS
 from entities.company import COMPANIES
 from entities.turn import TURN
 from entities.deck import DECK
+from entities.market import MARKET
 from phases.dividends import setup_dividends_phase_py, apply_dividend_action_py
 from phases.issue import setup_issue_phase_py, apply_issue_action_py
 from phases.acquisition import (
@@ -47,6 +48,29 @@ def assert_net_worth_fresh(state, msg=""):
         calculated = PLAYERS[p].calculate_net_worth(state)
         assert stored == calculated, (
             f"{msg}\nPlayer {p} net worth stale: "
+            f"stored={stored}, calculated={calculated}"
+        )
+
+
+def assert_liquidity_fresh(state, msg=""):
+    """Assert stored liquidity equals calculated liquidity for all players."""
+    for p in range(state.get_num_players()):
+        stored = PLAYERS[p].get_liquidity(state)
+        calculated = PLAYERS[p].calculate_liquidity(state)
+        assert stored == calculated, (
+            f"{msg}\nPlayer {p} liquidity stale: "
+            f"stored={stored}, calculated={calculated}"
+        )
+
+
+def assert_income_fresh(state, msg=""):
+    """Assert stored income equals recalculated income for all players."""
+    for p in range(state.get_num_players()):
+        stored = PLAYERS[p].get_income(state)
+        PLAYERS[p].calculate_income(state)
+        calculated = PLAYERS[p].get_income(state)
+        assert stored == calculated, (
+            f"{msg}\nPlayer {p} income stale: "
             f"stored={stored}, calculated={calculated}"
         )
 
@@ -155,6 +179,62 @@ class TestNetWorthFormula:
         PLAYERS[0].update_net_worth(state)
         stored = PLAYERS[0].get_net_worth(state)
         assert stored == calculated
+
+
+class TestEntityHandleFinanceFreshness:
+    """Direct entity-handle mutations keep player finance caches coherent."""
+
+    def test_company_transfer_self_heals_net_worth(self):
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        cid = DECK.draw(state)
+        COMPANIES[cid].transfer_to_player(state, 0)
+
+        assert_net_worth_fresh(state, "After direct company transfer")
+        assert_income_fresh(state, "After direct company transfer")
+
+    def test_cash_change_self_heals_net_worth_and_liquidity(self):
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        PLAYERS[0].add_cash(state, 7)
+
+        assert_net_worth_fresh(state, "After direct cash mutation")
+        assert_liquidity_fresh(state, "After direct cash mutation")
+        assert_income_fresh(state, "After direct cash mutation")
+
+    def test_price_and_market_changes_self_heal_shareholder_finance(self):
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        float_corp_for_test(state, corp_id=0, par_index=10, float_shares=2)
+        PLAYERS[1].set_shares(state, 0, 1)
+        PLAYERS[1].set_cash(state, 50)
+        update_all_net_worths(state)
+
+        # Simulate a higher-priced occupied market configuration via the
+        # entity handles themselves.
+        CORPS[0].set_price_index(state, 11)
+        MARKET.set_space_available(state, 10, True)
+        MARKET.set_space_available(state, 11, False)
+        MARKET.set_space_available(state, 9, False)
+
+        assert_net_worth_fresh(state, "After direct corp/market mutations")
+        assert_liquidity_fresh(state, "After direct corp/market mutations")
+        assert_income_fresh(state, "After direct corp/market mutations")
+
+    def test_coo_change_self_heals_company_income_cache(self):
+        state = GameState(num_players=3)
+        state.initialize_game(seed=42)
+
+        cid = DECK.draw(state)
+        COMPANIES[cid].transfer_to_player(state, 0)
+        update_all_net_worths(state)
+
+        TURN.set_coo_level(state, 2)
+
+        assert_income_fresh(state, "After CoO change")
 
 
 # =============================================================================

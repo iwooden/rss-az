@@ -28,7 +28,7 @@ calls are thin cdef dispatches once typed.
 
 from libc.stdint cimport int16_t
 
-from core.state cimport GameState, LAYOUT, PLAYER_FIELDS
+from core.state cimport GameState, LAYOUT, PLAYER_FIELDS, TURN_OFFSETS
 from core.data cimport (
     GameConstants,
     MARKET_PRICES,
@@ -61,6 +61,37 @@ cdef TurnState _TURN():
     if _TURN_CACHED is None:
         _TURN_CACHED = <TurnState>turn_module.TURN
     return _TURN_CACHED
+
+
+# =============================================================================
+# PLAYER FINANCE DIRTY MASK
+# =============================================================================
+
+cdef inline int _player_cache_dirty_slot() noexcept nogil:
+    return LAYOUT.turn_offset + TURN_OFFSETS.player_cache_dirty
+
+
+cdef inline int _all_players_mask(GameState state) noexcept nogil:
+    cdef int num_players = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.num_players]
+    return (1 << num_players) - 1
+
+
+cdef inline bint _cache_dirty(GameState state, int player_id) noexcept nogil:
+    return (<int>state._data[_player_cache_dirty_slot()] & (1 << player_id)) != 0
+
+
+cdef inline void _clear_cache_dirty(GameState state, int player_id) noexcept nogil:
+    cdef int slot = _player_cache_dirty_slot()
+    state._data[slot] = <int16_t>(<int>state._data[slot] & ~(1 << player_id))
+
+
+cdef void invalidate_player_cache(GameState state, int player_id) noexcept nogil:
+    cdef int slot = _player_cache_dirty_slot()
+    state._data[slot] = <int16_t>(<int>state._data[slot] | (1 << player_id))
+
+
+cdef void invalidate_all_player_caches(GameState state) noexcept nogil:
+    state._data[_player_cache_dirty_slot()] = <int16_t>_all_players_mask(state)
 
 
 # =============================================================================
@@ -170,25 +201,6 @@ cdef void _recalculate_presidency(GameState state, int corp_id):
         )
         state._data[pres_slot] = 1
 
-
-# =============================================================================
-# NET WORTH UPDATE (uses Player class methods)
-# =============================================================================
-
-cdef void update_all_player_net_worths(GameState state, int num_players) noexcept:
-    """Update net worth for all players using Player class methods."""
-    cdef int player_id
-    cdef Player player
-    for player_id in range(num_players):
-        player = <Player>PLAYERS[player_id]
-        player.update_net_worth(state)
-
-
-def update_all_net_worths(GameState state):
-    """Update net worth for all players. Python-accessible wrapper."""
-    update_all_player_net_worths(state, _TURN()._get_num_players(state))
-
-
 # =============================================================================
 # HIGH-LEVEL PLAYER CLASS
 # =============================================================================
@@ -250,22 +262,26 @@ cdef class Player:
     cpdef void set_cash(self, GameState state, int cash):
         """Set player's cash (raw integer dollars)."""
         state._data[self._slot(PLAYER_FIELDS.cash)] = <int16_t>cash
+        invalidate_player_cache(state, self.player_id)
 
     cpdef void add_cash(self, GameState state, int amount):
         """Add to player's cash (negative `amount` subtracts)."""
         cdef int slot = self._slot(PLAYER_FIELDS.cash)
         state._data[slot] = <int16_t>(<int>state._data[slot] + amount)
+        invalidate_player_cache(state, self.player_id)
 
     # =========================================================================
     # NET WORTH
     # =========================================================================
 
     cpdef int get_net_worth(self, GameState state):
-        """Get player's stored net worth (raw integer dollars)."""
+        """Get player's cached net worth (raw integer dollars)."""
+        if _cache_dirty(state, self.player_id):
+            self._refresh_cache(state)
         return <int>state._data[self._slot(PLAYER_FIELDS.net_worth)]
 
     cpdef void set_net_worth(self, GameState state, int net_worth):
-        """Set player's net worth (raw integer dollars)."""
+        """Set player's cached net worth (raw integer dollars)."""
         state._data[self._slot(PLAYER_FIELDS.net_worth)] = <int16_t>net_worth
 
     cpdef int calculate_net_worth(self, GameState state):
@@ -294,21 +310,25 @@ cdef class Player:
 
         return total
 
-    cpdef void update_net_worth(self, GameState state):
-        """Recalculate and store net worth and liquidity."""
+    cdef void _refresh_cache(self, GameState state):
+        """Recompute and store this player's derived finance cache."""
+        self.set_income(state, company_sum_player_adjusted_income(state, self.player_id))
         self.set_net_worth(state, self.calculate_net_worth(state))
         self.set_liquidity(state, self.calculate_liquidity(state))
+        _clear_cache_dirty(state, self.player_id)
 
     # =========================================================================
     # LIQUIDITY
     # =========================================================================
 
     cpdef int get_liquidity(self, GameState state):
-        """Get player's stored liquidity (raw integer dollars)."""
+        """Get player's cached liquidity (raw integer dollars)."""
+        if _cache_dirty(state, self.player_id):
+            self._refresh_cache(state)
         return <int>state._data[self._slot(PLAYER_FIELDS.liquidity)]
 
     cpdef void set_liquidity(self, GameState state, int liquidity):
-        """Set player's liquidity (raw integer dollars)."""
+        """Set player's cached liquidity (raw integer dollars)."""
         state._data[self._slot(PLAYER_FIELDS.liquidity)] = <int16_t>liquidity
 
     cpdef int calculate_liquidity(self, GameState state):
@@ -434,6 +454,7 @@ cdef class Player:
         # Adjust bank shares by inverse delta
         if delta != 0:
             corp.set_bank_shares(state, new_bank_shares)
+            invalidate_player_cache(state, self.player_id)
         _recalculate_presidency(state, corp_id)
 
     # =========================================================================
@@ -507,15 +528,17 @@ cdef class Player:
     # =========================================================================
 
     cpdef int get_income(self, GameState state):
-        """Get player's stored income (raw integer dollars)."""
+        """Get player's cached income (raw integer dollars)."""
+        if _cache_dirty(state, self.player_id):
+            self._refresh_cache(state)
         return <int>state._data[self._slot(PLAYER_FIELDS.income)]
 
     cpdef void set_income(self, GameState state, int income):
-        """Set player's income (raw integer dollars)."""
+        """Set player's cached income (raw integer dollars)."""
         state._data[self._slot(PLAYER_FIELDS.income)] = <int16_t>income
 
     cpdef void calculate_income(self, GameState state):
-        """Recalculate and store total income from player's private companies.
+        """Recalculate and store only the income component of the cache.
 
         Uses the cached companies-section incomes sub-array (updated when
         CoO changes). Note: Only player-owned privates, NOT corp

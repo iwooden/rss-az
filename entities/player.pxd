@@ -24,10 +24,11 @@ from core.state cimport GameState
 
 
 # =============================================================================
-# NET WORTH UPDATE
+# PLAYER FINANCE CACHE
 # =============================================================================
 
-cdef void update_all_player_net_worths(GameState state, int num_players) noexcept
+cdef void invalidate_player_cache(GameState state, int player_id) noexcept nogil
+cdef void invalidate_all_player_caches(GameState state) noexcept nogil
 
 
 # =============================================================================
@@ -44,6 +45,7 @@ cdef class Player:
     cdef int _get_share_sells(self, GameState state, int corp_id) noexcept nogil
     cdef bint _owns_company(self, GameState state, int company_id) noexcept nogil
     cdef inline int _slot(self, int field) noexcept nogil
+    cdef void _refresh_cache(self, GameState state)
 
     # Cash
     cpdef int get_cash(self, GameState state)
@@ -54,7 +56,6 @@ cdef class Player:
     cpdef int get_net_worth(self, GameState state)
     cpdef void set_net_worth(self, GameState state, int net_worth)
     cpdef int calculate_net_worth(self, GameState state)
-    cpdef void update_net_worth(self, GameState state)
 
     # Liquidity
     cpdef int get_liquidity(self, GameState state)

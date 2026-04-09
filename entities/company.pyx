@@ -31,6 +31,7 @@ cache and no initialize() step. The handle's only state is its
 from libc.stdint cimport int16_t
 from core.state cimport GameState, LAYOUT, COMPANY_OFFSETS
 from entities.turn cimport TurnState
+from entities.player cimport invalidate_player_cache
 from core.data cimport (
     GameConstants,
     COMPANY_FACE_VALUE,
@@ -45,7 +46,6 @@ from core.data cimport (
 from core.data import COMPANY_NAMES
 from entities import turn as turn_module
 from entities import corp as corp_module
-from entities import player as player_module
 from entities import fi as fi_module
 
 # Lazy accessor for the TURN singleton. See the corresponding comment in
@@ -256,7 +256,7 @@ cdef class Company:
             corp_module.CORPS[owner_id].recalculate_company_stars(state)
             corp_module.CORPS[owner_id].calculate_income(state)
         elif location == LOC_PLAYER:
-            player_module.PLAYERS[owner_id].calculate_income(state)
+            invalidate_player_cache(state, owner_id)
         elif location == LOC_FI:
             fi_module.FI.calculate_income(state)
 

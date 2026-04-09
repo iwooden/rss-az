@@ -220,6 +220,10 @@ cdef TurnStateOffsets compute_turn_offsets() noexcept nogil:
     t.ipo_remaining = offset
     offset += GameConstants.NUM_COMPANIES
 
+    # Internal derived-cache dirty mask (one bit per player).
+    t.player_cache_dirty = offset
+    offset += 1
+
     t.size = offset
     return t
 
@@ -780,3 +784,7 @@ cdef class GameState:
 
         # 10. Set active player
         turn_module.TURN.set_active_player(self, 0)
+
+        # Player finance caches are already valid in the freshly seeded state:
+        # players have starting cash, no shares, and no owned companies.
+        turn[TURN_OFFSETS.player_cache_dirty] = 0

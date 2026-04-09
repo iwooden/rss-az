@@ -73,6 +73,9 @@ cdef struct TurnStateOffsets:
     int dividend_remaining       # 8 corp flags
     int issue_remaining          # 8 corp flags
     int ipo_remaining            # 36 company flags
+    # Internal dirty mask for derived player finance caches.
+    # Bit i corresponds to player i (0 <= i < MAX_PLAYERS).
+    int player_cache_dirty
     # Total size of the turn state block (single source of truth for layout)
     int size
 
