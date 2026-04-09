@@ -431,7 +431,68 @@ cdef int _enumerate_invest(
 cdef int _enumerate_bid(
     GameState state, uint16_t* ids,
 ) noexcept nogil:
-    return 0
+    """Emit every legal DPHASE_BID action in deterministic order.
+
+    Ordering (phase-local IDs match the ``encode_bid_*`` helpers in
+    ``core/actions.pxd``):
+
+      1. ``id 0``: leave the auction (always legal — decodes to
+         ``ACTION_PASS``).
+      2. ``ids 1..14``: raise to ``face_value + 1 + offset``, emitted for
+         each legal ``offset in 0..13``. Both the strictly-greater-than
+         current bid gate and the affordability gate are monotone in
+         ``offset``, so the inner loop starts at the smallest legal
+         offset and breaks as soon as the new bid exceeds the active
+         player's cash.
+
+    Returns the number of IDs written. Worst case: 1 + 14 = 15 — well
+    under ``MAX_LEGAL_ACTIONS = 256``.
+
+    Reads state via direct slot arithmetic against the module-level
+    layout constants, matching the ``_enumerate_invest`` escape-hatch
+    pattern — this module is the one place allowed to cimport
+    ``LAYOUT`` / ``PLAYER_FIELDS`` / ``TURN_OFFSETS`` / ``COMPANY_OFFSETS``.
+    """
+    cdef int count = 0
+    cdef int player_id = <int>state._data[
+        LAYOUT.turn_offset + TURN_OFFSETS.active_player
+    ]
+    cdef int player_base = LAYOUT.players_offset + player_id * PLAYER_FIELDS.size
+    cdef int player_cash = <int>state._data[player_base + PLAYER_FIELDS.cash]
+    cdef int company_id = <int>state._data[
+        LAYOUT.turn_offset + TURN_OFFSETS.active_company
+    ]
+    cdef int current_bid = <int>state._data[
+        LAYOUT.turn_offset + TURN_OFFSETS.auction_price
+    ]
+    cdef int face, offset, new_bid, min_offset
+
+    # --- id 0: leave the auction (always legal) ----------------------------
+    ids[count] = <uint16_t>encode_bid_pass()
+    count += 1
+
+    # A BID state with no active_company is a driver bug — nothing to
+    # auction, nothing to raise on.
+    assert company_id >= 0, "_enumerate_bid: active_company unset"
+
+    face = COMPANY_FACE_VALUE[company_id]
+    # Smallest legal offset: the first ``offset`` where
+    # ``face + offset + 1 > current_bid``. Solving gives
+    # ``offset >= current_bid - face``; clamp to 0 since negative offsets
+    # are not part of the encoding.
+    min_offset = current_bid - face
+    if min_offset < 0:
+        min_offset = 0
+    for offset in range(min_offset, 14):
+        new_bid = face + offset + 1
+        if new_bid > player_cash:
+            # Affordability is monotone in offset — once we can't afford
+            # the next step, we can't afford any higher one.
+            break
+        ids[count] = <uint16_t>encode_bid_raise(offset)
+        count += 1
+
+    return count
 
 
 cdef int _enumerate_acquisition(

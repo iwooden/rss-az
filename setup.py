@@ -170,7 +170,7 @@ def find_pyx_files(directory):
 pyx_files = (
     ['core/data.pyx', 'core/state.pyx', 'core/actions.pyx']
     + find_pyx_files('entities')
-    + ['phases/invest.pyx']
+    + ['phases/invest.pyx', 'phases/bid.pyx']
 )
 
 extensions = []
