@@ -21,48 +21,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from core.data import (
+    MAX_ACTION_SIZE,
+    PHASE_ACTION_SIZES,
+    TokenType,
+)
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-# Phase indices (8 decision phases)
-PHASE_INVEST = 0
-PHASE_BID = 1
-PHASE_ACQUISITION = 2
-PHASE_ACQ_OFFER = 3
-PHASE_CLOSING = 4
-PHASE_DIVIDENDS = 5
-PHASE_ISSUE = 6
-PHASE_IPO = 7
+# Decision phases / action sizes / token type IDs all live in ``core.data``
+# and are imported above. This module is strictly a consumer; editing policy
+# head widths or adding token types happens over there.
+
 NUM_PHASES = 8
-
-# Action counts per phase
-PHASE_ACTION_SIZES: list[int] = [
-    557,  # INVEST:      1 pass + 36*15 auction + 8*2 trade
-    15,   # BID:         1 pass + 14 raises (pass = leave the auction)
-    14977,  # ACQUISITION: 1 pass + 8*36*52 corp x company x offset/action
-    2,    # ACQ_OFFER:   buy + pass
-    37,   # CLOSING:     1 pass + 36 company closes
-    26,   # DIVIDENDS:   26 amounts
-    2,    # ISSUE:       1 pass + 1 issue
-    113,  # IPO:         1 pass + 8*14 corp x par price
-]
-MAX_ACTIONS = max(PHASE_ACTION_SIZES)  # 14977
-
-# Token type IDs (12 types)
-TYPE_PLAYER = 0
-TYPE_CORP = 1
-TYPE_COMPANY = 2
-TYPE_FI = 3
-TYPE_MARKET = 4
-TYPE_GLOBAL = 5
-TYPE_AUCTION = 6
-TYPE_DIVIDEND = 7
-TYPE_ISSUE = 8
-TYPE_PAR = 9
-TYPE_ACQ_OFFER = 10
-TYPE_PASS = 11
-NUM_TOKEN_TYPES = 12
+NUM_TOKEN_TYPES = int(TokenType.NUM_TOKEN_TYPES)
 
 _GELU_APPROX = "tanh"
 
@@ -148,18 +122,18 @@ class RSSTransformerNet(nn.Module):
 
         # Pre-computed type IDs (buffer moves with model to correct device)
         type_ids = torch.zeros(cfg.num_tokens, dtype=torch.long)
-        type_ids[self._player_slice] = TYPE_PLAYER
-        type_ids[self._corp_slice] = TYPE_CORP
-        type_ids[self._company_slice] = TYPE_COMPANY
-        type_ids[self._fi_idx] = TYPE_FI
-        type_ids[self._market_idx] = TYPE_MARKET
-        type_ids[self._global_idx] = TYPE_GLOBAL
-        type_ids[self._auction_idx] = TYPE_AUCTION
-        type_ids[self._dividend_idx] = TYPE_DIVIDEND
-        type_ids[self._issue_idx] = TYPE_ISSUE
-        type_ids[self._par_idx] = TYPE_PAR
-        type_ids[self._acq_offer_idx] = TYPE_ACQ_OFFER
-        type_ids[self._pass_idx] = TYPE_PASS
+        type_ids[self._player_slice] = int(TokenType.TYPE_PLAYER)
+        type_ids[self._corp_slice] = int(TokenType.TYPE_CORP)
+        type_ids[self._company_slice] = int(TokenType.TYPE_COMPANY)
+        type_ids[self._fi_idx] = int(TokenType.TYPE_FI)
+        type_ids[self._market_idx] = int(TokenType.TYPE_MARKET)
+        type_ids[self._global_idx] = int(TokenType.TYPE_GLOBAL)
+        type_ids[self._auction_idx] = int(TokenType.TYPE_AUCTION)
+        type_ids[self._dividend_idx] = int(TokenType.TYPE_DIVIDEND)
+        type_ids[self._issue_idx] = int(TokenType.TYPE_ISSUE)
+        type_ids[self._par_idx] = int(TokenType.TYPE_PAR)
+        type_ids[self._acq_offer_idx] = int(TokenType.TYPE_ACQ_OFFER)
+        type_ids[self._pass_idx] = int(TokenType.TYPE_PASS)
         self.register_buffer("_type_ids", type_ids)
 
         # --- Type-specific input projections ---
@@ -360,18 +334,18 @@ class RSSTransformerNet(nn.Module):
             tokens: (batch, num_tokens, d_model) final token representations.
             phase_ids: (batch,) int tensor, phase index 0-7.
         Returns:
-            (batch, MAX_ACTIONS) logits. Positions beyond a phase's action count
+            (batch, MAX_ACTION_SIZE) logits. Positions beyond a phase's action count
             are filled with -1e9 so they vanish after masking + softmax.
         """
         B = tokens.shape[0]
-        # This dense padded `(B, MAX_ACTIONS)` interface is intentionally simple
+        # This dense padded `(B, MAX_ACTION_SIZE)` interface is intentionally simple
         # for the prototype, but it is not the long-term design. Mixed-phase
         # batches pay for boolean indexing, per-phase dispatch, and stitching
         # small outputs back into one padded tensor. Full ACQUISITION makes that
         # padded width especially wasteful. Once the sparse per-phase policy
         # path is wired through the evaluator / replay / trainer stack, this
         # method should be replaced with phase-local candidate scoring.
-        logits = tokens.new_full((B, MAX_ACTIONS), -1e9)
+        logits = tokens.new_full((B, MAX_ACTION_SIZE), -1e9)
 
         dispatch = [
             self._policy_invest, self._policy_bid, self._policy_acquisition,
@@ -401,7 +375,7 @@ class RSSTransformerNet(nn.Module):
             phase_ids: (batch,) int tensor, decision phase index 0-7.
 
         Returns:
-            policy_logits: (batch, MAX_ACTIONS) raw logits (-1e9 beyond phase range).
+            policy_logits: (batch, MAX_ACTION_SIZE) raw logits (-1e9 beyond phase range).
             values: (batch, num_players) per-player expected outcomes in [-1, 1].
         """
         tokens = self._project_tokens(x)
@@ -511,7 +485,7 @@ if __name__ == "__main__":
     print(f"policy_logits: {tuple(policy_logits.shape)}")
     print(f"values:        {tuple(values.shape)}")
 
-    assert policy_logits.shape == (batch_size, MAX_ACTIONS)
+    assert policy_logits.shape == (batch_size, MAX_ACTION_SIZE)
     assert values.shape == (batch_size, cfg.num_players)
 
     assert values.min() >= -1.0 and values.max() <= 1.0, "tanh output out of range"

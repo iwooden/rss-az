@@ -10,11 +10,10 @@ encoding defined here is the single source of truth for:
   - how the engine decodes a sparse legal candidate into a phase handler call
   - how ``nn/transformer.py`` interprets its policy head outputs
 
-The per-phase action counts **must** match
-``nn/transformer.py::PHASE_ACTION_SIZES`` exactly. Any divergence silently
-misaligns replay targets with model logits. Encode/decode roundtrips are
-tested at import time; changing the layout here requires a matching change
-to the model module.
+The per-phase action *counts* themselves live in ``core/data.pxd`` as the
+``ActionSize`` ``cpdef enum`` — single source of truth shared with the model
+module. The ``encode_*`` arithmetic below must stay consistent with those
+counts; the roundtrip asserts in ``actions.pyx`` guard against drift.
 
 See ``transformers.md`` and ``sparse-refactor.md`` for motivation.
 
@@ -24,7 +23,9 @@ Conventions
 - **Decision phases** are the 8 phases the model sees, distinct from the
   engine's 12 ``GamePhases`` — notably the engine's ``ACQUISITION`` splits
   into ``DPHASE_ACQUISITION`` + ``DPHASE_ACQ_OFFER``, and ``IPO`` / ``PAR``
-  collapse into ``DPHASE_IPO``.
+  collapse into ``DPHASE_IPO``. The enum itself lives in ``core/data.pxd``
+  (``cpdef enum DecisionPhase``) alongside the engine → decision lookup
+  table.
 - Action IDs are **phase-local**: the same integer means different things in
   different phases. Callers must always carry the ``phase_id`` alongside the
   ``action_id``.
@@ -37,50 +38,51 @@ Conventions
 from libc.stdint cimport uint16_t
 
 from core.state cimport GameState
+from core.data cimport (
+    ACTION_SIZE_INVEST,
+    ACTION_SIZE_BID,
+    ACTION_SIZE_ACQUISITION,
+    ACTION_SIZE_ACQ_OFFER,
+    ACTION_SIZE_CLOSING,
+    ACTION_SIZE_DIVIDENDS,
+    ACTION_SIZE_ISSUE,
+    ACTION_SIZE_IPO,
+    MAX_ACTION_SIZE,
+    DPHASE_INVEST,
+    DPHASE_BID,
+    DPHASE_ACQUISITION,
+    DPHASE_ACQ_OFFER,
+    DPHASE_CLOSING,
+    DPHASE_DIVIDENDS,
+    DPHASE_ISSUE,
+    DPHASE_IPO,
+)
 
 
 # =============================================================================
-# DECISION PHASES (what the model sees)
+# SPARSE LEGAL-ACTION BUFFER WIDTH
 # =============================================================================
-
-cdef enum DecisionPhase:
-    DPHASE_INVEST = 0
-    DPHASE_BID = 1
-    DPHASE_ACQUISITION = 2
-    DPHASE_ACQ_OFFER = 3
-    DPHASE_CLOSING = 4
-    DPHASE_DIVIDENDS = 5
-    DPHASE_ISSUE = 6
-    DPHASE_IPO = 7
-    NUM_DECISION_PHASES = 8
-
-
-# =============================================================================
-# ACTION SPACE SIZES (must match nn/transformer.py::PHASE_ACTION_SIZES)
-# =============================================================================
+#
+# Per-phase sizes (``ACTION_SIZE_*``, ``MAX_ACTION_SIZE``) and the decision
+# phase enum (``DPHASE_*``) are cimported from ``core.data`` above — that
+# module is the single source of truth for both. ``MAX_LEGAL_ACTIONS`` is
+# the pad width for the sparse legal-action buffer and lives here because
+# it's a property of the enumeration API, not the policy head geometry.
 
 cdef enum:
-    ACTION_SIZE_INVEST = 557        # 1 pass + 36*15 auction + 8*2 trade
-    ACTION_SIZE_BID = 15            # 1 pass (= leave auction) + 14 raises
-    ACTION_SIZE_ACQUISITION = 14977 # 1 pass + 8*36*52 corp x company x {51 price + FI_BUY}
-    ACTION_SIZE_ACQ_OFFER = 2       # pass + buy
-    ACTION_SIZE_CLOSING = 37        # 1 pass + 36 company closes
-    ACTION_SIZE_DIVIDENDS = 26      # dividend amounts 0..25
-    ACTION_SIZE_ISSUE = 2           # pass + issue
-    ACTION_SIZE_IPO = 113           # 1 pass + 8*14 corp x par index
-
-    MAX_ACTION_SIZE = 14977         # max over all phases (ACQUISITION)
-
     # Padded-sparse buffer width. Every replay/IPC tensor pads to this size.
     # Legal counts above this are considered a bug (see sparse-refactor.md).
     # Kmax=256 is the Phase-1 default; revisit after legal-count profiling.
     MAX_LEGAL_ACTIONS = 256
 
 
-# Module-level C array of per-phase sizes, indexed by DecisionPhase. Filled
-# in at import time from the constants above so callers can look sizes up
-# without a switch.
-cdef int PHASE_ACTION_SIZES[8]
+# Module-private C array of per-phase sizes, indexed by ``DecisionPhase``.
+# Filled in at import time from the ``ActionSize`` enum so callers can look
+# sizes up without a per-phase switch. Named ``_PHASE_ACTION_SIZES_C`` to
+# avoid confusion with the Python-level ``PHASE_ACTION_SIZES`` list exported
+# by ``core.data`` — that list is the Python consumer surface; this table
+# is the Cython-side lookup.
+cdef int _PHASE_ACTION_SIZES_C[8]
 
 
 # =============================================================================
@@ -203,12 +205,11 @@ cdef ActionInfo decode_action(int phase_id, int action_id) noexcept nogil
 # DECISION PHASE BRIDGE
 # =============================================================================
 #
-# Maps engine ``GamePhases`` to the 8-phase decision space. The engine now
-# distinguishes ``ACQUISITION`` from ``ACQ_OFFER`` directly in its phase
-# enum, so this is a straight 1:1 table lookup. Engine phases without a
-# corresponding decision phase (WRAP_UP, INCOME, END_CARD, GAME_OVER) are
-# automated/terminal and return -1 — the driver auto-applies those without
-# consulting the action module.
+# Reads the engine phase from ``state`` and maps it to a ``DecisionPhase``
+# via ``core.data.ENGINE_TO_DECISION_PHASE``. That table maps the 12 engine
+# ``GamePhases`` into the 8-phase decision space; automated/terminal phases
+# (WRAP_UP, INCOME, END_CARD, GAME_OVER) map to -1 and the driver fast-
+# forwards through them without consulting this module.
 
 cdef int get_decision_phase(GameState state) noexcept nogil
 

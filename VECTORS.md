@@ -272,11 +272,11 @@ Stored as a raw integer at `LAYOUT.turn_offset + TURN_OFFSETS.phase`. Defined in
 
 ## Action Space
 
-The old global dense `action_dim` vector is gone. The new action space is **per-phase and phase-local**: the same integer means different things in different phases, so callers must always carry `phase_id` alongside `action_id`. Encoding lives in `core/actions.{pyx,pxd}`; it is the single source of truth, and the values below must stay in lockstep with `nn/transformer.py::PHASE_ACTION_SIZES` (an import-time assertion guards against drift).
+The old global dense `action_dim` vector is gone. The new action space is **per-phase and phase-local**: the same integer means different things in different phases, so callers must always carry `phase_id` alongside `action_id`. The canonical per-phase sizes live in `core/data.pxd` as the `ActionSize` `cpdef enum`; `core/actions.pxd` cimports them for its encode/decode arithmetic, and `nn/transformer.py` imports the `PHASE_ACTION_SIZES` Python list and `MAX_ACTION_SIZE` from `core.data`. Single source of truth — no cross-file sync. An import-time roundtrip assert in `core/actions.pyx` catches encode-formula drift against those sizes.
 
 ### Decision phases
 
-The engine has 12 `GamePhases`; the model only sees the 8 decision phases where a real choice is needed. `get_decision_phase(state)` reads the engine phase from the state buffer and maps it to a `DecisionPhase`, returning `-1` for automated/terminal engine phases (`WRAP_UP`, `INCOME`, `END_CARD`, `GAME_OVER`).
+The engine has 12 `GamePhases`; the model only sees the 8 decision phases where a real choice is needed. The `DecisionPhase` `cpdef enum` lives in `core/data.pxd`, as does the `ENGINE_TO_DECISION_PHASE[12]` lookup table that maps each `GamePhases` value to its `DecisionPhase` (or `-1` for automated/terminal engine phases: `WRAP_UP`, `INCOME`, `END_CARD`, `GAME_OVER`). `get_decision_phase(state)` in `core/actions.pyx` is the nogil helper that reads the engine phase from state and indexes that table.
 
 | DecisionPhase       | ID | Action count | Layout |
 |---------------------|----|-------------:|--------|
@@ -342,7 +342,7 @@ Python-accessible wrappers (for tests + diagnostics):
 
 | Function | Returns |
 |----------|---------|
-| `get_phase_action_size(phase_id)` | Per-phase action count from `PHASE_ACTION_SIZES_PY` |
+| `get_phase_action_size(phase_id)` | Per-phase action count from `core.data.PHASE_ACTION_SIZES` |
 | `decode_action_py(phase_id, action_id)` | Tuple `(phase, action_type, corp_id, company_id, amount)` |
 | `enumerate_legal_actions_py(state, phase_id=-1)` | Tuple `(phase_id, uint16 ndarray of legal ids)` — empty until enumerators land |
 | `get_forced_action_py(state)` | Tuple `(action_id, found)` — `(-1, False)` until enumerators land |
@@ -374,8 +374,8 @@ Python-accessible wrappers (for tests + diagnostics):
 
 ```python
 from core.state import GameState, get_layout, get_player_fields
+from core.data import PHASE_ACTION_SIZES
 from core.actions import (
-    PHASE_ACTION_SIZES_PY,
     decode_action_py,
     enumerate_legal_actions_py,
     get_phase_action_size,
@@ -399,7 +399,7 @@ print(pf.cash, pf.has_passed)     # 0 38
 print(PLAYERS[0].get_cash(state))
 
 # Per-phase action space
-print(PHASE_ACTION_SIZES_PY)          # [557, 15, 14977, 2, 37, 26, 2, 113]
+print(PHASE_ACTION_SIZES)             # [557, 15, 14977, 2, 37, 26, 2, 113]
 print(get_phase_action_size(2))       # 14977 (ACQUISITION)
 print(decode_action_py(0, 0))         # (0, 0, -1, -1, -1) — INVEST pass
 

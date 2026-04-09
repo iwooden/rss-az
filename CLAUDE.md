@@ -59,7 +59,7 @@ We are mid-refactor on the `transformer-refactor` branch. The old MLP-era implem
 | ISSUE | pass token → pass (1); issue token → issue (1). **2.** |
 | IPO | pass token → pass (1); each corp → 14 par-price logits (112). **113.** (The merged IPO+PAR phase.) |
 
-These `PHASE_ACTION_SIZES` must stay in lockstep with `core/actions.pxd`. Both files have import-time self-checks against this, so drift fails fast.
+Action counts live in `core/data.pxd` as the `ActionSize` `cpdef enum`; `core/actions.pxd` cimports them for its encode/decode arithmetic, and `nn/transformer.py` imports the Python-level `PHASE_ACTION_SIZES` list and `MAX_ACTION_SIZE` from `core.data`. Single source of truth — no cross-file sync needed. `core/actions.pyx` has an import-time roundtrip assert that the `encode_*` formulae still produce `ACTION_SIZE_* - 1` for each phase's max id.
 
 **Value head.** A small `(d_model → d_model/2 → 1 → tanh)` MLP shared across all player tokens. Each player token emits its own value in `[-1, 1]`. Because player tokens aren't slot-rotated, the output values are already in canonical order (player 0's token → v_0, etc.) — no un-rotation.
 
@@ -186,7 +186,7 @@ The corp block carries a single cached `company_stars` slot; total stars and cas
 **Per-phase, phase-local action encoding.** Replaces the old single global dense action vector. `core/actions.pxd` is the source of truth for the contract — read it directly, it's short.
 
 - 8 decision phases: `DPHASE_INVEST`, `DPHASE_BID`, `DPHASE_ACQUISITION`, `DPHASE_ACQ_OFFER`, `DPHASE_CLOSING`, `DPHASE_DIVIDENDS`, `DPHASE_ISSUE`, `DPHASE_IPO`. These are what the model sees; the engine's 12 `GamePhases` fold down into them via `get_decision_phase`.
-- **Action counts per phase:** `[557, 15, 14977, 2, 37, 26, 2, 113]`. These must stay in lockstep with `nn/transformer.py::PHASE_ACTION_SIZES`; an import-time assertion guards against drift.
+- **Action counts per phase:** `[557, 15, 14977, 2, 37, 26, 2, 113]`. Canonical values live in `core/data.pxd` as the `ActionSize` `cpdef enum`; `core/actions.pxd` cimports them for its encode arithmetic and `nn/transformer.py` imports the `PHASE_ACTION_SIZES` list from `core.data`. Single source of truth, no cross-file sync. An import-time roundtrip assert in `core/actions.pyx` catches encode-formula drift.
 - **Encode/decode:** each decision phase has a family of `encode_*` `cdef inline` helpers and a single `decode_action(phase_id, action_id)` inverse. `encode_action(ActionInfo)` is the tested roundtrip.
 - **Engine → decision bridge:** `get_decision_phase(state)` reads the engine phase from the state buffer and maps it to a `DecisionPhase`, or returns `-1` for automated/terminal phases (`WRAP_UP`, `INCOME`, `END_CARD`, `GAME_OVER`).
 - **Sparse legal-action enumeration:** `enumerate_legal_actions(state, phase_id, uint16_t* ids)` is the public contract. Every phase has a `_enumerate_*` helper that writes phase-local ids in a deterministic order and returns the count. **Right now these helpers are all empty stubs** (tracked as rss-az-848a). The mask-generation logic has to be ported out of the old `actions-old.pyx` on `main` and re-keyed to the new encoding.
@@ -229,7 +229,7 @@ The model is ahead of the engine: it already expects `(batch, num_tokens, token_
 
 **PAR is gone.** The old IPO → PAR two-step is merged into a single `PHASE_IPO` that selects `(corp, par_index)` in one action. `ACQ_OFFER` has taken the slot PAR used to occupy in the engine phase enum.
 
-**8 decision phases** (what the model sees, defined in `core/actions.pxd` as `DecisionPhase`): INVEST, BID, ACQUISITION, ACQ_OFFER, CLOSING, DIVIDENDS, ISSUE, IPO. `get_decision_phase(state)` maps from the engine phase to this compressed space.
+**8 decision phases** (what the model sees, defined in `core/data.pxd` as the `DecisionPhase` `cpdef enum`): INVEST, BID, ACQUISITION, ACQ_OFFER, CLOSING, DIVIDENDS, ISSUE, IPO. `core.data.ENGINE_TO_DECISION_PHASE` is the 12-slot lookup table from `GamePhases` to `DecisionPhase` (-1 for automated/terminal engine phases); `get_decision_phase(state)` in `core/actions.pyx` reads the current engine phase from state and indexes that table.
 
 **The old offer-buffer pattern is gone.** ACQUISITION and CLOSING no longer pre-generate sorted offers and walk through them one-by-one with CLOSE/BUY/PASS actions. ACQUISITION exposes the full `(corp, company, offset)` action space directly via masking; CLOSING exposes all eligible companies directly; the acting player picks in a single shot, or passes. The old phase code on `main` is *only* a rule-intent reference — do not port its state machine.
 
@@ -306,7 +306,7 @@ When these pieces are rebuilt, they will have to talk to the new token eval buff
 |------|---------------|-----------------|
 | Layout / field offsets | `core/state.{pyx,pxd}`, `VECTORS.md` | `entities/*.pxd` |
 | Static game data / synergies / CoO | `core/data.{pyx,pxd}` | `RULES.md` |
-| Action encoding / decoding | `core/actions.{pyx,pxd}` | `nn/transformer.py::PHASE_ACTION_SIZES` |
+| Action encoding / decoding | `core/actions.{pyx,pxd}` | `core/data.pxd::ActionSize` (size constants) |
 | Entity field access | `entities/<entity>.{pyx,pxd}` | — |
 | Model architecture | `nn/transformer.py` | "Transformer Refactor" section above |
 | Rewriting driver / phases | (currently TBD) | old files on `main` + `RULES.md` |

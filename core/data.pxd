@@ -44,6 +44,31 @@ cpdef enum GamePhases:
     PHASE_IPO = 10
     PHASE_GAME_OVER = 11
 
+# Decision phases — the 8-phase compressed space the transformer sees.
+# The engine's 12 ``GamePhases`` fold down into these via the
+# ``ENGINE_TO_DECISION_PHASE`` table declared below: WRAP_UP / INCOME /
+# END_CARD / GAME_OVER are automated or terminal and map to -1 so the
+# driver fast-forwards through them without consulting the action module.
+# ``cpdef enum`` makes each ``DPHASE_*`` value both a cimport target for
+# Cython code and an attribute on ``core.data.DecisionPhase`` for Python.
+cpdef enum DecisionPhase:
+    DPHASE_INVEST = 0
+    DPHASE_BID = 1
+    DPHASE_ACQUISITION = 2
+    DPHASE_ACQ_OFFER = 3
+    DPHASE_CLOSING = 4
+    DPHASE_DIVIDENDS = 5
+    DPHASE_ISSUE = 6
+    DPHASE_IPO = 7
+
+# Engine-phase → decision-phase lookup table. Indexed by ``GamePhases``;
+# slots corresponding to automated/terminal phases hold -1. Filled in at
+# module import time in ``core/data.pyx``. Cython callers cimport this
+# array directly (``get_decision_phase`` in ``core/actions.pyx`` reads it
+# on the nogil hot path); Python callers get a plain-int list mirror
+# named ``ENGINE_TO_DECISION_PHASE`` on ``core.data``.
+cdef int ENGINE_TO_DECISION_PHASE[12]
+
 # Corp indices for special ability checks
 cpdef enum CorpIndices:
     CORP_JS = 0 # Gets 2x income when closing companies
@@ -54,6 +79,49 @@ cpdef enum CorpIndices:
     CORP_DA = 5 # Gets +max(company incomes) bonus
     CORP_VM = 6 # Gets min(10, total_cost_of_ownership) bonus
     CORP_SI = 7 # Gets +2 share price movement after dividends
+
+# Token type IDs for the transformer input / type embedding.
+# These index the model's type embedding table and are the single source of
+# truth shared between the engine's token extraction and ``nn/transformer.py``.
+# ``cpdef enum`` makes each value both a Cython compile-time constant (for
+# ``get_token_data`` once it lands) and a Python-accessible attribute on
+# ``core.data.TokenType``.
+cpdef enum TokenType:
+    TYPE_PLAYER = 0
+    TYPE_CORP = 1
+    TYPE_COMPANY = 2
+    TYPE_FI = 3
+    TYPE_MARKET = 4
+    TYPE_GLOBAL = 5
+    TYPE_AUCTION = 6
+    TYPE_DIVIDEND = 7
+    TYPE_ISSUE = 8
+    TYPE_PAR = 9
+    TYPE_ACQ_OFFER = 10
+    TYPE_PASS = 11
+    NUM_TOKEN_TYPES = 12
+
+# Per-decision-phase action-space sizes.
+#
+# Single source of truth for the policy head output widths. ``core/actions``
+# cimports these to build its encode/decode formulae; ``nn/transformer.py``
+# imports them to size its per-phase policy heads. Keeping them here (rather
+# than in ``core/actions.pxd``) means the model module doesn't need to touch
+# the actions Cython layer, and the import-time drift check between the two
+# goes away — they share one definition.
+#
+# Any change here must stay consistent with the ``encode_*`` arithmetic in
+# ``core/actions.pxd``; that file still holds the roundtrip asserts.
+cpdef enum ActionSize:
+    ACTION_SIZE_INVEST = 557        # 1 pass + 36*15 auction + 8*2 trade
+    ACTION_SIZE_BID = 15            # 1 pass (= leave auction) + 14 raises
+    ACTION_SIZE_ACQUISITION = 14977 # 1 pass + 8*36*52 corp x company x {51 price + FI_BUY}
+    ACTION_SIZE_ACQ_OFFER = 2       # pass + buy
+    ACTION_SIZE_CLOSING = 37        # 1 pass + 36 company closes
+    ACTION_SIZE_DIVIDENDS = 26      # dividend amounts 0..25
+    ACTION_SIZE_ISSUE = 2           # pass + issue
+    ACTION_SIZE_IPO = 113           # 1 pass + 8*14 corp x par index
+    MAX_ACTION_SIZE = 14977         # max over all phases (ACQUISITION)
 
 # Normalization constants used during token extraction for NN input.
 # Exposed as C #defines so the values are compile-time constants in every

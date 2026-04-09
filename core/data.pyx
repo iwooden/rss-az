@@ -45,6 +45,81 @@ PY_MAX_ROUNDTRIPS = MAX_ROUNDTRIPS
 PY_IMPACT_DIVISOR = IMPACT_DIVISOR
 
 # =============================================================================
+# ENGINE → DECISION PHASE MAPPING
+# =============================================================================
+#
+# The engine's 12 ``GamePhases`` fold down to 8 ``DecisionPhase`` slots for
+# the transformer. Automated/terminal engine phases (``WRAP_UP``, ``INCOME``,
+# ``END_CARD``, ``GAME_OVER``) map to -1 and are fast-forwarded by the
+# driver. ``ENGINE_TO_DECISION_PHASE`` is the canonical lookup both for the
+# nogil Cython path in ``core/actions.pyx::get_decision_phase`` (which
+# cimports the C array) and for Python callers (which import the list
+# mirror below).
+
+cdef void _init_engine_to_decision_phase() noexcept nogil:
+    cdef int i
+    for i in range(12):
+        ENGINE_TO_DECISION_PHASE[i] = -1
+    ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_INVEST] = <int>DecisionPhase.DPHASE_INVEST
+    ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_BID_IN_AUCTION] = <int>DecisionPhase.DPHASE_BID
+    ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_ACQUISITION] = <int>DecisionPhase.DPHASE_ACQUISITION
+    ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_ACQ_OFFER] = <int>DecisionPhase.DPHASE_ACQ_OFFER
+    ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_CLOSING] = <int>DecisionPhase.DPHASE_CLOSING
+    ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_DIVIDENDS] = <int>DecisionPhase.DPHASE_DIVIDENDS
+    ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_ISSUE_SHARES] = <int>DecisionPhase.DPHASE_ISSUE
+    ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_IPO] = <int>DecisionPhase.DPHASE_IPO
+
+
+_init_engine_to_decision_phase()
+
+
+cdef list _engine_to_decision_phase_pylist():
+    """Build a plain Python list mirror of the C lookup table."""
+    cdef int i
+    cdef list out = []
+    for i in range(12):
+        out.append(ENGINE_TO_DECISION_PHASE[i])
+    return out
+
+
+# Python-level mirror of the Cython lookup table. Same ``globals()`` trick
+# as ``PHASE_ACTION_SIZES`` — a bare ``ENGINE_TO_DECISION_PHASE = [...]``
+# assignment would be shadowed by the cimported ``cdef int[12]`` array.
+globals()["ENGINE_TO_DECISION_PHASE"] = _engine_to_decision_phase_pylist()
+
+
+# =============================================================================
+# POLICY ACTION-SPACE SIZES (Python-accessible)
+# =============================================================================
+#
+# The per-phase sizes live in the ``ActionSize`` ``cpdef enum`` in data.pxd.
+# That makes them cimportable as compile-time constants from Cython code,
+# but it does **not** put them in this module's Python namespace — only the
+# ``ActionSize`` class itself is visible, and members with the same int
+# value (e.g. ``ACTION_SIZE_ISSUE`` / ``ACTION_SIZE_ACQ_OFFER`` both == 2)
+# alias in ``repr`` which is ugly. So we inject plain-int mirrors into
+# ``globals()`` at import so that Python consumers
+# (``nn/transformer.py``, trainer, replay) can do a straightforward
+# ``from core.data import PHASE_ACTION_SIZES, MAX_ACTION_SIZE``. Cython
+# callers still ``cimport`` the enum members directly.
+#
+# Using ``globals()[...] = ...`` rather than a bare assignment because
+# ``MAX_ACTION_SIZE = ...`` at module scope shadows the cpdef enum member
+# in the Cython compile pass and silently drops the assignment.
+_py_phase_action_sizes = [
+    int(ActionSize.ACTION_SIZE_INVEST),
+    int(ActionSize.ACTION_SIZE_BID),
+    int(ActionSize.ACTION_SIZE_ACQUISITION),
+    int(ActionSize.ACTION_SIZE_ACQ_OFFER),
+    int(ActionSize.ACTION_SIZE_CLOSING),
+    int(ActionSize.ACTION_SIZE_DIVIDENDS),
+    int(ActionSize.ACTION_SIZE_ISSUE),
+    int(ActionSize.ACTION_SIZE_IPO),
+]
+globals()["PHASE_ACTION_SIZES"] = _py_phase_action_sizes
+globals()["MAX_ACTION_SIZE"] = int(ActionSize.MAX_ACTION_SIZE)
+
+# =============================================================================
 # COMPANY DATA
 # =============================================================================
 

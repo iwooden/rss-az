@@ -12,9 +12,9 @@ See ``core/actions.pxd`` for the full contract. This file supplies:
 The legal-enumeration helpers (``_enumerate_invest``, ``_enumerate_bid``, …)
 are intentionally empty. They are the second-pass work that ports mask
 generation out of ``actions-old.pyx`` into phase-local sparse form. The
-encoding layer defined here is frozen and must stay in lockstep with
-``nn/transformer.py::PHASE_ACTION_SIZES``; a startup-time assertion guards
-against drift.
+encoding layer defined here is frozen against the ``ActionSize`` enum in
+``core/data.pxd``; the roundtrip self-check below catches drift between the
+``encode_*`` arithmetic and those sizes.
 """
 
 cimport cython
@@ -24,28 +24,50 @@ cimport numpy as cnp
 from libc.stdint cimport uint16_t
 
 from core.state cimport GameState, LAYOUT, TURN_OFFSETS
-from core.data cimport GameConstants, GamePhases
+from core.data cimport (
+    GameConstants,
+    GamePhases,
+    ACTION_SIZE_INVEST,
+    ACTION_SIZE_BID,
+    ACTION_SIZE_ACQUISITION,
+    ACTION_SIZE_ACQ_OFFER,
+    ACTION_SIZE_CLOSING,
+    ACTION_SIZE_DIVIDENDS,
+    ACTION_SIZE_ISSUE,
+    ACTION_SIZE_IPO,
+    DPHASE_INVEST,
+    DPHASE_BID,
+    DPHASE_ACQUISITION,
+    DPHASE_ACQ_OFFER,
+    DPHASE_CLOSING,
+    DPHASE_DIVIDENDS,
+    DPHASE_ISSUE,
+    DPHASE_IPO,
+    ENGINE_TO_DECISION_PHASE,
+)
 
 cnp.import_array()
 
 
 # =============================================================================
-# PHASE_ACTION_SIZES TABLE
+# PER-PHASE SIZE LOOKUP TABLE
 # =============================================================================
 
 # Populated at module import by ``_init_phase_action_sizes``. The pxd
-# declares this as ``cdef int PHASE_ACTION_SIZES[8]``; the init function
-# fills it from the ``ACTION_SIZE_*`` enum constants so phase sizes are
-# readable via a single indexed lookup rather than a switch.
+# declares this as ``cdef int _PHASE_ACTION_SIZES_C[8]``; the init function
+# fills it from the ``ActionSize`` enum members cimported from ``core.data``
+# so phase sizes are readable via a single indexed lookup rather than a
+# switch. The table name is distinct from ``core.data.PHASE_ACTION_SIZES``
+# (the Python list) to avoid confusion.
 cdef void _init_phase_action_sizes() noexcept nogil:
-    PHASE_ACTION_SIZES[<int>DPHASE_INVEST] = ACTION_SIZE_INVEST
-    PHASE_ACTION_SIZES[<int>DPHASE_BID] = ACTION_SIZE_BID
-    PHASE_ACTION_SIZES[<int>DPHASE_ACQUISITION] = ACTION_SIZE_ACQUISITION
-    PHASE_ACTION_SIZES[<int>DPHASE_ACQ_OFFER] = ACTION_SIZE_ACQ_OFFER
-    PHASE_ACTION_SIZES[<int>DPHASE_CLOSING] = ACTION_SIZE_CLOSING
-    PHASE_ACTION_SIZES[<int>DPHASE_DIVIDENDS] = ACTION_SIZE_DIVIDENDS
-    PHASE_ACTION_SIZES[<int>DPHASE_ISSUE] = ACTION_SIZE_ISSUE
-    PHASE_ACTION_SIZES[<int>DPHASE_IPO] = ACTION_SIZE_IPO
+    _PHASE_ACTION_SIZES_C[<int>DPHASE_INVEST] = ACTION_SIZE_INVEST
+    _PHASE_ACTION_SIZES_C[<int>DPHASE_BID] = ACTION_SIZE_BID
+    _PHASE_ACTION_SIZES_C[<int>DPHASE_ACQUISITION] = ACTION_SIZE_ACQUISITION
+    _PHASE_ACTION_SIZES_C[<int>DPHASE_ACQ_OFFER] = ACTION_SIZE_ACQ_OFFER
+    _PHASE_ACTION_SIZES_C[<int>DPHASE_CLOSING] = ACTION_SIZE_CLOSING
+    _PHASE_ACTION_SIZES_C[<int>DPHASE_DIVIDENDS] = ACTION_SIZE_DIVIDENDS
+    _PHASE_ACTION_SIZES_C[<int>DPHASE_ISSUE] = ACTION_SIZE_ISSUE
+    _PHASE_ACTION_SIZES_C[<int>DPHASE_IPO] = ACTION_SIZE_IPO
 
 
 _init_phase_action_sizes()
@@ -246,27 +268,6 @@ cdef ActionInfo decode_action(int phase_id, int action_id) noexcept nogil:
 # DECISION PHASE BRIDGE
 # =============================================================================
 
-# Lookup table from engine GamePhases -> DecisionPhase. -1 marks phases
-# that are automated or terminal (driver fast-forwards, no action needed).
-cdef int _ENGINE_TO_DECISION[12]
-
-cdef void _init_engine_to_decision() noexcept nogil:
-    cdef int i
-    for i in range(12):
-        _ENGINE_TO_DECISION[i] = -1
-    _ENGINE_TO_DECISION[<int>GamePhases.PHASE_INVEST] = DPHASE_INVEST
-    _ENGINE_TO_DECISION[<int>GamePhases.PHASE_BID_IN_AUCTION] = DPHASE_BID
-    _ENGINE_TO_DECISION[<int>GamePhases.PHASE_ACQUISITION] = DPHASE_ACQUISITION
-    _ENGINE_TO_DECISION[<int>GamePhases.PHASE_ACQ_OFFER] = DPHASE_ACQ_OFFER
-    _ENGINE_TO_DECISION[<int>GamePhases.PHASE_CLOSING] = DPHASE_CLOSING
-    _ENGINE_TO_DECISION[<int>GamePhases.PHASE_DIVIDENDS] = DPHASE_DIVIDENDS
-    _ENGINE_TO_DECISION[<int>GamePhases.PHASE_ISSUE_SHARES] = DPHASE_ISSUE
-    _ENGINE_TO_DECISION[<int>GamePhases.PHASE_IPO] = DPHASE_IPO
-
-
-_init_engine_to_decision()
-
-
 cdef int get_decision_phase(GameState state) noexcept nogil:
     """Read the engine phase from ``state`` and map it to a DecisionPhase.
 
@@ -274,13 +275,14 @@ cdef int get_decision_phase(GameState state) noexcept nogil:
     END_CARD, GAME_OVER). Callers are expected to only invoke enumeration /
     decoding for phases where the driver actually asks for an action.
 
-    Reads the phase slot directly from the state buffer — no Python
-    singleton access — so the whole function stays nogil.
+    Reads the phase slot directly from the state buffer and indexes the
+    ``ENGINE_TO_DECISION_PHASE`` table cimported from ``core.data`` — no
+    Python singleton access, the whole function stays nogil.
     """
     cdef int engine_phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
     if engine_phase < 0 or engine_phase >= 12:
         return -1
-    return _ENGINE_TO_DECISION[engine_phase]
+    return ENGINE_TO_DECISION_PHASE[engine_phase]
 
 
 # =============================================================================
@@ -408,7 +410,7 @@ cpdef int get_phase_action_size(int phase_id):
     """Return the action-space size for a given DecisionPhase."""
     if phase_id < 0 or phase_id >= <int>GameConstants.NUM_DECISION_PHASES:
         raise ValueError(f"invalid decision phase: {phase_id}")
-    return PHASE_ACTION_SIZES[phase_id]
+    return _PHASE_ACTION_SIZES_C[phase_id]
 
 
 cpdef tuple decode_action_py(int phase_id, int action_id):
@@ -418,10 +420,10 @@ cpdef tuple decode_action_py(int phase_id, int action_id):
     """
     if phase_id < 0 or phase_id >= <int>GameConstants.NUM_DECISION_PHASES:
         raise ValueError(f"invalid decision phase: {phase_id}")
-    if action_id < 0 or action_id >= PHASE_ACTION_SIZES[phase_id]:
+    if action_id < 0 or action_id >= _PHASE_ACTION_SIZES_C[phase_id]:
         raise ValueError(
             f"action_id {action_id} out of range for phase {phase_id} "
-            f"(size {PHASE_ACTION_SIZES[phase_id]})"
+            f"(size {_PHASE_ACTION_SIZES_C[phase_id]})"
         )
     cdef ActionInfo info = decode_action(phase_id, action_id)
     return (info.phase, info.action_type, info.corp_id, info.company_id, info.amount)
@@ -460,31 +462,13 @@ cpdef tuple get_forced_action_py(GameState state):
 # =============================================================================
 # MODULE-LEVEL PYTHON CONSTANTS (for tests / external inspection)
 # =============================================================================
-
-# Expose DecisionPhase values as plain Python ints so tests can import them
-# without cimporting the enum. Matches the naming in nn/transformer.py.
-PHASE_INVEST = DPHASE_INVEST
-PHASE_BID = DPHASE_BID
-PHASE_ACQUISITION = DPHASE_ACQUISITION
-PHASE_ACQ_OFFER = DPHASE_ACQ_OFFER
-PHASE_CLOSING = DPHASE_CLOSING
-PHASE_DIVIDENDS = DPHASE_DIVIDENDS
-PHASE_ISSUE = DPHASE_ISSUE
-PHASE_IPO = DPHASE_IPO
-
-PHASE_ACTION_SIZES_PY = [
-    ACTION_SIZE_INVEST,
-    ACTION_SIZE_BID,
-    ACTION_SIZE_ACQUISITION,
-    ACTION_SIZE_ACQ_OFFER,
-    ACTION_SIZE_CLOSING,
-    ACTION_SIZE_DIVIDENDS,
-    ACTION_SIZE_ISSUE,
-    ACTION_SIZE_IPO,
-]
+#
+# ``DecisionPhase`` lives on ``core.data`` — Python consumers should use
+# ``from core.data import DecisionPhase`` and reference ``DPHASE_*`` as
+# attributes. Only constants that are specific to the actions API (action
+# type tags, legal-action buffer width) are mirrored here.
 
 MAX_LEGAL_ACTIONS_PY = MAX_LEGAL_ACTIONS
-MAX_ACTION_SIZE_PY = MAX_ACTION_SIZE
 
 ACTION_PASS_PY = ACTION_PASS
 ACTION_AUCTION_PY = ACTION_AUCTION
@@ -506,42 +490,16 @@ ACTION_IPO_PY = ACTION_IPO
 #
 # Catch encoding drift immediately: verify the computed per-phase max
 # action id equals ``size - 1`` for every phase. Any mismatch means the
-# ``encode_*`` formulae and the pxd size constants have fallen out of
-# sync, which will silently corrupt replay alignment later.
+# ``encode_*`` formulae and the ``ActionSize`` enum in ``core/data.pxd``
+# have fallen out of sync, which would silently corrupt replay alignment.
+# ``core.data`` is the single source of truth — no cross-module comparison
+# to ``nn/transformer.py`` is needed anymore.
 
-def _verify_encoding_consistency():
-    from nn.transformer import PHASE_ACTION_SIZES as NN_SIZES
-
-    local = list(PHASE_ACTION_SIZES_PY)
-    nn = list(NN_SIZES)
-    assert local == nn, (
-        f"core/actions.pyx PHASE_ACTION_SIZES {local} disagrees with "
-        f"nn/transformer.py {nn}. Keep them in lockstep or replay "
-        f"targets will silently misalign with policy logits."
-    )
-
-    # Spot-check each phase's highest encodable id.
-    assert encode_invest_sell(7) == ACTION_SIZE_INVEST - 1
-    assert encode_bid_raise(13) == ACTION_SIZE_BID - 1
-    assert encode_acquisition_fi_buy(7, 35) == ACTION_SIZE_ACQUISITION - 1
-    assert encode_acq_offer_buy() == ACTION_SIZE_ACQ_OFFER - 1
-    assert encode_closing_close(35) == ACTION_SIZE_CLOSING - 1
-    assert encode_dividends(25) == ACTION_SIZE_DIVIDENDS - 1
-    assert encode_issue_issue() == ACTION_SIZE_ISSUE - 1
-    assert encode_ipo(7, 13) == ACTION_SIZE_IPO - 1
-
-
-try:
-    _verify_encoding_consistency()
-except ImportError:
-    # nn/transformer.py imports torch; environments without torch (early
-    # CI / static analysis) still get the self-consistency checks above,
-    # just not the cross-module comparison.
-    assert encode_invest_sell(7) == ACTION_SIZE_INVEST - 1
-    assert encode_bid_raise(13) == ACTION_SIZE_BID - 1
-    assert encode_acquisition_fi_buy(7, 35) == ACTION_SIZE_ACQUISITION - 1
-    assert encode_acq_offer_buy() == ACTION_SIZE_ACQ_OFFER - 1
-    assert encode_closing_close(35) == ACTION_SIZE_CLOSING - 1
-    assert encode_dividends(25) == ACTION_SIZE_DIVIDENDS - 1
-    assert encode_issue_issue() == ACTION_SIZE_ISSUE - 1
-    assert encode_ipo(7, 13) == ACTION_SIZE_IPO - 1
+assert encode_invest_sell(7) == ACTION_SIZE_INVEST - 1
+assert encode_bid_raise(13) == ACTION_SIZE_BID - 1
+assert encode_acquisition_fi_buy(7, 35) == ACTION_SIZE_ACQUISITION - 1
+assert encode_acq_offer_buy() == ACTION_SIZE_ACQ_OFFER - 1
+assert encode_closing_close(35) == ACTION_SIZE_CLOSING - 1
+assert encode_dividends(25) == ACTION_SIZE_DIVIDENDS - 1
+assert encode_issue_issue() == ACTION_SIZE_ISSUE - 1
+assert encode_ipo(7, 13) == ACTION_SIZE_IPO - 1
