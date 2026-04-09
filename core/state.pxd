@@ -48,14 +48,16 @@ cdef struct StateLayout:
     int deck_offset
 
     # Player section (LAST: only num_players-dependent slice).
-    # Includes share_buys / share_sells / auction_passed per player.
+    # Includes share_buys / share_sells / has_passed per player.
     int players_offset
 
 
 cdef struct TurnStateOffsets:
-    # Metadata (formerly stored at the top of the state buffer; folded into
-    # the turn block so StateLayout only describes section offsets)
+    # Metadata / phase context (folded into the turn block so StateLayout
+    # only describes section offsets)
     int active_player
+    int active_corp              # corp_id or -1
+    int active_company           # company_id or -1
     int num_players
     int phase                    # raw integer (0-11), not one-hot
     int coo_level                # raw integer (1-7), not one-hot
@@ -94,7 +96,7 @@ cdef struct PlayerFieldOffsets:
     int income
     int share_buys               # 8 per-corp buy counts (this turn)
     int share_sells              # 8 per-corp sell counts (this turn)
-    int auction_passed           # 1 flag (has this player left the current auction)
+    int has_passed               # 1 flag (has this player passed in the current phase)
     # Total size of one player's data block (single source of truth for stride)
     int stride
 

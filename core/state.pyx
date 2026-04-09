@@ -9,8 +9,9 @@ directly; get_token_data() extracts per-entity features into float eval buffers.
 Layout:
   [fi | companies | market | corps | turn | deck | players]
 
-The five metadata slots (active_player, num_players, phase, coo_level,
-turn_number) live at the front of the turn block. The companies section
+The turn block starts with the active player, active corp/company
+selectors, and the canonical game metadata (`num_players`, `phase`,
+`coo_level`, `turn_number`). The companies section
 holds three parallel 36-slot sub-arrays (adjusted incomes, location
 enums, owner ids) reachable via `LAYOUT.companies_offset +
 COMPANY_OFFSETS.<field>`. The deck section holds the top-of-deck index
@@ -28,7 +29,7 @@ num_players-dependent quantity is the total buffer size, computed inline
 as `LAYOUT.players_offset + LAYOUT.player_stride * num_players` at the
 small handful of sites that need it (allocation and length validation).
 All per-player tracking (cash, shares, presidencies, share buys/sells,
-the auction-passed flag) lives inside one player_stride block, so
+the per-phase passed flag) lives inside one player_stride block, so
 `_player_ptr(i)` reaches everything for player `i` in a single pointer
 hop.
 """
@@ -52,7 +53,7 @@ from core.data cimport (
 PlayerFields = namedtuple('PlayerFields', [
     'cash', 'net_worth', 'liquidity', 'turn_order',
     'owned_shares', 'is_president', 'round_trips', 'income',
-    'share_buys', 'share_sells', 'auction_passed',
+    'share_buys', 'share_sells', 'has_passed',
 ])
 
 CorpFields = namedtuple('CorpFields', [
@@ -72,7 +73,7 @@ DeckFields = namedtuple('DeckFields', [
 ])
 
 TurnFields = namedtuple('TurnFields', [
-    'active_player', 'num_players',
+    'active_player', 'active_corp', 'active_company', 'num_players',
     'phase', 'coo_level', 'turn_number',
     'end_card_flipped', 'consecutive_passes', 'cards_remaining',
     'auction_price', 'auction_company', 'auction_high_bidder',
@@ -183,8 +184,13 @@ cdef TurnStateOffsets compute_turn_offsets() noexcept nogil:
     cdef TurnStateOffsets t
     cdef int offset = 0
 
-    # Metadata (formerly the top-of-buffer "metadata" section)
+    # Metadata / phase context (formerly part of the top-of-buffer
+    # metadata + visible-state context surface)
     t.active_player = offset
+    offset += 1
+    t.active_corp = offset
+    offset += 1
+    t.active_company = offset
     offset += 1
     t.num_players = offset
     offset += 1
@@ -268,7 +274,7 @@ cdef PlayerFieldOffsets compute_player_field_offsets() noexcept nogil:
     offset += GameConstants.NUM_CORPS
     p.share_sells = offset
     offset += GameConstants.NUM_CORPS
-    p.auction_passed = offset
+    p.has_passed = offset
     offset += 1
 
     p.stride = offset
@@ -428,7 +434,7 @@ def get_player_fields():
         income=PLAYER_FIELDS.income,
         share_buys=PLAYER_FIELDS.share_buys,
         share_sells=PLAYER_FIELDS.share_sells,
-        auction_passed=PLAYER_FIELDS.auction_passed,
+        has_passed=PLAYER_FIELDS.has_passed,
     )
 
 
@@ -495,6 +501,8 @@ def get_turn_fields():
     """
     return TurnFields(
         active_player=TURN_OFFSETS.active_player,
+        active_corp=TURN_OFFSETS.active_corp,
+        active_company=TURN_OFFSETS.active_company,
         num_players=TURN_OFFSETS.num_players,
         phase=TURN_OFFSETS.phase,
         coo_level=TURN_OFFSETS.coo_level,
@@ -778,7 +786,9 @@ cdef class GameState:
         turn[TURN_OFFSETS.phase] = <int16_t>GamePhases.PHASE_INVEST
         turn[TURN_OFFSETS.turn_number] = 1
 
-        # 9. Initialize "no selection" auction sentinels to -1
+        # 9. Initialize "no selection" turn-context sentinels to -1
+        turn[TURN_OFFSETS.active_corp] = -1
+        turn[TURN_OFFSETS.active_company] = -1
         turn[TURN_OFFSETS.auction_company] = -1
         turn[TURN_OFFSETS.auction_high_bidder] = -1
         turn[TURN_OFFSETS.auction_starter] = -1

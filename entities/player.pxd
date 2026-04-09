@@ -90,6 +90,10 @@ cdef class Player:
     cpdef void set_income(self, GameState state, int income)
     cpdef void calculate_income(self, GameState state)
 
-    # Auction-passed flag (per-player; lives inside the player block)
+    # Generic passed flag (per-player; lives inside the player block)
+    cpdef bint has_passed(self, GameState state)
+    cpdef void set_has_passed(self, GameState state, bint passed)
+
+    # Compatibility aliases for older auction-specific call sites
     cpdef bint has_passed_auction(self, GameState state)
     cpdef void set_passed_auction(self, GameState state, bint passed)

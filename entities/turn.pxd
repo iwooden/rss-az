@@ -2,17 +2,13 @@
 """
 Turn state entity declarations.
 
-Turn state in the compact GameState is split between metadata
-(phase, coo_level, turn_number — single integer slots stored at the top
-of the state array) and the turn block (per-turn tracking such as
-end_card_flipped, consecutive_passes, cards_remaining, auction state,
-and the dividend/issue/IPO "remaining" flag arrays).
+Turn state in the compact GameState lives entirely inside the turn block:
+metadata / active context (active player, active corp/company, phase,
+coo_level, turn_number), per-turn tracking such as end_card_flipped,
+consecutive_passes, cards_remaining, auction state, and the
+dividend/issue/IPO "remaining" flag arrays.
 
-All values are raw int16 — no one-hot encoding, no NN-side duplication of
-active corp/company features, no normalization. Phase-specific context
-the transformer needs (dividend impacts, par price tables, synergy
-previews, etc.) is reconstructed by the token-extraction layer instead of
-being maintained as engine state.
+All values are raw int16 — no one-hot encoding, no normalization.
 
 The TurnState handle is fully stateless: there is no per-instance offset
 cache and no initialize() step. Each access derives its slot inline from
@@ -29,14 +25,22 @@ cdef class TurnState:
     # Low-level (nogil) accessors used by hot paths inside the engine.
     cdef int _get_phase(self, GameState state) noexcept nogil
     cdef int _get_coo_level(self, GameState state) noexcept nogil
-    cdef int _get_auction_price(self, GameState state) noexcept nogil
     cdef int _get_active_player(self, GameState state) noexcept nogil
     cdef void _set_active_player(self, GameState state, int player_id) noexcept nogil
+    cdef int _get_active_corp(self, GameState state) noexcept nogil
+    cdef int _get_active_company(self, GameState state) noexcept nogil
+    cdef int _get_auction_price(self, GameState state) noexcept nogil
     cdef int _get_num_players(self, GameState state) noexcept nogil
 
-    # Active player (state-level metadata; lives in the turn block)
+    # Active selection / player context (lives in the turn block)
     cpdef int get_active_player(self, GameState state)
     cpdef void set_active_player(self, GameState state, int player_id)
+    cpdef int get_active_corp(self, GameState state)
+    cpdef void set_active_corp(self, GameState state, int corp_id)
+    cpdef void clear_active_corp(self, GameState state)
+    cpdef int get_active_company(self, GameState state)
+    cpdef void set_active_company(self, GameState state, int company_id)
+    cpdef void clear_active_company(self, GameState state)
 
     # Number of players (state-level metadata; lives in the turn block)
     cpdef int get_num_players(self, GameState state)
@@ -83,6 +87,16 @@ cdef class TurnState:
     cpdef int get_auction_starter(self, GameState state)
     cpdef void set_auction_starter(self, GameState state, int player_id)
     cpdef void clear_auction_starter(self, GameState state)
+
+    # Compatibility aliases for older phase-specific turn context
+    cpdef int get_ipo_company(self, GameState state)
+    cpdef void set_ipo_company(self, GameState state, int company_id)
+    cpdef void clear_ipo_company(self, GameState state)
+    cpdef int get_acq_active_corp(self, GameState state)
+    cpdef void set_acq_active_corp(self, GameState state, int corp_id)
+    cpdef void clear_acq_active_corp(self, GameState state)
+    cpdef void clear_passed_flags(self, GameState state)
+    cpdef void clear_auction_passed(self, GameState state)
 
     # Phase-remaining flag arrays
     cpdef bint is_dividend_remaining(self, GameState state, int corp_id)

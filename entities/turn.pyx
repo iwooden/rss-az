@@ -2,23 +2,23 @@
 """
 Turn state entity implementation.
 
-Owns the turn-block fields inside the compact GameState plus the three
-metadata slots that don't fit anywhere else (phase, coo_level,
-turn_number). All values are raw int16 — no one-hot encoding, no
-NN-side normalization, no active corp/company duplication. Most of the
-"context" state the old MLP needed (active_corp, active_company,
-dividend_impact, par tables, synergy previews) is gone entirely; the
-transformer reconstructs that material from entity tokens at inference
-time.
+Owns the turn-block fields inside the compact GameState, including the
+metadata slots (active player, active corp/company context, phase,
+coo_level, turn_number). All values are raw int16 — no one-hot
+encoding, no NN-side normalization.
 
-The methods that survived from the previous design fall into three
+The methods on this handle fall into four
 buckets:
 
-1. **Single-slot scalars**: phase, coo_level, turn_number,
+1. **Single-slot scalars**: active player, active corp/company context,
+   phase, coo_level, turn_number,
    end_card_flipped, consecutive_passes, cards_remaining.
 2. **Auction tracking**: auction_company / price / high_bidder / starter
    (single integers with -1 sentinels) plus the per-player passed flags.
-3. **Phase-remaining flag arrays**: dividend_remaining (8),
+3. **Compatibility aliases**: older phase-specific names like
+   `ipo_company` and `acq_active_corp` now map to the generic active
+   company/corp slots.
+4. **Phase-remaining flag arrays**: dividend_remaining (8),
    issue_remaining (8), ipo_remaining (36) — used by the engine to track
    which corps/companies still need to act in DIV / ISSUE / IPO.
 
@@ -27,11 +27,10 @@ field write: it cascades the new CoO into adjusted company incomes,
 marks corp/player derived caches dirty, and refreshes FI income.
 
 Layout offsets come from the module-level ``LAYOUT`` and ``TURN_OFFSETS``
-constants on ``core.state``. Single-slot metadata lives at
-``LAYOUT.<name>_offset``; turn-block fields live at
-``LAYOUT.turn_offset + TURN_OFFSETS.<name>``. The handle has no
-per-instance state at all — the singleton TURN can be reused with any
-GameState at any player count.
+constants on ``core.state``. Turn fields live at
+``LAYOUT.turn_offset + TURN_OFFSETS.<name>``. The handle has no per-instance
+state at all — the singleton TURN can be reused with any GameState at any
+player count.
 """
 
 from libc.stdint cimport int16_t
@@ -75,20 +74,26 @@ cdef class TurnState:
     cdef inline int _get_coo_level(self, GameState state) noexcept nogil:
         return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.coo_level]
 
-    cdef inline int _get_auction_price(self, GameState state) noexcept nogil:
-        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_price]
-
     cdef inline int _get_active_player(self, GameState state) noexcept nogil:
         return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
 
     cdef inline void _set_active_player(self, GameState state, int player_id) noexcept nogil:
         state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_player] = <int16_t>player_id
 
+    cdef inline int _get_active_corp(self, GameState state) noexcept nogil:
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_corp]
+
+    cdef inline int _get_active_company(self, GameState state) noexcept nogil:
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_company]
+
+    cdef inline int _get_auction_price(self, GameState state) noexcept nogil:
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_price]
+
     cdef inline int _get_num_players(self, GameState state) noexcept nogil:
         return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.num_players]
 
     # =========================================================================
-    # ACTIVE PLAYER (state-level metadata, lives in the turn block)
+    # ACTIVE SELECTION / PLAYER CONTEXT
     # =========================================================================
 
     cpdef int get_active_player(self, GameState state):
@@ -100,6 +105,34 @@ cdef class TurnState:
         assert 0 <= player_id < self._get_num_players(state), \
             f"player_id {player_id} out of range [0, {self._get_num_players(state)})"
         self._set_active_player(state, player_id)
+
+    cpdef int get_active_corp(self, GameState state):
+        """Return the active corporation ID, or -1 if none is selected."""
+        return self._get_active_corp(state)
+
+    cpdef void set_active_corp(self, GameState state, int corp_id):
+        """Set the active corporation ID."""
+        assert 0 <= corp_id < <int>GameConstants.NUM_CORPS, \
+            f"corp_id {corp_id} out of range [0, {<int>GameConstants.NUM_CORPS})"
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_corp] = <int16_t>corp_id
+
+    cpdef void clear_active_corp(self, GameState state):
+        """Clear the active corporation sentinel."""
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_corp] = -1
+
+    cpdef int get_active_company(self, GameState state):
+        """Return the active company ID, or -1 if none is selected."""
+        return self._get_active_company(state)
+
+    cpdef void set_active_company(self, GameState state, int company_id):
+        """Set the active company ID."""
+        assert 0 <= company_id < <int>GameConstants.NUM_COMPANIES, \
+            f"company_id {company_id} out of range [0, {<int>GameConstants.NUM_COMPANIES})"
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_company] = <int16_t>company_id
+
+    cpdef void clear_active_company(self, GameState state):
+        """Clear the active company sentinel."""
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_company] = -1
 
     # =========================================================================
     # NUMBER OF PLAYERS
@@ -280,6 +313,44 @@ cdef class TurnState:
         state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_starter] = -1
 
     # =========================================================================
+    # COMPATIBILITY ALIASES FOR OLDER PHASE-SPECIFIC TURN CONTEXT
+    # =========================================================================
+
+    cpdef int get_ipo_company(self, GameState state):
+        """Compatibility alias for get_active_company()."""
+        return self.get_active_company(state)
+
+    cpdef void set_ipo_company(self, GameState state, int company_id):
+        """Compatibility alias for set_active_company()."""
+        self.set_active_company(state, company_id)
+
+    cpdef void clear_ipo_company(self, GameState state):
+        """Compatibility alias for clear_active_company()."""
+        self.clear_active_company(state)
+
+    cpdef int get_acq_active_corp(self, GameState state):
+        """Compatibility alias for get_active_corp()."""
+        return self.get_active_corp(state)
+
+    cpdef void set_acq_active_corp(self, GameState state, int corp_id):
+        """Compatibility alias for set_active_corp()."""
+        self.set_active_corp(state, corp_id)
+
+    cpdef void clear_acq_active_corp(self, GameState state):
+        """Compatibility alias for clear_active_corp()."""
+        self.clear_active_corp(state)
+
+    cpdef void clear_passed_flags(self, GameState state):
+        """Clear the per-player passed flags for the current phase."""
+        cdef int player_id
+        for player_id in range(self._get_num_players(state)):
+            player_module.PLAYERS[player_id].set_has_passed(state, False)
+
+    cpdef void clear_auction_passed(self, GameState state):
+        """Compatibility alias for clear_passed_flags()."""
+        self.clear_passed_flags(state)
+
+    # =========================================================================
     # PHASE-REMAINING FLAGS
     # =========================================================================
 
@@ -354,7 +425,7 @@ cdef class TurnState:
             next_position = (current_position + 1) % self._get_num_players(state)
             candidate = self.find_player_at_position(state, next_position)
 
-            if not player_module.PLAYERS[candidate].has_passed_auction(state):
+            if not player_module.PLAYERS[candidate].has_passed(state):
                 self._set_active_player(state, candidate)
                 return
 

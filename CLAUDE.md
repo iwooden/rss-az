@@ -66,13 +66,13 @@ Single contiguous int16 numpy array. Raw integers only — no normalization, no 
 
 | Players | total_size | player_stride | corp_stride |
 |---------|-----------|---------------|-------------|
-| 2 | 454 | 39 | 17 |
-| 3 | 493 | 39 | 17 |
-| 4 | 532 | 39 | 17 |
-| 5 | 571 | 39 | 17 |
-| 6 | 610 | 39 | 17 |
+| 2 | 456 | 39 | 17 |
+| 3 | 495 | 39 | 17 |
+| 4 | 534 | 39 | 17 |
+| 5 | 573 | 39 | 17 |
+| 6 | 612 | 39 | 17 |
 
-The fixed prefix (everything except the players section) is **376** int16 slots and is identical across player counts. Only `total_size` scales: `total_size = 376 + 39 * num_players`. The players section lives at the end of the buffer for exactly this reason — every other section's offset is constant.
+The fixed prefix (everything except the players section) is **378** int16 slots and is identical across player counts. Only `total_size` scales: `total_size = 378 + 39 * num_players`. The players section lives at the end of the buffer for exactly this reason — every other section's offset is constant.
 
 `GameState` is basically just a thin wrapper around the state vector. There are no per-instance layout fields — entity handles read offsets directly from the module-level constants below. All field-level reads and writes go through entity handles in `entities/`.
 
@@ -81,7 +81,7 @@ The fixed prefix (everything except the players section) is **376** int16 slots 
 **Module-level layout constants** on `core.state` (computed once at import, shared by every `GameState`):
 
 - `LAYOUT` — `cdef StateLayout`: top-level section offsets (`players_offset`, `fi_offset`, `corps_offset`, `turn_offset`, …) plus `player_stride` and `corp_stride`. `total_size` is *not* in this struct because it depends on `num_players`; compute it inline as `LAYOUT.players_offset + LAYOUT.player_stride * num_players` at the few sites that need it (allocation, length validation).
-- `PLAYER_FIELDS` — `cdef PlayerFieldOffsets`: relative offsets within a player block (`cash`, `owned_shares`, `auction_passed`, `stride`, …).
+- `PLAYER_FIELDS` — `cdef PlayerFieldOffsets`: relative offsets within a player block (`cash`, `owned_shares`, `has_passed`, `stride`, …).
 - `CORP_FIELDS` — `cdef CorpFieldOffsets`: relative offsets within a corp block.
 - `TURN_OFFSETS` — `cdef TurnStateOffsets`: relative offsets within the (fixed-size) turn block.
 
@@ -169,11 +169,11 @@ At each decision point: state, legal_mask, policy_target (MCTS visits), value_ta
 See `VECTORS.md` for the full buffer layout. Key points:
 
 - Single contiguous int16 array per `GameState`. Raw integers, no normalization, no one-hot encoding, no visible/hidden split.
-- Sections in order: `FI (2) | companies (108) | market (27) | corps (17 × 8) | turn (66) | deck (37) | players (39 × N)`. The players section is **last** because it is the only section whose size depends on `num_players`; every other offset is constant.
+- Sections in order: `FI (2) | companies (108) | market (27) | corps (17 × 8) | turn (68) | deck (37) | players (39 × N)`. The players section is **last** because it is the only section whose size depends on `num_players`; every other offset is constant.
 - The companies section packs three parallel 36-slot sub-arrays — `incomes`, `locations`, `owner_ids` — reachable via `LAYOUT.companies_offset + COMPANY_OFFSETS.<field>`. The deck section packs `top` (1) + `order` (36) reachable via `LAYOUT.deck_offset + DECK_OFFSETS.<field>`.
-- The turn block (66 slots, fixed across player counts) carries the game-wide metadata at the front (`active_player`, `num_players`, `phase`, `coo_level`, `turn_number`) followed by global scalars, the phase-remaining flag arrays, and two internal dirty-mask slots for the lazy player/corp caches. The per-player `auction_passed` flag lives in the player block, not the turn block.
+- The turn block (68 slots, fixed across player counts) carries the game-wide metadata and active context at the front (`active_player`, `active_corp`, `active_company`, `num_players`, `phase`, `coo_level`, `turn_number`) followed by global scalars, the phase-remaining flag arrays, and two internal dirty-mask slots for the lazy player/corp caches. The per-player `has_passed` flag lives in the player block, not the turn block.
 - The corp block carries its star count split into three slots (`total_stars`, `cash_stars`, `company_stars`) and stores other derived corp values lazily behind a dirty bit. `share_price` is not stored; it is derived from `price_index`.
-- All per-player data — cash, shares, presidencies, this-turn share buys/sells, and the per-player `auction_passed` flag — lives inside one player block, so `_player_ptr(i)` reaches everything for player `i` in a single pointer hop.
+- All per-player data — cash, shares, presidencies, this-turn share buys/sells, and the per-player `has_passed` flag — lives inside one player block, so `_player_ptr(i)` reaches everything for player `i` in a single pointer hop.
 - `companies.locations` (`CompanyLocation` enum, 0–8) plus `companies.owner_ids` are the single source of truth for "who owns what". `LOC_DECK = 0` is the zero-init default; `__cinit__` explicitly seeds `companies.owner_ids` to `-1`.
 
 ## Game Flow & Phases

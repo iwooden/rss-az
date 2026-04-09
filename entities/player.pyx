@@ -13,7 +13,7 @@ with any GameState at any player count.
 Layout summary (per-player block, all raw int16):
   cash, net_worth, liquidity, turn_order (single int), owned_shares (8),
   is_president (8), round_trips, income, share_buys (8), share_sells (8),
-  auction_passed (1).
+  has_passed (1).
 
 Company ownership lives in the companies section, but player code reads
 it through company-module query helpers rather than duplicating the
@@ -547,19 +547,27 @@ cdef class Player:
         self.set_income(state, company_sum_player_adjusted_income(state, self.player_id))
 
     # =========================================================================
-    # AUCTION-PASSED FLAG
+    # GENERIC PASSED FLAG
     # =========================================================================
 
-    cpdef bint has_passed_auction(self, GameState state):
-        """Return True if this player has left the current auction.
+    cpdef bint has_passed(self, GameState state):
+        """Return True if this player has passed in the current phase.
 
         Stored as a per-player int16 flag in the player block.
         """
-        return state._data[self._slot(PLAYER_FIELDS.auction_passed)] == 1
+        return state._data[self._slot(PLAYER_FIELDS.has_passed)] == 1
+
+    cpdef void set_has_passed(self, GameState state, bint passed):
+        """Mark whether this player has passed in the current phase."""
+        state._data[self._slot(PLAYER_FIELDS.has_passed)] = <int16_t>(1 if passed else 0)
+
+    cpdef bint has_passed_auction(self, GameState state):
+        """Compatibility alias for the generic per-phase passed flag."""
+        return self.has_passed(state)
 
     cpdef void set_passed_auction(self, GameState state, bint passed):
-        """Mark whether this player has left the current auction."""
-        state._data[self._slot(PLAYER_FIELDS.auction_passed)] = <int16_t>(1 if passed else 0)
+        """Compatibility alias for the generic per-phase passed flag."""
+        self.set_has_passed(state, passed)
 
 
 # =============================================================================
