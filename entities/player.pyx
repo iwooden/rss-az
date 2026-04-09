@@ -145,7 +145,7 @@ cdef void _recalculate_presidency(GameState state, int corp_id):
         for player_id in range(num_players):
             pres_slot = (
                 LAYOUT.players_offset
-                + player_id * LAYOUT.player_stride
+                + player_id * PLAYER_FIELDS.size
                 + PLAYER_FIELDS.is_president
                 + corp_id
             )
@@ -188,14 +188,14 @@ cdef void _recalculate_presidency(GameState state, int corp_id):
         if current_president >= 0:
             pres_slot = (
                 LAYOUT.players_offset
-                + current_president * LAYOUT.player_stride
+                + current_president * PLAYER_FIELDS.size
                 + PLAYER_FIELDS.is_president
                 + corp_id
             )
             state._data[pres_slot] = 0
         pres_slot = (
             LAYOUT.players_offset
-            + president_id * LAYOUT.player_stride
+            + president_id * PLAYER_FIELDS.size
             + PLAYER_FIELDS.is_president
             + corp_id
         )
@@ -225,7 +225,7 @@ cdef class Player:
 
     cdef inline int _slot(self, int field) noexcept nogil:
         """Absolute index of a per-player field for this player."""
-        return LAYOUT.players_offset + self.player_id * LAYOUT.player_stride + field
+        return LAYOUT.players_offset + self.player_id * PLAYER_FIELDS.size + field
 
     # =========================================================================
     # NOGIL ACCESSORS (used by hot paths inside the engine)

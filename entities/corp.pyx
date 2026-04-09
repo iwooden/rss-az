@@ -209,7 +209,7 @@ cdef class Corporation:
 
     cdef inline int _slot(self, int field) noexcept nogil:
         """Absolute index of a per-corp field for this corp."""
-        return LAYOUT.corps_offset + self.corp_id * LAYOUT.corp_stride + field
+        return LAYOUT.corps_offset + self.corp_id * CORP_FIELDS.size + field
 
     # =========================================================================
     # NOGIL ACCESSORS (used by hot paths inside the engine)

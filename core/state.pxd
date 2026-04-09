@@ -17,13 +17,9 @@ cimport numpy as cnp
 # =============================================================================
 
 cdef struct StateLayout:
-    # Strides
-    int player_stride
-    int corp_stride
-
     # NOTE: total_size is intentionally NOT in this struct. It is the only
     # value that depends on num_players, and is computed inline as
-    #     LAYOUT.players_offset + LAYOUT.player_stride * num_players
+    #     LAYOUT.players_offset + PLAYER_FIELDS.size * num_players
     # Every other offset is a constant shared across all player counts.
 
     # Foreign investor section (cash + income only — ownership lives in
@@ -164,7 +160,7 @@ cdef DeckOffsets compute_deck_offsets() noexcept nogil
 # scope. Other modules (entity handles, token extraction, etc.) cimport
 # these directly and read offsets without going through a GameState
 # instance. The only num_players-dependent quantity is the total buffer
-# size, which is `LAYOUT.players_offset + LAYOUT.player_stride * num_players`
+# size, which is `LAYOUT.players_offset + PLAYER_FIELDS.size * num_players`
 # and is computed at the small handful of sites that need it.
 
 cdef StateLayout LAYOUT

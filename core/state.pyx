@@ -26,10 +26,10 @@ across all player counts and is exposed through module-level constants
 `COMPANY_OFFSETS`, `DECK_OFFSETS`) that entity handles and token
 extraction can `cimport` directly. The only
 num_players-dependent quantity is the total buffer size, computed inline
-as `LAYOUT.players_offset + LAYOUT.player_stride * num_players` at the
+as `LAYOUT.players_offset + PLAYER_FIELDS.size * num_players` at the
 small handful of sites that need it (allocation and length validation).
 All per-player tracking (cash, shares, presidencies, share buys/sells,
-the per-phase passed flag) lives inside one player_stride block, so
+the per-phase passed flag) lives inside one player-size block, so
 `_player_ptr(i)` reaches everything for player `i` in a single pointer
 hop.
 """
@@ -83,7 +83,7 @@ TurnFields = namedtuple('TurnFields', [
 
 LayoutInfo = namedtuple('LayoutInfo', [
     # Sizes
-    'total_size', 'player_stride', 'corp_stride',
+    'total_size', 'player_size', 'corp_size',
     # Sections
     'players_offset', 'fi_offset',
     'companies_offset', 'market_offset', 'corps_offset', 'turn_offset',
@@ -110,10 +110,10 @@ cdef StateLayout compute_layout() noexcept nogil:
     Every offset in the returned struct is constant across all player
     counts. The only num_players-dependent value is the total buffer
     size, computed inline as
-        LAYOUT.players_offset + LAYOUT.player_stride * num_players
+        LAYOUT.players_offset + PLAYER_FIELDS.size * num_players
     at the few sites that need it (allocation and length validation).
 
-    Section sizes (player stride, corp stride, turn block) are derived
+    Section sizes (player block, corp block, turn block) are derived
     from the dedicated offset-computation functions so this layout
     function never needs to know the field list.
 
@@ -132,9 +132,6 @@ cdef StateLayout compute_layout() noexcept nogil:
     cdef CompanyOffsets company_offsets = compute_company_offsets()
     cdef DeckOffsets deck_offsets = compute_deck_offsets()
 
-    layout.player_stride = player_fields.size
-    layout.corp_stride = corp_fields.size
-
     # --- Foreign Investor: cash, income ---
     layout.fi_offset = offset
     offset += 2
@@ -149,7 +146,7 @@ cdef StateLayout compute_layout() noexcept nogil:
 
     # --- Corporations ---
     layout.corps_offset = offset
-    offset += layout.corp_stride * GameConstants.NUM_CORPS
+    offset += corp_fields.size * GameConstants.NUM_CORPS
 
     # --- Turn state ---
     layout.turn_offset = offset
@@ -162,7 +159,7 @@ cdef StateLayout compute_layout() noexcept nogil:
     # --- Players (LAST: only num_players-dependent section). The actual
     # length of this region depends on num_players and is *not* recorded
     # here — callers compute total_size on demand from
-    # players_offset + player_stride * num_players. ---
+    # players_offset + PLAYER_FIELDS.size * num_players. ---
     layout.players_offset = offset
 
     return layout
@@ -394,18 +391,18 @@ cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil:
 def get_layout(int num_players):
     """Python-accessible layout offsets. Single source of truth.
 
-    Returns a LayoutInfo namedtuple with all sizes, offsets, and strides
+    Returns a LayoutInfo namedtuple with all sizes and offsets
     needed by Python code (tests, evaluator). Cython code should
     `cimport LAYOUT` directly for nogil performance.
 
     Only ``total_size`` depends on ``num_players``; every other field is
     a constant pulled straight from the module-level ``LAYOUT`` struct.
     """
-    cdef int total_size = LAYOUT.players_offset + LAYOUT.player_stride * num_players
+    cdef int total_size = LAYOUT.players_offset + PLAYER_FIELDS.size * num_players
     return LayoutInfo(
         total_size=total_size,
-        player_stride=LAYOUT.player_stride,
-        corp_stride=LAYOUT.corp_stride,
+        player_size=PLAYER_FIELDS.size,
+        corp_size=CORP_FIELDS.size,
         players_offset=LAYOUT.players_offset,
         fi_offset=LAYOUT.fi_offset,
         companies_offset=LAYOUT.companies_offset,
@@ -421,7 +418,7 @@ def get_player_fields():
     """Python-accessible player field sub-offsets within each player's data block.
 
     Returns a PlayerFields namedtuple with relative offsets (add to
-    players_offset + p * player_stride to get absolute position).
+    players_offset + p * player_size to get absolute position).
     """
     return PlayerFields(
         cash=PLAYER_FIELDS.cash,
@@ -442,7 +439,7 @@ def get_corp_fields():
     """Python-accessible corp field sub-offsets within each corp's data block.
 
     Returns a CorpFields namedtuple with relative offsets (add to
-    corps_offset + c * corp_stride to get absolute position).
+    corps_offset + c * corp_size to get absolute position).
     """
     return CorpFields(
         active=CORP_FIELDS.active,
@@ -542,7 +539,7 @@ DECK_OFFSETS = compute_deck_offsets()
 # =============================================================================
 
 cdef inline int _expected_size(int num_players) noexcept nogil:
-    return LAYOUT.players_offset + LAYOUT.player_stride * num_players
+    return LAYOUT.players_offset + PLAYER_FIELDS.size * num_players
 
 
 cdef void _seed_zeroed_storage(GameState state, int num_players):
@@ -743,7 +740,7 @@ cdef class GameState:
         # 1. Set player starting state (raw integers, no normalization)
         starting_cash = 25 if num_players == 6 else 30
         for i in range(num_players):
-            player = self._data + LAYOUT.players_offset + i * LAYOUT.player_stride
+            player = self._data + LAYOUT.players_offset + i * PLAYER_FIELDS.size
             player[PLAYER_FIELDS.cash] = <int16_t>starting_cash
             player[PLAYER_FIELDS.net_worth] = <int16_t>starting_cash
             player[PLAYER_FIELDS.liquidity] = <int16_t>starting_cash
@@ -755,7 +752,7 @@ cdef class GameState:
 
         # 3. Initialize corporations (only non-zero: unissued shares)
         for corp_id in range(<int>GameConstants.NUM_CORPS):
-            corp = self._data + LAYOUT.corps_offset + corp_id * LAYOUT.corp_stride
+            corp = self._data + LAYOUT.corps_offset + corp_id * CORP_FIELDS.size
             corp[CORP_FIELDS.unissued_shares] = <int16_t>CORP_SHARE_COUNT[corp_id]
 
         # 4. Initialize market - all spaces available
