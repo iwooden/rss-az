@@ -136,13 +136,26 @@ Every phase gets its own id space. Examples:
   - raise `(offset)`
 - CLOSING:
   - pass
-  - close `(company_id)`
+  - close `(company_id)` — direct company selection, no offer-buffer indirection
 - IPO:
   - pass
   - `(corp_id, par_index)`
 - ACQ:
   - pass
-  - `(corp_id, company_id, price_offset)`
+  - `(corp_id, company_id, price_offset_or_fi_buy)` — the pair space includes the
+    fixed-price FI purchase as the 52nd option per `(corp, company)` pair. No
+    offer-buffer indirection: the engine exposes the full tuple space and the
+    acting player picks directly.
+- ACQ_OFFER:
+  - pass
+  - buy — a first-class 2-action decision phase for FI-priority resolution.
+    Entered whenever a player or receivership corp attempts to acquire an
+    FI-owned company AND one or more higher-priority corps exist (OS first at
+    face value; remaining corps ordered by descending share price at high
+    value). Each higher-priority corp is offered the chance to preempt, with
+    that corp's president as the active player. The contested corp and company
+    are carried in the existing `turn.active_corp` / `turn.active_company`
+    slots; no new state fields are needed.
 
 The state phase disambiguates the meaning of the local id. No global action
 index is required.
@@ -154,13 +167,21 @@ Use compact integer packing for each phase.
 For ACQ:
 
 ```text
-0                    -> pass
-1 + ((corp * 36 + company) * 51 + price_offset) -> acquisition tuple
+0                                     -> pass
+1 + ((corp * 36 + company) * 52 + k)  -> acquisition tuple
+    where k < 51  -> low_price + k  (normal price offsets)
+    where k == 51 -> ACQ_FI_BUY     (fixed-price FI purchase; OS=face, others=high)
 ```
 
 This fits comfortably in `uint16`:
 
-- `1 + 8 * 36 * 51 = 14,689`
+- `1 + 8 * 36 * 52 = 14,977`
+
+FI purchases are folded into the same pair space rather than a separate
+sub-phase — the old offer-buffer indirection is gone, so the engine exposes
+every legal `(corp, company, price-or-fi-buy)` tuple as a masked action. The
+separate `ACQ_OFFER` phase handles only FI *priority* resolution (offering a
+higher-priority corp the chance to preempt), not the fixed-price FI buy itself.
 
 For most other phases, `uint16` is also enough.
 
@@ -188,6 +209,9 @@ That is the key simplification.
 For smaller phases, keep the current style of dense per-phase heads:
 
 - BID: 15 logits
+- ACQ_OFFER: 2 logits
+- ISSUE: 2 logits
+- DIVIDENDS: 26 logits
 - CLOSING: 37 logits
 - IPO: 113 logits
 - INVEST: 557 logits

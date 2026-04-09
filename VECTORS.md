@@ -162,8 +162,8 @@ Block size: **67**, fixed across player counts. Sub-offsets via `core.state.get_
 | Relative offset | Field | Size | Notes |
 |----------------|-------|------|-------|
 | 0  | active_player        | 1  | Canonical player_id |
-| 1  | active_corp          | 1  | Active corp for issue/dividend/acquisition context, or `-1` |
-| 2  | active_company       | 1  | Active company for bid/IPO/closing/acquisition/auction context, or `-1` |
+| 1  | active_corp          | 1  | Active corp for ISSUE / DIVIDENDS / ACQ_OFFER context, or `-1`. **Unused during ACQUISITION** — that phase picks corps directly from the masked action space, so this slot stays at `-1`. |
+| 2  | active_company       | 1  | Active company for BID / IPO / ACQ_OFFER context, or `-1`. **Unused during ACQUISITION and CLOSING** — those phases pick companies directly from the masked action space, so this slot stays at `-1`. |
 | 3  | num_players          | 1  | 2–6, seeded in `__cinit__` |
 | 4  | phase                | 1  | 0–11, see [Phase enum](#phase-enum) |
 | 5  | coo_level            | 1  | 1–7 |
@@ -180,7 +180,7 @@ Block size: **67**, fixed across player counts. Sub-offsets via `core.state.get_
 
 Internal slots at relative offsets `65` and `66` hold the player-finance (`player_cache_dirty`) and corp-derived (`corp_cache_dirty`) dirty masks used by the lazy cache system. These offsets exist in `TURN_OFFSETS` for Cython code but are intentionally omitted from the Python `TurnFields` namedtuple.
 
-There is no dedicated `auction_company` slot — the generic `active_company` selector at offset 2 carries that role during BID, and likewise covers the active-company context for IPO, CLOSING, and ACQUISITION. The per-player `has_passed` flag used to live in the turn block as an auction-specific array; it now lives in the player block, so the turn block is fully fixed-size.
+There is no dedicated `auction_company` slot — the generic `active_company` selector at offset 2 carries that role during BID, and likewise covers the active-company context for IPO and ACQ_OFFER. It is **not** used during ACQUISITION or CLOSING: the old per-phase offer buffers are gone, and those phases now pick the target company directly from the masked action space, so both `active_corp` and `active_company` sit at `-1` throughout them. ACQ_OFFER reuses the same selectors for FI-priority resolution: `active_corp` = the preempting corp being offered the FI-owned company, `active_company` = the contested FI company, and `active_player` = that corp's president. No new per-phase fields (`closing_company` / `dividend_corp` / `issue_corp` / `ipo_company`) are needed — the generic selectors plus the per-phase remaining bitmasks already in the turn block cover every phase. The per-player `has_passed` flag used to live in the turn block as an auction-specific array; it now lives in the player block, so the turn block is fully fixed-size.
 
 ---
 
@@ -238,7 +238,11 @@ Stored as a raw integer at `LAYOUT.turn_offset + TURN_OFFSETS.phase`. Defined in
 | 10 | PHASE_IPO            | Select corp charter + par price in one action |
 | 11 | PHASE_GAME_OVER      | Terminal state |
 
-**PAR is gone.** The old separate `PHASE_PAR` is merged into `PHASE_IPO`: each IPO decision picks `(corp, par_index)` in a single action. `PHASE_ACQ_OFFER` is a first-class engine phase for FI preemption; it used to be a hidden sub-state of `PHASE_ACQUISITION`.
+**PAR is gone.** The old separate `PHASE_PAR` is merged into `PHASE_IPO`: each IPO decision picks `(corp, par_index)` in a single action.
+
+**`PHASE_ACQ_OFFER` is the FI-priority resolution phase.** It is a first-class engine phase, not a hidden sub-state of ACQUISITION. The engine enters ACQ_OFFER whenever a player or receivership corp attempts to acquire an FI-owned company AND one or more higher-priority corps exist (OS has absolute priority at face value; remaining corps ordered by descending share price at high value). Each higher-priority corp is offered, in turn, a 2-action `{pass, buy}` choice; once all decline, control returns to the original ACQUISITION acquirer. The turn block's existing `active_corp` / `active_company` / `active_player` selectors carry the preempting corp, the contested FI company, and that corp's president for the duration.
+
+**No per-phase offer-buffer bookkeeping.** The old ACQUISITION and CLOSING offer buffers (pre-sorted one-by-one presentation) are gone. ACQUISITION picks `(corp, company, offset)` directly from the masked action space; CLOSING picks a company directly. This means ACQUISITION has no "active" corp or company — both turn slots sit at `-1` during that phase. The old engine used careful offer ordering to implement FI priority; the new engine replaces that with explicit `PHASE_ACQ_OFFER` transitions.
 
 ---
 
