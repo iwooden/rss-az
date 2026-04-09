@@ -85,7 +85,7 @@ def engine_action_to_18xx(
             return {"type": "sell_shares", "corporation": CORP_NAMES[corp_id]}
 
     # BID phase
-    if phase == GamePhases.PHASE_BID_IN_AUCTION:
+    if phase == GamePhases.PHASE_BID:
         if atype == ACTION_LEAVE_AUCTION:
             return {"type": "pass"}
         if atype == ACTION_RAISE_BID:

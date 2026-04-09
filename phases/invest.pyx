@@ -7,7 +7,7 @@ Handles the four INVEST actions: PASS, AUCTION (start), BUY_SHARE, SELL_SHARE.
   clears per-player round-trip tracking scratch and transitions to
   ``PHASE_WRAP_UP``.
 - AUCTION: seeds auction state (company, price, high bidder, starter),
-  clears per-player has_passed flags, transitions to ``PHASE_BID_IN_AUCTION``,
+  clears per-player has_passed flags, transitions to ``PHASE_BID``,
   and advances past the starter to the next bidder.
 - BUY_SHARE: moves corp price up to the next available index, charges the
   player the *new* (higher) price, transfers the share, tracks the buy.
@@ -118,7 +118,7 @@ cdef void _handle_auction(GameState state, int company_id, int bid_offset) noexc
     # (recorded in auction_price / auction_high_bidder), so control moves
     # to the next non-passed bidder. With freshly-cleared has_passed flags
     # this is just the next player in turn order.
-    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_BID_IN_AUCTION)
+    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_BID)
     turn_module.TURN.advance_to_next_bidder(state)
 
 

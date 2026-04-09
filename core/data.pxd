@@ -32,7 +32,7 @@ cpdef enum GameConstants:
 
 cpdef enum GamePhases:
     PHASE_INVEST = 0
-    PHASE_BID_IN_AUCTION = 1
+    PHASE_BID = 1
     PHASE_WRAP_UP = 2
     PHASE_ACQUISITION = 3
     PHASE_ACQ_OFFER = 4

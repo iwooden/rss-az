@@ -226,7 +226,7 @@ Stored as a raw integer at `LAYOUT.turn_offset + TURN_OFFSETS.phase`. Defined in
 | Value | Name | Notes |
 |-------|------|-------|
 | 0  | PHASE_INVEST         | Buy/sell shares, start auctions |
-| 1  | PHASE_BID_IN_AUCTION | Bidding for a company |
+| 1  | PHASE_BID | Bidding for a company |
 | 2  | PHASE_WRAP_UP        | Automated: FI buys companies at face value |
 | 3  | PHASE_ACQUISITION    | Corps acquiring companies |
 | 4  | PHASE_ACQ_OFFER      | FI preemption sub-phase (higher-priority corps get first shot) |
@@ -251,7 +251,7 @@ Stored as a raw integer at `LAYOUT.turn_offset + TURN_OFFSETS.phase`. Defined in
 | Phase | Mechanism | Location |
 |-------|-----------|----------|
 | INVEST            | `consecutive_passes` counter | turn block (slot 8) |
-| BID_IN_AUCTION    | per-player `has_passed` flag | player block (slot 38) |
+| BID    | per-player `has_passed` flag | player block (slot 38) |
 | CLOSING / ACQUISITION / IPO / ISSUE | per-phase, handled by the decision-phase enumeration + pass action | engine, not a dedicated state slot |
 
 ---

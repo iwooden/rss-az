@@ -61,7 +61,7 @@ cdef void _init_engine_to_decision_phase() noexcept nogil:
     for i in range(12):
         ENGINE_TO_DECISION_PHASE[i] = -1
     ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_INVEST] = <int>DecisionPhase.DPHASE_INVEST
-    ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_BID_IN_AUCTION] = <int>DecisionPhase.DPHASE_BID
+    ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_BID] = <int>DecisionPhase.DPHASE_BID
     ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_ACQUISITION] = <int>DecisionPhase.DPHASE_ACQUISITION
     ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_ACQ_OFFER] = <int>DecisionPhase.DPHASE_ACQ_OFFER
     ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_CLOSING] = <int>DecisionPhase.DPHASE_CLOSING

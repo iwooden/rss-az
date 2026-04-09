@@ -167,7 +167,7 @@ Model is ahead of the engine: expects `(batch, num_tokens, token_dim)` features 
 | # | Phase | Notes |
 |---|-------|-------|
 | 0 | INVEST | Buy/sell shares, start auctions |
-| 1 | BID_IN_AUCTION | Bidding |
+| 1 | BID | Bidding |
 | 2 | WRAP_UP | Automated: FI buys at face value |
 | 3 | ACQUISITION | Corps acquiring companies |
 | 4 | ACQ_OFFER | FI preemption sub-phase |

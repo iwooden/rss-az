@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 # Map 18xx frontend round names to the engine phases they correspond to.
 # When the frontend round doesn't match our engine phase, we send passes.
 _ROUND_TO_PHASES: dict[str, set[int]] = {
-    "Investment": {GamePhases.PHASE_INVEST, GamePhases.PHASE_BID_IN_AUCTION},
+    "Investment": {GamePhases.PHASE_INVEST, GamePhases.PHASE_BID},
     "Acquisition": {GamePhases.PHASE_ACQUISITION},
     "Closing": {GamePhases.PHASE_CLOSING},
     "Dividends": {GamePhases.PHASE_DIVIDENDS},

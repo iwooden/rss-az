@@ -28,7 +28,7 @@ LOC_REVEALED = CompanyLocation.LOC_REVEALED
 
 # Phase constants — shared by game_session, replay_harness, etc.
 PHASE_INVEST = GamePhases.PHASE_INVEST
-PHASE_BID = GamePhases.PHASE_BID_IN_AUCTION
+PHASE_BID = GamePhases.PHASE_BID
 PHASE_WRAP_UP = GamePhases.PHASE_WRAP_UP
 PHASE_ACQ = GamePhases.PHASE_ACQUISITION
 PHASE_CLOSING = GamePhases.PHASE_CLOSING
@@ -70,7 +70,7 @@ class ActionLayout:
 
 # 18xx action type sets (used to identify which engine phase an action belongs to)
 INVEST_ACTIONS = {'bid', 'buy_shares', 'sell_shares', 'pass'}
-BID_ACTIONS = {'bid', 'pass'}       # When in our BID_IN_AUCTION phase
+BID_ACTIONS = {'bid', 'pass'}       # When in our BID phase
 IPO_ACTIONS = {'par', 'pass'}
 DIVIDEND_ACTIONS = {'dividend'}
 ISSUE_ACTIONS = {'sell_shares', 'pass'}  # sell_shares by corp entity = issue
@@ -350,7 +350,7 @@ def map_invest_action(
 
 def map_bid_action(action: dict, layout: ActionLayout) -> int:
     """
-    Map an 18xx BID_IN_AUCTION-phase action to our engine's action index.
+    Map an 18xx BID-phase action to our engine's action index.
 
     Supported action types:
     - 'pass' -> leave auction
