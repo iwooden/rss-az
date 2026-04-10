@@ -560,15 +560,6 @@ cdef class Player:
         """Mark whether this player has passed in the current phase."""
         state._data[self._slot(PLAYER_FIELDS.has_passed)] = <int16_t>(1 if passed else 0)
 
-    cpdef bint has_passed_auction(self, GameState state):
-        """Compatibility alias for the generic per-phase passed flag."""
-        return self.has_passed(state)
-
-    cpdef void set_passed_auction(self, GameState state, bint passed):
-        """Compatibility alias for the generic per-phase passed flag."""
-        self.set_has_passed(state, passed)
-
-
 # =============================================================================
 # GLOBAL PLAYER INSTANCES
 # =============================================================================
