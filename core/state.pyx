@@ -546,6 +546,11 @@ cdef void _seed_zeroed_storage(GameState state, int num_players):
     for i in range(<int>GameConstants.NUM_CORPS):
         state._data[LAYOUT.corps_offset + i * CORP_FIELDS.size + CORP_FIELDS.president_id] = -1
 
+    # FI always receives +5 base income (RULES.md line 354), even with no
+    # companies. Seed the stored income so the eagerly-maintained invariant
+    # holds from the start.
+    state._data[LAYOUT.fi_offset + 1] = 5
+
 
 cdef void _reset_storage(GameState state, int num_players):
     """Reset this GameState to a zeroed buffer for `num_players`.
