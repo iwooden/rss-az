@@ -175,7 +175,7 @@ else:
     ext_modules = cythonize(
         extensions,
         compiler_directives=compiler_directives,
-        annotate=False,  # Generates HTML annotation files showing Python interaction
+        annotate=True,  # Generates HTML annotation files showing Python interaction
     )
 
 setup(
