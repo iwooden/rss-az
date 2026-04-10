@@ -151,13 +151,7 @@ cdef int encode_action(ActionInfo info) noexcept nogil:
         if info.action_type == ACTION_IPO:
             return encode_ipo(info.corp_id, info.amount)
 
-    # Unreachable for a well-formed ActionInfo. The assert fires under
-    # debug builds; under -O it falls through to -1 which callers treat
-    # as a decoding error.
-    with gil:
-        raise AssertionError(
-            f"encode_action: illegal (phase={phase}, type={info.action_type})"
-        )
+    assert False, f"encode_action: illegal (phase={phase}, type={info.action_type})"
 
 
 # =============================================================================
@@ -268,9 +262,7 @@ cdef ActionInfo decode_action(int phase_id, int action_id) noexcept nogil:
         info.amount = idx % 14
         return info
 
-    # Unknown phase — caller error.
-    with gil:
-        raise AssertionError(f"decode_action: unknown phase {phase_id}")
+    assert False, f"decode_action: unknown phase {phase_id}"
 
 
 # =============================================================================
@@ -289,8 +281,7 @@ cdef int get_decision_phase(GameState state) noexcept nogil:
     Python singleton access, the whole function stays nogil.
     """
     cdef int engine_phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
-    if engine_phase < 0 or engine_phase >= 12:
-        return -1
+    assert 0 <= engine_phase < 12, f"corrupt engine phase: {engine_phase}"
     return ENGINE_TO_DECISION_PHASE[engine_phase]
 
 
@@ -590,8 +581,8 @@ cdef (int, bint) get_forced_action(GameState state) noexcept nogil:
 
 cpdef int get_phase_action_size(int phase_id):
     """Return the action-space size for a given DecisionPhase."""
-    if phase_id < 0 or phase_id >= <int>GameConstants.NUM_DECISION_PHASES:
-        raise ValueError(f"invalid decision phase: {phase_id}")
+    assert 0 <= phase_id < <int>GameConstants.NUM_DECISION_PHASES, \
+        f"invalid decision phase: {phase_id}"
     return _PHASE_ACTION_SIZES_C[phase_id]
 
 
@@ -600,13 +591,11 @@ cpdef tuple decode_action_py(int phase_id, int action_id):
 
     Returns a tuple ``(phase, action_type, corp_id, company_id, amount)``.
     """
-    if phase_id < 0 or phase_id >= <int>GameConstants.NUM_DECISION_PHASES:
-        raise ValueError(f"invalid decision phase: {phase_id}")
-    if action_id < 0 or action_id >= _PHASE_ACTION_SIZES_C[phase_id]:
-        raise ValueError(
-            f"action_id {action_id} out of range for phase {phase_id} "
-            f"(size {_PHASE_ACTION_SIZES_C[phase_id]})"
-        )
+    assert 0 <= phase_id < <int>GameConstants.NUM_DECISION_PHASES, \
+        f"invalid decision phase: {phase_id}"
+    assert 0 <= action_id < _PHASE_ACTION_SIZES_C[phase_id], \
+        f"action_id {action_id} out of range for phase {phase_id} " \
+        f"(size {_PHASE_ACTION_SIZES_C[phase_id]})"
     cdef ActionInfo info = decode_action(phase_id, action_id)
     return (info.phase, info.action_type, info.corp_id, info.company_id, info.amount)
 
