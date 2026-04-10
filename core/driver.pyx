@@ -116,33 +116,19 @@ cdef class GameDriver:
         elif phase_id == DPHASE_BID:
             apply_bid_action(state, &info)
         elif phase_id == DPHASE_ACQUISITION:
-            raise NotImplementedError(
-                "DPHASE_ACQUISITION handler not yet ported (rss-az-trvp)"
-            )
+            assert False, "DPHASE_ACQUISITION handler not yet ported (rss-az-trvp)"
         elif phase_id == DPHASE_ACQ_OFFER:
-            raise NotImplementedError(
-                "DPHASE_ACQ_OFFER handler not yet ported (rss-az-trvp)"
-            )
+            assert False, "DPHASE_ACQ_OFFER handler not yet ported (rss-az-trvp)"
         elif phase_id == DPHASE_CLOSING:
-            raise NotImplementedError(
-                "DPHASE_CLOSING handler not yet ported (rss-az-trvp)"
-            )
+            assert False, "DPHASE_CLOSING handler not yet ported (rss-az-trvp)"
         elif phase_id == DPHASE_DIVIDENDS:
-            raise NotImplementedError(
-                "DPHASE_DIVIDENDS handler not yet ported (rss-az-trvp)"
-            )
+            assert False, "DPHASE_DIVIDENDS handler not yet ported (rss-az-trvp)"
         elif phase_id == DPHASE_ISSUE:
-            raise NotImplementedError(
-                "DPHASE_ISSUE handler not yet ported (rss-az-trvp)"
-            )
+            assert False, "DPHASE_ISSUE handler not yet ported (rss-az-trvp)"
         elif phase_id == DPHASE_IPO:
-            raise NotImplementedError(
-                "DPHASE_IPO handler not yet ported (rss-az-trvp)"
-            )
+            assert False, "DPHASE_IPO handler not yet ported (rss-az-trvp)"
         else:
-            raise AssertionError(
-                f"_dispatch: unknown decision phase {phase_id}"
-            )
+            assert False, f"_dispatch: unknown decision phase {phase_id}"
 
         return STATUS_OK
 
@@ -167,27 +153,15 @@ cdef class GameDriver:
             history.append((state._array.copy(), -1, engine_phase))
 
         if engine_phase == GamePhases.PHASE_WRAP_UP:
-            raise NotImplementedError(
-                "PHASE_WRAP_UP handler not yet ported (rss-az-trvp)"
-            )
+            assert False, "PHASE_WRAP_UP handler not yet ported (rss-az-trvp)"
         elif engine_phase == GamePhases.PHASE_INCOME:
-            raise NotImplementedError(
-                "PHASE_INCOME handler not yet ported (rss-az-trvp)"
-            )
+            assert False, "PHASE_INCOME handler not yet ported (rss-az-trvp)"
         elif engine_phase == GamePhases.PHASE_END_CARD:
-            raise NotImplementedError(
-                "PHASE_END_CARD handler not yet ported (rss-az-trvp)"
-            )
+            assert False, "PHASE_END_CARD handler not yet ported (rss-az-trvp)"
         else:
-            raise AssertionError(
-                f"_run_automated_phase: phase {engine_phase} is not automated"
-            )
+            assert False, f"_run_automated_phase: phase {engine_phase} is not automated"
 
-        # NOTE: every branch above currently raises, so a trailing
-        # ``return STATUS_OK`` would be unreachable (Cython warns). When
-        # the WRAP_UP / INCOME / END_CARD handlers land (rss-az-trvp),
-        # each implemented branch should follow its ``apply_<phase>(state)``
-        # call with ``return STATUS_OK``.
+        return STATUS_OK
 
     # -------------------------------------------------------------------------
     # _auto_chain — fast-forward through automated phases & forced decisions
@@ -228,20 +202,18 @@ cdef class GameDriver:
                 continue
 
             decision_phase_id = get_decision_phase(state)
-            if decision_phase_id < 0:
-                raise AssertionError(
-                    f"_auto_chain: engine phase {engine_phase} has no "
-                    f"decision phase mapping and is not in the automated "
-                    f"set — ENGINE_TO_DECISION_PHASE bug"
-                )
+            assert decision_phase_id >= 0, (
+                f"_auto_chain: engine phase {engine_phase} has no "
+                f"decision phase mapping and is not in the automated "
+                f"set — ENGINE_TO_DECISION_PHASE bug"
+            )
 
             count = enumerate_legal_actions(state, decision_phase_id, scratch)
-            if count == 0:
-                raise RuntimeError(
-                    f"_auto_chain: zero legal actions in decision phase "
-                    f"{decision_phase_id} (engine phase {engine_phase}) — "
-                    f"enumerator bug or unported phase"
-                )
+            assert count > 0, (
+                f"_auto_chain: zero legal actions in decision phase "
+                f"{decision_phase_id} (engine phase {engine_phase}) — "
+                f"enumerator bug or unported phase"
+            )
             if count >= 2:
                 # Real decision — hand control back to the caller.
                 return STATUS_OK
@@ -251,9 +223,8 @@ cdef class GameDriver:
             self._dispatch(state, decision_phase_id, action_id, history)
             iterations += 1
 
-        raise RuntimeError(
-            f"_auto_chain: exceeded {MAX_AUTO_CHAIN_ITERATIONS} iterations"
-        )
+        assert False, f"_auto_chain: exceeded {MAX_AUTO_CHAIN_ITERATIONS} iterations"
+        return STATUS_OK
 
     # -------------------------------------------------------------------------
     # apply_action — public entry point
@@ -305,26 +276,6 @@ cdef class GameDriver:
 
         self._dispatch(state, decision_phase_id, action_id, history)
         return self._auto_chain(state, history)
-
-    # -------------------------------------------------------------------------
-    # Python convenience wrappers
-    # -------------------------------------------------------------------------
-
-    cpdef object legal_actions(self, GameState state):
-        """Return ``(decision_phase, ndarray of legal action ids)``.
-
-        Thin wrapper around ``core.actions.enumerate_legal_actions_py`` so
-        callers (MCTS, tests) only need to import the driver to drive a
-        game. The lazy import avoids pulling Python-level numpy bits into
-        Cython's cimport graph at module load.
-        """
-        from core.actions import enumerate_legal_actions_py
-        return enumerate_legal_actions_py(state)
-
-    cpdef int decision_phase(self, GameState state):
-        """Return the current ``DecisionPhase`` (or ``-1`` for automated/terminal)."""
-        return get_decision_phase(state)
-
 
 # =============================================================================
 # MODULE-LEVEL SINGLETON + PYTHON CONSTANTS

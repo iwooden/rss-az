@@ -56,5 +56,3 @@ cdef class GameDriver:
 
     # Public entry points.
     cpdef int apply_action(self, GameState state, int action_id, object history=*) except -1
-    cpdef object legal_actions(self, GameState state)
-    cpdef int decision_phase(self, GameState state)
