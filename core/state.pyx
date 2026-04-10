@@ -27,10 +27,10 @@ extraction can `cimport` directly. The only
 num_players-dependent quantity is the total buffer size, computed inline
 as `LAYOUT.players_offset + PLAYER_FIELDS.size * num_players` at the
 small handful of sites that need it (allocation and length validation).
-All per-player tracking (cash, shares, presidencies, share buys/sells,
+All per-player tracking (cash, shares, share buys/sells,
 the per-phase passed flag) lives inside one player-size block, so
 `_player_ptr(i)` reaches everything for player `i` in a single pointer
-hop.
+hop. Presidency is tracked per-corp via ``CORP_FIELDS.president_id``.
 """
 
 cimport cython
@@ -51,7 +51,7 @@ from core.data cimport (
 
 PlayerFields = namedtuple('PlayerFields', [
     'cash', 'net_worth', 'liquidity', 'turn_order',
-    'owned_shares', 'is_president', 'round_trips', 'income',
+    'owned_shares', 'round_trips', 'income',
     'share_buys', 'share_sells', 'has_passed',
 ])
 
@@ -61,6 +61,7 @@ CorpFields = namedtuple('CorpFields', [
     'acquisition_proceeds',
     'in_receivership', 'price_index',
     'raw_revenue', 'synergy_income', 'coo_cost', 'ability_income',
+    'president_id',
 ])
 
 CompanyFields = namedtuple('CompanyFields', [
@@ -258,8 +259,6 @@ cdef PlayerFieldOffsets compute_player_field_offsets() noexcept nogil:
     offset += 1  # single integer (not num_players one-hot)
     p.owned_shares = offset
     offset += GameConstants.NUM_CORPS
-    p.is_president = offset
-    offset += GameConstants.NUM_CORPS
     p.round_trips = offset
     offset += 1
     p.income = offset
@@ -370,6 +369,8 @@ cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil:
     offset += 1
     c.ability_income = offset
     offset += 1
+    c.president_id = offset
+    offset += 1
 
     c.size = offset
     return c
@@ -417,7 +418,6 @@ def get_player_fields():
         liquidity=PLAYER_FIELDS.liquidity,
         turn_order=PLAYER_FIELDS.turn_order,
         owned_shares=PLAYER_FIELDS.owned_shares,
-        is_president=PLAYER_FIELDS.is_president,
         round_trips=PLAYER_FIELDS.round_trips,
         income=PLAYER_FIELDS.income,
         share_buys=PLAYER_FIELDS.share_buys,
@@ -447,6 +447,7 @@ def get_corp_fields():
         synergy_income=CORP_FIELDS.synergy_income,
         coo_cost=CORP_FIELDS.coo_cost,
         ability_income=CORP_FIELDS.ability_income,
+        president_id=CORP_FIELDS.president_id,
     )
 
 
@@ -543,6 +544,10 @@ cdef void _seed_zeroed_storage(GameState state, int num_players):
     # player 0".
     for i in range(<int>GameConstants.NUM_COMPANIES):
         state._data[owner_ids_base + i] = -1
+
+    # Corp president_id defaults to -1 (no president / inactive).
+    for i in range(<int>GameConstants.NUM_CORPS):
+        state._data[LAYOUT.corps_offset + i * CORP_FIELDS.size + CORP_FIELDS.president_id] = -1
 
 
 cdef void _reset_storage(GameState state, int num_players):

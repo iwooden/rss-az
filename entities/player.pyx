@@ -11,8 +11,8 @@ with any GameState at any player count.
 
 Layout summary (per-player block, all raw int16):
   cash, net_worth, liquidity, turn_order (single int), owned_shares (8),
-  is_president (8), round_trips, income, share_buys (8), share_sells (8),
-  has_passed (1).
+  round_trips, income, share_buys (8), share_sells (8), has_passed (1).
+Presidency is tracked per-corp via ``CORP_FIELDS.president_id``.
 
 Company ownership lives in the companies section, but player code reads
 it through company-module query helpers rather than duplicating the
@@ -27,7 +27,7 @@ calls are thin cdef dispatches once typed.
 
 from libc.stdint cimport int16_t
 
-from core.state cimport GameState, LAYOUT, PLAYER_FIELDS, TURN_OFFSETS
+from core.state cimport GameState, LAYOUT, PLAYER_FIELDS, CORP_FIELDS, TURN_OFFSETS
 from core.data cimport (
     GameConstants,
     MARKET_PRICES,
@@ -92,113 +92,6 @@ cdef void invalidate_player_cache(GameState state, int player_id) noexcept nogil
 cdef void invalidate_all_player_caches(GameState state) noexcept nogil:
     state._data[_player_cache_dirty_slot()] = <int16_t>_all_players_mask(state)
 
-
-# =============================================================================
-# PRESIDENCY RECALCULATION
-# =============================================================================
-
-cdef void _recalculate_presidency(GameState state, int corp_id):
-    """
-    Recalculate presidency for a corporation based on current share ownership.
-
-    This is called automatically whenever share counts change via set_shares().
-    Implements the presidency rules from RULES.md:
-
-    1. If no player owns shares (max == 0): corporation is in receivership
-    2. If current president is tied for max shares: they remain president (incumbency)
-    3. Otherwise: first player in turn order AFTER current president with max shares
-       becomes the new president
-    """
-    cdef int player_id, shares, max_shares, president_id, current_president
-    cdef int incumbent_shares, incumbent_position, position, checked, candidate
-    cdef int pres_slot
-    cdef TurnState turn = _TURN()
-    cdef int num_players = turn._get_num_players(state)
-    cdef Corporation corp = <Corporation>corp_module.CORPS[corp_id]
-
-    # Skip inactive corporations
-    if not corp.is_active(state):
-        return
-
-    # Find current president (if any)
-    current_president = -1
-    for player_id in range(num_players):
-        if (<Player>PLAYERS[player_id]).is_president_of(state, corp_id):
-            current_president = player_id
-            break
-
-    # Find maximum share count across all players
-    max_shares = 0
-    for player_id in range(num_players):
-        shares = (<Player>PLAYERS[player_id]).get_shares(state, corp_id)
-        if shares > max_shares:
-            max_shares = shares
-
-    # Determine new president
-    president_id = -1
-
-    if max_shares == 0:
-        # No player owns shares - corporation enters receivership
-        corp.set_in_receivership(state, True)
-        # Clear all president flags
-        for player_id in range(num_players):
-            pres_slot = (
-                LAYOUT.players_offset
-                + player_id * PLAYER_FIELDS.size
-                + PLAYER_FIELDS.is_president
-                + corp_id
-            )
-            state._data[pres_slot] = 0
-        return
-
-    # Someone owns shares - not in receivership
-    corp.set_in_receivership(state, False)
-
-    if current_president >= 0:
-        incumbent_shares = (<Player>PLAYERS[current_president]).get_shares(state, corp_id)
-
-        if incumbent_shares >= max_shares:
-            # Current president tied for max or has max - they keep it
-            president_id = current_president
-        else:
-            # Someone has more shares than incumbent
-            # Find first player in turn order (starting AFTER incumbent) with max shares
-            incumbent_position = (<Player>PLAYERS[current_president]).get_turn_order(state)
-
-            checked = 0
-            position = incumbent_position
-            while checked < num_players:
-                position = (position + 1) % num_players
-                candidate = turn.find_player_at_position(state, position)
-                if (<Player>PLAYERS[candidate]).get_shares(state, corp_id) == max_shares:
-                    president_id = candidate
-                    break
-                checked += 1
-    else:
-        # No current president - first player by turn order with max shares
-        for position in range(num_players):
-            candidate = turn.find_player_at_position(state, position)
-            if (<Player>PLAYERS[candidate]).get_shares(state, corp_id) == max_shares:
-                president_id = candidate
-                break
-
-    # Update president flags if changed
-    if president_id >= 0 and president_id != current_president:
-        if current_president >= 0:
-            pres_slot = (
-                LAYOUT.players_offset
-                + current_president * PLAYER_FIELDS.size
-                + PLAYER_FIELDS.is_president
-                + corp_id
-            )
-            state._data[pres_slot] = 0
-        pres_slot = (
-            LAYOUT.players_offset
-            + president_id * PLAYER_FIELDS.size
-            + PLAYER_FIELDS.is_president
-            + corp_id
-        )
-        state._data[pres_slot] = 1
 
 # =============================================================================
 # HIGH-LEVEL PLAYER CLASS
@@ -454,7 +347,7 @@ cdef class Player:
         if delta != 0:
             corp.set_bank_shares(state, new_bank_shares)
             invalidate_player_cache(state, self.player_id)
-        _recalculate_presidency(state, corp_id)
+        corp._recalculate_presidency(state)
 
     # =========================================================================
     # PRESIDENT STATUS (read-only — derived from share ownership)
@@ -462,7 +355,8 @@ cdef class Player:
 
     cpdef bint is_president_of(self, GameState state, int corp_id):
         """Check if player is president of a corporation."""
-        return state._data[self._slot(PLAYER_FIELDS.is_president) + corp_id] == 1
+        cdef int slot = LAYOUT.corps_offset + corp_id * CORP_FIELDS.size + CORP_FIELDS.president_id
+        return <int>state._data[slot] == self.player_id
 
     # =========================================================================
     # ROUND-TRIP TRACKING (INVEST PHASE)

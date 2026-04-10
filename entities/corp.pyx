@@ -46,6 +46,7 @@ from entities.company cimport (
     company_owned_by_corp,
 )
 from entities.player cimport (
+    Player,
     invalidate_all_player_caches,
 )
 from entities.turn cimport TurnState
@@ -624,12 +625,84 @@ cdef class Corporation:
     # =========================================================================
 
     cpdef int get_president_id(self, GameState state):
-        """Return player_id of the corp's president, or -1 if in receivership."""
-        cdef int player_id
-        for player_id in range(_TURN()._get_num_players(state)):
-            if player_module.PLAYERS[player_id].is_president_of(state, self.corp_id):
-                return player_id
-        return -1
+        """Return player_id of the corp's president, or -1 if inactive/receivership."""
+        return <int>state._data[self._slot(CORP_FIELDS.president_id)]
+
+    cdef void _recalculate_presidency(self, GameState state):
+        """
+        Recalculate presidency based on current share ownership.
+
+        Called automatically whenever share counts change via Player.set_shares().
+        Implements the presidency rules from RULES.md:
+
+        1. If no player owns shares (max == 0): corporation is in receivership
+        2. If current president is tied for max shares: they remain president (incumbency)
+        3. Otherwise: first player in turn order AFTER current president with max shares
+           becomes the new president
+        """
+        cdef int player_id, shares, max_shares, president_id, current_president
+        cdef int incumbent_shares, incumbent_position, position, checked, candidate
+        cdef TurnState turn = _TURN()
+        cdef int num_players = turn._get_num_players(state)
+        cdef int slot = self._slot(CORP_FIELDS.president_id)
+
+        # Skip inactive corporations
+        if not self._is_active(state):
+            return
+
+        # Read current president from the corp's president_id field
+        current_president = <int>state._data[slot]
+
+        # Find maximum share count across all players
+        max_shares = 0
+        for player_id in range(num_players):
+            shares = (<Player>player_module.PLAYERS[player_id]).get_shares(state, self.corp_id)
+            if shares > max_shares:
+                max_shares = shares
+
+        # Determine new president
+        president_id = -1
+
+        if max_shares == 0:
+            # No player owns shares - corporation enters receivership
+            self.set_in_receivership(state, True)
+            state._data[slot] = -1
+            return
+
+        # Someone owns shares - not in receivership
+        self.set_in_receivership(state, False)
+
+        if current_president >= 0:
+            incumbent_shares = (<Player>player_module.PLAYERS[current_president]).get_shares(state, self.corp_id)
+
+            if incumbent_shares >= max_shares:
+                # Current president tied for max or has max - they keep it
+                president_id = current_president
+            else:
+                # Someone has more shares than incumbent
+                # Find first player in turn order (starting AFTER incumbent) with max shares
+                incumbent_position = (<Player>player_module.PLAYERS[current_president]).get_turn_order(state)
+
+                checked = 0
+                position = incumbent_position
+                while checked < num_players:
+                    position = (position + 1) % num_players
+                    candidate = turn.find_player_at_position(state, position)
+                    if (<Player>player_module.PLAYERS[candidate]).get_shares(state, self.corp_id) == max_shares:
+                        president_id = candidate
+                        break
+                    checked += 1
+        else:
+            # No current president - first player by turn order with max shares
+            for position in range(num_players):
+                candidate = turn.find_player_at_position(state, position)
+                if (<Player>player_module.PLAYERS[candidate]).get_shares(state, self.corp_id) == max_shares:
+                    president_id = candidate
+                    break
+
+        # Update president_id if changed
+        if president_id >= 0 and president_id != current_president:
+            state._data[slot] = <int16_t>president_id
 
     # =========================================================================
     # ACQUISITION PILE

@@ -525,7 +525,6 @@ cdef int _enumerate_closing(
     cdef int company_base = LAYOUT.companies_offset
     cdef int loc, owner
     cdef int corp_id, corp_base, company_id
-    cdef int player_base = LAYOUT.players_offset + active_player * PLAYER_FIELDS.size
     cdef int corp_company_count[8]
     cdef bint corp_closable[8]  # True if active_player can close companies from this corp
 
@@ -550,7 +549,7 @@ cdef int _enumerate_closing(
             continue
         if <int>state._data[corp_base + CORP_FIELDS.in_receivership] == 1:
             continue
-        if <int>state._data[player_base + PLAYER_FIELDS.is_president + corp_id] != 1:
+        if <int>state._data[corp_base + CORP_FIELDS.president_id] != active_player:
             continue
         corp_closable[corp_id] = True
 

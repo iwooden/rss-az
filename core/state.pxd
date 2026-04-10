@@ -86,7 +86,6 @@ cdef struct PlayerFieldOffsets:
     int liquidity
     int turn_order               # single integer (not one-hot)
     int owned_shares             # 8 raw counts
-    int is_president             # 8 flags
     int round_trips
     int income
     int share_buys               # 8 per-corp buy counts (this turn)
@@ -132,6 +131,7 @@ cdef struct CorpFieldOffsets:
     int synergy_income
     int coo_cost
     int ability_income
+    int president_id             # player_id or -1 (receivership/inactive)
     # Total size of one corp's data block
     int size
 

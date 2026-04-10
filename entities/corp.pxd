@@ -131,8 +131,9 @@ cdef class Corporation:
     # Bankruptcy
     cpdef void go_bankrupt(self, GameState state)
 
-    # President lookup
+    # President
     cpdef int get_president_id(self, GameState state)
+    cdef void _recalculate_presidency(self, GameState state)
 
     # Acquisition pile
     cpdef bint has_acquisition_company(self, GameState state, int company_id)
