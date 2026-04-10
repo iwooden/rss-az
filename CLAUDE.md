@@ -24,8 +24,8 @@ Backwards compatibility is **not** a goal. Code outside `core/state.*`, `core/da
 
 | Type | Count (3p) | Carries |
 |------|-----------|---------|
-| Player | 3 | identity, cash, net worth, income, turn order, owned shares + presidencies, round trips, `is_active` |
-| Corporation | 8 | identity, active, cash, shares, income, stars, price index, pending move, owned companies, receivership, invest impacts, `is_phase_active` |
+| Player | 3 | identity, cash, net worth, income, turn order, owned shares, `is_active` |
+| Corporation | 8 | identity, active, cash, shares, income, stars, price index, pending move, owned companies, receivership, president_id, invest impacts, `is_phase_active` |
 | Company | 36 | identity, location flags, income, static features, 36-dim synergy, `is_phase_active` |
 | FI | 1 | cash, income, owned companies |
 | Market | 1 | 27 availability flags |
@@ -135,11 +135,11 @@ Thin wrapper around a single int16 numpy array. Raw integers only — no normali
 
 `total_size` is not on `LAYOUT` (depends on num_players); compute inline as `LAYOUT.players_offset + PLAYER_FIELDS.size * num_players`. Section sizes live on their field structs (`PLAYER_FIELDS.size`, etc.).
 
-All per-player tracking (cash, net_worth, liquidity, turn order, shares, presidencies, round trips, income, share buys/sells, `has_passed`) lives inside one player block — single pointer hop per player.
+All per-player tracking (cash, net_worth, liquidity, turn order, shares, income, share buys/sells, `has_passed`) lives inside one player block — single pointer hop per player. Presidency is tracked per-corp via `CORP_FIELDS.president_id` (`player_id` or `-1`), not in the player block. Round-trip counts are derived on demand from `min(share_buys, share_sells)` per corp — no dedicated slot.
 
 Corps cache `company_stars`; `share_price` is derived from `price_index`. Derived values (revenue, synergy income, CoO, ability income) cached lazily behind per-corp dirty bits (`TURN_OFFSETS.corp_cache_dirty`). Players have an analogous `player_cache_dirty`.
 
-`companies.locations` (`CompanyLocation` enum) + `companies.owner_ids` are the single source of truth for ownership — no per-player/per-corp ownership bitmaps. `LOC_DECK = 0` is zero-init default; `__cinit__` seeds `owner_ids` to `-1`.
+`companies.locations` (`CompanyLocation` enum) + `companies.owner_ids` are the single source of truth for ownership — no per-player/per-corp ownership bitmaps. `LOC_DECK = 0` is zero-init default; `__cinit__` seeds `owner_ids` and `corps.president_id` to `-1`.
 
 ### Actions (`core/actions.{pyx,pxd}`)
 

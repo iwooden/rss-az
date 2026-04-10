@@ -24,7 +24,7 @@ The feature lists below are planning sketches, not frozen interfaces. The exact 
 
 | Token type | Count | Raw features | Notes |
 |------------|-------|-------------|-------|
-| Player | N (2-6) | ~63 (3p prototype) | explicit player identity, cash, net_worth, income, turn_order one-hot, owned_companies (36), shares (8), is_president (8), round_trips. Active player gets `is_active=1` flag. |
+| Player | N (2-6) | ~63 (3p prototype) | explicit player identity, cash, net_worth, income, turn_order one-hot, owned_companies (36), shares (8). Active player gets `is_active=1` flag. Presidency and round-trips are derived from corp `president_id` and `min(share_buys, share_sells)` respectively — no dedicated player-block slots. |
 | Corporation | 8 | ~55 | explicit corp identity / ability signal, active, cash, shares, income, stars, share_price, price_index, pending_price_move, revenue breakdown, owned_companies (36), in_receivership, invest buy/sell price impacts (2), `is_phase_active` flag (1 — set during ISSUE, DIVIDENDS, IPO, and ACQ_OFFER to mark the corp in focus; **unused during ACQUISITION**, which picks corps directly from the masked action space with no active-corp bookkeeping) |
 | Company | 36 | ~48 | explicit company identity, location flags (for_auction, revealed, removed, acquired), income, static features (face_value, low_price, high_price, stars, base_income), synergy vector (36 — bidirectional synergy $ with each other company), `is_phase_active` flag (1 — set during BID, IPO, and ACQ_OFFER to mark the contested/subject company; **unused during ACQUISITION and CLOSING**, which pick companies directly from the masked action space) |
 | FI | 1 | 38 | cash, income, owned_companies (36) |

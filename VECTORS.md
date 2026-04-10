@@ -12,13 +12,13 @@ This document describes the in-memory game state layout. The state is the engine
 
 | Players | total_size | player_stride | corp_stride | turn_size |
 |---------|-----------|---------------|-------------|-----------|
-| 2       | 431       | 39            | 14          | 67        |
-| 3       | 470       | 39            | 14          | 67        |
-| 4       | 509       | 39            | 14          | 67        |
-| 5       | 548       | 39            | 14          | 67        |
-| 6       | 587       | 39            | 14          | 67        |
+| 2       | 421       | 30            | 15          | 67        |
+| 3       | 451       | 30            | 15          | 67        |
+| 4       | 481       | 30            | 15          | 67        |
+| 5       | 511       | 30            | 15          | 67        |
+| 6       | 541       | 30            | 15          | 67        |
 
-`player_stride`, `corp_stride`, and `turn_size` are all fixed across player counts. The players section is the **only** part of the buffer whose size depends on `num_players`, so `total_size = 353 + 39 * num_players` — the constant 353 is the fixed prefix, and only the trailing players section grows.
+`player_stride`, `corp_stride`, and `turn_size` are all fixed across player counts. The players section is the **only** part of the buffer whose size depends on `num_players`, so `total_size = 361 + 30 * num_players` — the constant 361 is the fixed prefix, and only the trailing players section grows.
 
 Layout offsets are computed once at module load and exposed as Cython `cdef` structs at module scope on `core.state`:
 
@@ -44,10 +44,10 @@ Cython code reads them directly via `from core.state cimport LAYOUT, TURN_OFFSET
 | FI        | 0   | 2   | Foreign investor cash, income |
 | Companies | 2   | 108 | Three parallel 36-slot sub-arrays: `incomes`, `locations`, `owner_ids` (see [Companies section](#companies-section)) |
 | Market    | 110 | 27  | Per-price availability flags |
-| Corps     | 137 | 112 | Per-corp blocks: `corp_stride (14) * 8` (see [Corp block](#corp-block)) |
-| Turn      | 249 | 67  | Turn-scoped state including game-wide metadata, active corp/company selectors, plus two internal cache-dirty masks (see [Turn block](#turn-block)) |
-| Deck      | 316 | 37  | `top` (1) + `order` (36) — see [Deck section](#deck-section) |
-| Players   | 353 | `player_stride * num_players` | Per-player blocks (see [Player block](#player-block)) |
+| Corps     | 137 | 120 | Per-corp blocks: `corp_stride (15) * 8` (see [Corp block](#corp-block)) |
+| Turn      | 257 | 67  | Turn-scoped state including game-wide metadata, active corp/company selectors, plus two internal cache-dirty masks (see [Turn block](#turn-block)) |
+| Deck      | 324 | 37  | `top` (1) + `order` (36) — see [Deck section](#deck-section) |
+| Players   | 361 | `player_stride * num_players` | Per-player blocks (see [Player block](#player-block)) |
 
 Every offset above is **constant across all player counts** — the players section lives at the end of the buffer for exactly this reason. The "Start offset" column is identical for every player count up to and including the players section start.
 
@@ -57,7 +57,7 @@ Section start offsets are exposed via `LayoutInfo` as `fi_offset`, `companies_of
 
 ## Player block
 
-Stride: **39**. Player `i` lives at `players_offset + i * 39`. Field offsets via `core.state.get_player_fields()` (`PlayerFields` namedtuple) for Python, or `from core.state cimport PLAYER_FIELDS` for Cython.
+Stride: **30**. Player `i` lives at `players_offset + i * 30`. Field offsets via `core.state.get_player_fields()` (`PlayerFields` namedtuple) for Python, or `from core.state cimport PLAYER_FIELDS` for Cython.
 
 | Relative offset | Field | Size | Notes |
 |----------------|-------|------|-------|
@@ -66,14 +66,12 @@ Stride: **39**. Player `i` lives at `players_offset + i * 39`. Field offsets via
 | 2  | liquidity       | 1 | Iterative share liquidation value (cash + value of shares + companies) |
 | 3  | turn_order      | 1 | Position 0 = first to act |
 | 4  | owned_shares    | 8 | Per-corp share count |
-| 12 | is_president    | 8 | Per-corp president flag |
-| 20 | round_trips     | 1 | `max(min(buys[c], sells[c]) for c in corps)` this turn |
-| 21 | income          | 1 | Income from owned private companies |
-| 22 | share_buys      | 8 | Per-corp buy counts (this turn) |
-| 30 | share_sells     | 8 | Per-corp sell counts (this turn) |
-| 38 | has_passed      | 1 | `1` once this player has passed in the current phase |
+| 12 | income          | 1 | Income from owned private companies |
+| 13 | share_buys      | 8 | Per-corp buy counts (this turn) |
+| 21 | share_sells     | 8 | Per-corp sell counts (this turn) |
+| 29 | has_passed      | 1 | `1` once this player has passed in the current phase |
 
-All per-player tracking lives inside one player block, so a single pointer hop reaches everything for player `i`. The generic `has_passed` flag previously lived in the turn block as an auction-specific per-player array; moving it into the player block makes the player block fully self-contained and the turn block fixed-size.
+All per-player tracking lives inside one player block, so a single pointer hop reaches everything for player `i`. Presidency is tracked per-corp via `CORP_FIELDS.president_id` (see [Corp block](#corp-block)), not in the player block. Round-trip counts are derived on demand from `min(share_buys, share_sells)` per corp — no dedicated slot. The generic `has_passed` flag previously lived in the turn block as an auction-specific per-player array; moving it into the player block makes the player block fully self-contained and the turn block fixed-size.
 
 ---
 
@@ -116,7 +114,7 @@ State invariant: index `0` (`$0`, bankruptcy) and index `26` (`$75`, max price) 
 
 ## Corp block
 
-Stride: **14**. Corp `c` lives at `corps_offset + c * 14`. Field offsets via `core.state.get_corp_fields()` (`CorpFields` namedtuple) for Python, or `from core.state cimport CORP_FIELDS` for Cython.
+Stride: **15**. Corp `c` lives at `corps_offset + c * 15`. Field offsets via `core.state.get_corp_fields()` (`CorpFields` namedtuple) for Python, or `from core.state cimport CORP_FIELDS` for Cython.
 
 | Relative offset | Field | Notes |
 |----------------|-------|-------|
@@ -134,6 +132,7 @@ Stride: **14**. Corp `c` lives at `corps_offset + c * 14`. Field offsets via `co
 | 11 | synergy_income        | |
 | 12 | coo_cost              | Always ≤ 0 |
 | 13 | ability_income        | |
+| 14 | president_id          | `player_id` or `-1` (inactive / receivership). Initialized to `-1`. |
 
 `share_price` is **not stored** in the corp block. It is derived from `price_index` via `MARKET_PRICES[price_index]`; use `CORPS[c].get_share_price(state)` rather than expecting a backing slot.
 
@@ -251,7 +250,7 @@ Stored as a raw integer at `LAYOUT.turn_offset + TURN_OFFSETS.phase`. Defined in
 | Phase | Mechanism | Location |
 |-------|-----------|----------|
 | INVEST            | `consecutive_passes` counter | turn block (slot 8) |
-| BID    | per-player `has_passed` flag | player block (slot 38) |
+| BID    | per-player `has_passed` flag | player block (slot 29) |
 | CLOSING / ACQUISITION / IPO / ISSUE | per-phase, handled by the decision-phase enumeration + pass action | engine, not a dedicated state slot |
 
 ---
@@ -260,7 +259,7 @@ Stored as a raw integer at `LAYOUT.turn_offset + TURN_OFFSETS.phase`. Defined in
 
 | Method | Behavior |
 |--------|----------|
-| `GameState(num_players)` | Allocate a fresh zero-initialized buffer; seed `turn.num_players` and `companies.owner_ids` to `-1`. |
+| `GameState(num_players)` | Allocate a fresh zero-initialized buffer; seed `turn.num_players`, `companies.owner_ids`, and `corps.president_id` to `-1`. |
 | `GameState.from_array(arr, num_players)` | Allocate and copy `arr` into the new state. Accepts any 1-D `int16` array/view of the correct logical length, contiguous or not. |
 | `GameState.from_buffer(buf, num_players)` | Wrap an existing writable C-contiguous `int16` buffer zero-copy. Buffer must already contain valid state — does **not** seed `companies.owner_ids`. |
 | `state.rebind(buf, num_players)` | Repoint an existing `GameState` at a different writable C-contiguous buffer. Used in MCTS hot paths. |
@@ -385,15 +384,15 @@ from entities.player import PLAYERS
 # State buffer
 state = GameState(num_players=3)
 state.initialize_game(3, seed=42)
-print(f"buffer length = {len(state._array)}")  # 470 for 3p
+print(f"buffer length = {len(state._array)}")  # 451 for 3p
 
 # Layout introspection
 layout = get_layout(3)            # LayoutInfo namedtuple
-print(layout.players_offset)      # 353 (constant across player counts)
-print(layout.total_size)          # 470
+print(layout.players_offset)      # 361 (constant across player counts)
+print(layout.total_size)          # 451
 
 pf = get_player_fields()          # PlayerFields namedtuple
-print(pf.cash, pf.has_passed)     # 0 38
+print(pf.cash, pf.has_passed)     # 0 29
 
 # Field access goes through entity handles, not raw buffer indexing
 print(PLAYERS[0].get_cash(state))
