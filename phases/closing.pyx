@@ -1,0 +1,312 @@
+"""CLOSING phase handler.
+
+Three stages:
+1. **Auto-close** — FI negative-income companies + receivership red/orange
+   above cost-of-ownership thresholds.
+2. **Player decisions** — each player in ascending ID order may voluntarily
+   close any company they own (private) or that a non-receivership corp they
+   preside over owns (subject to the corp retaining at least one company).
+3. **Mandatory close** — force-close player privates (cheapest first) until
+   no player would end up with negative cash after INCOME.
+
+All state access goes through entity handles. The handler does not import
+layout constants and never indexes ``state._data`` directly.
+"""
+
+from core.state cimport GameState
+from core.actions cimport (
+    ActionInfo,
+    ACTION_PASS,
+    ACTION_CLOSE,
+)
+from core.data cimport (
+    GameConstants,
+    GamePhases,
+    CorpIndices,
+    COMPANY_STARS,
+    COMPANY_INCOME,
+    COMPANY_FACE_VALUE,
+    COST_OF_OWNERSHIP,
+)
+
+# Late Python-level entity imports, same pattern as phases/bid.pyx.
+from entities import turn as turn_module
+from entities import player as player_module
+from entities import company as company_module
+from entities import corp as corp_module
+from entities import fi as fi_module
+
+
+# =============================================================================
+# PRIVATE HELPERS
+# =============================================================================
+
+cdef void _auto_close_fi(GameState state) noexcept:
+    """Close all FI-owned companies with negative adjusted income."""
+    cdef int i
+    for i in range(<int>GameConstants.NUM_COMPANIES):
+        if (company_module.COMPANIES[i].is_owned_by_fi(state)
+                and company_module.COMPANIES[i].get_adjusted_income(state) < 0):
+            company_module.COMPANIES[i].remove_from_game(state)
+
+
+cdef void _auto_close_receivership(GameState state) noexcept:
+    """Auto-close red/orange companies for receivership corps above CoO thresholds.
+
+    For each active receivership corp:
+    - Red (1-star) companies close if CoO >= $4
+    - Orange (2-star) companies close if CoO >= $7
+    - The company with the highest face value is always protected.
+    - If a corp has only one company, skip (it's the highest by default).
+    - Close eligible companies lowest face value first.
+    - JS gets 2x printed income bonus on auto-close.
+    """
+    cdef int corp_id, coo_level, i, j, count
+    cdef int stars, coo_cost, face_val, max_face, max_face_idx
+    cdef int comp_ids[36]
+    cdef int eligible[36]
+    cdef int eligible_count
+    cdef int face_values[36]
+
+    coo_level = turn_module.TURN.get_coo_level(state)
+
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
+        if not corp_module.CORPS[corp_id].is_active(state):
+            continue
+        if not corp_module.CORPS[corp_id].is_in_receivership(state):
+            continue
+
+        # Collect this corp's company IDs
+        count = 0
+        for i in range(<int>GameConstants.NUM_COMPANIES):
+            if company_module.COMPANIES[i].is_owned_by_corp(state, corp_id):
+                comp_ids[count] = i
+                count += 1
+
+        if count <= 1:
+            continue  # Can't close the only company
+
+        # Find highest face value among ALL corp companies (protected)
+        max_face = -1
+        max_face_idx = -1
+        for i in range(count):
+            face_val = COMPANY_FACE_VALUE[comp_ids[i]]
+            if face_val > max_face:
+                max_face = face_val
+                max_face_idx = comp_ids[i]
+
+        # Collect eligible companies for auto-close
+        eligible_count = 0
+        for i in range(count):
+            if comp_ids[i] == max_face_idx:
+                continue  # Protected
+            stars = COMPANY_STARS[comp_ids[i]]
+            if stars >= 3:
+                continue  # Only red (1) and orange (2) are candidates
+            # COST_OF_OWNERSHIP is [7][5], indexed as [coo_level-1][stars-1]
+            coo_cost = COST_OF_OWNERSHIP[coo_level - 1][stars - 1]
+            if stars == 1 and coo_cost >= 4:
+                eligible[eligible_count] = comp_ids[i]
+                face_values[eligible_count] = COMPANY_FACE_VALUE[comp_ids[i]]
+                eligible_count += 1
+            elif stars == 2 and coo_cost >= 7:
+                eligible[eligible_count] = comp_ids[i]
+                face_values[eligible_count] = COMPANY_FACE_VALUE[comp_ids[i]]
+                eligible_count += 1
+
+        # Sort eligible by face value ascending (simple insertion sort — at most ~36 elements)
+        for i in range(1, eligible_count):
+            j = i
+            while j > 0 and face_values[j - 1] > face_values[j]:
+                # Swap
+                eligible[j], eligible[j - 1] = eligible[j - 1], eligible[j]
+                face_values[j], face_values[j - 1] = face_values[j - 1], face_values[j]
+                j -= 1
+
+        # Close eligible (lowest face value first), but never the last company
+        for i in range(eligible_count):
+            # Re-count remaining companies to enforce the last-company invariant.
+            # This matters because we're closing multiple in one pass.
+            if corp_module.CORPS[corp_id].count_companies(state) <= 1:
+                break
+            if corp_id == <int>CorpIndices.CORP_JS:
+                corp_module.CORPS[corp_id].add_cash(
+                    state, 2 * COMPANY_INCOME[eligible[i]])
+            company_module.COMPANIES[eligible[i]].remove_from_game(state)
+
+
+cdef void _process_mandatory_close(GameState state) noexcept:
+    """Force-close player privates until no player has negative income+cash.
+
+    For each player: while income + cash < 0, close the player-owned private
+    with the lowest face value. Only targets LOC_PLAYER companies, not corp
+    subsidiaries. No JS bonus (mandatory close is for player privates only).
+    """
+    cdef int pid, i, j
+    cdef int num_players = turn_module.TURN.get_num_players(state)
+    cdef int income, cash
+    cdef int cheapest_id, cheapest_face
+
+    for pid in range(num_players):
+        while True:
+            income = player_module.PLAYERS[pid].get_income(state)
+            cash = player_module.PLAYERS[pid].get_cash(state)
+            if income + cash >= 0:
+                break
+
+            # Find the cheapest player-owned private
+            cheapest_id = -1
+            cheapest_face = 999
+            for i in range(<int>GameConstants.NUM_COMPANIES):
+                if not company_module.COMPANIES[i].is_owned_by_player(state, pid):
+                    continue
+                if COMPANY_FACE_VALUE[i] < cheapest_face:
+                    cheapest_face = COMPANY_FACE_VALUE[i]
+                    cheapest_id = i
+
+            # If no company to close, the player is stuck — this shouldn't
+            # happen if game rules are followed, but guard against infinite loop.
+            assert cheapest_id >= 0, \
+                f"_process_mandatory_close: player {pid} has income+cash<0 but no companies to close"
+            company_module.COMPANIES[cheapest_id].remove_from_game(state)
+
+
+cdef bint _player_has_closable(GameState state, int player_id) noexcept:
+    """Return True if the player has any company they can voluntarily close.
+
+    A player can close:
+    - Any player-owned private (LOC_PLAYER)
+    - Any company owned by a non-receivership corp they preside, provided the
+      corp retains at least 2 companies.
+    No income filter — any company is eligible for voluntary close.
+    """
+    cdef int i, corp_id
+
+    # Check player-owned privates
+    for i in range(<int>GameConstants.NUM_COMPANIES):
+        if company_module.COMPANIES[i].is_owned_by_player(state, player_id):
+            return True
+
+    # Check corp subsidiaries
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
+        if not corp_module.CORPS[corp_id].is_active(state):
+            continue
+        if corp_module.CORPS[corp_id].is_in_receivership(state):
+            continue
+        if not player_module.PLAYERS[player_id].is_president_of(state, corp_id):
+            continue
+        if corp_module.CORPS[corp_id].count_companies(state) <= 1:
+            continue
+        # This corp has >=2 companies and the player presides — at least one
+        # is closable (any except the last).
+        return True
+
+    return False
+
+
+cdef void _advance_to_next_closer(GameState state) noexcept:
+    """Find the next player (ascending ID) who has closable companies and hasn't passed.
+
+    If none found, run mandatory close and transition to INCOME.
+    """
+    cdef int num_players = turn_module.TURN.get_num_players(state)
+    cdef int current = turn_module.TURN.get_active_player(state)
+    cdef int i, pid
+
+    for i in range(1, num_players):
+        pid = (current + i) % num_players
+        if (not player_module.PLAYERS[pid].has_passed(state)
+                and _player_has_closable(state, pid)):
+            turn_module.TURN.set_active_player(state, pid)
+            return
+
+    # All players done
+    _process_mandatory_close(state)
+    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_INCOME)
+
+
+# =============================================================================
+# PUBLIC ENTRY POINTS
+# =============================================================================
+
+cdef void apply_closing_auto(GameState state) noexcept:
+    """Run auto-close stages and set up the first player for decisions.
+
+    Called by the driver exactly once on entering PHASE_CLOSING, before any
+    action enumeration.
+    """
+    cdef int num_players = turn_module.TURN.get_num_players(state)
+    cdef int pid
+
+    # Stage 1: FI auto-close
+    _auto_close_fi(state)
+
+    # Stage 2: Receivership auto-close
+    _auto_close_receivership(state)
+
+    # Stage 3: Clear passed flags for all players
+    turn_module.TURN.clear_passed_flags(state)
+
+    # Stage 4: Find the first player with closable companies
+    for pid in range(num_players):
+        if _player_has_closable(state, pid):
+            turn_module.TURN.set_active_player(state, pid)
+            return
+
+    # No player has closable companies — run mandatory close and go to INCOME
+    _process_mandatory_close(state)
+    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_INCOME)
+
+
+cdef void apply_closing_action(GameState state, ActionInfo* info) noexcept:
+    """Dispatch a CLOSING-phase action (CLOSE or PASS).
+
+    ``info`` is assumed to be a legal CLOSING action produced by
+    ``decode_action(DPHASE_CLOSING, action_id)`` after the id was yielded
+    by ``_enumerate_closing``. Illegal actions are a driver bug and trip
+    the assertion below.
+    """
+    cdef int action_type = info.action_type
+    cdef int company_id, owner_id, corp_id, pid, loc
+
+    if action_type == ACTION_PASS:
+        pid = turn_module.TURN.get_active_player(state)
+        player_module.PLAYERS[pid].set_has_passed(state, True)
+        _advance_to_next_closer(state)
+
+    elif action_type == ACTION_CLOSE:
+        company_id = info.company_id
+        pid = turn_module.TURN.get_active_player(state)
+
+        # Determine who owns the company and validate
+        loc = company_module.COMPANIES[company_id].get_location(state)
+        owner_id = company_module.COMPANIES[company_id].get_owner_id(state)
+
+        if loc == 3:  # LOC_PLAYER
+            assert owner_id == pid, \
+                f"apply_closing_action: company {company_id} owned by player {owner_id}, not active player {pid}"
+        elif loc == 5:  # LOC_CORP
+            corp_id = owner_id
+            assert player_module.PLAYERS[pid].is_president_of(state, corp_id), \
+                f"apply_closing_action: player {pid} not president of corp {corp_id}"
+            assert not corp_module.CORPS[corp_id].is_in_receivership(state), \
+                f"apply_closing_action: corp {corp_id} is in receivership"
+            assert corp_module.CORPS[corp_id].count_companies(state) > 1, \
+                f"apply_closing_action: corp {corp_id} would lose its last company"
+
+            # JS bonus: 2x printed income to JS cash
+            if corp_id == <int>CorpIndices.CORP_JS:
+                corp_module.CORPS[corp_id].add_cash(
+                    state, 2 * COMPANY_INCOME[company_id])
+        else:
+            assert False, \
+                f"apply_closing_action: company {company_id} has unexpected location {loc}"
+
+        company_module.COMPANIES[company_id].remove_from_game(state)
+
+        # Stay on the same player — they may close more. The driver will
+        # re-enumerate; if only PASS remains, forced-action logic advances.
+
+    else:
+        assert False, \
+            f"apply_closing_action: illegal action_type {action_type}"

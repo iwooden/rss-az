@@ -506,7 +506,74 @@ cdef int _enumerate_acq_offer(
 cdef int _enumerate_closing(
     GameState state, uint16_t* ids,
 ) noexcept nogil:
-    return 0
+    """Emit every legal DPHASE_CLOSING action in deterministic order.
+
+    Ordering:
+      1. ``id 0``: pass (always legal)
+      2. ``ids 1..36``: close company_id, ``1 + company_id``.
+         Player-owned privates (LOC_PLAYER, owner == active_player) are
+         always closable. Corp subsidiaries (LOC_CORP) are closable if
+         the active player presides the corp, the corp is not in
+         receivership, and the corp retains at least 2 companies.
+
+    Returns the number of IDs written. Worst case: 37 (pass + 36 companies).
+    """
+    cdef int count = 0
+    cdef int active_player = <int>state._data[
+        LAYOUT.turn_offset + TURN_OFFSETS.active_player
+    ]
+    cdef int company_base = LAYOUT.companies_offset
+    cdef int loc, owner
+    cdef int corp_id, corp_base, company_id
+    cdef int player_base = LAYOUT.players_offset + active_player * PLAYER_FIELDS.size
+    cdef int corp_company_count[8]
+
+    # --- id 0: pass (always legal) -------------------------------------------
+    ids[count] = 0
+    count += 1
+
+    # --- Pre-scan: count companies per corp -----------------------------------
+    for corp_id in range(8):
+        corp_company_count[corp_id] = 0
+    for company_id in range(36):
+        loc = <int>state._data[company_base + COMPANY_OFFSETS.locations + company_id]
+        if loc == 5:  # LOC_CORP
+            owner = <int>state._data[company_base + COMPANY_OFFSETS.owner_ids + company_id]
+            corp_company_count[owner] += 1
+
+    # --- Player-owned privates ------------------------------------------------
+    for company_id in range(36):
+        loc = <int>state._data[company_base + COMPANY_OFFSETS.locations + company_id]
+        if loc != 3:  # LOC_PLAYER
+            continue
+        owner = <int>state._data[company_base + COMPANY_OFFSETS.owner_ids + company_id]
+        if owner != active_player:
+            continue
+        ids[count] = <uint16_t>encode_closing_close(company_id)
+        count += 1
+
+    # --- Corp subsidiaries (presided by active_player, not in receivership) ---
+    for corp_id in range(8):
+        corp_base = LAYOUT.corps_offset + corp_id * CORP_FIELDS.size
+        if <int>state._data[corp_base + CORP_FIELDS.active] != 1:
+            continue
+        if <int>state._data[corp_base + CORP_FIELDS.in_receivership] == 1:
+            continue
+        if <int>state._data[player_base + PLAYER_FIELDS.is_president + corp_id] != 1:
+            continue
+        if corp_company_count[corp_id] <= 1:
+            continue  # Can't close the last company
+        for company_id in range(36):
+            loc = <int>state._data[company_base + COMPANY_OFFSETS.locations + company_id]
+            if loc != 5:  # LOC_CORP
+                continue
+            owner = <int>state._data[company_base + COMPANY_OFFSETS.owner_ids + company_id]
+            if owner != corp_id:
+                continue
+            ids[count] = <uint16_t>encode_closing_close(company_id)
+            count += 1
+
+    return count
 
 
 cdef int _enumerate_dividends(
