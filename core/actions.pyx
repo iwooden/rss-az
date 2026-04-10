@@ -527,33 +527,24 @@ cdef int _enumerate_closing(
     cdef int corp_id, corp_base, company_id
     cdef int player_base = LAYOUT.players_offset + active_player * PLAYER_FIELDS.size
     cdef int corp_company_count[8]
+    cdef bint corp_closable[8]  # True if active_player can close companies from this corp
 
     # --- id 0: pass (always legal) -------------------------------------------
     ids[count] = 0
     count += 1
 
-    # --- Pre-scan: count companies per corp -----------------------------------
+    # --- Pre-scan: count companies per corp, determine closable corps ---------
     for corp_id in range(8):
         corp_company_count[corp_id] = 0
+        corp_closable[corp_id] = False
     for company_id in range(36):
         loc = <int>state._data[company_base + COMPANY_OFFSETS.locations + company_id]
         if loc == 5:  # LOC_CORP
             owner = <int>state._data[company_base + COMPANY_OFFSETS.owner_ids + company_id]
             corp_company_count[owner] += 1
-
-    # --- Player-owned privates ------------------------------------------------
-    for company_id in range(36):
-        loc = <int>state._data[company_base + COMPANY_OFFSETS.locations + company_id]
-        if loc != 3:  # LOC_PLAYER
-            continue
-        owner = <int>state._data[company_base + COMPANY_OFFSETS.owner_ids + company_id]
-        if owner != active_player:
-            continue
-        ids[count] = <uint16_t>encode_closing_close(company_id)
-        count += 1
-
-    # --- Corp subsidiaries (presided by active_player, not in receivership) ---
     for corp_id in range(8):
+        if corp_company_count[corp_id] <= 1:
+            continue
         corp_base = LAYOUT.corps_offset + corp_id * CORP_FIELDS.size
         if <int>state._data[corp_base + CORP_FIELDS.active] != 1:
             continue
@@ -561,17 +552,21 @@ cdef int _enumerate_closing(
             continue
         if <int>state._data[player_base + PLAYER_FIELDS.is_president + corp_id] != 1:
             continue
-        if corp_company_count[corp_id] <= 1:
-            continue  # Can't close the last company
-        for company_id in range(36):
-            loc = <int>state._data[company_base + COMPANY_OFFSETS.locations + company_id]
-            if loc != 5:  # LOC_CORP
-                continue
+        corp_closable[corp_id] = True
+
+    # --- Single pass over companies: emit player-owned + valid corp-owned -----
+    for company_id in range(36):
+        loc = <int>state._data[company_base + COMPANY_OFFSETS.locations + company_id]
+        if loc == 3:  # LOC_PLAYER
             owner = <int>state._data[company_base + COMPANY_OFFSETS.owner_ids + company_id]
-            if owner != corp_id:
-                continue
-            ids[count] = <uint16_t>encode_closing_close(company_id)
-            count += 1
+            if owner == active_player:
+                ids[count] = <uint16_t>encode_closing_close(company_id)
+                count += 1
+        elif loc == 5:  # LOC_CORP
+            owner = <int>state._data[company_base + COMPANY_OFFSETS.owner_ids + company_id]
+            if corp_closable[owner]:
+                ids[count] = <uint16_t>encode_closing_close(company_id)
+                count += 1
 
     return count
 
