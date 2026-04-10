@@ -606,7 +606,11 @@ cdef int _enumerate_dividends(
 cdef int _enumerate_issue(
     GameState state, uint16_t* ids,
 ) noexcept nogil:
-    return 0
+    # Active corp always has unissued shares when this runs
+    # (advance logic auto-skips corps with 0 unissued).
+    ids[0] = 0  # pass
+    ids[1] = 1  # issue
+    return 2
 
 
 cdef int _enumerate_ipo(

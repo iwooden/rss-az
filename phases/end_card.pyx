@@ -30,6 +30,7 @@ only flips the phase enum.
 from core.state cimport GameState
 from core.data cimport GameConstants, GamePhases
 from entities.company cimport LOC_DECK, LOC_AUCTION, LOC_REVEALED
+from phases.issue cimport setup_issue_phase
 
 # Late Python-level entity imports, same pattern as phases/invest.pyx.
 from entities import turn as turn_module
@@ -121,9 +122,9 @@ cdef void apply_end_card(GameState state) noexcept:
     if _no_unowned_companies(state):
         _flip_end_card(state)
 
-    # (4) Normal transition to ISSUE_SHARES. Phase-entry setup for
-    # ISSUE_SHARES is owned by ``phases/issue.pyx``.
-    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_ISSUE_SHARES)
+    # (4) Normal transition to ISSUE_SHARES via setup_issue_phase,
+    # which sets the phase, initializes remaining flags, and advances.
+    setup_issue_phase(state)
 
 
 # =============================================================================
