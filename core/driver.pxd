@@ -50,7 +50,7 @@ cdef class GameDriver:
     # apply_action / _auto_chain. ``except -1`` so exceptions raised
     # inside (NotImplementedError from unported handlers, AssertionError
     # from broken state) propagate out.
-    cdef int _dispatch(self, GameState state, int phase_id, int action_id, object history) except -1
+    cdef int _dispatch(self, GameState state, int action_id, object history) except -1
     cdef int _run_automated_phase(self, GameState state, int engine_phase, object history) except -1
     cdef int _auto_chain(self, GameState state, object history) except -1
 

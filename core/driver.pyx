@@ -93,12 +93,12 @@ cdef class GameDriver:
     cdef int _dispatch(
         self,
         GameState state,
-        int phase_id,
         int action_id,
         object history,
     ) except -1:
-        """Decode ``action_id`` for ``phase_id`` and dispatch to its handler.
+        """Decode ``action_id`` and dispatch to the current phase's handler.
 
+        Reads the decision phase from ``state`` via ``get_decision_phase``.
         Records ``(state._array.copy(), phase_id, action_id)`` to
         ``history`` *before* mutating state, so the recorded snapshot is
         the pre-action state — matching the convention the old driver used.
@@ -106,6 +106,9 @@ cdef class GameDriver:
         caller (``apply_action`` or ``_auto_chain``) is responsible for
         only passing legal ids.
         """
+        cdef int phase_id = get_decision_phase(state)
+        assert phase_id >= 0, f"_dispatch: state is in automated/terminal phase (decision_phase={phase_id})"
+
         if history is not None:
             history.append((state._array.copy(), phase_id, action_id))
 
@@ -179,13 +182,12 @@ cdef class GameDriver:
               * 1 action   → forced; dispatch and loop.
               * 2+ actions → caller's turn; return ``STATUS_OK``.
 
-        ``get_decision_phase`` returning ``-1`` here would mean an engine
-        phase that maps to neither a decision phase nor one of the three
-        automated phases handled above — that's a programmer error in
-        ``ENGINE_TO_DECISION_PHASE``.
+        ``_dispatch`` asserts ``get_decision_phase >= 0``, catching any
+        engine phase that maps to neither a decision phase nor one of the
+        three automated phases handled above.
         """
         cdef int iterations = 0
-        cdef int engine_phase, decision_phase_id, count, i, action_id
+        cdef int engine_phase, count, i, action_id
         cdef uint16_t scratch[256]   # MAX_LEGAL_ACTIONS
 
         while iterations < MAX_AUTO_CHAIN_ITERATIONS:
@@ -201,18 +203,10 @@ cdef class GameDriver:
                 iterations += 1
                 continue
 
-            decision_phase_id = get_decision_phase(state)
-            assert decision_phase_id >= 0, (
-                f"_auto_chain: engine phase {engine_phase} has no "
-                f"decision phase mapping and is not in the automated "
-                f"set — ENGINE_TO_DECISION_PHASE bug"
-            )
-
-            count = enumerate_legal_actions(state, decision_phase_id, scratch)
+            count = enumerate_legal_actions(state, scratch)
             assert count > 0, (
-                f"_auto_chain: zero legal actions in decision phase "
-                f"{decision_phase_id} (engine phase {engine_phase}) — "
-                f"enumerator bug or unported phase"
+                f"_auto_chain: zero legal actions in engine phase "
+                f"{engine_phase} — enumerator bug or unported phase"
             )
             if count >= 2:
                 # Real decision — hand control back to the caller.
@@ -220,7 +214,7 @@ cdef class GameDriver:
 
             # Exactly one legal action: forced. Dispatch and loop.
             action_id = <int>scratch[0]
-            self._dispatch(state, decision_phase_id, action_id, history)
+            self._dispatch(state, action_id, history)
             iterations += 1
 
         assert False, f"_auto_chain: exceeded {MAX_AUTO_CHAIN_ITERATIONS} iterations"
@@ -255,16 +249,8 @@ cdef class GameDriver:
         if engine_phase == GamePhases.PHASE_GAME_OVER:
             return STATUS_GAME_OVER
 
-        cdef int decision_phase_id = get_decision_phase(state)
-        if decision_phase_id < 0:
-            # Engine is in WRAP_UP / INCOME / END_CARD: caller jumped the
-            # gun. Don't auto-chain on the caller's behalf — the contract
-            # is "you call apply_action when it's your turn"; if the
-            # engine isn't waiting on you, that's a caller bug.
-            return STATUS_INVALID
-
         cdef uint16_t scratch[256]   # MAX_LEGAL_ACTIONS
-        cdef int count = enumerate_legal_actions(state, decision_phase_id, scratch)
+        cdef int count = enumerate_legal_actions(state, scratch)
         cdef int i
         cdef bint legal = False
         for i in range(count):
@@ -274,7 +260,7 @@ cdef class GameDriver:
         if not legal:
             return STATUS_INVALID
 
-        self._dispatch(state, decision_phase_id, action_id, history)
+        self._dispatch(state, action_id, history)
         return self._auto_chain(state, history)
 
 # =============================================================================

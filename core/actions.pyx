@@ -19,6 +19,7 @@ encoding layer defined here is frozen against the ``ActionSize`` enum in
 cimport cython
 import numpy as np
 cimport numpy as cnp
+from collections import namedtuple
 
 from libc.stdint cimport int16_t, uint16_t
 
@@ -56,6 +57,11 @@ from core.data cimport (
 from entities.company cimport LOC_AUCTION
 
 cnp.import_array()
+
+# Python-accessible namedtuple mirror of the C-level ActionInfo struct.
+ActionInfoTuple = namedtuple('ActionInfoTuple', [
+    'phase', 'action_type', 'corp_id', 'company_id', 'amount',
+])
 
 
 # =============================================================================
@@ -523,15 +529,20 @@ cdef int _enumerate_ipo(
 
 cdef int enumerate_legal_actions(
     GameState state,
-    int phase_id,
     uint16_t* action_ids,
 ) noexcept nogil:
     """Fill ``action_ids`` with legal phase-local IDs; return the count.
 
-    Dispatches to a phase-specific ``_enumerate_*`` helper. The helpers
-    own the per-phase enumeration order contract and all run ``nogil``
-    via direct state-buffer slot arithmetic.
+    Reads the decision phase from ``state`` via ``get_decision_phase``,
+    then dispatches to a phase-specific ``_enumerate_*`` helper. Returns
+    0 for automated/terminal engine phases. The helpers own the per-phase
+    enumeration order contract and all run ``nogil`` via direct
+    state-buffer slot arithmetic.
     """
+    cdef int phase_id = get_decision_phase(state)
+    if phase_id < 0:
+        return 0
+
     cdef int count = 0
 
     if phase_id == DPHASE_INVEST:
@@ -559,22 +570,6 @@ cdef int enumerate_legal_actions(
     return count
 
 
-cdef (int, bint) get_forced_action(GameState state) noexcept nogil:
-    """Return ``(action_id, True)`` if exactly one action is legal.
-
-    Used by the driver to fast-forward through single-choice decision
-    points. Returns ``(-1, False)`` for zero or multiple legal actions.
-    """
-    cdef uint16_t scratch[256]   # MAX_LEGAL_ACTIONS
-    cdef int phase_id = get_decision_phase(state)
-    if phase_id < 0:
-        return (-1, False)
-    cdef int count = enumerate_legal_actions(state, phase_id, scratch)
-    if count == 1:
-        return (<int>scratch[0], True)
-    return (-1, False)
-
-
 # =============================================================================
 # PYTHON-ACCESSIBLE WRAPPERS
 # =============================================================================
@@ -586,7 +581,7 @@ cpdef int get_phase_action_size(int phase_id):
     return _PHASE_ACTION_SIZES_C[phase_id]
 
 
-cpdef tuple decode_action_py(int phase_id, int action_id):
+cpdef object decode_action_py(int phase_id, int action_id):
     """Python wrapper around ``decode_action``.
 
     Returns a tuple ``(phase, action_type, corp_id, company_id, amount)``.
@@ -597,37 +592,23 @@ cpdef tuple decode_action_py(int phase_id, int action_id):
         f"action_id {action_id} out of range for phase {phase_id} " \
         f"(size {_PHASE_ACTION_SIZES_C[phase_id]})"
     cdef ActionInfo info = decode_action(phase_id, action_id)
-    return (info.phase, info.action_type, info.corp_id, info.company_id, info.amount)
+    return ActionInfoTuple(info.phase, info.action_type, info.corp_id, info.company_id, info.amount)
 
 
-cpdef object enumerate_legal_actions_py(GameState state, int phase_id=-1):
+cpdef int get_decision_phase_py(GameState state):
+    """Python wrapper around ``get_decision_phase``."""
+    return get_decision_phase(state)
+
+
+cpdef int enumerate_legal_actions_py(GameState state, cnp.ndarray action_ids):
     """Python wrapper around ``enumerate_legal_actions``.
 
-    If ``phase_id`` is -1 (default), the current decision phase is read
-    from ``state`` via ``get_decision_phase``. Returns a tuple
-    ``(phase_id, action_ids_array)`` where ``action_ids_array`` is a
-    uint16 numpy array of length ``count``.
+    Caller supplies a pre-allocated uint16 numpy array of at least
+    ``MAX_LEGAL_ACTIONS`` elements. Returns the number of legal action
+    IDs written into the buffer.
     """
-    cdef int dphase
-    if phase_id < 0:
-        dphase = get_decision_phase(state)
-    else:
-        dphase = phase_id
-    if dphase < 0:
-        return (-1, np.empty(0, dtype=np.uint16))
-
-    cdef cnp.ndarray buf = np.empty(MAX_LEGAL_ACTIONS, dtype=np.uint16)
-    cdef uint16_t* buf_ptr = <uint16_t*>cnp.PyArray_DATA(buf)
-    cdef int count = enumerate_legal_actions(state, dphase, buf_ptr)
-    return (dphase, buf[:count].copy())
-
-
-cpdef tuple get_forced_action_py(GameState state):
-    """Python wrapper around ``get_forced_action``. Returns ``(action_id, found)``."""
-    cdef int action_id
-    cdef bint found
-    (action_id, found) = get_forced_action(state)
-    return (action_id, bool(found))
+    cdef uint16_t* buf_ptr = <uint16_t*>cnp.PyArray_DATA(action_ids)
+    return enumerate_legal_actions(state, buf_ptr)
 
 
 # =============================================================================

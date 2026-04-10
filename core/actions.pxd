@@ -35,6 +35,7 @@ Conventions
   sparse list.
 """
 
+cimport numpy as cnp
 from libc.stdint cimport uint16_t
 
 from core.state cimport GameState
@@ -181,20 +182,20 @@ cdef ActionInfo decode_action(int phase_id, int action_id) noexcept nogil
 # forwards through them without consulting this module.
 
 cdef int get_decision_phase(GameState state) noexcept nogil
+cpdef int get_decision_phase_py(GameState state)
 
 
 # =============================================================================
 # SPARSE LEGAL-ACTION ENUMERATION
 # =============================================================================
 #
-# Writes legal phase-local action IDs into ``action_ids`` in a deterministic,
+# Reads the decision phase from ``state`` via ``get_decision_phase``, then
+# writes legal phase-local action IDs into ``action_ids`` in a deterministic,
 # phase-specific order and returns the count. The buffer must hold at least
 # ``MAX_LEGAL_ACTIONS`` slots. An assert fires if a phase produces more legal
 # actions than ``MAX_LEGAL_ACTIONS`` — that is a configuration bug.
 #
-# The caller owns ``phase_id`` lookup (usually via ``get_decision_phase``).
-# Keeping it explicit lets callers scope enumeration to a specific phase
-# without re-reading the state.
+# Returns 0 for automated/terminal engine phases (decision phase == -1).
 #
 # NOTE: This is the skeleton. Phase-specific legality logic lives in
 # ``_enumerate_*`` helpers in ``actions.pyx`` and will be filled in a
@@ -203,20 +204,8 @@ cdef int get_decision_phase(GameState state) noexcept nogil
 
 cdef int enumerate_legal_actions(
     GameState state,
-    int phase_id,
     uint16_t* action_ids,
 ) noexcept nogil
-
-
-# Forced-action helper. Enumerates into a temporary buffer; if exactly one
-# legal action is found, returns ``(action_id, 1)``. Otherwise returns
-# ``(-1, 0)``. Used by the driver to fast-forward through single-choice
-# decision points.
-#
-# Declared as ``cdef`` (not ``cpdef``) and with a ``noexcept`` return so it
-# can live on the nogil hot path. A Python wrapper is provided below.
-
-cdef (int, bint) get_forced_action(GameState state) noexcept nogil
 
 
 # =============================================================================
@@ -224,6 +213,5 @@ cdef (int, bint) get_forced_action(GameState state) noexcept nogil
 # =============================================================================
 
 cpdef int get_phase_action_size(int phase_id)
-cpdef tuple decode_action_py(int phase_id, int action_id)
-cpdef object enumerate_legal_actions_py(GameState state, int phase_id=*)
-cpdef tuple get_forced_action_py(GameState state)
+cpdef object decode_action_py(int phase_id, int action_id)
+cpdef int enumerate_legal_actions_py(GameState state, cnp.ndarray action_ids)
