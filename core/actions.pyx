@@ -101,7 +101,7 @@ cdef int encode_action(ActionInfo info) noexcept nogil:
 
     if phase == DPHASE_INVEST:
         if info.action_type == ACTION_PASS:
-            return encode_pass()
+            return 0
         if info.action_type == ACTION_AUCTION:
             return encode_invest_auction(info.company_id, info.amount)
         if info.action_type == ACTION_BUY_SHARE:
@@ -111,13 +111,13 @@ cdef int encode_action(ActionInfo info) noexcept nogil:
 
     elif phase == DPHASE_BID:
         if info.action_type == ACTION_PASS:
-            return encode_pass()
+            return 0
         if info.action_type == ACTION_RAISE:
             return encode_bid_raise(info.amount)
 
     elif phase == DPHASE_ACQUISITION:
         if info.action_type == ACTION_PASS:
-            return encode_pass()
+            return 0
         if info.action_type == ACTION_ACQ_PRICE:
             return encode_acquisition_price(info.corp_id, info.company_id, info.amount)
         if info.action_type == ACTION_ACQ_FI_BUY:
@@ -125,29 +125,29 @@ cdef int encode_action(ActionInfo info) noexcept nogil:
 
     elif phase == DPHASE_ACQ_OFFER:
         if info.action_type == ACTION_PASS:
-            return encode_pass()
+            return 0
         if info.action_type == ACTION_ACQ_OFFER_BUY:
-            return encode_acq_offer_buy()
+            return 1
 
     elif phase == DPHASE_CLOSING:
         if info.action_type == ACTION_PASS:
-            return encode_pass()
+            return 0
         if info.action_type == ACTION_CLOSE:
             return encode_closing_close(info.company_id)
 
     elif phase == DPHASE_DIVIDENDS:
         if info.action_type == ACTION_DIVIDEND:
-            return encode_dividends(info.amount)
+            return info.amount
 
     elif phase == DPHASE_ISSUE:
         if info.action_type == ACTION_PASS:
-            return encode_pass()
+            return 0
         if info.action_type == ACTION_ISSUE:
-            return encode_issue_issue()
+            return 1
 
     elif phase == DPHASE_IPO:
         if info.action_type == ACTION_PASS:
-            return encode_pass()
+            return 0
         if info.action_type == ACTION_IPO:
             return encode_ipo(info.corp_id, info.amount)
 
@@ -351,7 +351,7 @@ cdef int _enumerate_invest(
     cdef int corp_id, corp_base, buys, sells, current_index, buy_index, i
 
     # --- id 0: pass ---------------------------------------------------------
-    ids[count] = <uint16_t>encode_pass()
+    ids[count] = 0
     count += 1
 
     # --- ids 1..540: auctions ----------------------------------------------
@@ -458,7 +458,7 @@ cdef int _enumerate_bid(
     cdef int face, offset, new_bid, min_offset
 
     # --- id 0: leave the auction (always legal) ----------------------------
-    ids[count] = <uint16_t>encode_pass()
+    ids[count] = 0
     count += 1
 
     # A BID state with no active_company is a driver bug — nothing to
@@ -669,8 +669,8 @@ ACTION_IPO_PY = ACTION_IPO
 assert encode_invest_sell(7) == ACTION_SIZE_INVEST - 1
 assert encode_bid_raise(13) == ACTION_SIZE_BID - 1
 assert encode_acquisition_fi_buy(7, 35) == ACTION_SIZE_ACQUISITION - 1
-assert encode_acq_offer_buy() == ACTION_SIZE_ACQ_OFFER - 1
+assert 1 == ACTION_SIZE_ACQ_OFFER - 1
 assert encode_closing_close(35) == ACTION_SIZE_CLOSING - 1
-assert encode_dividends(25) == ACTION_SIZE_DIVIDENDS - 1
-assert encode_issue_issue() == ACTION_SIZE_ISSUE - 1
+assert 25 == ACTION_SIZE_DIVIDENDS - 1
+assert 1 == ACTION_SIZE_ISSUE - 1
 assert encode_ipo(7, 13) == ACTION_SIZE_IPO - 1

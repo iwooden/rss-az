@@ -127,9 +127,6 @@ cdef struct ActionInfo:
 # assumed valid (asserts guard bounds). The functions are ``inline`` nogil
 # so Cython can fold them away in hot paths.
 
-cdef inline int encode_pass() noexcept nogil:
-    return 0
-
 cdef inline int encode_invest_auction(int company_id, int bid_offset) noexcept nogil:
     return 1 + company_id * 15 + bid_offset
 
@@ -148,17 +145,8 @@ cdef inline int encode_acquisition_price(int corp_id, int company_id, int price_
 cdef inline int encode_acquisition_fi_buy(int corp_id, int company_id) noexcept nogil:
     return 1 + (corp_id * 36 + company_id) * 52 + 51
 
-cdef inline int encode_acq_offer_buy() noexcept nogil:
-    return 1
-
 cdef inline int encode_closing_close(int company_id) noexcept nogil:
     return 1 + company_id
-
-cdef inline int encode_dividends(int amount) noexcept nogil:
-    return amount
-
-cdef inline int encode_issue_issue() noexcept nogil:
-    return 1
 
 cdef inline int encode_ipo(int corp_id, int par_index) noexcept nogil:
     return 1 + corp_id * 14 + par_index
