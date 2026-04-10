@@ -51,7 +51,7 @@ from core.data cimport (
 
 PlayerFields = namedtuple('PlayerFields', [
     'cash', 'net_worth', 'liquidity', 'turn_order',
-    'owned_shares', 'round_trips', 'income',
+    'owned_shares', 'income',
     'share_buys', 'share_sells', 'has_passed',
 ])
 
@@ -259,8 +259,6 @@ cdef PlayerFieldOffsets compute_player_field_offsets() noexcept nogil:
     offset += 1  # single integer (not num_players one-hot)
     p.owned_shares = offset
     offset += GameConstants.NUM_CORPS
-    p.round_trips = offset
-    offset += 1
     p.income = offset
     offset += 1
     p.share_buys = offset
@@ -418,7 +416,6 @@ def get_player_fields():
         liquidity=PLAYER_FIELDS.liquidity,
         turn_order=PLAYER_FIELDS.turn_order,
         owned_shares=PLAYER_FIELDS.owned_shares,
-        round_trips=PLAYER_FIELDS.round_trips,
         income=PLAYER_FIELDS.income,
         share_buys=PLAYER_FIELDS.share_buys,
         share_sells=PLAYER_FIELDS.share_sells,

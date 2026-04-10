@@ -11,7 +11,7 @@ with any GameState at any player count.
 
 Layout summary (per-player block, all raw int16):
   cash, net_worth, liquidity, turn_order (single int), owned_shares (8),
-  round_trips, income, share_buys (8), share_sells (8), has_passed (1).
+  income, share_buys (8), share_sells (8), has_passed (1).
 Presidency is tracked per-corp via ``CORP_FIELDS.president_id``.
 
 Company ownership lives in the companies section, but player code reads
@@ -367,31 +367,18 @@ cdef class Player:
         return self._get_share_buys(state, corp_id)
 
     cpdef void increment_share_buys(self, GameState state, int corp_id):
-        """Increment share buy count and refresh the round_trips slot."""
+        """Increment share buy count for this corp this turn."""
         cdef int slot = self._slot(PLAYER_FIELDS.share_buys) + corp_id
         state._data[slot] = <int16_t>(<int>state._data[slot] + 1)
-        self._update_roundtrips(state)
 
     cpdef int get_share_sells(self, GameState state, int corp_id):
         """Get share sell count for this corp this turn."""
         return self._get_share_sells(state, corp_id)
 
     cpdef void increment_share_sells(self, GameState state, int corp_id):
-        """Increment share sell count and refresh the round_trips slot."""
+        """Increment share sell count for this corp this turn."""
         cdef int slot = self._slot(PLAYER_FIELDS.share_sells) + corp_id
         state._data[slot] = <int16_t>(<int>state._data[slot] + 1)
-        self._update_roundtrips(state)
-
-    cdef void _update_roundtrips(self, GameState state):
-        """Recompute the round_trips slot = max(min(buys, sells)) across all corps."""
-        cdef int i, buys, sells, rt, max_rt = 0
-        for i in range(<int>GameConstants.NUM_CORPS):
-            buys = self._get_share_buys(state, i)
-            sells = self._get_share_sells(state, i)
-            rt = buys if buys < sells else sells
-            if rt > max_rt:
-                max_rt = rt
-        state._data[self._slot(PLAYER_FIELDS.round_trips)] = <int16_t>max_rt
 
     cpdef int get_roundtrips(self, GameState state, int corp_id):
         """
@@ -407,14 +394,13 @@ cdef class Player:
         return buys if buys < sells else sells
 
     cpdef void clear_roundtrip_tracking(self, GameState state):
-        """Clear buy/sell tracking and round_trips for all corps."""
+        """Clear buy/sell tracking for all corps."""
         cdef int i
         cdef int buys_base = self._slot(PLAYER_FIELDS.share_buys)
         cdef int sells_base = self._slot(PLAYER_FIELDS.share_sells)
         for i in range(<int>GameConstants.NUM_CORPS):
             state._data[buys_base + i] = 0
             state._data[sells_base + i] = 0
-        state._data[self._slot(PLAYER_FIELDS.round_trips)] = 0
 
     # =========================================================================
     # INCOME

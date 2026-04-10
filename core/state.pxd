@@ -86,7 +86,6 @@ cdef struct PlayerFieldOffsets:
     int liquidity
     int turn_order               # single integer (not one-hot)
     int owned_shares             # 8 raw counts
-    int round_trips
     int income
     int share_buys               # 8 per-corp buy counts (this turn)
     int share_sells              # 8 per-corp sell counts (this turn)

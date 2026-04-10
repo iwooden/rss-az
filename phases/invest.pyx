@@ -73,7 +73,7 @@ cdef void _handle_pass(GameState state) noexcept:
 
     if turn_module.TURN.get_consecutive_passes(state) >= num_players:
         # All players passed consecutively. INVEST owns the per-player
-        # round-trip scratch fields (share_buys / share_sells / round_trips),
+        # round-trip scratch fields (share_buys / share_sells),
         # so clear them here before handing control to WRAP_UP — the token
         # features for later phases should not see stale INVEST-turn data.
         for i in range(num_players):

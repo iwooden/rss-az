@@ -81,7 +81,6 @@ cdef class Player:
     cpdef void increment_share_buys(self, GameState state, int corp_id)
     cpdef int get_share_sells(self, GameState state, int corp_id)
     cpdef void increment_share_sells(self, GameState state, int corp_id)
-    cdef void _update_roundtrips(self, GameState state)
     cpdef int get_roundtrips(self, GameState state, int corp_id)
     cpdef void clear_roundtrip_tracking(self, GameState state)
 
