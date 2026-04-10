@@ -70,7 +70,7 @@ Action counts live in `core/data.pxd` as `ActionSize` `cpdef enum`; `core/action
 
 ### What currently builds
 
-`setup.py` compiles only `core/data.pyx`, `core/state.pyx`, `core/actions.pyx`, `entities/*.pyx`.
+`setup.py` compiles all `.pyx` files in `core/`, `entities/`, and `phases/`.
 
 | Area | Status |
 |------|--------|
