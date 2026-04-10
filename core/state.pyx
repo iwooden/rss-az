@@ -72,6 +72,10 @@ DeckFields = namedtuple('DeckFields', [
     'top', 'order',
 ])
 
+FIFields = namedtuple('FIFields', [
+    'cash', 'income',
+])
+
 TurnFields = namedtuple('TurnFields', [
     'active_player', 'active_corp', 'active_company', 'num_players',
     'phase', 'coo_level', 'turn_number',
@@ -131,10 +135,11 @@ cdef StateLayout compute_layout() noexcept nogil:
     cdef TurnStateOffsets turn_offsets = compute_turn_offsets()
     cdef CompanyOffsets company_offsets = compute_company_offsets()
     cdef DeckOffsets deck_offsets = compute_deck_offsets()
+    cdef FIOffsets fi_offsets = compute_fi_offsets()
 
     # --- Foreign Investor: cash, income ---
     layout.fi_offset = offset
-    offset += 2
+    offset += fi_offsets.size
 
     # --- Companies (adjusted incomes + locations + owner_ids) ---
     layout.companies_offset = offset
@@ -327,6 +332,30 @@ cdef DeckOffsets compute_deck_offsets() noexcept nogil:
 
 
 # =============================================================================
+# FI SECTION SUB-OFFSETS
+# =============================================================================
+
+cdef FIOffsets compute_fi_offsets() noexcept nogil:
+    """Compute sub-offsets within the Foreign Investor section.
+
+    The FI section is just two slots — cash and income. Ownership is
+    tracked via the companies section (LOC_FI). The final ``f.size``
+    field is the total length of the FI block and is used by
+    compute_layout to size the section.
+    """
+    cdef FIOffsets f
+    cdef int offset = 0
+
+    f.cash = offset
+    offset += 1
+    f.income = offset
+    offset += 1
+
+    f.size = offset
+    return f
+
+
+# =============================================================================
 # CORP FIELD OFFSETS (within corp stride)
 # =============================================================================
 
@@ -475,6 +504,19 @@ def get_deck_fields():
     )
 
 
+def get_fi_fields():
+    """Python-accessible FI-section sub-offsets.
+
+    Returns an FIFields namedtuple with relative offsets (add to
+    fi_offset to get absolute position). The FI section is fixed-size —
+    no num_players argument needed.
+    """
+    return FIFields(
+        cash=FI_OFFSETS.cash,
+        income=FI_OFFSETS.income,
+    )
+
+
 def get_turn_fields():
     """Python-accessible turn state sub-offsets within the turn block.
 
@@ -517,6 +559,7 @@ PLAYER_FIELDS = compute_player_field_offsets()
 CORP_FIELDS = compute_corp_field_offsets()
 COMPANY_OFFSETS = compute_company_offsets()
 DECK_OFFSETS = compute_deck_offsets()
+FI_OFFSETS = compute_fi_offsets()
 
 
 # =============================================================================
@@ -549,7 +592,7 @@ cdef void _seed_zeroed_storage(GameState state, int num_players):
     # FI always receives +5 base income (RULES.md line 354), even with no
     # companies. Seed the stored income so the eagerly-maintained invariant
     # holds from the start.
-    state._data[LAYOUT.fi_offset + 1] = 5
+    state._data[LAYOUT.fi_offset + FI_OFFSETS.income] = 5
 
 
 cdef void _reset_storage(GameState state, int num_players):
@@ -741,8 +784,8 @@ cdef class GameState:
             player[PLAYER_FIELDS.turn_order] = <int16_t>i
 
         # 2. Set Foreign Investor state (raw integers)
-        self._data[LAYOUT.fi_offset] = 4       # cash
-        self._data[LAYOUT.fi_offset + 1] = 5   # income (base +5)
+        self._data[LAYOUT.fi_offset + FI_OFFSETS.cash] = 4       # cash
+        self._data[LAYOUT.fi_offset + FI_OFFSETS.income] = 5     # income (base +5)
 
         # 3. Initialize corporations (only non-zero: unissued shares)
         for corp_id in range(<int>GameConstants.NUM_CORPS):

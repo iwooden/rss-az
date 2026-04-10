@@ -111,6 +111,13 @@ cdef struct DeckOffsets:
     int size
 
 
+cdef struct FIOffsets:
+    int cash
+    int income
+    # Total size of the FI section (used by compute_layout to size it)
+    int size
+
+
 cdef struct CorpFieldOffsets:
     int active
     int cash
@@ -144,6 +151,7 @@ cdef PlayerFieldOffsets compute_player_field_offsets() noexcept nogil
 cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil
 cdef CompanyOffsets compute_company_offsets() noexcept nogil
 cdef DeckOffsets compute_deck_offsets() noexcept nogil
+cdef FIOffsets compute_fi_offsets() noexcept nogil
 
 
 # =============================================================================
@@ -164,6 +172,7 @@ cdef PlayerFieldOffsets PLAYER_FIELDS
 cdef CorpFieldOffsets CORP_FIELDS
 cdef CompanyOffsets COMPANY_OFFSETS
 cdef DeckOffsets DECK_OFFSETS
+cdef FIOffsets FI_OFFSETS
 
 cdef class GameState:
     cdef int16_t* _data

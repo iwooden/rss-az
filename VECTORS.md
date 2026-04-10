@@ -22,14 +22,15 @@ This document describes the in-memory game state layout. The state is the engine
 
 Layout offsets are computed once at module load and exposed as Cython `cdef` structs at module scope on `core.state`:
 
-- `LAYOUT` (`cdef StateLayout`) — top-level section offsets only: `fi_offset`, `companies_offset`, `market_offset`, `corps_offset`, `turn_offset`, `deck_offset`, `players_offset`. **Strides are not on this struct** — each section's block size lives on its own field-offset struct as a trailing `size` slot (`PLAYER_FIELDS.size`, `CORP_FIELDS.size`, `TURN_OFFSETS.size`, `COMPANY_OFFSETS.size`, `DECK_OFFSETS.size`). `total_size` is intentionally not in `StateLayout` either because it depends on `num_players`; compute it inline as `LAYOUT.players_offset + PLAYER_FIELDS.size * num_players` at the few sites that need it.
+- `LAYOUT` (`cdef StateLayout`) — top-level section offsets only: `fi_offset`, `companies_offset`, `market_offset`, `corps_offset`, `turn_offset`, `deck_offset`, `players_offset`. **Strides are not on this struct** — each section's block size lives on its own field-offset struct as a trailing `size` slot (`PLAYER_FIELDS.size`, `CORP_FIELDS.size`, `TURN_OFFSETS.size`, `COMPANY_OFFSETS.size`, `DECK_OFFSETS.size`, `FI_OFFSETS.size`). `total_size` is intentionally not in `StateLayout` either because it depends on `num_players`; compute it inline as `LAYOUT.players_offset + PLAYER_FIELDS.size * num_players` at the few sites that need it.
 - `TURN_OFFSETS` (`cdef TurnStateOffsets`) — relative offsets within the (fixed-size) turn block, plus `size`.
 - `PLAYER_FIELDS` (`cdef PlayerFieldOffsets`) — relative offsets within a player block, plus `size`.
 - `CORP_FIELDS` (`cdef CorpFieldOffsets`) — relative offsets within a corp block, plus `size`.
 - `COMPANY_OFFSETS` (`cdef CompanyOffsets`) — relative offsets of the companies-section sub-arrays (`incomes`, `locations`, `owner_ids`), plus `size`.
 - `DECK_OFFSETS` (`cdef DeckOffsets`) — relative offsets of the deck-section sub-arrays (`top`, `order`), plus `size`.
+- `FI_OFFSETS` (`cdef FIOffsets`) — relative offsets within the FI section (`cash`, `income`), plus `size`.
 
-Cython code reads them directly via `from core.state cimport LAYOUT, TURN_OFFSETS, PLAYER_FIELDS, CORP_FIELDS, COMPANY_OFFSETS, DECK_OFFSETS`. Python code uses the namedtuple accessors `core.state.get_layout(num_players)`, `get_player_fields()`, `get_corp_fields()`, `get_turn_fields()`, `get_company_fields()`, `get_deck_fields()` (none of the field accessors take a `num_players` argument since the fields are fixed-size).
+Cython code reads them directly via `from core.state cimport LAYOUT, TURN_OFFSETS, PLAYER_FIELDS, CORP_FIELDS, COMPANY_OFFSETS, DECK_OFFSETS, FI_OFFSETS`. Python code uses the namedtuple accessors `core.state.get_layout(num_players)`, `get_player_fields()`, `get_corp_fields()`, `get_turn_fields()`, `get_company_fields()`, `get_deck_fields()`, `get_fi_fields()` (none of the field accessors take a `num_players` argument since the fields are fixed-size).
 
 > **Direct layout access is for entity handles only.** See `CLAUDE.md` "Code Conventions". Phase handlers, MCTS code, trainer code, tests, and anything outside `entities/` should go through the handle methods (`PLAYERS[i].get_cash(state)`, etc.) rather than cimporting these constants or indexing `state._data` directly.
 
@@ -76,6 +77,8 @@ All per-player tracking lives inside one player block, so a single pointer hop r
 ---
 
 ## Foreign Investor (size 2)
+
+Sub-offsets via `core.state.get_fi_fields()` (`FIFields` namedtuple) for Python, or `from core.state cimport FI_OFFSETS` for Cython.
 
 | Relative offset | Field |
 |----------------|-------|
@@ -265,7 +268,7 @@ Stored as a raw integer at `LAYOUT.turn_offset + TURN_OFFSETS.phase`. Defined in
 | `state.rebind(buf, num_players)` | Repoint an existing `GameState` at a different writable C-contiguous buffer. Used in MCTS hot paths. |
 | `state.initialize_game(num_players, seed=-1)` | Reset to a fresh game state for the requested player count, then set up players, FI, corps, market, deck, turn state, and active player. `num_players` is required; `seed=-1` uses current time. |
 
-`GameState` exposes only structural primitives publicly: `_player_ptr` / `_corp_ptr` / `_turn_ptr` (cdef nogil, used by entity handles), `_num_players` (cdef int, readable from cdef code for assertions), `get_active_player` / `set_active_player`, `get_num_players`, and `initialize_game`. There are no per-instance layout-offset fields — every entity handle reads offsets directly from the module-level `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` / `COMPANY_OFFSETS` / `DECK_OFFSETS` constants on `core.state`. All field-level reads and writes go through the entity handles in `entities/`.
+`GameState` exposes only structural primitives publicly: `_player_ptr` / `_corp_ptr` / `_turn_ptr` (cdef nogil, used by entity handles), `_num_players` (cdef int, readable from cdef code for assertions), `get_active_player` / `set_active_player`, `get_num_players`, and `initialize_game`. There are no per-instance layout-offset fields — every entity handle reads offsets directly from the module-level `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` / `COMPANY_OFFSETS` / `DECK_OFFSETS` / `FI_OFFSETS` constants on `core.state`. All field-level reads and writes go through the entity handles in `entities/`.
 
 ---
 

@@ -131,7 +131,7 @@ Thin wrapper around a single int16 numpy array. Raw integers only — no normali
 - `GameState.from_array(array, num_players)` — copy-in path; accepts non-contiguous 1-D int16 views.
 - `GameState.from_buffer(buffer, num_players)` / `state.rebind(buffer, num_players)` — zero-copy; require writable C-contiguous int16 buffers whose canonical `turn.num_players` slot already matches.
 
-**Module-level layout constants** on `core.state` (computed once, shared across all `GameState`s): `LAYOUT`, `PLAYER_FIELDS`, `CORP_FIELDS`, `TURN_OFFSETS`, `COMPANY_OFFSETS`, `DECK_OFFSETS`. These are Cython `cdef` structs — NOT accessible from Python. Cython: `from core.state cimport LAYOUT, ...`. Python: `core.state.get_layout(num_players)`, `get_player_fields()`, etc. (namedtuple accessors).
+**Module-level layout constants** on `core.state` (computed once, shared across all `GameState`s): `LAYOUT`, `PLAYER_FIELDS`, `CORP_FIELDS`, `TURN_OFFSETS`, `COMPANY_OFFSETS`, `DECK_OFFSETS`, `FI_OFFSETS`. These are Cython `cdef` structs — NOT accessible from Python. Cython: `from core.state cimport LAYOUT, ...`. Python: `core.state.get_layout(num_players)`, `get_player_fields()`, etc. (namedtuple accessors).
 
 `total_size` is not on `LAYOUT` (depends on num_players); compute inline as `LAYOUT.players_offset + PLAYER_FIELDS.size * num_players`. Section sizes live on their field structs (`PLAYER_FIELDS.size`, etc.).
 

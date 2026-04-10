@@ -4,19 +4,20 @@ Foreign Investor entity implementation.
 The FI is a special entity that buys companies (at face value when OS has
 the priority slot, otherwise at high price) and holds them until
 corporations acquire them. In the compact state layout the FI block is
-just two raw int16 slots — cash at ``LAYOUT.fi_offset`` and income at
-``LAYOUT.fi_offset + 1``. Ownership of companies lives in the companies
-section via LOC_FI, but FI logic reads that state through company-module
-query helpers instead of touching the companies layout directly.
+just two raw int16 slots — cash at ``LAYOUT.fi_offset + FI_OFFSETS.cash``
+and income at ``LAYOUT.fi_offset + FI_OFFSETS.income``. Ownership of
+companies lives in the companies section via LOC_FI, but FI logic reads
+that state through company-module query helpers instead of touching the
+companies layout directly.
 
-The handle is fully stateless: its own cash/income slots live at fixed
-offsets under ``LAYOUT.fi_offset``. No per-instance offset cache, no
+The handle is fully stateless: its own cash/income slots live at named
+offsets under ``FI_OFFSETS``. No per-instance offset cache, no
 initialize() step.
 """
 
 from libc.stdint cimport int16_t
 
-from core.state cimport GameState, LAYOUT
+from core.state cimport GameState, LAYOUT, FI_OFFSETS
 from core.data cimport GameConstants
 from entities.company cimport company_owned_by_fi, company_sum_fi_adjusted_income
 
@@ -36,10 +37,10 @@ cdef class ForeignInvestor:
     # =========================================================================
 
     cdef inline int _get_cash(self, GameState state) noexcept nogil:
-        return <int>state._data[LAYOUT.fi_offset]
+        return <int>state._data[LAYOUT.fi_offset + FI_OFFSETS.cash]
 
     cdef inline void _set_cash(self, GameState state, int cash) noexcept nogil:
-        state._data[LAYOUT.fi_offset] = <int16_t>cash
+        state._data[LAYOUT.fi_offset + FI_OFFSETS.cash] = <int16_t>cash
 
     # =========================================================================
     # CASH (Python-accessible wrappers)
@@ -76,10 +77,10 @@ cdef class ForeignInvestor:
     # =========================================================================
 
     cdef inline int _get_income(self, GameState state) noexcept nogil:
-        return <int>state._data[LAYOUT.fi_offset + 1]
+        return <int>state._data[LAYOUT.fi_offset + FI_OFFSETS.income]
 
     cdef inline void _set_income(self, GameState state, int income) noexcept nogil:
-        state._data[LAYOUT.fi_offset + 1] = <int16_t>income
+        state._data[LAYOUT.fi_offset + FI_OFFSETS.income] = <int16_t>income
 
     # =========================================================================
     # INCOME (Python-accessible wrappers)

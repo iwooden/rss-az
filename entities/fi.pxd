@@ -3,12 +3,13 @@
 Foreign Investor entity declarations.
 
 In the compact GameState the FI block is just two raw int16 slots — cash
-at ``LAYOUT.fi_offset`` and income at ``LAYOUT.fi_offset + 1``. Company
-ownership is tracked entirely through the shared company_locations /
-company_owner_ids arrays (LOC_FI), so the FI handle no longer carries
-its own ownership flags. The handle is fully stateless: every read goes
-straight through the module-level ``LAYOUT`` constant on ``core.state``,
-no per-instance offset cache and no initialize() step.
+at ``LAYOUT.fi_offset + FI_OFFSETS.cash`` and income at
+``LAYOUT.fi_offset + FI_OFFSETS.income``. Company ownership is tracked
+entirely through the shared company_locations / company_owner_ids arrays
+(LOC_FI), so the FI handle no longer carries its own ownership flags.
+The handle is fully stateless: every read goes straight through the
+module-level layout constants on ``core.state``, no per-instance offset
+cache and no initialize() step.
 """
 
 from core.state cimport GameState
