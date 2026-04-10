@@ -171,6 +171,7 @@ pyx_files = (
     ['core/data.pyx', 'core/state.pyx', 'core/actions.pyx']
     + find_pyx_files('entities')
     + ['phases/invest.pyx', 'phases/bid.pyx']
+    + ['core/driver.pyx']
 )
 
 extensions = []
