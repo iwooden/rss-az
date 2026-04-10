@@ -1,4 +1,3 @@
-# cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
 """BID phase handler.
 
 Handles the two BID actions: LEAVE (pass-class) and RAISE.

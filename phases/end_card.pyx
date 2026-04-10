@@ -1,4 +1,3 @@
-# cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
 """END_CARD phase handler.
 
 END_CARD is an automated engine phase with no decision action. Per

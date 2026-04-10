@@ -1,4 +1,3 @@
-# cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
 """
 Foreign Investor entity implementation.
 

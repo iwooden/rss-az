@@ -1,4 +1,3 @@
-# cython: language_level=3
 """
 Entity module - provides entity handles for game state access.
 

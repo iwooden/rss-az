@@ -1,4 +1,3 @@
-# cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
 """WRAP_UP phase handler.
 
 WRAP_UP is an automated engine phase with no decision action. Per
