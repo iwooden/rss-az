@@ -55,6 +55,9 @@ from core.driver cimport (
 )
 from phases.invest cimport apply_invest_action
 from phases.bid cimport apply_bid_action
+from phases.wrap_up cimport apply_wrap_up
+from phases.income cimport apply_income
+from phases.end_card cimport apply_end_card
 
 # Late Python-level entity import — same pattern as ``phases/invest.pyx``
 # and ``phases/bid.pyx``. The driver only needs ``TURN`` to read the raw
@@ -156,11 +159,11 @@ cdef class GameDriver:
             history.append((state._array.copy(), -1, engine_phase))
 
         if engine_phase == GamePhases.PHASE_WRAP_UP:
-            assert False, "PHASE_WRAP_UP handler not yet ported (rss-az-trvp)"
+            apply_wrap_up(state)
         elif engine_phase == GamePhases.PHASE_INCOME:
-            assert False, "PHASE_INCOME handler not yet ported (rss-az-trvp)"
+            apply_income(state)
         elif engine_phase == GamePhases.PHASE_END_CARD:
-            assert False, "PHASE_END_CARD handler not yet ported (rss-az-trvp)"
+            apply_end_card(state)
         else:
             assert False, f"_run_automated_phase: phase {engine_phase} is not automated"
 
