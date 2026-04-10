@@ -390,7 +390,7 @@ cdef int _enumerate_invest(
         sells = <int>state._data[
             player_base + PLAYER_FIELDS.share_sells + corp_id
         ]
-        if (buys if buys < sells else sells) >= 2:
+        if min(buys, sells) >= 2:
             continue
 
         corp_base = LAYOUT.corps_offset + corp_id * CORP_FIELDS.size
