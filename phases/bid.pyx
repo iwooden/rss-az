@@ -72,10 +72,8 @@ cdef void _resolve_auction(GameState state) noexcept:
     # Defensive invariant: the driver must have seeded a live auction
     # before dispatching any BID action. Both fields being valid is the
     # precondition for _handle_leave / _handle_raise calling us.
-    assert winner >= 0, \
-        f"_resolve_auction: high bidder unset"
-    assert company_id >= 0, \
-        f"_resolve_auction: active_company unset"
+    assert winner >= 0, "_resolve_auction: high bidder unset"
+    assert company_id >= 0, "_resolve_auction: active_company unset"
 
     # Pay the bid to the bank (money leaves circulation). Cache dirty
     # bits are flipped inside add_cash / transfer_to_player, so there is
@@ -93,10 +91,8 @@ cdef void _resolve_auction(GameState state) noexcept:
     turn_module.TURN.set_auction_price(state, 0)
     turn_module.TURN.clear_auction_high_bidder(state)
     turn_module.TURN.clear_auction_starter(state)
-    # Per-player has_passed is reused by INVEST pass tracking? No —
-    # INVEST uses ``consecutive_passes`` in the turn block, not the
-    # per-player flag, which belongs to BID. Clear it anyway as cheap
-    # insurance against any later phase ever reading it stale.
+    # Defensive clear — no later phase currently reads has_passed, but
+    # keep it clean so a stray flag can't leak into a future phase.
     turn_module.TURN.clear_passed_flags(state)
 
     # Hand control back to INVEST. Next action goes to the player *after*
@@ -134,13 +130,14 @@ cdef void _handle_raise(GameState state, int bid_offset) noexcept:
     # driver/enumerator drift, not rule-level legality.
     assert 0 <= bid_offset < 14, \
         f"_handle_raise: bid_offset {bid_offset} out of [0, 14)"
-    assert company_id >= 0, \
-        f"_handle_raise: active_company unset"
+    assert company_id >= 0, "_handle_raise: active_company unset"
 
     new_bid = COMPANY_FACE_VALUE[company_id] + bid_offset + 1
 
     assert new_bid > turn_module.TURN.get_auction_price(state), \
         f"_handle_raise: new bid {new_bid} not greater than current"
+    assert new_bid <= player_module.PLAYERS[pid].get_cash(state), \
+        f"_handle_raise: new bid {new_bid} exceeds player {pid} cash"
 
     turn_module.TURN.set_auction_price(state, new_bid)
     turn_module.TURN.set_auction_high_bidder(state, pid)
