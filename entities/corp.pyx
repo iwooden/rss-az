@@ -256,7 +256,7 @@ cdef class Corporation:
                 invalidate_all_player_caches(state)
 
     cpdef void float_corp(self, GameState state, int player_id, int company_id,
-                          int par_index, int float_shares=1):
+                          int market_index, int float_shares=1):
         """
         Float corporation via IPO.
 
@@ -281,8 +281,8 @@ cdef class Corporation:
         company_module.COMPANIES[company_id].transfer_to_corp(state, self.corp_id)
 
         # 3. Claim market space and set price
-        market_module.MARKET.set_space_available(state, par_index, False)
-        self.set_price_index(state, par_index)
+        market_module.MARKET.set_space_available(state, market_index, False)
+        self.set_price_index(state, market_index)
 
         # 4. Set share distribution
         self.set_unissued_shares(state, unissued_shares)

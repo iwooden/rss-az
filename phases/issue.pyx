@@ -16,6 +16,7 @@ All state access goes through entity handles.
 from core.state cimport GameState
 from core.data cimport GameConstants, GamePhases, CorpIndices, MARKET_PRICES
 from core.actions cimport ActionInfo, ACTION_PASS, ACTION_ISSUE
+from phases.ipo cimport setup_ipo_phase
 
 # Late Python-level entity imports, same pattern as phases/dividends.pyx.
 from entities import turn as turn_module
@@ -119,7 +120,7 @@ cdef void _advance_to_next_corp(GameState state) noexcept:
         if corp_id == -1:
             # All done -> transition to IPO
             turn_module.TURN.clear_active_corp(state)
-            turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_IPO)
+            setup_ipo_phase(state)
             return
 
         unissued = corp_module.CORPS[corp_id].get_unissued_shares(state)

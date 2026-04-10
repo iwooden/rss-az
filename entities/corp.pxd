@@ -80,7 +80,7 @@ cdef class Corporation:
     cpdef bint is_active(self, GameState state)
     cpdef void set_active(self, GameState state, bint active)
     cpdef void float_corp(self, GameState state, int player_id, int company_id,
-                          int par_index, int float_shares=*)
+                          int market_index, int float_shares=*)
 
     # Cash
     cpdef int get_cash(self, GameState state)

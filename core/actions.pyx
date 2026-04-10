@@ -52,6 +52,10 @@ from core.data cimport (
     DPHASE_IPO,
     ENGINE_TO_DECISION_PHASE,
     COMPANY_FACE_VALUE,
+    COMPANY_STARS,
+    ALL_PAR_PRICES,
+    PAR_PRICE_VALID,
+    PRICE_TO_MARKET_INDEX,
     MARKET_PRICES,
 )
 from entities.company cimport LOC_AUCTION
@@ -616,7 +620,65 @@ cdef int _enumerate_issue(
 cdef int _enumerate_ipo(
     GameState state, uint16_t* ids,
 ) noexcept nogil:
-    return 0
+    """Emit every legal DPHASE_IPO action in deterministic order.
+
+    Ordering:
+      1. ``id 0``: pass (always legal)
+      2. ``ids 1..112``: ``1 + corp_id * 14 + par_index``.
+         Emitted for each inactive corp and each affordable, star-valid,
+         market-available par price.
+
+    Returns the number of IDs written. Worst case: 113 (pass + 8*14).
+    """
+    cdef int16_t* d = &state._data[0]
+    cdef int count = 0
+
+    # Get active IPO company
+    cdef int company_id = <int>d[LAYOUT.turn_offset + TURN_OFFSETS.active_company]
+    assert company_id >= 0, "_enumerate_ipo: active_company unset"
+
+    cdef int star_tier = COMPANY_STARS[company_id]
+    cdef int face_value = COMPANY_FACE_VALUE[company_id]
+
+    # Get active player and their cash
+    cdef int player_id = <int>d[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
+    cdef int player_base = LAYOUT.players_offset + player_id * PLAYER_FIELDS.size
+    cdef int player_cash = <int>d[player_base + PLAYER_FIELDS.cash]
+
+    cdef int corp_id, corp_base, par_index, par_price, market_index
+    cdef int float_shares, player_payment
+
+    # --- id 0: pass (always legal) -------------------------------------------
+    ids[count] = 0
+    count += 1
+
+    # --- ids 1..112: (corp, par_index) combinations --------------------------
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
+        corp_base = LAYOUT.corps_offset + corp_id * CORP_FIELDS.size
+        if <int>d[corp_base + CORP_FIELDS.active] != 0:
+            continue
+
+        for par_index in range(<int>GameConstants.NUM_PAR_PRICES):
+            if PAR_PRICE_VALID[star_tier - 1][par_index] == 0:
+                continue
+
+            par_price = ALL_PAR_PRICES[par_index]
+            market_index = PRICE_TO_MARKET_INDEX[par_price]
+
+            # Market space must be available
+            if <int>d[LAYOUT.market_offset + market_index] == 0:
+                continue
+
+            # Player must be able to afford
+            float_shares = 2 if face_value > par_price else 1
+            player_payment = (float_shares * par_price) - face_value
+            if player_payment > player_cash:
+                continue
+
+            ids[count] = <uint16_t>(1 + corp_id * 14 + par_index)
+            count += 1
+
+    return count
 
 
 cdef int enumerate_legal_actions(
