@@ -101,7 +101,7 @@ cdef int encode_action(ActionInfo info) noexcept nogil:
 
     if phase == DPHASE_INVEST:
         if info.action_type == ACTION_PASS:
-            return encode_invest_pass()
+            return encode_pass()
         if info.action_type == ACTION_AUCTION:
             return encode_invest_auction(info.company_id, info.amount)
         if info.action_type == ACTION_BUY_SHARE:
@@ -111,13 +111,13 @@ cdef int encode_action(ActionInfo info) noexcept nogil:
 
     elif phase == DPHASE_BID:
         if info.action_type == ACTION_PASS:
-            return encode_bid_pass()
+            return encode_pass()
         if info.action_type == ACTION_RAISE:
             return encode_bid_raise(info.amount)
 
     elif phase == DPHASE_ACQUISITION:
         if info.action_type == ACTION_PASS:
-            return encode_acquisition_pass()
+            return encode_pass()
         if info.action_type == ACTION_ACQ_PRICE:
             return encode_acquisition_price(info.corp_id, info.company_id, info.amount)
         if info.action_type == ACTION_ACQ_FI_BUY:
@@ -125,13 +125,13 @@ cdef int encode_action(ActionInfo info) noexcept nogil:
 
     elif phase == DPHASE_ACQ_OFFER:
         if info.action_type == ACTION_PASS:
-            return encode_acq_offer_pass()
+            return encode_pass()
         if info.action_type == ACTION_ACQ_OFFER_BUY:
             return encode_acq_offer_buy()
 
     elif phase == DPHASE_CLOSING:
         if info.action_type == ACTION_PASS:
-            return encode_closing_pass()
+            return encode_pass()
         if info.action_type == ACTION_CLOSE:
             return encode_closing_close(info.company_id)
 
@@ -141,13 +141,13 @@ cdef int encode_action(ActionInfo info) noexcept nogil:
 
     elif phase == DPHASE_ISSUE:
         if info.action_type == ACTION_PASS:
-            return encode_issue_pass()
+            return encode_pass()
         if info.action_type == ACTION_ISSUE:
             return encode_issue_issue()
 
     elif phase == DPHASE_IPO:
         if info.action_type == ACTION_PASS:
-            return encode_ipo_pass()
+            return encode_pass()
         if info.action_type == ACTION_IPO:
             return encode_ipo(info.corp_id, info.amount)
 
@@ -351,7 +351,7 @@ cdef int _enumerate_invest(
     cdef int corp_id, corp_base, buys, sells, current_index, buy_index, i
 
     # --- id 0: pass ---------------------------------------------------------
-    ids[count] = <uint16_t>encode_invest_pass()
+    ids[count] = <uint16_t>encode_pass()
     count += 1
 
     # --- ids 1..540: auctions ----------------------------------------------
@@ -458,7 +458,7 @@ cdef int _enumerate_bid(
     cdef int face, offset, new_bid, min_offset
 
     # --- id 0: leave the auction (always legal) ----------------------------
-    ids[count] = <uint16_t>encode_bid_pass()
+    ids[count] = <uint16_t>encode_pass()
     count += 1
 
     # A BID state with no active_company is a driver bug — nothing to
