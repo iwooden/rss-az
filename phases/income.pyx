@@ -17,6 +17,7 @@ All state access goes through entity handles.
 
 from core.state cimport GameState
 from core.data cimport GameConstants, GamePhases
+from phases.dividends cimport setup_dividends_phase
 
 # Late Python-level entity imports, same pattern as phases/end_card.pyx.
 from entities import turn as turn_module
@@ -92,7 +93,7 @@ cdef void apply_income(GameState state) noexcept:
     _collect_player_income(state)
     _collect_corp_income(state)
     _collect_fi_income(state)
-    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_DIVIDENDS)
+    setup_dividends_phase(state)
 
 
 # =============================================================================

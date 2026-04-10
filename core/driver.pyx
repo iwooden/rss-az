@@ -58,6 +58,7 @@ from phases.bid cimport apply_bid_action
 from phases.wrap_up cimport apply_wrap_up
 from phases.income cimport apply_income
 from phases.end_card cimport apply_end_card
+from phases.dividends cimport apply_dividend_action
 
 # Late Python-level entity import — same pattern as ``phases/invest.pyx``
 # and ``phases/bid.pyx``. The driver only needs ``TURN`` to read the raw
@@ -128,7 +129,7 @@ cdef class GameDriver:
         elif phase_id == DPHASE_CLOSING:
             assert False, "DPHASE_CLOSING handler not yet ported (rss-az-trvp)"
         elif phase_id == DPHASE_DIVIDENDS:
-            assert False, "DPHASE_DIVIDENDS handler not yet ported (rss-az-trvp)"
+            apply_dividend_action(state, &info)
         elif phase_id == DPHASE_ISSUE:
             assert False, "DPHASE_ISSUE handler not yet ported (rss-az-trvp)"
         elif phase_id == DPHASE_IPO:

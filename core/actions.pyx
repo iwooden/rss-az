@@ -573,7 +573,34 @@ cdef int _enumerate_closing(
 cdef int _enumerate_dividends(
     GameState state, uint16_t* ids,
 ) noexcept nogil:
-    return 0
+    """Emit every legal DPHASE_DIVIDENDS action in deterministic order.
+
+    Action IDs are literal dividend amounts: 0, 1, 2, ..., max_dividend.
+    Legal range: 0 to min(price // 3, cash // issued_shares, 25).
+
+    No pass action -- 0-dividend is always legal and plays that role.
+    Worst case: 26 IDs (amounts 0-25).
+    """
+    cdef int active_corp = <int>state._data[
+        LAYOUT.turn_offset + TURN_OFFSETS.active_corp
+    ]
+    cdef int corp_base = LAYOUT.corps_offset + active_corp * CORP_FIELDS.size
+    cdef int price_index = <int>state._data[corp_base + CORP_FIELDS.price_index]
+    cdef int issued_shares = <int>state._data[corp_base + CORP_FIELDS.issued_shares]
+    cdef int corp_cash = <int>state._data[corp_base + CORP_FIELDS.cash]
+
+    cdef int max_by_price = MARKET_PRICES[price_index] // 3
+    cdef int max_by_afford = corp_cash // issued_shares
+
+    cdef int max_div = min(max_by_afford, max_by_price, 25)
+    max_div = max(max_div, 0)
+
+    cdef int count = 0
+    cdef int level
+    for level in range(max_div + 1):
+        ids[count] = <uint16_t>level
+        count += 1
+    return count
 
 
 cdef int _enumerate_issue(
