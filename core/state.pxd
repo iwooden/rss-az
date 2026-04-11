@@ -184,6 +184,7 @@ cdef class GameState:
 
     # Driver config flags (Python-level, not in state array)
     cdef public bint step_mode
+    cdef public bint acq_same_president
 
-    # Game initialization
+    # Game initialization (note: __cinit__ takes acq_same_president=True)
     cpdef void initialize_game(self, int num_players, int seed=*)

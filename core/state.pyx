@@ -675,11 +675,13 @@ cdef class GameState:
     value is the total buffer size, computed inline where needed. Logic
     is delegated to Entity handles and Phase classes.
     """
-    def __cinit__(self, unsigned int num_players, bint _alloc=True):
-        if num_players < 2 or num_players > GameConstants.MAX_PLAYERS:
-            raise ValueError(f"num_players must be 2-{GameConstants.MAX_PLAYERS}")
+    def __cinit__(self, unsigned int num_players, bint _alloc=True,
+                  bint acq_same_president=True):
+        assert 2 <= num_players <= <unsigned int>GameConstants.MAX_PLAYERS, \
+            f"num_players must be 2-{GameConstants.MAX_PLAYERS}, got {num_players}"
 
         self.step_mode = False
+        self.acq_same_president = acq_same_president
 
         if not _alloc:
             # Caller will set _array and _data (used by from_buffer). The
@@ -703,20 +705,16 @@ cdef class GameState:
         cdef cnp.ndarray arr = np.asarray(array)
         cdef int expected_size = _expected_size(num_players)
         cdef int canonical_num_players
-        if arr.dtype != np.int16:
-            raise ValueError(f"Expected int16 array, got {arr.dtype}")
-        if arr.ndim != 1 or <int>arr.shape[0] != expected_size:
-            raise ValueError(
-                f"Expected 1-D array of length {expected_size}, "
-                f"got ndim={arr.ndim} len={<int>arr.shape[0]}"
-            )
+        assert arr.dtype == np.int16, \
+            f"Expected int16 array, got {arr.dtype}"
+        assert arr.ndim == 1 and <int>arr.shape[0] == expected_size, \
+            f"Expected 1-D array of length {expected_size}, " \
+            f"got ndim={arr.ndim} len={<int>arr.shape[0]}"
         canonical_num_players = <int>arr[
             LAYOUT.turn_offset + TURN_OFFSETS.num_players
         ]
-        if canonical_num_players != num_players:
-            raise ValueError(
-                f"array canonical num_players {canonical_num_players} != claimed {num_players}"
-            )
+        assert canonical_num_players == num_players, \
+            f"array canonical num_players {canonical_num_players} != claimed {num_players}"
         state = GameState(num_players)
         np.copyto(state._array, arr)
         return state
@@ -781,8 +779,8 @@ cdef class GameState:
         cdef int16_t* turn
         cdef int16_t* player
         cdef int16_t* corp
-        if num_players < 2 or num_players > <int>GameConstants.MAX_PLAYERS:
-            raise ValueError(f"num_players must be 2-{GameConstants.MAX_PLAYERS}")
+        assert 2 <= num_players <= <int>GameConstants.MAX_PLAYERS, \
+            f"num_players must be 2-{GameConstants.MAX_PLAYERS}, got {num_players}"
 
         _reset_storage(self, num_players)
 
