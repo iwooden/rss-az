@@ -82,7 +82,6 @@ TurnFields = namedtuple('TurnFields', [
     'end_card_flipped', 'consecutive_passes', 'cards_remaining',
     'auction_price', 'auction_high_bidder',
     'auction_starter',
-    'acq_offer_corp', 'acq_offer_company',
     'dividend_remaining', 'issue_remaining', 'ipo_remaining',
 ])
 
@@ -217,12 +216,6 @@ cdef TurnStateOffsets compute_turn_offsets() noexcept nogil:
     t.auction_high_bidder = offset
     offset += 1
     t.auction_starter = offset
-    offset += 1
-
-    # ACQ_OFFER sub-phase context
-    t.acq_offer_corp = offset
-    offset += 1
-    t.acq_offer_company = offset
     offset += 1
 
     # Phase remaining tracking
@@ -548,8 +541,6 @@ def get_turn_fields():
         auction_price=TURN_OFFSETS.auction_price,
         auction_high_bidder=TURN_OFFSETS.auction_high_bidder,
         auction_starter=TURN_OFFSETS.auction_starter,
-        acq_offer_corp=TURN_OFFSETS.acq_offer_corp,
-        acq_offer_company=TURN_OFFSETS.acq_offer_company,
         dividend_remaining=TURN_OFFSETS.dividend_remaining,
         issue_remaining=TURN_OFFSETS.issue_remaining,
         ipo_remaining=TURN_OFFSETS.ipo_remaining,
@@ -835,8 +826,6 @@ cdef class GameState:
         turn[TURN_OFFSETS.active_company] = -1
         turn[TURN_OFFSETS.auction_high_bidder] = -1
         turn[TURN_OFFSETS.auction_starter] = -1
-        turn[TURN_OFFSETS.acq_offer_corp] = -1
-        turn[TURN_OFFSETS.acq_offer_company] = -1
 
         # 10. Set active player
         turn_module.TURN.set_active_player(self, 0)
