@@ -12,13 +12,13 @@ This document describes the in-memory game state layout. The state is the engine
 
 | Players | total_size | player_stride | corp_stride | turn_size |
 |---------|-----------|---------------|-------------|-----------|
-| 2       | 430       | 30            | 16          | 68        |
-| 3       | 460       | 30            | 16          | 68        |
-| 4       | 490       | 30            | 16          | 68        |
-| 5       | 520       | 30            | 16          | 68        |
-| 6       | 550       | 30            | 16          | 68        |
+| 2       | 431       | 30            | 16          | 69        |
+| 3       | 461       | 30            | 16          | 69        |
+| 4       | 491       | 30            | 16          | 69        |
+| 5       | 521       | 30            | 16          | 69        |
+| 6       | 551       | 30            | 16          | 69        |
 
-`player_stride`, `corp_stride`, and `turn_size` are all fixed across player counts. The players section is the **only** part of the buffer whose size depends on `num_players`, so `total_size = 370 + 30 * num_players` — the constant 370 is the fixed prefix, and only the trailing players section grows.
+`player_stride`, `corp_stride`, and `turn_size` are all fixed across player counts. The players section is the **only** part of the buffer whose size depends on `num_players`, so `total_size = 371 + 30 * num_players` — the constant 371 is the fixed prefix, and only the trailing players section grows.
 
 Layout offsets are computed once at module load and exposed as Cython `cdef` structs at module scope on `core.state`:
 
@@ -160,7 +160,7 @@ Several corp-block fields are stored but derived from authoritative state: `inco
 
 ## Turn block
 
-Block size: **68**, fixed across player counts. Sub-offsets via `core.state.get_turn_fields()` (`TurnFields` namedtuple) for Python, or `from core.state cimport TURN_OFFSETS` for Cython. The turn block starts with the active player plus the generic active corp/company selectors, then the remaining game-wide metadata and phase state.
+Block size: **69**, fixed across player counts. Sub-offsets via `core.state.get_turn_fields()` (`TurnFields` namedtuple) for Python, or `from core.state cimport TURN_OFFSETS` for Cython. The turn block starts with the active player plus the generic active corp/company selectors, then the remaining game-wide metadata and phase state.
 
 | Relative offset | Field | Size | Notes |
 |----------------|-------|------|-------|
@@ -177,7 +177,8 @@ Block size: **68**, fixed across player counts. Sub-offsets via `core.state.get_
 | 10 | auction_price        | 1  | 0 when no auction |
 | 11 | auction_high_bidder  | 1  | `player_id` or `-1` |
 | 12 | auction_starter      | 1  | `player_id` or `-1` |
-| 13 | acq_offer_corp       | 1  | `corp_id` of original offer in ACQ_OFFER, or `-1` |
+| 13 | acq_offer_price      | 1  | Offer price, or 0 when not in ACQ_OFFER |
+| 14 | acq_offer_corp       | 1  | `corp_id` of original offer in ACQ_OFFER, or `-1` |
 | 15 | dividend_remaining   | 8  | Per-corp pending flag |
 | 23 | issue_remaining      | 8  | Per-corp pending flag |
 | 31 | ipo_remaining        | 36 | Per-company pending flag |
@@ -393,8 +394,8 @@ print(f"buffer length = {len(state._array)}")  # 451 for 3p
 
 # Layout introspection
 layout = get_layout(3)            # LayoutInfo namedtuple
-print(layout.players_offset)      # 361 (constant across player counts)
-print(layout.total_size)          # 451
+print(layout.players_offset)      # 371 (constant across player counts)
+print(layout.total_size)          # 461
 
 pf = get_player_fields()          # PlayerFields namedtuple
 print(pf.cash, pf.has_passed)     # 0 29

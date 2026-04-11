@@ -29,7 +29,7 @@ from entities.company cimport (
     LOC_PLAYER,
 )
 
-from phases.acquisition cimport _execute_fi_buy, _find_first_preemptor
+from phases.acquisition cimport _execute_fi_buy, _find_first_preemptor, _find_first_active_player
 
 from entities import turn as turn_module
 from entities import corp as corp_module
@@ -43,15 +43,16 @@ from entities import fi as fi_module
 # =============================================================================
 
 cdef void _return_to_acquisition(GameState state) noexcept:
-    """Return to ACQUISITION phase with the original active player."""
-    cdef int original_player = turn_module.TURN.get_auction_high_bidder(state)
-    turn_module.TURN.set_auction_starter(state, -1)
-    turn_module.TURN.clear_auction_high_bidder(state)
+    """Return to ACQUISITION phase, resuming with first non-passed player."""
+    turn_module.TURN.clear_acq_offer_corp(state)
     turn_module.TURN.clear_acq_offer_price(state)
     turn_module.TURN.clear_active_corp(state)
     turn_module.TURN.clear_active_company(state)
-    turn_module.TURN.set_active_player(state, original_player)
     turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_ACQUISITION)
+
+    cdef int pid = _find_first_active_player(state)
+    assert pid >= 0, "_return_to_acquisition: no eligible player"
+    turn_module.TURN.set_active_player(state, pid)
 
 
 # =============================================================================
@@ -73,7 +74,7 @@ cdef void apply_acq_offer_action(GameState state, ActionInfo* info) noexcept:
     """
     cdef int active_corp = turn_module.TURN.get_active_corp(state)
     cdef int company_id = turn_module.TURN.get_active_company(state)
-    cdef int original_corp = turn_module.TURN.get_auction_starter(state)
+    cdef int original_corp = turn_module.TURN.get_acq_offer_corp(state)
     cdef int price = turn_module.TURN.get_acq_offer_price(state)
 
     assert active_corp >= 0, f"acq_offer: no active corp"

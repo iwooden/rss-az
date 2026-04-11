@@ -98,12 +98,14 @@ cdef int _find_first_preemptor(
 
 
 cdef int _find_first_active_player(GameState state) noexcept:
-    """Return first player (in turn order) who presides over an active
-    non-receivership corp. Returns -1 if none."""
+    """Return first non-passed player (in turn order) who presides over
+    an active non-receivership corp. Returns -1 if none."""
     cdef int num_players = turn_module.TURN.get_num_players(state)
     cdef int pos, pid, c
     for pos in range(num_players):
         pid = turn_module.TURN.find_player_at_position(state, pos)
+        if player_module.PLAYERS[pid].has_passed(state):
+            continue
         for c in range(<int>GameConstants.NUM_CORPS):
             if (corp_module.CORPS[c].is_active(state)
                     and not corp_module.CORPS[c].is_in_receivership(state)
@@ -167,7 +169,7 @@ cdef void _execute_fi_buy(GameState state, int corp_id, int company_id) noexcept
 
 cdef void _enter_acq_offer(
     GameState state, int offered_corp, int company_id, int price,
-    int original_corp, int original_player, int deciding_player,
+    int original_corp, int deciding_player,
 ) noexcept:
     """Push into ACQ_OFFER phase.
 
@@ -175,12 +177,10 @@ cdef void _enter_acq_offer(
         offered_corp: corp that would acquire the company (active_corp in ACQ_OFFER)
         company_id: the target company
         price: the offer price (stored in acq_offer_price)
-        original_corp: the original acquiring corp (-1 for cross-president offers)
-        original_player: the original active player to return to
+        original_corp: the corp that initiated the acquisition (acq_offer_corp)
         deciding_player: who makes the accept/pass decision
     """
-    turn_module.TURN.set_auction_starter(state, original_corp)
-    turn_module.TURN.set_auction_high_bidder(state, original_player)
+    turn_module.TURN.set_acq_offer_corp(state, original_corp)
     turn_module.TURN.set_acq_offer_price(state, price)
     turn_module.TURN.set_active_corp(state, offered_corp)
     turn_module.TURN.set_active_company(state, company_id)
@@ -217,7 +217,7 @@ cdef void _handle_acq_price(GameState state, ActionInfo* info) noexcept:
         if owner_player >= 0 and owner_player != active_player:
             _enter_acq_offer(
                 state, corp_id, company_id, price,
-                -1, active_player, owner_player,
+                corp_id, owner_player,
             )
             return
 
@@ -241,7 +241,6 @@ cdef void _handle_fi_buy(GameState state, ActionInfo* info) noexcept:
     """Execute an FI purchase, with preemption check."""
     cdef int corp_id = info.corp_id
     cdef int company_id = info.company_id
-    cdef int active_player = turn_module.TURN.get_active_player(state)
     cdef int CORP_OS = <int>CorpIndices.CORP_OS
     cdef int first_preemptor, price
 
@@ -258,7 +257,7 @@ cdef void _handle_fi_buy(GameState state, ActionInfo* info) noexcept:
             price = COMPANY_HIGH_PRICE[company_id]
         _enter_acq_offer(
             state, first_preemptor, company_id, price,
-            corp_id, active_player,
+            corp_id,
             corp_module.CORPS[first_preemptor].get_president_id(state),
         )
         return
@@ -301,6 +300,7 @@ cdef void _transition_to_closing(GameState state) noexcept:
     turn_module.TURN.clear_active_corp(state)
     turn_module.TURN.clear_active_company(state)
     turn_module.TURN.clear_acq_offer_price(state)
+    turn_module.TURN.clear_acq_offer_corp(state)
     turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_CLOSING)
     apply_closing_auto(state)
 

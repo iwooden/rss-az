@@ -836,7 +836,6 @@ cdef class GameState:
         turn[TURN_OFFSETS.auction_high_bidder] = -1
         turn[TURN_OFFSETS.auction_starter] = -1
         turn[TURN_OFFSETS.acq_offer_corp] = -1
-        turn[TURN_OFFSETS.acq_offer_company] = -1
 
         # 10. Set active player
         turn_module.TURN.set_active_player(self, 0)
