@@ -135,5 +135,9 @@ cdef class Corporation:
     cpdef int get_president_id(self, GameState state)
     cdef void _recalculate_presidency(self, GameState state)
 
+    # ACQ_OFFER passed flag
+    cpdef bint has_passed_acq_offer(self, GameState state)
+    cpdef void set_passed_acq_offer(self, GameState state, bint passed)
+
     # Acquisition pile
     cpdef bint has_acquisition_company(self, GameState state, int company_id)

@@ -298,6 +298,38 @@ cdef class TurnState:
         state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_starter] = -1
 
     # =========================================================================
+    # ACQ_OFFER SUB-PHASE CONTEXT
+    # =========================================================================
+
+    cpdef int get_acq_offer_corp(self, GameState state):
+        """Return the corp being offered in ACQ_OFFER, or -1 if none."""
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.acq_offer_corp]
+
+    cpdef void set_acq_offer_corp(self, GameState state, int corp_id):
+        """Set the corp being offered in ACQ_OFFER."""
+        assert 0 <= corp_id < <int>GameConstants.NUM_CORPS, \
+            f"corp_id {corp_id} out of range [0, {<int>GameConstants.NUM_CORPS})"
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.acq_offer_corp] = <int16_t>corp_id
+
+    cpdef void clear_acq_offer_corp(self, GameState state):
+        """Clear the ACQ_OFFER corp sentinel."""
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.acq_offer_corp] = -1
+
+    cpdef int get_acq_offer_company(self, GameState state):
+        """Return the company being contested in ACQ_OFFER, or -1 if none."""
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.acq_offer_company]
+
+    cpdef void set_acq_offer_company(self, GameState state, int company_id):
+        """Set the company being contested in ACQ_OFFER."""
+        assert 0 <= company_id < <int>GameConstants.NUM_COMPANIES, \
+            f"company_id {company_id} out of range [0, {<int>GameConstants.NUM_COMPANIES})"
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.acq_offer_company] = <int16_t>company_id
+
+    cpdef void clear_acq_offer_company(self, GameState state):
+        """Clear the ACQ_OFFER company sentinel."""
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.acq_offer_company] = -1
+
+    # =========================================================================
     # COMPATIBILITY ALIASES FOR OLDER PHASE-SPECIFIC TURN CONTEXT
     # =========================================================================
 

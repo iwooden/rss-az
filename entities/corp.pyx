@@ -705,6 +705,18 @@ cdef class Corporation:
             state._data[slot] = <int16_t>president_id
 
     # =========================================================================
+    # ACQ_OFFER PASSED FLAG
+    # =========================================================================
+
+    cpdef bint has_passed_acq_offer(self, GameState state):
+        """Return True if this corp has passed on the current ACQ_OFFER."""
+        return state._data[self._slot(CORP_FIELDS.passed_acq_offer)] == 1
+
+    cpdef void set_passed_acq_offer(self, GameState state, bint passed):
+        """Set whether this corp has passed on the current ACQ_OFFER."""
+        state._data[self._slot(CORP_FIELDS.passed_acq_offer)] = <int16_t>(1 if passed else 0)
+
+    # =========================================================================
     # ACQUISITION PILE
     # =========================================================================
 

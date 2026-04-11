@@ -45,10 +45,10 @@ Cython code reads them directly via `from core.state cimport LAYOUT, TURN_OFFSET
 | FI        | 0   | 2   | Foreign investor cash, income |
 | Companies | 2   | 108 | Three parallel 36-slot sub-arrays: `incomes`, `locations`, `owner_ids` (see [Companies section](#companies-section)) |
 | Market    | 110 | 27  | Per-price availability flags |
-| Corps     | 137 | 120 | Per-corp blocks: `corp_stride (15) * 8` (see [Corp block](#corp-block)) |
-| Turn      | 257 | 67  | Turn-scoped state including game-wide metadata, active corp/company selectors, plus two internal cache-dirty masks (see [Turn block](#turn-block)) |
-| Deck      | 324 | 37  | `top` (1) + `order` (36) — see [Deck section](#deck-section) |
-| Players   | 361 | `player_stride * num_players` | Per-player blocks (see [Player block](#player-block)) |
+| Corps     | 137 | 128 | Per-corp blocks: `corp_stride (16) * 8` (see [Corp block](#corp-block)) |
+| Turn      | 265 | 69  | Turn-scoped state including game-wide metadata, active corp/company selectors, plus two internal cache-dirty masks (see [Turn block](#turn-block)) |
+| Deck      | 334 | 37  | `top` (1) + `order` (36) — see [Deck section](#deck-section) |
+| Players   | 371 | `player_stride * num_players` | Per-player blocks (see [Player block](#player-block)) |
 
 Every offset above is **constant across all player counts** — the players section lives at the end of the buffer for exactly this reason. The "Start offset" column is identical for every player count up to and including the players section start.
 
@@ -117,7 +117,7 @@ State invariant: index `0` (`$0`, bankruptcy) and index `26` (`$75`, max price) 
 
 ## Corp block
 
-Stride: **15**. Corp `c` lives at `corps_offset + c * 15`. Field offsets via `core.state.get_corp_fields()` (`CorpFields` namedtuple) for Python, or `from core.state cimport CORP_FIELDS` for Cython.
+Stride: **16**. Corp `c` lives at `corps_offset + c * 16`. Field offsets via `core.state.get_corp_fields()` (`CorpFields` namedtuple) for Python, or `from core.state cimport CORP_FIELDS` for Cython.
 
 | Relative offset | Field | Notes |
 |----------------|-------|-------|
@@ -136,6 +136,7 @@ Stride: **15**. Corp `c` lives at `corps_offset + c * 15`. Field offsets via `co
 | 12 | coo_cost              | Always ≤ 0 |
 | 13 | ability_income        | |
 | 14 | president_id          | `player_id` or `-1` (inactive / receivership). Initialized to `-1`. |
+| 15 | passed_acq_offer      | flag — `1` if corp passed on current ACQ_OFFER |
 
 `share_price` is **not stored** in the corp block. It is derived from `price_index` via `MARKET_PRICES[price_index]`; use `CORPS[c].get_share_price(state)` rather than expecting a backing slot.
 
@@ -159,7 +160,7 @@ Several corp-block fields are stored but derived from authoritative state: `inco
 
 ## Turn block
 
-Block size: **67**, fixed across player counts. Sub-offsets via `core.state.get_turn_fields()` (`TurnFields` namedtuple) for Python, or `from core.state cimport TURN_OFFSETS` for Cython. The turn block starts with the active player plus the generic active corp/company selectors, then the remaining game-wide metadata and phase state.
+Block size: **69**, fixed across player counts. Sub-offsets via `core.state.get_turn_fields()` (`TurnFields` namedtuple) for Python, or `from core.state cimport TURN_OFFSETS` for Cython. The turn block starts with the active player plus the generic active corp/company selectors, then the remaining game-wide metadata and phase state.
 
 | Relative offset | Field | Size | Notes |
 |----------------|-------|------|-------|
@@ -176,11 +177,13 @@ Block size: **67**, fixed across player counts. Sub-offsets via `core.state.get_
 | 10 | auction_price        | 1  | 0 when no auction |
 | 11 | auction_high_bidder  | 1  | `player_id` or `-1` |
 | 12 | auction_starter      | 1  | `player_id` or `-1` |
-| 13 | dividend_remaining   | 8  | Per-corp pending flag |
-| 21 | issue_remaining      | 8  | Per-corp pending flag |
-| 29 | ipo_remaining        | 36 | Per-company pending flag |
+| 13 | acq_offer_corp       | 1  | `corp_id` being offered in ACQ_OFFER, or `-1` |
+| 14 | acq_offer_company    | 1  | `company_id` being contested in ACQ_OFFER, or `-1` |
+| 15 | dividend_remaining   | 8  | Per-corp pending flag |
+| 23 | issue_remaining      | 8  | Per-corp pending flag |
+| 31 | ipo_remaining        | 36 | Per-company pending flag |
 
-Internal slots at relative offsets `65` and `66` hold the player-finance (`player_cache_dirty`) and corp-derived (`corp_cache_dirty`) dirty masks used by the lazy cache system. These offsets exist in `TURN_OFFSETS` for Cython code but are intentionally omitted from the Python `TurnFields` namedtuple.
+Internal slots at relative offsets `67` and `68` hold the player-finance (`player_cache_dirty`) and corp-derived (`corp_cache_dirty`) dirty masks used by the lazy cache system. These offsets exist in `TURN_OFFSETS` for Cython code but are intentionally omitted from the Python `TurnFields` namedtuple.
 
 There is no dedicated `auction_company` slot — the generic `active_company` selector at offset 2 carries that role during BID, and likewise covers the active-company context for IPO and ACQ_OFFER. It is **not** used during ACQUISITION or CLOSING: the old per-phase offer buffers are gone, and those phases now pick the target company directly from the masked action space, so both `active_corp` and `active_company` sit at `-1` throughout them. ACQ_OFFER reuses the same selectors for FI-priority resolution: `active_corp` = the preempting corp being offered the FI-owned company, `active_company` = the contested FI company, and `active_player` = that corp's president. No new per-phase fields (`closing_company` / `dividend_corp` / `issue_corp` / `ipo_company`) are needed — the generic selectors plus the per-phase remaining bitmasks already in the turn block cover every phase. The per-player `has_passed` flag used to live in the turn block as an auction-specific array; it now lives in the player block, so the turn block is fully fixed-size.
 

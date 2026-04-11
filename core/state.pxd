@@ -66,6 +66,9 @@ cdef struct TurnStateOffsets:
     int auction_price
     int auction_high_bidder      # player_id or -1
     int auction_starter          # player_id or -1
+    # ACQ_OFFER sub-phase context
+    int acq_offer_corp           # corp_id being offered, or -1
+    int acq_offer_company        # company_id being contested, or -1
     # Phase remaining tracking
     int dividend_remaining       # 8 corp flags
     int issue_remaining          # 8 corp flags
@@ -138,6 +141,7 @@ cdef struct CorpFieldOffsets:
     int coo_cost
     int ability_income
     int president_id             # player_id or -1 (receivership/inactive)
+    int passed_acq_offer         # 1 if corp passed on current ACQ_OFFER
     # Total size of one corp's data block
     int size
 
