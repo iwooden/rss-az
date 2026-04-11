@@ -101,7 +101,7 @@ cdef enum ActionType:
     ACTION_RAISE = 4           # BID: raise current bid by (face + 1 + amount)
     ACTION_ACQ_PRICE = 5       # ACQUISITION: corp_id acquires company_id at low+amount
     ACTION_ACQ_FI_BUY = 6      # ACQUISITION: corp_id buys company_id from FI at fixed price
-    ACTION_ACQ_OFFER_BUY = 7   # ACQ_OFFER: preempting corp takes the offered company
+    ACTION_ACQ_OFFER_ACCEPT = 7  # ACQ_OFFER: accept the offered acquisition
     ACTION_CLOSE = 8           # CLOSING: close company_id
     ACTION_DIVIDEND = 9        # DIVIDENDS: pay dividend of amount
     ACTION_ISSUE = 10          # ISSUE: issue one share

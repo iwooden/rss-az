@@ -34,6 +34,7 @@ from core.state cimport (
 from core.data cimport (
     GameConstants,
     GamePhases,
+    CorpIndices,
     ACTION_SIZE_INVEST,
     ACTION_SIZE_BID,
     ACTION_SIZE_ACQUISITION,
@@ -52,13 +53,15 @@ from core.data cimport (
     DPHASE_IPO,
     ENGINE_TO_DECISION_PHASE,
     COMPANY_FACE_VALUE,
+    COMPANY_LOW_PRICE,
+    COMPANY_HIGH_PRICE,
     COMPANY_STARS,
     ALL_PAR_PRICES,
     PAR_PRICE_VALID,
     PRICE_TO_MARKET_INDEX,
     MARKET_PRICES,
 )
-from entities.company cimport LOC_AUCTION
+from entities.company cimport LOC_AUCTION, LOC_FI, LOC_CORP, LOC_PLAYER
 
 cnp.import_array()
 
@@ -136,7 +139,7 @@ cdef int encode_action(ActionInfo info) noexcept nogil:
     elif phase == DPHASE_ACQ_OFFER:
         if info.action_type == ACTION_PASS:
             return 0
-        if info.action_type == ACTION_ACQ_OFFER_BUY:
+        if info.action_type == ACTION_ACQ_OFFER_ACCEPT:
             return 1
 
     elif phase == DPHASE_CLOSING:
@@ -235,7 +238,7 @@ cdef ActionInfo decode_action(int phase_id, int action_id) noexcept nogil:
         if action_id == 0:
             info.action_type = ACTION_PASS
         else:
-            info.action_type = ACTION_ACQ_OFFER_BUY
+            info.action_type = ACTION_ACQ_OFFER_ACCEPT
         return info
 
     # --- CLOSING ----------------------------------------------------------
@@ -495,16 +498,211 @@ cdef int _enumerate_bid(
     return count
 
 
+cdef int _find_receivership_forced_buy(GameState state) noexcept nogil:
+    """Highest-share-price receivership corp's most expensive affordable FI buy.
+
+    Returns the encoded FI_BUY action id, or -1 if no receivership corp
+    can afford any FI company. Priority: highest share price first (tie-break
+    ascending corp_id). Within a corp, most expensive affordable FI company.
+    """
+    cdef int CORP_OS = <int>CorpIndices.CORP_OS
+    cdef int NUM_CORPS = <int>GameConstants.NUM_CORPS
+    cdef int NUM_COMPANIES = <int>GameConstants.NUM_COMPANIES
+    cdef int best_corp = -1
+    cdef int best_price = -1
+    cdef int c, sp, corp_base, loc
+
+    for c in range(NUM_CORPS):
+        corp_base = LAYOUT.corps_offset + c * CORP_FIELDS.size
+        if <int>state._data[corp_base + CORP_FIELDS.active] != 1:
+            continue
+        if <int>state._data[corp_base + CORP_FIELDS.in_receivership] != 1:
+            continue
+        sp = MARKET_PRICES[<int>state._data[corp_base + CORP_FIELDS.price_index]]
+        if sp > best_price or (sp == best_price and (best_corp == -1 or c < best_corp)):
+            best_price = sp
+            best_corp = c
+
+    if best_corp < 0:
+        return -1
+
+    cdef int cash = <int>state._data[
+        LAYOUT.corps_offset + best_corp * CORP_FIELDS.size + CORP_FIELDS.cash
+    ]
+    cdef int best_company = -1
+    cdef int best_cost = -1
+    cdef int company_id, cost
+
+    for company_id in range(NUM_COMPANIES):
+        loc = <int>state._data[
+            LAYOUT.companies_offset + COMPANY_OFFSETS.locations + company_id
+        ]
+        if loc != <int>LOC_FI:
+            continue
+        if best_corp == CORP_OS:
+            cost = COMPANY_FACE_VALUE[company_id]
+        else:
+            cost = COMPANY_HIGH_PRICE[company_id]
+        if cost <= cash and cost > best_cost:
+            best_cost = cost
+            best_company = company_id
+
+    if best_company < 0:
+        return -1
+
+    return encode_acquisition_fi_buy(best_corp, best_company)
+
+
 cdef int _enumerate_acquisition(
     GameState state, uint16_t* ids,
 ) noexcept nogil:
-    return 0
+    """Enumerate legal ACQUISITION actions for the current state.
+
+    Two modes:
+    1. Receivership forced buys: if any receivership corp has a mandatory
+       FI purchase, return that single action (driver forces it).
+    2. Player actions: PASS + all legal (corp, company, price) tuples for
+       corps the active player presides over.
+
+    When ``state.acq_same_president`` is True (default), corp-to-corp
+    requires the active player to preside over both buyer and seller, and
+    corp-to-player requires the active player to own the private. When
+    False, any affordable target is valid (cross-president targets go
+    through ACQ_OFFER in the handler).
+
+    Ordering: PASS, then ascending corp_id, ascending company_id,
+    ascending price_offset / FI_BUY.
+    """
+    cdef int count = 0
+    cdef int CORP_OS = <int>CorpIndices.CORP_OS
+    cdef int NUM_CORPS = <int>GameConstants.NUM_CORPS
+    cdef int NUM_COMPANIES = <int>GameConstants.NUM_COMPANIES
+
+    # --- Mode 1: Receivership forced buys ---
+    cdef int recv_action = _find_receivership_forced_buy(state)
+    if recv_action >= 0:
+        ids[0] = <uint16_t>recv_action
+        return 1
+
+    # --- Mode 2: Player action space ---
+    ids[count] = 0  # PASS always legal
+    count += 1
+
+    cdef int player_id = <int>state._data[
+        LAYOUT.turn_offset + TURN_OFFSETS.active_player
+    ]
+    cdef bint same_pres = state.acq_same_president
+    cdef int corp_id, company_id, loc, owner_id, cash, corp_base
+    cdef int low_price, high_price, max_offset, price_offset, price
+    cdef int seller_count, i, seller_base
+
+    for corp_id in range(NUM_CORPS):
+        corp_base = LAYOUT.corps_offset + corp_id * CORP_FIELDS.size
+        if <int>state._data[corp_base + CORP_FIELDS.active] != 1:
+            continue
+        if <int>state._data[corp_base + CORP_FIELDS.in_receivership] == 1:
+            continue
+        if <int>state._data[corp_base + CORP_FIELDS.president_id] != player_id:
+            continue
+
+        cash = <int>state._data[corp_base + CORP_FIELDS.cash]
+        if cash <= 0:
+            continue
+
+        for company_id in range(NUM_COMPANIES):
+            loc = <int>state._data[
+                LAYOUT.companies_offset + COMPANY_OFFSETS.locations + company_id
+            ]
+
+            if loc == <int>LOC_FI:
+                # FI purchase: single fixed-price action
+                if corp_id == CORP_OS:
+                    price = COMPANY_FACE_VALUE[company_id]
+                else:
+                    price = COMPANY_HIGH_PRICE[company_id]
+                if cash >= price:
+                    assert count < MAX_LEGAL_ACTIONS, \
+                        f"_enumerate_acquisition overflow at FI_BUY({corp_id},{company_id})"
+                    ids[count] = <uint16_t>encode_acquisition_fi_buy(corp_id, company_id)
+                    count += 1
+
+            elif loc == <int>LOC_CORP:
+                owner_id = <int>state._data[
+                    LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids + company_id
+                ]
+                if owner_id == corp_id:
+                    continue  # Can't buy from yourself
+                if same_pres:
+                    seller_base = LAYOUT.corps_offset + owner_id * CORP_FIELDS.size
+                    if <int>state._data[seller_base + CORP_FIELDS.president_id] != player_id:
+                        continue
+                # Seller must retain >= 1 company (LOC_CORP only, not ACQ pile)
+                seller_count = 0
+                for i in range(NUM_COMPANIES):
+                    if (<int>state._data[
+                        LAYOUT.companies_offset + COMPANY_OFFSETS.locations + i
+                    ] == <int>LOC_CORP
+                        and <int>state._data[
+                            LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids + i
+                        ] == owner_id):
+                        seller_count += 1
+                if seller_count <= 1:
+                    continue
+                low_price = COMPANY_LOW_PRICE[company_id]
+                high_price = COMPANY_HIGH_PRICE[company_id]
+                max_offset = high_price - low_price
+                if cash - low_price < max_offset:
+                    max_offset = cash - low_price
+                if max_offset < 0:
+                    continue
+                if max_offset > 50:
+                    max_offset = 50  # Cap at action space width
+                for price_offset in range(max_offset + 1):
+                    assert count < MAX_LEGAL_ACTIONS, \
+                        f"_enumerate_acquisition overflow at ACQ_PRICE({corp_id},{company_id},{price_offset})"
+                    ids[count] = <uint16_t>encode_acquisition_price(
+                        corp_id, company_id, price_offset)
+                    count += 1
+
+            elif loc == <int>LOC_PLAYER:
+                owner_id = <int>state._data[
+                    LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids + company_id
+                ]
+                if same_pres:
+                    if owner_id != player_id:
+                        continue
+                low_price = COMPANY_LOW_PRICE[company_id]
+                high_price = COMPANY_HIGH_PRICE[company_id]
+                max_offset = high_price - low_price
+                if cash - low_price < max_offset:
+                    max_offset = cash - low_price
+                if max_offset < 0:
+                    continue
+                if max_offset > 50:
+                    max_offset = 50
+                for price_offset in range(max_offset + 1):
+                    assert count < MAX_LEGAL_ACTIONS, \
+                        f"_enumerate_acquisition overflow at ACQ_PRICE({corp_id},{company_id},{price_offset})"
+                    ids[count] = <uint16_t>encode_acquisition_price(
+                        corp_id, company_id, price_offset)
+                    count += 1
+
+            # LOC_CORP_ACQ, LOC_DECK, LOC_AUCTION, etc. -> not acquirable
+
+    return count
 
 
 cdef int _enumerate_acq_offer(
     GameState state, uint16_t* ids,
 ) noexcept nogil:
-    return 0
+    """Enumerate legal ACQ_OFFER actions: always PASS + ACCEPT.
+
+    We never enter ACQ_OFFER unless both actions are valid (affordability
+    is pre-filtered before entry), so this always returns exactly 2.
+    """
+    ids[0] = 0  # PASS
+    ids[1] = 1  # ACCEPT
+    return 2
 
 
 cdef int _enumerate_closing(
@@ -783,7 +981,7 @@ ACTION_SELL_SHARE_PY = ACTION_SELL_SHARE
 ACTION_RAISE_PY = ACTION_RAISE
 ACTION_ACQ_PRICE_PY = ACTION_ACQ_PRICE
 ACTION_ACQ_FI_BUY_PY = ACTION_ACQ_FI_BUY
-ACTION_ACQ_OFFER_BUY_PY = ACTION_ACQ_OFFER_BUY
+ACTION_ACQ_OFFER_ACCEPT_PY = ACTION_ACQ_OFFER_ACCEPT
 ACTION_CLOSE_PY = ACTION_CLOSE
 ACTION_DIVIDEND_PY = ACTION_DIVIDEND
 ACTION_ISSUE_PY = ACTION_ISSUE

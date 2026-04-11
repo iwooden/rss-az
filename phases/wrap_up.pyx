@@ -32,6 +32,7 @@ from core.data cimport (
     GamePhases,
     COMPANY_FACE_VALUE,
 )
+from phases.acquisition cimport setup_acquisition_phase
 
 # Late Python-level entity imports, same pattern as phases/invest.pyx.
 from entities import turn as turn_module
@@ -178,9 +179,8 @@ cdef void apply_wrap_up(GameState state) noexcept:
     _reveal_all_to_auction(state)
 
     # Hand off to ACQUISITION. Phase-entry setup (active-player,
-    # remaining masks) belongs to ``phases/acquisition.pyx`` — WRAP_UP
-    # only flips the phase enum.
-    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_ACQUISITION)
+    # passed-flags) is owned by ``phases/acquisition.pyx``.
+    setup_acquisition_phase(state)
 
 
 # =============================================================================
