@@ -314,6 +314,20 @@ cdef class TurnState:
         """Clear the ACQ_OFFER price."""
         state._data[LAYOUT.turn_offset + TURN_OFFSETS.acq_offer_price] = 0
 
+    cpdef int get_acq_offer_corp(self, GameState state):
+        """Return the corp being offered in ACQ_OFFER, or -1 if none."""
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.acq_offer_corp]
+
+    cpdef void set_acq_offer_corp(self, GameState state, int corp_id):
+        """Set the corp being offered in ACQ_OFFER."""
+        assert 0 <= corp_id < <int>GameConstants.NUM_CORPS, \
+            f"corp_id {corp_id} out of range [0, {<int>GameConstants.NUM_CORPS})"
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.acq_offer_corp] = <int16_t>corp_id
+
+    cpdef void clear_acq_offer_corp(self, GameState state):
+        """Clear the ACQ_OFFER corp sentinel."""
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.acq_offer_corp] = -1
+
     # =========================================================================
     # COMPATIBILITY ALIASES FOR OLDER PHASE-SPECIFIC TURN CONTEXT
     # =========================================================================
