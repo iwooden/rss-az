@@ -66,6 +66,8 @@ cdef struct TurnStateOffsets:
     int auction_price
     int auction_high_bidder      # player_id or -1
     int auction_starter          # player_id or -1
+    # ACQ_OFFER context
+    int acq_offer_price          # offer price, or 0 when not in ACQ_OFFER
     # Phase remaining tracking
     int dividend_remaining       # 8 corp flags
     int issue_remaining          # 8 corp flags

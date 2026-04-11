@@ -298,6 +298,23 @@ cdef class TurnState:
         state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_starter] = -1
 
     # =========================================================================
+    # ACQ_OFFER CONTEXT
+    # =========================================================================
+
+    cpdef int get_acq_offer_price(self, GameState state):
+        """Return the ACQ_OFFER price, or 0 if not in ACQ_OFFER."""
+        return <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.acq_offer_price]
+
+    cpdef void set_acq_offer_price(self, GameState state, int price):
+        """Set the ACQ_OFFER price."""
+        assert price > 0, f"acq_offer_price must be positive, got {price}"
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.acq_offer_price] = <int16_t>price
+
+    cpdef void clear_acq_offer_price(self, GameState state):
+        """Clear the ACQ_OFFER price."""
+        state._data[LAYOUT.turn_offset + TURN_OFFSETS.acq_offer_price] = 0
+
+    # =========================================================================
     # COMPATIBILITY ALIASES FOR OLDER PHASE-SPECIFIC TURN CONTEXT
     # =========================================================================
 

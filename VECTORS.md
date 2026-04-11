@@ -12,13 +12,13 @@ This document describes the in-memory game state layout. The state is the engine
 
 | Players | total_size | player_stride | corp_stride | turn_size |
 |---------|-----------|---------------|-------------|-----------|
-| 2       | 429       | 30            | 16          | 67        |
-| 3       | 459       | 30            | 16          | 67        |
-| 4       | 489       | 30            | 16          | 67        |
-| 5       | 519       | 30            | 16          | 67        |
-| 6       | 549       | 30            | 16          | 67        |
+| 2       | 430       | 30            | 16          | 68        |
+| 3       | 460       | 30            | 16          | 68        |
+| 4       | 490       | 30            | 16          | 68        |
+| 5       | 520       | 30            | 16          | 68        |
+| 6       | 550       | 30            | 16          | 68        |
 
-`player_stride`, `corp_stride`, and `turn_size` are all fixed across player counts. The players section is the **only** part of the buffer whose size depends on `num_players`, so `total_size = 369 + 30 * num_players` — the constant 369 is the fixed prefix, and only the trailing players section grows.
+`player_stride`, `corp_stride`, and `turn_size` are all fixed across player counts. The players section is the **only** part of the buffer whose size depends on `num_players`, so `total_size = 370 + 30 * num_players` — the constant 370 is the fixed prefix, and only the trailing players section grows.
 
 Layout offsets are computed once at module load and exposed as Cython `cdef` structs at module scope on `core.state`:
 
@@ -46,9 +46,9 @@ Cython code reads them directly via `from core.state cimport LAYOUT, TURN_OFFSET
 | Companies | 2   | 108 | Three parallel 36-slot sub-arrays: `incomes`, `locations`, `owner_ids` (see [Companies section](#companies-section)) |
 | Market    | 110 | 27  | Per-price availability flags |
 | Corps     | 137 | 128 | Per-corp blocks: `corp_stride (16) * 8` (see [Corp block](#corp-block)) |
-| Turn      | 265 | 67  | Turn-scoped state including game-wide metadata, active corp/company selectors, plus two internal cache-dirty masks (see [Turn block](#turn-block)) |
-| Deck      | 332 | 37  | `top` (1) + `order` (36) — see [Deck section](#deck-section) |
-| Players   | 369 | `player_stride * num_players` | Per-player blocks (see [Player block](#player-block)) |
+| Turn      | 265 | 68  | Turn-scoped state including game-wide metadata, active corp/company selectors, plus two internal cache-dirty masks (see [Turn block](#turn-block)) |
+| Deck      | 333 | 37  | `top` (1) + `order` (36) — see [Deck section](#deck-section) |
+| Players   | 370 | `player_stride * num_players` | Per-player blocks (see [Player block](#player-block)) |
 
 Every offset above is **constant across all player counts** — the players section lives at the end of the buffer for exactly this reason. The "Start offset" column is identical for every player count up to and including the players section start.
 
@@ -160,7 +160,7 @@ Several corp-block fields are stored but derived from authoritative state: `inco
 
 ## Turn block
 
-Block size: **67**, fixed across player counts. Sub-offsets via `core.state.get_turn_fields()` (`TurnFields` namedtuple) for Python, or `from core.state cimport TURN_OFFSETS` for Cython. The turn block starts with the active player plus the generic active corp/company selectors, then the remaining game-wide metadata and phase state.
+Block size: **68**, fixed across player counts. Sub-offsets via `core.state.get_turn_fields()` (`TurnFields` namedtuple) for Python, or `from core.state cimport TURN_OFFSETS` for Cython. The turn block starts with the active player plus the generic active corp/company selectors, then the remaining game-wide metadata and phase state.
 
 | Relative offset | Field | Size | Notes |
 |----------------|-------|------|-------|
@@ -177,11 +177,12 @@ Block size: **67**, fixed across player counts. Sub-offsets via `core.state.get_
 | 10 | auction_price        | 1  | 0 when no auction |
 | 11 | auction_high_bidder  | 1  | `player_id` or `-1` |
 | 12 | auction_starter      | 1  | `player_id` or `-1` |
-| 13 | dividend_remaining   | 8  | Per-corp pending flag |
-| 21 | issue_remaining      | 8  | Per-corp pending flag |
-| 29 | ipo_remaining        | 36 | Per-company pending flag |
+| 13 | acq_offer_price      | 1  | Offer price during ACQ_OFFER, or `0` |
+| 14 | dividend_remaining   | 8  | Per-corp pending flag |
+| 22 | issue_remaining      | 8  | Per-corp pending flag |
+| 30 | ipo_remaining        | 36 | Per-company pending flag |
 
-Internal slots at relative offsets `65` and `66` hold the player-finance (`player_cache_dirty`) and corp-derived (`corp_cache_dirty`) dirty masks used by the lazy cache system. These offsets exist in `TURN_OFFSETS` for Cython code but are intentionally omitted from the Python `TurnFields` namedtuple.
+Internal slots at relative offsets `66` and `67` hold the player-finance (`player_cache_dirty`) and corp-derived (`corp_cache_dirty`) dirty masks used by the lazy cache system. These offsets exist in `TURN_OFFSETS` for Cython code but are intentionally omitted from the Python `TurnFields` namedtuple.
 
 There is no dedicated `auction_company` slot — the generic `active_company` selector at offset 2 carries that role during BID, and likewise covers the active-company context for IPO and ACQ_OFFER. It is **not** used during ACQUISITION or CLOSING: the old per-phase offer buffers are gone, and those phases now pick the target company directly from the masked action space, so both `active_corp` and `active_company` sit at `-1` throughout them. ACQ_OFFER reuses the same selectors for FI-priority resolution: `active_corp` = the preempting corp being offered the FI-owned company, `active_company` = the contested FI company, and `active_player` = that corp's president. No new per-phase fields (`closing_company` / `dividend_corp` / `issue_corp` / `ipo_company`) are needed — the generic selectors plus the per-phase remaining bitmasks already in the turn block cover every phase. The per-player `has_passed` flag used to live in the turn block as an auction-specific array; it now lives in the player block, so the turn block is fully fixed-size.
 
@@ -388,12 +389,12 @@ from entities.player import PLAYERS
 # State buffer
 state = GameState(num_players=3)
 state.initialize_game(3, seed=42)
-print(f"buffer length = {len(state._array)}")  # 459 for 3p
+print(f"buffer length = {len(state._array)}")  # 460 for 3p
 
 # Layout introspection
 layout = get_layout(3)            # LayoutInfo namedtuple
-print(layout.players_offset)      # 369 (constant across player counts)
-print(layout.total_size)          # 459
+print(layout.players_offset)      # 370 (constant across player counts)
+print(layout.total_size)          # 460
 
 pf = get_player_fields()          # PlayerFields namedtuple
 print(pf.cash, pf.has_passed)     # 0 29
