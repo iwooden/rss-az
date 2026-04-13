@@ -11,12 +11,21 @@ Action space: 26 actions (amounts 0-25, no pass action). ``action_id == amount``
 Reference: RULES.md Phase 6, Pay Dividends, Adjust Share Price, Target Stars,
 Maximum Dividend Per Share.
 
-All state access goes through entity handles.
+Repeated corp reads go through entity-owned primitives; semantic mutations
+remain on entity handles.
 """
 
 from core.state cimport GameState
 from core.data cimport GameConstants, GamePhases
 from core.actions cimport ActionInfo, ACTION_DIVIDEND
+from entities.corp cimport (
+    corp_is_active,
+    corp_issued_shares,
+    corp_price_index,
+    corp_is_in_receivership,
+    corp_president_id,
+    corp_pending_price_move,
+)
 
 # Late Python-level entity imports, same pattern as phases/income.pyx.
 from entities import turn as turn_module
@@ -35,7 +44,7 @@ cdef void _init_dividend_remaining(GameState state) noexcept:
     for corp_id in range(<int>GameConstants.NUM_CORPS):
         turn_module.TURN.set_dividend_remaining(
             state, corp_id,
-            corp_module.CORPS[corp_id].is_active(state),
+            corp_is_active(state, corp_id),
         )
 
 
@@ -48,11 +57,11 @@ cdef int _find_next_dividend_corp(GameState state) noexcept:
     best_id = -1
     best_price = -1
     for corp_id in range(<int>GameConstants.NUM_CORPS):
-        if not corp_module.CORPS[corp_id].is_active(state):
+        if not corp_is_active(state, corp_id):
             continue
         if not turn_module.TURN.is_dividend_remaining(state, corp_id):
             continue
-        price = corp_module.CORPS[corp_id].get_price_index(state)
+        price = corp_price_index(state, corp_id)
         if price > best_price:
             best_price = price
             best_id = corp_id
@@ -74,7 +83,7 @@ cdef void _pay_dividends(GameState state, int corp_id, int amount_per_share) noe
         if shares > 0:
             player_module.PLAYERS[p].add_cash(state, amount_per_share * shares)
     corp_module.CORPS[corp_id].add_cash(
-        state, -(amount_per_share * corp_module.CORPS[corp_id].get_issued_shares(state)),
+        state, -(amount_per_share * corp_issued_shares(state, corp_id)),
     )
 
 
@@ -110,8 +119,8 @@ cdef void _adjust_share_price(GameState state, int corp_id) noexcept:
     Handles space availability (freeing old, claiming new) and bankruptcy
     when the target reaches index 0.
     """
-    cdef int current_index = corp_module.CORPS[corp_id].get_price_index(state)
-    cdef int move = corp_module.CORPS[corp_id].get_pending_price_move(state)
+    cdef int current_index = corp_price_index(state, corp_id)
+    cdef int move = corp_pending_price_move(state, corp_id)
     cdef int target_index
 
     if move == 0:
@@ -148,7 +157,7 @@ cdef void _advance_to_next_corp(GameState state) noexcept:
             turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_END_CARD)
             return
 
-        if corp_module.CORPS[corp_id].is_in_receivership(state):
+        if corp_is_in_receivership(state, corp_id):
             # Receivership: auto-pay 0, adjust price, clear flag, loop.
             _adjust_share_price(state, corp_id)
             turn_module.TURN.set_dividend_remaining(state, corp_id, False)
@@ -157,7 +166,7 @@ cdef void _advance_to_next_corp(GameState state) noexcept:
         # Player-controlled: set active context and return for decision.
         turn_module.TURN.set_active_corp(state, corp_id)
         turn_module.TURN.set_active_player(
-            state, corp_module.CORPS[corp_id].get_president_id(state),
+            state, corp_president_id(state, corp_id),
         )
         return
 

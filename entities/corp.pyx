@@ -79,6 +79,10 @@ cdef inline int _corp_cache_dirty_slot() noexcept nogil:
     return LAYOUT.turn_offset + TURN_OFFSETS.corp_cache_dirty
 
 
+cdef inline int _corp_slot(int corp_id, int field) noexcept nogil:
+    return LAYOUT.corps_offset + corp_id * CORP_FIELDS.size + field
+
+
 cdef inline int _all_corps_mask() noexcept nogil:
     return (1 << <int>GameConstants.NUM_CORPS) - 1
 
@@ -106,6 +110,60 @@ cdef int count_corp_companies(
 ) noexcept nogil:
     return company_fill_corp_company_ids(
         state, corp_id, include_acquisition, <int*>NULL)
+
+
+cdef bint corp_is_active(GameState state, int corp_id) noexcept nogil:
+    return state._data[_corp_slot(corp_id, CORP_FIELDS.active)] == 1
+
+
+cdef int corp_cash(GameState state, int corp_id) noexcept nogil:
+    return <int>state._data[_corp_slot(corp_id, CORP_FIELDS.cash)]
+
+
+cdef int corp_unissued_shares(GameState state, int corp_id) noexcept nogil:
+    return <int>state._data[_corp_slot(corp_id, CORP_FIELDS.unissued_shares)]
+
+
+cdef int corp_issued_shares(GameState state, int corp_id) noexcept nogil:
+    return <int>state._data[_corp_slot(corp_id, CORP_FIELDS.issued_shares)]
+
+
+cdef int corp_bank_shares(GameState state, int corp_id) noexcept nogil:
+    return <int>state._data[_corp_slot(corp_id, CORP_FIELDS.bank_shares)]
+
+
+cdef int corp_price_index(GameState state, int corp_id) noexcept nogil:
+    return <int>state._data[_corp_slot(corp_id, CORP_FIELDS.price_index)]
+
+
+cdef int corp_share_price(GameState state, int corp_id) noexcept nogil:
+    return MARKET_PRICES[corp_price_index(state, corp_id)]
+
+
+cdef int corp_acquisition_proceeds(GameState state, int corp_id) noexcept nogil:
+    return <int>state._data[_corp_slot(corp_id, CORP_FIELDS.acquisition_proceeds)]
+
+
+cdef bint corp_is_in_receivership(GameState state, int corp_id) noexcept nogil:
+    return state._data[_corp_slot(corp_id, CORP_FIELDS.in_receivership)] == 1
+
+
+cdef int corp_president_id(GameState state, int corp_id) noexcept nogil:
+    return <int>state._data[_corp_slot(corp_id, CORP_FIELDS.president_id)]
+
+
+cdef bint corp_has_passed_acq_offer(GameState state, int corp_id) noexcept nogil:
+    return state._data[_corp_slot(corp_id, CORP_FIELDS.passed_acq_offer)] == 1
+
+
+cdef bint corp_owns_company(GameState state, int corp_id, int company_id) noexcept nogil:
+    return company_owned_by_corp(state, company_id, corp_id)
+
+
+cdef bint corp_has_acquisition_company(
+    GameState state, int corp_id, int company_id,
+) noexcept nogil:
+    return company_in_corp_acquisition(state, company_id, corp_id)
 
 
 # =============================================================================
@@ -179,6 +237,143 @@ cdef inline (int, int) _aggregate_synergies(int* company_ids, int num_companies)
     return (total_income, marker_count)
 
 
+cdef void _clear_corp_cache(GameState state, int corp_id) noexcept nogil:
+    state._data[_corp_slot(corp_id, CORP_FIELDS.income)] = 0
+    state._data[_corp_slot(corp_id, CORP_FIELDS.company_stars)] = 0
+    state._data[_corp_slot(corp_id, CORP_FIELDS.raw_revenue)] = 0
+    state._data[_corp_slot(corp_id, CORP_FIELDS.synergy_income)] = 0
+    state._data[_corp_slot(corp_id, CORP_FIELDS.coo_cost)] = 0
+    state._data[_corp_slot(corp_id, CORP_FIELDS.ability_income)] = 0
+    _clear_cache_dirty(state, corp_id)
+
+
+cdef void _refresh_corp_cache(GameState state, int corp_id) noexcept nogil:
+    cdef int company_id, base_income, fv, i
+    cdef int adjusted_income_sum = 0
+    cdef int raw_revenue_sum = 0
+    cdef int highest_fv = 0
+    cdef int highest_fv_income = 0
+    cdef int company_stars = 0
+    cdef int company_ids[36]
+    cdef int synergy_income = 0
+    cdef int synergy_markers = 0
+    cdef int total_coo, ability, total
+    cdef int company_count
+
+    if not corp_is_active(state, corp_id):
+        _clear_corp_cache(state, corp_id)
+        return
+
+    company_count = company_fill_corp_company_ids(
+        state, corp_id, True, company_ids)
+
+    # Single ownership scan drives both star totals and the income
+    # breakdown, so all corp-derived fields stay coherent together.
+    for i in range(company_count):
+        company_id = company_ids[i]
+        company_stars += COMPANY_STARS[company_id]
+        adjusted_income_sum += company_adjusted_income(state, company_id)
+
+        base_income = COMPANY_INCOME[company_id]
+        raw_revenue_sum += base_income
+        fv = COMPANY_FACE_VALUE[company_id]
+        if fv > highest_fv:
+            highest_fv = fv
+            highest_fv_income = base_income
+        elif fv == highest_fv and base_income > highest_fv_income:
+            highest_fv_income = base_income
+
+    total_coo = raw_revenue_sum - adjusted_income_sum
+
+    if company_count > 1:
+        (synergy_income, synergy_markers) = _aggregate_synergies(company_ids, company_count)
+
+    ability = 0
+    if corp_id == <int>CorpIndices.CORP_VM:
+        ability = total_coo if total_coo < 10 else 10
+    elif corp_id == <int>CorpIndices.CORP_PR:
+        ability = company_count
+    elif corp_id == <int>CorpIndices.CORP_DA:
+        ability = highest_fv_income
+    elif corp_id == <int>CorpIndices.CORP_S:
+        ability = synergy_markers // 2
+
+    total = raw_revenue_sum - total_coo + synergy_income + ability
+
+    state._data[_corp_slot(corp_id, CORP_FIELDS.income)] = <int16_t>total
+    state._data[_corp_slot(corp_id, CORP_FIELDS.company_stars)] = <int16_t>company_stars
+    state._data[_corp_slot(corp_id, CORP_FIELDS.raw_revenue)] = <int16_t>raw_revenue_sum
+    state._data[_corp_slot(corp_id, CORP_FIELDS.synergy_income)] = <int16_t>synergy_income
+    state._data[_corp_slot(corp_id, CORP_FIELDS.coo_cost)] = <int16_t>(-total_coo)
+    state._data[_corp_slot(corp_id, CORP_FIELDS.ability_income)] = <int16_t>ability
+    _clear_cache_dirty(state, corp_id)
+
+
+cdef int corp_income(GameState state, int corp_id) noexcept nogil:
+    if _cache_dirty(state, corp_id):
+        _refresh_corp_cache(state, corp_id)
+    return <int>state._data[_corp_slot(corp_id, CORP_FIELDS.income)]
+
+
+cdef int corp_raw_revenue(GameState state, int corp_id) noexcept nogil:
+    if _cache_dirty(state, corp_id):
+        _refresh_corp_cache(state, corp_id)
+    return <int>state._data[_corp_slot(corp_id, CORP_FIELDS.raw_revenue)]
+
+
+cdef int corp_synergy_income(GameState state, int corp_id) noexcept nogil:
+    if _cache_dirty(state, corp_id):
+        _refresh_corp_cache(state, corp_id)
+    return <int>state._data[_corp_slot(corp_id, CORP_FIELDS.synergy_income)]
+
+
+cdef int corp_coo_cost(GameState state, int corp_id) noexcept nogil:
+    if _cache_dirty(state, corp_id):
+        _refresh_corp_cache(state, corp_id)
+    return <int>state._data[_corp_slot(corp_id, CORP_FIELDS.coo_cost)]
+
+
+cdef int corp_ability_income(GameState state, int corp_id) noexcept nogil:
+    if _cache_dirty(state, corp_id):
+        _refresh_corp_cache(state, corp_id)
+    return <int>state._data[_corp_slot(corp_id, CORP_FIELDS.ability_income)]
+
+
+cdef int corp_company_stars(GameState state, int corp_id) noexcept nogil:
+    if _cache_dirty(state, corp_id):
+        _refresh_corp_cache(state, corp_id)
+    return <int>state._data[_corp_slot(corp_id, CORP_FIELDS.company_stars)]
+
+
+cdef int corp_cash_stars(GameState state, int corp_id) noexcept nogil:
+    cdef int cash
+    if not corp_is_active(state, corp_id):
+        return 0
+    cash = corp_cash(state, corp_id)
+    return cash // 10 if cash > 0 else 0
+
+
+cdef int corp_total_stars(GameState state, int corp_id) noexcept nogil:
+    if not corp_is_active(state, corp_id):
+        return 0
+    return (
+        corp_company_stars(state, corp_id)
+        + corp_cash_stars(state, corp_id)
+        + (2 if corp_id == <int>CorpIndices.CORP_SI else 0)
+    )
+
+
+cdef int corp_pending_price_move(GameState state, int corp_id) noexcept nogil:
+    cdef int required
+    if not corp_is_active(state, corp_id):
+        return 0
+    required = _required_stars(
+        corp_price_index(state, corp_id),
+        corp_issued_shares(state, corp_id),
+    )
+    return calculate_price_move(corp_total_stars(state, corp_id), required)
+
+
 # =============================================================================
 # CORPORATION CLASS
 # =============================================================================
@@ -198,71 +393,23 @@ cdef class Corporation:
         self.name = name
 
     # =========================================================================
-    # SLOT HELPER (constant-offset arithmetic)
-    # =========================================================================
-
-    cdef inline int _slot(self, int field) noexcept nogil:
-        """Absolute index of a per-corp field for this corp."""
-        return LAYOUT.corps_offset + self.corp_id * CORP_FIELDS.size + field
-
-    # =========================================================================
-    # NOGIL ACCESSORS (used by hot paths inside the engine)
-    # =========================================================================
-
-    cdef inline int _get_cash(self, GameState state) noexcept nogil:
-        return <int>state._data[self._slot(CORP_FIELDS.cash)]
-
-    cdef inline int _get_bank_shares(self, GameState state) noexcept nogil:
-        return <int>state._data[self._slot(CORP_FIELDS.bank_shares)]
-
-    cdef inline int _get_unissued_shares(self, GameState state) noexcept nogil:
-        return <int>state._data[self._slot(CORP_FIELDS.unissued_shares)]
-
-    cdef inline int _get_issued_shares(self, GameState state) noexcept nogil:
-        return <int>state._data[self._slot(CORP_FIELDS.issued_shares)]
-
-    cdef inline int _get_price_index(self, GameState state) noexcept nogil:
-        return <int>state._data[self._slot(CORP_FIELDS.price_index)]
-
-    cdef inline bint _is_active(self, GameState state) noexcept nogil:
-        return state._data[self._slot(CORP_FIELDS.active)] == 1
-
-    cdef inline bint _is_in_receivership(self, GameState state) noexcept nogil:
-        return state._data[self._slot(CORP_FIELDS.in_receivership)] == 1
-
-    cdef inline bint _owns_company(self, GameState state, int company_id) noexcept nogil:
-        """Check if this corp currently owns the given company.
-
-        Delegates to the company module, which owns the companies
-        section storage and its layout details.
-        """
-        return company_owned_by_corp(state, company_id, self.corp_id)
-
-    cdef inline bint _has_acquisition_company(self, GameState state, int company_id) noexcept nogil:
-        """Check if this corp has the given company in its acquisition pile."""
-        return company_in_corp_acquisition(state, company_id, self.corp_id)
-
-    cdef inline int _count_companies(self, GameState state, bint include_acquisition) noexcept nogil:
-        return count_corp_companies(state, self.corp_id, include_acquisition)
-
-    # =========================================================================
     # ACTIVE STATUS
     # =========================================================================
 
     cpdef bint is_active(self, GameState state):
         """Return True if the corp has been IPO'd."""
-        return self._is_active(state)
+        return corp_is_active(state, self.corp_id)
 
     cpdef void set_active(self, GameState state, bint active):
         """Set whether the corp is active."""
-        cdef bint old_active = self._is_active(state)
-        state._data[self._slot(CORP_FIELDS.active)] = <int16_t>(1 if active else 0)
+        cdef bint old_active = corp_is_active(state, self.corp_id)
+        state._data[_corp_slot(self.corp_id, CORP_FIELDS.active)] = <int16_t>(1 if active else 0)
         if old_active != active:
             if active:
                 invalidate_corp_cache(state, self.corp_id)
                 invalidate_all_player_caches(state)
             else:
-                self._clear_cache(state)
+                _clear_corp_cache(state, self.corp_id)
                 invalidate_all_player_caches(state)
 
     cpdef void float_corp(self, GameState state, int player_id, int company_id,
@@ -309,15 +456,15 @@ cdef class Corporation:
 
     cpdef int get_cash(self, GameState state):
         """Return corp cash (raw integer dollars)."""
-        return self._get_cash(state)
+        return corp_cash(state, self.corp_id)
 
     cpdef void set_cash(self, GameState state, int cash):
         """Set corp cash (raw integer dollars)."""
-        state._data[self._slot(CORP_FIELDS.cash)] = <int16_t>cash
+        state._data[_corp_slot(self.corp_id, CORP_FIELDS.cash)] = <int16_t>cash
 
     cpdef void add_cash(self, GameState state, int amount):
         """Add to corp cash (negative `amount` subtracts)."""
-        self.set_cash(state, self._get_cash(state) + amount)
+        self.set_cash(state, corp_cash(state, self.corp_id) + amount)
 
     # =========================================================================
     # SHARE TRACKING
@@ -325,29 +472,29 @@ cdef class Corporation:
 
     cpdef int get_unissued_shares(self, GameState state):
         """Return number of unissued shares remaining in the treasury."""
-        return self._get_unissued_shares(state)
+        return corp_unissued_shares(state, self.corp_id)
 
     cpdef void set_unissued_shares(self, GameState state, int shares):
         """Set number of unissued shares."""
-        state._data[self._slot(CORP_FIELDS.unissued_shares)] = <int16_t>shares
+        state._data[_corp_slot(self.corp_id, CORP_FIELDS.unissued_shares)] = <int16_t>shares
         invalidate_corp_cache(state, self.corp_id)
 
     cpdef int get_issued_shares(self, GameState state):
         """Return number of issued shares (held by players + bank)."""
-        return self._get_issued_shares(state)
+        return corp_issued_shares(state, self.corp_id)
 
     cpdef void set_issued_shares(self, GameState state, int shares):
         """Set number of issued shares."""
-        state._data[self._slot(CORP_FIELDS.issued_shares)] = <int16_t>shares
+        state._data[_corp_slot(self.corp_id, CORP_FIELDS.issued_shares)] = <int16_t>shares
         invalidate_corp_cache(state, self.corp_id)
 
     cpdef int get_bank_shares(self, GameState state):
         """Return number of shares held by the bank (sold by players)."""
-        return self._get_bank_shares(state)
+        return corp_bank_shares(state, self.corp_id)
 
     cpdef void set_bank_shares(self, GameState state, int shares):
         """Set number of bank shares."""
-        state._data[self._slot(CORP_FIELDS.bank_shares)] = <int16_t>shares
+        state._data[_corp_slot(self.corp_id, CORP_FIELDS.bank_shares)] = <int16_t>shares
         invalidate_corp_cache(state, self.corp_id)
 
     # =========================================================================
@@ -356,37 +503,27 @@ cdef class Corporation:
 
     cpdef int get_income(self, GameState state):
         """Return cached corp income (raw integer dollars)."""
-        if _cache_dirty(state, self.corp_id):
-            self._refresh_cache(state)
-        return <int>state._data[self._slot(CORP_FIELDS.income)]
+        return corp_income(state, self.corp_id)
 
     cpdef void set_income(self, GameState state, int income):
         """Set cached corp income (raw integer dollars)."""
-        state._data[self._slot(CORP_FIELDS.income)] = <int16_t>income
+        state._data[_corp_slot(self.corp_id, CORP_FIELDS.income)] = <int16_t>income
 
     cpdef int get_raw_revenue(self, GameState state):
         """Return cached raw revenue before CoO and bonuses."""
-        if _cache_dirty(state, self.corp_id):
-            self._refresh_cache(state)
-        return <int>state._data[self._slot(CORP_FIELDS.raw_revenue)]
+        return corp_raw_revenue(state, self.corp_id)
 
     cpdef int get_synergy_income(self, GameState state):
         """Return cached synergy-income component."""
-        if _cache_dirty(state, self.corp_id):
-            self._refresh_cache(state)
-        return <int>state._data[self._slot(CORP_FIELDS.synergy_income)]
+        return corp_synergy_income(state, self.corp_id)
 
     cpdef int get_coo_cost(self, GameState state):
         """Return cached CoO component (stored as a non-positive value)."""
-        if _cache_dirty(state, self.corp_id):
-            self._refresh_cache(state)
-        return <int>state._data[self._slot(CORP_FIELDS.coo_cost)]
+        return corp_coo_cost(state, self.corp_id)
 
     cpdef int get_ability_income(self, GameState state):
         """Return cached ability-income component."""
-        if _cache_dirty(state, self.corp_id):
-            self._refresh_cache(state)
-        return <int>state._data[self._slot(CORP_FIELDS.ability_income)]
+        return corp_ability_income(state, self.corp_id)
 
     # =========================================================================
     # STARS
@@ -394,34 +531,19 @@ cdef class Corporation:
 
     cpdef int get_total_stars(self, GameState state):
         """Return total stars as company_stars + cash stars + SI bonus."""
-        if not self._is_active(state):
-            return 0
-        if _cache_dirty(state, self.corp_id):
-            self._refresh_cache(state)
-        return self.get_company_stars(state) + self.get_cash_stars(state) + (
-            2 if self.corp_id == <int>CorpIndices.CORP_SI else 0
-        )
+        return corp_total_stars(state, self.corp_id)
 
     cpdef int get_cash_stars(self, GameState state):
         """Return derived cash-stars component from current cash."""
-        if not self._is_active(state):
-            return 0
-        cdef int cash = self._get_cash(state)
-        return cash // 10 if cash > 0 else 0
+        return corp_cash_stars(state, self.corp_id)
 
     cpdef int get_company_stars(self, GameState state):
         """Return cached company-stars component."""
-        if _cache_dirty(state, self.corp_id):
-            self._refresh_cache(state)
-        return <int>state._data[self._slot(CORP_FIELDS.company_stars)]
+        return corp_company_stars(state, self.corp_id)
 
     cpdef int get_pending_price_move(self, GameState state):
         """Return derived pending price-movement scalar."""
-        cdef int required
-        if not self._is_active(state):
-            return 0
-        required = _required_stars(self._get_price_index(state), self._get_issued_shares(state))
-        return calculate_price_move(self.get_total_stars(state), required)
+        return corp_pending_price_move(state, self.corp_id)
 
     # =========================================================================
     # SHARE PRICE / MARKET INDEX
@@ -429,19 +551,19 @@ cdef class Corporation:
 
     cpdef int get_share_price(self, GameState state):
         """Return current share price derived from the market index."""
-        return MARKET_PRICES[self._get_price_index(state)]
+        return corp_share_price(state, self.corp_id)
 
     cpdef int get_price_index(self, GameState state):
         """Return market price index (0-26, where 0 is bankruptcy)."""
-        return self._get_price_index(state)
+        return corp_price_index(state, self.corp_id)
 
     cpdef void set_price_index(self, GameState state, int index):
         """Set the canonical market price index."""
         cdef int old_index
         assert 0 <= index < <int>GameConstants.NUM_MARKET_SPACES, \
             f"price index {index} out of range [0, {<int>GameConstants.NUM_MARKET_SPACES})"
-        old_index = self._get_price_index(state)
-        state._data[self._slot(CORP_FIELDS.price_index)] = <int16_t>index
+        old_index = corp_price_index(state, self.corp_id)
+        state._data[_corp_slot(self.corp_id, CORP_FIELDS.price_index)] = <int16_t>index
         if old_index != index:
             invalidate_corp_cache(state, self.corp_id)
             invalidate_all_player_caches(state)
@@ -452,11 +574,11 @@ cdef class Corporation:
 
     cpdef int get_acquisition_proceeds(self, GameState state):
         """Return accumulated acquisition proceeds (for dividend calculation)."""
-        return <int>state._data[self._slot(CORP_FIELDS.acquisition_proceeds)]
+        return corp_acquisition_proceeds(state, self.corp_id)
 
     cpdef void set_acquisition_proceeds(self, GameState state, int proceeds):
         """Set accumulated acquisition proceeds."""
-        state._data[self._slot(CORP_FIELDS.acquisition_proceeds)] = <int16_t>proceeds
+        state._data[_corp_slot(self.corp_id, CORP_FIELDS.acquisition_proceeds)] = <int16_t>proceeds
 
     # =========================================================================
     # RECEIVERSHIP
@@ -464,11 +586,11 @@ cdef class Corporation:
 
     cpdef bint is_in_receivership(self, GameState state):
         """Return True if the corp is in receivership (no president)."""
-        return self._is_in_receivership(state)
+        return corp_is_in_receivership(state, self.corp_id)
 
     cpdef void set_in_receivership(self, GameState state, bint in_recv):
         """Set whether the corp is in receivership."""
-        state._data[self._slot(CORP_FIELDS.in_receivership)] = <int16_t>(1 if in_recv else 0)
+        state._data[_corp_slot(self.corp_id, CORP_FIELDS.in_receivership)] = <int16_t>(1 if in_recv else 0)
 
     # =========================================================================
     # COMPANY OWNERSHIP
@@ -481,7 +603,7 @@ cdef class Corporation:
         """
         assert 0 <= company_id < <int>GameConstants.NUM_COMPANIES, \
             f"company_id {company_id} out of range [0, {<int>GameConstants.NUM_COMPANIES})"
-        return self._owns_company(state, company_id)
+        return corp_owns_company(state, self.corp_id, company_id)
 
     cpdef int count_companies(self, GameState state, bint include_acquisition=False):
         """
@@ -492,89 +614,7 @@ cdef class Corporation:
         in this corp's acquisition pile (which will become owned once
         the phase ends).
         """
-        return self._count_companies(state, include_acquisition)
-
-    # =========================================================================
-    # DERIVED CACHE REFRESH
-    # =========================================================================
-
-    cdef void _clear_cache(self, GameState state) noexcept:
-        state._data[self._slot(CORP_FIELDS.income)] = 0
-        state._data[self._slot(CORP_FIELDS.company_stars)] = 0
-        state._data[self._slot(CORP_FIELDS.raw_revenue)] = 0
-        state._data[self._slot(CORP_FIELDS.synergy_income)] = 0
-        state._data[self._slot(CORP_FIELDS.coo_cost)] = 0
-        state._data[self._slot(CORP_FIELDS.ability_income)] = 0
-        _clear_cache_dirty(state, self.corp_id)
-
-    cdef void _refresh_cache(self, GameState state):
-        """
-        Recompute all derived corporation fields from authoritative state.
-
-        This folds the expensive ownership scan and the full income
-        breakdown behind a single dirty bit. When the cache is clean,
-        getters can read the stored slots directly and derive the cheap
-        star / price-move values from live state.
-        """
-        cdef int company_id, base_income, fv, i
-        cdef int adjusted_income_sum = 0
-        cdef int raw_revenue_sum = 0
-        cdef int highest_fv = 0
-        cdef int highest_fv_income = 0
-        cdef int company_stars = 0
-        cdef int company_ids[36]
-        cdef int synergy_income = 0
-        cdef int synergy_markers = 0
-        cdef int total_coo, ability, total
-        cdef int company_count
-
-        if not self._is_active(state):
-            self._clear_cache(state)
-            return
-
-        company_count = company_fill_corp_company_ids(
-            state, self.corp_id, True, company_ids)
-
-        # Single ownership scan drives both star totals and the income
-        # breakdown, so all corp-derived fields stay coherent together.
-        for i in range(company_count):
-            company_id = company_ids[i]
-            company_stars += COMPANY_STARS[company_id]
-            adjusted_income_sum += company_adjusted_income(state, company_id)
-
-            base_income = COMPANY_INCOME[company_id]
-            raw_revenue_sum += base_income
-            fv = COMPANY_FACE_VALUE[company_id]
-            if fv > highest_fv:
-                highest_fv = fv
-                highest_fv_income = base_income
-            elif fv == highest_fv and base_income > highest_fv_income:
-                highest_fv_income = base_income
-
-        total_coo = raw_revenue_sum - adjusted_income_sum
-
-        if company_count > 1:
-            (synergy_income, synergy_markers) = _aggregate_synergies(company_ids, company_count)
-
-        ability = 0
-        if self.corp_id == <int>CorpIndices.CORP_VM:
-            ability = total_coo if total_coo < 10 else 10
-        elif self.corp_id == <int>CorpIndices.CORP_PR:
-            ability = company_count
-        elif self.corp_id == <int>CorpIndices.CORP_DA:
-            ability = highest_fv_income
-        elif self.corp_id == <int>CorpIndices.CORP_S:
-            ability = synergy_markers // 2
-
-        total = raw_revenue_sum - total_coo + synergy_income + ability
-
-        state._data[self._slot(CORP_FIELDS.income)] = <int16_t>total
-        state._data[self._slot(CORP_FIELDS.company_stars)] = <int16_t>company_stars
-        state._data[self._slot(CORP_FIELDS.raw_revenue)] = <int16_t>raw_revenue_sum
-        state._data[self._slot(CORP_FIELDS.synergy_income)] = <int16_t>synergy_income
-        state._data[self._slot(CORP_FIELDS.coo_cost)] = <int16_t>(-total_coo)
-        state._data[self._slot(CORP_FIELDS.ability_income)] = <int16_t>ability
-        _clear_cache_dirty(state, self.corp_id)
+        return count_corp_companies(state, self.corp_id, include_acquisition)
 
     # =========================================================================
     # BANKRUPTCY
@@ -599,8 +639,8 @@ cdef class Corporation:
         # acquisition pile, but we clean up LOC_CORP_ACQ defensively so the
         # foundation layer never leaves companies attached to an inactive corp.
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
-            if (self._owns_company(state, company_id)
-                    or self._has_acquisition_company(state, company_id)):
+            if (corp_owns_company(state, self.corp_id, company_id)
+                    or corp_has_acquisition_company(state, self.corp_id, company_id)):
                 company_module.COMPANIES[company_id].remove_from_game(state)
 
         # Step 2: Return all shares to unissued — clear player shares.
@@ -617,7 +657,7 @@ cdef class Corporation:
         self.set_cash(state, 0)
 
         # Step 5: Free market space if needed.
-        current_index = self._get_price_index(state)
+        current_index = corp_price_index(state, self.corp_id)
         if current_index > 0:
             market_module.MARKET.set_space_available(state, current_index, True)
 
@@ -635,7 +675,7 @@ cdef class Corporation:
 
     cpdef int get_president_id(self, GameState state):
         """Return player_id of the corp's president, or -1 if inactive/receivership."""
-        return <int>state._data[self._slot(CORP_FIELDS.president_id)]
+        return corp_president_id(state, self.corp_id)
 
     cdef void _recalculate_presidency(self, GameState state):
         """
@@ -653,10 +693,10 @@ cdef class Corporation:
         cdef int incumbent_shares, incumbent_position, position, checked, candidate
         cdef TurnState turn = _TURN()
         cdef int num_players = turn._get_num_players(state)
-        cdef int slot = self._slot(CORP_FIELDS.president_id)
+        cdef int slot = _corp_slot(self.corp_id, CORP_FIELDS.president_id)
 
         # Skip inactive corporations
-        if not self._is_active(state):
+        if not corp_is_active(state, self.corp_id):
             return
 
         # Read current president from the corp's president_id field
@@ -719,11 +759,11 @@ cdef class Corporation:
 
     cpdef bint has_passed_acq_offer(self, GameState state):
         """Return True if this corp has passed on the current ACQ_OFFER."""
-        return state._data[self._slot(CORP_FIELDS.passed_acq_offer)] == 1
+        return corp_has_passed_acq_offer(state, self.corp_id)
 
     cpdef void set_passed_acq_offer(self, GameState state, bint passed):
         """Set whether this corp has passed on the current ACQ_OFFER."""
-        state._data[self._slot(CORP_FIELDS.passed_acq_offer)] = <int16_t>(1 if passed else 0)
+        state._data[_corp_slot(self.corp_id, CORP_FIELDS.passed_acq_offer)] = <int16_t>(1 if passed else 0)
 
     # =========================================================================
     # ACQUISITION PILE
@@ -733,7 +773,7 @@ cdef class Corporation:
         """Return True if this corp has the given company in its acquisition pile."""
         assert 0 <= company_id < <int>GameConstants.NUM_COMPANIES, \
             f"company_id {company_id} out of range [0, {<int>GameConstants.NUM_COMPANIES})"
-        return self._has_acquisition_company(state, company_id)
+        return corp_has_acquisition_company(state, self.corp_id, company_id)
 
 
 # =============================================================================

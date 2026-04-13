@@ -175,6 +175,59 @@ set_company_location_owner(state, company_id, LOC_CORP, corp_id)
 
 unless it remains private inside `entities/company.pyx`.
 
+## Cache Encapsulation
+
+Entity caches are entity implementation details. Phase handlers, action
+enumeration, MCTS, and training code should not check dirty flags, refresh
+caches, clear caches, or read cached storage slots directly.
+
+Expose cache-aware domain reads instead:
+
+```cython
+cdef int corp_income(GameState state, int corp_id) noexcept nogil:
+    if _cache_dirty(state, corp_id):
+        _refresh_corp_cache(state, corp_id)
+    return <int>state._data[_corp_slot(corp_id, CORP_FIELDS.income)]
+```
+
+Callers then use:
+
+```cython
+income = corp_income(state, corp_id)
+move = corp_pending_price_move(state, corp_id)
+```
+
+and can assume those values are fresh. The cache machinery remains private to
+the entity module:
+
+- `_cache_dirty(...)`
+- `_clear_cache_dirty(...)`
+- `_clear_corp_cache(...)`
+- `_refresh_corp_cache(...)`
+- raw cached-slot reads
+
+Existing public handle methods should delegate to the same cache-aware
+primitive:
+
+```cython
+cpdef int get_income(self, GameState state):
+    return corp_income(state, self.corp_id)
+```
+
+This keeps Python/debug callers and Cython hot paths on the same behavior
+without sending hot loops through `CORPS[corp_id].get_income(...)`.
+
+Some cross-entity cache invalidation hooks may still need to be declared in a
+`.pxd` when another entity owns a semantic mutation that affects this entity's
+derived values. For example, company transfers can mark a corporation cache
+dirty because company ownership lives in `entities/company`. Treat those
+helpers as entity-internal maintenance hooks, not phase APIs:
+
+- Peer entity modules may call invalidation helpers when preserving invariants.
+- Phase modules should prefer semantic mutations and cache-aware reads.
+- Do not export cache refresh or dirty-check helpers.
+- Do not make phases responsible for cache freshness.
+
 ## Cheap Checks Before Expensive Scans
 
 Order legality checks by cost.

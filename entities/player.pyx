@@ -12,7 +12,7 @@ with any GameState at any player count.
 Layout summary (per-player block, all raw int16):
   cash, net_worth, liquidity, turn_order (single int), owned_shares (8),
   income, share_buys (8), share_sells (8), has_passed (1).
-Presidency is tracked per-corp via ``CORP_FIELDS.president_id``.
+Presidency is tracked by the corp entity.
 
 Company ownership lives in the companies section, but player code reads
 it through company-module query helpers rather than duplicating the
@@ -27,7 +27,7 @@ calls are thin cdef dispatches once typed.
 
 from libc.stdint cimport int16_t
 
-from core.state cimport GameState, LAYOUT, PLAYER_FIELDS, CORP_FIELDS, TURN_OFFSETS
+from core.state cimport GameState, LAYOUT, PLAYER_FIELDS, TURN_OFFSETS
 from core.data cimport (
     GameConstants,
     MARKET_PRICES,
@@ -38,7 +38,15 @@ from entities.company cimport (
     company_sum_player_adjusted_income,
 )
 from entities.turn cimport TurnState
-from entities.corp cimport Corporation
+from entities.corp cimport (
+    Corporation,
+    corp_is_active,
+    corp_issued_shares,
+    corp_bank_shares,
+    corp_price_index,
+    corp_share_price,
+    corp_president_id,
+)
 from entities.market cimport copy_market_availability
 
 # Late imports to avoid circular dependencies (resolved at runtime)
@@ -185,20 +193,17 @@ cdef class Player:
         cdef int total = self._get_cash(state)
         cdef int corp_id
         cdef int shares
-        cdef Corporation corp
 
         # Add face value of owned private companies
         total += company_sum_player_face_value(state, self.player_id)
 
-        # Add value of corporation shares. Typed Corporation handle lets
-        # Cython dispatch via cdef instead of Python attribute lookups.
+        # Add value of corporation shares.
         for corp_id in range(<int>GameConstants.NUM_CORPS):
             shares = self._get_shares(state, corp_id)
             if shares <= 0:
                 continue
-            corp = <Corporation>corp_module.CORPS[corp_id]
-            if corp._is_active(state):
-                total += shares * corp.get_share_price(state)
+            if corp_is_active(state, corp_id):
+                total += shares * corp_share_price(state, corp_id)
 
         return total
 
@@ -236,22 +241,18 @@ cdef class Player:
         cdef int total = self._get_cash(state)
         cdef int corp_id, shares, sim_index, new_index, i
         cdef int16_t sim_market[27]
-        cdef Corporation corp
 
         # Copy market availability for simulation
         copy_market_availability(state, sim_market)
 
-        # Typed Corporation handle lets Cython dispatch via cdef instead
-        # of Python attribute lookups inside the inner simulation loop.
         for corp_id in range(<int>GameConstants.NUM_CORPS):
-            corp = <Corporation>corp_module.CORPS[corp_id]
-            if not corp._is_active(state):
+            if not corp_is_active(state, corp_id):
                 continue
             shares = self._get_shares(state, corp_id)
             if shares <= 0:
                 continue
 
-            sim_index = corp._get_price_index(state)
+            sim_index = corp_price_index(state, corp_id)
             for _ in range(shares):
                 # Find next lower available space in simulated market
                 new_index = sim_index - 1
@@ -331,13 +332,13 @@ cdef class Player:
         assert shares >= 0, f"shares must be non-negative, got {shares}"
 
         corp = <Corporation>corp_module.CORPS[corp_id]
-        assert corp._is_active(state), \
+        assert corp_is_active(state, corp_id), \
             f"cannot assign shares of inactive corp {corp_id}"
-        issued_shares = corp._get_issued_shares(state)
+        issued_shares = corp_issued_shares(state, corp_id)
         assert shares <= issued_shares, \
             f"player {self.player_id} shares {shares} exceed issued shares {issued_shares} for corp {corp_id}"
 
-        bank_shares = corp._get_bank_shares(state)
+        bank_shares = corp_bank_shares(state, corp_id)
         new_bank_shares = bank_shares - delta
         assert 0 <= new_bank_shares <= issued_shares, \
             f"share transfer would leave bank_shares={new_bank_shares} outside [0, {issued_shares}] for corp {corp_id}"
@@ -355,8 +356,7 @@ cdef class Player:
 
     cpdef bint is_president_of(self, GameState state, int corp_id):
         """Check if player is president of a corporation."""
-        cdef int slot = LAYOUT.corps_offset + corp_id * CORP_FIELDS.size + CORP_FIELDS.president_id
-        return <int>state._data[slot] == self.player_id
+        return corp_president_id(state, corp_id) == self.player_id
 
     # =========================================================================
     # ROUND-TRIP TRACKING (INVEST PHASE)

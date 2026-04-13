@@ -37,6 +37,15 @@ from entities.company cimport (
     company_location,
     company_owner_id,
 )
+from entities.corp cimport (
+    corp_is_active,
+    corp_cash,
+    corp_share_price,
+    corp_is_in_receivership,
+    corp_president_id,
+    corp_has_passed_acq_offer,
+    corp_acquisition_proceeds,
+)
 from phases.closing cimport setup_closing_phase
 
 from entities import turn as turn_module
@@ -89,9 +98,9 @@ cdef int _find_first_preemptor(GameState state, int company_id) noexcept:
     cdef int CORP_OS = <int>CorpIndices.CORP_OS
 
     # OS always highest priority
-    if (corp_module.CORPS[CORP_OS].is_active(state)
-            and not corp_module.CORPS[CORP_OS].has_passed_acq_offer(state)
-            and corp_module.CORPS[CORP_OS].get_cash(state) >= face_val):
+    if (corp_is_active(state, CORP_OS)
+            and not corp_has_passed_acq_offer(state, CORP_OS)
+            and corp_cash(state, CORP_OS) >= face_val):
         return CORP_OS
 
     # Other corps by descending share price. Live share prices are unique in
@@ -102,13 +111,13 @@ cdef int _find_first_preemptor(GameState state, int company_id) noexcept:
     for c in range(<int>GameConstants.NUM_CORPS):
         if c == CORP_OS:
             continue
-        if not corp_module.CORPS[c].is_active(state):
+        if not corp_is_active(state, c):
             continue
-        if corp_module.CORPS[c].has_passed_acq_offer(state):
+        if corp_has_passed_acq_offer(state, c):
             continue
-        if corp_module.CORPS[c].get_cash(state) < high_val:
+        if corp_cash(state, c) < high_val:
             continue
-        sp = corp_module.CORPS[c].get_share_price(state)
+        sp = corp_share_price(state, c)
         if sp > best_price:
             best_price = sp
             best_id = c
@@ -126,9 +135,9 @@ cdef int _find_first_active_player(GameState state) noexcept:
         if player_module.PLAYERS[pid].has_passed(state):
             continue
         for c in range(<int>GameConstants.NUM_CORPS):
-            if (corp_module.CORPS[c].is_active(state)
-                    and not corp_module.CORPS[c].is_in_receivership(state)
-                    and corp_module.CORPS[c].get_president_id(state) == pid):
+            if (corp_is_active(state, c)
+                    and not corp_is_in_receivership(state, c)
+                    and corp_president_id(state, c) == pid):
                 return pid
     return -1
 
@@ -163,9 +172,9 @@ cdef void _advance_to_next_player(GameState state) noexcept:
         pid = turn_module.TURN.find_player_at_position(state, pos)
         if not player_module.PLAYERS[pid].has_passed(state):
             for c in range(<int>GameConstants.NUM_CORPS):
-                if (corp_module.CORPS[c].is_active(state)
-                        and not corp_module.CORPS[c].is_in_receivership(state)
-                        and corp_module.CORPS[c].get_president_id(state) == pid):
+                if (corp_is_active(state, c)
+                        and not corp_is_in_receivership(state, c)
+                        and corp_president_id(state, c) == pid):
                     turn_module.TURN.set_active_player(state, pid)
                     return
         checked += 1
@@ -194,7 +203,7 @@ cdef int _find_most_expensive_affordable_fi_company(
     GameState state, int corp_id,
 ) noexcept:
     """Return the most expensive FI company this corp can afford, or -1."""
-    cdef int cash = corp_module.CORPS[corp_id].get_cash(state)
+    cdef int cash = corp_cash(state, corp_id)
     cdef int company_id, price
     cdef int best_company = -1
     cdef int best_price = -1
@@ -226,8 +235,8 @@ cdef bint _find_receivership_forced_buy(
     cdef int best_company = -1
     cdef int best_share_price = -1
 
-    if (corp_module.CORPS[CORP_OS].is_active(state)
-            and corp_module.CORPS[CORP_OS].is_in_receivership(state)):
+    if (corp_is_active(state, CORP_OS)
+            and corp_is_in_receivership(state, CORP_OS)):
         company_id = _find_most_expensive_affordable_fi_company(state, CORP_OS)
         if company_id >= 0:
             out_corp[0] = CORP_OS
@@ -237,14 +246,14 @@ cdef bint _find_receivership_forced_buy(
     for corp_id in range(<int>GameConstants.NUM_CORPS):
         if corp_id == CORP_OS:
             continue
-        if not corp_module.CORPS[corp_id].is_active(state):
+        if not corp_is_active(state, corp_id):
             continue
-        if not corp_module.CORPS[corp_id].is_in_receivership(state):
+        if not corp_is_in_receivership(state, corp_id):
             continue
         company_id = _find_most_expensive_affordable_fi_company(state, corp_id)
         if company_id < 0:
             continue
-        share_price = corp_module.CORPS[corp_id].get_share_price(state)
+        share_price = corp_share_price(state, corp_id)
         if share_price > best_share_price:
             best_share_price = share_price
             best_corp = corp_id
@@ -274,12 +283,12 @@ cdef bint _process_receivership_forced_buys(GameState state) noexcept:
             _execute_fi_buy(state, recv_corp, company_id)
             continue
 
-        if corp_module.CORPS[first_preemptor].is_in_receivership(state):
+        if corp_is_in_receivership(state, first_preemptor):
             _execute_fi_buy(state, first_preemptor, company_id)
             continue
 
         price = _get_fi_purchase_price(first_preemptor, company_id)
-        deciding_player = corp_module.CORPS[first_preemptor].get_president_id(state)
+        deciding_player = corp_president_id(state, first_preemptor)
         _enter_acq_offer(
             state, first_preemptor, company_id, price,
             recv_corp, deciding_player,
@@ -314,8 +323,8 @@ cdef void _resume_acquisition_after_offer(GameState state, int original_corp) no
     """Return from ACQ_OFFER to ACQUISITION without exposing automation."""
     cdef bint resume_receivership_setup = (
         original_corp >= 0
-        and corp_module.CORPS[original_corp].is_active(state)
-        and corp_module.CORPS[original_corp].is_in_receivership(state)
+        and corp_is_active(state, original_corp)
+        and corp_is_in_receivership(state, original_corp)
     )
     cdef int pid
 
@@ -329,9 +338,9 @@ cdef void _resume_acquisition_after_offer(GameState state, int original_corp) no
         return
 
     if (original_corp >= 0
-            and corp_module.CORPS[original_corp].is_active(state)
-            and not corp_module.CORPS[original_corp].is_in_receivership(state)):
-        pid = corp_module.CORPS[original_corp].get_president_id(state)
+            and corp_is_active(state, original_corp)
+            and not corp_is_in_receivership(state, original_corp)):
+        pid = corp_president_id(state, original_corp)
         if pid >= 0 and not player_module.PLAYERS[pid].has_passed(state):
             turn_module.TURN.set_active_player(state, pid)
             return
@@ -354,17 +363,17 @@ cdef void _handle_acq_price(GameState state, ActionInfo* info) noexcept:
     cdef int active_player = turn_module.TURN.get_active_player(state)
     cdef int owner_player = -1
 
-    assert corp_module.CORPS[corp_id].is_active(state), \
+    assert corp_is_active(state, corp_id), \
         f"_handle_acq_price: corp {corp_id} not active"
-    assert corp_module.CORPS[corp_id].get_cash(state) >= price, \
+    assert corp_cash(state, corp_id) >= price, \
         f"_handle_acq_price: corp {corp_id} can't afford {price}"
 
     # Check cross-president: enter ACQ_OFFER if owner is a different player
     if not state.acq_same_president:
         if loc == <int>LOC_CORP:
-            assert not corp_module.CORPS[owner_id].is_in_receivership(state), \
+            assert not corp_is_in_receivership(state, owner_id), \
                 f"_handle_acq_price: cannot buy company {company_id} from receivership corp {owner_id}"
-            owner_player = corp_module.CORPS[owner_id].get_president_id(state)
+            owner_player = corp_president_id(state, owner_id)
         elif loc == <int>LOC_PLAYER:
             owner_player = owner_id
         if owner_player >= 0 and owner_player != active_player:
@@ -380,11 +389,11 @@ cdef void _handle_acq_price(GameState state, ActionInfo* info) noexcept:
     if loc == <int>LOC_CORP:
         assert owner_id != corp_id, \
             f"_handle_acq_price: corp {corp_id} buying from itself"
-        assert not corp_module.CORPS[owner_id].is_in_receivership(state), \
+        assert not corp_is_in_receivership(state, owner_id), \
             f"_handle_acq_price: cannot buy company {company_id} from receivership corp {owner_id}"
         corp_module.CORPS[owner_id].set_acquisition_proceeds(
             state,
-            corp_module.CORPS[owner_id].get_acquisition_proceeds(state) + price,
+            corp_acquisition_proceeds(state, owner_id) + price,
         )
     elif loc == <int>LOC_PLAYER:
         player_module.PLAYERS[owner_id].add_cash(state, price)
@@ -400,9 +409,9 @@ cdef void _handle_fi_buy(GameState state, ActionInfo* info) noexcept:
 
     assert company_location(state, company_id) == <int>LOC_FI, \
         f"_handle_fi_buy: company {company_id} not LOC_FI"
-    assert corp_module.CORPS[corp_id].is_active(state), \
+    assert corp_is_active(state, corp_id), \
         f"_handle_fi_buy: corp {corp_id} not active"
-    assert corp_module.CORPS[corp_id].get_cash(state) >= _get_fi_purchase_price(corp_id, company_id), \
+    assert corp_cash(state, corp_id) >= _get_fi_purchase_price(corp_id, company_id), \
         f"_handle_fi_buy: corp {corp_id} can't afford FI company {company_id}"
 
     # Check for preemptors
@@ -414,12 +423,12 @@ cdef void _handle_fi_buy(GameState state, ActionInfo* info) noexcept:
 
     # A higher-priority receivership corp has no president to ask; its FI
     # purchase is automatic. Player-controlled corps enter ACQ_OFFER.
-    if corp_module.CORPS[first_preemptor].is_in_receivership(state):
+    if corp_is_in_receivership(state, first_preemptor):
         _execute_fi_buy(state, first_preemptor, company_id)
         return
 
     price = _get_fi_purchase_price(first_preemptor, company_id)
-    deciding_player = corp_module.CORPS[first_preemptor].get_president_id(state)
+    deciding_player = corp_president_id(state, first_preemptor)
     _enter_acq_offer(
         state, first_preemptor, company_id, price,
         corp_id, deciding_player,
@@ -431,9 +440,9 @@ cdef void _merge_acquisition_zones(GameState state) noexcept:
     cdef int corp_id, company_id, proceeds, owner_id
 
     for corp_id in range(<int>GameConstants.NUM_CORPS):
-        if not corp_module.CORPS[corp_id].is_active(state):
+        if not corp_is_active(state, corp_id):
             continue
-        proceeds = corp_module.CORPS[corp_id].get_acquisition_proceeds(state)
+        proceeds = corp_acquisition_proceeds(state, corp_id)
         if proceeds > 0:
             corp_module.CORPS[corp_id].add_cash(state, proceeds)
             corp_module.CORPS[corp_id].set_acquisition_proceeds(state, 0)
@@ -449,8 +458,8 @@ cdef void _merge_acquisition_zones(GameState state) noexcept:
             assert company_location(state, company_id) != <int>LOC_CORP_ACQ, \
                 f"_merge_acquisition_zones: LOC_CORP_ACQ still present for company {company_id}"
         for corp_id in range(<int>GameConstants.NUM_CORPS):
-            if corp_module.CORPS[corp_id].is_active(state):
-                assert corp_module.CORPS[corp_id].get_acquisition_proceeds(state) == 0, \
+            if corp_is_active(state, corp_id):
+                assert corp_acquisition_proceeds(state, corp_id) == 0, \
                     f"_merge_acquisition_zones: nonzero proceeds on corp {corp_id}"
 
 

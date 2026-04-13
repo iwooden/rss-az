@@ -12,12 +12,18 @@ with no player decisions. Per RULES.md §Phase 5 and §Collect Income:
 Players cannot go bankrupt — CLOSING's mandatory close ensures
 ``income + cash >= 0`` before we get here.
 
-All state access goes through entity handles.
+Repeated corp reads go through entity-owned primitives; semantic mutations
+remain on entity handles.
 """
 
 from core.state cimport GameState
 from core.data cimport GameConstants, GamePhases
 from phases.dividends cimport setup_dividends_phase
+from entities.corp cimport (
+    corp_is_active,
+    corp_cash,
+    corp_income,
+)
 
 # Late Python-level entity imports, same pattern as phases/end_card.pyx.
 from entities import turn as turn_module
@@ -60,11 +66,11 @@ cdef void _collect_corp_income(GameState state) noexcept:
     cdef int income
 
     for corp_id in range(<int>GameConstants.NUM_CORPS):
-        if not corp_module.CORPS[corp_id].is_active(state):
+        if not corp_is_active(state, corp_id):
             continue
-        income = corp_module.CORPS[corp_id].get_income(state)
+        income = corp_income(state, corp_id)
         corp_module.CORPS[corp_id].add_cash(state, income)
-        if income < 0 and corp_module.CORPS[corp_id].get_cash(state) < 0:
+        if income < 0 and corp_cash(state, corp_id) < 0:
             corp_module.CORPS[corp_id].go_bankrupt(state)
 
 

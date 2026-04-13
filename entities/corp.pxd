@@ -26,12 +26,34 @@ from core.state cimport GameState
 
 
 # =============================================================================
-# CORPORATION CACHE
+# CORPORATION ENTITY PRIMITIVES
 # =============================================================================
 
 cdef void invalidate_corp_cache(GameState state, int corp_id) noexcept nogil
 cdef void invalidate_all_corp_caches(GameState state) noexcept nogil
 cdef int count_corp_companies(GameState state, int corp_id, bint include_acquisition) noexcept nogil
+cdef bint corp_is_active(GameState state, int corp_id) noexcept nogil
+cdef int corp_cash(GameState state, int corp_id) noexcept nogil
+cdef int corp_unissued_shares(GameState state, int corp_id) noexcept nogil
+cdef int corp_issued_shares(GameState state, int corp_id) noexcept nogil
+cdef int corp_bank_shares(GameState state, int corp_id) noexcept nogil
+cdef int corp_price_index(GameState state, int corp_id) noexcept nogil
+cdef int corp_share_price(GameState state, int corp_id) noexcept nogil
+cdef int corp_acquisition_proceeds(GameState state, int corp_id) noexcept nogil
+cdef bint corp_is_in_receivership(GameState state, int corp_id) noexcept nogil
+cdef int corp_president_id(GameState state, int corp_id) noexcept nogil
+cdef bint corp_has_passed_acq_offer(GameState state, int corp_id) noexcept nogil
+cdef bint corp_owns_company(GameState state, int corp_id, int company_id) noexcept nogil
+cdef bint corp_has_acquisition_company(GameState state, int corp_id, int company_id) noexcept nogil
+cdef int corp_income(GameState state, int corp_id) noexcept nogil
+cdef int corp_raw_revenue(GameState state, int corp_id) noexcept nogil
+cdef int corp_synergy_income(GameState state, int corp_id) noexcept nogil
+cdef int corp_coo_cost(GameState state, int corp_id) noexcept nogil
+cdef int corp_ability_income(GameState state, int corp_id) noexcept nogil
+cdef int corp_company_stars(GameState state, int corp_id) noexcept nogil
+cdef int corp_cash_stars(GameState state, int corp_id) noexcept nogil
+cdef int corp_total_stars(GameState state, int corp_id) noexcept nogil
+cdef int corp_pending_price_move(GameState state, int corp_id) noexcept nogil
 
 
 # =============================================================================
@@ -60,23 +82,6 @@ cpdef int calculate_price_move(int owned_stars, int required_stars) noexcept nog
 cdef class Corporation:
     cdef readonly int corp_id
     cdef readonly str name
-
-    # Slot helper (constant-offset arithmetic)
-    cdef inline int _slot(self, int field) noexcept nogil
-
-    # Low-level (nogil) accessors used by hot paths inside the engine.
-    cdef int _get_cash(self, GameState state) noexcept nogil
-    cdef int _get_bank_shares(self, GameState state) noexcept nogil
-    cdef int _get_unissued_shares(self, GameState state) noexcept nogil
-    cdef int _get_issued_shares(self, GameState state) noexcept nogil
-    cdef int _get_price_index(self, GameState state) noexcept nogil
-    cdef bint _is_active(self, GameState state) noexcept nogil
-    cdef bint _is_in_receivership(self, GameState state) noexcept nogil
-    cdef bint _owns_company(self, GameState state, int company_id) noexcept nogil
-    cdef bint _has_acquisition_company(self, GameState state, int company_id) noexcept nogil
-    cdef int _count_companies(self, GameState state, bint include_acquisition) noexcept nogil
-    cdef void _refresh_cache(self, GameState state)
-    cdef void _clear_cache(self, GameState state) noexcept
 
     # Active status
     cpdef bint is_active(self, GameState state)

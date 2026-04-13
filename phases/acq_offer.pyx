@@ -23,6 +23,11 @@ from entities.company cimport (
     company_location,
     company_owner_id,
 )
+from entities.corp cimport (
+    corp_acquisition_proceeds,
+    corp_is_in_receivership,
+    corp_president_id,
+)
 
 from phases.acquisition cimport (
     _resume_acquisition_after_offer,
@@ -89,7 +94,7 @@ cdef void apply_acq_offer_action(GameState state, ActionInfo* info) noexcept:
             if loc == <int>LOC_CORP:
                 corp_module.CORPS[owner_id].set_acquisition_proceeds(
                     state,
-                    corp_module.CORPS[owner_id].get_acquisition_proceeds(state) + price,
+                    corp_acquisition_proceeds(state, owner_id) + price,
                 )
             elif loc == <int>LOC_PLAYER:
                 player_module.PLAYERS[owner_id].add_cash(state, price)
@@ -104,13 +109,13 @@ cdef void apply_acq_offer_action(GameState state, ActionInfo* info) noexcept:
             corp_module.CORPS[active_corp].set_passed_acq_offer(state, True)
             next_corp = _find_first_preemptor(state, company_id)
             if next_corp >= 0 and next_corp != original_corp:
-                if corp_module.CORPS[next_corp].is_in_receivership(state):
+                if corp_is_in_receivership(state, next_corp):
                     _execute_fi_buy(state, next_corp, company_id)
                     _return_to_acquisition(state)
                     return
 
                 next_price = _get_fi_purchase_price(next_corp, company_id)
-                deciding_player = corp_module.CORPS[next_corp].get_president_id(state)
+                deciding_player = corp_president_id(state, next_corp)
                 turn_module.TURN.set_active_corp(state, next_corp)
                 turn_module.TURN.set_acq_offer_price(state, next_price)
                 turn_module.TURN.set_active_player(state, deciding_player)

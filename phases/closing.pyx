@@ -13,12 +13,12 @@ Three stages:
 3. **Mandatory close** — force-close player privates (cheapest first) until
    no player would end up with negative cash after INCOME.
 
-Most state access goes through entity handles. The Cython-only legality
-predicate exported for action enumeration reads cheap corp scalar fields
-directly so it can run nogil before doing any company-table scans.
+Most state access goes through entity-owned primitives. The Cython-only
+legality predicate exported for action enumeration does cheap corp scalar
+checks before doing any company-table scans.
 """
 
-from core.state cimport GameState, LAYOUT, CORP_FIELDS
+from core.state cimport GameState
 from core.actions cimport (
     ActionInfo,
     ACTION_PASS,
@@ -43,7 +43,12 @@ from entities.company cimport (
     company_owned_by_fi,
     company_owned_by_corp,
 )
-from entities.corp cimport count_corp_companies
+from entities.corp cimport (
+    count_corp_companies,
+    corp_is_active,
+    corp_is_in_receivership,
+    corp_president_id,
+)
 
 # Late Python-level entity imports, same pattern as phases/bid.pyx.
 from entities import turn as turn_module
@@ -79,13 +84,11 @@ cdef bint _corp_closable_by_player(GameState state, int corp_id, int player_id) 
     Cheap scalar checks come first; counting owned companies scans the
     company table, so do it only after the corp could otherwise be eligible.
     """
-    cdef int corp_base = LAYOUT.corps_offset + corp_id * CORP_FIELDS.size
-
-    if <int>state._data[corp_base + CORP_FIELDS.active] != 1:
+    if not corp_is_active(state, corp_id):
         return False
-    if <int>state._data[corp_base + CORP_FIELDS.in_receivership] == 1:
+    if corp_is_in_receivership(state, corp_id):
         return False
-    if <int>state._data[corp_base + CORP_FIELDS.president_id] != player_id:
+    if corp_president_id(state, corp_id) != player_id:
         return False
 
     return count_corp_companies(state, corp_id, False) > 1
@@ -109,12 +112,12 @@ cdef void _auto_close_receivership(GameState state) noexcept:
     coo_level = turn_module.TURN.get_coo_level(state)
 
     for corp_id in range(<int>GameConstants.NUM_CORPS):
-        if not corp_module.CORPS[corp_id].is_active(state):
+        if not corp_is_active(state, corp_id):
             continue
-        if not corp_module.CORPS[corp_id].is_in_receivership(state):
+        if not corp_is_in_receivership(state, corp_id):
             continue
 
-        count = corp_module.CORPS[corp_id].count_companies(state)
+        count = count_corp_companies(state, corp_id, False)
 
         if count <= 1:
             continue  # Can't close the only company
@@ -221,13 +224,13 @@ cdef bint _player_has_closable(GameState state, int player_id) noexcept:
 
     # Check corp subsidiaries
     for corp_id in range(<int>GameConstants.NUM_CORPS):
-        if not corp_module.CORPS[corp_id].is_active(state):
+        if not corp_is_active(state, corp_id):
             continue
-        if corp_module.CORPS[corp_id].is_in_receivership(state):
+        if corp_is_in_receivership(state, corp_id):
             continue
-        if not player_module.PLAYERS[player_id].is_president_of(state, corp_id):
+        if corp_president_id(state, corp_id) != player_id:
             continue
-        if corp_module.CORPS[corp_id].count_companies(state) <= 1:
+        if count_corp_companies(state, corp_id, False) <= 1:
             continue
         # This corp has >=2 companies and the player presides — at least one
         # is closable (any except the last).
@@ -324,9 +327,9 @@ cdef void apply_closing_action(GameState state, ActionInfo* info) noexcept:
             corp_id = owner_id
             assert player_module.PLAYERS[pid].is_president_of(state, corp_id), \
                 f"apply_closing_action: player {pid} not president of corp {corp_id}"
-            assert not corp_module.CORPS[corp_id].is_in_receivership(state), \
+            assert not corp_is_in_receivership(state, corp_id), \
                 f"apply_closing_action: corp {corp_id} is in receivership"
-            assert corp_module.CORPS[corp_id].count_companies(state) > 1, \
+            assert count_corp_companies(state, corp_id, False) > 1, \
                 f"apply_closing_action: corp {corp_id} would lose its last company"
 
             # JS bonus: 2x printed income to JS cash

@@ -30,7 +30,6 @@ from core.state cimport (
     LAYOUT,
     TURN_OFFSETS,
     PLAYER_FIELDS,
-    CORP_FIELDS,
 )
 from core.data cimport (
     GameConstants,
@@ -71,7 +70,16 @@ from entities.company cimport (
     company_owner_id,
     company_owned_by_player,
 )
-from entities.corp cimport count_corp_companies
+from entities.corp cimport (
+    count_corp_companies,
+    corp_is_active,
+    corp_cash,
+    corp_issued_shares,
+    corp_bank_shares,
+    corp_price_index,
+    corp_is_in_receivership,
+    corp_president_id,
+)
 from phases.closing cimport _corp_closable_by_player
 
 cnp.import_array()
@@ -388,7 +396,7 @@ cdef int _enumerate_invest(
     cdef int16_t* market_ptr = state._data + LAYOUT.market_offset
 
     cdef int company_id, bid_offset, face_value
-    cdef int corp_id, corp_base, buys, sells, current_index, buy_index, i
+    cdef int corp_id, buys, sells, current_index, buy_index, i
 
     # --- id 0: pass ---------------------------------------------------------
     ids[count] = 0
@@ -425,18 +433,17 @@ cdef int _enumerate_invest(
         if min(buys, sells) >= 2:
             continue
 
-        corp_base = LAYOUT.corps_offset + corp_id * CORP_FIELDS.size
-        if <int>state._data[corp_base + CORP_FIELDS.active] != 1:
+        if not corp_is_active(state, corp_id):
             # Inactive corps have no tradable shares.
             continue
 
         # --- BUY ------------------------------------------------------------
-        if <int>state._data[corp_base + CORP_FIELDS.bank_shares] > 0:
+        if corp_bank_shares(state, corp_id) > 0:
             # Inlined next-higher scan. Matches Market._find_next_higher_space
             # exactly: walk from current_index+1 up to but not including
             # max_index, fall through to max_index as the always-available
             # $75 sentinel.
-            current_index = <int>state._data[corp_base + CORP_FIELDS.price_index]
+            current_index = corp_price_index(state, corp_id)
             buy_index = max_index
             for i in range(current_index + 1, max_index):
                 if market_ptr[i] == 1:
@@ -556,20 +563,18 @@ cdef int _enumerate_acquisition(
         LAYOUT.turn_offset + TURN_OFFSETS.active_player
     ]
     cdef bint same_pres = state.acq_same_president
-    cdef int corp_id, company_id, loc, owner_id, cash, corp_base
+    cdef int corp_id, company_id, loc, owner_id, cash
     cdef int low_price, high_price, max_offset, price_offset, price
-    cdef int seller_base
 
     for corp_id in range(NUM_CORPS):
-        corp_base = LAYOUT.corps_offset + corp_id * CORP_FIELDS.size
-        if <int>state._data[corp_base + CORP_FIELDS.active] != 1:
+        if not corp_is_active(state, corp_id):
             continue
-        if <int>state._data[corp_base + CORP_FIELDS.in_receivership] == 1:
+        if corp_is_in_receivership(state, corp_id):
             continue
-        if <int>state._data[corp_base + CORP_FIELDS.president_id] != player_id:
+        if corp_president_id(state, corp_id) != player_id:
             continue
 
-        cash = <int>state._data[corp_base + CORP_FIELDS.cash]
+        cash = corp_cash(state, corp_id)
         if cash <= 0:
             continue
 
@@ -591,11 +596,10 @@ cdef int _enumerate_acquisition(
                 owner_id = company_owner_id(state, company_id)
                 if owner_id == corp_id:
                     continue  # Can't buy from yourself
-                seller_base = LAYOUT.corps_offset + owner_id * CORP_FIELDS.size
-                if <int>state._data[seller_base + CORP_FIELDS.in_receivership] == 1:
+                if corp_is_in_receivership(state, owner_id):
                     continue  # Receivership corps never sell companies
                 if same_pres:
-                    if <int>state._data[seller_base + CORP_FIELDS.president_id] != player_id:
+                    if corp_president_id(state, owner_id) != player_id:
                         continue
                 # Seller must retain >= 1 company (LOC_CORP only, not ACQ pile)
                 if count_corp_companies(state, owner_id, False) <= 1:
@@ -711,13 +715,12 @@ cdef int _enumerate_dividends(
     cdef int active_corp = <int>state._data[
         LAYOUT.turn_offset + TURN_OFFSETS.active_corp
     ]
-    cdef int corp_base = LAYOUT.corps_offset + active_corp * CORP_FIELDS.size
-    cdef int price_index = <int>state._data[corp_base + CORP_FIELDS.price_index]
-    cdef int issued_shares = <int>state._data[corp_base + CORP_FIELDS.issued_shares]
-    cdef int corp_cash = <int>state._data[corp_base + CORP_FIELDS.cash]
+    cdef int price_index = corp_price_index(state, active_corp)
+    cdef int issued_shares = corp_issued_shares(state, active_corp)
+    cdef int cash = corp_cash(state, active_corp)
 
     cdef int max_by_price = MARKET_PRICES[price_index] // 3
-    cdef int max_by_afford = corp_cash // issued_shares
+    cdef int max_by_afford = cash // issued_shares
 
     cdef int max_div = min(max_by_afford, max_by_price, 25)
     max_div = max(max_div, 0)
@@ -769,7 +772,7 @@ cdef int _enumerate_ipo(
     cdef int player_base = LAYOUT.players_offset + player_id * PLAYER_FIELDS.size
     cdef int player_cash = <int>d[player_base + PLAYER_FIELDS.cash]
 
-    cdef int corp_id, corp_base, par_index, par_price, market_index
+    cdef int corp_id, par_index, par_price, market_index
     cdef int float_shares, player_payment
 
     # --- id 0: pass (always legal) -------------------------------------------
@@ -778,8 +781,7 @@ cdef int _enumerate_ipo(
 
     # --- ids 1..112: (corp, par_index) combinations --------------------------
     for corp_id in range(<int>GameConstants.NUM_CORPS):
-        corp_base = LAYOUT.corps_offset + corp_id * CORP_FIELDS.size
-        if <int>d[corp_base + CORP_FIELDS.active] != 0:
+        if corp_is_active(state, corp_id):
             continue
 
         for par_index in range(<int>GameConstants.NUM_PAR_PRICES):

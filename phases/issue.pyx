@@ -10,13 +10,24 @@ Action space: 2 actions -- ``pass(0)`` + ``issue(1)``.
 
 Reference: RULES.md Phase 8, Issue Share, Sell One Share.
 
-All state access goes through entity handles.
+Repeated corp reads go through entity-owned primitives; semantic mutations
+remain on entity handles.
 """
 
 from core.state cimport GameState
 from core.data cimport GameConstants, GamePhases, CorpIndices, MARKET_PRICES
 from core.actions cimport ActionInfo, ACTION_PASS, ACTION_ISSUE
 from phases.ipo cimport setup_ipo_phase
+from entities.corp cimport (
+    corp_is_active,
+    corp_unissued_shares,
+    corp_issued_shares,
+    corp_bank_shares,
+    corp_price_index,
+    corp_share_price,
+    corp_is_in_receivership,
+    corp_president_id,
+)
 
 # Late Python-level entity imports, same pattern as phases/dividends.pyx.
 from entities import turn as turn_module
@@ -34,7 +45,7 @@ cdef void _init_issue_remaining(GameState state) noexcept:
     for corp_id in range(<int>GameConstants.NUM_CORPS):
         turn_module.TURN.set_issue_remaining(
             state, corp_id,
-            corp_module.CORPS[corp_id].is_active(state),
+            corp_is_active(state, corp_id),
         )
 
 
@@ -47,11 +58,11 @@ cdef int _find_next_issue_corp(GameState state) noexcept:
     best_id = -1
     best_price = -1
     for corp_id in range(<int>GameConstants.NUM_CORPS):
-        if not corp_module.CORPS[corp_id].is_active(state):
+        if not corp_is_active(state, corp_id):
             continue
         if not turn_module.TURN.is_issue_remaining(state, corp_id):
             continue
-        price = corp_module.CORPS[corp_id].get_price_index(state)
+        price = corp_price_index(state, corp_id)
         if price > best_price:
             best_price = price
             best_id = corp_id
@@ -65,16 +76,16 @@ cdef void _issue_one_share(GameState state, int corp_id) noexcept:
     All other corps move to the next lower available market space and receive
     the new (lower) share price. Bankruptcy occurs if new price reaches 0.
     """
-    cdef int unissued = corp_module.CORPS[corp_id].get_unissued_shares(state)
+    cdef int unissued = corp_unissued_shares(state, corp_id)
     assert unissued > 0, f"_issue_one_share: corp {corp_id} has no unissued shares"
 
     # 1. Transfer share: unissued -> issued + bank
     corp_module.CORPS[corp_id].set_unissued_shares(state, unissued - 1)
     corp_module.CORPS[corp_id].set_issued_shares(
-        state, corp_module.CORPS[corp_id].get_issued_shares(state) + 1,
+        state, corp_issued_shares(state, corp_id) + 1,
     )
     corp_module.CORPS[corp_id].set_bank_shares(
-        state, corp_module.CORPS[corp_id].get_bank_shares(state) + 1,
+        state, corp_bank_shares(state, corp_id) + 1,
     )
 
     # 2. Price adjustment + payment
@@ -83,10 +94,10 @@ cdef void _issue_one_share(GameState state, int corp_id) noexcept:
     if corp_id == <int>CorpIndices.CORP_SM:
         # Stock Masters: no price change, receive current price
         corp_module.CORPS[corp_id].add_cash(
-            state, corp_module.CORPS[corp_id].get_share_price(state),
+            state, corp_share_price(state, corp_id),
         )
     else:
-        current_index = corp_module.CORPS[corp_id].get_price_index(state)
+        current_index = corp_price_index(state, corp_id)
 
         # Find next lower available space
         new_index = market_module.MARKET.find_next_lower_space(state, current_index)
@@ -123,14 +134,14 @@ cdef void _advance_to_next_corp(GameState state) noexcept:
             setup_ipo_phase(state)
             return
 
-        unissued = corp_module.CORPS[corp_id].get_unissued_shares(state)
+        unissued = corp_unissued_shares(state, corp_id)
 
         if unissued == 0:
             # Nothing to issue -> auto-skip
             turn_module.TURN.set_issue_remaining(state, corp_id, False)
             continue
 
-        if corp_module.CORPS[corp_id].is_in_receivership(state):
+        if corp_is_in_receivership(state, corp_id):
             # Receivership: must issue
             _issue_one_share(state, corp_id)
             turn_module.TURN.set_issue_remaining(state, corp_id, False)
@@ -139,7 +150,7 @@ cdef void _advance_to_next_corp(GameState state) noexcept:
         # Player-controlled with unissued shares -> decision
         turn_module.TURN.set_active_corp(state, corp_id)
         turn_module.TURN.set_active_player(
-            state, corp_module.CORPS[corp_id].get_president_id(state),
+            state, corp_president_id(state, corp_id),
         )
         return
 

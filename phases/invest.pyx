@@ -17,11 +17,10 @@ Handles the four INVEST actions: PASS, AUCTION (start), BUY_SHARE, SELL_SHARE.
   *new* (lower) price, tracks the sell. Hitting market index 0 triggers
   ``corp.go_bankrupt()`` which fully cleans up.
 
-All state access goes through entity handles — the handler imports no
-layout constants and never indexes ``state._data`` directly. Cache
-invalidation (player finance, corp derived income/stars) happens inside
-the entity handle methods, so there is no manual net-worth or income
-refresh here.
+Repeated corp reads go through entity-owned primitives, and semantic mutations
+remain on entity handles. Cache invalidation (player finance, corp derived
+income/stars) happens inside entity methods, so there is no manual net-worth
+or income refresh here.
 """
 
 from core.state cimport GameState
@@ -39,6 +38,7 @@ from core.data cimport (
     MARKET_PRICES,
 )
 from entities.company cimport company_is_for_auction
+from entities.corp cimport corp_price_index
 
 # Late Python-level entity imports. ``phases/`` sits above ``entities/`` in
 # the dependency DAG (nobody imports phases), so there is no cycle to work
@@ -130,7 +130,7 @@ cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
     # Price moves BEFORE payment — player pays the *new* (higher) price.
     # RULES.md "Buy One Share": corp returns its card, takes the next
     # higher available card, and the player pays the new price.
-    current_index = corp_module.CORPS[corp_id].get_price_index(state)
+    current_index = corp_price_index(state, corp_id)
     new_index = market_module.MARKET.find_next_higher_space(state, current_index)
 
     # Free the old slot first, then occupy the new one (unless the new
@@ -179,7 +179,7 @@ cdef void _handle_sell_share(GameState state, int corp_id) noexcept:
     # company removal, share return, corp deactivation); we call it with
     # the corp still sitting at its current pre-sell state so it can free
     # the right market slot on its own.
-    current_index = corp_module.CORPS[corp_id].get_price_index(state)
+    current_index = corp_price_index(state, corp_id)
     new_index = market_module.MARKET.find_next_lower_space(state, current_index)
 
     if new_index == 0:

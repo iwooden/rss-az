@@ -35,11 +35,14 @@ from entities.company cimport (
     LOC_REVEALED,
     company_location,
 )
+from entities.corp cimport (
+    corp_is_active,
+    corp_price_index,
+)
 from phases.issue cimport setup_issue_phase
 
 # Late Python-level entity imports, same pattern as phases/invest.pyx.
 from entities import turn as turn_module
-from entities import corp as corp_module
 
 
 # =============================================================================
@@ -59,9 +62,9 @@ cdef bint _any_corp_at_max_price(GameState state) noexcept:
     cdef int corp_id
 
     for corp_id in range(<int>GameConstants.NUM_CORPS):
-        if not corp_module.CORPS[corp_id].is_active(state):
+        if not corp_is_active(state, corp_id):
             continue
-        if corp_module.CORPS[corp_id].get_price_index(state) == max_index:
+        if corp_price_index(state, corp_id) == max_index:
             return True
     return False
 

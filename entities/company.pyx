@@ -30,7 +30,7 @@ cache and no initialize() step. The handle's only state is its
 from libc.stdint cimport int16_t
 from core.state cimport GameState, LAYOUT, COMPANY_OFFSETS
 from entities.turn cimport TurnState
-from entities.corp cimport invalidate_corp_cache
+from entities.corp cimport invalidate_corp_cache, corp_is_active
 from entities.player cimport invalidate_player_cache
 from core.data cimport (
     GameConstants,
@@ -45,7 +45,6 @@ from core.data cimport (
 
 from core.data import COMPANY_NAMES
 from entities import turn as turn_module
-from entities import corp as corp_module
 from entities import fi as fi_module
 
 # Lazy accessor for the TURN singleton. See the corresponding comment in
@@ -315,7 +314,7 @@ cdef class Company:
         asserts elide under ``python -O`` so this costs nothing in release.
         """
         if location == LOC_CORP or location == LOC_CORP_ACQ:
-            assert corp_module.CORPS[owner_id].is_active(state), \
+            assert corp_is_active(state, owner_id), \
                 f"company {self.company_id} associated with inactive corp {owner_id} (loc={location})"
             invalidate_corp_cache(state, owner_id)
         elif location == LOC_PLAYER:
