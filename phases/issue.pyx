@@ -91,6 +91,10 @@ cdef void _issue_one_share(GameState state, int corp_id) noexcept:
         # Find next lower available space
         new_index = market_module.MARKET.find_next_lower_space(state, current_index)
 
+        if new_index == 0:
+            corp_module.CORPS[corp_id].go_bankrupt(state)
+            return
+
         # Free old space (index 26 is shared $75 slot, never freed)
         if current_index < 26:
             market_module.MARKET.set_space_available(state, current_index, True)
@@ -99,10 +103,6 @@ cdef void _issue_one_share(GameState state, int corp_id) noexcept:
             market_module.MARKET.set_space_available(state, new_index, False)
 
         corp_module.CORPS[corp_id].set_price_index(state, new_index)
-
-        if new_index == 0:
-            corp_module.CORPS[corp_id].go_bankrupt(state)
-            return
 
         # Corp receives new (lower) share price
         corp_module.CORPS[corp_id].add_cash(state, MARKET_PRICES[new_index])
