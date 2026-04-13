@@ -259,6 +259,16 @@ cdef uint8_t[5][14] PAR_PRICE_VALID = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1],
 ]
 
+# Python-visible mirrors of the par-price tables. Same ``globals()`` trick
+# as ``PHASE_ACTION_SIZES`` / ``ENGINE_TO_DECISION_PHASE`` — a bare module-
+# level assignment would be shadowed by the cimported ``cdef`` array.
+# Cython callers still cimport the raw arrays above.
+globals()["ALL_PAR_PRICES"] = tuple(ALL_PAR_PRICES[i] for i in range(14))
+globals()["PAR_PRICE_VALID"] = tuple(
+    tuple(bool(PAR_PRICE_VALID[star][par]) for par in range(14))
+    for star in range(5)
+)
+
 # =============================================================================
 # COST OF OWNERSHIP TABLE
 # =============================================================================
