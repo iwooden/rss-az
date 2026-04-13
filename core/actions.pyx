@@ -35,6 +35,7 @@ from core.data cimport (
     GameConstants,
     GamePhases,
     CorpIndices,
+    AUCTION_CAP,
     ACTION_SIZE_INVEST,
     ACTION_SIZE_BID,
     ACTION_SIZE_ACQUISITION,
@@ -226,15 +227,15 @@ cdef ActionInfo decode_action(int phase_id, int action_id) noexcept nogil:
     if phase_id == DPHASE_INVEST:
         if action_id == 0:
             info.action_type = ACTION_PASS
-        elif action_id < 541:
-            # Auction: 1 + company_id * 15 + bid_offset
+        elif action_id < 1 + <int>GameConstants.NUM_COMPANIES * <int>AUCTION_CAP:
+            # Auction: 1 + company_id * AUCTION_CAP + bid_offset
             info.action_type = ACTION_AUCTION
             idx = action_id - 1
-            info.company_id = idx // 15
-            info.amount = idx % 15
+            info.company_id = idx // <int>AUCTION_CAP
+            info.amount = idx % <int>AUCTION_CAP
         else:
-            # Trade: 541 + corp_id * 2 + {0=buy, 1=sell}
-            idx = action_id - 541
+            # Trade: 1 + NUM_COMPANIES*AUCTION_CAP + corp_id * 2 + {0=buy, 1=sell}
+            idx = action_id - (1 + <int>GameConstants.NUM_COMPANIES * <int>AUCTION_CAP)
             info.corp_id = idx // 2
             if (idx & 1) == 0:
                 info.action_type = ACTION_BUY_SHARE
@@ -359,7 +360,7 @@ cdef int _enumerate_invest(
     ``core/actions.pxd``):
 
       1. ``id 0``: pass (always legal)
-      2. ``ids 1..540``: auction starts, ``1 + company_id * 15 + bid_offset``.
+      2. ``ids 1..540``: auction starts, ``1 + company_id * AUCTION_CAP + bid_offset``.
          Emitted for each LOC_AUCTION company, for each affordable bid offset.
          Offsets are monotone in cost so the inner loop breaks as soon as
          ``face_value + offset`` exceeds the active player's cash.
@@ -373,7 +374,7 @@ cdef int _enumerate_invest(
 
     Returns the number of IDs written.
 
-    Practical upper bound: ``1 + num_players * 15 + 16``. Worst case at
+    Practical upper bound: ``1 + num_players * AUCTION_CAP + 16``. Worst case at
     the game's maximum of 6 players is 107 — well under
     ``MAX_LEGAL_ACTIONS = 256``. The naive bound of 557 is unreachable
     because only ``num_players`` companies are LOC_AUCTION at any time.
@@ -410,7 +411,7 @@ cdef int _enumerate_invest(
         if face_value > player_cash:
             # Can't afford even the opening bid; no legal offset exists.
             continue
-        for bid_offset in range(15):
+        for bid_offset in range(<int>AUCTION_CAP):
             if face_value + bid_offset > player_cash:
                 # Monotone in offset — once unaffordable, every higher
                 # offset is also unaffordable.
@@ -519,7 +520,7 @@ cdef int _enumerate_bid(
     min_offset = current_bid - face
     if min_offset < 0:
         min_offset = 0
-    for offset in range(min_offset, 14):
+    for offset in range(min_offset, <int>AUCTION_CAP - 1):
         new_bid = face + offset + 1
         if new_bid > player_cash:
             # Affordability is monotone in offset — once we can't afford

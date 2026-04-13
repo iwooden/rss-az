@@ -117,6 +117,7 @@ _py_phase_action_sizes = [
 ]
 globals()["PHASE_ACTION_SIZES"] = _py_phase_action_sizes
 globals()["MAX_ACTION_SIZE"] = int(ActionSize.MAX_ACTION_SIZE)
+globals()["AUCTION_CAP"] = int(GameConstants.AUCTION_CAP)
 
 # =============================================================================
 # COMPANY DATA

@@ -26,6 +26,7 @@ cpdef enum GameConstants:
     MAX_STAR_TIERS = 5
     MAX_DECK_SIZE = 36
     NUM_PAR_PRICES = 14
+    AUCTION_CAP = 15          # price-offset slots per company in INVEST auction (0..14)
     MAX_DIVIDEND = 26
     MAX_SHARE_PRICE = 75
     COO_LEVEL_END_CARD_FLIPPED = 7
@@ -113,8 +114,8 @@ cpdef enum TokenType:
 # Any change here must stay consistent with the ``encode_*`` arithmetic in
 # ``core/actions.pxd``; that file still holds the roundtrip asserts.
 cpdef enum ActionSize:
-    ACTION_SIZE_INVEST = 557        # 1 pass + 36*15 auction + 8*2 trade
-    ACTION_SIZE_BID = 15            # 1 pass (= leave auction) + 14 raises
+    ACTION_SIZE_INVEST = 557        # 1 pass + 36*AUCTION_CAP auction + 8*2 trade
+    ACTION_SIZE_BID = 15            # 1 pass (= leave auction) + (AUCTION_CAP-1) raises
     ACTION_SIZE_ACQUISITION = 14977 # 1 pass + 8*36*52 corp x company x {51 price + FI_BUY}
     ACTION_SIZE_ACQ_OFFER = 2       # pass + buy
     ACTION_SIZE_CLOSING = 37        # 1 pass + 36 company closes

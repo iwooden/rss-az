@@ -40,6 +40,8 @@ from libc.stdint cimport uint16_t
 
 from core.state cimport GameState
 from core.data cimport (
+    NUM_COMPANIES,
+    AUCTION_CAP,
     ACTION_SIZE_INVEST,
     ACTION_SIZE_BID,
     ACTION_SIZE_ACQUISITION,
@@ -129,13 +131,13 @@ cdef struct ActionInfo:
 # so Cython can fold them away in hot paths.
 
 cdef inline int encode_invest_auction(int company_id, int bid_offset) noexcept nogil:
-    return 1 + company_id * 15 + bid_offset
+    return 1 + company_id * <int>AUCTION_CAP + bid_offset
 
 cdef inline int encode_invest_buy(int corp_id) noexcept nogil:
-    return 541 + corp_id * 2
+    return 1 + <int>NUM_COMPANIES * <int>AUCTION_CAP + corp_id * 2
 
 cdef inline int encode_invest_sell(int corp_id) noexcept nogil:
-    return 541 + corp_id * 2 + 1
+    return 1 + <int>NUM_COMPANIES * <int>AUCTION_CAP + corp_id * 2 + 1
 
 cdef inline int encode_bid_raise(int raise_offset) noexcept nogil:
     return 1 + raise_offset

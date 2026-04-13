@@ -22,6 +22,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from core.data import (
+    AUCTION_CAP,
     MAX_ACTION_SIZE,
     PHASE_ACTION_SIZES,
     TokenType,
@@ -170,7 +171,7 @@ class RSSTransformerNet(nn.Module):
         self.pass_head = nn.Linear(d, 1)
         self.company_auction_head = nn.Sequential(
             nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 15),  # 15 price offsets per company
+            nn.Linear(d // 2, int(AUCTION_CAP)),  # AUCTION_CAP price offsets per company
         )
         self.corp_trade_head = nn.Sequential(
             nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
@@ -181,7 +182,7 @@ class RSSTransformerNet(nn.Module):
         # Phase-specific context token heads
         self.auction_raise_head = nn.Sequential(
             nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 14),  # 14 raise amounts
+            nn.Linear(d // 2, int(AUCTION_CAP) - 1),  # AUCTION_CAP-1 raise amounts
         )
         self.dividend_head = nn.Sequential(
             nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
@@ -270,15 +271,15 @@ class RSSTransformerNet(nn.Module):
     # ------------------------------------------------------------------
 
     def _policy_invest(self, t: torch.Tensor) -> torch.Tensor:
-        """INVEST: pass(1) + auction(36*15) + trade(8*2) = 557."""
+        """INVEST: pass(1) + auction(36*AUCTION_CAP) + trade(8*2) = 557."""
         n = t.shape[0]
         pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
-        auction = self.company_auction_head(t[:, self._company_slice])        # (n, 36, 15)
+        auction = self.company_auction_head(t[:, self._company_slice])        # (n, 36, AUCTION_CAP)
         trade = self.corp_trade_head(t[:, self._corp_slice])                  # (n, 8, 2)
         return torch.cat([pass_logit, auction.reshape(n, -1), trade.reshape(n, -1)], dim=-1)
 
     def _policy_bid(self, t: torch.Tensor) -> torch.Tensor:
-        """BID: pass(1) + raises(14) = 15. Pass = leave the auction."""
+        """BID: pass(1) + raises(AUCTION_CAP-1) = AUCTION_CAP. Pass = leave the auction."""
         pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
         raises = self.auction_raise_head(t[:, self._auction_idx])             # (n, 14)
         return torch.cat([pass_logit, raises], dim=-1)

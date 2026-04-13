@@ -28,6 +28,7 @@ from core.actions cimport (
 )
 from core.data cimport (
     GamePhases,
+    AUCTION_CAP,
     COMPANY_FACE_VALUE,
 )
 
@@ -127,8 +128,8 @@ cdef void _handle_raise(GameState state, int bid_offset) noexcept:
 
     # Defensive invariants (compile out under python -O). These catch
     # driver/enumerator drift, not rule-level legality.
-    assert 0 <= bid_offset < 14, \
-        f"_handle_raise: bid_offset {bid_offset} out of [0, 14)"
+    assert 0 <= bid_offset < <int>AUCTION_CAP - 1, \
+        f"_handle_raise: bid_offset {bid_offset} out of [0, {<int>AUCTION_CAP - 1})"
     assert company_id >= 0, "_handle_raise: active_company unset"
 
     new_bid = COMPANY_FACE_VALUE[company_id] + bid_offset + 1
