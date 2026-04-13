@@ -15,7 +15,7 @@ from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.company import COMPANIES, CompanyLocation
 from entities.fi import FI
-from entities.deck import DECK
+from phases.acquisition import setup_acquisition_phase_py
 
 from tests.phases.conftest import (
     apply_and_verify,
@@ -24,6 +24,9 @@ from tests.phases.conftest import (
     find_all_legal_actions,
     float_corp_for_test,
     setup_receivership_corp,
+    draw_to_player,
+    draw_to_fi,
+    draw_to_corp,
 )
 
 
@@ -34,44 +37,10 @@ from tests.phases.conftest import (
 CORP_OS = int(CorpIndices.CORP_OS)  # 2
 
 
-def _draw_company(state):
-    """Draw a company from the deck (LOC_DECK → LOC_REVEALED). Returns company_id."""
-    cid = DECK.draw(state)
-    assert cid >= 0, "Deck is empty"
-    return cid
-
-
-def _draw_to_fi(state):
-    """Draw a company and transfer it to FI. Returns company_id."""
-    cid = _draw_company(state)
-    COMPANIES[cid].transfer_to_fi(state)
-    return cid
-
-
-def _draw_to_player(state, player_id):
-    """Draw a company and transfer it to a player. Returns company_id."""
-    cid = _draw_company(state)
-    COMPANIES[cid].transfer_to_player(state, player_id)
-    return cid
-
-
-def _advance_to_acquisition(state):
-    """Pass all players through INVEST to reach ACQUISITION via WRAP_UP.
-
-    Drains FI cash first to prevent WRAP_UP FI purchases from creating
-    unexpected FI-owned companies. Returns when the engine is at ACQUISITION
-    or has already advanced past it.
-    """
-    num_players = TURN.get_num_players(state)
-    assert TURN.get_phase(state) == int(GamePhases.PHASE_INVEST)
-
-    # Drain FI cash so WRAP_UP doesn't buy companies for FI
-    FI.set_cash(state, 0)
-
-    # All players pass consecutively to end INVEST
-    for _ in range(num_players):
-        pass_id = find_legal_action(state, action_type=ACTION_PASS)
-        apply_and_verify(state, pass_id)
+def _enter_acquisition(state):
+    """Enter ACQUISITION phase directly. Clears context, processes
+    receivership forced buys, and sets the first active player."""
+    setup_acquisition_phase_py(state)
 
 
 def _pass_through_acquisition(state, max_steps=50):
@@ -93,16 +62,20 @@ class TestPassAction:
     def test_pass_marks_player_as_passed(self, game_state):
         """Passing marks the active player as passed."""
         num_players = TURN.get_num_players(game_state)
+        if num_players < 3:
+            return  # need 2 distinct presidents with buy targets
 
+        # Both players need corps AND buy targets so the driver doesn't
+        # auto-chain the second player's forced PASS after the first passes
+        draw_to_player(game_state, 0)
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         CORPS[0].set_cash(game_state, 100)
-        if num_players >= 3:
-            float_corp_for_test(game_state, corp_id=1, player_id=1, par_index=12)
-            CORPS[1].set_cash(game_state, 100)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        draw_to_player(game_state, 1)
+        float_corp_for_test(game_state, corp_id=1, player_id=1, par_index=12)
+        CORPS[1].set_cash(game_state, 100)
+
+        _enter_acquisition(game_state)
 
         active = TURN.get_active_player(game_state)
         assert not PLAYERS[active].has_passed(game_state)
@@ -117,32 +90,31 @@ class TestPassAction:
         if num_players < 3:
             return
 
+        draw_to_player(game_state, 0)
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         CORPS[0].set_cash(game_state, 100)
+
+        draw_to_player(game_state, 1)
         float_corp_for_test(game_state, corp_id=1, player_id=1, par_index=12)
         CORPS[1].set_cash(game_state, 100)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        _enter_acquisition(game_state)
 
         first_active = TURN.get_active_player(game_state)
         pass_id = find_legal_action(game_state, action_type=ACTION_PASS)
         apply_and_verify(game_state, pass_id)
 
-        if TURN.get_phase(game_state) == int(GamePhases.PHASE_ACQUISITION):
-            assert TURN.get_active_player(game_state) != first_active
+        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_ACQUISITION)
+        assert TURN.get_active_player(game_state) != first_active
 
-    def test_all_pass_transitions_to_closing(self, game_state):
+    def test_all_pass_transitions_past_acquisition(self, game_state):
         """When all eligible players pass, phase transitions past ACQUISITION."""
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         CORPS[0].set_cash(game_state, 100)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
-
+        _enter_acquisition(game_state)
         _pass_through_acquisition(game_state)
+
         assert TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION)
 
 
@@ -155,56 +127,45 @@ class TestFiBuy:
 
     def test_fi_buy_transfers_company_and_cash(self, game_state):
         """FI buy moves company to corp, deducts cash from corp, pays FI."""
-        fi_company = _draw_to_fi(game_state)
+        fi_company = draw_to_fi(game_state)
 
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         CORPS[0].set_cash(game_state, 200)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
-
-        fi_buys = find_all_legal_actions(
-            game_state, action_type=ACTION_ACQ_FI_BUY, corp_id=0, company_id=fi_company,
-        )
-        if not fi_buys:
-            return
+        _enter_acquisition(game_state)
 
         corp_cash_before = CORPS[0].get_cash(game_state)
         fi_cash_before = FI.get_cash(game_state)
         expected_price = COMPANIES[fi_company].get_high_price()
 
-        apply_and_verify(game_state, fi_buys[0])
+        fi_buy_id = find_legal_action(
+            game_state, action_type=ACTION_ACQ_FI_BUY, corp_id=0, company_id=fi_company,
+        )
+        apply_and_verify(game_state, fi_buy_id)
 
         loc = COMPANIES[fi_company].get_location(game_state)
-        owner = COMPANIES[fi_company].get_owner_id(game_state)
         assert loc in (int(CompanyLocation.LOC_CORP_ACQ), int(CompanyLocation.LOC_CORP))
-        assert owner == 0
+        assert COMPANIES[fi_company].get_owner_id(game_state) == 0
         assert CORPS[0].get_cash(game_state) == corp_cash_before - expected_price
         assert FI.get_cash(game_state) == fi_cash_before + expected_price
 
     def test_os_pays_face_value_for_fi(self, game_state):
         """OS (corp 2) pays face value instead of high price for FI companies."""
-        fi_company = _draw_to_fi(game_state)
+        fi_company = draw_to_fi(game_state)
 
         float_corp_for_test(game_state, corp_id=CORP_OS, player_id=0, par_index=10)
         CORPS[CORP_OS].set_cash(game_state, 200)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
-
-        fi_buys = find_all_legal_actions(
-            game_state, action_type=ACTION_ACQ_FI_BUY, corp_id=CORP_OS, company_id=fi_company,
-        )
-        if not fi_buys:
-            return
+        _enter_acquisition(game_state)
 
         corp_cash_before = CORPS[CORP_OS].get_cash(game_state)
         fi_cash_before = FI.get_cash(game_state)
         expected_price = COMPANIES[fi_company].get_face_value()
 
-        apply_and_verify(game_state, fi_buys[0])
+        fi_buy_id = find_legal_action(
+            game_state, action_type=ACTION_ACQ_FI_BUY, corp_id=CORP_OS, company_id=fi_company,
+        )
+        apply_and_verify(game_state, fi_buy_id)
 
         assert CORPS[CORP_OS].get_cash(game_state) == corp_cash_before - expected_price
         assert FI.get_cash(game_state) == fi_cash_before + expected_price
@@ -219,32 +180,24 @@ class TestAcqPrice:
 
     def test_corp_to_corp_same_president(self, game_state):
         """Corp acquires from another corp under same president."""
-        # Float corp 0 (seller), player 0 is president
+        # Float corp 0 (seller) with 2 companies so it retains >= 1 after sale
         seller_co = float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
-        # Give corp 0 a second company so it retains >= 1 after sale
-        extra_co = _draw_company(game_state)
-        COMPANIES[extra_co].transfer_to_corp(game_state, 0)
+        draw_to_corp(game_state, 0)
 
-        # Float corp 1 (buyer), same president (player 0), with cash
+        # Float corp 1 (buyer), same president (player 0)
         float_corp_for_test(game_state, corp_id=1, player_id=0, par_index=12)
         CORPS[1].set_cash(game_state, 200)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        _enter_acquisition(game_state)
 
-        # Find ACQ_PRICE for corp 1 buying seller_co from corp 0
         acq_actions = find_all_legal_actions(
             game_state, action_type=ACTION_ACQ_PRICE, corp_id=1, company_id=seller_co,
         )
-        if not acq_actions:
-            return
+        assert len(acq_actions) > 0, "Expected ACQ_PRICE actions for corp-to-corp"
 
         action_id = acq_actions[len(acq_actions) // 2]
-        actions = get_legal_actions(game_state)
-        info = next(i for aid, i in actions if aid == action_id)
-        low_price = COMPANIES[seller_co].get_low_price()
-        price = low_price + info.amount
+        info = next(i for aid, i in get_legal_actions(game_state) if aid == action_id)
+        price = COMPANIES[seller_co].get_low_price() + info.amount
 
         buyer_cash_before = CORPS[1].get_cash(game_state)
         seller_proceeds_before = CORPS[0].get_acquisition_proceeds(game_state)
@@ -252,9 +205,8 @@ class TestAcqPrice:
         apply_and_verify(game_state, action_id)
 
         loc = COMPANIES[seller_co].get_location(game_state)
-        owner = COMPANIES[seller_co].get_owner_id(game_state)
         assert loc in (int(CompanyLocation.LOC_CORP_ACQ), int(CompanyLocation.LOC_CORP))
-        assert owner == 1
+        assert COMPANIES[seller_co].get_owner_id(game_state) == 1
         assert CORPS[1].get_cash(game_state) == buyer_cash_before - price
 
         if TURN.get_phase(game_state) == int(GamePhases.PHASE_ACQUISITION):
@@ -262,26 +214,18 @@ class TestAcqPrice:
 
     def test_corp_to_player_acquisition(self, game_state):
         """Corp acquires a private company from the president (same player)."""
-        private_co = _draw_to_player(game_state, 0)
+        private_co = draw_to_player(game_state, 0)
 
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         CORPS[0].set_cash(game_state, 200)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        _enter_acquisition(game_state)
 
-        acq_actions = find_all_legal_actions(
+        action_id = find_legal_action(
             game_state, action_type=ACTION_ACQ_PRICE, corp_id=0, company_id=private_co,
         )
-        if not acq_actions:
-            return
-
-        action_id = acq_actions[0]
-        actions = get_legal_actions(game_state)
-        info = next(i for aid, i in actions if aid == action_id)
-        low_price = COMPANIES[private_co].get_low_price()
-        price = low_price + info.amount
+        info = next(i for aid, i in get_legal_actions(game_state) if aid == action_id)
+        price = COMPANIES[private_co].get_low_price() + info.amount
 
         player_cash_before = PLAYERS[0].get_cash(game_state)
         corp_cash_before = CORPS[0].get_cash(game_state)
@@ -296,74 +240,52 @@ class TestAcqPrice:
 
     def test_price_at_low_boundary(self, game_state):
         """Acquisition at minimum price (low_price + 0 offset)."""
-        private_co = _draw_to_player(game_state, 0)
+        private_co = draw_to_player(game_state, 0)
 
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         CORPS[0].set_cash(game_state, 200)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        _enter_acquisition(game_state)
 
-        min_action = None
-        for aid, info in get_legal_actions(game_state):
-            if (info.action_type == ACTION_ACQ_PRICE
-                    and info.corp_id == 0
-                    and info.company_id == private_co
-                    and info.amount == 0):
-                min_action = aid
-                break
-        if min_action is None:
-            return
-
+        action_id = find_legal_action(
+            game_state, action_type=ACTION_ACQ_PRICE, corp_id=0,
+            company_id=private_co, amount=0,
+        )
         low_price = COMPANIES[private_co].get_low_price()
         corp_cash_before = CORPS[0].get_cash(game_state)
 
-        apply_and_verify(game_state, min_action)
+        apply_and_verify(game_state, action_id)
         assert CORPS[0].get_cash(game_state) == corp_cash_before - low_price
 
     def test_price_at_high_boundary(self, game_state):
         """Acquisition at maximum price (high_price)."""
-        private_co = _draw_to_player(game_state, 0)
-
-        float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
+        private_co = draw_to_player(game_state, 0)
         high_price = COMPANIES[private_co].get_high_price()
-        CORPS[0].set_cash(game_state, high_price + 50)
-
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
-
         low_price = COMPANIES[private_co].get_low_price()
         max_offset = high_price - low_price
 
-        max_action = None
-        for aid, info in get_legal_actions(game_state):
-            if (info.action_type == ACTION_ACQ_PRICE
-                    and info.corp_id == 0
-                    and info.company_id == private_co
-                    and info.amount == max_offset):
-                max_action = aid
-                break
-        if max_action is None:
-            return
+        float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
+        CORPS[0].set_cash(game_state, high_price + 50)
 
+        _enter_acquisition(game_state)
+
+        action_id = find_legal_action(
+            game_state, action_type=ACTION_ACQ_PRICE, corp_id=0,
+            company_id=private_co, amount=max_offset,
+        )
         corp_cash_before = CORPS[0].get_cash(game_state)
-        apply_and_verify(game_state, max_action)
+
+        apply_and_verify(game_state, action_id)
         assert CORPS[0].get_cash(game_state) == corp_cash_before - high_price
 
     def test_seller_must_retain_one_company(self, game_state):
         """A corp with exactly 1 company cannot sell it."""
-        # Float corp 0 with exactly 1 company
         seller_co = float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
 
-        # Float corp 1 (buyer) same president, with cash
         float_corp_for_test(game_state, corp_id=1, player_id=0, par_index=12)
         CORPS[1].set_cash(game_state, 200)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        _enter_acquisition(game_state)
 
         acq_actions = find_all_legal_actions(
             game_state, action_type=ACTION_ACQ_PRICE, corp_id=1, company_id=seller_co,
@@ -384,7 +306,7 @@ class TestFiPreemption:
         if num_players < 3:
             return
 
-        fi_co = _draw_to_fi(game_state)
+        fi_co = draw_to_fi(game_state)
 
         # Low-price buyer (player 1)
         float_corp_for_test(game_state, corp_id=3, player_id=1, par_index=5)
@@ -394,25 +316,20 @@ class TestFiPreemption:
         float_corp_for_test(game_state, corp_id=4, player_id=2, par_index=15)
         CORPS[4].set_cash(game_state, 200)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        _enter_acquisition(game_state)
 
+        # Player 1 is first in turn order with a corp, so should be active
         active = TURN.get_active_player(game_state)
         if active != 1:
-            return  # not the right player scenario
+            return  # turn order doesn't match expected setup
 
-        fi_buys = find_all_legal_actions(
+        fi_buy_id = find_legal_action(
             game_state, action_type=ACTION_ACQ_FI_BUY, corp_id=3, company_id=fi_co,
         )
-        if not fi_buys:
-            return
-
-        apply_and_verify(game_state, fi_buys[0])
+        apply_and_verify(game_state, fi_buy_id)
 
         phase = TURN.get_phase(game_state)
         if phase == int(GamePhases.PHASE_ACQ_OFFER):
-            # The preemptor's president (player 2) should decide
             assert TURN.get_active_player(game_state) == 2
 
 
@@ -425,15 +342,14 @@ class TestReceivershipForcedBuys:
 
     def test_receivership_corp_auto_buys_fi_company(self, game_state):
         """A receivership corp with cash automatically buys from FI."""
-        recv_co = _draw_company(game_state)
-        COMPANIES[recv_co].transfer_to_player(game_state, 0)
+        recv_co = draw_to_player(game_state, 0)
         setup_receivership_corp(game_state, corp_id=0, company_ids=[recv_co])
         CORPS[0].set_cash(game_state, 200)
 
-        fi_co = _draw_to_fi(game_state)
+        fi_co = draw_to_fi(game_state)
         fi_cash_before = FI.get_cash(game_state)
 
-        _advance_to_acquisition(game_state)
+        _enter_acquisition(game_state)
 
         phase = TURN.get_phase(game_state)
         if phase == int(GamePhases.PHASE_ACQ_OFFER):
@@ -446,14 +362,13 @@ class TestReceivershipForcedBuys:
 
     def test_receivership_with_no_cash_skips(self, game_state):
         """Receivership corp with no cash does not buy from FI."""
-        recv_co = _draw_company(game_state)
-        COMPANIES[recv_co].transfer_to_player(game_state, 0)
+        recv_co = draw_to_player(game_state, 0)
         setup_receivership_corp(game_state, corp_id=0, company_ids=[recv_co])
         CORPS[0].set_cash(game_state, 0)
 
-        fi_co = _draw_to_fi(game_state)
+        fi_co = draw_to_fi(game_state)
 
-        _advance_to_acquisition(game_state)
+        _enter_acquisition(game_state)
 
         assert COMPANIES[fi_co].get_location(game_state) == int(CompanyLocation.LOC_FI)
 
@@ -466,18 +381,17 @@ class TestPhaseTransitions:
     """Test phase transitions from ACQUISITION."""
 
     def test_no_active_corps_skips_to_closing(self, game_state):
-        """With no active corps, ACQUISITION transitions directly past."""
-        _advance_to_acquisition(game_state)
+        """With no active corps, ACQUISITION transitions directly to CLOSING."""
+        _enter_acquisition(game_state)
         assert TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION)
 
     def test_only_receivership_corps_transitions_after_forced_buys(self, game_state):
-        """With only receivership corps, ACQUISITION transitions after forced buys."""
-        recv_co = _draw_company(game_state)
-        COMPANIES[recv_co].transfer_to_player(game_state, 0)
+        """With only receivership corps, ACQUISITION transitions past."""
+        recv_co = draw_to_player(game_state, 0)
         setup_receivership_corp(game_state, corp_id=0, company_ids=[recv_co])
         CORPS[0].set_cash(game_state, 0)
 
-        _advance_to_acquisition(game_state)
+        _enter_acquisition(game_state)
         assert TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION)
 
     def test_acquisition_eventually_reaches_closing(self, game_state):
@@ -485,7 +399,7 @@ class TestPhaseTransitions:
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         CORPS[0].set_cash(game_state, 100)
 
-        _advance_to_acquisition(game_state)
+        _enter_acquisition(game_state)
         _pass_through_acquisition(game_state)
 
         phase = TURN.get_phase(game_state)
@@ -503,21 +417,17 @@ class TestAcquisitionZoneMerge:
 
     def test_acq_zone_merged_after_phase(self, game_state):
         """After ACQUISITION ends, no companies remain in LOC_CORP_ACQ."""
-        private_co = _draw_to_player(game_state, 0)
+        private_co = draw_to_player(game_state, 0)
 
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         CORPS[0].set_cash(game_state, 200)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        _enter_acquisition(game_state)
 
-        acq_actions = find_all_legal_actions(
+        acq_id = find_legal_action(
             game_state, action_type=ACTION_ACQ_PRICE, corp_id=0, company_id=private_co,
         )
-        if acq_actions:
-            apply_and_verify(game_state, acq_actions[0])
-
+        apply_and_verify(game_state, acq_id)
         _pass_through_acquisition(game_state)
 
         for cid in range(int(GameConstants.NUM_COMPANIES)):
@@ -528,22 +438,17 @@ class TestAcquisitionZoneMerge:
     def test_proceeds_flushed_after_phase(self, game_state):
         """After ACQUISITION ends, all corps have 0 acquisition_proceeds."""
         seller_co = float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
-        extra_co = _draw_company(game_state)
-        COMPANIES[extra_co].transfer_to_corp(game_state, 0)
+        draw_to_corp(game_state, 0)
 
         float_corp_for_test(game_state, corp_id=1, player_id=0, par_index=12)
         CORPS[1].set_cash(game_state, 200)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        _enter_acquisition(game_state)
 
-        acq_actions = find_all_legal_actions(
+        acq_id = find_legal_action(
             game_state, action_type=ACTION_ACQ_PRICE, corp_id=1, company_id=seller_co,
         )
-        if acq_actions:
-            apply_and_verify(game_state, acq_actions[0])
-
+        apply_and_verify(game_state, acq_id)
         _pass_through_acquisition(game_state)
 
         for corp_id in range(int(GameConstants.NUM_CORPS)):
@@ -565,9 +470,7 @@ class TestEnumeration:
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         CORPS[0].set_cash(game_state, 200)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        _enter_acquisition(game_state)
 
         actions = get_legal_actions(game_state)
         pass_actions = [info for _, info in actions if info.action_type == ACTION_PASS]
@@ -578,18 +481,7 @@ class TestEnumeration:
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         CORPS[0].set_cash(game_state, 500)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
-
-        # After advancing (FI drained), FI should have no companies
-        # Verify no FI companies exist
-        fi_count = sum(
-            1 for cid in range(int(GameConstants.NUM_COMPANIES))
-            if COMPANIES[cid].get_location(game_state) == int(CompanyLocation.LOC_FI)
-        )
-        if fi_count > 0:
-            return  # FI somehow got companies; skip
+        _enter_acquisition(game_state)
 
         actions = get_legal_actions(game_state)
         fi_buys = [info for _, info in actions if info.action_type == ACTION_ACQ_FI_BUY]
@@ -597,15 +489,13 @@ class TestEnumeration:
 
     def test_fi_buy_limited_by_cash(self, game_state):
         """FI_BUY actions only for companies the corp can afford."""
-        fi_co = _draw_to_fi(game_state)
+        fi_co = draw_to_fi(game_state)
 
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         high_price = COMPANIES[fi_co].get_high_price()
         CORPS[0].set_cash(game_state, high_price)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        _enter_acquisition(game_state)
 
         cash = CORPS[0].get_cash(game_state)
         actions = get_legal_actions(game_state)
@@ -619,15 +509,13 @@ class TestEnumeration:
 
     def test_acq_price_limited_by_cash(self, game_state):
         """ACQ_PRICE offsets cannot exceed what the corp can afford."""
-        private_co = _draw_to_player(game_state, 0)
+        private_co = draw_to_player(game_state, 0)
 
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         low_price = COMPANIES[private_co].get_low_price()
         CORPS[0].set_cash(game_state, low_price + 3)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        _enter_acquisition(game_state)
 
         cash = CORPS[0].get_cash(game_state)
         actions = get_legal_actions(game_state)
@@ -646,9 +534,7 @@ class TestEnumeration:
         owned_co = float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         CORPS[0].set_cash(game_state, 200)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        _enter_acquisition(game_state)
 
         acq_self = find_all_legal_actions(
             game_state, action_type=ACTION_ACQ_PRICE, corp_id=0, company_id=owned_co,
@@ -660,17 +546,14 @@ class TestEnumeration:
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=12)
         CORPS[0].set_cash(game_state, 200)
 
-        recv_co = _draw_company(game_state)
-        COMPANIES[recv_co].transfer_to_player(game_state, 0)
-        recv_co2 = _draw_company(game_state)
-        COMPANIES[recv_co2].transfer_to_player(game_state, 0)
+        recv_co = draw_to_player(game_state, 0)
+        recv_co2 = draw_to_player(game_state, 0)
         setup_receivership_corp(game_state, corp_id=1, company_ids=[recv_co, recv_co2])
 
-        _advance_to_acquisition(game_state)
+        _enter_acquisition(game_state)
         if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+            return  # receivership forced buy may have transitioned
 
-        # No actions should buy recv_co from the receivership corp 1
         acq_recv = find_all_legal_actions(
             game_state, action_type=ACTION_ACQ_PRICE, corp_id=0, company_id=recv_co,
         )
@@ -678,19 +561,18 @@ class TestEnumeration:
 
     def test_no_actions_for_receivership_corp_as_buyer(self, game_state):
         """Receivership corps do not appear as buyers in enumerated actions."""
-        recv_co = _draw_company(game_state)
-        COMPANIES[recv_co].transfer_to_player(game_state, 0)
+        recv_co = draw_to_player(game_state, 0)
         setup_receivership_corp(game_state, corp_id=0, company_ids=[recv_co])
         CORPS[0].set_cash(game_state, 200)
 
         float_corp_for_test(game_state, corp_id=1, player_id=0, par_index=10)
         CORPS[1].set_cash(game_state, 100)
 
-        _draw_to_fi(game_state)
+        draw_to_fi(game_state)
 
-        _advance_to_acquisition(game_state)
+        _enter_acquisition(game_state)
         if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+            return  # receivership forced buy may have transitioned
 
         actions = get_legal_actions(game_state)
         recv_buyer_actions = [
@@ -706,12 +588,10 @@ class TestEnumeration:
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         CORPS[0].set_cash(game_state, 0)
 
-        _draw_to_fi(game_state)
-        _draw_to_player(game_state, 0)
+        draw_to_fi(game_state)
+        draw_to_player(game_state, 0)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        _enter_acquisition(game_state)
 
         actions = get_legal_actions(game_state)
         buy_actions = [
@@ -726,27 +606,28 @@ class TestEnumeration:
         if num_players < 3:
             return
 
-        # Corp 0 owned by player 0, with 2 companies
         seller_co = float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
-        extra_co = _draw_company(game_state)
-        COMPANIES[extra_co].transfer_to_corp(game_state, 0)
+        draw_to_corp(game_state, 0)
 
-        # Corp 1 owned by player 1
         float_corp_for_test(game_state, corp_id=1, player_id=1, par_index=12)
         CORPS[1].set_cash(game_state, 200)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        _enter_acquisition(game_state)
 
+        # Check from whichever player is active — neither should see
+        # cross-president actions
+        acq_cross = find_all_legal_actions(
+            game_state, action_type=ACTION_ACQ_PRICE, corp_id=1, company_id=seller_co,
+        )
         active = TURN.get_active_player(game_state)
         if active == 1:
-            acq_cross = find_all_legal_actions(
-                game_state, action_type=ACTION_ACQ_PRICE, corp_id=1, company_id=seller_co,
-            )
             assert len(acq_cross) == 0, (
                 "In same-president mode, cross-president corp-to-corp not allowed"
             )
+        else:
+            # Player 0 is active; they preside over corp 0 but not corp 1,
+            # so corp 1 won't appear in their actions regardless
+            assert len(acq_cross) == 0
 
 
 # =============================================================================
@@ -758,46 +639,36 @@ class TestPlayerStaysAfterBuy:
 
     def test_player_remains_active_after_acq_price(self, game_state):
         """Active player stays active after an ACQ_PRICE action."""
-        private_co = _draw_to_player(game_state, 0)
+        private_co = draw_to_player(game_state, 0)
 
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         CORPS[0].set_cash(game_state, 200)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        _enter_acquisition(game_state)
 
         active_before = TURN.get_active_player(game_state)
-        acq_actions = find_all_legal_actions(
+        acq_id = find_legal_action(
             game_state, action_type=ACTION_ACQ_PRICE, corp_id=0, company_id=private_co,
         )
-        if not acq_actions:
-            return
-
-        apply_and_verify(game_state, acq_actions[0])
+        apply_and_verify(game_state, acq_id)
 
         if TURN.get_phase(game_state) == int(GamePhases.PHASE_ACQUISITION):
             assert TURN.get_active_player(game_state) == active_before
 
     def test_player_remains_active_after_fi_buy(self, game_state):
         """Active player stays active after an FI_BUY (no preemption)."""
-        fi_co = _draw_to_fi(game_state)
+        fi_co = draw_to_fi(game_state)
 
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         CORPS[0].set_cash(game_state, 200)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        _enter_acquisition(game_state)
 
         active_before = TURN.get_active_player(game_state)
-        fi_buys = find_all_legal_actions(
+        fi_buy_id = find_legal_action(
             game_state, action_type=ACTION_ACQ_FI_BUY, corp_id=0, company_id=fi_co,
         )
-        if not fi_buys:
-            return
-
-        apply_and_verify(game_state, fi_buys[0])
+        apply_and_verify(game_state, fi_buy_id)
 
         phase = TURN.get_phase(game_state)
         if phase == int(GamePhases.PHASE_ACQUISITION):
@@ -813,34 +684,27 @@ class TestMultipleAcquisitions:
 
     def test_two_consecutive_buys(self, game_state):
         """Player buys two companies in the same ACQUISITION turn."""
-        co1 = _draw_to_player(game_state, 0)
-        co2 = _draw_to_player(game_state, 0)
+        co1 = draw_to_player(game_state, 0)
+        co2 = draw_to_player(game_state, 0)
 
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         CORPS[0].set_cash(game_state, 500)
 
-        _advance_to_acquisition(game_state)
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        _enter_acquisition(game_state)
 
         # First buy
-        acq1 = find_all_legal_actions(
+        acq1_id = find_legal_action(
             game_state, action_type=ACTION_ACQ_PRICE, corp_id=0, company_id=co1,
         )
-        if not acq1:
-            return
-        apply_and_verify(game_state, acq1[0])
+        apply_and_verify(game_state, acq1_id)
 
-        if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-            return
+        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_ACQUISITION)
 
         # Second buy
-        acq2 = find_all_legal_actions(
+        acq2_id = find_legal_action(
             game_state, action_type=ACTION_ACQ_PRICE, corp_id=0, company_id=co2,
         )
-        if not acq2:
-            return
-        apply_and_verify(game_state, acq2[0])
+        apply_and_verify(game_state, acq2_id)
 
         for co in [co1, co2]:
             loc = COMPANIES[co].get_location(game_state)

@@ -216,6 +216,34 @@ def apply_and_verify(state, action_id, msg="", expected_status=STATUS_OK):
 # STATE SETUP HELPERS
 # =============================================================================
 
+def draw_company(state):
+    """Draw a company from the deck (LOC_DECK -> LOC_REVEALED). Returns company_id."""
+    cid = DECK.draw(state)
+    assert cid >= 0, "Deck is empty"
+    return cid
+
+
+def draw_to_player(state, player_id):
+    """Draw a company and transfer it to a player. Returns company_id."""
+    cid = draw_company(state)
+    COMPANIES[cid].transfer_to_player(state, player_id)
+    return cid
+
+
+def draw_to_fi(state):
+    """Draw a company and transfer it to the Foreign Investor. Returns company_id."""
+    cid = draw_company(state)
+    COMPANIES[cid].transfer_to_fi(state)
+    return cid
+
+
+def draw_to_corp(state, corp_id):
+    """Draw a company and transfer it to a corporation. Returns company_id."""
+    cid = draw_company(state)
+    COMPANIES[cid].transfer_to_corp(state, corp_id)
+    return cid
+
+
 def float_corp_for_test(state, corp_id, company_id=None, player_id=0, par_index=10, float_shares=1):
     """Float a corporation for testing.
 
