@@ -195,6 +195,7 @@ PAR is gone — merged into IPO. ACQ_OFFER took PAR's slot in the enum.
 - **`core/data` is data-only.** No field-level helpers. Static data is `cimport`ed directly.
 - **Pointer safety:** Entity handles read offsets from cimported layout constants, cache nothing per-instance. Player/Corp use an inline `_slot(field)` helper Cython optimizes away in nogil. This is the only code that should cimport those constants.
 - **Guard with `assert`, not silent fallbacks.** In Cython, validate invariants with `assert` — not `if ...: return False/0`. Out-of-range IDs, inactive entities that should be active, malformed state: crash loudly. `assert` compiles out under `python -O`. Include an f-string message. Example: `assert 0 <= player_id < state._num_players, f"bad player_id {player_id}"`. **Exception:** genuine business-logic branches (e.g. "can't afford the share, so the action is illegal") still return cleanly. This rule is about defensive checks for things callers should guarantee.
+- **No method-level imports.** All imports must be at file scope (top of the file). Do not use inline `import` inside functions, methods, or test bodies. This applies everywhere — production code, test code, and scripts.
 
 ## Build
 
