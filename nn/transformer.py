@@ -27,6 +27,7 @@ from core.data import (
     PHASE_ACTION_SIZES,
     TokenType,
 )
+from core.token_data import TokenDataSize
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -58,7 +59,10 @@ class TransformerConfig:
     ff_mult: float = 3.0  # FFN inner dimension = ceil(ff_mult * d_model)
     d_bilinear: int = 64   # Hidden width for the unified ACQ pair-feature policy head
 
-    token_dim: int = 63    # Raw feature width per token (all zero-padded to same size)
+    # Raw feature width per token (zero-padded to same size across types).
+    # Sourced from core.token_data so the model and the Cython extractor
+    # can't drift out of sync.
+    token_dim: int = int(TokenDataSize.TOKEN_DIM)
 
     def __post_init__(self) -> None:
         assert 3 <= self.num_players <= 5, f"num_players must be 3-5, got {self.num_players}"
