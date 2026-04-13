@@ -101,6 +101,13 @@ cdef void invalidate_all_corp_caches(GameState state) noexcept nogil:
     state._data[_corp_cache_dirty_slot()] = <int16_t>_all_corps_mask()
 
 
+cdef int count_corp_companies(
+    GameState state, int corp_id, bint include_acquisition,
+) noexcept nogil:
+    return company_fill_corp_company_ids(
+        state, corp_id, include_acquisition, <int*>NULL)
+
+
 # =============================================================================
 # PURE-FUNCTION HELPERS
 # =============================================================================
@@ -234,6 +241,9 @@ cdef class Corporation:
     cdef inline bint _has_acquisition_company(self, GameState state, int company_id) noexcept nogil:
         """Check if this corp has the given company in its acquisition pile."""
         return company_in_corp_acquisition(state, company_id, self.corp_id)
+
+    cdef inline int _count_companies(self, GameState state, bint include_acquisition) noexcept nogil:
+        return count_corp_companies(state, self.corp_id, include_acquisition)
 
     # =========================================================================
     # ACTIVE STATUS
@@ -482,8 +492,7 @@ cdef class Corporation:
         in this corp's acquisition pile (which will become owned once
         the phase ends).
         """
-        return company_fill_corp_company_ids(
-            state, self.corp_id, include_acquisition, <int*>NULL)
+        return self._count_companies(state, include_acquisition)
 
     # =========================================================================
     # DERIVED CACHE REFRESH

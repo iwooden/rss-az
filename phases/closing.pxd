@@ -10,5 +10,6 @@ access goes through entity handles.
 from core.state cimport GameState
 from core.actions cimport ActionInfo
 
+cdef bint _corp_closable_by_player(GameState state, int corp_id, int player_id) noexcept nogil
 cdef void setup_closing_phase(GameState state) noexcept
 cdef void apply_closing_action(GameState state, ActionInfo* info) noexcept

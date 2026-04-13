@@ -13,11 +13,12 @@ Three stages:
 3. **Mandatory close** — force-close player privates (cheapest first) until
    no player would end up with negative cash after INCOME.
 
-All state access goes through entity handles. The handler does not import
-layout constants and never indexes ``state._data`` directly.
+Most state access goes through entity handles. The Cython-only legality
+predicate exported for action enumeration reads cheap corp scalar fields
+directly so it can run nogil before doing any company-table scans.
 """
 
-from core.state cimport GameState
+from core.state cimport GameState, LAYOUT, CORP_FIELDS
 from core.actions cimport (
     ActionInfo,
     ACTION_PASS,
@@ -32,6 +33,8 @@ from core.data cimport (
     COMPANY_FACE_VALUE,
     COST_OF_OWNERSHIP,
 )
+from entities.company cimport LOC_PLAYER, LOC_CORP
+from entities.corp cimport count_corp_companies
 
 # Late Python-level entity imports, same pattern as phases/bid.pyx.
 from entities import turn as turn_module
@@ -39,6 +42,13 @@ from entities import player as player_module
 from entities import company as company_module
 from entities import corp as corp_module
 from entities import fi as fi_module
+
+
+DEF RED_STAR_TIER = 1
+DEF ORANGE_STAR_TIER = 2
+DEF GREEN_STAR_TIER = 3
+DEF RED_RECEIVERSHIP_CLOSE_COO = 4
+DEF ORANGE_RECEIVERSHIP_CLOSE_COO = 7
 
 
 # =============================================================================
@@ -54,6 +64,24 @@ cdef void _auto_close_fi(GameState state) noexcept:
             company_module.COMPANIES[i].remove_from_game(state)
 
 
+cdef bint _corp_closable_by_player(GameState state, int corp_id, int player_id) noexcept nogil:
+    """Return True if ``player_id`` can voluntarily close a company from ``corp_id``.
+
+    Cheap scalar checks come first; counting owned companies scans the
+    company table, so do it only after the corp could otherwise be eligible.
+    """
+    cdef int corp_base = LAYOUT.corps_offset + corp_id * CORP_FIELDS.size
+
+    if <int>state._data[corp_base + CORP_FIELDS.active] != 1:
+        return False
+    if <int>state._data[corp_base + CORP_FIELDS.in_receivership] == 1:
+        return False
+    if <int>state._data[corp_base + CORP_FIELDS.president_id] != player_id:
+        return False
+
+    return count_corp_companies(state, corp_id, False) > 1
+
+
 cdef void _auto_close_receivership(GameState state) noexcept:
     """Auto-close red/orange companies for receivership corps above CoO thresholds.
 
@@ -65,12 +93,9 @@ cdef void _auto_close_receivership(GameState state) noexcept:
     - Close eligible companies lowest face value first.
     - JS gets 2x printed income bonus on auto-close.
     """
-    cdef int corp_id, coo_level, i, j, count
+    cdef int corp_id, coo_level, i, count
     cdef int stars, coo_cost, face_val, max_face, max_face_idx
-    cdef int comp_ids[36]
-    cdef int eligible[36]
-    cdef int eligible_count
-    cdef int face_values[36]
+    cdef int close_id, close_face
 
     coo_level = turn_module.TURN.get_coo_level(state)
 
@@ -80,12 +105,7 @@ cdef void _auto_close_receivership(GameState state) noexcept:
         if not corp_module.CORPS[corp_id].is_in_receivership(state):
             continue
 
-        # Collect this corp's company IDs
-        count = 0
-        for i in range(<int>GameConstants.NUM_COMPANIES):
-            if company_module.COMPANIES[i].is_owned_by_corp(state, corp_id):
-                comp_ids[count] = i
-                count += 1
+        count = corp_module.CORPS[corp_id].count_companies(state)
 
         if count <= 1:
             continue  # Can't close the only company
@@ -93,50 +113,49 @@ cdef void _auto_close_receivership(GameState state) noexcept:
         # Find highest face value among ALL corp companies (protected)
         max_face = -1
         max_face_idx = -1
-        for i in range(count):
-            face_val = COMPANY_FACE_VALUE[comp_ids[i]]
+        for i in range(<int>GameConstants.NUM_COMPANIES):
+            if not company_module.COMPANIES[i].is_owned_by_corp(state, corp_id):
+                continue
+            face_val = COMPANY_FACE_VALUE[i]
             if face_val > max_face:
                 max_face = face_val
-                max_face_idx = comp_ids[i]
+                max_face_idx = i
 
-        # Collect eligible companies for auto-close
-        eligible_count = 0
-        for i in range(count):
-            if comp_ids[i] == max_face_idx:
-                continue  # Protected
-            stars = COMPANY_STARS[comp_ids[i]]
-            if stars >= 3:
-                continue  # Only red (1) and orange (2) are candidates
-            # COST_OF_OWNERSHIP is [7][5], indexed as [coo_level-1][stars-1]
-            coo_cost = COST_OF_OWNERSHIP[coo_level - 1][stars - 1]
-            if stars == 1 and coo_cost >= 4:
-                eligible[eligible_count] = comp_ids[i]
-                face_values[eligible_count] = COMPANY_FACE_VALUE[comp_ids[i]]
-                eligible_count += 1
-            elif stars == 2 and coo_cost >= 7:
-                eligible[eligible_count] = comp_ids[i]
-                face_values[eligible_count] = COMPANY_FACE_VALUE[comp_ids[i]]
-                eligible_count += 1
+        # Close eligible companies lowest face value first, but never the
+        # protected highest-face company or the last remaining company.
+        while count > 1:
+            close_id = -1
+            for i in range(<int>GameConstants.NUM_COMPANIES):
+                if i == max_face_idx:
+                    continue
+                if not company_module.COMPANIES[i].is_owned_by_corp(state, corp_id):
+                    continue
+                stars = COMPANY_STARS[i]
+                if stars >= GREEN_STAR_TIER:
+                    continue  # Only red and orange companies are candidates.
+                # COST_OF_OWNERSHIP is indexed by zero-based coo/star tiers.
+                coo_cost = COST_OF_OWNERSHIP[coo_level - 1][stars - 1]
+                if stars == RED_STAR_TIER:
+                    if coo_cost < RED_RECEIVERSHIP_CLOSE_COO:
+                        continue
+                elif stars == ORANGE_STAR_TIER:
+                    if coo_cost < ORANGE_RECEIVERSHIP_CLOSE_COO:
+                        continue
+                else:
+                    continue
 
-        # Sort eligible by face value ascending (simple insertion sort — at most ~36 elements)
-        for i in range(1, eligible_count):
-            j = i
-            while j > 0 and face_values[j - 1] > face_values[j]:
-                # Swap
-                eligible[j], eligible[j - 1] = eligible[j - 1], eligible[j]
-                face_values[j], face_values[j - 1] = face_values[j - 1], face_values[j]
-                j -= 1
+                face_val = COMPANY_FACE_VALUE[i]
+                if close_id == -1 or face_val < close_face:
+                    close_id = i
+                    close_face = face_val
 
-        # Close eligible (lowest face value first), but never the last company
-        for i in range(eligible_count):
-            # Re-count remaining companies to enforce the last-company invariant.
-            # This matters because we're closing multiple in one pass.
-            if corp_module.CORPS[corp_id].count_companies(state) <= 1:
+            if close_id == -1:
                 break
             if corp_id == <int>CorpIndices.CORP_JS:
                 corp_module.CORPS[corp_id].add_cash(
-                    state, 2 * COMPANY_INCOME[eligible[i]])
-            company_module.COMPANIES[eligible[i]].remove_from_game(state)
+                    state, 2 * COMPANY_INCOME[close_id])
+            company_module.COMPANIES[close_id].remove_from_game(state)
+            count -= 1
 
 
 cdef void _process_mandatory_close(GameState state) noexcept:
@@ -289,10 +308,10 @@ cdef void apply_closing_action(GameState state, ActionInfo* info) noexcept:
         loc = company_module.COMPANIES[company_id].get_location(state)
         owner_id = company_module.COMPANIES[company_id].get_owner_id(state)
 
-        if loc == 3:  # LOC_PLAYER
+        if loc == <int>LOC_PLAYER:
             assert owner_id == pid, \
                 f"apply_closing_action: company {company_id} owned by player {owner_id}, not active player {pid}"
-        elif loc == 5:  # LOC_CORP
+        elif loc == <int>LOC_CORP:
             corp_id = owner_id
             assert player_module.PLAYERS[pid].is_president_of(state, corp_id), \
                 f"apply_closing_action: player {pid} not president of corp {corp_id}"

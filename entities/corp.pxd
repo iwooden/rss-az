@@ -31,6 +31,7 @@ from core.state cimport GameState
 
 cdef void invalidate_corp_cache(GameState state, int corp_id) noexcept nogil
 cdef void invalidate_all_corp_caches(GameState state) noexcept nogil
+cdef int count_corp_companies(GameState state, int corp_id, bint include_acquisition) noexcept nogil
 
 
 # =============================================================================
@@ -73,6 +74,7 @@ cdef class Corporation:
     cdef bint _is_in_receivership(self, GameState state) noexcept nogil
     cdef bint _owns_company(self, GameState state, int company_id) noexcept nogil
     cdef bint _has_acquisition_company(self, GameState state, int company_id) noexcept nogil
+    cdef int _count_companies(self, GameState state, bint include_acquisition) noexcept nogil
     cdef void _refresh_cache(self, GameState state)
     cdef void _clear_cache(self, GameState state) noexcept
 

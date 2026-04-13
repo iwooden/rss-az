@@ -64,6 +64,7 @@ from core.data cimport (
     MARKET_PRICES,
 )
 from entities.company cimport LOC_AUCTION, LOC_FI, LOC_CORP, LOC_PLAYER
+from phases.closing cimport _corp_closable_by_player
 
 cnp.import_array()
 
@@ -685,47 +686,24 @@ cdef int _enumerate_closing(
     ]
     cdef int company_base = LAYOUT.companies_offset
     cdef int loc, owner
-    cdef int corp_id, corp_base, company_id
-    cdef int corp_company_count[8]
-    cdef bint corp_closable[8]  # True if active_player can close companies from this corp
+    cdef int company_id
 
     # --- id 0: pass (always legal) -------------------------------------------
     ids[count] = 0
     count += 1
 
-    # --- Pre-scan: count companies per corp, determine closable corps ---------
-    for corp_id in range(8):
-        corp_company_count[corp_id] = 0
-        corp_closable[corp_id] = False
-    for company_id in range(36):
+    # --- Emit player-owned + valid corp-owned companies -----------------------
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
         loc = <int>state._data[company_base + COMPANY_OFFSETS.locations + company_id]
-        if loc == 5:  # LOC_CORP
-            owner = <int>state._data[company_base + COMPANY_OFFSETS.owner_ids + company_id]
-            corp_company_count[owner] += 1
-    for corp_id in range(8):
-        if corp_company_count[corp_id] <= 1:
-            continue
-        corp_base = LAYOUT.corps_offset + corp_id * CORP_FIELDS.size
-        if <int>state._data[corp_base + CORP_FIELDS.active] != 1:
-            continue
-        if <int>state._data[corp_base + CORP_FIELDS.in_receivership] == 1:
-            continue
-        if <int>state._data[corp_base + CORP_FIELDS.president_id] != active_player:
-            continue
-        corp_closable[corp_id] = True
-
-    # --- Single pass over companies: emit player-owned + valid corp-owned -----
-    for company_id in range(36):
-        loc = <int>state._data[company_base + COMPANY_OFFSETS.locations + company_id]
-        if loc == 3:  # LOC_PLAYER
+        if loc == <int>LOC_PLAYER:
             owner = <int>state._data[company_base + COMPANY_OFFSETS.owner_ids + company_id]
             if owner == active_player:
                 _require_action_capacity(count, b"CLOSING_PLAYER")
                 ids[count] = <uint16_t>encode_closing_close(company_id)
                 count += 1
-        elif loc == 5:  # LOC_CORP
+        elif loc == <int>LOC_CORP:
             owner = <int>state._data[company_base + COMPANY_OFFSETS.owner_ids + company_id]
-            if corp_closable[owner]:
+            if _corp_closable_by_player(state, owner, active_player):
                 _require_action_capacity(count, b"CLOSING_CORP")
                 ids[count] = <uint16_t>encode_closing_close(company_id)
                 count += 1
