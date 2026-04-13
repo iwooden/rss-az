@@ -14,9 +14,11 @@ High-performance Cython game engine for "Rolling Stock Stars", optimized for Alp
 
 ## Transformer Refactor (current state)
 
-We are mid-refactor on `transformer-refactor`. Old MLP-era design (state rotation, dense global action vector, phase-specific MLP heads) is **torn out**. New design: each game entity is its own transformer token, state is compact int16 with no rotation/pre-normalization, `get_token_data()` is the sole engine→NN interface, action encodings are phase-local and sparse, and policy logits are read directly from the relevant entity tokens.
+We are on the `transformer-refactor` branch. Old MLP-era design (state rotation, dense global action vector, phase-specific MLP heads) is **torn out**. New design: each game entity is its own transformer token, state is compact int16 with no rotation/pre-normalization, `get_token_data()` is the sole engine→NN interface, action encodings are phase-local and sparse, and policy logits are read directly from the relevant entity tokens.
 
-Backwards compatibility is **not** a goal. Code outside `core/state.*`, `core/data.*`, `core/actions.*`, `entities/` is stale or stubbed. The `main` branch preserves pre-refactor code as a reference for **rule intent only** — do not copy state layout, field offsets, action indices, or function signatures from it.
+**Engine layer is complete:** `core/state`, `core/data`, `core/actions` (encode/decode + all 8 `_enumerate_*` helpers), `core/driver` (game-loop dispatch + forced-action auto-chain), `entities/*` (all 7 handles), and `phases/*` (all 11 phase handlers) are implemented and building. Remaining work: `get_token_data()`, MCTS rewrite, and train pipeline rewrite.
+
+Backwards compatibility is **not** a goal. The `main` branch preserves pre-refactor code as a reference for **rule intent only** — do not copy state layout, field offsets, action indices, or function signatures from it.
 
 ### Transformer (summary of `nn/transformer.py` + `transformers.md`)
 
@@ -65,7 +67,7 @@ Action counts live in `core/data.pxd` as `ActionSize` `cpdef enum`; `core/action
 - **Offer-based phases are gone.** ACQUISITION exposes the full `(corp, company, offset)` space via masking; CLOSING exposes all eligible companies directly. Players pick in one shot. FI fixed-price buys fold into the pair space as the 52nd per-pair option (`FI_BUY`). Receivership auto-acquisitions and mandatory negative-income-and-cash closes remain as forced actions resolved by the driver.
 - **FI-priority via `PHASE_ACQ_OFFER`.** When a player/receivership corp tries to acquire an FI-owned company and higher-priority corps exist (OS first at face value; rest by descending share price at high value), the engine pushes into `PHASE_ACQ_OFFER` and offers each in turn a 2-action `{pass, buy}`. Reuses existing `active_corp` (= preempting corp), `active_company` (= contested FI company), `active_player` (= that corp's president). No new state fields.
 - **No per-ACQ active entity.** During ACQUISITION itself, `active_corp`/`active_company` sit at `-1`. The generic `active_corp`/`active_company`/`active_player` selectors plus per-phase remaining bitmasks cover every decision phase — no `closing_company`/`dividend_corp`/`issue_corp`/`ipo_company` fields needed.
-- **Cross-player/cross-corp ACQ transfers:** still not supported, known 18xx.games divergence.
+- **Cross-president ACQ transfers:** supported via `state.acq_same_president` flag. When `False`, corps can acquire from entities presided by a different player; the owner gets an accept/decline choice via `PHASE_ACQ_OFFER`. Known 18xx.games divergence: cross-corp transfers between corps of the *same* president are always allowed (no offer needed).
 - **3-player only.** Multi-player-count support is explicit non-goal for the prototype.
 
 ### What currently builds
@@ -76,14 +78,14 @@ Action counts live in `core/data.pxd` as `ActionSize` `cpdef enum`; `core/action
 |------|--------|
 | `core/data.{pyx,pxd}` | ✅ Pure data + enums + norm divisors |
 | `core/state.{pyx,pxd}` | ✅ Compact int16 layout with module-level `LAYOUT`/`*_FIELDS`/`*_OFFSETS` |
-| `core/actions.{pyx,pxd}` | ✅ Phase-local encode/decode + engine→decision bridge. ⚠ `_enumerate_*` helpers are **empty stubs** (rss-az-848a) |
+| `core/actions.{pyx,pxd}` | ✅ Phase-local encode/decode + all 8 `_enumerate_*` helpers implemented |
+| `core/driver.{pyx,pxd}` | ✅ Game-loop dispatch, forced-action auto-chain, all phases wired |
 | `entities/*.pyx` | ✅ All 7 handles rewritten, fully stateless |
+| `phases/*.pyx` | ✅ All 11 phase handlers (8 decision + 3 automated) implemented |
 | `nn/transformer.py` | ✅ Token-based transformer, imports cleanly |
-| `core/driver.{pyx,pxd}` | ❌ Pre-refactor, not in build. Needs rewrite |
-| `phases/` | ❌ Empty stub package. All phase handlers await rewrite |
 | `mcts/` | ❌ Pre-refactor (`search.py`, `node.py`, `evaluator.py`, `mcts_core.pyx`) |
-| `train/` | 🟡 Leaf modules import; orchestration (`eval_server`, `self_play`, `main`, `analyze_game`, `tournament`) broken on driver |
-| `tests/` | 🟡 Only `tests/games_18xx/`, currently broken on `core.driver` |
+| `train/` | 🟡 Leaf modules import; orchestration (`eval_server`, `self_play`, `main`, `analyze_game`, `tournament`) needs rewrite for sparse policy + token buffers |
+| `tests/` | 🟡 Only `tests/games_18xx/`; needs rewrite for new driver API |
 | `interp/` | ❌ Removed |
 
 Rule when touching anything on the broken list: **rewrite it against the new `core/state` + `core/actions` + `entities/` contract.**
@@ -95,9 +97,9 @@ Rule when touching anything on the broken list: **rewrite it against the new `co
 ## Directory Structure
 
 ```
-core/        # Engine: state.pyx, data.pyx, actions.pyx (driver.pyx = stale)
+core/        # Engine: state.pyx, data.pyx, actions.pyx, driver.pyx
 entities/    # Entity handles: player, corp, company, deck, turn, market, fi
-phases/      # Empty stub — all handlers await rewrite
+phases/      # All 11 phase handlers (invest, bid, acquisition, acq_offer, closing, dividends, income, issue, ipo, wrap_up, end_card)
 mcts/        # Stale pre-refactor MCTS
 nn/          # transformer.py — token-based model
 train/       # Self-play scaffolding; orchestration broken
@@ -149,7 +151,7 @@ Per-phase, phase-local encoding. Read the `.pxd` directly — it's the contract.
 - **Action counts:** `[557, 15, 14977, 2, 37, 26, 2, 113]`. Canonical in `core/data.pxd::ActionSize`.
 - **Encode/decode:** family of `encode_*` `cdef inline` helpers + single `decode_action(phase_id, action_id)` inverse. `encode_action(ActionInfo)` is the tested roundtrip.
 - **`get_decision_phase(state)`** returns `DecisionPhase` or `-1` for automated/terminal phases (`WRAP_UP`, `INCOME`, `END_CARD`, `GAME_OVER`).
-- **`enumerate_legal_actions(state, phase_id, uint16_t* ids)`** — public contract; returns count, writes phase-local ids in deterministic order. Phase-specific `_enumerate_*` helpers are **empty stubs** (rss-az-848a). Mask logic needs porting from old `actions-old.pyx` on `main` into the new encoding.
+- **`enumerate_legal_actions(state, phase_id, uint16_t* ids)`** — public contract; returns count, writes phase-local ids in deterministic order. All 8 `_enumerate_*` helpers are implemented with real mask logic.
 - Buffers pad to `MAX_LEGAL_ACTIONS = 256`. Over-cap is a bug; `enumerate_legal_actions` asserts on overflow.
 
 ### Data (`core/data.pyx`)
@@ -158,7 +160,7 @@ Pure data + constants: static tables (36 companies, 8 corporations, 27 market pr
 
 ### NN Model (`nn/transformer.py`)
 
-Model is ahead of the engine: expects `(batch, num_tokens, token_dim)` features and per-phase action indices, but `get_token_data()` (the Phase-1 link) doesn't exist yet. Don't change the action-space contract without updating `core/actions.pxd` (import-time assert catches drift).
+Expects `(batch, num_tokens, token_dim)` features and per-phase action indices. The engine is now fully wired (driver + phases + enumerators), but `get_token_data()` — the bridge from compact state to token features — doesn't exist yet. Don't change the action-space contract without updating `core/actions.pxd` (import-time assert catches drift).
 
 ## Game Flow & Phases
 
@@ -208,7 +210,7 @@ PAR is gone — merged into IPO. ACQ_OFFER took PAR's slot in the enum.
 .venv/bin/python setup.py clean
 ```
 
-> ⚠️ Refactor in progress. Only `core/data.pyx`, `core/state.pyx`, `core/actions.pyx`, `entities/*.pyx` build. `pytest tests/`, `python -m train`, benchmarks do not run yet.
+> ⚠️ Refactor in progress. `core/*.pyx`, `entities/*.pyx`, and `phases/*.pyx` all build. `pytest tests/`, `python -m train`, benchmarks do not run yet (blocked on `get_token_data()` + MCTS/train rewrite).
 
 - **Warning-free builds required.** File a beads issue if warnings appear.
 - **Fix pyright errors before moving on**, even pre-existing ones. Run `pyright <file>` via Bash for definitive results (auto-injected diagnostics can be stale).
@@ -231,8 +233,8 @@ Most of the old suite is deleted. Surviving code lives in `tests/games_18xx/` an
 | Action encoding | `core/actions.{pyx,pxd}` | `core/data.pxd::ActionSize` |
 | Entity field access | `entities/<entity>.{pyx,pxd}` | — |
 | Model | `nn/transformer.py` | Transformer Refactor section above |
-| Driver / phases rewrite | (TBD) | old files on `main` + `RULES.md` |
-| Phase implementation | entity handles + `core/actions.pyx::_enumerate_*` | `RULES.md`; ask before adding handle methods |
+| Driver | `core/driver.{pyx,pxd}` | `phases/*.pyx` |
+| Phase implementation | `phases/<phase>.{pyx,pxd}` | entity handles, `RULES.md`; ask before adding handle methods |
 
 ---
 
@@ -247,6 +249,6 @@ Project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
 **Ad-hoc scripts:** Write to `scratchpad/`, not inline in Bash. Use `Edit` for iteration. Prepend `PYTHONPATH=/home/icebreaker/rss-az-cython2` when running. Saves tokens vs writing 100-line scripts inline.
 
-**Referencing `main`:** OK for game rule intent, edge cases, shape of old phase handlers/driver/MCTS, and legality logic to port into `_enumerate_*`. NOT OK for state layout, field offsets, action indices, or signatures — those have all changed.
+**Referencing `main`:** OK for game rule intent, edge cases, and shape of old MCTS/train code. NOT OK for state layout, field offsets, action indices, or signatures — those have all changed.
 
 **Session close:** Follow the beads session-close protocol from the session-start hook. Minimum gate is the build command above (clean + build_ext). This branch is ephemeral with no upstream — code is merged to `main` locally, not pushed.

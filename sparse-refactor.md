@@ -475,17 +475,17 @@ This gives one stable tensor shape per phase batch and works well with compilati
 
 ## Suggested file-by-file changes
 
-### `core/actions.pyx` and `core/actions.pxd`
+### `core/actions.pyx` and `core/actions.pxd` ✅
 
-- Remove dependence on global action layout.
-- Introduce phase-local encode/decode helpers.
-- Add `enumerate_legal_actions(state)` API.
-- Ensure returned order is deterministic.
+- ~~Remove dependence on global action layout.~~ Done.
+- ~~Introduce phase-local encode/decode helpers.~~ Done.
+- ~~Add `enumerate_legal_actions(state)` API.~~ Done — all 8 `_enumerate_*` helpers implemented.
+- ~~Ensure returned order is deterministic.~~ Done — documented per-phase ordering.
 
-### `core/driver.pyx`
+### `core/driver.pyx` ✅
 
-- Update action application to use phase-local ids.
-- Decode relative to current phase.
+- ~~Update action application to use phase-local ids.~~ Done.
+- ~~Decode relative to current phase.~~ Done — full dispatch table + forced-action auto-chain.
 
 ### `mcts/evaluator.py`
 
@@ -700,11 +700,11 @@ This refactor should be driven by measured legal counts, not guesses.
 
 ## Suggested rollout order
 
-### Phase 1: action ids and legal enumeration
+### Phase 1: action ids and legal enumeration ✅
 
-- phase-local ids
-- deterministic `enumerate_legal_actions()`
-- decode/apply path updated
+- phase-local ids — **done** (`core/actions.{pxd,pyx}`)
+- deterministic `enumerate_legal_actions()` — **done** (all 8 `_enumerate_*` helpers)
+- decode/apply path updated — **done** (`core/driver.pyx` dispatches to `phases/*.pyx`)
 
 ### Phase 2: sparse MCTS plumbing
 

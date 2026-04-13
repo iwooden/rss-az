@@ -348,18 +348,18 @@ Four major pieces of action-space indirection in the MLP-era engine are **remove
 
 All four simplifications follow the same pattern: the MLP needed a small, fixed action space, so the engine compressed entity-level decisions into slot/offer indirection or multi-step sequences. The transformer's entity-readout makes the direct formulations cheap, so the engine drops the indirection.
 
-### What stays the same
+### What stays the same (conceptually)
 
-- MCTS search logic (PUCT, A0GB, subtree reuse)
+- MCTS search logic (PUCT, A0GB, subtree reuse) — code needs rewrite for sparse policy
 - Self-play worker architecture (shared memory, eval servers — buffer layout changes but architecture doesn't)
 - Training loop (policy CE + value MSE)
-- Game engine core logic (driver.pyx, phases/*.pyx — core rules unchanged, though some current action-space-focusing constraints may be relaxed experimentally)
+- Game rules — driver and phase handlers are rewritten but encode the same game logic
 
 ## Open Questions
 
-1. **Compact state layout**: Need to design the new compact state array. All the game data currently split across visible+hidden goes into one array, stored as raw values (integers, enums, counts). Estimated ~500-800 floats for 3p. The entity handle pattern (Player, Corp, Company, etc.) stays but their offset calculations simplify.
+1. ~~**Compact state layout**~~: **Done.** Single int16 array, raw values, entity handles with module-level layout constants. See `VECTORS.md` for the authoritative layout.
 
-2. **`get_token_data()` feature lists**: Exactly which features go into each token type's buffer slot. Some features are dynamic (cash, income, ownership), some are static (synergies, face values), some are phase-conditional (zeroed outside relevant phase). This is the new single source of truth for the state→NN mapping.
+2. **`get_token_data()` feature lists**: Exactly which features go into each token type's buffer slot. Some features are dynamic (cash, income, ownership), some are static (synergies, face values), some are phase-conditional (zeroed outside relevant phase). This is the new single source of truth for the state→NN mapping. **Still open** — the last piece of Phase 1.
 
 3. **Batching with variable token counts**: Deferred until after the 3p prototype is validated. For multi-player-count training, batches would contain games with different numbers of player tokens (3p: 56 tokens, 6p: 59). Options: pad to max and use attention mask, or batch by player count. Padding is simpler; batching by count is more efficient.
 
@@ -381,11 +381,15 @@ All four simplifications follow the same pattern: the MLP needed a small, fixed 
 - Implement `get_token_data()` in Cython — fills eval buffer from compact state. **Pending** — this is the next chunk of Phase 1 work.
 - Target: 3p only
 
-### Phase 2: Action space refactor (core/actions.pyx)
-- Per-phase action indices (no global action vector)
-- New action layout: company-indexed auctions, company-indexed closes, full ACQUISITION head, merged IPO
-- ACQ and ACQ_OFFER, 8 decision phases total
-- Update mask generation, action decoding, phase handlers
+### Phase 2: Action space refactor (core/actions.pyx) ✅
+- **Done.** Per-phase action indices, company-indexed auctions/closes, full ACQUISITION head, merged IPO.
+- 8 decision phases, all `_enumerate_*` helpers implemented with real mask logic.
+- Deterministic enumeration order, `MAX_LEGAL_ACTIONS=256` overflow asserts.
+
+### Phase 2b: Driver + phase handlers (core/driver.pyx, phases/*.pyx) ✅
+- **Done.** `core/driver.{pyx,pxd}` rewritten: game-loop dispatch, forced-action auto-chain, all 8 decision phases + 3 automated phases wired.
+- All 11 phase handlers in `phases/` implemented: invest, bid, acquisition, acq_offer, closing, dividends, income, issue, ipo, wrap_up, end_card.
+- Cross-president acquisition offers supported via `acq_same_president` flag + `PHASE_ACQ_OFFER`.
 
 ### Phase 3: Transformer model (nn/) ✅
 - **Done.** See `nn/transformer.py` (~2.3M params, `TransformerConfig` defaults)
@@ -399,11 +403,13 @@ All four simplifications follow the same pattern: the MLP needed a small, fixed 
 - Eval buffers: `(batch, num_tokens, token_dim)` in shared memory
 - Remove state rotation, remove value un-rotation
 - Verify MCTS works end-to-end
+- **Blocked on:** `get_token_data()` (Phase 1 pending item) + MCTS rewrite
 
 ### Phase 5: Training loop updates (train/)
 - Update replay buffer for per-phase action indices + token data storage
 - Update shared memory buffer layout
 - Verify self-play + training loop works
+- **Blocked on:** Phase 4
 
 ### Phase 6: Multi-player-count support (only if the 3p prototype is competitive)
 - Variable player token count + attention masking for padding
