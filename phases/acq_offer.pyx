@@ -29,7 +29,12 @@ from entities.company cimport (
     LOC_PLAYER,
 )
 
-from phases.acquisition cimport _execute_fi_buy, _find_first_preemptor, _find_first_active_player
+from phases.acquisition cimport (
+    _clear_acquisition_context,
+    _execute_fi_buy,
+    _find_first_preemptor,
+    _find_first_active_player,
+)
 
 from entities import turn as turn_module
 from entities import corp as corp_module
@@ -44,10 +49,7 @@ from entities import fi as fi_module
 
 cdef void _return_to_acquisition(GameState state) noexcept:
     """Return to ACQUISITION phase, resuming with first non-passed player."""
-    turn_module.TURN.clear_acq_offer_corp(state)
-    turn_module.TURN.clear_acq_offer_price(state)
-    turn_module.TURN.clear_active_corp(state)
-    turn_module.TURN.clear_active_company(state)
+    _clear_acquisition_context(state)
     turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_ACQUISITION)
 
     cdef int pid = _find_first_active_player(state)

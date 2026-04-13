@@ -119,7 +119,6 @@ cdef void _advance_to_next_company(GameState state) noexcept:
         return
 
     # Set up for this company's owner's decision
-    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_IPO)
     turn_module.TURN.set_ipo_company(state, company_id)
     cdef int player_id = company_module.COMPANIES[company_id].get_owner_id(state)
     turn_module.TURN.set_active_player(state, player_id)
@@ -131,6 +130,7 @@ cdef void _advance_to_next_company(GameState state) noexcept:
 
 cdef void setup_ipo_phase(GameState state) noexcept:
     """Initialize IPO phase: set remaining flags and find first company."""
+    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_IPO)
     _init_ipo_remaining(state)
     turn_module.TURN.clear_ipo_company(state)
     _advance_to_next_company(state)

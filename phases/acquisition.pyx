@@ -7,8 +7,9 @@ Two public entry points:
   - ``setup_acquisition_phase`` — called by WRAP_UP on transition.
   - ``apply_acquisition_action`` — dispatches PASS / ACQ_PRICE / FI_BUY.
 
-Shared helpers ``_execute_fi_buy`` and ``_find_first_preemptor`` are
-declared in ``acquisition.pxd`` and cimported by ``acq_offer.pyx``.
+Shared helpers declared in ``acquisition.pxd`` and cimported by
+``acq_offer.pyx``: ``_clear_acquisition_context``, ``_execute_fi_buy``,
+``_find_first_preemptor``, ``_find_first_active_player``.
 """
 
 from core.state cimport GameState
@@ -32,7 +33,7 @@ from entities.company cimport (
     LOC_CORP,
     LOC_CORP_ACQ,
 )
-from phases.closing cimport apply_closing_auto
+from phases.closing cimport setup_closing_phase
 
 from entities import turn as turn_module
 from entities import corp as corp_module
@@ -44,6 +45,18 @@ from entities import fi as fi_module
 # =============================================================================
 # PRIVATE HELPERS
 # =============================================================================
+
+cdef void _clear_acquisition_context(GameState state) noexcept:
+    """Clear all ACQ/ACQ_OFFER context fields in the turn block.
+
+    Shared exit cleanup for both the ACQ→CLOSING transition and the
+    ACQ_OFFER→ACQUISITION return path.
+    """
+    turn_module.TURN.clear_active_corp(state)
+    turn_module.TURN.clear_active_company(state)
+    turn_module.TURN.clear_acq_offer_price(state)
+    turn_module.TURN.clear_acq_offer_corp(state)
+
 
 cdef void _clear_acq_offer_flags(GameState state) noexcept:
     """Clear the per-corp passed_acq_offer flags."""
@@ -295,14 +308,10 @@ cdef void _merge_acquisition_zones(GameState state) noexcept:
 
 
 cdef void _transition_to_closing(GameState state) noexcept:
-    """Merge acquisition zones and transition to CLOSING phase."""
+    """Exit ACQUISITION: merge zones, clear context, hand off to CLOSING."""
     _merge_acquisition_zones(state)
-    turn_module.TURN.clear_active_corp(state)
-    turn_module.TURN.clear_active_company(state)
-    turn_module.TURN.clear_acq_offer_price(state)
-    turn_module.TURN.clear_acq_offer_corp(state)
-    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_CLOSING)
-    apply_closing_auto(state)
+    _clear_acquisition_context(state)
+    setup_closing_phase(state)
 
 
 # =============================================================================

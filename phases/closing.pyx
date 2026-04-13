@@ -1,8 +1,12 @@
 """CLOSING phase handler.
 
+Two entry points: ``setup_closing_phase`` sets the phase, runs auto-close
+stages, and finds the first player for decisions; ``apply_closing_action``
+dispatches player CLOSE/PASS decisions.
+
 Three stages:
-1. **Auto-close** — FI negative-income companies + receivership red/orange
-   above cost-of-ownership thresholds.
+1. **Auto-close** (in ``setup_closing_phase``) — FI negative-income companies
+   + receivership red/orange above cost-of-ownership thresholds.
 2. **Player decisions** — each player in ascending ID order may voluntarily
    close any company they own (private) or that a non-receivership corp they
    preside over owns (subject to the corp retaining at least one company).
@@ -229,12 +233,15 @@ cdef void _advance_to_next_closer(GameState state) noexcept:
 # PUBLIC ENTRY POINTS
 # =============================================================================
 
-cdef void apply_closing_auto(GameState state) noexcept:
-    """Run auto-close stages and set up the first player for decisions.
+cdef void setup_closing_phase(GameState state) noexcept:
+    """Initialize CLOSING phase: run auto-close stages and find first player.
 
-    Called by the driver exactly once on entering PHASE_CLOSING, before any
-    action enumeration.
+    Sets the phase, runs FI and receivership auto-closes, clears passed
+    flags, and sets the active player to the first with closable companies.
+    If no player has closable companies, runs mandatory close and transitions
+    to INCOME.
     """
+    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_CLOSING)
     cdef int num_players = turn_module.TURN.get_num_players(state)
     cdef int pid
 
