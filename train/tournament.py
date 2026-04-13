@@ -228,7 +228,7 @@ def _format_report(
     """Format tournament results as a readable report."""
     lines: list[str] = []
     total_games = len(results)
-    rank_labels = ["1st", "2nd", "3rd", "4th", "5th", "6th"][:num_players]
+    rank_labels = ["1st", "2nd", "3rd", "4th", "5th"][:num_players]
 
     lines.append(f"# Tournament Report ({total_games} games, {elapsed:.1f}s)")
     lines.append("")

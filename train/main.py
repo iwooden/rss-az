@@ -868,7 +868,7 @@ def main() -> None:
             avg_game_dur = total_duration / n_games
             rank_avgs = [t / n_games for t in rank_totals]
 
-            rank_labels = ["1st", "2nd", "3rd", "4th", "5th", "6th"][:num_players]
+            rank_labels = ["1st", "2nd", "3rd", "4th", "5th"][:num_players]
             net_worth_scalars = {}
             for k, avg, mn, mx in zip(
                 rank_labels, rank_avgs, rank_mins, rank_maxs

@@ -2,7 +2,7 @@
 
 > **WARNING: Breaking refactor.** This work lives on the `transformer-refactor` branch and touches nearly every layer of the codebase — state representation, action space, model architecture, evaluator, and training loop. Backward compatibility with the MLP model, old state vectors, and old action indices is not maintained. Most existing tests will fail until the refactor is complete and tests are updated. The `main` branch is untouched and safe.
 >
-> **Initial scope:** validate the architecture in **3-player only**. The longer-term goal is a single model across 2-6 players, but multi-player-count support is explicitly deferred until the 3p transformer trains competitively with the current MLP.
+> **Training scope:** 3–5 players. The engine supports 2–6p for test compatibility, but all NN/MCTS/training code targets 3–5p only.
 
 ## Motivation
 
@@ -10,7 +10,7 @@ Replace the residual MLP (~4.1M params, flat state vector) with a transformer th
 
 1. **No state rotation.** The MLP requires rotating player data so the active player is always at slot 0. A transformer is permutation-equivariant on its input tokens - just mark the active player with a flag. Eliminates rotation logic in the evaluator and state construction.
 
-2. **Long-term: one model for all player counts.** The MLP requires separate models for 3p/4p/5p because the input dimension changes. A transformer can support a variable number of player tokens, but the initial prototype stays 3p-only to validate the architecture first. If the 3p transformer matches the MLP well enough, Phase 6 extends the design to 2-6p.
+2. **One model for 3-5p.** The MLP requires separate models for 3p/4p/5p because the input dimension changes. A transformer supports a variable number of player tokens natively.
 
 3. **Entity-readout policy heads.** Instead of phase-specific MLP heads that output the full action vector, each entity token produces only its own action logits. Corp tokens output buy/sell logits, company tokens output auction logits, etc. Structurally encodes the right inductive bias.
 
@@ -24,7 +24,7 @@ The feature lists below are planning sketches, not frozen interfaces. The exact 
 
 | Token type | Count | Raw features | Notes |
 |------------|-------|-------------|-------|
-| Player | N (2-6) | ~63 (3p prototype) | explicit player identity, cash, net_worth, income, turn_order one-hot, owned_companies (36), shares (8). Active player gets `is_active=1` flag. Presidency and round-trips are derived from corp `president_id` and `min(share_buys, share_sells)` respectively — no dedicated player-block slots. |
+| Player | N (3-5) | ~63 (3p prototype) | explicit player identity, cash, net_worth, income, turn_order one-hot, owned_companies (36), shares (8). Active player gets `is_active=1` flag. Presidency and round-trips are derived from corp `president_id` and `min(share_buys, share_sells)` respectively — no dedicated player-block slots. |
 | Corporation | 8 | ~55 | explicit corp identity / ability signal, active, cash, shares, income, stars, share_price, price_index, pending_price_move, revenue breakdown, owned_companies (36), in_receivership, invest buy/sell price impacts (2), `is_phase_active` flag (1 — set during ISSUE, DIVIDENDS, IPO, and ACQ_OFFER to mark the corp in focus; **unused during ACQUISITION**, which picks corps directly from the masked action space with no active-corp bookkeeping) |
 | Company | 36 | ~48 | explicit company identity, location flags (for_auction, revealed, removed, acquired), income, static features (face_value, low_price, high_price, stars, base_income), synergy vector (36 — bidirectional synergy $ with each other company), `is_phase_active` flag (1 — set during BID, IPO, and ACQ_OFFER to mark the contested/subject company; **unused during ACQUISITION and CLOSING**, which pick companies directly from the masked action space) |
 | FI | 1 | 38 | cash, income, owned_companies (36) |
@@ -37,7 +37,7 @@ The feature lists below are planning sketches, not frozen interfaces. The exact 
 | Acq Offer | 1 | 3 | offer_price (1, normalized — face value for OS, high value for others), is_os_offer (1), acq_is_fi_offer (1). Zeroed when not in ACQ_OFFER sub-phase. Produces buy/pass logits for FI preemption offers. |
 | Pass | 1 | 0 | No input features — representation is purely the learned type embedding, shaped by attention. Produces the pass logit for INVEST, BID (pass = leave the auction), ACQUISITION, CLOSING, ISSUE, and IPO phases. |
 
-**Total: 53 + N tokens** (56 for 3p, 59 for 6p)
+**Total: 53 + N tokens** (56 for 3p, 57 for 4p, 58 for 5p)
 
 ### What disappears from the state vector
 
@@ -84,7 +84,7 @@ Entity-readout policy heads (+ full ACQUISITION pair head) + value head
 | num_layers | 10 | Enough depth for multi-hop reasoning |
 | ff_mult | 3.0 | SwiGLU FFN inner dim = ceil(ff_mult * d_model) |
 | d_bilinear | 64 | Hidden width for the ACQUISITION pair-feature policy head |
-| token_dim | 63 | Fixed width for the 3p prototype. Phase 6 revisits padding/embeddings for shared 2-6p support. |
+| token_dim | 63 | Fixed width, zero-padded to uniform size across all token types. |
 
 **No positional encoding over token order.** Permutation equivariance is a feature, not a bug. Token order is fixed for implementation convenience, but entity identity should come from explicit player/corp/company ID features or ID embeddings plus the type embeddings, not from sequence position.
 
@@ -308,7 +308,7 @@ The eval buffer is `(batch_size, num_tokens, token_dim)`:
 - Total per sample: 56 × 63 = 3,528 floats (~13.8KB)
 - Compare to current visible state: 1,109 floats (~4.4KB)
 
-~3x larger per sample, but still small in absolute terms for a 3p prototype. The rectangular layout enables clean GPU operations. All type-specific projections take the same `token_dim` input (no per-type slicing needed). Phase 6 can either pad to 6p maxima or move more categorical information into embeddings.
+~3x larger per sample, but still small in absolute terms. The rectangular layout enables clean GPU operations. All type-specific projections take the same `token_dim` input (no per-type slicing needed).
 
 ### Replay buffer storage
 
@@ -361,15 +361,13 @@ All four simplifications follow the same pattern: the MLP needed a small, fixed 
 
 2. **`get_token_data()` feature lists**: Exactly which features go into each token type's buffer slot. Some features are dynamic (cash, income, ownership), some are static (synergies, face values), some are phase-conditional (zeroed outside relevant phase). This is the new single source of truth for the state→NN mapping. **Still open** — the last piece of Phase 1.
 
-3. **Batching with variable token counts**: Deferred until after the 3p prototype is validated. For multi-player-count training, batches would contain games with different numbers of player tokens (3p: 56 tokens, 6p: 59). Options: pad to max and use attention mask, or batch by player count. Padding is simpler; batching by count is more efficient.
+3. **Batching with variable token counts**: For 3-5p training, batches contain games with different numbers of player tokens (56-58). Options: pad to 58 and use attention mask, or batch by player count. Padding is simpler; batching by count is more efficient.
 
 4. **Replay storage strategy**: Option B (store token buffers directly) is convenient for prototyping but probably requires a much smaller replay buffer. Option A (store compact state and re-extract tokens) is likely the long-term path.
 
-5. **Inference speed**: Need to benchmark transformer vs MLP for the sequence lengths we're dealing with (~56 tokens in 3p). Should be fine, but verify with `torch.compile`.
+5. **Inference speed**: Need to benchmark transformer vs MLP for the sequence lengths we're dealing with (~56-58 tokens for 3-5p). Should be fine, but verify with `torch.compile`.
 
-6. **Graduating from 3p prototype**: If 3p works, what's needed to support 2-6p? Mainly: variable player token count, re-derive action masks, adjust eval buffer dimensions, and lock down a shared fixed-width token contract.
-
-7. **Head dispatch**: The forward pass has 8 phase-specific dispatch paths. The current implementation uses a full ACQUISITION pair head plus direct per-corp IPO readout. Need to keep mixed-phase batches efficient despite the padded `(B, 14977)` output interface.
+6. **Head dispatch**: The forward pass has 8 phase-specific dispatch paths. The current implementation uses a full ACQUISITION pair head plus direct per-corp IPO readout. Need to keep mixed-phase batches efficient despite the padded `(B, 14977)` output interface.
 
 ## Implementation Phases
 
@@ -411,7 +409,7 @@ All four simplifications follow the same pattern: the MLP needed a small, fixed 
 - Verify self-play + training loop works
 - **Blocked on:** Phase 4
 
-### Phase 6: Multi-player-count support (only if the 3p prototype is competitive)
-- Variable player token count + attention masking for padding
-- Single model for 2-6p
+### Phase 6: Multi-player-count training (3-5p)
+- Variable player token count (56-58 tokens) + attention masking or pad-to-max
+- Single model for 3-5p
 - Batching strategy for mixed player counts

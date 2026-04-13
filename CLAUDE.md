@@ -8,7 +8,7 @@ High-performance Cython game engine for "Rolling Stock Stars", optimized for Alp
 
 **Important:** "Rolling Stock Stars" is NOT "Rolling Stock" — rules differ. Always consult `RULES.md` as the authoritative source.
 
-- 2–6 player support (prototype is 3p only), dynamic state sizing
+- Engine supports 2–6 players; training/model/MCTS scoped to 3–5p
 - Compact int16 state vector (sizes in `VECTORS.md`)
 - Nogil hot paths, target thousands of games/min
 
@@ -22,11 +22,11 @@ Backwards compatibility is **not** a goal. The `main` branch preserves pre-refac
 
 ### Transformer (summary of `nn/transformer.py` + `transformers.md`)
 
-**Tokens** (3p: 56 total). Shared `token_dim=63` projected via type-specific linear layers + learned type embeddings. No positional encoding. Token order in eval buffer: `[players..., corps..., companies..., FI, market, global, auction, dividend, issue, par, acq_offer, pass]`.
+**Tokens** (3p: 56, 4p: 57, 5p: 58). Shared `token_dim=63` projected via type-specific linear layers + learned type embeddings. No positional encoding. Token order in eval buffer: `[players..., corps..., companies..., FI, market, global, auction, dividend, issue, par, acq_offer, pass]`.
 
 | Type | Count (3p) | Carries |
 |------|-----------|---------|
-| Player | 3 | identity, cash, net worth, income, turn order, owned shares, `is_active` |
+| Player | 3–5 | identity, cash, net worth, income, turn order, owned shares, `is_active` |
 | Corporation | 8 | identity, active, cash, shares, income, stars, price index, pending move, owned companies, receivership, president_id, invest impacts, `is_phase_active` |
 | Company | 36 | identity, location flags, income, static features, 36-dim synergy, `is_phase_active` |
 | FI | 1 | cash, income, owned companies |
@@ -68,7 +68,7 @@ Action counts live in `core/data.pxd` as `ActionSize` `cpdef enum`; `core/action
 - **FI-priority via `PHASE_ACQ_OFFER`.** When a player/receivership corp tries to acquire an FI-owned company and higher-priority corps exist (OS first at face value; rest by descending share price at high value), the engine pushes into `PHASE_ACQ_OFFER` and offers each in turn a 2-action `{pass, buy}`. Reuses existing `active_corp` (= preempting corp), `active_company` (= contested FI company), `active_player` (= that corp's president). No new state fields.
 - **No per-ACQ active entity.** During ACQUISITION itself, `active_corp`/`active_company` sit at `-1`. The generic `active_corp`/`active_company`/`active_player` selectors plus per-phase remaining bitmasks cover every decision phase — no `closing_company`/`dividend_corp`/`issue_corp`/`ipo_company` fields needed.
 - **Cross-president ACQ transfers:** supported via `state.acq_same_president` flag. When `False`, corps can acquire from entities presided by a different player; the owner gets an accept/decline choice via `PHASE_ACQ_OFFER`. Known 18xx.games divergence: cross-corp transfers between corps of the *same* president are always allowed (no offer needed).
-- **3-player only.** Multi-player-count support is explicit non-goal for the prototype.
+- **3–5 player training.** Engine supports 2–6p for 18xx test compatibility, but all NN/MCTS/training code targets 3–5p only. No 2p or 6p training configs, token data, or model support.
 
 ### What currently builds
 

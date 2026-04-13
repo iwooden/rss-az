@@ -35,8 +35,8 @@ class MCTSConfig:
             raise ValueError(
                 f"search_batch_size must be >= 1, got {self.search_batch_size}"
             )
-        if self.num_players < 2:
-            raise ValueError(f"num_players must be >= 2, got {self.num_players}")
+        if not 3 <= self.num_players <= 5:
+            raise ValueError(f"num_players must be 3-5, got {self.num_players}")
         if self.c_puct < 0:
             raise ValueError(f"c_puct must be >= 0, got {self.c_puct}")
         if self.dirichlet_alpha <= 0:
@@ -274,8 +274,8 @@ class TrainingConfig:
             )
 
         # Game fields
-        if self.num_players < 2:
-            raise ValueError(f"num_players must be >= 2, got {self.num_players}")
+        if not 3 <= self.num_players <= 5:
+            raise ValueError(f"num_players must be 3-5, got {self.num_players}")
 
         # Optimizer
         if self.optimizer not in ("adamw", "muon"):

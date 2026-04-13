@@ -47,10 +47,10 @@ _GELU_APPROX = "tanh"
 
 @dataclass(frozen=True)
 class TransformerConfig:
-    """All dimensions parameterized. Defaults are 3-player with d_model=256."""
+    """All dimensions parameterized. Defaults are 3-player with d_model=128."""
 
     # Core architecture
-    num_players: int = 3
+    num_players: int = 3  # 3-5 supported
     d_model: int = 128
     num_heads: int = 2
     num_layers: int = 10
@@ -58,6 +58,9 @@ class TransformerConfig:
     d_bilinear: int = 64   # Hidden width for the unified ACQ pair-feature policy head
 
     token_dim: int = 63    # Raw feature width per token (all zero-padded to same size)
+
+    def __post_init__(self) -> None:
+        assert 3 <= self.num_players <= 5, f"num_players must be 3-5, got {self.num_players}"
 
     @property
     def num_tokens(self) -> int:

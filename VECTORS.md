@@ -10,6 +10,8 @@ This document describes the in-memory game state layout. The state is the engine
 
 ### Sizes by player count
 
+The engine supports 2–6 players. Training/NN/MCTS targets **3–5p only**.
+
 | Players | total_size | player_stride | corp_stride | turn_size |
 |---------|-----------|---------------|-------------|-----------|
 | 2       | 431       | 30            | 16          | 69        |
