@@ -10,6 +10,7 @@ from core.actions import (
     ACTION_ACQ_FI_BUY_PY as ACTION_ACQ_FI_BUY,
 )
 from core.data import GamePhases, GameConstants, CorpIndices
+from core.state import GameState
 from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.corp import CORPS
@@ -704,3 +705,145 @@ class TestMultipleAcquisitions:
             loc = COMPANIES[co].get_location(game_state)
             assert loc in (int(CompanyLocation.LOC_CORP_ACQ), int(CompanyLocation.LOC_CORP))
             assert COMPANIES[co].get_owner_id(game_state) == 0
+
+
+# =============================================================================
+# CROSS-PRESIDENT MODE (acq_same_president=False)
+# =============================================================================
+
+class TestCrossPresidentMode:
+    """Test ACQUISITION with acq_same_president=False.
+
+    When False, cross-president corp-to-corp and corp-to-player acquisitions
+    are enumerated as legal actions. On execution, if the owner is a different
+    player, the handler enters ACQ_OFFER for the owner's approval instead of
+    executing directly.
+    """
+
+    @staticmethod
+    def _make_state(num_players):
+        """Create a fresh game state with acq_same_president=False."""
+        state = GameState(num_players, acq_same_president=False)
+        state.initialize_game(num_players, seed=42)
+        return state
+
+    def test_cross_president_corp_to_corp_enumerated(self):
+        """Cross-president corp-to-corp actions appear when flag is False."""
+        state = self._make_state(3)
+
+        # Corp 0 (player 0) has 2 companies
+        seller_co = float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
+        draw_to_corp(state, 0)
+
+        # Corp 1 (player 1) is the buyer
+        float_corp_for_test(state, corp_id=1, player_id=1, par_index=12)
+        CORPS[1].set_cash(state, 200)
+
+        setup_acquisition_phase_py(state)
+
+        # Player 1 should see actions to buy seller_co from corp 0
+        # despite different presidents
+        active = TURN.get_active_player(state)
+        if active != 1:
+            # Pass player 0 to get to player 1
+            pass_id = find_legal_action(state, action_type=ACTION_PASS)
+            apply_and_verify(state, pass_id)
+
+        acq_actions = find_all_legal_actions(
+            state, action_type=ACTION_ACQ_PRICE, corp_id=1, company_id=seller_co,
+        )
+        assert len(acq_actions) > 0, (
+            "Cross-president corp-to-corp should be enumerated when flag is False"
+        )
+
+    def test_cross_president_corp_to_player_enumerated(self):
+        """Cross-president corp-to-player actions appear when flag is False."""
+        state = self._make_state(3)
+
+        # Player 1 owns a private company
+        private_co = draw_to_player(state, 1)
+
+        # Corp 0 (player 0) is the buyer
+        float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
+        CORPS[0].set_cash(state, 200)
+
+        setup_acquisition_phase_py(state)
+
+        acq_actions = find_all_legal_actions(
+            state, action_type=ACTION_ACQ_PRICE, corp_id=0, company_id=private_co,
+        )
+        assert len(acq_actions) > 0, (
+            "Cross-president corp-to-player should be enumerated when flag is False"
+        )
+
+    def test_cross_president_corp_to_corp_enters_acq_offer(self):
+        """Cross-president corp-to-corp acquisition enters ACQ_OFFER."""
+        state = self._make_state(3)
+
+        seller_co = float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
+        draw_to_corp(state, 0)
+
+        float_corp_for_test(state, corp_id=1, player_id=1, par_index=12)
+        CORPS[1].set_cash(state, 200)
+
+        setup_acquisition_phase_py(state)
+
+        # Get player 1 active
+        active = TURN.get_active_player(state)
+        if active != 1:
+            pass_id = find_legal_action(state, action_type=ACTION_PASS)
+            apply_and_verify(state, pass_id)
+
+        acq_id = find_legal_action(
+            state, action_type=ACTION_ACQ_PRICE, corp_id=1, company_id=seller_co,
+        )
+        apply_and_verify(state, acq_id)
+
+        # Owner (player 0, president of corp 0) should get an ACQ_OFFER
+        assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_OFFER)
+        assert TURN.get_active_player(state) == 0
+
+    def test_cross_president_corp_to_player_enters_acq_offer(self):
+        """Cross-president corp-to-player acquisition enters ACQ_OFFER."""
+        state = self._make_state(3)
+
+        private_co = draw_to_player(state, 1)
+
+        float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
+        CORPS[0].set_cash(state, 200)
+
+        setup_acquisition_phase_py(state)
+
+        acq_id = find_legal_action(
+            state, action_type=ACTION_ACQ_PRICE, corp_id=0, company_id=private_co,
+        )
+        apply_and_verify(state, acq_id)
+
+        # Owner (player 1) should get an ACQ_OFFER
+        assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_OFFER)
+        assert TURN.get_active_player(state) == 1
+
+    def test_same_president_still_executes_directly(self):
+        """Same-president acquisition executes directly even when flag is False."""
+        state = self._make_state(3)
+
+        private_co = draw_to_player(state, 0)
+        draw_to_player(state, 0)  # second target so PASS isn't forced after buy
+
+        float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
+        CORPS[0].set_cash(state, 200)
+
+        setup_acquisition_phase_py(state)
+
+        corp_cash_before = CORPS[0].get_cash(state)
+
+        acq_id = find_legal_action(
+            state, action_type=ACTION_ACQ_PRICE, corp_id=0, company_id=private_co,
+        )
+        apply_and_verify(state, acq_id)
+
+        # Should NOT enter ACQ_OFFER — same president means direct execution
+        assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQUISITION)
+        loc = COMPANIES[private_co].get_location(state)
+        assert loc in (int(CompanyLocation.LOC_CORP_ACQ), int(CompanyLocation.LOC_CORP))
+        assert CORPS[0].get_cash(state) < corp_cash_before
