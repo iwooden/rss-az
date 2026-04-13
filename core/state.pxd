@@ -142,6 +142,11 @@ cdef struct CorpFieldOffsets:
     int ability_income
     int president_id             # player_id or -1 (receivership/inactive)
     int passed_acq_offer         # 1 if corp passed on current ACQ_OFFER
+    # pending_price_move is the cached price index delta that *would*
+    # happen if the corp paid $0 dividend right now, given its current
+    # stars and price position. Cached behind corp_cache_dirty — refreshed
+    # together with company_stars and the income breakdown.
+    int pending_price_move
     # Total size of one corp's data block
     int size
 

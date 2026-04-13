@@ -244,6 +244,7 @@ cdef void _clear_corp_cache(GameState state, int corp_id) noexcept nogil:
     state._data[_corp_slot(corp_id, CORP_FIELDS.synergy_income)] = 0
     state._data[_corp_slot(corp_id, CORP_FIELDS.coo_cost)] = 0
     state._data[_corp_slot(corp_id, CORP_FIELDS.ability_income)] = 0
+    state._data[_corp_slot(corp_id, CORP_FIELDS.pending_price_move)] = 0
     _clear_cache_dirty(state, corp_id)
 
 
@@ -259,6 +260,7 @@ cdef void _refresh_corp_cache(GameState state, int corp_id) noexcept nogil:
     cdef int synergy_markers = 0
     cdef int total_coo, ability, total
     cdef int company_count
+    cdef int cash, cash_stars, total_stars, required, pending
 
     if not corp_is_active(state, corp_id):
         _clear_corp_cache(state, corp_id)
@@ -300,12 +302,29 @@ cdef void _refresh_corp_cache(GameState state, int corp_id) noexcept nogil:
 
     total = raw_revenue_sum - total_coo + synergy_income + ability
 
+    # Compute pending_price_move inline — we already have company_stars
+    # from the scan above; derive total_stars from it so we don't
+    # re-enter the cache via corp_total_stars().
+    cash = <int>state._data[_corp_slot(corp_id, CORP_FIELDS.cash)]
+    cash_stars = cash // 10 if cash > 0 else 0
+    total_stars = (
+        company_stars
+        + cash_stars
+        + (2 if corp_id == <int>CorpIndices.CORP_SI else 0)
+    )
+    required = _required_stars(
+        <int>state._data[_corp_slot(corp_id, CORP_FIELDS.price_index)],
+        <int>state._data[_corp_slot(corp_id, CORP_FIELDS.issued_shares)],
+    )
+    pending = calculate_price_move(total_stars, required)
+
     state._data[_corp_slot(corp_id, CORP_FIELDS.income)] = <int16_t>total
     state._data[_corp_slot(corp_id, CORP_FIELDS.company_stars)] = <int16_t>company_stars
     state._data[_corp_slot(corp_id, CORP_FIELDS.raw_revenue)] = <int16_t>raw_revenue_sum
     state._data[_corp_slot(corp_id, CORP_FIELDS.synergy_income)] = <int16_t>synergy_income
     state._data[_corp_slot(corp_id, CORP_FIELDS.coo_cost)] = <int16_t>(-total_coo)
     state._data[_corp_slot(corp_id, CORP_FIELDS.ability_income)] = <int16_t>ability
+    state._data[_corp_slot(corp_id, CORP_FIELDS.pending_price_move)] = <int16_t>pending
     _clear_cache_dirty(state, corp_id)
 
 
@@ -364,14 +383,9 @@ cdef int corp_total_stars(GameState state, int corp_id) noexcept nogil:
 
 
 cdef int corp_pending_price_move(GameState state, int corp_id) noexcept nogil:
-    cdef int required
-    if not corp_is_active(state, corp_id):
-        return 0
-    required = _required_stars(
-        corp_price_index(state, corp_id),
-        corp_issued_shares(state, corp_id),
-    )
-    return calculate_price_move(corp_total_stars(state, corp_id), required)
+    if _cache_dirty(state, corp_id):
+        _refresh_corp_cache(state, corp_id)
+    return <int>state._data[_corp_slot(corp_id, CORP_FIELDS.pending_price_move)]
 
 
 # =============================================================================
@@ -461,6 +475,7 @@ cdef class Corporation:
     cpdef void set_cash(self, GameState state, int cash):
         """Set corp cash (raw integer dollars)."""
         state._data[_corp_slot(self.corp_id, CORP_FIELDS.cash)] = <int16_t>cash
+        invalidate_corp_cache(state, self.corp_id)
 
     cpdef void add_cash(self, GameState state, int amount):
         """Add to corp cash (negative `amount` subtracts)."""

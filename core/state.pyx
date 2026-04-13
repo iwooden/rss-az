@@ -61,7 +61,7 @@ CorpFields = namedtuple('CorpFields', [
     'acquisition_proceeds',
     'in_receivership', 'price_index',
     'raw_revenue', 'synergy_income', 'coo_cost', 'ability_income',
-    'president_id', 'passed_acq_offer',
+    'president_id', 'passed_acq_offer', 'pending_price_move',
 ])
 
 CompanyFields = namedtuple('CompanyFields', [
@@ -407,6 +407,8 @@ cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil:
     offset += 1
     c.passed_acq_offer = offset
     offset += 1
+    c.pending_price_move = offset
+    offset += 1
 
     c.size = offset
     return c
@@ -484,6 +486,7 @@ def get_corp_fields():
         ability_income=CORP_FIELDS.ability_income,
         president_id=CORP_FIELDS.president_id,
         passed_acq_offer=CORP_FIELDS.passed_acq_offer,
+        pending_price_move=CORP_FIELDS.pending_price_move,
     )
 
 

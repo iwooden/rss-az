@@ -119,7 +119,7 @@ State invariant: index `0` (`$0`, bankruptcy) and index `26` (`$75`, max price) 
 
 ## Corp block
 
-Stride: **16**. Corp `c` lives at `corps_offset + c * 16`. Field offsets via `core.state.get_corp_fields()` (`CorpFields` namedtuple) for Python, or `from core.state cimport CORP_FIELDS` for Cython.
+Stride: **17**. Corp `c` lives at `corps_offset + c * 17`. Field offsets via `core.state.get_corp_fields()` (`CorpFields` namedtuple) for Python, or `from core.state cimport CORP_FIELDS` for Cython.
 
 | Relative offset | Field | Notes |
 |----------------|-------|-------|
@@ -139,20 +139,20 @@ Stride: **16**. Corp `c` lives at `corps_offset + c * 16`. Field offsets via `co
 | 13 | ability_income        | |
 | 14 | president_id          | `player_id` or `-1` (inactive / receivership). Initialized to `-1`. |
 | 15 | passed_acq_offer      | flag — `1` if corp passed on current ACQ_OFFER |
+| 16 | pending_price_move    | Cached price index delta for a $0 dividend (clamped to [-2, +2]) |
 
 `share_price` is **not stored** in the corp block. It is derived from `price_index` via `MARKET_PRICES[price_index]`; use `CORPS[c].get_share_price(state)` rather than expecting a backing slot.
 
-`total_stars`, `cash_stars`, and `pending_price_move` are **not stored** either. They are all derived on demand:
+`total_stars` and `cash_stars` are **not stored** either. They are derived on demand:
 
 - `cash_stars = floor(cash / 10)` clamped at 0.
 - `total_stars = company_stars + cash_stars + (2 if corp_id == CORP_SI else 0)`.
-- `pending_price_move` is predicted on demand by the corp handle when asked.
 
-Only `company_stars` — the expensive part of the total that depends on owned-company scans — is cached in the block.
+`company_stars` and `pending_price_move` — which both depend on owned-company scans and derived star totals — are cached in the block behind the corp dirty mask.
 
 ### Derived corp cache
 
-Several corp-block fields are stored but derived from authoritative state: `income`, `company_stars`, `raw_revenue`, `synergy_income`, `coo_cost`, and `ability_income`.
+Several corp-block fields are stored but derived from authoritative state: `income`, `company_stars`, `raw_revenue`, `synergy_income`, `coo_cost`, `ability_income`, and `pending_price_move`.
 
 - Mutations of authoritative corp state mark the corporation dirty via the internal `TURN_OFFSETS.corp_cache_dirty` bitmask (one bit per corp).
 - The first read through any derived getter (`get_income`, `get_total_stars`, `get_pending_price_move`, etc.) runs one `_refresh_cache(state)` pass, recomputing the full derived bundle coherently from authoritative state.
