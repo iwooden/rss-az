@@ -94,13 +94,14 @@ cpdef enum TokenType:
     TYPE_FI = 3
     TYPE_MARKET = 4
     TYPE_GLOBAL = 5
-    TYPE_AUCTION = 6
-    TYPE_DIVIDEND = 7
-    TYPE_ISSUE = 8
-    TYPE_PAR = 9
-    TYPE_ACQ_OFFER = 10
-    TYPE_PASS = 11
-    NUM_TOKEN_TYPES = 12
+    TYPE_INVEST = 6
+    TYPE_AUCTION = 7
+    TYPE_DIVIDEND = 8
+    TYPE_ISSUE = 9
+    TYPE_PAR = 10
+    TYPE_ACQ_OFFER = 11
+    TYPE_PASS = 12
+    NUM_TOKEN_TYPES = 13
 
 # Per-decision-phase action-space sizes.
 #

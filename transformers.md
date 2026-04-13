@@ -18,26 +18,27 @@ Replace the residual MLP (~4.1M params, flat state vector) with a transformer th
 
 Each token is projected to a common `d_model` dimension via type-specific linear layers, then augmented with a learned type embedding.
 
-The feature lists below are planning sketches, not frozen interfaces. The exact `get_token_data()` contract will be finalized during core/evaluator integration. In particular, player/corp/company identity will be provided explicitly (likely via learned ID embeddings; one-hot ID fields are acceptable for the first prototype). Type embeddings alone are not enough because corp abilities are asymmetric.
+The authoritative per-token feature spec is in `token-data.md`. The table below summarizes token types and counts.
 
 ### Entity Tokens
 
-| Token type | Count | Raw features | Notes |
-|------------|-------|-------------|-------|
-| Player | N (3-5) | ~63 (3p prototype) | explicit player identity, cash, net_worth, income, turn_order one-hot, owned_companies (36), shares (8). Active player gets `is_active=1` flag. Presidency and round-trips are derived from corp `president_id` and `min(share_buys, share_sells)` respectively — no dedicated player-block slots. |
-| Corporation | 8 | ~55 | explicit corp identity / ability signal, active, cash, shares, income, stars, share_price, price_index, pending_price_move, revenue breakdown, owned_companies (36), in_receivership, invest buy/sell price impacts (2), `is_phase_active` flag (1 — set during ISSUE, DIVIDENDS, IPO, and ACQ_OFFER to mark the corp in focus; **unused during ACQUISITION**, which picks corps directly from the masked action space with no active-corp bookkeeping) |
-| Company | 36 | ~48 | explicit company identity, location flags (for_auction, revealed, removed, acquired), income, static features (face_value, low_price, high_price, stars, base_income), synergy vector (36 — bidirectional synergy $ with each other company), `is_phase_active` flag (1 — set during BID, IPO, and ACQ_OFFER to mark the contested/subject company; **unused during ACQUISITION and CLOSING**, which pick companies directly from the masked action space) |
-| FI | 1 | 38 | cash, income, owned_companies (36) |
-| Market | 1 | 27 | Availability flags for 27 price points |
-| Global | 1 | ~18 | Phase (8 one-hot: INV/BID/ACQUISITION/ACQ_OFFER/CLO/DIV/ISS/IPO), CoO (7 one-hot), end_card_flipped, cards_remaining, consecutive_passes |
-| Auction | 1 | 2 + 3N | auction_price, auction_price_offset, auction_high_bidder (N one-hot), auction_starter (N one-hot), auction_passed (N flags). Zeroed when not in BID phase. |
-| Dividend | 1 | ~35 | dividend_impact (26), dividend_remaining (8), active corp flag. Zeroed when not in DIV phase. |
-| Issue | 1 | ~11 | issue_remaining (8), issue_price_impact (1), issue_cash_gain (1), active corp flag. Zeroed when not in ISSUE phase. |
-| PAR | 1 | 28 | par_corp_treasury (14), par_shares (14). Zeroed when not in IPO phase. These are global (not per-corp) — they depend on market availability, company face value, and player cash. |
-| Acq Offer | 1 | 3 | offer_price (1, normalized — face value for OS, high value for others), is_os_offer (1), acq_is_fi_offer (1). Zeroed when not in ACQ_OFFER sub-phase. Produces buy/pass logits for FI preemption offers. |
-| Pass | 1 | 0 | No input features — representation is purely the learned type embedding, shaped by attention. Produces the pass logit for INVEST, BID (pass = leave the auction), ACQUISITION, CLOSING, ISSUE, and IPO phases. |
+| Token type | Count | Notes |
+|------------|-------|-------|
+| Player | N (3-5) | identity, cash, net worth, liquidity, income, turn order, has passed, owned shares, share buys/sells, round trips, presidencies, owned companies |
+| Corporation | 8 | identity, active, receivership, passed ACQ_OFFER, shares, price index+value, pending move, cash, acq proceeds, income breakdown, total stars, president, owned companies |
+| Company | 36 | identity, active company flag, location flags, ownership (corp/player/FI), adjusted income, static data (prices, stars, base income), 36-dim synergy |
+| FI | 1 | cash, income, owned companies (36) |
+| Market | 1 | 27 availability flags |
+| Global | 1 | num players (3-slot one-hot), phase (8-slot one-hot), CoO (7-slot one-hot), end-card flipped, cards remaining |
+| Invest | 1 | consecutive passes, buy/sell share price impacts per corp (8+8). Zeroed outside INVEST. |
+| Auction | 1 | price index+value, high bidder (5-slot), starter (5-slot). Zeroed outside BID. |
+| Dividend | 1 | 26 dividend-amount price impacts, dividend remaining (8 corp flags). Zeroed outside DIVIDENDS. |
+| Issue | 1 | price impact, issue remaining (8 corp flags). Zeroed outside ISSUE. |
+| PAR | 1 | per-par player cost (14), corp cash (14), issued shares (14). Zeroed outside IPO. |
+| Acq Offer | 1 | offer price index+value, offer corp (8-slot), FI-company flag. Zeroed outside ACQ_OFFER. |
+| Pass | 1 | No input features — type embedding only. Emits pass logit. |
 
-**Total: 53 + N tokens** (56 for 3p, 57 for 4p, 58 for 5p)
+**Total: 54 + N tokens** (57 for 3p, 58 for 4p, 59 for 5p)
 
 ### What disappears from the state vector
 
@@ -45,32 +46,33 @@ The current turn state has ~225 floats of context-dependent fields. Many exist b
 
 - **Active entity duplication** (~100 floats): `active_company` (36 one-hot + 5 scalars), `active_corp` (8 one-hot + 14 scalars + 36 owned_companies). The transformer can attend directly to the relevant entity token. Replaced by a single `is_phase_active` flag on the relevant corp/company token — the transformer already has the entity's full features via its token.
 - **Auction slot info** (5 * N floats): Per-slot company features (stars, prices, income) duplicated from company data. Unnecessary when company tokens carry their own features.
-- **Invest impacts** (16 floats): Buy/sell price impact per corp. Moved onto corp tokens (2 extra floats each) where they belong.
+- **Invest impacts** (16 floats): Buy/sell price impact per corp. Moved onto the dedicated Invest phase-context token.
 
 ### Phase-specific context tokens
 
-Two dedicated tokens carry phase-specific information that the model needs for decision-making, and double as policy readout points for their respective phases:
+Seven dedicated tokens carry phase-specific information that the model needs for decision-making, zeroed outside their respective phases. Some double as policy readout points. Full feature lists in `token-data.md`.
 
-- **Dividend token**: dividend_impact (26 levels), dividend_remaining (8 corp flags), active corp flag. Zeroed outside DIV phase. Policy logits for DIVIDENDS (26 actions) are read directly from this token.
-- **Issue token**: issue_remaining (8 corp flags), issue_price_impact, issue_cash_gain, active corp flag. Zeroed outside ISSUE phase. Policy logits for ISSUE (2 actions) are read directly from this token.
-
-Interpretability analysis on the MLP model showed these phase-specific features significantly improve model quality. Giving them dedicated tokens preserves that signal and provides a natural readout point — the token that carries the decision context also produces the decision.
-
-**PAR context token**: The PAR phase is eliminated as a separate game phase, but the PAR token remains as context for the merged IPO phase. It carries par_corp_treasury and par_shares — these are global (not per-corp) since they depend on market availability, company face value, and player cash. In the current transformer implementation, IPO logits are read directly from each corp token, while the PAR token still serves as shared context through attention.
+- **Invest token**: consecutive passes, buy/sell share price impacts per corp. Context for INVEST.
+- **Auction token**: price index+value, high bidder, starter. Raises are read from this token during BID.
+- **Dividend token**: 26 dividend-amount price impacts, corp-remaining flags. Dividend amount logits are read directly from this token.
+- **Issue token**: price impact, corp-remaining flags. Issue logit is read from this token.
+- **PAR token**: per-par player cost, resulting corp cash, resulting issued shares. Context for IPO (IPO logits are read from corp tokens, PAR provides shared context through attention).
+- **Acq Offer token**: offer price index+value, offer corp, FI-company flag. Buy logit is read from this token during ACQ_OFFER.
+- **Pass token**: no input features — purely learned type embedding. Emits the pass logit shared across all phases that use it.
 
 ## Transformer Architecture
 
 **Implementation: `nn/transformer.py`** (~2.3M params at default config)
 
 ```
-Input tokens (56 for 3p)
+Input tokens (57 for 3p)
     ↓
 Type-specific linear projections → d_model
     + learned type embeddings
     ↓
 L transformer blocks (pre-RMSNorm, multi-head self-attention + SwiGLU FFN)
     ↓
-Output token representations (56 × d_model)
+Output token representations (57 × d_model)
     ↓
 Entity-readout policy heads (+ full ACQUISITION pair head) + value head
 ```
@@ -100,11 +102,11 @@ All projections take the full zero-padded `token_dim` input (no per-type feature
 # All projections: nn.Linear(token_dim, d_model) — one per entity type
 self.player_proj  = nn.Linear(token_dim, d_model)
 self.corp_proj    = nn.Linear(token_dim, d_model)
-# ... (11 total, one per non-pass token type)
+# ... (12 total, one per non-pass token type)
 # Pass token has no input features — its initial representation is just its type embedding
 
 # Learned type embeddings (added after projection)
-self.type_embed = nn.Embedding(12, d_model)  # player/corp/company/fi/market/global/auction/dividend/issue/par/acq_offer/pass
+self.type_embed = nn.Embedding(13, d_model)  # player/corp/company/fi/market/global/invest/auction/dividend/issue/par/acq_offer/pass
 ```
 
 ## Policy Head: Entity-Readout
@@ -280,32 +282,19 @@ cdef void get_token_data(GameState state, float* buffer, int num_tokens, int tok
     buffer shape: (num_tokens, token_dim), zero-initialized.
     
     Token order is fixed: [players..., corps..., companies..., FI, market,
-                           global, auction, dividend, issue, par, acq_offer,
-                           pass]
+                           global, invest, auction, dividend, issue, par,
+                           acq_offer, pass]
     """
-    # Player tokens (N tokens, ~20-30 dynamic features each)
-    for i in range(num_players):
-        _fill_player_token(state, buffer + i * token_dim, i)
-    
-    # Corp tokens (8 tokens, ~20 dynamic features each)
-    for i in range(8):
-        _fill_corp_token(state, buffer + (num_players + i) * token_dim, i)
-    
-    # Company tokens (36 tokens, ~12 dynamic + ~36 static synergy features each)
-    for i in range(36):
-        _fill_company_token(state, buffer + (num_players + 8 + i) * token_dim, i)
-    
-    # ... FI, market, global, phase-specific tokens
 ```
 
-Each `_fill_*_token()` helper reads from the compact state and writes raw/lightly-processed features into the buffer. Static features (synergies, face values) are written every time — it's just memcpy and the simplicity is worth more than the minor bandwidth savings.
+Implementation lives in `core/token_data.{pyx,pxd}`. Feature spec: `token-data.md`. Each `_fill_*_token()` helper reads from the compact state and writes raw/lightly-processed features into the buffer. Static features (synergies, face values) are written every time — it's just memcpy and the simplicity is worth more than the minor bandwidth savings.
 
 ### Eval buffer sizing
 
 The eval buffer is `(batch_size, num_tokens, token_dim)`:
-- `num_tokens`: 56 for the 3p prototype
+- `num_tokens`: 57 for the 3p prototype
 - `token_dim`: 63 for the 3p prototype (all token types zero-padded to the same width)
-- Total per sample: 56 × 63 = 3,528 floats (~13.8KB)
+- Total per sample: 57 × 63 = 3,591 floats (~14.0KB)
 - Compare to current visible state: 1,109 floats (~4.4KB)
 
 ~3x larger per sample, but still small in absolute terms. The rectangular layout enables clean GPU operations. All type-specific projections take the same `token_dim` input (no per-type slicing needed).
@@ -322,7 +311,7 @@ The replay buffer stores training examples. With per-phase action indices, each 
 Option A: store the compact state and re-extract tokens at training time. Smallest storage.
 Option B: store the eval buffer directly. Faster training (no re-extraction), larger storage.
 
-Option B is simpler for a very small-scale prototype, but expensive at current training defaults: with `56 × 63` float token buffers and `buffer_capacity=500_000`, token storage alone is ~6.6 GiB, and total replay storage is materially higher once masks, policy targets, and value targets are included, especially with a 14,977-action ACQUISITION head. If we start with Option B, we should also reduce buffer capacity. Option A is the more realistic long-term default.
+Option B is simpler for a very small-scale prototype, but expensive at current training defaults: with `57 × 63` float token buffers and `buffer_capacity=500_000`, token storage alone is ~6.6 GiB, and total replay storage is materially higher once masks, policy targets, and value targets are included, especially with a 14,977-action ACQUISITION head. If we start with Option B, we should also reduce buffer capacity. Option A is the more realistic long-term default.
 
 ## Impact on Training & MCTS Pipeline
 
@@ -359,13 +348,13 @@ All four simplifications follow the same pattern: the MLP needed a small, fixed 
 
 1. ~~**Compact state layout**~~: **Done.** Single int16 array, raw values, entity handles with module-level layout constants. See `VECTORS.md` for the authoritative layout.
 
-2. **`get_token_data()` feature lists**: Exactly which features go into each token type's buffer slot. Some features are dynamic (cash, income, ownership), some are static (synergies, face values), some are phase-conditional (zeroed outside relevant phase). This is the new single source of truth for the state→NN mapping. **Still open** — the last piece of Phase 1.
+2. ~~**`get_token_data()` feature lists**~~: **Spec'd.** See `token-data.md` for the authoritative per-token feature spec. Implementation in `core/token_data.{pyx,pxd}` — still pending.
 
-3. **Batching with variable token counts**: For 3-5p training, batches contain games with different numbers of player tokens (56-58). Options: pad to 58 and use attention mask, or batch by player count. Padding is simpler; batching by count is more efficient.
+3. **Batching with variable token counts**: For 3-5p training, batches contain games with different numbers of player tokens (57-59). Options: pad to 59 and use attention mask, or batch by player count. Padding is simpler; batching by count is more efficient.
 
 4. **Replay storage strategy**: Option B (store token buffers directly) is convenient for prototyping but probably requires a much smaller replay buffer. Option A (store compact state and re-extract tokens) is likely the long-term path.
 
-5. **Inference speed**: Need to benchmark transformer vs MLP for the sequence lengths we're dealing with (~56-58 tokens for 3-5p). Should be fine, but verify with `torch.compile`.
+5. **Inference speed**: Need to benchmark transformer vs MLP for the sequence lengths we're dealing with (~57-59 tokens for 3-5p). Should be fine, but verify with `torch.compile`.
 
 6. **Head dispatch**: The forward pass has 8 phase-specific dispatch paths. The current implementation uses a full ACQUISITION pair head plus direct per-corp IPO readout. Need to keep mixed-phase batches efficient despite the padded `(B, 14977)` output interface.
 
@@ -410,6 +399,6 @@ All four simplifications follow the same pattern: the MLP needed a small, fixed 
 - **Blocked on:** Phase 4
 
 ### Phase 6: Multi-player-count training (3-5p)
-- Variable player token count (56-58 tokens) + attention masking or pad-to-max
+- Variable player token count (57-59 tokens) + attention masking or pad-to-max
 - Single model for 3-5p
 - Batching strategy for mixed player counts

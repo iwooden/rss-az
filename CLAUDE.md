@@ -22,21 +22,22 @@ Backwards compatibility is **not** a goal. The `main` branch preserves pre-refac
 
 ### Transformer (summary of `nn/transformer.py` + `transformers.md`)
 
-**Tokens** (3p: 56, 4p: 57, 5p: 58). Shared `token_dim=63` projected via type-specific linear layers + learned type embeddings. No positional encoding. Token order in eval buffer: `[players..., corps..., companies..., FI, market, global, auction, dividend, issue, par, acq_offer, pass]`.
+**Tokens** (3p: 57, 4p: 58, 5p: 59). Shared `token_dim=63` projected via type-specific linear layers + learned type embeddings. No positional encoding. Token order in eval buffer: `[players..., corps..., companies..., FI, market, global, invest, auction, dividend, issue, par, acq_offer, pass]`. Full per-token feature spec in `token-data.md`.
 
 | Type | Count (3p) | Carries |
 |------|-----------|---------|
-| Player | 3–5 | identity, cash, net worth, income, turn order, owned shares, `is_active` |
-| Corporation | 8 | identity, active, cash, shares, income, stars, price index, pending move, owned companies, receivership, president_id, invest impacts, `is_phase_active` |
-| Company | 36 | identity, location flags, income, static features, 36-dim synergy, `is_phase_active` |
+| Player | 3–5 | identity, cash, net worth, liquidity, income, turn order, has passed, owned shares, share buys/sells, round trips, presidencies, owned companies |
+| Corporation | 8 | identity, active, receivership, passed ACQ_OFFER, shares (unissued/issued/bank), price index+value, pending move, cash, acq proceeds, income breakdown (raw/synergy/CoO/ability), total stars, president, owned companies |
+| Company | 36 | identity, active company flag, location flags, ownership (corp/player/FI), adjusted income, static data (prices, stars, base income), 36-dim synergy |
 | FI | 1 | cash, income, owned companies |
 | Market | 1 | 27 availability flags |
-| Global | 1 | phase one-hot, CoO one-hot, end-card flipped, cards remaining, passes |
-| Auction (phase ctx) | 1 | price, starter, high bidder, passed. Zeroed outside BID. |
-| Dividend (phase ctx) | 1 | impact, corp-remaining. Zeroed outside DIVIDENDS. |
-| Issue (phase ctx) | 1 | corp-remaining, price impact, cash gain. Zeroed outside ISSUE. |
-| PAR (phase ctx) | 1 | par treasury + share availability. Zeroed outside IPO. |
-| Acq Offer (phase ctx) | 1 | offer price, OS-flag, FI-flag. Zeroed outside ACQ_OFFER. |
+| Global | 1 | num players, phase one-hot, CoO one-hot, end-card flipped, cards remaining |
+| Invest (phase ctx) | 1 | consecutive passes, buy/sell share price impacts per corp. Zeroed outside INVEST. |
+| Auction (phase ctx) | 1 | price index+value, high bidder, starter. Zeroed outside BID. |
+| Dividend (phase ctx) | 1 | 26 dividend-amount impacts, corp-remaining. Zeroed outside DIVIDENDS. |
+| Issue (phase ctx) | 1 | price impact, corp-remaining. Zeroed outside ISSUE. |
+| PAR (phase ctx) | 1 | per-par player cost, corp cash, issued shares. Zeroed outside IPO. |
+| Acq Offer (phase ctx) | 1 | offer price index+value, offer corp, FI-company flag. Zeroed outside ACQ_OFFER. |
 | Pass | 1 | no input — type embedding only. Emits pass logit. |
 
 **Arch:** Pre-RMSNorm blocks, SwiGLU FFN (`ff_mult=3.0`), `d_model=128`, `num_layers=10`, `num_heads=2`, ~2.3M params.
@@ -60,7 +61,7 @@ Action counts live in `core/data.pxd` as `ActionSize` `cpdef enum`; `core/action
 
 ### Engine implications
 
-- **Compact state, `get_token_data()` is the only NN interface.** No visible/hidden split, no pre-normalization, no one-hot in state vector. `get_token_data(state, buffer, num_tokens, token_dim)` fills the eval buffer with raw/lightly-normalized features in nogil Cython. **Still pending** — the missing link between Phase 1 and Phase 4.
+- **Compact state, `get_token_data()` is the only NN interface.** No visible/hidden split, no pre-normalization, no one-hot in state vector. `get_token_data(state, buffer, num_tokens, token_dim)` fills the eval buffer with raw/lightly-normalized features in nogil Cython. Feature spec: `token-data.md`. Implementation: `core/token_data.{pyx,pxd}`. **Still pending** — the missing link between Phase 1 and Phase 4.
 - **Per-phase action indices.** Same integer means different things in different phases. Callers must carry `phase_id` with `action_id`. `MAX_LEGAL_ACTIONS = 256`; over-cap is a bug, not graceful degradation.
 - **PAR folded into IPO.** Single `(corp, par_index)` action on merged `PHASE_IPO`.
 - **`PHASE_ACQ_OFFER` is a first-class engine phase** for FI preemption / receivership offers. Both ACQUISITION and ACQ_OFFER are separate decision phases.

@@ -65,8 +65,8 @@ class TransformerConfig:
 
     @property
     def num_tokens(self) -> int:
-        """N players + 53 fixed entity tokens."""
-        return self.num_players + 53
+        """N players + 54 fixed entity tokens."""
+        return self.num_players + 54
 
 
 # ---------------------------------------------------------------------------
@@ -117,12 +117,13 @@ class RSSTransformerNet(nn.Module):
         self._fi_idx = np_ + 44
         self._market_idx = np_ + 45
         self._global_idx = np_ + 46
-        self._auction_idx = np_ + 47
-        self._dividend_idx = np_ + 48
-        self._issue_idx = np_ + 49
-        self._par_idx = np_ + 50
-        self._acq_offer_idx = np_ + 51
-        self._pass_idx = np_ + 52
+        self._invest_idx = np_ + 47
+        self._auction_idx = np_ + 48
+        self._dividend_idx = np_ + 49
+        self._issue_idx = np_ + 50
+        self._par_idx = np_ + 51
+        self._acq_offer_idx = np_ + 52
+        self._pass_idx = np_ + 53
 
         # Pre-computed type IDs (buffer moves with model to correct device)
         type_ids = torch.zeros(cfg.num_tokens, dtype=torch.long)
@@ -132,6 +133,7 @@ class RSSTransformerNet(nn.Module):
         type_ids[self._fi_idx] = int(TokenType.TYPE_FI)
         type_ids[self._market_idx] = int(TokenType.TYPE_MARKET)
         type_ids[self._global_idx] = int(TokenType.TYPE_GLOBAL)
+        type_ids[self._invest_idx] = int(TokenType.TYPE_INVEST)
         type_ids[self._auction_idx] = int(TokenType.TYPE_AUCTION)
         type_ids[self._dividend_idx] = int(TokenType.TYPE_DIVIDEND)
         type_ids[self._issue_idx] = int(TokenType.TYPE_ISSUE)
@@ -150,6 +152,7 @@ class RSSTransformerNet(nn.Module):
         self.fi_proj = nn.Linear(tdim, d)
         self.market_proj = nn.Linear(tdim, d)
         self.global_proj = nn.Linear(tdim, d)
+        self.invest_proj = nn.Linear(tdim, d)
         self.auction_proj = nn.Linear(tdim, d)
         self.dividend_proj = nn.Linear(tdim, d)
         self.issue_proj = nn.Linear(tdim, d)
@@ -255,6 +258,7 @@ class RSSTransformerNet(nn.Module):
             self.fi_proj(x[:, self._fi_idx]).unsqueeze(1),            # (B, 1, d)
             self.market_proj(x[:, self._market_idx]).unsqueeze(1),
             self.global_proj(x[:, self._global_idx]).unsqueeze(1),
+            self.invest_proj(x[:, self._invest_idx]).unsqueeze(1),
             self.auction_proj(x[:, self._auction_idx]).unsqueeze(1),
             self.dividend_proj(x[:, self._dividend_idx]).unsqueeze(1),
             self.issue_proj(x[:, self._issue_idx]).unsqueeze(1),
@@ -440,8 +444,8 @@ if __name__ == "__main__":
     proj_modules = [
         model.player_proj, model.corp_proj, model.company_proj,
         model.fi_proj, model.market_proj, model.global_proj,
-        model.auction_proj, model.dividend_proj, model.issue_proj,
-        model.par_proj, model.acq_offer_proj,
+        model.invest_proj, model.auction_proj, model.dividend_proj,
+        model.issue_proj, model.par_proj, model.acq_offer_proj,
     ]
     proj_params = sum(sum(p.numel() for p in m.parameters()) for m in proj_modules)
     type_params = sum(p.numel() for p in model.type_embed.parameters())
