@@ -34,9 +34,6 @@ from entities.fi import FI
 from entities.deck import DECK
 
 
-NUM_PLAYERS = 3  # Prototype is 3p only
-
-
 # =============================================================================
 # LEGAL ACTION HELPERS
 # =============================================================================
@@ -437,10 +434,11 @@ def assert_invariants(state, msg=""):
 # FIXTURES
 # =============================================================================
 
-@pytest.fixture
-def game_state():
-    """Fresh 3-player game state in INVEST phase."""
-    state = GameState(NUM_PLAYERS)
-    state.initialize_game(NUM_PLAYERS, seed=42)
+@pytest.fixture(params=[2, 3, 4, 5, 6])
+def game_state(request):
+    """Fresh game state in INVEST phase, parameterized across all player counts."""
+    num_players = request.param
+    state = GameState(num_players)
+    state.initialize_game(num_players, seed=42)
     assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
     return state
