@@ -122,6 +122,7 @@ cdef class Corporation:
     cpdef void add_cash(self, GameState state, int amount)
 
     # Share tracking
+    cpdef int get_total_shares(self)
     cpdef int get_unissued_shares(self, GameState state)
     cpdef void set_unissued_shares(self, GameState state, int shares)
     cpdef int get_issued_shares(self, GameState state)
@@ -148,6 +149,7 @@ cdef class Corporation:
     cpdef int get_share_price(self, GameState state)
     cpdef int get_price_index(self, GameState state)
     cpdef void set_price_index(self, GameState state, int index)
+    cpdef void move_to_price_index(self, GameState state, int new_index)
     cpdef int get_pending_price_move(self, GameState state)
     cpdef int simulate_dividend_price_move(self, GameState state, int amount_per_share)
     cpdef tuple simulate_float(self, int company_id, int par_index)

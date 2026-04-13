@@ -533,6 +533,10 @@ cdef class Corporation:
     # SHARE TRACKING
     # =========================================================================
 
+    cpdef int get_total_shares(self):
+        """Return total share count for this corp (static per corp_id)."""
+        return CORP_SHARE_COUNT[self.corp_id]
+
     cpdef int get_unissued_shares(self, GameState state):
         """Return number of unissued shares remaining in the treasury."""
         return corp_unissued_shares(state, self.corp_id)
@@ -664,6 +668,27 @@ cdef class Corporation:
         if old_index != index:
             invalidate_corp_cache(state, self.corp_id)
             invalidate_all_player_caches(state)
+
+    cpdef void move_to_price_index(self, GameState state, int new_index):
+        """Atomically move the corp to a new (interior) market price index.
+
+        Frees the previously-occupied interior space, claims the new space,
+        and updates the price index. Boundary spaces 0 ($0 bankruptcy) and
+        26 ($75 cap) are always available and are skipped on both sides.
+
+        Does NOT trigger bankruptcy when ``new_index == 0`` — that's a
+        policy decision left to callers (e.g. ``_issue_one_share``).
+        """
+        cdef int old_index
+        cdef int max_index = <int>GameConstants.NUM_MARKET_SPACES - 1
+        assert 0 <= new_index < <int>GameConstants.NUM_MARKET_SPACES, \
+            f"price index {new_index} out of range [0, {<int>GameConstants.NUM_MARKET_SPACES})"
+        old_index = corp_price_index(state, self.corp_id)
+        if 0 < old_index < max_index:
+            market_module.MARKET.set_space_available(state, old_index, True)
+        if 0 < new_index < max_index:
+            market_module.MARKET.set_space_available(state, new_index, False)
+        self.set_price_index(state, new_index)
 
     # =========================================================================
     # ACQUISITION PROCEEDS
