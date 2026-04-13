@@ -42,6 +42,7 @@ from core.data cimport (
     COST_OF_OWNERSHIP,
 )
 from entities.corp cimport invalidate_all_corp_caches
+from entities.company cimport set_company_adjusted_income
 from entities.player cimport invalidate_all_player_caches
 # Late entity imports live below the class definition + ``TURN`` singleton
 # creation. Peer modules (player / company / corp / fi) use a lazy
@@ -49,7 +50,7 @@ from entities.player cimport invalidate_all_player_caches
 # call, so import order between peers is unconstrained. The late imports
 # below are still needed because TurnState methods reach into the other
 # entity modules at call time (e.g. ``set_coo_level`` cascades into
-# player / corp / fi income recalcs) — but they no longer dictate a
+# player / fi income recalcs) — but they no longer dictate a
 # cross-module load order.
 
 
@@ -193,7 +194,7 @@ cdef class TurnState:
                 COMPANY_INCOME[company_id]
                 - COST_OF_OWNERSHIP[level_index][COMPANY_STARS[company_id] - 1]
             )
-            company_module.COMPANIES[company_id].set_adjusted_income(state, adjusted)
+            set_company_adjusted_income(state, company_id, adjusted)
 
     # =========================================================================
     # TURN NUMBER
@@ -474,11 +475,10 @@ TURN = TurnState()
 # LATE ENTITY IMPORTS
 # =============================================================================
 #
-# Methods on TurnState reach into other entity modules (player, company, corp,
-# fi) at *call* time, so the imports can live below the class definition and
+# Methods on TurnState reach into other entity modules (player / fi) at
+# *call* time, so the imports can live below the class definition and
 # the singleton creation. Placing them here keeps ``TURN`` populated before
 # any cyclic load of those entity modules begins.
 
 from entities import player as player_module
-from entities import company as company_module
 from entities import fi as fi_module

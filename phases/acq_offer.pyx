@@ -20,6 +20,8 @@ from entities.company cimport (
     LOC_FI,
     LOC_CORP,
     LOC_PLAYER,
+    company_location,
+    company_owner_id,
 )
 
 from phases.acquisition cimport (
@@ -71,7 +73,7 @@ cdef void apply_acq_offer_action(GameState state, ActionInfo* info) noexcept:
     assert company_id >= 0, f"acq_offer: no active company"
     assert price > 0, f"acq_offer: no offer price"
 
-    cdef int loc = company_module.COMPANIES[company_id].get_location(state)
+    cdef int loc = company_location(state, company_id)
     cdef bint is_fi_preemption = (loc == <int>LOC_FI)
 
     cdef int owner_id, next_corp, next_price, deciding_player
@@ -82,7 +84,7 @@ cdef void apply_acq_offer_action(GameState state, ActionInfo* info) noexcept:
             _execute_fi_buy(state, active_corp, company_id)
         else:
             # Cross-president: execute negotiated transfer at acq_offer_price
-            owner_id = company_module.COMPANIES[company_id].get_owner_id(state)
+            owner_id = company_owner_id(state, company_id)
             corp_module.CORPS[active_corp].add_cash(state, -price)
             if loc == <int>LOC_CORP:
                 corp_module.CORPS[owner_id].set_acquisition_proceeds(

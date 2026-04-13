@@ -33,6 +33,7 @@ from core.data cimport (
     COMPANY_FACE_VALUE,
 )
 from phases.acquisition cimport setup_acquisition_phase
+from entities.company cimport company_is_for_auction, company_is_revealed
 
 # Late Python-level entity imports, same pattern as phases/invest.pyx.
 from entities import turn as turn_module
@@ -110,7 +111,7 @@ cdef int _find_cheapest_affordable_available(GameState state) noexcept:
     cdef int face_value
 
     for company_id in range(<int>GameConstants.NUM_COMPANIES):
-        if company_module.COMPANIES[company_id].is_for_auction(state):
+        if company_is_for_auction(state, company_id):
             face_value = COMPANY_FACE_VALUE[company_id]
             if face_value <= fi_cash:
                 return company_id
@@ -157,7 +158,7 @@ cdef void _reveal_all_to_auction(GameState state) noexcept:
     cdef int company_id
 
     for company_id in range(<int>GameConstants.NUM_COMPANIES):
-        if company_module.COMPANIES[company_id].is_revealed(state):
+        if company_is_revealed(state, company_id):
             company_module.COMPANIES[company_id].move_to_auction(state)
 
 

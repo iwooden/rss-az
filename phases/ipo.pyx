@@ -21,11 +21,15 @@ from core.data cimport (
     COMPANY_STARS,
 )
 from core.actions cimport ActionInfo, ACTION_PASS, ACTION_IPO
-from entities.company cimport LOC_PLAYER
+from entities.company cimport (
+    LOC_PLAYER,
+    company_location,
+    company_owner_id,
+    company_face_value,
+)
 
 from entities import turn as turn_module
 from entities import corp as corp_module
-from entities import company as company_module
 from entities import player as player_module
 from entities import market as market_module
 
@@ -40,8 +44,7 @@ cdef void _init_ipo_remaining(GameState state) noexcept:
     for company_id in range(<int>GameConstants.NUM_COMPANIES):
         turn_module.TURN.set_ipo_remaining(
             state, company_id,
-            company_module.COMPANIES[company_id].get_location(state)
-                == <int>LOC_PLAYER,
+            company_location(state, company_id) == <int>LOC_PLAYER,
         )
 
 
@@ -57,10 +60,10 @@ cdef int _find_next_ipo_company(GameState state) noexcept:
         if not turn_module.TURN.is_ipo_remaining(state, company_id):
             continue
         # Double-check still player-owned
-        if company_module.COMPANIES[company_id].get_location(state) != <int>LOC_PLAYER:
+        if company_location(state, company_id) != <int>LOC_PLAYER:
             turn_module.TURN.set_ipo_remaining(state, company_id, False)
             continue
-        fv = company_module.COMPANIES[company_id].get_face_value()
+        fv = company_face_value(company_id)
         if fv > best_fv:
             best_fv = fv
             best_id = company_id
@@ -70,8 +73,8 @@ cdef int _find_next_ipo_company(GameState state) noexcept:
 cdef void _process_ipo(GameState state, int corp_id, int par_index) noexcept:
     """Execute the Form Corporation procedure for the active IPO company."""
     cdef int company_id = turn_module.TURN.get_ipo_company(state)
-    cdef int player_id = company_module.COMPANIES[company_id].get_owner_id(state)
-    cdef int face_value = company_module.COMPANIES[company_id].get_face_value()
+    cdef int player_id = company_owner_id(state, company_id)
+    cdef int face_value = company_face_value(company_id)
     cdef int par_price = ALL_PAR_PRICES[par_index]
     cdef int market_index = PRICE_TO_MARKET_INDEX[par_price]
 
@@ -120,7 +123,7 @@ cdef void _advance_to_next_company(GameState state) noexcept:
 
     # Set up for this company's owner's decision
     turn_module.TURN.set_ipo_company(state, company_id)
-    cdef int player_id = company_module.COMPANIES[company_id].get_owner_id(state)
+    cdef int player_id = company_owner_id(state, company_id)
     turn_module.TURN.set_active_player(state, player_id)
 
 

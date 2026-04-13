@@ -38,6 +38,7 @@ from core.data cimport (
     COMPANY_FACE_VALUE,
     MARKET_PRICES,
 )
+from entities.company cimport company_is_for_auction
 
 # Late Python-level entity imports. ``phases/`` sits above ``entities/`` in
 # the dependency DAG (nobody imports phases), so there is no cycle to work
@@ -46,7 +47,6 @@ from core.data cimport (
 from entities import turn as turn_module
 from entities import player as player_module
 from entities import corp as corp_module
-from entities import company as company_module
 from entities import market as market_module
 
 
@@ -93,7 +93,7 @@ cdef void _handle_auction(GameState state, int company_id, int bid_offset) noexc
     # Defensive invariant: the enumerator only emits auctions for
     # LOC_AUCTION companies. If this fires, the enumerator and the
     # handler have fallen out of sync.
-    assert company_module.COMPANIES[company_id].is_for_auction(state), \
+    assert company_is_for_auction(state, company_id), \
         f"_handle_auction: company {company_id} is not LOC_AUCTION"
 
     # Seed auction context. ``active_company`` is reused by BID as the

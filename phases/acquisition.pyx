@@ -34,6 +34,8 @@ from entities.company cimport (
     LOC_FI,
     LOC_CORP,
     LOC_CORP_ACQ,
+    company_location,
+    company_owner_id,
 )
 from phases.closing cimport setup_closing_phase
 
@@ -198,7 +200,7 @@ cdef int _find_most_expensive_affordable_fi_company(
     cdef int best_price = -1
 
     for company_id in range(<int>GameConstants.NUM_COMPANIES):
-        if company_module.COMPANIES[company_id].get_location(state) != <int>LOC_FI:
+        if company_location(state, company_id) != <int>LOC_FI:
             continue
         price = _get_fi_purchase_price(corp_id, company_id)
         if price <= cash and price > best_price:
@@ -347,8 +349,8 @@ cdef void _handle_acq_price(GameState state, ActionInfo* info) noexcept:
     cdef int company_id = info.company_id
     cdef int price = COMPANY_LOW_PRICE[company_id] + info.amount
 
-    cdef int loc = company_module.COMPANIES[company_id].get_location(state)
-    cdef int owner_id = company_module.COMPANIES[company_id].get_owner_id(state)
+    cdef int loc = company_location(state, company_id)
+    cdef int owner_id = company_owner_id(state, company_id)
     cdef int active_player = turn_module.TURN.get_active_player(state)
     cdef int owner_player = -1
 
@@ -396,7 +398,7 @@ cdef void _handle_fi_buy(GameState state, ActionInfo* info) noexcept:
     cdef int company_id = info.company_id
     cdef int first_preemptor, price, deciding_player
 
-    assert company_module.COMPANIES[company_id].get_location(state) == <int>LOC_FI, \
+    assert company_location(state, company_id) == <int>LOC_FI, \
         f"_handle_fi_buy: company {company_id} not LOC_FI"
     assert corp_module.CORPS[corp_id].is_active(state), \
         f"_handle_fi_buy: corp {corp_id} not active"
@@ -437,14 +439,14 @@ cdef void _merge_acquisition_zones(GameState state) noexcept:
             corp_module.CORPS[corp_id].set_acquisition_proceeds(state, 0)
 
     for company_id in range(<int>GameConstants.NUM_COMPANIES):
-        if company_module.COMPANIES[company_id].get_location(state) == <int>LOC_CORP_ACQ:
-            owner_id = company_module.COMPANIES[company_id].get_owner_id(state)
+        if company_location(state, company_id) == <int>LOC_CORP_ACQ:
+            owner_id = company_owner_id(state, company_id)
             company_module.COMPANIES[company_id].transfer_to_corp(state, owner_id)
 
     # Invariant: no acquisition-pile companies or buffered proceeds remain
     if __debug__:
         for company_id in range(<int>GameConstants.NUM_COMPANIES):
-            assert company_module.COMPANIES[company_id].get_location(state) != <int>LOC_CORP_ACQ, \
+            assert company_location(state, company_id) != <int>LOC_CORP_ACQ, \
                 f"_merge_acquisition_zones: LOC_CORP_ACQ still present for company {company_id}"
         for corp_id in range(<int>GameConstants.NUM_CORPS):
             if corp_module.CORPS[corp_id].is_active(state):

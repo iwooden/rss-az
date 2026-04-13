@@ -33,7 +33,16 @@ from core.data cimport (
     COMPANY_FACE_VALUE,
     COST_OF_OWNERSHIP,
 )
-from entities.company cimport LOC_PLAYER, LOC_CORP
+from entities.company cimport (
+    LOC_PLAYER,
+    LOC_CORP,
+    company_adjusted_income,
+    company_location,
+    company_owner_id,
+    company_owned_by_player,
+    company_owned_by_fi,
+    company_owned_by_corp,
+)
 from entities.corp cimport count_corp_companies
 
 # Late Python-level entity imports, same pattern as phases/bid.pyx.
@@ -59,8 +68,8 @@ cdef void _auto_close_fi(GameState state) noexcept:
     """Close all FI-owned companies with negative adjusted income."""
     cdef int i
     for i in range(<int>GameConstants.NUM_COMPANIES):
-        if (company_module.COMPANIES[i].is_owned_by_fi(state)
-                and company_module.COMPANIES[i].get_adjusted_income(state) < 0):
+        if (company_owned_by_fi(state, i)
+                and company_adjusted_income(state, i) < 0):
             company_module.COMPANIES[i].remove_from_game(state)
 
 
@@ -114,7 +123,7 @@ cdef void _auto_close_receivership(GameState state) noexcept:
         max_face = -1
         max_face_idx = -1
         for i in range(<int>GameConstants.NUM_COMPANIES):
-            if not company_module.COMPANIES[i].is_owned_by_corp(state, corp_id):
+            if not company_owned_by_corp(state, i, corp_id):
                 continue
             face_val = COMPANY_FACE_VALUE[i]
             if face_val > max_face:
@@ -128,7 +137,7 @@ cdef void _auto_close_receivership(GameState state) noexcept:
             for i in range(<int>GameConstants.NUM_COMPANIES):
                 if i == max_face_idx:
                     continue
-                if not company_module.COMPANIES[i].is_owned_by_corp(state, corp_id):
+                if not company_owned_by_corp(state, i, corp_id):
                     continue
                 stars = COMPANY_STARS[i]
                 if stars >= GREEN_STAR_TIER:
@@ -181,7 +190,7 @@ cdef void _process_mandatory_close(GameState state) noexcept:
             cheapest_id = -1
             cheapest_face = 999
             for i in range(<int>GameConstants.NUM_COMPANIES):
-                if not company_module.COMPANIES[i].is_owned_by_player(state, pid):
+                if not company_owned_by_player(state, i, pid):
                     continue
                 if COMPANY_FACE_VALUE[i] < cheapest_face:
                     cheapest_face = COMPANY_FACE_VALUE[i]
@@ -207,7 +216,7 @@ cdef bint _player_has_closable(GameState state, int player_id) noexcept:
 
     # Check player-owned privates
     for i in range(<int>GameConstants.NUM_COMPANIES):
-        if company_module.COMPANIES[i].is_owned_by_player(state, player_id):
+        if company_owned_by_player(state, i, player_id):
             return True
 
     # Check corp subsidiaries
@@ -305,8 +314,8 @@ cdef void apply_closing_action(GameState state, ActionInfo* info) noexcept:
         pid = turn_module.TURN.get_active_player(state)
 
         # Determine who owns the company and validate
-        loc = company_module.COMPANIES[company_id].get_location(state)
-        owner_id = company_module.COMPANIES[company_id].get_owner_id(state)
+        loc = company_location(state, company_id)
+        owner_id = company_owner_id(state, company_id)
 
         if loc == <int>LOC_PLAYER:
             assert owner_id == pid, \

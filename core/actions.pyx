@@ -31,7 +31,6 @@ from core.state cimport (
     TURN_OFFSETS,
     PLAYER_FIELDS,
     CORP_FIELDS,
-    COMPANY_OFFSETS,
 )
 from core.data cimport (
     GameConstants,
@@ -63,7 +62,16 @@ from core.data cimport (
     PRICE_TO_MARKET_INDEX,
     MARKET_PRICES,
 )
-from entities.company cimport LOC_AUCTION, LOC_FI, LOC_CORP, LOC_PLAYER
+from entities.company cimport (
+    LOC_AUCTION,
+    LOC_FI,
+    LOC_CORP,
+    LOC_PLAYER,
+    company_location,
+    company_owner_id,
+    company_owned_by_player,
+)
+from entities.corp cimport count_corp_companies
 from phases.closing cimport _corp_closable_by_player
 
 cnp.import_array()
@@ -362,9 +370,8 @@ cdef int _enumerate_invest(
     ``MAX_LEGAL_ACTIONS = 256``. The naive bound of 557 is unreachable
     because only ``num_players`` companies are LOC_AUCTION at any time.
 
-    Reads state via direct slot arithmetic against the module-level
-    ``LAYOUT`` / ``PLAYER_FIELDS`` / ``CORP_FIELDS`` / ``COMPANY_OFFSETS``
-    structs cimported from ``core.state``. This is the intentional
+    Reads state via direct slot arithmetic and entity-owned primitives
+    where available. This is the intentional
     escape hatch for the per-phase enumerators: they run at peak MCTS
     hot-path frequency, so they bypass the entity-handle dispatch layer
     to stay in one nogil-clean C translation unit. Phase *handlers* in
@@ -380,7 +387,7 @@ cdef int _enumerate_invest(
     cdef int player_cash = <int>state._data[player_base + PLAYER_FIELDS.cash]
     cdef int16_t* market_ptr = state._data + LAYOUT.market_offset
 
-    cdef int company_id, bid_offset, face_value, loc
+    cdef int company_id, bid_offset, face_value
     cdef int corp_id, corp_base, buys, sells, current_index, buy_index, i
 
     # --- id 0: pass ---------------------------------------------------------
@@ -389,10 +396,7 @@ cdef int _enumerate_invest(
 
     # --- ids 1..540: auctions ----------------------------------------------
     for company_id in range(<int>GameConstants.NUM_COMPANIES):
-        loc = <int>state._data[
-            LAYOUT.companies_offset + COMPANY_OFFSETS.locations + company_id
-        ]
-        if loc != <int>LOC_AUCTION:
+        if company_location(state, company_id) != <int>LOC_AUCTION:
             continue
         face_value = COMPANY_FACE_VALUE[company_id]
         if face_value > player_cash:
@@ -475,9 +479,8 @@ cdef int _enumerate_bid(
     under ``MAX_LEGAL_ACTIONS = 256``.
 
     Reads state via direct slot arithmetic against the module-level
-    layout constants, matching the ``_enumerate_invest`` escape-hatch
-    pattern — this module is the one place allowed to cimport
-    ``LAYOUT`` / ``PLAYER_FIELDS`` / ``TURN_OFFSETS`` / ``COMPANY_OFFSETS``.
+    layout constants and entity-owned primitives, matching the
+    ``_enumerate_invest`` escape-hatch pattern.
     """
     cdef int count = 0
     cdef int player_id = <int>state._data[
@@ -555,7 +558,7 @@ cdef int _enumerate_acquisition(
     cdef bint same_pres = state.acq_same_president
     cdef int corp_id, company_id, loc, owner_id, cash, corp_base
     cdef int low_price, high_price, max_offset, price_offset, price
-    cdef int seller_count, i, seller_base
+    cdef int seller_base
 
     for corp_id in range(NUM_CORPS):
         corp_base = LAYOUT.corps_offset + corp_id * CORP_FIELDS.size
@@ -571,9 +574,7 @@ cdef int _enumerate_acquisition(
             continue
 
         for company_id in range(NUM_COMPANIES):
-            loc = <int>state._data[
-                LAYOUT.companies_offset + COMPANY_OFFSETS.locations + company_id
-            ]
+            loc = company_location(state, company_id)
 
             if loc == <int>LOC_FI:
                 # FI purchase: single fixed-price action
@@ -587,9 +588,7 @@ cdef int _enumerate_acquisition(
                     count += 1
 
             elif loc == <int>LOC_CORP:
-                owner_id = <int>state._data[
-                    LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids + company_id
-                ]
+                owner_id = company_owner_id(state, company_id)
                 if owner_id == corp_id:
                     continue  # Can't buy from yourself
                 seller_base = LAYOUT.corps_offset + owner_id * CORP_FIELDS.size
@@ -599,16 +598,7 @@ cdef int _enumerate_acquisition(
                     if <int>state._data[seller_base + CORP_FIELDS.president_id] != player_id:
                         continue
                 # Seller must retain >= 1 company (LOC_CORP only, not ACQ pile)
-                seller_count = 0
-                for i in range(NUM_COMPANIES):
-                    if (<int>state._data[
-                        LAYOUT.companies_offset + COMPANY_OFFSETS.locations + i
-                    ] == <int>LOC_CORP
-                        and <int>state._data[
-                            LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids + i
-                        ] == owner_id):
-                        seller_count += 1
-                if seller_count <= 1:
+                if count_corp_companies(state, owner_id, False) <= 1:
                     continue
                 low_price = COMPANY_LOW_PRICE[company_id]
                 high_price = COMPANY_HIGH_PRICE[company_id]
@@ -626,9 +616,7 @@ cdef int _enumerate_acquisition(
                     count += 1
 
             elif loc == <int>LOC_PLAYER:
-                owner_id = <int>state._data[
-                    LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids + company_id
-                ]
+                owner_id = company_owner_id(state, company_id)
                 if same_pres:
                     if owner_id != player_id:
                         continue
@@ -684,7 +672,6 @@ cdef int _enumerate_closing(
     cdef int active_player = <int>state._data[
         LAYOUT.turn_offset + TURN_OFFSETS.active_player
     ]
-    cdef int company_base = LAYOUT.companies_offset
     cdef int loc, owner
     cdef int company_id
 
@@ -694,15 +681,14 @@ cdef int _enumerate_closing(
 
     # --- Emit player-owned + valid corp-owned companies -----------------------
     for company_id in range(<int>GameConstants.NUM_COMPANIES):
-        loc = <int>state._data[company_base + COMPANY_OFFSETS.locations + company_id]
+        loc = company_location(state, company_id)
         if loc == <int>LOC_PLAYER:
-            owner = <int>state._data[company_base + COMPANY_OFFSETS.owner_ids + company_id]
-            if owner == active_player:
+            if company_owned_by_player(state, company_id, active_player):
                 _require_action_capacity(count, b"CLOSING_PLAYER")
                 ids[count] = <uint16_t>encode_closing_close(company_id)
                 count += 1
         elif loc == <int>LOC_CORP:
-            owner = <int>state._data[company_base + COMPANY_OFFSETS.owner_ids + company_id]
+            owner = company_owner_id(state, company_id)
             if _corp_closable_by_player(state, owner, active_player):
                 _require_action_capacity(count, b"CLOSING_CORP")
                 ids[count] = <uint16_t>encode_closing_close(company_id)

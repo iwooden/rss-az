@@ -29,13 +29,17 @@ only flips the phase enum.
 
 from core.state cimport GameState
 from core.data cimport GameConstants, GamePhases
-from entities.company cimport LOC_DECK, LOC_AUCTION, LOC_REVEALED
+from entities.company cimport (
+    LOC_DECK,
+    LOC_AUCTION,
+    LOC_REVEALED,
+    company_location,
+)
 from phases.issue cimport setup_issue_phase
 
 # Late Python-level entity imports, same pattern as phases/invest.pyx.
 from entities import turn as turn_module
 from entities import corp as corp_module
-from entities import company as company_module
 
 
 # =============================================================================
@@ -75,7 +79,7 @@ cdef bint _no_unowned_companies(GameState state) noexcept:
     cdef int loc
 
     for company_id in range(<int>GameConstants.NUM_COMPANIES):
-        loc = company_module.COMPANIES[company_id].get_location(state)
+        loc = company_location(state, company_id)
         if loc == <int>LOC_DECK \
                 or loc == <int>LOC_AUCTION \
                 or loc == <int>LOC_REVEALED:

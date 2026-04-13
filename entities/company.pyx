@@ -107,8 +107,72 @@ cdef bint company_in_corp_acquisition(GameState state, int company_id, int corp_
     return _location_at(state, company_id) == <int>LOC_CORP_ACQ and _owner_at(state, company_id) == corp_id
 
 
+cdef int company_location(GameState state, int company_id) noexcept nogil:
+    return _location_at(state, company_id)
+
+
+cdef int company_owner_id(GameState state, int company_id) noexcept nogil:
+    return _owner_at(state, company_id)
+
+
+cdef bint company_is_in_deck(GameState state, int company_id) noexcept nogil:
+    return _location_at(state, company_id) == <int>LOC_DECK
+
+
+cdef bint company_is_excluded(GameState state, int company_id) noexcept nogil:
+    return _location_at(state, company_id) == <int>LOC_EXCLUDED
+
+
+cdef bint company_is_for_auction(GameState state, int company_id) noexcept nogil:
+    return _location_at(state, company_id) == <int>LOC_AUCTION
+
+
+cdef bint company_is_revealed(GameState state, int company_id) noexcept nogil:
+    return _location_at(state, company_id) == <int>LOC_REVEALED
+
+
+cdef bint company_is_removed(GameState state, int company_id) noexcept nogil:
+    return _location_at(state, company_id) == <int>LOC_REMOVED
+
+
+cdef bint company_is_acquired(GameState state, int company_id) noexcept nogil:
+    return _location_at(state, company_id) == <int>LOC_CORP_ACQ
+
+
 cdef int company_adjusted_income(GameState state, int company_id) noexcept nogil:
     return _adjusted_income_at(state, company_id)
+
+
+cdef void set_company_adjusted_income(GameState state, int company_id, int income) noexcept nogil:
+    _set_adjusted_income_at(state, company_id, income)
+
+
+cdef int company_face_value(int company_id) noexcept nogil:
+    return COMPANY_FACE_VALUE[company_id]
+
+
+cdef int company_low_price(int company_id) noexcept nogil:
+    return COMPANY_LOW_PRICE[company_id]
+
+
+cdef int company_high_price(int company_id) noexcept nogil:
+    return COMPANY_HIGH_PRICE[company_id]
+
+
+cdef int company_stars(int company_id) noexcept nogil:
+    return COMPANY_STARS[company_id]
+
+
+cdef int company_base_income(int company_id) noexcept nogil:
+    return COMPANY_INCOME[company_id]
+
+
+cdef bint company_is_last_in_group(int company_id) noexcept nogil:
+    return COMPANY_LAST_IN_GROUP[company_id] != 0
+
+
+cdef int company_synergy(int company_id, int other_company_id) noexcept nogil:
+    return COMPANY_SYNERGY[company_id][other_company_id]
 
 
 cdef int company_sum_player_face_value(GameState state, int player_id) noexcept nogil:
@@ -191,24 +255,24 @@ cdef class Company:
 
     cpdef int get_location(self, GameState state):
         """Return the company's CompanyLocation enum value."""
-        return self._get_location(state)
+        return company_location(state, self.company_id)
 
     cpdef int get_owner_id(self, GameState state):
         """Return owner ID (player_id or corp_id) for ownership locations, -1 otherwise."""
-        return self._get_owner_id(state)
+        return company_owner_id(state, self.company_id)
 
     cpdef bint is_in_deck(self, GameState state):
-        return self._get_location(state) == LOC_DECK
+        return company_is_in_deck(state, self.company_id)
 
     cpdef bint is_excluded(self, GameState state):
         """True if this company was filtered out at deck setup for the player count."""
-        return self._get_location(state) == LOC_EXCLUDED
+        return company_is_excluded(state, self.company_id)
 
     cpdef bint is_for_auction(self, GameState state):
-        return self._get_location(state) == LOC_AUCTION
+        return company_is_for_auction(state, self.company_id)
 
     cpdef bint is_revealed(self, GameState state):
-        return self._get_location(state) == LOC_REVEALED
+        return company_is_revealed(state, self.company_id)
 
     cpdef bint is_owned_by_player(self, GameState state, int player_id):
         assert 0 <= player_id < _TURN()._get_num_players(state), \
@@ -229,11 +293,11 @@ cdef class Company:
         return company_in_corp_acquisition(state, self.company_id, corp_id)
 
     cpdef bint is_removed(self, GameState state):
-        return self._get_location(state) == LOC_REMOVED
+        return company_is_removed(state, self.company_id)
 
     cpdef bint is_acquired(self, GameState state):
         """True if the company sits in any corp's acquisition pile this phase."""
-        return self._get_location(state) == LOC_CORP_ACQ
+        return company_is_acquired(state, self.company_id)
 
     # =========================================================================
     # TRANSFER OPERATIONS
@@ -325,27 +389,27 @@ cdef class Company:
     # =========================================================================
 
     cpdef int get_face_value(self):
-        return COMPANY_FACE_VALUE[self.company_id]
+        return company_face_value(self.company_id)
 
     cpdef int get_low_price(self):
-        return COMPANY_LOW_PRICE[self.company_id]
+        return company_low_price(self.company_id)
 
     cpdef int get_high_price(self):
-        return COMPANY_HIGH_PRICE[self.company_id]
+        return company_high_price(self.company_id)
 
     cpdef int get_stars(self):
-        return COMPANY_STARS[self.company_id]
+        return company_stars(self.company_id)
 
     cpdef int get_base_income(self):
-        return COMPANY_INCOME[self.company_id]
+        return company_base_income(self.company_id)
 
     cpdef bint is_last_in_group(self):
-        return COMPANY_LAST_IN_GROUP[self.company_id] != 0
+        return company_is_last_in_group(self.company_id)
 
     cpdef int get_synergy_with(self, int other_company_id):
         assert 0 <= other_company_id < <int>GameConstants.NUM_COMPANIES, \
             f"other_company_id {other_company_id} out of range [0, {<int>GameConstants.NUM_COMPANIES})"
-        return COMPANY_SYNERGY[self.company_id][other_company_id]
+        return company_synergy(self.company_id, other_company_id)
 
     # =========================================================================
     # DYNAMIC DATA FROM STATE
@@ -353,10 +417,10 @@ cdef class Company:
 
     cpdef int get_adjusted_income(self, GameState state):
         """Adjusted income (after cost of ownership). Stored as a raw int16."""
-        return _adjusted_income_at(state, self.company_id)
+        return company_adjusted_income(state, self.company_id)
 
     cpdef void set_adjusted_income(self, GameState state, int income):
-        _set_adjusted_income_at(state, self.company_id, income)
+        set_company_adjusted_income(state, self.company_id, income)
 
 # =============================================================================
 # GLOBAL COMPANY INSTANCES

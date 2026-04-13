@@ -50,7 +50,23 @@ cdef bint company_owned_by_player(GameState state, int company_id, int player_id
 cdef bint company_owned_by_fi(GameState state, int company_id) noexcept nogil
 cdef bint company_owned_by_corp(GameState state, int company_id, int corp_id) noexcept nogil
 cdef bint company_in_corp_acquisition(GameState state, int company_id, int corp_id) noexcept nogil
+cdef int company_location(GameState state, int company_id) noexcept nogil
+cdef int company_owner_id(GameState state, int company_id) noexcept nogil
+cdef bint company_is_in_deck(GameState state, int company_id) noexcept nogil
+cdef bint company_is_excluded(GameState state, int company_id) noexcept nogil
+cdef bint company_is_for_auction(GameState state, int company_id) noexcept nogil
+cdef bint company_is_revealed(GameState state, int company_id) noexcept nogil
+cdef bint company_is_removed(GameState state, int company_id) noexcept nogil
+cdef bint company_is_acquired(GameState state, int company_id) noexcept nogil
 cdef int company_adjusted_income(GameState state, int company_id) noexcept nogil
+cdef void set_company_adjusted_income(GameState state, int company_id, int income) noexcept nogil
+cdef int company_face_value(int company_id) noexcept nogil
+cdef int company_low_price(int company_id) noexcept nogil
+cdef int company_high_price(int company_id) noexcept nogil
+cdef int company_stars(int company_id) noexcept nogil
+cdef int company_base_income(int company_id) noexcept nogil
+cdef bint company_is_last_in_group(int company_id) noexcept nogil
+cdef int company_synergy(int company_id, int other_company_id) noexcept nogil
 cdef int company_sum_player_face_value(GameState state, int player_id) noexcept nogil
 cdef int company_sum_player_adjusted_income(GameState state, int player_id) noexcept nogil
 cdef int company_sum_fi_adjusted_income(GameState state) noexcept nogil
