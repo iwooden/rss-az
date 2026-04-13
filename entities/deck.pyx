@@ -27,7 +27,10 @@ from core.data cimport (
     GameConstants,
     COMPANY_STARS,
 )
-from entities.company cimport Company, LOC_DECK, LOC_REVEALED, LOC_EXCLUDED
+from entities.company cimport (
+    Company, LOC_DECK, LOC_REVEALED, LOC_EXCLUDED,
+    LOC_PLAYER, LOC_CORP, LOC_FI,
+)
 from entities import company as company_module
 from entities import turn as turn_module
 
@@ -195,6 +198,47 @@ cdef class Deck:
         state._data[order_base + top] = <int16_t>-1
         state._data[top_slot] = <int16_t>(top - 1)
         self._sync_cards_remaining(state)
+
+    cpdef void set_company_location(
+        self, GameState state, int company_id, int target_location, int owner_id=0,
+    ):
+        """Test-only helper: move a company out of the deck into a target location.
+
+        Lets tests construct deterministic initial states (e.g. "give player 0
+        company 35") by bypassing the normal "must draw from top" restriction.
+        Splices the company out of the live deck order (if still there), then
+        routes through the standard ``Company.transfer_to_*`` bookkeeping so
+        any downstream recalculation (income caches, ownership lists, etc.)
+        runs normally.
+
+        No CoO level update is performed — tests that care set it directly.
+
+        Args:
+            state: GameState
+            company_id: Company to relocate (must be in deck OR already revealed)
+            target_location: CompanyLocation to move to (LOC_PLAYER, LOC_CORP,
+                LOC_FI). Other locations are rejected.
+            owner_id: Player/corp id for LOC_PLAYER/LOC_CORP (ignored for LOC_FI).
+                Defaults to 0.
+        """
+        cdef Company company = <Company>company_module.COMPANIES[company_id]
+        cdef int current_loc = company._get_location(state)
+
+        if current_loc == LOC_DECK:
+            # Splice from live deck order and flip to REVEALED so the
+            # normal transfer flow accepts it.
+            self.remove(state, company_id)
+            company._set_location(state, LOC_REVEALED, -1)
+
+        if target_location == LOC_PLAYER:
+            company.transfer_to_player(state, owner_id)
+        elif target_location == LOC_CORP:
+            company.transfer_to_corp(state, owner_id)
+        elif target_location == LOC_FI:
+            company.transfer_to_fi(state)
+        else:
+            assert False, \
+                f"set_company_location: unsupported target {target_location}"
 
     # =========================================================================
     # SETUP

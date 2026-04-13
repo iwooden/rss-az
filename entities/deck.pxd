@@ -28,6 +28,7 @@ cdef class Deck:
     cpdef int get_remaining_count(self, GameState state)
     cpdef bint is_empty(self, GameState state)
     cpdef void remove(self, GameState state, int company_id)
+    cpdef void set_company_location(self, GameState state, int company_id, int target_location, int owner_id=*)
 
     # Push the current deck-top count out to TurnState.cards_remaining
     # so phases / NN tokens can read deck size without touching the deck

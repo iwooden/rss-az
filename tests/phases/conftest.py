@@ -269,7 +269,9 @@ def float_corp_for_test(state, corp_id, company_id=None, player_id=0, par_index=
     Args:
         state: GameState instance
         corp_id: Corporation ID to float
-        company_id: Company ID to use. If None, draws from deck.
+        company_id: Company ID to use. If None, draws the top of the deck.
+            If given, the company is routed out of the deck via
+            ``DECK.set_company_location`` — works regardless of deck position.
         player_id: Player who becomes president (default 0)
         par_index: Market price index for starting share price (default 10)
         float_shares: Shares for player and bank each (default 1)
@@ -280,28 +282,36 @@ def float_corp_for_test(state, corp_id, company_id=None, player_id=0, par_index=
     if company_id is None:
         company_id = DECK.draw(state)
         assert company_id >= 0, "Deck is empty, cannot draw company for floating"
+        COMPANIES[company_id].transfer_to_player(state, player_id)
+    else:
+        DECK.set_company_location(
+            state, company_id, int(CompanyLocation.LOC_PLAYER), player_id,
+        )
 
-    COMPANIES[company_id].transfer_to_player(state, player_id)
     CORPS[corp_id].float_corp(state, player_id, company_id, par_index, float_shares)
     return company_id
 
 
-def setup_receivership_corp(state, corp_id, company_ids):
+def setup_receivership_corp(state, corp_id, company_ids, par_index=10):
     """Float a corp and put it into receivership with the given companies.
 
     First company is used for floating (transferred to player 0, then floated).
     Player 0's shares are zeroed to trigger receivership. Additional companies
-    are transferred directly to the corp.
+    are transferred directly to the corp. All company_ids are routed via
+    ``DECK.set_company_location``, so they can be in the deck OR already
+    drawn/owned.
 
     Args:
         state: GameState
         corp_id: Corporation ID
         company_ids: List of company IDs (first used for floating)
+        par_index: Market price index for starting share price (default 10)
     """
-    float_corp_for_test(state, corp_id=corp_id, company_id=company_ids[0])
+    float_corp_for_test(state, corp_id=corp_id, company_id=company_ids[0],
+                        par_index=par_index)
     PLAYERS[0].set_shares(state, corp_id, 0)
     for cid in company_ids[1:]:
-        COMPANIES[cid].transfer_to_corp(state, corp_id)
+        DECK.set_company_location(state, cid, int(CompanyLocation.LOC_CORP), corp_id)
 
 
 # =============================================================================
