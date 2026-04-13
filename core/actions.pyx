@@ -22,6 +22,8 @@ cimport numpy as cnp
 from collections import namedtuple
 
 from libc.stdint cimport int16_t, uint16_t
+from libc.stdio cimport fprintf, stderr
+from libc.stdlib cimport abort
 
 from core.state cimport (
     GameState,
@@ -93,6 +95,23 @@ cdef void _init_phase_action_sizes() noexcept nogil:
 
 
 _init_phase_action_sizes()
+
+
+cdef inline void _require_action_capacity(int count, const char* context) noexcept nogil:
+    """Abort if the sparse legal-action buffer would overflow.
+
+    ``MAX_LEGAL_ACTIONS`` is an empirical training-time bound. Exceeding it is
+    a configuration bug that must fail in optimized builds too, before writing
+    past the caller's fixed-size scratch buffer.
+    """
+    if count >= MAX_LEGAL_ACTIONS:
+        fprintf(
+            stderr,
+            b"enumerate_legal_actions overflow in %s: MAX_LEGAL_ACTIONS=%d\n",
+            context,
+            MAX_LEGAL_ACTIONS,
+        )
+        abort()
 
 
 # =============================================================================
@@ -383,6 +402,7 @@ cdef int _enumerate_invest(
                 # Monotone in offset — once unaffordable, every higher
                 # offset is also unaffordable.
                 break
+            _require_action_capacity(count, b"INVEST_AUCTION")
             ids[count] = <uint16_t>encode_invest_auction(company_id, bid_offset)
             count += 1
 
@@ -418,6 +438,7 @@ cdef int _enumerate_invest(
                     buy_index = i
                     break
             if player_cash >= MARKET_PRICES[buy_index]:
+                _require_action_capacity(count, b"INVEST_BUY")
                 ids[count] = <uint16_t>encode_invest_buy(corp_id)
                 count += 1
 
@@ -425,6 +446,7 @@ cdef int _enumerate_invest(
         if <int>state._data[
             player_base + PLAYER_FIELDS.owned_shares + corp_id
         ] > 0:
+            _require_action_capacity(count, b"INVEST_SELL")
             ids[count] = <uint16_t>encode_invest_sell(corp_id)
             count += 1
 
@@ -492,65 +514,11 @@ cdef int _enumerate_bid(
             # Affordability is monotone in offset — once we can't afford
             # the next step, we can't afford any higher one.
             break
+        _require_action_capacity(count, b"BID_RAISE")
         ids[count] = <uint16_t>encode_bid_raise(offset)
         count += 1
 
     return count
-
-
-cdef int _find_receivership_forced_buy(GameState state) noexcept nogil:
-    """Highest-share-price receivership corp's most expensive affordable FI buy.
-
-    Returns the encoded FI_BUY action id, or -1 if no receivership corp
-    can afford any FI company. Priority: highest share price first (tie-break
-    ascending corp_id). Within a corp, most expensive affordable FI company.
-    """
-    cdef int CORP_OS = <int>CorpIndices.CORP_OS
-    cdef int NUM_CORPS = <int>GameConstants.NUM_CORPS
-    cdef int NUM_COMPANIES = <int>GameConstants.NUM_COMPANIES
-    cdef int best_corp = -1
-    cdef int best_price = -1
-    cdef int c, sp, corp_base, loc
-
-    for c in range(NUM_CORPS):
-        corp_base = LAYOUT.corps_offset + c * CORP_FIELDS.size
-        if <int>state._data[corp_base + CORP_FIELDS.active] != 1:
-            continue
-        if <int>state._data[corp_base + CORP_FIELDS.in_receivership] != 1:
-            continue
-        sp = MARKET_PRICES[<int>state._data[corp_base + CORP_FIELDS.price_index]]
-        if sp > best_price or (sp == best_price and (best_corp == -1 or c < best_corp)):
-            best_price = sp
-            best_corp = c
-
-    if best_corp < 0:
-        return -1
-
-    cdef int cash = <int>state._data[
-        LAYOUT.corps_offset + best_corp * CORP_FIELDS.size + CORP_FIELDS.cash
-    ]
-    cdef int best_company = -1
-    cdef int best_cost = -1
-    cdef int company_id, cost
-
-    for company_id in range(NUM_COMPANIES):
-        loc = <int>state._data[
-            LAYOUT.companies_offset + COMPANY_OFFSETS.locations + company_id
-        ]
-        if loc != <int>LOC_FI:
-            continue
-        if best_corp == CORP_OS:
-            cost = COMPANY_FACE_VALUE[company_id]
-        else:
-            cost = COMPANY_HIGH_PRICE[company_id]
-        if cost <= cash and cost > best_cost:
-            best_cost = cost
-            best_company = company_id
-
-    if best_company < 0:
-        return -1
-
-    return encode_acquisition_fi_buy(best_corp, best_company)
 
 
 cdef int _enumerate_acquisition(
@@ -558,11 +526,10 @@ cdef int _enumerate_acquisition(
 ) noexcept nogil:
     """Enumerate legal ACQUISITION actions for the current state.
 
-    Two modes:
-    1. Receivership forced buys: if any receivership corp has a mandatory
-       FI purchase, return that single action (driver forces it).
-    2. Player actions: PASS + all legal (corp, company, price) tuples for
-       corps the active player presides over.
+    Emits player actions only: PASS + all legal (corp, company, price)
+    tuples for corps the active player presides over. Receivership forced
+    buys are automated inside ``phases/acquisition.pyx`` before control
+    reaches this enumerator.
 
     When ``state.acq_same_president`` is True (default), corp-to-corp
     requires the active player to preside over both buyer and seller, and
@@ -578,13 +545,6 @@ cdef int _enumerate_acquisition(
     cdef int NUM_CORPS = <int>GameConstants.NUM_CORPS
     cdef int NUM_COMPANIES = <int>GameConstants.NUM_COMPANIES
 
-    # --- Mode 1: Receivership forced buys ---
-    cdef int recv_action = _find_receivership_forced_buy(state)
-    if recv_action >= 0:
-        ids[0] = <uint16_t>recv_action
-        return 1
-
-    # --- Mode 2: Player action space ---
     ids[count] = 0  # PASS always legal
     count += 1
 
@@ -621,8 +581,7 @@ cdef int _enumerate_acquisition(
                 else:
                     price = COMPANY_HIGH_PRICE[company_id]
                 if cash >= price:
-                    assert count < MAX_LEGAL_ACTIONS, \
-                        f"_enumerate_acquisition overflow at FI_BUY({corp_id},{company_id})"
+                    _require_action_capacity(count, b"ACQUISITION_FI_BUY")
                     ids[count] = <uint16_t>encode_acquisition_fi_buy(corp_id, company_id)
                     count += 1
 
@@ -632,8 +591,10 @@ cdef int _enumerate_acquisition(
                 ]
                 if owner_id == corp_id:
                     continue  # Can't buy from yourself
+                seller_base = LAYOUT.corps_offset + owner_id * CORP_FIELDS.size
+                if <int>state._data[seller_base + CORP_FIELDS.in_receivership] == 1:
+                    continue  # Receivership corps never sell companies
                 if same_pres:
-                    seller_base = LAYOUT.corps_offset + owner_id * CORP_FIELDS.size
                     if <int>state._data[seller_base + CORP_FIELDS.president_id] != player_id:
                         continue
                 # Seller must retain >= 1 company (LOC_CORP only, not ACQ pile)
@@ -658,8 +619,7 @@ cdef int _enumerate_acquisition(
                 if max_offset > 50:
                     max_offset = 50  # Cap at action space width
                 for price_offset in range(max_offset + 1):
-                    assert count < MAX_LEGAL_ACTIONS, \
-                        f"_enumerate_acquisition overflow at ACQ_PRICE({corp_id},{company_id},{price_offset})"
+                    _require_action_capacity(count, b"ACQUISITION_CORP_PRICE")
                     ids[count] = <uint16_t>encode_acquisition_price(
                         corp_id, company_id, price_offset)
                     count += 1
@@ -681,8 +641,7 @@ cdef int _enumerate_acquisition(
                 if max_offset > 50:
                     max_offset = 50
                 for price_offset in range(max_offset + 1):
-                    assert count < MAX_LEGAL_ACTIONS, \
-                        f"_enumerate_acquisition overflow at ACQ_PRICE({corp_id},{company_id},{price_offset})"
+                    _require_action_capacity(count, b"ACQUISITION_PLAYER_PRICE")
                     ids[count] = <uint16_t>encode_acquisition_price(
                         corp_id, company_id, price_offset)
                     count += 1
@@ -761,11 +720,13 @@ cdef int _enumerate_closing(
         if loc == 3:  # LOC_PLAYER
             owner = <int>state._data[company_base + COMPANY_OFFSETS.owner_ids + company_id]
             if owner == active_player:
+                _require_action_capacity(count, b"CLOSING_PLAYER")
                 ids[count] = <uint16_t>encode_closing_close(company_id)
                 count += 1
         elif loc == 5:  # LOC_CORP
             owner = <int>state._data[company_base + COMPANY_OFFSETS.owner_ids + company_id]
             if corp_closable[owner]:
+                _require_action_capacity(count, b"CLOSING_CORP")
                 ids[count] = <uint16_t>encode_closing_close(company_id)
                 count += 1
 
@@ -800,6 +761,7 @@ cdef int _enumerate_dividends(
     cdef int count = 0
     cdef int level
     for level in range(max_div + 1):
+        _require_action_capacity(count, b"DIVIDENDS")
         ids[count] = <uint16_t>level
         count += 1
     return count
@@ -873,6 +835,7 @@ cdef int _enumerate_ipo(
             if player_payment > player_cash:
                 continue
 
+            _require_action_capacity(count, b"IPO")
             ids[count] = <uint16_t>(1 + corp_id * 14 + par_index)
             count += 1
 
@@ -914,11 +877,16 @@ cdef int enumerate_legal_actions(
     elif phase_id == DPHASE_IPO:
         count = _enumerate_ipo(state, action_ids)
 
-    # Overflow is a bug, not a recoverable condition. Kmax is sized to
-    # the worst-case legal set across all phases; exceeding it means the
-    # enumerator or the bound is wrong.
-    assert count <= MAX_LEGAL_ACTIONS, \
-        "legal action count exceeds MAX_LEGAL_ACTIONS — bump Kmax or fix enumerator"
+    # Overflow is a configuration bug, not a recoverable condition. This is
+    # intentionally checked in release builds, not only with Python asserts.
+    if count > MAX_LEGAL_ACTIONS:
+        fprintf(
+            stderr,
+            b"enumerate_legal_actions returned count=%d > MAX_LEGAL_ACTIONS=%d\n",
+            count,
+            MAX_LEGAL_ACTIONS,
+        )
+        abort()
     return count
 
 

@@ -192,8 +192,9 @@ cpdef int get_decision_phase_py(GameState state)
 # Reads the decision phase from ``state`` via ``get_decision_phase``, then
 # writes legal phase-local action IDs into ``action_ids`` in a deterministic,
 # phase-specific order and returns the count. The buffer must hold at least
-# ``MAX_LEGAL_ACTIONS`` slots. An assert fires if a phase produces more legal
-# actions than ``MAX_LEGAL_ACTIONS`` — that is a configuration bug.
+# ``MAX_LEGAL_ACTIONS`` slots. Enumeration aborts the process if a phase
+# produces more legal actions than ``MAX_LEGAL_ACTIONS`` — that is a
+# configuration bug and must fail loudly in optimized training builds.
 #
 # Returns 0 for automated/terminal engine phases (decision phase == -1).
 #

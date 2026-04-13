@@ -10,14 +10,7 @@ No setup function — ACQ_OFFER is entered mid-action from
 """
 
 from core.state cimport GameState
-from core.data cimport (
-    GameConstants,
-    GamePhases,
-    CorpIndices,
-    COMPANY_FACE_VALUE,
-    COMPANY_HIGH_PRICE,
-    COMPANY_LOW_PRICE,
-)
+from core.data cimport GamePhases
 from core.actions cimport (
     ActionInfo,
     ACTION_PASS,
@@ -30,17 +23,16 @@ from entities.company cimport (
 )
 
 from phases.acquisition cimport (
-    _clear_acquisition_context,
+    _resume_acquisition_after_offer,
     _execute_fi_buy,
+    _get_fi_purchase_price,
     _find_first_preemptor,
-    _find_first_active_player,
 )
 
 from entities import turn as turn_module
 from entities import corp as corp_module
 from entities import company as company_module
 from entities import player as player_module
-from entities import fi as fi_module
 
 
 # =============================================================================
@@ -48,13 +40,9 @@ from entities import fi as fi_module
 # =============================================================================
 
 cdef void _return_to_acquisition(GameState state) noexcept:
-    """Return to ACQUISITION phase, resuming with first non-passed player."""
-    _clear_acquisition_context(state)
-    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_ACQUISITION)
-
-    cdef int pid = _find_first_active_player(state)
-    assert pid >= 0, "_return_to_acquisition: no eligible player"
-    turn_module.TURN.set_active_player(state, pid)
+    """Return to ACQUISITION after the active offer resolves."""
+    cdef int original_corp = turn_module.TURN.get_acq_offer_corp(state)
+    _resume_acquisition_after_offer(state, original_corp)
 
 
 # =============================================================================
@@ -86,8 +74,7 @@ cdef void apply_acq_offer_action(GameState state, ActionInfo* info) noexcept:
     cdef int loc = company_module.COMPANIES[company_id].get_location(state)
     cdef bint is_fi_preemption = (loc == <int>LOC_FI)
 
-    cdef int owner_id, next_corp, next_price
-    cdef int CORP_OS = <int>CorpIndices.CORP_OS
+    cdef int owner_id, next_corp, next_price, deciding_player
 
     if info.action_type == <int>ACTION_ACQ_OFFER_ACCEPT:
         if is_fi_preemption:
@@ -113,21 +100,22 @@ cdef void apply_acq_offer_action(GameState state, ActionInfo* info) noexcept:
         if is_fi_preemption:
             # Corp declines. Set passed flag and check next preemptor.
             corp_module.CORPS[active_corp].set_passed_acq_offer(state, True)
-            next_corp = _find_first_preemptor(state, original_corp, company_id)
-            if next_corp >= 0:
-                if next_corp == CORP_OS:
-                    next_price = COMPANY_FACE_VALUE[company_id]
-                else:
-                    next_price = COMPANY_HIGH_PRICE[company_id]
+            next_corp = _find_first_preemptor(state, company_id)
+            if next_corp >= 0 and next_corp != original_corp:
+                if corp_module.CORPS[next_corp].is_in_receivership(state):
+                    _execute_fi_buy(state, next_corp, company_id)
+                    _return_to_acquisition(state)
+                    return
+
+                next_price = _get_fi_purchase_price(next_corp, company_id)
+                deciding_player = corp_module.CORPS[next_corp].get_president_id(state)
                 turn_module.TURN.set_active_corp(state, next_corp)
                 turn_module.TURN.set_acq_offer_price(state, next_price)
-                turn_module.TURN.set_active_player(
-                    state,
-                    corp_module.CORPS[next_corp].get_president_id(state),
-                )
+                turn_module.TURN.set_active_player(state, deciding_player)
                 # Stay in ACQ_OFFER
             else:
-                # All declined — original corp buys
+                # All higher-priority corps declined, or the original corp is
+                # now first in priority order — original action goes through.
                 _execute_fi_buy(state, original_corp, company_id)
                 _return_to_acquisition(state)
         else:
