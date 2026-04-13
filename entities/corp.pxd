@@ -76,6 +76,33 @@ cpdef int calculate_price_move(int owned_stars, int required_stars) noexcept nog
 
 
 # =============================================================================
+# SIMULATION HELPERS (canonical nogil implementations, cimportable)
+# =============================================================================
+#
+# These encode the formulas that used to live inline in
+# ``core/token_data.pyx`` and ``phases/ipo.pyx``. They are the single
+# source of truth — the extractor cimports them for its dividend / par
+# tokens, ``_refresh_corp_cache`` calls the amount=0 dividend path to
+# populate the cached ``pending_price_move`` slot, and ``phases/ipo.pyx``
+# calls ``_simulate_float`` to derive its market/cash arithmetic.
+
+# Predicted market-index delta for ``corp_id`` paying
+# ``amount_per_share`` in dividends this round. Amount 0 gives the
+# plain "no dividend" pending price move.
+cdef int _simulate_dividend_price_move(
+    GameState state, int corp_id, int amount_per_share,
+) noexcept nogil
+
+
+# IPO outcome for a given company face value + par price index.
+# Returns ``(float_shares, market_index, player_payment, corp_cash,
+# issued_shares)``. Pure function of static data — no GameState read.
+cdef (int, int, int, int, int) _simulate_float(
+    int face_value, int par_index,
+) noexcept nogil
+
+
+# =============================================================================
 # CORPORATION CLASS
 # =============================================================================
 
@@ -122,6 +149,8 @@ cdef class Corporation:
     cpdef int get_price_index(self, GameState state)
     cpdef void set_price_index(self, GameState state, int index)
     cpdef int get_pending_price_move(self, GameState state)
+    cpdef int simulate_dividend_price_move(self, GameState state, int amount_per_share)
+    cpdef tuple simulate_float(self, int company_id, int par_index)
 
     # Acquisition proceeds
     cpdef int get_acquisition_proceeds(self, GameState state)

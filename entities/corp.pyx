@@ -31,12 +31,14 @@ from core.state cimport GameState, LAYOUT, CORP_FIELDS, TURN_OFFSETS
 from core.data cimport (
     GameConstants,
     CorpIndices,
+    ALL_PAR_PRICES,
     COMPANY_FACE_VALUE,
     COMPANY_INCOME,
     COMPANY_STARS,
     COMPANY_SYNERGY,
     CORP_SHARE_COUNT,
     MARKET_PRICES,
+    PRICE_TO_MARKET_INDEX,
 )
 from core.data import CORP_NAMES
 from entities.company cimport (
@@ -200,6 +202,60 @@ cdef inline int _required_stars(int price_index, int issued_shares) noexcept nog
     return <int>(issued_shares * price / 10.0 + 0.5)
 
 
+# =============================================================================
+# SIMULATION HELPERS (dividend / float)
+# =============================================================================
+
+cdef int _simulate_dividend_price_move(
+    GameState state, int corp_id, int amount_per_share,
+) noexcept nogil:
+    """Predicted market-index delta for ``corp_id`` paying ``amount_per_share``.
+
+    The dividend amount reduces corp cash, which reduces cash_stars
+    (``floor(cash/10)``), which shifts total_stars relative to required
+    stars. ``calculate_price_move`` clamps the result to ``[-2, +2]``.
+
+    Amount 0 recovers the "no dividend" pending-price-move path, which
+    is what ``_refresh_corp_cache`` stores in the corp cache slot.
+    """
+    cdef int cash = corp_cash(state, corp_id)
+    cdef int issued = corp_issued_shares(state, corp_id)
+    cdef int price_idx = corp_price_index(state, corp_id)
+    cdef int company_stars = corp_company_stars(state, corp_id)
+    cdef int cash_after = cash - amount_per_share * issued
+    cdef int cash_stars = cash_after // 10 if cash_after > 0 else 0
+    cdef int si_bonus = 2 if corp_id == <int>CorpIndices.CORP_SI else 0
+    cdef int total_stars = company_stars + cash_stars + si_bonus
+    cdef int required = _required_stars(price_idx, issued)
+    return calculate_price_move(total_stars, required)
+
+
+cdef (int, int, int, int, int) _simulate_float(
+    int face_value, int par_index,
+) noexcept nogil:
+    """IPO outcome for (face_value, par_index) — pure function of static data.
+
+    Returns ``(float_shares, market_index, player_payment, corp_cash,
+    issued_shares)``.
+
+    The rule: if ``face_value > par_price`` the player only needs a
+    single share to pay off the company (``float_shares == 1``);
+    otherwise they need two to cover the company's face value
+    (``float_shares == 2``). Bank matches the player's float_shares,
+    issued = ``float_shares * 2``. Player pays ``float_shares*par -
+    face`` (the shortfall vs. face), the bank pays ``float_shares*par``;
+    corp starts with the sum.
+    """
+    cdef int par_price = ALL_PAR_PRICES[par_index]
+    cdef int market_index = PRICE_TO_MARKET_INDEX[par_price]
+    cdef int float_shares = 2 if face_value > par_price else 1
+    cdef int player_payment = float_shares * par_price - face_value
+    cdef int bank_payment = float_shares * par_price
+    cdef int corp_cash_after = player_payment + bank_payment
+    cdef int issued = float_shares * 2
+    return (float_shares, market_index, player_payment, corp_cash_after, issued)
+
+
 cdef inline (int, int) _aggregate_synergies(int* company_ids, int num_companies) noexcept nogil:
     """
     Aggregate synergy bonuses for a list of company IDs.
@@ -260,7 +316,7 @@ cdef void _refresh_corp_cache(GameState state, int corp_id) noexcept nogil:
     cdef int synergy_markers = 0
     cdef int total_coo, ability, total
     cdef int company_count
-    cdef int cash, cash_stars, total_stars, required, pending
+    cdef int pending
 
     if not corp_is_active(state, corp_id):
         _clear_corp_cache(state, corp_id)
@@ -302,30 +358,22 @@ cdef void _refresh_corp_cache(GameState state, int corp_id) noexcept nogil:
 
     total = raw_revenue_sum - total_coo + synergy_income + ability
 
-    # Compute pending_price_move inline — we already have company_stars
-    # from the scan above; derive total_stars from it so we don't
-    # re-enter the cache via corp_total_stars().
-    cash = <int>state._data[_corp_slot(corp_id, CORP_FIELDS.cash)]
-    cash_stars = cash // 10 if cash > 0 else 0
-    total_stars = (
-        company_stars
-        + cash_stars
-        + (2 if corp_id == <int>CorpIndices.CORP_SI else 0)
-    )
-    required = _required_stars(
-        <int>state._data[_corp_slot(corp_id, CORP_FIELDS.price_index)],
-        <int>state._data[_corp_slot(corp_id, CORP_FIELDS.issued_shares)],
-    )
-    pending = calculate_price_move(total_stars, required)
-
+    # Persist the income breakdown + company_stars first, then clear the
+    # cache-dirty bit, then call ``_simulate_dividend_price_move``. Order
+    # matters: the simulate helper reads company_stars via
+    # ``corp_company_stars`` which guards on the dirty bit — calling it
+    # while the bit is still set would re-enter this function.
     state._data[_corp_slot(corp_id, CORP_FIELDS.income)] = <int16_t>total
     state._data[_corp_slot(corp_id, CORP_FIELDS.company_stars)] = <int16_t>company_stars
     state._data[_corp_slot(corp_id, CORP_FIELDS.raw_revenue)] = <int16_t>raw_revenue_sum
     state._data[_corp_slot(corp_id, CORP_FIELDS.synergy_income)] = <int16_t>synergy_income
     state._data[_corp_slot(corp_id, CORP_FIELDS.coo_cost)] = <int16_t>(-total_coo)
     state._data[_corp_slot(corp_id, CORP_FIELDS.ability_income)] = <int16_t>ability
-    state._data[_corp_slot(corp_id, CORP_FIELDS.pending_price_move)] = <int16_t>pending
     _clear_cache_dirty(state, corp_id)
+
+    # Cached pending-price-move = amount=0 dividend simulation.
+    pending = _simulate_dividend_price_move(state, corp_id, 0)
+    state._data[_corp_slot(corp_id, CORP_FIELDS.pending_price_move)] = <int16_t>pending
 
 
 cdef int corp_income(GameState state, int corp_id) noexcept nogil:
@@ -557,8 +605,42 @@ cdef class Corporation:
         return corp_company_stars(state, self.corp_id)
 
     cpdef int get_pending_price_move(self, GameState state):
-        """Return derived pending price-movement scalar."""
+        """Return derived pending price-movement scalar.
+
+        Equivalent to ``simulate_dividend_price_move(state, 0)`` but
+        reads the cached slot populated by ``_refresh_corp_cache``.
+        """
         return corp_pending_price_move(state, self.corp_id)
+
+    cpdef int simulate_dividend_price_move(self, GameState state, int amount_per_share):
+        """Predicted market-index delta if this corp paid ``amount_per_share``.
+
+        Does NOT mutate state. Used by the dividend-token extractor to
+        preview the price move for each possible dividend amount.
+        """
+        assert corp_is_active(state, self.corp_id), \
+            f"simulate_dividend_price_move on inactive corp {self.corp_id}"
+        assert amount_per_share >= 0, \
+            f"amount_per_share {amount_per_share} must be non-negative"
+        return _simulate_dividend_price_move(state, self.corp_id, amount_per_share)
+
+    cpdef tuple simulate_float(self, int company_id, int par_index):
+        """IPO outcome for floating this corp with ``company_id`` at ``par_index``.
+
+        Returns ``(float_shares, market_index, player_payment, corp_cash,
+        issued_shares)``. Pure function of static data — no GameState read.
+        Callers still need to validate that ``par_index`` is valid for the
+        company's star tier via ``PAR_PRICE_VALID``.
+        """
+        assert 0 <= company_id < <int>GameConstants.NUM_COMPANIES, \
+            f"company_id {company_id} out of range"
+        assert 0 <= par_index < 14, f"par_index {par_index} out of range [0, 14)"
+        cdef int face_value = COMPANY_FACE_VALUE[company_id]
+        cdef int float_shares, market_index, player_payment, corp_cash_after, issued
+        (float_shares, market_index, player_payment, corp_cash_after, issued) = (
+            _simulate_float(face_value, par_index)
+        )
+        return (float_shares, market_index, player_payment, corp_cash_after, issued)
 
     # =========================================================================
     # SHARE PRICE / MARKET INDEX

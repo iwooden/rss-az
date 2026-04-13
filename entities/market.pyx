@@ -29,6 +29,39 @@ cdef void copy_market_availability(GameState state, int16_t* out_flags) noexcept
         out_flags[index] = state._data[LAYOUT.market_offset + index]
 
 
+cdef int market_find_next_higher_space(GameState state, int current_index) noexcept nogil:
+    """Next available higher market space, or 26 ($75, always available).
+
+    Index 26 is a no-card sentinel per RULES.md: when no higher card is
+    available, the corp takes no card and has price $75. Multiple corps
+    can share this state, so it is never marked occupied. This is the
+    canonical nogil implementation; ``Market._find_next_higher_space``
+    delegates here so callers outside the class (e.g. ``token_data``)
+    can ``cimport`` and call it without GIL.
+    """
+    cdef int index
+    cdef int max_index = <int>GameConstants.NUM_MARKET_SPACES - 1  # 26
+    for index in range(current_index + 1, max_index):
+        if state._data[LAYOUT.market_offset + index] == 1:
+            return index
+    return max_index
+
+
+cdef int market_find_next_lower_space(GameState state, int current_index) noexcept nogil:
+    """Next available lower market space, or 0 ($0, always available).
+
+    Index 0 is the bankruptcy space: when a corp lands there it goes
+    bankrupt and is removed from the market, immediately freeing the
+    space. Canonical nogil implementation — see
+    ``market_find_next_higher_space`` for rationale.
+    """
+    cdef int index
+    for index in range(current_index - 1, -1, -1):
+        if state._data[LAYOUT.market_offset + index] == 1:
+            return index
+    return 0
+
+
 cdef class Market:
     """
     Entity handle for accessing market state.
@@ -103,34 +136,12 @@ cdef class Market:
     # =========================================================================
 
     cdef int _find_next_higher_space(self, GameState state, int current_index) noexcept nogil:
-        """Find next available higher market space.
-
-        INVARIANT: Index 26 ($75) is always available. Per RULES.md, when
-        no higher card is available, the corp takes no card and has price
-        $75. Multiple corps can share this "no card" state, so it is never
-        marked occupied.
-        """
-        cdef int index
-        cdef int max_index = <int>GameConstants.NUM_MARKET_SPACES - 1  # 26
-        for index in range(current_index + 1, max_index):
-            if state._data[LAYOUT.market_offset + index] == 1:
-                return index
-        # Index 26 ($75) is always available per game rules
-        return max_index
+        """Delegates to ``market_find_next_higher_space`` (canonical impl)."""
+        return market_find_next_higher_space(state, current_index)
 
     cdef int _find_next_lower_space(self, GameState state, int current_index) noexcept nogil:
-        """Find next available lower market space.
-
-        INVARIANT: Index 0 ($0, bankruptcy) is always available. When a
-        corp lands on index 0 it goes bankrupt and is removed from the
-        market, immediately freeing the space.
-        """
-        cdef int index
-        for index in range(current_index - 1, -1, -1):
-            if state._data[LAYOUT.market_offset + index] == 1:
-                return index
-        # Index 0 ($0) is always available per game rules
-        return 0
+        """Delegates to ``market_find_next_lower_space`` (canonical impl)."""
+        return market_find_next_lower_space(state, current_index)
 
     cpdef int find_next_higher_space(self, GameState state, int current_index):
         """Python wrapper around `_find_next_higher_space`."""

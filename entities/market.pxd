@@ -18,6 +18,13 @@ from core.state cimport GameState
 cdef void copy_market_availability(GameState state, int16_t* out_flags) noexcept nogil
 
 
+# Free-function price-movement helpers, cimportable from nogil code outside
+# the Market class (e.g. ``core/token_data.pyx``). The class methods on
+# ``Market`` delegate to these so there is a single source of truth.
+cdef int market_find_next_higher_space(GameState state, int current_index) noexcept nogil
+cdef int market_find_next_lower_space(GameState state, int current_index) noexcept nogil
+
+
 cdef class Market:
     # Low-level (nogil) accessors used by hot paths inside the engine.
     cdef bint _is_space_available(self, GameState state, int index) noexcept nogil

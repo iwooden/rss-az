@@ -17,9 +17,10 @@ All state access goes through entity handles.
 from core.state cimport GameState
 from core.data cimport (
     GameConstants, GamePhases,
-    ALL_PAR_PRICES, PAR_PRICE_VALID, PRICE_TO_MARKET_INDEX,
+    PAR_PRICE_VALID,
     COMPANY_STARS,
 )
+from entities.corp cimport _simulate_float
 from core.actions cimport ActionInfo, ACTION_PASS, ACTION_IPO
 from entities.company cimport (
     LOC_PLAYER,
@@ -75,20 +76,19 @@ cdef void _process_ipo(GameState state, int corp_id, int par_index) noexcept:
     cdef int company_id = turn_module.TURN.get_ipo_company(state)
     cdef int player_id = company_owner_id(state, company_id)
     cdef int face_value = company_face_value(company_id)
-    cdef int par_price = ALL_PAR_PRICES[par_index]
-    cdef int market_index = PRICE_TO_MARKET_INDEX[par_price]
 
-    # Determine share distribution
-    cdef int float_shares = 2 if face_value > par_price else 1
+    # Canonical float simulation — returns everything derived from
+    # (face_value, par_index). The same helper drives the extractor's
+    # par-token preview so they can't drift.
+    cdef int float_shares, market_index, player_payment, corp_cash, issued
+    (float_shares, market_index, player_payment, corp_cash, issued) = (
+        _simulate_float(face_value, par_index)
+    )
 
     # Float corp (handles: activate, transfer company, claim market space,
-    # set price index, distribute shares, set presidency)
+    # set price index, distribute shares, set presidency). Issued shares
+    # are set by ``float_corp`` itself from ``float_shares``.
     corp_module.CORPS[corp_id].float_corp(state, player_id, company_id, market_index, float_shares)
-
-    # Phase-specific: calculate and apply cash payments
-    cdef int player_payment = (float_shares * par_price) - face_value
-    cdef int bank_payment = float_shares * par_price
-    cdef int corp_cash = player_payment + bank_payment
 
     corp_module.CORPS[corp_id].set_cash(state, corp_cash)
     player_module.PLAYERS[player_id].add_cash(state, -player_payment)

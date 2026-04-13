@@ -336,3 +336,38 @@ def _populate_synergies():
 
 # Auto-initialize on import
 _init_module()
+
+
+# =============================================================================
+# PYTHON-VISIBLE MIRRORS OF PAR-PRICE TABLES
+# =============================================================================
+#
+# ``ALL_PAR_PRICES`` is ``cdef int[14]`` and ``PAR_PRICE_VALID`` is
+# ``cdef uint8_t[5][14]``; neither is visible to Python by default.
+# Tests (e.g. token-data invariants) and notebooks that want to iterate
+# over valid par indices per star tier read the mirrors below. Defined
+# after ``_init_module()`` so the ``cdef`` arrays above are fully
+# populated before we snapshot them.
+
+cdef list _all_par_prices_pylist():
+    cdef int i
+    cdef list out = []
+    for i in range(14):
+        out.append(ALL_PAR_PRICES[i])
+    return out
+
+
+cdef list _par_price_valid_pylist():
+    cdef int tier, idx
+    cdef list out = []
+    cdef list row
+    for tier in range(5):
+        row = []
+        for idx in range(14):
+            row.append(<int>PAR_PRICE_VALID[tier][idx])
+        out.append(row)
+    return out
+
+
+globals()["PY_ALL_PAR_PRICES"] = _all_par_prices_pylist()
+globals()["PY_PAR_PRICE_VALID"] = _par_price_valid_pylist()

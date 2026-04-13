@@ -67,15 +67,12 @@ from core.data cimport (
     DecisionPhase,
     ENGINE_TO_DECISION_PHASE,
     CorpIndices,
-    MARKET_PRICES,
-    PRICE_TO_MARKET_INDEX,
     COMPANY_FACE_VALUE,
     COMPANY_LOW_PRICE,
     COMPANY_HIGH_PRICE,
     COMPANY_STARS,
     COMPANY_INCOME,
     COMPANY_SYNERGY,
-    ALL_PAR_PRICES,
     PAR_PRICE_VALID,
     CASH_DIVISOR,
     NET_WORTH_DIVISOR,
@@ -107,10 +104,10 @@ from entities.corp cimport (
     corp_synergy_income,
     corp_coo_cost,
     corp_ability_income,
-    corp_company_stars,
     corp_total_stars,
     corp_pending_price_move,
-    calculate_price_move,
+    _simulate_dividend_price_move,
+    _simulate_float,
 )
 from entities.company cimport (
     LOC_AUCTION, LOC_REVEALED, LOC_PLAYER, LOC_FI, LOC_CORP, LOC_CORP_ACQ,
@@ -119,7 +116,11 @@ from entities.company cimport (
     company_owner_id,
     company_adjusted_income,
 )
-from entities.market cimport copy_market_availability
+from entities.market cimport (
+    copy_market_availability,
+    market_find_next_higher_space,
+    market_find_next_lower_space,
+)
 
 # Late Python-level import for the player cache-refresh prologue.
 from entities import player as player_module
@@ -630,12 +631,12 @@ cdef void _fill_invest_token(
         current_idx = corp_price_index(state, c)
 
         # Buy impact: delta to the next higher available market space.
-        new_idx = _find_next_higher_space(state, current_idx)
+        new_idx = market_find_next_higher_space(state, current_idx)
         delta = new_idx - current_idx
         buffer[tok, OFF_BUY_IMPACT + c] = <float>delta / IMPACT_DIVISOR
 
         # Sell impact: delta to the next lower available market space.
-        new_idx = _find_next_lower_space(state, current_idx)
+        new_idx = market_find_next_lower_space(state, current_idx)
         delta = new_idx - current_idx
         buffer[tok, OFF_SELL_IMPACT + c] = <float>delta / IMPACT_DIVISOR
 
@@ -684,7 +685,7 @@ cdef void _fill_dividend_token(
     # Dividend impacts — only meaningful if there is an active corp.
     if 0 <= active_corp < NUM_CORPS and corp_is_active(state, active_corp):
         for amount in range(MAX_DIVIDEND):
-            price_move = _dividend_price_move(state, active_corp, amount)
+            price_move = _simulate_dividend_price_move(state, active_corp, amount)
             buffer[tok, OFF_IMPACT + amount] = <float>price_move / IMPACT_DIVISOR
 
     # Per-corp dividend-remaining flags
@@ -712,7 +713,7 @@ cdef void _fill_issue_token(
             buffer[tok, OFF_IMPACT] = 0.0
         else:
             current_idx = corp_price_index(state, active_corp)
-            new_idx = _find_next_lower_space(state, current_idx)
+            new_idx = market_find_next_lower_space(state, current_idx)
             delta = new_idx - current_idx
             buffer[tok, OFF_IMPACT] = <float>delta / IMPACT_DIVISOR
 
@@ -733,8 +734,8 @@ cdef void _fill_par_token(
     cdef int OFF_REMAINING     = 42   # 8 slots (inactive corps)
 
     cdef int active_company = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_company]
-    cdef int face_value, star_tier, par_index, par_price
-    cdef int float_shares, player_payment, bank_payment, corp_cash_result, issued
+    cdef int face_value, star_tier, par_index
+    cdef int float_shares, market_index, player_payment, corp_cash_result, issued
     cdef int c
 
     if 0 <= active_company < NUM_COMPANIES:
@@ -744,12 +745,10 @@ cdef void _fill_par_token(
             for par_index in range(NUM_PAR_PRICES):
                 if PAR_PRICE_VALID[star_tier - 1][par_index] == 0:
                     continue
-                par_price = ALL_PAR_PRICES[par_index]
-                float_shares = 2 if face_value > par_price else 1
-                player_payment = (float_shares * par_price) - face_value
-                bank_payment = float_shares * par_price
-                corp_cash_result = player_payment + bank_payment
-                issued = float_shares * 2  # matches Corporation.float_corp
+                # Canonical IPO simulation — same helper used by
+                # ``phases/ipo.pyx::_process_ipo``.
+                (float_shares, market_index, player_payment,
+                 corp_cash_result, issued) = _simulate_float(face_value, par_index)
 
                 buffer[tok, OFF_PLAYER_CASH + par_index] = (
                     <float>player_payment / CASH_DIVISOR
@@ -794,75 +793,3 @@ cdef void _fill_acq_offer_token(
 
     if 0 <= offer_corp < NUM_CORPS:
         buffer[tok, OFF_OFFER_CORP + offer_corp] = 1.0
-
-
-# =============================================================================
-# INTERNAL HELPERS
-# =============================================================================
-
-cdef inline int _find_next_higher_space(GameState state, int current_idx) noexcept nogil:
-    """Find the next higher available market space (INVEST buy price move).
-
-    Mirrors ``Market._find_next_higher_space`` without taking the Market
-    handle through GIL. Index 26 ($75) is the always-available sentinel;
-    out-of-range inputs clamp to 26.
-    """
-    cdef int idx = current_idx + 1
-    if idx >= NUM_MARKET_SPACES - 1:
-        return NUM_MARKET_SPACES - 1
-    while idx < NUM_MARKET_SPACES - 1:
-        if state._data[LAYOUT.market_offset + idx] != 0:
-            return idx
-        idx += 1
-    return NUM_MARKET_SPACES - 1
-
-
-cdef inline int _find_next_lower_space(GameState state, int current_idx) noexcept nogil:
-    """Find the next lower available market space (INVEST sell / ISSUE).
-
-    Index 0 ($0) is the always-available bankruptcy sentinel.
-    """
-    cdef int idx = current_idx - 1
-    if idx <= 0:
-        return 0
-    while idx > 0:
-        if state._data[LAYOUT.market_offset + idx] != 0:
-            return idx
-        idx -= 1
-    return 0
-
-
-cdef inline int _required_stars_for(int price_index, int issued_shares) noexcept nogil:
-    """Required star count for a corp at (price_index, issued_shares).
-
-    Mirrors ``entities/corp.pyx::_required_stars`` (private cdef helper
-    there, cannot be cimported). Out-of-range inputs return 0.
-    """
-    cdef int price
-    if price_index < 1 or price_index > 26:
-        return 0
-    if issued_shares < 2 or issued_shares > 7:
-        return 0
-    price = MARKET_PRICES[price_index]
-    return <int>(issued_shares * price / 10.0 + 0.5)
-
-
-cdef inline int _dividend_price_move(
-    GameState state, int corp_id, int amount_per_share,
-) noexcept nogil:
-    """Predicted market-index delta for ``corp`` paying ``amount_per_share``.
-
-    The dividend amount reduces corp cash, which reduces cash_stars
-    (``floor(cash/10)``), which shifts total_stars relative to required
-    stars. ``calculate_price_move`` clamps the difference to [-2, +2].
-    """
-    cdef int cash = corp_cash(state, corp_id)
-    cdef int issued = corp_issued_shares(state, corp_id)
-    cdef int price_idx = corp_price_index(state, corp_id)
-    cdef int company_stars = corp_company_stars(state, corp_id)
-    cdef int cash_after = cash - amount_per_share * issued
-    cdef int cash_stars = cash_after // 10 if cash_after > 0 else 0
-    cdef int si_bonus = 2 if corp_id == <int>CorpIndices.CORP_SI else 0
-    cdef int total_stars = company_stars + cash_stars + si_bonus
-    cdef int required = _required_stars_for(price_idx, issued)
-    return calculate_price_move(total_stars, required)
