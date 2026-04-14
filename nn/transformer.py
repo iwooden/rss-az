@@ -25,7 +25,6 @@ from core.data import (
     AUCTION_CAP,
     MAX_ACTION_SIZE,
     PHASE_ACTION_SIZES,
-    TokenType,
 )
 from core.token_data import TokenDataSize
 
@@ -33,12 +32,11 @@ from core.token_data import TokenDataSize
 # Constants
 # ---------------------------------------------------------------------------
 
-# Decision phases / action sizes / token type IDs all live in ``core.data``
-# and are imported above. This module is strictly a consumer; editing policy
-# head widths or adding token types happens over there.
+# Decision phases / action sizes all live in ``core.data`` and are imported
+# above. This module is strictly a consumer; editing policy head widths or
+# adding token types happens over there.
 
 NUM_PHASES = 8
-NUM_TOKEN_TYPES = int(TokenType.NUM_TOKEN_TYPES)
 
 _GELU_APPROX = "tanh"
 
@@ -129,23 +127,6 @@ class RSSTransformerNet(nn.Module):
         self._acq_offer_idx = np_ + 52
         self._pass_idx = np_ + 53
 
-        # Pre-computed type IDs (buffer moves with model to correct device)
-        type_ids = torch.zeros(cfg.num_tokens, dtype=torch.long)
-        type_ids[self._player_slice] = int(TokenType.TYPE_PLAYER)
-        type_ids[self._corp_slice] = int(TokenType.TYPE_CORP)
-        type_ids[self._company_slice] = int(TokenType.TYPE_COMPANY)
-        type_ids[self._fi_idx] = int(TokenType.TYPE_FI)
-        type_ids[self._market_idx] = int(TokenType.TYPE_MARKET)
-        type_ids[self._global_idx] = int(TokenType.TYPE_GLOBAL)
-        type_ids[self._invest_idx] = int(TokenType.TYPE_INVEST)
-        type_ids[self._auction_idx] = int(TokenType.TYPE_AUCTION)
-        type_ids[self._dividend_idx] = int(TokenType.TYPE_DIVIDEND)
-        type_ids[self._issue_idx] = int(TokenType.TYPE_ISSUE)
-        type_ids[self._par_idx] = int(TokenType.TYPE_PAR)
-        type_ids[self._acq_offer_idx] = int(TokenType.TYPE_ACQ_OFFER)
-        type_ids[self._pass_idx] = int(TokenType.TYPE_PASS)
-        self.register_buffer("_type_ids", type_ids)
-
         # --- Type-specific input projections ---
         # All take the full zero-padded token_dim input. Weights for always-zero
         # feature positions are inert; the simplicity is worth the ~2% extra params.
@@ -162,9 +143,12 @@ class RSSTransformerNet(nn.Module):
         self.issue_proj = nn.Linear(tdim, d)
         self.par_proj = nn.Linear(tdim, d)
         self.acq_offer_proj = nn.Linear(tdim, d)
-        # Pass token: no input features — representation is purely its type embedding.
-
-        self.type_embed = nn.Embedding(NUM_TOKEN_TYPES, d)
+        # Pass token: no input features. Its representation is a single learned
+        # vector (BERT [CLS]-style) that rides the residual stream and picks up
+        # game-state context through attention. All other token types are
+        # discriminated via their own per-type projection (and its bias), so a
+        # shared type-embedding table would be redundant there.
+        self.pass_embed = nn.Parameter(torch.empty(d))
 
         # --- Transformer trunk ---
         self.blocks = nn.ModuleList([
@@ -268,10 +252,9 @@ class RSSTransformerNet(nn.Module):
             self.issue_proj(x[:, self._issue_idx]).unsqueeze(1),
             self.par_proj(x[:, self._par_idx]).unsqueeze(1),
             self.acq_offer_proj(x[:, self._acq_offer_idx]).unsqueeze(1),
-            x.new_zeros(B, 1, self.cfg.d_model),  # Pass token: type embedding only
+            self.pass_embed.view(1, 1, -1).expand(B, 1, -1),  # Pass: learned anchor
         ]
         tokens = torch.cat(parts, dim=1)                      # (B, num_tokens, d)
-        tokens = tokens + self.type_embed(self._type_ids)      # broadcast over batch
         return tokens
 
     # ------------------------------------------------------------------
@@ -413,8 +396,9 @@ class RSSTransformerNet(nn.Module):
                     nn.init.zeros_(module.bias)
             elif isinstance(module, nn.RMSNorm):
                 nn.init.ones_(module.weight)
-            elif isinstance(module, nn.Embedding):
-                nn.init.normal_(module.weight, std=0.02)
+
+        # Pass token: small-random learned anchor (BERT [CLS] convention).
+        nn.init.trunc_normal_(self.pass_embed, std=0.02)
 
         # Zero-init residual outputs so each block starts as identity
         for block in self.blocks:
@@ -452,7 +436,7 @@ if __name__ == "__main__":
         model.issue_proj, model.par_proj, model.acq_offer_proj,
     ]
     proj_params = sum(sum(p.numel() for p in m.parameters()) for m in proj_modules)
-    type_params = sum(p.numel() for p in model.type_embed.parameters())
+    pass_params = model.pass_embed.numel()
     trunk_params = (
         sum(p.numel() for p in model.blocks.parameters())
         + sum(p.numel() for p in model.final_norm.parameters())
@@ -471,7 +455,7 @@ if __name__ == "__main__":
     print("Parameter breakdown:")
     for name, count in [
         ("Input projections", proj_params),
-        ("Type embeddings", type_params),
+        ("Pass token", pass_params),
         ("Transformer trunk", trunk_params),
         ("Policy heads", policy_params),
         ("Value head", value_params),

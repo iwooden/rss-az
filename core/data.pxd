@@ -81,28 +81,6 @@ cpdef enum CorpIndices:
     CORP_VM = 6 # Gets min(10, total_cost_of_ownership) bonus
     CORP_SI = 7 # Gets +2 share price movement after dividends
 
-# Token type IDs for the transformer input / type embedding.
-# These index the model's type embedding table and are the single source of
-# truth shared between the engine's token extraction and ``nn/transformer.py``.
-# ``cpdef enum`` makes each value both a Cython compile-time constant (for
-# ``get_token_data`` once it lands) and a Python-accessible attribute on
-# ``core.data.TokenType``.
-cpdef enum TokenType:
-    TYPE_PLAYER = 0
-    TYPE_CORP = 1
-    TYPE_COMPANY = 2
-    TYPE_FI = 3
-    TYPE_MARKET = 4
-    TYPE_GLOBAL = 5
-    TYPE_INVEST = 6
-    TYPE_AUCTION = 7
-    TYPE_DIVIDEND = 8
-    TYPE_ISSUE = 9
-    TYPE_PAR = 10
-    TYPE_ACQ_OFFER = 11
-    TYPE_PASS = 12
-    NUM_TOKEN_TYPES = 13
-
 # Per-decision-phase action-space sizes.
 #
 # Single source of truth for the policy head output widths. ``core/actions``

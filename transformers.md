@@ -16,7 +16,7 @@ Replace the residual MLP (~4.1M params, flat state vector) with a transformer th
 
 ## Token Decomposition
 
-Each token is projected to a common `d_model` dimension via type-specific linear layers, then augmented with a learned type embedding.
+Each token is projected to a common `d_model` dimension via type-specific linear layers. Type discrimination is handled by the per-type projection (including its bias) — no shared type-embedding table. The pass token, which has no input features, is instead represented by a single learned `nn.Parameter` anchor (BERT `[CLS]`-style).
 
 The authoritative per-token feature spec is in `token-data.md`. The table below summarizes token types and counts.
 
@@ -36,7 +36,7 @@ The authoritative per-token feature spec is in `token-data.md`. The table below 
 | Issue | 1 | price impact, issue remaining (8 corp flags). Zeroed outside ISSUE. |
 | PAR | 1 | per-par player cost (14), corp cash (14), issued shares (14). Zeroed outside IPO. |
 | Acq Offer | 1 | offer price index+value, offer corp (8-slot), FI-company flag. Zeroed outside ACQ_OFFER. |
-| Pass | 1 | No input features — type embedding only. Emits pass logit. |
+| Pass | 1 | No input features — single learned `nn.Parameter` anchor. Emits pass logit. |
 
 **Total: 54 + N tokens** (57 for 3p, 58 for 4p, 59 for 5p)
 
@@ -58,7 +58,7 @@ Seven dedicated tokens carry phase-specific information that the model needs for
 - **Issue token**: price impact, corp-remaining flags. Issue logit is read from this token.
 - **PAR token**: per-par player cost, resulting corp cash, resulting issued shares. Context for IPO (IPO logits are read from corp tokens, PAR provides shared context through attention).
 - **Acq Offer token**: offer price index+value, offer corp, FI-company flag. Buy logit is read from this token during ACQ_OFFER.
-- **Pass token**: no input features — purely learned type embedding. Emits the pass logit shared across all phases that use it.
+- **Pass token**: no input features — a single learned `nn.Parameter` vector (BERT `[CLS]`-style anchor) that rides the residual stream and picks up phase-dependent context through attention. Emits the pass logit shared across all phases that use it.
 
 ## Transformer Architecture
 
@@ -67,8 +67,7 @@ Seven dedicated tokens carry phase-specific information that the model needs for
 ```
 Input tokens (57 for 3p)
     ↓
-Type-specific linear projections → d_model
-    + learned type embeddings
+Type-specific linear projections → d_model      (pass token: learned anchor only)
     ↓
 L transformer blocks (pre-RMSNorm, multi-head self-attention + SwiGLU FFN)
     ↓
@@ -88,7 +87,7 @@ Entity-readout policy heads (+ full ACQUISITION pair head) + value head
 | d_bilinear | 64 | Hidden width for the ACQUISITION pair-feature policy head |
 | token_dim | 63 | Fixed width, zero-padded to uniform size across all token types. |
 
-**No positional encoding over token order.** Permutation equivariance is a feature, not a bug. Token order is fixed for implementation convenience, but entity identity should come from explicit player/corp/company ID features or ID embeddings plus the type embeddings, not from sequence position.
+**No positional encoding over token order.** Permutation equivariance is a feature, not a bug. Token order is fixed for implementation convenience, but entity identity should come from explicit player/corp/company ID features (and the per-type projection, which already puts each token type in its own subspace of `d_model`), not from sequence position.
 
 **Normalization:** RMSNorm (not LayerNorm). Drops the mean-centering step — only divides by root mean square. Simpler, slightly faster, no downside.
 
@@ -100,13 +99,15 @@ All projections take the full zero-padded `token_dim` input (no per-type feature
 
 ```python
 # All projections: nn.Linear(token_dim, d_model) — one per entity type
+# Each projection's bias already provides a per-type shift in d_model space,
+# so no shared type-embedding table is needed for discrimination.
 self.player_proj  = nn.Linear(token_dim, d_model)
 self.corp_proj    = nn.Linear(token_dim, d_model)
 # ... (12 total, one per non-pass token type)
-# Pass token has no input features — its initial representation is just its type embedding
 
-# Learned type embeddings (added after projection)
-self.type_embed = nn.Embedding(13, d_model)  # player/corp/company/fi/market/global/invest/auction/dividend/issue/par/acq_offer/pass
+# Pass token has no input features. Its representation is a single learned
+# anchor vector (BERT [CLS]-style) initialized with trunc_normal_(std=0.02).
+self.pass_embed = nn.Parameter(torch.empty(d_model))
 ```
 
 ## Policy Head: Entity-Readout
