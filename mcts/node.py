@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-from mcts.mcts_core import expand_node as _expand_node
+from mcts.mcts_core import expand_node_sparse as _expand_node_sparse
 
 
 class MCTSNode:
@@ -9,7 +9,9 @@ class MCTSNode:
 
     Each node stores visit statistics, value estimates, and per-action arrays
     for vectorized PUCT selection. Values are stored in canonical player order
-    (player 0, 1, 2, ...) so that backpropagation is straightforward.
+    (player 0, 1, 2, ...) so that backpropagation is straightforward — the new
+    token transformer returns canonical-order values (no rotation), matching
+    this layout directly.
 
     Expansion is lazy: expand() sets up per-action arrays (legal_actions,
     priors, visit_counts, value_sums) but does NOT create child MCTSNode
@@ -19,13 +21,23 @@ class MCTSNode:
     Attributes:
         visit_count: Number of times this node has been visited (N).
         value_sum: Cumulative canonical values per player, shape (num_players,).
-        active_player_id: The player who acts at this node.
+        active_player_id: Canonical id of the player who acts at this node.
+            Indexes value_sums[:, active_player_id] during PUCT selection.
         children: Mapping from action index to child MCTSNode (visited only).
         is_terminal: Whether this node represents a game-over state.
         state_idx: Index into the StatePool matrix (-1 if unassigned).
         terminal_values: Cached terminal values for game-over nodes.
+        pending_action_ids: Legal phase-local action ids enumerated at child
+            creation time, shape (>= pending_n,) uint16. Only the first
+            pending_n entries are valid. Cleared after expansion.
+        pending_n: Count of legal actions cached for this leaf. 0 until a
+            batch evaluator fills in the buffer at child creation.
+        pending_phase: Decision phase id (0-7) of the state at child
+            creation. Needed because the model dispatches per-leaf phase_ids.
+            -1 until populated.
         legal_actions: Sorted int array of legal action indices, shape (N,).
-        priors: NN policy priors for legal actions, shape (N,).
+        priors: NN policy priors for legal actions, shape (N,). Already
+            softmax-normalized over the legal list.
         default_value: Parent's NN value used as FPU for unvisited actions.
         visit_counts: Per-action visit counts, shape (N,). Zero-initialized;
             unvisited actions use default_value via value_sums / max(1, vc).
@@ -42,7 +54,9 @@ class MCTSNode:
         "is_terminal",
         "state_idx",
         "terminal_values",
-        "pending_mask",
+        "pending_action_ids",
+        "pending_n",
+        "pending_phase",
         "legal_actions",
         "priors",
         "default_value",
@@ -64,7 +78,9 @@ class MCTSNode:
         self.is_terminal: bool = is_terminal
         self.state_idx: int = -1
         self.terminal_values: np.ndarray | None = None
-        self.pending_mask: np.ndarray | None = None
+        self.pending_action_ids: np.ndarray | None = None
+        self.pending_n: int = 0
+        self.pending_phase: int = -1
         self.legal_actions: np.ndarray | None = None
         self.priors: np.ndarray | None = None
         self.default_value: np.ndarray | None = None
@@ -89,22 +105,27 @@ class MCTSNode:
 
     def expand(
         self,
-        policy_priors: np.ndarray,
-        legal_mask: np.ndarray,
+        action_ids: np.ndarray,
+        n: int,
+        priors: np.ndarray,
         num_players: int,
         default_value: np.ndarray,
     ) -> None:
-        """Expand this node by setting up per-action arrays for PUCT selection.
+        """Expand this node from a sparse legal-action list + aligned priors.
 
         Does NOT create child MCTSNode objects — children are allocated lazily
         on first visit during selection.
 
         Args:
-            policy_priors: NN policy output, shape (action_dim,). Values for
-                legal actions are used as priors for the corresponding children.
-            legal_mask: Binary mask, shape (action_dim,). 1.0 for legal actions.
+            action_ids: Legal phase-local action ids, shape (>= n,) uint16.
+                Only the first n entries are read.
+            n: Number of legal actions.
+            priors: Softmax-normalized priors over the legal list,
+                shape (>= n,) float32. Only the first n entries are read.
+                The eval server / NNEvaluator has already gathered + softmaxed
+                the dense model logits at these action ids.
             num_players: Number of players in the game.
             default_value: NN value output for this node, shape (num_players,).
                 Used as FPU (First Play Urgency) virtual visit for each action.
         """
-        _expand_node(self, policy_priors, legal_mask, num_players, default_value)
+        _expand_node_sparse(self, action_ids, n, priors, default_value, num_players)
