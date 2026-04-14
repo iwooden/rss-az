@@ -273,7 +273,12 @@ class NNEvaluator(BaseEvaluator):
         for i, s in enumerate(states):
             fill_token_buffer(s, buf[i])
 
-        action_ids_buf = np.empty((n, K_MAX), dtype=np.uint16)
+        # Zero-init — torch.gather below reads the full K_MAX width of this
+        # buffer, so garbage past n_legals[i] can produce out-of-bounds
+        # indices into the (batch, MAX_ACTION_SIZE) logits tensor.
+        # enumerate_legal_actions_py only writes [:n_legal], so the zero
+        # tail stands and is safely masked out downstream.
+        action_ids_buf = np.zeros((n, K_MAX), dtype=np.uint16)
         n_legals = [0] * n
         for i, s in enumerate(states):
             n_legals[i] = enumerate_legal_actions_py(s, action_ids_buf[i])

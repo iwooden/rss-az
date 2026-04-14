@@ -22,9 +22,13 @@ class MCTSConfig:
     action_dim: int = field(init=False)
 
     def __post_init__(self) -> None:
-        from core.actions import get_total_action_count
+        from core.data import MAX_ACTION_SIZE
 
-        self.action_dim = get_total_action_count(self.num_players)
+        # Post-refactor: action space is per-phase sparse with a fixed dense
+        # pad width (MAX_ACTION_SIZE = ACQUISITION, 14977) that doesn't vary
+        # with player count. get_action_probabilities returns a
+        # (MAX_ACTION_SIZE,) dense distribution.
+        self.action_dim = int(MAX_ACTION_SIZE)
         self.validate()
 
     def validate(self) -> None:
@@ -179,7 +183,7 @@ class TrainingConfig:
 
         Called from __post_init__ and after CLI/JSON overrides.
         """
-        from core.actions import get_total_action_count
+        from core.data import MAX_ACTION_SIZE
         from core.state import get_layout
 
         # Resolve "auto" model path based on num_players
@@ -187,8 +191,10 @@ class TrainingConfig:
             from nn import default_model_path
             self.model_path = default_model_path(self.num_players)
 
-        # Recompute derived fields (num_players may have changed via override)
-        self.action_dim = get_total_action_count(self.num_players)
+        # Post-refactor: dense action pad width is player-count independent.
+        # visible_size is retained for downstream consumers that still key off
+        # it — the new transformer eval buffer is keyed off token_dim/num_tokens.
+        self.action_dim = int(MAX_ACTION_SIZE)
         self.visible_size = get_layout(self.num_players).visible_size
 
         # Model path — must be a non-empty dotted module path
