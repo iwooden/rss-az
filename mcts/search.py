@@ -24,22 +24,60 @@ import numpy as np
 
 from train.config import MCTSConfig
 from mcts.node import MCTSNode
-from mcts.mcts_core import select_child, backup as _backup, increment_visits as _increment_visits, virtual_backup as _virtual_backup, masked_softmax as _apply_mask_softmax
+from mcts.mcts_core import (
+    select_child,
+    backup as _backup,
+    increment_visits as _increment_visits,
+    virtual_backup as _virtual_backup,
+)
+from core.actions import (
+    get_decision_phase_py,
+    enumerate_legal_actions_py,
+    MAX_LEGAL_ACTIONS_PY,
+)
+from core.data import MAX_ACTION_SIZE, GamePhases
+from core.driver import DRIVER, STATUS_GAME_OVER_PY, STATUS_INVALID_PY
+from core.state import GameState, get_layout
+from entities.turn import TURN
+
+
+K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 
 
 class StatePool:
     """Pre-allocated matrix for MCTS node game states.
 
     Created once and reused across all MCTS searches for the training
-    lifetime. Each row stores one node's full game state. reset() is
-    called at the start of each run_search to reuse the same memory.
+    lifetime. Each row stores one node's full compact int16 game state.
+    ``reset()`` is called at the start of each run_search to reuse the
+    same memory. The pool also owns per-search scratch buffers
+    (``_legal_scratch``, ``_pending_action_ids_buf``, ``_pending_n_buf``)
+    so ``run_search`` never allocates per simulation.
     """
 
-    __slots__ = ("states", "_next")
+    __slots__ = (
+        "states",
+        "_next",
+        "_legal_scratch",
+        "_pending_action_ids_buf",
+        "_pending_n_buf",
+    )
 
     def __init__(self, capacity: int, state_size: int) -> None:
-        self.states = np.zeros((capacity, state_size), dtype=np.float32)
+        # Compact int16 state storage — the new transformer consumes
+        # (num_tokens, token_dim) float32 buffers built lazily via
+        # core.token_data.get_token_data(). The pool itself just holds
+        # the raw int16 state arrays.
+        self.states = np.zeros((capacity, state_size), dtype=np.int16)
         self._next = 0
+        # Per-leaf enumerate scratch — written by enumerate_legal_actions_py,
+        # then sliced + copied into each leaf's pending_action_ids.
+        self._legal_scratch = np.empty(K_MAX, dtype=np.uint16)
+        # Packed (batch_size, K_MAX) buffer + int32 n_legals array handed
+        # to evaluate_leaves each batch. Lazy-allocated because batch_size
+        # isn't known at pool construction.
+        self._pending_action_ids_buf: np.ndarray | None = None
+        self._pending_n_buf: np.ndarray | None = None
 
     def reset(self) -> None:
         """Reset the write cursor for a new search."""
@@ -78,6 +116,15 @@ class StatePool:
     def row(self, idx: int) -> np.ndarray:
         """Return a view (not copy) of the given pool row."""
         return self.states[idx]
+
+    def ensure_pending_bufs(self, batch_size: int) -> None:
+        """Grow the per-batch scratch buffers to fit ``batch_size`` leaves."""
+        buf = self._pending_action_ids_buf
+        if buf is None or buf.shape[0] < batch_size:
+            self._pending_action_ids_buf = np.empty(
+                (batch_size, K_MAX), dtype=np.uint16,
+            )
+            self._pending_n_buf = np.empty(batch_size, dtype=np.int32)
 
 
 def _add_dirichlet_noise(
@@ -181,7 +228,9 @@ def run_search(
         root_state: GameState object to search from. Required for fresh
             searches, ignored when reuse_root is provided (the reused
             subtree's pooled states are authoritative).
-        evaluator: NNEvaluator for leaf evaluation.
+        evaluator: NNEvaluator (in-process) or RemoteEvaluator (shared-mem IPC).
+            Both return sparse-priors 5-tuples from ``evaluate`` and sparse
+            ``(priors, values)`` pairs from ``evaluate_leaves``.
         config: Search hyperparameters (search_batch_size controls batching).
         rng: Optional numpy random Generator for Dirichlet noise.
             If None, creates an unseeded generator.
@@ -200,11 +249,6 @@ def run_search(
     Returns:
         The root MCTSNode with search statistics populated.
     """
-    from core.actions import get_valid_action_mask
-    from core.data import GamePhases
-    from core.driver import DRIVER, STATUS_GAME_OVER_PY, STATUS_INVALID_PY
-    from core.state import GameState
-
     num_players = config.num_players
     batch_size = config.search_batch_size
 
@@ -226,17 +270,17 @@ def run_search(
 
         # Set up state pool
         if state_pool is None:
-            from core.state import get_layout
             total_size = get_layout(num_players).total_size
             state_pool = StatePool(2 * (config.num_simulations + 1), total_size)
         # Fresh search — reset pool and build root from scratch
         state_pool.reset()
 
-        # Check if root state is terminal
-        is_terminal = root_state.get_phase() == GamePhases.PHASE_GAME_OVER
+        # Check if root state is terminal. GameState doesn't expose get_phase
+        # directly — the canonical accessor lives on the TURN handle.
+        is_terminal = TURN.get_phase(root_state) == GamePhases.PHASE_GAME_OVER
 
         root = MCTSNode(
-            active_player_id=root_state.get_active_player(),
+            active_player_id=TURN.get_active_player(root_state),
             num_players=num_players,
             is_terminal=is_terminal,
         )
@@ -249,18 +293,30 @@ def run_search(
             root.value_sum += values
             return root
 
-        # Evaluate root with NN
-        policy_probs, root_values, mask = evaluator.evaluate(root_state)
+        # Evaluate root with NN. Sparse-priors contract:
+        #   (sparse_priors, values, action_ids, n_legal, phase_id)
+        priors, root_values, action_ids, n_legal, _ = evaluator.evaluate(
+            root_state,
+        )
 
-        # Expand root (sets up per-action arrays, no children created)
-        root.expand(policy_probs, mask, num_players=num_players,
-                    default_value=root_values)
+        # Expand root onto the sparse legal list (no dense mask).
+        root.expand(
+            action_ids, n_legal, priors,
+            num_players=num_players, default_value=root_values,
+        )
 
         # Backup root evaluation
         root.visit_count = 1
         root.value_sum += root_values
 
         num_sims = config.num_simulations
+
+    # Ensure per-batch scratch buffers are sized for this search
+    state_pool.ensure_pending_bufs(batch_size)
+    pending_action_ids_buf = state_pool._pending_action_ids_buf
+    pending_n_buf = state_pool._pending_n_buf
+    assert pending_action_ids_buf is not None and pending_n_buf is not None
+    legal_scratch = state_pool._legal_scratch
 
     # Scratch GameState rebound to each pool row via rebind()
     scratch_gs = GameState.from_buffer(state_pool.row(0), num_players)
@@ -334,20 +390,28 @@ def run_search(
                         num_players=num_players,
                     )
                     child.state_idx = state_pool.alloc_from_row(node.state_idx)
-                    scratch_gs.rebind(state_pool.row(child.state_idx))
+                    scratch_gs.rebind(state_pool.row(child.state_idx), num_players)
                     status = DRIVER.apply_action(scratch_gs, action_idx)
                     assert status != STATUS_INVALID_PY, (
                         f"MCTS expansion got STATUS_INVALID for action {action_idx}"
                     )
-                    child.active_player_id = scratch_gs.get_active_player()
+                    child.active_player_id = TURN.get_active_player(scratch_gs)
                     if status == STATUS_GAME_OVER_PY:
                         child.is_terminal = True
                         child.terminal_values = evaluator.evaluate_terminal(
-                            scratch_gs
+                            scratch_gs,
                         )
                     else:
-                        # Cache legal mask for later evaluation
-                        child.pending_mask = get_valid_action_mask(scratch_gs)
+                        # Cache legal-action list + decision phase for this
+                        # leaf. The scratch enumerate buffer is reused across
+                        # leaves, so slice-and-copy the active range.
+                        child.pending_phase = get_decision_phase_py(scratch_gs)
+                        child.pending_n = enumerate_legal_actions_py(
+                            scratch_gs, legal_scratch,
+                        )
+                        child.pending_action_ids = (
+                            legal_scratch[:child.pending_n].copy()
+                        )
                     node.children[action_idx] = child
                     node = child
                     break  # New child is unexpanded — it's the leaf
@@ -404,16 +468,36 @@ def run_search(
             _t1 = perf_counter()
             profile.selection_secs += _t1 - _t0
 
+        # Pack per-leaf pending_action_ids into the shared (batch, K_MAX)
+        # buffer; evaluate_leaves reads [i, :n_legals[i]] per row. Zero the
+        # unused tail [n:] so the downstream torch.gather (which indexes the
+        # entire K_MAX width before masked_fill) sees valid in-range indices
+        # there — stale data from a prior larger batch would raise on CPU
+        # and silently corrupt on GPU.
+        n_pending = len(pending)
+        for i, (_, node) in enumerate(pending):
+            assert node.pending_action_ids is not None
+            n = node.pending_n
+            pending_action_ids_buf[i, :n] = node.pending_action_ids[:n]
+            pending_action_ids_buf[i, n:] = 0
+            pending_n_buf[i] = n
+
         leaf_arrays = [state_pool.row(node.state_idx) for _, node in pending]
-        leaf_players = [node.active_player_id for _, node in pending]
-        results = evaluator.evaluate_leaves(leaf_arrays, leaf_players)
+        phase_ids = [node.pending_phase for _, node in pending]
+        n_legals = pending_n_buf[:n_pending].tolist()
+        results = evaluator.evaluate_leaves(
+            leaf_arrays,
+            phase_ids,
+            pending_action_ids_buf[:n_pending],
+            n_legals,
+        )
 
         if profile is not None:
             _t2 = perf_counter()
             profile.eval_secs += _t2 - _t1
 
-        for i, ((path, node), (logits, values)) in enumerate(
-            zip(pending, results)
+        for i, ((path, node), (priors, values)) in enumerate(
+            zip(pending, results),
         ):
             # Unlock parent edge: restore saved Q values
             parent, _, parent_aidx = path[-1]
@@ -423,12 +507,18 @@ def run_search(
             # Recursively unlock propagation-locked ancestor edges
             _propagate_unlock(path)
 
-            # Apply masked softmax and expand the leaf
-            assert node.pending_mask is not None
-            policy_probs = _apply_mask_softmax(logits, node.pending_mask)
-            node.expand(policy_probs, node.pending_mask,
-                        num_players=num_players, default_value=values)
-            node.pending_mask = None  # dead after expansion
+            # Expand the leaf. Priors are already sparse + softmaxed by the
+            # evaluator (GPU-side gather + softmax on the server path,
+            # torch.gather + softmax in-process for NNEvaluator).
+            assert node.pending_action_ids is not None
+            node.expand(
+                node.pending_action_ids, node.pending_n, priors,
+                num_players=num_players, default_value=values,
+            )
+            # Clear per-leaf pending state — consumed by expansion.
+            node.pending_action_ids = None
+            node.pending_n = 0
+            node.pending_phase = -1
 
             # Backup values (visit counts already incremented at selection time)
             _backup(path, node, values)
@@ -444,21 +534,24 @@ def run_search(
 def get_action_probabilities(
     root: MCTSNode,
     temperature: float,
-    action_dim: int,
 ) -> np.ndarray:
     """Convert root visit counts to action probabilities.
+
+    Returns a dense ``(MAX_ACTION_SIZE,)`` distribution with zeros outside
+    the legal list — callers in self_play sample from it directly. A later
+    pass (rss-az-phli.1) will switch to sparse ``(action_ids, probs)``
+    once self_play moves to sparse policy targets.
 
     Args:
         root: Root node after search.
         temperature: Controls exploration.
             temperature=1.0: proportional to visit counts.
             temperature->0: deterministic (argmax).
-        action_dim: Size of the action space.
 
     Returns:
-        Probability distribution over actions, shape (action_dim,).
+        Probability distribution over actions, shape ``(MAX_ACTION_SIZE,)``.
     """
-    probs = np.zeros(action_dim, dtype=np.float32)
+    probs = np.zeros(MAX_ACTION_SIZE, dtype=np.float32)
 
     if root.legal_actions is None:
         return probs
