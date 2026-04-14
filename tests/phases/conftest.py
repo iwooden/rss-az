@@ -1244,6 +1244,43 @@ def assert_token_data_invariants(state, msg=""):
 
 
 # =============================================================================
+# AUTO-PHASE HELPERS
+# =============================================================================
+
+def make_auto_phase_state(num_players, engine_phase, seed=42):
+    """Fresh state placed into ``engine_phase`` with no decision-phase context.
+
+    Initializes via ``GameState.initialize_game`` (which lands in
+    PHASE_INVEST), then flips the phase and clears the decision-phase
+    sentinels that would have been set by the preceding decision phase.
+    Caller is responsible for any further setup (floating corps, setting
+    FI cash, relocating companies, etc.) specific to the scenario under
+    test.
+    """
+    state = GameState(num_players)
+    state.initialize_game(num_players, seed=seed)
+    TURN.set_phase(state, engine_phase)
+    TURN.clear_active_corp(state)
+    TURN.clear_active_company(state)
+    TURN.clear_acq_offer_price(state)
+    return state
+
+
+def assert_post_auto(state, expected_phase, msg=""):
+    """Wrap the standard invariant pair with an explicit phase check.
+
+    Catches the common bug of "auto phase mutated state but forgot to
+    transition" or "transitioned to the wrong next phase".
+    """
+    actual_phase = TURN.get_phase(state)
+    assert actual_phase == expected_phase, (
+        f"{msg}\nExpected phase {expected_phase}, got {actual_phase}"
+    )
+    assert_invariants(state, msg)
+    assert_token_data_invariants(state, msg)
+
+
+# =============================================================================
 # FIXTURES
 # =============================================================================
 
