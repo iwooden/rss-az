@@ -25,6 +25,7 @@ from tests.phases.conftest import (
     draw_to_fi,
     float_corp_for_test,
 )
+from tests.phases.helpers.finance import prime_corp_income_for_test
 
 
 # =============================================================================
@@ -33,21 +34,6 @@ from tests.phases.conftest import (
 
 PHASE_INCOME = int(GamePhases.PHASE_INCOME)
 PHASE_DIVIDENDS = int(GamePhases.PHASE_DIVIDENDS)
-
-
-def _prime_corp_income(state, corp_id, income):
-    """Force a corp's cached income to ``income`` without re-dirtying the cache.
-
-    The income cache is dirtied by any setter that invalidates
-    ``corp_cache_dirty`` (e.g. ``set_cash``, ``set_price_index``). Callers
-    wanting to stage a synthetic income for a floated corp must:
-      1. First land all dirty-bit-invalidating mutations (set_cash, etc.).
-      2. Refresh the corp cache once to clear the dirty bit.
-      3. Finally write ``set_income(income)`` to overwrite just the income
-         slot with the synthetic value.
-    """
-    CORPS[corp_id].refresh_cache(state)
-    CORPS[corp_id].set_income(state, income)
 
 
 # =============================================================================
@@ -130,7 +116,7 @@ class TestCorpIncome:
         float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
 
         CORPS[0].set_cash(state, 20)
-        _prime_corp_income(state, 0, 7)
+        prime_corp_income_for_test(state, 0, 7)
         assert CORPS[0].get_income(state) == 7
 
         apply_income_py(state)
@@ -146,7 +132,7 @@ class TestCorpIncome:
         float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
 
         CORPS[0].set_cash(state, 10)
-        _prime_corp_income(state, 0, -3)
+        prime_corp_income_for_test(state, 0, -3)
 
         apply_income_py(state)
 
@@ -162,7 +148,7 @@ class TestCorpIncome:
         cid = float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
 
         CORPS[0].set_cash(state, 1)
-        _prime_corp_income(state, 0, -5)
+        prime_corp_income_for_test(state, 0, -5)
 
         apply_income_py(state)
 
@@ -181,7 +167,7 @@ class TestCorpIncome:
         state = make_auto_phase_state(3, PHASE_INCOME)
         # Float corp 0 only; corps 1..7 remain inactive.
         float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
-        _prime_corp_income(state, 0, 0)
+        prime_corp_income_for_test(state, 0, 0)
 
         # Stage a sentinel: write a non-zero cash and non-zero income to an
         # inactive corp's slot. The handler must NOT read/modify either.
@@ -251,7 +237,7 @@ class TestTransition:
         state = make_auto_phase_state(3, PHASE_INCOME)
         # Need an active corp so setup doesn't cascade past DIVIDENDS.
         float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
-        _prime_corp_income(state, 0, 0)
+        prime_corp_income_for_test(state, 0, 0)
 
         apply_income_py(state)
 
@@ -261,11 +247,11 @@ class TestTransition:
         """setup_dividends_phase sets dividend_remaining for active corps."""
         state = make_auto_phase_state(3, PHASE_INCOME)
         float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
-        _prime_corp_income(state, 0, 0)
+        prime_corp_income_for_test(state, 0, 0)
         # A second, higher-priced active corp verifies the "highest price
         # first" active_corp selection done by setup.
         float_corp_for_test(state, corp_id=1, player_id=0, par_index=13)
-        _prime_corp_income(state, 1, 0)
+        prime_corp_income_for_test(state, 1, 0)
 
         apply_income_py(state)
 

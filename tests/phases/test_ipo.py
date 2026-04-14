@@ -25,6 +25,7 @@ from tests.phases.conftest import (
     find_all_legal_actions,
     float_corp_for_test,
 )
+from tests.phases.helpers.finance import set_player_cashs
 from tests.phases.helpers.ownership import give_company_to_player
 
 
@@ -72,8 +73,7 @@ def _enter_ipo(state, owners, cash_by_player=None):
         _give_company(state, cid, pid)
     if cash_by_player is None:
         cash_by_player = {pid: 100 for pid in set(owners.values())}
-    for pid, cash in cash_by_player.items():
-        PLAYERS[pid].set_cash(state, cash)
+    set_player_cashs(state, cash_by_player)
     setup_ipo_phase_py(state)
 
 
