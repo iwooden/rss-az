@@ -173,7 +173,6 @@ class TrainingConfig:
 
     # --- Computed ---
     action_dim: int = field(init=False)
-    visible_size: int = field(init=False)
 
     def __post_init__(self) -> None:
         self.validate()
@@ -184,7 +183,6 @@ class TrainingConfig:
         Called from __post_init__ and after CLI/JSON overrides.
         """
         from core.data import MAX_ACTION_SIZE
-        from core.state import get_layout
 
         # Resolve "auto" model path based on num_players
         if self.model_path == "auto":
@@ -192,10 +190,9 @@ class TrainingConfig:
             self.model_path = default_model_path(self.num_players)
 
         # Post-refactor: dense action pad width is player-count independent.
-        # visible_size is retained for downstream consumers that still key off
-        # it — the new transformer eval buffer is keyed off token_dim/num_tokens.
+        # The transformer eval buffer is keyed off core.token_data's
+        # (num_tokens, token_dim) — there is no flat state width.
         self.action_dim = int(MAX_ACTION_SIZE)
-        self.visible_size = get_layout(self.num_players).visible_size
 
         # Model path — must be a non-empty dotted module path
         if not self.model_path or not isinstance(self.model_path, str):
@@ -408,14 +405,12 @@ class TrainingConfig:
         d = asdict(self)
         # Remove computed fields — they'll be recomputed on load
         d.pop("action_dim", None)
-        d.pop("visible_size", None)
         return json.dumps(d, indent=2)
 
     @staticmethod
     def _normalize_json(d: dict[str, Any]) -> dict[str, Any]:
         """Apply backward compat renames and drop computed/unknown fields."""
         d.pop("action_dim", None)
-        d.pop("visible_size", None)
 
         if "temp_threshold" in d:
             if "temp_anneal_start" not in d:

@@ -11,9 +11,14 @@ import torch
 
 
 class TrainingExample(NamedTuple):
-    """Single training example from self-play."""
+    """Single training example from self-play.
 
-    state: np.ndarray  # (visible_size,), float32 — rotated visible state
+    Legacy dense-MLP schema — scheduled for replacement under rss-az-phli.2
+    with the sparse (state int16, phase_id, action_ids, policy_target,
+    value_target) contract produced by train.self_play.SelfPlayExample.
+    """
+
+    state: np.ndarray  # (state_size,), float32 — flat state vector
     legal_mask: np.ndarray  # (action_dim,), float32 — binary legal action mask
     policy_target: np.ndarray  # (action_dim,), float32 — MCTS visit probabilities
     value_target: np.ndarray  # (num_players,), float32 — A0GB values, active-player-first
@@ -24,12 +29,14 @@ class ReplayBuffer:
 
     All arrays are allocated at full capacity upfront. Examples are written
     in a circular fashion, overwriting the oldest when full.
+
+    Legacy dense-MLP schema — scheduled for replacement under rss-az-phli.2.
     """
 
     def __init__(
         self,
         capacity: int,
-        visible_size: int,
+        state_size: int,
         action_dim: int,
         num_players: int,
     ) -> None:
@@ -37,7 +44,7 @@ class ReplayBuffer:
         self._size = 0
         self._index = 0
 
-        self._states = np.zeros((capacity, visible_size), dtype=np.float32)
+        self._states = np.zeros((capacity, state_size), dtype=np.float32)
         self._legal_masks = np.zeros((capacity, action_dim), dtype=np.float32)
         self._policy_targets = np.zeros((capacity, action_dim), dtype=np.float32)
         self._value_targets = np.zeros((capacity, num_players), dtype=np.float32)

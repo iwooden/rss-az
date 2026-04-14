@@ -30,7 +30,7 @@ def apply_player_permutation(
     """Apply a permutation of inactive player slots to a batch.
 
     Args:
-        states: [batch, visible_size] float32 state vectors (modified in-place).
+        states: [batch, state_size] float32 state vectors (modified in-place).
         value_targets: [batch, num_players] float32 value targets (modified in-place).
         perm: 1-D int64 tensor of length num_players, mapping destination slot
               to source slot. perm[0] MUST be 0 (active player stays fixed).
