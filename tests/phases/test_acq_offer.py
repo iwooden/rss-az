@@ -98,6 +98,12 @@ def _enter_acq_offer_direct(state, offered_corp, company_id, price,
     )
 
 
+def _assert_offer_context_cleared(state):
+    assert TURN.get_active_company(state) == -1
+    assert TURN.get_acq_offer_price(state) == 0
+    assert TURN.get_acq_offer_corp(state) == -1
+
+
 # =============================================================================
 # ENUMERATION
 # =============================================================================
@@ -181,8 +187,8 @@ class TestFiPreemptionAccept:
         assert CORPS[0].get_cash(game_state) == corp_cash_before - price
         assert FI.get_cash(game_state) == fi_cash_before + price
 
-    def test_accept_returns_to_acquisition(self, game_state):
-        """After accepting, phase returns to ACQUISITION."""
+    def test_accept_clears_offer_context_and_auto_advances_to_closing(self, game_state):
+        """Direct FI-preemption accept resolves the offer and clears scratch state."""
         fi_co = draw_to_fi(game_state)
 
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
@@ -199,9 +205,10 @@ class TestFiPreemptionAccept:
         accept_id = find_legal_action(game_state, action_type=ACTION_ACQ_OFFER_ACCEPT)
         apply_and_verify(game_state, accept_id)
 
-        # Should return to ACQUISITION or have transitioned past it
-        phase = TURN.get_phase(game_state)
-        assert phase != int(GamePhases.PHASE_ACQ_OFFER)
+        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_CLOSING)
+        assert TURN.get_active_player(game_state) == 0
+        assert TURN.get_active_corp(game_state) == -1
+        _assert_offer_context_cleared(game_state)
 
     def test_os_preemptor_pays_face_value(self, game_state):
         """OS (corp 2) pays face value, not high price, when preempting."""
@@ -408,8 +415,8 @@ class TestFiPreemptionPass:
         assert loc in (int(CompanyLocation.LOC_CORP_ACQ), int(CompanyLocation.LOC_CORP))
         assert COMPANIES[fi_co].get_owner_id(game_state) == 4
 
-    def test_receivership_preemptor_auto_buys(self, game_state):
-        """When the next preemptor is in receivership, it auto-buys (no offer)."""
+    def test_receivership_preemptor_auto_buys_and_clears_offer_context(self, game_state):
+        """Passing to a receivership preemptor auto-buys and clears offer scratch state."""
         num_players = TURN.get_num_players(game_state)
         if num_players < 3:
             return
@@ -441,14 +448,17 @@ class TestFiPreemptionPass:
         pass_id = find_legal_action(game_state, action_type=ACTION_PASS)
         apply_and_verify(game_state, pass_id)
 
-        # Corp 4 is receivership -- it should auto-buy without entering
-        # another ACQ_OFFER. The company should be owned by corp 4.
-        # (The driver chains through this automatically.)
-        loc = COMPANIES[fi_co].get_location(game_state)
-        if loc != int(CompanyLocation.LOC_FI):
-            # If corp 4 could afford it, it should have auto-bought
-            assert COMPANIES[fi_co].get_owner_id(game_state) == 4
-            assert TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQ_OFFER)
+        assert COMPANIES[fi_co].get_location(game_state) in (
+            int(CompanyLocation.LOC_CORP_ACQ),
+            int(CompanyLocation.LOC_CORP),
+        )
+        assert COMPANIES[fi_co].get_owner_id(game_state) == 4
+        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_DIVIDENDS)
+        assert TURN.get_active_player(game_state) == 1
+        assert TURN.get_active_corp(game_state) == 3
+        _assert_offer_context_cleared(game_state)
+        assert CORPS[3].has_passed_acq_offer(game_state)
+        assert not CORPS[4].has_passed_acq_offer(game_state)
 
 
 # =============================================================================
@@ -549,8 +559,8 @@ class TestCrossPresidentAccept:
         assert PLAYERS[1].get_cash(state) == player_cash_before + price
         assert CORPS[0].get_cash(state) == corp_cash_before - price
 
-    def test_accept_returns_to_acquisition(self):
-        """After accepting cross-president offer, phase returns to ACQUISITION."""
+    def test_accept_clears_offer_context_and_auto_advances_to_closing(self):
+        """Direct cross-president accept resolves the offer and clears scratch state."""
         state = self._make_state(3)
 
         private_co = draw_to_player(state, 1)
@@ -569,8 +579,10 @@ class TestCrossPresidentAccept:
         accept_id = find_legal_action(state, action_type=ACTION_ACQ_OFFER_ACCEPT)
         apply_and_verify(state, accept_id)
 
-        phase = TURN.get_phase(state)
-        assert phase != int(GamePhases.PHASE_ACQ_OFFER)
+        assert TURN.get_phase(state) == int(GamePhases.PHASE_CLOSING)
+        assert TURN.get_active_player(state) == 0
+        assert TURN.get_active_corp(state) == -1
+        _assert_offer_context_cleared(state)
 
 
 # =============================================================================
@@ -617,8 +629,8 @@ class TestCrossPresidentDecline:
         assert CORPS[0].get_cash(state) == corp_cash_before
         assert PLAYERS[1].get_cash(state) == player_cash_before
 
-    def test_decline_returns_to_acquisition(self):
-        """After declining, phase returns to ACQUISITION."""
+    def test_decline_clears_offer_context_and_returns_to_acquisition(self):
+        """Direct cross-president decline cancels the offer and clears scratch state."""
         state = self._make_state(3)
 
         private_co = draw_to_player(state, 1)
@@ -637,8 +649,10 @@ class TestCrossPresidentDecline:
         pass_id = find_legal_action(state, action_type=ACTION_PASS)
         apply_and_verify(state, pass_id)
 
-        phase = TURN.get_phase(state)
-        assert phase != int(GamePhases.PHASE_ACQ_OFFER)
+        assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQUISITION)
+        assert TURN.get_active_player(state) == 0
+        assert TURN.get_active_corp(state) == -1
+        _assert_offer_context_cleared(state)
 
     def test_decline_corp_to_corp_company_stays(self):
         """Declining corp-to-corp offer leaves company with seller corp."""
