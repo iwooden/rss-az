@@ -7,9 +7,22 @@ The model's GPU parameter tensors are shared zero-copy via CUDA IPC
 to eval servers automatically.
 
 Communication uses shared memory (torch tensors with share_memory_()):
-- Input states: float32 (workers write with pure numpy slice assignment)
-- Output logits: float32 (workers read via zero-copy .numpy() for Cython softmax)
-- Output values: float32 (workers read via zero-copy .numpy())
+
+  Worker → Server (inputs)
+      states     : float32 (W, B, num_tokens, token_dim)
+      phase_ids  : int8    (W, B)
+      action_ids : int16   (W, B, K_MAX)   — bit-reinterpretable as uint16
+      n_legals   : int16   (W, B)
+
+  Server → Worker (outputs — sparse, already softmaxed on GPU)
+      priors     : float32 (W, B, K_MAX)   — over legal actions only
+      values     : float32 (W, B, num_players)   — canonical order (no rotation)
+
+Dense per-phase logits (width ``MAX_ACTION_SIZE``) never cross the IPC
+boundary: the server gathers dense logits at per-leaf ``action_ids[:n_legal]``
+and softmaxes on the GPU inside the autocast region before copy-back. This
+kills the old 14977-wide shared-mem logits buffer (~46 MB at 96 workers)
+and the worker-side masked-softmax step outright.
 
 **Signaling protocol:**
 
@@ -28,11 +41,14 @@ has its own GIL, CUDA context, and default stream, so multiple servers
 truly overlap. Gather/scatter between per-worker slots and contiguous
 inference buffers uses Cython nogil memcpy (no per-worker Python loop).
 
-Workers do zero torch operations — pure numpy on both write and read sides.
-Mask+softmax is applied via Cython on the worker's f32 numpy logit view.
+Workers do zero torch operations on the hot path — pure numpy writes
+into the shared input buffers, a single bitmap publish + Event wait,
+then numpy reads of the already-softmaxed sparse priors / canonical
+values. No rotation, no masking, no softmax on the worker side.
 
-RemoteEvaluator is the worker-side proxy that implements the same interface
-as NNEvaluator, writing to shared memory instead of serializing over pipes.
+RemoteEvaluator is the worker-side proxy that implements the same
+``evaluate`` / ``evaluate_leaves`` / ``evaluate_terminal`` interface as
+NNEvaluator, writing to shared memory instead of serializing over pipes.
 """
 
 from __future__ import annotations
@@ -45,58 +61,87 @@ from typing import Any
 import numpy as np
 import torch
 
-from mcts.evaluator import (
-    BaseEvaluator,
-    rotate_visible_state_into,
+from core.actions import (
+    MAX_LEGAL_ACTIONS_PY,
+    enumerate_legal_actions_py,
+    get_decision_phase_py,
 )
+from core.token_data import TokenDataSize, get_num_tokens, get_token_data
+from mcts.evaluator import BaseEvaluator
 from train.profile_stats import EvalClientStats, EvalServerStats
+
+K_MAX = int(MAX_LEGAL_ACTIONS_PY)
+TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
 
 
 class SharedEvalBuffers:
     """Pre-allocated shared memory for zero-copy worker <-> server communication.
 
-    Input states are float32 so workers can write with pure numpy slice
-    assignment (no torch overhead). Output logits and values are float32 so
-    workers can read zero-copy numpy views and apply Cython mask+softmax.
+    All tensors are created once in the main process via ``share_memory_()``
+    and picked up by worker/server processes after fork/spawn. Workers write
+    into their own row of each per-worker tensor; the server reads those rows,
+    runs inference, and writes already-softmaxed sparse priors + canonical
+    values back into the same per-worker slot.
 
-    Each worker gets a fixed slot in shared tensors. Workers write rotated
-    states into their input slot; the server reads them directly. The server
-    writes raw logits and values into each worker's output slot. Workers apply
-    legal action masking and softmax locally after reading results.
+    Inputs (worker → server):
+        states     (W, B, num_tokens, token_dim) float32
+        phase_ids  (W, B)                        int8
+        action_ids (W, B, K_MAX)                 int16 (uint16 via bit-reinterp)
+        n_legals   (W, B)                        int16
 
-    Memory layout (per worker):
-        Input:  states  float32 (batch_size x visible_size)
-        Output: logits  float32  (batch_size x action_dim)
-                values  float32  (batch_size x num_players)
+    Outputs (server → worker):
+        priors     (W, B, K_MAX)           float32  (sparse, softmaxed on GPU)
+        values     (W, B, num_players)     float32  (canonical order)
+
+    ``MAX_ACTION_SIZE`` (the dense model-head width) intentionally does not
+    appear in any shape here — the server gathers dense logits down to the
+    sparse legal list before the copy-back. Shared-mem output footprint
+    drops from ~46 MB (workers × batch × 14977 × 4) to ~0.8 MB.
     """
 
     def __init__(
         self,
         num_workers: int,
         batch_size: int,
-        visible_size: int,
-        action_dim: int,
         num_players: int,
     ) -> None:
         self.num_workers = num_workers
         self.batch_size = batch_size
-        self.visible_size = visible_size
-        self.action_dim = action_dim
         self.num_players = num_players
+        self.num_tokens = get_num_tokens(num_players)
+        self.token_dim = TOKEN_DIM
+        self.k_max = K_MAX
 
-        # Input: float32 — workers write with pure numpy slice assignment
+        # --- Inputs (worker → server) ---
         self._states = torch.zeros(
-            num_workers, batch_size, visible_size, dtype=torch.float32,
+            num_workers, batch_size, self.num_tokens, self.token_dim,
+            dtype=torch.float32,
         ).share_memory_()
-        # Output: float32 — workers read via .numpy() (zero-copy view)
-        self._logits = torch.zeros(
-            num_workers, batch_size, action_dim, dtype=torch.float32,
+        self._phase_ids = torch.zeros(
+            num_workers, batch_size, dtype=torch.int8,
+        ).share_memory_()
+        # torch.uint16 doesn't exist; store signed and reinterpret via
+        # numpy .view(np.uint16). Max action id is 14976 ≪ 32767, so the
+        # signed view is lossless and bit-identical.
+        self._action_ids = torch.zeros(
+            num_workers, batch_size, self.k_max, dtype=torch.int16,
+        ).share_memory_()
+        self._n_legals = torch.zeros(
+            num_workers, batch_size, dtype=torch.int16,
+        ).share_memory_()
+
+        # --- Outputs (server → worker) ---
+        # Sparse priors over the legal action list, already softmaxed on the
+        # GPU inside the server's autocast region. Padded slots [n_legal:K_MAX]
+        # carry near-zero mass (softmax of -1e9) and must never be read.
+        self._priors = torch.zeros(
+            num_workers, batch_size, self.k_max, dtype=torch.float32,
         ).share_memory_()
         self._values = torch.zeros(
             num_workers, batch_size, num_players, dtype=torch.float32,
         ).share_memory_()
 
-        # Per-worker state counts (how many states in current request)
+        # Per-worker state counts (how many states in current request).
         self._counts = torch.zeros(num_workers, dtype=torch.int32).share_memory_()
 
         # Bitmap signaling and events — initialized lazily via init_bitmap().
@@ -106,22 +151,42 @@ class SharedEvalBuffers:
         self.server_events: list[Any] | None = None
         self.done_events: list[Any] | None = None
 
-    def get_input_states_np(self, worker_idx: int) -> np.ndarray:
-        """Numpy view into worker's float32 input state slot.
+    # ------------------------------------------------------------------
+    # Per-worker input accessors. Numpy views are created on-demand
+    # because they don't survive pickling across spawn boundaries.
+    # ------------------------------------------------------------------
 
-        Creates the view on-demand rather than caching in __init__, because
-        numpy views don't survive pickling across spawn boundaries — they'd
-        become detached copies instead of shared memory views.
-        """
+    def get_input_states_np(self, worker_idx: int) -> np.ndarray:
+        """(batch, num_tokens, token_dim) float32 view into this worker's input slot."""
         return self._states[worker_idx].numpy()
 
-    def get_output_logits(self, worker_idx: int) -> torch.Tensor:
-        """float32 tensor view into worker's output logit slot."""
-        return self._logits[worker_idx]
+    def get_input_phase_ids_np(self, worker_idx: int) -> np.ndarray:
+        """(batch,) int8 view into this worker's phase-id slot."""
+        return self._phase_ids[worker_idx].numpy()
 
-    def get_output_values(self, worker_idx: int) -> torch.Tensor:
-        """float32 tensor view into worker's output value slot."""
-        return self._values[worker_idx]
+    def get_input_action_ids_np(self, worker_idx: int) -> np.ndarray:
+        """(batch, K_MAX) uint16 view into this worker's action-id slot.
+
+        The underlying storage is int16 because torch lacks uint16; this
+        ``.view(np.uint16)`` is a bit-reinterpretation over the same memory.
+        """
+        return self._action_ids[worker_idx].numpy().view(np.uint16)
+
+    def get_input_n_legals_np(self, worker_idx: int) -> np.ndarray:
+        """(batch,) int16 view into this worker's n_legal slot."""
+        return self._n_legals[worker_idx].numpy()
+
+    # ------------------------------------------------------------------
+    # Per-worker output accessors.
+    # ------------------------------------------------------------------
+
+    def get_output_priors_np(self, worker_idx: int) -> np.ndarray:
+        """(batch, K_MAX) float32 view of this worker's sparse-prior output slot."""
+        return self._priors[worker_idx].numpy()
+
+    def get_output_values_np(self, worker_idx: int) -> np.ndarray:
+        """(batch, num_players) float32 view of this worker's value output slot."""
+        return self._values[worker_idx].numpy()
 
     def init_bitmap(
         self,
@@ -272,6 +337,11 @@ def _eval_server_serve(
     _dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16}
     eval_autocast_dtype: torch.dtype | None = _dtype_map.get(eval_dtype) if eval_dtype else None
 
+    num_tokens = shared_bufs.num_tokens
+    token_dim = shared_bufs.token_dim
+    k_max = shared_bufs.k_max
+    npl = shared_bufs.num_players
+
     # Optionally compile the model (per-process compilation).
     if not no_compile and use_cuda:
         ckw = compile_kwargs if compile_kwargs is not None else {}
@@ -290,43 +360,86 @@ def _eval_server_serve(
             dtype=eval_autocast_dtype,
             enabled=eval_autocast_dtype is not None,
         ):
-            dummy = torch.randn(warmup_n, shared_bufs.visible_size, device=device)
-            model(dummy)
-            del dummy
+            dummy_s = torch.randn(
+                warmup_n, num_tokens, token_dim, device=device,
+            )
+            dummy_p = torch.zeros(warmup_n, dtype=torch.int8, device=device)
+            model(dummy_s, dummy_p)
+            del dummy_s, dummy_p
         torch.cuda.synchronize()
 
     # Allocate pinned CPU buffers and GPU tensors in this process's CUDA context
     partition_size = worker_end - worker_start
     max_batch = partition_size * shared_bufs.batch_size
-    vis = shared_bufs.visible_size
-    act = shared_bufs.action_dim
-    npl = shared_bufs.num_players
 
-    pin_s = torch.empty(max_batch, vis, dtype=torch.float32, pin_memory=use_cuda)
+    # --- Inputs: pinned CPU + GPU side ---
+    pin_s = torch.empty(
+        max_batch, num_tokens, token_dim,
+        dtype=torch.float32, pin_memory=use_cuda,
+    )
     pin_s_np = pin_s.numpy()
-    gpu_s = torch.empty(max_batch, vis, dtype=torch.float32, device=device)
-    pin_log = torch.empty(max_batch, act, dtype=torch.float32, pin_memory=use_cuda)
-    pin_log_np = pin_log.numpy()
+    # Flat 2-D view for the row-agnostic Cython memcpy gather.
+    pin_s_flat_np = pin_s_np.reshape(max_batch, num_tokens * token_dim)
+    gpu_s = torch.empty(
+        max_batch, num_tokens, token_dim, dtype=torch.float32, device=device,
+    )
+
+    pin_phase_ids = torch.empty(max_batch, dtype=torch.int8, pin_memory=use_cuda)
+    pin_phase_ids_np = pin_phase_ids.numpy()
+    gpu_phase_ids = torch.empty(max_batch, dtype=torch.int8, device=device)
+
+    pin_action_ids = torch.empty(
+        max_batch, k_max, dtype=torch.int16, pin_memory=use_cuda,
+    )
+    pin_action_ids_np = pin_action_ids.numpy()
+    gpu_action_ids = torch.empty(
+        max_batch, k_max, dtype=torch.int16, device=device,
+    )
+
+    pin_n_legals = torch.empty(max_batch, dtype=torch.int16, pin_memory=use_cuda)
+    pin_n_legals_np = pin_n_legals.numpy()
+    gpu_n_legals = torch.empty(max_batch, dtype=torch.int16, device=device)
+
+    # --- Outputs: pinned CPU + GPU side ---
+    # Priors are (max_batch, K_MAX) f32 (sparse, already softmaxed on GPU).
+    # This REPLACES the old (max_batch, MAX_ACTION_SIZE=14977) logits buffer.
+    pin_priors = torch.empty(
+        max_batch, k_max, dtype=torch.float32, pin_memory=use_cuda,
+    )
+    pin_priors_np = pin_priors.numpy()
+    gpu_priors = torch.empty(
+        max_batch, k_max, dtype=torch.float32, device=device,
+    )
+
     pin_val = torch.empty(max_batch, npl, dtype=torch.float32, pin_memory=use_cuda)
     pin_val_np = pin_val.numpy()
+    gpu_val = torch.empty(max_batch, npl, dtype=torch.float32, device=device)
 
     stats: EvalServerStats | None = EvalServerStats() if profile else None
     _tp = _ti = 0.0
 
-    # Contiguous 3D views for Cython gather/scatter (no per-worker Python loop)
+    # Cython gather/scatter helpers (nogil memcpy, no per-worker Python loop).
     from mcts.mcts_core import (
+        gather_action_ids as _gather_action_ids,
+        gather_n_legals as _gather_n_legals,
+        gather_phase_ids as _gather_phase_ids,
         gather_states as _gather_states,
         scatter_results as _scatter_results,
         server_drain_bitmap as _drain,
         server_peek_bitmap as _peek,
     )
-    # states: (num_workers, batch_size, visible_size) f32 numpy
-    all_states_np = shared_bufs._states.numpy()
-    # logits: (num_workers, batch_size, action_dim) f32 numpy
-    all_logits_np = shared_bufs._logits.numpy()
-    # values: (num_workers, batch_size, num_players) f32 numpy
+    # Contiguous views of the shared-memory tensors (views don't survive
+    # pickling, so they're built per-process here).
+    # states: (W, B, num_tokens, token_dim) f32 → flatten last two for gather.
+    all_states_np = shared_bufs._states.numpy().reshape(
+        shared_bufs.num_workers, shared_bufs.batch_size, num_tokens * token_dim,
+    )
+    all_phase_ids_np = shared_bufs._phase_ids.numpy()
+    all_action_ids_np = shared_bufs._action_ids.numpy()
+    all_n_legals_np = shared_bufs._n_legals.numpy()
+    all_priors_np = shared_bufs._priors.numpy()
     all_values_np = shared_bufs._values.numpy()
-    logit_row_bytes = act * 4  # fp32 = 4 bytes per element
+    priors_row_bytes = k_max * 4  # f32 = 4 bytes per element
 
     # Bitmap and event handles
     submitted_masks, sig_counts = shared_bufs.get_bitmap_arrays()
@@ -339,11 +452,15 @@ def _eval_server_serve(
     _widx_buf = np.empty(partition_size, dtype=np.int32)
     _cnt_buf = np.empty(partition_size, dtype=np.int32)
 
+    # Pre-compute the K_MAX arange + a scratch long buffer for n_legals
+    # comparisons, allocated on GPU once (reused every batch).
+    gpu_k_range = torch.arange(k_max, device=device)
+
     # --- Shared helpers (closures over setup state) ---
 
     def _infer_and_scatter(widx: np.ndarray, cnts: np.ndarray,
                            n_req: int, padded_n: int = 0) -> int:
-        """Gather states, run GPU inference, scatter results, signal workers.
+        """Gather inputs, run GPU inference + gather+softmax, scatter sparse priors.
 
         Args:
             widx: Worker indices array (length n_req).
@@ -355,8 +472,18 @@ def _eval_server_serve(
             total_n: Actual number of states processed.
         """
         nonlocal _ti
+        # Gather all four inputs into the pinned buffers via Cython memcpy.
         total_n = _gather_states(
-            pin_s_np, all_states_np, widx, cnts, n_req,
+            pin_s_flat_np, all_states_np, widx, cnts, n_req,
+        )
+        _gather_phase_ids(
+            pin_phase_ids_np, all_phase_ids_np, widx, cnts, n_req,
+        )
+        _gather_action_ids(
+            pin_action_ids_np, all_action_ids_np, widx, cnts, n_req,
+        )
+        _gather_n_legals(
+            pin_n_legals_np, all_n_legals_np, widx, cnts, n_req,
         )
         if padded_n == 0:
             padded_n = total_n
@@ -366,12 +493,33 @@ def _eval_server_serve(
 
         gpu_s_batch = gpu_s[:padded_n]
         gpu_s_batch[:total_n].copy_(pin_s[:total_n], non_blocking=True)
+        gpu_phase_ids[:total_n].copy_(pin_phase_ids[:total_n], non_blocking=True)
+        gpu_action_ids[:total_n].copy_(pin_action_ids[:total_n], non_blocking=True)
+        gpu_n_legals[:total_n].copy_(pin_n_legals[:total_n], non_blocking=True)
+
         with torch.inference_mode():
-            policy_logits, values = model(gpu_s_batch)
-            pin_log[:total_n].copy_(
-                policy_logits[:total_n], non_blocking=True,
+            # Autocast region is already active (entered once for the whole
+            # serve loop). Running the gather / masked_fill / softmax inside
+            # it keeps the 14977-wide dense logits in bf16/fp16; upcasting to
+            # f32 just to softmax would undo most of the autocast win.
+            logits_dense, values = model(
+                gpu_s_batch, gpu_phase_ids[:padded_n],
             )
-            pin_val[:total_n].copy_(values[:total_n], non_blocking=True)
+            # logits_dense: (padded_n, MAX_ACTION_SIZE)  in autocast dtype
+            # values:       (padded_n, num_players)      in autocast dtype
+            idx = gpu_action_ids[:total_n].to(torch.long)        # (B, K_MAX)
+            gathered = logits_dense[:total_n].gather(1, idx)     # (B, K_MAX)
+            k_mask = (
+                gpu_k_range[None, :]
+                < gpu_n_legals[:total_n].to(torch.long)[:, None]
+            )
+            gathered = gathered.masked_fill(~k_mask, -1e9)
+            # Cast to f32 only on the final copy into the persistent buffer.
+            gpu_priors[:total_n] = gathered.softmax(dim=1).to(torch.float32)
+            gpu_val[:total_n] = values[:total_n].to(torch.float32)
+
+            pin_priors[:total_n].copy_(gpu_priors[:total_n], non_blocking=True)
+            pin_val[:total_n].copy_(gpu_val[:total_n], non_blocking=True)
             if use_cuda:
                 torch.cuda.synchronize()
 
@@ -379,9 +527,9 @@ def _eval_server_serve(
             stats.record_batch(total_n, perf_counter() - _ti)
 
         _scatter_results(
-            pin_log_np.view(np.int8), pin_val_np,
-            all_logits_np.view(np.int8), all_values_np,
-            widx, cnts, n_req, logit_row_bytes,
+            pin_priors_np.view(np.int8), pin_val_np,
+            all_priors_np.view(np.int8), all_values_np,
+            widx, cnts, n_req, priors_row_bytes,
         )
         for i in range(n_req):
             done_events[widx[i]].set()
@@ -638,21 +786,24 @@ class EvaluationServer:
 class RemoteEvaluator(BaseEvaluator):
     """Worker-side proxy that evaluates states via shared memory + EvaluationServer.
 
-    Implements the same evaluate/evaluate_batch/evaluate_terminal interface
-    as NNEvaluator, so it can be used as a drop-in replacement.
+    Implements the same evaluate / evaluate_leaves / evaluate_terminal
+    interface as NNEvaluator, so it can be used as a drop-in replacement.
 
-    Write side: pure numpy slice assignment into f32 shared memory (no torch).
-    Read side: zero-copy f32 numpy views for Cython mask+softmax (no torch).
+    Hot path is pure numpy: workers fill ``(num_tokens, token_dim)`` f32
+    token buffers via ``core.token_data.get_token_data``, write phase_id /
+    action_ids / n_legal scalars into their shared-mem slots, publish a
+    bitmap bit, and sleep on an Event until the server signals completion.
+    The returned priors are already softmaxed over the legal action list
+    on the GPU — no worker-side gather or softmax.
 
     Communication uses per-server uint64 bitmaps for lockfree request
     submission (atomic fetch-or) and per-worker mp.Events for done
-    notification. Worker sets its bit in the server's bitmap, sleeps on
-    Event.wait() until the server signals completion, then reads results.
+    notification.
 
-    Invariant: each worker may have at most one outstanding eval request at a
-    time. Output slots are keyed by worker_idx alone (no request id), so a
-    second request before the first completes would overwrite the output buffer.
-    The sequential submit → wait → read flow enforces this.
+    Invariant: each worker may have at most one outstanding eval request
+    at a time. Output slots are keyed by worker_idx alone (no request id),
+    so a second request before the first completes would overwrite the
+    output buffer. The sequential submit → wait → read flow enforces this.
     """
 
     # Seconds to wait for eval server response before raising.
@@ -669,9 +820,17 @@ class RemoteEvaluator(BaseEvaluator):
     ) -> None:
         super().__init__(num_players, terminal_rank_weight)
         self._worker_idx = worker_idx
+
+        # Input views (worker writes these).
         self._in_states_np = shared_bufs.get_input_states_np(worker_idx)
-        self._out_logits = shared_bufs.get_output_logits(worker_idx)
-        self._out_values = shared_bufs.get_output_values(worker_idx)
+        self._in_phase_ids_np = shared_bufs.get_input_phase_ids_np(worker_idx)
+        self._in_action_ids_np = shared_bufs.get_input_action_ids_np(worker_idx)
+        self._in_n_legals_np = shared_bufs.get_input_n_legals_np(worker_idx)
+
+        # Output views (worker reads these; already softmaxed + canonical).
+        self._out_priors_np = shared_bufs.get_output_priors_np(worker_idx)
+        self._out_values_np = shared_bufs.get_output_values_np(worker_idx)
+
         self._profile = profile
         self._stats: EvalClientStats | None = EvalClientStats() if profile else None
 
@@ -702,58 +861,70 @@ class RemoteEvaluator(BaseEvaluator):
                 f"(worker {self._worker_idx}, batch {n})"
             )
 
-    def evaluate(self, state: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Evaluate a single state via the remote server."""
-        from core.actions import get_valid_action_mask
+    def evaluate(
+        self, state: Any,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int]:
+        """Evaluate a single game state via the remote server.
 
-        active_player = state.get_active_player()
-        rotate_visible_state_into(
-            self._in_states_np[0], state._array, active_player, self.num_players
-        )
-        mask = get_valid_action_mask(state)
+        Writes the token buffer / phase_id / legal action ids straight into
+        the worker's shared-mem input slot, then blocks on the server's done
+        event. Returns sparse softmax priors + canonical values (no
+        worker-side gather or softmax).
+
+        Returns:
+            (priors_legal, values_canonical, action_ids_legal, n_legal, phase_id):
+            - priors_legal: (n_legal,) float32 softmax over legal actions.
+            - values_canonical: (num_players,) float32 in canonical order.
+            - action_ids_legal: (n_legal,) uint16 phase-local legal action ids.
+            - n_legal: count of legal actions.
+            - phase_id: decision phase id 0-7.
+        """
+        phase_id = get_decision_phase_py(state)
+        get_token_data(state, self._in_states_np[0])
+        self._in_phase_ids_np[0] = phase_id
+        # enumerate writes phase-local action ids directly into shared mem.
+        n = enumerate_legal_actions_py(state, self._in_action_ids_np[0])
+        self._in_n_legals_np[0] = n
 
         self._request_eval(1)
-        logits = self._out_logits[0].numpy()
-        values = self._out_values[0].numpy()
 
-        return self._finalize_single(logits, values, mask, active_player)
-
-    def evaluate_batch(
-        self,
-        states: list[Any],
-    ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        """Evaluate multiple states in a single round-trip to the server."""
-        from core.actions import get_valid_action_mask
-
-        n = len(states)
-        if n == 0:
-            return []
-
-        active_ids = [s.get_active_player() for s in states]
-
-        masks_list = []
-        for i, (s, ap) in enumerate(zip(states, active_ids)):
-            rotate_visible_state_into(
-                self._in_states_np[i], s._array, ap, self.num_players
-            )
-            masks_list.append(get_valid_action_mask(s))
-
-        self._request_eval(n)
-        logits_np = self._out_logits[:n].numpy()
-        values_np = self._out_values[:n].numpy()
-
-        return self._finalize_batch(logits_np, values_np, masks_list, active_ids)
+        return (
+            self._out_priors_np[0, :n].copy(),
+            self._out_values_np[0].copy(),
+            self._in_action_ids_np[0, :n].copy(),
+            n,
+            phase_id,
+        )
 
     def evaluate_leaves(
         self,
         state_arrays: list[np.ndarray],
-        active_player_ids: list[int],
+        phase_ids: list[int],
+        action_ids_buf: np.ndarray,
+        n_legals: list[int],
     ) -> list[tuple[np.ndarray, np.ndarray]]:
-        """Evaluate pre-computed leaf data in a single round-trip to the server.
+        """Evaluate pre-enumerated leaf data in a single round-trip to the server.
 
-        Returns raw logits — the caller applies masked softmax using the
-        legal masks it already has on each node.
+        MCTS has already enumerated legal actions + computed phase ids during
+        selection, so we just fill the per-leaf input rows and submit one
+        batch. Returned priors are already softmaxed over each leaf's legal
+        list on the GPU.
+
+        Args:
+            state_arrays: Raw int16 state arrays (pool row views), one per
+                leaf. Each ``(total_size,)`` int16.
+            phase_ids: Decision phase ids per leaf, length n.
+            action_ids_buf: Legal phase-local action ids, shape
+                ``(>= n, K_MAX)`` uint16. Only ``[i, :n_legals[i]]`` is read.
+            n_legals: Count of legal actions per leaf, length n.
+
+        Returns:
+            List of ``(priors_legal[:n], values_canonical)`` tuples.
         """
+        # Deferred import: keep GameState out of top-level to avoid a circular
+        # import when core.state depends on Cython modules at init time.
+        from core.state import GameState
+
         n = len(state_arrays)
         if n == 0:
             return []
@@ -763,9 +934,22 @@ class RemoteEvaluator(BaseEvaluator):
         if _stats is not None:
             _t0 = perf_counter()
 
-        in_np = self._in_states_np
-        for i, (arr, ap) in enumerate(zip(state_arrays, active_player_ids)):
-            rotate_visible_state_into(in_np[i], arr, ap, self.num_players)
+        # Rebind a scratch GameState across rows — get_token_data needs a
+        # GameState wrapper, but we don't want to allocate a new one per leaf.
+        scratch_gs = GameState.from_buffer(state_arrays[0], self.num_players)
+        get_token_data(scratch_gs, self._in_states_np[0])
+        self._in_phase_ids_np[0] = phase_ids[0]
+        n0 = n_legals[0]
+        self._in_action_ids_np[0, :n0] = action_ids_buf[0, :n0]
+        self._in_n_legals_np[0] = n0
+
+        for i in range(1, n):
+            scratch_gs.rebind(state_arrays[i], self.num_players)
+            get_token_data(scratch_gs, self._in_states_np[i])
+            self._in_phase_ids_np[i] = phase_ids[i]
+            ni = n_legals[i]
+            self._in_action_ids_np[i, :ni] = action_ids_buf[i, :ni]
+            self._in_n_legals_np[i] = ni
 
         if _stats is not None:
             _t1 = perf_counter()
@@ -777,10 +961,13 @@ class RemoteEvaluator(BaseEvaluator):
             _t2 = perf_counter()
             _stats.wait_secs += _t2 - _t1
 
-        logits_np = self._out_logits[:n].numpy()
-        values_np = self._out_values[:n].numpy()
-
-        results = self._finalize_leaves(logits_np, values_np, active_player_ids)
+        results = [
+            (
+                self._out_priors_np[i, :n_legals[i]].copy(),
+                self._out_values_np[i].copy(),
+            )
+            for i in range(n)
+        ]
 
         if _stats is not None:
             _stats.result_secs += perf_counter() - _t2
