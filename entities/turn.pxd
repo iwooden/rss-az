@@ -91,6 +91,16 @@ cdef class TurnState:
     cpdef int get_acq_offer_corp(self, GameState state)
     cpdef void set_acq_offer_corp(self, GameState state, int corp_id)
     cpdef void clear_acq_offer_corp(self, GameState state)
+    cpdef void enter_acq_offer(
+        self,
+        GameState state,
+        int offered_corp,
+        int company_id,
+        int price,
+        int original_corp,
+        int deciding_player,
+    )
+    cpdef void clear_acquisition_context(self, GameState state)
 
     # Compatibility aliases for older phase-specific turn context
     cpdef int get_ipo_company(self, GameState state)

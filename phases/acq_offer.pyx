@@ -116,9 +116,14 @@ cdef void apply_acq_offer_action(GameState state, ActionInfo* info) noexcept:
 
                 next_price = _get_fi_purchase_price(next_corp, company_id)
                 deciding_player = corp_president_id(state, next_corp)
-                turn_module.TURN.set_active_corp(state, next_corp)
-                turn_module.TURN.set_acq_offer_price(state, next_price)
-                turn_module.TURN.set_active_player(state, deciding_player)
+                turn_module.TURN.enter_acq_offer(
+                    state,
+                    next_corp,
+                    company_id,
+                    next_price,
+                    original_corp,
+                    deciding_player,
+                )
                 # Stay in ACQ_OFFER
             else:
                 # All higher-priority corps declined, or the original corp is

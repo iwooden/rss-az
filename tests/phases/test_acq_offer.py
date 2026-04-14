@@ -42,19 +42,59 @@ from tests.phases.conftest import (
 CORP_OS = int(CorpIndices.CORP_OS)  # 2
 
 
+class TestTurnAcqOfferHelpers:
+    def test_enter_acq_offer_sets_grouped_context(self, game_state):
+        TURN.enter_acq_offer(
+            game_state,
+            offered_corp=4,
+            company_id=7,
+            price=33,
+            original_corp=2,
+            deciding_player=1,
+        )
+
+        assert TURN.get_acq_offer_corp(game_state) == 2
+        assert TURN.get_acq_offer_price(game_state) == 33
+        assert TURN.get_active_corp(game_state) == 4
+        assert TURN.get_active_company(game_state) == 7
+        assert TURN.get_active_player(game_state) == 1
+        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_ACQ_OFFER)
+
+    def test_clear_acquisition_context_clears_offer_fields(self, game_state):
+        TURN.set_active_player(game_state, 0)
+        TURN.enter_acq_offer(
+            game_state,
+            offered_corp=4,
+            company_id=7,
+            price=33,
+            original_corp=2,
+            deciding_player=1,
+        )
+
+        TURN.clear_acquisition_context(game_state)
+
+        assert TURN.get_active_corp(game_state) == -1
+        assert TURN.get_active_company(game_state) == -1
+        assert TURN.get_acq_offer_price(game_state) == 0
+        assert TURN.get_acq_offer_corp(game_state) == -1
+        assert TURN.get_active_player(game_state) == 1
+
+
 def _enter_acq_offer_direct(state, offered_corp, company_id, price,
                             original_corp, deciding_player):
-    """Manually set up ACQ_OFFER state, replicating _enter_acq_offer().
+    """Set up ACQ_OFFER state through TURN's grouped production helper.
 
-    This avoids coupling tests to ACQUISITION internals while still producing
-    a valid ACQ_OFFER state for the driver to process.
+    This still avoids coupling tests to ACQUISITION internals, but no longer
+    duplicates the grouped field writes in Python.
     """
-    TURN.set_acq_offer_corp(state, original_corp)
-    TURN.set_acq_offer_price(state, price)
-    TURN.set_active_corp(state, offered_corp)
-    TURN.set_active_company(state, company_id)
-    TURN.set_active_player(state, deciding_player)
-    TURN.set_phase(state, int(GamePhases.PHASE_ACQ_OFFER))
+    TURN.enter_acq_offer(
+        state,
+        offered_corp=offered_corp,
+        company_id=company_id,
+        price=price,
+        original_corp=original_corp,
+        deciding_player=deciding_player,
+    )
 
 
 # =============================================================================

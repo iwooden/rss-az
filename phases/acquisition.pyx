@@ -65,10 +65,7 @@ cdef void _clear_acquisition_context(GameState state) noexcept:
     Shared exit cleanup for both the ACQ→CLOSING transition and the
     ACQ_OFFER→ACQUISITION return path.
     """
-    turn_module.TURN.clear_active_corp(state)
-    turn_module.TURN.clear_active_company(state)
-    turn_module.TURN.clear_acq_offer_price(state)
-    turn_module.TURN.clear_acq_offer_corp(state)
+    turn_module.TURN.clear_acquisition_context(state)
 
 
 cdef void _clear_acq_offer_flags(GameState state) noexcept:
@@ -311,12 +308,14 @@ cdef void _enter_acq_offer(
         original_corp: the corp that initiated the acquisition (acq_offer_corp)
         deciding_player: who makes the accept/pass decision
     """
-    turn_module.TURN.set_acq_offer_corp(state, original_corp)
-    turn_module.TURN.set_acq_offer_price(state, price)
-    turn_module.TURN.set_active_corp(state, offered_corp)
-    turn_module.TURN.set_active_company(state, company_id)
-    turn_module.TURN.set_active_player(state, deciding_player)
-    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_ACQ_OFFER)
+    turn_module.TURN.enter_acq_offer(
+        state,
+        offered_corp,
+        company_id,
+        price,
+        original_corp,
+        deciding_player,
+    )
 
 
 cdef void _resume_acquisition_after_offer(GameState state, int original_corp) noexcept:
@@ -477,9 +476,7 @@ cdef void _transition_to_closing(GameState state) noexcept:
 cdef void setup_acquisition_phase(GameState state) noexcept:
     """Initialize ACQUISITION phase context. Called by WRAP_UP."""
     turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_ACQUISITION)
-    turn_module.TURN.clear_active_corp(state)
-    turn_module.TURN.clear_active_company(state)
-    turn_module.TURN.clear_acq_offer_price(state)
+    turn_module.TURN.clear_acquisition_context(state)
     turn_module.TURN.clear_passed_flags(state)
 
     if _process_receivership_forced_buys(state):

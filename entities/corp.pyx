@@ -572,6 +572,10 @@ cdef class Corporation:
         """Return cached corp income (raw integer dollars)."""
         return corp_income(state, self.corp_id)
 
+    cpdef void refresh_cache(self, GameState state):
+        """Force immediate recomputation of this corp's derived cache."""
+        _refresh_corp_cache(state, self.corp_id)
+
     cpdef void set_income(self, GameState state, int income):
         """Set cached corp income (raw integer dollars)."""
         state._data[_corp_slot(self.corp_id, CORP_FIELDS.income)] = <int16_t>income

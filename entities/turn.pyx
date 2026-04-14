@@ -37,6 +37,7 @@ from libc.stdint cimport int16_t
 from core.state cimport GameState, LAYOUT, TURN_OFFSETS
 from core.data cimport (
     GameConstants,
+    GamePhases,
     COMPANY_INCOME,
     COMPANY_STARS,
     COST_OF_OWNERSHIP,
@@ -328,6 +329,30 @@ cdef class TurnState:
     cpdef void clear_acq_offer_corp(self, GameState state):
         """Clear the ACQ_OFFER corp sentinel."""
         state._data[LAYOUT.turn_offset + TURN_OFFSETS.acq_offer_corp] = -1
+
+    cpdef void enter_acq_offer(
+        self,
+        GameState state,
+        int offered_corp,
+        int company_id,
+        int price,
+        int original_corp,
+        int deciding_player,
+    ):
+        """Populate the grouped ACQ_OFFER turn context and enter the phase."""
+        self.set_acq_offer_corp(state, original_corp)
+        self.set_acq_offer_price(state, price)
+        self.set_active_corp(state, offered_corp)
+        self.set_active_company(state, company_id)
+        self.set_active_player(state, deciding_player)
+        self.set_phase(state, <int>GamePhases.PHASE_ACQ_OFFER)
+
+    cpdef void clear_acquisition_context(self, GameState state):
+        """Clear the shared acquisition / ACQ_OFFER context fields."""
+        self.clear_active_corp(state)
+        self.clear_active_company(state)
+        self.clear_acq_offer_price(state)
+        self.clear_acq_offer_corp(state)
 
     # =========================================================================
     # COMPATIBILITY ALIASES FOR OLDER PHASE-SPECIFIC TURN CONTEXT

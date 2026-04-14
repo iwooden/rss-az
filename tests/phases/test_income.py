@@ -42,11 +42,11 @@ def _prime_corp_income(state, corp_id, income):
     ``corp_cache_dirty`` (e.g. ``set_cash``, ``set_price_index``). Callers
     wanting to stage a synthetic income for a floated corp must:
       1. First land all dirty-bit-invalidating mutations (set_cash, etc.).
-      2. Read ``get_income`` once to refresh and clear the dirty bit.
+      2. Refresh the corp cache once to clear the dirty bit.
       3. Finally write ``set_income(income)`` to overwrite just the income
          slot with the synthetic value.
     """
-    CORPS[corp_id].get_income(state)  # Refresh cache → clears dirty bit.
+    CORPS[corp_id].refresh_cache(state)
     CORPS[corp_id].set_income(state, income)
 
 
@@ -112,6 +112,17 @@ class TestPlayerIncome:
 
 class TestCorpIncome:
     """INCOME step 2: corp income with bankruptcy-on-negative-and-insolvent."""
+
+    def test_refresh_cache_clears_dirty_bit_for_test_income_override(self):
+        """Explicit refresh should let tests override cached income without re-dirtying."""
+        state = make_auto_phase_state(3, PHASE_INCOME)
+        float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
+
+        CORPS[0].set_cash(state, 20)  # dirties the derived corp cache
+        CORPS[0].refresh_cache(state)
+        CORPS[0].set_income(state, 7)
+
+        assert CORPS[0].get_income(state) == 7
 
     def test_positive_income_adds_to_cash(self):
         """Floated corp with positive income gains it in cash; stays active."""

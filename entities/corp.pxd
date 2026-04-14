@@ -132,6 +132,7 @@ cdef class Corporation:
 
     # Income
     cpdef int get_income(self, GameState state)
+    cpdef void refresh_cache(self, GameState state)
     cpdef void set_income(self, GameState state, int income)
     cpdef int get_raw_revenue(self, GameState state)
     cpdef int get_synergy_income(self, GameState state)
