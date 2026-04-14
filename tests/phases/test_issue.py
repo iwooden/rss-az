@@ -558,22 +558,28 @@ class TestRemainingFlags:
             assert not TURN.is_issue_remaining(game_state, corp_id)
 
     def test_all_active_corps_marked_remaining(self, game_state):
-        """Every active corp is marked remaining at setup."""
+        """Every active corp with unissued shares is marked remaining at setup."""
         float_corp_for_test(game_state, corp_id=0, player_id=0,
                             company_id=CO_A, par_index=5)
         float_corp_for_test(game_state, corp_id=2, player_id=0,
                             company_id=CO_B, par_index=10)
         _enter_issue(game_state)
 
-        for corp_id in range(int(GameConstants.NUM_CORPS)):
-            if CORPS[corp_id].is_active(game_state):
-                # Active corp is either remaining (waiting) or already processed
-                # (current decision). The current active corp is still "remaining"
-                # until its decision is applied.
-                if TURN.get_active_corp(game_state) == corp_id:
-                    assert TURN.is_issue_remaining(game_state, corp_id)
-            else:
-                assert not TURN.is_issue_remaining(game_state, corp_id)
+        remaining_corps = {
+            corp_id
+            for corp_id in range(int(GameConstants.NUM_CORPS))
+            if TURN.is_issue_remaining(game_state, corp_id)
+        }
+        expected_remaining = {
+            corp_id
+            for corp_id in range(int(GameConstants.NUM_CORPS))
+            if CORPS[corp_id].is_active(game_state)
+            and CORPS[corp_id].get_unissued_shares(game_state) > 0
+        }
+
+        assert remaining_corps == expected_remaining
+        assert remaining_corps == {0, 2}
+        assert TURN.get_active_corp(game_state) in remaining_corps
 
 
 # =============================================================================
