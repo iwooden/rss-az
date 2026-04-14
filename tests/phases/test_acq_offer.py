@@ -27,10 +27,11 @@ from tests.phases.conftest import (
     apply_and_verify,
     get_legal_actions,
     find_legal_action,
+    find_legal_action_with_info,
     float_corp_for_test,
     setup_receivership_corp,
-    draw_to_player,
     draw_to_fi,
+    draw_to_player,
     draw_to_corp,
 )
 
@@ -743,10 +744,9 @@ class TestIntegrationCrossPresident:
 
         player_cash_before = PLAYERS[1].get_cash(state)
 
-        acq_id = find_legal_action(
+        acq_id, info = find_legal_action_with_info(
             state, action_type=ACTION_ACQ_PRICE, corp_id=0, company_id=private_co,
         )
-        info = next(i for aid, i in get_legal_actions(state) if aid == acq_id)
         price = COMPANIES[private_co].get_low_price() + info.amount
 
         apply_and_verify(state, acq_id)

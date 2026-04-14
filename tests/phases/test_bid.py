@@ -19,6 +19,7 @@ from tests.phases.conftest import (
     apply_and_verify,
     get_legal_actions,
     find_legal_action,
+    find_legal_action_with_info,
 )
 
 
@@ -136,9 +137,7 @@ class TestRaiseAction:
         _, company_id, _ = _enter_bid_phase(game_state)
         face = COMPANIES[company_id].get_face_value()
 
-        raise_id = find_legal_action(game_state, action_type=ACTION_RAISE)
-        actions = get_legal_actions(game_state)
-        raise_info = next(info for _, info in actions if info.action_type == ACTION_RAISE)
+        raise_id, raise_info = find_legal_action_with_info(game_state, action_type=ACTION_RAISE)
         expected_price = face + 1 + raise_info.amount
 
         apply_and_verify(game_state, raise_id)
@@ -274,9 +273,7 @@ class TestAuctionResolution:
         # Give raiser enough cash
         PLAYERS[raiser].set_cash(game_state, 200)
 
-        raise_id = find_legal_action(game_state, action_type=ACTION_RAISE)
-        raise_info = next(info for _, info in get_legal_actions(game_state)
-                         if info.action_type == ACTION_RAISE)
+        raise_id, raise_info = find_legal_action_with_info(game_state, action_type=ACTION_RAISE)
         expected_price = COMPANIES[company_id].get_face_value() + 1 + raise_info.amount
         apply_and_verify(game_state, raise_id)
 

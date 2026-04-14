@@ -8,6 +8,10 @@ Usage:
     that verify state setup before applying actions).
   - get_legal_actions(state): Enumerate and decode all legal actions. Returns
     list of (action_id, decoded_info) tuples.
+  - find_legal_action_with_info(state, **kwargs): Find the first matching legal
+    action and return (action_id, decoded_info).
+  - find_all_legal_actions_with_info(state, **kwargs): Return all matching legal
+    actions as (action_id, decoded_info) tuples.
   - find_legal_action(state, **kwargs): Find a legal action matching decoded
     properties. Returns action_id or raises AssertionError.
   - float_corp_for_test(...): Float a corporation for testing.
@@ -79,6 +83,66 @@ def get_legal_actions(state):
     return result
 
 
+def _legal_action_matches(info, action_type=None, corp_id=None, company_id=None, amount=None):
+    if action_type is not None and info.action_type != action_type:
+        return False
+    if corp_id is not None and info.corp_id != corp_id:
+        return False
+    if company_id is not None and info.company_id != company_id:
+        return False
+    if amount is not None and info.amount != amount:
+        return False
+    return True
+
+
+def _format_legal_action_filters(action_type=None, corp_id=None, company_id=None, amount=None):
+    filters = []
+    if action_type is not None:
+        filters.append(f"action_type={action_type}")
+    if corp_id is not None:
+        filters.append(f"corp_id={corp_id}")
+    if company_id is not None:
+        filters.append(f"company_id={company_id}")
+    if amount is not None:
+        filters.append(f"amount={amount}")
+    return filters
+
+
+def find_legal_action_with_info(state, action_type=None, corp_id=None, company_id=None, amount=None):
+    """Find the first legal action matching the given decoded properties.
+
+    Returns:
+        (action_id, info) tuple for the first matching legal action.
+
+    Raises:
+        AssertionError if no matching action is found.
+    """
+    actions = get_legal_actions(state)
+    for action_id, info in actions:
+        if _legal_action_matches(
+            info,
+            action_type=action_type,
+            corp_id=corp_id,
+            company_id=company_id,
+            amount=amount,
+        ):
+            return action_id, info
+
+    filters = _format_legal_action_filters(
+        action_type=action_type,
+        corp_id=corp_id,
+        company_id=company_id,
+        amount=amount,
+    )
+    available = [(aid, f"type={i.action_type} corp={i.corp_id} co={i.company_id} amt={i.amount}")
+                 for aid, i in actions]
+    assert False, (
+        f"No legal action matching {', '.join(filters)}.\n"
+        f"Available ({len(available)}): {available[:20]}"
+        f"{'...' if len(available) > 20 else ''}"
+    )
+
+
 def find_legal_action(state, action_type=None, corp_id=None, company_id=None, amount=None):
     """Find a legal action matching the given decoded properties.
 
@@ -95,52 +159,46 @@ def find_legal_action(state, action_type=None, corp_id=None, company_id=None, am
     Raises:
         AssertionError if no matching action is found.
     """
-    actions = get_legal_actions(state)
-    for action_id, info in actions:
-        if action_type is not None and info.action_type != action_type:
-            continue
-        if corp_id is not None and info.corp_id != corp_id:
-            continue
-        if company_id is not None and info.company_id != company_id:
-            continue
-        if amount is not None and info.amount != amount:
-            continue
-        return action_id
-
-    # Build a helpful error message
-    filters = []
-    if action_type is not None:
-        filters.append(f"action_type={action_type}")
-    if corp_id is not None:
-        filters.append(f"corp_id={corp_id}")
-    if company_id is not None:
-        filters.append(f"company_id={company_id}")
-    if amount is not None:
-        filters.append(f"amount={amount}")
-    available = [(aid, f"type={i.action_type} corp={i.corp_id} co={i.company_id} amt={i.amount}")
-                 for aid, i in actions]
-    assert False, (
-        f"No legal action matching {', '.join(filters)}.\n"
-        f"Available ({len(available)}): {available[:20]}"
-        f"{'...' if len(available) > 20 else ''}"
+    action_id, _ = find_legal_action_with_info(
+        state,
+        action_type=action_type,
+        corp_id=corp_id,
+        company_id=company_id,
+        amount=amount,
     )
+    return action_id
+
+
+def find_all_legal_actions_with_info(
+    state, action_type=None, corp_id=None, company_id=None, amount=None
+):
+    """Like find_legal_action_with_info but returns all matching (action_id, info) pairs."""
+    actions = get_legal_actions(state)
+    result = []
+    for action_id, info in actions:
+        if _legal_action_matches(
+            info,
+            action_type=action_type,
+            corp_id=corp_id,
+            company_id=company_id,
+            amount=amount,
+        ):
+            result.append((action_id, info))
+    return result
 
 
 def find_all_legal_actions(state, action_type=None, corp_id=None, company_id=None, amount=None):
     """Like find_legal_action but returns ALL matching action_ids as a list."""
-    actions = get_legal_actions(state)
-    result = []
-    for action_id, info in actions:
-        if action_type is not None and info.action_type != action_type:
-            continue
-        if corp_id is not None and info.corp_id != corp_id:
-            continue
-        if company_id is not None and info.company_id != company_id:
-            continue
-        if amount is not None and info.amount != amount:
-            continue
-        result.append(action_id)
-    return result
+    return [
+        action_id
+        for action_id, _ in find_all_legal_actions_with_info(
+            state,
+            action_type=action_type,
+            corp_id=corp_id,
+            company_id=company_id,
+            amount=amount,
+        )
+    ]
 
 
 # =============================================================================

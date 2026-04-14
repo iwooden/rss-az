@@ -22,7 +22,9 @@ from tests.phases.conftest import (
     apply_and_verify,
     get_legal_actions,
     find_legal_action,
+    find_legal_action_with_info,
     find_all_legal_actions,
+    find_all_legal_actions_with_info,
     float_corp_for_test,
     setup_receivership_corp,
     draw_to_player,
@@ -185,13 +187,12 @@ class TestAcqPrice:
 
         setup_acquisition_phase_py(game_state)
 
-        acq_actions = find_all_legal_actions(
+        acq_actions = find_all_legal_actions_with_info(
             game_state, action_type=ACTION_ACQ_PRICE, corp_id=1, company_id=seller_co,
         )
         assert len(acq_actions) > 0, "Expected ACQ_PRICE actions for corp-to-corp"
 
-        action_id = acq_actions[len(acq_actions) // 2]
-        info = next(i for aid, i in get_legal_actions(game_state) if aid == action_id)
+        action_id, info = acq_actions[len(acq_actions) // 2]
         price = COMPANIES[seller_co].get_low_price() + info.amount
 
         buyer_cash_before = CORPS[1].get_cash(game_state)
@@ -216,10 +217,9 @@ class TestAcqPrice:
 
         setup_acquisition_phase_py(game_state)
 
-        action_id = find_legal_action(
+        action_id, info = find_legal_action_with_info(
             game_state, action_type=ACTION_ACQ_PRICE, corp_id=0, company_id=private_co,
         )
-        info = next(i for aid, i in get_legal_actions(game_state) if aid == action_id)
         price = COMPANIES[private_co].get_low_price() + info.amount
 
         player_cash_before = PLAYERS[0].get_cash(game_state)
