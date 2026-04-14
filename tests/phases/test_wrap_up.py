@@ -26,6 +26,7 @@ from tests.phases.conftest import (
     assert_post_auto,
     float_corp_for_test,
 )
+from tests.phases.helpers.ownership import ids_at_location
 
 
 # =============================================================================
@@ -44,26 +45,17 @@ LOC_REMOVED = int(CompanyLocation.LOC_REMOVED)
 
 def _auction_ids(state):
     """Return sorted list of company IDs currently at LOC_AUCTION."""
-    return sorted(
-        cid for cid in range(int(GameConstants.NUM_COMPANIES))
-        if COMPANIES[cid].get_location(state) == LOC_AUCTION
-    )
+    return ids_at_location(state, LOC_AUCTION)
 
 
 def _revealed_ids(state):
     """Return sorted list of company IDs currently at LOC_REVEALED."""
-    return sorted(
-        cid for cid in range(int(GameConstants.NUM_COMPANIES))
-        if COMPANIES[cid].get_location(state) == LOC_REVEALED
-    )
+    return ids_at_location(state, LOC_REVEALED)
 
 
 def _fi_owned_ids(state):
     """Return sorted list of company IDs currently at LOC_FI."""
-    return sorted(
-        cid for cid in range(int(GameConstants.NUM_COMPANIES))
-        if COMPANIES[cid].get_location(state) == LOC_FI
-    )
+    return ids_at_location(state, LOC_FI)
 
 
 # =============================================================================

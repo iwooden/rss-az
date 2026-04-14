@@ -31,11 +31,8 @@ from tests.phases.conftest import (
     draw_to_fi,
     draw_to_corp,
 )
+from tests.phases.helpers.ownership import count_at_location
 
-
-# =============================================================================
-# HELPERS
-# =============================================================================
 
 CORP_OS = int(CorpIndices.CORP_OS)  # 2
 
@@ -425,10 +422,7 @@ class TestAcquisitionZoneMerge:
         apply_and_verify(game_state, acq_id)
         _pass_through_acquisition(game_state)
 
-        for cid in range(int(GameConstants.NUM_COMPANIES)):
-            assert COMPANIES[cid].get_location(game_state) != int(CompanyLocation.LOC_CORP_ACQ), (
-                f"Company {cid} still in LOC_CORP_ACQ after ACQUISITION ended"
-            )
+        assert count_at_location(game_state, CompanyLocation.LOC_CORP_ACQ) == 0
 
     def test_proceeds_flushed_after_phase(self, game_state):
         """After ACQUISITION ends, all corps have 0 acquisition_proceeds."""

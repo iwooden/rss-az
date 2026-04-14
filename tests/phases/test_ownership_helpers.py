@@ -6,6 +6,8 @@ from tests.phases.helpers.ownership import (
     give_company_to_player,
     give_company_to_corp,
     give_company_to_fi,
+    ids_at_location,
+    count_at_location,
 )
 
 
@@ -38,3 +40,16 @@ class TestOwnershipHelpers:
 
         assert COMPANIES[company_id].get_location(game_state) == int(CompanyLocation.LOC_FI)
         assert COMPANIES[company_id].get_owner_id(game_state) == -1
+
+    def test_ids_at_location_returns_sorted_company_ids(self, game_state):
+        company_id = draw_to_player(game_state, player_id=1)
+        give_company_to_player(game_state, CO_5S, player_id=0)
+
+        assert ids_at_location(game_state, CompanyLocation.LOC_PLAYER) == sorted([company_id, CO_5S])
+
+    def test_count_at_location_counts_companies_at_location(self, game_state):
+        company_id = draw_to_player(game_state, player_id=1)
+        give_company_to_fi(game_state, company_id)
+        give_company_to_fi(game_state, CO_5S)
+
+        assert count_at_location(game_state, CompanyLocation.LOC_FI) == 2

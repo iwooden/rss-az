@@ -13,7 +13,7 @@ from core.actions import (
 from core.data import GamePhases, GameConstants
 from entities.turn import TURN
 from entities.player import PLAYERS
-from entities.company import COMPANIES
+from entities.company import COMPANIES, CompanyLocation
 
 from tests.phases.conftest import (
     apply_and_verify,
@@ -21,6 +21,7 @@ from tests.phases.conftest import (
     find_legal_action,
     find_legal_action_with_info,
 )
+from tests.phases.helpers.ownership import count_at_location
 
 
 # =============================================================================
@@ -291,20 +292,14 @@ class TestAuctionResolution:
     def test_replacement_card_drawn(self, game_state):
         """A replacement card is drawn from the deck on auction resolution."""
         num_players = TURN.get_num_players(game_state)
-        deck_before = sum(
-            1 for cid in range(int(GameConstants.NUM_COMPANIES))
-            if COMPANIES[cid].get_location(game_state) == 3  # LOC_REVEALED
-        )
+        deck_before = count_at_location(game_state, CompanyLocation.LOC_REVEALED)
         _enter_bid_phase(game_state)
 
         for _ in range(num_players - 1):
             leave_id = find_legal_action(game_state, action_type=ACTION_PASS)
             apply_and_verify(game_state, leave_id)
 
-        revealed_after = sum(
-            1 for cid in range(int(GameConstants.NUM_COMPANIES))
-            if COMPANIES[cid].get_location(game_state) == 3  # LOC_REVEALED
-        )
+        revealed_after = count_at_location(game_state, CompanyLocation.LOC_REVEALED)
         # One new card should be in LOC_REVEALED (or deck was empty)
         assert revealed_after >= deck_before
 
