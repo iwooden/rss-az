@@ -423,24 +423,28 @@ class TestEnumeration:
                 )
 
     def test_no_raise_when_cannot_beat_current_bid(self, game_state):
-        """No raise actions when player can't afford to beat the current bid."""
-        _, company_id, bid_price = _enter_bid_phase(game_state)
+        """When cash equals the current bid, PASS is the only legal action."""
+        _, _, bid_price = _enter_bid_phase(game_state)
         active = TURN.get_active_player(game_state)
 
-        # Set cash to exactly the current bid — can't beat it
+        # Cash equal to the current bid cannot afford any strictly higher bid.
         PLAYERS[active].set_cash(game_state, bid_price)
 
         actions = get_legal_actions(game_state)
-        raise_actions = [info for _, info in actions if info.action_type == ACTION_RAISE]
-        # face + 1 + 0 might exceed bid_price, or not. Check more carefully.
-        face = COMPANIES[company_id].get_face_value()
-        # All raise options produce face + 1 + offset. The minimum raise is
-        # face + 1 + min_offset where face + 1 + min_offset > bid_price.
-        # If bid_price >= face + AUCTION_CAP - 1, no raise is possible.
-        for info in raise_actions:
-            new_bid = face + 1 + info.amount
-            assert new_bid > bid_price
-            assert new_bid <= bid_price  # cash == bid_price, so this should not exist
+        raise_actions = [
+            (action_id, info)
+            for action_id, info in actions
+            if info.action_type == ACTION_RAISE
+        ]
+        pass_actions = [
+            (action_id, info)
+            for action_id, info in actions
+            if info.action_type == ACTION_PASS
+        ]
+
+        assert raise_actions == []
+        assert len(pass_actions) == 1
+        assert len(actions) == 1
 
     def test_raise_count_matches_affordable_offsets(self, game_state):
         """Number of raise actions equals the number of affordable bid offsets."""
