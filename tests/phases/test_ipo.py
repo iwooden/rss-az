@@ -16,7 +16,6 @@ from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.company import COMPANIES, CompanyLocation
 from entities.market import MARKET
-from entities.deck import DECK
 from phases.ipo import setup_ipo_phase_py
 
 from tests.phases.conftest import (
@@ -26,6 +25,7 @@ from tests.phases.conftest import (
     find_all_legal_actions,
     float_corp_for_test,
 )
+from tests.phases.helpers.ownership import give_company_to_player
 
 
 # =============================================================================
@@ -57,7 +57,7 @@ PAR_37 = ALL_PAR_PRICES.index(37)
 
 def _give_company(state, company_id, player_id=0):
     """Transfer a company into LOC_PLAYER regardless of current location."""
-    DECK.set_company_location(state, company_id, int(CompanyLocation.LOC_PLAYER), player_id)
+    give_company_to_player(state, company_id, player_id)
 
 
 def _enter_ipo(state, owners, cash_by_player=None):

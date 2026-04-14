@@ -50,6 +50,11 @@ from entities.market import MARKET
 from entities.fi import FI
 from entities.deck import DECK
 
+from tests.phases.helpers.ownership import (
+    give_company_to_player,
+    give_company_to_corp,
+)
+
 
 # =============================================================================
 # LEGAL ACTION HELPERS
@@ -270,8 +275,8 @@ def float_corp_for_test(state, corp_id, company_id=None, player_id=0, par_index=
         state: GameState instance
         corp_id: Corporation ID to float
         company_id: Company ID to use. If None, draws the top of the deck.
-            If given, the company is routed out of the deck via
-            ``DECK.set_company_location`` — works regardless of deck position.
+            If given, the company is routed into player ownership through the
+            ownership test helpers, regardless of current location.
         player_id: Player who becomes president (default 0)
         par_index: Market price index for starting share price (default 10)
         float_shares: Shares for player and bank each (default 1)
@@ -284,9 +289,7 @@ def float_corp_for_test(state, corp_id, company_id=None, player_id=0, par_index=
         assert company_id >= 0, "Deck is empty, cannot draw company for floating"
         COMPANIES[company_id].transfer_to_player(state, player_id)
     else:
-        DECK.set_company_location(
-            state, company_id, int(CompanyLocation.LOC_PLAYER), player_id,
-        )
+        give_company_to_player(state, company_id, player_id)
 
     CORPS[corp_id].float_corp(state, player_id, company_id, par_index, float_shares)
     return company_id
@@ -297,9 +300,8 @@ def setup_receivership_corp(state, corp_id, company_ids, par_index=10):
 
     First company is used for floating (transferred to player 0, then floated).
     Player 0's shares are zeroed to trigger receivership. Additional companies
-    are transferred directly to the corp. All company_ids are routed via
-    ``DECK.set_company_location``, so they can be in the deck OR already
-    drawn/owned.
+    are transferred directly to the active corp through the ownership helpers,
+    regardless of whether they started in the deck or were already owned.
 
     Args:
         state: GameState
@@ -311,7 +313,7 @@ def setup_receivership_corp(state, corp_id, company_ids, par_index=10):
                         par_index=par_index)
     PLAYERS[0].set_shares(state, corp_id, 0)
     for cid in company_ids[1:]:
-        DECK.set_company_location(state, cid, int(CompanyLocation.LOC_CORP), corp_id)
+        give_company_to_corp(state, cid, corp_id)
 
 
 # =============================================================================
