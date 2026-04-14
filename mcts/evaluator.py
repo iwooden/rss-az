@@ -1,7 +1,10 @@
 """NN evaluator for MCTS leaf evaluation.
 
-Handles state rotation (active player → slot 0), legal action masking,
-neural network inference, and value un-rotation to canonical player order.
+Fills token buffers from compact int16 game states via
+``core.token_data.get_token_data``, runs NN inference, and returns
+sparse softmax priors over legal actions plus canonical-order values.
+No rotation — the transformer consumes non-rotated state and emits
+values in canonical player order directly.
 """
 
 from __future__ import annotations
@@ -12,113 +15,29 @@ from typing import Any
 import numpy as np
 import torch
 
+from core.token_data import get_num_tokens, TokenDataSize, get_token_data
+from core.actions import (
+    get_decision_phase_py,
+    enumerate_legal_actions_py,
+    MAX_LEGAL_ACTIONS_PY,
+)
+from entities.player import PLAYERS
+
 logger = logging.getLogger(__name__)
 
-from core.state import LayoutInfo, get_layout as _get_layout_uncached
-from mcts.mcts_core import (
-    rotate_visible_state_into as _rotate_cython,
-    masked_softmax as _masked_softmax_cython,
-    unrotate_values as _unrotate_cython,
-)
-
-# Cache layouts per player count
-_layout_cache: dict[int, LayoutInfo] = {}
+K_MAX = int(MAX_LEGAL_ACTIONS_PY)
+TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
 
 
-def get_layout(num_players: int) -> LayoutInfo:
-    """Get cached layout for a given player count.
+def fill_token_buffer(state: Any, buf2d: np.ndarray) -> None:
+    """Fill a ``(num_tokens, TOKEN_DIM)`` float32 buffer from a GameState.
 
-    Wraps core.state.get_layout() with caching since it crosses the
-    Cython/Python boundary each call.
+    Thin wrapper around ``core.token_data.get_token_data`` that isolates
+    the Cython import-site so callers don't need to know where the entry
+    point lives. ``num_players ∉ {3, 4, 5}`` is rejected inside
+    ``get_token_data`` via assert.
     """
-    if num_players not in _layout_cache:
-        _layout_cache[num_players] = _get_layout_uncached(num_players)
-    return _layout_cache[num_players]
-
-
-def rotate_visible_state_into(
-    dst: np.ndarray,
-    state_array: np.ndarray,
-    active_player_id: int,
-    num_players: int,
-) -> None:
-    """Copy visible state into *dst* with player data rotated in-place.
-
-    Delegates to a Cython implementation that uses memcpy and pointer
-    arithmetic instead of numpy roll/copy/reshape.
-
-    Args:
-        dst: Destination array of shape ``(visible_size,)`` — written in-place.
-        state_array: Full state array (visible + hidden).
-        active_player_id: Canonical player ID (0 to num_players-1).
-        num_players: Number of players in the game.
-    """
-    layout = get_layout(num_players)
-    _rotate_cython(
-        dst, state_array, active_player_id, num_players,
-        layout.visible_size, layout.players_offset, layout.player_stride,
-        layout.auction_high_bidder_offset,
-        layout.auction_starter_offset,
-        layout.auction_passed_offset,
-    )
-
-
-def rotate_visible_state(state_array: np.ndarray, active_player_id: int,
-                         num_players: int) -> np.ndarray:
-    """Return a copy of the visible state with player data rotated.
-
-    After rotation, the active player's data is at slot 0 (what the NN expects).
-
-    Rotates:
-    - Player data blocks (contiguous, each player_stride floats)
-    - Turn state per-player fields: auction_high_bidder, auction_starter,
-      auction_passed (each num_players floats)
-
-    Args:
-        state_array: Full state array (visible + hidden).
-        active_player_id: Canonical player ID (0 to num_players-1).
-        num_players: Number of players in the game.
-
-    Returns:
-        Copy of visible state portion with rotation applied.
-    """
-    layout = get_layout(num_players)
-    dst = np.empty(layout.visible_size, dtype=state_array.dtype)
-    rotate_visible_state_into(dst, state_array, active_player_id, num_players)
-    return dst
-
-
-def apply_mask_softmax(logits: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """Apply legal action mask and softmax to raw policy logits.
-
-    Delegates to a Cython implementation that uses a single C loop
-    instead of the previous torch tensor round-trip.
-
-    Args:
-        logits: Raw logits from NN, shape (action_dim,).
-        mask: Binary float32 mask (1.0 = legal, 0.0 = illegal).
-
-    Returns:
-        Probability distribution over actions, shape (action_dim,).
-    """
-    return _masked_softmax_cython(logits, mask)
-
-
-def unrotate_values(values: np.ndarray, active_player_id: int) -> np.ndarray:
-    """Convert NN value output (active player at index 0) to canonical order.
-
-    Delegates to a Cython implementation that avoids numpy dispatch
-    overhead on the tiny (num_players,) array.
-
-    Args:
-        values: Per-player values from NN, shape (num_players,).
-        active_player_id: Canonical player ID of the active player.
-
-    Returns:
-        Values in canonical player order.
-    """
-    vals = values if values.dtype == np.float32 else values.astype(np.float32)
-    return _unrotate_cython(vals, active_player_id, len(vals))
+    get_token_data(state, buf2d)
 
 
 def compute_terminal_values(
@@ -188,13 +107,16 @@ class BaseEvaluator:
     """Shared state and post-processing for MCTS evaluators.
 
     Subclassed by NNEvaluator (local model inference) and
-    RemoteEvaluator (shared-memory IPC to eval server).
+    RemoteEvaluator (shared-memory IPC to eval server). Both speak
+    token buffers — compact int16 state in, sparse softmaxed priors +
+    canonical-order values out.
     """
 
     def __init__(self, num_players: int, terminal_rank_weight: float = 0.5) -> None:
         self.num_players = num_players
         self.terminal_rank_weight = terminal_rank_weight
-        self.layout = get_layout(num_players)
+        self.num_tokens = get_num_tokens(num_players)
+        self.token_dim = TOKEN_DIM
 
     def evaluate_terminal(self, state: Any) -> np.ndarray:
         """Compute terminal values from a game-over state.
@@ -205,7 +127,7 @@ class BaseEvaluator:
         Returns:
             Canonical values, shape (num_players,).
         """
-        net_worths = [state.get_player_net_worth(i) for i in range(self.num_players)]
+        net_worths = [PLAYERS[i].get_net_worth(state) for i in range(self.num_players)]
         return compute_terminal_values(
             net_worths, self.num_players, self.terminal_rank_weight
         )
@@ -226,44 +148,15 @@ class BaseEvaluator:
             logger.error(msg)
             raise RuntimeError(msg)
 
-    def _finalize_single(
-        self, logits: np.ndarray, values: np.ndarray,
-        mask: np.ndarray, active_player_id: int,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Apply mask+softmax and unrotate values for a single state."""
-        self._check_nan(logits, values)
-        policy_probs = apply_mask_softmax(logits, mask)
-        canonical_values = unrotate_values(values, active_player_id)
-        return policy_probs, canonical_values, mask
-
-    def _finalize_batch(
-        self, logits_np: np.ndarray, values_np: np.ndarray,
-        masks: list[np.ndarray], active_player_ids: list[int],
-    ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        """Apply mask+softmax and unrotate values for a batch of states."""
-        return [
-            self._finalize_single(logits_np[i], values_np[i], masks[i],
-                                  active_player_ids[i])
-            for i in range(len(active_player_ids))
-        ]
-
-    def _finalize_leaves(
-        self, logits_np: np.ndarray, values_np: np.ndarray,
-        active_player_ids: list[int],
-    ) -> list[tuple[np.ndarray, np.ndarray]]:
-        """Unrotate values for a batch of leaves (logits returned raw)."""
-        self._check_nan(logits_np, values_np)
-        return [
-            (logits_np[i], unrotate_values(values_np[i], active_player_ids[i]))
-            for i in range(len(active_player_ids))
-        ]
-
 
 class NNEvaluator(BaseEvaluator):
-    """Wraps a neural network model for MCTS leaf evaluation.
+    """Wraps a neural network model for in-process MCTS leaf evaluation.
 
-    Handles state rotation, legal action masking, inference,
-    and value un-rotation to canonical player order.
+    Used for single-process tests and anything that doesn't go through
+    the shared-mem eval server. Fills a token buffer from compact state,
+    runs inference, gathers the dense policy logits at the legal-action
+    ids, and softmaxes — mirroring the GPU-side gather+softmax that the
+    eval server runs for ``RemoteEvaluator``.
     """
 
     _DTYPE_MAP = {"bfloat16": torch.bfloat16, "float16": torch.float16}
@@ -278,149 +171,213 @@ class NNEvaluator(BaseEvaluator):
         self._autocast_dtype = self._DTYPE_MAP.get(eval_dtype) if eval_dtype else None
         self.model.eval()
 
-        # Reusable rotation buffer for batch evaluation, grows as needed
-        self._rotation_buf: np.ndarray | None = None
+        # Reusable token buffer for batch evaluation, grows as needed.
+        self._token_buf: np.ndarray | None = None
 
-        # Validate model output dims match expected action space and num_players.
-        # Catches misconfiguration before it reaches boundscheck=False Cython code.
-        from core.actions import get_total_action_count
-        expected_action_dim = get_total_action_count(num_players)
+        # Catch model/player-count mismatch before it reaches boundscheck=False
+        # Cython code. The new transformer config only exposes num_players
+        # (action-space width is set by PHASE_ACTION_SIZES, shared via
+        # core.data.ActionSize; value-head width always tracks num_players).
         cfg = getattr(model, "cfg", None)
         if cfg is not None:
-            if getattr(cfg, "action_dim", expected_action_dim) != expected_action_dim:
+            model_np = getattr(cfg, "num_players", num_players)
+            if model_np != num_players:
                 raise ValueError(
-                    f"Model action_dim ({cfg.action_dim}) does not match "
-                    f"expected action space for {num_players} players "
-                    f"({expected_action_dim})"
-                )
-            if getattr(cfg, "value_dim", num_players) != num_players:
-                raise ValueError(
-                    f"Model value_dim ({cfg.value_dim}) does not match "
-                    f"num_players ({num_players})"
+                    f"Model num_players ({model_np}) does not match "
+                    f"evaluator num_players ({num_players})"
                 )
 
-    def _get_rotation_buf(self, n: int) -> np.ndarray:
-        """Return a (n, visible_size) rotation buffer, reusing if large enough."""
-        buf = self._rotation_buf
+    def _get_token_buf(self, n: int) -> np.ndarray:
+        """Return a (n, num_tokens, token_dim) token buffer, reusing if large enough."""
+        buf = self._token_buf
         if buf is None or buf.shape[0] < n:
-            buf = np.empty((n, self.layout.visible_size), dtype=np.float32)
-            self._rotation_buf = buf
+            buf = np.empty(
+                (n, self.num_tokens, self.token_dim), dtype=np.float32
+            )
+            self._token_buf = buf
         return buf[:n]
 
     @torch.inference_mode()
-    def evaluate(self, state: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Evaluate a game state with the neural network.
+    def evaluate(
+        self, state: Any,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int]:
+        """Evaluate a single game state with the neural network.
 
         Args:
-            state: GameState object.
+            state: GameState object (non-terminal).
 
         Returns:
-            Tuple of (policy_probs, canonical_values, legal_mask):
-            - policy_probs: shape (action_dim,), softmax over legal actions
-            - canonical_values: shape (num_players,), per-player values in
-              canonical order (index 0 = player 0, etc.)
-            - legal_mask: shape (action_dim,), binary mask of legal actions
+            Tuple of (sparse_priors, canonical_values, action_ids, n_legal, phase_id):
+            - sparse_priors: shape (n_legal,) float32, softmax over legal actions.
+            - canonical_values: shape (num_players,) float32, per-player values in
+              canonical order (already non-rotated from the model).
+            - action_ids: shape (n_legal,) uint16, phase-local legal action ids.
+            - n_legal: count of legal actions at this state.
+            - phase_id: decision phase id 0-7.
         """
-        from core.actions import get_valid_action_mask
+        phase_id = get_decision_phase_py(state)
 
-        active_player = state.get_active_player()
+        # Fill a 1-row token buffer from the compact state.
+        buf = self._get_token_buf(1)
+        fill_token_buffer(state, buf[0])
 
-        # Rotate visible state so active player is at slot 0
-        rotated_visible = rotate_visible_state(
-            state._array, active_player, self.num_players
-        )
+        # Enumerate legal actions into a uint16 scratch buffer.
+        action_ids = np.empty(K_MAX, dtype=np.uint16)
+        n_legal = enumerate_legal_actions_py(state, action_ids)
 
-        # Get legal action mask
-        mask_np = get_valid_action_mask(state)
-
-        # Convert to tensor (no mask — applied CPU-side after inference)
-        x = torch.from_numpy(rotated_visible).unsqueeze(0).to(self.device)
-
-        # Forward pass (bfloat16 on CUDA for throughput)
+        # Forward pass with autocast (if requested).
+        x = torch.from_numpy(buf).to(self.device)
+        phase_t = torch.tensor([phase_id], dtype=torch.long, device=self.device)
         with torch.autocast(self.device.type, dtype=self._autocast_dtype,
                             enabled=self._autocast_dtype is not None):
-            policy_logits, value_output = self.model(x)
+            policy_logits, value_output = self.model(x, phase_t)
+            # Gather + softmax inside the autocast region so the 14977-wide
+            # logits tensor stays in bf16/fp16 — up-casting it to f32 just
+            # to softmax would undo most of the autocast win.
+            idx = torch.from_numpy(
+                action_ids[:n_legal].astype(np.int64)
+            ).to(self.device).unsqueeze(0)  # (1, n_legal)
+            gathered = policy_logits.gather(1, idx)  # (1, n_legal)
+            priors = gathered.softmax(dim=1).to(torch.float32)
 
-        # Raw logits + values to numpy, then finalize CPU-side
-        logits = policy_logits.float().squeeze(0).cpu().numpy()
-        values = value_output.float().squeeze(0).cpu().numpy()
-        return self._finalize_single(logits, values, mask_np, active_player)
+        # Check NaN on the full dense logits too — softmax would have
+        # hidden any stray NaN outside the legal slice.
+        logits_np = policy_logits.float().squeeze(0).cpu().numpy()
+        values_np = value_output.float().squeeze(0).cpu().numpy()
+        self._check_nan(logits_np, values_np)
+
+        priors_np = priors.squeeze(0).cpu().numpy()
+        return priors_np, values_np, action_ids[:n_legal].copy(), n_legal, phase_id
 
     @torch.inference_mode()
     def evaluate_batch(
         self, states: list[Any],
-    ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray, int, int]]:
         """Evaluate multiple game states in a single NN forward pass.
 
         Args:
-            states: List of GameState objects.
+            states: List of GameState objects (non-terminal).
 
         Returns:
-            List of (policy_probs, canonical_values, legal_mask) tuples,
-            one per state.
+            List of (sparse_priors, canonical_values, action_ids, n_legal,
+            phase_id) tuples, one per state. See ``evaluate`` for shapes.
         """
-        from core.actions import get_valid_action_mask
-
         n = len(states)
         if n == 0:
             return []
         if n == 1:
             return [self.evaluate(states[0])]
 
-        active_players = [s.get_active_player() for s in states]
+        phase_ids = [get_decision_phase_py(s) for s in states]
+        buf = self._get_token_buf(n)
+        for i, s in enumerate(states):
+            fill_token_buffer(s, buf[i])
 
-        # Rotate visible states into reusable buffer
-        rotated = self._get_rotation_buf(n)
-        for i, (s, ap) in enumerate(zip(states, active_players)):
-            rotate_visible_state_into(rotated[i], s._array, ap, self.num_players)
-        masks = [get_valid_action_mask(s) for s in states]
+        action_ids_buf = np.empty((n, K_MAX), dtype=np.uint16)
+        n_legals = [0] * n
+        for i, s in enumerate(states):
+            n_legals[i] = enumerate_legal_actions_py(s, action_ids_buf[i])
 
-        # Single forward pass (no mask — applied CPU-side after inference)
-        x = torch.from_numpy(rotated).to(self.device)
+        x = torch.from_numpy(buf).to(self.device)
+        phase_t = torch.tensor(phase_ids, dtype=torch.long, device=self.device)
         with torch.autocast(self.device.type, dtype=self._autocast_dtype,
                             enabled=self._autocast_dtype is not None):
-            policy_logits, value_output = self.model(x)
+            policy_logits, value_output = self.model(x, phase_t)
+            idx = torch.from_numpy(
+                action_ids_buf.astype(np.int64)
+            ).to(self.device)  # (n, K_MAX)
+            gathered = policy_logits.gather(1, idx)  # (n, K_MAX)
+            k_range = torch.arange(K_MAX, device=self.device)
+            n_legals_t = torch.tensor(n_legals, dtype=torch.long, device=self.device)
+            k_mask = k_range[None, :] < n_legals_t[:, None]
+            gathered = gathered.masked_fill(~k_mask, -1e9)
+            priors = gathered.softmax(dim=1).to(torch.float32)
 
-        logits = policy_logits.float().cpu().numpy()
-        values = value_output.float().cpu().numpy()
-        return self._finalize_batch(logits, values, masks, active_players)
+        logits_np = policy_logits.float().cpu().numpy()
+        values_np = value_output.float().cpu().numpy()
+        self._check_nan(logits_np, values_np)
+        priors_np = priors.cpu().numpy()
+        return [
+            (
+                priors_np[i, :n_legals[i]].copy(),
+                values_np[i],
+                action_ids_buf[i, :n_legals[i]].copy(),
+                n_legals[i],
+                phase_ids[i],
+            )
+            for i in range(n)
+        ]
 
     @torch.inference_mode()
     def evaluate_leaves(
         self,
         state_arrays: list[np.ndarray],
-        active_player_ids: list[int],
+        phase_ids: list[int],
+        action_ids_buf: np.ndarray,
+        n_legals: list[int],
     ) -> list[tuple[np.ndarray, np.ndarray]]:
-        """Evaluate pre-computed leaf data in a single NN forward pass.
+        """Evaluate pre-enumerated leaf data in a single NN forward pass.
 
-        Optimized for the MCTS hot loop: takes raw arrays instead of
-        GameState objects, avoiding Python wrapper allocation. Returns
-        raw logits — the caller applies masked softmax using the legal
-        masks it already has on each node.
+        Optimized hot path for MCTS: the caller has already enumerated legal
+        actions and computed phase ids during selection, so we just fill token
+        buffers from the raw state arrays and forward. Mirrors the eval
+        server's GPU gather + softmax, but in-process.
 
         Args:
-            state_arrays: Raw state arrays (pool row views), each (total_size,).
-            active_player_ids: Active player ID for each state.
+            state_arrays: Raw int16 state arrays (pool row views), each
+                ``(total_size,)``.
+            phase_ids: Decision phase ids per leaf, length n.
+            action_ids_buf: Legal phase-local action ids, shape
+                ``(n, K_MAX)`` uint16. Only ``[i, :n_legals[i]]`` is read.
+            n_legals: Count of legal actions per leaf, length n.
 
         Returns:
-            List of (logits, canonical_values) tuples. Logits are raw
-            NN output; caller must apply masked softmax before use.
+            List of ``(sparse_priors[:n_legal], canonical_values)`` tuples.
+            Priors are softmaxed over the legal list; values are canonical.
         """
+        # Deferred import: avoids circular top-level import in mcts_core
+        # consumers, matches the single-import-point convention elsewhere.
+        from core.state import GameState
+
         n = len(state_arrays)
         if n == 0:
             return []
+        assert len(phase_ids) == n, f"{len(phase_ids)} phase_ids vs {n} states"
+        assert len(n_legals) == n, f"{len(n_legals)} n_legals vs {n} states"
+        assert action_ids_buf.shape == (n, K_MAX), \
+            f"action_ids_buf shape {action_ids_buf.shape} != ({n}, {K_MAX})"
 
-        # Rotate visible states into reusable buffer
-        rotated = self._get_rotation_buf(n)
-        for i, (arr, ap) in enumerate(zip(state_arrays, active_player_ids)):
-            rotate_visible_state_into(rotated[i], arr, ap, self.num_players)
+        # Fill token buffers from each state array. ``get_token_data`` needs
+        # a GameState wrapper; rebind a scratch one per row (zero-copy).
+        buf = self._get_token_buf(n)
+        scratch_gs = GameState.from_buffer(state_arrays[0], self.num_players)
+        fill_token_buffer(scratch_gs, buf[0])
+        for i in range(1, n):
+            scratch_gs.rebind(state_arrays[i], self.num_players)
+            fill_token_buffer(scratch_gs, buf[i])
 
-        # Single forward pass
-        x = torch.from_numpy(rotated).to(self.device)
+        x = torch.from_numpy(buf).to(self.device)
+        phase_t = torch.tensor(phase_ids, dtype=torch.long, device=self.device)
         with torch.autocast(self.device.type, dtype=self._autocast_dtype,
                             enabled=self._autocast_dtype is not None):
-            policy_logits, value_output = self.model(x)
+            policy_logits, value_output = self.model(x, phase_t)
+            idx = torch.from_numpy(
+                action_ids_buf.astype(np.int64)
+            ).to(self.device)  # (n, K_MAX)
+            gathered = policy_logits.gather(1, idx)
+            k_range = torch.arange(K_MAX, device=self.device)
+            n_legals_t = torch.tensor(
+                n_legals, dtype=torch.long, device=self.device,
+            )
+            k_mask = k_range[None, :] < n_legals_t[:, None]
+            gathered = gathered.masked_fill(~k_mask, -1e9)
+            priors = gathered.softmax(dim=1).to(torch.float32)
 
-        logits = policy_logits.float().cpu().numpy()
-        values = value_output.float().cpu().numpy()
-        return self._finalize_leaves(logits, values, active_player_ids)
+        logits_np = policy_logits.float().cpu().numpy()
+        values_np = value_output.float().cpu().numpy()
+        self._check_nan(logits_np, values_np)
+        priors_np = priors.cpu().numpy()
+        return [
+            (priors_np[i, :n_legals[i]].copy(), values_np[i])
+            for i in range(n)
+        ]

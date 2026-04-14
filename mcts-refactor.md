@@ -92,6 +92,14 @@ All three gather helpers are structurally identical to `gather_states` (same pra
 
 ### 2. `mcts/node.py` — sparse expand + per-leaf phase context
 
+**Status:** ✅ Done (rss-az-t3d2.2, commit `fa9171f`). Post-implementation notes:
+
+- `MCTSNode.expand` rewired as specified — delegates straight to `expand_node_sparse`.
+- `__slots__`: dropped `pending_mask`; added `pending_action_ids`, `pending_n`, `pending_phase`.
+- Dense `expand_node` removed from `mcts_core.pyx` at the same time (the only caller was `MCTSNode.expand`). This is slightly ahead of where Step 1's notes parked it, but nothing imports the dense path anymore.
+- `active_player_id` docstring clarified: canonical actor id, not rotated slot 0. PUCT indexing `value_sums[:, active_player_id]` is unchanged because the new transformer returns canonical-order values.
+- **Expected post-step fallout:** `mcts/search.py` still references `pending_mask` and the dense expand signature; it fails at import until Step 5 lands. `mcts_core.so` + `mcts/node.py` import warning-free.
+
 **Replace:** `MCTSNode.expand(policy_priors, legal_mask, num_players, default_value)` with `MCTSNode.expand(action_ids, n, priors, num_players, default_value)`.
 
 `MCTSNode.__slots__` changes:
@@ -105,6 +113,16 @@ All three gather helpers are structurally identical to `gather_states` (same pra
 `mean_value(player_id)` unchanged.
 
 ### 3. `mcts/evaluator.py` — strip rotation, add token-buffer fill
+
+**Status:** ✅ Done (rss-az-t3d2.3). Post-implementation notes:
+
+- `BaseEvaluator` + `NNEvaluator` rewritten against the plan. `RemoteEvaluator` stays in `train/eval_server.py` and is owned by Step 4 — Step 3 only touches `mcts/evaluator.py`.
+- `fill_token_buffer` added; `_rotation_buf` replaced by `_token_buf` of shape `(n, num_tokens, token_dim)` f32 that grows on demand.
+- `evaluate`, `evaluate_batch`, `evaluate_leaves` all run the **gather + softmax inside the autocast region** (bf16/fp16 when enabled) and only cast to f32 on the final assignment, matching the server-side path.
+- `evaluate_leaves` takes raw int16 `state_arrays` + pre-enumerated `phase_ids` + `(n, K_MAX) uint16 action_ids_buf` + `n_legals`. It rebinds a single scratch `GameState` across rows (no per-leaf wrapper allocation) to hand each row to `get_token_data`. The `active_player_ids` argument is gone as specified.
+- **Model-config validation** relaxed: old `cfg.action_dim` / `cfg.value_dim` checks were removed (the new `TransformerConfig` doesn't expose those fields — action width is set by `PHASE_ACTION_SIZES`, value width always tracks `num_players`). Kept a `cfg.num_players == num_players` sanity check.
+- `evaluate_terminal` migrated from `state.get_player_net_worth(i)` to `PLAYERS[i].get_net_worth(state)` — the old GameState method is gone post-refactor, entity handles are the single access path.
+- **Expected post-step fallout:** `mcts/search.py` imports `masked_softmax` + dense `evaluate_leaves(state_arrays, active_player_ids)`; broken until Step 5. `train/eval_server.py` imports `rotate_visible_state_into`; broken until Step 4. `train/self_play.py` imports `rotate_visible_state`; broken until Step 6 (under rss-az-phli). `train/{tournament, analyze_game, main}.py` and `utils_18xx/server.py` import `NNEvaluator`/`compute_terminal_values` — still exported, so they survive at import time.
 
 This file shrinks substantially. Goal: a clean `BaseEvaluator` + `NNEvaluator` (in-process model) + `RemoteEvaluator` (shared-mem IPC) trio that all speak token buffers.
 
