@@ -481,7 +481,7 @@ class TestPhaseTransitions:
     """Transitions out of ISSUE_SHARES into IPO / INVEST."""
 
     def test_single_corp_transitions_after_action(self, game_state):
-        """After the only corp's decision, phase leaves ISSUE_SHARES."""
+        """After the only corp's decision, ISSUE cascades through IPO into INVEST."""
         float_corp_for_test(game_state, corp_id=0, player_id=0,
                             company_id=CO_A, par_index=15)
         _enter_issue(game_state)
@@ -490,26 +490,34 @@ class TestPhaseTransitions:
         pass_id = find_legal_action(game_state, action_type=ACTION_PASS)
         apply_and_verify(game_state, pass_id)
 
-        assert TURN.get_phase(game_state) != int(GamePhases.PHASE_ISSUE_SHARES)
+        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_INVEST)
+        assert TURN.get_active_corp(game_state) == -1
+        assert TURN.get_ipo_company(game_state) == -1
+        assert TURN.get_active_player(game_state) == TURN.find_player_at_position(game_state, 0)
 
     def test_no_active_corps_immediate_transition(self, game_state):
-        """If no active corps exist, setup immediately transitions past ISSUE."""
+        """If no active corps exist, setup immediately cascades through IPO into INVEST."""
         _enter_issue(game_state)
 
-        # Nothing to issue → cascades through IPO → INVEST (no player companies).
-        assert TURN.get_phase(game_state) != int(GamePhases.PHASE_ISSUE_SHARES)
+        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_INVEST)
+        assert TURN.get_active_corp(game_state) == -1
+        assert TURN.get_ipo_company(game_state) == -1
+        assert TURN.get_active_player(game_state) == TURN.find_player_at_position(game_state, 0)
 
     def test_all_receivership_transitions_past_issue(self, game_state):
-        """All-receivership setup auto-processes everything and transitions out."""
+        """All-receivership setup auto-processes and then cascades through IPO into INVEST."""
         setup_receivership_corp(game_state, corp_id=0,
                                 company_ids=[CO_A], par_index=10)
 
         _enter_issue(game_state)
 
-        assert TURN.get_phase(game_state) != int(GamePhases.PHASE_ISSUE_SHARES)
+        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_INVEST)
+        assert TURN.get_active_corp(game_state) == -1
+        assert TURN.get_ipo_company(game_state) == -1
+        assert TURN.get_active_player(game_state) == TURN.find_player_at_position(game_state, 0)
 
     def test_two_corps_transition_after_both(self, game_state):
-        """After the second corp's decision the phase leaves ISSUE."""
+        """After the second corp's decision, ISSUE cascades through IPO into INVEST."""
         float_corp_for_test(game_state, corp_id=0, player_id=0,
                             company_id=CO_A, par_index=5)
         float_corp_for_test(game_state, corp_id=1, player_id=0,
@@ -521,10 +529,18 @@ class TestPhaseTransitions:
         apply_and_verify(game_state, pass_id)
 
         assert TURN.get_phase(game_state) == int(GamePhases.PHASE_ISSUE_SHARES)
+        assert TURN.get_active_corp(game_state) == 0
+        assert TURN.get_active_player(game_state) == 0
+        assert TURN.is_issue_remaining(game_state, 0)
+        assert not TURN.is_issue_remaining(game_state, 1)
+
         pass_id = find_legal_action(game_state, action_type=ACTION_PASS)
         apply_and_verify(game_state, pass_id)
 
-        assert TURN.get_phase(game_state) != int(GamePhases.PHASE_ISSUE_SHARES)
+        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_INVEST)
+        assert TURN.get_active_corp(game_state) == -1
+        assert TURN.get_ipo_company(game_state) == -1
+        assert TURN.get_active_player(game_state) == TURN.find_player_at_position(game_state, 0)
 
 
 # =============================================================================
