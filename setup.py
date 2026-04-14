@@ -100,6 +100,7 @@ pyx_files = (
     find_pyx_files('core')
     + find_pyx_files('entities')
     + find_pyx_files('phases')
+    + find_pyx_files('mcts')
 )
 
 extensions = []
@@ -180,7 +181,7 @@ else:
 
 setup(
     name="rss-cython-core",
-    packages=['core', 'entities', 'phases'],
+    packages=['core', 'entities', 'phases', 'mcts'],
     ext_modules=ext_modules,
     cmdclass={
         'clean': CleanCommand,

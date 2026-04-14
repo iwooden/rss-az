@@ -6,7 +6,8 @@ eliminating numpy/torch dispatch overhead for small arrays where the
 overhead dominates actual computation.
 """
 
-from libc.math cimport sqrtf, expf
+from libc.math cimport sqrtf
+from libc.stdint cimport int8_t, int16_t, uint16_t, uint64_t
 from libc.string cimport memcpy
 
 cdef extern from "<assert.h>" nogil:
@@ -25,8 +26,6 @@ import numpy as np
 # has a pending request. Workers publish via atomic fetch-or (release),
 # servers claim all pending work via atomic exchange (acquire). This gives
 # O(1) empty check and O(k) drain for k ready workers.
-
-from libc.stdint cimport uint64_t
 
 cdef extern from *:
     """
@@ -293,145 +292,12 @@ def increment_visits(list path, leaf):
 
 
 # ---------------------------------------------------------------------------
-# State rotation (replaces numpy roll/copy in evaluator.py)
+# Eval-server shared-memory gather/scatter helpers
 # ---------------------------------------------------------------------------
-
-cdef void _rotate_visible_state(
-    float* dst, const float* src,
-    int visible_size, int active_player_id, int num_players,
-    int players_offset, int player_stride,
-    int field0_offset, int field1_offset, int field2_offset,
-) noexcept nogil:
-    """Copy visible state from src to dst with player rotation.
-
-    Copies the full visible region, then overwrites player blocks and
-    per-player turn fields in rotated order. Reads from src only, so
-    there is no aliasing issue even though dst starts as a copy of src.
-    """
-    # Bulk copy entire visible state
-    memcpy(dst, src, visible_size * sizeof(float))
-
-    if active_player_id == 0:
-        return
-
-    # Overwrite player data blocks in rotated order.
-    # np.roll(blocks, -active_player_id, axis=0) means:
-    #   dst_slot[i] = src_slot[(i + active_player_id) % num_players]
-    cdef int i, src_player
-    cdef int byte_stride = player_stride * sizeof(float)
-    for i in range(num_players):
-        src_player = (i + active_player_id) % num_players
-        memcpy(
-            dst + players_offset + i * player_stride,
-            src + players_offset + src_player * player_stride,
-            byte_stride,
-        )
-
-    # Rotate 3 per-player turn state fields (each num_players floats)
-    cdef int field_offsets[3]
-    field_offsets[0] = field0_offset
-    field_offsets[1] = field1_offset
-    field_offsets[2] = field2_offset
-    cdef int f, off
-    for f in range(3):
-        off = field_offsets[f]
-        for i in range(num_players):
-            src_player = (i + active_player_id) % num_players
-            dst[off + i] = src[off + src_player]
-
-
-def rotate_visible_state_into(
-    float[:] dst, const float[:] src,
-    int active_player_id, int num_players,
-    int visible_size, int players_offset, int player_stride,
-    int field0_offset, int field1_offset, int field2_offset,
-):
-    """Copy visible state into dst with player rotation.
-
-    Drop-in replacement for evaluator.rotate_visible_state_into.
-    Uses memcpy and pointer arithmetic instead of numpy roll/copy.
-
-    Args:
-        dst: Destination buffer, shape (visible_size,).
-        src: Full state array (visible + hidden).
-        active_player_id: Canonical player ID (0 to num_players-1).
-        num_players: Number of players.
-        visible_size: Size of visible state region.
-        players_offset: Offset to player data blocks.
-        player_stride: Floats per player block.
-        field0_offset: Offset to auction_high_bidder per-player field.
-        field1_offset: Offset to auction_starter per-player field.
-        field2_offset: Offset to auction_passed per-player field.
-    """
-    _rotate_visible_state(
-        &dst[0], &src[0],
-        visible_size, active_player_id, num_players,
-        players_offset, player_stride,
-        field0_offset, field1_offset, field2_offset,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Masked softmax (replaces torch round-trip in evaluator.py)
-# ---------------------------------------------------------------------------
-
-cdef void _masked_softmax(
-    float* out, const float* logits, const float* mask, int n,
-) noexcept nogil:
-    """Numerically stable masked softmax: mask, shift, exp, normalize.
-
-    Illegal actions (mask <= 0) get probability 0.
-    """
-    cdef int i
-    cdef float max_val = -1e30
-    cdef float v
-
-    # Find max of legal logits for numerical stability
-    for i in range(n):
-        if mask[i] > 0.0:
-            v = logits[i]
-            if v > max_val:
-                max_val = v
-
-    # Compute exp(logit - max) for legal actions, sum
-    cdef float total = 0.0
-    for i in range(n):
-        if mask[i] > 0.0:
-            out[i] = expf(logits[i] - max_val)
-            total = total + out[i]
-        else:
-            out[i] = 0.0
-
-    # Normalize
-    if total > 0.0:
-        for i in range(n):
-            out[i] = out[i] / total
-
-
-def masked_softmax(const float[:] logits, const float[:] mask):
-    """Apply legal action mask and softmax to raw policy logits.
-
-    Drop-in replacement for evaluator.apply_mask_softmax. Uses a single
-    C loop instead of torch tensor round-trip.
-
-    Args:
-        logits: Raw logits from NN, shape (action_dim,).
-        mask: Binary float32 mask (1.0 = legal, 0.0 = illegal).
-
-    Returns:
-        Probability distribution over actions, shape (action_dim,).
-    """
-    cdef int n = logits.shape[0]
-    assert mask.shape[0] == n, f"logits length ({n}) != mask length ({mask.shape[0]})"
-    result = np.empty(n, dtype=np.float32)
-    cdef float[:] out = result
-    _masked_softmax(&out[0], &logits[0], &mask[0], n)
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Value un-rotation (replaces np.roll on tiny arrays in evaluator.py)
-# ---------------------------------------------------------------------------
+# All gather_* helpers share the same skeleton: a nogil loop that walks the
+# (worker_indices, counts) request list and memcpys each request's contiguous
+# row block from the per-worker shared-mem slot into a flat batch buffer.
+# They differ only by dtype and row width. scatter_results is the inverse.
 
 def gather_states(
     float[:, :] dst,
@@ -440,24 +306,24 @@ def gather_states(
     const int[:] counts,
     int num_requests,
 ):
-    """Gather input states from per-worker shared memory into a contiguous buffer.
+    """Gather per-leaf NN input rows into a contiguous batch buffer.
 
-    Replaces the Python loop in eval_server._eval_server_serve:
-        for widx, n in batch_info:
-            pin_s_np[total_n:total_n + n] = w_states_np[widx][:n]
+    Row width is `num_tokens * token_dim` floats — callers reshape the logical
+    ``(W, B, num_tokens, token_dim)`` buffer to 3-D ``(W, B, row_floats)``
+    before calling; the memcpy is the same.
 
     Args:
-        dst: Contiguous destination buffer, shape (max_batch, visible_size).
-        src: Per-worker input states, shape (num_workers, batch_size, visible_size).
+        dst: Contiguous destination buffer, shape (max_batch, row_floats).
+        src: Per-worker input rows, shape (num_workers, batch_size, row_floats).
         worker_indices: Worker index per request, shape (num_requests,).
-        counts: Number of states per request, shape (num_requests,).
+        counts: Number of rows per request, shape (num_requests,).
         num_requests: Number of requests in this batch.
 
     Returns:
-        Total number of states gathered.
+        Total number of rows gathered.
     """
-    cdef int vis = dst.shape[1]
-    cdef int row_bytes = vis * sizeof(float)
+    cdef int row_floats = dst.shape[1]
+    cdef int row_bytes = row_floats * sizeof(float)
     cdef int total = 0
     cdef int i, n, widx
     with nogil:
@@ -470,47 +336,208 @@ def gather_states(
     return total
 
 
+def gather_phase_ids(
+    int8_t[:] dst,
+    const int8_t[:, :] src,
+    const int[:] worker_indices,
+    const int[:] counts,
+    int num_requests,
+):
+    """Gather per-leaf phase ids from per-worker shared-mem into a flat batch buffer.
+
+    Args:
+        dst: Contiguous destination buffer, shape (max_batch,) int8.
+        src: Per-worker phase id slots, shape (num_workers, batch_size) int8.
+        worker_indices: Worker index per request, shape (num_requests,).
+        counts: Number of ids per request, shape (num_requests,).
+        num_requests: Number of requests in this batch.
+
+    Returns:
+        Total number of phase ids gathered.
+    """
+    cdef int total = 0
+    cdef int i, n, widx
+    with nogil:
+        for i in range(num_requests):
+            widx = worker_indices[i]
+            n = counts[i]
+            assert_c(total + n <= <int>dst.shape[0])
+            memcpy(&dst[total], &src[widx, 0], n * <int>sizeof(int8_t))
+            total = total + n
+    return total
+
+
+def gather_action_ids(
+    int16_t[:, :] dst,
+    const int16_t[:, :, :] src,
+    const int[:] worker_indices,
+    const int[:] counts,
+    int num_requests,
+):
+    """Gather per-leaf legal-action id rows into a contiguous batch buffer.
+
+    Stored as int16 because ``torch.uint16`` doesn't exist; action ids top out
+    at 14976 ≪ 32767 so the signed view is bit-reinterpretable with a
+    worker-side uint16 numpy view over the same memory.
+
+    Args:
+        dst: Contiguous destination buffer, shape (max_batch, K_MAX) int16.
+        src: Per-worker action id slots, shape (num_workers, batch_size, K_MAX) int16.
+        worker_indices: Worker index per request, shape (num_requests,).
+        counts: Number of rows per request, shape (num_requests,).
+        num_requests: Number of requests in this batch.
+
+    Returns:
+        Total number of action-id rows gathered.
+    """
+    cdef int k_max = dst.shape[1]
+    cdef int row_bytes = k_max * <int>sizeof(int16_t)
+    cdef int total = 0
+    cdef int i, n, widx
+    with nogil:
+        for i in range(num_requests):
+            widx = worker_indices[i]
+            n = counts[i]
+            assert_c(total + n <= <int>dst.shape[0])
+            memcpy(&dst[total, 0], &src[widx, 0, 0], n * row_bytes)
+            total = total + n
+    return total
+
+
+def gather_n_legals(
+    int16_t[:] dst,
+    const int16_t[:, :] src,
+    const int[:] worker_indices,
+    const int[:] counts,
+    int num_requests,
+):
+    """Gather per-leaf n_legal scalars from per-worker shared-mem into a flat batch buffer.
+
+    Args:
+        dst: Contiguous destination buffer, shape (max_batch,) int16.
+        src: Per-worker n_legal slots, shape (num_workers, batch_size) int16.
+        worker_indices: Worker index per request, shape (num_requests,).
+        counts: Number of scalars per request, shape (num_requests,).
+        num_requests: Number of requests in this batch.
+
+    Returns:
+        Total number of n_legal scalars gathered.
+    """
+    cdef int total = 0
+    cdef int i, n, widx
+    with nogil:
+        for i in range(num_requests):
+            widx = worker_indices[i]
+            n = counts[i]
+            assert_c(total + n <= <int>dst.shape[0])
+            memcpy(&dst[total], &src[widx, 0], n * <int>sizeof(int16_t))
+            total = total + n
+    return total
+
+
 def scatter_results(
-    const char[:, :] src_logits,
+    const char[:, :] src_priors,
     const float[:, :] src_values,
-    char[:, :, :] dst_logits,
+    char[:, :, :] dst_priors,
     float[:, :, :] dst_values,
     const int[:] worker_indices,
     const int[:] counts,
     int num_requests,
-    int logit_row_bytes,
+    int priors_row_bytes,
 ):
-    """Scatter inference results from contiguous buffers to per-worker shared memory.
+    """Scatter sparse-prior + canonical-value results back to per-worker shared memory.
 
-    Replaces the Python loop in eval_server._eval_server_serve:
-        for widx, n in batch_info:
-            w_logits[widx][:n].copy_(pin_log[offset:offset + n])
-            w_values[widx][:n].copy_(pin_val[offset:offset + n])
+    The eval server has already gathered the dense model logits at each leaf's
+    legal action ids and softmaxed on the GPU before copy-back, so the scattered
+    row is a length-K_MAX prior vector (zero-padded past n_legal) that the
+    worker expands directly — no further transform needed.
 
-    Uses char (byte) views for logits to stay dtype-agnostic at the Cython level.
+    Priors use a byte (char) view so the caller can plug in any float dtype
+    (f32 in the canonical path) without branching here.
 
     Args:
-        src_logits: Contiguous logit buffer as bytes, shape (max_batch, logit_row_bytes).
+        src_priors: Contiguous prior buffer as bytes, shape (max_batch, priors_row_bytes).
         src_values: Contiguous value buffer, shape (max_batch, num_players).
-        dst_logits: Per-worker logit slots as bytes, shape (num_workers, batch_size, logit_row_bytes).
+        dst_priors: Per-worker prior slots as bytes, shape (num_workers, batch_size, priors_row_bytes).
         dst_values: Per-worker value slots, shape (num_workers, batch_size, num_players).
         worker_indices: Worker index per request, shape (num_requests,).
-        counts: Number of states per request, shape (num_requests,).
+        counts: Number of rows per request, shape (num_requests,).
         num_requests: Number of requests in this batch.
-        logit_row_bytes: Bytes per logit row (action_dim * 2 for bf16).
+        priors_row_bytes: Bytes per priors row (K_MAX * 4 for f32).
     """
     cdef int npl = src_values.shape[1]
-    cdef int val_row_bytes = npl * sizeof(float)
+    cdef int val_row_bytes = npl * <int>sizeof(float)
     cdef int offset = 0
     cdef int i, n, widx
     with nogil:
         for i in range(num_requests):
             widx = worker_indices[i]
             n = counts[i]
-            assert_c(offset + n <= <int>src_logits.shape[0])
-            memcpy(&dst_logits[widx, 0, 0], &src_logits[offset, 0], n * logit_row_bytes)
+            assert_c(offset + n <= <int>src_priors.shape[0])
+            memcpy(&dst_priors[widx, 0, 0], &src_priors[offset, 0], n * priors_row_bytes)
             memcpy(&dst_values[widx, 0, 0], &src_values[offset, 0], n * val_row_bytes)
             offset = offset + n
+
+
+# ---------------------------------------------------------------------------
+# Sparse node expansion
+# ---------------------------------------------------------------------------
+
+def expand_node_sparse(
+    node,
+    const uint16_t[:] action_ids,
+    int n,
+    const float[:] priors_legal,
+    const float[:] default_value,
+    int num_players,
+):
+    """Set up per-action arrays on an MCTSNode from a sparse legal-action list.
+
+    Replaces the dense-mask path: callers pass the already-enumerated legal
+    phase-local action ids plus their softmax-normalized priors, aligned 1:1.
+    Skips the 14977-wide mask scan of the dense form.
+
+    Args:
+        node: MCTSNode to expand (modified in place).
+        action_ids: Legal phase-local action ids, shape (≥ n,) uint16 — only
+            first n entries are read.
+        n: Number of legal actions.
+        priors_legal: Softmax-normalized priors over the legal list,
+            shape (≥ n,) float32 — only first n entries are read.
+        default_value: FPU default value (NN value for this node), shape (num_players,) float32.
+        num_players: Number of players in the game.
+    """
+    actions = np.empty(n, dtype=np.int32)
+    priors = np.empty(n, dtype=np.float32)
+    visit_counts = np.zeros(n, dtype=np.int32)
+    value_sums = np.empty((n, num_players), dtype=np.float32)
+    dv = np.empty(num_players, dtype=np.float32)
+
+    cdef int[:] a_view = actions
+    cdef float[:] p_view = priors
+    cdef float[:, :] vs_view = value_sums
+    cdef float[:] dv_view = dv
+
+    cdef int i, p
+
+    # Copy sparse legal list + aligned priors
+    for i in range(n):
+        a_view[i] = <int>action_ids[i]
+        p_view[i] = priors_legal[i]
+
+    # Copy default_value and broadcast it into each value_sums row
+    for p in range(num_players):
+        dv_view[p] = default_value[p]
+    for i in range(n):
+        for p in range(num_players):
+            vs_view[i, p] = default_value[p]
+
+    # Set node attributes
+    node.legal_actions = actions
+    node.priors = priors
+    node.default_value = dv
+    node.visit_counts = visit_counts
+    node.value_sums = value_sums
 
 
 def expand_node(
@@ -520,11 +547,11 @@ def expand_node(
     int num_players,
     const float[:] default_value,
 ):
-    """Set up per-action arrays on an MCTSNode for PUCT selection.
+    """Dense-mask node expansion (legacy).
 
-    Drop-in replacement for MCTSNode.expand() internals. Collapses
-    np.nonzero + fancy-index + astype + broadcast_to + copy chains into
-    typed-memoryview C loops over the (small) legal action set.
+    Retained while `MCTSNode.expand` still goes through the dense path;
+    will be removed in Step 2 once the node layer switches to
+    `expand_node_sparse`.
 
     Args:
         node: MCTSNode to expand (modified in place).
@@ -577,25 +604,3 @@ def expand_node(
     node.default_value = dv
     node.visit_counts = visit_counts
     node.value_sums = value_sums
-
-
-def unrotate_values(const float[:] values, int active_player_id, int num_players):
-    """Convert NN values (active player at index 0) to canonical order.
-
-    Drop-in replacement for evaluator.unrotate_values.
-    Equivalent to np.roll(values, active_player_id) without numpy dispatch.
-
-    Args:
-        values: Per-player values from NN, shape (num_players,).
-        active_player_id: Canonical player ID of the active player.
-        num_players: Number of players.
-
-    Returns:
-        Values in canonical player order, shape (num_players,).
-    """
-    result = np.empty(num_players, dtype=np.float32)
-    cdef float[:] out = result
-    cdef int i
-    for i in range(num_players):
-        out[(i + active_player_id) % num_players] = values[i]
-    return result
