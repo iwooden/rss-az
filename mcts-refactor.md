@@ -168,6 +168,15 @@ Note the `active_player_ids` argument is gone.
 
 ### 4. `train/eval_server.py` — token inputs, sparse priors out, GPU-side gather
 
+**Status:** ✅ Done (rss-az-t3d2.4, commit `46560d6`). Implementation landed as specified below. Post-implementation notes:
+
+- `SharedEvalBuffers` constructor: `visible_size` and `action_dim` gone. `num_tokens` / `token_dim` derived from `core.token_data`; `K_MAX` from `core.actions.MAX_LEGAL_ACTIONS_PY`. `num_players` retained for validation.
+- `_action_ids` stored as `int16` (torch has no `uint16`); workers view the same memory as `uint16` via numpy. Accessor naming follows the plan (`get_input_action_ids_np` etc., `get_output_priors_np` replaces `get_output_logits_np`).
+- `_eval_server_serve` runs `gather` + `masked_fill(-1e9)` + `softmax` inside the autocast region, casting to f32 only on the final `gpu_priors[:B] = ...` copy. All four Cython gather helpers from Step 1 are used in parallel for the four input fields.
+- `RemoteEvaluator.evaluate` writes legal action ids directly into the shared-mem input buffer via `enumerate_legal_actions_py` — no worker-side scratch round-trip. Returns the 5-tuple `(priors_legal, values, action_ids_legal, n_legal, phase_id)`.
+- `evaluate_leaves` signature realigned to `(state_arrays, phase_ids, action_ids_buf, n_legals)` per plan — `active_player_ids` gone.
+- **Expected post-step fallout:** `train/self_play.py` still imports the old flat-state eval path; broken until Step 6. `mcts/search.py` already speaks the new contract (Step 5 landed the same day).
+
 `SharedEvalBuffers` schema (`K_MAX = MAX_LEGAL_ACTIONS = 256`):
 
 ```python
@@ -259,6 +268,16 @@ Accessors on `SharedEvalBuffers`:
 
 ### 5. `mcts/search.py` — wire up the new contract
 
+**Status:** ✅ Done (rss-az-t3d2.5, commit `17ac1e6`). Post-implementation notes:
+
+- `StatePool` now **owns the per-search scratch buffers** rather than having `run_search` allocate them locally: `_legal_scratch` (`K_MAX` uint16) is created in `__init__`; `_pending_action_ids_buf` / `_pending_n_buf` grow lazily via `StatePool.ensure_pending_bufs(batch_size)` on first use. The plan originally parked these as `run_search` locals — co-locating them with the pool keeps all persistent MCTS scratch in one place and matches the "allocate once, reuse" intent.
+- `_pending_n_buf` stored as **int32** (plan said int64 / implicit). `evaluate_leaves` consumes it via Python list comprehension, so the width is immaterial — int32 is cheap + matches other internal counters.
+- **Critical correctness fix** baked into this step: the `[n_legal:K_MAX]` tail of each row of `_pending_action_ids_buf` is zeroed before handoff to `evaluate_leaves`. `torch.gather` on the server runs across the full `K_MAX` width before `masked_fill` applies — stale action ids from a larger prior batch would otherwise blow the 14977-wide dense-logits range (CPU raises, CUDA corrupts silently). The zero fill is cheap and mandatory.
+- Root eval: `TURN.get_phase(root_state)` / `TURN.get_active_player(root_state)` replace the missing `GameState.get_phase` / `.get_active_player` accessors. Root's `pending_phase` is stashed before `root.expand(action_ids, n_legal, priors, num_players, values)`.
+- Leaf creation: drops `child.pending_mask = get_valid_action_mask(...)` (dense helper is gone). Writes `child.pending_phase`, `child.pending_n`, and copies `_legal_scratch[:n]` into `child.pending_action_ids`.
+- `get_action_probabilities(root, temperature)` — `action_dim` argument dropped. Current implementation returns a dense `(MAX_ACTION_SIZE,)` float32 vector keyed off the module-level `MAX_ACTION_SIZE` constant. `self_play` now works directly off `root.visit_counts` (sparse), so the dense return is effectively dead — leave in place until it's either removed or migrated to a sparse `(action_ids, probs)` return under rss-az-phli.
+- Smoke coverage: 3p game, 16 sims, batch 4, fresh search + `prepare_reuse_root` + 5-move sequence all ran clean end-to-end before commit. Warning-free build.
+
 `StatePool` shape becomes `(capacity, total_int16_size)` int16:
 
 ```python
@@ -298,6 +317,16 @@ self.states = np.zeros((capacity, state_size), dtype=np.int16)
 `get_action_probabilities(root, temperature)` — drop the `action_dim` argument; the function can return a dense `(MAX_ACTION_SIZE,)` for now (caller in self_play samples from it). Once self_play moves to sparse sampling (Step 7), this function can return `(action_ids, probs)` instead.
 
 ### 6. `train/self_play.py` — sparse policy targets, no rotation
+
+**Status:** ✅ Done (rss-az-phli.1, commit `f31f1d9`). Post-implementation notes:
+
+- `SelfPlayExample` dataclass **added alongside** the legacy `TrainingExample` rather than replacing it — `TrainingExample` still lives on in `train/replay_buffer.py` under the pre-refactor dense schema, annotated as "legacy dense-MLP schema, scheduled for replacement under rss-az-phli.2" (= Step 7 below).
+- `GameRecord` schema flipped to the six padded arrays listed in the plan: `states (N, total_int16)` int16, `phase_ids (N,)` int8, `n_legals (N,)` int16, `action_ids (N, K_MAX)` uint16 zero-padded, `policy_targets (N, K_MAX)` f32 zero-padded, `value_targets (N, num_players)` f32. `legal_masks` dropped.
+- Per-move loop: enumerates legal actions once via `enumerate_legal_actions_py`, uses `root.visit_counts` directly as the sparse policy target (no `get_action_probabilities` call), samples via a temperature-scaled variant with a `temp < 1e-8` greedy guard, reads `get_greedy_leaf_value(root, num_players)` for the canonical value target (no `np.roll`).
+- Value blending (`value_blend_alpha`) simplified: since `compute_terminal_values` is already canonical, the blend broadcasts `terminal_values[None, :]` across the record without a per-row rotation loop.
+- Preferred net-worth accessor: `PLAYERS[i].get_net_worth(state)` (the old `GameState.get_player_net_worth` method is gone post-refactor). All previously-inline imports in `self_play.py` hoisted to file scope per CLAUDE.md convention.
+- **Collateral config churn:** `train/config.py` drops `TrainingConfig.visible_size` entirely (field, assignment, and legacy JSON-normalize pop). `action_dim` is now sourced directly from `core.data.MAX_ACTION_SIZE` (the removed `core.actions.get_total_action_count(num_players)` helper no longer exists). `train/replay_buffer.py` renamed its `visible_size` init arg to `state_size` (still on the legacy dense schema — Step 7).
+- Downstream **stale references** in `train/{main,tournament,analyze_game}.py` and `utils_18xx/server.py` (flat-state IPC, dense policy loss, rotated value targets) are knowingly left broken — those files need full rewrites under the rss-az-phli parent and are tracked separately.
 
 This file lives under rss-az-phli but the changes are tightly coupled to MCTS, so plan them here.
 
@@ -350,6 +379,16 @@ Drop `legal_masks` from the record.
 
 ### 7. `train/replay_buffer.py` — sparse padded schema
 
+**Status:** ✅ Done (rss-az-phli.2). Post-implementation notes:
+
+- `ReplayBuffer.__init__(capacity, state_size_int16, num_players, k_max=256)` — the six-array sparse schema from the plan landed verbatim: `_states (capacity, state_size_int16) int16`, `_phase_ids (capacity,) int8`, `_n_legals (capacity,) int16`, `_action_ids (capacity, k_max) uint16`, `_policy_targets (capacity, k_max) f32`, `_value_targets (capacity, num_players) f32`.
+- `add_stacked(states, phase_ids, n_legals, action_ids, policy_targets, value_targets)` — six positional args mirroring the `GameRecord` fields. The ring-buffer wrap + overflow-truncate-to-last-N skeleton is preserved unchanged across all six arrays.
+- `sample()` returns all six tensors. `action_ids` is returned as **int16** (torch has no `uint16`); the reinterpret is lossless because max action id 14976 ≪ 32767 and consumers can view the tensor's underlying memory as `uint16` via numpy when needed. Same decision as Step 4's shared-mem storage — kept symmetric across the whole pipeline.
+- `TrainingExample` NamedTuple flipped to the sparse row contract (`state int16`, `phase_id`, `n_legal`, `action_ids uint16`, `policy_target f32`, `value_target f32`). It's not used by the hot path today (worker→trainer goes through `add_stacked` on pre-stacked arrays from `GameRecord`), but keeping it 1:1 with `SelfPlayExample` from `train/self_play.py` preserves the single-example API for tests + manual inspection.
+- `save` / `load` — metadata now records `state_size` / `num_players` / `k_max` alongside `capacity` / `size` / `index`. Load rejects on any of those mismatching (not just capacity), because silently padding or truncating sparse rows across a `k_max` change would corrupt the policy target's probability mass. Warn-and-skip behavior preserved.
+- **Expected post-step fallout:** `train/main.py` still calls the legacy 4-arg `ReplayBuffer(capacity, visible_size, action_dim, num_players)` constructor and the old 4-arg `add_stacked(states, legal_masks, policy_targets, value_targets)` — broken at call time. Left as-is; the full `train/main.py` rewrite is tracked under the rss-az-phli parent. Nothing else in the repo imports `ReplayBuffer`, so the blast radius is contained to that one file.
+- Smoke coverage: happy-path add/sample/dtype checks, ring-buffer wrap-around, overflow (n ≥ capacity → keep last-N), save/load round-trip, shape-mismatch skip on load, and oversample `ValueError` — all green via a scratchpad script (no persistent test suite — `tests/test_replay_buffer.py` worth adding once `train/main.py` comes back online, so the end-to-end `GameRecord` → `ReplayBuffer` → `sample` → trainer path is exercised together).
+
 Mirror the `GameRecord` schema:
 
 ```python
@@ -380,19 +419,11 @@ class ReplayBuffer:
 
 ### 8. Smoke test before declaring victory
 
-There is no production-grade test harness yet (`tests/games_18xx` is broken on driver). Until that comes back, run an in-process self-play smoke from a scratchpad script:
+**Status:** 🟡 Partially done — the scratchpad-smoke intent was promoted to a **persistent test suite**. `tests/test_mcts.py` (113 tests, commit `79b4807`) covers post-refactor MCTS end-to-end: `MCTSConfig`, `MCTSNode`, `expand_node_sparse`, PUCT `select_child`, `compute_terminal_values`, `backup` / `increment_visits` / `virtual_backup`, Dirichlet noise, `StatePool`, `NNEvaluator.{evaluate, evaluate_batch, evaluate_leaves, evaluate_terminal}`, `fill_token_buffer`, `run_search` (single + batched), propagation lock/unlock, subtree reuse, and all four `gather_*` + `scatter_results` IPC primitives. Replaces the deleted `tests/test_mcts-old.py`.
 
-```bash
-PYTHONPATH=/home/icebreaker/rss-az-cython2 .venv/bin/python scratchpad/mcts_smoke.py
-```
+The worker ↔ eval_server IPC smoke (Step 4's multi-worker round-trip with real shared memory + the bitmap+event protocol) is **not yet covered**. `RemoteEvaluator` is imported by `test_mcts.py` only at the class-surface level — no end-to-end IPC invocation test. The original plan's "4-worker / 1-server `train.main` smoke" stays as follow-up once `train/main.py` + `train/replay_buffer.py` (Step 7) are back online.
 
-The script should:
-1. Build a 3p `GameState` and `initialize_game(seed=0)`.
-2. Build an `NNEvaluator` (in-process model — bypasses eval_server, isolates MCTS bugs).
-3. Run `play_game(...)` for one game with `num_simulations=64` (small enough for ~30s wall-clock).
-4. Assert: game terminates with `STATUS_GAME_OVER`, value targets are in `[-1, 1]`, sparse policy_targets sum to 1.0 per move, `n_legal <= MAX_LEGAL_ACTIONS`.
-
-Once that passes, run a 4-worker / 1-server `train.main` smoke for one epoch of 4 games to exercise the IPC path.
+**Test-suite bug caught during this step:** `mcts/evaluator.py::NNEvaluator.evaluate_batch` was allocating `action_ids_buf` with `np.empty`, leaving garbage past `n_legals[i]`. `torch.gather` then read across the full `K_MAX` width and produced OOB indices into the dense 14977-wide logits. Fixed by switching to `np.zeros`; legal rows still read `[:n_legal]`, and the zero tail is masked out by the `k_mask` path downstream. Same correctness failure mode flagged in Step 5 for the `_pending_action_ids_buf` tail — two sites, one invariant: **any action_ids buffer that reaches `torch.gather` must have its tail zeroed (or otherwise in-range) before the gather runs.**
 
 ---
 
