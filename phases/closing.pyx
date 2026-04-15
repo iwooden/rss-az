@@ -348,3 +348,12 @@ cdef void apply_closing_action(GameState state, ActionInfo* info) noexcept:
     else:
         assert False, \
             f"apply_closing_action: illegal action_type {action_type}"
+
+
+# =============================================================================
+# PYTHON COMPATIBILITY WRAPPERS
+# =============================================================================
+
+
+def setup_closing_phase_py(GameState state):
+    setup_closing_phase(state)
