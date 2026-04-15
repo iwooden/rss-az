@@ -1,148 +1,106 @@
 # AGENTS.md
 
-Short operational guide for future Codex sessions. This file is intentionally narrower than `CLAUDE.md`: it focuses on the context you usually need before editing, debugging, or verifying work.
+Concise injected context for future Hermes/Codex sessions working in this repo.
 
-## Project In One Screen
+## Project in one screen
 
-- This repo is a high-performance Cython engine plus AlphaZero-style training stack for **Rolling Stock Stars**.
-- **Rolling Stock Stars is not Rolling Stock.** If a task touches rules or game behavior, read `RULES.md` first.
-- The central data structure is a single contiguous `float32` game-state array. Most core logic is pointer arithmetic over that array, not Python objects.
-- The state is split into **visible** NN input and **hidden** bookkeeping. The NN sees the active player rotated into slot 0; hidden state remains canonical/private.
-- The engine supports 2-6 players, but the current search / NN / training defaults are centered on **3-player** play.
+- This repo is a high-performance Cython engine plus AlphaZero-style search/training stack for **Rolling Stock Stars**.
+- **Rolling Stock Stars is not Rolling Stock.** If behavior or rules matter, read `RULES.md` first.
+- The core game state is a single contiguous compact `int16` array wrapped by `GameState`.
+- The NN does **not** read state directly. The live engine→NN bridge is `core/token_data.pyx:get_token_data(...)`, which fills token buffers for `nn/transformer.py`.
+- Search/eval/self-play/trainer are now on the sparse/token contract. Do not assume the old visible/hidden float32 + rotated-state + residual-MLP architecture is still current.
 
-## Source Of Truth Order
+## Source of truth order
 
 When docs disagree, trust these in roughly this order:
 
 1. `RULES.md` for game rules.
-2. `VECTORS.md` plus `core/state.pyx` for state/action layout details.
-3. Current source code (`core/`, `phases/`, `mcts/`, `train/`, `nn/`) for behavior and defaults.
-4. `CLAUDE.md` for repo-specific workflow notes.
-5. `README.md` for high-level orientation only.
+2. Current code in `core/`, `entities/`, `phases/`, `nn/`, `mcts/`, `train/`.
+3. Runtime-verified behavior (build/import/tests/smokes) over prose.
+4. Obsidian cartography notes if present:
+   - `/mnt/c/Users/Isaac/Documents/obsidian/Archivum Cogitata/Hermes/rss-az-cython2/`
+   - start with `00 Index.md`, `01 Source of Truth.md`, `03 Architecture.md`, `04 Build, Test, and Dev Loop.md`.
+5. `CLAUDE.md`, `VECTORS.md`, `README.md`, `transformers.md` only after checking them against code.
 
-## Repo Map
+Important: several repo docs are stale in specific ways. In particular, old references to float32 visible/hidden state, token width `63`, stub legal enumeration, or pre-refactor MCTS/training status are not current.
 
-- `core/`
-  - `state.pyx`: layout computation, visible/hidden split, rotation-related offsets.
-  - `actions.pyx`: action-space layout; use helpers instead of hardcoding counts.
-  - `driver.pyx`: stateless `apply_action(...)` loop, phase dispatch, forced-action chaining.
-  - `data.pyx`: enums, constants, divisors, market data, company/corp metadata.
-- `entities/`
-  - Handles over state-array regions (`PLAYERS`, `CORPS`, `TURN`, `FI`, etc.).
-  - Hot-path access lives here; IDs are plain ints, handles are singleton objects.
-- `phases/`
-  - Per-phase rules and transitions: invest, bid, acquisition, closing, dividends, issue, ipo, wrap_up, income, end_card.
-- `mcts/`
-  - `search.py`: PUCT search, batched leaf eval, leaf locking, subtree reuse, A0GB target extraction.
-  - `node.py`: tree structure.
-  - `evaluator.py`: state rotation, NN eval, terminal values.
-  - `mcts_core.pyx`: Cython hot helpers and worker/server signaling primitives.
-- `nn/`
-  - `model_3p.py`: current residual MLP with phase-specific policy heads.
-  - `__init__.py`: dynamic model factory via `--model-path`.
-- `train/`
-  - `config.py`: all training + MCTS defaults and validation.
-  - `main.py`: CLI / orchestration.
-  - `self_play.py`: game generation and worker entry points.
-  - `eval_server.py`: shared-memory eval servers.
-  - `trainer.py`, `replay_buffer.py`, `checkpoint.py`, `logging.py`: training loop plumbing.
-- `tests/`
-  - `tests/phases/`: rules / phase coverage.
-  - `tests/test_mcts.py`, `tests/test_training.py`, `tests/test_state_layout.py`: search, training, layout.
-  - `tests/games_18xx/`: replay tests against 18xx.games plus reusable debug scripts.
-- `interp/`
-  - Interpretability tooling. Start with `interp/README.md` if the task touches analysis or reports.
+## Current architecture snapshot
 
-## Mental Model That Matters
+- `core/state.pyx`: compact int16 layout. Use `core.state.get_layout(num_players)` from Python for exact offsets/sizes.
+- `entities/*`: stateless handles over the state array; they own coherence/invalidation semantics.
+- `core/actions.pyx`: live phase-local action encoding + sparse legal enumeration.
+- `core/driver.pyx`: stateless dispatch + auto-chaining through automated phases and forced actions; step-mode helpers also exist.
+- `core/token_data.pyx`: live token extraction bridge.
+- `nn/transformer.py`: active model; token-based, dense policy head over `MAX_ACTION_SIZE`, canonical-order values.
+- `mcts/*`: live sparse/token search stack.
+- `train/eval_server.py`, `train/self_play.py`, `train/replay_buffer.py`, `train/trainer.py`, `train/main.py`: live sparse/token path.
+- `train/analyze_game.py`: current checkpoint-analysis/debugging entry point; if search/evaluator return shapes change, re-check it explicitly.
 
-- State layout is flat and normalized. Writes usually divide by a constant; reads usually multiply and round back to ints.
-- Many visible fields are derived views of hidden/canonical state. If you change state logic, expect both low-level and visible representations to matter.
-- Action space size depends on player count. Use `get_total_action_count(num_players)` and `get_action_layout(...)`; do not hardcode totals.
-- Some phases are automated (`WRAP_UP`, `INCOME`, `END_CARD`). The driver may auto-advance through them or auto-apply forced actions.
-- `GameState._layout` is a Cython-only struct. From Python, use `core.state.get_layout(num_players)`.
-- Acquisition and closing use hidden offer buffers and present offers one at a time. If those phases misbehave, inspect buffer setup and revalidation logic before changing action masks.
+## Read order by task
 
-## Read Order By Task
-
-- Game-rule bug or behavior change:
+- Rules / phase behavior:
   - `RULES.md`
   - relevant `phases/*.pyx`
   - `core/driver.pyx`
-  - matching tests in `tests/phases/`
-- State/layout/vector issue:
-  - `VECTORS.md`
+  - relevant tests in `tests/phases/`
+- State/layout/invariants:
   - `core/state.pyx`
-  - relevant entity modules
-  - `tests/test_state_layout.py`
-- Action-space change:
+  - relevant `entities/*.pyx`
+  - `core/token_data.pyx` if NN-visible features are affected
+- Action-space changes:
+  - `core/data.pxd`
   - `core/actions.pyx`
-  - `core/driver.pyx`
-  - relevant phase file
-  - tests covering that phase
-- Search / MCTS work:
-  - `mcts/search.py`
+  - relevant phase module
+  - `nn/transformer.py` if action slicing/head assumptions change
+- Search/eval changes:
+  - `mcts/mcts_core.pyx`
   - `mcts/node.py`
   - `mcts/evaluator.py`
-  - `tests/test_mcts.py`
-- Training / self-play / checkpointing:
-  - `train/config.py`
-  - `train/main.py`
-  - `train/self_play.py`
+  - `mcts/search.py`
   - `train/eval_server.py`
-  - `tests/test_training.py`
-- Interpretability:
-  - `interp/README.md`
-  - specific scripts under `interp/`
-- Replay mismatch against 18xx.games:
-  - `tests/games_18xx/README.md`
-  - `tests/games_18xx/replay_harness.py`
-  - `tests/games_18xx/action_parser.py`
-  - existing scripts in `tests/games_18xx/debug/`
+- Self-play / trainer changes:
+  - `train/self_play.py`
+  - `train/replay_buffer.py`
+  - `train/trainer.py`
+  - `train/main.py`
 
-## Build And Verification
+## Build / test loop
 
 - Use `.venv/bin/python`, not bare `python`.
-- Build extensions before running code that imports `core`, `entities`, `phases`, or `mcts`:
+- Run commands from the repo root. If you need explicit imports from ad hoc shell commands, set `PYTHONPATH` to the current repo/worktree root.
+- Build extensions before running code that imports compiled modules:
 
 ```bash
 .venv/bin/python setup.py build_ext --inplace
 ```
 
-- If you changed `.pxd` files or low-level layout/signature details, clean first:
+- If you changed `.pxd` files or low-level signatures/layout, clean first:
 
 ```bash
 .venv/bin/python setup.py clean
 .venv/bin/python setup.py build_ext --inplace
 ```
 
-- Full test gate:
+- Useful targeted tests/smokes:
 
 ```bash
-pytest tests/
+.venv/bin/pytest tests/phases -q
+.venv/bin/pytest tests/test_mcts.py -q
+.venv/bin/pytest tests/test_driver_step_mode.py -q
+.venv/bin/pytest tests/test_self_play.py -q
 ```
 
-- Targeted commands that are often useful:
+## Working rules
 
-```bash
-pyright <path>
-.venv/bin/python setup.py trace_game
-.venv/bin/python setup.py benchmark --device=cpu --batch-size=4
-.venv/bin/python -m train --num-workers 0 --games-per-epoch 10
-```
+- Do not trust stale prose over live code.
+- Do not hardcode action counts or layout numbers; query helpers/constants.
+- Do not bypass entity handles with raw state-array writes unless you are deliberately working in tightly scoped test/setup code.
+- For replay/training/search work, assume the sparse legal-list contract is the default until the code proves otherwise.
+- If you need more context than this file can carry, check the Obsidian notes before doing a broad rediscovery pass.
 
-## Testing Notes
+## Environment / workflow notes
 
-- `tests/phases/conftest.py` is important. Its fixtures and `assert_invariants(...)` cover many derived-state expectations, so not every feature needs a dedicated test file.
-- For engine/rules changes, run the relevant phase tests first, then `pytest tests/`.
-- For MCTS or training changes, start with `tests/test_mcts.py` and `tests/test_training.py`, then run the full suite.
-- Replay tests in `tests/games_18xx/` require Ruby and the checked-in `18xx/` submodule content. Read that README before assuming a replay mismatch is an engine bug.
-- Existing replay debug scripts are usually better than ad-hoc one-off scripts.
-
-## Environment / Workflow Gotchas
-
-- `install.sh` expects an **activated** venv and installs platform-specific PyTorch for `cpu`, `cuda`, or `rocm`.
-- There is no `pyproject.toml`; `setup.py` is the build entry point.
-- `pyright` is expected to be the system binary, not `.venv/bin/pyright`.
-- Search/training worker partitioning is constrained by a uint64 bitmap design: each eval-server partition may cover at most 64 workers. `TrainingConfig` validates this.
-- The repo uses `bd` / beads for issue tracking. If you discover follow-up work that is out of scope, record it instead of letting it disappear.
-- Use `scratchpad/` for temporary investigation scripts if you need local throwaway code.
+- `setup.py` is the build entry point; there is no `pyproject.toml`.
+- `pyright` is the system binary, not `.venv/bin/pyright`.
+- The repo uses `bd` / beads for issue tracking.
+- Use `scratchpad/` for temporary investigation scripts.
