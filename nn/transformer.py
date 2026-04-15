@@ -275,11 +275,13 @@ class RSSTransformerNet(nn.Module):
 
     def _policy_invest(self, t: torch.Tensor) -> torch.Tensor:
         """INVEST: pass(1) + auction(36*AUCTION_CAP) + trade(8*2) = 557."""
-        n = t.shape[0]
         pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
         auction = self.company_auction_head(t[:, self._company_slice])        # (n, 36, AUCTION_CAP)
         trade = self.corp_trade_head(t[:, self._corp_slice])                  # (n, 8, 2)
-        return torch.cat([pass_logit, auction.reshape(n, -1), trade.reshape(n, -1)], dim=-1)
+        # flatten(1) instead of reshape(n, -1): the latter is ambiguous when
+        # n == 0 (empty mask in dispatch), since 0 elements / 0 rows is
+        # undefined for the inferred dim.
+        return torch.cat([pass_logit, auction.flatten(1), trade.flatten(1)], dim=-1)
 
     def _policy_bid(self, t: torch.Tensor) -> torch.Tensor:
         """BID: pass(1) + raises(AUCTION_CAP-1) = AUCTION_CAP. Pass = leave the auction."""
@@ -289,7 +291,6 @@ class RSSTransformerNet(nn.Module):
 
     def _policy_acquisition(self, t: torch.Tensor) -> torch.Tensor:
         """ACQUISITION: pass(1) + corp*company*offset(8*36*52=14976) = 14977."""
-        n = t.shape[0]
         pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
         corp_h = self.acquisition_corp_proj(t[:, self._corp_slice])           # (n, 8, dk)
         comp_h = self.acquisition_company_proj(t[:, self._company_slice])     # (n, 36, dk)
@@ -297,7 +298,8 @@ class RSSTransformerNet(nn.Module):
         comp_h = comp_h.unsqueeze(1).expand(-1, 8, -1, -1)                    # (n, 8, 36, dk)
         pair_h = torch.cat([corp_h, comp_h, corp_h * comp_h], dim=-1)         # (n, 8, 36, 3*dk)
         acquisition = self.acquisition_pair_head(pair_h)                      # (n, 8, 36, 52)
-        return torch.cat([pass_logit, acquisition.reshape(n, -1)], dim=-1)
+        # flatten(1): reshape(n, -1) is ambiguous for empty (n=0) tensors.
+        return torch.cat([pass_logit, acquisition.flatten(1)], dim=-1)
 
     def _policy_acq_offer(self, t: torch.Tensor) -> torch.Tensor:
         """ACQ_OFFER: pass(1) + buy(1) = 2."""
@@ -323,10 +325,10 @@ class RSSTransformerNet(nn.Module):
 
     def _policy_ipo(self, t: torch.Tensor) -> torch.Tensor:
         """IPO: pass(1) + per-corp par_price logits(8*14=112) = 113."""
-        n = t.shape[0]
         pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
         ipo = self.corp_ipo_head(t[:, self._corp_slice])                      # (n, 8, 14)
-        return torch.cat([pass_logit, ipo.reshape(n, -1)], dim=-1)
+        # flatten(1): reshape(n, -1) is ambiguous for empty (n=0) tensors.
+        return torch.cat([pass_logit, ipo.flatten(1)], dim=-1)
 
     # ------------------------------------------------------------------
     # Policy dispatch (handles mixed-phase batches)
@@ -370,10 +372,14 @@ class RSSTransformerNet(nn.Module):
             self._policy_acq_offer, self._policy_closing, self._policy_dividends,
             self._policy_issue, self._policy_ipo,
         )
+        # No `if not mask.any(): continue` early-exit: that path forces a
+        # GPU→CPU sync (8 per forward) which dominates eval latency on
+        # CPU-bound workloads like analyze_game. Empty masks flow cleanly
+        # through linear / cat / gather / masked_scatter as no-op (0,*)
+        # ops, so we just dispatch all 8 phases unconditionally and let
+        # the GPU pipeline absorb the extra small launches.
         for phase_id in range(NUM_PHASES):
             mask = phase_ids == phase_id
-            if not mask.any():
-                continue
             phase_logits = dispatch[phase_id](tokens[mask])        # (n, phase_width)
             # Gather wants int64; .long() is a no-op if already long.
             sub_ids = action_ids[mask].long()                      # (n, K)
