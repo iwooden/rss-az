@@ -102,6 +102,92 @@ cdef void invalidate_all_player_caches(GameState state) noexcept nogil:
 
 
 # =============================================================================
+# NOGIL CACHE REFRESH (module-level, bypasses the Python PLAYERS[i] lookup)
+# =============================================================================
+#
+# These mirror Player.calculate_net_worth / calculate_liquidity / _refresh_cache
+# but operate on raw player_id, so they are callable from nogil contexts. The
+# class-level helpers delegate here to avoid duplicating the math.
+
+cdef inline int _player_base(int player_id) noexcept nogil:
+    return LAYOUT.players_offset + player_id * PLAYER_FIELDS.size
+
+
+cdef int _calc_net_worth(GameState state, int player_id) noexcept nogil:
+    """Compute net worth = cash + face values + share value (active corps)."""
+    cdef int base = _player_base(player_id)
+    cdef int total = <int>state._data[base + PLAYER_FIELDS.cash]
+    cdef int corp_id, shares
+
+    total += company_sum_player_face_value(state, player_id)
+
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
+        shares = <int>state._data[base + PLAYER_FIELDS.owned_shares + corp_id]
+        if shares <= 0:
+            continue
+        if corp_is_active(state, corp_id):
+            total += shares * corp_share_price(state, corp_id)
+
+    return total
+
+
+cdef int _calc_liquidity(GameState state, int player_id) noexcept nogil:
+    """Compute iterative-sale liquidation value across all owned shares."""
+    cdef int base = _player_base(player_id)
+    cdef int total = <int>state._data[base + PLAYER_FIELDS.cash]
+    cdef int corp_id, shares, sim_index, new_index, _i
+    cdef int16_t sim_market[27]
+
+    copy_market_availability(state, sim_market)
+
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
+        if not corp_is_active(state, corp_id):
+            continue
+        shares = <int>state._data[base + PLAYER_FIELDS.owned_shares + corp_id]
+        if shares <= 0:
+            continue
+
+        sim_index = corp_price_index(state, corp_id)
+        for _i in range(shares):
+            new_index = sim_index - 1
+            while new_index > 0 and sim_market[new_index] != 1:
+                new_index -= 1
+            if new_index <= 0:
+                break  # Bankruptcy — remaining shares worthless
+            total += MARKET_PRICES[new_index]
+            if sim_index < 26:
+                sim_market[sim_index] = 1
+            sim_market[new_index] = 0
+            sim_index = new_index
+
+    return total
+
+
+cdef void refresh_player_cache_if_dirty(
+    GameState state, int player_id,
+) noexcept nogil:
+    """Refresh income / net_worth / liquidity slots if the dirty bit is set.
+
+    Module-level nogil equivalent of ``Player._refresh_cache``, callable
+    without holding the GIL. ``core/token_data`` uses this to fold the
+    cache-refresh prologue into the same nogil block as ``_fill_buffer``.
+    """
+    if not _cache_dirty(state, player_id):
+        return
+    cdef int base = _player_base(player_id)
+    state._data[base + PLAYER_FIELDS.income] = (
+        <int16_t>company_sum_player_adjusted_income(state, player_id)
+    )
+    state._data[base + PLAYER_FIELDS.net_worth] = (
+        <int16_t>_calc_net_worth(state, player_id)
+    )
+    state._data[base + PLAYER_FIELDS.liquidity] = (
+        <int16_t>_calc_liquidity(state, player_id)
+    )
+    _clear_cache_dirty(state, player_id)
+
+
+# =============================================================================
 # HIGH-LEVEL PLAYER CLASS
 # =============================================================================
 
@@ -190,28 +276,25 @@ cdef class Player:
 
         Net worth = cash + sum(company face values) + sum(shares * share_price)
         """
-        cdef int total = self._get_cash(state)
-        cdef int corp_id
-        cdef int shares
+        return _calc_net_worth(state, self.player_id)
 
-        # Add face value of owned private companies
-        total += company_sum_player_face_value(state, self.player_id)
+    cdef void _refresh_cache(self, GameState state) noexcept nogil:
+        """Recompute and store this player's derived finance cache.
 
-        # Add value of corporation shares.
-        for corp_id in range(<int>GameConstants.NUM_CORPS):
-            shares = self._get_shares(state, corp_id)
-            if shares <= 0:
-                continue
-            if corp_is_active(state, corp_id):
-                total += shares * corp_share_price(state, corp_id)
-
-        return total
-
-    cdef void _refresh_cache(self, GameState state):
-        """Recompute and store this player's derived finance cache."""
-        self.set_income(state, company_sum_player_adjusted_income(state, self.player_id))
-        self.set_net_worth(state, self.calculate_net_worth(state))
-        self.set_liquidity(state, self.calculate_liquidity(state))
+        Caller is expected to have verified the cache is dirty (the cpdef
+        getters do that). The body matches ``refresh_player_cache_if_dirty``
+        without the dirty-check guard so we don't double-test the same bit.
+        """
+        cdef int base = _player_base(self.player_id)
+        state._data[base + PLAYER_FIELDS.income] = (
+            <int16_t>company_sum_player_adjusted_income(state, self.player_id)
+        )
+        state._data[base + PLAYER_FIELDS.net_worth] = (
+            <int16_t>_calc_net_worth(state, self.player_id)
+        )
+        state._data[base + PLAYER_FIELDS.liquidity] = (
+            <int16_t>_calc_liquidity(state, self.player_id)
+        )
         _clear_cache_dirty(state, self.player_id)
 
     # =========================================================================
@@ -238,36 +321,7 @@ cdef class Player:
         effects are captured: selling corp 0's shares frees/occupies market
         spaces that affect corp 1's simulation, etc.
         """
-        cdef int total = self._get_cash(state)
-        cdef int corp_id, shares, sim_index, new_index, i
-        cdef int16_t sim_market[27]
-
-        # Copy market availability for simulation
-        copy_market_availability(state, sim_market)
-
-        for corp_id in range(<int>GameConstants.NUM_CORPS):
-            if not corp_is_active(state, corp_id):
-                continue
-            shares = self._get_shares(state, corp_id)
-            if shares <= 0:
-                continue
-
-            sim_index = corp_price_index(state, corp_id)
-            for _ in range(shares):
-                # Find next lower available space in simulated market
-                new_index = sim_index - 1
-                while new_index > 0 and sim_market[new_index] != 1:
-                    new_index -= 1
-                if new_index <= 0:
-                    break  # Bankruptcy — remaining shares worthless
-                total += MARKET_PRICES[new_index]
-                # Update simulated market: free old space, occupy new
-                if sim_index < 26:
-                    sim_market[sim_index] = 1
-                sim_market[new_index] = 0
-                sim_index = new_index
-
-        return total
+        return _calc_liquidity(state, self.player_id)
 
     # =========================================================================
     # TURN ORDER

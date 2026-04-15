@@ -29,6 +29,13 @@ from core.state cimport GameState
 cdef void invalidate_player_cache(GameState state, int player_id) noexcept nogil
 cdef void invalidate_all_player_caches(GameState state) noexcept nogil
 
+# Module-level nogil cache refresh — bypasses the Python ``PLAYERS[i]``
+# attribute lookup so callers in nogil blocks (notably ``core/token_data``)
+# can fold the refresh into the same nogil region as the fill kernel.
+cdef void refresh_player_cache_if_dirty(
+    GameState state, int player_id,
+) noexcept nogil
+
 
 # =============================================================================
 # PLAYER CLASS
@@ -44,7 +51,7 @@ cdef class Player:
     cdef int _get_share_sells(self, GameState state, int corp_id) noexcept nogil
     cdef bint _owns_company(self, GameState state, int company_id) noexcept nogil
     cdef inline int _slot(self, int field) noexcept nogil
-    cdef void _refresh_cache(self, GameState state)
+    cdef void _refresh_cache(self, GameState state) noexcept nogil
 
     # Cash
     cpdef int get_cash(self, GameState state)

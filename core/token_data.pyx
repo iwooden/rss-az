@@ -120,9 +120,7 @@ from entities.market cimport (
     market_find_next_higher_space,
     market_find_next_lower_space,
 )
-
-# Late Python-level import for the player cache-refresh prologue.
-from entities import player as player_module
+from entities.player cimport refresh_player_cache_if_dirty
 
 
 # =============================================================================
@@ -164,6 +162,11 @@ cpdef void get_token_data(GameState state, float[:, ::1] buffer):
     ``buffer`` must be a writable C-contiguous float32 memoryview at least
     ``(num_players + 54, TOKEN_DIM)`` in size. Training is scoped to
     3-5 players; other player counts are rejected.
+
+    The cache-refresh prologue and ``_fill_buffer`` run in a single nogil
+    block — refresh goes through the module-level
+    ``refresh_player_cache_if_dirty`` helper rather than the Python-level
+    ``PLAYERS[i].get_net_worth(state)`` lookup it used to.
     """
     cdef int num_players = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.num_players]
     cdef int num_tokens = num_players + 54
@@ -176,14 +179,9 @@ cpdef void get_token_data(GameState state, float[:, ::1] buffer):
     assert buffer.shape[1] >= <int>TokenDataSize.TOKEN_DIM, \
         f"get_token_data: buffer cols {buffer.shape[1]} < TOKEN_DIM {<int>TokenDataSize.TOKEN_DIM}"
 
-    # Prologue: force per-player cache refresh so the nogil body below can
-    # read net_worth / liquidity / income slots directly. The corp cache
-    # refresh path is already nogil-safe (corp_income et al. refresh on
-    # demand from inside nogil code), so corps do not need this treatment.
-    for i in range(num_players):
-        player_module.PLAYERS[i].get_net_worth(state)
-
     with nogil:
+        for i in range(num_players):
+            refresh_player_cache_if_dirty(state, i)
         _fill_buffer(state, buffer, num_players, num_tokens)
 
 
@@ -195,11 +193,9 @@ cpdef void get_token_data_batch(
     """Batched ``get_token_data``: fill ``buffer[i]`` for each ``state_arrays[i]``.
 
     Reuses a single scratch ``GameState`` across all rows via ``rebind``
-    (zero-copy). Compared with the Python-level per-state loop in
-    ``mcts.evaluator.evaluate_leaves``, this folds ``n`` function calls and
-    ``n`` wrapper constructions into a single Cython entry — the inner
-    loop runs in C with only the cache-refresh prologue and ``rebind``
-    holding the GIL, same as the single-state entry does once.
+    (zero-copy). Each row's cache refresh + fill runs in a single nogil
+    block; the only GIL-held op per iteration is ``rebind`` (Python-level
+    validation + ``_array`` attribute write).
 
     Args:
         state_arrays: List of writable C-contiguous int16 state arrays, one
@@ -231,12 +227,9 @@ cpdef void get_token_data_batch(
         if i > 0:
             scratch_gs.rebind(state_arrays[i], num_players)
 
-        # Cache refresh prologue (GIL-held — player refresh is not nogil-safe).
-        # Must run before every fill: each leaf has its own dirty cache state.
-        for p in range(num_players):
-            player_module.PLAYERS[p].get_net_worth(scratch_gs)
-
         with nogil:
+            for p in range(num_players):
+                refresh_player_cache_if_dirty(scratch_gs, p)
             _fill_buffer(scratch_gs, buffer[i], num_players, num_tokens)
 
 
