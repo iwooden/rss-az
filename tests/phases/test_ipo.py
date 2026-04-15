@@ -6,6 +6,8 @@ activation and presidency, processing order (descending face value), legal-actio
 enumeration (star tier, market availability, affordability), and the phase
 transition back to INVEST at the start of a new turn.
 """
+import pytest
+
 from core.actions import (
     ACTION_PASS_PY as ACTION_PASS,
     ACTION_IPO_PY as ACTION_IPO,
@@ -395,9 +397,6 @@ class TestProcessingOrder:
 
     def test_active_player_matches_owner(self, game_state):
         """Active player is always the owner of the currently active company."""
-        num_players = TURN.get_num_players(game_state)
-        if num_players < 2:
-            return
         _enter_ipo(game_state, {CO_5S: 0, CO_3S: 1}, {0: 200, 1: 200})
 
         # FV=60 first, owned by player 0.
@@ -467,9 +466,6 @@ class TestPhaseTransitions:
 
     def test_transition_resets_active_player_to_position_zero(self, game_state):
         """The new turn's active player is the one at turn-order position 0."""
-        num_players = TURN.get_num_players(game_state)
-        if num_players < 2:
-            return
         # CO_3S owned by player 1 — last active player will be player 1.
         _enter_ipo(game_state, {CO_3S: 1}, {1: 200})
 

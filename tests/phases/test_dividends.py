@@ -5,6 +5,8 @@ card and affordability), share price adjustment after dividends, receivership
 auto-pay, corp processing order (descending share price), phase transitions
 to END_CARD, and bankruptcy on price slide to 0.
 """
+import pytest
+
 from core.actions import (
     ACTION_DIVIDEND_PY as ACTION_DIVIDEND,
 )
@@ -295,11 +297,10 @@ class TestProcessingOrder:
         if TURN.get_phase(game_state) == GamePhases.PHASE_DIVIDENDS:
             assert TURN.get_active_corp(game_state) == 0
 
+    @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
     def test_three_corps_processed_in_descending_price(self, game_state):
         """Three corps at different prices are processed high to low."""
         num_players = TURN.get_num_players(game_state)
-        if num_players < 3:
-            return
 
         float_corp_for_test(game_state, corp_id=0, player_id=0,
                             company_id=0, par_index=5)
@@ -323,10 +324,6 @@ class TestProcessingOrder:
 
     def test_active_player_is_president_of_active_corp(self, game_state):
         """Active player is the president of the currently active corp."""
-        num_players = TURN.get_num_players(game_state)
-        if num_players < 2:
-            return
-
         float_corp_for_test(game_state, corp_id=0, player_id=0,
                             company_id=CO_1STAR, par_index=5)
         float_corp_for_test(game_state, corp_id=1, player_id=1,
@@ -364,7 +361,7 @@ class TestReceivership:
         assert TURN.get_active_corp(game_state) == 0
 
     def test_receivership_corp_no_dividend_paid(self, game_state):
-        """Receivership corps pay 0 dividend — no cash changes for players."""
+        """Receivership-only setup lands in END_CARD with no player/corp cash changes."""
         setup_receivership_corp(game_state, corp_id=0, company_ids=[CO_1STAR])
         CORPS[0].set_cash(game_state, 50)
 
@@ -374,8 +371,9 @@ class TestReceivership:
 
         _enter_dividends(game_state)
 
-        # All receivership => transitions past DIVIDENDS
-        assert TURN.get_phase(game_state) != GamePhases.PHASE_DIVIDENDS
+        assert TURN.get_phase(game_state) == GamePhases.PHASE_END_CARD
+        assert TURN.get_active_corp(game_state) == -1
+        assert not TURN.is_dividend_remaining(game_state, 0)
 
         for p in range(num_players):
             assert PLAYERS[p].get_cash(game_state) == cash_before[p]
@@ -401,10 +399,6 @@ class TestReceivership:
 
     def test_mixed_receivership_and_player_corps(self, game_state):
         """Mix of receivership and player corps: only player corps need decisions."""
-        num_players = TURN.get_num_players(game_state)
-        if num_players < 2:
-            return
-
         # Corp 0: player-controlled at price 5
         float_corp_for_test(game_state, corp_id=0, player_id=0,
                             company_id=CO_1STAR, par_index=5)
@@ -426,10 +420,10 @@ class TestReceivership:
 # =============================================================================
 
 class TestPhaseTransition:
-    """Transitions from DIVIDENDS to END_CARD."""
+    """Transitions from DIVIDENDS to END_CARD/ISSUE."""
 
-    def test_single_corp_transitions_after_dividend(self, game_state):
-        """After single corp's dividend, phase transitions past DIVIDENDS."""
+    def test_single_corp_transitions_to_issue_after_dividend(self, game_state):
+        """A single dividend decision auto-chains END_CARD and lands in ISSUE for that corp."""
         float_corp_for_test(game_state, corp_id=0, player_id=0,
                             company_id=CO_1STAR, par_index=10)
         CORPS[0].set_cash(game_state, 100)
@@ -438,27 +432,32 @@ class TestPhaseTransition:
         aid = find_legal_action(game_state, action_type=ACTION_DIVIDEND, amount=0)
         apply_and_verify(game_state, aid)
 
-        assert TURN.get_phase(game_state) != GamePhases.PHASE_DIVIDENDS
+        assert TURN.get_phase(game_state) == GamePhases.PHASE_ISSUE_SHARES
+        assert TURN.get_active_corp(game_state) == 0
+        assert TURN.get_active_player(game_state) == 0
+        assert TURN.is_issue_remaining(game_state, 0)
+        assert not TURN.is_dividend_remaining(game_state, 0)
 
-    def test_no_active_corps_immediate_transition(self, game_state):
-        """If no active corps, setup immediately transitions past DIVIDENDS."""
+    def test_no_active_corps_immediate_transition_to_end_card(self, game_state):
+        """With no active corps, setup exits DIVIDENDS immediately and stops at END_CARD."""
         _enter_dividends(game_state)
-        assert TURN.get_phase(game_state) != GamePhases.PHASE_DIVIDENDS
+        assert TURN.get_phase(game_state) == GamePhases.PHASE_END_CARD
+        assert TURN.get_active_corp(game_state) == -1
+        for corp_id in range(int(GameConstants.NUM_CORPS)):
+            assert not TURN.is_dividend_remaining(game_state, corp_id)
 
-    def test_all_receivership_transitions_past_dividends(self, game_state):
-        """When all active corps are in receivership, phase auto-completes."""
+    def test_all_receivership_transitions_to_end_card(self, game_state):
+        """Receivership-only setup auto-processes zero dividends and stops at END_CARD."""
         setup_receivership_corp(game_state, corp_id=0, company_ids=[CO_1STAR])
         CORPS[0].set_cash(game_state, 50)
 
         _enter_dividends(game_state)
-        assert TURN.get_phase(game_state) != GamePhases.PHASE_DIVIDENDS
+        assert TURN.get_phase(game_state) == GamePhases.PHASE_END_CARD
+        assert TURN.get_active_corp(game_state) == -1
+        assert not TURN.is_dividend_remaining(game_state, 0)
 
-    def test_two_corps_transitions_after_both(self, game_state):
-        """After both corps pay, transitions past DIVIDENDS."""
-        num_players = TURN.get_num_players(game_state)
-        if num_players < 2:
-            return
-
+    def test_two_corps_transitions_to_issue_after_both(self, game_state):
+        """Two corps stay in DIVIDENDS after the first decision, then land in ISSUE after the second."""
         float_corp_for_test(game_state, corp_id=0, player_id=0,
                             company_id=CO_1STAR, par_index=5)
         float_corp_for_test(game_state, corp_id=1, player_id=1,
@@ -467,15 +466,25 @@ class TestPhaseTransition:
         CORPS[1].set_cash(game_state, 100)
         _enter_dividends(game_state)
 
-        # First corp (1, higher price)
         aid = find_legal_action(game_state, action_type=ACTION_DIVIDEND, amount=0)
         apply_and_verify(game_state, aid)
 
-        if TURN.get_phase(game_state) == GamePhases.PHASE_DIVIDENDS:
-            aid = find_legal_action(game_state, action_type=ACTION_DIVIDEND, amount=0)
-            apply_and_verify(game_state, aid)
+        assert TURN.get_phase(game_state) == GamePhases.PHASE_DIVIDENDS
+        assert TURN.get_active_corp(game_state) == 0
+        assert TURN.get_active_player(game_state) == 0
+        assert TURN.is_dividend_remaining(game_state, 0)
+        assert not TURN.is_dividend_remaining(game_state, 1)
 
-        assert TURN.get_phase(game_state) != GamePhases.PHASE_DIVIDENDS
+        aid = find_legal_action(game_state, action_type=ACTION_DIVIDEND, amount=0)
+        apply_and_verify(game_state, aid)
+
+        assert TURN.get_phase(game_state) == GamePhases.PHASE_ISSUE_SHARES
+        assert TURN.get_active_corp(game_state) == 1
+        assert TURN.get_active_player(game_state) == 1
+        assert TURN.is_issue_remaining(game_state, 0)
+        assert TURN.is_issue_remaining(game_state, 1)
+        assert not TURN.is_dividend_remaining(game_state, 0)
+        assert not TURN.is_dividend_remaining(game_state, 1)
 
 
 # =============================================================================

@@ -14,6 +14,7 @@ from core.data import GamePhases, GameConstants
 from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.company import COMPANIES, CompanyLocation
+from entities.deck import DECK
 
 from tests.phases.conftest import (
     apply_and_verify,
@@ -55,6 +56,7 @@ def _enter_bid_phase(state, bid_offset=0):
 class TestLeaveAction:
     """Test BID phase leave-auction action behavior."""
 
+    @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
     def test_leave_marks_player_as_passed(self, game_state):
         """Leaving the auction marks the active player as passed.
 
@@ -62,8 +64,6 @@ class TestLeaveAction:
         passed flags), so we need >= 3 players to observe the flag.
         """
         num_players = TURN.get_num_players(game_state)
-        if num_players < 3:
-            return  # 2p leave immediately resolves, clearing passed flags
 
         _enter_bid_phase(game_state)
         active = TURN.get_active_player(game_state)
@@ -73,11 +73,10 @@ class TestLeaveAction:
         apply_and_verify(game_state, leave_id)
         assert PLAYERS[active].has_passed(game_state)
 
+    @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
     def test_leave_advances_to_next_non_passed_bidder(self, game_state):
         """Leaving advances control to the next non-passed bidder."""
         num_players = TURN.get_num_players(game_state)
-        if num_players < 3:
-            return  # 2p leave resolves immediately
 
         _enter_bid_phase(game_state)
         first_bidder = TURN.get_active_player(game_state)
@@ -88,11 +87,10 @@ class TestLeaveAction:
         next_bidder = TURN.get_active_player(game_state)
         assert next_bidder != first_bidder
 
+    @pytest.mark.parametrize("game_state", [4, 5, 6], indirect=True)
     def test_leave_skips_already_passed_players(self, game_state):
         """After multiple leaves, advancing skips players who already left."""
         num_players = TURN.get_num_players(game_state)
-        if num_players < 4:
-            return  # need 4+ to observe two leaves without resolution
 
         _enter_bid_phase(game_state)
 
@@ -184,11 +182,10 @@ class TestRaiseAction:
 
         assert TURN.get_phase(game_state) == int(GamePhases.PHASE_BID)
 
+    @pytest.mark.parametrize("game_state", [2], indirect=True)
     def test_raise_then_leave_resolves_in_2p(self, game_state):
         """In 2p: raise then leave resolves the auction to the raiser."""
         num_players = TURN.get_num_players(game_state)
-        if num_players != 2:
-            return  # 2-player specific
 
         _, company_id, _ = _enter_bid_phase(game_state)
 
@@ -205,11 +202,10 @@ class TestRaiseAction:
         # Winner should own the company
         assert COMPANIES[company_id].get_owner_id(game_state) == raiser
 
+    @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
     def test_consecutive_raises_increase_price(self, game_state):
         """Multiple raises monotonically increase the auction price."""
         num_players = TURN.get_num_players(game_state)
-        if num_players < 3:
-            return  # need 3+ for two distinct raises without resolution
 
         # Give all players plenty of cash
         for p in range(num_players):
@@ -302,6 +298,28 @@ class TestAuctionResolution:
         revealed_after = count_at_location(game_state, CompanyLocation.LOC_REVEALED)
         # One new card should be in LOC_REVEALED (or deck was empty)
         assert revealed_after >= deck_before
+
+    def test_empty_deck_resolution_draws_no_replacement_and_still_resolves(self, game_state):
+        """Auction resolution with an empty deck succeeds without creating a revealed card."""
+        num_players = TURN.get_num_players(game_state)
+        starter, company_id, bid_price = _enter_bid_phase(game_state)
+        starter_cash_before = PLAYERS[starter].get_cash(game_state)
+
+        DECK.set_order(game_state, [])
+        assert TURN.get_cards_remaining(game_state) == 0
+        assert DECK.is_empty(game_state)
+        assert count_at_location(game_state, CompanyLocation.LOC_REVEALED) == 0
+
+        for _ in range(num_players - 1):
+            leave_id = find_legal_action(game_state, action_type=ACTION_PASS)
+            apply_and_verify(game_state, leave_id)
+
+        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_INVEST)
+        assert PLAYERS[starter].owns_company(game_state, company_id)
+        assert PLAYERS[starter].get_cash(game_state) == starter_cash_before - bid_price
+        assert TURN.get_cards_remaining(game_state) == 0
+        assert DECK.is_empty(game_state)
+        assert count_at_location(game_state, CompanyLocation.LOC_REVEALED) == 0
 
     def test_auction_fields_cleared_after_resolution(self, game_state):
         """All auction scratch fields are cleared after resolution."""
@@ -537,11 +555,10 @@ class TestPhaseTransitions:
 
         assert TURN.get_phase(game_state) == int(GamePhases.PHASE_BID)
 
+    @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
     def test_leave_without_resolution_keeps_bid_phase(self, game_state):
         """A single leave when >2 bidders remain stays in BID."""
         num_players = TURN.get_num_players(game_state)
-        if num_players < 3:
-            return  # 2p leave immediately resolves
 
         _enter_bid_phase(game_state)
 
@@ -578,11 +595,10 @@ class TestPhaseTransitions:
 class TestBiddingSequence:
     """Test multi-player bidding sequences."""
 
+    @pytest.mark.parametrize("game_state", [2], indirect=True)
     def test_two_player_bidding_war(self, game_state):
         """Two players alternate raising until one leaves."""
         num_players = TURN.get_num_players(game_state)
-        if num_players != 2:
-            return  # 2-player specific
 
         for p in range(num_players):
             PLAYERS[p].set_cash(game_state, 200)
@@ -626,11 +642,10 @@ class TestBiddingSequence:
         # The non-leaver is the starter (who opened the bid)
         assert starter not in leavers
 
+    @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
     def test_raise_changes_winner_identity(self, game_state):
         """A raise followed by others leaving makes the raiser the winner."""
         num_players = TURN.get_num_players(game_state)
-        if num_players < 3:
-            return  # need 3+ so raiser and starter are distinct
 
         for p in range(num_players):
             PLAYERS[p].set_cash(game_state, 200)

@@ -162,6 +162,25 @@ class TestCorpIncome:
         assert_invariants(state)
         assert_token_data_invariants(state)
 
+    def test_negative_income_exactly_zero_cash_does_not_go_bankrupt(self):
+        """A corp survives when negative income lands exactly on zero cash."""
+        state = make_auto_phase_state(3, PHASE_INCOME)
+        cid = float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
+
+        CORPS[0].set_cash(state, 5)
+        prime_corp_income_for_test(state, 0, -5)
+
+        apply_income_py(state)
+
+        assert CORPS[0].is_active(state)
+        assert CORPS[0].get_cash(state) == 0
+        assert CORPS[0].count_companies(state, include_acquisition=True) == 1
+        assert CORPS[0].get_price_index(state) == 10
+        assert COMPANIES[cid].is_owned_by_corp(state, 0)
+        assert COMPANIES[cid].get_location(state) == int(CompanyLocation.LOC_CORP)
+        assert_invariants(state)
+        assert_token_data_invariants(state)
+
     def test_inactive_corp_skipped(self):
         """Inactive corps don't receive income and aren't bankruptcy-checked."""
         state = make_auto_phase_state(3, PHASE_INCOME)

@@ -211,10 +211,8 @@ class TestPlayerOrder:
         assert TURN.get_phase(game_state) == PHASE_INCOME
         assert_invariants(game_state, "after all closers pass in player-ID order")
 
+    @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
     def test_pass_skips_players_without_closable_companies(self, game_state):
-        if TURN.get_num_players(game_state) < 3:
-            pytest.skip("needs at least 3 players to verify skipping a middle player")
-
         give_company_to_player(game_state, 0, 0)
         give_company_to_player(game_state, 1, 2)
 

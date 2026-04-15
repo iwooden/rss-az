@@ -8,6 +8,8 @@ ACQ_OFFER has no setup function -- it is entered mid-action from ACQUISITION.
 Tests set up ACQ_OFFER state directly using TURN field setters to replicate
 what _enter_acq_offer() does, avoiding coupling to ACQUISITION internals.
 """
+import pytest
+
 from core.actions import (
     ACTION_PASS_PY as ACTION_PASS,
     ACTION_ACQ_OFFER_ACCEPT_PY as ACTION_ACQ_OFFER_ACCEPT,
@@ -34,6 +36,7 @@ from tests.phases.conftest import (
     draw_to_player,
     draw_to_corp,
 )
+from tests.phases.helpers.ownership import give_company_to_fi
 
 
 # =============================================================================
@@ -269,12 +272,9 @@ class TestFiPreemptionPass:
         assert loc in (int(CompanyLocation.LOC_CORP_ACQ), int(CompanyLocation.LOC_CORP))
         assert COMPANIES[fi_co].get_owner_id(game_state) == 1
 
+    @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
     def test_pass_sets_corp_passed_flag(self, game_state):
         """Passing sets the per-corp passed_acq_offer flag."""
-        num_players = TURN.get_num_players(game_state)
-        if num_players < 3:
-            return
-
         fi_co = draw_to_fi(game_state)
 
         # Two preemptors so passing doesn't immediately end
@@ -301,12 +301,9 @@ class TestFiPreemptionPass:
         apply_and_verify(game_state, pass_id)
         assert CORPS[3].has_passed_acq_offer(game_state)
 
+    @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
     def test_pass_cascades_to_next_preemptor(self, game_state):
         """When first preemptor passes, offer cascades to next by share price."""
-        num_players = TURN.get_num_players(game_state)
-        if num_players < 3:
-            return
-
         fi_co = draw_to_fi(game_state)
 
         # Preemptor 1: corp 3, player 1 -- higher share price, offered first
@@ -336,12 +333,9 @@ class TestFiPreemptionPass:
         assert TURN.get_active_corp(game_state) == 4
         assert TURN.get_active_player(game_state) == 2
 
+    @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
     def test_all_preemptors_pass_original_buys(self, game_state):
         """When all preemptors pass, the original corp gets the company."""
-        num_players = TURN.get_num_players(game_state)
-        if num_players < 3:
-            return
-
         fi_co = draw_to_fi(game_state)
 
         # Preemptor 1: corp 3, player 1
@@ -376,12 +370,9 @@ class TestFiPreemptionPass:
         assert loc in (int(CompanyLocation.LOC_CORP_ACQ), int(CompanyLocation.LOC_CORP))
         assert COMPANIES[fi_co].get_owner_id(game_state) == 5
 
+    @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
     def test_second_preemptor_accepts(self, game_state):
         """First preemptor passes, second accepts and gets the company."""
-        num_players = TURN.get_num_players(game_state)
-        if num_players < 3:
-            return
-
         fi_co = draw_to_fi(game_state)
 
         # Preemptor 1: corp 3, player 1 -- will pass
@@ -415,12 +406,9 @@ class TestFiPreemptionPass:
         assert loc in (int(CompanyLocation.LOC_CORP_ACQ), int(CompanyLocation.LOC_CORP))
         assert COMPANIES[fi_co].get_owner_id(game_state) == 4
 
+    @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
     def test_receivership_preemptor_auto_buys_and_clears_offer_context(self, game_state):
         """Passing to a receivership preemptor auto-buys and clears offer scratch state."""
-        num_players = TURN.get_num_players(game_state)
-        if num_players < 3:
-            return
-
         fi_co = draw_to_fi(game_state)
 
         # Preemptor 1: corp 3, player 1 -- will pass
@@ -687,53 +675,43 @@ class TestCrossPresidentDecline:
 class TestIntegrationFiPreemption:
     """Test ACQ_OFFER entered via FI_BUY preemption in ACQUISITION."""
 
+    @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
     def test_fi_buy_triggers_preemption_and_accept_resolves(self, game_state):
         """FI buy by lower-priority corp triggers offer to higher-priority corp."""
-        num_players = TURN.get_num_players(game_state)
-        if num_players < 3:
-            return
-
-        fi_co = draw_to_fi(game_state)
+        fi_co = 10
+        give_company_to_fi(game_state, fi_co)
 
         # Low-price buyer (player 1) -- initiates FI buy
-        float_corp_for_test(game_state, corp_id=3, player_id=1, par_index=5)
+        float_corp_for_test(game_state, corp_id=3, company_id=11, player_id=1, par_index=5)
         CORPS[3].set_cash(game_state, 200)
 
         # High-price preemptor (player 2) -- gets offer
-        float_corp_for_test(game_state, corp_id=4, player_id=2, par_index=15)
+        float_corp_for_test(game_state, corp_id=4, company_id=12, player_id=2, par_index=15)
         CORPS[4].set_cash(game_state, 200)
 
         setup_acquisition_phase_py(game_state)
 
-        # Find player 1 and get them active
-        active = TURN.get_active_player(game_state)
-        if active != 1:
-            # Need to pass to reach player 1
-            while TURN.get_active_player(game_state) != 1:
-                if TURN.get_phase(game_state) != int(GamePhases.PHASE_ACQUISITION):
-                    return  # phase transitioned
-                pass_id = find_legal_action(game_state, action_type=ACTION_PASS)
-                apply_and_verify(game_state, pass_id)
+        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_ACQUISITION)
+        assert TURN.get_active_player(game_state) == 1
 
         fi_buy_id = find_legal_action(
             game_state, action_type=ACTION_ACQ_FI_BUY, corp_id=3, company_id=fi_co,
         )
         apply_and_verify(game_state, fi_buy_id)
 
-        phase = TURN.get_phase(game_state)
-        if phase == int(GamePhases.PHASE_ACQ_OFFER):
-            # Preemptor (corp 4, player 2) should be offered
-            assert TURN.get_active_player(game_state) == 2
-            assert TURN.get_active_corp(game_state) == 4
+        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_ACQ_OFFER)
+        assert TURN.get_active_player(game_state) == 2
+        assert TURN.get_active_corp(game_state) == 4
+        assert TURN.get_active_company(game_state) == fi_co
 
-            # Accept the preemption
-            accept_id = find_legal_action(game_state, action_type=ACTION_ACQ_OFFER_ACCEPT)
-            apply_and_verify(game_state, accept_id)
+        # Accept the preemption
+        accept_id = find_legal_action(game_state, action_type=ACTION_ACQ_OFFER_ACCEPT)
+        apply_and_verify(game_state, accept_id)
 
-            # Company should go to preemptor (corp 4)
-            loc = COMPANIES[fi_co].get_location(game_state)
-            assert loc in (int(CompanyLocation.LOC_CORP_ACQ), int(CompanyLocation.LOC_CORP))
-            assert COMPANIES[fi_co].get_owner_id(game_state) == 4
+        # Company should go to preemptor (corp 4)
+        loc = COMPANIES[fi_co].get_location(game_state)
+        assert loc in (int(CompanyLocation.LOC_CORP_ACQ), int(CompanyLocation.LOC_CORP))
+        assert COMPANIES[fi_co].get_owner_id(game_state) == 4
 
 
 class TestIntegrationCrossPresident:

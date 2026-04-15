@@ -150,13 +150,19 @@ class TestStartAuction:
     def test_auction_with_positive_offset(self, game_state):
         """Auction with offset > 0 sets price to face + offset."""
         actions = get_legal_actions(game_state)
-        for aid, info in actions:
-            if info.action_type == ACTION_AUCTION and info.amount > 0:
-                face = COMPANIES[info.company_id].get_face_value()
-                apply_and_verify(game_state, aid)
-                assert TURN.get_auction_price(game_state) == face + info.amount
-                return
-        pytest.skip("No positive-offset auction affordable")
+        positive_offset_auctions = [
+            (aid, info)
+            for aid, info in actions
+            if info.action_type == ACTION_AUCTION and info.amount > 0
+        ]
+        assert positive_offset_auctions, (
+            "Expected a positive-offset auction in the seeded INVEST opening state"
+        )
+
+        aid, info = positive_offset_auctions[0]
+        face = COMPANIES[info.company_id].get_face_value()
+        apply_and_verify(game_state, aid)
+        assert TURN.get_auction_price(game_state) == face + info.amount
 
     def test_auction_sets_high_bidder_to_starter(self, game_state):
         """Auction starter is recorded as the high bidder."""
@@ -206,8 +212,7 @@ class TestStartAuction:
         actions = get_legal_actions(game_state)
         auction_actions = [(aid, info) for aid, info in actions
                           if info.action_type == ACTION_AUCTION]
-        if not auction_actions:
-            pytest.skip("No auction actions available")
+        assert auction_actions, "Expected at least one auction action in fresh INVEST state"
 
         # Pick a company and set cash to face + 2
         company_id = auction_actions[0][1].company_id

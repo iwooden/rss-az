@@ -6,6 +6,8 @@ processing order (descending share price), receivership auto-issue,
 auto-skip of corps with no unissued shares, bankruptcy on issue to index 0,
 phase transitions through IPO to the next turn, and legal-action enumeration.
 """
+import pytest
+
 from core.actions import (
     ACTION_PASS_PY as ACTION_PASS,
     ACTION_ISSUE_PY as ACTION_ISSUE,
@@ -343,12 +345,9 @@ class TestProcessingOrder:
         assert TURN.get_phase(game_state) == int(GamePhases.PHASE_ISSUE_SHARES)
         assert TURN.get_active_corp(game_state) == 0
 
+    @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
     def test_three_corps_descending_order(self, game_state):
         """Three corps at distinct prices are processed highest → lowest."""
-        num_players = TURN.get_num_players(game_state)
-        if num_players < 3:
-            return
-
         float_corp_for_test(game_state, corp_id=0, player_id=0,
                             company_id=CO_A, par_index=5)
         float_corp_for_test(game_state, corp_id=1, player_id=1,
@@ -366,10 +365,6 @@ class TestProcessingOrder:
 
     def test_active_player_is_president(self, game_state):
         """Active player matches the president of the active corp."""
-        num_players = TURN.get_num_players(game_state)
-        if num_players < 2:
-            return
-
         float_corp_for_test(game_state, corp_id=0, player_id=0,
                             company_id=CO_A, par_index=5)
         float_corp_for_test(game_state, corp_id=1, player_id=1,
