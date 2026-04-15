@@ -1,4 +1,3 @@
-# cython: language_level=3
 """ACQUISITION phase handler declarations.
 
 Two entry points: ``setup_acquisition_phase`` initializes phase context,

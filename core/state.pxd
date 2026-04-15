@@ -1,4 +1,3 @@
-# cython: language_level=3
 """
 Declaration file for game state (compact layout for transformer architecture).
 

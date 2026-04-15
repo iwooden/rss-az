@@ -1,4 +1,3 @@
-# cython: language_level=3
 """ACQ_OFFER phase handler declarations.
 
 Single entry point: ``apply_acq_offer_action`` dispatches PASS/ACCEPT

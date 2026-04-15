@@ -1,4 +1,3 @@
-# cython: language_level=3
 """Declarations for MCTS hot-path functions."""
 
 cdef (int, int) _select_child_impl(

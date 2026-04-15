@@ -1,4 +1,3 @@
-# cython: language_level=3
 """
 Turn state entity declarations.
 

@@ -1,4 +1,3 @@
-# cython: language_level=3
 """INVEST phase handler declarations.
 
 Handles the four INVEST actions: PASS, AUCTION (start), BUY_SHARE, SELL_SHARE.

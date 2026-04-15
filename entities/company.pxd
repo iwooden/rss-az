@@ -1,4 +1,3 @@
-# cython: language_level=3
 """
 Company entity declarations.
 

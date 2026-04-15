@@ -1,4 +1,3 @@
-# cython: language_level=3
 """
 Per-phase action encoding for the transformer refactor.
 

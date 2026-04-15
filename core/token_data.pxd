@@ -1,4 +1,3 @@
-# cython: language_level=3
 """
 Declaration file for token data extraction.
 

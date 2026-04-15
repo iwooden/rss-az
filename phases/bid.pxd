@@ -1,4 +1,3 @@
-# cython: language_level=3
 """BID phase handler declarations.
 
 Handles the two BID actions: LEAVE (pass-class) and RAISE. The handler

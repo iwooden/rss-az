@@ -1,4 +1,3 @@
-# cython: language_level=3
 """END_CARD phase handler declarations.
 
 END_CARD is an automated engine phase with no decision action. The

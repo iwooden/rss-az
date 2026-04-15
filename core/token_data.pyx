@@ -1,4 +1,3 @@
-# cython: language_level=3
 """
 Token data extraction: compact GameState -> transformer eval buffer.
 

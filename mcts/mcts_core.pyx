@@ -1,4 +1,3 @@
-# cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
 """Cython implementations of MCTS hot functions.
 
 Replaces pure-Python/numpy versions in search.py and evaluator.py,

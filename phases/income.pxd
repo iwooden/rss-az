@@ -1,4 +1,3 @@
-# cython: language_level=3
 """INCOME phase handler declarations.
 
 INCOME is an automated engine phase with no decision action. The

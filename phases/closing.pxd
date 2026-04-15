@@ -1,4 +1,3 @@
-# cython: language_level=3
 """CLOSING phase handler declarations.
 
 Two entry points: ``setup_closing_phase`` sets the phase, runs the

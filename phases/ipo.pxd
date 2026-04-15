@@ -1,4 +1,3 @@
-# cython: language_level=3
 """IPO phase handler declarations.
 
 Two entry points: ``setup_ipo_phase`` initializes the per-company remaining

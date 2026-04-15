@@ -1,4 +1,3 @@
-# cython: language_level=3
 """ISSUE phase handler declarations.
 
 Two entry points: ``setup_issue_phase`` initializes the per-corp remaining
