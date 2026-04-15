@@ -39,6 +39,7 @@ cdef enum ActionStatus:
     STATUS_INVALID = 2     # Caller-supplied action_id is not legal in
                            # the current decision phase, or the engine is
                            # currently sitting in a non-decision phase.
+    STATUS_PAUSED = 3      # Step mode paused after one deterministic step.
 
 
 # =============================================================================
@@ -50,9 +51,13 @@ cdef class GameDriver:
     # apply_action / _auto_chain. ``except -1`` so exceptions raised
     # inside (NotImplementedError from unported handlers, AssertionError
     # from broken state) propagate out.
+    cdef bint _is_automated_engine_phase(self, int engine_phase) noexcept nogil
+    cdef int _forced_action_or_negative_one(self, GameState state) except -2
     cdef int _dispatch(self, GameState state, int action_id, object history) except -1
     cdef int _run_automated_phase(self, GameState state, int engine_phase, object history) except -1
     cdef int _auto_chain(self, GameState state, object history) except -1
 
     # Public entry points.
     cpdef int apply_action(self, GameState state, int action_id, object history=*) except -1
+    cpdef bint is_non_player_phase(self, GameState state)
+    cpdef int advance_phase(self, GameState state, object history=*) except -1

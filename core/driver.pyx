@@ -52,6 +52,7 @@ from core.driver cimport (
     STATUS_OK,
     STATUS_GAME_OVER,
     STATUS_INVALID,
+    STATUS_PAUSED,
 )
 from phases.invest cimport apply_invest_action
 from phases.bid cimport apply_bid_action
@@ -94,6 +95,24 @@ cdef class GameDriver:
         # against it directly. The class exists only to give Cython a
         # convenient namespace for the cdef hot-path helpers.
         pass
+
+    cdef bint _is_automated_engine_phase(self, int engine_phase) noexcept nogil:
+        return (
+            engine_phase == GamePhases.PHASE_WRAP_UP
+            or engine_phase == GamePhases.PHASE_INCOME
+            or engine_phase == GamePhases.PHASE_END_CARD
+        )
+
+    cdef int _forced_action_or_negative_one(self, GameState state) except -2:
+        cdef uint16_t scratch[256]   # MAX_LEGAL_ACTIONS
+        cdef int count = enumerate_legal_actions(state, scratch)
+        assert count > 0, (
+            f"_forced_action_or_negative_one: zero legal actions in engine phase "
+            f"{turn_module.TURN.get_phase(state)} — enumerator bug or unported phase"
+        )
+        if count == 1:
+            return <int>scratch[0]
+        return -1
 
     # -------------------------------------------------------------------------
     # _dispatch — phase-handler switch
@@ -196,8 +215,7 @@ cdef class GameDriver:
         three automated phases handled above.
         """
         cdef int iterations = 0
-        cdef int engine_phase, count, i, action_id
-        cdef uint16_t scratch[256]   # MAX_LEGAL_ACTIONS
+        cdef int engine_phase, action_id
 
         while iterations < MAX_AUTO_CHAIN_ITERATIONS:
             engine_phase = turn_module.TURN.get_phase(state)
@@ -205,28 +223,58 @@ cdef class GameDriver:
             if engine_phase == GamePhases.PHASE_GAME_OVER:
                 return STATUS_GAME_OVER
 
-            if (engine_phase == GamePhases.PHASE_WRAP_UP
-                    or engine_phase == GamePhases.PHASE_INCOME
-                    or engine_phase == GamePhases.PHASE_END_CARD):
+            if self._is_automated_engine_phase(engine_phase):
                 self._run_automated_phase(state, engine_phase, history)
                 iterations += 1
                 continue
 
-            count = enumerate_legal_actions(state, scratch)
-            assert count > 0, (
-                f"_auto_chain: zero legal actions in engine phase "
-                f"{engine_phase} — enumerator bug or unported phase"
-            )
-            if count >= 2:
+            action_id = self._forced_action_or_negative_one(state)
+            if action_id < 0:
                 # Real decision — hand control back to the caller.
                 return STATUS_OK
 
             # Exactly one legal action: forced. Dispatch and loop.
-            action_id = <int>scratch[0]
             self._dispatch(state, action_id, history)
             iterations += 1
 
         assert False, f"_auto_chain: exceeded {MAX_AUTO_CHAIN_ITERATIONS} iterations"
+        return STATUS_OK
+
+    # -------------------------------------------------------------------------
+    # Public driver inspection / stepping helpers
+    # -------------------------------------------------------------------------
+
+    cpdef bint is_non_player_phase(self, GameState state):
+        cdef int engine_phase = turn_module.TURN.get_phase(state)
+        if engine_phase == GamePhases.PHASE_GAME_OVER:
+            return False
+        if self._is_automated_engine_phase(engine_phase):
+            return True
+        return self._forced_action_or_negative_one(state) >= 0
+
+    cpdef int advance_phase(
+        self,
+        GameState state,
+        object history=None,
+    ) except -1:
+        cdef int engine_phase = turn_module.TURN.get_phase(state)
+        cdef int action_id
+
+        if engine_phase == GamePhases.PHASE_GAME_OVER:
+            return STATUS_GAME_OVER
+
+        if self._is_automated_engine_phase(engine_phase):
+            self._run_automated_phase(state, engine_phase, history)
+        else:
+            action_id = self._forced_action_or_negative_one(state)
+            if action_id < 0:
+                return STATUS_INVALID
+            self._dispatch(state, action_id, history)
+
+        if turn_module.TURN.get_phase(state) == GamePhases.PHASE_GAME_OVER:
+            return STATUS_GAME_OVER
+        if state.step_mode:
+            return STATUS_PAUSED
         return STATUS_OK
 
     # -------------------------------------------------------------------------
@@ -270,6 +318,10 @@ cdef class GameDriver:
             return STATUS_INVALID
 
         self._dispatch(state, action_id, history)
+        if turn_module.TURN.get_phase(state) == GamePhases.PHASE_GAME_OVER:
+            return STATUS_GAME_OVER
+        if state.step_mode:
+            return STATUS_PAUSED
         return self._auto_chain(state, history)
 
 # =============================================================================
@@ -281,3 +333,4 @@ DRIVER = GameDriver()
 STATUS_OK_PY = STATUS_OK
 STATUS_GAME_OVER_PY = STATUS_GAME_OVER
 STATUS_INVALID_PY = STATUS_INVALID
+STATUS_PAUSED_PY = STATUS_PAUSED
