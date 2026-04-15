@@ -10,6 +10,7 @@ Usage:
     .venv/bin/python -m train.analyze_game latest --checkpoint-dir checkpoints
     .venv/bin/python -m train.analyze_game latest --seed 123 --simulations 200
     .venv/bin/python -m train.analyze_game latest --output game_log.md
+    .venv/bin/python -m train.analyze_game new --num-players 4 --simulations 50
 """
 
 from __future__ import annotations
@@ -703,9 +704,15 @@ def main() -> None:
     parser.add_argument(
         "checkpoint",
         type=str,
-        help='Path to checkpoint file, or "latest"',
+        help='Path to checkpoint file, "latest" for the newest in --checkpoint-dir, '
+             'or "new" for a freshly-initialized (untrained) model',
     )
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
+    parser.add_argument(
+        "--num-players", type=int, default=3,
+        help='Player count when using "new" (3-5). Ignored for loaded checkpoints — '
+             'num_players comes from the checkpoint config.',
+    )
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--simulations", type=int, default=800)
@@ -751,26 +758,33 @@ def main() -> None:
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Load checkpoint
-    if args.checkpoint == "latest":
-        cp_path = find_latest_checkpoint(Path(args.checkpoint_dir))
-        if cp_path is None:
-            print(f"No checkpoint found in {args.checkpoint_dir}")
-            return
+    # Load checkpoint (or build a fresh untrained model when "new")
+    if args.checkpoint == "new":
+        assert 3 <= args.num_players <= 5, \
+            f"--num-players must be in [3, 5], got {args.num_players}"
+        config = TrainingConfig(num_players=args.num_players)
+        model = create_model(num_players=args.num_players).to(device)
+        model.eval()
+        print(f"Using freshly-initialized (untrained) model, num_players={args.num_players}, device={device}")
     else:
-        cp_path = Path(args.checkpoint)
+        if args.checkpoint == "latest":
+            cp_path = find_latest_checkpoint(Path(args.checkpoint_dir))
+            if cp_path is None:
+                print(f"No checkpoint found in {args.checkpoint_dir}")
+                return
+        else:
+            cp_path = Path(args.checkpoint)
 
-    print(f"Loading checkpoint: {cp_path}")
-    cp = load_checkpoint(cp_path, device)
-    config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
+        print(f"Loading checkpoint: {cp_path}")
+        cp = load_checkpoint(cp_path, device)
+        config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
 
-    # Build model
-    model = create_model(num_players=config.num_players).to(device)
-    model.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
-    model.eval()
+        model = create_model(num_players=config.num_players).to(device)
+        model.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
+        model.eval()
 
-    epoch = cp.get("epoch", "?")
-    print(f"Model from epoch {epoch}, device={device}")
+        epoch = cp.get("epoch", "?")
+        print(f"Model from epoch {epoch}, device={device}")
     print(f"Running {args.simulations} MCTS simulations per move...")
     print()
 
