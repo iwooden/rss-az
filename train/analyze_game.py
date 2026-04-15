@@ -20,36 +20,239 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from core.data import GamePhases
+from core.actions import (
+    ACTION_ACQ_FI_BUY_PY,
+    ACTION_ACQ_OFFER_ACCEPT_PY,
+    ACTION_ACQ_PRICE_PY,
+    ACTION_AUCTION_PY,
+    ACTION_BUY_SHARE_PY,
+    ACTION_CLOSE_PY,
+    ACTION_DIVIDEND_PY,
+    ACTION_IPO_PY,
+    ACTION_ISSUE_PY,
+    ACTION_PASS_PY,
+    ACTION_RAISE_PY,
+    ACTION_SELL_SHARE_PY,
+    decode_action_py,
+    get_decision_phase_py,
+)
+from core.data import (
+    ALL_PAR_PRICES,
+    COMPANY_NAMES,
+    CORP_NAMES,
+    GamePhases,
+)
 from core.driver import DRIVER, STATUS_GAME_OVER_PY as STATUS_GAME_OVER
 from core.state import GameState, get_layout
+from entities.company import COMPANIES
+from entities.corp import CORPS
+from entities.fi import FI
+from entities.player import PLAYERS
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator, compute_terminal_values
-from mcts.search import StatePool, run_search, get_greedy_leaf_value, prepare_reuse_root
+from mcts.node import MCTSNode
+from mcts.search import StatePool, get_greedy_leaf_value, prepare_reuse_root, run_search
 from nn import create_model
-from tests.debug_trace import (
-    format_action,
-    format_phase_context,
-    format_state_full,
-    PHASE_NAMES,
-)
 from train.checkpoint import find_latest_checkpoint, load_checkpoint
 from train.config import MCTSConfig, TrainingConfig
+from train.profile_stats import SearchStats
+
+
+# Engine-phase names (12 ``GamePhases`` slots, used for automated-phase
+# markers in driver history and for the decision-point header).
+PHASE_NAMES = {
+    GamePhases.PHASE_INVEST: "INVEST",
+    GamePhases.PHASE_BID: "BID",
+    GamePhases.PHASE_WRAP_UP: "WRAP_UP",
+    GamePhases.PHASE_ACQUISITION: "ACQUISITION",
+    GamePhases.PHASE_ACQ_OFFER: "ACQ_OFFER",
+    GamePhases.PHASE_CLOSING: "CLOSING",
+    GamePhases.PHASE_INCOME: "INCOME",
+    GamePhases.PHASE_DIVIDENDS: "DIVIDENDS",
+    GamePhases.PHASE_END_CARD: "END_CARD",
+    GamePhases.PHASE_ISSUE_SHARES: "ISSUE_SHARES",
+    GamePhases.PHASE_IPO: "IPO",
+    GamePhases.PHASE_GAME_OVER: "GAME_OVER",
+}
+
+
+def format_action(phase_id: int, action_id: int) -> str:
+    """Human-readable rendering of a phase-local (phase_id, action_id) pair.
+
+    Uses ``core.actions.decode_action_py`` which is the canonical inverse of
+    the encode helpers. ``phase_id == -1`` is the driver-history sentinel
+    for an automated engine phase (WRAP_UP / INCOME / END_CARD); in that
+    case ``action_id`` holds the engine phase id.
+    """
+    if phase_id < 0:
+        return f"AUTO:{PHASE_NAMES.get(action_id, str(action_id))}"
+
+    info = decode_action_py(phase_id, action_id)
+    at = info.action_type
+
+    if at == ACTION_PASS_PY:
+        return "PASS"
+    if at == ACTION_AUCTION_PY:
+        return f"AUCTION {COMPANY_NAMES[info.company_id]} bid+{info.amount}"
+    if at == ACTION_BUY_SHARE_PY:
+        return f"BUY {CORP_NAMES[info.corp_id]}"
+    if at == ACTION_SELL_SHARE_PY:
+        return f"SELL {CORP_NAMES[info.corp_id]}"
+    if at == ACTION_RAISE_PY:
+        return f"RAISE +{info.amount}"
+    if at == ACTION_ACQ_PRICE_PY:
+        return (
+            f"ACQ {CORP_NAMES[info.corp_id]} <- "
+            f"{COMPANY_NAMES[info.company_id]} (price_off+{info.amount})"
+        )
+    if at == ACTION_ACQ_FI_BUY_PY:
+        return (
+            f"ACQ {CORP_NAMES[info.corp_id]} <- "
+            f"{COMPANY_NAMES[info.company_id]} (FI fixed)"
+        )
+    if at == ACTION_ACQ_OFFER_ACCEPT_PY:
+        return "ACCEPT OFFER"
+    if at == ACTION_CLOSE_PY:
+        return f"CLOSE {COMPANY_NAMES[info.company_id]}"
+    if at == ACTION_DIVIDEND_PY:
+        return f"DIVIDEND ${info.amount}"
+    if at == ACTION_ISSUE_PY:
+        return f"ISSUE {CORP_NAMES[info.corp_id]}"
+    if at == ACTION_IPO_PY:
+        return f"IPO {CORP_NAMES[info.corp_id]} @${ALL_PAR_PRICES[info.amount]}"
+    return f"action_type={at} phase={phase_id} id={action_id}"
+
+
+def format_phase_context(state: GameState) -> str:
+    """Short one-line context for the current decision phase.
+
+    Pulled from the generic ``active_corp`` / ``active_company`` / auction
+    slots on TURN — no phase-specific handle methods are needed. Returns
+    an empty string when the phase has no useful selector context.
+    """
+    phase = TURN.get_phase(state)
+
+    if phase == GamePhases.PHASE_BID:
+        bidder = TURN.get_auction_high_bidder(state)
+        price = TURN.get_auction_price(state)
+        starter = TURN.get_auction_starter(state)
+        company_id = TURN.get_active_company(state)
+        company = COMPANY_NAMES[company_id] if company_id >= 0 else "?"
+        return (
+            f"AUCTION: {company} high_bid=${price} "
+            f"bidder=P{bidder} starter=P{starter}"
+        )
+    if phase == GamePhases.PHASE_ACQ_OFFER:
+        offer_corp = TURN.get_acq_offer_corp(state)
+        offer_price = TURN.get_acq_offer_price(state)
+        company_id = TURN.get_active_company(state)
+        offer_corp_str = CORP_NAMES[offer_corp] if offer_corp >= 0 else "?"
+        company = COMPANY_NAMES[company_id] if company_id >= 0 else "?"
+        return (
+            f"ACQ_OFFER: {offer_corp_str} wants {company} @${offer_price}"
+        )
+    if phase == GamePhases.PHASE_ISSUE_SHARES:
+        corp_id = TURN.get_active_corp(state)
+        if corp_id >= 0:
+            return f"ISSUE: {CORP_NAMES[corp_id]}"
+    if phase == GamePhases.PHASE_DIVIDENDS:
+        corp_id = TURN.get_active_corp(state)
+        if corp_id >= 0:
+            return f"DIVIDENDS: {CORP_NAMES[corp_id]}"
+    if phase == GamePhases.PHASE_IPO:
+        corp_id = TURN.get_ipo_company(state)
+        if corp_id >= 0:
+            return f"IPO: {CORP_NAMES[corp_id]}"
+    return ""
+
+
+def format_state_full(state: GameState) -> str:
+    """Compact full-state dump used at phase/turn boundaries.
+
+    Focuses on the fields a human reads when following a self-play log:
+    per-player cash / net worth / shares, per-active-corp cash / price /
+    income / ownership, and FI cash / holdings. Intentionally minimal —
+    the fine-grained debug_trace renderer lived in the deleted test
+    helper and was tuned for unit-test debugging, not play analysis.
+    """
+    num_players = TURN.get_num_players(state)
+    phase = TURN.get_phase(state)
+    turn = TURN.get_turn_number(state)
+    coo = TURN.get_coo_level(state)
+    active_player = TURN.get_active_player(state)
+
+    lines: list[str] = []
+    lines.append(
+        f"State: phase={PHASE_NAMES.get(phase, phase)} turn={turn} "
+        f"CoO={coo} active=P{active_player} cards_left={TURN.get_cards_remaining(state)}"
+    )
+
+    # Players
+    lines.append("Players:")
+    for pid in range(num_players):
+        p = PLAYERS[pid]
+        shares = [
+            f"{CORP_NAMES[cid]}={p.get_shares(state, cid)}"
+            for cid in range(8)
+            if p.get_shares(state, cid) > 0
+        ]
+        shares_str = " ".join(shares) if shares else "-"
+        lines.append(
+            f"  P{pid}: cash=${p.get_cash(state)} nw=${p.get_net_worth(state)} "
+            f"inc=${p.get_income(state)} | {shares_str}"
+        )
+
+    # Active corps (skip ones still in IPO)
+    active_corps: list[int] = [c for c in range(8) if CORPS[c].is_active(state)]
+    if active_corps:
+        lines.append("Corps:")
+        for cid in active_corps:
+            c = CORPS[cid]
+            pres = c.get_president_id(state)
+            pres_str = f"P{pres}" if pres >= 0 else "-"
+            owned = [
+                COMPANY_NAMES[coid]
+                for coid in range(36)
+                if COMPANIES[coid].is_owned_by_corp(state, cid)
+            ]
+            lines.append(
+                f"  {CORP_NAMES[cid]}: pres={pres_str} "
+                f"cash=${c.get_cash(state)} price=${c.get_share_price(state)} "
+                f"inc=${c.get_income(state)} | {' '.join(owned) if owned else '-'}"
+            )
+
+    # Foreign Investor
+    fi_owned = [
+        COMPANY_NAMES[coid]
+        for coid in range(36)
+        if COMPANIES[coid].is_owned_by_fi(state)
+    ]
+    lines.append(
+        f"FI: cash=${FI.get_cash(state)} inc=${FI.get_income(state)} | "
+        f"{' '.join(fi_owned) if fi_owned else '-'}"
+    )
+
+    return "\n".join(lines)
 
 
 def _format_nn_eval(
-    policy_probs: np.ndarray,
+    priors: np.ndarray,
     values: np.ndarray,
-    legal_mask: np.ndarray,
+    action_ids: np.ndarray,
+    phase_id: int,
     num_players: int,
-    state: GameState,
     top_n: int = 10,
     noised_priors: dict[int, float] | None = None,
 ) -> list[str]:
     """Format NN evaluation into readable lines.
 
+    ``priors`` is the sparse softmax over the legal list (shape ``(n_legal,)``)
+    and ``action_ids`` is the aligned phase-local id list. ``phase_id`` is
+    needed because action ids are phase-local — the same integer means
+    different things across phases.
+
     Args:
-        noised_priors: If provided, maps global action index to the
+        noised_priors: If provided, maps phase-local action id to the
             noise-applied prior from the MCTS root. Shows the delta
             next to each raw prior.
     """
@@ -59,19 +262,19 @@ def _format_nn_eval(
     val_parts = [f"P{i}={values[i]:+.3f}" for i in range(num_players)]
     lines.append(f"  NN Values: {', '.join(val_parts)}")
 
-    # Top priors for legal actions
-    legal_indices = np.flatnonzero(legal_mask)
-    legal_priors = policy_probs[legal_indices]
-    sorted_order = np.argsort(-legal_priors)[:top_n]
+    sorted_order = np.argsort(-priors)[:top_n]
+    n_legal = len(action_ids)
 
-    lines.append(f"  NN Priors (top {min(top_n, len(sorted_order))} of {len(legal_indices)} legal):")
+    lines.append(
+        f"  NN Priors (top {min(top_n, n_legal)} of {n_legal} legal):"
+    )
     for rank, idx in enumerate(sorted_order):
-        action_idx = int(legal_indices[idx])
-        prior = legal_priors[idx]
-        action_str = format_action(action_idx, num_players, state)
+        action_id = int(action_ids[idx])
+        prior = float(priors[idx])
+        action_str = format_action(phase_id, action_id)
         bar = "\u2588" * int(prior * 40)
-        if noised_priors is not None and action_idx in noised_priors:
-            noised = noised_priors[action_idx]
+        if noised_priors is not None and action_id in noised_priors:
+            noised = noised_priors[action_id]
             delta_pp = (noised - prior) * 100
             lines.append(f"    {rank+1:2d}. {prior:6.1%} ({delta_pp:+5.1f}pp) {bar} {action_str}")
         else:
@@ -81,9 +284,8 @@ def _format_nn_eval(
 
 
 def _format_mcts_visits(
-    root,
-    num_players: int,
-    state: GameState,
+    root: MCTSNode,
+    phase_id: int,
     top_n: int = 10,
 ) -> list[str]:
     """Format MCTS visit counts into readable lines."""
@@ -92,6 +294,7 @@ def _format_mcts_visits(
     if root.legal_actions is None or root.visit_counts is None:
         lines.append("  MCTS: (no search data)")
         return lines
+    assert root.value_sums is not None
 
     counts = root.visit_counts
     total_visits = int(counts.sum())
@@ -99,12 +302,12 @@ def _format_mcts_visits(
 
     lines.append(f"  MCTS Visits (top {min(top_n, len(sorted_order))}, {total_visits} total):")
     for rank, idx in enumerate(sorted_order):
-        action_idx = int(root.legal_actions[idx])
+        action_id = int(root.legal_actions[idx])
         visits = int(counts[idx])
         if visits == 0:
             break
         pct = visits / max(total_visits, 1)
-        action_str = format_action(action_idx, num_players, state)
+        action_str = format_action(phase_id, action_id)
 
         # Show Q value for this action (max(1,vc) matches select_child convention)
         q_val = float(root.value_sums[idx, root.active_player_id] / max(visits, 1))
@@ -114,7 +317,7 @@ def _format_mcts_visits(
     return lines
 
 
-def _compute_tree_metrics(root) -> dict[str, float | int]:
+def _compute_tree_metrics(root: MCTSNode) -> dict[str, float | int]:
     """Compute compact search-tree metrics for one root."""
     assert root.legal_actions is not None and root.visit_counts is not None
 
@@ -136,7 +339,7 @@ def _compute_tree_metrics(root) -> dict[str, float | int]:
     total_nodes = 0
     depth_sum = 0
     max_depth = 0
-    stack: list[tuple[object, int]] = [(root, 0)]
+    stack: list[tuple[MCTSNode, int]] = [(root, 0)]
     while stack:
         node, depth = stack.pop()
         total_nodes += 1
@@ -179,7 +382,7 @@ def _format_mcts_stats_step(
     phase_name: str,
     action_str: str,
     metrics: dict[str, float | int],
-    search_stats,
+    search_stats: SearchStats,
     auto_count: int,
 ) -> str:
     """Format one compact per-move MCTS summary line."""
@@ -207,8 +410,6 @@ def _append_mcts_stats_summary(
     terminal_rank_weight: float,
 ) -> None:
     """Append compact end-of-game aggregates for stats-only mode."""
-    from entities.player import PLAYERS
-
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -285,7 +486,7 @@ def analyze_game(
     num_players = config.num_players
 
     state = GameState(num_players)
-    state.initialize_game(seed=seed)
+    state.initialize_game(num_players, seed=seed)
 
     terminal_rank_weight = terminal_blend if terminal_blend is not None else config.terminal_blend
     evaluator = NNEvaluator(
@@ -335,23 +536,29 @@ def analyze_game(
         lines.append("---")
         lines.append("")
 
-    from train.profile_stats import SearchStats
-
     step = 0
-    prev_phase = state.get_phase()
+    prev_phase = TURN.get_phase(state)
     prev_turn = TURN.get_turn_number(state)
-    reuse_root = None
+    reuse_root: MCTSNode | None = None
     total_vbackups = 0
     per_move_stats: list[dict[str, float | int]] = []
 
-    while state.get_phase() != GamePhases.PHASE_GAME_OVER:
-        active_player = state.get_active_player()
-        cur_phase = PHASE_NAMES.get(state.get_phase(), str(state.get_phase()))
+    while TURN.get_phase(state) != GamePhases.PHASE_GAME_OVER:
+        active_player = TURN.get_active_player(state)
+        engine_phase = TURN.get_phase(state)
+        cur_phase = PHASE_NAMES.get(engine_phase, str(engine_phase))
         cur_turn = int(TURN.get_turn_number(state))
+        # Phase id is needed for action rendering in both modes, so compute
+        # it unconditionally — cheap lookup off the state.
+        phase_id = get_decision_phase_py(state)
 
+        # NN evaluation (raw, before MCTS). Only needed for the full log
+        # mode; stats-only mode skips the extra forward pass.
+        priors: np.ndarray | None = None
+        values: np.ndarray | None = None
+        action_ids_arr: np.ndarray | None = None
         if not mcts_stats_only:
-            # NN evaluation (raw, before MCTS)
-            policy_probs, values, legal_mask = evaluator.evaluate(state)
+            priors, values, action_ids_arr, _, _ = evaluator.evaluate(state)
 
         # MCTS search (reuses subtree from previous move when available)
         search_stats = SearchStats()
@@ -364,9 +571,10 @@ def analyze_game(
         # Choose action (argmax = best play)
         assert root.legal_actions is not None and root.visit_counts is not None
         action = int(root.legal_actions[np.argmax(root.visit_counts)])
-        action_str = format_action(action, num_players, state)
+        action_str = format_action(phase_id, action)
 
-        # Build noised prior map if noise was applied
+        # Build noised prior map if noise was applied. Root priors are
+        # aligned to root.legal_actions (sparse, phase-local ids).
         noised_map: dict[int, float] | None = None
         if (not mcts_stats_only
                 and mcts_config.dirichlet_epsilon > 0
@@ -376,9 +584,11 @@ def analyze_game(
                 for i in range(len(root.legal_actions))
             }
 
+        metrics: dict[str, float | int] | None = None
         if mcts_stats_only:
             metrics = _compute_tree_metrics(root)
         else:
+            assert priors is not None and values is not None and action_ids_arr is not None
             # Log this decision point
             lines.append(f"### Step {step}: P{active_player} [{cur_phase}]")
             lines.append("")
@@ -387,11 +597,11 @@ def analyze_game(
                 lines.append(f"  {phase_ctx}")
                 lines.append("")
             lines.extend(_format_nn_eval(
-                policy_probs, values, legal_mask, num_players, state, top_n,
+                priors, values, action_ids_arr, phase_id, num_players, top_n,
                 noised_priors=noised_map,
             ))
             lines.append("")
-            lines.extend(_format_mcts_visits(root, num_players, state, top_n))
+            lines.extend(_format_mcts_visits(root, phase_id, top_n))
             a0gb = get_greedy_leaf_value(root, num_players)
             a0gb_parts = [f"P{i}={a0gb[i]:+.3f}" for i in range(num_players)]
             vb = search_stats.virtual_backups
@@ -400,13 +610,17 @@ def analyze_game(
             lines.append(f"  **Action: {action_str}**")
             lines.append("")
 
-        # Apply action
-        history: list[tuple[int, int]] = []
+        # Apply action. Driver records (pre_state_copy, phase_id, action_id)
+        # per dispatch — phase_id == -1 flags an automated engine phase
+        # transition (WRAP_UP / INCOME / END_CARD), in which case the third
+        # slot holds the engine phase id rather than an action id.
+        history: list[tuple[np.ndarray, int, int]] = []
         status = DRIVER.apply_action(state, action, history=history)
         auto_count = max(len(history) - 1, 0)
         total_vbackups += search_stats.virtual_backups
 
         if mcts_stats_only:
+            assert metrics is not None
             lines.append(_format_mcts_stats_step(
                 step, cur_turn, active_player, cur_phase, action_str,
                 metrics, search_stats, auto_count,
@@ -425,8 +639,8 @@ def analyze_game(
 
         # Show auto-applied actions
         if not mcts_stats_only and len(history) > 1:
-            for _, aid in history[1:]:
-                auto_str = format_action(aid, num_players)
+            for _, h_phase_id, h_action_id in history[1:]:
+                auto_str = format_action(h_phase_id, h_action_id)
                 lines.append(f"  \u21b3 auto: {auto_str}")
             lines.append("")
 
@@ -434,7 +648,7 @@ def analyze_game(
         reuse_root = prepare_reuse_root(root, action, state_pool)
 
         step += 1
-        new_phase = state.get_phase()
+        new_phase = TURN.get_phase(state)
         new_turn = TURN.get_turn_number(state)
 
         # State dump on phase/turn change (or every step if verbose)
@@ -466,7 +680,6 @@ def analyze_game(
         lines.append(f"Completed in {step} decision points ({total_vbackups} virtual backups from subtree reuse)")
         lines.append("")
 
-        from entities.player import PLAYERS
         net_worths = [PLAYERS[pid].get_net_worth(state) for pid in range(num_players)]
         for pid in range(num_players):
             lines.append(f"  P{pid}: net worth ${net_worths[pid]}")
