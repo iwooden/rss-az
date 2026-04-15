@@ -552,12 +552,7 @@ def main() -> None:
     config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
 
     # Build model
-    model = create_model(
-        config.model_path,
-        input_dim=config.visible_size,
-        action_dim=config.action_dim,
-        value_dim=config.num_players,
-    ).to(device)
+    model = create_model(num_players=config.num_players).to(device)
     model.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
     model.eval()
 

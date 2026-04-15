@@ -1,18 +1,36 @@
-"""AlphaZero training step with policy and value losses."""
+"""AlphaZero training step with policy and value losses.
+
+Sparse post-refactor contract: batches carry compact int16 game states and
+per-row sparse legal-action data (`phase_id`, `n_legal`, `action_ids`,
+`policy_target`). The trainer materializes the
+``(batch, num_tokens, token_dim)`` float32 token buffer at training time via
+``core.token_data.get_token_data`` and runs policy CE over the legal set only
+— no dense ``-1e9`` mask, no state rotation, no per-player augmentation.
+"""
 
 from __future__ import annotations
 
 import math
 import warnings
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
-from core.state import LayoutInfo
-from train.augment import apply_player_permutation, random_player_permutation
+from core.actions import MAX_LEGAL_ACTIONS_PY
+from core.state import GameState, get_layout
+from core.token_data import TokenDataSize, get_num_tokens, get_token_data
 from train.config import TrainingConfig
 
-_PHASE_NAMES = ["invest", "bid", "acq", "close", "div", "issue", "ipo", "par"]
+K_MAX = int(MAX_LEGAL_ACTIONS_PY)
+TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
+
+# Matches core.data.DecisionPhase order (DPHASE_INVEST..DPHASE_IPO, 8 entries).
+# PAR was folded into IPO; ACQ_OFFER is a first-class decision phase.
+_PHASE_NAMES = [
+    "invest", "bid", "acq", "acq_offer",
+    "close", "div", "issue", "ipo",
+]
 
 
 class Trainer:
@@ -23,18 +41,21 @@ class Trainer:
         model: torch.nn.Module,
         config: TrainingConfig,
         device: torch.device,
-        layout: LayoutInfo | None = None,
     ) -> None:
         self.model = model
         self.config = config
         self.device = device
         self._global_step = 0
 
-        # Layout for player-slot permutation augmentation.
-        if layout is None:
-            from core.state import get_layout
-            layout = get_layout(config.num_players)
-        self._layout: LayoutInfo = layout
+        self._num_players = config.num_players
+        self._num_tokens = get_num_tokens(config.num_players)
+        self._state_size = get_layout(config.num_players).total_size
+
+        # Scratch GameState rebinds across batch rows so each train_step
+        # avoids allocating a wrapper per row. Default ctor seeds the
+        # canonical num_players slot that rebind() validates against;
+        # the backing array gets overwritten on first rebind().
+        self._scratch_state: GameState = GameState(config.num_players)
 
         # --- Optimizer setup ---
         if config.optimizer == "muon":
@@ -129,37 +150,86 @@ class Trainer:
             if aux_groups else None
         )
 
+    def _build_token_batch(
+        self, states_cpu: torch.Tensor,
+    ) -> torch.Tensor:
+        """Materialize the (B, num_tokens, TOKEN_DIM) f32 token buffer.
+
+        ``states_cpu`` is a contiguous int16 tensor of shape
+        ``(batch, state_size)``. For each row we rebind the scratch
+        GameState onto the row's backing memory and fill one slice of
+        the output buffer via the nogil ``get_token_data`` path.
+        """
+        batch = states_cpu.shape[0]
+        token_buf = np.empty(
+            (batch, self._num_tokens, TOKEN_DIM), dtype=np.float32,
+        )
+        states_np = states_cpu.numpy()  # zero-copy view of the int16 tensor
+        scratch = self._scratch_state
+        num_players = self._num_players
+        for i in range(batch):
+            # rebind zero-copies onto row i; canonical num_players slot is
+            # assumed present (replay buffer stored raw state arrays
+            # produced by self_play, which always carry it).
+            scratch.rebind(states_np[i], num_players)
+            get_token_data(scratch, token_buf[i])
+        return torch.from_numpy(token_buf)
+
     def train_step(self, batch: dict[str, torch.Tensor]) -> dict[str, float]:
         """Execute a single training step.
 
         Args:
-            batch: dict with "states", "legal_masks", "policy_targets",
-                   "value_targets". Tensors on CPU; moved to device here.
+            batch: dict with keys ``states`` (int16 ``(B, state_size)``),
+                ``phase_ids`` (int8 ``(B,)``), ``n_legals`` (int16 ``(B,)``),
+                ``action_ids`` (int16/uint16 reinterp ``(B, K_MAX)``),
+                ``policy_targets`` (float32 ``(B, K_MAX)`` zero-padded past
+                ``n_legal``), and ``value_targets`` (float32 ``(B, N)``).
+                Tensors on CPU; moved to device here.
 
         Returns:
-            dict with "policy_loss", "value_loss", "total_loss" as floats.
+            dict with ``policy_loss``, ``value_loss``, ``total_loss`` as
+            floats, plus ``policy_loss_<phase>`` per decision phase bucket
+            present in the batch.
         """
+        # Token buffer fill happens on CPU (get_token_data is a nogil Cython
+        # kernel — overlaps well with DataLoader worker parallelism).
+        states_cpu = batch["states"]
+        token_buf_cpu = self._build_token_batch(states_cpu)
+
         # non_blocking=True allows CPU work to overlap with DMA transfer.
-        # On NVIDIA GH200 with NVLink-C2C this is especially beneficial.
         nb = self.device.type == "cuda"
-        states = batch["states"].to(self.device, non_blocking=nb)
-        legal_masks = batch["legal_masks"].to(self.device, non_blocking=nb)
+        tokens = token_buf_cpu.to(self.device, non_blocking=nb)
+        phase_ids = batch["phase_ids"].to(
+            self.device, non_blocking=nb, dtype=torch.long,
+        )
+        action_ids = batch["action_ids"].to(
+            self.device, non_blocking=nb, dtype=torch.long,
+        )  # (B, K_MAX) — int16 values fit losslessly in long
+        n_legals = batch["n_legals"].to(
+            self.device, non_blocking=nb, dtype=torch.long,
+        )
         policy_targets = batch["policy_targets"].to(self.device, non_blocking=nb)
         value_targets = batch["value_targets"].to(self.device, non_blocking=nb)
 
-        # Player-slot permutation augmentation: randomly shuffle inactive
-        # player slots (1..N-1) to teach slot-order invariance.
-        perm = random_player_permutation(
-            self._layout.num_players, states.device
-        )
-        apply_player_permutation(states, value_targets, perm, self._layout)
+        # --- Forward: dense (B, MAX_ACTION_SIZE) logits + (B, N) values ---
+        policy_logits, values = self.model(tokens, phase_ids)
 
-        # Forward + loss in float32 (inference uses bfloat16 autocast separately)
-        policy_logits, values = self.model(states)
-        policy_logits.masked_fill_(legal_masks <= 0, -1e9)
+        # Gather the dense logits down to the per-row sparse legal list,
+        # then mask the [n_legal:K_MAX] tail. The zero-init tail of
+        # action_ids points at index 0, so gather reads some valid logit;
+        # masked_fill then drives that tail to -1e9 before log_softmax so
+        # it takes ~no probability mass. policy_targets tail is zero, so
+        # those positions contribute nothing to the CE sum.
+        gathered = policy_logits.gather(1, action_ids)  # (B, K_MAX)
+        k_range = torch.arange(K_MAX, device=self.device)
+        k_mask = k_range[None, :] < n_legals[:, None]  # (B, K_MAX) bool
+        gathered = gathered.masked_fill(~k_mask, -1e9)
 
-        # Policy loss: cross-entropy with MCTS target distribution
-        log_probs = F.log_softmax(policy_logits, dim=-1)
+        # Policy loss: sparse cross-entropy over legal actions only.
+        # log_softmax is numerically stable (x - logsumexp), so the tail
+        # log_probs are finite-but-very-negative; multiplied by the zero
+        # tail of policy_targets they contribute nothing.
+        log_probs = F.log_softmax(gathered, dim=-1)
         per_example_policy_loss = -(policy_targets * log_probs).sum(dim=-1)
         policy_loss = per_example_policy_loss.mean()
 
@@ -194,8 +264,7 @@ class Trainer:
 
         self._global_step += 1
 
-        # Per-phase policy loss (detached, no grad impact)
-        phases = states[:, :8].argmax(dim=-1)
+        # Per-phase policy loss (detached, no grad impact).
         per_phase = per_example_policy_loss.detach()
         result: dict[str, float] = {
             "policy_loss": policy_loss.item(),
@@ -203,7 +272,7 @@ class Trainer:
             "total_loss": total_loss.item(),
         }
         for phase_idx, name in enumerate(_PHASE_NAMES):
-            mask = phases == phase_idx
+            mask = phase_ids == phase_idx
             if mask.any():
                 result[f"policy_loss_{name}"] = per_phase[mask].mean().item()
 

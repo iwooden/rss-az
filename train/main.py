@@ -16,6 +16,8 @@ import numpy as np
 import torch
 import torch.multiprocessing as mp
 
+from core.state import get_layout
+from core.token_data import TokenDataSize, get_num_tokens
 from nn import create_model
 from train.checkpoint import (
     cleanup_checkpoints,
@@ -45,10 +47,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Resume from checkpoint file, or "latest" to auto-find',
     )
     parser.add_argument("--device", type=str, help="Force device: cuda, cpu")
-    parser.add_argument(
-        "--model-path", type=str,
-        help="Dotted module path to model definition (default: nn.model_{num_players}p)",
-    )
     parser.add_argument("--num-players", type=int,
                         help="Number of players (default: 3)")
     parser.add_argument("--games-per-epoch", type=int)
@@ -130,7 +128,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 _CLI_FIELDS = (
-    "model_path", "num_players", "eval_dtype",
+    "num_players", "eval_dtype",
     "games_per_epoch", "num_epochs", "num_simulations", "search_batch_size",
     "mcts_sims_start", "mcts_sims_end", "mcts_ramp_start_epoch", "mcts_ramp_end_epoch",
     "num_workers", "num_eval_servers", "eval_fixed_batch_workers",
@@ -219,12 +217,6 @@ def _apply_overrides(
                 if old != val:
                     print(f"  CLI override: {field} = {val} (was {old})")
             setattr(config, field, val)
-
-    # If num_players changed but model_path wasn't explicitly set, reset to
-    # "auto" so validate() re-derives the model path for the new player count.
-    if (getattr(args, "num_players", None) is not None
-            and getattr(args, "model_path", None) is None):
-        config.model_path = "auto"
 
 
 def _capture_rng_state(master_rng: np.random.Generator) -> dict[str, object]:
@@ -423,12 +415,7 @@ def main() -> None:
         print("  Restored RNG state from checkpoint")
 
     # --- Model ---
-    model = create_model(
-        config.model_path,
-        input_dim=config.visible_size,
-        action_dim=config.action_dim,
-        value_dim=config.num_players,
-    ).to(device)
+    model = create_model(num_players=config.num_players).to(device)
     param_count = sum(p.numel() for p in model.parameters())
 
     # --- Resume: restore model weights (before compile + Trainer creation) ---
@@ -438,10 +425,14 @@ def main() -> None:
         start_epoch = cp["epoch"] + 1  # type: ignore[operator]
 
     # --- Components (model-independent) ---
+    # Compact int16 state — replay buffer stores raw GameState rows, the
+    # trainer builds token buffers per-batch via core.token_data.
+    state_size_int16 = get_layout(config.num_players).total_size
+    num_tokens = get_num_tokens(config.num_players)
+    token_dim = int(TokenDataSize.TOKEN_DIM)
     buffer = ReplayBuffer(
         config.buffer_capacity,
-        config.visible_size,
-        config.action_dim,
+        state_size_int16,
         config.num_players,
     )
     logger = TrainingLogger(config.tensorboard_dir)
@@ -469,7 +460,6 @@ def main() -> None:
     task_queue: Any = None  # mp.Queue
     result_queue: Any = None  # mp.Queue
     epoch_ending_flag: Any = None  # mp.Value(c_bool) for fixed-batch servers
-    max_partition_size: int = 0
 
     if config.num_workers > 0:
         ctx = mp.get_context("spawn")
@@ -481,8 +471,6 @@ def main() -> None:
         shared_bufs = SharedEvalBuffers(
             num_workers=config.num_workers,
             batch_size=config.search_batch_size,
-            visible_size=config.visible_size,
-            action_dim=config.action_dim,
             num_players=config.num_players,
         )
         # Partition workers across eval servers. Each server owns a
@@ -561,9 +549,14 @@ def main() -> None:
             warmup_bs = gpu.warmup_batch_size(config.batch_size)
             model.train()
             with torch.inference_mode():
-                dummy = torch.randn(warmup_bs, config.visible_size, device=device)
-                model(dummy)
-                del dummy
+                dummy_tokens = torch.randn(
+                    warmup_bs, num_tokens, token_dim, device=device,
+                )
+                dummy_phase = torch.zeros(
+                    warmup_bs, dtype=torch.long, device=device,
+                )
+                model(dummy_tokens, dummy_phase)
+                del dummy_tokens, dummy_phase
             torch.cuda.synchronize()
             print("  Model compiled.")
 
@@ -610,9 +603,12 @@ def main() -> None:
             model = cast(torch.nn.Module, torch.compile(model, **sp_compile_kwargs))  # type: ignore[call-overload]
             model.train()
             with torch.inference_mode():
-                dummy = torch.randn(1, config.visible_size, device=device)
-                model(dummy)
-                del dummy
+                dummy_tokens = torch.randn(
+                    1, num_tokens, token_dim, device=device,
+                )
+                dummy_phase = torch.zeros(1, dtype=torch.long, device=device)
+                model(dummy_tokens, dummy_phase)
+                del dummy_tokens, dummy_phase
             torch.cuda.synchronize()
             print("  Model compiled.")
 
@@ -637,10 +633,9 @@ def main() -> None:
             terminal_rank_weight=config.terminal_blend,
             eval_dtype=config.eval_dtype,
         )
-        from core.state import get_layout
-
-        total_state_size = get_layout(config.num_players).total_size
-        state_pool = StatePool(2 * (config.max_simulations + 1), total_state_size)
+        state_pool = StatePool(
+            2 * (config.max_simulations + 1), state_size_int16,
+        )
 
     # --- Training loop ---
     avg_losses: dict[str, float] = {}
@@ -678,8 +673,12 @@ def main() -> None:
                 nonlocal total_avg_corp_price, total_corps_in_receivership
                 nonlocal games_with_max_price_corp
                 buffer.add_stacked(  # type: ignore[union-attr]
-                    record.states, record.legal_masks,  # type: ignore[union-attr]
-                    record.policy_targets, record.value_targets,  # type: ignore[union-attr]
+                    record.states,  # type: ignore[union-attr]
+                    record.phase_ids,  # type: ignore[union-attr]
+                    record.n_legals,  # type: ignore[union-attr]
+                    record.action_ids,  # type: ignore[union-attr]
+                    record.policy_targets,  # type: ignore[union-attr]
+                    record.value_targets,  # type: ignore[union-attr]
                 )
                 total_examples += record.num_examples  # type: ignore[union-attr]
                 total_moves += record.total_moves  # type: ignore[union-attr]

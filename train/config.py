@@ -75,9 +75,6 @@ class EpochConfig:
 class TrainingConfig:
     """All hyperparameters for the self-play training loop."""
 
-    # --- Model ---
-    model_path: str = "auto"  # "auto" = nn.model_{num_players}p; or explicit dotted path
-
     # --- Game ---
     num_players: int = 3
 
@@ -184,19 +181,10 @@ class TrainingConfig:
         """
         from core.data import MAX_ACTION_SIZE
 
-        # Resolve "auto" model path based on num_players
-        if self.model_path == "auto":
-            from nn import default_model_path
-            self.model_path = default_model_path(self.num_players)
-
         # Post-refactor: dense action pad width is player-count independent.
         # The transformer eval buffer is keyed off core.token_data's
         # (num_tokens, token_dim) — there is no flat state width.
         self.action_dim = int(MAX_ACTION_SIZE)
-
-        # Model path — must be a non-empty dotted module path
-        if not self.model_path or not isinstance(self.model_path, str):
-            raise ValueError(f"model_path must be a non-empty string, got {self.model_path!r}")
 
         # Eval dtype
         if self.eval_dtype is not None and self.eval_dtype not in ("bfloat16", "float16"):
@@ -409,30 +397,13 @@ class TrainingConfig:
 
     @staticmethod
     def _normalize_json(d: dict[str, Any]) -> dict[str, Any]:
-        """Apply backward compat renames and drop computed/unknown fields."""
-        d.pop("action_dim", None)
-
-        if "temp_threshold" in d:
-            if "temp_anneal_start" not in d:
-                d["temp_anneal_start"] = d.pop("temp_threshold")
-            else:
-                d.pop("temp_threshold")
-        if "c_puct" in d:
-            if "c_puct_final" not in d:
-                d["c_puct_final"] = d.pop("c_puct")
-            else:
-                d.pop("c_puct")
-        if "model_arch" in d:
-            d.pop("model_arch")
-            if "model_path" not in d:
-                d["model_path"] = "nn.model_3p"  # ancient configs were always 3p
-
+        """Drop computed/unknown fields so from_json + overrides stay strict."""
         valid = set(TrainingConfig.__dataclass_fields__)
         return {k: v for k, v in d.items() if k in valid}
 
     @classmethod
     def from_json(cls, json_str: str) -> TrainingConfig:
-        """Deserialize from JSON, with backward compatibility for old configs."""
+        """Deserialize from JSON."""
         d = cls._normalize_json(json.loads(json_str))
         return cls(**d)
 
@@ -448,8 +419,4 @@ class TrainingConfig:
             if old != v:
                 setattr(self, k, v)
                 changes.append(f"{k} = {v} (was {old})")
-        # If num_players changed but model_path wasn't in the overrides,
-        # reset to "auto" so validate() re-derives for the new player count.
-        if "num_players" in d and "model_path" not in d:
-            self.model_path = "auto"
         return changes

@@ -97,12 +97,7 @@ class AIServer:
         cp = load_checkpoint(cp_path, self.device)
         self._config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
 
-        model = create_model(
-            self._config.model_path,
-            input_dim=self._config.visible_size,
-            action_dim=self._config.action_dim,
-            value_dim=self._config.num_players,
-        ).to(self.device)
+        model = create_model(num_players=self._config.num_players).to(self.device)
         model.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
         model.eval()
 
