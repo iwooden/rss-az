@@ -102,15 +102,8 @@ cdef class TurnState:
     )
     cpdef void clear_acquisition_context(self, GameState state)
 
-    # Compatibility aliases for older phase-specific turn context
-    cpdef int get_ipo_company(self, GameState state)
-    cpdef void set_ipo_company(self, GameState state, int company_id)
-    cpdef void clear_ipo_company(self, GameState state)
-    cpdef int get_acq_active_corp(self, GameState state)
-    cpdef void set_acq_active_corp(self, GameState state, int corp_id)
-    cpdef void clear_acq_active_corp(self, GameState state)
+    # Per-player passed-flag bulk reset
     cpdef void clear_passed_flags(self, GameState state)
-    cpdef void clear_auction_passed(self, GameState state)
 
     # Phase-remaining flag arrays
     cpdef bint is_dividend_remaining(self, GameState state, int corp_id)

@@ -131,7 +131,7 @@ def engine_action_to_18xx(
             acq_company = TURN.get_acq_target_company(state)
             low = get_company_low_price(acq_company)
             price = low + amount
-            buyer_corp = TURN.get_acq_active_corp(state)
+            buyer_corp = TURN.get_active_corp(state)
             return {
                 "type": "offer",
                 "corporation": CORP_NAMES[buyer_corp],
@@ -140,7 +140,7 @@ def engine_action_to_18xx(
             }
         if atype == ACTION_ACQ_FI_BUY:
             acq_company = TURN.get_acq_target_company(state)
-            buyer_corp = TURN.get_acq_active_corp(state)
+            buyer_corp = TURN.get_active_corp(state)
             return {
                 "type": "offer",
                 "corporation": CORP_NAMES[buyer_corp],

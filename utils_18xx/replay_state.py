@@ -249,7 +249,7 @@ def replay_acquisition_offer(
         if TURN.get_phase(state) != GamePhases.PHASE_ACQUISITION:
             return False
 
-        cur_corp = TURN.get_acq_active_corp(state)
+        cur_corp = TURN.get_active_corp(state)
         if cur_corp < 0:
             # Engine offer buffer exhausted (paused at ACQ transition).
             return False

@@ -487,7 +487,7 @@ class TestPhaseTransitions:
 
         assert TURN.get_phase(game_state) == int(GamePhases.PHASE_INVEST)
         assert TURN.get_active_corp(game_state) == -1
-        assert TURN.get_ipo_company(game_state) == -1
+        assert TURN.get_active_company(game_state) == -1
         assert TURN.get_active_player(game_state) == TURN.find_player_at_position(game_state, 0)
 
     def test_no_active_corps_immediate_transition(self, game_state):
@@ -496,7 +496,7 @@ class TestPhaseTransitions:
 
         assert TURN.get_phase(game_state) == int(GamePhases.PHASE_INVEST)
         assert TURN.get_active_corp(game_state) == -1
-        assert TURN.get_ipo_company(game_state) == -1
+        assert TURN.get_active_company(game_state) == -1
         assert TURN.get_active_player(game_state) == TURN.find_player_at_position(game_state, 0)
 
     def test_all_receivership_transitions_past_issue(self, game_state):
@@ -508,7 +508,7 @@ class TestPhaseTransitions:
 
         assert TURN.get_phase(game_state) == int(GamePhases.PHASE_INVEST)
         assert TURN.get_active_corp(game_state) == -1
-        assert TURN.get_ipo_company(game_state) == -1
+        assert TURN.get_active_company(game_state) == -1
         assert TURN.get_active_player(game_state) == TURN.find_player_at_position(game_state, 0)
 
     def test_two_corps_transition_after_both(self, game_state):
@@ -534,7 +534,7 @@ class TestPhaseTransitions:
 
         assert TURN.get_phase(game_state) == int(GamePhases.PHASE_INVEST)
         assert TURN.get_active_corp(game_state) == -1
-        assert TURN.get_ipo_company(game_state) == -1
+        assert TURN.get_active_company(game_state) == -1
         assert TURN.get_active_player(game_state) == TURN.find_player_at_position(game_state, 0)
 
 

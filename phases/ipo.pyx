@@ -73,7 +73,7 @@ cdef int _find_next_ipo_company(GameState state) noexcept:
 
 cdef void _process_ipo(GameState state, int corp_id, int par_index) noexcept:
     """Execute the Form Corporation procedure for the active IPO company."""
-    cdef int company_id = turn_module.TURN.get_ipo_company(state)
+    cdef int company_id = turn_module.TURN.get_active_company(state)
     cdef int player_id = company_owner_id(state, company_id)
     cdef int face_value = company_face_value(company_id)
 
@@ -100,7 +100,7 @@ cdef void _process_ipo(GameState state, int corp_id, int par_index) noexcept:
 cdef void _transition_out_of_ipo(GameState state) noexcept:
     """End-of-phase cleanup; starts a new turn."""
     # Clear IPO state
-    turn_module.TURN.clear_ipo_company(state)
+    turn_module.TURN.clear_active_company(state)
 
     # Increment turn number
     cdef int current_turn = turn_module.TURN.get_turn_number(state)
@@ -122,7 +122,7 @@ cdef void _advance_to_next_company(GameState state) noexcept:
         return
 
     # Set up for this company's owner's decision
-    turn_module.TURN.set_ipo_company(state, company_id)
+    turn_module.TURN.set_active_company(state, company_id)
     cdef int player_id = company_owner_id(state, company_id)
     turn_module.TURN.set_active_player(state, player_id)
 
@@ -135,7 +135,7 @@ cdef void setup_ipo_phase(GameState state) noexcept:
     """Initialize IPO phase: set remaining flags and find first company."""
     turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_IPO)
     _init_ipo_remaining(state)
-    turn_module.TURN.clear_ipo_company(state)
+    turn_module.TURN.clear_active_company(state)
     _advance_to_next_company(state)
 
 
@@ -143,7 +143,7 @@ cdef void apply_ipo_action(GameState state, ActionInfo* info) noexcept:
     """Apply an IPO decision for the active company."""
     cdef int company_id
     if info.action_type == <int>ACTION_PASS:
-        company_id = turn_module.TURN.get_ipo_company(state)
+        company_id = turn_module.TURN.get_active_company(state)
         assert company_id >= 0, "apply_ipo_action: no active company"
         turn_module.TURN.set_ipo_remaining(state, company_id, False)
         _advance_to_next_company(state)

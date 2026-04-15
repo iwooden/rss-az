@@ -14,10 +14,7 @@ buckets:
    end_card_flipped, consecutive_passes, cards_remaining.
 2. **Auction tracking**: active_company plus auction price / high_bidder / starter
    (single integers with -1 sentinels) plus the per-player passed flags.
-3. **Compatibility aliases**: older phase-specific names like
-   `ipo_company` and `acq_active_corp` now map to the generic active
-   company/corp slots.
-4. **Phase-remaining flag arrays**: dividend_remaining (8),
+3. **Phase-remaining flag arrays**: dividend_remaining (8),
    issue_remaining (8), ipo_remaining (36) — used by the engine to track
    which corps/companies still need to act in DIV / ISSUE / IPO.
 
@@ -354,43 +351,16 @@ cdef class TurnState:
         self.clear_acq_offer_price(state)
         self.clear_acq_offer_corp(state)
 
-    # =========================================================================
-    # COMPATIBILITY ALIASES FOR OLDER PHASE-SPECIFIC TURN CONTEXT
-    # =========================================================================
-
-    cpdef int get_ipo_company(self, GameState state):
-        """Compatibility alias for get_active_company()."""
-        return self.get_active_company(state)
-
-    cpdef void set_ipo_company(self, GameState state, int company_id):
-        """Compatibility alias for set_active_company()."""
-        self.set_active_company(state, company_id)
-
-    cpdef void clear_ipo_company(self, GameState state):
-        """Compatibility alias for clear_active_company()."""
-        self.clear_active_company(state)
-
-    cpdef int get_acq_active_corp(self, GameState state):
-        """Compatibility alias for get_active_corp()."""
-        return self.get_active_corp(state)
-
-    cpdef void set_acq_active_corp(self, GameState state, int corp_id):
-        """Compatibility alias for set_active_corp()."""
-        self.set_active_corp(state, corp_id)
-
-    cpdef void clear_acq_active_corp(self, GameState state):
-        """Compatibility alias for clear_active_corp()."""
-        self.clear_active_corp(state)
-
     cpdef void clear_passed_flags(self, GameState state):
-        """Clear the per-player passed flags for the current phase."""
+        """Reset every player's has_passed flag to False.
+
+        Used at phase boundaries (WRAP_UP → ACQUISITION, CLOSING setup,
+        auction start/resolve) where the engine needs a clean slate on
+        the per-player passed flags the next phase will use.
+        """
         cdef int player_id
         for player_id in range(self._get_num_players(state)):
             player_module.PLAYERS[player_id].set_has_passed(state, False)
-
-    cpdef void clear_auction_passed(self, GameState state):
-        """Compatibility alias for clear_passed_flags()."""
-        self.clear_passed_flags(state)
 
     # =========================================================================
     # PHASE-REMAINING FLAGS

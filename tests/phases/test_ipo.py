@@ -393,21 +393,21 @@ class TestProcessingOrder:
     def test_highest_face_value_first(self, game_state):
         """Among several player-owned companies, the highest FV is offered first."""
         _enter_ipo(game_state, {CO_1S_A: 0, CO_3S: 0, CO_5S: 0}, {0: 200})
-        assert TURN.get_ipo_company(game_state) == CO_5S  # FV=60
+        assert TURN.get_active_company(game_state) == CO_5S  # FV=60
 
     def test_active_player_matches_owner(self, game_state):
         """Active player is always the owner of the currently active company."""
         _enter_ipo(game_state, {CO_5S: 0, CO_3S: 1}, {0: 200, 1: 200})
 
         # FV=60 first, owned by player 0.
-        assert TURN.get_ipo_company(game_state) == CO_5S
+        assert TURN.get_active_company(game_state) == CO_5S
         assert TURN.get_active_player(game_state) == 0
 
         pass_id = find_legal_action(game_state, action_type=ACTION_PASS)
         apply_and_verify(game_state, pass_id)
 
         # FV=20 second, owned by player 1.
-        assert TURN.get_ipo_company(game_state) == CO_3S
+        assert TURN.get_active_company(game_state) == CO_3S
         assert TURN.get_active_player(game_state) == 1
 
     def test_descending_order_three_companies(self, game_state):
@@ -418,7 +418,7 @@ class TestProcessingOrder:
         expected_order = [CO_5S, CO_3S, CO_1S_A]
         for expected in expected_order:
             assert TURN.get_phase(game_state) == int(GamePhases.PHASE_IPO)
-            assert TURN.get_ipo_company(game_state) == expected
+            assert TURN.get_active_company(game_state) == expected
             pass_id = find_legal_action(game_state, action_type=ACTION_PASS)
             apply_and_verify(game_state, pass_id)
 
@@ -483,7 +483,7 @@ class TestPhaseTransitions:
         pass_id = find_legal_action(game_state, action_type=ACTION_PASS)
         apply_and_verify(game_state, pass_id)
 
-        assert TURN.get_ipo_company(game_state) == -1
+        assert TURN.get_active_company(game_state) == -1
 
     def test_mixed_pass_and_ipo_sequence(self, game_state):
         """Multi-company flow with both pass and IPO actions transitions out."""
@@ -496,12 +496,12 @@ class TestPhaseTransitions:
         assert CORPS[0].is_active(game_state)
 
         # CO_3S (20) — pass
-        assert TURN.get_ipo_company(game_state) == CO_3S
+        assert TURN.get_active_company(game_state) == CO_3S
         pass_id = find_legal_action(game_state, action_type=ACTION_PASS)
         apply_and_verify(game_state, pass_id)
 
         # CO_1S_A (1) — IPO into corp 1 at par=10 (cost 9)
-        assert TURN.get_ipo_company(game_state) == CO_1S_A
+        assert TURN.get_active_company(game_state) == CO_1S_A
         aid = find_legal_action(game_state, action_type=ACTION_IPO,
                                 corp_id=1, amount=PAR_10)
         apply_and_verify(game_state, aid)

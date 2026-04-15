@@ -294,7 +294,7 @@ class AIServer:
         # IPO selected a corp — apply it, then search for PAR
         ipo_corp = intent["corporation"]
         # Get the IPO company before applying (it gets cleared after)
-        ipo_company_id = TURN.get_ipo_company(state)
+        ipo_company_id = TURN.get_active_company(state)
         from core.data import COMPANY_NAMES
         ipo_company = COMPANY_NAMES[ipo_company_id]
 
@@ -442,7 +442,7 @@ class AIServer:
             if TURN.get_phase(state) != GamePhases.PHASE_ACQUISITION:
                 break
 
-            acq_corp = TURN.get_acq_active_corp(state)
+            acq_corp = TURN.get_active_corp(state)
             if acq_corp < 0:
                 break  # Offer buffer exhausted
 

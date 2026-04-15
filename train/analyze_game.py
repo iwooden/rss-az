@@ -161,9 +161,9 @@ def format_phase_context(state: GameState) -> str:
         if corp_id >= 0:
             return f"DIVIDENDS: {CORP_NAMES[corp_id]}"
     if phase == GamePhases.PHASE_IPO:
-        corp_id = TURN.get_ipo_company(state)
-        if corp_id >= 0:
-            return f"IPO: {CORP_NAMES[corp_id]}"
+        company_id = TURN.get_active_company(state)
+        if company_id >= 0:
+            return f"IPO: {COMPANY_NAMES[company_id]}"
     return ""
 
 
