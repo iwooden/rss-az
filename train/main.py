@@ -16,8 +16,11 @@ import numpy as np
 import torch
 import torch.multiprocessing as mp
 
+from core.actions import MAX_LEGAL_ACTIONS_PY
 from core.state import get_layout
 from core.token_data import TokenDataSize, get_num_tokens
+
+K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 from nn import create_model
 from train.checkpoint import (
     cleanup_checkpoints,
@@ -555,8 +558,14 @@ def main() -> None:
                 dummy_phase = torch.zeros(
                     warmup_bs, dtype=torch.long, device=device,
                 )
-                model(dummy_tokens, dummy_phase)
-                del dummy_tokens, dummy_phase
+                dummy_action_ids = torch.zeros(
+                    warmup_bs, K_MAX, dtype=torch.long, device=device,
+                )
+                dummy_n_legals = torch.zeros(
+                    warmup_bs, dtype=torch.long, device=device,
+                )
+                model(dummy_tokens, dummy_phase, dummy_action_ids, dummy_n_legals)
+                del dummy_tokens, dummy_phase, dummy_action_ids, dummy_n_legals
             torch.cuda.synchronize()
             print("  Model compiled.")
 
@@ -607,8 +616,12 @@ def main() -> None:
                     1, num_tokens, token_dim, device=device,
                 )
                 dummy_phase = torch.zeros(1, dtype=torch.long, device=device)
-                model(dummy_tokens, dummy_phase)
-                del dummy_tokens, dummy_phase
+                dummy_action_ids = torch.zeros(
+                    1, K_MAX, dtype=torch.long, device=device,
+                )
+                dummy_n_legals = torch.zeros(1, dtype=torch.long, device=device)
+                model(dummy_tokens, dummy_phase, dummy_action_ids, dummy_n_legals)
+                del dummy_tokens, dummy_phase, dummy_action_ids, dummy_n_legals
             torch.cuda.synchronize()
             print("  Model compiled.")
 

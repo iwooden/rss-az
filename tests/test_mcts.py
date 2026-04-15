@@ -172,7 +172,7 @@ class TestMCTSConfig:
         assert cfg.dirichlet_dynamic is True
         assert cfg.dirichlet_alpha_numerator == 10.0
         assert cfg.num_players == 3
-        assert cfg.search_batch_size == 1
+        assert cfg.search_batch_size == 8
 
     def test_action_dim_is_max_action_size(self):
         """Post-refactor: dense pad width is player-count independent."""

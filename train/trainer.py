@@ -17,12 +17,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from core.actions import MAX_LEGAL_ACTIONS_PY
 from core.state import GameState, get_layout
 from core.token_data import TokenDataSize, get_num_tokens, get_token_data
 from train.config import TrainingConfig
 
-K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
 
 # Matches core.data.DecisionPhase order (DPHASE_INVEST..DPHASE_IPO, 8 entries).
@@ -211,25 +209,16 @@ class Trainer:
         policy_targets = batch["policy_targets"].to(self.device, non_blocking=nb)
         value_targets = batch["value_targets"].to(self.device, non_blocking=nb)
 
-        # --- Forward: dense (B, MAX_ACTION_SIZE) logits + (B, N) values ---
-        policy_logits, values = self.model(tokens, phase_ids)
-
-        # Gather the dense logits down to the per-row sparse legal list,
-        # then mask the [n_legal:K_MAX] tail. The zero-init tail of
-        # action_ids points at index 0, so gather reads some valid logit;
-        # masked_fill then drives that tail to -1e9 before log_softmax so
-        # it takes ~no probability mass. policy_targets tail is zero, so
-        # those positions contribute nothing to the CE sum.
-        gathered = policy_logits.gather(1, action_ids)  # (B, K_MAX)
-        k_range = torch.arange(K_MAX, device=self.device)
-        k_mask = k_range[None, :] < n_legals[:, None]  # (B, K_MAX) bool
-        gathered = gathered.masked_fill(~k_mask, -1e9)
+        # --- Forward: sparse (B, K_MAX) logits + (B, N) values ---
+        # The model gathers per-row legal slices internally and fills the
+        # [n_legal:K_MAX] tail with -1e9, so we can log_softmax directly.
+        policy_logits, values = self.model(tokens, phase_ids, action_ids, n_legals)
 
         # Policy loss: sparse cross-entropy over legal actions only.
         # log_softmax is numerically stable (x - logsumexp), so the tail
         # log_probs are finite-but-very-negative; multiplied by the zero
         # tail of policy_targets they contribute nothing.
-        log_probs = F.log_softmax(gathered, dim=-1)
+        log_probs = F.log_softmax(policy_logits, dim=-1)
         per_example_policy_loss = -(policy_targets * log_probs).sum(dim=-1)
         policy_loss = per_example_policy_loss.mean()
 

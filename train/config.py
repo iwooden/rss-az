@@ -18,7 +18,7 @@ class MCTSConfig:
     dirichlet_dynamic: bool = True
     dirichlet_alpha_numerator: float = 10.0
     num_players: int = 3
-    search_batch_size: int = 1
+    search_batch_size: int = 8
     action_dim: int = field(init=False)
 
     def __post_init__(self) -> None:

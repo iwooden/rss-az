@@ -364,8 +364,10 @@ def _eval_server_serve(
                 warmup_n, num_tokens, token_dim, device=device,
             )
             dummy_p = torch.zeros(warmup_n, dtype=torch.int8, device=device)
-            model(dummy_s, dummy_p)
-            del dummy_s, dummy_p
+            dummy_a = torch.zeros(warmup_n, k_max, dtype=torch.int16, device=device)
+            dummy_nl = torch.zeros(warmup_n, dtype=torch.int16, device=device)
+            model(dummy_s, dummy_p, dummy_a, dummy_nl)
+            del dummy_s, dummy_p, dummy_a, dummy_nl
         torch.cuda.synchronize()
 
     # Allocate pinned CPU buffers and GPU tensors in this process's CUDA context
@@ -452,10 +454,6 @@ def _eval_server_serve(
     _widx_buf = np.empty(partition_size, dtype=np.int32)
     _cnt_buf = np.empty(partition_size, dtype=np.int32)
 
-    # Pre-compute the K_MAX arange + a scratch long buffer for n_legals
-    # comparisons, allocated on GPU once (reused every batch).
-    gpu_k_range = torch.arange(k_max, device=device)
-
     # --- Shared helpers (closures over setup state) ---
 
     def _infer_and_scatter(widx: np.ndarray, cnts: np.ndarray,
@@ -496,26 +494,28 @@ def _eval_server_serve(
         gpu_phase_ids[:total_n].copy_(pin_phase_ids[:total_n], non_blocking=True)
         gpu_action_ids[:total_n].copy_(pin_action_ids[:total_n], non_blocking=True)
         gpu_n_legals[:total_n].copy_(pin_n_legals[:total_n], non_blocking=True)
+        # Zero the [total_n:padded_n] tail so the model's internal gather
+        # sees in-range action_ids (0) and masks them out (n_legals=0).
+        # Without this, stale data from prior batches could produce
+        # out-of-bounds indices into the per-phase logits tensor.
+        if padded_n > total_n:
+            gpu_phase_ids[total_n:padded_n].zero_()
+            gpu_action_ids[total_n:padded_n].zero_()
+            gpu_n_legals[total_n:padded_n].zero_()
 
         with torch.inference_mode():
             # Autocast region is already active (entered once for the whole
-            # serve loop). Running the gather / masked_fill / softmax inside
-            # it keeps the 14977-wide dense logits in bf16/fp16; upcasting to
-            # f32 just to softmax would undo most of the autocast win.
-            logits_dense, values = model(
+            # serve loop). The model gathers per-row legal slices internally
+            # and returns (padded_n, K_MAX) sparse logits, so softmaxing
+            # inside the autocast region keeps the narrow logits tensor in
+            # bf16/fp16 until the final f32 copy.
+            logits_sparse, values = model(
                 gpu_s_batch, gpu_phase_ids[:padded_n],
+                gpu_action_ids[:padded_n], gpu_n_legals[:padded_n],
             )
-            # logits_dense: (padded_n, MAX_ACTION_SIZE)  in autocast dtype
-            # values:       (padded_n, num_players)      in autocast dtype
-            idx = gpu_action_ids[:total_n].to(torch.long)        # (B, K_MAX)
-            gathered = logits_dense[:total_n].gather(1, idx)     # (B, K_MAX)
-            k_mask = (
-                gpu_k_range[None, :]
-                < gpu_n_legals[:total_n].to(torch.long)[:, None]
-            )
-            gathered = gathered.masked_fill(~k_mask, -1e9)
-            # Cast to f32 only on the final copy into the persistent buffer.
-            gpu_priors[:total_n] = gathered.softmax(dim=1).to(torch.float32)
+            # logits_sparse: (padded_n, K_MAX)       in autocast dtype
+            # values:        (padded_n, num_players) in autocast dtype
+            gpu_priors[:total_n] = logits_sparse[:total_n].softmax(dim=1).to(torch.float32)
             gpu_val[:total_n] = values[:total_n].to(torch.float32)
 
             pin_priors[:total_n].copy_(gpu_priors[:total_n], non_blocking=True)

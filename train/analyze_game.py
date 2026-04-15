@@ -473,7 +473,7 @@ def analyze_game(
     config: TrainingConfig,
     seed: int,
     num_simulations: int,
-    search_batch_size: int = 1,
+    search_batch_size: int = 8,
     top_n: int = 10,
     verbose: bool = False,
     *,
@@ -493,6 +493,7 @@ def analyze_game(
     evaluator = NNEvaluator(
         model, device, num_players=num_players,
         terminal_rank_weight=terminal_rank_weight,
+        eval_dtype=config.eval_dtype,
     )
     mcts_config = config.to_mcts_config(c_puct_override=c_puct)
     mcts_config = MCTSConfig(
@@ -553,8 +554,10 @@ def analyze_game(
         # it unconditionally — cheap lookup off the state.
         phase_id = get_decision_phase_py(state)
 
-        # NN evaluation (raw, before MCTS). Only needed for the full log
-        # mode; stats-only mode skips the extra forward pass.
+        # Raw NN evaluation for the log. Only needed for the full log mode;
+        # stats-only mode skips this extra forward pass. Keeping the raw
+        # priors out of MCTSNode keeps per-node memory tight in self-play,
+        # at the cost of one extra root-only forward pass here.
         priors: np.ndarray | None = None
         values: np.ndarray | None = None
         action_ids_arr: np.ndarray | None = None
@@ -716,7 +719,7 @@ def main() -> None:
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--simulations", type=int, default=800)
-    parser.add_argument("--search-batch-size", type=int, default=1)
+    parser.add_argument("--search-batch-size", type=int, default=8)
     parser.add_argument(
         "--c-puct", type=float, default=None,
         help="Override c_puct for this analysis run (default from checkpoint)",

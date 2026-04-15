@@ -188,6 +188,59 @@ cpdef void get_token_data(GameState state, float[:, ::1] buffer):
         _fill_buffer(state, buffer, num_players, num_tokens)
 
 
+cpdef void get_token_data_batch(
+    list state_arrays,
+    int num_players,
+    float[:, :, ::1] buffer,
+):
+    """Batched ``get_token_data``: fill ``buffer[i]`` for each ``state_arrays[i]``.
+
+    Reuses a single scratch ``GameState`` across all rows via ``rebind``
+    (zero-copy). Compared with the Python-level per-state loop in
+    ``mcts.evaluator.evaluate_leaves``, this folds ``n`` function calls and
+    ``n`` wrapper constructions into a single Cython entry — the inner
+    loop runs in C with only the cache-refresh prologue and ``rebind``
+    holding the GIL, same as the single-state entry does once.
+
+    Args:
+        state_arrays: List of writable C-contiguous int16 state arrays, one
+            per leaf. Every entry must size-match the shared ``num_players``
+            layout (same constraint as ``GameState.rebind``).
+        num_players: Training player count (3-5). Applies to every state
+            array in the batch — mixed-player batches are not supported.
+        buffer: ``(n, num_players + 54, TOKEN_DIM)`` float32 output, C-contig.
+    """
+    cdef int n = len(state_arrays)
+    cdef int num_tokens = num_players + 54
+    cdef int i, p
+    cdef GameState scratch_gs
+
+    assert 3 <= num_players <= 5, \
+        f"get_token_data_batch: num_players must be 3-5, got {num_players}"
+    if n == 0:
+        return
+    assert buffer.shape[0] >= n, \
+        f"get_token_data_batch: buffer batch {buffer.shape[0]} < n {n}"
+    assert buffer.shape[1] >= num_tokens, \
+        f"get_token_data_batch: buffer rows {buffer.shape[1]} < num_tokens {num_tokens}"
+    assert buffer.shape[2] >= <int>TokenDataSize.TOKEN_DIM, \
+        f"get_token_data_batch: buffer cols {buffer.shape[2]} < TOKEN_DIM {<int>TokenDataSize.TOKEN_DIM}"
+
+    scratch_gs = GameState.from_buffer(state_arrays[0], num_players)
+
+    for i in range(n):
+        if i > 0:
+            scratch_gs.rebind(state_arrays[i], num_players)
+
+        # Cache refresh prologue (GIL-held — player refresh is not nogil-safe).
+        # Must run before every fill: each leaf has its own dirty cache state.
+        for p in range(num_players):
+            player_module.PLAYERS[p].get_net_worth(scratch_gs)
+
+        with nogil:
+            _fill_buffer(scratch_gs, buffer[i], num_players, num_tokens)
+
+
 # =============================================================================
 # INTERNAL: MAIN FILL DRIVER
 # =============================================================================

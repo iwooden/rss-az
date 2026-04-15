@@ -28,3 +28,15 @@ cpdef int get_num_tokens(int num_players) noexcept nogil
 # when the current engine phase does not match. Requires a C-contiguous
 # float32 memoryview sized for at least (num_players + 54, TOKEN_DIM).
 cpdef void get_token_data(GameState state, float[:, ::1] buffer)
+
+
+# Batched variant: fill ``buffer[i]`` from ``state_arrays[i]`` for i in [0, n).
+# Reuses one scratch GameState across all rows via rebind, so the outer
+# function call amortizes per-state Python dispatch + GameState construction
+# over a single entry. Cache-refresh prologue still runs under the GIL per
+# state (player refresh path is not nogil-safe); the ``_fill_buffer`` call
+# itself is nogil per row as in the single-state entry. Requires a
+# C-contiguous (n, num_players + 54, TOKEN_DIM) float32 buffer.
+cpdef void get_token_data_batch(
+    list state_arrays, int num_players, float[:, :, ::1] buffer,
+)

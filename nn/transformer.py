@@ -21,9 +21,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from core.actions import MAX_LEGAL_ACTIONS_PY
 from core.data import (
     AUCTION_CAP,
-    MAX_ACTION_SIZE,
     PHASE_ACTION_SIZES,
 )
 from core.token_data import TokenDataSize
@@ -37,6 +37,7 @@ from core.token_data import TokenDataSize
 # adding token types happens over there.
 
 NUM_PHASES = 8
+K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 
 _GELU_APPROX = "tanh"
 
@@ -105,6 +106,10 @@ class TransformerBlock(nn.Module):
 
 class RSSTransformerNet(nn.Module):
     """Transformer with entity-readout policy heads and per-player value output."""
+
+    # Declared for pyright: ``register_buffer`` adds dynamic attributes whose
+    # type isn't otherwise visible to the checker.
+    _k_range: torch.Tensor
 
     def __init__(self, cfg: TransformerConfig) -> None:
         super().__init__()
@@ -222,6 +227,13 @@ class RSSTransformerNet(nn.Module):
             nn.Tanh(),
         )
 
+        # Index range used by per-phase output masking. Registered as a
+        # non-persistent buffer so it rides the module's device and shows
+        # up in `.to(...)`, but is not saved to checkpoints.
+        self.register_buffer(
+            "_k_range", torch.arange(K_MAX, dtype=torch.long), persistent=False,
+        )
+
         self._init_weights()
 
     # ------------------------------------------------------------------
@@ -322,39 +334,54 @@ class RSSTransformerNet(nn.Module):
 
     def _policy_forward(
         self, tokens: torch.Tensor, phase_ids: torch.Tensor,
+        action_ids: torch.Tensor, n_legals: torch.Tensor,
     ) -> torch.Tensor:
-        """Route each batch element to its phase-specific policy head.
+        """Route each batch element to its phase-specific policy head and
+        gather the per-row legal slice in one shot.
+
+        The per-phase heads emit logits of shape ``(n_phase, phase_action_size)``
+        — much narrower than the full ``MAX_ACTION_SIZE = 14977`` pad. Gathering
+        against ``action_ids`` inside the model keeps the source tensor at
+        phase-local width, so the evaluator / trainer / eval-server never have
+        to allocate or scatter into the full ACQUISITION-wide scratch.
 
         Args:
             tokens: (batch, num_tokens, d_model) final token representations.
             phase_ids: (batch,) int tensor, phase index 0-7.
-        Returns:
-            (batch, MAX_ACTION_SIZE) logits. Positions beyond a phase's action count
-            are filled with -1e9 so they vanish after masking + softmax.
-        """
-        B = tokens.shape[0]
-        # This dense padded `(B, MAX_ACTION_SIZE)` interface is intentionally simple
-        # for the prototype, but it is not the long-term design. Mixed-phase
-        # batches pay for boolean indexing, per-phase dispatch, and stitching
-        # small outputs back into one padded tensor. Full ACQUISITION makes that
-        # padded width especially wasteful. Once the sparse per-phase policy
-        # path is wired through the evaluator / replay / trainer stack, this
-        # method should be replaced with phase-local candidate scoring.
-        logits = tokens.new_full((B, MAX_ACTION_SIZE), -1e9)
+            action_ids: (batch, K_MAX) int tensor, phase-local legal action ids
+                per row. Unused tail positions ([n_legals[i]:]) should be
+                in-range (e.g. zero) — they are read by ``gather`` but masked
+                out before softmax.
+            n_legals: (batch,) int tensor, legal action count per row.
 
-        dispatch = [
+        Returns:
+            (batch, K_MAX) float tensor of gathered logits, with positions
+            beyond ``n_legals[i]`` filled with ``-1e9`` so they vanish after
+            softmax.
+        """
+        B, K = action_ids.shape
+        out = tokens.new_full((B, K), -1e9)
+
+        # Local dispatch tuple: cheap to rebuild (8 bound-method refs), and
+        # keeps pyright from routing a ``self._dispatch = (...)`` assignment
+        # through ``nn.Module.__setattr__``.
+        dispatch = (
             self._policy_invest, self._policy_bid, self._policy_acquisition,
             self._policy_acq_offer, self._policy_closing, self._policy_dividends,
             self._policy_issue, self._policy_ipo,
-        ]
+        )
         for phase_id in range(NUM_PHASES):
             mask = phase_ids == phase_id
             if not mask.any():
                 continue
-            phase_logits = dispatch[phase_id](tokens[mask])
-            logits[mask, :phase_logits.shape[-1]] = phase_logits
+            phase_logits = dispatch[phase_id](tokens[mask])        # (n, phase_width)
+            # Gather wants int64; .long() is a no-op if already long.
+            sub_ids = action_ids[mask].long()                      # (n, K)
+            gathered = phase_logits.gather(1, sub_ids)             # (n, K)
+            invalid = self._k_range[None, :] >= n_legals[mask][:, None]
+            out[mask] = gathered.masked_fill(invalid, -1e9)
 
-        return logits
+        return out
 
     # ------------------------------------------------------------------
     # Forward
@@ -362,15 +389,21 @@ class RSSTransformerNet(nn.Module):
 
     def forward(
         self, x: torch.Tensor, phase_ids: torch.Tensor,
+        action_ids: torch.Tensor, n_legals: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the transformer.
 
         Args:
             x: (batch, num_tokens, token_dim) token features, zero-padded.
             phase_ids: (batch,) int tensor, decision phase index 0-7.
+            action_ids: (batch, K_MAX) int tensor, phase-local legal action
+                ids per row. Unused tail ([n_legals[i]:]) must be in-range.
+            n_legals: (batch,) int tensor, legal action count per row.
 
         Returns:
-            policy_logits: (batch, MAX_ACTION_SIZE) raw logits (-1e9 beyond phase range).
+            policy_logits: (batch, K_MAX) gathered logits over the per-row
+                legal-action slice. Positions beyond ``n_legals[i]`` are
+                filled with ``-1e9``.
             values: (batch, num_players) per-player expected outcomes in [-1, 1].
         """
         tokens = self._project_tokens(x)
@@ -379,7 +412,7 @@ class RSSTransformerNet(nn.Module):
             tokens = block(tokens)
         tokens = self.final_norm(tokens)
 
-        policy_logits = self._policy_forward(tokens, phase_ids)
+        policy_logits = self._policy_forward(tokens, phase_ids, action_ids, n_legals)
         values = self.value_head(tokens[:, self._player_slice]).squeeze(-1)  # (B, N)
         return policy_logits, values
 
@@ -475,25 +508,33 @@ if __name__ == "__main__":
     batch_size = NUM_PHASES  # one sample per phase
     x = torch.randn(batch_size, cfg.num_tokens, cfg.token_dim)
     phase_ids = torch.arange(NUM_PHASES)
+    # Per-phase legal-action synthesis: use the first min(K_MAX, phase_size)
+    # ids from each phase. Unused tail is zero-padded; n_legals masks it.
+    action_ids = torch.zeros(batch_size, K_MAX, dtype=torch.long)
+    n_legals = torch.zeros(batch_size, dtype=torch.long)
+    for i in range(NUM_PHASES):
+        n = min(K_MAX, PHASE_ACTION_SIZES[i])
+        action_ids[i, :n] = torch.arange(n)
+        n_legals[i] = n
 
-    policy_logits, values = model(x, phase_ids)
+    policy_logits, values = model(x, phase_ids, action_ids, n_legals)
 
     print(f"policy_logits: {tuple(policy_logits.shape)}")
     print(f"values:        {tuple(values.shape)}")
 
-    assert policy_logits.shape == (batch_size, MAX_ACTION_SIZE)
+    assert policy_logits.shape == (batch_size, K_MAX)
     assert values.shape == (batch_size, cfg.num_players)
 
     assert values.min() >= -1.0 and values.max() <= 1.0, "tanh output out of range"
     print("values in [-1, 1]: ok")
 
     for i in range(NUM_PHASES):
-        ac = PHASE_ACTION_SIZES[i]
-        active = policy_logits[i, :ac]
-        inactive = policy_logits[i, ac:]
+        n = int(n_legals[i])
+        active = policy_logits[i, :n]
+        inactive = policy_logits[i, n:]
         assert torch.isfinite(active).all(), f"{phase_names[i]}: non-finite logits"
         if inactive.numel() > 0:
-            assert (inactive == -1e9).all(), f"{phase_names[i]}: leak beyond action range"
-    print("per-phase logit ranges: ok")
+            assert (inactive == -1e9).all(), f"{phase_names[i]}: leak beyond legal slice"
+    print("per-row legal slice: ok")
 
     print("\nSmoke test passed.")
