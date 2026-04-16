@@ -424,8 +424,8 @@ class RSSTransformerNet(nn.Module):
         else:
             # Legacy boolean-mask path. Each `tokens[mask]` / `out[mask] = ...`
             # forces a host sync because the masked size is data-dependent.
-            # Retained for trainer + test paths where the sync cost is
-            # acceptable (training time is dominated by self-play).
+            # Retained for test paths only — all production callers (trainer,
+            # eval server, NNEvaluator) build phase_indices up front.
             for phase_id in range(NUM_PHASES):
                 mask = phase_ids == phase_id
                 phase_logits = self._dispatch[phase_id](tokens[mask])

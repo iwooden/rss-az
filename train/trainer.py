@@ -16,9 +16,11 @@ import warnings
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch._dynamo.decorators import mark_unbacked
 
 from core.state import GameState, get_layout
 from core.token_data import TokenDataSize, get_num_tokens, get_token_data
+from nn.transformer import NUM_PHASES
 from train.config import TrainingConfig
 
 TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
@@ -197,7 +199,8 @@ class Trainer:
         # non_blocking=True allows CPU work to overlap with DMA transfer.
         nb = self.device.type == "cuda"
         tokens = token_buf_cpu.to(self.device, non_blocking=nb)
-        phase_ids = batch["phase_ids"].to(
+        phase_ids_cpu = batch["phase_ids"]
+        phase_ids = phase_ids_cpu.to(
             self.device, non_blocking=nb, dtype=torch.long,
         )
         action_ids = batch["action_ids"].to(
@@ -209,10 +212,29 @@ class Trainer:
         policy_targets = batch["policy_targets"].to(self.device, non_blocking=nb)
         value_targets = batch["value_targets"].to(self.device, non_blocking=nb)
 
+        # Build per-phase row indices on host so the model's policy gather
+        # uses index_select / index_copy_ instead of boolean masking.
+        # Boolean masking reads the mask's true-count back to host to size
+        # the intermediate, forcing one H←D sync per phase × 8 phases =
+        # 8 syncs per forward. mark_unbacked keeps torch.compile from
+        # specializing on per-phase row counts (which would blow the
+        # recompile limit on training batches).
+        phase_view = phase_ids_cpu.numpy()
+        phase_indices: list[torch.Tensor] = []
+        for _p in range(NUM_PHASES):
+            _idx_np = np.nonzero(phase_view == _p)[0].astype(np.int64, copy=False)
+            _t = torch.from_numpy(_idx_np)
+            if nb:
+                _t = _t.to(self.device, non_blocking=True)
+            mark_unbacked(_t, 0)
+            phase_indices.append(_t)
+
         # --- Forward: sparse (B, K_MAX) logits + (B, N) values ---
         # The model gathers per-row legal slices internally and fills the
         # [n_legal:K_MAX] tail with -1e9, so we can log_softmax directly.
-        policy_logits, values = self.model(tokens, phase_ids, action_ids, n_legals)
+        policy_logits, values = self.model(
+            tokens, phase_ids, action_ids, n_legals, phase_indices,
+        )
 
         # Policy loss: sparse cross-entropy over legal actions only.
         # log_softmax is numerically stable (x - logsumexp), so the tail
