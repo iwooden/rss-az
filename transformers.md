@@ -1,6 +1,6 @@
 # Transformer Architecture for Rolling Stock Stars
 
-> **WARNING: Breaking refactor.** This work lives on the `transformer-refactor` branch and touches nearly every layer of the codebase — state representation, action space, model architecture, evaluator, and training loop. Backward compatibility with the MLP model, old state vectors, and old action indices is not maintained. Most existing tests will fail until the refactor is complete and tests are updated. The `main` branch is untouched and safe.
+> **Refactor status.** This work lives on the `transformer-refactor` branch and has touched nearly every layer of the codebase — state representation, action space, model architecture, evaluator, and training loop. Phases 1-5 (compact state, action space, driver+phase handlers, transformer model, evaluator integration, and self-play + replay buffer rewrite) are landed. Multi-player-count training (Phase 6) is the remaining scoped work. Backward compatibility with the MLP model, old state vectors, and old action indices is not maintained; the `main` branch is preserved as a reference for rule intent only.
 >
 > **Training scope:** 3–5 players. The engine supports 2–6p for test compatibility, but all NN/MCTS/training code targets 3–5p only.
 
@@ -85,7 +85,7 @@ Entity-readout policy heads (+ full ACQUISITION pair head) + value head
 | num_layers | 10 | Enough depth for multi-hop reasoning |
 | ff_mult | 3.0 | SwiGLU FFN inner dim = ceil(ff_mult * d_model) |
 | d_bilinear | 64 | Hidden width for the ACQUISITION pair-feature policy head |
-| token_dim | 63 | Fixed width, zero-padded to uniform size across all token types. |
+| token_dim | 97 | Fixed width, zero-padded to uniform size across all token types. Sourced from `core.token_data.TokenDataSize.TOKEN_DIM` so the model and the Cython extractor can't drift out of sync. |
 
 **No positional encoding over token order.** Permutation equivariance is a feature, not a bug. Token order is fixed for implementation convenience, but entity identity should come from explicit player/corp/company ID features (and the per-type projection, which already puts each token type in its own subspace of `d_model`), not from sequence position.
 
@@ -241,64 +241,49 @@ Since player tokens aren't ordered by slot, the output values are already in can
 
 ## State Simplification
 
-The transformer refactor enables a fundamental simplification of `GameState`: eliminate the visible/hidden split entirely. The state becomes a single compact array used only by the game engine. A new `get_token_data()` method is the sole interface between the engine and the NN.
-
-### Current design (MLP)
+The transformer refactor rebuilds `GameState` around a single compact `int16` array used only by the game engine, with `get_token_data()` as the sole engine→NN interface. The full state layout (section offsets, player/corp/turn blocks, company tracking, action-space encoding) is authoritative in [`VECTORS.md`](VECTORS.md); the pipeline it participates in is:
 
 ```
-GameState: [visible state (1109 floats, 3p)] [hidden state (1271 floats)]
+GameState (int16, 469 slots at 3p)  ── engine-only, raw values ──
                      ↓
-           State rotation (for active player)
+           get_token_data(state, buffer)   ← Cython, nogil
                      ↓
-           Flat float32 vector → MLP input
+           eval_buffer: (batch, num_players + 54, 97)  float32
+                     ↓
+           Type-specific projections → d_model → transformer trunk
 ```
 
-The visible state contains one-hot encodings, normalized values, duplicated entity features, and player-rotated data — all to make it consumable by the MLP directly.
-
-### New design (transformer)
-
-```
-GameState: [compact state (~500-800 floats, estimated)]
-                     ↓
-           get_token_data(eval_buffer_slice)   ← Cython, fast
-                     ↓
-           eval_buffer: (batch, num_tokens, token_dim)
-                     ↓
-           Eval server routes token data → type-specific projections → d_model
-```
-
-**What gets deleted from the state array:**
+**What was deleted compared to the pre-refactor MLP layout:**
 - **Visible/hidden split**: No more `get_visible_size()`, `get_hidden_size()`, separate offset tracking. One compact array.
-- **One-hot encodings**: Phase, CoO, turn order, price indices stored as plain integers. The projection layers (or small embeddings) handle encoding.
-- **Normalization in setters**: No more `cash / CASH_DIVISOR` on write + `cash * CASH_DIVISOR + 0.5` on read. Raw values stored directly. Projection layers learn appropriate scaling (or apply fixed divisors).
-- **Duplicated entity features**: active_company (41 floats), active_corp (58 floats), auction slot info (5*N floats) — all gone. `is_phase_active` flags on entity tokens replace them.
-- **State rotation**: Gone entirely — no visible state to rotate.
+- **One-hot encodings in state**: Phase, CoO, turn order, price indices stored as plain integers. One-hot fan-out happens inside `get_token_data()`, not in the backing buffer.
+- **Normalization in setters**: No more `cash / CASH_DIVISOR` on write + `cash * CASH_DIVISOR + 0.5` on read. Raw values stored directly; token extraction applies fixed divisors from `core/data.pxd`.
+- **Duplicated entity features**: `active_company` scalar block, `active_corp` scalar block, and auction-slot feature duplication are gone. Instead, `active_player` / `active_corp` / `active_company` are single int16 selector slots in the turn block, and the transformer attends to the relevant entity's own token for its features.
+- **State rotation**: Gone entirely — the compact state is never rotated; the value head reads from player tokens in canonical order.
 
 ### `get_token_data()` interface
 
 ```cython
-cdef void get_token_data(GameState state, float* buffer, int num_tokens, int token_dim) nogil:
-    """Fill eval buffer with per-token features for NN input.
-    
-    buffer shape: (num_tokens, token_dim), zero-initialized.
-    
-    Token order is fixed: [players..., corps..., companies..., FI, market,
-                           global, invest, auction, dividend, issue, par,
-                           acq_offer, pass]
-    """
+cpdef void get_token_data(GameState state, float[:, ::1] buffer)
+
+cpdef void get_token_data_batch(
+    list state_arrays, int num_players, float[:, :, ::1] buffer,
+)
 ```
 
-Implementation lives in `core/token_data.{pyx,pxd}`. Feature spec: `token-data.md`. Each `_fill_*_token()` helper reads from the compact state and writes raw/lightly-processed features into the buffer. Static features (synergies, face values) are written every time — it's just memcpy and the simplicity is worth more than the minor bandwidth savings.
+Implementation lives in `core/token_data.{pyx,pxd}`. Feature spec: `token-data.md`. Each `_fill_*_token()` helper reads from the compact state and writes raw/lightly-normalized features into the buffer inside a single `nogil` block. Token order is fixed: `[players..., corps..., companies..., FI, market, global, invest, auction, dividend, issue, par, acq_offer, pass]`.
+
+Both entries accept C-contiguous `float32` memoryviews sized to at least `(num_players + 54, TOKEN_DIM)` (single) or `(n, num_players + 54, TOKEN_DIM)` (batch). `get_token_data_batch` reuses a single scratch `GameState` across rows via `rebind`, amortizing Python dispatch over the whole batch — this is the path the evaluator and eval server use on their hot paths. A small GIL-held prologue runs `refresh_player_cache_if_dirty` for each player before the nogil fill body, so the fill itself can read cached net-worth / liquidity / income slots directly.
+
+Static features (synergies, face values, etc.) are written every call — it's a straight memcpy and the simplicity is worth more than the minor bandwidth savings. Phase-specific tokens are left at the zeroed default when the current engine phase does not match.
 
 ### Eval buffer sizing
 
 The eval buffer is `(batch_size, num_tokens, token_dim)`:
-- `num_tokens`: 57 for the 3p prototype
-- `token_dim`: 63 for the 3p prototype (all token types zero-padded to the same width)
-- Total per sample: 57 × 63 = 3,591 floats (~14.0KB)
-- Compare to current visible state: 1,109 floats (~4.4KB)
+- `num_tokens = num_players + 54` — 57 (3p), 58 (4p), 59 (5p)
+- `token_dim = 97` (all token types zero-padded to the same width; `TokenDataSize.TOKEN_DIM`)
+- Total per sample: 57 × 97 = 5,529 floats (~21.6 KiB) for 3p
 
-~3x larger per sample, but still small in absolute terms. The rectangular layout enables clean GPU operations. All type-specific projections take the same `token_dim` input (no per-type slicing needed).
+The rectangular layout enables clean GPU operations. All type-specific projections take the same `token_dim` input (no per-type slicing needed).
 
 ### Replay buffer storage
 
@@ -312,7 +297,7 @@ The replay buffer stores training examples. With per-phase action indices, each 
 Option A: store the compact state and re-extract tokens at training time. Smallest storage.
 Option B: store the eval buffer directly. Faster training (no re-extraction), larger storage.
 
-Option B is simpler for a very small-scale prototype, but expensive at current training defaults: with `57 × 63` float token buffers and `buffer_capacity=500_000`, token storage alone is ~6.6 GiB, and total replay storage is materially higher once masks, policy targets, and value targets are included, especially with a 14,977-action ACQUISITION head. If we start with Option B, we should also reduce buffer capacity. Option A is the more realistic long-term default.
+Option B is simpler for a very small-scale prototype, but expensive at current training defaults: a `(57, 97)` float32 token buffer is ~22 KiB per sample, so a 500k-sample replay buffer costs ~11 GiB for tokens alone — before per-sample phase ids, legal-action masks, sparse policy targets, and value targets. Option A is the more realistic long-term default.
 
 ## Impact on Training & MCTS Pipeline
 
@@ -349,57 +334,61 @@ All four simplifications follow the same pattern: the MLP needed a small, fixed 
 
 1. ~~**Compact state layout**~~: **Done.** Single int16 array, raw values, entity handles with module-level layout constants. See `VECTORS.md` for the authoritative layout.
 
-2. ~~**`get_token_data()` feature lists**~~: **Spec'd.** See `token-data.md` for the authoritative per-token feature spec. Implementation in `core/token_data.{pyx,pxd}` — still pending.
+2. ~~**`get_token_data()` feature lists / implementation**~~: **Done.** See `token-data.md` for the per-token feature spec and `core/token_data.{pyx,pxd}` for the implementation (nogil fill + batched `get_token_data_batch`).
 
-3. **Batching with variable token counts**: For 3-5p training, batches contain games with different numbers of player tokens (57-59). Options: pad to 59 and use attention mask, or batch by player count. Padding is simpler; batching by count is more efficient.
+3. ~~**Head dispatch efficiency**~~: **Resolved.** The model emits per-row gathered logits of shape `(B, K_MAX)` — never the dense `(B, 14977)` ACQUISITION pad — by gathering against each row's legal-action list inside `_policy_forward`. The fast path uses precomputed per-phase row indices (`phase_indices`) to avoid the H↔D sync that boolean indexing forces.
 
-4. **Replay storage strategy**: Option B (store token buffers directly) is convenient for prototyping but probably requires a much smaller replay buffer. Option A (store compact state and re-extract tokens) is likely the long-term path.
+4. **Batching with variable token counts** (Phase 6): For 3-5p training, batches contain games with different numbers of player tokens (57-59). Options: pad to 59 and use attention mask, or batch by player count. Padding is simpler; batching by count is more efficient.
 
-5. **Inference speed**: Need to benchmark transformer vs MLP for the sequence lengths we're dealing with (~57-59 tokens for 3-5p). Should be fine, but verify with `torch.compile`.
+5. **Replay storage strategy**: Currently Option A — the replay buffer stores compact state + phase id + enumerated legal ids + sparse policy/value targets, and re-runs `get_token_data_batch` at training time. Option B (pre-extracted token buffers) is not planned at current buffer sizes.
 
-6. **Head dispatch**: The forward pass has 8 phase-specific dispatch paths. The current implementation uses a full ACQUISITION pair head plus direct per-corp IPO readout. Need to keep mixed-phase batches efficient despite the padded `(B, 14977)` output interface.
+6. **Inference speed**: Validated via self-play throughput on CPU + ROCm; per-layer `F.scaled_dot_product_attention` fuses cleanly under `torch.compile` with `mark_unbacked` applied to each per-phase row-index tensor so recompile counts stay bounded.
 
 ## Implementation Phases
 
-### Phase 1: Compact state + token extraction (core/)
-- Redesign `GameState` as a single compact array (no visible/hidden split) — **done in `09e5048`** (`core/state.{pxd,pyx}` reduced to structural primitives + entity-handle delegation; player block now contains all per-player tracking incl. share buys/sells).
-- Delete one-hot encoding, normalization-on-write, entity duplication — **done in `09e5048`**.
-- Reduce `core/data.{pxd,pyx}` to pure data + constants — **done.** All field-level accessors removed; the file exposes only the static arrays (company/corp/market/CoO/par tables, synergy matrix), the shared enums (`GameConstants`, `GamePhases`, `CorpIndices`), and the normalization divisors used by token extraction. Computational helpers that used to live here (synergy aggregation, required stars, cost-of-ownership lookup, par-price validity) now live as private cdef functions in the module that uses them.
-- Update entity handles (Player, Corp, Company, FI, Market, Deck, TurnState) for the new offset layout — **done.** Every handle is fully stateless: no per-instance offset cache, no `initialize()` step, no normalization-on-read. Each accessor reads its slot inline from the module-level `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` constants, so the singletons in `PLAYERS` / `CORPS` / `COMPANIES` are reused with any `GameState` at any player count. Company ownership is read from the shared `company_locations` / `company_owner_ids` arrays — the per-player and per-corp `owned_companies` bitmaps are gone.
-- Implement `get_token_data()` in Cython — fills eval buffer from compact state. **Pending** — this is the next chunk of Phase 1 work.
-- Target: 3p only
+### Phase 1: Compact state + token extraction (core/) ✅
+- Redesign `GameState` as a single compact `int16` array (no visible/hidden split) — **done.** `core/state.{pxd,pyx}` reduced to structural primitives + entity-handle delegation; player block now contains all per-player tracking incl. share buys/sells/has_passed.
+- Delete one-hot encoding, normalization-on-write, entity duplication — **done.**
+- Reduce `core/data.{pxd,pyx}` to pure data + constants — **done.** All field-level accessors removed; the file exposes only the static arrays (company/corp/market/CoO/par tables, synergy matrix), the shared enums (`GameConstants`, `GamePhases`, `DecisionPhase`, `CorpIndices`, `ActionSize`), and the normalization divisors used by token extraction. Computational helpers that used to live here (synergy aggregation, required stars, cost-of-ownership lookup, par-price validity) now live as private cdef functions in the entity that uses them.
+- Update entity handles (Player, Corp, Company, FI, Market, Deck, TurnState) for the new offset layout — **done.** Every handle is fully stateless: no per-instance offset cache, no `initialize()` step, no normalization-on-read. Each accessor reads its slot inline from the module-level `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` / `COMPANY_OFFSETS` / `DECK_OFFSETS` / `FI_OFFSETS` constants, so the singletons in `PLAYERS` / `CORPS` / `COMPANIES` are reused with any `GameState` at any player count. Company ownership is read from the shared `company_locations` / `company_owner_ids` arrays — the per-player and per-corp `owned_companies` bitmaps are gone.
+- Implement `get_token_data()` in Cython — **done.** `core/token_data.{pyx,pxd}` fills a `(num_players + 54, 97)` float32 memoryview inside a single nogil block, with a batched `get_token_data_batch` variant that amortizes per-state Python dispatch via `GameState.rebind`. `TokenDataSize.TOKEN_DIM` is the single source of truth for the padded width shared with `nn/transformer.py`.
 
 ### Phase 2: Action space refactor (core/actions.pyx) ✅
 - **Done.** Per-phase action indices, company-indexed auctions/closes, full ACQUISITION head, merged IPO.
 - 8 decision phases, all `_enumerate_*` helpers implemented with real mask logic.
 - Deterministic enumeration order, `MAX_LEGAL_ACTIONS=256` overflow asserts.
+- Import-time roundtrip assert in `core/actions.pyx` catches drift between `encode_*` arithmetic and the `ActionSize` enum in `core/data.pxd`.
 
 ### Phase 2b: Driver + phase handlers (core/driver.pyx, phases/*.pyx) ✅
-- **Done.** `core/driver.{pyx,pxd}` rewritten: game-loop dispatch, forced-action auto-chain, all 8 decision phases + 3 automated phases wired.
+- **Done.** `core/driver.{pyx,pxd}` rewritten: game-loop dispatch, forced-action auto-chain (single legal action ⇒ auto-dispatch), all 8 decision phases + 3 automated phases wired. `step_mode` flag pauses after each decision point for tests / replay tooling.
 - All 11 phase handlers in `phases/` implemented: invest, bid, acquisition, acq_offer, closing, dividends, income, issue, ipo, wrap_up, end_card.
 - Cross-president acquisition offers supported via `acq_same_president` flag + `PHASE_ACQ_OFFER`.
+- Optional `history` list records `(state._array.copy(), phase_id, action_id)` tuples before each mutation — used by replay / test scaffolding.
 
 ### Phase 3: Transformer model (nn/) ✅
-- **Done.** See `nn/transformer.py` (~2.3M params, `TransformerConfig` defaults)
-- Pre-RMSNorm transformer blocks with SwiGLU FFN
-- Type-specific projections (uniform `token_dim` input), entity-readout heads
-- Full ACQUISITION pair head and direct per-corp IPO head
-- Smoke test passes: all 8 phases produce correct shapes, values in [-1,1]
-- Target: 3p only, all dimensions parameterized via `TransformerConfig`
+- **Done.** See `nn/transformer.py` (~2.37M params at `TransformerConfig()` defaults).
+- Pre-RMSNorm transformer blocks with SwiGLU FFN; attention via packed QKV + `F.scaled_dot_product_attention` (traces cleanly under `torch.compile`, unlike `nn.MultiheadAttention`).
+- Type-specific projections (uniform `token_dim=97` input), entity-readout heads for every decision phase.
+- Full ACQUISITION pair head (corp × company × 52) and direct per-corp IPO head (merged IPO+PAR).
+- Per-phase head dispatch with two paths: the fast `phase_indices` path (`index_select` / `index_copy_`, no H↔D sync) used by the evaluator and eval server, and a boolean-mask fallback retained for trainer + tests where the sync cost is negligible.
+- `forward(x, phase_ids, action_ids, n_legals, phase_indices=None)` returns `(policy_logits, values)` where `policy_logits` has shape `(B, K_MAX)` gathered against each row's legal-action slice — the trainer, evaluator, and eval server never allocate anything as wide as the full 14,977-action ACQUISITION output.
+- Smoke test covers all 8 phases: shapes, finite logits inside the legal slice, `-1e9` tail, values ∈ [-1, 1].
 
-### Phase 4: Evaluator integration (mcts/evaluator.py)
-- Eval buffers: `(batch, num_tokens, token_dim)` in shared memory
-- Remove state rotation, remove value un-rotation
-- Verify MCTS works end-to-end
-- **Blocked on:** `get_token_data()` (Phase 1 pending item) + MCTS rewrite
+### Phase 4: Evaluator integration (mcts/evaluator.py) ✅
+- **Done.** `BaseEvaluator` + `NNEvaluator` (in-process) + `RemoteEvaluator` (shared-mem IPC, in `train/eval_server.py`) speak token buffers end-to-end.
+- Preallocated pinned-host + device scratch tensors (tokens / phase_ids / action_ids / n_legals), grown in powers of two, aliased on CPU devices so no H→D copy runs locally.
+- `fill_token_buffer_batch` routes to `get_token_data_batch` for a single Cython entry per batch.
+- No state rotation, no value un-rotation — the model emits values in canonical player order directly from player tokens.
+- GPU-side gather + softmax live inside the model itself; callers receive sparse `(n_legal,)` priors over the enumerated legal list plus canonical-order values.
+- MCTS search (`mcts/search.py`), persistent-tree state, and subtree reuse rebuilt against the sparse token/phase contract; replay buffer (`train/replay_buffer.py`) stores per-sample compact state + phase id + legal-id list + sparse policy target + canonical value target.
 
-### Phase 5: Training loop updates (train/)
-- Update replay buffer for per-phase action indices + token data storage
-- Update shared memory buffer layout
-- Verify self-play + training loop works
-- **Blocked on:** Phase 4
+### Phase 5: Training loop updates (train/) ✅
+- **Done.** `train/main.py`, `train/self_play.py`, `train/eval_server.py`, `train/trainer.py`, `train/replay_buffer.py`, `train/analyze_game.py`, `train/tournament.py` all ported to sparse / token / per-phase-id contract.
+- Shared-memory eval server carries token buffers, phase ids, sparse legal ids, and n_legals per leaf; GPU gathers logits against the sparse list and returns `(n_legal, num_players)` priors+values slices to each worker.
+- Self-play + training end-to-end runs: eval-server workers, mixed-phase batches, replay buffer ingest, and policy-CE + value-MSE training all validated on 3p.
+- State rotation, dense legal masks, and the old `(B, dense_action_size)` logit tensors are fully removed from the pipeline.
 
-### Phase 6: Multi-player-count training (3-5p)
-- Variable player token count (57-59 tokens) + attention masking or pad-to-max
-- Single model for 3-5p
-- Batching strategy for mixed player counts
+### Phase 6: Multi-player-count training (3-5p) — pending
+- Variable player token count (57–59 tokens); choose between pad-to-max+attention-mask and bucket-by-player-count.
+- Single model for 3-5p; requires generalizing the `TransformerConfig.num_players` check in `NNEvaluator.__init__` and the per-player masking in the value head consumer.
+- Self-play orchestration needs per-worker player-count selection.

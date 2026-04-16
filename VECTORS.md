@@ -1,6 +1,6 @@
 # Cython Core Vector Documentation
 
-This document describes the in-memory game state layout. The state is the engine's only authoritative game data; per-token features for the neural network are produced lazily by `get_token_data()` (a separate path, still to be written as part of the transformer refactor — see `CLAUDE.md`).
+This document describes the in-memory game state layout. The state is the engine's only authoritative game data; per-token features for the neural network are produced lazily by `get_token_data()` in `core/token_data.{pyx,pxd}` — see [token-data.md](token-data.md) for the per-token feature spec and `transformers.md` for how the model consumes them.
 
 ---
 
@@ -14,13 +14,13 @@ The engine supports 2–6 players. Training/NN/MCTS targets **3–5p only**.
 
 | Players | total_size | player_stride | corp_stride | turn_size |
 |---------|-----------|---------------|-------------|-----------|
-| 2       | 431       | 30            | 16          | 69        |
-| 3       | 461       | 30            | 16          | 69        |
-| 4       | 491       | 30            | 16          | 69        |
-| 5       | 521       | 30            | 16          | 69        |
-| 6       | 551       | 30            | 16          | 69        |
+| 2       | 439       | 30            | 17          | 69        |
+| 3       | 469       | 30            | 17          | 69        |
+| 4       | 499       | 30            | 17          | 69        |
+| 5       | 529       | 30            | 17          | 69        |
+| 6       | 559       | 30            | 17          | 69        |
 
-`player_stride`, `corp_stride`, and `turn_size` are all fixed across player counts. The players section is the **only** part of the buffer whose size depends on `num_players`, so `total_size = 371 + 30 * num_players` — the constant 371 is the fixed prefix, and only the trailing players section grows.
+`player_stride`, `corp_stride`, and `turn_size` are all fixed across player counts. The players section is the **only** part of the buffer whose size depends on `num_players`, so `total_size = 379 + 30 * num_players` — the constant 379 is the fixed prefix, and only the trailing players section grows.
 
 Layout offsets are computed once at module load and exposed as Cython `cdef` structs at module scope on `core.state`:
 
@@ -47,10 +47,10 @@ Cython code reads them directly via `from core.state cimport LAYOUT, TURN_OFFSET
 | FI        | 0   | 2   | Foreign investor cash, income |
 | Companies | 2   | 108 | Three parallel 36-slot sub-arrays: `incomes`, `locations`, `owner_ids` (see [Companies section](#companies-section)) |
 | Market    | 110 | 27  | Per-price availability flags |
-| Corps     | 137 | 128 | Per-corp blocks: `corp_stride (16) * 8` (see [Corp block](#corp-block)) |
-| Turn      | 265 | 69  | Turn-scoped state including game-wide metadata, active corp/company selectors, plus two internal cache-dirty masks (see [Turn block](#turn-block)) |
-| Deck      | 334 | 37  | `top` (1) + `order` (36) — see [Deck section](#deck-section) |
-| Players   | 371 | `player_stride * num_players` | Per-player blocks (see [Player block](#player-block)) |
+| Corps     | 137 | 136 | Per-corp blocks: `corp_stride (17) * 8` (see [Corp block](#corp-block)) |
+| Turn      | 273 | 69  | Turn-scoped state including game-wide metadata, active corp/company selectors, plus two internal cache-dirty masks (see [Turn block](#turn-block)) |
+| Deck      | 342 | 37  | `top` (1) + `order` (36) — see [Deck section](#deck-section) |
+| Players   | 379 | `player_stride * num_players` | Per-player blocks (see [Player block](#player-block)) |
 
 Every offset above is **constant across all player counts** — the players section lives at the end of the buffer for exactly this reason. The "Start offset" column is identical for every player count up to and including the players section start.
 
@@ -119,7 +119,7 @@ State invariant: index `0` (`$0`, bankruptcy) and index `26` (`$75`, max price) 
 
 ## Corp block
 
-Stride: **17**. Corp `c` lives at `corps_offset + c * 17`. Field offsets via `core.state.get_corp_fields()` (`CorpFields` namedtuple) for Python, or `from core.state cimport CORP_FIELDS` for Cython.
+Stride: **17**. Corp `c` lives at `corps_offset + c * 17`. Field offsets via `core.state.get_corp_fields()` (`CorpFields` namedtuple) for Python, or `from core.state cimport CORP_FIELDS` for Cython. `pending_price_move` is the last slot; it is cached behind the corp-cache dirty bit (see [Derived corp cache](#derived-corp-cache)).
 
 | Relative offset | Field | Notes |
 |----------------|-------|-------|
@@ -343,7 +343,9 @@ IPO:
 
 ### Sparse legal-action interface
 
-Legal-action enumeration is sparse: `enumerate_legal_actions(state, phase_id, uint16_t* ids)` writes deterministic phase-local ids into the buffer and returns the count. Per-phase helpers live in `core/actions.pyx` as `_enumerate_*`. **Right now these helpers are all empty stubs** (tracked as rss-az-848a); the rule-level legality logic needs to be ported out of the old `actions-old.pyx` on `main` into these helpers as part of the refactor. Until that lands, `enumerate_legal_actions` returns 0 for every phase and `get_forced_action` always returns `(-1, False)`.
+Legal-action enumeration is sparse: `enumerate_legal_actions(state, uint16_t* ids)` reads the decision phase from `state` (via `get_decision_phase`), writes deterministic phase-local ids into the buffer, and returns the count. Per-phase helpers live in `core/actions.pyx` as `_enumerate_*`; they are all implemented and backed by the phase-level legality rules in `phases/*.pyx`. Automated/terminal engine phases (WRAP_UP / INCOME / END_CARD / GAME_OVER) map to decision phase `-1` and return 0 — the driver fast-forwards through those without consulting the enumerator.
+
+Forced-action detection (single legal action ⇒ the decision is fake, and the driver auto-dispatches it) is handled inside `core/driver.pyx::_forced_action_or_negative_one` rather than exposed as a public helper — callers should enumerate and inspect `count == 1` themselves if they need the distinction.
 
 Python-accessible wrappers (for tests + diagnostics):
 
@@ -351,8 +353,8 @@ Python-accessible wrappers (for tests + diagnostics):
 |----------|---------|
 | `get_phase_action_size(phase_id)` | Per-phase action count from `core.data.PHASE_ACTION_SIZES` |
 | `decode_action_py(phase_id, action_id)` | Tuple `(phase, action_type, corp_id, company_id, amount)` |
-| `enumerate_legal_actions_py(state, phase_id=-1)` | Tuple `(phase_id, uint16 ndarray of legal ids)` — empty until enumerators land |
-| `get_forced_action_py(state)` | Tuple `(action_id, found)` — `(-1, False)` until enumerators land |
+| `get_decision_phase_py(state)` | Decision-phase id (0-7) or `-1` for automated/terminal engine phases |
+| `enumerate_legal_actions_py(state, action_ids)` | Number of legal actions written into the caller-provided `uint16` ndarray (which must hold ≥ `MAX_LEGAL_ACTIONS = 256` slots) |
 
 ### ActionType enum (decoded semantics)
 
@@ -367,7 +369,7 @@ Python-accessible wrappers (for tests + diagnostics):
 | 4  | `ACTION_RAISE`         | BID        | Raise current bid by (face + 1 + `amount`) |
 | 5  | `ACTION_ACQ_PRICE`     | ACQUISITION| `corp_id` acquires `company_id` at low_price + `amount` |
 | 6  | `ACTION_ACQ_FI_BUY`    | ACQUISITION| `corp_id` buys `company_id` from FI at fixed price (OS=face, others=high) |
-| 7  | `ACTION_ACQ_OFFER_BUY` | ACQ_OFFER  | Preempting corp takes the offered company |
+| 7  | `ACTION_ACQ_OFFER_ACCEPT` | ACQ_OFFER  | Preempting corp / contested owner accepts the offered acquisition |
 | 8  | `ACTION_CLOSE`         | CLOSING    | Close `company_id` |
 | 9  | `ACTION_DIVIDEND`      | DIVIDENDS  | Pay dividend of `amount` per share |
 | 10 | `ACTION_ISSUE`         | ISSUE      | Issue one share |
@@ -380,24 +382,27 @@ Python-accessible wrappers (for tests + diagnostics):
 ### Python Access
 
 ```python
+import numpy as np
 from core.state import GameState, get_layout, get_player_fields
 from core.data import PHASE_ACTION_SIZES
 from core.actions import (
     decode_action_py,
     enumerate_legal_actions_py,
+    get_decision_phase_py,
     get_phase_action_size,
+    MAX_LEGAL_ACTIONS_PY,
 )
 from entities.player import PLAYERS
 
 # State buffer
 state = GameState(num_players=3)
 state.initialize_game(3, seed=42)
-print(f"buffer length = {len(state._array)}")  # 451 for 3p
+print(f"buffer length = {len(state._array)}")  # 469 for 3p
 
 # Layout introspection
 layout = get_layout(3)            # LayoutInfo namedtuple
-print(layout.players_offset)      # 371 (constant across player counts)
-print(layout.total_size)          # 461
+print(layout.players_offset)      # 379 (constant across player counts)
+print(layout.total_size)          # 469
 
 pf = get_player_fields()          # PlayerFields namedtuple
 print(pf.cash, pf.has_passed)     # 0 29
@@ -410,8 +415,12 @@ print(PHASE_ACTION_SIZES)             # [557, 15, 14977, 2, 37, 26, 2, 113]
 print(get_phase_action_size(2))       # 14977 (ACQUISITION)
 print(decode_action_py(0, 0))         # (0, 0, -1, -1, -1) — INVEST pass
 
-# Sparse legal actions (currently returns empty until enumerators land)
-phase_id, legal_ids = enumerate_legal_actions_py(state)
+# Sparse legal actions: caller supplies a uint16 buffer of at least
+# MAX_LEGAL_ACTIONS slots; the call returns the number written.
+phase_id = get_decision_phase_py(state)                       # 0 for INVEST
+buf = np.empty(MAX_LEGAL_ACTIONS_PY, dtype=np.uint16)
+n_legal = enumerate_legal_actions_py(state, buf)
+legal_ids = buf[:n_legal]
 ```
 
 ### Cython Access
