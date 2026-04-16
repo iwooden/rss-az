@@ -551,7 +551,9 @@ class TestMCTSNode:
         assert node.default_value is None
         assert node.visit_counts is None
         assert node.value_sums is None
-        assert node._propagation_saved is None
+        assert node.saved_value_sums is None
+        assert node.saved_mask is None
+        assert node.saved_count == 0
 
     def test_pending_slots_default(self):
         """Per-leaf phase context slots start cleared."""
@@ -1403,9 +1405,9 @@ class TestPropagationLock:
         assert parent.value_sums is not None
         assert root.value_sums is not None
         parent.value_sums[0] = neg_inf
-        _propagate_lock([(root, 0, 0), (parent, 0, 0)], neg_inf)
+        _propagate_lock([(root, 0, 0), (parent, 0, 0)])
 
-        assert root._propagation_saved is None
+        assert root.saved_count == 0
         assert not np.isinf(root.value_sums[0, 0])
 
     def test_propagation_when_all_siblings_locked(self):
@@ -1418,16 +1420,18 @@ class TestPropagationLock:
         root_q_before = root.value_sums[0].copy()
 
         parent.value_sums[0] = neg_inf
-        _propagate_lock([(root, 0, 0), (parent, 0, 0)], neg_inf)
-        assert root._propagation_saved is None  # 1 of 2 locked
+        _propagate_lock([(root, 0, 0), (parent, 0, 0)])
+        assert root.saved_count == 0  # 1 of 2 locked
 
         parent.value_sums[1] = neg_inf
-        _propagate_lock([(root, 0, 0), (parent, 1, 1)], neg_inf)
+        _propagate_lock([(root, 0, 0), (parent, 1, 1)])
 
-        assert root._propagation_saved is not None
-        assert 0 in root._propagation_saved
+        assert root.saved_count == 1
+        assert root.saved_mask is not None
+        assert root.saved_value_sums is not None
+        assert root.saved_mask[0] == 1
         np.testing.assert_array_equal(
-            root._propagation_saved[0], root_q_before,
+            root.saved_value_sums[0], root_q_before,
         )
         assert root.value_sums[0, 0] == -np.inf
 
@@ -1443,18 +1447,18 @@ class TestPropagationLock:
         assert root.value_sums is not None
         parent.value_sums[0] = neg_inf
         _propagate_lock(
-            [(root, 0, 0), (mid, 0, 0), (parent, 0, 0)], neg_inf,
+            [(root, 0, 0), (mid, 0, 0), (parent, 0, 0)],
         )
-        assert mid._propagation_saved is None
+        assert mid.saved_count == 0
 
         parent.value_sums[1] = neg_inf
         _propagate_lock(
-            [(root, 0, 0), (mid, 0, 0), (parent, 1, 1)], neg_inf,
+            [(root, 0, 0), (mid, 0, 0), (parent, 1, 1)],
         )
-        assert mid._propagation_saved is not None
-        assert 0 in mid._propagation_saved
-        assert root._propagation_saved is not None
-        assert 0 in root._propagation_saved
+        assert mid.saved_count == 1
+        assert mid.saved_mask is not None and mid.saved_mask[0] == 1
+        assert root.saved_count == 1
+        assert root.saved_mask is not None and root.saved_mask[0] == 1
         assert root.value_sums[0, 0] == -np.inf
 
     def test_unlock_restores_values(self):
@@ -1475,9 +1479,9 @@ class TestPropagationLock:
         path_a = [(root, 0, 0), (parent, 0, 0)]
         path_b = [(root, 0, 0), (parent, 1, 1)]
         parent.value_sums[0] = neg_inf
-        _propagate_lock(path_a, neg_inf)
+        _propagate_lock(path_a)
         parent.value_sums[1] = neg_inf
-        _propagate_lock(path_b, neg_inf)
+        _propagate_lock(path_b)
         assert root.value_sums[0, 0] == -np.inf
 
         # Unlock A: restore parent edge, then the propagation unlock
@@ -1485,7 +1489,7 @@ class TestPropagationLock:
         _propagate_unlock(path_a)
 
         np.testing.assert_array_equal(root.value_sums[0], root_q_before)
-        assert root._propagation_saved is None
+        assert root.saved_count == 0
         # Parent B still locked (not restored by A's unlock)
         assert parent.value_sums[1, 0] == -np.inf
 
@@ -1516,7 +1520,7 @@ class TestPropagationLock:
             for p in paths:
                 aidx = p[-1][2]
                 parent.value_sums[aidx] = neg_inf
-                _propagate_lock(p, neg_inf)
+                _propagate_lock(p)
             assert root.value_sums[0, 0] == -np.inf
 
             for i in order:
@@ -1526,7 +1530,7 @@ class TestPropagationLock:
             np.testing.assert_array_equal(
                 root.value_sums[0], root_q_orig,
             )
-            assert root._propagation_saved is None
+            assert root.saved_count == 0
             for j in range(2):
                 np.testing.assert_array_equal(
                     parent.value_sums[j], parent_qs[j],
@@ -1542,7 +1546,7 @@ class TestPropagationLock:
         stack = [root]
         while stack:
             node = stack.pop()
-            assert node._propagation_saved is None
+            assert node.saved_count == 0
             stack.extend(node.children.values())
 
 

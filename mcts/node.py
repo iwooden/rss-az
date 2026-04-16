@@ -43,6 +43,15 @@ class MCTSNode:
         value_sums: Per-action cumulative values, shape (N, num_players).
             Initialized to default_value per row (FPU). On the first real
             visit, _backup replaces (not adds to) this FPU value.
+        saved_value_sums: Backup storage for propagation-locked edges,
+            shape (N, num_players) float32. Lazily allocated the first
+            time an edge at this node becomes propagation-locked.
+        saved_mask: Per-edge flag (1 iff that edge is propagation-locked
+            and its original Q is stored in saved_value_sums), shape (N,)
+            uint8. Lazily allocated alongside saved_value_sums.
+        saved_count: Number of edges currently propagation-locked at this
+            node. Fast early-exit check in propagate_unlock without
+            touching the mask array.
     """
 
     __slots__ = (
@@ -60,7 +69,9 @@ class MCTSNode:
         "default_value",
         "visit_counts",
         "value_sums",
-        "_propagation_saved",
+        "saved_value_sums",
+        "saved_mask",
+        "saved_count",
     )
 
     def __init__(
@@ -83,7 +94,9 @@ class MCTSNode:
         self.default_value: np.ndarray | None = None
         self.visit_counts: np.ndarray | None = None
         self.value_sums: np.ndarray | None = None
-        self._propagation_saved: dict[int, np.ndarray] | None = None
+        self.saved_value_sums: np.ndarray | None = None
+        self.saved_mask: np.ndarray | None = None
+        self.saved_count: int = 0
 
     def mean_value(self, player_id: int) -> float:
         """Return the mean value estimate for the given player.

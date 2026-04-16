@@ -5,7 +5,7 @@ eliminating numpy/torch dispatch overhead for small arrays where the
 overhead dominates actual computation.
 """
 
-from libc.math cimport sqrtf, isinf
+from libc.math cimport sqrtf, isinf, INFINITY
 from libc.stdint cimport int8_t, int16_t, uint16_t, uint64_t
 from libc.string cimport memcpy
 
@@ -303,6 +303,107 @@ cdef bint _all_col0_neg_inf(const float[:, :] value_sums) noexcept nogil:
 def all_col0_neg_inf(const float[:, :] value_sums):
     """Python-callable wrapper around _all_col0_neg_inf."""
     return _all_col0_neg_inf(value_sums) != 0
+
+
+cdef void _save_and_lock_row(
+    float[:, :] vs, float[:, :] saved_vs, unsigned char[:] saved_mask,
+    int aidx, int npl,
+) noexcept nogil:
+    """Copy vs[aidx] into saved_vs[aidx], overwrite vs[aidx] with -inf, mark locked."""
+    cdef int k
+    memcpy(&saved_vs[aidx, 0], &vs[aidx, 0], npl * <int>sizeof(float))
+    for k in range(npl):
+        vs[aidx, k] = -INFINITY
+    saved_mask[aidx] = 1
+
+
+cdef void _restore_row(
+    float[:, :] vs, float[:, :] saved_vs, unsigned char[:] saved_mask,
+    int aidx, int npl,
+) noexcept nogil:
+    """Copy saved_vs[aidx] back into vs[aidx], clear mask bit."""
+    memcpy(&vs[aidx, 0], &saved_vs[aidx, 0], npl * <int>sizeof(float))
+    saved_mask[aidx] = 0
+
+
+def propagate_lock(list path):
+    """Walk the selection path from leaf upward, locking ancestors whose
+    outgoing edges are all now locked (via leaf-lock or prior propagation).
+
+    Drop-in replacement for search.py::_propagate_lock. The saved Q row and
+    the lock flag for each propagation-locked edge live in two parallel
+    arrays on the ancestor MCTSNode (``saved_value_sums``, ``saved_mask``),
+    lazily allocated on first use. The inner save/restore is a nogil memcpy
+    plus a small loop — no Python dict churn in the hot path.
+
+    Args:
+        path: List of (parent_node, action, array_idx) tuples describing
+            the selection path whose leaf was just locked. Entries are
+            processed from ``path[-1]`` up to ``path[0]``.
+    """
+    cdef int path_len = len(path)
+    cdef int j, aidx, n_rows, npl
+    cdef float[:, :] vs_j
+    cdef float[:, :] vs_anc
+    cdef float[:, :] saved_vs
+    cdef unsigned char[:] saved_mask
+
+    for j in range(path_len - 1, -1, -1):
+        node_j = path[j][0]
+        vs_j = node_j.value_sums
+        if not _all_col0_neg_inf(vs_j):
+            return
+        if j == 0:
+            return  # root fully locked — can't propagate further
+        ancestor = path[j - 1][0]
+        aidx = <int>path[j - 1][2]
+        vs_anc = ancestor.value_sums
+        npl = vs_anc.shape[1]
+
+        if ancestor.saved_mask is None:
+            n_rows = vs_anc.shape[0]
+            ancestor.saved_value_sums = np.empty((n_rows, npl), dtype=np.float32)
+            ancestor.saved_mask = np.zeros(n_rows, dtype=np.uint8)
+        saved_mask = ancestor.saved_mask
+        if saved_mask[aidx] == 0:
+            saved_vs = ancestor.saved_value_sums
+            _save_and_lock_row(vs_anc, saved_vs, saved_mask, aidx, npl)
+            ancestor.saved_count = ancestor.saved_count + 1
+
+
+def propagate_unlock(list path):
+    """Walk the selection path from leaf's parent upward, restoring any
+    propagation-locked ancestor edges.
+
+    Drop-in replacement for search.py::_propagate_unlock. Order-independent:
+    the first unlock in a fully-locked subtree restores the full ancestor
+    chain; later unlocks on sibling paths find those edges already restored
+    and stop immediately.
+
+    Args:
+        path: List of (parent_node, action, array_idx) tuples — same path
+            layout produced at selection time. Entries are processed from
+            ``path[-2]`` up to ``path[0]``.
+    """
+    cdef int path_len = len(path)
+    cdef int j, aidx, npl
+    cdef float[:, :] vs
+    cdef float[:, :] saved_vs
+    cdef unsigned char[:] saved_mask
+
+    for j in range(path_len - 2, -1, -1):
+        node_j = path[j][0]
+        if node_j.saved_count == 0:
+            return
+        aidx = <int>path[j][2]
+        saved_mask = node_j.saved_mask
+        if saved_mask[aidx] == 0:
+            return
+        vs = node_j.value_sums
+        saved_vs = node_j.saved_value_sums
+        npl = vs.shape[1]
+        _restore_row(vs, saved_vs, saved_mask, aidx, npl)
+        node_j.saved_count = node_j.saved_count - 1
 
 
 def virtual_backup(root, child, int array_idx):

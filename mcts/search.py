@@ -30,6 +30,8 @@ from mcts.mcts_core import (
     virtual_backup as _virtual_backup,
     all_col0_neg_inf as _all_col0_neg_inf,
     descend_path as _descend_path,
+    propagate_lock as _propagate_lock,
+    propagate_unlock as _propagate_unlock,
     DESCEND_NEED_NEW_CHILD,
     DESCEND_VIRTUAL_BACKUP,
     DESCEND_EXISTING_LEAF,
@@ -147,60 +149,6 @@ def _add_dirichlet_noise(
 
 # Type alias for a selection path: list of (parent_node, action, array_idx)
 _Path = list[tuple[MCTSNode, int, int]]
-
-
-def _propagate_lock(path: _Path, neg_inf_row: np.ndarray) -> None:
-    """Propagate leaf lock up the tree when all children at a node are locked.
-
-    After locking a leaf's parent edge, checks if all sibling edges are also
-    locked (-inf). If so, saves the grandparent's edge Q values and locks
-    that edge too, recursively up to the root.
-
-    Saved values are stored on each ancestor node's _propagation_saved dict,
-    keyed by array_idx. Any leaf's recursive unlock can restore them
-    (order-independent).
-    """
-    for j in range(len(path) - 1, -1, -1):
-        node_j = path[j][0]
-        assert node_j.value_sums is not None
-        # Check if ALL outgoing edges from this node are locked
-        if not _all_col0_neg_inf(node_j.value_sums):
-            return
-        if j == 0:
-            return  # root is fully locked, can't propagate further
-        # Lock the edge from ancestor to this node
-        ancestor = path[j - 1][0]
-        aidx = path[j - 1][2]
-        assert ancestor.value_sums is not None
-        if ancestor._propagation_saved is None:
-            ancestor._propagation_saved = {}
-        if aidx not in ancestor._propagation_saved:
-            ancestor._propagation_saved[aidx] = ancestor.value_sums[aidx].copy()
-            ancestor.value_sums[aidx] = neg_inf_row
-
-
-def _propagate_unlock(path: _Path) -> None:
-    """Recursively unlock propagation-locked ancestor edges.
-
-    After restoring a leaf's direct parent edge, walks up the path checking
-    for propagation-locked edges (stored in _propagation_saved). Restores
-    each one found, stopping at the first non-propagation-locked edge.
-
-    Order-independent: the first unlock in a fully-locked subtree restores
-    the full ancestor chain; subsequent unlocks find them already restored.
-    """
-    for j in range(len(path) - 2, -1, -1):
-        node_j = path[j][0]
-        if node_j._propagation_saved is None:
-            return
-        aidx_j = path[j][2]
-        saved_q = node_j._propagation_saved.pop(aidx_j, None)
-        if saved_q is None:
-            return
-        assert node_j.value_sums is not None
-        node_j.value_sums[aidx_j] = saved_q
-        if not node_j._propagation_saved:
-            node_j._propagation_saved = None
 
 
 def run_search(
@@ -445,7 +393,7 @@ def run_search(
             parent.value_sums[parent_aidx] = neg_inf_row
 
             # Propagate lock up when all sibling edges at a node are locked
-            _propagate_lock(path, neg_inf_row)
+            _propagate_lock(path)
 
             pending.append((path, node))
             pending_ids.add(nid)
