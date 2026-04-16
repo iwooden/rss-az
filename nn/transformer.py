@@ -348,6 +348,7 @@ class RSSTransformerNet(nn.Module):
     def _policy_forward(
         self, tokens: torch.Tensor, phase_ids: torch.Tensor,
         action_ids: torch.Tensor, n_legals: torch.Tensor,
+        phase_indices: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         """Route each batch element to its phase-specific policy head and
         gather the per-row legal slice in one shot.
@@ -360,12 +361,23 @@ class RSSTransformerNet(nn.Module):
 
         Args:
             tokens: (batch, num_tokens, d_model) final token representations.
-            phase_ids: (batch,) int tensor, phase index 0-7.
+            phase_ids: (batch,) int tensor, phase index 0-7. Ignored when
+                ``phase_indices`` is provided; required otherwise.
             action_ids: (batch, K_MAX) int tensor, phase-local legal action ids
                 per row. Unused tail positions ([n_legals[i]:]) should be
                 in-range (e.g. zero) — they are read by ``gather`` but masked
                 out before softmax.
             n_legals: (batch,) int tensor, legal action count per row.
+            phase_indices: Optional list of ``NUM_PHASES`` int64 tensors on
+                ``tokens.device``. ``phase_indices[p]`` holds the row indices
+                whose ``phase_id == p``. When provided, dispatch uses
+                ``index_select`` / ``index_copy_`` instead of boolean masking,
+                which avoids the per-iteration H←D sync that boolean indexing
+                forces (it has to read the mask's true-count to size the
+                masked tensor). Eval/self-play hot paths build these on CPU
+                from the pinned phase_ids buffer before the H→D copy and pass
+                them in. Trainer and tests leave it ``None`` and pay the sync
+                cost on the legacy path.
 
         Returns:
             (batch, K_MAX) float tensor of gathered logits, with positions
@@ -377,18 +389,30 @@ class RSSTransformerNet(nn.Module):
 
         # No `if not mask.any(): continue` early-exit: that path forces a
         # GPU→CPU sync (8 per forward) which dominates eval latency on
-        # CPU-bound workloads like analyze_game. Empty masks flow cleanly
-        # through linear / cat / gather / masked_scatter as no-op (0,*)
-        # ops, so we just dispatch all 8 phases unconditionally and let
-        # the GPU pipeline absorb the extra small launches.
-        for phase_id in range(NUM_PHASES):
-            mask = phase_ids == phase_id
-            phase_logits = self._dispatch[phase_id](tokens[mask])  # (n, phase_width)
-            # Gather wants int64; .long() is a no-op if already long.
-            sub_ids = action_ids[mask].long()                      # (n, K)
-            gathered = phase_logits.gather(1, sub_ids)             # (n, K)
-            invalid = self._k_range[None, :] >= n_legals[mask][:, None]
-            out[mask] = gathered.masked_fill(invalid, -1e9)
+        # CPU-bound workloads like analyze_game. Empty masks/indices flow
+        # cleanly through linear / cat / gather / masked_scatter as no-op
+        # (0,*) ops, so we just dispatch all 8 phases unconditionally and
+        # let the GPU pipeline absorb the extra small launches.
+        if phase_indices is not None:
+            for phase_id in range(NUM_PHASES):
+                idx = phase_indices[phase_id]
+                phase_logits = self._dispatch[phase_id](tokens.index_select(0, idx))
+                sub_ids = action_ids.index_select(0, idx).long()
+                gathered = phase_logits.gather(1, sub_ids)
+                invalid = self._k_range[None, :] >= n_legals.index_select(0, idx)[:, None]
+                out.index_copy_(0, idx, gathered.masked_fill(invalid, -1e9))
+        else:
+            # Legacy boolean-mask path. Each `tokens[mask]` / `out[mask] = ...`
+            # forces a host sync because the masked size is data-dependent.
+            # Retained for trainer + test paths where the sync cost is
+            # acceptable (training time is dominated by self-play).
+            for phase_id in range(NUM_PHASES):
+                mask = phase_ids == phase_id
+                phase_logits = self._dispatch[phase_id](tokens[mask])
+                sub_ids = action_ids[mask].long()
+                gathered = phase_logits.gather(1, sub_ids)
+                invalid = self._k_range[None, :] >= n_legals[mask][:, None]
+                out[mask] = gathered.masked_fill(invalid, -1e9)
 
         return out
 
@@ -399,6 +423,7 @@ class RSSTransformerNet(nn.Module):
     def forward(
         self, x: torch.Tensor, phase_ids: torch.Tensor,
         action_ids: torch.Tensor, n_legals: torch.Tensor,
+        phase_indices: list[torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the transformer.
 
@@ -408,6 +433,9 @@ class RSSTransformerNet(nn.Module):
             action_ids: (batch, K_MAX) int tensor, phase-local legal action
                 ids per row. Unused tail ([n_legals[i]:]) must be in-range.
             n_legals: (batch,) int tensor, legal action count per row.
+            phase_indices: Optional ``NUM_PHASES``-length list of int64 row
+                indices per phase; see ``_policy_forward`` for details. When
+                supplied the policy gather avoids a per-batch H←D sync.
 
         Returns:
             policy_logits: (batch, K_MAX) gathered logits over the per-row
@@ -421,7 +449,9 @@ class RSSTransformerNet(nn.Module):
             tokens = block(tokens)
         tokens = self.final_norm(tokens)
 
-        policy_logits = self._policy_forward(tokens, phase_ids, action_ids, n_legals)
+        policy_logits = self._policy_forward(
+            tokens, phase_ids, action_ids, n_legals, phase_indices,
+        )
         values = self.value_head(tokens[:, self._player_slice]).squeeze(-1)  # (B, N)
         return policy_logits, values
 

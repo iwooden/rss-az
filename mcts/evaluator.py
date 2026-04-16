@@ -26,6 +26,7 @@ from core.actions import (
     MAX_LEGAL_ACTIONS_PY,
 )
 from entities.player import PLAYERS
+from nn.transformer import NUM_PHASES
 
 K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
@@ -417,15 +418,34 @@ class NNEvaluator(BaseEvaluator):
         softmax and copy back to host.
         """
         self._h2d(n)
+        phase_indices = self._build_phase_indices(n)
 
         with torch.autocast(self.device.type, dtype=self._autocast_dtype,
                             enabled=self._autocast_dtype is not None):
             logits, value_output = self.model(
                 self._tok_d[:n], self._phase_d[:n],
-                self._aid_d[:n], self._nl_d[:n],
+                self._aid_d[:n], self._nl_d[:n], phase_indices,
             )
-            # Softmax inside autocast: the (n, K_MAX) sparse logits stay
-            # in bf16/fp16 until the final f32 copy.
             priors = logits.softmax(dim=1).to(torch.float32)
+            values = value_output.to(torch.float32)
 
-        return priors.cpu().numpy(), value_output.float().cpu().numpy()
+        return priors.cpu().numpy(), values.cpu().numpy()
+
+    def _build_phase_indices(self, n: int) -> list[torch.Tensor]:
+        """Build per-phase int64 row indices on host, async-shipped to device.
+
+        Computed from the already-filled ``_phase_h_np[:n]`` slice. Avoids
+        the per-iteration host sync that boolean indexing inside the model
+        would otherwise force (the masked-tensor size is data-dependent).
+        On CPU device, the returned tensors share memory with the numpy
+        arrays.
+        """
+        phase_view = self._phase_h_np[:n]
+        out: list[torch.Tensor] = []
+        for p in range(NUM_PHASES):
+            idx_np = np.nonzero(phase_view == p)[0].astype(np.int64, copy=False)
+            t = torch.from_numpy(idx_np)
+            if self.device.type == "cuda":
+                t = t.to(self.device, non_blocking=True)
+            out.append(t)
+        return out

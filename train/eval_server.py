@@ -68,6 +68,7 @@ from core.actions import (
 )
 from core.token_data import TokenDataSize, get_num_tokens, get_token_data
 from mcts.evaluator import BaseEvaluator
+from nn.transformer import NUM_PHASES
 from train.profile_stats import EvalClientStats, EvalServerStats
 
 K_MAX = int(MAX_LEGAL_ACTIONS_PY)
@@ -502,6 +503,23 @@ def _eval_server_serve(
         gpu_n_legals[:total_n].copy_(pin_n_legals[:total_n], non_blocking=True)
         # Padded tail [total_n:padded_n] is permanently zero (see allocation).
 
+        # Build per-phase row indices on host so the model's policy gather
+        # can use index_select / index_copy_ instead of boolean masking
+        # (which would force a per-iteration H←D sync — that scatter
+        # dominated analyze_game profiles before this change). Padded
+        # rows [total_n:padded_n] have phase_id=0 on the GPU side
+        # (zero-init tail), so we mirror that on the host before reading.
+        if padded_n > total_n:
+            pin_phase_ids_np[total_n:padded_n] = 0
+        phase_view = pin_phase_ids_np[:padded_n]
+        phase_indices: list[torch.Tensor] = []
+        for _p in range(NUM_PHASES):
+            _idx_np = np.nonzero(phase_view == _p)[0].astype(np.int64, copy=False)
+            _t = torch.from_numpy(_idx_np)
+            if use_cuda:
+                _t = _t.to(device, non_blocking=True)
+            phase_indices.append(_t)
+
         with torch.inference_mode():
             # Autocast region is already active (entered once for the whole
             # serve loop). The model gathers per-row legal slices internally
@@ -511,6 +529,7 @@ def _eval_server_serve(
             logits_sparse, values = model(
                 gpu_s_batch, gpu_phase_ids[:padded_n],
                 gpu_action_ids[:padded_n], gpu_n_legals[:padded_n],
+                phase_indices,
             )
             # logits_sparse: (padded_n, K_MAX)       in autocast dtype
             # values:        (padded_n, num_players) in autocast dtype
