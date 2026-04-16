@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import warnings
+from typing import Any
 
 import numpy as np
 import torch
@@ -142,7 +143,7 @@ class Trainer:
             adjust_lr_fn="match_rms_adamw",
         )
 
-        aux_groups: list[dict[str, object]] = []
+        aux_groups: list[dict[str, Any]] = []
         if adam_decay:
             aux_groups.append({
                 "params": adam_decay, "weight_decay": config.weight_decay,
@@ -304,6 +305,7 @@ class Trainer:
         # row counts (which would blow the recompile limit).
         phase_view = self._phase_h_np[:B]
         phase_indices: list[torch.Tensor] = []
+        phase_counts: list[int] = []
         for _p in range(NUM_PHASES):
             _idx_np = np.nonzero(phase_view == _p)[0].astype(np.int64, copy=False)
             _t = torch.from_numpy(_idx_np)
@@ -311,6 +313,7 @@ class Trainer:
                 _t = _t.to(self.device, non_blocking=True)
             mark_unbacked(_t, 0)
             phase_indices.append(_t)
+            phase_counts.append(int(_idx_np.shape[0]))
 
         # --- Forward: sparse (B, K_MAX) logits + (B, N) values ---
         # The model gathers per-row legal slices internally and fills the
@@ -336,6 +339,28 @@ class Trainer:
             + self.config.value_loss_weight * value_loss
         )
 
+        # Per-phase policy loss: computed on device using the same
+        # phase_indices as the model's policy gather. Each phase does
+        # one index_select + mean (no host sync); empty buckets get a
+        # zero placeholder that we filter out on the host side using
+        # phase_counts (already known from the numpy nonzero build).
+        per_phase = per_example_policy_loss.detach()
+        device = per_phase.device
+        per_phase_means = torch.zeros(NUM_PHASES, device=device, dtype=per_phase.dtype)
+        for p in range(NUM_PHASES):
+            if phase_counts[p] > 0:
+                per_phase_means[p] = per_phase.index_select(0, phase_indices[p]).mean()
+
+        # Pack every scalar we want to read back into one tensor so the
+        # host read is a single H←D sync instead of 3 + 8 separate .item()
+        # calls. Order: policy_loss, value_loss, total_loss, *per-phase.
+        all_scalars = torch.cat([
+            torch.stack([
+                policy_loss.detach(), value_loss.detach(), total_loss.detach(),
+            ]),
+            per_phase_means,
+        ])
+
         if torch.isnan(total_loss):
             raise RuntimeError(
                 f"NaN loss at step {self._global_step}: "
@@ -358,17 +383,16 @@ class Trainer:
 
         self._global_step += 1
 
-        # Per-phase policy loss (detached, no grad impact).
-        per_phase = per_example_policy_loss.detach()
+        # Single H←D sync for all scalars.
+        scalars = all_scalars.tolist()
         result: dict[str, float] = {
-            "policy_loss": policy_loss.item(),
-            "value_loss": value_loss.item(),
-            "total_loss": total_loss.item(),
+            "policy_loss": scalars[0],
+            "value_loss": scalars[1],
+            "total_loss": scalars[2],
         }
         for phase_idx, name in enumerate(_PHASE_NAMES):
-            mask = phase_ids == phase_idx
-            if mask.any():
-                result[f"policy_loss_{name}"] = per_phase[mask].mean().item()
+            if phase_counts[phase_idx] > 0:
+                result[f"policy_loss_{name}"] = scalars[3 + phase_idx]
 
         return result
 
@@ -386,9 +410,9 @@ class Trainer:
             return self._aux_optimizer.param_groups[0]["lr"]
         return None
 
-    def state_dict(self) -> dict[str, object]:
+    def state_dict(self) -> dict[str, Any]:
         """Return state for checkpointing."""
-        state: dict[str, object] = {
+        state: dict[str, Any] = {
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict(),
             "global_step": self._global_step,
@@ -399,7 +423,7 @@ class Trainer:
             state["aux_scheduler"] = self._aux_scheduler.state_dict()
         return state
 
-    def load_state_dict(self, state: dict[str, object]) -> None:
+    def load_state_dict(self, state: dict[str, Any]) -> None:
         """Restore from checkpoint.  Tolerates missing or mismatched
         optimizer/scheduler (e.g. after optimizer type change) — they
         just start fresh with a warning."""
