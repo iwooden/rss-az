@@ -98,7 +98,7 @@ class Trainer:
             for pname, param in module.named_parameters(recurse=False):
                 if not param.requires_grad:
                     continue
-                if isinstance(module, torch.nn.LayerNorm) or pname == "bias":
+                if isinstance(module, (torch.nn.LayerNorm, torch.nn.RMSNorm)) or pname == "bias":
                     no_decay_params.append(param)
                 else:
                     decay_params.append(param)
@@ -123,9 +123,10 @@ class Trainer:
             for pname, param in module.named_parameters(recurse=False):
                 if not param.requires_grad:
                     continue
-                if param.ndim >= 2 and not isinstance(module, torch.nn.LayerNorm):
+                is_norm = isinstance(module, (torch.nn.LayerNorm, torch.nn.RMSNorm))
+                if param.ndim >= 2 and not is_norm:
                     muon_params.append(param)
-                elif isinstance(module, torch.nn.LayerNorm) or pname == "bias":
+                elif is_norm or pname == "bias":
                     adam_no_decay.append(param)
                 else:
                     adam_decay.append(param)
