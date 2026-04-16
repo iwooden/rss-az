@@ -72,7 +72,8 @@ class StatePool:
         self.states = np.zeros((capacity, state_size), dtype=np.int16)
         self._next = 0
         # Per-leaf enumerate scratch — written by enumerate_legal_actions_py,
-        # then sliced + copied into each leaf's pending_action_ids.
+        # then copied directly into the per-leaf row of _pending_action_ids_buf
+        # at child creation time (no intermediate per-node allocation).
         self._legal_scratch = np.empty(K_MAX, dtype=np.uint16)
         # Packed (batch_size, K_MAX) buffer + int32 n_legals array handed
         # to evaluate_leaves each batch. Lazy-allocated because batch_size
@@ -403,16 +404,24 @@ def run_search(
                             scratch_gs,
                         )
                     else:
-                        # Cache legal-action list + decision phase for this
-                        # leaf. The scratch enumerate buffer is reused across
-                        # leaves, so slice-and-copy the active range.
+                        # Pack legal actions directly into the eval batch
+                        # buffer at the slot this leaf will occupy when
+                        # queued. Newly created non-terminal children always
+                        # queue next (no virtual-backup / terminal / dedup
+                        # bailout applies), so len(pending) is the slot.
+                        # Zero the [n:] tail: the downstream torch.gather on
+                        # the eval server indexes the full K_MAX width before
+                        # masked_fill, so stale ids from a prior larger batch
+                        # would blow the dense-logits range.
                         child.pending_phase = get_decision_phase_py(scratch_gs)
-                        child.pending_n = enumerate_legal_actions_py(
+                        n = enumerate_legal_actions_py(
                             scratch_gs, legal_scratch,
                         )
-                        child.pending_action_ids = (
-                            legal_scratch[:child.pending_n].copy()
-                        )
+                        child.pending_n = n
+                        slot = len(pending)
+                        pending_action_ids_buf[slot, :n] = legal_scratch[:n]
+                        pending_action_ids_buf[slot, n:] = 0
+                        pending_n_buf[slot] = n
                     node.children[action_idx] = child
                     node = child
                     break  # New child is unexpanded — it's the leaf
@@ -469,19 +478,9 @@ def run_search(
             _t1 = perf_counter()
             profile.selection_secs += _t1 - _t0
 
-        # Pack per-leaf pending_action_ids into the shared (batch, K_MAX)
-        # buffer; evaluate_leaves reads [i, :n_legals[i]] per row. Zero the
-        # unused tail [n:] so the downstream torch.gather (which indexes the
-        # entire K_MAX width before masked_fill) sees valid in-range indices
-        # there — stale data from a prior larger batch would raise on CPU
-        # and silently corrupt on GPU.
+        # pending_action_ids_buf and pending_n_buf are already packed per-leaf
+        # at child-creation time; no extra pass needed here.
         n_pending = len(pending)
-        for i, (_, node) in enumerate(pending):
-            assert node.pending_action_ids is not None
-            n = node.pending_n
-            pending_action_ids_buf[i, :n] = node.pending_action_ids[:n]
-            pending_action_ids_buf[i, n:] = 0
-            pending_n_buf[i] = n
 
         leaf_arrays = [state_pool.row(node.state_idx) for _, node in pending]
         phase_ids = [node.pending_phase for _, node in pending]
@@ -510,14 +509,16 @@ def run_search(
 
             # Expand the leaf. Priors are already sparse + softmaxed by the
             # evaluator (GPU-side gather + softmax on the server path,
-            # torch.gather + softmax in-process for NNEvaluator).
-            assert node.pending_action_ids is not None
+            # torch.gather + softmax in-process for NNEvaluator). The
+            # action_ids view into pending_action_ids_buf is consumed
+            # synchronously by expand_node_sparse (copies into a fresh
+            # per-node array), so the buffer slot is free for reuse next batch.
+            n = node.pending_n
             node.expand(
-                node.pending_action_ids, node.pending_n, priors,
+                pending_action_ids_buf[i, :n], n, priors,
                 num_players=num_players, default_value=values,
             )
             # Clear per-leaf pending state — consumed by expansion.
-            node.pending_action_ids = None
             node.pending_n = 0
             node.pending_phase = -1
 

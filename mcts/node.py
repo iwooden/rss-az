@@ -27,11 +27,10 @@ class MCTSNode:
         is_terminal: Whether this node represents a game-over state.
         state_idx: Index into the StatePool matrix (-1 if unassigned).
         terminal_values: Cached terminal values for game-over nodes.
-        pending_action_ids: Legal phase-local action ids enumerated at child
-            creation time, shape (>= pending_n,) uint16. Only the first
-            pending_n entries are valid. Cleared after expansion.
-        pending_n: Count of legal actions cached for this leaf. 0 until a
-            batch evaluator fills in the buffer at child creation.
+        pending_n: Count of legal actions cached for this leaf at child
+            creation. 0 until a batch evaluator fills in the buffer.
+            The action ids themselves are packed directly into the shared
+            (batch, K_MAX) eval buffer at creation time — no per-node copy.
         pending_phase: Decision phase id (0-7) of the state at child
             creation. Needed because the model dispatches per-leaf phase_ids.
             -1 until populated.
@@ -54,7 +53,6 @@ class MCTSNode:
         "is_terminal",
         "state_idx",
         "terminal_values",
-        "pending_action_ids",
         "pending_n",
         "pending_phase",
         "legal_actions",
@@ -78,7 +76,6 @@ class MCTSNode:
         self.is_terminal: bool = is_terminal
         self.state_idx: int = -1
         self.terminal_values: np.ndarray | None = None
-        self.pending_action_ids: np.ndarray | None = None
         self.pending_n: int = 0
         self.pending_phase: int = -1
         self.legal_actions: np.ndarray | None = None

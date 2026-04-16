@@ -556,7 +556,6 @@ class TestMCTSNode:
     def test_pending_slots_default(self):
         """Per-leaf phase context slots start cleared."""
         node = MCTSNode()
-        assert node.pending_action_ids is None
         assert node.pending_n == 0
         assert node.pending_phase == -1
 
@@ -600,12 +599,8 @@ class TestMCTSNode:
     def test_pending_slots_writable(self):
         """search.py stashes pending_* on leaves between selection + expand."""
         node = MCTSNode()
-        buf = np.zeros(K_MAX, dtype=np.uint16)
-        buf[:2] = [5, 42]
-        node.pending_action_ids = buf
         node.pending_n = 2
         node.pending_phase = 0  # DPHASE_INVEST
-        assert node.pending_action_ids is buf
         assert node.pending_n == 2
         assert node.pending_phase == 0
 
@@ -1194,7 +1189,6 @@ class TestMCTSSearch:
         while stack:
             node = stack.pop()
             if node.expanded() and not node.is_terminal:
-                assert node.pending_action_ids is None
                 assert node.pending_n == 0
                 assert node.pending_phase == -1
             stack.extend(node.children.values())
