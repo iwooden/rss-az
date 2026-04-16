@@ -67,7 +67,12 @@ from core.actions import (
     enumerate_legal_actions_py,
     get_decision_phase_py,
 )
-from core.token_data import TokenDataSize, get_num_tokens, get_token_data
+from core.token_data import (
+    TokenDataSize,
+    get_num_tokens,
+    get_token_data,
+    get_token_data_batch,
+)
 from mcts.evaluator import BaseEvaluator
 from nn.transformer import NUM_PHASES
 from train.profile_stats import EvalClientStats, EvalServerStats
@@ -980,10 +985,6 @@ class RemoteEvaluator(BaseEvaluator):
         Returns:
             List of ``(priors_legal[:n], values_canonical)`` tuples.
         """
-        # Deferred import: keep GameState out of top-level to avoid a circular
-        # import when core.state depends on Cython modules at init time.
-        from core.state import GameState
-
         n = len(state_arrays)
         if n == 0:
             return []
@@ -993,22 +994,16 @@ class RemoteEvaluator(BaseEvaluator):
         if _stats is not None:
             _t0 = perf_counter()
 
-        # Rebind a scratch GameState across rows — get_token_data needs a
-        # GameState wrapper, but we don't want to allocate a new one per leaf.
-        scratch_gs = GameState.from_buffer(state_arrays[0], self.num_players)
-        get_token_data(scratch_gs, self._in_states_np[0])
-        self._in_phase_ids_np[0] = phase_ids[0]
-        n0 = n_legals[0]
-        self._in_action_ids_np[0, :n0] = action_ids_buf[0, :n0]
-        self._in_n_legals_np[0] = n0
-
-        for i in range(1, n):
-            scratch_gs.rebind(state_arrays[i], self.num_players)
-            get_token_data(scratch_gs, self._in_states_np[i])
-            self._in_phase_ids_np[i] = phase_ids[i]
-            ni = n_legals[i]
-            self._in_action_ids_np[i, :ni] = action_ids_buf[i, :ni]
-            self._in_n_legals_np[i] = ni
+        # Batched token fill — single Cython entry amortizes per-leaf Python
+        # dispatch + GameState wrapper construction (rebind across rows
+        # internally). Phase / action / n_legal fills are single numpy
+        # memcpys; action_ids_buf has zero-padded tails per the caller's
+        # contract (run_search clears [n_legals[i]:]), so a whole-row copy
+        # is safe.
+        get_token_data_batch(state_arrays, self.num_players, self._in_states_np[:n])
+        self._in_phase_ids_np[:n] = phase_ids
+        self._in_action_ids_np[:n] = action_ids_buf[:n]
+        self._in_n_legals_np[:n] = n_legals
 
         if _stats is not None:
             _t1 = perf_counter()
