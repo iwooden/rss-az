@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Callable
 
 import torch
 import torch.nn as nn
@@ -110,6 +111,8 @@ class RSSTransformerNet(nn.Module):
     # Declared for pyright: ``register_buffer`` adds dynamic attributes whose
     # type isn't otherwise visible to the checker.
     _k_range: torch.Tensor
+    # Cached per-phase head dispatch tuple, indexed by phase_id 0..7.
+    _dispatch: tuple[Callable[[torch.Tensor], torch.Tensor], ...]
 
     def __init__(self, cfg: TransformerConfig) -> None:
         super().__init__()
@@ -232,6 +235,14 @@ class RSSTransformerNet(nn.Module):
         # up in `.to(...)`, but is not saved to checkpoints.
         self.register_buffer(
             "_k_range", torch.arange(K_MAX, dtype=torch.long), persistent=False,
+        )
+
+        # Per-phase head dispatch, indexed by phase_id 0..7. Built once;
+        # the bound-method refs stay valid for the module's lifetime.
+        self._dispatch = (
+            self._policy_invest, self._policy_bid, self._policy_acquisition,
+            self._policy_acq_offer, self._policy_closing, self._policy_dividends,
+            self._policy_issue, self._policy_ipo,
         )
 
         self._init_weights()
@@ -364,14 +375,6 @@ class RSSTransformerNet(nn.Module):
         B, K = action_ids.shape
         out = tokens.new_full((B, K), -1e9)
 
-        # Local dispatch tuple: cheap to rebuild (8 bound-method refs), and
-        # keeps pyright from routing a ``self._dispatch = (...)`` assignment
-        # through ``nn.Module.__setattr__``.
-        dispatch = (
-            self._policy_invest, self._policy_bid, self._policy_acquisition,
-            self._policy_acq_offer, self._policy_closing, self._policy_dividends,
-            self._policy_issue, self._policy_ipo,
-        )
         # No `if not mask.any(): continue` early-exit: that path forces a
         # GPU→CPU sync (8 per forward) which dominates eval latency on
         # CPU-bound workloads like analyze_game. Empty masks flow cleanly
@@ -380,7 +383,7 @@ class RSSTransformerNet(nn.Module):
         # the GPU pipeline absorb the extra small launches.
         for phase_id in range(NUM_PHASES):
             mask = phase_ids == phase_id
-            phase_logits = dispatch[phase_id](tokens[mask])        # (n, phase_width)
+            phase_logits = self._dispatch[phase_id](tokens[mask])  # (n, phase_width)
             # Gather wants int64; .long() is a no-op if already long.
             sub_ids = action_ids[mask].long()                      # (n, K)
             gathered = phase_logits.gather(1, sub_ids)             # (n, K)

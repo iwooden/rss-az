@@ -386,21 +386,27 @@ def _eval_server_serve(
         max_batch, num_tokens, token_dim, dtype=torch.float32, device=device,
     )
 
+    # GPU phase/action/n_legals buffers are zero-initialized once and the
+    # tail [total_n:max_batch] is never written again — per-batch H→D copies
+    # only touch [:total_n]. The model gathers [:padded_n] each forward,
+    # so any padded-tail rows read in-range zeros for action_ids/phase_ids
+    # and n_legals=0 (which masks the row out via the model's invalid mask).
+    # This drops three per-batch .zero_() launches from the hot path.
     pin_phase_ids = torch.empty(max_batch, dtype=torch.int8, pin_memory=use_cuda)
     pin_phase_ids_np = pin_phase_ids.numpy()
-    gpu_phase_ids = torch.empty(max_batch, dtype=torch.int8, device=device)
+    gpu_phase_ids = torch.zeros(max_batch, dtype=torch.int8, device=device)
 
     pin_action_ids = torch.empty(
         max_batch, k_max, dtype=torch.int16, pin_memory=use_cuda,
     )
     pin_action_ids_np = pin_action_ids.numpy()
-    gpu_action_ids = torch.empty(
+    gpu_action_ids = torch.zeros(
         max_batch, k_max, dtype=torch.int16, device=device,
     )
 
     pin_n_legals = torch.empty(max_batch, dtype=torch.int16, pin_memory=use_cuda)
     pin_n_legals_np = pin_n_legals.numpy()
-    gpu_n_legals = torch.empty(max_batch, dtype=torch.int16, device=device)
+    gpu_n_legals = torch.zeros(max_batch, dtype=torch.int16, device=device)
 
     # --- Outputs: pinned CPU + GPU side ---
     # Priors are (max_batch, K_MAX) f32 (sparse, already softmaxed on GPU).
@@ -494,14 +500,7 @@ def _eval_server_serve(
         gpu_phase_ids[:total_n].copy_(pin_phase_ids[:total_n], non_blocking=True)
         gpu_action_ids[:total_n].copy_(pin_action_ids[:total_n], non_blocking=True)
         gpu_n_legals[:total_n].copy_(pin_n_legals[:total_n], non_blocking=True)
-        # Zero the [total_n:padded_n] tail so the model's internal gather
-        # sees in-range action_ids (0) and masks them out (n_legals=0).
-        # Without this, stale data from prior batches could produce
-        # out-of-bounds indices into the per-phase logits tensor.
-        if padded_n > total_n:
-            gpu_phase_ids[total_n:padded_n].zero_()
-            gpu_action_ids[total_n:padded_n].zero_()
-            gpu_n_legals[total_n:padded_n].zero_()
+        # Padded tail [total_n:padded_n] is permanently zero (see allocation).
 
         with torch.inference_mode():
             # Autocast region is already active (entered once for the whole

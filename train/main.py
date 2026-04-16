@@ -19,8 +19,6 @@ import torch.multiprocessing as mp
 from core.actions import MAX_LEGAL_ACTIONS_PY
 from core.state import get_layout
 from core.token_data import TokenDataSize, get_num_tokens
-
-K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 from nn import create_model
 from train.checkpoint import (
     cleanup_checkpoints,
@@ -37,6 +35,8 @@ from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool
 from train.self_play import play_game, self_play_worker
 from train.trainer import Trainer
+
+K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 
 
 def _build_parser() -> argparse.ArgumentParser:
