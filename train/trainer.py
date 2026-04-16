@@ -20,8 +20,8 @@ import torch.nn.functional as F
 from torch._dynamo.decorators import mark_unbacked
 
 from core.actions import MAX_LEGAL_ACTIONS_PY
-from core.state import GameState, get_layout
-from core.token_data import TokenDataSize, get_num_tokens, get_token_data
+from core.state import get_layout
+from core.token_data import TokenDataSize, get_num_tokens, get_token_data_batch
 from nn.transformer import NUM_PHASES
 from train.config import TrainingConfig
 from train.replay_buffer import ReplayBuffer
@@ -54,12 +54,6 @@ class Trainer:
         self._num_players = config.num_players
         self._num_tokens = get_num_tokens(config.num_players)
         self._state_size = get_layout(config.num_players).total_size
-
-        # Scratch GameState rebinds across batch rows so each train_step
-        # avoids allocating a wrapper per row. Default ctor seeds the
-        # canonical num_players slot that rebind() validates against;
-        # the backing array gets overwritten on first rebind().
-        self._scratch_state: GameState = GameState(config.num_players)
 
         # Lazy pinned host + device scratch (see _ensure_scratch).
         self._scratch_cap: int = 0
@@ -231,16 +225,15 @@ class Trainer:
         self._vt_d[:n].copy_(self._vt_h[:n], non_blocking=True)
 
     def _fill_token_batch(self, n: int) -> None:
-        """Fill ``_tok_h_np[:n]`` from ``_states_np[:n]`` via get_token_data.
-
-        Rebinds the scratch GameState onto each row's backing int16
-        buffer; ``get_token_data`` is a nogil Cython kernel.
+        """Fill ``_tok_h_np[:n]`` from ``_states_np[:n]`` via the batched
+        Cython entry. One Python dispatch for the whole batch; rows are
+        filled in a nogil loop with a shared rebindable scratch state.
         """
-        scratch = self._scratch_state
-        num_players = self._num_players
-        for i in range(n):
-            scratch.rebind(self._states_np[i], num_players)
-            get_token_data(scratch, self._tok_h_np[i])
+        get_token_data_batch(
+            [self._states_np[i] for i in range(n)],
+            self._num_players,
+            self._tok_h_np[:n],
+        )
 
     def train_step(
         self,
