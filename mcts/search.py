@@ -57,8 +57,9 @@ class StatePool:
     lifetime. Each row stores one node's full compact int16 game state.
     ``reset()`` is called at the start of each run_search to reuse the
     same memory. The pool also owns per-search scratch buffers
-    (``_legal_scratch``, ``_pending_action_ids_buf``, ``_pending_n_buf``)
-    so ``run_search`` never allocates per simulation.
+    (``_legal_scratch``, ``_pending_action_ids_buf``, ``_pending_n_buf``,
+    ``_saved_values_buf``, ``_path_pool``) so ``run_search`` never
+    allocates per simulation.
     """
 
     __slots__ = (
@@ -67,6 +68,8 @@ class StatePool:
         "_legal_scratch",
         "_pending_action_ids_buf",
         "_pending_n_buf",
+        "_saved_values_buf",
+        "_path_pool",
     )
 
     def __init__(self, capacity: int, state_size: int) -> None:
@@ -85,6 +88,15 @@ class StatePool:
         # isn't known at pool construction.
         self._pending_action_ids_buf: np.ndarray | None = None
         self._pending_n_buf: np.ndarray | None = None
+        # Per-batch saved-Q rows for leaf-lock unlock. One row per pending
+        # slot, memcpy'd from parent.value_sums at lock time and back at
+        # unlock time — no per-leaf np.copy() allocation.
+        self._saved_values_buf: np.ndarray | None = None
+        # Preallocated path lists indexed by pending slot. ``_descend_path``
+        # writes into ``_path_pool[len(pending)]`` (cleared before use); on
+        # commit, that slot is appended into ``pending`` directly — no
+        # per-simulation list allocation or tuple churn.
+        self._path_pool: list[list[tuple[MCTSNode, int, int]]] | None = None
 
     def reset(self) -> None:
         """Reset the write cursor for a new search."""
@@ -124,7 +136,7 @@ class StatePool:
         """Return a view (not copy) of the given pool row."""
         return self.states[idx]
 
-    def ensure_pending_bufs(self, batch_size: int) -> None:
+    def ensure_pending_bufs(self, batch_size: int, num_players: int) -> None:
         """Grow the per-batch scratch buffers to fit ``batch_size`` leaves."""
         buf = self._pending_action_ids_buf
         if buf is None or buf.shape[0] < batch_size:
@@ -132,6 +144,16 @@ class StatePool:
                 (batch_size, K_MAX), dtype=np.uint16,
             )
             self._pending_n_buf = np.empty(batch_size, dtype=np.int32)
+        sv = self._saved_values_buf
+        if sv is None or sv.shape[0] < batch_size or sv.shape[1] < num_players:
+            self._saved_values_buf = np.empty(
+                (batch_size, num_players), dtype=np.float32,
+            )
+        pp = self._path_pool
+        if pp is None:
+            self._path_pool = [[] for _ in range(batch_size)]
+        elif len(pp) < batch_size:
+            pp.extend([] for _ in range(batch_size - len(pp)))
 
 
 def _add_dirichlet_noise(
@@ -265,10 +287,13 @@ def run_search(
         num_sims = config.num_simulations
 
     # Ensure per-batch scratch buffers are sized for this search
-    state_pool.ensure_pending_bufs(batch_size)
+    state_pool.ensure_pending_bufs(batch_size, num_players)
     pending_action_ids_buf = state_pool._pending_action_ids_buf
     pending_n_buf = state_pool._pending_n_buf
+    saved_values_buf = state_pool._saved_values_buf
+    path_pool = state_pool._path_pool
     assert pending_action_ids_buf is not None and pending_n_buf is not None
+    assert saved_values_buf is not None and path_pool is not None
     legal_scratch = state_pool._legal_scratch
 
     # Scratch GameState rebound to each pool row via rebind()
@@ -301,13 +326,16 @@ def run_search(
         # Collect a batch of leaves for NN evaluation.
         pending: list[tuple[_Path, MCTSNode]] = []
         pending_ids: set[int] = set()  # safety net for single-action parents
-        saved_values: list[np.ndarray] = []  # saved parent Q rows for unlock
 
         while len(pending) < batch_size and sim < num_sims:
             # Selection: traverse tree to find a leaf via one Cython call.
             # descend_path appends (node, action_idx, array_idx) per level
             # and returns an outcome describing why the descent stopped.
-            path: _Path = []
+            # Reuse the preallocated path list at the next pending slot;
+            # if the descent doesn't commit to pending, the same slot is
+            # reused (cleared) on the next iteration.
+            path: _Path = path_pool[len(pending)]
+            path.clear()
             outcome, descend_node, descend_aidx, descend_arr = _descend_path(
                 root, config.c_puct, path,
             )
@@ -386,10 +414,12 @@ def run_search(
             sim += 1
             _increment_visits(path, node)
 
-            # Lock parent edge and queue for batch eval
+            # Lock parent edge and queue for batch eval. Row-memcpy into
+            # the preallocated saved_values_buf — the slot index is the
+            # current pending length (append happens below).
             parent, _, parent_aidx = path[-1]
             assert parent.value_sums is not None
-            saved_values.append(parent.value_sums[parent_aidx].copy())
+            saved_values_buf[len(pending)] = parent.value_sums[parent_aidx]
             parent.value_sums[parent_aidx] = neg_inf_row
 
             # Propagate lock up when all sibling edges at a node are locked
@@ -437,7 +467,7 @@ def run_search(
             # Unlock parent edge: restore saved Q values
             parent, _, parent_aidx = path[-1]
             assert parent.value_sums is not None
-            parent.value_sums[parent_aidx] = saved_values[i]
+            parent.value_sums[parent_aidx] = saved_values_buf[i]
 
             # Recursively unlock propagation-locked ancestor edges
             _propagate_unlock(path)

@@ -976,20 +976,32 @@ class TestStatePool:
         total_size = get_layout(3).total_size
         pool = StatePool(4, total_size)
         assert pool._pending_action_ids_buf is None
-        pool.ensure_pending_bufs(4)
+        assert pool._saved_values_buf is None
+        assert pool._path_pool is None
+        pool.ensure_pending_bufs(4, NUM_PLAYERS)
         assert pool._pending_action_ids_buf is not None
         assert pool._pending_action_ids_buf.shape == (4, K_MAX)
         assert pool._pending_n_buf is not None
         assert pool._pending_n_buf.shape == (4,)
+        assert pool._saved_values_buf is not None
+        assert pool._saved_values_buf.shape == (4, NUM_PLAYERS)
+        assert pool._path_pool is not None
+        assert len(pool._path_pool) == 4
 
-        # Growing the batch reallocates
-        pool.ensure_pending_bufs(8)
+        # Growing the batch reallocates / extends
+        pool.ensure_pending_bufs(8, NUM_PLAYERS)
         assert pool._pending_action_ids_buf.shape == (8, K_MAX)
+        assert pool._saved_values_buf.shape == (8, NUM_PLAYERS)
+        assert len(pool._path_pool) == 8
 
         # Shrinking doesn't reallocate
         buf = pool._pending_action_ids_buf
-        pool.ensure_pending_bufs(2)
+        sv = pool._saved_values_buf
+        pp = pool._path_pool
+        pool.ensure_pending_bufs(2, NUM_PLAYERS)
         assert pool._pending_action_ids_buf is buf
+        assert pool._saved_values_buf is sv
+        assert pool._path_pool is pp
 
 
 # ---------------------------------------------------------------------------
