@@ -73,7 +73,18 @@ def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
     site applies ``mark_unbacked`` on the runtime-varying dims instead.
 
     Args:
-        for_training: Unused today; retained so callers can keep a stable API.
+        for_training: If True, disables Inductor's
+            ``joint_graph_constant_folding`` pass. That pass calls
+            ``fake_tensor.is_contiguous`` on uniform-valued nodes
+            (e.g. backward-pass ``zeros_like`` tensors) and guards on
+            ``Eq(K * u, 0)`` to test emptiness. When the shape carries a
+            ``mark_unbacked`` symbol (our per-phase row counts do), the
+            guard is undecidable and compilation crashes. The pass is a
+            training-only concern — inference skips the joint-graph
+            backward partition entirely, which is why eval_server is
+            unaffected. Disabling costs only a small forward-graph
+            constant-folding optimization.
     """
-    del for_training
+    if for_training:
+        return {"options": {"joint_graph_constant_folding": False}}
     return {}
