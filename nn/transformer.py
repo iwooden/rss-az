@@ -78,12 +78,28 @@ class TransformerConfig:
 # ---------------------------------------------------------------------------
 
 class TransformerBlock(nn.Module):
-    """Pre-LN transformer block: LN -> MHSA -> residual, LN -> SwiGLU FFN -> residual."""
+    """Pre-LN transformer block: LN -> MHSA -> residual, LN -> SwiGLU FFN -> residual.
+
+    Attention is implemented via ``F.scaled_dot_product_attention`` over a
+    manually-packed QKV projection rather than ``nn.MultiheadAttention``.
+    ``nn.MultiheadAttention`` dispatches to ``aten._native_multi_head_attention``,
+    which doesn't support fake-tensor tracing and therefore causes a
+    graph break per layer under ``torch.compile``. SDPA traces cleanly
+    and Inductor fuses it into a single Triton kernel per block.
+    """
 
     def __init__(self, d_model: int, num_heads: int, d_ff: int) -> None:
         super().__init__()
+        assert d_model % num_heads == 0, (
+            f"d_model {d_model} must be divisible by num_heads {num_heads}"
+        )
+        self.num_heads = num_heads
+        self.head_dim = d_model // num_heads
         self.attn_norm = nn.RMSNorm(d_model)
-        self.attn = nn.MultiheadAttention(d_model, num_heads, batch_first=True)
+        # Packed Q/K/V projection. Same parameter count as
+        # nn.MultiheadAttention's in_proj_weight/in_proj_bias.
+        self.qkv_proj = nn.Linear(d_model, 3 * d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
         self.ffn_norm = nn.RMSNorm(d_model)
         self.ffn_gate = nn.Linear(d_model, d_ff, bias=False)
         self.ffn_up = nn.Linear(d_model, d_ff, bias=False)
@@ -91,10 +107,14 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         h = self.attn_norm(x)
-        # We never consume attention weights in this model. Skipping them avoids
-        # extra work in the forward pass and makes it easier for PyTorch to use
-        # its more efficient attention kernels.
-        h, _ = self.attn(h, h, h, need_weights=False)
+        B, N, D = h.shape
+        qkv = self.qkv_proj(h).reshape(B, N, 3, self.num_heads, self.head_dim)
+        # (3, B, heads, N, head_dim) so unbind(0) yields three (B, heads, N, head_dim) tensors.
+        q, k, v = qkv.permute(2, 0, 3, 1, 4).unbind(0)
+        attn_out = F.scaled_dot_product_attention(q, k, v)
+        # (B, heads, N, head_dim) -> (B, N, D)
+        attn_out = attn_out.transpose(1, 2).reshape(B, N, D)
+        h = self.out_proj(attn_out)
         x = x + h
         h = self.ffn_norm(x)
         h = self.ffn_down(F.silu(self.ffn_gate(h)) * self.ffn_up(h))
@@ -476,8 +496,8 @@ class RSSTransformerNet(nn.Module):
         for block in self.blocks:
             assert isinstance(block, TransformerBlock)
             nn.init.zeros_(block.ffn_down.weight)
-            nn.init.zeros_(block.attn.out_proj.weight)
-            nn.init.zeros_(block.attn.out_proj.bias)
+            nn.init.zeros_(block.out_proj.weight)
+            nn.init.zeros_(block.out_proj.bias)
 
 
 # ---------------------------------------------------------------------------

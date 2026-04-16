@@ -3,10 +3,12 @@
 When running on AMD GPUs (detected via torch.version.hip), these
 optimizations are applied:
 
-1. **torch.compile mode="reduce-overhead"** (HIP graphs): Eliminates kernel
-   launch overhead by capturing the entire forward pass as a HIP graph.
-   Same mechanism as CUDA graphs on NVIDIA, ~2.3x inference throughput
-   improvement on RDNA 4 (gfx1201).
+1. **torch.compile default mode** (Inductor fusion, no HIP graphs):
+   Removes most per-op Python dispatch overhead by fusing and codegen'ing
+   Triton kernels. HIP-graph mode ("reduce-overhead") is NOT used because
+   ``nn/transformer.py::_policy_forward`` has data-dependent inner shapes
+   (per-phase ``index_select`` with varying row counts) — HIP/CUDA graphs
+   require static tensor sizes. Default mode supports dynamic shapes.
 
 Note: TF32 does not exist on AMD hardware — the torch TF32 flags are
 accepted but have zero effect.  TunableOp is intentionally NOT enabled:
@@ -66,11 +68,17 @@ def apply_amd_optimizations() -> dict[str, str]:
 def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
     """Return torch.compile kwargs optimized for AMD GPUs.
 
-    Uses mode='reduce-overhead' which enables HIP graph capture via Inductor,
-    eliminating kernel launch overhead.
+    Uses default (automatic-dynamic) mode. ``reduce-overhead`` / HIP
+    graphs were dropped because our policy-head dispatch uses
+    ``index_select`` with per-phase row counts that vary every batch —
+    HIP graphs require static shapes. Global ``dynamic=True`` is
+    explicitly discouraged by the PyTorch docs (forces every dim and
+    module parameter dynamic, error-prone, can cause perf regressions);
+    the eval-server warmup site applies ``mark_unbacked`` on the
+    runtime-varying dims instead.
 
     Args:
         for_training: Unused today; retained so callers can keep a stable API.
     """
     del for_training
-    return {"mode": "reduce-overhead"}
+    return {}

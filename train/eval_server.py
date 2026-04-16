@@ -60,6 +60,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from torch._dynamo.decorators import mark_unbacked
 
 from core.actions import (
     MAX_LEGAL_ACTIONS_PY,
@@ -348,13 +349,35 @@ def _eval_server_serve(
         ckw = compile_kwargs if compile_kwargs is not None else {}
         model = torch.compile(model, **ckw)  # type: ignore[assignment]
         model.eval()
-        # reduce-overhead / cudagraphs benefit most when the warmup batch size
-        # matches the steady-state inference shape. In fixed-batch mode we pad
-        # to a constant GPU batch size, so warm up with that size here.
+        # Warm up with the EXACT call signature the hot path uses — same
+        # positional args, same dtypes, and a ``phase_indices`` list. A
+        # warmup that omits phase_indices compiles the 9-graph-break
+        # boolean-mask branch in ``_policy_forward``; the first real
+        # batch would then trigger a full recompile on the 5-arg
+        # signature and discard the work.
+        #
+        # Dynamic-shape strategy (see ``train/gpu/{amd,nvidia}.py`` for
+        # why we dropped global ``dynamic=True``). Every runtime-varying
+        # dim gets ``mark_unbacked``:
+        #   * batch dim of (s, phase_ids, action_ids, n_legals):
+        #     ``maybe_mark_dynamic`` still triggers a recompile the
+        #     first time a size-1 batch appears (framework-level 0/1
+        #     specialization is separate from user-level dynamic
+        #     hints); strict ``mark_dynamic`` also fails because
+        #     Inductor's fusion heuristics generate size-dependent
+        #     guards (e.g. ``(12416*B) / (12416 + 225*B) > 0.043``).
+        #     ``mark_unbacked`` is what the runtime itself suggests in
+        #     that recompile message, and it gives us a single compiled
+        #     graph that handles all batch sizes 1..max_batch.
+        #   * per-phase row indices: same story — sizes 0 and 1 are
+        #     both legitimate (a phase may have no rows, or exactly
+        #     one).
+        # Any reasonable warmup batch size works — pick at least
+        # ``NUM_PHASES`` so each phase head gets traced.
         warmup_n = (
             fixed_batch_workers * shared_bufs.batch_size
             if fixed_batch_workers is not None
-            else 1
+            else NUM_PHASES
         )
         with torch.inference_mode(), torch.autocast(
             device.type,
@@ -364,11 +387,24 @@ def _eval_server_serve(
             dummy_s = torch.randn(
                 warmup_n, num_tokens, token_dim, device=device,
             )
-            dummy_p = torch.zeros(warmup_n, dtype=torch.int8, device=device)
+            # Spread phase ids across 0..NUM_PHASES-1 so every phase
+            # head gets traced; the hot path dispatches all 8 even when
+            # only a subset of rows belongs to each phase.
+            dummy_p_cpu = torch.arange(warmup_n, dtype=torch.int8) % NUM_PHASES
+            dummy_p = dummy_p_cpu.to(device)
             dummy_a = torch.zeros(warmup_n, k_max, dtype=torch.int16, device=device)
-            dummy_nl = torch.zeros(warmup_n, dtype=torch.int16, device=device)
-            model(dummy_s, dummy_p, dummy_a, dummy_nl)
-            del dummy_s, dummy_p, dummy_a, dummy_nl
+            dummy_nl = torch.ones(warmup_n, dtype=torch.int16, device=device)
+            for _t in (dummy_s, dummy_p, dummy_a, dummy_nl):
+                mark_unbacked(_t, 0)
+            dummy_phase_indices: list[torch.Tensor] = [
+                (dummy_p_cpu == _p).nonzero(as_tuple=False).squeeze(-1)
+                .to(torch.int64).to(device, non_blocking=True)
+                for _p in range(NUM_PHASES)
+            ]
+            for _t in dummy_phase_indices:
+                mark_unbacked(_t, 0)
+            model(dummy_s, dummy_p, dummy_a, dummy_nl, dummy_phase_indices)
+            del dummy_s, dummy_p, dummy_a, dummy_nl, dummy_phase_indices
         torch.cuda.synchronize()
 
     # Allocate pinned CPU buffers and GPU tensors in this process's CUDA context
@@ -509,6 +545,10 @@ def _eval_server_serve(
         # dominated analyze_game profiles before this change). Padded
         # rows [total_n:padded_n] have phase_id=0 on the GPU side
         # (zero-init tail), so we mirror that on the host before reading.
+        # Each phase tensor is marked unbacked so torch.compile treats
+        # its dim 0 as truly data-dependent — without this, every new
+        # combination of per-phase row counts triggers a recompile and
+        # we hit recompile_limit within the first few epochs.
         if padded_n > total_n:
             pin_phase_ids_np[total_n:padded_n] = 0
         phase_view = pin_phase_ids_np[:padded_n]
@@ -518,6 +558,7 @@ def _eval_server_serve(
             _t = torch.from_numpy(_idx_np)
             if use_cuda:
                 _t = _t.to(device, non_blocking=True)
+            mark_unbacked(_t, 0)
             phase_indices.append(_t)
 
         with torch.inference_mode():

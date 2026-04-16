@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from torch._dynamo.decorators import mark_unbacked
 
 from core.token_data import (
     get_num_tokens,
@@ -439,6 +440,12 @@ class NNEvaluator(BaseEvaluator):
         would otherwise force (the masked-tensor size is data-dependent).
         On CPU device, the returned tensors share memory with the numpy
         arrays.
+
+        Each returned tensor is marked ``unbacked`` on dim 0 so that
+        ``torch.compile`` doesn't specialize on its size. Without this,
+        every distinct combination of per-phase row counts (and there are
+        many — up to ``C(N+7, 7)``) triggers a recompile, blowing past
+        the default ``recompile_limit`` after a handful of batches.
         """
         phase_view = self._phase_h_np[:n]
         out: list[torch.Tensor] = []
@@ -447,5 +454,6 @@ class NNEvaluator(BaseEvaluator):
             t = torch.from_numpy(idx_np)
             if self.device.type == "cuda":
                 t = t.to(self.device, non_blocking=True)
+            mark_unbacked(t, 0)
             out.append(t)
         return out

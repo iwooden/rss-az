@@ -6,10 +6,12 @@ When running on NVIDIA hardware, these optimizations are applied:
    with minimal precision loss (19-bit mantissa vs 23-bit). Affects the float32
    backward pass and any non-autocast matmuls.
 
-2. **torch.compile mode="reduce-overhead"** (CUDA graphs): Can cut kernel
-   launch overhead when Inductor is able to record stable-shape CUDA graphs.
-   This is most effective for the eval server when batch shapes are kept
-   consistent (for example via fixed-batch mode).
+2. **torch.compile default mode** (Inductor fusion, no CUDA graphs):
+   CUDA-graph capture (mode="reduce-overhead") is NOT used because
+   ``nn/transformer.py::_policy_forward`` uses ``index_select`` with
+   data-dependent per-phase row counts — CUDA graphs require static
+   shapes. Default-mode Inductor still removes most Python dispatch
+   overhead via Triton fusion.
 
 3. **non_blocking H2D transfers**: Allows CPU work to overlap with GPU DMA.
    Especially beneficial on GH200 with NVLink-C2C (900 GB/s).
@@ -62,12 +64,16 @@ def apply_nvidia_optimizations() -> dict[str, str]:
 def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
     """Return torch.compile kwargs optimized for NVIDIA GPUs.
 
-    Uses mode='reduce-overhead', which enables CUDA graph capture via
-    Inductor when the workload has stable shapes. This is primarily aimed at
-    the self-play eval server's small-batch inference path.
+    Uses default (automatic-dynamic) mode. ``reduce-overhead`` was
+    dropped because our policy-head dispatch uses ``index_select`` with
+    per-phase row counts that vary every batch — CUDA graphs require
+    static shapes. Global ``dynamic=True`` is explicitly discouraged by
+    the PyTorch docs (forces every dim and module parameter dynamic,
+    error-prone, can cause perf regressions); the eval-server warmup
+    site applies ``mark_unbacked`` on the runtime-varying dims instead.
 
     Args:
         for_training: Unused today; retained so callers can keep a stable API.
     """
     del for_training
-    return {"mode": "reduce-overhead"}
+    return {}
