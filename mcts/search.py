@@ -25,11 +25,14 @@ import numpy as np
 from train.config import MCTSConfig
 from mcts.node import MCTSNode
 from mcts.mcts_core import (
-    select_child,
     backup as _backup,
     increment_visits as _increment_visits,
     virtual_backup as _virtual_backup,
     all_col0_neg_inf as _all_col0_neg_inf,
+    descend_path as _descend_path,
+    DESCEND_NEED_NEW_CHILD,
+    DESCEND_VIRTUAL_BACKUP,
+    DESCEND_EXISTING_LEAF,
 )
 from core.actions import (
     get_decision_phase_py,
@@ -353,82 +356,66 @@ def run_search(
         saved_values: list[np.ndarray] = []  # saved parent Q rows for unlock
 
         while len(pending) < batch_size and sim < num_sims:
-            # Selection: traverse tree to find a leaf
-            node = root
+            # Selection: traverse tree to find a leaf via one Cython call.
+            # descend_path appends (node, action_idx, array_idx) per level
+            # and returns an outcome describing why the descent stopped.
             path: _Path = []
-            is_root = True
-            did_virtual_backup = False
+            outcome, descend_node, descend_aidx, descend_arr = _descend_path(
+                root, config.c_puct, path,
+            )
 
-            while node.expanded() and not node.is_terminal:
-                assert node.visit_counts is not None
-                action_idx, array_idx = select_child(node, config.c_puct)
-                path.append((node, action_idx, array_idx))
-
-                if action_idx in node.children:
-                    child = node.children[action_idx]
-
-                    # Virtual backup: at the root of a reused subtree,
-                    # if the child has more real visits than the root
-                    # has recorded, echo the child's mean Q to the root
-                    # without traversing deeper. This lets Dirichlet noise
-                    # meaningfully influence the root visit distribution.
-                    if (is_root
-                            and child.visit_count > 0
-                            and node.visit_counts[array_idx] < child.visit_count):
-                        _virtual_backup(node, child, array_idx)
-                        sim += 1
-                        did_virtual_backup = True
-                        if profile is not None:
-                            profile.virtual_backups += 1
-                        break
-
-                    # Follow existing child
-                    is_root = False
-                    node = child
-                else:
-                    # First visit: create child node with state from pool.
-                    # Rebind scratch GameState to avoid allocating a wrapper.
-                    child = MCTSNode(
-                        num_players=num_players,
-                    )
-                    child.state_idx = state_pool.alloc_from_row(node.state_idx)
-                    scratch_gs.rebind(state_pool.row(child.state_idx), num_players)
-                    status = DRIVER.apply_action(scratch_gs, action_idx)
-                    assert status != STATUS_INVALID_PY, (
-                        f"MCTS expansion got STATUS_INVALID for action {action_idx}"
-                    )
-                    child.active_player_id = TURN.get_active_player(scratch_gs)
-                    if status == STATUS_GAME_OVER_PY:
-                        child.is_terminal = True
-                        child.terminal_values = evaluator.evaluate_terminal(
-                            scratch_gs,
-                        )
-                    else:
-                        # Pack legal actions directly into the eval batch
-                        # buffer at the slot this leaf will occupy when
-                        # queued. Newly created non-terminal children always
-                        # queue next (no virtual-backup / terminal / dedup
-                        # bailout applies), so len(pending) is the slot.
-                        # Zero the [n:] tail: the downstream torch.gather on
-                        # the eval server indexes the full K_MAX width before
-                        # masked_fill, so stale ids from a prior larger batch
-                        # would blow the dense-logits range.
-                        child.pending_phase = get_decision_phase_py(scratch_gs)
-                        n = enumerate_legal_actions_py(
-                            scratch_gs, legal_scratch,
-                        )
-                        child.pending_n = n
-                        slot = len(pending)
-                        pending_action_ids_buf[slot, :n] = legal_scratch[:n]
-                        pending_action_ids_buf[slot, n:] = 0
-                        pending_n_buf[slot] = n
-                    node.children[action_idx] = child
-                    node = child
-                    break  # New child is unexpanded — it's the leaf
-
-            # Virtual backup already handled — skip leaf processing
-            if did_virtual_backup:
+            if outcome == DESCEND_VIRTUAL_BACKUP:
+                # Reuse-root case: echo child Q to root, no further descent.
+                child = descend_node.children[descend_aidx]
+                _virtual_backup(descend_node, child, descend_arr)
+                sim += 1
+                if profile is not None:
+                    profile.virtual_backups += 1
                 continue
+
+            if outcome == DESCEND_NEED_NEW_CHILD:
+                # First visit: create child node with state from pool.
+                # Rebind scratch GameState to avoid allocating a wrapper.
+                parent = descend_node
+                action_idx = descend_aidx
+                child = MCTSNode(num_players=num_players)
+                child.state_idx = state_pool.alloc_from_row(parent.state_idx)
+                scratch_gs.rebind(state_pool.row(child.state_idx), num_players)
+                status = DRIVER.apply_action(scratch_gs, action_idx)
+                assert status != STATUS_INVALID_PY, (
+                    f"MCTS expansion got STATUS_INVALID for action {action_idx}"
+                )
+                child.active_player_id = TURN.get_active_player(scratch_gs)
+                if status == STATUS_GAME_OVER_PY:
+                    child.is_terminal = True
+                    child.terminal_values = evaluator.evaluate_terminal(
+                        scratch_gs,
+                    )
+                else:
+                    # Pack legal actions directly into the eval batch
+                    # buffer at the slot this leaf will occupy when
+                    # queued. Newly created non-terminal children always
+                    # queue next (no virtual-backup / terminal / dedup
+                    # bailout applies), so len(pending) is the slot.
+                    # Zero the [n:] tail: the downstream torch.gather on
+                    # the eval server indexes the full K_MAX width before
+                    # masked_fill, so stale ids from a prior larger batch
+                    # would blow the dense-logits range.
+                    child.pending_phase = get_decision_phase_py(scratch_gs)
+                    n = enumerate_legal_actions_py(
+                        scratch_gs, legal_scratch,
+                    )
+                    child.pending_n = n
+                    slot = len(pending)
+                    pending_action_ids_buf[slot, :n] = legal_scratch[:n]
+                    pending_action_ids_buf[slot, n:] = 0
+                    pending_n_buf[slot] = n
+                parent.children[action_idx] = child
+                node = child
+            else:
+                assert outcome == DESCEND_EXISTING_LEAF
+                # Landed on a terminal or unexpanded (queued-for-eval) node.
+                node = descend_node
 
             # Terminal node: increment visits along path and backup values
             if node.is_terminal:

@@ -166,6 +166,80 @@ def select_child(node, float c_puct):
     return action_idx, array_idx
 
 
+# descend_path outcome codes. Exported so search.py can dispatch.
+DESCEND_NEED_NEW_CHILD = 0
+DESCEND_VIRTUAL_BACKUP = 1
+DESCEND_EXISTING_LEAF = 2
+
+
+def descend_path(root, float c_puct, list path_out):
+    """PUCT-descend from ``root`` until the descent must stop.
+
+    Fuses the per-level selection loop from ``run_search``. Each descent
+    step calls the C PUCT impl directly, appends ``(node, action_idx,
+    array_idx)`` to ``path_out``, and uses ``dict.get`` (one lookup)
+    rather than ``in``-then-``__getitem__`` (two lookups).
+
+    Args:
+        root: The search root MCTSNode.
+        c_puct: PUCT exploration constant.
+        path_out: Mutable list; one tuple appended per descent level.
+            Caller creates and owns it (cleared per iteration).
+
+    Returns:
+        ``(outcome, node, action_idx, array_idx)`` where outcome is one of:
+
+        - DESCEND_NEED_NEW_CHILD: ``node`` is the parent needing a new
+          child at ``(action_idx, array_idx)``. Its entry is the last
+          element of ``path_out``.
+        - DESCEND_VIRTUAL_BACKUP: ``node`` is the reuse-root whose child
+          at ``(action_idx, array_idx)`` needs a virtual backup. Only
+          fires at depth 0 (``is_root == True``). Its entry is the last
+          element of ``path_out``.
+        - DESCEND_EXISTING_LEAF: ``node`` is the leaf (terminal or
+          already queued-for-eval). ``action_idx`` and ``array_idx`` are
+          -1. The leaf's parent is the last element of ``path_out``.
+    """
+    cdef int action_idx, array_idx
+    cdef int parent_vc, active_player_id, child_vc
+    cdef bint is_root = True
+    cdef const int[:] legal_actions_view
+    cdef const float[:] priors_view
+    cdef const int[:] vc_view
+    cdef const float[:, :] vs_view
+    cdef object child
+
+    node = root
+    while node.expanded() and not node.is_terminal:
+        legal_actions_view = node.legal_actions
+        priors_view = node.priors
+        vc_view = node.visit_counts
+        vs_view = node.value_sums
+        active_player_id = node.active_player_id
+        parent_vc = node.visit_count
+
+        action_idx, array_idx = _select_child_impl(
+            legal_actions_view, priors_view, vc_view, vs_view,
+            active_player_id, parent_vc, c_puct,
+        )
+        path_out.append((node, action_idx, array_idx))
+
+        child = node.children.get(action_idx)
+        if child is None:
+            return (DESCEND_NEED_NEW_CHILD, node, action_idx, array_idx)
+
+        if is_root:
+            child_vc = child.visit_count
+            # Virtual backup: reuse-root hasn't caught up to child's real visits
+            if child_vc > 0 and vc_view[array_idx] < child_vc:
+                return (DESCEND_VIRTUAL_BACKUP, node, action_idx, array_idx)
+            is_root = False
+
+        node = child
+
+    return (DESCEND_EXISTING_LEAF, node, -1, -1)
+
+
 cdef void _backup_node(
     float[:] value_sum, float[:, :] value_sums,
     const int[:] visit_counts, int array_idx,
