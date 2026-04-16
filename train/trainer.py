@@ -368,6 +368,11 @@ class Trainer:
 
         total_loss.backward()
 
+        if self.config.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(), self.config.grad_clip,
+            )
+
         self.optimizer.step()
         self.scheduler.step()
         if self._aux_optimizer is not None:

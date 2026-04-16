@@ -140,6 +140,7 @@ class TrainingConfig:
     optimizer: str = "adamw"        # "adamw" or "muon"
     learning_rate: float = 1e-3
     weight_decay: float = 1e-3
+    grad_clip: float = 1.0          # global-norm clip; 0 disables
     training_steps_per_epoch: int = 1000
 
     # --- LR Schedule ---
@@ -272,6 +273,10 @@ class TrainingConfig:
         if self.optimizer not in ("adamw", "muon"):
             raise ValueError(
                 f"optimizer must be 'adamw' or 'muon', got {self.optimizer!r}"
+            )
+        if self.grad_clip < 0:
+            raise ValueError(
+                f"grad_clip must be >= 0 (0 disables), got {self.grad_clip}"
             )
 
         # Training fields
