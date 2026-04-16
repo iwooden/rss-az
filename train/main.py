@@ -827,8 +827,9 @@ def main() -> None:
                         config.training_steps_per_epoch,
                     )
                     for step in range(config.training_steps_per_epoch):
-                        batch = buffer.sample(config.batch_size, master_rng)
-                        losses = trainer.train_step(batch)
+                        losses = trainer.train_step(
+                            buffer, config.batch_size, master_rng,
+                        )
                         for k, v in losses.items():
                             shutdown_losses[k].append(v)
                         logger.update_training(step + 1, losses, trainer.lr)
@@ -966,18 +967,11 @@ def main() -> None:
                 )
 
                 for step in range(config.training_steps_per_epoch):
-                    batch = buffer.sample(config.batch_size, master_rng)
-
-                    # Detect NaN in training data (from self-play inference)
-                    for key, tensor in batch.items():
-                        if torch.isnan(tensor).any():
-                            nan_count = torch.isnan(tensor).sum().item()
-                            raise RuntimeError(
-                                f"NaN in batch['{key}'] at epoch {epoch_num} "
-                                f"step {step}: {nan_count} elements"
-                            )
-
-                    losses = trainer.train_step(batch)
+                    # train_step samples directly into pinned host scratch
+                    # and raises on NaN in policy / value targets.
+                    losses = trainer.train_step(
+                        buffer, config.batch_size, master_rng,
+                    )
                     for k, v in losses.items():
                         epoch_losses[k].append(v)
 

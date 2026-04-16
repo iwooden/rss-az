@@ -18,12 +18,15 @@ import torch
 import torch.nn.functional as F
 from torch._dynamo.decorators import mark_unbacked
 
+from core.actions import MAX_LEGAL_ACTIONS_PY
 from core.state import GameState, get_layout
 from core.token_data import TokenDataSize, get_num_tokens, get_token_data
 from nn.transformer import NUM_PHASES
 from train.config import TrainingConfig
+from train.replay_buffer import ReplayBuffer
 
 TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
+K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 
 # Matches core.data.DecisionPhase order (DPHASE_INVEST..DPHASE_IPO, 8 entries).
 # PAR was folded into IPO; ACQ_OFFER is a first-class decision phase.
@@ -56,6 +59,9 @@ class Trainer:
         # canonical num_players slot that rebind() validates against;
         # the backing array gets overwritten on first rebind().
         self._scratch_state: GameState = GameState(config.num_players)
+
+        # Lazy pinned host + device scratch (see _ensure_scratch).
+        self._scratch_cap: int = 0
 
         # --- Optimizer setup ---
         if config.optimizer == "muon":
@@ -150,81 +156,158 @@ class Trainer:
             if aux_groups else None
         )
 
-    def _build_token_batch(
-        self, states_cpu: torch.Tensor,
-    ) -> torch.Tensor:
-        """Materialize the (B, num_tokens, TOKEN_DIM) f32 token buffer.
+    def _ensure_scratch(self, n: int) -> None:
+        """Grow preallocated pinned-host + device scratch to fit ``n`` rows.
 
-        ``states_cpu`` is a contiguous int16 tensor of shape
-        ``(batch, state_size)``. For each row we rebind the scratch
-        GameState onto the row's backing memory and fill one slice of
-        the output buffer via the nogil ``get_token_data`` path.
+        Grows in powers of two so steady-state shrinks don't realloc. On
+        CUDA, host tensors are pinned so ``.copy_(non_blocking=True)``
+        genuinely async-ships. On CPU, device tensors alias the host
+        tensors and no H→D copy is needed.
+
+        Integer fields are stored as ``torch.long`` to match the model's
+        input contract — widening from the replay buffer's compact
+        dtypes (int8/int16/uint16) happens once on the CPU fill.
         """
-        batch = states_cpu.shape[0]
-        token_buf = np.empty(
-            (batch, self._num_tokens, TOKEN_DIM), dtype=np.float32,
-        )
-        states_np = states_cpu.numpy()  # zero-copy view of the int16 tensor
+        if n <= self._scratch_cap:
+            return
+        cap = max(n, max(self._scratch_cap * 2, 1))
+        pm = self.device.type == "cuda"
+        nt, td = self._num_tokens, TOKEN_DIM
+        N = self._num_players
+
+        # Raw states: CPU-only (consumed by get_token_data), never shipped.
+        self._states_np = np.empty((cap, self._state_size), dtype=np.int16)
+
+        # Pinned host (on CUDA). Exposed as numpy for buffer fills.
+        self._tok_h = torch.empty((cap, nt, td), dtype=torch.float32, pin_memory=pm)
+        self._tok_h_np = self._tok_h.numpy()
+        self._phase_h = torch.empty(cap, dtype=torch.long, pin_memory=pm)
+        self._phase_h_np = self._phase_h.numpy()
+        self._aid_h = torch.empty((cap, K_MAX), dtype=torch.long, pin_memory=pm)
+        self._aid_h_np = self._aid_h.numpy()
+        self._nl_h = torch.empty(cap, dtype=torch.long, pin_memory=pm)
+        self._nl_h_np = self._nl_h.numpy()
+        self._pt_h = torch.empty((cap, K_MAX), dtype=torch.float32, pin_memory=pm)
+        self._pt_h_np = self._pt_h.numpy()
+        self._vt_h = torch.empty((cap, N), dtype=torch.float32, pin_memory=pm)
+        self._vt_h_np = self._vt_h.numpy()
+
+        if pm:
+            self._tok_d = torch.empty(
+                (cap, nt, td), dtype=torch.float32, device=self.device,
+            )
+            self._phase_d = torch.empty(cap, dtype=torch.long, device=self.device)
+            self._aid_d = torch.empty(
+                (cap, K_MAX), dtype=torch.long, device=self.device,
+            )
+            self._nl_d = torch.empty(cap, dtype=torch.long, device=self.device)
+            self._pt_d = torch.empty(
+                (cap, K_MAX), dtype=torch.float32, device=self.device,
+            )
+            self._vt_d = torch.empty((cap, N), dtype=torch.float32, device=self.device)
+        else:
+            self._tok_d = self._tok_h
+            self._phase_d = self._phase_h
+            self._aid_d = self._aid_h
+            self._nl_d = self._nl_h
+            self._pt_d = self._pt_h
+            self._vt_d = self._vt_h
+
+        self._scratch_cap = cap
+
+    def _h2d(self, n: int) -> None:
+        """Async copy pinned host scratch [:n] into device scratch [:n].
+
+        No-op on CPU (host and device scratch alias the same tensors).
+        """
+        if self.device.type != "cuda":
+            return
+        self._tok_d[:n].copy_(self._tok_h[:n], non_blocking=True)
+        self._phase_d[:n].copy_(self._phase_h[:n], non_blocking=True)
+        self._aid_d[:n].copy_(self._aid_h[:n], non_blocking=True)
+        self._nl_d[:n].copy_(self._nl_h[:n], non_blocking=True)
+        self._pt_d[:n].copy_(self._pt_h[:n], non_blocking=True)
+        self._vt_d[:n].copy_(self._vt_h[:n], non_blocking=True)
+
+    def _fill_token_batch(self, n: int) -> None:
+        """Fill ``_tok_h_np[:n]`` from ``_states_np[:n]`` via get_token_data.
+
+        Rebinds the scratch GameState onto each row's backing int16
+        buffer; ``get_token_data`` is a nogil Cython kernel.
+        """
         scratch = self._scratch_state
         num_players = self._num_players
-        for i in range(batch):
-            # rebind zero-copies onto row i; canonical num_players slot is
-            # assumed present (replay buffer stored raw state arrays
-            # produced by self_play, which always carry it).
-            scratch.rebind(states_np[i], num_players)
-            get_token_data(scratch, token_buf[i])
-        return torch.from_numpy(token_buf)
+        for i in range(n):
+            scratch.rebind(self._states_np[i], num_players)
+            get_token_data(scratch, self._tok_h_np[i])
 
-    def train_step(self, batch: dict[str, torch.Tensor]) -> dict[str, float]:
-        """Execute a single training step.
+    def train_step(
+        self,
+        buffer: ReplayBuffer,
+        batch_size: int,
+        rng: np.random.Generator,
+    ) -> dict[str, float]:
+        """Sample a batch from ``buffer`` and execute one training step.
 
-        Args:
-            batch: dict with keys ``states`` (int16 ``(B, state_size)``),
-                ``phase_ids`` (int8 ``(B,)``), ``n_legals`` (int16 ``(B,)``),
-                ``action_ids`` (int16/uint16 reinterp ``(B, K_MAX)``),
-                ``policy_targets`` (float32 ``(B, K_MAX)`` zero-padded past
-                ``n_legal``), and ``value_targets`` (float32 ``(B, N)``).
-                Tensors on CPU; moved to device here.
+        Samples directly into the trainer's pinned host scratch so the
+        subsequent H→D copies are genuinely async (non_blocking=True
+        silently degrades to a blocking copy on pageable source memory).
+        Grows scratch on first call / when ``batch_size`` increases.
 
         Returns:
             dict with ``policy_loss``, ``value_loss``, ``total_loss`` as
-            floats, plus ``policy_loss_<phase>`` per decision phase bucket
-            present in the batch.
+            floats, plus ``policy_loss_<phase>`` per decision phase
+            bucket present in the batch.
         """
-        # Token buffer fill happens on CPU (get_token_data is a nogil Cython
-        # kernel — overlaps well with DataLoader worker parallelism).
-        states_cpu = batch["states"]
-        token_buf_cpu = self._build_token_batch(states_cpu)
+        self._ensure_scratch(batch_size)
+        B = batch_size
 
-        # non_blocking=True allows CPU work to overlap with DMA transfer.
-        nb = self.device.type == "cuda"
-        tokens = token_buf_cpu.to(self.device, non_blocking=nb)
-        phase_ids_cpu = batch["phase_ids"]
-        phase_ids = phase_ids_cpu.to(
-            self.device, non_blocking=nb, dtype=torch.long,
+        # Fill pinned host scratch directly from the replay buffer.
+        buffer.sample_into(
+            B, rng,
+            self._states_np[:B],
+            self._phase_h_np[:B],
+            self._nl_h_np[:B],
+            self._aid_h_np[:B],
+            self._pt_h_np[:B],
+            self._vt_h_np[:B],
         )
-        action_ids = batch["action_ids"].to(
-            self.device, non_blocking=nb, dtype=torch.long,
-        )  # (B, K_MAX) — int16 values fit losslessly in long
-        n_legals = batch["n_legals"].to(
-            self.device, non_blocking=nb, dtype=torch.long,
-        )
-        policy_targets = batch["policy_targets"].to(self.device, non_blocking=nb)
-        value_targets = batch["value_targets"].to(self.device, non_blocking=nb)
+
+        # NaN in any training target is a self-play inference bug —
+        # fail loudly before it corrupts gradients.
+        for name, arr in (
+            ("policy_targets", self._pt_h_np[:B]),
+            ("value_targets", self._vt_h_np[:B]),
+        ):
+            if np.isnan(arr).any():
+                raise RuntimeError(
+                    f"NaN in sampled '{name}' at step {self._global_step}"
+                )
+
+        # Tokenize states into pinned host tokens buffer.
+        self._fill_token_batch(B)
+
+        # Async H→D on CUDA; aliased no-op on CPU.
+        self._h2d(B)
+
+        tokens = self._tok_d[:B]
+        phase_ids = self._phase_d[:B]
+        action_ids = self._aid_d[:B]
+        n_legals = self._nl_d[:B]
+        policy_targets = self._pt_d[:B]
+        value_targets = self._vt_d[:B]
 
         # Build per-phase row indices on host so the model's policy gather
-        # uses index_select / index_copy_ instead of boolean masking.
-        # Boolean masking reads the mask's true-count back to host to size
-        # the intermediate, forcing one H←D sync per phase × 8 phases =
-        # 8 syncs per forward. mark_unbacked keeps torch.compile from
-        # specializing on per-phase row counts (which would blow the
-        # recompile limit on training batches).
-        phase_view = phase_ids_cpu.numpy()
+        # uses index_select / index_copy_ instead of boolean masking
+        # (which forces one H←D sync per phase × 8 phases per forward).
+        # mark_unbacked keeps torch.compile from specializing on per-phase
+        # row counts (which would blow the recompile limit).
+        phase_view = self._phase_h_np[:B]
         phase_indices: list[torch.Tensor] = []
         for _p in range(NUM_PHASES):
             _idx_np = np.nonzero(phase_view == _p)[0].astype(np.int64, copy=False)
             _t = torch.from_numpy(_idx_np)
-            if nb:
+            if self.device.type == "cuda":
                 _t = _t.to(self.device, non_blocking=True)
             mark_unbacked(_t, 0)
             phase_indices.append(_t)

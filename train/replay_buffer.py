@@ -157,6 +157,37 @@ class ReplayBuffer:
             "value_targets": torch.from_numpy(self._value_targets[indices]),
         }
 
+    def sample_into(
+        self,
+        batch_size: int,
+        rng: np.random.Generator,
+        states_out: np.ndarray,
+        phase_ids_out: np.ndarray,
+        n_legals_out: np.ndarray,
+        action_ids_out: np.ndarray,
+        policy_targets_out: np.ndarray,
+        value_targets_out: np.ndarray,
+    ) -> None:
+        """Fill caller-provided arrays with a random batch.
+
+        Unlike ``sample``, this writes directly into existing buffers —
+        used by the trainer to fill pinned host scratch, so the
+        subsequent H→D copy is genuinely async. Integer outputs may be
+        wider than the stored dtype (e.g. int64); widening happens
+        during the fancy-index copy.
+        """
+        if batch_size > self._size:
+            raise ValueError(
+                f"batch_size ({batch_size}) exceeds buffer size ({self._size})"
+            )
+        indices = rng.choice(self._size, size=batch_size, replace=False)
+        states_out[:] = self._states[indices]
+        phase_ids_out[:] = self._phase_ids[indices]
+        n_legals_out[:] = self._n_legals[indices]
+        action_ids_out[:] = self._action_ids[indices]
+        policy_targets_out[:] = self._policy_targets[indices]
+        value_targets_out[:] = self._value_targets[indices]
+
     def __len__(self) -> int:
         return self._size
 
