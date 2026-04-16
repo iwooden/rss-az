@@ -17,3 +17,5 @@ cdef void _virtual_backup_node(
     int[:] visit_counts, int array_idx,
     const float[:] child_q, int num_players,
 ) noexcept nogil
+
+cdef bint _all_col0_neg_inf(const float[:, :] value_sums) noexcept nogil

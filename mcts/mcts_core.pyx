@@ -5,7 +5,7 @@ eliminating numpy/torch dispatch overhead for small arrays where the
 overhead dominates actual computation.
 """
 
-from libc.math cimport sqrtf
+from libc.math cimport sqrtf, isinf
 from libc.stdint cimport int8_t, int16_t, uint16_t, uint64_t
 from libc.string cimport memcpy
 
@@ -208,6 +208,27 @@ cdef void _virtual_backup_node(
             value_sums[array_idx, p] = child_q[p]
         else:
             value_sums[array_idx, p] = value_sums[array_idx, p] + child_q[p]
+
+
+cdef bint _all_col0_neg_inf(const float[:, :] value_sums) noexcept nogil:
+    """Return 1 iff value_sums[i, 0] == -inf for every row i.
+
+    Used to detect the 'all sibling edges locked' condition in MCTS leaf
+    batching without paying numpy dispatch for a <~K-element reduction.
+    """
+    cdef int n = value_sums.shape[0]
+    cdef int i
+    cdef float v
+    for i in range(n):
+        v = value_sums[i, 0]
+        if not (isinf(v) and v < 0.0):
+            return 0
+    return 1
+
+
+def all_col0_neg_inf(const float[:, :] value_sums):
+    """Python-callable wrapper around _all_col0_neg_inf."""
+    return _all_col0_neg_inf(value_sums) != 0
 
 
 def virtual_backup(root, child, int array_idx):

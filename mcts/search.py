@@ -29,6 +29,7 @@ from mcts.mcts_core import (
     backup as _backup,
     increment_visits as _increment_visits,
     virtual_backup as _virtual_backup,
+    all_col0_neg_inf as _all_col0_neg_inf,
 )
 from core.actions import (
     get_decision_phase_py,
@@ -159,7 +160,7 @@ def _propagate_lock(path: _Path, neg_inf_row: np.ndarray) -> None:
         node_j = path[j][0]
         assert node_j.value_sums is not None
         # Check if ALL outgoing edges from this node are locked
-        if not np.all(node_j.value_sums[:, 0] == -np.inf):
+        if not _all_col0_neg_inf(node_j.value_sums):
             return
         if j == 0:
             return  # root is fully locked, can't propagate further
@@ -455,7 +456,7 @@ def run_search(
 
             # Early termination: all root edges locked, no more useful search
             assert root.value_sums is not None
-            if np.all(root.value_sums[:, 0] == -np.inf):
+            if _all_col0_neg_inf(root.value_sums):
                 break
 
         # Batch evaluate all pending leaves using raw arrays (no GameState needed)
