@@ -98,7 +98,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--optimizer", type=str, choices=["adamw", "muon"],
-        help="Optimizer type (default: adamw)",
+        help="Optimizer type (default: muon)",
     )
     parser.add_argument(
         "--grad-clip", type=float,

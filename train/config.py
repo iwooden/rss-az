@@ -137,7 +137,7 @@ class TrainingConfig:
 
     # --- Training ---
     batch_size: int = 256
-    optimizer: str = "adamw"        # "adamw" or "muon"
+    optimizer: str = "muon"         # "adamw" or "muon"
     learning_rate: float = 1e-3
     weight_decay: float = 1e-3
     grad_clip: float = 1.0          # global-norm clip; 0 disables
