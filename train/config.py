@@ -139,7 +139,7 @@ class TrainingConfig:
     batch_size: int = 256
     optimizer: str = "muon"         # "adamw" or "muon"
     learning_rate: float = 1e-3
-    weight_decay: float = 1e-3
+    weight_decay: float = 1e-2
     grad_clip: float = 1.0          # global-norm clip; 0 disables
     training_steps_per_epoch: int = 1000
 
