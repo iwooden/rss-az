@@ -103,9 +103,12 @@ WSL2 on Windows. AMD Ryzen 9 9950X3D (32 cores). AMD Radeon RX 9070 XT (ROCm 7.2
 
 # Agent Instructions
 
-Issue tracking: **bd** (beads). `bd onboard` for the full guide.
+Issue tracking: **bd** (beads). `bd prime` is the authoritative workflow reference — the `SessionStart` hook runs it automatically, so treat its output as source of truth for commands and the session-close protocol.
 
 - File beads issues for any out-of-scope discoveries. **No insights lost.** Always include `--description` — a title alone is not enough.
 - Use `bd create --parent=<id>` for related subtasks (dot-notation ids), independent issues for unrelated bugs.
+- Claim work with `bd update <id> --claim` (the old `--status=in_progress` still works but `--claim` is preferred).
+- Remote sync is `bd dolt pull` / `bd dolt push` (the old `bd sync` no longer exists).
+- Persistent cross-session knowledge lives in `bd remember "insight"` / `bd memories <keyword>`, injected by `bd prime`. Prefer this over ad-hoc MEMORY.md files for project-wide context.
 - **Ad-hoc scripts:** write to `scratchpad/` (gitignored), iterate with `Edit`, run with `PYTHONPATH=/home/icebreaker/rss-az-cython2 .venv/bin/python scratchpad/<script>.py`. Don't inline 100-line scripts in Bash.
-- **Session close:** follow the beads protocol from the session-start hook. Minimum gate is a clean + `build_ext`. This branch is ephemeral (no upstream) — code is merged to `main` locally, not pushed.
+- **Session close:** follow the protocol from `bd prime`. Minimum gate is a clean + `build_ext`. This branch is ephemeral (no upstream) — code is merged to `main` locally, not pushed.
