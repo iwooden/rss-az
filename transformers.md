@@ -84,7 +84,7 @@ Entity-readout policy heads (+ full ACQUISITION pair head) + value head
 | num_heads | 2 | Default in `TransformerConfig` |
 | num_layers | 10 | Enough depth for multi-hop reasoning |
 | ff_mult | 3.0 | SwiGLU FFN inner dim = ceil(ff_mult * d_model) |
-| d_bilinear | 64 | Hidden width for the ACQUISITION pair-feature policy head |
+| acq_rank | 4 | Per-offset bilinear rank for the ACQUISITION pair-feature policy head |
 | token_dim | 97 | Fixed width, zero-padded to uniform size across all token types. Sourced from `core.token_data.TokenDataSize.TOKEN_DIM` so the model and the Cython extractor can't drift out of sync. |
 
 **No positional encoding over token order.** Permutation equivariance is a feature, not a bug. Token order is fixed for implementation convenience, but entity identity should come from explicit player/corp/company ID features (and the per-type projection, which already puts each token type in its own subspace of `d_model`), not from sequence position.
@@ -202,14 +202,15 @@ self.dividend_head  = nn.Sequential(nn.Linear(d_model, d_model // 2), nn.GELU(),
 self.issue_head     = nn.Linear(d_model, 1)  # issue (pass comes from Pass token)
 self.acq_offer_head = nn.Linear(d_model, 1)  # buy logit (pass from pass_head)
 
-# ACQUISITION: shared corp/company pair features → 52 logits per pair
-self.acquisition_corp_proj    = nn.Linear(d_model, dk)
-self.acquisition_company_proj = nn.Linear(d_model, dk)
-self.acquisition_pair_head    = nn.Sequential(
-    nn.Linear(3 * dk, dk),
-    nn.GELU(),
-    nn.Linear(dk, 52),  # 51 price offsets + FI buy
-)
+# ACQUISITION: per-offset low-rank bilinear on corp × company + additive unary paths
+#   score(c, t, p) = (corp_h[c] @ U[p]) · (comp_h[t] @ V[p])          # bilinear
+#                  + W_corp[p] · corp_h[c] + W_comp[p] · comp_h[t]    # unary fallback
+# Each of the 52 offsets (51 price offsets + FI buy) gets its own rank-r
+# interaction pattern instead of sharing a single GELU bottleneck.
+self.acquisition_U            = nn.Parameter(torch.empty(52, d_model, r))
+self.acquisition_V            = nn.Parameter(torch.empty(52, d_model, r))
+self.acquisition_corp_bias    = nn.Linear(d_model, 52)
+self.acquisition_company_bias = nn.Linear(d_model, 52)
 
 # IPO: per-corp readout directly from corp tokens
 self.corp_ipo_head = nn.Sequential(

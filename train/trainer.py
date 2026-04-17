@@ -124,7 +124,11 @@ class Trainer:
                 if not param.requires_grad:
                     continue
                 is_norm = isinstance(module, (torch.nn.LayerNorm, torch.nn.RMSNorm))
-                if param.ndim >= 2 and not is_norm:
+                # Muon only supports 2D matrix params. Stacked (3D+) tensors —
+                # e.g. the per-offset ACQ bilinear factors — go to AdamW decay:
+                # Newton-Schulz orthogonalization across the stack axis isn't
+                # what Muon means by "matrix."
+                if param.ndim == 2 and not is_norm:
                     muon_params.append(param)
                 elif is_norm or pname == "bias":
                     adam_no_decay.append(param)

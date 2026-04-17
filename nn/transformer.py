@@ -57,7 +57,7 @@ class TransformerConfig:
     num_heads: int = 2
     num_layers: int = 10
     ff_mult: float = 3.0  # FFN inner dimension = ceil(ff_mult * d_model)
-    d_bilinear: int = 64   # Hidden width for the unified ACQ pair-feature policy head
+    acq_rank: int = 4      # Per-offset bilinear rank for the ACQ pair-feature policy head
 
     # Raw feature width per token (zero-padded to same size across types).
     # Sourced from core.token_data so the model and the Cython extractor
@@ -216,23 +216,23 @@ class RSSTransformerNet(nn.Module):
         self.acq_offer_head = nn.Linear(d, 1)  # buy logit (pass from pass_head)
 
         # ACQUISITION is also likely to change once the sparse candidate-scoring
-        # path is implemented. For now, we build a shared feature for each
-        # (corp, company) pair, then read the 52 offset/FI-buy logits from that
-        # pair representation.
+        # path is implemented. For now we score the full (corp, company, offset)
+        # space with a per-offset low-rank bilinear form:
         #
-        # A lower-rank trilinear alternative would be:
-        #   score(c, t, p) = sum_r q_c[r] * k_t[r] * e_p[r]
-        # with corp/company projections q_c and k_t plus a learned price
-        # embedding e_p. That is smaller, but less expressive than the current
-        # pair-feature head.
-        dk = cfg.d_bilinear
-        self.acquisition_corp_proj = nn.Linear(d, dk)
-        self.acquisition_company_proj = nn.Linear(d, dk)
-        self.acquisition_pair_head = nn.Sequential(
-            nn.Linear(3 * dk, dk),
-            nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(dk, 52),  # 51 price offsets + FI buy
-        )
+        #   score(c, t, p) = (corp_h[c] @ U[p]) . (comp_h[t] @ V[p])       (bilinear)
+        #                  + W_corp[p] . corp_h[c]                        (corp-only)
+        #                  + W_comp[p] . comp_h[t]                        (company-only)
+        #
+        # Each of the 52 offsets gets its own rank-r interaction pattern (U_p, V_p),
+        # so offset-specific attention over corp/company features is learnable
+        # instead of being crammed through a single shared GELU bottleneck. The
+        # additive unary paths keep the score well-defined when either side's
+        # representation is weak (pure-multiplicative scores collapse there).
+        r = cfg.acq_rank
+        self.acquisition_U = nn.Parameter(torch.empty(52, d, r))
+        self.acquisition_V = nn.Parameter(torch.empty(52, d, r))
+        self.acquisition_corp_bias = nn.Linear(d, 52)
+        self.acquisition_company_bias = nn.Linear(d, 52)
 
         # IPO now reads par-price logits directly from each corp token. This is
         # a cleaner entity-readout signal than routing the decision through the
@@ -323,12 +323,18 @@ class RSSTransformerNet(nn.Module):
     def _policy_acquisition(self, t: torch.Tensor) -> torch.Tensor:
         """ACQUISITION: pass(1) + corp*company*offset(8*36*52=14976) = 14977."""
         pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
-        corp_h = self.acquisition_corp_proj(t[:, self._corp_slice])           # (n, 8, dk)
-        comp_h = self.acquisition_company_proj(t[:, self._company_slice])     # (n, 36, dk)
-        corp_h = corp_h.unsqueeze(2).expand(-1, -1, 36, -1)                   # (n, 8, 36, dk)
-        comp_h = comp_h.unsqueeze(1).expand(-1, 8, -1, -1)                    # (n, 8, 36, dk)
-        pair_h = torch.cat([corp_h, comp_h, corp_h * comp_h], dim=-1)         # (n, 8, 36, 3*dk)
-        acquisition = self.acquisition_pair_head(pair_h)                      # (n, 8, 36, 52)
+        corp_h = t[:, self._corp_slice]                                       # (n, 8, d)
+        comp_h = t[:, self._company_slice]                                    # (n, 36, d)
+        # Per-offset low-rank bilinear score: factor through a rank-r bottleneck
+        # instead of materializing the dense (n, 8, 36, 3*dk) pair cat. Peak
+        # transient drops from ~3*dk wide down to two (n, 8|36, 52, r) projection
+        # buffers and the (n, 8, 36, 52) output.
+        corp_proj = torch.einsum('ncd,pdr->ncpr', corp_h, self.acquisition_U) # (n, 8, 52, r)
+        comp_proj = torch.einsum('ntd,pdr->ntpr', comp_h, self.acquisition_V) # (n, 36, 52, r)
+        bilin = torch.einsum('ncpr,ntpr->nctp', corp_proj, comp_proj)         # (n, 8, 36, 52)
+        corp_bias = self.acquisition_corp_bias(corp_h)                        # (n, 8, 52)
+        comp_bias = self.acquisition_company_bias(comp_h)                     # (n, 36, 52)
+        acquisition = bilin + corp_bias.unsqueeze(2) + comp_bias.unsqueeze(1) # (n, 8, 36, 52)
         # flatten(1): reshape(n, -1) is ambiguous for empty (n=0) tensors.
         return torch.cat([pass_logit, acquisition.flatten(1)], dim=-1)
 
@@ -505,6 +511,11 @@ class RSSTransformerNet(nn.Module):
         # Pass token: small-random learned anchor (BERT [CLS] convention).
         nn.init.trunc_normal_(self.pass_embed, std=0.02)
 
+        # ACQ bilinear factors: same std as Linear weights. `_init_weights`
+        # sweeps `nn.Linear` modules only, so raw parameters need explicit init.
+        nn.init.trunc_normal_(self.acquisition_U, std=0.02)
+        nn.init.trunc_normal_(self.acquisition_V, std=0.02)
+
         # Zero-init residual outputs so each block starts as identity
         for block in self.blocks:
             assert isinstance(block, TransformerBlock)
@@ -528,7 +539,7 @@ if __name__ == "__main__":
 
     print(f"Transformer model: {cfg.num_players}p")
     print(f"  d_model={cfg.d_model}, heads={cfg.num_heads}, "
-          f"layers={cfg.num_layers}, d_ff={math.ceil(cfg.ff_mult * cfg.d_model)}, d_bilinear={cfg.d_bilinear}")
+          f"layers={cfg.num_layers}, d_ff={math.ceil(cfg.ff_mult * cfg.d_model)}, acq_rank={cfg.acq_rank}")
     print(f"  tokens={cfg.num_tokens}, token_dim={cfg.token_dim}")
     print(f"  Trainable parameters: {total:,}")
     print()
@@ -550,11 +561,11 @@ if __name__ == "__main__":
         model.pass_head, model.company_auction_head, model.corp_trade_head,
         model.company_close_head, model.auction_raise_head, model.dividend_head,
         model.issue_head, model.acq_offer_head,
-        model.acquisition_corp_proj, model.acquisition_company_proj,
-        model.acquisition_pair_head,
+        model.acquisition_corp_bias, model.acquisition_company_bias,
         model.corp_ipo_head,
     ]
     policy_params = sum(sum(p.numel() for p in m.parameters()) for m in policy_modules)
+    policy_params += model.acquisition_U.numel() + model.acquisition_V.numel()
     value_params = sum(p.numel() for p in model.value_head.parameters())
 
     print("Parameter breakdown:")
