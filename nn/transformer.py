@@ -402,7 +402,10 @@ class RSSTransformerNet(nn.Module):
             softmax.
         """
         B, K = action_ids.shape
-        out = tokens.new_full((B, K), -1e9)
+        # Explicit fp32 rather than tokens.new_full: sentinels need no
+        # precision, and a fixed dtype avoids a silent coupling to whatever
+        # autocast leaves `tokens` as post-final_norm.
+        out = torch.full((B, K), -1e9, dtype=torch.float32, device=tokens.device)
 
         # No `if not mask.any(): continue` early-exit: that path forces a
         # GPU→CPU sync (8 per forward) which dominates eval latency on
