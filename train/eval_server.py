@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import copy
 import queue as _queue
+import threading
 from time import perf_counter
 from typing import Any
 
@@ -411,14 +412,26 @@ def _eval_server_serve(
     partition_size = worker_end - worker_start
     max_batch = partition_size * shared_bufs.batch_size
 
+    # Ping-pong depth for pinned I/O buffers. While the GPU computes batch
+    # N and the scatter thread reads slot N's pinned outputs, the main loop
+    # writes slot N+1's pinned inputs. A single event per slot, recorded
+    # after the D→H copies, covers both the input (H→D read of pin_s[slot])
+    # and output (D→H write of pin_priors[slot]) halves.
+    buf_depth = 2 if use_cuda else 1
+
     # --- Inputs: pinned CPU + GPU side ---
-    pin_s = torch.empty(
-        max_batch, num_tokens, token_dim,
-        dtype=torch.float32, pin_memory=use_cuda,
-    )
-    pin_s_np = pin_s.numpy()
+    pin_s_list = [
+        torch.empty(
+            max_batch, num_tokens, token_dim,
+            dtype=torch.float32, pin_memory=use_cuda,
+        )
+        for _ in range(buf_depth)
+    ]
+    pin_s_np_list = [p.numpy() for p in pin_s_list]
     # Flat 2-D view for the row-agnostic Cython memcpy gather.
-    pin_s_flat_np = pin_s_np.reshape(max_batch, num_tokens * token_dim)
+    pin_s_flat_np_list = [
+        p.reshape(max_batch, num_tokens * token_dim) for p in pin_s_np_list
+    ]
     gpu_s = torch.empty(
         max_batch, num_tokens, token_dim, dtype=torch.float32, device=device,
     )
@@ -430,38 +443,51 @@ def _eval_server_serve(
     # n_legals=0 (which masks the row out via the model's invalid mask).
     # Phase ids stay host-only: they feed ``phase_indices`` construction on
     # the CPU (one nonzero per phase), which is async-shipped to the GPU.
-    pin_phase_ids = torch.empty(max_batch, dtype=torch.int8, pin_memory=use_cuda)
-    pin_phase_ids_np = pin_phase_ids.numpy()
+    pin_phase_ids_list = [
+        torch.empty(max_batch, dtype=torch.int8, pin_memory=use_cuda)
+        for _ in range(buf_depth)
+    ]
+    pin_phase_ids_np_list = [p.numpy() for p in pin_phase_ids_list]
 
-    pin_action_ids = torch.empty(
-        max_batch, k_max, dtype=torch.int16, pin_memory=use_cuda,
-    )
-    pin_action_ids_np = pin_action_ids.numpy()
+    pin_action_ids_list = [
+        torch.empty(max_batch, k_max, dtype=torch.int16, pin_memory=use_cuda)
+        for _ in range(buf_depth)
+    ]
+    pin_action_ids_np_list = [p.numpy() for p in pin_action_ids_list]
     gpu_action_ids = torch.zeros(
         max_batch, k_max, dtype=torch.int16, device=device,
     )
 
-    pin_n_legals = torch.empty(max_batch, dtype=torch.int16, pin_memory=use_cuda)
-    pin_n_legals_np = pin_n_legals.numpy()
+    pin_n_legals_list = [
+        torch.empty(max_batch, dtype=torch.int16, pin_memory=use_cuda)
+        for _ in range(buf_depth)
+    ]
+    pin_n_legals_np_list = [p.numpy() for p in pin_n_legals_list]
     gpu_n_legals = torch.zeros(max_batch, dtype=torch.int16, device=device)
 
     # --- Outputs: pinned CPU + GPU side ---
     # Priors are (max_batch, K_MAX) f32 (sparse, already softmaxed on GPU).
     # This REPLACES the old (max_batch, MAX_ACTION_SIZE=14977) logits buffer.
-    pin_priors = torch.empty(
-        max_batch, k_max, dtype=torch.float32, pin_memory=use_cuda,
-    )
-    pin_priors_np = pin_priors.numpy()
+    pin_priors_list = [
+        torch.empty(
+            max_batch, k_max, dtype=torch.float32, pin_memory=use_cuda,
+        )
+        for _ in range(buf_depth)
+    ]
+    pin_priors_np_list = [p.numpy() for p in pin_priors_list]
     gpu_priors = torch.empty(
         max_batch, k_max, dtype=torch.float32, device=device,
     )
 
-    pin_val = torch.empty(max_batch, npl, dtype=torch.float32, pin_memory=use_cuda)
-    pin_val_np = pin_val.numpy()
+    pin_val_list = [
+        torch.empty(max_batch, npl, dtype=torch.float32, pin_memory=use_cuda)
+        for _ in range(buf_depth)
+    ]
+    pin_val_np_list = [p.numpy() for p in pin_val_list]
     gpu_val = torch.empty(max_batch, npl, dtype=torch.float32, device=device)
 
     stats: EvalServerStats | None = EvalServerStats() if profile else None
-    _tp = _ti = 0.0
+    _tp = 0.0
 
     # Cython gather/scatter helpers (nogil memcpy, no per-worker Python loop).
     from mcts.mcts_core import (
@@ -497,22 +523,98 @@ def _eval_server_serve(
     _widx_buf = np.empty(partition_size, dtype=np.int32)
     _cnt_buf = np.empty(partition_size, dtype=np.int32)
 
+    # --- Async-completion infrastructure ---------------------------------
+    # The scatter thread takes the blocking cuda.synchronize() and per-worker
+    # done_events[...].set() burst off the main serve loop's critical path.
+    # Profiling before this change showed 70% of wall time in synchronize
+    # and 14% in notify_all — both of which are now pipelined behind batch
+    # N+1's input prep and GPU launch.
+    #
+    # Slot ownership:
+    #   main thread  — writes pin_*[slot] inputs, launches GPU work,
+    #                  records a CUDA event after the D→H copies, hands
+    #                  the slot off via _scatter_jobs.
+    #   scatter thr  — event.synchronize() (releases GIL → main runs free),
+    #                  reads pin_priors[slot]/pin_val[slot] into shared
+    #                  memory, sets per-worker done_events, returns the
+    #                  slot via _free_slots.
+    #
+    # The single recorded event covers BOTH halves of the slot's lifetime:
+    # the H→D copies must have completed (GPU copy engine finished reading
+    # pin_s[slot]) before the model forward could run, and the D→H copies
+    # must have completed before the event was visible. So by the time the
+    # scatter thread wakes, pin_s[slot] is safe to overwrite AND
+    # pin_priors[slot]/pin_val[slot] are fully populated.
+    _free_slots: _queue.Queue[int] = _queue.Queue(maxsize=buf_depth)
+    for _i in range(buf_depth):
+        _free_slots.put(_i)
+    # Sentinel `None` tells the scatter thread to exit.
+    _scatter_jobs: _queue.Queue[Any] = _queue.Queue()
+    # Serializes stats access between main (record_idle, copy+reset) and
+    # scatter thread (record_batch).
+    _stats_lock = threading.Lock()
+
+    def _scatter_worker() -> None:
+        while True:
+            job = _scatter_jobs.get()
+            if job is None:
+                return
+            (event, slot, widx_copy, cnts_copy, n_req, total_n,
+             start_ti) = job
+            if event is not None:
+                event.synchronize()
+            _scatter_results(
+                pin_priors_np_list[slot].view(np.int8), pin_val_np_list[slot],
+                all_priors_np.view(np.int8), all_values_np,
+                widx_copy, cnts_copy, n_req, priors_row_bytes,
+            )
+            for i in range(n_req):
+                done_events[widx_copy[i]].set()
+            if stats is not None:
+                with _stats_lock:
+                    stats.record_batch(total_n, perf_counter() - start_ti)
+            _free_slots.put(slot)
+
+    _scatter_thread = threading.Thread(
+        target=_scatter_worker, name=f"eval-scatter-{server_id}", daemon=True,
+    )
+    _scatter_thread.start()
+
     # --- Shared helpers (closures over setup state) ---
 
     def _infer_and_scatter(widx: np.ndarray, cnts: np.ndarray,
                            n_req: int, padded_n: int = 0) -> int:
-        """Gather inputs, run GPU inference + gather+softmax, scatter sparse priors.
+        """Gather inputs, launch GPU inference, hand off to scatter thread.
+
+        Blocks on _free_slots.get() when all buf_depth slots are in flight;
+        this is the backpressure that keeps the pipeline at depth
+        ``buf_depth`` instead of letting the main loop run arbitrarily
+        far ahead of the GPU.
 
         Args:
-            widx: Worker indices array (length n_req).
-            cnts: Per-worker state counts (length n_req).
+            widx: Worker indices array (length n_req). Copied before return.
+            cnts: Per-worker state counts (length n_req). Copied before return.
             n_req: Number of workers in this batch.
             padded_n: GPU batch size (0 = use actual total_n, no padding).
 
         Returns:
             total_n: Actual number of states processed.
         """
-        nonlocal _ti
+        # Acquire a free ping-pong slot. Blocks until the scatter thread
+        # finishes processing an in-flight slot (the GPU sync happens
+        # there, not here).
+        slot = _free_slots.get()
+
+        pin_s_slot = pin_s_list[slot]
+        pin_s_flat_np = pin_s_flat_np_list[slot]
+        pin_phase_ids_np = pin_phase_ids_np_list[slot]
+        pin_action_ids_slot = pin_action_ids_list[slot]
+        pin_action_ids_np = pin_action_ids_np_list[slot]
+        pin_n_legals_slot = pin_n_legals_list[slot]
+        pin_n_legals_np = pin_n_legals_np_list[slot]
+        pin_priors_slot = pin_priors_list[slot]
+        pin_val_slot = pin_val_list[slot]
+
         # Gather all four inputs into the pinned buffers via Cython memcpy.
         total_n = _gather_states(
             pin_s_flat_np, all_states_np, widx, cnts, n_req,
@@ -529,13 +631,17 @@ def _eval_server_serve(
         if padded_n == 0:
             padded_n = total_n
 
-        if stats is not None:
-            _ti = perf_counter()
+        start_ti = perf_counter() if stats is not None else 0.0
+
+        # Snapshot widx/cnts — the caller reuses these arrays for the next
+        # drain, so the scatter thread must work from its own copy.
+        widx_copy = widx[:n_req].copy()
+        cnts_copy = cnts[:n_req].copy()
 
         gpu_s_batch = gpu_s[:padded_n]
-        gpu_s_batch[:total_n].copy_(pin_s[:total_n], non_blocking=True)
-        gpu_action_ids[:total_n].copy_(pin_action_ids[:total_n], non_blocking=True)
-        gpu_n_legals[:total_n].copy_(pin_n_legals[:total_n], non_blocking=True)
+        gpu_s_batch[:total_n].copy_(pin_s_slot[:total_n], non_blocking=True)
+        gpu_action_ids[:total_n].copy_(pin_action_ids_slot[:total_n], non_blocking=True)
+        gpu_n_legals[:total_n].copy_(pin_n_legals_slot[:total_n], non_blocking=True)
         # Padded tail [total_n:padded_n] is permanently zero (see allocation).
 
         # Build per-phase row indices on host so the model's policy gather
@@ -576,29 +682,42 @@ def _eval_server_serve(
             gpu_priors[:total_n] = logits_sparse[:total_n].softmax(dim=1).to(torch.float32)
             gpu_val[:total_n] = values[:total_n].to(torch.float32)
 
-            pin_priors[:total_n].copy_(gpu_priors[:total_n], non_blocking=True)
-            pin_val[:total_n].copy_(gpu_val[:total_n], non_blocking=True)
-            if use_cuda:
-                torch.cuda.synchronize()
+            pin_priors_slot[:total_n].copy_(gpu_priors[:total_n], non_blocking=True)
+            pin_val_slot[:total_n].copy_(gpu_val[:total_n], non_blocking=True)
 
-        if stats is not None:
-            stats.record_batch(total_n, perf_counter() - _ti)
-
-        _scatter_results(
-            pin_priors_np.view(np.int8), pin_val_np,
-            all_priors_np.view(np.int8), all_values_np,
-            widx, cnts, n_req, priors_row_bytes,
-        )
-        for i in range(n_req):
-            done_events[widx[i]].set()
+        if use_cuda:
+            event = torch.cuda.Event()
+            event.record()
+            _scatter_jobs.put((
+                event, slot, widx_copy, cnts_copy, n_req, total_n, start_ti,
+            ))
+        else:
+            # CPU path: no event, scatter inline to keep semantics simple.
+            _scatter_results(
+                pin_priors_np_list[slot].view(np.int8), pin_val_np_list[slot],
+                all_priors_np.view(np.int8), all_values_np,
+                widx_copy, cnts_copy, n_req, priors_row_bytes,
+            )
+            for i in range(n_req):
+                done_events[widx_copy[i]].set()
+            if stats is not None:
+                stats.record_batch(total_n, perf_counter() - start_ti)
+            _free_slots.put(slot)
         return total_n
 
     def _check_stats_report() -> None:
-        """Send stats to main process if requested."""
+        """Send stats to main process if requested.
+
+        Held under ``_stats_lock`` so the scatter thread's in-flight
+        ``record_batch`` calls can't interleave a half-updated state into
+        the snapshot or get lost across the reset.
+        """
         if stats_report_event is not None and stats_report_event.is_set():
-            stats_queue.put(copy.copy(stats))
-            if stats is not None:
-                stats.reset()
+            with _stats_lock:
+                snap = copy.copy(stats)
+                if stats is not None:
+                    stats.reset()
+            stats_queue.put(snap)
             stats_report_event.clear()
 
     def _idle_wait() -> None:
@@ -687,7 +806,8 @@ def _eval_server_serve(
             # Idle / doorbell handling.
             if _accum_n == 0:
                 if num_drained == 0 and stats is not None:
-                    stats.record_idle(perf_counter() - _tp)
+                    with _stats_lock:
+                        stats.record_idle(perf_counter() - _tp)
                 _check_stats_report()
                 _idle_wait()
             else:
@@ -709,7 +829,8 @@ def _eval_server_serve(
 
             if num_requests == 0:
                 if stats is not None:
-                    stats.record_idle(perf_counter() - _tp)
+                    with _stats_lock:
+                        stats.record_idle(perf_counter() - _tp)
                 _check_stats_report()
                 _idle_wait()
                 continue
@@ -719,6 +840,13 @@ def _eval_server_serve(
                 num_requests,
             )
             _check_stats_report()
+
+    # Drain the scatter thread: any batches launched before stop_event was
+    # observed must finish their notify so workers aren't left stuck on
+    # done_events.wait(). The sentinel tells the thread to exit once it's
+    # worked through the queue.
+    _scatter_jobs.put(None)
+    _scatter_thread.join()
 
     if _autocast_ctx is not None:
         _autocast_ctx.__exit__(None, None, None)
