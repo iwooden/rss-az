@@ -37,7 +37,9 @@ def _make_acq_offer_accept_state():
     state.initialize_game(3, seed=42)
 
     fi_co = draw_to_fi(state)
-    float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
+    # Use a valid FI-preemption setup: preemptor and original buyer have
+    # different presidents.
+    float_corp_for_test(state, corp_id=0, player_id=1, par_index=10)
     CORPS[0].set_cash(state, 200)
     float_corp_for_test(state, corp_id=1, player_id=0, par_index=12)
     CORPS[1].set_cash(state, 200)
@@ -49,7 +51,7 @@ def _make_acq_offer_accept_state():
         company_id=fi_co,
         price=price,
         original_corp=1,
-        deciding_player=0,
+        deciding_player=1,
     )
     accept_id = find_legal_action(state, action_type=ACTION_ACQ_OFFER_ACCEPT)
     return state, accept_id
@@ -91,7 +93,7 @@ def test_apply_action_in_step_mode_pauses_before_auto_chain():
     assert len(history) == 1
 
 
-def test_apply_action_without_step_mode_still_auto_chains():
+def test_apply_action_without_step_mode_auto_chains_to_closing():
     state, accept_id = _make_acq_offer_accept_state()
     history = []
 
@@ -99,6 +101,8 @@ def test_apply_action_without_step_mode_still_auto_chains():
 
     assert status == STATUS_OK
     assert TURN.get_phase(state) == PHASE_CLOSING
+    assert TURN.get_active_player(state) == 1
+    assert TURN.get_active_corp(state) == -1
     assert len(history) > 1
 
 

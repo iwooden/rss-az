@@ -73,9 +73,12 @@ from core.data cimport (
 
 cdef enum:
     # Padded-sparse buffer width. Every replay/IPC tensor pads to this size.
-    # Legal counts above this are considered a bug (see sparse-refactor.md).
-    # Kmax=256 is the Phase-1 default; revisit after legal-count profiling.
-    MAX_LEGAL_ACTIONS = 256
+    # Legal counts above this are considered a bug (see sparse-refactor.md),
+    # but late-game ACQUISITION price surfaces in replay fixtures have already
+    # exceeded both 256 and 512. Keep enough headroom here that replay and
+    # driver legality checks stay memory-safe while we continue collecting
+    # empirical maxima.
+    MAX_LEGAL_ACTIONS = 1024
 
 
 # Module-private C array of per-phase sizes, indexed by ``DecisionPhase``.

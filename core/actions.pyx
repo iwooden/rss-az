@@ -602,8 +602,8 @@ cdef int _enumerate_acquisition(
                 if same_pres:
                     if corp_president_id(state, owner_id) != player_id:
                         continue
-                # Seller must retain >= 1 company (LOC_CORP only, not ACQ pile)
-                if count_corp_companies(state, owner_id, False) <= 1:
+                # Seller must retain >= 1 company across owned + acquisition piles.
+                if count_corp_companies(state, owner_id, True) <= 1:
                     continue
                 low_price = COMPANY_LOW_PRICE[company_id]
                 high_price = COMPANY_HIGH_PRICE[company_id]

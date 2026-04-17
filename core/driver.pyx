@@ -13,7 +13,7 @@ The driver routes a phase-local ``action_id`` from the caller through:
 
 The legality check is a linear scan over the legal-action set produced
 by ``core/actions.enumerate_legal_actions``. Worst case is bounded by
-``MAX_LEGAL_ACTIONS = 256``; INVEST's empirical worst case is ~107.
+``MAX_LEGAL_ACTIONS = 1024``; INVEST's empirical worst case is ~107.
 
 Phase handlers are ``cdef void apply_<phase>_action(state, ActionInfo*)
 noexcept`` — they assume legality, which the driver guarantees. Phases
@@ -104,7 +104,7 @@ cdef class GameDriver:
         )
 
     cdef int _forced_action_or_negative_one(self, GameState state) except -2:
-        cdef uint16_t scratch[256]   # MAX_LEGAL_ACTIONS
+        cdef uint16_t scratch[1024]   # MAX_LEGAL_ACTIONS
         cdef int count = enumerate_legal_actions(state, scratch)
         assert count > 0, (
             f"_forced_action_or_negative_one: zero legal actions in engine phase "
@@ -306,7 +306,7 @@ cdef class GameDriver:
         if engine_phase == GamePhases.PHASE_GAME_OVER:
             return STATUS_GAME_OVER
 
-        cdef uint16_t scratch[256]   # MAX_LEGAL_ACTIONS
+        cdef uint16_t scratch[1024]   # MAX_LEGAL_ACTIONS
         cdef int count = enumerate_legal_actions(state, scratch)
         cdef int i
         cdef bint legal = False

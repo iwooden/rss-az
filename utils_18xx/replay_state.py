@@ -1,7 +1,15 @@
-"""Shared helpers for replaying 18xx.games actions through our engine."""
+"""Shared helpers for replaying 18xx.games actions through the current engine."""
 
 from __future__ import annotations
 
+from core.actions import (
+    ACTION_ACQ_FI_BUY_PY as ACTION_ACQ_FI_BUY,
+    ACTION_ACQ_OFFER_ACCEPT_PY as ACTION_ACQ_OFFER_ACCEPT,
+    ACTION_ACQ_PRICE_PY as ACTION_ACQ_PRICE,
+    ACTION_CLOSE_PY as ACTION_CLOSE,
+    ACTION_PASS_PY as ACTION_PASS,
+)
+from core.data import CorpIndices, GamePhases
 from core.driver import (
     DRIVER,
     STATUS_GAME_OVER_PY as STATUS_GAME_OVER,
@@ -9,20 +17,22 @@ from core.driver import (
     STATUS_OK_PY as STATUS_OK,
     STATUS_PAUSED_PY as STATUS_PAUSED,
 )
-from core.actions import get_valid_action_mask
-from core.data import CorpIndices, GamePhases, get_company_income, get_company_low_price
 from core.state import GameState
 from entities.company import COMPANIES, CompanyLocation
 from entities.corp import CORPS
 from entities.fi import FI
 from entities.player import PLAYERS
 from entities.turn import TURN
-from phases.closing import is_closing_transition_pending_py
 
-from .action_parser import map_action, override_deck_and_offering
-
-PHASE_ACQ = GamePhases.PHASE_ACQUISITION
-PHASE_CLO = GamePhases.PHASE_CLOSING
+from .action_parser import (
+    PHASE_ACQ,
+    PHASE_ACQ_OFFER,
+    PHASE_CLOSING,
+    find_legal_action,
+    get_legal_actions,
+    map_action,
+    override_deck_and_offering,
+)
 
 LOC_PLAYER = CompanyLocation.LOC_PLAYER
 LOC_FI = CompanyLocation.LOC_FI
@@ -34,48 +44,35 @@ def initialize_replay_state(
     deck_order_names: list[str],
     offering_names: list[str],
     *,
+    cost_level: int | None = None,
     step_mode: bool = False,
     pause_before_acq_transition: bool = False,
     pause_before_closing_transition: bool = False,
 ) -> GameState:
-    """Create a GameState configured for step-by-step 18xx replay."""
-    state = GameState(num_players)
-    state.initialize_game(seed=42)
+    """Create a replay state on the live ACQ/CLO surface.
+
+    ``pause_before_*`` arguments remain accepted for compatibility with older
+    callers, but current replay code relies on step mode and driver support
+    rather than custom pause flags on ``GameState``.
+    """
+    del pause_before_acq_transition, pause_before_closing_transition
+
+    state = GameState(num_players, acq_same_president=False)
+    state.initialize_game(num_players, seed=42)
     state.step_mode = step_mode
-    state.pause_before_acq_transition = pause_before_acq_transition
-    state.pause_before_closing_transition = pause_before_closing_transition
     override_deck_and_offering(state, deck_order_names, offering_names)
+    if cost_level is not None:
+        TURN.set_coo_level(state, cost_level)
     return state
 
 
-def _should_pause(state: GameState) -> bool:
-    """Check whether the engine is at a pause boundary.
-
-    Replicates the logic of ``_should_pause_before_phase_execution`` in
-    ``core/driver.pyx`` using Python-accessible attributes so that
-    higher-level replay helpers can respect pause flags.
-    """
-    phase = TURN.get_phase(state)
-    if phase == PHASE_ACQ and state.pause_before_acq_transition:
-        return True
-    if (
-        phase == PHASE_CLO
-        and state.pause_before_closing_transition
-        and is_closing_transition_pending(state)
-    ):
-        return True
-    return False
-
-
 def settle_to_player_choice(state: GameState) -> int:
-    """Advance deterministic phases until a player decision, pause, or game end."""
+    """Advance deterministic work until a real decision, pause, or game end."""
     result = STATUS_OK
     while DRIVER.is_non_player_phase(state):
-        if _should_pause(state):
-            return STATUS_PAUSED
         result = DRIVER.advance_phase(state)
-        if result == STATUS_GAME_OVER:
-            break
+        if result != STATUS_OK:
+            return result
     return result
 
 
@@ -83,32 +80,21 @@ def apply_action_sequence(
     state: GameState,
     action_idx_or_list: int | list[int],
 ) -> int:
-    """Apply one mapped engine action or a short action sequence."""
-    action_list = (
-        action_idx_or_list
-        if isinstance(action_idx_or_list, list)
-        else [action_idx_or_list]
-    )
-
+    """Apply one engine action or a short explicit sequence."""
+    action_list = action_idx_or_list if isinstance(action_idx_or_list, list) else [action_idx_or_list]
     result = STATUS_OK
-    for idx, action_idx in enumerate(action_list):
-        if idx > 0 and TURN.get_phase(state) != GamePhases.PHASE_PAR:
-            break
+    for action_idx in action_list:
         result = DRIVER.apply_action(state, action_idx)
         if result != STATUS_OK:
             return result
         if TURN.get_phase(state) == GamePhases.PHASE_GAME_OVER:
             return result
-
     return result
 
 
 def align_to_action(state: GameState, action: dict, layout) -> bool:
-    """Apply omitted single-option actions until *action* becomes mappable.
-
-    Returns True when one or more forced engine actions were applied while
-    catching up to the next explicit 18xx action.
-    """
+    """Apply omitted forced actions until ``action`` becomes mappable."""
+    del layout
     advanced = False
 
     while True:
@@ -117,9 +103,10 @@ def align_to_action(state: GameState, action: dict, layout) -> bool:
             return advanced
 
         try:
-            engine_action = map_action(state, action, TURN.get_phase(state), layout)
+            engine_action = map_action(state, action, TURN.get_phase(state), None)
         except (ValueError, KeyError, IndexError):
             engine_action = None
+
         if engine_action is not None:
             return advanced
 
@@ -127,19 +114,18 @@ def align_to_action(state: GameState, action: dict, layout) -> bool:
         if forced_action is None:
             return advanced
 
-        DRIVER.apply_action(state, forced_action)
+        result = DRIVER.apply_action(state, forced_action)
+        if result == STATUS_INVALID:
+            raise RuntimeError(f"Invalid forced replay action {forced_action}")
         advanced = True
+        if result in (STATUS_GAME_OVER, STATUS_PAUSED):
+            return advanced
 
 
 def _get_single_legal_action(state: GameState) -> int | None:
-    """Return the lone legal action index, or None if not forced."""
-    legal_actions = [
-        idx
-        for idx, value in enumerate(get_valid_action_mask(state))
-        if value > 0.5
-    ]
-    if len(legal_actions) == 1:
-        return legal_actions[0]
+    actions = get_legal_actions(state)
+    if len(actions) == 1:
+        return actions[0][0]
     return None
 
 
@@ -148,23 +134,9 @@ def is_representable_acquisition_offer(
     buyer_corp_id: int,
     company_id: int,
 ) -> bool:
-    """Return whether the current engine can represent the acquisition offer.
-
-    Our engine only exposes same-president non-FI offers. FI offers are always
-    representable.
-    """
-    buyer_president = CORPS[buyer_corp_id].get_president_id(state)
-    owner_id = COMPANIES[company_id].get_owner_id(state)
-    owner_loc = COMPANIES[company_id].get_location(state)
-
-    if owner_loc == LOC_FI:
-        return True
-    if owner_loc == LOC_PLAYER:
-        return buyer_president >= 0 and owner_id == buyer_president
-    if owner_loc == LOC_CORP:
-        seller_president = CORPS[owner_id].get_president_id(state)
-        return seller_president >= 0 and seller_president == buyer_president
-    return False
+    """Return whether the current live action surface can represent the offer."""
+    del buyer_corp_id
+    return COMPANIES[company_id].get_location(state) in (LOC_FI, LOC_PLAYER, LOC_CORP)
 
 
 def apply_external_acquisition_transfer(
@@ -173,12 +145,7 @@ def apply_external_acquisition_transfer(
     company_id: int,
     price: int,
 ) -> bool:
-    """Apply an accepted acquisition that is outside our ACQ action space.
-
-    This stages the company through the normal acquisition zone so the
-    subsequent ACQ -> CLO transition merges it through the engine's existing
-    phase logic.
-    """
+    """Fallback manual transfer for offers that cannot be replayed directly."""
     seller_id = COMPANIES[company_id].get_owner_id(state)
     seller_loc = COMPANIES[company_id].get_location(state)
 
@@ -200,15 +167,15 @@ def apply_external_acquisition_transfer(
 
 
 def is_closing_transition_pending(state: GameState) -> bool:
-    """Return whether CLO is waiting on mandatory close / INCOME transition."""
-    return bool(is_closing_transition_pending_py(state))
+    del state
+    return False
 
 
 def apply_external_close(
     state: GameState,
     company_id: int,
 ) -> bool:
-    """Apply a close that the current CLO offer buffer did not represent."""
+    """Fallback manual close for cases not representable via legal actions."""
     if COMPANIES[company_id].is_removed(state):
         return False
 
@@ -223,7 +190,7 @@ def apply_external_close(
         if owner_id < 0 or CORPS[owner_id].count_companies(state) < 2:
             return False
         if owner_id == CorpIndices.CORP_JS:
-            CORPS[owner_id].add_cash(state, get_company_income(company_id) * 2)
+            CORPS[owner_id].add_cash(state, COMPANIES[company_id].get_base_income() * 2)
         COMPANIES[company_id].remove_from_game(state)
         return True
 
@@ -244,44 +211,59 @@ def replay_acquisition_offer(
     accept: bool,
     max_iterations: int = 200,
 ) -> bool:
-    """Walk the ACQ offer buffer until the target offer is reached."""
+    """Replay a direct ACQ/ACQ_OFFER acquisition on the live engine surface."""
+    del layout
+
     for _ in range(max_iterations):
-        if TURN.get_phase(state) != GamePhases.PHASE_ACQUISITION:
-            return False
+        settle_to_player_choice(state)
+        phase = TURN.get_phase(state)
 
-        cur_corp = TURN.get_active_corp(state)
-        if cur_corp < 0:
-            # Engine offer buffer exhausted (paused at ACQ transition).
-            return False
-
-        cur_company = TURN.get_acq_target_company(state)
-        if cur_corp == buyer_corp_id and cur_company == company_id:
-            if accept:
-                if TURN.is_acq_fi_offer(state):
-                    result = DRIVER.apply_action(state, layout.acq_fi_buy)
-                else:
-                    low_price = get_company_low_price(company_id)
-                    result = DRIVER.apply_action(
+        if phase == PHASE_ACQ:
+            try:
+                if COMPANIES[company_id].get_location(state) == LOC_FI:
+                    action_id = find_legal_action(
                         state,
-                        layout.acq_price_base + (price - low_price),
+                        action_type=ACTION_ACQ_FI_BUY,
+                        corp_id=buyer_corp_id,
+                        company_id=company_id,
                     )
-            else:
-                result = DRIVER.apply_action(state, layout.acq_pass)
+                else:
+                    amount = price - COMPANIES[company_id].get_low_price()
+                    action_id = find_legal_action(
+                        state,
+                        action_type=ACTION_ACQ_PRICE,
+                        corp_id=buyer_corp_id,
+                        company_id=company_id,
+                        amount=amount,
+                    )
+            except ValueError:
+                try:
+                    pass_id = find_legal_action(state, action_type=ACTION_PASS)
+                except ValueError:
+                    return False
+                result = DRIVER.apply_action(state, pass_id)
+                if result == STATUS_INVALID:
+                    return False
+                continue
 
+            result = DRIVER.apply_action(state, action_id)
             if result == STATUS_INVALID:
-                raise RuntimeError(
-                    f"Invalid ACQ replay action for corp={buyer_corp_id}, "
-                    f"company={company_id}, accept={accept}"
-                )
-            return True
+                return False
+            if TURN.get_phase(state) != PHASE_ACQ_OFFER:
+                return True
 
-        result = DRIVER.apply_action(state, layout.acq_pass)
-        if result == STATUS_INVALID:
-            raise RuntimeError(
-                f"Invalid ACQ pass while searching for corp={buyer_corp_id}, "
-                f"company={company_id}"
-            )
-        if result in (STATUS_GAME_OVER, STATUS_PAUSED):
+        elif phase == PHASE_ACQ_OFFER:
+            try:
+                action_id = find_legal_action(
+                    state,
+                    action_type=ACTION_ACQ_OFFER_ACCEPT if accept else ACTION_PASS,
+                )
+            except ValueError:
+                return False
+            result = DRIVER.apply_action(state, action_id)
+            return result != STATUS_INVALID
+
+        else:
             return False
 
     raise RuntimeError("Exceeded ACQ replay iteration limit")
@@ -289,24 +271,24 @@ def replay_acquisition_offer(
 
 def drain_offer_phases(state: GameState, layout, max_iterations: int = 500) -> None:
     """Pass through any remaining ACQ/CLO offers after replay."""
+    del layout
+
     for _ in range(max_iterations):
         settle_to_player_choice(state)
         phase = TURN.get_phase(state)
 
-        if phase == GamePhases.PHASE_ACQUISITION:
-            if DRIVER.is_non_player_phase(state):
-                # Paused at ACQ transition — no deferred patches during drain.
-                DRIVER.advance_phase(state)
-                continue
-            result = DRIVER.apply_action(state, layout.acq_pass)
-        elif phase == GamePhases.PHASE_CLOSING:
-            if DRIVER.is_non_player_phase(state):
-                # Paused at CLO transition — no deferred patches during drain.
-                DRIVER.advance_phase(state)
-                continue
-            result = DRIVER.apply_action(state, layout.close_pass)
-        else:
+        if phase not in (PHASE_ACQ, PHASE_ACQ_OFFER, PHASE_CLOSING):
             return
+
+        try:
+            pass_id = find_legal_action(state, action_type=ACTION_PASS)
+        except ValueError:
+            forced_action = _get_single_legal_action(state)
+            if forced_action is None:
+                return
+            result = DRIVER.apply_action(state, forced_action)
+        else:
+            result = DRIVER.apply_action(state, pass_id)
 
         if result == STATUS_INVALID:
             raise RuntimeError(f"Invalid replay drain action in phase={phase}")

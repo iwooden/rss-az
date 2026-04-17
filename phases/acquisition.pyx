@@ -82,22 +82,42 @@ cdef int _get_fi_purchase_price(int corp_id, int company_id) noexcept:
     return COMPANY_HIGH_PRICE[company_id]
 
 
-cdef int _find_first_preemptor(GameState state, int company_id) noexcept:
+cdef int _find_first_preemptor(GameState state, int company_id, int original_corp) noexcept:
     """Return first eligible FI buyer by priority, or -1 if none.
 
     Priority: OS first if it can afford the company, then descending share
     price. The only stateful exclusion is the per-corp passed_acq_offer flag;
     callers decide whether the returned corp is the original acquirer or a
     higher-priority preemptor.
+
+    Rolling Stock / Rolling Stock Stars FI intervention has one additional
+    nuance: when a player-controlled corporation proposes to buy from FI,
+    higher-priority corporations owned by that same player are skipped until we
+    either reach a different player's corporation or fall back to the original
+    buyer. This mirrors 18xx.games' responder_list construction, which strips a
+    same-president prefix so a player cannot "intervene" on their own FI buy
+    with another corporation they control.
+
+    Pass ``original_corp = -1`` when there is no player proposer (for example
+    receivership auto-buys). In that case no same-president skipping occurs.
     """
     cdef int face_val = COMPANY_FACE_VALUE[company_id]
     cdef int high_val = COMPANY_HIGH_PRICE[company_id]
     cdef int CORP_OS = <int>CorpIndices.CORP_OS
+    cdef int original_owner = -1
+
+    if (original_corp >= 0
+            and corp_is_active(state, original_corp)
+            and not corp_is_in_receivership(state, original_corp)):
+        original_owner = corp_president_id(state, original_corp)
 
     # OS always highest priority
     if (corp_is_active(state, CORP_OS)
             and not corp_has_passed_acq_offer(state, CORP_OS)
-            and corp_cash(state, CORP_OS) >= face_val):
+            and corp_cash(state, CORP_OS) >= face_val
+            and (original_owner < 0
+                 or CORP_OS == original_corp
+                 or corp_president_id(state, CORP_OS) != original_owner)):
         return CORP_OS
 
     # Other corps by descending share price. Live share prices are unique in
@@ -113,6 +133,10 @@ cdef int _find_first_preemptor(GameState state, int company_id) noexcept:
         if corp_has_passed_acq_offer(state, c):
             continue
         if corp_cash(state, c) < high_val:
+            continue
+        if (original_owner >= 0
+                and c != original_corp
+                and corp_president_id(state, c) == original_owner):
             continue
         sp = corp_share_price(state, c)
         if sp > best_price:
@@ -274,7 +298,7 @@ cdef bint _process_receivership_forced_buys(GameState state) noexcept:
 
     while _find_receivership_forced_buy(state, &recv_corp, &company_id):
         _clear_acq_offer_flags(state)
-        first_preemptor = _find_first_preemptor(state, company_id)
+        first_preemptor = _find_first_preemptor(state, company_id, -1)
 
         if first_preemptor < 0 or first_preemptor == recv_corp:
             _execute_fi_buy(state, recv_corp, company_id)
@@ -415,7 +439,7 @@ cdef void _handle_fi_buy(GameState state, ActionInfo* info) noexcept:
 
     # Check for preemptors
     _clear_acq_offer_flags(state)
-    first_preemptor = _find_first_preemptor(state, company_id)
+    first_preemptor = _find_first_preemptor(state, company_id, corp_id)
     if first_preemptor < 0 or first_preemptor == corp_id:
         _execute_fi_buy(state, corp_id, company_id)
         return

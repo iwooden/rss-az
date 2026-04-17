@@ -191,10 +191,11 @@ class TestFiPreemptionAccept:
         assert FI.get_cash(game_state) == fi_cash_before + price
 
     def test_accept_clears_offer_context_and_auto_advances_to_closing(self, game_state):
-        """Direct FI-preemption accept resolves the offer and clears scratch state."""
+        """Valid FI-preemption accept resolves the offer and auto-chains to CLOSING."""
         fi_co = draw_to_fi(game_state)
 
-        float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
+        # Valid FI preemption requires a different-president preemptor.
+        float_corp_for_test(game_state, corp_id=0, player_id=1, par_index=10)
         CORPS[0].set_cash(game_state, 200)
         float_corp_for_test(game_state, corp_id=1, player_id=0, par_index=12)
         CORPS[1].set_cash(game_state, 200)
@@ -202,14 +203,14 @@ class TestFiPreemptionAccept:
         price = COMPANIES[fi_co].get_high_price()
         _enter_acq_offer_direct(
             game_state, offered_corp=0, company_id=fi_co, price=price,
-            original_corp=1, deciding_player=0,
+            original_corp=1, deciding_player=1,
         )
 
         accept_id = find_legal_action(game_state, action_type=ACTION_ACQ_OFFER_ACCEPT)
         apply_and_verify(game_state, accept_id)
 
         assert TURN.get_phase(game_state) == int(GamePhases.PHASE_CLOSING)
-        assert TURN.get_active_player(game_state) == 0
+        assert TURN.get_active_player(game_state) == 1
         assert TURN.get_active_corp(game_state) == -1
         _assert_offer_context_cleared(game_state)
 
@@ -369,6 +370,53 @@ class TestFiPreemptionPass:
         loc = COMPANIES[fi_co].get_location(game_state)
         assert loc in (int(CompanyLocation.LOC_CORP_ACQ), int(CompanyLocation.LOC_CORP))
         assert COMPANIES[fi_co].get_owner_id(game_state) == 5
+
+    @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
+    def test_receivership_original_buys_before_lower_price_preemptor(self, game_state):
+        """A receivership original corp re-enters the price order before lower-price corps."""
+        fi_co = draw_to_fi(game_state)
+        recv_co = draw_to_player(game_state, 0)
+
+        # Higher-price player-controlled preemptor offered first.
+        high_preemptor = 3
+        float_corp_for_test(game_state, corp_id=high_preemptor, player_id=1, par_index=20)
+        CORPS[high_preemptor].set_cash(game_state, 200)
+
+        # Lower-price player-controlled corp that can also afford the company.
+        low_preemptor = 4
+        float_corp_for_test(game_state, corp_id=low_preemptor, player_id=2, par_index=5)
+        low_cash_before = COMPANIES[fi_co].get_high_price()
+        CORPS[low_preemptor].set_cash(game_state, low_cash_before)
+
+        # Original buyer is a receivership corp with a mid-range share price.
+        original_corp = 5
+        setup_receivership_corp(game_state, corp_id=original_corp, company_ids=[recv_co], par_index=10)
+        CORPS[original_corp].set_cash(game_state, COMPANIES[fi_co].get_high_price())
+        fi_cash_before = FI.get_cash(game_state)
+
+        price = COMPANIES[fi_co].get_high_price()
+        _enter_acq_offer_direct(
+            game_state,
+            offered_corp=high_preemptor,
+            company_id=fi_co,
+            price=price,
+            original_corp=original_corp,
+            deciding_player=1,
+        )
+
+        pass_id = find_legal_action(game_state, action_type=ACTION_PASS)
+        apply_and_verify(game_state, pass_id)
+
+        # The receivership original corp (price 10) outranks the lower-price
+        # player corp (price 5), so it auto-buys immediately instead of
+        # cascading to another ACQ_OFFER for corp 4.
+        loc = COMPANIES[fi_co].get_location(game_state)
+        assert loc in (int(CompanyLocation.LOC_CORP_ACQ), int(CompanyLocation.LOC_CORP))
+        assert COMPANIES[fi_co].get_owner_id(game_state) == original_corp
+        assert not (
+            TURN.get_phase(game_state) == int(GamePhases.PHASE_ACQ_OFFER)
+            and TURN.get_active_corp(game_state) == low_preemptor
+        )
 
     @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
     def test_second_preemptor_accepts(self, game_state):

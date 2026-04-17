@@ -107,7 +107,7 @@ cdef void apply_acq_offer_action(GameState state, ActionInfo* info) noexcept:
         if is_fi_preemption:
             # Corp declines. Set passed flag and check next preemptor.
             corp_module.CORPS[active_corp].set_passed_acq_offer(state, True)
-            next_corp = _find_first_preemptor(state, company_id)
+            next_corp = _find_first_preemptor(state, company_id, original_corp)
             if next_corp >= 0 and next_corp != original_corp:
                 if corp_is_in_receivership(state, next_corp):
                     _execute_fi_buy(state, next_corp, company_id)

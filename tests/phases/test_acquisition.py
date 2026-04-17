@@ -286,6 +286,28 @@ class TestAcqPrice:
         )
         assert len(acq_actions) == 0, "Should not buy from corp with only 1 company"
 
+    def test_seller_acq_pile_counts_toward_last_company_invariant(self, game_state):
+        """A seller with 1 owned company plus 1 acquisition-pile company may still sell the owned company."""
+        seller_co = float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
+        staged_co = draw_to_player(game_state, 0)
+        COMPANIES[staged_co].transfer_to_corp_acquisition(game_state, 0)
+
+        float_corp_for_test(game_state, corp_id=1, player_id=0, par_index=12)
+        CORPS[1].set_cash(game_state, 200)
+
+        setup_acquisition_phase_py(game_state)
+
+        assert CORPS[0].count_companies(game_state, include_acquisition=False) == 1
+        assert CORPS[0].count_companies(game_state, include_acquisition=True) == 2
+
+        acq_actions = find_all_legal_actions(
+            game_state, action_type=ACTION_ACQ_PRICE, corp_id=1, company_id=seller_co,
+        )
+        assert len(acq_actions) > 0, (
+            "Seller should be allowed to sell when it would still retain a company "
+            "across LOC_CORP + LOC_CORP_ACQ"
+        )
+
 
 # =============================================================================
 # FI PREEMPTION TESTS (ACQ_OFFER)
@@ -323,6 +345,40 @@ class TestFiPreemption:
         assert TURN.get_active_player(game_state) == 2
         assert TURN.get_active_corp(game_state) == 4
         assert TURN.get_active_company(game_state) == fi_co
+
+    def test_same_president_higher_priority_corp_does_not_preempt(self, game_state):
+        """Same-president higher-priority corps do not intervene on an FI buy."""
+        fi_co = draw_to_fi(game_state)
+
+        # Higher-priority overseas corp owned by the same player as the buyer.
+        float_corp_for_test(game_state, corp_id=CORP_OS, player_id=0, par_index=15)
+        CORPS[CORP_OS].set_cash(game_state, 200)
+
+        # Lower-priority original buyer, same president.
+        buyer_corp = 3
+        float_corp_for_test(game_state, corp_id=buyer_corp, player_id=0, par_index=10)
+        CORPS[buyer_corp].set_cash(game_state, 200)
+
+        setup_acquisition_phase_py(game_state)
+
+        fi_buy_id = find_legal_action(
+            game_state, action_type=ACTION_ACQ_FI_BUY, corp_id=buyer_corp, company_id=fi_co,
+        )
+        buyer_cash_before = CORPS[buyer_corp].get_cash(game_state)
+        os_cash_before = CORPS[CORP_OS].get_cash(game_state)
+        fi_cash_before = FI.get_cash(game_state)
+        expected_price = COMPANIES[fi_co].get_high_price()
+
+        apply_and_verify(game_state, fi_buy_id)
+
+        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_ACQUISITION)
+        assert TURN.get_active_player(game_state) == 0
+        loc = COMPANIES[fi_co].get_location(game_state)
+        assert loc in (int(CompanyLocation.LOC_CORP_ACQ), int(CompanyLocation.LOC_CORP))
+        assert COMPANIES[fi_co].get_owner_id(game_state) == buyer_corp
+        assert CORPS[buyer_corp].get_cash(game_state) == buyer_cash_before - expected_price
+        assert CORPS[CORP_OS].get_cash(game_state) == os_cash_before
+        assert FI.get_cash(game_state) == fi_cash_before + expected_price
 
 
 # =============================================================================
