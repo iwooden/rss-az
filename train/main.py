@@ -544,34 +544,11 @@ def main() -> None:
                 )
         print(f"  {n_servers} eval server{'s' if n_servers > 1 else ''} ready.")
 
-        # Compile for training in main process (after servers finish, so no
-        # CPU contention from concurrent Inductor/Triton jobs).
-        if not args.no_compile and device.type == "cuda":
-            train_compile_kwargs = gpu.get_compile_kwargs(for_training=True)
-            print(f"Compiling model with torch.compile ({train_compile_kwargs})...")
-            model = cast(torch.nn.Module, torch.compile(model, **train_compile_kwargs))  # type: ignore[call-overload]
-            # Warmup pass — triggers Inductor compilation (and graph capture
-            # in reduce-overhead mode).  Use actual batch size so the graph
-            # matches training dimensions.  No autocast: training runs fp32.
-            warmup_bs = gpu.warmup_batch_size(config.batch_size)
-            model.train()
-            with torch.inference_mode():
-                dummy_tokens = torch.randn(
-                    warmup_bs, num_tokens, token_dim, device=device,
-                )
-                dummy_phase = torch.zeros(
-                    warmup_bs, dtype=torch.long, device=device,
-                )
-                dummy_action_ids = torch.zeros(
-                    warmup_bs, K_MAX, dtype=torch.long, device=device,
-                )
-                dummy_n_legals = torch.zeros(
-                    warmup_bs, dtype=torch.long, device=device,
-                )
-                model(dummy_tokens, dummy_phase, dummy_action_ids, dummy_n_legals)
-                del dummy_tokens, dummy_phase, dummy_action_ids, dummy_n_legals
-            torch.cuda.synchronize()
-            print("  Model compiled.")
+        # Training-side torch.compile is disabled pending rss-az-mpxc: the AMD
+        # Triton backend crashes in make_ttgir lowering the fused backward
+        # RMSNorm kernel on gfx1201 (RDNA 4).  Self-play dominates wall time
+        # so leaving the trainer uncompiled is near-free.  Eval servers still
+        # compile (inference_mode avoids the offending backward partition).
 
         # Spawn workers now that eval servers are ready to serve requests.
         for i in range(config.num_workers):
