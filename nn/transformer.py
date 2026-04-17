@@ -366,9 +366,9 @@ class RSSTransformerNet(nn.Module):
     # ------------------------------------------------------------------
 
     def _policy_forward(
-        self, tokens: torch.Tensor, phase_ids: torch.Tensor,
+        self, tokens: torch.Tensor,
         action_ids: torch.Tensor, n_legals: torch.Tensor,
-        phase_indices: list[torch.Tensor] | None = None,
+        phase_indices: list[torch.Tensor],
     ) -> torch.Tensor:
         """Route each batch element to its phase-specific policy head and
         gather the per-row legal slice in one shot.
@@ -381,23 +381,20 @@ class RSSTransformerNet(nn.Module):
 
         Args:
             tokens: (batch, num_tokens, d_model) final token representations.
-            phase_ids: (batch,) int tensor, phase index 0-7. Ignored when
-                ``phase_indices`` is provided; required otherwise.
             action_ids: (batch, K_MAX) int tensor, phase-local legal action ids
                 per row. Tail positions ([n_legals[i]:]) may hold arbitrary
                 values — they are rewritten to 0 before ``gather`` and
                 masked out before softmax.
             n_legals: (batch,) int tensor, legal action count per row.
-            phase_indices: Optional list of ``NUM_PHASES`` int64 tensors on
+            phase_indices: List of ``NUM_PHASES`` int64 tensors on
                 ``tokens.device``. ``phase_indices[p]`` holds the row indices
-                whose ``phase_id == p``. When provided, dispatch uses
-                ``index_select`` / ``index_copy_`` instead of boolean masking,
-                which avoids the per-iteration H←D sync that boolean indexing
-                forces (it has to read the mask's true-count to size the
-                masked tensor). Eval/self-play hot paths build these on CPU
-                from the pinned phase_ids buffer before the H→D copy and pass
-                them in. Trainer and tests leave it ``None`` and pay the sync
-                cost on the legacy path.
+                whose ``phase_id == p``. Dispatch uses ``index_select`` /
+                ``index_copy_`` so the policy gather has no H←D sync — the
+                per-iteration sync that boolean indexing would force (it has
+                to read the mask's true-count to size the masked tensor)
+                dominated eval latency on CPU-bound workloads. All callers
+                build these on CPU from the pinned phase_ids buffer before the
+                H→D copy and pass them in.
 
         Returns:
             (batch, K_MAX) float tensor of gathered logits, with positions
@@ -428,32 +425,18 @@ class RSSTransformerNet(nn.Module):
         # such dependence and survives fusion. Output is identical:
         # invalid-position values get masked to -1e9 after gather
         # either way.
-        if phase_indices is not None:
-            for phase_id in range(NUM_PHASES):
-                idx = phase_indices[phase_id]
-                phase_logits = self._dispatch[phase_id](tokens.index_select(0, idx))
-                sub_ids = action_ids.index_select(0, idx).long()
-                safe_ids = sub_ids.clamp(min=0, max=phase_logits.shape[1] - 1)
-                gathered = phase_logits.gather(1, safe_ids)
-                invalid = self._k_range[None, :] >= n_legals.index_select(0, idx)[:, None]
-                # Cast to out.dtype: under autocast, tokens (post-RMSNorm) is
-                # fp32 but phase_logits (from Linear) is bf16 — index_copy_
-                # requires matching dtypes. torch.compile hides the mismatch
-                # via fusion; eager (NNEvaluator) surfaces it.
-                out.index_copy_(0, idx, gathered.masked_fill(invalid, -1e9).to(out.dtype))
-        else:
-            # Legacy boolean-mask path. Each `tokens[mask]` / `out[mask] = ...`
-            # forces a host sync because the masked size is data-dependent.
-            # Retained for test paths only — all production callers (trainer,
-            # eval server, NNEvaluator) build phase_indices up front.
-            for phase_id in range(NUM_PHASES):
-                mask = phase_ids == phase_id
-                phase_logits = self._dispatch[phase_id](tokens[mask])
-                sub_ids = action_ids[mask].long()
-                safe_ids = sub_ids.clamp(min=0, max=phase_logits.shape[1] - 1)
-                gathered = phase_logits.gather(1, safe_ids)
-                invalid = self._k_range[None, :] >= n_legals[mask][:, None]
-                out[mask] = gathered.masked_fill(invalid, -1e9)
+        for phase_id in range(NUM_PHASES):
+            idx = phase_indices[phase_id]
+            phase_logits = self._dispatch[phase_id](tokens.index_select(0, idx))
+            sub_ids = action_ids.index_select(0, idx).long()
+            safe_ids = sub_ids.clamp(min=0, max=phase_logits.shape[1] - 1)
+            gathered = phase_logits.gather(1, safe_ids)
+            invalid = self._k_range[None, :] >= n_legals.index_select(0, idx)[:, None]
+            # Cast to out.dtype: under autocast, tokens (post-RMSNorm) is
+            # fp32 but phase_logits (from Linear) is bf16 — index_copy_
+            # requires matching dtypes. torch.compile hides the mismatch
+            # via fusion; eager (NNEvaluator) surfaces it.
+            out.index_copy_(0, idx, gathered.masked_fill(invalid, -1e9).to(out.dtype))
 
         return out
 
@@ -462,22 +445,22 @@ class RSSTransformerNet(nn.Module):
     # ------------------------------------------------------------------
 
     def forward(
-        self, x: torch.Tensor, phase_ids: torch.Tensor,
+        self, x: torch.Tensor,
         action_ids: torch.Tensor, n_legals: torch.Tensor,
-        phase_indices: list[torch.Tensor] | None = None,
+        phase_indices: list[torch.Tensor],
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the transformer.
 
         Args:
             x: (batch, num_tokens, token_dim) token features, zero-padded.
-            phase_ids: (batch,) int tensor, decision phase index 0-7.
             action_ids: (batch, K_MAX) int tensor, phase-local legal action
                 ids per row. Tail ([n_legals[i]:]) may be arbitrary — sanitized
                 inside ``_policy_forward`` before gather.
             n_legals: (batch,) int tensor, legal action count per row.
-            phase_indices: Optional ``NUM_PHASES``-length list of int64 row
-                indices per phase; see ``_policy_forward`` for details. When
-                supplied the policy gather avoids a per-batch H←D sync.
+            phase_indices: ``NUM_PHASES``-length list of int64 row indices per
+                phase; see ``_policy_forward`` for details. Required — the
+                policy gather uses ``index_select`` / ``index_copy_`` to avoid
+                the per-batch H←D sync that boolean indexing would force.
 
         Returns:
             policy_logits: (batch, K_MAX) gathered logits over the per-row
@@ -492,7 +475,7 @@ class RSSTransformerNet(nn.Module):
         tokens = self.final_norm(tokens)
 
         policy_logits = self._policy_forward(
-            tokens, phase_ids, action_ids, n_legals, phase_indices,
+            tokens, action_ids, n_legals, phase_indices,
         )
         values = self.value_head(tokens[:, self._player_slice]).squeeze(-1)  # (B, N)
         return policy_logits, values
@@ -593,7 +576,6 @@ if __name__ == "__main__":
     print()
     batch_size = NUM_PHASES  # one sample per phase
     x = torch.randn(batch_size, cfg.num_tokens, cfg.token_dim)
-    phase_ids = torch.arange(NUM_PHASES)
     # Per-phase legal-action synthesis: use the first min(K_MAX, phase_size)
     # ids from each phase. Unused tail is zero-padded; n_legals masks it.
     action_ids = torch.zeros(batch_size, K_MAX, dtype=torch.long)
@@ -602,8 +584,9 @@ if __name__ == "__main__":
         n = min(K_MAX, PHASE_ACTION_SIZES[i])
         action_ids[i, :n] = torch.arange(n)
         n_legals[i] = n
+    phase_indices = [torch.tensor([i], dtype=torch.int64) for i in range(NUM_PHASES)]
 
-    policy_logits, values = model(x, phase_ids, action_ids, n_legals)
+    policy_logits, values = model(x, action_ids, n_legals, phase_indices)
 
     print(f"policy_logits: {tuple(policy_logits.shape)}")
     print(f"values:        {tuple(values.shape)}")

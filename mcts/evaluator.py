@@ -229,12 +229,10 @@ class NNEvaluator(BaseEvaluator):
         # Device: separate on CUDA, aliased on CPU (no copy needed).
         if pm:
             self._tok_d = torch.empty((cap, nt, td), dtype=torch.float32, device=self.device)
-            self._phase_d = torch.empty(cap, dtype=torch.long, device=self.device)
             self._aid_d = torch.empty((cap, K_MAX), dtype=torch.long, device=self.device)
             self._nl_d = torch.empty(cap, dtype=torch.long, device=self.device)
         else:
             self._tok_d = self._tok_h
-            self._phase_d = self._phase_h
             self._aid_d = self._aid_h
             self._nl_d = self._nl_h
 
@@ -248,7 +246,6 @@ class NNEvaluator(BaseEvaluator):
         if self.device.type != "cuda":
             return
         self._tok_d[:n].copy_(self._tok_h[:n], non_blocking=True)
-        self._phase_d[:n].copy_(self._phase_h[:n], non_blocking=True)
         self._aid_d[:n].copy_(self._aid_h[:n], non_blocking=True)
         self._nl_d[:n].copy_(self._nl_h[:n], non_blocking=True)
 
@@ -424,7 +421,7 @@ class NNEvaluator(BaseEvaluator):
         with torch.autocast(self.device.type, dtype=self._autocast_dtype,
                             enabled=self._autocast_dtype is not None):
             logits, value_output = self.model(
-                self._tok_d[:n], self._phase_d[:n],
+                self._tok_d[:n],
                 self._aid_d[:n], self._nl_d[:n], phase_indices,
             )
             priors = logits.softmax(dim=1).to(torch.float32)

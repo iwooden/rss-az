@@ -192,7 +192,6 @@ class Trainer:
             self._tok_d = torch.empty(
                 (cap, nt, td), dtype=torch.float32, device=self.device,
             )
-            self._phase_d = torch.empty(cap, dtype=torch.long, device=self.device)
             self._aid_d = torch.empty(
                 (cap, K_MAX), dtype=torch.long, device=self.device,
             )
@@ -203,7 +202,6 @@ class Trainer:
             self._vt_d = torch.empty((cap, N), dtype=torch.float32, device=self.device)
         else:
             self._tok_d = self._tok_h
-            self._phase_d = self._phase_h
             self._aid_d = self._aid_h
             self._nl_d = self._nl_h
             self._pt_d = self._pt_h
@@ -219,7 +217,6 @@ class Trainer:
         if self.device.type != "cuda":
             return
         self._tok_d[:n].copy_(self._tok_h[:n], non_blocking=True)
-        self._phase_d[:n].copy_(self._phase_h[:n], non_blocking=True)
         self._aid_d[:n].copy_(self._aid_h[:n], non_blocking=True)
         self._nl_d[:n].copy_(self._nl_h[:n], non_blocking=True)
         self._pt_d[:n].copy_(self._pt_h[:n], non_blocking=True)
@@ -286,7 +283,6 @@ class Trainer:
         self._h2d(B)
 
         tokens = self._tok_d[:B]
-        phase_ids = self._phase_d[:B]
         action_ids = self._aid_d[:B]
         n_legals = self._nl_d[:B]
         policy_targets = self._pt_d[:B]
@@ -313,7 +309,7 @@ class Trainer:
         # The model gathers per-row legal slices internally and fills the
         # [n_legal:K_MAX] tail with -1e9, so we can log_softmax directly.
         policy_logits, values = self.model(
-            tokens, phase_ids, action_ids, n_legals, phase_indices,
+            tokens, action_ids, n_legals, phase_indices,
         )
 
         # Policy loss: sparse cross-entropy over legal actions only.

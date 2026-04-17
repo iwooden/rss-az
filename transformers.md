@@ -336,7 +336,7 @@ All four simplifications follow the same pattern: the MLP needed a small, fixed 
 
 2. ~~**`get_token_data()` feature lists / implementation**~~: **Done.** See `token-data.md` for the per-token feature spec and `core/token_data.{pyx,pxd}` for the implementation (nogil fill + batched `get_token_data_batch`).
 
-3. ~~**Head dispatch efficiency**~~: **Resolved.** The model emits per-row gathered logits of shape `(B, K_MAX)` — never the dense `(B, 14977)` ACQUISITION pad — by gathering against each row's legal-action list inside `_policy_forward`. The fast path uses precomputed per-phase row indices (`phase_indices`) to avoid the H↔D sync that boolean indexing forces.
+3. ~~**Head dispatch efficiency**~~: **Resolved.** The model emits per-row gathered logits of shape `(B, K_MAX)` — never the dense `(B, 14977)` ACQUISITION pad — by gathering against each row's legal-action list inside `_policy_forward`. Callers pass precomputed per-phase row indices (`phase_indices`) so the dispatch uses `index_select` / `index_copy_` with no H↔D sync.
 
 4. **Batching with variable token counts** (Phase 6): For 3-5p training, batches contain games with different numbers of player tokens (57-59). Options: pad to 59 and use attention mask, or batch by player count. Padding is simpler; batching by count is more efficient.
 
@@ -370,8 +370,8 @@ All four simplifications follow the same pattern: the MLP needed a small, fixed 
 - Pre-RMSNorm transformer blocks with SwiGLU FFN; attention via packed QKV + `F.scaled_dot_product_attention` (traces cleanly under `torch.compile`, unlike `nn.MultiheadAttention`).
 - Type-specific projections (uniform `token_dim=97` input), entity-readout heads for every decision phase.
 - Full ACQUISITION pair head (corp × company × 52) and direct per-corp IPO head (merged IPO+PAR).
-- Per-phase head dispatch with two paths: the fast `phase_indices` path (`index_select` / `index_copy_`, no H↔D sync) used by the evaluator and eval server, and a boolean-mask fallback retained for trainer + tests where the sync cost is negligible.
-- `forward(x, phase_ids, action_ids, n_legals, phase_indices=None)` returns `(policy_logits, values)` where `policy_logits` has shape `(B, K_MAX)` gathered against each row's legal-action slice — the trainer, evaluator, and eval server never allocate anything as wide as the full 14,977-action ACQUISITION output.
+- Per-phase head dispatch uses precomputed per-phase row indices (`phase_indices`) with `index_select` / `index_copy_`, so the policy gather has no H↔D sync. All callers (trainer, evaluator, eval server) build them on the host before the H→D copy.
+- `forward(x, action_ids, n_legals, phase_indices)` returns `(policy_logits, values)` where `policy_logits` has shape `(B, K_MAX)` gathered against each row's legal-action slice — the trainer, evaluator, and eval server never allocate anything as wide as the full 14,977-action ACQUISITION output.
 - Smoke test covers all 8 phases: shapes, finite logits inside the legal slice, `-1e9` tail, values ∈ [-1, 1].
 
 ### Phase 4: Evaluator integration (mcts/evaluator.py) ✅

@@ -355,16 +355,12 @@ def _eval_server_serve(
         model = torch.compile(model, **ckw)  # type: ignore[assignment]
         model.eval()
         # Warm up with the EXACT call signature the hot path uses — same
-        # positional args, same dtypes, and a ``phase_indices`` list. A
-        # warmup that omits phase_indices compiles the 9-graph-break
-        # boolean-mask branch in ``_policy_forward``; the first real
-        # batch would then trigger a full recompile on the 5-arg
-        # signature and discard the work.
+        # positional args, same dtypes, and a ``phase_indices`` list.
         #
         # Dynamic-shape strategy (see ``train/gpu/{amd,nvidia}.py`` for
         # why we dropped global ``dynamic=True``). Every runtime-varying
         # dim gets ``mark_unbacked``:
-        #   * batch dim of (s, phase_ids, action_ids, n_legals):
+        #   * batch dim of (s, action_ids, n_legals):
         #     ``maybe_mark_dynamic`` still triggers a recompile the
         #     first time a size-1 batch appears (framework-level 0/1
         #     specialization is separate from user-level dynamic
@@ -396,10 +392,9 @@ def _eval_server_serve(
             # head gets traced; the hot path dispatches all 8 even when
             # only a subset of rows belongs to each phase.
             dummy_p_cpu = torch.arange(warmup_n, dtype=torch.int8) % NUM_PHASES
-            dummy_p = dummy_p_cpu.to(device)
             dummy_a = torch.zeros(warmup_n, k_max, dtype=torch.int16, device=device)
             dummy_nl = torch.ones(warmup_n, dtype=torch.int16, device=device)
-            for _t in (dummy_s, dummy_p, dummy_a, dummy_nl):
+            for _t in (dummy_s, dummy_a, dummy_nl):
                 mark_unbacked(_t, 0)
             dummy_phase_indices: list[torch.Tensor] = [
                 (dummy_p_cpu == _p).nonzero(as_tuple=False).squeeze(-1)
@@ -408,8 +403,8 @@ def _eval_server_serve(
             ]
             for _t in dummy_phase_indices:
                 mark_unbacked(_t, 0)
-            model(dummy_s, dummy_p, dummy_a, dummy_nl, dummy_phase_indices)
-            del dummy_s, dummy_p, dummy_a, dummy_nl, dummy_phase_indices
+            model(dummy_s, dummy_a, dummy_nl, dummy_phase_indices)
+            del dummy_s, dummy_a, dummy_nl, dummy_phase_indices
         torch.cuda.synchronize()
 
     # Allocate pinned CPU buffers and GPU tensors in this process's CUDA context
@@ -428,15 +423,15 @@ def _eval_server_serve(
         max_batch, num_tokens, token_dim, dtype=torch.float32, device=device,
     )
 
-    # GPU phase/action/n_legals buffers are zero-initialized once and the
+    # GPU action/n_legals buffers are zero-initialized once and the
     # tail [total_n:max_batch] is never written again — per-batch H→D copies
     # only touch [:total_n]. The model gathers [:padded_n] each forward,
-    # so any padded-tail rows read in-range zeros for action_ids/phase_ids
-    # and n_legals=0 (which masks the row out via the model's invalid mask).
-    # This drops three per-batch .zero_() launches from the hot path.
+    # so any padded-tail rows read in-range zeros for action_ids and
+    # n_legals=0 (which masks the row out via the model's invalid mask).
+    # Phase ids stay host-only: they feed ``phase_indices`` construction on
+    # the CPU (one nonzero per phase), which is async-shipped to the GPU.
     pin_phase_ids = torch.empty(max_batch, dtype=torch.int8, pin_memory=use_cuda)
     pin_phase_ids_np = pin_phase_ids.numpy()
-    gpu_phase_ids = torch.zeros(max_batch, dtype=torch.int8, device=device)
 
     pin_action_ids = torch.empty(
         max_batch, k_max, dtype=torch.int16, pin_memory=use_cuda,
@@ -539,7 +534,6 @@ def _eval_server_serve(
 
         gpu_s_batch = gpu_s[:padded_n]
         gpu_s_batch[:total_n].copy_(pin_s[:total_n], non_blocking=True)
-        gpu_phase_ids[:total_n].copy_(pin_phase_ids[:total_n], non_blocking=True)
         gpu_action_ids[:total_n].copy_(pin_action_ids[:total_n], non_blocking=True)
         gpu_n_legals[:total_n].copy_(pin_n_legals[:total_n], non_blocking=True)
         # Padded tail [total_n:padded_n] is permanently zero (see allocation).
@@ -573,7 +567,7 @@ def _eval_server_serve(
             # inside the autocast region keeps the narrow logits tensor in
             # bf16/fp16 until the final f32 copy.
             logits_sparse, values = model(
-                gpu_s_batch, gpu_phase_ids[:padded_n],
+                gpu_s_batch,
                 gpu_action_ids[:padded_n], gpu_n_legals[:padded_n],
                 phase_indices,
             )
