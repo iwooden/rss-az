@@ -415,21 +415,27 @@ class RSSTransformerNet(nn.Module):
         # let the GPU pipeline absorb the extra small launches.
         # `action_ids` tail positions [n_legals[i]:] may hold stale
         # garbage (shared-memory worker slots are reused across phases
-        # and only [:n_legals[i]] is written per enumeration). We
-        # masked_fill sub_ids to 0 on those positions before gather so
-        # the compiled kernel never indexes out of range into narrow
-        # phase heads (ACQ_OFFER / ISSUE have width 2). CUDA Inductor
-        # bounds-checks and device-asserts otherwise; ROCm silently
-        # reads garbage then drops it in the -1e9 mask below, so this
-        # is an equivalent rewrite on both platforms.
+        # and only [:n_legals[i]] is written per enumeration). We clamp
+        # sub_ids to the phase head width before gather so the compiled
+        # kernel never indexes out of range into narrow phase heads
+        # (ACQ_OFFER / ISSUE have width 2). Clamp rather than
+        # ``masked_fill(invalid, 0)``: Inductor will reorder a mask
+        # whose effect is "overwritten later by -1e9" past the gather,
+        # since the reasoning is that the gathered value at invalid
+        # positions doesn't matter. That reordering is unsafe on CUDA
+        # where gather bounds-checks and device-asserts regardless of
+        # what happens to the result. An unconditional clamp has no
+        # such dependence and survives fusion. Output is identical:
+        # invalid-position values get masked to -1e9 after gather
+        # either way.
         if phase_indices is not None:
             for phase_id in range(NUM_PHASES):
                 idx = phase_indices[phase_id]
                 phase_logits = self._dispatch[phase_id](tokens.index_select(0, idx))
                 sub_ids = action_ids.index_select(0, idx).long()
-                invalid = self._k_range[None, :] >= n_legals.index_select(0, idx)[:, None]
-                safe_ids = sub_ids.masked_fill(invalid, 0)
+                safe_ids = sub_ids.clamp(min=0, max=phase_logits.shape[1] - 1)
                 gathered = phase_logits.gather(1, safe_ids)
+                invalid = self._k_range[None, :] >= n_legals.index_select(0, idx)[:, None]
                 out.index_copy_(0, idx, gathered.masked_fill(invalid, -1e9))
         else:
             # Legacy boolean-mask path. Each `tokens[mask]` / `out[mask] = ...`
@@ -440,9 +446,9 @@ class RSSTransformerNet(nn.Module):
                 mask = phase_ids == phase_id
                 phase_logits = self._dispatch[phase_id](tokens[mask])
                 sub_ids = action_ids[mask].long()
-                invalid = self._k_range[None, :] >= n_legals[mask][:, None]
-                safe_ids = sub_ids.masked_fill(invalid, 0)
+                safe_ids = sub_ids.clamp(min=0, max=phase_logits.shape[1] - 1)
                 gathered = phase_logits.gather(1, safe_ids)
+                invalid = self._k_range[None, :] >= n_legals[mask][:, None]
                 out[mask] = gathered.masked_fill(invalid, -1e9)
 
         return out
