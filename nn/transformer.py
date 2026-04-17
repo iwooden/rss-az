@@ -384,9 +384,9 @@ class RSSTransformerNet(nn.Module):
             phase_ids: (batch,) int tensor, phase index 0-7. Ignored when
                 ``phase_indices`` is provided; required otherwise.
             action_ids: (batch, K_MAX) int tensor, phase-local legal action ids
-                per row. Unused tail positions ([n_legals[i]:]) should be
-                in-range (e.g. zero) — they are read by ``gather`` but masked
-                out before softmax.
+                per row. Tail positions ([n_legals[i]:]) may hold arbitrary
+                values — they are rewritten to 0 before ``gather`` and
+                masked out before softmax.
             n_legals: (batch,) int tensor, legal action count per row.
             phase_indices: Optional list of ``NUM_PHASES`` int64 tensors on
                 ``tokens.device``. ``phase_indices[p]`` holds the row indices
@@ -413,13 +413,23 @@ class RSSTransformerNet(nn.Module):
         # cleanly through linear / cat / gather / masked_scatter as no-op
         # (0,*) ops, so we just dispatch all 8 phases unconditionally and
         # let the GPU pipeline absorb the extra small launches.
+        # `action_ids` tail positions [n_legals[i]:] may hold stale
+        # garbage (shared-memory worker slots are reused across phases
+        # and only [:n_legals[i]] is written per enumeration). We
+        # masked_fill sub_ids to 0 on those positions before gather so
+        # the compiled kernel never indexes out of range into narrow
+        # phase heads (ACQ_OFFER / ISSUE have width 2). CUDA Inductor
+        # bounds-checks and device-asserts otherwise; ROCm silently
+        # reads garbage then drops it in the -1e9 mask below, so this
+        # is an equivalent rewrite on both platforms.
         if phase_indices is not None:
             for phase_id in range(NUM_PHASES):
                 idx = phase_indices[phase_id]
                 phase_logits = self._dispatch[phase_id](tokens.index_select(0, idx))
                 sub_ids = action_ids.index_select(0, idx).long()
-                gathered = phase_logits.gather(1, sub_ids)
                 invalid = self._k_range[None, :] >= n_legals.index_select(0, idx)[:, None]
+                safe_ids = sub_ids.masked_fill(invalid, 0)
+                gathered = phase_logits.gather(1, safe_ids)
                 out.index_copy_(0, idx, gathered.masked_fill(invalid, -1e9))
         else:
             # Legacy boolean-mask path. Each `tokens[mask]` / `out[mask] = ...`
@@ -430,8 +440,9 @@ class RSSTransformerNet(nn.Module):
                 mask = phase_ids == phase_id
                 phase_logits = self._dispatch[phase_id](tokens[mask])
                 sub_ids = action_ids[mask].long()
-                gathered = phase_logits.gather(1, sub_ids)
                 invalid = self._k_range[None, :] >= n_legals[mask][:, None]
+                safe_ids = sub_ids.masked_fill(invalid, 0)
+                gathered = phase_logits.gather(1, safe_ids)
                 out[mask] = gathered.masked_fill(invalid, -1e9)
 
         return out
@@ -451,7 +462,8 @@ class RSSTransformerNet(nn.Module):
             x: (batch, num_tokens, token_dim) token features, zero-padded.
             phase_ids: (batch,) int tensor, decision phase index 0-7.
             action_ids: (batch, K_MAX) int tensor, phase-local legal action
-                ids per row. Unused tail ([n_legals[i]:]) must be in-range.
+                ids per row. Tail ([n_legals[i]:]) may be arbitrary — sanitized
+                inside ``_policy_forward`` before gather.
             n_legals: (batch,) int tensor, legal action count per row.
             phase_indices: Optional ``NUM_PHASES``-length list of int64 row
                 indices per phase; see ``_policy_forward`` for details. When
