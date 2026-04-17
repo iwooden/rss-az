@@ -114,6 +114,9 @@ def get_extra_compile_args():
         args.extend(['/O2', '/GL'])
     else:
         args.extend(['-O3', '-march=native', get_lto_flag()])
+    # CYTHON_WITHOUT_ASSERTIONS strips assert readers, leaving cdef locals
+    # and Cython scratch temps declared-but-unused in the generated C.
+    args.extend(['-Wno-unused-variable', '-Wno-unused-but-set-variable'])
     return args
 
 
