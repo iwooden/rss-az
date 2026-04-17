@@ -72,6 +72,16 @@ def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
     error-prone, can cause perf regressions); the eval-server warmup
     site applies ``mark_unbacked`` on the runtime-varying dims instead.
 
+    ``triton.autotune_at_compile_time`` moves per-kernel Triton autotune
+    from runtime to compile time. At runtime our unbacked per-phase row
+    counts can legitimately be 0 (a batch with no rows for a given
+    phase), and Inductor's runtime autotune divides by that dim inside
+    its block/grid heuristic → ``ZeroDivisionError`` during
+    ``autotune_to_one_config``. Compile-time autotune synthesizes
+    benchmark inputs using a non-zero size hint for unbacked symints,
+    sidestepping the crash. Observed on CUDA 12.8 / torch 2.11; ROCm
+    uses a different Triton heuristic and is unaffected.
+
     Args:
         for_training: If True, disables Inductor's
             ``joint_graph_constant_folding`` pass. That pass calls
@@ -85,6 +95,7 @@ def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
             unaffected. Disabling costs only a small forward-graph
             constant-folding optimization.
     """
+    options: dict[str, Any] = {"triton.autotune_at_compile_time": True}
     if for_training:
-        return {"options": {"joint_graph_constant_folding": False}}
-    return {}
+        options["joint_graph_constant_folding"] = False
+    return {"options": options}
