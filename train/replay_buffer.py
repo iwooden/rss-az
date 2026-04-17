@@ -47,7 +47,7 @@ class ReplayBuffer:
         capacity: int,
         state_size_int16: int,
         num_players: int,
-        k_max: int = 256,
+        k_max: int = 1024,
     ) -> None:
         self._capacity = capacity
         self._state_size = state_size_int16
