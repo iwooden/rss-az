@@ -30,8 +30,12 @@ Request submission is lockfree via per-server uint64 bitmaps (Cython
 atomics in mcts_core.pyx). Each worker atomically sets its bit in the
 server's bitmap via fetch-or (release); the server atomically exchanges
 the bitmap to zero (acquire) to claim all pending work in O(1). A
-per-server mp.Event doorbell wakes idle servers; per-worker mp.Events
-signal completion to workers.
+per-server mp.Event doorbell wakes idle servers. Done-notification is
+a per-server mp.Condition plus a shared-memory uint8 ``done_flags``
+array: the scatter thread takes the condition lock once per batch,
+stamps ``done_flags[widx]=1`` for every completed worker, and calls
+``notify_all`` a single time — eliminating the per-worker Event.set
+burst that used to dominate the scatter thread.
 
 **Multi-server concurrency:**
 
@@ -152,12 +156,20 @@ class SharedEvalBuffers:
         # Per-worker state counts (how many states in current request).
         self._counts = torch.zeros(num_workers, dtype=torch.int32).share_memory_()
 
+        # Per-worker done flags (server → worker). Written by the scatter
+        # thread under its server's ``done_cond`` lock; read by the owning
+        # worker both under the lock (for the wait-loop predicate) and
+        # outside (for the pre-publish clear, which is safe because the
+        # flag is only ever transitioned 1→0 by its owner between request
+        # cycles and 0→1 by the server after the bitmap submission).
+        self._done_flags = torch.zeros(num_workers, dtype=torch.uint8).share_memory_()
+
         # Bitmap signaling and events — initialized lazily via init_bitmap().
         self._submitted_masks: torch.Tensor | None = None
         self._worker_to_server: np.ndarray | None = None
         self._worker_to_local_idx: np.ndarray | None = None
         self.server_events: list[Any] | None = None
-        self.done_events: list[Any] | None = None
+        self.done_conds: list[Any] | None = None
 
     # ------------------------------------------------------------------
     # Per-worker input accessors. Numpy views are created on-demand
@@ -233,8 +245,10 @@ class SharedEvalBuffers:
 
         # Per-server doorbell events (wake idle servers on new work)
         self.server_events = [ctx.Event() for _ in range(num_servers)]
-        # Per-worker done events (wake workers after inference completes)
-        self.done_events = [ctx.Event() for _ in range(self.num_workers)]
+        # Per-server done-conditions (one shared condvar per server partition).
+        # Workers in partition P wait on done_conds[P]; the server's scatter
+        # thread notifies it exactly once per batch after stamping flags.
+        self.done_conds = [ctx.Condition() for _ in range(num_servers)]
 
     def get_bitmap_arrays(self) -> tuple[np.ndarray, np.ndarray]:
         """Return (submitted_masks_uint64, counts_int32) numpy views.
@@ -249,6 +263,14 @@ class SharedEvalBuffers:
         assert self._worker_to_server is not None
         assert self._worker_to_local_idx is not None
         return int(self._worker_to_server[worker_idx]), int(self._worker_to_local_idx[worker_idx])
+
+    def get_done_flags_np(self) -> np.ndarray:
+        """uint8 (num_workers,) view of the shared done-flag array.
+
+        Numpy views over shared-memory torch tensors don't survive spawn
+        pickling, so each process must call this for its own view.
+        """
+        return self._done_flags.numpy()
 
 
 def _eval_server_main(
@@ -514,9 +536,10 @@ def _eval_server_serve(
 
     # Bitmap and event handles
     submitted_masks, sig_counts = shared_bufs.get_bitmap_arrays()
-    assert shared_bufs.done_events is not None
+    assert shared_bufs.done_conds is not None
     assert shared_bufs.server_events is not None
-    done_events = shared_bufs.done_events
+    done_cond = shared_bufs.done_conds[server_id]
+    done_flags_np = shared_bufs.get_done_flags_np()
     server_event = shared_bufs.server_events[server_id]
 
     # Pre-allocate request arrays (filled each drain, avoids per-batch alloc)
@@ -524,11 +547,12 @@ def _eval_server_serve(
     _cnt_buf = np.empty(partition_size, dtype=np.int32)
 
     # --- Async-completion infrastructure ---------------------------------
-    # The scatter thread takes the blocking cuda.synchronize() and per-worker
-    # done_events[...].set() burst off the main serve loop's critical path.
-    # Profiling before this change showed 70% of wall time in synchronize
-    # and 14% in notify_all — both of which are now pipelined behind batch
-    # N+1's input prep and GPU launch.
+    # The scatter thread takes the blocking cuda.synchronize() and the
+    # done-notify work off the main serve loop's critical path. Profiling
+    # before this change showed 70% of wall time in synchronize and 14%
+    # in the per-worker Event.set burst — both are now pipelined behind
+    # batch N+1's input prep and GPU launch, and the burst itself has
+    # collapsed to a single notify_all on a shared condition.
     #
     # Slot ownership:
     #   main thread  — writes pin_*[slot] inputs, launches GPU work,
@@ -536,8 +560,8 @@ def _eval_server_serve(
     #                  the slot off via _scatter_jobs.
     #   scatter thr  — event.synchronize() (releases GIL → main runs free),
     #                  reads pin_priors[slot]/pin_val[slot] into shared
-    #                  memory, sets per-worker done_events, returns the
-    #                  slot via _free_slots.
+    #                  memory, stamps per-worker done_flags and notifies
+    #                  the done-condition, returns the slot via _free_slots.
     #
     # The single recorded event covers BOTH halves of the slot's lifetime:
     # the H→D copies must have completed (GPU copy engine finished reading
@@ -568,8 +592,13 @@ def _eval_server_serve(
                 all_priors_np.view(np.int8), all_values_np,
                 widx_copy, cnts_copy, n_req, priors_row_bytes,
             )
-            for i in range(n_req):
-                done_events[widx_copy[i]].set()
+            # Consolidated wake: one lock acquire, N byte stores, one
+            # notify_all. Replaces the old per-worker Event.set() burst
+            # (N × (lock + notify + unlock)).
+            with done_cond:
+                for i in range(n_req):
+                    done_flags_np[widx_copy[i]] = 1
+                done_cond.notify_all()
             if stats is not None:
                 with _stats_lock:
                     stats.record_batch(total_n, perf_counter() - start_ti)
@@ -698,8 +727,10 @@ def _eval_server_serve(
                 all_priors_np.view(np.int8), all_values_np,
                 widx_copy, cnts_copy, n_req, priors_row_bytes,
             )
-            for i in range(n_req):
-                done_events[widx_copy[i]].set()
+            with done_cond:
+                for i in range(n_req):
+                    done_flags_np[widx_copy[i]] = 1
+                done_cond.notify_all()
             if stats is not None:
                 stats.record_batch(total_n, perf_counter() - start_ti)
             _free_slots.put(slot)
@@ -843,7 +874,7 @@ def _eval_server_serve(
 
     # Drain the scatter thread: any batches launched before stop_event was
     # observed must finish their notify so workers aren't left stuck on
-    # done_events.wait(). The sentinel tells the thread to exit once it's
+    # done_cond.wait(). The sentinel tells the thread to exit once it's
     # worked through the queue.
     _scatter_jobs.put(None)
     _scatter_thread.join()
@@ -978,13 +1009,15 @@ class RemoteEvaluator(BaseEvaluator):
     Hot path is pure numpy: workers fill ``(num_tokens, token_dim)`` f32
     token buffers via ``core.token_data.get_token_data``, write phase_id /
     action_ids / n_legal scalars into their shared-mem slots, publish a
-    bitmap bit, and sleep on an Event until the server signals completion.
-    The returned priors are already softmaxed over the legal action list
-    on the GPU — no worker-side gather or softmax.
+    bitmap bit, and sleep on the per-server done-condition until a
+    shared-memory done flag flips. The returned priors are already
+    softmaxed over the legal action list on the GPU — no worker-side
+    gather or softmax.
 
     Communication uses per-server uint64 bitmaps for lockfree request
-    submission (atomic fetch-or) and per-worker mp.Events for done
-    notification.
+    submission (atomic fetch-or) and a per-server mp.Condition + shm
+    ``done_flags`` array for done notification (one notify_all per batch
+    instead of N per-worker Event.set() calls).
 
     Invariant: each worker may have at most one outstanding eval request
     at a time. Output slots are keyed by worker_idx alone (no request id),
@@ -1020,32 +1053,47 @@ class RemoteEvaluator(BaseEvaluator):
         self._profile = profile
         self._stats: EvalClientStats | None = EvalClientStats() if profile else None
 
-        # Bitmap signaling: atomic fetch-or to publish, mp.Event for done.
+        # Bitmap signaling: atomic fetch-or to publish, per-server
+        # Condition + shm done flag for completion.
         from mcts.mcts_core import worker_publish_request
         self._submitted_masks, self._sig_counts = shared_bufs.get_bitmap_arrays()
         self._publish = worker_publish_request
         self._server_id, self._local_idx = shared_bufs.get_worker_mapping(worker_idx)
-        assert shared_bufs.done_events is not None, (
+        assert shared_bufs.done_conds is not None, (
             "SharedEvalBuffers.init_bitmap() must be called before creating RemoteEvaluator"
         )
         assert shared_bufs.server_events is not None
-        self._done_event = shared_bufs.done_events[worker_idx]
+        self._done_cond = shared_bufs.done_conds[self._server_id]
+        self._done_flags_np = shared_bufs.get_done_flags_np()
         self._server_event = shared_bufs.server_events[self._server_id]
 
     def _request_eval(self, n: int) -> None:
-        """Publish request via bitmap, wake server if needed, sleep until done."""
-        self._done_event.clear()
+        """Publish request via bitmap, wake server if needed, sleep until done.
+
+        Uses a per-server mp.Condition + shared-memory ``done_flags``
+        byte array. Clearing our flag outside the condition's lock is
+        safe because this worker is the only actor that transitions it
+        1→0 (and only here, strictly between response observation and
+        next publish); the server only transitions it 0→1 after observing
+        the bitmap bit we set in ``publish``.
+        """
+        self._done_flags_np[self._worker_idx] = 0
         became_nonempty = self._publish(
             self._submitted_masks, self._sig_counts,
             self._worker_idx, self._server_id, self._local_idx, n,
         )
         if became_nonempty:
             self._server_event.set()
-        if not self._done_event.wait(timeout=self._EVAL_TIMEOUT):
-            raise RuntimeError(
-                f"Eval server did not respond within {self._EVAL_TIMEOUT}s "
-                f"(worker {self._worker_idx}, batch {n})"
-            )
+        deadline = perf_counter() + self._EVAL_TIMEOUT
+        with self._done_cond:
+            while self._done_flags_np[self._worker_idx] == 0:
+                remaining = deadline - perf_counter()
+                if remaining <= 0:
+                    raise RuntimeError(
+                        f"Eval server did not respond within {self._EVAL_TIMEOUT}s "
+                        f"(worker {self._worker_idx}, batch {n})"
+                    )
+                self._done_cond.wait(timeout=remaining)
 
     def evaluate(
         self, state: Any,
