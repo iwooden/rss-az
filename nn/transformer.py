@@ -502,10 +502,15 @@ class RSSTransformerNet(nn.Module):
     # ------------------------------------------------------------------
 
     def _init_weights(self) -> None:
-        """Kaiming init for linears, zero-init residual outputs for identity start."""
+        """GPT/LLaMA-style trunc-normal init, zero-init residual outputs for identity start.
+
+        kaiming_uniform_(nonlinearity="relu") is wrong for most Linears here
+        (SDPA has no ReLU, SwiGLU/GELU heads aren't ReLU, value head feeds
+        Tanh) and produces bounds ~10x wider than standard transformer init.
+        """
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")
+                nn.init.trunc_normal_(module.weight, std=0.02)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
             elif isinstance(module, nn.RMSNorm):
