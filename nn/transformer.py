@@ -436,7 +436,11 @@ class RSSTransformerNet(nn.Module):
                 safe_ids = sub_ids.clamp(min=0, max=phase_logits.shape[1] - 1)
                 gathered = phase_logits.gather(1, safe_ids)
                 invalid = self._k_range[None, :] >= n_legals.index_select(0, idx)[:, None]
-                out.index_copy_(0, idx, gathered.masked_fill(invalid, -1e9))
+                # Cast to out.dtype: under autocast, tokens (post-RMSNorm) is
+                # fp32 but phase_logits (from Linear) is bf16 — index_copy_
+                # requires matching dtypes. torch.compile hides the mismatch
+                # via fusion; eager (NNEvaluator) surfaces it.
+                out.index_copy_(0, idx, gathered.masked_fill(invalid, -1e9).to(out.dtype))
         else:
             # Legacy boolean-mask path. Each `tokens[mask]` / `out[mask] = ...`
             # forces a host sync because the masked size is data-dependent.
