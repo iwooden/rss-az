@@ -948,6 +948,10 @@ class RemoteEvaluator(BaseEvaluator):
         self._in_phase_ids_np[0] = phase_id
         # enumerate writes phase-local action ids directly into shared mem.
         n = enumerate_legal_actions_py(state, self._in_action_ids_np[0])
+        # Zero the tail so stale ids from a prior (possibly larger-phase)
+        # enumeration don't reach the model's gather. Matches the
+        # contract run_search and NNEvaluator already honor.
+        self._in_action_ids_np[0, n:] = 0
         self._in_n_legals_np[0] = n
 
         self._request_eval(1)
