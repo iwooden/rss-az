@@ -307,7 +307,7 @@ Option B is simpler for a very small-scale prototype, but expensive at current t
 - **Eval buffers**: `(batch, num_tokens, token_dim)` rank-3 tensor in shared memory. All token types use the same padded width.
 - **Action layout**: Per-phase action indices (max 14,977 for ACQUISITION). Update `actions.pyx` layout and mask generation.
 - **Evaluator**: Remove state rotation. Remove un-rotation of values. Simpler.
-- **Model interface**: `forward(x, phase_ids) → (policy_logits, values)` where `x` is `(batch, num_tokens, token_dim)` and `phase_ids` is `(batch,)`. Policy logits padded to `MAX_ACTION_SIZE` (14,977), -1e9 beyond phase action range.
+- **Model interface**: `forward(x, action_ids, n_legals, phase_indices) → (policy_logits, values)` where `x` is `(batch, num_tokens, token_dim)`. Policy logits are per-row gathered against each row's legal slice (shape `(B, K_MAX)`), with `-1e9` beyond `n_legals[i]`.
 
 ### Game engine simplifications
 
