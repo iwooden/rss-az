@@ -18,3 +18,8 @@ backups/
 gamelog.md
 *.tar.gz
 tests/games_18xx/data/*.json
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
