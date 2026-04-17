@@ -1,26 +1,40 @@
-# Sparse Policy / Replay Refactor
+# Sparse Policy / Replay Refactor — Historical Design Notes
 
-## Why this document exists
+> **Status (2026-04): mostly landed.** Phase-local action ids, sparse MCTS
+> plumbing, sparse replay, sparse eval-server IPC, and sparse trainer loss
+> have all shipped. The only unlanded item is candidate-direct scoring inside
+> the ACQUISITION head, and the current thinking is that it isn't worth
+> pursuing at this model scale — see the ACQUISITION section below. This
+> document survives as a reference for the *why*, not as a work queue.
 
-The current engine/training stack still reflects an older MLP-era assumption:
-policy outputs, legal masks, replay targets, and eval-server IPC are all built
-around a single dense `action_dim` vector.
+## Current state (pointers to authoritative code)
 
-That assumption is increasingly out of date:
+| Piece | State | Code |
+|-------|-------|------|
+| Phase-local action ids, `enumerate_legal_actions` | ✅ landed | `core/actions.{pyx,pxd}` |
+| Phase dispatch in driver | ✅ landed | `core/driver.pyx` |
+| Sparse node expansion (`action_ids`, `priors`) | ✅ landed | `mcts/node.py`, `mcts/mcts_core.pyx` |
+| Sparse evaluator contract | ✅ landed | `mcts/evaluator.py` (returns `(priors[:n_legal], values, action_ids, n_legal, phase_id)`) |
+| Sparse eval-server shm protocol | ✅ landed | `train/eval_server.py` (worker→server `action_ids (W,B,K_MAX)`, server→worker softmaxed `priors (W,B,K_MAX)`) |
+| Sparse replay buffer | ✅ landed | `train/replay_buffer.py` — `TrainingExample(action_ids, policy_target)` padded to K_MAX |
+| Sparse self-play export | ✅ landed | `train/self_play.py` |
+| Trainer: phase-local loss, gather + softmax over legal only | ✅ landed | `train/trainer.py` (batch by phase via `phase_indices`) |
+| Dense heads for small phases + per-row gather in model | ✅ landed | `nn/transformer.py::_policy_forward` |
+| ACQ candidate-direct scoring inside head | ❌ not pursued | current head is per-offset low-rank bilinear; rationale below |
 
-- We already treat phases separately at the model level.
-- We no longer need globally unique action indices.
-- MCTS only searches over **legal** actions, not the full theoretical action universe.
-- The proposed transformer architecture can represent large combinatorial phases
-  like ACQUISITION cleanly, but dense policy tensors make that awkward and wasteful.
+## Why this document exists (preserved for context)
 
-The clearest pressure point is full-joint ACQUISITION. A direct action space of
+The refactor was motivated by an earlier MLP-era assumption that policy outputs,
+legal masks, replay targets, and eval-server IPC all lived on a single dense
+`action_dim` vector. That assumption predated phase-local action ids and the
+transformer entity-readout design.
+
+The clearest pressure point was full-joint ACQUISITION. A direct action space of
 
 `8 corps * 36 companies * 51 price offsets = 14,688`
 
-is completely feasible **inside the model**, but awkward when forced through
-dense fixed-width runtime interfaces. The expensive part is not the model head
-itself. The expensive part is:
+is feasible **inside the model**, but forcing it through dense fixed-width
+runtime interfaces was wasteful. The expensive parts were:
 
 - dense logits over eval-server IPC
 - dense legal masks
@@ -28,18 +42,12 @@ itself. The expensive part is:
 - dense replay `legal_mask`
 - dense trainer-side `log_softmax` over large padded action vectors
 
-This refactor proposes a unified sparse policy interface that matches how
-search already works conceptually:
-
-- the engine enumerates legal actions
-- the model scores those legal actions
-- MCTS stores priors only for those legal actions
-- replay stores those legal actions plus target probabilities
-- training computes loss over that legal set only
-
-This matches standard AlphaZero masking semantics. Invalid actions are excluded
-from the softmax competition set. They are **not** trained implicitly by dense
-masking with `-inf`.
+All five are now gone: IPC, replay, and trainer loss all travel on `(K_MAX,)`
+phase-local legal lists. The engine enumerates, the model scores (dense per
+phase, then gathered to the legal slice inside `_policy_forward`), MCTS stores
+priors only for those legal actions, replay stores the same. Training loss is
+softmax over the gathered legal set, which is mathematically equivalent to
+dense `-inf` masking but avoids the dense intermediate outside the model.
 
 
 ## Goals
@@ -224,33 +232,61 @@ During training and inference:
 
 This preserves simplicity where the dense head is already small and natural.
 
-### ACQUISITION
+### ACQUISITION — what actually landed, and why candidate-direct wasn't pursued
 
-ACQ should use direct candidate scoring rather than dense `[14,689]` output.
+The ACQ head currently materializes the full `(B, 8, 36, 52)` logit tensor,
+then `_policy_forward` gathers the legal slice and hands `(B, K_MAX)` back to
+the caller. Nothing dense leaves the model.
 
-The model should accept the legal ACQ candidate list and score those candidates directly.
+The original design sketch proposed going further — score only the legal
+`(corp, company, offset)` triples directly, never materializing the dense
+tensor. That is **not** what shipped, and on current evidence isn't worth
+shipping. The honest accounting:
 
-Two reasonable implementations:
+- The dense `(B, 8, 36, 52)` transient is ~15 MB at B=256 (fp32). Nothing on a
+  16 GB GPU cares about 15 MB.
+- Head FLOPs are <1% of a training step — the trunk (10 layers, d=128) swamps
+  the head by two orders of magnitude. Making ~1% of compute smaller buys
+  nothing measurable.
+- Candidate-direct scoring on GPU is *not* free: per-row gathers into
+  per-offset factors break memory coalescence, warp divergence grows with
+  per-row legal-count variation, and kernel-launch overhead dominates at the
+  small batch sizes used in self-play eval (B=1-16). The factored dense path
+  runs as two fused GEMMs + one contraction under Inductor; candidate-direct
+  would very likely be neutral or slower.
+- The data-pipeline wins the sparse design promised (replay storage, IPC
+  bandwidth, avoiding dense `-inf` masks in the trainer) are already banked
+  by the current architecture — the dense tensor exists only as a microsecond
+  transient between the head's last matmul and the in-model `.gather()`.
 
-1. Low-rank trilinear scoring:
+What the head currently does: per-offset low-rank bilinear +
+additive unary paths, implemented as three einsums:
 
 ```text
-score(c, t, p) = sum_r q_c[r] * k_t[r] * e_p[r]
+score(c, t, p) = (corp_h[c] @ U[p]) · (comp_h[t] @ V[p])          # bilinear, rank-r per offset
+               + W_corp[p] · corp_h[c] + W_comp[p] · comp_h[t]    # unary fallback
 ```
 
-2. Candidate-feature MLP:
+with `U, V: (52, d_model, r)` and per-offset bias linears. See
+`nn/transformer.py::_policy_acquisition` and `TransformerConfig.acq_rank`.
+This replaced the older `cat([corp_h, comp_h, corp_h*comp_h]) → MLP → 52` head,
+cutting peak activation roughly in half while giving each offset its own
+rank-r interaction pattern instead of sharing a single GELU bottleneck.
 
-- gather `corp_token[c]`
-- gather `company_token[t]`
-- gather `price_embedding[p]`
-- concatenate / fuse
-- small MLP -> scalar logit
+If a future model scale (d_model=512, dk=256, bigger batches, or a larger
+combinatorial phase) ever makes the head's dense intermediate actually
+matter, revisit this section — the candidate-direct math is sketched below
+for that eventuality.
 
-The trilinear form is probably the better first implementation:
+**Sketched alternatives (not implemented):**
 
-- fewer parameters
-- easy vectorization
-- preserves a natural factorization
+1. Low-rank trilinear scoring: `score(c, t, p) = sum_r q_c[r] * k_t[r] * e_p[r]`.
+   Smallest parameter count, easy vectorization, preserves a natural
+   factorization. Less expressive than the current bilinear form — each offset
+   gets a rank-1 interaction instead of rank-r.
+2. Candidate-feature MLP: gather `corp_token[c]`, `company_token[t]`,
+   `price_embedding[p]`, fuse, small MLP → scalar logit. Most flexible, but
+   worst on the gather-coalescence/divergence axes above.
 
 ### Important modeling note
 
@@ -473,7 +509,7 @@ Build a boolean padding mask:
 This gives one stable tensor shape per phase batch and works well with compilation.
 
 
-## Suggested file-by-file changes
+## File-by-file status
 
 ### `core/actions.pyx` and `core/actions.pxd` ✅
 
@@ -487,59 +523,52 @@ This gives one stable tensor shape per phase batch and works well with compilati
 - ~~Update action application to use phase-local ids.~~ Done.
 - ~~Decode relative to current phase.~~ Done — full dispatch table + forced-action auto-chain.
 
-### `mcts/evaluator.py`
+### `mcts/evaluator.py` ✅
 
-- Replace dense `(policy_logits, legal_mask)` contract with sparse candidate scoring.
-- Evaluator should return priors aligned with the legal action list.
+- ~~Replace dense `(policy_logits, legal_mask)` contract with sparse candidate scoring.~~ Done — `evaluate*()` returns `(priors[:n_legal], values, action_ids, n_legal, phase_id)`.
+- Model forward still does dense-per-phase + gather internally; evaluator sees only the sparse result.
 
-### `train/eval_server.py`
+### `train/eval_server.py` ✅
 
-- Add shared buffers for:
-  - `phase_ids`
-  - `legal_counts`
-  - `action_ids`
-  - sparse `priors`
-- Remove dense output-logit buffer for the sparse path.
-- Score and normalize legal candidates on the server.
+- ~~Add shared buffers for `phase_ids`, `legal_counts`, `action_ids`, sparse `priors`.~~ Done.
+- ~~Remove dense output-logit buffer.~~ Done — ~46 MB shared-mem buffer gone at 96 workers.
+- ~~Score and normalize legal candidates on the server.~~ Done — softmax runs on-GPU inside the server's autocast region.
 
-### `mcts/node.py`
+### `mcts/node.py` ✅
 
-- Keep sparse storage of action ids, priors, visits, and value sums.
-- No conceptual redesign needed beyond the input contract.
+- ~~Sparse storage of action ids, priors, visits, value sums.~~ Done — `MCTSNode.expand(action_ids, n, priors, default_value)`.
 
-### `mcts/mcts_core.pyx`
+### `mcts/mcts_core.pyx` ✅
 
-- Add `expand_node_from_sparse(action_ids, priors, default_value)`.
-- Keep current PUCT scan logic.
+- ~~Sparse expansion entrypoint.~~ Done — `_expand_node_sparse`.
+- PUCT scan unchanged.
 
-### `mcts/search.py`
+### `mcts/search.py` ✅
 
-- Stop materializing dense root probability vectors.
-- Sample directly from sparse root visits.
-- Store sparse policy targets in self-play records.
+- ~~Stop materializing dense root probability vectors.~~ Done.
+- ~~Sample directly from sparse root visits.~~ Done.
+- ~~Store sparse policy targets in self-play records.~~ Done.
 
-### `train/replay_buffer.py`
+### `train/replay_buffer.py` ✅
 
-- Replace dense `legal_masks` and dense `policy_targets`.
-- Store sparse padded arrays plus `phase_id` and `legal_count`.
+- ~~Replace dense `legal_masks` and dense `policy_targets`.~~ Done — schema is `(action_ids (uint16, K_MAX), policy_targets (float32, K_MAX), phase_ids, n_legals, state, value_targets)`.
 
-### `train/self_play.py`
+### `train/self_play.py` ✅
 
-- Export sparse targets directly from root visit counts.
-- Stop building dense root distributions.
+- ~~Export sparse targets directly from root visit counts.~~ Done — `SelfPlayExample.policy_target` is `(n_legal,)` float32.
 
-### `train/trainer.py`
+### `train/trainer.py` ✅
 
-- Batch by phase.
-- Gather dense logits for small phases.
-- Candidate-score ACQ directly.
-- Compute sparse legal-only cross-entropy.
+- ~~Batch by phase.~~ Done — phase dispatch flows through `phase_indices` in the model.
+- ~~Gather logits for small phases.~~ Done inside `_policy_forward`.
+- ~~Sparse legal-only cross-entropy.~~ Done.
+- ❌ **Not pursued:** candidate-score ACQ directly — see the ACQUISITION modeling note above.
 
-### `nn/transformer.py`
+### `nn/transformer.py` ✅ (with one deliberate omission)
 
-- Remove the assumption that every phase returns a common `MAX_ACTIONS`.
-- Keep dense heads for small phases if desired.
-- Add candidate-scoring path for ACQ.
+- ~~Remove the assumption that every phase returns a common `MAX_ACTIONS`.~~ Done — `_policy_forward` dispatches per-phase and gathers to `K_MAX` inside the model.
+- ~~Keep dense heads for small phases.~~ Done — all 7 small-phase heads are dense-then-gather.
+- ❌ **Deliberately not added:** candidate-scoring path for ACQ. Current head is per-offset low-rank bilinear + unary paths, dense `(B, 8, 36, 52)` transient collapsed by the in-model `.gather()`. See ACQUISITION modeling note for rationale.
 
 ### Tests
 
@@ -698,7 +727,7 @@ At minimum, log:
 This refactor should be driven by measured legal counts, not guesses.
 
 
-## Suggested rollout order
+## Rollout status
 
 ### Phase 1: action ids and legal enumeration ✅
 
@@ -706,42 +735,42 @@ This refactor should be driven by measured legal counts, not guesses.
 - deterministic `enumerate_legal_actions()` — **done** (all 8 `_enumerate_*` helpers)
 - decode/apply path updated — **done** (`core/driver.pyx` dispatches to `phases/*.pyx`)
 
-### Phase 2: sparse MCTS plumbing
+### Phase 2: sparse MCTS plumbing ✅
 
-- sparse evaluator contract
-- sparse node expansion
-- sparse root action sampling
+- sparse evaluator contract — **done** (`mcts/evaluator.py`)
+- sparse node expansion — **done** (`mcts/node.py`, `_expand_node_sparse`)
+- sparse root action sampling — **done** (`mcts/search.py`)
 
-### Phase 3: sparse replay
+### Phase 3: sparse replay ✅
 
-- padded sparse replay schema
-- self-play export changes
-- trainer input changes
+- padded sparse replay schema — **done** (`train/replay_buffer.py`)
+- self-play export changes — **done** (`train/self_play.py`)
+- trainer input changes — **done** (`train/trainer.py`)
 
-### Phase 4: transformer integration
+### Phase 4: transformer integration ✅ / ❌
 
-- small dense heads + sparse gather loss
-- ACQ candidate scorer
+- small dense heads + sparse gather loss — **done** (`nn/transformer.py::_policy_forward`)
+- ACQ candidate scorer — **deliberately not pursued**; see ACQUISITION modeling note
 
-### Phase 5: performance tuning
+### Phase 5: performance tuning (ongoing, as-needed)
 
-- tune `Kmax`
-- decide whether `float16` policy targets are acceptable
-- profile eval-server scoring path
-- only then consider ragged arena storage
+- `K_MAX = MAX_LEGAL_ACTIONS_PY = 256` in `core/actions`; overflow is a loud assert.
+- `policy_targets` kept at float32 — cheap and simplifies the loss path.
+- eval-server scoring path is profiled via the training-loop monitoring
+  (`train/main.py`, tensorboard scalars).
 
+## Design decisions taken
 
-## Recommended decisions
+This is what the shipped system actually commits to:
 
-If we are optimizing for the best tradeoff between clarity, risk, and performance:
+- phase-local action ids ✅
+- padded sparse `K_MAX` everywhere outside the model ✅
+- dense per-phase heads + in-model `.gather()` (not candidate-direct scoring) ✅
+- server returns already-softmaxed sparse priors ✅
+- engine is the single source of truth for legality ✅
+- sparse replay for **all** phases, not just ACQ ✅
 
-- use phase-local ids
-- make replay sparse for **all** phases
-- keep a padded sparse `Kmax` design for v1
-- keep dense heads for small phases
-- use direct candidate scoring for ACQ
-- let the server return normalized sparse priors
-- keep the engine as the single source of truth for legal action enumeration
-
-This gives a coherent end-to-end design without forcing every phase to share
-the same internal model implementation.
+Net effect: a coherent end-to-end sparse design that does *not* force every
+phase to share the same internal model implementation, while avoiding the
+gather-heavy GPU access patterns that true candidate-direct scoring would
+require.
