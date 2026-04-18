@@ -16,7 +16,7 @@ Replace the residual MLP (~4.1M params, flat state vector) with a transformer th
 
 ## Token Decomposition
 
-Each token is projected to a common `d_model` dimension via type-specific linear layers. Type discrimination is handled by the per-type projection (including its bias) — no shared type-embedding table. The pass token, which has no input features, is instead represented by a single learned `nn.Parameter` anchor (BERT `[CLS]`-style).
+Each token is projected to a common `d_model` dimension via type-specific linear layers. Type discrimination is handled by the per-type projection (including its bias) — no shared type-embedding table. The pass tokens, which have no input features, are instead represented by a small bank of learned `nn.Parameter` anchors (BERT `[CLS]`-style) — one per pass-using phase.
 
 The authoritative per-token feature spec is in `token-data.md`. The table below summarizes token types and counts.
 
@@ -36,9 +36,8 @@ The authoritative per-token feature spec is in `token-data.md`. The table below 
 | Issue | 1 | price impact, issue remaining (8 corp flags). Zeroed outside ISSUE. |
 | PAR | 1 | per-par player cost (14), corp cash (14), issued shares (14). Zeroed outside IPO. |
 | Acq Offer | 1 | offer price index+value, offer corp (8-slot), FI-company flag. Zeroed outside ACQ_OFFER. |
-| Pass | 1 | No input features — single learned `nn.Parameter` anchor. Emits pass logit. |
 
-**Total: 54 + N tokens** (57 for 3p, 58 for 4p, 59 for 5p)
+**Input buffer total: 53 + N tokens** (56 for 3p, 57 for 4p, 58 for 5p). The trunk sequence is 7 wider because the model concatenates 7 learned per-phase pass anchors after projection — see *Per-phase pass anchors* below.
 
 ### What disappears from the state vector
 
@@ -50,7 +49,7 @@ The current turn state has ~225 floats of context-dependent fields. Many exist b
 
 ### Phase-specific context tokens
 
-Seven dedicated tokens carry phase-specific information that the model needs for decision-making, zeroed outside their respective phases. Some double as policy readout points. Full feature lists in `token-data.md`.
+Six dedicated tokens carry phase-specific information that the model needs for decision-making, zeroed outside their respective phases. Some double as policy readout points. Full feature lists in `token-data.md`.
 
 - **Invest token**: consecutive passes, buy/sell share price impacts per corp. Context for INVEST.
 - **Auction token**: price index+value, high bidder, starter. Raises are read from this token during BID.
@@ -58,20 +57,23 @@ Seven dedicated tokens carry phase-specific information that the model needs for
 - **Issue token**: price impact, corp-remaining flags. Issue logit is read from this token.
 - **PAR token**: per-par player cost, resulting corp cash, resulting issued shares. Context for IPO (IPO logits are read from corp tokens, PAR provides shared context through attention).
 - **Acq Offer token**: offer price index+value, offer corp, FI-company flag. Buy logit is read from this token during ACQ_OFFER.
-- **Pass token**: no input features — a single learned `nn.Parameter` vector (BERT `[CLS]`-style anchor) that rides the residual stream and picks up phase-dependent context through attention. Emits the pass logit shared across all phases that use it.
+
+### Per-phase pass anchors
+
+Seven learned `nn.Parameter` rows — one per pass-using decision phase (INVEST, BID, ACQUISITION, ACQ_OFFER, CLOSING, ISSUE, IPO; DIVIDENDS has no pass action). They have no input features, so they don't appear in the engine-side buffer — the model concatenates them to the projected trunk sequence inside `_project_tokens`. Each anchor rides the residual stream BERT `[CLS]`-style and picks up phase-dependent context through attention. The pass logit is read from the phase's own anchor via a single shared `pass_head`; per-phase specialization lives in the input anchors, not in the output head.
 
 ## Transformer Architecture
 
 **Implementation: `nn/transformer.py`** (~2.3M params at default config)
 
 ```
-Input tokens (57 for 3p)
+Input tokens (56 for 3p)
     ↓
-Type-specific linear projections → d_model      (pass token: learned anchor only)
+Type-specific linear projections → d_model, then concat 7 per-phase pass anchors
     ↓
 L transformer blocks (pre-RMSNorm, multi-head self-attention + SwiGLU FFN)
     ↓
-Output token representations (57 × d_model)
+Output token representations (63 × d_model for 3p)
     ↓
 Entity-readout policy heads (+ full ACQUISITION pair head) + value head
 ```
@@ -105,9 +107,10 @@ self.player_proj  = nn.Linear(token_dim, d_model)
 self.corp_proj    = nn.Linear(token_dim, d_model)
 # ... (12 total, one per non-pass token type)
 
-# Pass token has no input features. Its representation is a single learned
-# anchor vector (BERT [CLS]-style) initialized with trunc_normal_(std=0.02).
-self.pass_embed = nn.Parameter(torch.empty(d_model))
+# Pass tokens have no input features. Each pass-using phase has its own
+# learned anchor vector (BERT [CLS]-style), concatenated to the trunk
+# sequence inside _project_tokens. Initialized with trunc_normal_(std=0.02).
+self.pass_embeds = nn.Parameter(torch.empty(7, d_model))  # 7 phases, no DIVIDENDS
 ```
 
 ## Policy Head: Entity-Readout
@@ -193,7 +196,7 @@ self.corp_trade_head = nn.Sequential(
     nn.Linear(d_model // 2, 2),  # buy, sell
 )
 
-# Pass token → single pass logit (shared across all phases that use it; BID's pass = leave the auction)
+# Per-phase pass anchor → single pass logit via shared head (BID's pass = leave the auction)
 self.pass_head = nn.Linear(d_model, 1)
 
 # Phase-specific context tokens → policy logits (read directly from token)
@@ -249,7 +252,7 @@ GameState (int16, 469 slots at 3p)  ── engine-only, raw values ──
                      ↓
            get_token_data(state, buffer)   ← Cython, nogil
                      ↓
-           eval_buffer: (batch, num_players + 54, 97)  float32
+           eval_buffer: (batch, num_players + 53, 97)  float32
                      ↓
            Type-specific projections → d_model → transformer trunk
 ```
@@ -271,18 +274,18 @@ cpdef void get_token_data_batch(
 )
 ```
 
-Implementation lives in `core/token_data.{pyx,pxd}`. Feature spec: `token-data.md`. Each `_fill_*_token()` helper reads from the compact state and writes raw/lightly-normalized features into the buffer inside a single `nogil` block. Token order is fixed: `[players..., corps..., companies..., FI, market, global, invest, auction, dividend, issue, par, acq_offer, pass]`.
+Implementation lives in `core/token_data.{pyx,pxd}`. Feature spec: `token-data.md`. Each `_fill_*_token()` helper reads from the compact state and writes raw/lightly-normalized features into the buffer inside a single `nogil` block. Token order is fixed: `[players..., corps..., companies..., FI, market, global, invest, auction, dividend, issue, par, acq_offer]`. The 7 per-phase pass anchors are added inside the model after projection and don't appear in the engine-side buffer.
 
-Both entries accept C-contiguous `float32` memoryviews sized to at least `(num_players + 54, TOKEN_DIM)` (single) or `(n, num_players + 54, TOKEN_DIM)` (batch). `get_token_data_batch` reuses a single scratch `GameState` across rows via `rebind`, amortizing Python dispatch over the whole batch — this is the path the evaluator and eval server use on their hot paths. A small GIL-held prologue runs `refresh_player_cache_if_dirty` for each player before the nogil fill body, so the fill itself can read cached net-worth / liquidity / income slots directly.
+Both entries accept C-contiguous `float32` memoryviews sized to at least `(num_players + 53, TOKEN_DIM)` (single) or `(n, num_players + 53, TOKEN_DIM)` (batch). `get_token_data_batch` reuses a single scratch `GameState` across rows via `rebind`, amortizing Python dispatch over the whole batch — this is the path the evaluator and eval server use on their hot paths. A small GIL-held prologue runs `refresh_player_cache_if_dirty` for each player before the nogil fill body, so the fill itself can read cached net-worth / liquidity / income slots directly.
 
 Static features (synergies, face values, etc.) are written every call — it's a straight memcpy and the simplicity is worth more than the minor bandwidth savings. Phase-specific tokens are left at the zeroed default when the current engine phase does not match.
 
 ### Eval buffer sizing
 
 The eval buffer is `(batch_size, num_tokens, token_dim)`:
-- `num_tokens = num_players + 54` — 57 (3p), 58 (4p), 59 (5p)
+- `num_tokens = num_players + 53` — 56 (3p), 57 (4p), 58 (5p)
 - `token_dim = 97` (all token types zero-padded to the same width; `TokenDataSize.TOKEN_DIM`)
-- Total per sample: 57 × 97 = 5,529 floats (~21.6 KiB) for 3p
+- Total per sample: 56 × 97 = 5,432 floats (~21.2 KiB) for 3p
 
 The rectangular layout enables clean GPU operations. All type-specific projections take the same `token_dim` input (no per-type slicing needed).
 
@@ -298,7 +301,7 @@ The replay buffer stores training examples. With per-phase action indices, each 
 Option A: store the compact state and re-extract tokens at training time. Smallest storage.
 Option B: store the eval buffer directly. Faster training (no re-extraction), larger storage.
 
-Option B is simpler for a very small-scale prototype, but expensive at current training defaults: a `(57, 97)` float32 token buffer is ~22 KiB per sample, so a 500k-sample replay buffer costs ~11 GiB for tokens alone — before per-sample phase ids, legal-action masks, sparse policy targets, and value targets. Option A is the more realistic long-term default.
+Option B is simpler for a very small-scale prototype, but expensive at current training defaults: a `(56, 97)` float32 token buffer is ~21 KiB per sample, so a 500k-sample replay buffer costs ~11 GiB for tokens alone — before per-sample phase ids, legal-action masks, sparse policy targets, and value targets. Option A is the more realistic long-term default.
 
 ## Impact on Training & MCTS Pipeline
 
@@ -339,7 +342,7 @@ All four simplifications follow the same pattern: the MLP needed a small, fixed 
 
 3. ~~**Head dispatch efficiency**~~: **Resolved.** The model emits per-row gathered logits of shape `(B, K_MAX)` — never the dense `(B, 14977)` ACQUISITION pad — by gathering against each row's legal-action list inside `_policy_forward`. Callers pass precomputed per-phase row indices (`phase_indices`) so the dispatch uses `index_select` / `index_copy_` with no H↔D sync.
 
-4. **Batching with variable token counts** (Phase 6): For 3-5p training, batches contain games with different numbers of player tokens (57-59). Options: pad to 59 and use attention mask, or batch by player count. Padding is simpler; batching by count is more efficient.
+4. **Batching with variable token counts** (Phase 6): For 3-5p training, batches contain games with different numbers of player tokens (56-58 input-buffer rows). Options: pad to the max and use attention mask, or batch by player count. Padding is simpler; batching by count is more efficient.
 
 5. **Replay storage strategy**: Currently Option A — the replay buffer stores compact state + phase id + enumerated legal ids + sparse policy/value targets, and re-runs `get_token_data_batch` at training time. Option B (pre-extracted token buffers) is not planned at current buffer sizes.
 
@@ -352,7 +355,7 @@ All four simplifications follow the same pattern: the MLP needed a small, fixed 
 - Delete one-hot encoding, normalization-on-write, entity duplication — **done.**
 - Reduce `core/data.{pxd,pyx}` to pure data + constants — **done.** All field-level accessors removed; the file exposes only the static arrays (company/corp/market/CoO/par tables, synergy matrix), the shared enums (`GameConstants`, `GamePhases`, `DecisionPhase`, `CorpIndices`, `ActionSize`), and the normalization divisors used by token extraction. Computational helpers that used to live here (synergy aggregation, required stars, cost-of-ownership lookup, par-price validity) now live as private cdef functions in the entity that uses them.
 - Update entity handles (Player, Corp, Company, FI, Market, Deck, TurnState) for the new offset layout — **done.** Every handle is fully stateless: no per-instance offset cache, no `initialize()` step, no normalization-on-read. Each accessor reads its slot inline from the module-level `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` / `COMPANY_OFFSETS` / `DECK_OFFSETS` / `FI_OFFSETS` constants, so the singletons in `PLAYERS` / `CORPS` / `COMPANIES` are reused with any `GameState` at any player count. Company ownership is read from the shared `company_locations` / `company_owner_ids` arrays — the per-player and per-corp `owned_companies` bitmaps are gone.
-- Implement `get_token_data()` in Cython — **done.** `core/token_data.{pyx,pxd}` fills a `(num_players + 54, 97)` float32 memoryview inside a single nogil block, with a batched `get_token_data_batch` variant that amortizes per-state Python dispatch via `GameState.rebind`. `TokenDataSize.TOKEN_DIM` is the single source of truth for the padded width shared with `nn/transformer.py`.
+- Implement `get_token_data()` in Cython — **done.** `core/token_data.{pyx,pxd}` fills a `(num_players + 53, 97)` float32 memoryview inside a single nogil block, with a batched `get_token_data_batch` variant that amortizes per-state Python dispatch via `GameState.rebind`. `TokenDataSize.TOKEN_DIM` is the single source of truth for the padded width shared with `nn/transformer.py`.
 
 ### Phase 2: Action space refactor (core/actions.pyx) ✅
 - **Done.** Per-phase action indices, company-indexed auctions/closes, full ACQUISITION head, merged IPO.

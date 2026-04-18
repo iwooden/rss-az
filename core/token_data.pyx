@@ -8,10 +8,12 @@ so the trunk + MCTS throughput depends on this being fast.
 
 Token order (matches ``nn/transformer.py``):
     [players..., corps..., companies..., FI, market, global,
-     invest, auction, dividend, issue, par, acq_offer, pass]
+     invest, auction, dividend, issue, par, acq_offer]
 
-Total tokens = num_players + 54. The pass token has no input features —
-its representation in the trunk is the pure type embedding.
+Total tokens in the buffer = num_players + 53. The model concatenates 7
+learned pass-token anchors to the projected trunk sequence internally
+(one per pass-using decision phase; DIVIDENDS has no pass action), so
+the input buffer carries no pass rows — there is nothing to fill there.
 
 Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 97):
 
@@ -152,15 +154,21 @@ DEF CONSECUTIVE_PASSES_DIVISOR = 5.0
 # =============================================================================
 
 cpdef int get_num_tokens(int num_players) noexcept nogil:
-    """Total number of tokens for the given player count (num_players + 54)."""
-    return num_players + 54
+    """Input-buffer token count for the given player count (num_players + 53).
+
+    The model-side trunk is wider by 7 (per-phase pass anchors concatenated
+    inside ``RSSTransformerNet._project_tokens``), but those rows are
+    learned anchors with no input features, so the engine-side buffer
+    doesn't carry them.
+    """
+    return num_players + 53
 
 
 cpdef void get_token_data(GameState state, float[:, ::1] buffer):
     """Fill ``buffer`` with per-token NN features for ``state``.
 
     ``buffer`` must be a writable C-contiguous float32 memoryview at least
-    ``(num_players + 54, TOKEN_DIM)`` in size. Training is scoped to
+    ``(num_players + 53, TOKEN_DIM)`` in size. Training is scoped to
     3-5 players; other player counts are rejected.
 
     The cache-refresh prologue and ``_fill_buffer`` run in a single nogil
@@ -169,7 +177,7 @@ cpdef void get_token_data(GameState state, float[:, ::1] buffer):
     ``PLAYERS[i].get_net_worth(state)`` lookup it used to.
     """
     cdef int num_players = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.num_players]
-    cdef int num_tokens = num_players + 54
+    cdef int num_tokens = num_players + 53
     cdef int i
 
     assert 3 <= num_players <= 5, \
@@ -203,10 +211,10 @@ cpdef void get_token_data_batch(
             layout (same constraint as ``GameState.rebind``).
         num_players: Training player count (3-5). Applies to every state
             array in the batch — mixed-player batches are not supported.
-        buffer: ``(n, num_players + 54, TOKEN_DIM)`` float32 output, C-contig.
+        buffer: ``(n, num_players + 53, TOKEN_DIM)`` float32 output, C-contig.
     """
     cdef int n = len(state_arrays)
-    cdef int num_tokens = num_players + 54
+    cdef int num_tokens = num_players + 53
     cdef int i, p
     cdef GameState scratch_gs
 

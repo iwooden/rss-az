@@ -552,7 +552,7 @@ def assert_invariants(state, msg=""):
 # =============================================================================
 #
 # Phase-specific tokens are laid out after the fixed tokens. The token buffer
-# carries (num_players + 54, TOKEN_DIM=97) float32 rows in this order:
+# carries (num_players + 53, TOKEN_DIM=97) float32 rows in this order:
 #
 #     [0, num_players)              : player tokens (3-5p)
 #     [num_players, num_players+8)  : corp tokens    (8)
@@ -566,7 +566,9 @@ def assert_invariants(state, msg=""):
 #     num_players+50                : Issue   (zeroed outside PHASE_ISSUE_SHARES)
 #     num_players+51                : Par/IPO (zeroed outside PHASE_IPO)
 #     num_players+52                : AcqOffer(zeroed outside PHASE_ACQ_OFFER)
-#     num_players+53                : Pass    (always all-zero)
+#
+# The 7 per-phase pass anchors live inside the model (concatenated after
+# projection) and are not part of the input buffer.
 #
 # The feature-offset layouts below mirror core/token_data.pyx — treat that
 # file as the source of truth if these ever drift.
@@ -685,12 +687,10 @@ def assert_token_data_invariants(state, msg=""):
     issue_tok = fi_tok + 6
     par_tok = fi_tok + 7
     acq_offer_tok = fi_tok + 8
-    pass_tok = fi_tok + 9
-
     num_tokens = get_num_tokens(num_players)
-    assert num_tokens == pass_tok + 1, (
+    assert num_tokens == acq_offer_tok + 1, (
         f"{msg}\nget_num_tokens({num_players})={num_tokens} "
-        f"inconsistent with layout (expected {pass_tok + 1})"
+        f"inconsistent with layout (expected {acq_offer_tok + 1})"
     )
 
     buf = np.zeros((num_tokens, token_dim), dtype=np.float32)
@@ -1298,9 +1298,6 @@ def assert_token_data_invariants(state, msg=""):
         _assert_zero_row(buf[acq_offer_tok, 2 + num_corps + 1:], T_FLAG,
                          f"{aom}: tail beyond FI_COMPANY flag")
 
-    # Pass token: pure type embedding — always all-zero feature input.
-    _assert_zero_row(buf[pass_tok], T_FLAG,
-                     f"{msg}\nPass token must always be all-zero")
 
 
 # =============================================================================
