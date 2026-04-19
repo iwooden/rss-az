@@ -53,9 +53,9 @@ class TransformerConfig:
 
     # Core architecture
     num_players: int = 3  # 3-5 supported
-    d_model: int = 256
-    num_heads: int = 4
-    num_layers: int = 10
+    d_model: int = 192
+    num_heads: int = 3
+    num_layers: int = 15
     ff_mult: float = 3.0  # FFN inner dimension = ceil(ff_mult * d_model)
     acq_rank: int = 4      # Per-offset bilinear rank for the ACQ pair-feature policy head
 
