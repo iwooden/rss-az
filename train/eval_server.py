@@ -307,8 +307,8 @@ def _eval_server_main(
     no_compile: bool,
     compile_kwargs: dict[str, Any] | None = None,
     gpu_vendor: str = "cpu",
-    fixed_batch_workers: int | None = None,
-    epoch_ending_flag: Any = None,
+    min_batch_size: int = 0,
+    min_batch_timeout_ms: float = 10.0,
     eval_dtype: str | None = None,
 ) -> None:
     """Eval server process entry point.
@@ -331,8 +331,8 @@ def _eval_server_main(
             profile=profile, no_compile=no_compile,
             compile_kwargs=compile_kwargs,
             gpu_vendor=gpu_vendor,
-            fixed_batch_workers=fixed_batch_workers,
-            epoch_ending_flag=epoch_ending_flag,
+            min_batch_size=min_batch_size,
+            min_batch_timeout_ms=min_batch_timeout_ms,
             eval_dtype=eval_dtype,
         )
     except Exception:
@@ -356,23 +356,24 @@ def _eval_server_serve(
     no_compile: bool,
     compile_kwargs: dict[str, Any] | None = None,
     gpu_vendor: str = "cpu",
-    fixed_batch_workers: int | None = None,
-    epoch_ending_flag: Any = None,
+    min_batch_size: int = 0,
+    min_batch_timeout_ms: float = 10.0,
     eval_dtype: str | None = None,
 ) -> None:
     """Inner serve loop for an eval server process.
 
-    Two modes based on fixed_batch_workers:
+    Two modes based on min_batch_size:
 
-    **Fixed-batch mode** (fixed_batch_workers is an int): Accumulates
-    drained workers until target_workers are ready, then submits a
-    consistent-size GPU batch. At end-of-epoch (epoch_ending_flag set),
-    flushes partial batches with zero-padding (if compiled) to maintain
-    a single compiled graph size.
+    **Min-batch mode** (min_batch_size > 0): Accumulates drained requests
+    until the sum of pending states reaches min_batch_size, then submits.
+    If the accumulator is non-empty but below the floor, waits on the
+    doorbell with ``min_batch_timeout_ms`` and flushes the partial batch
+    on timeout (anti-starvation for epoch end / root eval). Batch size
+    is variable up to the partition's natural max — no padding.
 
-    **Greedy mode** (fixed_batch_workers is None): Drains all pending
-    requests and submits immediately with exact batch size. No padding,
-    no accumulation.
+    **Greedy mode** (min_batch_size == 0): Drains all pending requests
+    and submits immediately with exact batch size. No accumulation, no
+    timeout.
     """
     # Prevent OpenMP oversubscription (same as worker processes)
     torch.set_num_threads(1)
@@ -419,12 +420,11 @@ def _eval_server_serve(
         #     both legitimate (a phase may have no rows, or exactly
         #     one).
         # Any reasonable warmup batch size works — pick at least
-        # ``NUM_PHASES`` so each phase head gets traced.
-        warmup_n = (
-            fixed_batch_workers * shared_bufs.batch_size
-            if fixed_batch_workers is not None
-            else NUM_PHASES
-        )
+        # ``NUM_PHASES`` so each phase head gets traced. mark_unbacked on
+        # the batch dim lets the single compiled graph handle every
+        # runtime size from 1 to max_batch, so the warmup size itself
+        # carries no semantic weight.
+        warmup_n = NUM_PHASES
         with torch.inference_mode(), torch.autocast(
             device.type,
             dtype=eval_autocast_dtype,
@@ -671,7 +671,7 @@ def _eval_server_serve(
     # --- Shared helpers (closures over setup state) ---
 
     def _infer_and_scatter(widx: np.ndarray, cnts: np.ndarray,
-                           n_req: int, padded_n: int = 0) -> int:
+                           n_req: int) -> int:
         """Gather inputs, launch GPU inference, hand off to scatter thread.
 
         Blocks on _free_slots.get() when all buf_depth slots are in flight;
@@ -683,7 +683,6 @@ def _eval_server_serve(
             widx: Worker indices array (length n_req). Copied before return.
             cnts: Per-worker state counts (length n_req). Copied before return.
             n_req: Number of workers in this batch.
-            padded_n: GPU batch size (0 = use actual total_n, no padding).
 
         Returns:
             total_n: Actual number of states processed.
@@ -718,8 +717,7 @@ def _eval_server_serve(
         _gather_n_legals(
             pin_n_legals_np, all_n_legals_np, widx, cnts, n_req,
         )
-        if padded_n == 0:
-            padded_n = total_n
+        padded_n = total_n
 
         start_ti = perf_counter() if stats is not None else 0.0
 
@@ -873,13 +871,19 @@ def _eval_server_serve(
     if _autocast_ctx is not None:
         _autocast_ctx.__enter__()
 
-    if fixed_batch_workers is not None:
-        # --- Fixed-batch accumulation loop ---
-        target_workers = fixed_batch_workers
-        fixed_batch_size = target_workers * shared_bufs.batch_size
+    if min_batch_size > 0:
+        # --- Min-batch accumulation loop ---
+        # Accumulator holds drained (widx, cnt) pairs whose total pending
+        # state count is still below ``min_batch_size``. Units are states
+        # throughout — no worker-level accounting — because the downstream
+        # forward pass is sized in states and a worker's per-request state
+        # count is a ceiling, not a hard value (locked MCTS frontier can
+        # publish fewer than search_batch_size states).
         _accum_widx = np.empty(partition_size, dtype=np.int32)
         _accum_cnts = np.empty(partition_size, dtype=np.int32)
-        _accum_n = 0
+        _accum_n = 0          # number of worker entries in accumulator
+        _accum_states = 0     # sum of cnts across accumulator entries
+        _timeout_s = max(min_batch_timeout_ms, 0.0) / 1000.0
 
         while not stop_event.is_set():
             if stats is not None:
@@ -894,33 +898,20 @@ def _eval_server_serve(
                 _accum_widx[_accum_n:_accum_n + num_drained] = _widx_buf[:num_drained]
                 _accum_cnts[_accum_n:_accum_n + num_drained] = _cnt_buf[:num_drained]
                 _accum_n += num_drained
+                _accum_states += int(_cnt_buf[:num_drained].sum())
 
-            # Submit full batches from accumulator.
-            while _accum_n >= target_workers:
-                _infer_and_scatter(
-                    _accum_widx[:target_workers],
-                    _accum_cnts[:target_workers],
-                    target_workers, fixed_batch_size,
-                )
-                remaining = _accum_n - target_workers
-                if remaining > 0:
-                    _accum_widx[:remaining] = _accum_widx[target_workers:_accum_n]
-                    _accum_cnts[:remaining] = _accum_cnts[target_workers:_accum_n]
-                _accum_n = remaining
-
-            # Flush partial batch at end of epoch.
-            if (
-                _accum_n > 0
-                and epoch_ending_flag is not None
-                and epoch_ending_flag.value
-            ):
-                padded = fixed_batch_size if not no_compile else 0
+            # Submit once the accumulator crosses the floor. A single
+            # drain can push us well past min_batch_size — submit all
+            # of it in one forward pass (bounded by the partition's
+            # natural max_batch).
+            if _accum_states >= min_batch_size:
                 _infer_and_scatter(
                     _accum_widx[:_accum_n],
                     _accum_cnts[:_accum_n],
-                    _accum_n, padded,
+                    _accum_n,
                 )
                 _accum_n = 0
+                _accum_states = 0
 
             # Idle / doorbell handling.
             if _accum_n == 0:
@@ -930,13 +921,22 @@ def _eval_server_serve(
                 _check_stats_report()
                 _idle_wait()
             else:
-                # Have partial work — brief wait for more arrivals.
+                # Have partial work — brief wait for more arrivals, then
+                # flush whatever's accumulated on timeout (anti-starvation
+                # for epoch end and single-worker root evals).
                 _check_stats_report()
                 server_event.clear()
                 if not _peek(submitted_masks, server_id, num_words):
-                    server_event.wait(timeout=0.01)
+                    if not server_event.wait(timeout=_timeout_s):
+                        _infer_and_scatter(
+                            _accum_widx[:_accum_n],
+                            _accum_cnts[:_accum_n],
+                            _accum_n,
+                        )
+                        _accum_n = 0
+                        _accum_states = 0
     else:
-        # --- Greedy loop (no fixed batch, no padding) ---
+        # --- Greedy loop (no min batch, no accumulation, no timeout) ---
         while not stop_event.is_set():
             if stats is not None:
                 _tp = perf_counter()
@@ -999,8 +999,8 @@ class EvaluationServer:
         no_compile: bool = False,
         compile_kwargs: dict[str, Any] | None = None,
         gpu_vendor: str = "cpu",
-        fixed_batch_workers: int | None = None,
-        epoch_ending_flag: Any = None,
+        min_batch_size: int = 0,
+        min_batch_timeout_ms: float = 10.0,
         eval_dtype: str | None = None,
     ) -> None:
         import multiprocessing
@@ -1025,8 +1025,8 @@ class EvaluationServer:
             "no_compile": no_compile,
             "compile_kwargs": compile_kwargs,
             "gpu_vendor": gpu_vendor,
-            "fixed_batch_workers": fixed_batch_workers,
-            "epoch_ending_flag": epoch_ending_flag,
+            "min_batch_size": min_batch_size,
+            "min_batch_timeout_ms": min_batch_timeout_ms,
             "eval_dtype": eval_dtype,
         }
         self._mp_context = ctx

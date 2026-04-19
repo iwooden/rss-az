@@ -91,7 +91,17 @@ class TrainingConfig:
     search_batch_size: int = 8
     num_workers: int = 4
     num_eval_servers: int = 1
-    eval_fixed_batch_workers: int | None = None
+    # When > 0, eval servers accumulate drained requests until the total
+    # number of pending states reaches this floor before launching a GPU
+    # forward pass. 0 (default) = greedy: submit on every non-empty drain,
+    # no matter how small. Flush timeout below is only consulted when
+    # this is non-zero.
+    eval_min_batch_size: int = 0
+    # Short timeout (ms) the min-batch loop waits on the doorbell when
+    # the accumulator is non-empty but below the floor. On timeout, the
+    # partial accumulation is submitted — anti-starvation for epoch-end
+    # and single-root-eval cases.
+    eval_min_batch_timeout_ms: float = 10.0
 
     # --- Temperature Schedule (linear ramp) ---
     # temp_initial from move 0 to temp_anneal_start, then linearly decreases
@@ -291,14 +301,25 @@ class TrainingConfig:
                 f"num_eval_servers ({self.num_eval_servers}) must be <= "
                 f"num_workers ({self.num_workers})"
             )
-        if self.num_workers > 0:
+        if self.eval_min_batch_size < 0:
+            raise ValueError(
+                f"eval_min_batch_size must be >= 0 (0 disables), "
+                f"got {self.eval_min_batch_size}"
+            )
+        if self.num_workers > 0 and self.eval_min_batch_size > 0:
             max_partition = -(-self.num_workers // self.num_eval_servers)
-            if self.eval_fixed_batch_workers is not None:
-                if not 1 <= self.eval_fixed_batch_workers <= max_partition:
-                    raise ValueError(
-                        f"eval_fixed_batch_workers ({self.eval_fixed_batch_workers}) "
-                        f"must be between 1 and partition size ({max_partition})"
-                    )
+            max_batch = max_partition * self.search_batch_size
+            if self.eval_min_batch_size > max_batch:
+                raise ValueError(
+                    f"eval_min_batch_size ({self.eval_min_batch_size}) "
+                    f"must be <= partition_size * search_batch_size "
+                    f"({max_batch})"
+                )
+        if self.eval_min_batch_timeout_ms < 0:
+            raise ValueError(
+                f"eval_min_batch_timeout_ms must be >= 0, "
+                f"got {self.eval_min_batch_timeout_ms}"
+            )
         if self.buffer_capacity <= self.min_buffer_size:
             raise ValueError(
                 f"buffer_capacity ({self.buffer_capacity}) must exceed "

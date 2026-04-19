@@ -66,14 +66,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--search-batch-size", type=int)
     parser.add_argument("--num-workers", type=int)
     parser.add_argument("--num-eval-servers", type=int)
-    batch_group = parser.add_mutually_exclusive_group()
-    batch_group.add_argument(
-        "--eval-fixed-batch-workers", type=int,
-        help="Fixed number of workers per GPU batch (default: greedy batching)",
+    parser.add_argument(
+        "--eval-min-batch-size", type=int,
+        help="Minimum GPU batch size in states before launching a forward "
+             "pass. 0 (default) disables — submit on every drain.",
     )
-    batch_group.add_argument(
-        "--eval-no-fixed-batch", action="store_true", default=False,
-        help="Force greedy batching (override checkpoint config)",
+    parser.add_argument(
+        "--eval-min-batch-timeout-ms", type=float,
+        help="Timeout (ms) the min-batch loop waits for more arrivals "
+             "before flushing a partial batch (default: 10)",
     )
     parser.add_argument("--checkpoint-dir", type=str)
     parser.add_argument("--tensorboard-dir", type=str)
@@ -138,7 +139,8 @@ _CLI_FIELDS = (
     "num_players", "eval_dtype",
     "games_per_epoch", "num_epochs", "num_simulations", "search_batch_size",
     "mcts_sims_start", "mcts_sims_end", "mcts_ramp_start_epoch", "mcts_ramp_end_epoch",
-    "num_workers", "num_eval_servers", "eval_fixed_batch_workers",
+    "num_workers", "num_eval_servers",
+    "eval_min_batch_size", "eval_min_batch_timeout_ms",
     "checkpoint_dir", "tensorboard_dir", "seed",
     "temp_initial", "temp_anneal_start", "temp_anneal_end", "temp_final",
     "c_puct_initial", "c_puct_final", "c_puct_anneal_epochs",
@@ -401,15 +403,6 @@ def main() -> None:
     if args.profile:
         config.profile = True
 
-    # --eval-no-fixed-batch: force greedy batching even if the checkpoint
-    # saved a fixed worker count.
-    no_fixed_batch = getattr(args, "eval_no_fixed_batch", False)
-    if no_fixed_batch:
-        if config.eval_fixed_batch_workers is not None:
-            print(f"  CLI override: eval_fixed_batch_workers = None "
-                  f"(was {config.eval_fixed_batch_workers})")
-            config.eval_fixed_batch_workers = None
-
     # --- RNG ---
     master_rng = np.random.default_rng(config.seed)
     torch.manual_seed(config.seed)
@@ -466,7 +459,6 @@ def main() -> None:
     eval_servers: list[EvaluationServer] = []
     task_queue: Any = None  # mp.Queue
     result_queue: Any = None  # mp.Queue
-    epoch_ending_flag: Any = None  # mp.Value(c_bool) for fixed-batch servers
 
     if config.num_workers > 0:
         ctx = mp.get_context("spawn")
@@ -496,18 +488,6 @@ def main() -> None:
 
         shared_bufs.init_bitmap(partitions, ctx)
 
-        # Fixed batching is now opt-in only. Greedy mode remains the default,
-        # even when torch.compile is enabled.
-        effective_fbw = config.eval_fixed_batch_workers
-
-        # Epoch-ending flag for fixed-batch servers (prevents deadlock at
-        # end of epoch when fewer workers are active than the target).
-        import ctypes
-        epoch_ending_flag: Any = (
-            ctx.Value(ctypes.c_bool, False)
-            if effective_fbw is not None else None
-        )
-
         eval_compile_kwargs = gpu.get_compile_kwargs(for_training=False)
         for i, (ws, we) in enumerate(partitions):
             server = EvaluationServer(
@@ -520,8 +500,8 @@ def main() -> None:
                 no_compile=args.no_compile,
                 compile_kwargs=eval_compile_kwargs,
                 gpu_vendor=gpu.vendor,
-                fixed_batch_workers=effective_fbw,
-                epoch_ending_flag=epoch_ending_flag,
+                min_batch_size=config.eval_min_batch_size,
+                min_batch_timeout_ms=config.eval_min_batch_timeout_ms,
                 eval_dtype=config.eval_dtype,
             )
             server.start()
@@ -563,17 +543,17 @@ def main() -> None:
             p.start()
             workers.append(p)
 
-        if effective_fbw is not None:
-            fbw_detail = (
-                f", fixed batch: {effective_fbw} workers "
-                f"({effective_fbw * config.search_batch_size} states)"
+        if config.eval_min_batch_size > 0:
+            batch_detail = (
+                f", min batch: {config.eval_min_batch_size} states "
+                f"(timeout {config.eval_min_batch_timeout_ms:g}ms)"
             )
         else:
-            fbw_detail = ", batch mode: greedy"
+            batch_detail = ", batch mode: greedy"
         print(
             f"Started {config.num_workers} self-play workers, "
             f"{n_servers} eval server{'s' if n_servers > 1 else ''}"
-            f"{fbw_detail}"
+            f"{batch_detail}"
         )
 
         # Write process IDs for external profiling tools.
@@ -712,12 +692,10 @@ def main() -> None:
                     top1_visit_frac=total_top1 / n,
                 )
 
-            # Reset eval server profile stats and epoch-ending flag
+            # Reset eval server profile stats
             if config.profile and eval_servers:
                 for es in eval_servers:
                     es.reset_profile_stats()
-            if epoch_ending_flag is not None:
-                epoch_ending_flag.value = False
 
             # Compute per-epoch annealing parameters
             epoch_cfg = config.compute_epoch_config(epoch)
@@ -746,22 +724,10 @@ def main() -> None:
                         )
                     _collect_record(record, game_idx)
                     games_collected = game_idx + 1
-                    # Signal eval servers when few games remain so they
-                    # don't deadlock waiting for a full batch.  Use total
-                    # worker count (not partition size) because workers
-                    # across partitions don't finish at the same rate —
-                    # a partition could lose most of its workers while
-                    # games are still being collected from other partitions.
-                    if (
-                        epoch_ending_flag is not None
-                        and not epoch_ending_flag.value
-                        and config.games_per_epoch - games_collected
-                            < config.num_workers
-                    ):
-                        epoch_ending_flag.value = True
+                    # Min-batch mode drains partial accumulations via its
+                    # own doorbell timeout, so no epoch-end flag handshake
+                    # is needed here.
                     if shutdown_event.is_set():
-                        if epoch_ending_flag is not None:
-                            epoch_ending_flag.value = True
                         logger.end_self_play()
                         print(
                             "\nGraceful shutdown requested "
