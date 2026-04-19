@@ -6,7 +6,7 @@ overhead dominates actual computation.
 """
 
 from libc.math cimport sqrtf, isinf, INFINITY
-from libc.stdint cimport int8_t, int16_t, uint16_t, uint64_t
+from libc.stdint cimport int8_t, int16_t, int64_t, uint16_t, uint64_t
 from libc.string cimport memcpy
 
 cdef extern from "<assert.h>" nogil:
@@ -660,6 +660,77 @@ def gather_n_legals(
             assert_c(total + n <= <int>dst.shape[0])
             memcpy(&dst[total], &src[widx, 0], n * <int>sizeof(int16_t))
             total = total + n
+    return total
+
+
+def build_phase_buckets(
+    const int8_t[:] phase_ids,
+    int64_t[:] out_indices,
+    int[:] out_offsets,
+    int[:] out_lengths,
+    int padded_n,
+    int num_phases,
+    int64_t trash_index,
+):
+    """Walk phase_ids once, pack per-phase row indices into a single buffer.
+
+    Replaces the per-phase ``np.nonzero(phase_view == _p)`` + individual
+    ``torch.from_numpy(...).to(device, non_blocking=True)`` loop on the eval
+    server hot path with a single scan plus one H→D copy of the packed
+    buffer. Callers slice the single device tensor per phase (zero-copy
+    views) and mark_unbacked each slice.
+
+    ``out_indices`` layout (conceptual):
+        [phase 0 rows or trash | phase 1 rows or trash | ... ]
+    For each phase ``p``:
+        real rows      → ``out_indices[out_offsets[p] : out_offsets[p] + out_lengths[p]]``
+        empty phase    → ``out_indices[out_offsets[p]] = trash_index``, length 1
+    Callers use ``max(out_lengths[p], 1)`` for the effective slice length.
+
+    Args:
+        phase_ids: (padded_n,) int8 phase id per row, values in [0, num_phases).
+        out_indices: (>= padded_n + num_phases,) int64 preallocated output.
+        out_offsets: (num_phases,) int32 start offset per phase (written).
+        out_lengths: (num_phases,) int32 real row count per phase (written; 0 = empty).
+        padded_n: Number of rows in phase_ids to scan.
+        num_phases: Number of phases (must be <= 32).
+        trash_index: Row index written for empty phases (typically == padded_n).
+
+    Returns:
+        Total number of int64 slots used in out_indices.
+    """
+    assert num_phases <= 32
+    cdef int cursors[32]
+    cdef int p, i, offset, total
+    cdef int8_t ph
+
+    with nogil:
+        for p in range(num_phases):
+            out_lengths[p] = 0
+        for i in range(padded_n):
+            ph = phase_ids[i]
+            assert_c(ph >= 0)
+            assert_c(<int>ph < num_phases)
+            out_lengths[ph] = out_lengths[ph] + 1
+
+        offset = 0
+        for p in range(num_phases):
+            out_offsets[p] = offset
+            cursors[p] = offset
+            if out_lengths[p] == 0:
+                assert_c(offset < <int>out_indices.shape[0])
+                out_indices[offset] = trash_index
+                offset = offset + 1
+            else:
+                offset = offset + out_lengths[p]
+        total = offset
+        assert_c(total <= <int>out_indices.shape[0])
+
+        for i in range(padded_n):
+            ph = phase_ids[i]
+            out_indices[cursors[ph]] = i
+            cursors[ph] = cursors[ph] + 1
+
     return total
 
 
