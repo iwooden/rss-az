@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import copy
 import queue as _queue
+import signal
 import threading
 from time import perf_counter
 from typing import Any
@@ -317,6 +318,10 @@ def _eval_server_main(
     Each process has its own GIL and CUDA default stream, so multiple
     servers truly overlap.
     """
+    # Main drives shutdown via stop_event; Ctrl-C SIGINT would otherwise
+    # interrupt GPU inference or the scatter thread's Condition notify and
+    # leave the worker-side lock in an inconsistent state.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
         _eval_server_serve(
             model, device, shared_bufs,

@@ -10,6 +10,7 @@ computes policy cross-entropy over the legal list only (no dense −∞ mask).
 from __future__ import annotations
 
 import queue
+import signal
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -366,6 +367,11 @@ def self_play_worker(
     Loops until a None sentinel is received on the task queue
     or the connection breaks (shutdown).
     """
+    # Main drives shutdown via None sentinel + eval-server stop_event; Ctrl-C
+    # SIGINT delivered to the process group would otherwise interrupt the
+    # RemoteEvaluator's Condition.wait() mid lock-reacquire and bubble up as
+    # AssertionError from RLock.__exit__.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     torch.set_num_threads(1)  # Prevent OpenMP oversubscription with many workers
 
     evaluator = RemoteEvaluator(
