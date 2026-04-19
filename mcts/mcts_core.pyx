@@ -21,10 +21,18 @@ import numpy as np
 # GCC built-in atomics provide correct memory ordering on both x86 (TSO) and
 # ARM (weak ordering, needs explicit barriers).
 #
-# Protocol uses a per-server uint64 bitmap where bit i means local worker i
-# has a pending request. Workers publish via atomic fetch-or (release),
-# servers claim all pending work via atomic exchange (acquire). This gives
-# O(1) empty check and O(k) drain for k ready workers.
+# Protocol uses a per-server bitmap of ``W = ceil(partition_size / 64)``
+# uint64 words. Bit ``b`` of word ``w`` means local worker ``w*64 + b`` has
+# a pending request. Each word is padded to its own 64-byte cache line to
+# prevent false sharing between (server, word) pairs at large partition
+# sizes: the shared tensor has shape ``(num_servers * W, 8)`` uint64 and
+# word ``w`` of server ``s`` lives at row ``s*W + w``, column 0. Columns
+# 1..7 are dead padding.
+#
+# Workers publish via atomic fetch-or (release) on their own word; servers
+# claim all pending work via atomic exchange (acquire) per word. Empty
+# check is O(W) acquire loads (short-circuits on first non-empty word);
+# drain is O(W + k ready) with a ctz loop per word.
 
 cdef extern from *:
     """
@@ -41,64 +49,89 @@ cdef extern from *:
 
 
 def worker_publish_request(
-    uint64_t[:] submitted_masks,
+    uint64_t[:, :] submitted_masks,
     int[:] counts,
     int worker_idx,
     int server_id,
     int local_idx,
     int state_count,
+    int num_words,
 ):
     """Worker-side: write count, atomically set bit in server's submitted mask.
 
     The release fence on fetch_or ensures the server sees state data and
     count writes that preceded this call.
 
-    Returns True if the server's mask transitioned from 0 -> non-zero
-    (caller should set the server's doorbell event to wake it).
+    ``submitted_masks`` is the cache-line-padded ``(num_servers * W, 8)``
+    tensor; word ``w`` of server ``s`` lives at row ``s*W + w``, column 0.
+
+    Returns True if *this worker's word* transitioned from 0 -> non-zero
+    (caller should set the server's doorbell event to wake it). At W > 1
+    this may over-signal when a sibling word was already non-zero — bounded
+    by W×, cheaper than maintaining a separate cross-word pending counter,
+    and correctness-safe because ``mp.Event.set`` is idempotent.
     """
     counts[worker_idx] = state_count
-    cdef uint64_t bit = <uint64_t>1 << <uint64_t>local_idx
-    cdef uint64_t old_mask = ATOMIC_FETCH_OR_U64(&submitted_masks[server_id], bit)
-    return old_mask == 0
+    cdef int word_idx = local_idx >> 6
+    cdef int bit_offset = local_idx & 63
+    cdef uint64_t bit = <uint64_t>1 << <uint64_t>bit_offset
+    cdef int row = server_id * num_words + word_idx
+    cdef uint64_t old_word = ATOMIC_FETCH_OR_U64(&submitted_masks[row, 0], bit)
+    return old_word == 0
 
 
 def server_drain_bitmap(
-    uint64_t[:] submitted_masks,
+    uint64_t[:, :] submitted_masks,
     int[:] counts,
     int[:] out_worker_indices,
     int[:] out_counts,
     int server_id,
     int partition_start,
+    int num_words,
 ):
     """Server-side: atomically claim all pending requests from the bitmap.
 
-    Exchanges the server's submitted_mask with 0 (acquire), then iterates
-    set bits via ctz to build worker_indices and counts arrays. O(k) in
-    the number of ready workers.
+    Exchanges each of the server's W words with 0 (acquire), then iterates
+    set bits via ctz to build worker_indices and counts arrays. O(W + k)
+    where k is the number of ready workers.
 
     Returns the number of requests found.
     """
-    cdef uint64_t mask = ATOMIC_EXCHANGE_U64(&submitted_masks[server_id], 0)
     cdef int n = 0
-    cdef int local_idx, worker_idx
+    cdef int w, bit_offset, local_idx, worker_idx
+    cdef int base = server_id * num_words
+    cdef uint64_t mask
     with nogil:
-        while mask != 0:
-            local_idx = CTZ64(mask)
-            worker_idx = partition_start + local_idx
-            out_worker_indices[n] = worker_idx
-            out_counts[n] = counts[worker_idx]
-            n = n + 1
-            mask = mask & (mask - 1)  # clear lowest set bit
+        for w in range(num_words):
+            mask = ATOMIC_EXCHANGE_U64(&submitted_masks[base + w, 0], 0)
+            while mask != 0:
+                bit_offset = CTZ64(mask)
+                local_idx = (w << 6) + bit_offset
+                worker_idx = partition_start + local_idx
+                out_worker_indices[n] = worker_idx
+                out_counts[n] = counts[worker_idx]
+                n = n + 1
+                mask = mask & (mask - 1)  # clear lowest set bit
     return n
 
 
-def server_peek_bitmap(uint64_t[:] submitted_masks, int server_id):
-    """Server-side: acquire-load the submitted mask without modifying it.
+def server_peek_bitmap(
+    uint64_t[:, :] submitted_masks,
+    int server_id,
+    int num_words,
+):
+    """Server-side: acquire-load the submitted words without modifying them.
 
     Used for the lost-wakeup recheck: after clearing the doorbell event,
-    peek to see if new work arrived before sleeping.
+    peek to see if new work arrived before sleeping. Short-circuits on the
+    first non-empty word.
     """
-    return ATOMIC_LOAD_U64(&submitted_masks[server_id]) != 0
+    cdef int w
+    cdef int base = server_id * num_words
+    for w in range(num_words):
+        if ATOMIC_LOAD_U64(&submitted_masks[base + w, 0]) != 0:
+            return True
+    return False
 
 
 cdef (int, int) _select_child_impl(

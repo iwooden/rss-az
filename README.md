@@ -54,7 +54,7 @@ AlphaZero loop: play N games via MCTS → store in replay buffer → train → c
 
 - Multi-process architecture: CPU-bound MCTS workers + GPU eval server processes
 - Zero-copy model sharing via CUDA IPC, shared-memory state buffers
-- Lockfree worker-server IPC via GCC atomic uint64 bitmaps (one bit per worker, O(1) batch claim via exchange-to-zero)
+- Lockfree worker-server IPC via GCC atomic uint64 bitmap arrays (multi-word, cache-line-padded — O(W) empty check, O(W + k ready) batch claim via exchange-to-zero)
 - Graceful shutdown: `q + Enter` drains workers and saves state
 
 ## Beyond Standard AlphaZero

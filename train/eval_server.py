@@ -26,14 +26,17 @@ and the worker-side masked-softmax step outright.
 
 **Signaling protocol:**
 
-Request submission is lockfree via per-server uint64 bitmaps (Cython
-atomics in mcts_core.pyx). Each worker atomically sets its bit in the
-server's bitmap via fetch-or (release); the server atomically exchanges
-the bitmap to zero (acquire) to claim all pending work in O(1). A
-per-server mp.Event doorbell wakes idle servers. Done-notification is
-a per-server mp.Condition plus a shared-memory uint8 ``done_flags``
-array: the scatter thread takes the condition lock once per batch,
-stamps ``done_flags[widx]=1`` for every completed worker, and calls
+Request submission is lockfree via per-server uint64 bitmap *arrays*
+(Cython atomics in mcts_core.pyx). Each server owns ``W = ceil(max
+partition size / 64)`` uint64 words, with each word padded to its own
+64-byte cache line to avoid false sharing at partition sizes > 64.
+Workers atomically set their bit in the appropriate word via fetch-or
+(release); the server atomically exchanges each word to zero (acquire)
+to claim all pending work in O(W + k ready). A per-server mp.Event
+doorbell wakes idle servers. Done-notification is a per-server
+mp.Condition plus a shared-memory uint8 ``done_flags`` array: the
+scatter thread takes the condition lock once per batch, stamps
+``done_flags[widx]=1`` for every completed worker, and calls
 ``notify_all`` a single time — eliminating the per-worker Event.set
 burst that used to dominate the scatter thread.
 
@@ -166,6 +169,7 @@ class SharedEvalBuffers:
 
         # Bitmap signaling and events — initialized lazily via init_bitmap().
         self._submitted_masks: torch.Tensor | None = None
+        self._num_words: int = 0
         self._worker_to_server: np.ndarray | None = None
         self._worker_to_local_idx: np.ndarray | None = None
         self.server_events: list[Any] | None = None
@@ -226,11 +230,21 @@ class SharedEvalBuffers:
         ctx = mp_context or multiprocessing
         num_servers = len(partitions)
 
-        # Per-server submitted bitmask (uint64). Use int64 torch tensor
-        # (same bit width) because torch lacks uint64; reinterpreted on
-        # the Cython side via .view(np.uint64).
+        # Per-server submitted bitmap: W = ceil(max_partition / 64) uint64
+        # words per server, each word padded to its own 64-byte cache line
+        # (column 0 is the live word; columns 1..7 are dead padding). Without
+        # the padding, multiple (server, word) pairs share a cache line and
+        # every publish triggers cross-partition RFO traffic that scales with
+        # total worker count. Layout: ``(num_servers * W, 8)``; word ``w`` of
+        # server ``s`` lives at row ``s*W + w``.
+        #
+        # Stored as int64 because torch lacks uint64; reinterpreted on the
+        # Cython side via ``.view(np.uint64)``.
+        max_partition = max(we - ws for ws, we in partitions)
+        W = (max_partition + 63) // 64
+        self._num_words = W
         self._submitted_masks = torch.zeros(
-            num_servers, dtype=torch.int64,
+            num_servers * W, 8, dtype=torch.int64,
         ).share_memory_()
 
         # Worker -> server and worker -> local_idx mappings
@@ -254,6 +268,9 @@ class SharedEvalBuffers:
         """Return (submitted_masks_uint64, counts_int32) numpy views.
 
         Creates views on-demand (numpy views don't survive spawn pickling).
+        ``submitted_masks`` is 2-D ``(num_servers * W, 8)`` uint64; the
+        Cython helpers take the 2-D memoryview directly. Callers thread
+        ``self._num_words`` through to the Cython publish/drain/peek calls.
         """
         assert self._submitted_masks is not None
         return self._submitted_masks.numpy().view(np.uint64), self._counts.numpy()
@@ -544,6 +561,7 @@ def _eval_server_serve(
 
     # Bitmap and event handles
     submitted_masks, sig_counts = shared_bufs.get_bitmap_arrays()
+    num_words = shared_bufs._num_words
     assert shared_bufs.done_conds is not None
     assert shared_bufs.server_events is not None
     done_cond = shared_bufs.done_conds[server_id]
@@ -773,7 +791,7 @@ def _eval_server_serve(
     def _idle_wait() -> None:
         """Lost-wakeup-safe doorbell wait when no work is pending."""
         server_event.clear()
-        if _peek(submitted_masks, server_id):
+        if _peek(submitted_masks, server_id, num_words):
             return
         server_event.wait(timeout=0.1)
 
@@ -819,7 +837,7 @@ def _eval_server_serve(
             # Drain bitmap into accumulation buffer.
             num_drained = _drain(
                 submitted_masks, sig_counts,
-                _widx_buf, _cnt_buf, server_id, worker_start,
+                _widx_buf, _cnt_buf, server_id, worker_start, num_words,
             )
             if num_drained > 0:
                 _accum_widx[_accum_n:_accum_n + num_drained] = _widx_buf[:num_drained]
@@ -864,7 +882,7 @@ def _eval_server_serve(
                 # Have partial work — brief wait for more arrivals.
                 _check_stats_report()
                 server_event.clear()
-                if not _peek(submitted_masks, server_id):
+                if not _peek(submitted_masks, server_id, num_words):
                     server_event.wait(timeout=0.01)
     else:
         # --- Greedy loop (no fixed batch, no padding) ---
@@ -874,7 +892,7 @@ def _eval_server_serve(
 
             num_requests = _drain(
                 submitted_masks, sig_counts,
-                _widx_buf, _cnt_buf, server_id, worker_start,
+                _widx_buf, _cnt_buf, server_id, worker_start, num_words,
             )
 
             if num_requests == 0:
@@ -1033,10 +1051,10 @@ class RemoteEvaluator(BaseEvaluator):
     softmaxed over the legal action list on the GPU — no worker-side
     gather or softmax.
 
-    Communication uses per-server uint64 bitmaps for lockfree request
-    submission (atomic fetch-or) and a per-server mp.Condition + shm
-    ``done_flags`` array for done notification (one notify_all per batch
-    instead of N per-worker Event.set() calls).
+    Communication uses per-server uint64 bitmap arrays (W cache-line-padded
+    words each) for lockfree request submission (atomic fetch-or) and a
+    per-server mp.Condition + shm ``done_flags`` array for done notification
+    (one notify_all per batch instead of N per-worker Event.set() calls).
 
     Invariant: each worker may have at most one outstanding eval request
     at a time. Output slots are keyed by worker_idx alone (no request id),
@@ -1076,6 +1094,7 @@ class RemoteEvaluator(BaseEvaluator):
         # Condition + shm done flag for completion.
         from mcts.mcts_core import worker_publish_request
         self._submitted_masks, self._sig_counts = shared_bufs.get_bitmap_arrays()
+        self._num_words = shared_bufs._num_words
         self._publish = worker_publish_request
         self._server_id, self._local_idx = shared_bufs.get_worker_mapping(worker_idx)
         assert shared_bufs.done_conds is not None, (
@@ -1100,6 +1119,7 @@ class RemoteEvaluator(BaseEvaluator):
         became_nonempty = self._publish(
             self._submitted_masks, self._sig_counts,
             self._worker_idx, self._server_id, self._local_idx, n,
+            self._num_words,
         )
         if became_nonempty:
             self._server_event.set()
