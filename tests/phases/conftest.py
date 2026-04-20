@@ -1423,6 +1423,17 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
         _assert_zero_row(buf[acq_offer_tok, 2 + num_corps + 1:], T_FLAG,
                          f"{aom}: tail beyond FI_COMPANY flag")
 
+    # Acq-price-info token ------------------------------------------------
+    # In-phase scalars depend on corp_candidate_synergy_delta which is
+    # cdef-only; asserting the "zero outside PHASE_ACQ_SELECT_PRICE"
+    # invariant is the minimum that pairs with the extractor's phase gate.
+    # In-phase assertions can be added when a Python wrapper is exposed.
+    apim = f"{msg}\nAcqPriceInfo token"
+    if phase != int(GamePhases.PHASE_ACQ_SELECT_PRICE):
+        _assert_zero_row(buf[acq_price_info_tok], T_FLAG,
+                         f"{apim} must be all-zero outside PHASE_ACQ_SELECT_PRICE "
+                         f"(phase={phase})")
+
 
 
 # =============================================================================
