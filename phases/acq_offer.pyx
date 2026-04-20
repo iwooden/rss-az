@@ -11,7 +11,6 @@ prelude) via ``_enter_acq_offer``.
 """
 
 from core.state cimport GameState
-from core.data cimport GamePhases
 from core.actions cimport (
     ActionInfo,
     ACTION_PASS,
@@ -19,28 +18,23 @@ from core.actions cimport (
 )
 from entities.company cimport (
     LOC_FI,
-    LOC_CORP,
-    LOC_PLAYER,
     company_location,
-    company_owner_id,
 )
 from entities.corp cimport (
-    corp_acquisition_proceeds,
     corp_is_in_receivership,
     corp_president_id,
 )
 
-from phases.acq_select_corp cimport (
+from phases.util.acq_common cimport (
     _resume_acquisition_after_offer,
     _execute_fi_buy,
+    _execute_acq_transfer,
     _get_fi_purchase_price,
     _find_first_preemptor,
 )
 
 from entities import turn as turn_module
 from entities import corp as corp_module
-from entities import company as company_module
-from entities import player as player_module
 
 
 # =============================================================================
@@ -82,7 +76,7 @@ cdef void apply_acq_offer_action(GameState state, ActionInfo* info) noexcept:
     cdef int loc = company_location(state, company_id)
     cdef bint is_fi_preemption = (loc == <int>LOC_FI)
 
-    cdef int owner_id, next_corp, next_price, deciding_player
+    cdef int next_corp, next_price, deciding_player
 
     if info.action_type == <int>ACTION_ACQ_OFFER_ACCEPT:
         if is_fi_preemption:
@@ -90,18 +84,7 @@ cdef void apply_acq_offer_action(GameState state, ActionInfo* info) noexcept:
             _execute_fi_buy(state, active_corp, company_id)
         else:
             # Cross-president: execute negotiated transfer at acq_offer_price
-            owner_id = company_owner_id(state, company_id)
-            corp_module.CORPS[active_corp].add_cash(state, -price)
-            if loc == <int>LOC_CORP:
-                corp_module.CORPS[owner_id].set_acquisition_proceeds(
-                    state,
-                    corp_acquisition_proceeds(state, owner_id) + price,
-                )
-            elif loc == <int>LOC_PLAYER:
-                player_module.PLAYERS[owner_id].add_cash(state, price)
-            company_module.COMPANIES[company_id].transfer_to_corp_acquisition(
-                state, active_corp,
-            )
+            _execute_acq_transfer(state, active_corp, company_id, price, loc)
         _return_to_acquisition(state)
 
     elif info.action_type == <int>ACTION_PASS:

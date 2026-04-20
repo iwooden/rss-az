@@ -184,7 +184,7 @@ else:
 
 setup(
     name="rss-cython-core",
-    packages=['core', 'entities', 'phases', 'mcts'],
+    packages=['core', 'entities', 'phases', 'phases.util', 'mcts'],
     ext_modules=ext_modules,
     cmdclass={
         'clean': CleanCommand,

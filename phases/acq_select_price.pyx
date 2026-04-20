@@ -25,7 +25,6 @@ split rationale.
 
 from core.state cimport GameState
 from core.data cimport (
-    GameConstants,
     GamePhases,
     COMPANY_LOW_PRICE,
 )
@@ -46,9 +45,10 @@ from entities.corp cimport (
     corp_cash,
     corp_is_in_receivership,
     corp_president_id,
-    corp_acquisition_proceeds,
 )
-from phases.acq_select_corp cimport (
+from phases.util.acq_common cimport (
+    _clear_acq_offer_flags,
+    _execute_acq_transfer,
     _execute_fi_buy,
     _get_fi_purchase_price,
     _find_first_preemptor,
@@ -56,9 +56,6 @@ from phases.acq_select_corp cimport (
 )
 
 from entities import turn as turn_module
-from entities import corp as corp_module
-from entities import company as company_module
-from entities import player as player_module
 
 
 # =============================================================================
@@ -105,21 +102,7 @@ cdef void _handle_acq_price(GameState state, int corp_id, int company_id, int am
             return
 
     # Same-president (or no foreign owner): execute directly.
-    corp_module.CORPS[corp_id].add_cash(state, -price)
-
-    if loc == <int>LOC_CORP:
-        assert owner_id != corp_id, \
-            f"_handle_acq_price: corp {corp_id} buying from itself"
-        assert not corp_is_in_receivership(state, owner_id), \
-            f"_handle_acq_price: cannot buy company {company_id} from receivership corp {owner_id}"
-        corp_module.CORPS[owner_id].set_acquisition_proceeds(
-            state,
-            corp_acquisition_proceeds(state, owner_id) + price,
-        )
-    elif loc == <int>LOC_PLAYER:
-        player_module.PLAYERS[owner_id].add_cash(state, price)
-
-    company_module.COMPANIES[company_id].transfer_to_corp_acquisition(state, corp_id)
+    _execute_acq_transfer(state, corp_id, company_id, price, loc)
     _clear_acq_pair(state)
 
 
@@ -136,9 +119,7 @@ cdef void _handle_fi_buy(GameState state, int corp_id, int company_id) noexcept:
 
     # Clear per-corp passed_acq_offer flags before consulting the preemptor
     # list (matches the receivership-forced-buy prelude in SELECT_CORP).
-    cdef int c
-    for c in range(<int>GameConstants.NUM_CORPS):
-        corp_module.CORPS[c].set_passed_acq_offer(state, False)
+    _clear_acq_offer_flags(state)
 
     first_preemptor = _find_first_preemptor(state, company_id, corp_id)
     if first_preemptor < 0 or first_preemptor == corp_id:
