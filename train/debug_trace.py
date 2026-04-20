@@ -48,6 +48,7 @@ PHASE_NAMES = {
     GamePhases.PHASE_ISSUE_SHARES: "ISSUE_SHARES",
     GamePhases.PHASE_IPO: "IPO",
     GamePhases.PHASE_GAME_OVER: "GAME_OVER",
+    GamePhases.PHASE_PAR: "PAR",
 }
 
 # Decision-phase display names used when rendering pass-class actions.
@@ -60,6 +61,7 @@ DECISION_PHASE_NAMES = {
     5: "DIVIDENDS",
     6: "ISSUE_SHARES",
     7: "IPO",
+    8: "PAR",
 }
 
 
@@ -264,6 +266,12 @@ def format_phase_context(state: GameState) -> str:
         company_id = TURN.get_active_company(state)
         if company_id >= 0:
             return f"**IPO**: {COMPANY_NAMES[company_id]}"
+
+    if phase == GamePhases.PHASE_PAR:
+        company_id = TURN.get_active_company(state)
+        corp_id = TURN.get_active_corp(state)
+        if company_id >= 0 and corp_id >= 0:
+            return f"**PAR**: {COMPANY_NAMES[company_id]} -> {CORP_NAMES[corp_id]}"
 
     return ""
 

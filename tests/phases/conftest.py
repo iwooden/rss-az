@@ -571,7 +571,7 @@ def assert_invariants(state, msg=""):
 #     num_players+48                : Auction (zeroed outside PHASE_BID)
 #     num_players+49                : Dividend(zeroed outside PHASE_DIVIDENDS)
 #     num_players+50                : Issue   (zeroed outside PHASE_ISSUE_SHARES)
-#     num_players+51                : Par/IPO (zeroed outside PHASE_IPO)
+#     num_players+51                : Par/IPO (zeroed outside PHASE_IPO/PAR)
 #     num_players+52                : AcqOffer(zeroed outside PHASE_ACQ_OFFER)
 #
 # The 7 per-phase pass anchors live inside the model (concatenated after

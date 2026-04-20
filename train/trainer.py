@@ -295,7 +295,7 @@ class Trainer:
 
         # Build per-phase row indices on host so the model's policy gather
         # uses index_select / index_copy_ instead of boolean masking
-        # (which forces one H←D sync per phase × 8 phases per forward).
+        # (which forces one H←D sync per phase × 9 phases per forward).
         # mark_unbacked keeps torch.compile from specializing on per-phase
         # row counts (which would blow the recompile limit).
         phase_view = self._phase_h_np[:B]
