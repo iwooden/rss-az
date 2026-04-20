@@ -21,8 +21,9 @@ Communication uses shared memory (torch tensors with share_memory_()):
 Dense per-phase logits (width ``MAX_ACTION_SIZE``) never cross the IPC
 boundary: the server gathers dense logits at per-leaf ``action_ids[:n_legal]``
 and softmaxes on the GPU inside the autocast region before copy-back. This
-kills the old 14977-wide shared-mem logits buffer (~46 MB at 96 workers)
-and the worker-side masked-softmax step outright.
+killed the old dense-logits shared-mem buffer (historically 14977-wide when
+ACQUISITION was one joint phase; MAX_ACTION_SIZE is now 53 after the ACQ
+split) and the worker-side masked-softmax step outright.
 
 **Signaling protocol:**
 
@@ -111,8 +112,9 @@ class SharedEvalBuffers:
 
     ``MAX_ACTION_SIZE`` (the dense model-head width) intentionally does not
     appear in any shape here — the server gathers dense logits down to the
-    sparse legal list before the copy-back. Shared-mem output footprint
-    drops from ~46 MB (workers × batch × 14977 × 4) to ~0.8 MB.
+    sparse legal list before the copy-back. Shared-mem output footprint is
+    ``workers × batch × K_MAX × 4`` bytes (~0.8 MB at typical settings),
+    independent of ``MAX_ACTION_SIZE``.
     """
 
     def __init__(
@@ -546,7 +548,7 @@ def _eval_server_serve(
 
     # --- Outputs: pinned CPU + GPU side ---
     # Priors are (alloc_batch, K_MAX) f32 (sparse, already softmaxed on GPU).
-    # This REPLACES the old (max_batch, MAX_ACTION_SIZE=14977) logits buffer.
+    # This REPLACES the old (max_batch, MAX_ACTION_SIZE) dense-logits buffer.
     pin_priors_list = [
         torch.empty(
             alloc_batch, k_max, dtype=torch.float32, pin_memory=use_cuda,
@@ -1201,7 +1203,7 @@ class RemoteEvaluator(BaseEvaluator):
             - values_canonical: (num_players,) float32 in canonical order.
             - action_ids_legal: (n_legal,) uint16 phase-local legal action ids.
             - n_legal: count of legal actions.
-            - phase_id: decision phase id 0-8.
+            - phase_id: decision phase id 0-10.
         """
         phase_id = get_decision_phase_py(state)
         get_token_data(state, self._in_states_np[0])

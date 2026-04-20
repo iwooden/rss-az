@@ -15,11 +15,12 @@ cpdef enum GameConstants:
     NUM_COMPANIES = 36
     NUM_CORPS = 8
     NUM_MARKET_SPACES = 27
-    # 9 decision phases + 4 automated/terminal phases:
-    # INV, BID, ACQUISITION, ACQ_OFFER, CLOSING, DIVIDENDS, ISSUE, IPO, PAR
+    # 11 decision phases + 4 automated/terminal phases:
+    # INV, BID, ACQ_SELECT_CORP, ACQ_SELECT_COMPANY, ACQ_SELECT_PRICE,
+    # ACQ_OFFER, CLOSING, DIVIDENDS, ISSUE, IPO, PAR
     # plus WRAP_UP, INCOME, END_CARD, GAME_OVER.
-    NUM_PHASES = 13
-    NUM_DECISION_PHASES = 9
+    NUM_PHASES = 15
+    NUM_DECISION_PHASES = 11
     NUM_COO_LEVELS = 7
     MAX_PLAYERS = 6
     MAX_STAR_TIERS = 5
@@ -34,7 +35,7 @@ cpdef enum GamePhases:
     PHASE_INVEST = 0
     PHASE_BID = 1
     PHASE_WRAP_UP = 2
-    PHASE_ACQUISITION = 3
+    PHASE_ACQ_SELECT_CORP = 3
     PHASE_ACQ_OFFER = 4
     PHASE_CLOSING = 5
     PHASE_INCOME = 6
@@ -44,9 +45,11 @@ cpdef enum GamePhases:
     PHASE_IPO = 10
     PHASE_GAME_OVER = 11
     PHASE_PAR = 12
+    PHASE_ACQ_SELECT_COMPANY = 13
+    PHASE_ACQ_SELECT_PRICE = 14
 
-# Decision phases — the 9-phase compressed space the transformer sees.
-# The engine's 13 ``GamePhases`` fold down into these via the
+# Decision phases — the 11-phase compressed space the transformer sees.
+# The engine's 15 ``GamePhases`` fold down into these via the
 # ``ENGINE_TO_DECISION_PHASE`` table declared below: WRAP_UP / INCOME /
 # END_CARD / GAME_OVER are automated or terminal and map to -1 so the
 # driver fast-forwards through them without consulting the action module.
@@ -55,13 +58,15 @@ cpdef enum GamePhases:
 cpdef enum DecisionPhase:
     DPHASE_INVEST = 0
     DPHASE_BID = 1
-    DPHASE_ACQUISITION = 2
+    DPHASE_ACQ_SELECT_CORP = 2
     DPHASE_ACQ_OFFER = 3
     DPHASE_CLOSING = 4
     DPHASE_DIVIDENDS = 5
     DPHASE_ISSUE = 6
     DPHASE_IPO = 7
     DPHASE_PAR = 8
+    DPHASE_ACQ_SELECT_COMPANY = 9
+    DPHASE_ACQ_SELECT_PRICE = 10
 
 # Engine-phase → decision-phase lookup table. Indexed by ``GamePhases``;
 # slots corresponding to automated/terminal phases hold -1. Filled in at
@@ -69,7 +74,7 @@ cpdef enum DecisionPhase:
 # array directly (``get_decision_phase`` in ``core/actions.pyx`` reads it
 # on the nogil hot path); Python callers get a plain-int list mirror
 # named ``ENGINE_TO_DECISION_PHASE`` on ``core.data``.
-cdef int ENGINE_TO_DECISION_PHASE[13]
+cdef int ENGINE_TO_DECISION_PHASE[15]
 
 # Corp indices for special ability checks
 cpdef enum CorpIndices:
@@ -94,16 +99,18 @@ cpdef enum CorpIndices:
 # Any change here must stay consistent with the ``encode_*`` arithmetic in
 # ``core/actions.pxd``; that file still holds the roundtrip asserts.
 cpdef enum ActionSize:
-    ACTION_SIZE_INVEST = 53         # 1 pass + 36 company-select + 8*2 trade
-    ACTION_SIZE_BID = 16            # 1 pass (= leave auction) + AUCTION_CAP raise offsets
-    ACTION_SIZE_ACQUISITION = 14977 # 1 pass + 8*36*52 corp x company x {51 price + FI_BUY}
-    ACTION_SIZE_ACQ_OFFER = 2       # pass + buy
-    ACTION_SIZE_CLOSING = 37        # 1 pass + 36 company closes
-    ACTION_SIZE_DIVIDENDS = 26      # dividend amounts 0..25
-    ACTION_SIZE_ISSUE = 2           # pass + issue
-    ACTION_SIZE_IPO = 9             # 1 pass + 8 corp-select (par index chosen in PAR)
-    ACTION_SIZE_PAR = 14            # 14 par indices (no pass)
-    MAX_ACTION_SIZE = 14977         # max over all phases (ACQUISITION)
+    ACTION_SIZE_INVEST = 53             # 1 pass + 36 company-select + 8*2 trade
+    ACTION_SIZE_BID = 16                # 1 pass (= leave auction) + AUCTION_CAP raise offsets
+    ACTION_SIZE_ACQ_SELECT_CORP = 9     # 1 pass + 8 corp-select (company/price chosen later)
+    ACTION_SIZE_ACQ_SELECT_COMPANY = 36 # 36 company-select (no pass; SELECT_CORP commits)
+    ACTION_SIZE_ACQ_SELECT_PRICE = 52   # 51 price offsets + FI_BUY (no pass)
+    ACTION_SIZE_ACQ_OFFER = 2           # pass + buy
+    ACTION_SIZE_CLOSING = 37            # 1 pass + 36 company closes
+    ACTION_SIZE_DIVIDENDS = 26          # dividend amounts 0..25
+    ACTION_SIZE_ISSUE = 2               # pass + issue
+    ACTION_SIZE_IPO = 9                 # 1 pass + 8 corp-select (par index chosen in PAR)
+    ACTION_SIZE_PAR = 14                # 14 par indices (no pass)
+    MAX_ACTION_SIZE = 53                # max over all phases (INVEST)
 
 # Normalization constants used during token extraction for NN input.
 # Exposed as C #defines so the values are compile-time constants in every

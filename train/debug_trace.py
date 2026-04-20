@@ -39,7 +39,7 @@ PHASE_NAMES = {
     GamePhases.PHASE_INVEST: "INVEST",
     GamePhases.PHASE_BID: "BID_IN_AUCTION",
     GamePhases.PHASE_WRAP_UP: "WRAP_UP",
-    GamePhases.PHASE_ACQUISITION: "ACQUISITION",
+    GamePhases.PHASE_ACQ_SELECT_CORP: "ACQ_SELECT_CORP",
     GamePhases.PHASE_ACQ_OFFER: "ACQ_OFFER",
     GamePhases.PHASE_CLOSING: "CLOSING",
     GamePhases.PHASE_INCOME: "INCOME",
@@ -49,19 +49,23 @@ PHASE_NAMES = {
     GamePhases.PHASE_IPO: "IPO",
     GamePhases.PHASE_GAME_OVER: "GAME_OVER",
     GamePhases.PHASE_PAR: "PAR",
+    GamePhases.PHASE_ACQ_SELECT_COMPANY: "ACQ_SELECT_COMPANY",
+    GamePhases.PHASE_ACQ_SELECT_PRICE: "ACQ_SELECT_PRICE",
 }
 
 # Decision-phase display names used when rendering pass-class actions.
 DECISION_PHASE_NAMES = {
     0: "INVEST",
     1: "BID_IN_AUCTION",
-    2: "ACQUISITION",
+    2: "ACQ_SELECT_CORP",
     3: "ACQ_OFFER",
     4: "CLOSING",
     5: "DIVIDENDS",
     6: "ISSUE_SHARES",
     7: "IPO",
     8: "PAR",
+    9: "ACQ_SELECT_COMPANY",
+    10: "ACQ_SELECT_PRICE",
 }
 
 
@@ -196,7 +200,7 @@ def format_phase_context(state: GameState) -> str:
             f"starter=P{TURN.get_auction_starter(state)}"
         )
 
-    if phase == GamePhases.PHASE_ACQUISITION:
+    if phase == GamePhases.PHASE_ACQ_SELECT_CORP:
         active_player = TURN.get_active_player(state)
         corps = [
             f"{CORP_NAMES[cid]}(${CORPS[cid].get_cash(state)})"
@@ -206,8 +210,32 @@ def format_phase_context(state: GameState) -> str:
             and CORPS[cid].get_president_id(state) == active_player
         ]
         if corps:
-            return f"**Acquisition**: P{active_player} may buy with {', '.join(corps)}"
-        return f"**Acquisition**: P{active_player}"
+            return f"**Acquisition — Select Corp**: P{active_player} may buy with {', '.join(corps)}"
+        return f"**Acquisition — Select Corp**: P{active_player}"
+
+    if phase == GamePhases.PHASE_ACQ_SELECT_COMPANY:
+        active_player = TURN.get_active_player(state)
+        corp_id = TURN.get_active_corp(state)
+        if corp_id >= 0:
+            return (
+                f"**Acquisition — Select Company**: P{active_player} buying with "
+                f"{CORP_NAMES[corp_id]} (${CORPS[corp_id].get_cash(state)})"
+            )
+        return f"**Acquisition — Select Company**: P{active_player}"
+
+    if phase == GamePhases.PHASE_ACQ_SELECT_PRICE:
+        active_player = TURN.get_active_player(state)
+        corp_id = TURN.get_active_corp(state)
+        company_id = TURN.get_active_company(state)
+        if corp_id >= 0 and company_id >= 0:
+            low = COMPANIES[company_id].get_low_price()
+            high = COMPANIES[company_id].get_high_price()
+            return (
+                f"**Acquisition — Select Price**: P{active_player} "
+                f"{CORP_NAMES[corp_id]} -> {COMPANY_NAMES[company_id]} "
+                f"(price range ${low}-${high})"
+            )
+        return f"**Acquisition — Select Price**: P{active_player}"
 
     if phase == GamePhases.PHASE_ACQ_OFFER:
         offered_corp = TURN.get_active_corp(state)

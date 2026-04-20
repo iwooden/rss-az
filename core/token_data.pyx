@@ -8,12 +8,13 @@ so the trunk + MCTS throughput depends on this being fast.
 
 Token order (matches ``nn/transformer.py``):
     [players..., corps..., companies..., FI, market, global,
-     invest, auction, dividend, issue, par, acq_offer]
+     invest, auction, dividend, issue, par, acq_offer, acq_price_info]
 
-Total tokens in the buffer = num_players + 53. The model concatenates 7
+Total tokens in the buffer = num_players + 54. The model concatenates 7
 learned pass-token anchors to the projected trunk sequence internally
-(one per pass-using decision phase; DIVIDENDS has no pass action), so
-the input buffer carries no pass rows — there is nothing to fill there.
+(one per pass-using decision phase — INVEST, BID, ACQ_SELECT_CORP,
+ACQ_OFFER, CLOSING, ISSUE, IPO — the rest have no pass action), so the
+input buffer carries no pass rows.
 
 Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 97):
 
@@ -36,7 +37,7 @@ Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 97):
                 synergies (36)
   FI      (38): cash + income + owned_companies (36)
   Market  (27): availability flags (27)
-  Global  (21): num_players onehot (3) + phase onehot (9) + CoO onehot
+  Global  (23): num_players onehot (3) + phase onehot (11) + CoO onehot
                 (7) + end_card_flipped + cards_remaining
   Invest  (17): consecutive_passes + buy_impacts (8) + sell_impacts (8)
   Auction (13): min_bid_index + min_bid_value + is_first_bid +
@@ -47,6 +48,10 @@ Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 97):
                 resulting_issued_shares (14) + ipo_remaining (8)
   AcqOff  (11): offer_price_index + offer_price + offer_corp onehot (8) +
                 fi_company
+  AcqPrice (11): corp_cash + corp_share_price + company low/face/high +
+                company adjusted_income + company stars + FI flag +
+                cross_president flag + receivership_seller flag +
+                max_affordable_offset
 
 All values normalized by divisors defined in ``core.data`` (compile-time
 floats inlined by the C compiler). Phase-specific tokens are zeroed out
@@ -134,7 +139,7 @@ from entities.player cimport refresh_player_cache_if_dirty
 DEF NUM_CORPS = 8
 DEF NUM_COMPANIES = 36
 DEF NUM_MARKET_SPACES = 27
-DEF NUM_DECISION_PHASES = 9
+DEF NUM_DECISION_PHASES = 11
 DEF NUM_COO_LEVELS = 7
 DEF MAX_MODEL_PLAYERS = 5          # 3-5p supported; one-hots are padded to 5
 DEF AUCTION_CAP_INT = 15           # INVEST auction price offsets per company
@@ -154,21 +159,21 @@ DEF CONSECUTIVE_PASSES_DIVISOR = 5.0
 # =============================================================================
 
 cpdef int get_num_tokens(int num_players) noexcept nogil:
-    """Input-buffer token count for the given player count (num_players + 53).
+    """Input-buffer token count for the given player count (num_players + 54).
 
     The model-side trunk is wider by 7 (per-phase pass anchors concatenated
     inside ``RSSTransformerNet._project_tokens``), but those rows are
     learned anchors with no input features, so the engine-side buffer
     doesn't carry them.
     """
-    return num_players + 53
+    return num_players + 54
 
 
 cpdef void get_token_data(GameState state, float[:, ::1] buffer):
     """Fill ``buffer`` with per-token NN features for ``state``.
 
     ``buffer`` must be a writable C-contiguous float32 memoryview at least
-    ``(num_players + 53, TOKEN_DIM)`` in size. Training is scoped to
+    ``(num_players + 54, TOKEN_DIM)`` in size. Training is scoped to
     3-5 players; other player counts are rejected.
 
     The cache-refresh prologue and ``_fill_buffer`` run in a single nogil
@@ -177,7 +182,7 @@ cpdef void get_token_data(GameState state, float[:, ::1] buffer):
     ``PLAYERS[i].get_net_worth(state)`` lookup it used to.
     """
     cdef int num_players = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.num_players]
-    cdef int num_tokens = num_players + 53
+    cdef int num_tokens = num_players + 54
     cdef int i
 
     assert 3 <= num_players <= 5, \
@@ -211,10 +216,10 @@ cpdef void get_token_data_batch(
             layout (same constraint as ``GameState.rebind``).
         num_players: Training player count (3-5). Applies to every state
             array in the batch — mixed-player batches are not supported.
-        buffer: ``(n, num_players + 53, TOKEN_DIM)`` float32 output, C-contig.
+        buffer: ``(n, num_players + 54, TOKEN_DIM)`` float32 output, C-contig.
     """
     cdef int n = len(state_arrays)
-    cdef int num_tokens = num_players + 53
+    cdef int num_tokens = num_players + 54
     cdef int i, p
     cdef GameState scratch_gs
 
@@ -314,6 +319,10 @@ cdef void _fill_buffer(
 
     if phase == <int>GamePhases.PHASE_ACQ_OFFER:
         _fill_acq_offer_token(state, buffer, tok)
+    tok += 1
+
+    if phase == <int>GamePhases.PHASE_ACQ_SELECT_PRICE:
+        _fill_acq_price_info_token(state, buffer, tok)
     tok += 1
 
     # Pass token: no input features — left zero, trunk adds its type embedding.
@@ -631,10 +640,10 @@ cdef void _fill_global_token(
     int num_players,
 ) noexcept nogil:
     cdef int OFF_NUM_PLAYERS    = 0   # 3 slots (3p/4p/5p)
-    cdef int OFF_PHASE          = 3   # 9 slots (one per decision phase)
-    cdef int OFF_COO            = 12  # 7 slots
-    cdef int OFF_END_CARD       = 19
-    cdef int OFF_CARDS_REM      = 20
+    cdef int OFF_PHASE          = 3   # 11 slots (one per decision phase)
+    cdef int OFF_COO            = 14  # 7 slots
+    cdef int OFF_END_CARD       = 21
+    cdef int OFF_CARDS_REM      = 22
 
     cdef int phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
     cdef int coo = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.coo_level]
@@ -861,3 +870,96 @@ cdef void _fill_acq_offer_token(
 
     if 0 <= offer_corp < NUM_CORPS:
         buffer[tok, OFF_OFFER_CORP + offer_corp] = 1.0
+
+
+cdef void _fill_acq_price_info_token(
+    GameState state,
+    float[:, ::1] buffer,
+    int tok,
+) noexcept nogil:
+    """Fill the acq_price_info token during PHASE_ACQ_SELECT_PRICE.
+
+    The price head is a readout on this single token, so it needs the
+    (active_corp, active_company) context the trunk can't otherwise
+    concentrate into one position. Kept compact — token is zero outside
+    SELECT_PRICE and the active corp/company rows carry the full entity
+    detail via attention.
+    """
+    cdef int OFF_CORP_CASH           = 0
+    cdef int OFF_CORP_SHARE_PRICE    = 1
+    cdef int OFF_COMP_LOW            = 2
+    cdef int OFF_COMP_FACE           = 3
+    cdef int OFF_COMP_HIGH           = 4
+    cdef int OFF_COMP_ADJ_INCOME     = 5
+    cdef int OFF_COMP_STARS          = 6
+    cdef int OFF_FI_FLAG             = 7
+    cdef int OFF_CROSS_PRESIDENT     = 8
+    cdef int OFF_RECEIVERSHIP_SELLER = 9
+    cdef int OFF_MAX_AFFORD          = 10
+
+    cdef int active_corp = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_corp]
+    cdef int active_company = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_company]
+    cdef int active_player = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
+
+    # SELECT_PRICE requires both flags set (driver contract); bail if not.
+    if active_corp < 0 or active_corp >= NUM_CORPS:
+        return
+    if active_company < 0 or active_company >= NUM_COMPANIES:
+        return
+    if not corp_is_active(state, active_corp):
+        return
+
+    cdef int cash = corp_cash(state, active_corp)
+    cdef int share_price = corp_share_price(state, active_corp)
+    cdef int low_price = COMPANY_LOW_PRICE[active_company]
+    cdef int face_value = COMPANY_FACE_VALUE[active_company]
+    cdef int high_price = COMPANY_HIGH_PRICE[active_company]
+    cdef int adj_income = company_adjusted_income(state, active_company)
+    cdef int stars = COMPANY_STARS[active_company]
+    cdef int loc = company_location(state, active_company)
+    cdef int owner = company_owner_id(state, active_company)
+    cdef bint is_fi = loc == <int>LOC_FI
+    cdef bint cross_pres = False
+    cdef bint recv_seller = False
+    cdef int max_off
+
+    buffer[tok, OFF_CORP_CASH] = <float>cash / CASH_DIVISOR
+    buffer[tok, OFF_CORP_SHARE_PRICE] = <float>share_price / SHARE_PRICE_DIVISOR
+    buffer[tok, OFF_COMP_LOW] = <float>low_price / COMPANY_PRICE_DIVISOR
+    buffer[tok, OFF_COMP_FACE] = <float>face_value / COMPANY_PRICE_DIVISOR
+    buffer[tok, OFF_COMP_HIGH] = <float>high_price / COMPANY_PRICE_DIVISOR
+    buffer[tok, OFF_COMP_ADJ_INCOME] = <float>adj_income / COMPANY_INCOME_DIVISOR
+    buffer[tok, OFF_COMP_STARS] = <float>stars / COMPANY_STAR_DIVISOR
+
+    if is_fi:
+        buffer[tok, OFF_FI_FLAG] = 1.0
+    else:
+        # Cross-president fires only under ``acq_same_president=False`` when
+        # the seller is a foreign player (LOC_PLAYER) or a foreign-president
+        # corp (LOC_CORP). Receivership corps have no president so they do
+        # not branch to ACQ_OFFER even in the cross-president variant.
+        if not state.acq_same_president:
+            if loc == <int>LOC_PLAYER and owner != active_player:
+                cross_pres = True
+            elif loc == <int>LOC_CORP and not corp_is_in_receivership(state, owner):
+                if corp_president_id(state, owner) != active_player:
+                    cross_pres = True
+        if loc == <int>LOC_CORP and corp_is_in_receivership(state, owner):
+            recv_seller = True
+
+    if cross_pres:
+        buffer[tok, OFF_CROSS_PRESIDENT] = 1.0
+    if recv_seller:
+        buffer[tok, OFF_RECEIVERSHIP_SELLER] = 1.0
+
+    # Max affordable offset: 0..50 range for negotiated buys; leave zero
+    # for FI targets (price is fixed, decision is a single FI_BUY action).
+    if not is_fi:
+        max_off = high_price - low_price
+        if cash - low_price < max_off:
+            max_off = cash - low_price
+        if max_off > ACQ_PRICE_OFFSETS - 1:
+            max_off = ACQ_PRICE_OFFSETS - 1
+        if max_off < 0:
+            max_off = 0
+        buffer[tok, OFF_MAX_AFFORD] = <float>max_off / <float>(ACQ_PRICE_OFFSETS - 1)

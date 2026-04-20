@@ -25,9 +25,9 @@ class MCTSConfig:
         from core.data import MAX_ACTION_SIZE
 
         # Post-refactor: action space is per-phase sparse with a fixed dense
-        # pad width (MAX_ACTION_SIZE = ACQUISITION, 14977) that doesn't vary
-        # with player count. get_action_probabilities returns a
-        # (MAX_ACTION_SIZE,) dense distribution.
+        # pad width (MAX_ACTION_SIZE, max over all phases — currently INVEST
+        # at 53 after the ACQ split) that doesn't vary with player count.
+        # get_action_probabilities returns a (MAX_ACTION_SIZE,) dense distribution.
         self.action_dim = int(MAX_ACTION_SIZE)
         self.validate()
 

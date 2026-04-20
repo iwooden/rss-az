@@ -40,7 +40,9 @@ from core.data cimport (
     GamePhases,
     DPHASE_INVEST,
     DPHASE_BID,
-    DPHASE_ACQUISITION,
+    DPHASE_ACQ_SELECT_CORP,
+    DPHASE_ACQ_SELECT_COMPANY,
+    DPHASE_ACQ_SELECT_PRICE,
     DPHASE_ACQ_OFFER,
     DPHASE_CLOSING,
     DPHASE_DIVIDENDS,
@@ -64,7 +66,9 @@ from phases.dividends cimport apply_dividend_action
 from phases.issue cimport apply_issue_action
 from phases.ipo cimport apply_ipo_action
 from phases.par cimport apply_par_action
-from phases.acquisition cimport apply_acquisition_action
+from phases.acq_select_corp cimport apply_acq_select_corp_action
+from phases.acq_select_company cimport apply_acq_select_company_action
+from phases.acq_select_price cimport apply_acq_select_price_action
 from phases.acq_offer cimport apply_acq_offer_action
 from phases.closing cimport apply_closing_action
 
@@ -148,8 +152,12 @@ cdef class GameDriver:
             apply_invest_action(state, &info)
         elif phase_id == DPHASE_BID:
             apply_bid_action(state, &info)
-        elif phase_id == DPHASE_ACQUISITION:
-            apply_acquisition_action(state, &info)
+        elif phase_id == DPHASE_ACQ_SELECT_CORP:
+            apply_acq_select_corp_action(state, &info)
+        elif phase_id == DPHASE_ACQ_SELECT_COMPANY:
+            apply_acq_select_company_action(state, &info)
+        elif phase_id == DPHASE_ACQ_SELECT_PRICE:
+            apply_acq_select_price_action(state, &info)
         elif phase_id == DPHASE_ACQ_OFFER:
             apply_acq_offer_action(state, &info)
         elif phase_id == DPHASE_CLOSING:

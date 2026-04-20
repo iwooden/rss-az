@@ -559,7 +559,7 @@ def assert_invariants(state, msg=""):
 # =============================================================================
 #
 # Phase-specific tokens are laid out after the fixed tokens. The token buffer
-# carries (num_players + 53, TOKEN_DIM=97) float32 rows in this order:
+# carries (num_players + 54, TOKEN_DIM=97) float32 rows in this order:
 #
 #     [0, num_players)              : player tokens (3-5p)
 #     [num_players, num_players+8)  : corp tokens    (8)
@@ -573,6 +573,7 @@ def assert_invariants(state, msg=""):
 #     num_players+50                : Issue   (zeroed outside PHASE_ISSUE_SHARES)
 #     num_players+51                : Par/IPO (zeroed outside PHASE_IPO/PAR)
 #     num_players+52                : AcqOffer(zeroed outside PHASE_ACQ_OFFER)
+#     num_players+53                : AcqPriceInfo (zeroed outside PHASE_ACQ_SELECT_PRICE)
 #
 # The 7 per-phase pass anchors live inside the model (concatenated after
 # projection) and are not part of the input buffer.
@@ -703,10 +704,11 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
     issue_tok = fi_tok + 6
     par_tok = fi_tok + 7
     acq_offer_tok = fi_tok + 8
+    acq_price_info_tok = fi_tok + 9
     num_tokens = get_num_tokens(num_players)
-    assert num_tokens == acq_offer_tok + 1, (
+    assert num_tokens == acq_price_info_tok + 1, (
         f"{msg}\nget_num_tokens({num_players})={num_tokens} "
-        f"inconsistent with layout (expected {acq_offer_tok + 1})"
+        f"inconsistent with layout (expected {acq_price_info_tok + 1})"
     )
 
     buf = np.zeros((num_tokens, token_dim), dtype=np.float32)
@@ -1048,9 +1050,9 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
     gm = f"{msg}\nGlobal token"
     OFF_NUM_PLAYERS = 0
     OFF_PHASE = 3
-    OFF_COO = 12
-    OFF_END_CARD = 19
-    OFF_CARDS_REM = 20
+    OFF_COO = 14
+    OFF_END_CARD = 21
+    OFF_CARDS_REM = 22
 
     num_decision_phases = int(GameConstants.NUM_DECISION_PHASES)
     num_engine_phases = int(GameConstants.NUM_PHASES)

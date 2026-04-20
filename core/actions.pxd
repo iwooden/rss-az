@@ -19,16 +19,19 @@ See ``transformers.md`` and ``sparse-refactor.md`` for motivation.
 Conventions
 -----------
 
-- **Decision phases** are the 8 phases the model sees, distinct from the
-  engine's 12 ``GamePhases`` — notably the engine's ``ACQUISITION`` splits
-  into ``DPHASE_ACQUISITION`` + ``DPHASE_ACQ_OFFER``, and ``IPO`` / ``PAR``
-  collapse into ``DPHASE_IPO``. The enum itself lives in ``core/data.pxd``
+- **Decision phases** are the 11 phases the model sees, distinct from the
+  engine's 15 ``GamePhases``. The engine's ACQUISITION decomposes into
+  ``DPHASE_ACQ_SELECT_CORP`` → ``DPHASE_ACQ_SELECT_COMPANY`` →
+  ``DPHASE_ACQ_SELECT_PRICE``, plus the preemption sub-phase
+  ``DPHASE_ACQ_OFFER``; IPO similarly splits into ``DPHASE_IPO`` →
+  ``DPHASE_PAR``. The enum itself lives in ``core/data.pxd``
   (``cpdef enum DecisionPhase``) alongside the engine → decision lookup
   table.
 - Action IDs are **phase-local**: the same integer means different things in
   different phases. Callers must always carry the ``phase_id`` alongside the
   ``action_id``.
-- Action IDs fit comfortably in ``uint16`` (max 14,977 for ``ACQUISITION``).
+- Action IDs fit comfortably in ``uint16`` (max 52 in ``ACQ_SELECT_PRICE``;
+  ``MAX_ACTION_SIZE = 53`` from ``INVEST``).
 - The sparse legal-action path is the only public contract. There is no
   dense per-phase mask surface; any dense consumer should scatter from the
   sparse list.
@@ -43,7 +46,9 @@ from core.data cimport (
     AUCTION_CAP,
     ACTION_SIZE_INVEST,
     ACTION_SIZE_BID,
-    ACTION_SIZE_ACQUISITION,
+    ACTION_SIZE_ACQ_SELECT_CORP,
+    ACTION_SIZE_ACQ_SELECT_COMPANY,
+    ACTION_SIZE_ACQ_SELECT_PRICE,
     ACTION_SIZE_ACQ_OFFER,
     ACTION_SIZE_CLOSING,
     ACTION_SIZE_DIVIDENDS,
@@ -53,7 +58,9 @@ from core.data cimport (
     MAX_ACTION_SIZE,
     DPHASE_INVEST,
     DPHASE_BID,
-    DPHASE_ACQUISITION,
+    DPHASE_ACQ_SELECT_CORP,
+    DPHASE_ACQ_SELECT_COMPANY,
+    DPHASE_ACQ_SELECT_PRICE,
     DPHASE_ACQ_OFFER,
     DPHASE_CLOSING,
     DPHASE_DIVIDENDS,
@@ -89,7 +96,7 @@ cdef enum:
 # avoid confusion with the Python-level ``PHASE_ACTION_SIZES`` list exported
 # by ``core.data`` — that list is the Python consumer surface; this table
 # is the Cython-side lookup.
-cdef int _PHASE_ACTION_SIZES_C[9]
+cdef int _PHASE_ACTION_SIZES_C[11]
 
 
 # =============================================================================
@@ -98,22 +105,24 @@ cdef int _PHASE_ACTION_SIZES_C[9]
 
 cdef enum ActionType:
     # ACTION_PASS is the universal "opt out" for every phase that has one:
-    # INVEST pass, BID leave-auction, ACQUISITION pass, ACQ_OFFER pass,
+    # INVEST pass, BID leave-auction, ACQ_SELECT_CORP pass, ACQ_OFFER pass,
     # CLOSING pass, ISSUE pass, IPO pass. They all decode to ACTION_PASS.
-    # PAR has no pass.
+    # ACQ_SELECT_COMPANY / ACQ_SELECT_PRICE / PAR have no pass.
     ACTION_PASS = 0
     ACTION_AUCTION = 1         # INVEST: select company_id to auction (price chosen in BID)
     ACTION_BUY_SHARE = 2       # INVEST: buy corp_id
     ACTION_SELL_SHARE = 3      # INVEST: sell corp_id
     ACTION_RAISE = 4           # BID: bid face_value + amount (amount ∈ [0, AUCTION_CAP))
-    ACTION_ACQ_PRICE = 5       # ACQUISITION: corp_id acquires company_id at low+amount
-    ACTION_ACQ_FI_BUY = 6      # ACQUISITION: corp_id buys company_id from FI at fixed price
+    ACTION_ACQ_PRICE = 5       # ACQ_SELECT_PRICE: acquire active_company at low+amount
+    ACTION_ACQ_FI_BUY = 6      # ACQ_SELECT_PRICE: buy active_company from FI at fixed price
     ACTION_ACQ_OFFER_ACCEPT = 7  # ACQ_OFFER: accept the offered acquisition
     ACTION_CLOSE = 8           # CLOSING: close company_id
     ACTION_DIVIDEND = 9        # DIVIDENDS: pay dividend of amount
     ACTION_ISSUE = 10          # ISSUE: issue one share
     ACTION_IPO = 11            # IPO: select corp_id to float (par index chosen in PAR)
     ACTION_PAR = 12            # PAR: set par index for active_corp (float executed here)
+    ACTION_ACQ_SELECT_CORP = 13    # ACQ_SELECT_CORP: select corp_id to make the acquisition
+    ACTION_ACQ_SELECT_COMPANY = 14 # ACQ_SELECT_COMPANY: select company_id as the target
 
 
 # =============================================================================
@@ -123,9 +132,9 @@ cdef enum ActionType:
 cdef struct ActionInfo:
     int phase           # DecisionPhase
     int action_type     # ActionType
-    int corp_id         # -1 if not applicable
-    int company_id      # -1 if not applicable
-    int amount          # bid_offset / price_offset / dividend / par_index (PAR) / raise_offset / -1
+    int corp_id         # -1 if not applicable (IPO / ACQ_SELECT_CORP corp select)
+    int company_id      # -1 if not applicable (CLOSING / ACQ_SELECT_COMPANY company select)
+    int amount          # bid_offset / acq price_offset / dividend / par_index (PAR) / raise_offset / -1
 
 
 # =============================================================================
@@ -148,11 +157,17 @@ cdef inline int encode_invest_sell(int corp_id) noexcept nogil:
 cdef inline int encode_bid_raise(int raise_offset) noexcept nogil:
     return 1 + raise_offset
 
-cdef inline int encode_acquisition_price(int corp_id, int company_id, int price_offset) noexcept nogil:
-    return 1 + (corp_id * 36 + company_id) * 52 + price_offset
+cdef inline int encode_acq_select_corp(int corp_id) noexcept nogil:
+    return 1 + corp_id
 
-cdef inline int encode_acquisition_fi_buy(int corp_id, int company_id) noexcept nogil:
-    return 1 + (corp_id * 36 + company_id) * 52 + 51
+cdef inline int encode_acq_select_company(int company_id) noexcept nogil:
+    return company_id
+
+cdef inline int encode_acq_select_price(int price_offset) noexcept nogil:
+    return price_offset
+
+cdef inline int encode_acq_select_fi_buy() noexcept nogil:
+    return 51
 
 cdef inline int encode_closing_close(int company_id) noexcept nogil:
     return 1 + company_id

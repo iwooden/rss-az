@@ -27,7 +27,7 @@ from tests.phases.conftest import (
 
 
 PHASE_WRAP_UP = int(GamePhases.PHASE_WRAP_UP)
-PHASE_ACQUISITION = int(GamePhases.PHASE_ACQUISITION)
+PHASE_ACQ_SELECT_CORP = int(GamePhases.PHASE_ACQ_SELECT_CORP)
 PHASE_CLOSING = int(GamePhases.PHASE_CLOSING)
 PHASE_ACQ_OFFER = int(GamePhases.PHASE_ACQ_OFFER)
 
@@ -98,7 +98,7 @@ def test_apply_action_in_step_mode_pauses_before_auto_chain():
     status = DRIVER.apply_action(state, accept_id, history=history)
 
     assert status == STATUS_PAUSED
-    assert TURN.get_phase(state) == PHASE_ACQUISITION
+    assert TURN.get_phase(state) == PHASE_ACQ_SELECT_CORP
     assert TURN.get_active_player(state) == 0
     assert TURN.get_active_corp(state) == -1
     assert len(history) == 1
@@ -141,7 +141,7 @@ def test_advance_phase_executes_one_automated_phase_and_pauses():
     status = DRIVER.advance_phase(state, history=history)
 
     assert status == STATUS_PAUSED
-    assert TURN.get_phase(state) == PHASE_ACQUISITION
+    assert TURN.get_phase(state) == PHASE_ACQ_SELECT_CORP
     assert TURN.get_active_player(state) == 0
     assert TURN.get_active_corp(state) == -1
     assert len(history) == 1

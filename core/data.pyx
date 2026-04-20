@@ -47,7 +47,7 @@ PY_IMPACT_DIVISOR = IMPACT_DIVISOR
 # ENGINE → DECISION PHASE MAPPING
 # =============================================================================
 #
-# The engine's 13 ``GamePhases`` fold down to 9 ``DecisionPhase`` slots for
+# The engine's 15 ``GamePhases`` fold down to 11 ``DecisionPhase`` slots for
 # the transformer. Automated/terminal engine phases (``WRAP_UP``, ``INCOME``,
 # ``END_CARD``, ``GAME_OVER``) map to -1 and are fast-forwarded by the
 # driver. ``ENGINE_TO_DECISION_PHASE`` is the canonical lookup both for the
@@ -57,11 +57,13 @@ PY_IMPACT_DIVISOR = IMPACT_DIVISOR
 
 cdef void _init_engine_to_decision_phase() noexcept nogil:
     cdef int i
-    for i in range(13):
+    for i in range(15):
         ENGINE_TO_DECISION_PHASE[i] = -1
     ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_INVEST] = <int>DecisionPhase.DPHASE_INVEST
     ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_BID] = <int>DecisionPhase.DPHASE_BID
-    ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_ACQUISITION] = <int>DecisionPhase.DPHASE_ACQUISITION
+    ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_ACQ_SELECT_CORP] = <int>DecisionPhase.DPHASE_ACQ_SELECT_CORP
+    ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_ACQ_SELECT_COMPANY] = <int>DecisionPhase.DPHASE_ACQ_SELECT_COMPANY
+    ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_ACQ_SELECT_PRICE] = <int>DecisionPhase.DPHASE_ACQ_SELECT_PRICE
     ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_ACQ_OFFER] = <int>DecisionPhase.DPHASE_ACQ_OFFER
     ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_CLOSING] = <int>DecisionPhase.DPHASE_CLOSING
     ENGINE_TO_DECISION_PHASE[<int>GamePhases.PHASE_DIVIDENDS] = <int>DecisionPhase.DPHASE_DIVIDENDS
@@ -77,14 +79,14 @@ cdef list _engine_to_decision_phase_pylist():
     """Build a plain Python list mirror of the C lookup table."""
     cdef int i
     cdef list out = []
-    for i in range(13):
+    for i in range(15):
         out.append(ENGINE_TO_DECISION_PHASE[i])
     return out
 
 
 # Python-level mirror of the Cython lookup table. Same ``globals()`` trick
 # as ``PHASE_ACTION_SIZES`` — a bare ``ENGINE_TO_DECISION_PHASE = [...]``
-# assignment would be shadowed by the cimported ``cdef int[13]`` array.
+# assignment would be shadowed by the cimported ``cdef int[15]`` array.
 globals()["ENGINE_TO_DECISION_PHASE"] = _engine_to_decision_phase_pylist()
 
 
@@ -109,13 +111,15 @@ globals()["ENGINE_TO_DECISION_PHASE"] = _engine_to_decision_phase_pylist()
 _py_phase_action_sizes = [
     int(ActionSize.ACTION_SIZE_INVEST),
     int(ActionSize.ACTION_SIZE_BID),
-    int(ActionSize.ACTION_SIZE_ACQUISITION),
+    int(ActionSize.ACTION_SIZE_ACQ_SELECT_CORP),
     int(ActionSize.ACTION_SIZE_ACQ_OFFER),
     int(ActionSize.ACTION_SIZE_CLOSING),
     int(ActionSize.ACTION_SIZE_DIVIDENDS),
     int(ActionSize.ACTION_SIZE_ISSUE),
     int(ActionSize.ACTION_SIZE_IPO),
     int(ActionSize.ACTION_SIZE_PAR),
+    int(ActionSize.ACTION_SIZE_ACQ_SELECT_COMPANY),
+    int(ActionSize.ACTION_SIZE_ACQ_SELECT_PRICE),
 ]
 globals()["PHASE_ACTION_SIZES"] = _py_phase_action_sizes
 globals()["MAX_ACTION_SIZE"] = int(ActionSize.MAX_ACTION_SIZE)

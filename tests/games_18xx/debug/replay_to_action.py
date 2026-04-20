@@ -130,7 +130,7 @@ def main():
                     self._dump_state(state, layout, num_players, action)
                     return self.mismatches
 
-                if phase == GamePhases.PHASE_ACQUISITION:
+                if phase == GamePhases.PHASE_ACQ_SELECT_CORP:
                     idx = self._run_acquisition_adapter(state, actions, idx, layout, ref_by_action)
                 elif phase == GamePhases.PHASE_CLOSING:
                     idx = self._run_closing_adapter(state, actions, idx, layout, ref_by_action)

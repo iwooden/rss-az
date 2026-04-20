@@ -1,17 +1,22 @@
-"""ACQUISITION phase handler.
+"""ACQ_SELECT_CORP phase handler.
 
-Handles corp acquisitions of companies from FI, other corps, and players.
-See ``acquisition-impl.md`` for the full design.
+First of three sub-phases in the ACQ flow:
 
-Two public entry points:
-  - ``setup_acquisition_phase`` — called by WRAP_UP on transition.
-  - ``apply_acquisition_action`` — dispatches PASS / ACQ_PRICE / FI_BUY.
+  ACQ_SELECT_CORP    → pick corp (or pass)
+  ACQ_SELECT_COMPANY → pick target company
+  ACQ_SELECT_PRICE   → pick price offset (or FI_BUY)
 
-Shared helpers declared in ``acquisition.pxd`` and cimported by
-``acq_offer.pyx``: ``_clear_acquisition_context``,
-``_resume_acquisition_after_offer``, ``_execute_fi_buy``,
-``_get_fi_purchase_price``, ``_find_first_preemptor``,
-``_find_first_active_player``.
+Active flags: entry seeds ``active_corp=-1, active_company=-1``. Selecting
+a corp sets ``active_corp`` and transitions to PHASE_ACQ_SELECT_COMPANY.
+The SELECT_PRICE handler clears both fields and walks back here after a
+successful acquisition (stay-on-same-player).
+
+Also hosts the shared ACQ helpers cimported by ``acq_offer.pyx`` and
+``acq_select_price.pyx`` — simpler than spinning up a separate common
+module.
+
+Reference: RULES.md Acquisition procedure. See phase-refactor.md for the
+split rationale.
 """
 
 from core.state cimport GameState
@@ -21,18 +26,14 @@ from core.data cimport (
     CorpIndices,
     COMPANY_FACE_VALUE,
     COMPANY_HIGH_PRICE,
-    COMPANY_LOW_PRICE,
 )
 from core.actions cimport (
     ActionInfo,
     ACTION_PASS,
-    ACTION_ACQ_PRICE,
-    ACTION_ACQ_FI_BUY,
+    ACTION_ACQ_SELECT_CORP,
 )
 from entities.company cimport (
-    LOC_PLAYER,
     LOC_FI,
-    LOC_CORP,
     LOC_CORP_ACQ,
     company_location,
     company_owner_id,
@@ -56,14 +57,14 @@ from entities import fi as fi_module
 
 
 # =============================================================================
-# PRIVATE HELPERS
+# SHARED HELPERS (also cimported by acq_offer.pyx / acq_select_price.pyx)
 # =============================================================================
 
 cdef void _clear_acquisition_context(GameState state) noexcept:
     """Clear all ACQ/ACQ_OFFER context fields in the turn block.
 
-    Shared exit cleanup for both the ACQ→CLOSING transition and the
-    ACQ_OFFER→ACQUISITION return path.
+    Shared exit cleanup for both the SELECT_CORP→CLOSING transition and
+    the ACQ_OFFER→SELECT_CORP return path.
     """
     turn_module.TURN.clear_acquisition_context(state)
 
@@ -121,7 +122,7 @@ cdef int _find_first_preemptor(GameState state, int company_id, int original_cor
         return CORP_OS
 
     # Other corps by descending share price. Live share prices are unique in
-    # ACQUISITION; $0 corps are bankrupt and $75 ends the game before this phase.
+    # ACQ; $0 corps are bankrupt and $75 ends the game before this phase.
     cdef int best_id = -1
     cdef int best_price = -1
     cdef int c, sp
@@ -164,7 +165,7 @@ cdef int _find_first_active_player(GameState state) noexcept:
 
 
 cdef void _set_first_acquisition_player_or_closing(GameState state) noexcept:
-    """Select the first player decision in ACQUISITION, or exit the phase."""
+    """Select the first player decision in SELECT_CORP, or exit the phase."""
     cdef int pid = _find_first_active_player(state)
     if pid >= 0:
         turn_module.TURN.set_active_player(state, pid)
@@ -177,7 +178,6 @@ cdef void _advance_to_next_player(GameState state) noexcept:
     corps. If none found, transition to CLOSING."""
     cdef int num_players = turn_module.TURN.get_num_players(state)
     cdef int current_pid = turn_module.TURN.get_active_player(state)
-    # Find current player's turn position
     cdef int current_pos = -1
     cdef int pos, pid, c
     for pos in range(num_players):
@@ -186,7 +186,6 @@ cdef void _advance_to_next_player(GameState state) noexcept:
             break
     assert current_pos >= 0, f"_advance_to_next_player: player {current_pid} not in turn order"
 
-    # Scan forward from next position, wrapping around
     cdef int checked = 0
     pos = (current_pos + 1) % num_players
     while checked < num_players:
@@ -203,13 +202,6 @@ cdef void _advance_to_next_player(GameState state) noexcept:
 
     # No eligible player found — all passed or no active corps
     _transition_to_closing(state)
-
-
-cdef void _handle_pass(GameState state) noexcept:
-    """Mark current player as passed and advance."""
-    cdef int pid = turn_module.TURN.get_active_player(state)
-    player_module.PLAYERS[pid].set_has_passed(state, True)
-    _advance_to_next_player(state)
 
 
 cdef void _execute_fi_buy(GameState state, int corp_id, int company_id) noexcept:
@@ -289,7 +281,7 @@ cdef bint _find_receivership_forced_buy(
 
 
 cdef bint _process_receivership_forced_buys(GameState state) noexcept:
-    """Run beginning-of-ACQUISITION receivership buys.
+    """Run beginning-of-SELECT_CORP receivership buys.
 
     Returns True if processing paused on an ACQ_OFFER player decision.
     Returns False once no forced receivership buy remains.
@@ -343,7 +335,7 @@ cdef void _enter_acq_offer(
 
 
 cdef void _resume_acquisition_after_offer(GameState state, int original_corp) noexcept:
-    """Return from ACQ_OFFER to ACQUISITION without exposing automation."""
+    """Return from ACQ_OFFER to SELECT_CORP without exposing automation."""
     cdef bint resume_receivership_setup = (
         original_corp >= 0
         and corp_is_active(state, original_corp)
@@ -352,7 +344,7 @@ cdef void _resume_acquisition_after_offer(GameState state, int original_corp) no
     cdef int pid
 
     _clear_acquisition_context(state)
-    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_ACQUISITION)
+    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_ACQ_SELECT_CORP)
 
     if resume_receivership_setup:
         if _process_receivership_forced_buys(state):
@@ -369,93 +361,6 @@ cdef void _resume_acquisition_after_offer(GameState state, int original_corp) no
             return
 
     _set_first_acquisition_player_or_closing(state)
-
-
-cdef void _handle_acq_price(GameState state, ActionInfo* info) noexcept:
-    """Execute a negotiated-price acquisition (corp-to-corp or corp-to-player).
-
-    If acq_same_president is False and the owner is a different player,
-    enters ACQ_OFFER for owner approval instead of executing directly.
-    """
-    cdef int corp_id = info.corp_id
-    cdef int company_id = info.company_id
-    cdef int price = COMPANY_LOW_PRICE[company_id] + info.amount
-
-    cdef int loc = company_location(state, company_id)
-    cdef int owner_id = company_owner_id(state, company_id)
-    cdef int active_player = turn_module.TURN.get_active_player(state)
-    cdef int owner_player = -1
-
-    assert corp_is_active(state, corp_id), \
-        f"_handle_acq_price: corp {corp_id} not active"
-    assert corp_cash(state, corp_id) >= price, \
-        f"_handle_acq_price: corp {corp_id} can't afford {price}"
-
-    # Check cross-president: enter ACQ_OFFER if owner is a different player
-    if not state.acq_same_president:
-        if loc == <int>LOC_CORP:
-            assert not corp_is_in_receivership(state, owner_id), \
-                f"_handle_acq_price: cannot buy company {company_id} from receivership corp {owner_id}"
-            owner_player = corp_president_id(state, owner_id)
-        elif loc == <int>LOC_PLAYER:
-            owner_player = owner_id
-        if owner_player >= 0 and owner_player != active_player:
-            _enter_acq_offer(
-                state, corp_id, company_id, price,
-                corp_id, owner_player,
-            )
-            return
-
-    # Same-president: execute directly
-    corp_module.CORPS[corp_id].add_cash(state, -price)
-
-    if loc == <int>LOC_CORP:
-        assert owner_id != corp_id, \
-            f"_handle_acq_price: corp {corp_id} buying from itself"
-        assert not corp_is_in_receivership(state, owner_id), \
-            f"_handle_acq_price: cannot buy company {company_id} from receivership corp {owner_id}"
-        corp_module.CORPS[owner_id].set_acquisition_proceeds(
-            state,
-            corp_acquisition_proceeds(state, owner_id) + price,
-        )
-    elif loc == <int>LOC_PLAYER:
-        player_module.PLAYERS[owner_id].add_cash(state, price)
-
-    company_module.COMPANIES[company_id].transfer_to_corp_acquisition(state, corp_id)
-
-
-cdef void _handle_fi_buy(GameState state, ActionInfo* info) noexcept:
-    """Execute an FI purchase, with preemption check."""
-    cdef int corp_id = info.corp_id
-    cdef int company_id = info.company_id
-    cdef int first_preemptor, price, deciding_player
-
-    assert company_location(state, company_id) == <int>LOC_FI, \
-        f"_handle_fi_buy: company {company_id} not LOC_FI"
-    assert corp_is_active(state, corp_id), \
-        f"_handle_fi_buy: corp {corp_id} not active"
-    assert corp_cash(state, corp_id) >= _get_fi_purchase_price(corp_id, company_id), \
-        f"_handle_fi_buy: corp {corp_id} can't afford FI company {company_id}"
-
-    # Check for preemptors
-    _clear_acq_offer_flags(state)
-    first_preemptor = _find_first_preemptor(state, company_id, corp_id)
-    if first_preemptor < 0 or first_preemptor == corp_id:
-        _execute_fi_buy(state, corp_id, company_id)
-        return
-
-    # A higher-priority receivership corp has no president to ask; its FI
-    # purchase is automatic. Player-controlled corps enter ACQ_OFFER.
-    if corp_is_in_receivership(state, first_preemptor):
-        _execute_fi_buy(state, first_preemptor, company_id)
-        return
-
-    price = _get_fi_purchase_price(first_preemptor, company_id)
-    deciding_player = corp_president_id(state, first_preemptor)
-    _enter_acq_offer(
-        state, first_preemptor, company_id, price,
-        corp_id, deciding_player,
-    )
 
 
 cdef void _merge_acquisition_zones(GameState state) noexcept:
@@ -487,7 +392,7 @@ cdef void _merge_acquisition_zones(GameState state) noexcept:
 
 
 cdef void _transition_to_closing(GameState state) noexcept:
-    """Exit ACQUISITION: merge zones, clear context, hand off to CLOSING."""
+    """Exit SELECT_CORP: merge zones, clear context, hand off to CLOSING."""
     _merge_acquisition_zones(state)
     _clear_acquisition_context(state)
     setup_closing_phase(state)
@@ -498,8 +403,8 @@ cdef void _transition_to_closing(GameState state) noexcept:
 # =============================================================================
 
 cdef void setup_acquisition_phase(GameState state) noexcept:
-    """Initialize ACQUISITION phase context. Called by WRAP_UP."""
-    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_ACQUISITION)
+    """Initialize ACQ phase context. Called by WRAP_UP."""
+    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_ACQ_SELECT_CORP)
     turn_module.TURN.clear_acquisition_context(state)
     turn_module.TURN.clear_passed_flags(state)
 
@@ -508,16 +413,23 @@ cdef void setup_acquisition_phase(GameState state) noexcept:
     _set_first_acquisition_player_or_closing(state)
 
 
-cdef void apply_acquisition_action(GameState state, ActionInfo* info) noexcept:
-    """Dispatch an ACQUISITION action. Assumes legality (driver guarantees)."""
+cdef void apply_acq_select_corp_action(GameState state, ActionInfo* info) noexcept:
+    """Dispatch a SELECT_CORP action. Assumes legality (driver guarantees).
+
+    PASS: mark current player passed, advance.
+    SELECT_CORP: seed active_corp, transition to SELECT_COMPANY.
+    """
+    cdef int pid
     if info.action_type == <int>ACTION_PASS:
-        _handle_pass(state)
-    elif info.action_type == <int>ACTION_ACQ_PRICE:
-        _handle_acq_price(state, info)
-        # Stay on same player — driver re-enumerates
-    elif info.action_type == <int>ACTION_ACQ_FI_BUY:
-        _handle_fi_buy(state, info)
-        # Either stays in ACQUISITION (same player) or entered ACQ_OFFER
+        pid = turn_module.TURN.get_active_player(state)
+        player_module.PLAYERS[pid].set_has_passed(state, True)
+        _advance_to_next_player(state)
+        return
+
+    assert info.action_type == <int>ACTION_ACQ_SELECT_CORP, \
+        f"apply_acq_select_corp_action: unexpected type {info.action_type}"
+    turn_module.TURN.set_active_corp(state, info.corp_id)
+    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_ACQ_SELECT_COMPANY)
 
 
 # =============================================================================
@@ -527,7 +439,8 @@ cdef void apply_acquisition_action(GameState state, ActionInfo* info) noexcept:
 def setup_acquisition_phase_py(GameState state):
     setup_acquisition_phase(state)
 
-def apply_acquisition_action_py(GameState state, int phase_id, int action_id):
+
+def apply_acq_select_corp_action_py(GameState state, int phase_id, int action_id):
     from core.actions import decode_action_py
     info_tuple = decode_action_py(phase_id, action_id)
     cdef ActionInfo info
@@ -536,4 +449,4 @@ def apply_acquisition_action_py(GameState state, int phase_id, int action_id):
     info.corp_id = info_tuple.corp_id
     info.company_id = info_tuple.company_id
     info.amount = info_tuple.amount
-    apply_acquisition_action(state, &info)
+    apply_acq_select_corp_action(state, &info)

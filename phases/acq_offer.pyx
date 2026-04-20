@@ -6,7 +6,8 @@ who decides (active_player) varies between FI preemption and cross-
 president offers.
 
 No setup function — ACQ_OFFER is entered mid-action from
-``apply_acquisition_action`` via ``_enter_acq_offer``.
+``apply_acq_select_price_action`` (or the SELECT_CORP receivership
+prelude) via ``_enter_acq_offer``.
 """
 
 from core.state cimport GameState
@@ -29,7 +30,7 @@ from entities.corp cimport (
     corp_president_id,
 )
 
-from phases.acquisition cimport (
+from phases.acq_select_corp cimport (
     _resume_acquisition_after_offer,
     _execute_fi_buy,
     _get_fi_purchase_price,

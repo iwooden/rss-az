@@ -28,7 +28,7 @@ class TrainingExample(NamedTuple):
     """
 
     state: np.ndarray  # (state_size_int16,) int16 — raw compact state
-    phase_id: int  # decision phase 0-8
+    phase_id: int  # decision phase 0-10
     n_legal: int  # number of legal actions at this state
     action_ids: np.ndarray  # (n_legal,) uint16 — phase-local legal ids
     policy_target: np.ndarray  # (n_legal,) float32 — MCTS visit probs
@@ -136,8 +136,9 @@ class ReplayBuffer:
         tokenization run inside DataLoader workers.
 
         Note: ``action_ids`` is returned as int16 (torch has no uint16).
-        Values fit losslessly (max action id 14976 ≪ 32767); reinterpret
-        as uint16 on the consumer side if needed.
+        Phase-local ids after the ACQ split top out at MAX_ACTION_SIZE-1
+        (well below int16 max); reinterpret as uint16 on the consumer
+        side if needed.
 
         Raises ValueError if batch_size > current buffer size.
         """

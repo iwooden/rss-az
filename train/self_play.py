@@ -51,7 +51,7 @@ class SelfPlayExample:
     """
 
     state: np.ndarray  # (total_int16_size,), int16 — raw compact state
-    phase_id: int  # decision phase id 0-8
+    phase_id: int  # decision phase id 0-10
     n_legal: int  # number of legal actions at this state
     action_ids: np.ndarray  # (n_legal,), uint16 — phase-local legal ids
     policy_target: np.ndarray  # (n_legal,), float32 — MCTS visit probs

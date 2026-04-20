@@ -29,12 +29,14 @@ from train.replay_buffer import ReplayBuffer
 TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
 K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 
-# Matches core.data.DecisionPhase order (DPHASE_INVEST..DPHASE_PAR, 9 entries).
-# IPO splits into IPO (corp select) + PAR (price select); ACQ_OFFER is a
-# first-class decision phase.
+# Matches core.data.DecisionPhase order. DPHASE_INVEST..DPHASE_PAR occupy
+# slots 0..8; DPHASE_ACQ_SELECT_COMPANY / DPHASE_ACQ_SELECT_PRICE are
+# appended at slots 9 and 10 after the ACQ split. ACQ_SELECT_CORP at slot 2
+# replaces the old joint ACQUISITION. ACQ_OFFER stays a first-class phase.
 _PHASE_NAMES = [
-    "invest", "bid", "acq", "acq_offer",
+    "invest", "bid", "acq_corp", "acq_offer",
     "close", "div", "issue", "ipo", "par",
+    "acq_co", "acq_price",
 ]
 
 
@@ -295,7 +297,7 @@ class Trainer:
 
         # Build per-phase row indices on host so the model's policy gather
         # uses index_select / index_copy_ instead of boolean masking
-        # (which forces one H←D sync per phase × 9 phases per forward).
+        # (which forces one H←D sync per phase × NUM_PHASES per forward).
         # mark_unbacked keeps torch.compile from specializing on per-phase
         # row counts (which would blow the recompile limit).
         phase_view = self._phase_h_np[:B]

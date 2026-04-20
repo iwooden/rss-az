@@ -28,8 +28,9 @@ Don't auto-load; open when the task needs them.
 ```
 core/        state.pyx, data.pyx, actions.pyx, driver.pyx, token_data.pyx
 entities/    player, corp, company, deck, turn, market, fi — 7 stateless handles
-phases/      11 phase handlers: invest, bid, acquisition, acq_offer, closing,
-             dividends, income, issue, ipo, wrap_up, end_card
+phases/      14 phase handlers: invest, bid, acq_select_corp, acq_select_company,
+             acq_select_price, acq_offer, closing, dividends, income, issue,
+             ipo, par, wrap_up, end_card
 nn/          transformer.py — token-based model
 mcts/        search.py, node.py, evaluator.py, mcts_core.pyx
 train/       main, self_play, eval_server, trainer, replay_buffer,
@@ -43,10 +44,10 @@ scratchpad/  Ad-hoc scripts (gitignored)
 
 - **State.** `GameState` wraps one contiguous `int16` numpy array. Raw integers only — no normalization, no one-hot, no visible/hidden split. Layout offsets live as Cython `cdef` structs at module scope on `core.state` (`LAYOUT`, `PLAYER_FIELDS`, `CORP_FIELDS`, `TURN_OFFSETS`, `COMPANY_OFFSETS`, `DECK_OFFSETS`, `FI_OFFSETS`). Full layout in `VECTORS.md`.
 - **Entity handles.** `PLAYERS[i]`, `CORPS[c]`, `COMPANIES[i]`, `TURN`, `FI`, `MARKET`, `DECK` are stateless singletons — one set, reused with any `GameState` at any player count. All state reads and writes go through them.
-- **Actions.** Phase-local integer ids (see `VECTORS.md` Action Space). 8 decision phases (`DecisionPhase` in `core/data.pxd`); engine's 12 `GamePhases` fold to them via `ENGINE_TO_DECISION_PHASE`. Sparse legal-action enumeration via `enumerate_legal_actions(state, uint16_t* ids)`; buffers pad to `MAX_LEGAL_ACTIONS = 256` and overflow is a loud assert.
+- **Actions.** Phase-local integer ids (see `VECTORS.md` Action Space). 11 decision phases (`DecisionPhase` in `core/data.pxd`); engine's 15 `GamePhases` fold to them via `ENGINE_TO_DECISION_PHASE`. Sparse legal-action enumeration via `enumerate_legal_actions(state, uint16_t* ids)`; buffers pad to `MAX_LEGAL_ACTIONS` and overflow is a loud assert.
 - **Driver.** `core/driver.pyx::GameDriver` routes a phase-local `action_id` through legality check → phase handler → auto-chain (fast-forward through automated phases + forced decisions until a real multi-choice decision or `PHASE_GAME_OVER`). Optional `history` list records `(state._array.copy(), phase_id, action_id)` tuples pre-mutation.
 - **Token extraction.** `core/token_data.get_token_data(state, buffer)` fills `(num_players + 54, TOKEN_DIM=97)` float32 inside one nogil block; `get_token_data_batch` amortizes Python dispatch via `GameState.rebind`. Sole engine → NN bridge.
-- **Model.** `nn/transformer.py::RSSTransformerNet` — pre-RMSNorm + SwiGLU, entity-readout heads, per-phase dispatch, per-row logit gather. `TransformerConfig` defaults: 3p, d_model=128, 10 layers, 2 heads, ~2.37M params. `forward(x, action_ids, n_legals, phase_indices) → (policy_logits[B, K_MAX], values[B, N])`.
+- **Model.** `nn/transformer.py::RSSTransformerNet` — pre-RMSNorm + SwiGLU, entity-readout heads, per-phase dispatch, per-row logit gather. `TransformerConfig` defaults: 3p, d_model=128, 10 layers, 2 heads, ~2.39M params. `forward(x, action_ids, n_legals, phase_indices) → (policy_logits[B, K_MAX], values[B, N])`.
 - **Evaluator / MCTS / training.** `mcts/evaluator.py` (NNEvaluator, RemoteEvaluator) speaks token buffers end-to-end. `mcts/search.py` is sparse / subtree-reusing. `train/*` runs full self-play + training loop on 3p.
 
 ## Code conventions

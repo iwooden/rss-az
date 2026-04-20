@@ -15,8 +15,8 @@ RULES.md §Phase 2 it executes, in order:
 4. Flip every LOC_REVEALED company to LOC_AUCTION — this includes both
    pre-existing cards revealed during INVEST auctions and new
    replacements drawn by the FI loop above.
-5. Transition to PHASE_ACQUISITION. Phase-entry setup (active-player,
-   remaining masks) is owned by ``phases/acquisition.pyx``; WRAP_UP
+5. Transition to PHASE_ACQ_SELECT_CORP. Phase-entry setup (active-player,
+   remaining masks) is owned by ``phases/acq_select_corp.pyx``; WRAP_UP
    only flips the phase enum.
 
 All state access goes through entity handles — the handler imports no
@@ -32,7 +32,7 @@ from core.data cimport (
     GamePhases,
     COMPANY_FACE_VALUE,
 )
-from phases.acquisition cimport setup_acquisition_phase
+from phases.acq_select_corp cimport setup_acquisition_phase
 from entities.company cimport company_is_for_auction, company_is_revealed
 
 # Late Python-level entity imports, same pattern as phases/invest.pyx.
@@ -180,7 +180,7 @@ cdef void apply_wrap_up(GameState state) noexcept:
     _reveal_all_to_auction(state)
 
     # Hand off to ACQUISITION. Phase-entry setup (active-player,
-    # passed-flags) is owned by ``phases/acquisition.pyx``.
+    # passed-flags) is owned by ``phases/acq_select_corp.pyx``.
     setup_acquisition_phase(state)
 
 

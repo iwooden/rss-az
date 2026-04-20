@@ -31,7 +31,7 @@ class MCTSNode:
             creation. 0 until a batch evaluator fills in the buffer.
             The action ids themselves are packed directly into the shared
             (batch, K_MAX) eval buffer at creation time — no per-node copy.
-        pending_phase: Decision phase id (0-8) of the state at child
+        pending_phase: Decision phase id (0-10) of the state at child
             creation. Needed because the model dispatches per-leaf phase_ids.
             -1 until populated.
         legal_actions: Sorted int array of legal action indices, shape (N,).

@@ -38,7 +38,9 @@ from core.data cimport (
     AUCTION_CAP,
     ACTION_SIZE_INVEST,
     ACTION_SIZE_BID,
-    ACTION_SIZE_ACQUISITION,
+    ACTION_SIZE_ACQ_SELECT_CORP,
+    ACTION_SIZE_ACQ_SELECT_COMPANY,
+    ACTION_SIZE_ACQ_SELECT_PRICE,
     ACTION_SIZE_ACQ_OFFER,
     ACTION_SIZE_CLOSING,
     ACTION_SIZE_DIVIDENDS,
@@ -47,7 +49,9 @@ from core.data cimport (
     ACTION_SIZE_PAR,
     DPHASE_INVEST,
     DPHASE_BID,
-    DPHASE_ACQUISITION,
+    DPHASE_ACQ_SELECT_CORP,
+    DPHASE_ACQ_SELECT_COMPANY,
+    DPHASE_ACQ_SELECT_PRICE,
     DPHASE_ACQ_OFFER,
     DPHASE_CLOSING,
     DPHASE_DIVIDENDS,
@@ -98,7 +102,7 @@ ActionInfoTuple = namedtuple('ActionInfoTuple', [
 # =============================================================================
 
 # Populated at module import by ``_init_phase_action_sizes``. The pxd
-# declares this as ``cdef int _PHASE_ACTION_SIZES_C[9]``; the init function
+# declares this as ``cdef int _PHASE_ACTION_SIZES_C[11]``; the init function
 # fills it from the ``ActionSize`` enum members cimported from ``core.data``
 # so phase sizes are readable via a single indexed lookup rather than a
 # switch. The table name is distinct from ``core.data.PHASE_ACTION_SIZES``
@@ -106,7 +110,9 @@ ActionInfoTuple = namedtuple('ActionInfoTuple', [
 cdef void _init_phase_action_sizes() noexcept nogil:
     _PHASE_ACTION_SIZES_C[<int>DPHASE_INVEST] = ACTION_SIZE_INVEST
     _PHASE_ACTION_SIZES_C[<int>DPHASE_BID] = ACTION_SIZE_BID
-    _PHASE_ACTION_SIZES_C[<int>DPHASE_ACQUISITION] = ACTION_SIZE_ACQUISITION
+    _PHASE_ACTION_SIZES_C[<int>DPHASE_ACQ_SELECT_CORP] = ACTION_SIZE_ACQ_SELECT_CORP
+    _PHASE_ACTION_SIZES_C[<int>DPHASE_ACQ_SELECT_COMPANY] = ACTION_SIZE_ACQ_SELECT_COMPANY
+    _PHASE_ACTION_SIZES_C[<int>DPHASE_ACQ_SELECT_PRICE] = ACTION_SIZE_ACQ_SELECT_PRICE
     _PHASE_ACTION_SIZES_C[<int>DPHASE_ACQ_OFFER] = ACTION_SIZE_ACQ_OFFER
     _PHASE_ACTION_SIZES_C[<int>DPHASE_CLOSING] = ACTION_SIZE_CLOSING
     _PHASE_ACTION_SIZES_C[<int>DPHASE_DIVIDENDS] = ACTION_SIZE_DIVIDENDS
@@ -168,13 +174,21 @@ cdef int encode_action(ActionInfo info) noexcept nogil:
         if info.action_type == ACTION_RAISE:
             return encode_bid_raise(info.amount)
 
-    elif phase == DPHASE_ACQUISITION:
+    elif phase == DPHASE_ACQ_SELECT_CORP:
         if info.action_type == ACTION_PASS:
             return 0
+        if info.action_type == ACTION_ACQ_SELECT_CORP:
+            return encode_acq_select_corp(info.corp_id)
+
+    elif phase == DPHASE_ACQ_SELECT_COMPANY:
+        if info.action_type == ACTION_ACQ_SELECT_COMPANY:
+            return encode_acq_select_company(info.company_id)
+
+    elif phase == DPHASE_ACQ_SELECT_PRICE:
         if info.action_type == ACTION_ACQ_PRICE:
-            return encode_acquisition_price(info.corp_id, info.company_id, info.amount)
+            return encode_acq_select_price(info.amount)
         if info.action_type == ACTION_ACQ_FI_BUY:
-            return encode_acquisition_fi_buy(info.corp_id, info.company_id)
+            return encode_acq_select_fi_buy()
 
     elif phase == DPHASE_ACQ_OFFER:
         if info.action_type == ACTION_PASS:
@@ -222,7 +236,7 @@ cdef ActionInfo decode_action(int phase_id, int action_id) noexcept nogil:
     populated; fields that don't apply for the action type are set to -1.
     """
     cdef ActionInfo info
-    cdef int idx, pair, k
+    cdef int idx
 
     info.phase = phase_id
     info.action_type = ACTION_PASS
@@ -258,19 +272,26 @@ cdef ActionInfo decode_action(int phase_id, int action_id) noexcept nogil:
             info.amount = action_id - 1
         return info
 
-    # --- ACQUISITION ------------------------------------------------------
-    if phase_id == DPHASE_ACQUISITION:
+    # --- ACQ_SELECT_CORP --------------------------------------------------
+    if phase_id == DPHASE_ACQ_SELECT_CORP:
         if action_id == 0:
             info.action_type = ACTION_PASS
-            return info
-        idx = action_id - 1
-        pair = idx // 52            # corp * 36 + company
-        k = idx % 52
-        info.corp_id = pair // 36
-        info.company_id = pair % 36
-        if k < 51:
+        else:
+            info.action_type = ACTION_ACQ_SELECT_CORP
+            info.corp_id = action_id - 1
+        return info
+
+    # --- ACQ_SELECT_COMPANY -----------------------------------------------
+    if phase_id == DPHASE_ACQ_SELECT_COMPANY:
+        info.action_type = ACTION_ACQ_SELECT_COMPANY
+        info.company_id = action_id
+        return info
+
+    # --- ACQ_SELECT_PRICE -------------------------------------------------
+    if phase_id == DPHASE_ACQ_SELECT_PRICE:
+        if action_id < 51:
             info.action_type = ACTION_ACQ_PRICE
-            info.amount = k
+            info.amount = action_id
         else:
             info.action_type = ACTION_ACQ_FI_BUY
         return info
@@ -545,114 +566,218 @@ cdef int _enumerate_bid(
     return count
 
 
-cdef int _enumerate_acquisition(
+cdef inline bint _acq_pair_has_legal_price(
+    GameState state, int corp_id, int company_id,
+    int player_id, int cash, bint same_pres,
+) noexcept nogil:
+    """Does ``(corp_id, company_id)`` admit at least one legal acquisition price?
+
+    Shared predicate for SELECT_CORP (as part of the any-target hoist) and
+    SELECT_COMPANY (per-company gate). Encodes the same legality as the
+    per-offset loop in SELECT_PRICE, collapsed to a boolean:
+
+      - LOC_FI:     corp can afford the fixed FI price (face_value for OS,
+                    high_price otherwise).
+      - LOC_CORP:   target isn't self-owned, seller isn't in receivership,
+                    seller retains >= 2 companies after sale, and under
+                    same-president gating the active player presides the
+                    seller. Affordability: ``cash >= low_price``.
+      - LOC_PLAYER: under same-president gating the seller is the active
+                    player. Affordability: ``cash >= low_price``.
+
+    All other locations (LOC_CORP_ACQ, LOC_DECK, LOC_AUCTION) are unreachable
+    as acquisition targets.
+    """
+    cdef int loc = company_location(state, company_id)
+    cdef int owner_id
+    cdef int price, low_price, high_price, max_offset
+
+    if loc == <int>LOC_FI:
+        if corp_id == <int>CorpIndices.CORP_OS:
+            price = COMPANY_FACE_VALUE[company_id]
+        else:
+            price = COMPANY_HIGH_PRICE[company_id]
+        return cash >= price
+    elif loc == <int>LOC_CORP:
+        owner_id = company_owner_id(state, company_id)
+        if owner_id == corp_id:
+            return False
+        if corp_is_in_receivership(state, owner_id):
+            return False
+        if same_pres and corp_president_id(state, owner_id) != player_id:
+            return False
+        if count_corp_companies(state, owner_id, True) <= 1:
+            return False
+        low_price = COMPANY_LOW_PRICE[company_id]
+        high_price = COMPANY_HIGH_PRICE[company_id]
+        max_offset = high_price - low_price
+        if cash - low_price < max_offset:
+            max_offset = cash - low_price
+        return max_offset >= 0
+    elif loc == <int>LOC_PLAYER:
+        owner_id = company_owner_id(state, company_id)
+        if same_pres and owner_id != player_id:
+            return False
+        low_price = COMPANY_LOW_PRICE[company_id]
+        high_price = COMPANY_HIGH_PRICE[company_id]
+        max_offset = high_price - low_price
+        if cash - low_price < max_offset:
+            max_offset = cash - low_price
+        return max_offset >= 0
+    return False
+
+
+cdef inline bint _corp_has_legal_target(
+    GameState state, int corp_id, int player_id, bint same_pres,
+) noexcept nogil:
+    """True iff ``corp_id`` has at least one legal acquisition target.
+
+    Hoisted out of SELECT_CORP to prevent SELECT_COMPANY from hitting the
+    zero-legal-actions assertion on a corp with no reachable target.
+    """
+    cdef int cash = corp_cash(state, corp_id)
+    cdef int company_id
+    if cash <= 0:
+        return False
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
+        if _acq_pair_has_legal_price(
+            state, corp_id, company_id, player_id, cash, same_pres,
+        ):
+            return True
+    return False
+
+
+cdef int _enumerate_acq_select_corp(
     GameState state, uint16_t* ids,
 ) noexcept nogil:
-    """Enumerate legal ACQUISITION actions for the current state.
+    """Emit every legal DPHASE_ACQ_SELECT_CORP action in deterministic order.
 
-    Emits player actions only: PASS + all legal (corp, company, price)
-    tuples for corps the active player presides over. Receivership forced
-    buys are automated inside ``phases/acquisition.pyx`` before control
-    reaches this enumerator.
+    Ordering:
+      1. ``id 0``: pass — decline to acquire this turn.
+      2. ``ids 1..8``: ``1 + corp_id``. Emitted for each active,
+         non-receivership corp the active player presides over that has
+         at least one legal (company, price) target.
 
-    When ``state.acq_same_president`` is True (default), corp-to-corp
-    requires the active player to preside over both buyer and seller, and
-    corp-to-player requires the active player to own the private. When
-    False, any affordable target is valid (cross-president targets go
-    through ACQ_OFFER in the handler).
+    The any-legal-target hoist (``_corp_has_legal_target``) is required:
+    without it, SELECT_COMPANY can be entered against a corp with zero
+    reachable targets and would hit the zero-legal-actions trip.
 
-    Ordering: PASS, then ascending corp_id, ascending company_id,
-    ascending price_offset / FI_BUY.
+    Returns the number of IDs written. Worst case: 9 (pass + 8 corps).
     """
     cdef int count = 0
-    cdef int CORP_OS = <int>CorpIndices.CORP_OS
-    cdef int NUM_CORPS = <int>GameConstants.NUM_CORPS
-    cdef int NUM_COMPANIES = <int>GameConstants.NUM_COMPANIES
-
-    ids[count] = 0  # PASS always legal
-    count += 1
-
     cdef int player_id = <int>state._data[
         LAYOUT.turn_offset + TURN_OFFSETS.active_player
     ]
     cdef bint same_pres = state.acq_same_president
-    cdef int corp_id, company_id, loc, owner_id, cash
-    cdef int low_price, high_price, max_offset, price_offset, price
+    cdef int corp_id
 
-    for corp_id in range(NUM_CORPS):
+    # --- id 0: pass (decline to acquire) ------------------------------------
+    ids[count] = 0
+    count += 1
+
+    # --- ids 1..8: corp-select ----------------------------------------------
+    for corp_id in range(<int>GameConstants.NUM_CORPS):
         if not corp_is_active(state, corp_id):
             continue
         if corp_is_in_receivership(state, corp_id):
             continue
         if corp_president_id(state, corp_id) != player_id:
             continue
-
-        cash = corp_cash(state, corp_id)
-        if cash <= 0:
+        if not _corp_has_legal_target(state, corp_id, player_id, same_pres):
             continue
+        _require_action_capacity(count, b"ACQ_SELECT_CORP")
+        ids[count] = <uint16_t>encode_acq_select_corp(corp_id)
+        count += 1
 
-        for company_id in range(NUM_COMPANIES):
-            loc = company_location(state, company_id)
+    return count
 
-            if loc == <int>LOC_FI:
-                # FI purchase: single fixed-price action
-                if corp_id == CORP_OS:
-                    price = COMPANY_FACE_VALUE[company_id]
-                else:
-                    price = COMPANY_HIGH_PRICE[company_id]
-                if cash >= price:
-                    _require_action_capacity(count, b"ACQUISITION_FI_BUY")
-                    ids[count] = <uint16_t>encode_acquisition_fi_buy(corp_id, company_id)
-                    count += 1
 
-            elif loc == <int>LOC_CORP:
-                owner_id = company_owner_id(state, company_id)
-                if owner_id == corp_id:
-                    continue  # Can't buy from yourself
-                if corp_is_in_receivership(state, owner_id):
-                    continue  # Receivership corps never sell companies
-                if same_pres:
-                    if corp_president_id(state, owner_id) != player_id:
-                        continue
-                # Seller must retain >= 1 company across owned + acquisition piles.
-                if count_corp_companies(state, owner_id, True) <= 1:
-                    continue
-                low_price = COMPANY_LOW_PRICE[company_id]
-                high_price = COMPANY_HIGH_PRICE[company_id]
-                max_offset = high_price - low_price
-                if cash - low_price < max_offset:
-                    max_offset = cash - low_price
-                if max_offset < 0:
-                    continue
-                if max_offset > 50:
-                    max_offset = 50  # Cap at action space width
-                for price_offset in range(max_offset + 1):
-                    _require_action_capacity(count, b"ACQUISITION_CORP_PRICE")
-                    ids[count] = <uint16_t>encode_acquisition_price(
-                        corp_id, company_id, price_offset)
-                    count += 1
+cdef int _enumerate_acq_select_company(
+    GameState state, uint16_t* ids,
+) noexcept nogil:
+    """Emit every legal DPHASE_ACQ_SELECT_COMPANY action in deterministic order.
 
-            elif loc == <int>LOC_PLAYER:
-                owner_id = company_owner_id(state, company_id)
-                if same_pres:
-                    if owner_id != player_id:
-                        continue
-                low_price = COMPANY_LOW_PRICE[company_id]
-                high_price = COMPANY_HIGH_PRICE[company_id]
-                max_offset = high_price - low_price
-                if cash - low_price < max_offset:
-                    max_offset = cash - low_price
-                if max_offset < 0:
-                    continue
-                if max_offset > 50:
-                    max_offset = 50
-                for price_offset in range(max_offset + 1):
-                    _require_action_capacity(count, b"ACQUISITION_PLAYER_PRICE")
-                    ids[count] = <uint16_t>encode_acquisition_price(
-                        corp_id, company_id, price_offset)
-                    count += 1
+    Ordering:
+      ``ids 0..35``: ``company_id``. Emitted for each company where
+      ``(active_corp, company_id)`` has at least one legal price (or FI_BUY)
+      under the current same-president gate. No pass — SELECT_CORP already
+      committed the player to picking a target.
 
-            # LOC_CORP_ACQ, LOC_DECK, LOC_AUCTION, etc. -> not acquirable
+    Returns the number of IDs written. Worst case: 36.
+    """
+    cdef int count = 0
+    cdef int player_id = <int>state._data[
+        LAYOUT.turn_offset + TURN_OFFSETS.active_player
+    ]
+    cdef int corp_id = <int>state._data[
+        LAYOUT.turn_offset + TURN_OFFSETS.active_corp
+    ]
+    assert corp_id >= 0, "_enumerate_acq_select_company: active_corp unset"
+
+    cdef bint same_pres = state.acq_same_president
+    cdef int cash = corp_cash(state, corp_id)
+    cdef int company_id
+
+    for company_id in range(<int>GameConstants.NUM_COMPANIES):
+        if not _acq_pair_has_legal_price(
+            state, corp_id, company_id, player_id, cash, same_pres,
+        ):
+            continue
+        _require_action_capacity(count, b"ACQ_SELECT_COMPANY")
+        ids[count] = <uint16_t>encode_acq_select_company(company_id)
+        count += 1
+
+    return count
+
+
+cdef int _enumerate_acq_select_price(
+    GameState state, uint16_t* ids,
+) noexcept nogil:
+    """Emit every legal DPHASE_ACQ_SELECT_PRICE action in deterministic order.
+
+    Ordering:
+      - LOC_FI target: single ``id 51`` (FI_BUY, fixed price).
+      - LOC_CORP / LOC_PLAYER target: ``ids 0..max_offset`` where
+        ``max_offset = min(high - low, cash - low, 50)``.
+
+    Trusts SELECT_COMPANY's filter: by the time we're here, the
+    (active_corp, active_company) pair has at least one legal price and
+    the seller-side ownership gates have been validated. Only the
+    per-offset affordability is recomputed.
+
+    Returns the number of IDs written. Worst case: 52 (51 offsets + FI_BUY).
+    """
+    cdef int count = 0
+    cdef int corp_id = <int>state._data[
+        LAYOUT.turn_offset + TURN_OFFSETS.active_corp
+    ]
+    cdef int company_id = <int>state._data[
+        LAYOUT.turn_offset + TURN_OFFSETS.active_company
+    ]
+    assert corp_id >= 0, "_enumerate_acq_select_price: active_corp unset"
+    assert company_id >= 0, "_enumerate_acq_select_price: active_company unset"
+
+    cdef int cash = corp_cash(state, corp_id)
+    cdef int loc = company_location(state, company_id)
+    cdef int low_price, high_price, max_offset, price_offset
+
+    if loc == <int>LOC_FI:
+        _require_action_capacity(count, b"ACQ_SELECT_PRICE_FI")
+        ids[count] = <uint16_t>encode_acq_select_fi_buy()
+        count += 1
+    else:
+        # LOC_CORP / LOC_PLAYER — emit affordable offsets.
+        low_price = COMPANY_LOW_PRICE[company_id]
+        high_price = COMPANY_HIGH_PRICE[company_id]
+        max_offset = high_price - low_price
+        if cash - low_price < max_offset:
+            max_offset = cash - low_price
+        if max_offset > 50:
+            max_offset = 50
+        for price_offset in range(max_offset + 1):
+            _require_action_capacity(count, b"ACQ_SELECT_PRICE")
+            ids[count] = <uint16_t>encode_acq_select_price(price_offset)
+            count += 1
 
     return count
 
@@ -901,8 +1026,12 @@ cdef int enumerate_legal_actions(
         count = _enumerate_invest(state, action_ids)
     elif phase_id == DPHASE_BID:
         count = _enumerate_bid(state, action_ids)
-    elif phase_id == DPHASE_ACQUISITION:
-        count = _enumerate_acquisition(state, action_ids)
+    elif phase_id == DPHASE_ACQ_SELECT_CORP:
+        count = _enumerate_acq_select_corp(state, action_ids)
+    elif phase_id == DPHASE_ACQ_SELECT_COMPANY:
+        count = _enumerate_acq_select_company(state, action_ids)
+    elif phase_id == DPHASE_ACQ_SELECT_PRICE:
+        count = _enumerate_acq_select_price(state, action_ids)
     elif phase_id == DPHASE_ACQ_OFFER:
         count = _enumerate_acq_offer(state, action_ids)
     elif phase_id == DPHASE_CLOSING:
@@ -994,6 +1123,8 @@ ACTION_DIVIDEND_PY = ACTION_DIVIDEND
 ACTION_ISSUE_PY = ACTION_ISSUE
 ACTION_IPO_PY = ACTION_IPO
 ACTION_PAR_PY = ACTION_PAR
+ACTION_ACQ_SELECT_CORP_PY = ACTION_ACQ_SELECT_CORP
+ACTION_ACQ_SELECT_COMPANY_PY = ACTION_ACQ_SELECT_COMPANY
 
 
 # =============================================================================
@@ -1009,7 +1140,9 @@ ACTION_PAR_PY = ACTION_PAR
 
 assert encode_invest_sell(7) == ACTION_SIZE_INVEST - 1
 assert encode_bid_raise(<int>AUCTION_CAP - 1) == ACTION_SIZE_BID - 1
-assert encode_acquisition_fi_buy(7, 35) == ACTION_SIZE_ACQUISITION - 1
+assert encode_acq_select_corp(7) == ACTION_SIZE_ACQ_SELECT_CORP - 1
+assert encode_acq_select_company(35) == ACTION_SIZE_ACQ_SELECT_COMPANY - 1
+assert encode_acq_select_fi_buy() == ACTION_SIZE_ACQ_SELECT_PRICE - 1
 assert 1 == ACTION_SIZE_ACQ_OFFER - 1
 assert encode_closing_close(35) == ACTION_SIZE_CLOSING - 1
 assert 25 == ACTION_SIZE_DIVIDENDS - 1

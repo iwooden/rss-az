@@ -167,10 +167,10 @@ Block size: **69**, fixed across player counts. Sub-offsets via `core.state.get_
 | Relative offset | Field | Size | Notes |
 |----------------|-------|------|-------|
 | 0  | active_player        | 1  | Canonical player_id |
-| 1  | active_corp          | 1  | Active corp for ISSUE / DIVIDENDS / ACQ_OFFER context, or `-1`. **Unused during ACQUISITION** — that phase picks corps directly from the masked action space, so this slot stays at `-1`. |
-| 2  | active_company       | 1  | Active company for BID / IPO / ACQ_OFFER context, or `-1`. **Unused during ACQUISITION and CLOSING** — those phases pick companies directly from the masked action space, so this slot stays at `-1`. |
+| 1  | active_corp          | 1  | Active corp for ISSUE / DIVIDENDS / ACQ_OFFER / ACQ_SELECT_COMPANY / ACQ_SELECT_PRICE / PAR context, or `-1`. **Unused during ACQ_SELECT_CORP and CLOSING** — ACQ_SELECT_CORP is the entry point and hasn't picked a corp yet; CLOSING picks the company directly from the masked action space. |
+| 2  | active_company       | 1  | Active company for BID / IPO / ACQ_OFFER / ACQ_SELECT_PRICE context, or `-1`. **Unused during ACQ_SELECT_CORP, ACQ_SELECT_COMPANY, and CLOSING** — those phases pick the target from the masked action space rather than reading it off the turn block. |
 | 3  | num_players          | 1  | 2–6, seeded in `__cinit__` |
-| 4  | phase                | 1  | 0–11, see [Phase enum](#phase-enum) |
+| 4  | phase                | 1  | 0–14, see [Phase enum](#phase-enum) |
 | 5  | coo_level            | 1  | 1–7 |
 | 6  | turn_number          | 1  | 1+ |
 | 7  | end_card_flipped     | 1  | flag |
@@ -187,7 +187,7 @@ Block size: **69**, fixed across player counts. Sub-offsets via `core.state.get_
 
 Internal slots at relative offsets `67` and `68` hold the player-finance (`player_cache_dirty`) and corp-derived (`corp_cache_dirty`) dirty masks used by the lazy cache system. These offsets exist in `TURN_OFFSETS` for Cython code but are intentionally omitted from the Python `TurnFields` namedtuple.
 
-There is no dedicated `auction_company` slot — the generic `active_company` selector at offset 2 carries that role during BID, and likewise covers the active-company context for IPO and ACQ_OFFER. It is **not** used during ACQUISITION or CLOSING: the old per-phase offer buffers are gone, and those phases now pick the target company directly from the masked action space, so both `active_corp` and `active_company` sit at `-1` throughout them. ACQ_OFFER reuses the same selectors for FI-priority resolution: `active_corp` = the preempting corp being offered the FI-owned company, `active_company` = the contested FI company, and `active_player` = that corp's president. No new per-phase fields (`closing_company` / `dividend_corp` / `issue_corp` / `ipo_company`) are needed — the generic selectors plus the per-phase remaining bitmasks already in the turn block cover every phase. The per-player `has_passed` flag used to live in the turn block as an auction-specific array; it now lives in the player block, so the turn block is fully fixed-size.
+There is no dedicated `auction_company` slot — the generic `active_company` selector at offset 2 carries that role during BID, and likewise covers the active-company context for IPO, ACQ_SELECT_PRICE, and ACQ_OFFER. It is **not** used during ACQ_SELECT_CORP, ACQ_SELECT_COMPANY, or CLOSING: the old joint-ACQ offer buffer is gone, and those phases pick corp / company / close target directly from the masked action space. The three ACQ sub-phases walk the selectors forward: ACQ_SELECT_CORP sits with both at `-1`, ACQ_SELECT_COMPANY sets `active_corp` to the chosen corp, and ACQ_SELECT_PRICE enters with both `active_corp` and `active_company` pointing at the chosen pair (the final handler clears both on resolution). IPO/PAR follow the same pattern: IPO enters with `active_corp = -1`, PAR reads `active_corp` from the previous IPO selection. ACQ_OFFER reuses the same selectors for FI-priority resolution: `active_corp` = the preempting corp being offered the FI-owned company, `active_company` = the contested FI company, and `active_player` = that corp's president. No new per-phase fields (`closing_company` / `dividend_corp` / `issue_corp` / `ipo_company`) are needed — the generic selectors plus the per-phase remaining bitmasks already in the turn block cover every phase. The per-player `has_passed` flag used to live in the turn block as an auction-specific array; it now lives in the player block, so the turn block is fully fixed-size.
 
 ---
 
@@ -232,24 +232,29 @@ Stored as a raw integer at `LAYOUT.turn_offset + TURN_OFFSETS.phase`. Defined in
 
 | Value | Name | Notes |
 |-------|------|-------|
-| 0  | PHASE_INVEST         | Buy/sell shares, start auctions |
-| 1  | PHASE_BID | Bidding for a company |
-| 2  | PHASE_WRAP_UP        | Automated: FI buys companies at face value |
-| 3  | PHASE_ACQUISITION    | Corps acquiring companies |
-| 4  | PHASE_ACQ_OFFER      | FI preemption sub-phase (higher-priority corps get first shot) |
-| 5  | PHASE_CLOSING        | Player-owned companies closing |
-| 6  | PHASE_INCOME         | Automated: income payouts |
-| 7  | PHASE_DIVIDENDS      | Dividend declaration |
-| 8  | PHASE_END_CARD       | Automated: game end card trigger |
-| 9  | PHASE_ISSUE_SHARES   | Corp issuing a share |
-| 10 | PHASE_IPO            | Select corp charter + par price in one action |
-| 11 | PHASE_GAME_OVER      | Terminal state |
+| 0  | PHASE_INVEST               | Buy/sell shares, start auctions |
+| 1  | PHASE_BID                  | Bidding for a company |
+| 2  | PHASE_WRAP_UP              | Automated: FI buys companies at face value |
+| 3  | PHASE_ACQ_SELECT_CORP      | First ACQ sub-phase: pick the acquiring corp (or pass) |
+| 4  | PHASE_ACQ_OFFER            | FI preemption sub-phase (higher-priority corps get first shot) |
+| 5  | PHASE_CLOSING              | Player-owned companies closing |
+| 6  | PHASE_INCOME               | Automated: income payouts |
+| 7  | PHASE_DIVIDENDS            | Dividend declaration |
+| 8  | PHASE_END_CARD             | Automated: game end card trigger |
+| 9  | PHASE_ISSUE_SHARES         | Corp issuing a share |
+| 10 | PHASE_IPO                  | First IPO sub-phase: pick the corp to float (or pass) |
+| 11 | PHASE_GAME_OVER            | Terminal state |
+| 12 | PHASE_PAR                  | Second IPO sub-phase: pick the par price for the corp chosen in IPO |
+| 13 | PHASE_ACQ_SELECT_COMPANY   | Second ACQ sub-phase: pick the target company |
+| 14 | PHASE_ACQ_SELECT_PRICE     | Third ACQ sub-phase: pick the price offset (or FI_BUY) |
 
-**PAR is gone.** The old separate `PHASE_PAR` is merged into `PHASE_IPO`: each IPO decision picks `(corp, par_index)` in a single action.
+**IPO is split into IPO → PAR.** Each IPO decision picks a corp, then the PAR sub-phase picks a par price for that corp. There is no pass in PAR — committing to IPO locks the player into a par selection.
 
-**`PHASE_ACQ_OFFER` is the FI-priority resolution phase.** It is a first-class engine phase, not a hidden sub-state of ACQUISITION. The engine enters ACQ_OFFER whenever a player or receivership corp attempts to acquire an FI-owned company AND one or more higher-priority corps exist (OS has absolute priority at face value; remaining corps ordered by descending share price at high value). Each higher-priority corp is offered, in turn, a 2-action `{pass, buy}` choice; once all decline, control returns to the original ACQUISITION acquirer. The turn block's existing `active_corp` / `active_company` / `active_player` selectors carry the preempting corp, the contested FI company, and that corp's president for the duration.
+**ACQUISITION is split into three sub-phases.** The joint `(corp, company, offset)` head is gone. Instead, ACQ_SELECT_CORP picks the acquiring corp (or passes, ending the ACQ sequence), ACQ_SELECT_COMPANY picks the target company under `active_corp`, and ACQ_SELECT_PRICE picks the 51-price offset or FI_BUY under `active_corp` / `active_company`. The two trailing sub-phases have no pass — SELECT_CORP commits the player to finishing the sequence. Enum values for the two new phases are appended at the end (13, 14) rather than inserted mid-range to keep the existing numeric contract stable; `ENGINE_TO_DECISION_PHASE` and tests hard-code numeric values.
 
-**No per-phase offer-buffer bookkeeping.** The old ACQUISITION and CLOSING offer buffers (pre-sorted one-by-one presentation) are gone. ACQUISITION picks `(corp, company, offset)` directly from the masked action space; CLOSING picks a company directly. This means ACQUISITION has no "active" corp or company — both turn slots sit at `-1` during that phase. The old engine used careful offer ordering to implement FI priority; the new engine replaces that with explicit `PHASE_ACQ_OFFER` transitions.
+**`PHASE_ACQ_OFFER` is the FI-priority resolution phase.** It is a first-class engine phase, not a hidden sub-state of ACQUISITION. The engine enters ACQ_OFFER whenever a player or receivership corp attempts to acquire an FI-owned company AND one or more higher-priority corps exist (OS has absolute priority at face value; remaining corps ordered by descending share price at high value). Each higher-priority corp is offered, in turn, a 2-action `{pass, buy}` choice; once all decline, control returns to the original ACQ sequence. The turn block's existing `active_corp` / `active_company` / `active_player` selectors carry the preempting corp, the contested FI company, and that corp's president for the duration.
+
+**No per-phase offer-buffer bookkeeping.** The old joint-ACQUISITION and CLOSING offer buffers (pre-sorted one-by-one presentation) are gone. CLOSING picks a company directly from the masked action space. The ACQ sub-phases walk the turn-block selectors forward: SELECT_CORP enters with both slots at `-1`, SELECT_COMPANY reads `active_corp` and leaves `active_company` at `-1`, SELECT_PRICE reads both, and the final handler clears both on resolution. The old engine used careful offer ordering to implement FI priority; the new engine replaces that with explicit `PHASE_ACQ_OFFER` transitions.
 
 ---
 
@@ -259,7 +264,7 @@ Stored as a raw integer at `LAYOUT.turn_offset + TURN_OFFSETS.phase`. Defined in
 |-------|-----------|----------|
 | INVEST            | `consecutive_passes` counter | turn block (slot 8) |
 | BID    | per-player `has_passed` flag | player block (slot 29) |
-| CLOSING / ACQUISITION / IPO / ISSUE | per-phase, handled by the decision-phase enumeration + pass action | engine, not a dedicated state slot |
+| CLOSING / ACQ_SELECT_CORP / IPO / ISSUE | per-phase, handled by the decision-phase enumeration + pass action | engine, not a dedicated state slot |
 
 ---
 
@@ -283,20 +288,23 @@ The old global dense `action_dim` vector is gone. The new action space is **per-
 
 ### Decision phases
 
-The engine has 12 `GamePhases`; the model only sees the 8 decision phases where a real choice is needed. The `DecisionPhase` `cpdef enum` lives in `core/data.pxd`, as does the `ENGINE_TO_DECISION_PHASE[12]` lookup table that maps each `GamePhases` value to its `DecisionPhase` (or `-1` for automated/terminal engine phases: `WRAP_UP`, `INCOME`, `END_CARD`, `GAME_OVER`). `get_decision_phase(state)` in `core/actions.pyx` is the nogil helper that reads the engine phase from state and indexes that table.
+The engine has 15 `GamePhases`; the model only sees the 11 decision phases where a real choice is needed. The `DecisionPhase` `cpdef enum` lives in `core/data.pxd`, as does the `ENGINE_TO_DECISION_PHASE[15]` lookup table that maps each `GamePhases` value to its `DecisionPhase` (or `-1` for automated/terminal engine phases: `WRAP_UP`, `INCOME`, `END_CARD`, `GAME_OVER`). `get_decision_phase(state)` in `core/actions.pyx` is the nogil helper that reads the engine phase from state and indexes that table.
 
-| DecisionPhase       | ID | Action count | Layout |
-|---------------------|----|-------------:|--------|
-| `DPHASE_INVEST`     | 0  | 53    | 1 pass + 36 company-select + 8×2 trade (buy/sell) |
-| `DPHASE_BID`        | 1  | 16    | 1 pass (= leave auction, illegal on opening bid) + AUCTION_CAP (15) bid offsets |
-| `DPHASE_ACQUISITION`| 2  | 14977 | 1 pass + 8×36×52 corp × company × {51 price offsets + FI_BUY} |
-| `DPHASE_ACQ_OFFER`  | 3  | 2     | pass + buy (FI preemption) |
-| `DPHASE_CLOSING`    | 4  | 37    | 1 pass + 36 per-company close |
-| `DPHASE_DIVIDENDS`  | 5  | 26    | dividend amounts 0–25 |
-| `DPHASE_ISSUE`      | 6  | 2     | pass + issue |
-| `DPHASE_IPO`        | 7  | 113   | 1 pass + 8×14 corp × par index (merged IPO+PAR) |
+| DecisionPhase                | ID | Action count | Layout |
+|------------------------------|----|-------------:|--------|
+| `DPHASE_INVEST`              | 0  | 53  | 1 pass + 36 company-select + 8×2 trade (buy/sell) |
+| `DPHASE_BID`                 | 1  | 16  | 1 pass (= leave auction, illegal on opening bid) + AUCTION_CAP (15) bid offsets |
+| `DPHASE_ACQ_SELECT_CORP`     | 2  | 9   | 1 pass + 8 per-corp select |
+| `DPHASE_ACQ_OFFER`           | 3  | 2   | pass + buy (FI preemption) |
+| `DPHASE_CLOSING`             | 4  | 37  | 1 pass + 36 per-company close |
+| `DPHASE_DIVIDENDS`           | 5  | 26  | dividend amounts 0–25 |
+| `DPHASE_ISSUE`               | 6  | 2   | pass + issue |
+| `DPHASE_IPO`                 | 7  | 9   | 1 pass + 8 per-corp select (par chosen in `DPHASE_PAR`) |
+| `DPHASE_PAR`                 | 8  | 14  | 14 par indices (no pass; IPO committed the player) |
+| `DPHASE_ACQ_SELECT_COMPANY`  | 9  | 36  | 36 per-company select under `active_corp` (no pass) |
+| `DPHASE_ACQ_SELECT_PRICE`    | 10 | 52  | 51 price offsets + FI_BUY under `active_corp` / `active_company` (no pass) |
 
-Max action id fits comfortably in `uint16`. `MAX_ACTION_SIZE = 14977` (ACQUISITION). The sparse legal-action buffer width is `MAX_LEGAL_ACTIONS = 256`; any enumeration that exceeds this is a bug and `enumerate_legal_actions` asserts on overflow.
+Max action id fits comfortably in `uint16`. `MAX_ACTION_SIZE = 53` (INVEST). The sparse legal-action buffer width is `MAX_LEGAL_ACTIONS`; any enumeration that exceeds this is a bug and `enumerate_legal_actions` aborts on overflow.
 
 ### Encode / decode contract
 
@@ -315,11 +323,16 @@ BID:
   0                                    = leave auction (pass-class action, illegal on opening bid)
   1 + bid_offset                       = bid face_value + bid_offset (bid_offset ∈ [0, AUCTION_CAP))
 
-ACQUISITION:
-  0                                    = pass
-  1 + (corp_id*36 + company_id)*52 + k = acquire (corp, company) at:
-                                           k < 51  → low_price + k  (normal)
-                                           k == 51 → FI_BUY (special price)
+ACQ_SELECT_CORP:
+  0                                    = pass (ends the whole ACQ sequence)
+  1 + corp_id                          = select corp_id as the acquiring corp
+
+ACQ_SELECT_COMPANY:
+  company_id                           = select company_id as the target (no pass)
+
+ACQ_SELECT_PRICE:
+  k < 51                               → acquire (active_corp, active_company) at low_price + k
+  k == 51                              → FI_BUY (fixed price: OS=face, others=high)
 
 ACQ_OFFER:
   0 = pass
@@ -337,8 +350,11 @@ ISSUE:
   1 = issue one share
 
 IPO:
-  0                              = pass
-  1 + corp_id*14 + par_index     = start corp at par price ALL_PAR_PRICES[par_index]
+  0         = pass
+  1 + corp_id = select corp_id to float (par index chosen in PAR)
+
+PAR:
+  par_index = start active_corp at ALL_PAR_PRICES[par_index] (no pass)
 ```
 
 ### Sparse legal-action interface
@@ -353,8 +369,8 @@ Python-accessible wrappers (for tests + diagnostics):
 |----------|---------|
 | `get_phase_action_size(phase_id)` | Per-phase action count from `core.data.PHASE_ACTION_SIZES` |
 | `decode_action_py(phase_id, action_id)` | Tuple `(phase, action_type, corp_id, company_id, amount)` |
-| `get_decision_phase_py(state)` | Decision-phase id (0-7) or `-1` for automated/terminal engine phases |
-| `enumerate_legal_actions_py(state, action_ids)` | Number of legal actions written into the caller-provided `uint16` ndarray (which must hold ≥ `MAX_LEGAL_ACTIONS = 256` slots) |
+| `get_decision_phase_py(state)` | Decision-phase id (0-10) or `-1` for automated/terminal engine phases |
+| `enumerate_legal_actions_py(state, action_ids)` | Number of legal actions written into the caller-provided `uint16` ndarray (which must hold ≥ `MAX_LEGAL_ACTIONS` slots) |
 
 ### ActionType enum (decoded semantics)
 
@@ -362,18 +378,21 @@ Python-accessible wrappers (for tests + diagnostics):
 
 | Value | Type | Used by | Meaning |
 |-------|------|---------|---------|
-| 0  | `ACTION_PASS`          | INVEST, BID, ACQUISITION, ACQ_OFFER, CLOSING, ISSUE, IPO | Universal pass/opt-out. In BID this means "leave the auction". |
-| 1  | `ACTION_AUCTION`       | INVEST     | Select `company_id` to put up for auction; price is chosen in BID (`amount` unused) |
-| 2  | `ACTION_BUY_SHARE`     | INVEST     | Buy share in `corp_id` |
-| 3  | `ACTION_SELL_SHARE`    | INVEST     | Sell share in `corp_id` |
-| 4  | `ACTION_RAISE`         | BID        | Bid `face_value + amount` (amount ∈ [0, `AUCTION_CAP`)); opening bid allows any offset ≥ 0, subsequent bids must strictly exceed current |
-| 5  | `ACTION_ACQ_PRICE`     | ACQUISITION| `corp_id` acquires `company_id` at low_price + `amount` |
-| 6  | `ACTION_ACQ_FI_BUY`    | ACQUISITION| `corp_id` buys `company_id` from FI at fixed price (OS=face, others=high) |
-| 7  | `ACTION_ACQ_OFFER_ACCEPT` | ACQ_OFFER  | Preempting corp / contested owner accepts the offered acquisition |
-| 8  | `ACTION_CLOSE`         | CLOSING    | Close `company_id` |
-| 9  | `ACTION_DIVIDEND`      | DIVIDENDS  | Pay dividend of `amount` per share |
-| 10 | `ACTION_ISSUE`         | ISSUE      | Issue one share |
-| 11 | `ACTION_IPO`           | IPO        | Start `corp_id` at par price `ALL_PAR_PRICES[amount]` |
+| 0  | `ACTION_PASS`              | INVEST, BID, ACQ_SELECT_CORP, ACQ_OFFER, CLOSING, ISSUE, IPO | Universal pass/opt-out. In BID this means "leave the auction"; in ACQ_SELECT_CORP and IPO it ends the whole sub-phase sequence. |
+| 1  | `ACTION_AUCTION`           | INVEST              | Select `company_id` to put up for auction; price is chosen in BID (`amount` unused) |
+| 2  | `ACTION_BUY_SHARE`         | INVEST              | Buy share in `corp_id` |
+| 3  | `ACTION_SELL_SHARE`        | INVEST              | Sell share in `corp_id` |
+| 4  | `ACTION_RAISE`             | BID                 | Bid `face_value + amount` (amount ∈ [0, `AUCTION_CAP`)); opening bid allows any offset ≥ 0, subsequent bids must strictly exceed current |
+| 5  | `ACTION_ACQ_PRICE`         | ACQ_SELECT_PRICE    | Acquire `active_company` by `active_corp` at low_price + `amount` |
+| 6  | `ACTION_ACQ_FI_BUY`        | ACQ_SELECT_PRICE    | `active_corp` buys `active_company` from FI at fixed price (OS=face, others=high) |
+| 7  | `ACTION_ACQ_OFFER_ACCEPT`  | ACQ_OFFER           | Preempting corp / contested owner accepts the offered acquisition |
+| 8  | `ACTION_CLOSE`             | CLOSING             | Close `company_id` |
+| 9  | `ACTION_DIVIDEND`          | DIVIDENDS           | Pay dividend of `amount` per share |
+| 10 | `ACTION_ISSUE`             | ISSUE               | Issue one share |
+| 11 | `ACTION_IPO`               | IPO                 | Select `corp_id` to float (par index chosen in PAR) |
+| 12 | `ACTION_PAR`               | PAR                 | Start `active_corp` at par price `ALL_PAR_PRICES[amount]` |
+| 13 | `ACTION_ACQ_SELECT_CORP`   | ACQ_SELECT_CORP     | Select `corp_id` as the acquiring corp |
+| 14 | `ACTION_ACQ_SELECT_COMPANY`| ACQ_SELECT_COMPANY  | Select `company_id` as the target of the pending acquisition |
 
 ---
 
@@ -411,8 +430,8 @@ print(pf.cash, pf.has_passed)     # 0 29
 print(PLAYERS[0].get_cash(state))
 
 # Per-phase action space
-print(PHASE_ACTION_SIZES)             # [557, 15, 14977, 2, 37, 26, 2, 113]
-print(get_phase_action_size(2))       # 14977 (ACQUISITION)
+print(PHASE_ACTION_SIZES)             # [53, 16, 9, 2, 37, 26, 2, 9, 14, 36, 52]
+print(get_phase_action_size(2))       # 9 (ACQ_SELECT_CORP)
 print(decode_action_py(0, 0))         # (0, 0, -1, -1, -1) — INVEST pass
 
 # Sparse legal actions: caller supplies a uint16 buffer of at least

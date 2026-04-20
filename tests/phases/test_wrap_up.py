@@ -4,14 +4,14 @@ Covers: player reorder by descending cash (tiebreak on ascending old turn
 order), consecutive-pass counter clear, Foreign Investor face-value purchase
 loop (cheapest-affordable iteration, replacement draws, empty-deck draw,
 CoO-tier crossing), LOC_REVEALED → LOC_AUCTION promotion (including drawn
-replacements), and transition to PHASE_ACQUISITION.
+replacements), and transition to PHASE_ACQ_SELECT_CORP.
 
 WRAP_UP is automated — tests invoke ``apply_wrap_up_py`` directly rather than
 routing through the driver. See ``auto-phases.md`` for the rationale.
 """
 import pytest
 
-from core.data import GamePhases, GameConstants
+from core.data import GamePhases
 from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.company import COMPANIES, CompanyLocation
@@ -34,7 +34,7 @@ from tests.phases.helpers.ownership import ids_at_location
 # =============================================================================
 
 PHASE_WRAP_UP = int(GamePhases.PHASE_WRAP_UP)
-PHASE_ACQUISITION = int(GamePhases.PHASE_ACQUISITION)
+PHASE_ACQ_SELECT_CORP = int(GamePhases.PHASE_ACQ_SELECT_CORP)
 
 LOC_DECK = int(CompanyLocation.LOC_DECK)
 LOC_AUCTION = int(CompanyLocation.LOC_AUCTION)
@@ -329,7 +329,7 @@ class TestRevealedToAuction:
 # =============================================================================
 
 class TestTransition:
-    """WRAP_UP step 5: hand off to PHASE_ACQUISITION with its setup run."""
+    """WRAP_UP step 5: hand off to PHASE_ACQ_SELECT_CORP with its setup run."""
 
     def test_transitions_to_acquisition(self):
         """Phase enum flips to ACQUISITION when an active corp exists."""
@@ -340,7 +340,7 @@ class TestTransition:
 
         apply_wrap_up_py(state)
 
-        assert_post_auto(state, PHASE_ACQUISITION)
+        assert_post_auto(state, PHASE_ACQ_SELECT_CORP)
 
     def test_acquisition_setup_ran(self):
         """setup_acquisition_phase ran: active_player is the corp's president."""

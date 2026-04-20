@@ -13,8 +13,8 @@ import pytest
 from core.actions import (
     ACTION_PASS_PY as ACTION_PASS,
     ACTION_ACQ_OFFER_ACCEPT_PY as ACTION_ACQ_OFFER_ACCEPT,
-    ACTION_ACQ_FI_BUY_PY as ACTION_ACQ_FI_BUY,
     ACTION_ACQ_PRICE_PY as ACTION_ACQ_PRICE,
+    ACTION_ACQ_SELECT_CORP_PY as ACTION_ACQ_SELECT_CORP,
 )
 from core.data import GamePhases, CorpIndices
 from core.state import GameState
@@ -23,7 +23,7 @@ from entities.player import PLAYERS
 from entities.corp import CORPS
 from entities.company import COMPANIES, CompanyLocation
 from entities.fi import FI
-from phases.acquisition import setup_acquisition_phase_py
+from phases.acq_select_corp import setup_acquisition_phase_py
 
 from tests.phases.conftest import (
     apply_and_verify,
@@ -392,7 +392,6 @@ class TestFiPreemptionPass:
         original_corp = 5
         setup_receivership_corp(game_state, corp_id=original_corp, company_ids=[recv_co], par_index=10)
         CORPS[original_corp].set_cash(game_state, COMPANIES[fi_co].get_high_price())
-        fi_cash_before = FI.get_cash(game_state)
 
         price = COMPANIES[fi_co].get_high_price()
         _enter_acq_offer_direct(
@@ -564,7 +563,7 @@ class TestCrossPresidentAccept:
         assert CORPS[1].get_cash(state) == buyer_cash_before - price
         # Proceeds accumulate (flushed at end of ACQUISITION, not per-action)
         phase = TURN.get_phase(state)
-        if phase == int(GamePhases.PHASE_ACQUISITION):
+        if phase == int(GamePhases.PHASE_ACQ_SELECT_CORP):
             assert CORPS[0].get_acquisition_proceeds(state) == seller_proceeds_before + price
 
     def test_corp_to_player_accept_transfers_cash(self):
@@ -685,7 +684,7 @@ class TestCrossPresidentDecline:
         pass_id = find_legal_action(state, action_type=ACTION_PASS)
         apply_and_verify(state, pass_id)
 
-        assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQUISITION)
+        assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_SELECT_CORP)
         assert TURN.get_active_player(state) == 0
         assert TURN.get_active_corp(state) == -1
         _assert_offer_context_cleared(state)
@@ -721,11 +720,16 @@ class TestCrossPresidentDecline:
 # =============================================================================
 
 class TestIntegrationFiPreemption:
-    """Test ACQ_OFFER entered via FI_BUY preemption in ACQUISITION."""
+    """Test ACQ_OFFER entered via FI_BUY preemption in the SELECT_CORP flow."""
 
     @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
     def test_fi_buy_triggers_preemption_and_accept_resolves(self, game_state):
-        """FI buy by lower-priority corp triggers offer to higher-priority corp."""
+        """FI buy by lower-priority corp triggers offer to higher-priority corp.
+
+        Under the split: SELECT_CORP(3) → auto-chains SELECT_COMPANY (fi_co is
+        corp 3's only legal target) → SELECT_PRICE (FI_BUY is the only offset) →
+        preemption triggers ACQ_OFFER for corp 4's president.
+        """
         fi_co = 10
         give_company_to_fi(game_state, fi_co)
 
@@ -739,14 +743,15 @@ class TestIntegrationFiPreemption:
 
         setup_acquisition_phase_py(game_state)
 
-        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_ACQUISITION)
+        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_ACQ_SELECT_CORP)
         assert TURN.get_active_player(game_state) == 1
 
-        fi_buy_id = find_legal_action(
-            game_state, action_type=ACTION_ACQ_FI_BUY, corp_id=3, company_id=fi_co,
+        select_corp_id = find_legal_action(
+            game_state, action_type=ACTION_ACQ_SELECT_CORP, corp_id=3,
         )
-        apply_and_verify(game_state, fi_buy_id)
+        apply_and_verify(game_state, select_corp_id)
 
+        # SELECT_COMPANY / SELECT_PRICE each had 1 legal action → auto-chained.
         assert TURN.get_phase(game_state) == int(GamePhases.PHASE_ACQ_OFFER)
         assert TURN.get_active_player(game_state) == 2
         assert TURN.get_active_corp(game_state) == 4
@@ -763,7 +768,7 @@ class TestIntegrationFiPreemption:
 
 
 class TestIntegrationCrossPresident:
-    """Test ACQ_OFFER entered via cross-president ACQ_PRICE in ACQUISITION."""
+    """Test ACQ_OFFER entered via cross-president ACQ_PRICE through the split flow."""
 
     @staticmethod
     def _make_state(num_players):
@@ -772,60 +777,68 @@ class TestIntegrationCrossPresident:
         return state
 
     def test_cross_president_full_flow_accept(self):
-        """Full flow: cross-president acquisition -> ACQ_OFFER -> accept."""
+        """Full flow: SELECT_CORP → SELECT_COMPANY → SELECT_PRICE → ACQ_OFFER → accept."""
         state = self._make_state(3)
 
         private_co = draw_to_player(state, 1)
 
         float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
-        CORPS[0].set_cash(state, 200)
+        CORPS[0].set_cash(state, 10_000)
 
         setup_acquisition_phase_py(state)
 
         player_cash_before = PLAYERS[1].get_cash(state)
 
+        # SELECT_CORP(0) — only 1 target (private_co) so SELECT_COMPANY auto-chains.
+        select_corp_id = find_legal_action(
+            state, action_type=ACTION_ACQ_SELECT_CORP, corp_id=0,
+        )
+        apply_and_verify(state, select_corp_id)
+
+        # Land in SELECT_PRICE with multiple offsets thanks to generous cash.
+        assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_SELECT_PRICE)
+
         acq_id, info = find_legal_action_with_info(
-            state, action_type=ACTION_ACQ_PRICE, corp_id=0, company_id=private_co,
+            state, action_type=ACTION_ACQ_PRICE, amount=2,
         )
         price = COMPANIES[private_co].get_low_price() + info.amount
-
         apply_and_verify(state, acq_id)
 
-        # Should be in ACQ_OFFER with player 1 deciding
         assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_OFFER)
         assert TURN.get_active_player(state) == 1
 
-        # Player 1 accepts
         accept_id = find_legal_action(state, action_type=ACTION_ACQ_OFFER_ACCEPT)
         apply_and_verify(state, accept_id)
 
-        # Company transferred, player got paid
         loc = COMPANIES[private_co].get_location(state)
         assert loc in (int(CompanyLocation.LOC_CORP_ACQ), int(CompanyLocation.LOC_CORP))
         assert COMPANIES[private_co].get_owner_id(state) == 0
         assert PLAYERS[1].get_cash(state) == player_cash_before + price
 
     def test_cross_president_full_flow_decline(self):
-        """Full flow: cross-president acquisition -> ACQ_OFFER -> decline."""
+        """Full flow: SELECT_CORP → ... → ACQ_OFFER → decline."""
         state = self._make_state(3)
 
         private_co = draw_to_player(state, 1)
 
         float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
-        CORPS[0].set_cash(state, 200)
+        CORPS[0].set_cash(state, 10_000)
 
         setup_acquisition_phase_py(state)
 
         corp_cash_before = CORPS[0].get_cash(state)
 
-        acq_id = find_legal_action(
-            state, action_type=ACTION_ACQ_PRICE, corp_id=0, company_id=private_co,
+        select_corp_id = find_legal_action(
+            state, action_type=ACTION_ACQ_SELECT_CORP, corp_id=0,
         )
+        apply_and_verify(state, select_corp_id)
+        assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_SELECT_PRICE)
+
+        acq_id = find_legal_action(state, action_type=ACTION_ACQ_PRICE, amount=1)
         apply_and_verify(state, acq_id)
 
         assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_OFFER)
 
-        # Player 1 declines
         pass_id = find_legal_action(state, action_type=ACTION_PASS)
         apply_and_verify(state, pass_id)
 

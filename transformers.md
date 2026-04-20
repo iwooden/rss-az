@@ -29,15 +29,16 @@ The authoritative per-token feature spec is in `token-data.md`. The table below 
 | Company | 36 | identity, active company flag, location flags, ownership (corp/player/FI), adjusted income, static data (prices, stars, base income), 36-dim synergy |
 | FI | 1 | cash, income, owned companies (36) |
 | Market | 1 | 27 availability flags |
-| Global | 1 | num players (3-slot one-hot), phase (8-slot one-hot), CoO (7-slot one-hot), end-card flipped, cards remaining |
+| Global | 1 | num players (3-slot one-hot), phase (11-slot one-hot), CoO (7-slot one-hot), end-card flipped, cards remaining |
 | Invest | 1 | consecutive passes, buy/sell share price impacts per corp (8+8). Zeroed outside INVEST. |
 | Auction | 1 | price index+value, high bidder (5-slot), starter (5-slot). Zeroed outside BID. |
 | Dividend | 1 | 26 dividend-amount price impacts, dividend remaining (8 corp flags). Zeroed outside DIVIDENDS. |
 | Issue | 1 | price impact, issue remaining (8 corp flags). Zeroed outside ISSUE. |
-| PAR | 1 | per-par player cost (14), corp cash (14), issued shares (14). Zeroed outside IPO. |
+| PAR | 1 | per-par player cost (14), corp cash (14), issued shares (14). Zeroed outside IPO / PAR. |
 | Acq Offer | 1 | offer price index+value, offer corp (8-slot), FI-company flag. Zeroed outside ACQ_OFFER. |
+| Acq Price Info | 1 | active corp (8-slot), active company (36-slot), cash-affordable / star-affordable flags. Zeroed outside ACQ_SELECT_PRICE. |
 
-**Input buffer total: 53 + N tokens** (56 for 3p, 57 for 4p, 58 for 5p). The trunk sequence is 7 wider because the model concatenates 7 learned per-phase pass anchors after projection — see *Per-phase pass anchors* below.
+**Input buffer total: 54 + N tokens** (57 for 3p, 58 for 4p, 59 for 5p). The trunk sequence is 7 wider because the model concatenates 7 learned per-phase pass anchors after projection — see *Per-phase pass anchors* below.
 
 ### What disappears from the state vector
 
@@ -49,33 +50,34 @@ The current turn state has ~225 floats of context-dependent fields. Many exist b
 
 ### Phase-specific context tokens
 
-Six dedicated tokens carry phase-specific information that the model needs for decision-making, zeroed outside their respective phases. Some double as policy readout points. Full feature lists in `token-data.md`.
+Seven dedicated tokens carry phase-specific information that the model needs for decision-making, zeroed outside their respective phases. Some double as policy readout points. Full feature lists in `token-data.md`.
 
 - **Invest token**: consecutive passes, buy/sell share price impacts per corp. Context for INVEST.
 - **Auction token**: price index+value, high bidder, starter. Raises are read from this token during BID.
 - **Dividend token**: 26 dividend-amount price impacts, corp-remaining flags. Dividend amount logits are read directly from this token.
 - **Issue token**: price impact, corp-remaining flags. Issue logit is read from this token.
-- **PAR token**: per-par player cost, resulting corp cash, resulting issued shares. Context for IPO (IPO logits are read from corp tokens, PAR provides shared context through attention).
+- **PAR token**: per-par player cost, resulting corp cash, resulting issued shares. Context for IPO and PAR (IPO logits are read from corp tokens; PAR logits are read directly from this token, which also provides shared context through attention).
 - **Acq Offer token**: offer price index+value, offer corp, FI-company flag. Buy logit is read from this token during ACQ_OFFER.
+- **Acq Price Info token**: active-corp (8-slot), active-company (36-slot), cash- and star-affordability flags. 52 price logits (51 offsets + FI_BUY) are read directly from this token during ACQ_SELECT_PRICE; zeroed in every other phase.
 
 ### Per-phase pass anchors
 
-Seven learned `nn.Parameter` rows — one per pass-using decision phase (INVEST, BID, ACQUISITION, ACQ_OFFER, CLOSING, ISSUE, IPO; DIVIDENDS has no pass action). They have no input features, so they don't appear in the engine-side buffer — the model concatenates them to the projected trunk sequence inside `_project_tokens`. Each anchor rides the residual stream BERT `[CLS]`-style and picks up phase-dependent context through attention. The pass logit is read from the phase's own anchor via a single shared `pass_head`; per-phase specialization lives in the input anchors, not in the output head.
+Seven learned `nn.Parameter` rows — one per pass-using decision phase (INVEST, BID, ACQ_SELECT_CORP, ACQ_OFFER, CLOSING, ISSUE, IPO). DIVIDENDS, PAR, ACQ_SELECT_COMPANY, and ACQ_SELECT_PRICE have no pass action (once you commit to a corp / company / par price the sub-phase has to resolve). Anchors have no input features, so they don't appear in the engine-side buffer — the model concatenates them to the projected trunk sequence inside `_project_tokens`. Each anchor rides the residual stream BERT `[CLS]`-style and picks up phase-dependent context through attention. The pass logit is read from the phase's own anchor via a single shared `pass_head`; per-phase specialization lives in the input anchors, not in the output head.
 
 ## Transformer Architecture
 
-**Implementation: `nn/transformer.py`** (~2.3M params at default config)
+**Implementation: `nn/transformer.py`** (~2.39M params at default config)
 
 ```
-Input tokens (56 for 3p)
+Input tokens (57 for 3p)
     ↓
 Type-specific linear projections → d_model, then concat 7 per-phase pass anchors
     ↓
 L transformer blocks (pre-RMSNorm, multi-head self-attention + SwiGLU FFN)
     ↓
-Output token representations (63 × d_model for 3p)
+Output token representations (64 × d_model for 3p)
     ↓
-Entity-readout policy heads (+ full ACQUISITION pair head) + value head
+Entity-readout policy heads (11-phase dispatch) + value head
 ```
 
 ### Hyperparameters
@@ -86,7 +88,6 @@ Entity-readout policy heads (+ full ACQUISITION pair head) + value head
 | num_heads | 2 | Default in `TransformerConfig` |
 | num_layers | 10 | Enough depth for multi-hop reasoning |
 | ff_mult | 3.0 | SwiGLU FFN inner dim = ceil(ff_mult * d_model) |
-| acq_rank | 4 | Per-offset bilinear rank for the ACQUISITION pair-feature policy head |
 | token_dim | 97 | Fixed width, zero-padded to uniform size across all token types. Sourced from `core.token_data.TokenDataSize.TOKEN_DIM` so the model and the Cython extractor can't drift out of sync. |
 
 **No positional encoding over token order.** Permutation equivariance is a feature, not a bug. Token order is fixed for implementation convenience, but entity identity should come from explicit player/corp/company ID features (and the per-type projection, which already puts each token type in its own subspace of `d_model`), not from sequence position.
@@ -105,12 +106,14 @@ All projections take the full zero-padded `token_dim` input (no per-type feature
 # so no shared type-embedding table is needed for discrimination.
 self.player_proj  = nn.Linear(token_dim, d_model)
 self.corp_proj    = nn.Linear(token_dim, d_model)
-# ... (12 total, one per non-pass token type)
+# ... (13 total, one per non-pass token type)
 
 # Pass tokens have no input features. Each pass-using phase has its own
 # learned anchor vector (BERT [CLS]-style), concatenated to the trunk
 # sequence inside _project_tokens. Initialized with trunc_normal_(std=0.02).
-self.pass_embeds = nn.Parameter(torch.empty(7, d_model))  # 7 phases, no DIVIDENDS
+# Rows follow {INVEST, BID, ACQ_SELECT_CORP, ACQ_OFFER, CLOSING, ISSUE, IPO};
+# DIVIDENDS / PAR / ACQ_SELECT_COMPANY / ACQ_SELECT_PRICE have no pass.
+self.pass_embeds = nn.Parameter(torch.empty(7, d_model))
 ```
 
 ## Policy Head: Entity-Readout
@@ -139,53 +142,62 @@ The legal action mask zeros out non-auctionable companies, corps you can't buy/s
 
 | Phase | Entity → logits |
 |-------|----------------|
-| BID | **Pass token** → [pass] (1, = leave auction); **Auction token** → [raise_0 ... raise_13] (14) |
-| ACQUISITION | **Pass token** → [pass] (1); corp×company pair head → [corp_0_company_0_offset_0 ...] (14976) |
+| BID | **Pass token** → [pass] (1, = leave auction); **Auction token** → [raise_0 ... raise_14] (15) |
+| ACQ_SELECT_CORP | **Pass token** → [pass] (1); Corp 0..7 → [select] (8) |
+| ACQ_SELECT_COMPANY | Company 0..35 → [select] (36, no pass) |
+| ACQ_SELECT_PRICE | **Acq Price Info token** → [offset_0 ... offset_50, FI_BUY] (52, no pass) |
 | ACQ_OFFER | **Pass token** → [pass] (1); **Acq Offer token** → [buy] (1) |
 | CLOSING | **Pass token** → [pass] (1); Company 0..35 → [close] (36, most masked) |
 | DIVIDENDS | **Dividend token** → [div_0 ... div_25] (26) |
 | ISSUE | **Pass token** → [pass] (1); **Issue token** → [issue] (1) |
-| IPO | **Pass token** → [pass] (1); Corp 0..7 → [par_0 ... par_13] (112, most masked) |
+| IPO | **Pass token** → [pass] (1); Corp 0..7 → [select] (8) |
+| PAR | **PAR token** → [par_0 ... par_13] (14, no pass) |
 
-INVEST, CLOSING, and IPO use multi-entity readout (company/corp tokens + pass). ACQUISITION builds a shared representation for each `(corp, company)` pair, then reads 52 logits per pair (51 price offsets + FI buy). ACQ_OFFER uses Pass (pass) + Acq Offer token (buy). DIVIDENDS reads solely from its dedicated phase token. BID splits between Pass (leave the auction) and Auction (raises).
+INVEST, CLOSING, IPO, and the two ACQ select-entity phases use multi-entity readout (company/corp tokens + pass where applicable). ACQ_SELECT_PRICE and PAR read their full offset slate from a single dedicated phase token (`acq_price_info` and `par` respectively) — the active corp/company/par-price context flows into the head solely through that token's features and its attention to the rest of the trunk. ACQ_OFFER uses Pass (pass) + Acq Offer token (buy). DIVIDENDS reads solely from its dedicated phase token. BID splits between Pass (leave the auction) and Auction (raises).
 
 ### Action space size
 
 The new action layout (for any player count):
 
 ```
-INVEST:      1 (pass) + 36*15 (auction) + 8*2 (buy/sell) = 557
-BID:         15 (pass + 14 raises; pass = leave the auction)
-ACQUISITION: 14977 (pass + 8*36*52 corp×company×offset/action)
-ACQ_OFFER:   2 (pass + buy)
-CLOSE:       37 (36 company close + pass)
-DIV:         26 (dividend amounts)
-ISSUE:       2 (issue + pass)
-IPO:         113 (8*14 corp par prices + pass)
+INVEST:             1 (pass) + 36 (company-select) + 8*2 (buy/sell)          = 53
+BID:                1 (pass = leave auction) + 15 (AUCTION_CAP raise offsets) = 16
+ACQ_SELECT_CORP:    1 (pass) + 8 (per-corp select)                            = 9
+ACQ_SELECT_COMPANY: 36 (per-company select, no pass)                          = 36
+ACQ_SELECT_PRICE:   51 (price offsets) + 1 (FI_BUY) (no pass)                 = 52
+ACQ_OFFER:          1 (pass) + 1 (buy)                                        = 2
+CLOSING:            1 (pass) + 36 (per-company close)                         = 37
+DIVIDENDS:          26 (dividend amounts 0..25)                               = 26
+ISSUE:              1 (pass) + 1 (issue)                                      = 2
+IPO:                1 (pass) + 8 (per-corp select)                            = 9
+PAR:                14 (par indices, no pass)                                 = 14
 ```
 
-Per-phase action indices (no global action vector). The largest phase is ACQUISITION at 14,977 actions. All sizes are **fixed across player counts**.
+Per-phase action indices (no global action vector). The largest phase is INVEST at 53 actions. All sizes are **fixed across player counts**.
 
-ACQUISITION and ACQ_OFFER are distinct phases from the model's perspective (separate one-hot IDs in the Global token's phase encoding), even though the game engine treats ACQ_OFFER as a sub-phase of ACQUISITION. This is the same pattern as INV/BID today — BID is a "sub-phase" of INVEST in the game rules, but the model sees them as distinct phases.
+ACQ_SELECT_CORP, ACQ_SELECT_COMPANY, ACQ_SELECT_PRICE, and ACQ_OFFER are all distinct phases from the model's perspective (separate one-hot IDs in the Global token's phase encoding), even though the game engine treats ACQ_OFFER and the three ACQ select sub-phases as one coordinated flow. IPO / PAR follow the same pattern.
 
 **ACQ flow:**
-- **ACQUISITION** → the acting player picks `(corp, company, offset/action)` in one shot, or passes. No offer-buffer indirection: the engine exposes the full `(corp, company, offset)` space via masking and the player chooses directly from it. FI fixed-price purchases fold into the same pair space as the 52nd per-pair option (`FI_BUY`). Receivership auto-acquisitions are forced actions — the driver resolves them without a decision point. During ACQUISITION there is no "active" corp or company; `turn.active_corp` and `turn.active_company` stay at `-1`.
-- **ACQ_OFFER** (conditional) → entered whenever a player or receivership corp attempts to acquire an FI-owned company AND one or more higher-priority corps exist. Priority order: OS first at face value, remaining corps ordered by descending share price at high value. The engine offers each higher-priority corp in turn the 2-action `{pass, buy}` choice, with the offered corp's president as the active player. Once all preempting candidates decline, control returns to the original acquirer and ACQUISITION resumes. ACQ_OFFER reuses the turn block's existing `active_corp` / `active_company` / `active_player` selectors (= preempting corp being offered, contested FI company, and that corp's president); no new state fields are introduced.
+- **ACQ_SELECT_CORP** → the acting player picks which of their corps makes the acquisition, or passes to end the ACQ sequence. `turn.active_corp` / `turn.active_company` both sit at `-1`; the chosen corp is staged into `active_corp` on resolution.
+- **ACQ_SELECT_COMPANY** → reads `active_corp`, legal set is every company the active corp may target. 36 single-entity logits; no pass (committing to a corp locks the player in). On resolution the chosen company is staged into `active_company`.
+- **ACQ_SELECT_PRICE** → reads both `active_corp` and `active_company`. 52 logits (51 price offsets + FI_BUY) from the dedicated `acq_price_info` token. On resolution both selectors clear and the acquisition executes.
+- **ACQ_OFFER** (conditional, inserted inside the three-phase flow) → entered whenever a player or receivership corp attempts to acquire an FI-owned company AND one or more higher-priority corps exist. Priority order: OS first at face value, remaining corps ordered by descending share price at high value. The engine offers each higher-priority corp in turn the 2-action `{pass, buy}` choice, with the offered corp's president as the active player. Once all preempting candidates decline, control returns to the original ACQ flow. ACQ_OFFER reuses the turn block's existing `active_corp` / `active_company` / `active_player` selectors (= preempting corp being offered, contested FI company, and that corp's president); no new state fields are introduced.
 
-The current transformer implementation uses a fully joint ACQUISITION head: `1 + 8 × 36 × 52 = 14,977` actions. `ACQ_OFFER` remains a separate phase because FI preemption is a distinct decision point, often for a different player (the preempting corp's president) than the original acquirer.
+Receivership auto-acquisitions remain forced actions — the driver chains through the full ACQ sub-phase sequence without NN evaluation when each sub-phase's legal set has a single option.
 
-**All 8 decision phases:** INV, BID, ACQUISITION, ACQ_OFFER, CLO, DIV, ISS, IPO.
+**All 11 decision phases:** INVEST, BID, ACQ_SELECT_CORP, ACQ_OFFER, CLOSING, DIVIDENDS, ISSUE, IPO, PAR, ACQ_SELECT_COMPANY, ACQ_SELECT_PRICE.
 
 ### Head architecture
 
 Entity-readout heads are small linear layers (1-2 hidden layers) applied per-token:
 
 ```python
-# Shared across all company tokens (weight sharing = parameter efficiency)
+# INVEST now just selects which company to auction — price is chosen in BID.
+# One logit per company token; auction offsets have moved to BID.
 self.company_auction_head = nn.Sequential(
     nn.Linear(d_model, d_model // 2),
     nn.GELU(),
-    nn.Linear(d_model // 2, 15),  # 15 auction offsets
+    nn.Linear(d_model // 2, 1),
 )
 self.company_close_head = nn.Linear(d_model, 1)  # per-company close logit
 
@@ -199,24 +211,44 @@ self.corp_trade_head = nn.Sequential(
 # Per-phase pass anchor → single pass logit via shared head (BID's pass = leave the auction)
 self.pass_head = nn.Linear(d_model, 1)
 
-# Phase-specific context tokens → policy logits (read directly from token)
-self.auction_raise_head = nn.Sequential(nn.Linear(d_model, d_model // 2), nn.GELU(), nn.Linear(d_model // 2, 14))  # raise amounts
+# Phase-specific context tokens → policy logits (read directly from token).
+# AUCTION_CAP now lives on the raise head (15 offsets: opening + subsequent bids).
+self.auction_raise_head = nn.Sequential(nn.Linear(d_model, d_model // 2), nn.GELU(), nn.Linear(d_model // 2, AUCTION_CAP))
 self.dividend_head  = nn.Sequential(nn.Linear(d_model, d_model // 2), nn.GELU(), nn.Linear(d_model // 2, 26))
 self.issue_head     = nn.Linear(d_model, 1)  # issue (pass comes from Pass token)
 self.acq_offer_head = nn.Linear(d_model, 1)  # buy logit (pass from pass_head)
 
-# ACQUISITION: per-offset low-rank bilinear on corp × company + additive unary paths
-#   score(c, t, p) = (corp_h[c] @ U[p]) · (comp_h[t] @ V[p])          # bilinear
-#                  + W_corp[p] · corp_h[c] + W_comp[p] · comp_h[t]    # unary fallback
-# Each of the 52 offsets (51 price offsets + FI buy) gets its own rank-r
-# interaction pattern instead of sharing a single GELU bottleneck.
-self.acquisition_U            = nn.Parameter(torch.empty(52, d_model, r))
-self.acquisition_V            = nn.Parameter(torch.empty(52, d_model, r))
-self.acquisition_corp_bias    = nn.Linear(d_model, 52)
-self.acquisition_company_bias = nn.Linear(d_model, 52)
+# ACQ factored into three single-entity sub-phases. SELECT_CORP reads one
+# logit per corp token (8); SELECT_COMPANY reads one logit per company token
+# (36); SELECT_PRICE reads 52 logits off the dedicated acq_price_info token.
+# Cross-phase head sharing (e.g. unifying company_select across
+# INVEST / ACQ_SELECT_COMPANY / CLOSING, or corp_select across
+# ACQ_SELECT_CORP / IPO) is intentionally deferred — see phase-refactor.md.
+self.corp_acq_head = nn.Sequential(
+    nn.Linear(d_model, d_model // 2),
+    nn.GELU(),
+    nn.Linear(d_model // 2, 1),
+)
+self.company_acq_head = nn.Sequential(
+    nn.Linear(d_model, d_model // 2),
+    nn.GELU(),
+    nn.Linear(d_model // 2, 1),
+)
+self.price_acq_head = nn.Sequential(
+    nn.Linear(d_model, d_model // 2),
+    nn.GELU(),
+    nn.Linear(d_model // 2, 52),  # 51 price offsets + FI_BUY
+)
 
-# IPO: per-corp readout directly from corp tokens
+# IPO selects which corp floats; par price is picked in the separate PAR
+# phase. One logit per corp token.
 self.corp_ipo_head = nn.Sequential(
+    nn.Linear(d_model, d_model // 2),
+    nn.GELU(),
+    nn.Linear(d_model // 2, 1),
+)
+# PAR reads 14 par-price logits off the existing PAR token. No pass.
+self.par_price_head = nn.Sequential(
     nn.Linear(d_model, d_model // 2),
     nn.GELU(),
     nn.Linear(d_model // 2, 14),
@@ -252,7 +284,7 @@ GameState (int16, 469 slots at 3p)  ── engine-only, raw values ──
                      ↓
            get_token_data(state, buffer)   ← Cython, nogil
                      ↓
-           eval_buffer: (batch, num_players + 53, 97)  float32
+           eval_buffer: (batch, num_players + 54, 97)  float32
                      ↓
            Type-specific projections → d_model → transformer trunk
 ```
@@ -274,18 +306,18 @@ cpdef void get_token_data_batch(
 )
 ```
 
-Implementation lives in `core/token_data.{pyx,pxd}`. Feature spec: `token-data.md`. Each `_fill_*_token()` helper reads from the compact state and writes raw/lightly-normalized features into the buffer inside a single `nogil` block. Token order is fixed: `[players..., corps..., companies..., FI, market, global, invest, auction, dividend, issue, par, acq_offer]`. The 7 per-phase pass anchors are added inside the model after projection and don't appear in the engine-side buffer.
+Implementation lives in `core/token_data.{pyx,pxd}`. Feature spec: `token-data.md`. Each `_fill_*_token()` helper reads from the compact state and writes raw/lightly-normalized features into the buffer inside a single `nogil` block. Token order is fixed: `[players..., corps..., companies..., FI, market, global, invest, auction, dividend, issue, par, acq_offer, acq_price_info]`. The 7 per-phase pass anchors are added inside the model after projection and don't appear in the engine-side buffer.
 
-Both entries accept C-contiguous `float32` memoryviews sized to at least `(num_players + 53, TOKEN_DIM)` (single) or `(n, num_players + 53, TOKEN_DIM)` (batch). `get_token_data_batch` reuses a single scratch `GameState` across rows via `rebind`, amortizing Python dispatch over the whole batch — this is the path the evaluator and eval server use on their hot paths. A small GIL-held prologue runs `refresh_player_cache_if_dirty` for each player before the nogil fill body, so the fill itself can read cached net-worth / liquidity / income slots directly.
+Both entries accept C-contiguous `float32` memoryviews sized to at least `(num_players + 54, TOKEN_DIM)` (single) or `(n, num_players + 54, TOKEN_DIM)` (batch). `get_token_data_batch` reuses a single scratch `GameState` across rows via `rebind`, amortizing Python dispatch over the whole batch — this is the path the evaluator and eval server use on their hot paths. A small GIL-held prologue runs `refresh_player_cache_if_dirty` for each player before the nogil fill body, so the fill itself can read cached net-worth / liquidity / income slots directly.
 
 Static features (synergies, face values, etc.) are written every call — it's a straight memcpy and the simplicity is worth more than the minor bandwidth savings. Phase-specific tokens are left at the zeroed default when the current engine phase does not match.
 
 ### Eval buffer sizing
 
 The eval buffer is `(batch_size, num_tokens, token_dim)`:
-- `num_tokens = num_players + 53` — 56 (3p), 57 (4p), 58 (5p)
+- `num_tokens = num_players + 54` — 57 (3p), 58 (4p), 59 (5p)
 - `token_dim = 97` (all token types zero-padded to the same width; `TokenDataSize.TOKEN_DIM`)
-- Total per sample: 56 × 97 = 5,432 floats (~21.2 KiB) for 3p
+- Total per sample: 57 × 97 = 5,529 floats (~21.6 KiB) for 3p
 
 The rectangular layout enables clean GPU operations. All type-specific projections take the same `token_dim` input (no per-type slicing needed).
 
@@ -294,14 +326,14 @@ The rectangular layout enables clean GPU operations. All type-specific projectio
 The replay buffer stores training examples. With per-phase action indices, each example contains:
 - **Token data**: the eval buffer contents (or the compact state + `get_token_data()` at training time)
 - **Phase ID**: which phase this decision was in (determines action space)
-- **Legal action mask**: per-phase (max 14,977 for ACQUISITION)
-- **Policy target**: MCTS visit distribution (per-phase, same size as mask)
+- **Legal action list**: sparse, padded to `K_MAX = MAX_LEGAL_ACTIONS`
+- **Policy target**: MCTS visit distribution (sparse, same width as the legal list)
 - **Value target**: A0GB values (N floats)
 
 Option A: store the compact state and re-extract tokens at training time. Smallest storage.
 Option B: store the eval buffer directly. Faster training (no re-extraction), larger storage.
 
-Option B is simpler for a very small-scale prototype, but expensive at current training defaults: a `(56, 97)` float32 token buffer is ~21 KiB per sample, so a 500k-sample replay buffer costs ~11 GiB for tokens alone — before per-sample phase ids, legal-action masks, sparse policy targets, and value targets. Option A is the more realistic long-term default.
+Option B is simpler for a very small-scale prototype, but expensive at current training defaults: a `(57, 97)` float32 token buffer is ~22 KiB per sample, so a 500k-sample replay buffer costs ~11 GiB for tokens alone — before per-sample phase ids, legal-action lists, sparse policy targets, and value targets. Option A is the more realistic long-term default.
 
 ## Impact on Training & MCTS Pipeline
 
@@ -309,23 +341,21 @@ Option B is simpler for a very small-scale prototype, but expensive at current t
 
 - **GameState**: Compact state array, no visible/hidden split. New `get_token_data()` method fills eval buffers.
 - **Eval buffers**: `(batch, num_tokens, token_dim)` rank-3 tensor in shared memory. All token types use the same padded width.
-- **Action layout**: Per-phase action indices (max 14,977 for ACQUISITION). Update `actions.pyx` layout and mask generation.
+- **Action layout**: Per-phase action indices (max 53 for INVEST, after the ACQ split). Update `actions.pyx` layout and mask generation.
 - **Evaluator**: Remove state rotation. Remove un-rotation of values. Simpler.
 - **Model interface**: `forward(x, action_ids, n_legals, phase_indices) → (policy_logits, values)` where `x` is `(batch, num_tokens, token_dim)`. Policy logits are per-row gathered against each row's legal slice (shape `(B, K_MAX)`), with `-1e9` beyond `n_legals[i]`.
 
 ### Game engine simplifications
 
-Four major pieces of action-space indirection in the MLP-era engine are **removed** under the refactor. They were engine/training choices to keep the MLP's action space small; the transformer's entity-readout eliminates the need for them, so the new engine drops the indirection outright:
+Three major pieces of action-space indirection in the MLP-era engine are **removed** under the refactor. They were engine/training choices to keep the MLP's action space small; the transformer's entity-readout eliminates the need for them, so the new engine drops the indirection outright:
 
 - **Auction slots** (deleted). The old engine mapped auctionable companies to positional slots (0, 1, ..., N-1) so the action space scaled with player count. Auction actions are now company-indexed: `company_id × 15 + offset`. The slot machinery (`get_auction_company_for_slot()` and friends) is gone; the mask just enables the 15 logits for each auctionable company directly.
 
 - **Closing offer buffer** (deleted). The old engine pre-generated close offers into a hidden buffer, sorted by priority, and presented them one-by-one with CLOSE/PASS actions. The new engine exposes all eligible companies directly: in player order, mask all valid closes, let the model pick one company to close or pass, repeat until pass, then move to the next player. Mandatory closes for negative-income-and-cash corps still happen at the end as forced actions.
 
-- **Acquisition offer buffer** (deleted). The old engine pre-generated `(corp, company)` acquisition offers into a hidden buffer, sorted by priority (OS→FI, Corp→FI, Corp→Corp, Corp→Player), and presented them one-by-one. The new engine scores the full `(corp, company, offset/action)` space directly in `ACQUISITION` — the acting player picks the tuple in one shot, or passes. FI fixed-price purchases fold into the same pair space as the 52nd per-pair option (`FI_BUY`); there is no separate "FI buy" sub-flow. Receivership auto-acquisitions remain as forced actions resolved by the driver. FI *priority* preemption is no longer achieved by careful offer ordering; it is handled explicitly by a dedicated `PHASE_ACQ_OFFER` decision phase (see the *ACQ flow* subsection earlier in this document). The hidden "current offer pointer" state is gone entirely, and with it the need for any per-phase active-entity flags (`closing_company` / `dividend_corp` / `issue_corp` / `ipo_company`) — the generic `active_corp` / `active_company` / `active_player` turn slots cover every phase that still needs active-entity context (BID, IPO, ISSUE, DIVIDENDS, ACQ_OFFER). ACQUISITION and CLOSING sit at `-1` for both active slots.
+- **Acquisition offer buffer** (deleted). The old engine pre-generated `(corp, company)` acquisition offers into a hidden buffer, sorted by priority (OS→FI, Corp→FI, Corp→Corp, Corp→Player), and presented them one-by-one. The new engine walks the ACQ decision as a three-sub-phase sequence (SELECT_CORP → SELECT_COMPANY → SELECT_PRICE), with each sub-phase picking a single entity against the appropriate mask. FI fixed-price purchases fold into the SELECT_PRICE slate as the 52nd option (`FI_BUY`); there is no separate "FI buy" sub-flow. Receivership auto-acquisitions remain as forced actions resolved by the driver (the auto-chain walks all three sub-phases). FI *priority* preemption is handled explicitly by a dedicated `PHASE_ACQ_OFFER` decision phase (see the *ACQ flow* subsection earlier in this document), inserted inside the sub-phase sequence when an FI-owned target is picked. The hidden "current offer pointer" state is gone entirely. Per-phase active-entity flags (`closing_company` / `dividend_corp` / `issue_corp` / `ipo_company`) are unnecessary — the generic `active_corp` / `active_company` / `active_player` turn slots cover every phase that needs active-entity context (BID, IPO, ISSUE, DIVIDENDS, ACQ_OFFER, ACQ_SELECT_COMPANY, ACQ_SELECT_PRICE, PAR). ACQ_SELECT_CORP and CLOSING sit at `-1` for both active slots.
 
-- **IPO/PAR phase merge** (done). The old engine split IPO into two phases — IPO (select corp) then PAR (select par price). Each corp token now produces 14 par-price logits directly; the player picks "corp X at par price Y" in one action. The PAR phase is eliminated entirely, simplifying the phase graph and removing a state transition.
-
-All four simplifications follow the same pattern: the MLP needed a small, fixed action space, so the engine compressed entity-level decisions into slot/offer indirection or multi-step sequences. The transformer's entity-readout makes the direct formulations cheap, so the engine drops the indirection.
+All three simplifications follow the same pattern: the MLP needed a small, fixed action space, so the engine compressed entity-level decisions into slot/offer indirection. The transformer's entity-readout makes the direct formulations cheap, so the engine drops the indirection; the ACQ split further factors the joint `(corp, company, price)` decision into three single-entity sub-phases so each sub-phase has its own small softmax.
 
 ### What stays the same (conceptually)
 
@@ -340,9 +370,9 @@ All four simplifications follow the same pattern: the MLP needed a small, fixed 
 
 2. ~~**`get_token_data()` feature lists / implementation**~~: **Done.** See `token-data.md` for the per-token feature spec and `core/token_data.{pyx,pxd}` for the implementation (nogil fill + batched `get_token_data_batch`).
 
-3. ~~**Head dispatch efficiency**~~: **Resolved.** The model emits per-row gathered logits of shape `(B, K_MAX)` — never the dense `(B, 14977)` ACQUISITION pad — by gathering against each row's legal-action list inside `_policy_forward`. Callers pass precomputed per-phase row indices (`phase_indices`) so the dispatch uses `index_select` / `index_copy_` with no H↔D sync.
+3. ~~**Head dispatch efficiency**~~: **Resolved.** The model emits per-row gathered logits of shape `(B, K_MAX)` — never a per-phase dense pad — by gathering against each row's legal-action list inside `_policy_forward`. Callers pass precomputed per-phase row indices (`phase_indices`) so the dispatch uses `index_select` / `index_copy_` with no H↔D sync.
 
-4. **Batching with variable token counts** (Phase 6): For 3-5p training, batches contain games with different numbers of player tokens (56-58 input-buffer rows). Options: pad to the max and use attention mask, or batch by player count. Padding is simpler; batching by count is more efficient.
+4. **Batching with variable token counts** (Phase 6): For 3-5p training, batches contain games with different numbers of player tokens (57–59 input-buffer rows). Options: pad to the max and use attention mask, or batch by player count. Padding is simpler; batching by count is more efficient.
 
 5. **Replay storage strategy**: Currently Option A — the replay buffer stores compact state + phase id + enumerated legal ids + sparse policy/value targets, and re-runs `get_token_data_batch` at training time. Option B (pre-extracted token buffers) is not planned at current buffer sizes.
 
@@ -355,17 +385,17 @@ All four simplifications follow the same pattern: the MLP needed a small, fixed 
 - Delete one-hot encoding, normalization-on-write, entity duplication — **done.**
 - Reduce `core/data.{pxd,pyx}` to pure data + constants — **done.** All field-level accessors removed; the file exposes only the static arrays (company/corp/market/CoO/par tables, synergy matrix), the shared enums (`GameConstants`, `GamePhases`, `DecisionPhase`, `CorpIndices`, `ActionSize`), and the normalization divisors used by token extraction. Computational helpers that used to live here (synergy aggregation, required stars, cost-of-ownership lookup, par-price validity) now live as private cdef functions in the entity that uses them.
 - Update entity handles (Player, Corp, Company, FI, Market, Deck, TurnState) for the new offset layout — **done.** Every handle is fully stateless: no per-instance offset cache, no `initialize()` step, no normalization-on-read. Each accessor reads its slot inline from the module-level `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` / `COMPANY_OFFSETS` / `DECK_OFFSETS` / `FI_OFFSETS` constants, so the singletons in `PLAYERS` / `CORPS` / `COMPANIES` are reused with any `GameState` at any player count. Company ownership is read from the shared `company_locations` / `company_owner_ids` arrays — the per-player and per-corp `owned_companies` bitmaps are gone.
-- Implement `get_token_data()` in Cython — **done.** `core/token_data.{pyx,pxd}` fills a `(num_players + 53, 97)` float32 memoryview inside a single nogil block, with a batched `get_token_data_batch` variant that amortizes per-state Python dispatch via `GameState.rebind`. `TokenDataSize.TOKEN_DIM` is the single source of truth for the padded width shared with `nn/transformer.py`.
+- Implement `get_token_data()` in Cython — **done.** `core/token_data.{pyx,pxd}` fills a `(num_players + 54, 97)` float32 memoryview inside a single nogil block, with a batched `get_token_data_batch` variant that amortizes per-state Python dispatch via `GameState.rebind`. `TokenDataSize.TOKEN_DIM` is the single source of truth for the padded width shared with `nn/transformer.py`.
 
 ### Phase 2: Action space refactor (core/actions.pyx) ✅
-- **Done.** Per-phase action indices, company-indexed auctions/closes, full ACQUISITION head, merged IPO.
-- 8 decision phases, all `_enumerate_*` helpers implemented with real mask logic.
+- **Done.** Per-phase action indices, company-indexed auctions/closes, three-sub-phase ACQ (SELECT_CORP / SELECT_COMPANY / SELECT_PRICE), two-sub-phase IPO (IPO / PAR).
+- 11 decision phases, all `_enumerate_*` helpers implemented with real mask logic.
 - Deterministic enumeration order, `MAX_LEGAL_ACTIONS=256` overflow asserts.
 - Import-time roundtrip assert in `core/actions.pyx` catches drift between `encode_*` arithmetic and the `ActionSize` enum in `core/data.pxd`.
 
 ### Phase 2b: Driver + phase handlers (core/driver.pyx, phases/*.pyx) ✅
-- **Done.** `core/driver.{pyx,pxd}` rewritten: game-loop dispatch, forced-action auto-chain (single legal action ⇒ auto-dispatch), all 8 decision phases + 3 automated phases wired. `step_mode` flag pauses after each decision point for tests / replay tooling.
-- All 11 phase handlers in `phases/` implemented: invest, bid, acquisition, acq_offer, closing, dividends, income, issue, ipo, wrap_up, end_card.
+- **Done.** `core/driver.{pyx,pxd}` rewritten: game-loop dispatch, forced-action auto-chain (single legal action ⇒ auto-dispatch), all 11 decision phases + 3 automated phases wired. `step_mode` flag pauses after each decision point for tests / replay tooling.
+- All 14 phase handlers in `phases/` implemented: invest, bid, acq_select_corp, acq_select_company, acq_select_price, acq_offer, closing, dividends, income, issue, ipo, par, wrap_up, end_card.
 - Cross-president acquisition offers supported via `acq_same_president` flag + `PHASE_ACQ_OFFER`.
 - Optional `history` list records `(state._array.copy(), phase_id, action_id)` tuples before each mutation — used by replay / test scaffolding.
 
@@ -373,10 +403,10 @@ All four simplifications follow the same pattern: the MLP needed a small, fixed 
 - **Done.** See `nn/transformer.py` (~2.37M params at `TransformerConfig()` defaults).
 - Pre-RMSNorm transformer blocks with SwiGLU FFN; attention via packed QKV + `F.scaled_dot_product_attention` (traces cleanly under `torch.compile`, unlike `nn.MultiheadAttention`).
 - Type-specific projections (uniform `token_dim=97` input), entity-readout heads for every decision phase.
-- Full ACQUISITION pair head (corp × company × 52) and direct per-corp IPO head (merged IPO+PAR).
+- Three per-sub-phase ACQ heads (corp-select, company-select, 52-logit price head off `acq_price_info` token) and a two-head IPO→PAR pair (per-corp select + per-par readout off the `par` token).
 - Per-phase head dispatch uses precomputed per-phase row indices (`phase_indices`) with `index_select` / `index_copy_`, so the policy gather has no H↔D sync. All callers (trainer, evaluator, eval server) build them on the host before the H→D copy.
-- `forward(x, action_ids, n_legals, phase_indices)` returns `(policy_logits, values)` where `policy_logits` has shape `(B, K_MAX)` gathered against each row's legal-action slice — the trainer, evaluator, and eval server never allocate anything as wide as the full 14,977-action ACQUISITION output.
-- Smoke test covers all 8 phases: shapes, finite logits inside the legal slice, `-1e9` tail, values ∈ [-1, 1].
+- `forward(x, action_ids, n_legals, phase_indices)` returns `(policy_logits, values)` where `policy_logits` has shape `(B, K_MAX)` gathered against each row's legal-action slice — the trainer, evaluator, and eval server never allocate anything wider than the per-phase head output (max 52 for ACQ_SELECT_PRICE).
+- Smoke test covers all 11 phases: shapes, finite logits inside the legal slice, `-1e9` tail, values ∈ [-1, 1].
 
 ### Phase 4: Evaluator integration (mcts/evaluator.py) ✅
 - **Done.** `BaseEvaluator` + `NNEvaluator` (in-process) + `RemoteEvaluator` (shared-mem IPC, in `train/eval_server.py`) speak token buffers end-to-end.
@@ -393,6 +423,6 @@ All four simplifications follow the same pattern: the MLP needed a small, fixed 
 - State rotation, dense legal masks, and the old `(B, dense_action_size)` logit tensors are fully removed from the pipeline.
 
 ### Phase 6: Multi-player-count training (3-5p) — pending
-- Variable player token count (57–59 tokens); choose between pad-to-max+attention-mask and bucket-by-player-count.
+- Variable player token count (57–59 input-buffer tokens); choose between pad-to-max+attention-mask and bucket-by-player-count.
 - Single model for 3-5p; requires generalizing the `TransformerConfig.num_players` check in `NNEvaluator.__init__` and the per-player masking in the value head consumer.
 - Self-play orchestration needs per-worker player-count selection.
