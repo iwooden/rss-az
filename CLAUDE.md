@@ -22,6 +22,7 @@ Don't auto-load; open when the task needs them.
 | `transformers.md` | Model architecture, eval pipeline — before touching `nn/` or the evaluator |
 | `token-data.md` | Per-token feature spec — paired with `core/token_data.{pyx,pxd}` |
 | `sparse-refactor.md` | Historical design notes (deep reference only) |
+| `phase-refactor.md` | Historical design notes for the phase split (deep reference only) |
 
 ## Directory map
 
