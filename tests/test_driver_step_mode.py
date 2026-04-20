@@ -6,7 +6,6 @@ from core.actions import (
 from core.data import GamePhases
 from core.driver import (
     DRIVER,
-    STATUS_GAME_OVER_PY as STATUS_GAME_OVER,
     STATUS_INVALID_PY as STATUS_INVALID,
     STATUS_OK_PY as STATUS_OK,
     STATUS_PAUSED_PY as STATUS_PAUSED,

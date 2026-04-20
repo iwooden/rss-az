@@ -1124,25 +1124,24 @@ def assert_token_data_invariants(state, msg=""):
         # Slots represent the *minimum legal next bid*:
         #   - first bid (high_bidder == -1): min = face_value (offset 0)
         #   - otherwise: min = auction_price + 1
+        # active_company must be set in BID — the engine asserts this invariant
+        # in _fill_auction_token, so there is no "no active company" branch.
         high = TURN.get_auction_high_bidder(state)
         is_first_bid = high < 0
-        if 0 <= active_company < num_companies:
-            face = COMPANIES[active_company].get_face_value()
-            if is_first_bid:
-                min_bid = face
-            else:
-                min_bid = TURN.get_auction_price(state) + 1
-            exp_offset = (min_bid - face) / 15.0
-            _assert_close(buf[auction_tok, 0], exp_offset, T_SCALE,
-                          f"{am}: min_bid_idx offset (min-face)/15")
-            _assert_close(buf[auction_tok, 1] * PY_COMPANY_PRICE_DIVISOR,
-                          min_bid, T_SCALE,
-                          f"{am}: min_bid_value scalar")
+        assert 0 <= active_company < num_companies, (
+            f"{am}: active_company {active_company} unset in BID"
+        )
+        face = COMPANIES[active_company].get_face_value()
+        if is_first_bid:
+            min_bid = face
         else:
-            _assert_close(buf[auction_tok, 0], 0.0, T_FLAG,
-                          f"{am}: min_bid_idx must be zero with no active company")
-            _assert_close(buf[auction_tok, 1], 0.0, T_FLAG,
-                          f"{am}: min_bid_value must be zero with no active company")
+            min_bid = TURN.get_auction_price(state) + 1
+        exp_offset = (min_bid - face) / 15.0
+        _assert_close(buf[auction_tok, 0], exp_offset, T_SCALE,
+                      f"{am}: min_bid_idx offset (min-face)/15")
+        _assert_close(buf[auction_tok, 1] * PY_COMPANY_PRICE_DIVISOR,
+                      min_bid, T_SCALE,
+                      f"{am}: min_bid_value scalar")
 
         _assert_close(buf[auction_tok, 2], 1.0 if is_first_bid else 0.0, T_FLAG,
                       f"{am}: is_first_bid flag")

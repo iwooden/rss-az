@@ -155,10 +155,10 @@ cdef void _handle_raise(GameState state, int bid_offset) noexcept:
     turn_module.TURN.set_auction_high_bidder(state, pid)
 
     # The raising player stays in the auction — has_passed is untouched.
-    # After the opening bid there is always another live bidder (the
-    # starter placed the first bid and the round started with everyone
-    # unpassed); after a raise the previous high bidder is still in,
-    # so advance_to_next_bidder always has a distinct target.
+    # advance_to_next_bidder always finds a distinct target: on the
+    # opening RAISE, INVEST cleared all has_passed flags so the other
+    # n-1 players are live bidders; on subsequent RAISEs the previous
+    # high bidder is still in the auction.
     turn_module.TURN.advance_to_next_bidder(state)
 
 

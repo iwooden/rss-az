@@ -715,15 +715,19 @@ cdef void _fill_auction_token(
     cdef bint is_first_bid = high_bidder < 0
     cdef int face_value, min_bid, min_offset
 
-    if 0 <= active_company < NUM_COMPANIES:
-        face_value = COMPANY_FACE_VALUE[active_company]
-        if is_first_bid:
-            min_bid = face_value
-        else:
-            min_bid = auction_price + 1
-        min_offset = min_bid - face_value
-        buffer[tok, OFF_MIN_BID_IDX] = <float>min_offset / <float>AUCTION_CAP_INT
-        buffer[tok, OFF_MIN_BID_VALUE] = <float>min_bid / COMPANY_PRICE_DIVISOR
+    # active_company is seeded in INVEST before the BID transition and only
+    # cleared at auction resolution; any BID state without it is a driver bug.
+    assert 0 <= active_company < NUM_COMPANIES, \
+        f"_fill_auction_token: active_company {active_company} unset or out of range in BID"
+
+    face_value = COMPANY_FACE_VALUE[active_company]
+    if is_first_bid:
+        min_bid = face_value
+    else:
+        min_bid = auction_price + 1
+    min_offset = min_bid - face_value
+    buffer[tok, OFF_MIN_BID_IDX] = <float>min_offset / <float>AUCTION_CAP_INT
+    buffer[tok, OFF_MIN_BID_VALUE] = <float>min_bid / COMPANY_PRICE_DIVISOR
 
     buffer[tok, OFF_IS_FIRST_BID] = 1.0 if is_first_bid else 0.0
 

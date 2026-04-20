@@ -132,6 +132,80 @@ class TestOpeningBid:
         ]
         assert 0 in raise_offsets
 
+    @pytest.mark.parametrize("game_state", [3, 4, 5, 6], indirect=True)
+    def test_opening_bid_advances_to_next_player_in_turn_order(self, game_state):
+        """After the starter's opening RAISE, control moves to the next player."""
+        num_players = TURN.get_num_players(game_state)
+        starter, _ = _enter_bid_phase(game_state)
+
+        # Give everyone enough cash so the next player is a live bidder.
+        for p in range(num_players):
+            PLAYERS[p].set_cash(game_state, 200)
+
+        _place_opening_bid(game_state, offset=0)
+
+        active = TURN.get_active_player(game_state)
+        starter_pos = PLAYERS[starter].get_turn_order(game_state)
+        active_pos = PLAYERS[active].get_turn_order(game_state)
+        assert active != starter
+        assert active_pos == (starter_pos + 1) % num_players
+
+    @pytest.mark.parametrize("offset", [1, 5, 10])
+    def test_opening_bid_nonzero_offset_sets_price(self, game_state, offset):
+        """Opening bid at offset > 0 sets auction_price = face_value + offset."""
+        active = TURN.get_active_player(game_state)
+        PLAYERS[active].set_cash(game_state, 1000)
+
+        _, company_id = _enter_bid_phase(game_state)
+        face = COMPANIES[company_id].get_face_value()
+
+        raise_id = find_legal_action(game_state, action_type=ACTION_RAISE, amount=offset)
+        apply_and_verify(game_state, raise_id)
+        assert TURN.get_auction_price(game_state) == face + offset
+
+    @pytest.mark.parametrize("offset", [1, 5, 10])
+    def test_nonzero_opening_bid_gates_subsequent_raises(self, game_state, offset):
+        """After an offset>0 opening bid, raise offsets must exceed the opening."""
+        num_players = TURN.get_num_players(game_state)
+        for p in range(num_players):
+            PLAYERS[p].set_cash(game_state, 1000)
+
+        _, company_id = _enter_bid_phase(game_state)
+        face = COMPANIES[company_id].get_face_value()
+        _place_opening_bid(game_state, offset=offset)
+
+        actions = get_legal_actions(game_state)
+        raise_offsets = sorted(
+            info.amount for _, info in actions if info.action_type == ACTION_RAISE
+        )
+        # Every legal raise produces new_bid > face + offset, so every legal
+        # raise-offset is strictly greater than the opening offset.
+        assert raise_offsets
+        assert raise_offsets[0] == offset + 1
+        for o in raise_offsets:
+            assert face + o > face + offset
+
+    @pytest.mark.parametrize("offset", [1, 5, 10])
+    def test_nonzero_opening_bid_resolves_to_starter_at_opening_price(
+        self, game_state, offset
+    ):
+        """Starter opens at face+offset, everyone else leaves — winner pays face+offset."""
+        num_players = TURN.get_num_players(game_state)
+        for p in range(num_players):
+            PLAYERS[p].set_cash(game_state, 1000)
+
+        starter, company_id = _enter_bid_phase(game_state)
+        face = COMPANIES[company_id].get_face_value()
+        starter_cash_before = PLAYERS[starter].get_cash(game_state)
+        _place_opening_bid(game_state, offset=offset)
+
+        for _ in range(num_players - 1):
+            leave_id = find_legal_action(game_state, action_type=ACTION_PASS)
+            apply_and_verify(game_state, leave_id)
+
+        assert PLAYERS[starter].owns_company(game_state, company_id)
+        assert PLAYERS[starter].get_cash(game_state) == starter_cash_before - (face + offset)
+
 
 # =============================================================================
 # LEAVE (PASS) ACTION TESTS — after the opening bid
