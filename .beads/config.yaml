@@ -67,3 +67,5 @@ sync-branch: "beads-sync"
 # - github.repo
 
 sync.remote: "git+https://github.com/iwooden/rss-az.git"
+
+export.git-add: false

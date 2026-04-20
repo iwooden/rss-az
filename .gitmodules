@@ -1,3 +1,4 @@
 [submodule "submodules/18xx"]
 	path = submodules/18xx
+	ignore = all
 	url = https://github.com/iwooden/18xx.git
