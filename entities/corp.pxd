@@ -47,6 +47,7 @@ cdef bint corp_has_acquisition_company(GameState state, int corp_id, int company
 cdef int corp_income(GameState state, int corp_id) noexcept nogil
 cdef int corp_raw_revenue(GameState state, int corp_id) noexcept nogil
 cdef int corp_synergy_income(GameState state, int corp_id) noexcept nogil
+cdef int corp_candidate_synergy_delta(GameState state, int corp_id, int candidate_company_id) noexcept nogil
 cdef int corp_coo_cost(GameState state, int corp_id) noexcept nogil
 cdef int corp_ability_income(GameState state, int corp_id) noexcept nogil
 cdef int corp_company_stars(GameState state, int corp_id) noexcept nogil

@@ -394,6 +394,32 @@ cdef int corp_synergy_income(GameState state, int corp_id) noexcept nogil:
     return <int>state._data[_corp_slot(corp_id, CORP_FIELDS.synergy_income)]
 
 
+cdef int corp_candidate_synergy_delta(
+    GameState state, int corp_id, int candidate_company_id,
+) noexcept nogil:
+    """Marginal synergy income the corp would gain by adding the candidate.
+
+    Reuses ``_aggregate_synergies`` (the single source of truth for the
+    synergy formula) over ``corp_id``'s current portfolio extended with
+    the candidate, then subtracts the cached baseline on ``corp_id``.
+    """
+    cdef int company_ids[36]
+    cdef int company_count
+    cdef int total_with_candidate, _marker_count_unused
+
+    assert not (company_owned_by_corp(state, candidate_company_id, corp_id) or
+                company_in_corp_acquisition(state, candidate_company_id, corp_id)), \
+        f"corp_candidate_synergy_delta: candidate {candidate_company_id} already in corp {corp_id}'s portfolio"
+
+    company_count = company_fill_corp_company_ids(
+        state, corp_id, True, company_ids)
+    company_ids[company_count] = candidate_company_id
+
+    (total_with_candidate, _marker_count_unused) = _aggregate_synergies(
+        company_ids, company_count + 1)
+    return total_with_candidate - corp_synergy_income(state, corp_id)
+
+
 cdef int corp_coo_cost(GameState state, int corp_id) noexcept nogil:
     if _cache_dirty(state, corp_id):
         _refresh_corp_cache(state, corp_id)

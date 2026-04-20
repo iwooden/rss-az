@@ -130,6 +130,7 @@ cdef extern from *:
     #define CORP_STAR_DIVISOR 40.0f
     #define MAX_ROUNDTRIPS 2.0f
     #define IMPACT_DIVISOR 5.0f
+    #define PRICE_RANGE_DIVISOR 51.0f
     """
     const float CASH_DIVISOR
     const float NET_WORTH_DIVISOR
@@ -142,6 +143,7 @@ cdef extern from *:
     const float CORP_STAR_DIVISOR
     const float MAX_ROUNDTRIPS
     const float IMPACT_DIVISOR
+    const float PRICE_RANGE_DIVISOR
 
 # Company data arrays
 cdef int[36] COMPANY_FACE_VALUE
