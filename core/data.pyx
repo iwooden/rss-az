@@ -121,6 +121,17 @@ _py_phase_action_sizes = [
     int(ActionSize.ACTION_SIZE_ACQ_SELECT_COMPANY),
     int(ActionSize.ACTION_SIZE_ACQ_SELECT_PRICE),
 ]
+# Catch the "added a DecisionPhase enum entry but forgot to extend the
+# Python mirror" failure mode at import time — downstream consumers index
+# this list by phase id, so a short list hands back stale sizes silently.
+assert len(_py_phase_action_sizes) == int(GameConstants.NUM_DECISION_PHASES), (
+    f"_py_phase_action_sizes has {len(_py_phase_action_sizes)} entries but "
+    f"NUM_DECISION_PHASES = {int(GameConstants.NUM_DECISION_PHASES)}"
+)
+assert max(_py_phase_action_sizes) == int(ActionSize.MAX_ACTION_SIZE), (
+    f"max(_py_phase_action_sizes) = {max(_py_phase_action_sizes)} but "
+    f"MAX_ACTION_SIZE = {int(ActionSize.MAX_ACTION_SIZE)}"
+)
 globals()["PHASE_ACTION_SIZES"] = _py_phase_action_sizes
 globals()["MAX_ACTION_SIZE"] = int(ActionSize.MAX_ACTION_SIZE)
 globals()["AUCTION_CAP"] = int(GameConstants.AUCTION_CAP)

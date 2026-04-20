@@ -48,10 +48,9 @@ Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 97):
                 resulting_issued_shares (14) + ipo_remaining (8)
   AcqOff  (11): offer_price_index + offer_price + offer_corp onehot (8) +
                 fi_company
-  AcqPrice (11): corp_cash + corp_share_price + company low/face/high +
+  AcqPrice (10): corp_cash + corp_share_price + company low/face/high +
                 company adjusted_income + company stars + FI flag +
-                cross_president flag + receivership_seller flag +
-                max_affordable_offset
+                cross_president flag + max_affordable_offset
 
 All values normalized by divisors defined in ``core.data`` (compile-time
 floats inlined by the C compiler). Phase-specific tokens are zeroed out
@@ -885,29 +884,30 @@ cdef void _fill_acq_price_info_token(
     SELECT_PRICE and the active corp/company rows carry the full entity
     detail via attention.
     """
-    cdef int OFF_CORP_CASH           = 0
-    cdef int OFF_CORP_SHARE_PRICE    = 1
-    cdef int OFF_COMP_LOW            = 2
-    cdef int OFF_COMP_FACE           = 3
-    cdef int OFF_COMP_HIGH           = 4
-    cdef int OFF_COMP_ADJ_INCOME     = 5
-    cdef int OFF_COMP_STARS          = 6
-    cdef int OFF_FI_FLAG             = 7
-    cdef int OFF_CROSS_PRESIDENT     = 8
-    cdef int OFF_RECEIVERSHIP_SELLER = 9
-    cdef int OFF_MAX_AFFORD          = 10
+    cdef int OFF_CORP_CASH        = 0
+    cdef int OFF_CORP_SHARE_PRICE = 1
+    cdef int OFF_COMP_LOW         = 2
+    cdef int OFF_COMP_FACE        = 3
+    cdef int OFF_COMP_HIGH        = 4
+    cdef int OFF_COMP_ADJ_INCOME  = 5
+    cdef int OFF_COMP_STARS       = 6
+    cdef int OFF_FI_FLAG          = 7
+    cdef int OFF_CROSS_PRESIDENT  = 8
+    cdef int OFF_MAX_AFFORD       = 9
 
     cdef int active_corp = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_corp]
     cdef int active_company = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_company]
     cdef int active_player = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
 
-    # SELECT_PRICE requires both flags set (driver contract); bail if not.
-    if active_corp < 0 or active_corp >= NUM_CORPS:
-        return
-    if active_company < 0 or active_company >= NUM_COMPANIES:
-        return
-    if not corp_is_active(state, active_corp):
-        return
+    # Driver contract for PHASE_ACQ_SELECT_PRICE: both selectors stamped,
+    # corp active. SELECT_COMPANY's enumerator also rejects receivership
+    # sellers, so any LOC_CORP target reaching here has a live seller.
+    assert 0 <= active_corp < NUM_CORPS, \
+        f"_fill_acq_price_info_token: active_corp {active_corp} unset or out of range"
+    assert 0 <= active_company < NUM_COMPANIES, \
+        f"_fill_acq_price_info_token: active_company {active_company} unset or out of range"
+    assert corp_is_active(state, active_corp), \
+        f"_fill_acq_price_info_token: active_corp {active_corp} not active"
 
     cdef int cash = corp_cash(state, active_corp)
     cdef int share_price = corp_share_price(state, active_corp)
@@ -920,7 +920,6 @@ cdef void _fill_acq_price_info_token(
     cdef int owner = company_owner_id(state, active_company)
     cdef bint is_fi = loc == <int>LOC_FI
     cdef bint cross_pres = False
-    cdef bint recv_seller = False
     cdef int max_off
 
     buffer[tok, OFF_CORP_CASH] = <float>cash / CASH_DIVISOR
@@ -933,24 +932,18 @@ cdef void _fill_acq_price_info_token(
 
     if is_fi:
         buffer[tok, OFF_FI_FLAG] = 1.0
-    else:
+    elif not state.acq_same_president:
         # Cross-president fires only under ``acq_same_president=False`` when
         # the seller is a foreign player (LOC_PLAYER) or a foreign-president
-        # corp (LOC_CORP). Receivership corps have no president so they do
-        # not branch to ACQ_OFFER even in the cross-president variant.
-        if not state.acq_same_president:
-            if loc == <int>LOC_PLAYER and owner != active_player:
-                cross_pres = True
-            elif loc == <int>LOC_CORP and not corp_is_in_receivership(state, owner):
-                if corp_president_id(state, owner) != active_player:
-                    cross_pres = True
-        if loc == <int>LOC_CORP and corp_is_in_receivership(state, owner):
-            recv_seller = True
+        # live corp (LOC_CORP). Receivership corp sellers are already filtered
+        # out by SELECT_COMPANY's enumerator.
+        if loc == <int>LOC_PLAYER and owner != active_player:
+            cross_pres = True
+        elif loc == <int>LOC_CORP and corp_president_id(state, owner) != active_player:
+            cross_pres = True
 
     if cross_pres:
         buffer[tok, OFF_CROSS_PRESIDENT] = 1.0
-    if recv_seller:
-        buffer[tok, OFF_RECEIVERSHIP_SELLER] = 1.0
 
     # Max affordable offset: 0..50 range for negotiated buys; leave zero
     # for FI targets (price is fixed, decision is a single FI_BUY action).
