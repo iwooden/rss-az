@@ -46,6 +46,7 @@ from core.data cimport (
     DPHASE_DIVIDENDS,
     DPHASE_ISSUE,
     DPHASE_IPO,
+    DPHASE_PAR,
 )
 from core.driver cimport (
     ActionStatus,
@@ -62,6 +63,7 @@ from phases.end_card cimport apply_end_card
 from phases.dividends cimport apply_dividend_action
 from phases.issue cimport apply_issue_action
 from phases.ipo cimport apply_ipo_action
+from phases.par cimport apply_par_action
 from phases.acquisition cimport apply_acquisition_action
 from phases.acq_offer cimport apply_acq_offer_action
 from phases.closing cimport apply_closing_action
@@ -158,6 +160,8 @@ cdef class GameDriver:
             apply_issue_action(state, &info)
         elif phase_id == DPHASE_IPO:
             apply_ipo_action(state, &info)
+        elif phase_id == DPHASE_PAR:
+            apply_par_action(state, &info)
         else:
             assert False, f"_dispatch: unknown decision phase {phase_id}"
 

@@ -434,8 +434,8 @@ def _eval_server_serve(
                 warmup_n, num_tokens, token_dim, device=device,
             )
             # Spread phase ids across 0..NUM_PHASES-1 so every phase
-            # head gets traced; the hot path dispatches all 8 even when
-            # only a subset of rows belongs to each phase.
+            # head gets traced; the hot path dispatches all NUM_PHASES
+            # even when only a subset of rows belongs to each phase.
             dummy_p_cpu = torch.arange(warmup_n, dtype=torch.int8) % NUM_PHASES
             dummy_a = torch.zeros(warmup_n, k_max, dtype=torch.int16, device=device)
             dummy_nl = torch.ones(warmup_n, dtype=torch.int16, device=device)
@@ -1201,7 +1201,7 @@ class RemoteEvaluator(BaseEvaluator):
             - values_canonical: (num_players,) float32 in canonical order.
             - action_ids_legal: (n_legal,) uint16 phase-local legal action ids.
             - n_legal: count of legal actions.
-            - phase_id: decision phase id 0-7.
+            - phase_id: decision phase id 0-8.
         """
         phase_id = get_decision_phase_py(state)
         get_token_data(state, self._in_states_np[0])

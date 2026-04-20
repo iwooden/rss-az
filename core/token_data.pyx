@@ -134,7 +134,7 @@ from entities.player cimport refresh_player_cache_if_dirty
 DEF NUM_CORPS = 8
 DEF NUM_COMPANIES = 36
 DEF NUM_MARKET_SPACES = 27
-DEF NUM_DECISION_PHASES = 8
+DEF NUM_DECISION_PHASES = 9
 DEF NUM_COO_LEVELS = 7
 DEF MAX_MODEL_PLAYERS = 5          # 3-5p supported; one-hots are padded to 5
 DEF AUCTION_CAP_INT = 15           # INVEST auction price offsets per company
@@ -308,7 +308,7 @@ cdef void _fill_buffer(
         _fill_issue_token(state, buffer, tok)
     tok += 1
 
-    if phase == <int>GamePhases.PHASE_IPO:
+    if phase == <int>GamePhases.PHASE_IPO or phase == <int>GamePhases.PHASE_PAR:
         _fill_par_token(state, buffer, tok)
     tok += 1
 

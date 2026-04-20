@@ -37,7 +37,7 @@ from core.token_data import TokenDataSize
 # above. This module is strictly a consumer; editing policy head widths or
 # adding token types happens over there.
 
-NUM_PHASES = 8
+NUM_PHASES = 9
 K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 
 _GELU_APPROX = "tanh"
@@ -136,7 +136,7 @@ class RSSTransformerNet(nn.Module):
     # Declared for pyright: ``register_buffer`` adds dynamic attributes whose
     # type isn't otherwise visible to the checker.
     _k_range: torch.Tensor
-    # Cached per-phase head dispatch tuple, indexed by phase_id 0..7.
+    # Cached per-phase head dispatch tuple, indexed by phase_id 0..8.
     _dispatch: tuple[Callable[[torch.Tensor], torch.Tensor], ...]
 
     def __init__(self, cfg: TransformerConfig) -> None:
@@ -259,12 +259,19 @@ class RSSTransformerNet(nn.Module):
         self.acquisition_corp_bias = nn.Linear(d, 52)
         self.acquisition_company_bias = nn.Linear(d, 52)
 
-        # IPO now reads par-price logits directly from each corp token. This is
-        # a cleaner entity-readout signal than routing the decision through the
-        # PAR token projection.
+        # IPO selects which corp floats the active company; par price is chosen
+        # in the separate PAR phase. One logit per corp token — clean
+        # entity-readout signal.
         self.corp_ipo_head = nn.Sequential(
             nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 14),  # 14 par prices per corp
+            nn.Linear(d // 2, 1),
+        )
+        # PAR reads 14 par-price logits from the par info token. No pass
+        # anchor: PAR has no pass action — once a corp is selected the owner
+        # must commit to a price.
+        self.par_price_head = nn.Sequential(
+            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d // 2, 14),
         )
 
         # --- Value head (applied per player token) ---
@@ -282,12 +289,12 @@ class RSSTransformerNet(nn.Module):
             "_k_range", torch.arange(K_MAX, dtype=torch.long), persistent=False,
         )
 
-        # Per-phase head dispatch, indexed by phase_id 0..7. Built once;
+        # Per-phase head dispatch, indexed by phase_id 0..8. Built once;
         # the bound-method refs stay valid for the module's lifetime.
         self._dispatch = (
             self._policy_invest, self._policy_bid, self._policy_acquisition,
             self._policy_acq_offer, self._policy_closing, self._policy_dividends,
-            self._policy_issue, self._policy_ipo,
+            self._policy_issue, self._policy_ipo, self._policy_par,
         )
 
         self._init_weights()
@@ -391,11 +398,14 @@ class RSSTransformerNet(nn.Module):
         return torch.cat([pass_logit, issue], dim=-1)
 
     def _policy_ipo(self, t: torch.Tensor) -> torch.Tensor:
-        """IPO: pass(1) + per-corp par_price logits(8*14=112) = 113."""
+        """IPO: pass(1) + per-corp select logit(8) = 9."""
         pass_logit = self.pass_head(t[:, self._pass_ipo_idx])                 # (n, 1)
-        ipo = self.corp_ipo_head(t[:, self._corp_slice])                      # (n, 8, 14)
-        # flatten(1): reshape(n, -1) is ambiguous for empty (n=0) tensors.
-        return torch.cat([pass_logit, ipo.flatten(1)], dim=-1)
+        select = self.corp_ipo_head(t[:, self._corp_slice]).squeeze(-1)       # (n, 8)
+        return torch.cat([pass_logit, select], dim=-1)
+
+    def _policy_par(self, t: torch.Tensor) -> torch.Tensor:
+        """PAR: 14 par-price logits. No pass."""
+        return self.par_price_head(t[:, self._par_idx])                       # (n, 14)
 
     # ------------------------------------------------------------------
     # Policy dispatch (handles mixed-phase batches)
@@ -444,11 +454,11 @@ class RSSTransformerNet(nn.Module):
         out = torch.full((B, K), -1e9, dtype=torch.float32, device=tokens.device)
 
         # No `if not mask.any(): continue` early-exit: that path forces a
-        # GPU→CPU sync (8 per forward) which dominates eval latency on
-        # CPU-bound workloads like analyze_game. Empty masks/indices flow
+        # GPU→CPU sync (NUM_PHASES per forward) which dominates eval latency
+        # on CPU-bound workloads like analyze_game. Empty masks/indices flow
         # cleanly through linear / cat / gather / masked_scatter as no-op
-        # (0,*) ops, so we just dispatch all 8 phases unconditionally and
-        # let the GPU pipeline absorb the extra small launches.
+        # (0,*) ops, so we just dispatch all phases unconditionally and let
+        # the GPU pipeline absorb the extra small launches.
         # `action_ids` tail positions [n_legals[i]:] may hold stale
         # garbage (shared-memory worker slots are reused across phases
         # and only [:n_legals[i]] is written per enumeration). We clamp
@@ -593,7 +603,7 @@ if __name__ == "__main__":
         model.company_close_head, model.auction_raise_head, model.dividend_head,
         model.issue_head, model.acq_offer_head,
         model.acquisition_corp_bias, model.acquisition_company_bias,
-        model.corp_ipo_head,
+        model.corp_ipo_head, model.par_price_head,
     ]
     policy_params = sum(sum(p.numel() for p in m.parameters()) for m in policy_modules)
     policy_params += model.acquisition_U.numel() + model.acquisition_V.numel()
@@ -611,7 +621,7 @@ if __name__ == "__main__":
 
     phase_names = [
         "INVEST", "BID", "ACQUISITION", "ACQ_OFFER",
-        "CLOSING", "DIVIDENDS", "ISSUE", "IPO",
+        "CLOSING", "DIVIDENDS", "ISSUE", "IPO", "PAR",
     ]
     print()
     for name, size in zip(phase_names, PHASE_ACTION_SIZES):

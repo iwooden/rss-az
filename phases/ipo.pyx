@@ -1,13 +1,15 @@
 """IPO phase handler.
 
-PHASE_IPO (Phase 10) is a decision phase where each player-owned company
-(LOC_PLAYER) may be floated into a new corporation. Companies are processed
-in descending face-value order. For each company, the owner gets a single
-decision: pass, or float a corp at a valid par price. The action space is
-113 = 1 pass + 8x14 corp x par_index (merged IPO+PAR -- no separate PAR phase).
+PHASE_IPO (Phase 10) is the corp-select half of the Form Corporation flow.
+Companies are processed in descending face-value order. For each company the
+owner gets: pass, or select one of the inactive corps. Action space is
+9 = 1 pass + 8 corps. Par-price selection is PHASE_PAR; after PAR resolves,
+``_advance_to_next_company`` walks to the next company (back to IPO) or
+transitions to INVEST when none remain.
 
-After all companies are processed, the engine starts a new turn and
-transitions to PHASE_INVEST.
+Active flags: IPO entry sets ``active_company`` and leaves ``active_corp=-1``.
+Selecting a corp sets ``active_corp`` and switches to PHASE_PAR; the PAR
+handler clears ``active_corp`` and runs ``_advance_to_next_company``.
 
 Reference: RULES.md "Form Corporation" procedure.
 
@@ -15,12 +17,7 @@ All state access goes through entity handles.
 """
 
 from core.state cimport GameState
-from core.data cimport (
-    GameConstants, GamePhases,
-    PAR_PRICE_VALID,
-    COMPANY_STARS,
-)
-from entities.corp cimport _simulate_float
+from core.data cimport GameConstants, GamePhases
 from core.actions cimport ActionInfo, ACTION_PASS, ACTION_IPO
 from entities.company cimport (
     LOC_PLAYER,
@@ -30,9 +27,6 @@ from entities.company cimport (
 )
 
 from entities import turn as turn_module
-from entities import corp as corp_module
-from entities import player as player_module
-from entities import market as market_module
 
 
 # =============================================================================
@@ -71,32 +65,6 @@ cdef int _find_next_ipo_company(GameState state) noexcept:
     return best_id
 
 
-cdef void _process_ipo(GameState state, int corp_id, int par_index) noexcept:
-    """Execute the Form Corporation procedure for the active IPO company."""
-    cdef int company_id = turn_module.TURN.get_active_company(state)
-    cdef int player_id = company_owner_id(state, company_id)
-    cdef int face_value = company_face_value(company_id)
-
-    # Canonical float simulation — returns everything derived from
-    # (face_value, par_index). The same helper drives the extractor's
-    # par-token preview so they can't drift.
-    cdef int float_shares, market_index, player_payment, corp_cash, issued
-    (float_shares, market_index, player_payment, corp_cash, issued) = (
-        _simulate_float(face_value, par_index)
-    )
-
-    # Float corp (handles: activate, transfer company, claim market space,
-    # set price index, distribute shares, set presidency). Issued shares
-    # are set by ``float_corp`` itself from ``float_shares``.
-    corp_module.CORPS[corp_id].float_corp(state, player_id, company_id, market_index, float_shares)
-
-    corp_module.CORPS[corp_id].set_cash(state, corp_cash)
-    player_module.PLAYERS[player_id].add_cash(state, -player_payment)
-
-    # Clear from remaining
-    turn_module.TURN.set_ipo_remaining(state, company_id, False)
-
-
 cdef void _transition_out_of_ipo(GameState state) noexcept:
     """End-of-phase cleanup; starts a new turn."""
     # Clear IPO state
@@ -115,7 +83,12 @@ cdef void _transition_out_of_ipo(GameState state) noexcept:
 
 
 cdef void _advance_to_next_company(GameState state) noexcept:
-    """Find next company or transition out of IPO."""
+    """Find next company or transition out of IPO.
+
+    Called by ``setup_ipo_phase`` on entry, by the IPO PASS branch, and by
+    the PAR handler after a float completes. On finding a company the engine
+    is left in PHASE_IPO with ``active_company`` and ``active_player`` seeded.
+    """
     cdef int company_id = _find_next_ipo_company(state)
     if company_id < 0:
         _transition_out_of_ipo(state)
@@ -125,6 +98,9 @@ cdef void _advance_to_next_company(GameState state) noexcept:
     turn_module.TURN.set_active_company(state, company_id)
     cdef int player_id = company_owner_id(state, company_id)
     turn_module.TURN.set_active_player(state, player_id)
+    # IPO is a per-company decision; ensure the engine phase is PHASE_IPO
+    # (PAR handler walks us back here after a float).
+    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_IPO)
 
 
 # =============================================================================
@@ -140,7 +116,12 @@ cdef void setup_ipo_phase(GameState state) noexcept:
 
 
 cdef void apply_ipo_action(GameState state, ActionInfo* info) noexcept:
-    """Apply an IPO decision for the active company."""
+    """Apply an IPO corp-select decision for the active company.
+
+    PASS: drop the active company from the remaining set and advance.
+    ACTION_IPO: set ``active_corp`` and switch to PHASE_PAR. The float
+    (share transfer, cash flows, market claim) happens in the PAR handler.
+    """
     cdef int company_id
     if info.action_type == <int>ACTION_PASS:
         company_id = turn_module.TURN.get_active_company(state)
@@ -150,8 +131,8 @@ cdef void apply_ipo_action(GameState state, ActionInfo* info) noexcept:
         return
 
     assert info.action_type == <int>ACTION_IPO, f"apply_ipo_action: unexpected type {info.action_type}"
-    _process_ipo(state, info.corp_id, info.amount)
-    _advance_to_next_company(state)
+    turn_module.TURN.set_active_corp(state, info.corp_id)
+    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_PAR)
 
 
 # =============================================================================
@@ -163,12 +144,12 @@ def setup_ipo_phase_py(GameState state):
     setup_ipo_phase(state)
 
 
-def apply_ipo_action_py(GameState state, int action_type, int corp_id=-1, int par_index=-1):
+def apply_ipo_action_py(GameState state, int action_type, int corp_id=-1):
     """Python-accessible shim around the cdef ``apply_ipo_action``."""
     cdef ActionInfo ai
     ai.phase = 7  # DPHASE_IPO
     ai.action_type = action_type
     ai.corp_id = corp_id
     ai.company_id = -1
-    ai.amount = par_index
+    ai.amount = -1
     apply_ipo_action(state, &ai)

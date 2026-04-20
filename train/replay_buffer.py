@@ -28,7 +28,7 @@ class TrainingExample(NamedTuple):
     """
 
     state: np.ndarray  # (state_size_int16,) int16 — raw compact state
-    phase_id: int  # decision phase 0-7
+    phase_id: int  # decision phase 0-8
     n_legal: int  # number of legal actions at this state
     action_ids: np.ndarray  # (n_legal,) uint16 — phase-local legal ids
     policy_target: np.ndarray  # (n_legal,) float32 — MCTS visit probs

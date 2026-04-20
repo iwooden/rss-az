@@ -44,6 +44,7 @@ from core.data cimport (
     ACTION_SIZE_DIVIDENDS,
     ACTION_SIZE_ISSUE,
     ACTION_SIZE_IPO,
+    ACTION_SIZE_PAR,
     DPHASE_INVEST,
     DPHASE_BID,
     DPHASE_ACQUISITION,
@@ -52,6 +53,7 @@ from core.data cimport (
     DPHASE_DIVIDENDS,
     DPHASE_ISSUE,
     DPHASE_IPO,
+    DPHASE_PAR,
     ENGINE_TO_DECISION_PHASE,
     COMPANY_FACE_VALUE,
     COMPANY_LOW_PRICE,
@@ -96,7 +98,7 @@ ActionInfoTuple = namedtuple('ActionInfoTuple', [
 # =============================================================================
 
 # Populated at module import by ``_init_phase_action_sizes``. The pxd
-# declares this as ``cdef int _PHASE_ACTION_SIZES_C[8]``; the init function
+# declares this as ``cdef int _PHASE_ACTION_SIZES_C[9]``; the init function
 # fills it from the ``ActionSize`` enum members cimported from ``core.data``
 # so phase sizes are readable via a single indexed lookup rather than a
 # switch. The table name is distinct from ``core.data.PHASE_ACTION_SIZES``
@@ -110,6 +112,7 @@ cdef void _init_phase_action_sizes() noexcept nogil:
     _PHASE_ACTION_SIZES_C[<int>DPHASE_DIVIDENDS] = ACTION_SIZE_DIVIDENDS
     _PHASE_ACTION_SIZES_C[<int>DPHASE_ISSUE] = ACTION_SIZE_ISSUE
     _PHASE_ACTION_SIZES_C[<int>DPHASE_IPO] = ACTION_SIZE_IPO
+    _PHASE_ACTION_SIZES_C[<int>DPHASE_PAR] = ACTION_SIZE_PAR
 
 
 _init_phase_action_sizes()
@@ -199,7 +202,11 @@ cdef int encode_action(ActionInfo info) noexcept nogil:
         if info.action_type == ACTION_PASS:
             return 0
         if info.action_type == ACTION_IPO:
-            return encode_ipo(info.corp_id, info.amount)
+            return encode_ipo(info.corp_id)
+
+    elif phase == DPHASE_PAR:
+        if info.action_type == ACTION_PAR:
+            return encode_par(info.amount)
 
     assert False, f"encode_action: illegal (phase={phase}, type={info.action_type})"
 
@@ -303,11 +310,15 @@ cdef ActionInfo decode_action(int phase_id, int action_id) noexcept nogil:
     if phase_id == DPHASE_IPO:
         if action_id == 0:
             info.action_type = ACTION_PASS
-            return info
-        idx = action_id - 1
-        info.action_type = ACTION_IPO
-        info.corp_id = idx // 14
-        info.amount = idx % 14
+        else:
+            info.action_type = ACTION_IPO
+            info.corp_id = action_id - 1
+        return info
+
+    # --- PAR --------------------------------------------------------------
+    if phase_id == DPHASE_PAR:
+        info.action_type = ACTION_PAR
+        info.amount = action_id
         return info
 
     assert False, f"decode_action: unknown phase {phase_id}"
@@ -329,7 +340,8 @@ cdef int get_decision_phase(GameState state) noexcept nogil:
     Python singleton access, the whole function stays nogil.
     """
     cdef int engine_phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
-    assert 0 <= engine_phase < 12, f"corrupt engine phase: {engine_phase}"
+    assert 0 <= engine_phase < <int>GameConstants.NUM_PHASES, \
+        f"corrupt engine phase: {engine_phase}"
     return ENGINE_TO_DECISION_PHASE[engine_phase]
 
 
@@ -745,6 +757,33 @@ cdef int _enumerate_issue(
     return 2
 
 
+cdef inline bint _any_par_affordable(
+    int star_tier, int face_value, int player_cash, const int16_t* market_ptr,
+) noexcept nogil:
+    """Return True iff at least one par price is valid for the star tier,
+    has an available market slot, and is affordable by the active player.
+
+    Shared predicate between _enumerate_ipo (per-corp any-affordable gate)
+    and _enumerate_par (per-par emission). Keeping the inner arithmetic
+    identical between the two avoids a class of bugs where IPO offers a
+    corp with no legal PAR follow-up.
+    """
+    cdef int par_index, par_price, market_index, float_shares, player_payment
+    for par_index in range(<int>GameConstants.NUM_PAR_PRICES):
+        if PAR_PRICE_VALID[star_tier - 1][par_index] == 0:
+            continue
+        par_price = ALL_PAR_PRICES[par_index]
+        market_index = PRICE_TO_MARKET_INDEX[par_price]
+        if market_ptr[market_index] == 0:
+            continue
+        float_shares = 2 if face_value > par_price else 1
+        player_payment = (float_shares * par_price) - face_value
+        if player_payment > player_cash:
+            continue
+        return True
+    return False
+
+
 cdef int _enumerate_ipo(
     GameState state, uint16_t* ids,
 ) noexcept nogil:
@@ -752,59 +791,87 @@ cdef int _enumerate_ipo(
 
     Ordering:
       1. ``id 0``: pass (always legal)
-      2. ``ids 1..112``: ``1 + corp_id * 14 + par_index``.
-         Emitted for each inactive corp and each affordable, star-valid,
-         market-available par price.
+      2. ``ids 1..8``: ``1 + corp_id``. Emitted for each inactive corp
+         for which at least one par price is star-valid, market-available,
+         and affordable by the active player. The PAR handler re-checks
+         per-par legality when the corp is committed.
 
-    Returns the number of IDs written. Worst case: 113 (pass + 8*14).
+    Returns the number of IDs written. Worst case: 9 (pass + 8 corps).
     """
     cdef int16_t* d = &state._data[0]
     cdef int count = 0
 
-    # Get active IPO company
     cdef int company_id = <int>d[LAYOUT.turn_offset + TURN_OFFSETS.active_company]
     assert company_id >= 0, "_enumerate_ipo: active_company unset"
 
     cdef int star_tier = COMPANY_STARS[company_id]
     cdef int face_value = COMPANY_FACE_VALUE[company_id]
 
-    # Get active player and their cash
     cdef int player_id = <int>d[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
     cdef int player_base = LAYOUT.players_offset + player_id * PLAYER_FIELDS.size
     cdef int player_cash = <int>d[player_base + PLAYER_FIELDS.cash]
+    cdef const int16_t* market_ptr = d + LAYOUT.market_offset
 
-    cdef int corp_id, par_index, par_price, market_index
-    cdef int float_shares, player_payment
+    cdef int corp_id
 
     # --- id 0: pass (always legal) -------------------------------------------
     ids[count] = 0
     count += 1
 
-    # --- ids 1..112: (corp, par_index) combinations --------------------------
+    # --- ids 1..8: corp-select -----------------------------------------------
     for corp_id in range(<int>GameConstants.NUM_CORPS):
         if corp_is_active(state, corp_id):
             continue
+        if not _any_par_affordable(star_tier, face_value, player_cash, market_ptr):
+            continue
+        _require_action_capacity(count, b"IPO")
+        ids[count] = <uint16_t>encode_ipo(corp_id)
+        count += 1
 
-        for par_index in range(<int>GameConstants.NUM_PAR_PRICES):
-            if PAR_PRICE_VALID[star_tier - 1][par_index] == 0:
-                continue
+    return count
 
-            par_price = ALL_PAR_PRICES[par_index]
-            market_index = PRICE_TO_MARKET_INDEX[par_price]
 
-            # Market space must be available
-            if <int>d[LAYOUT.market_offset + market_index] == 0:
-                continue
+cdef int _enumerate_par(
+    GameState state, uint16_t* ids,
+) noexcept nogil:
+    """Emit every legal DPHASE_PAR action in deterministic order.
 
-            # Player must be able to afford
-            float_shares = 2 if face_value > par_price else 1
-            player_payment = (float_shares * par_price) - face_value
-            if player_payment > player_cash:
-                continue
+    Ordering:
+      ``ids 0..13``: ``par_index``. Emitted for each par price that is
+      valid for the active_company's star tier, has an available market
+      slot, and is affordable by the active player. No pass.
 
-            _require_action_capacity(count, b"IPO")
-            ids[count] = <uint16_t>(1 + corp_id * 14 + par_index)
-            count += 1
+    Returns the number of IDs written. Worst case: 14.
+    """
+    cdef int16_t* d = &state._data[0]
+    cdef int count = 0
+
+    cdef int company_id = <int>d[LAYOUT.turn_offset + TURN_OFFSETS.active_company]
+    assert company_id >= 0, "_enumerate_par: active_company unset"
+
+    cdef int star_tier = COMPANY_STARS[company_id]
+    cdef int face_value = COMPANY_FACE_VALUE[company_id]
+
+    cdef int player_id = <int>d[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
+    cdef int player_base = LAYOUT.players_offset + player_id * PLAYER_FIELDS.size
+    cdef int player_cash = <int>d[player_base + PLAYER_FIELDS.cash]
+
+    cdef int par_index, par_price, market_index, float_shares, player_payment
+
+    for par_index in range(<int>GameConstants.NUM_PAR_PRICES):
+        if PAR_PRICE_VALID[star_tier - 1][par_index] == 0:
+            continue
+        par_price = ALL_PAR_PRICES[par_index]
+        market_index = PRICE_TO_MARKET_INDEX[par_price]
+        if <int>d[LAYOUT.market_offset + market_index] == 0:
+            continue
+        float_shares = 2 if face_value > par_price else 1
+        player_payment = (float_shares * par_price) - face_value
+        if player_payment > player_cash:
+            continue
+        _require_action_capacity(count, b"PAR")
+        ids[count] = <uint16_t>encode_par(par_index)
+        count += 1
 
     return count
 
@@ -843,6 +910,8 @@ cdef int enumerate_legal_actions(
         count = _enumerate_issue(state, action_ids)
     elif phase_id == DPHASE_IPO:
         count = _enumerate_ipo(state, action_ids)
+    elif phase_id == DPHASE_PAR:
+        count = _enumerate_par(state, action_ids)
 
     # Overflow is a configuration bug, not a recoverable condition. This is
     # intentionally checked in release builds, not only with Python asserts.
@@ -921,6 +990,7 @@ ACTION_CLOSE_PY = ACTION_CLOSE
 ACTION_DIVIDEND_PY = ACTION_DIVIDEND
 ACTION_ISSUE_PY = ACTION_ISSUE
 ACTION_IPO_PY = ACTION_IPO
+ACTION_PAR_PY = ACTION_PAR
 
 
 # =============================================================================
@@ -941,4 +1011,5 @@ assert 1 == ACTION_SIZE_ACQ_OFFER - 1
 assert encode_closing_close(35) == ACTION_SIZE_CLOSING - 1
 assert 25 == ACTION_SIZE_DIVIDENDS - 1
 assert 1 == ACTION_SIZE_ISSUE - 1
-assert encode_ipo(7, 13) == ACTION_SIZE_IPO - 1
+assert encode_ipo(7) == ACTION_SIZE_IPO - 1
+assert encode_par(13) == ACTION_SIZE_PAR - 1

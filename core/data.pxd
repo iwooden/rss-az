@@ -15,11 +15,11 @@ cpdef enum GameConstants:
     NUM_COMPANIES = 36
     NUM_CORPS = 8
     NUM_MARKET_SPACES = 27
-    # 8 decision phases + 4 automated/terminal phases:
-    # INV, BID, ACQUISITION, ACQ_OFFER, CLOSING, DIVIDENDS, ISSUE, IPO
+    # 9 decision phases + 4 automated/terminal phases:
+    # INV, BID, ACQUISITION, ACQ_OFFER, CLOSING, DIVIDENDS, ISSUE, IPO, PAR
     # plus WRAP_UP, INCOME, END_CARD, GAME_OVER.
-    NUM_PHASES = 12
-    NUM_DECISION_PHASES = 8
+    NUM_PHASES = 13
+    NUM_DECISION_PHASES = 9
     NUM_COO_LEVELS = 7
     MAX_PLAYERS = 6
     MAX_STAR_TIERS = 5
@@ -43,9 +43,10 @@ cpdef enum GamePhases:
     PHASE_ISSUE_SHARES = 9
     PHASE_IPO = 10
     PHASE_GAME_OVER = 11
+    PHASE_PAR = 12
 
-# Decision phases — the 8-phase compressed space the transformer sees.
-# The engine's 12 ``GamePhases`` fold down into these via the
+# Decision phases — the 9-phase compressed space the transformer sees.
+# The engine's 13 ``GamePhases`` fold down into these via the
 # ``ENGINE_TO_DECISION_PHASE`` table declared below: WRAP_UP / INCOME /
 # END_CARD / GAME_OVER are automated or terminal and map to -1 so the
 # driver fast-forwards through them without consulting the action module.
@@ -60,6 +61,7 @@ cpdef enum DecisionPhase:
     DPHASE_DIVIDENDS = 5
     DPHASE_ISSUE = 6
     DPHASE_IPO = 7
+    DPHASE_PAR = 8
 
 # Engine-phase → decision-phase lookup table. Indexed by ``GamePhases``;
 # slots corresponding to automated/terminal phases hold -1. Filled in at
@@ -67,7 +69,7 @@ cpdef enum DecisionPhase:
 # array directly (``get_decision_phase`` in ``core/actions.pyx`` reads it
 # on the nogil hot path); Python callers get a plain-int list mirror
 # named ``ENGINE_TO_DECISION_PHASE`` on ``core.data``.
-cdef int ENGINE_TO_DECISION_PHASE[12]
+cdef int ENGINE_TO_DECISION_PHASE[13]
 
 # Corp indices for special ability checks
 cpdef enum CorpIndices:
@@ -99,7 +101,8 @@ cpdef enum ActionSize:
     ACTION_SIZE_CLOSING = 37        # 1 pass + 36 company closes
     ACTION_SIZE_DIVIDENDS = 26      # dividend amounts 0..25
     ACTION_SIZE_ISSUE = 2           # pass + issue
-    ACTION_SIZE_IPO = 113           # 1 pass + 8*14 corp x par index
+    ACTION_SIZE_IPO = 9             # 1 pass + 8 corp-select (par index chosen in PAR)
+    ACTION_SIZE_PAR = 14            # 14 par indices (no pass)
     MAX_ACTION_SIZE = 14977         # max over all phases (ACQUISITION)
 
 # Normalization constants used during token extraction for NN input.

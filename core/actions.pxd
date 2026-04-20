@@ -49,6 +49,7 @@ from core.data cimport (
     ACTION_SIZE_DIVIDENDS,
     ACTION_SIZE_ISSUE,
     ACTION_SIZE_IPO,
+    ACTION_SIZE_PAR,
     MAX_ACTION_SIZE,
     DPHASE_INVEST,
     DPHASE_BID,
@@ -58,6 +59,7 @@ from core.data cimport (
     DPHASE_DIVIDENDS,
     DPHASE_ISSUE,
     DPHASE_IPO,
+    DPHASE_PAR,
 )
 
 
@@ -87,7 +89,7 @@ cdef enum:
 # avoid confusion with the Python-level ``PHASE_ACTION_SIZES`` list exported
 # by ``core.data`` — that list is the Python consumer surface; this table
 # is the Cython-side lookup.
-cdef int _PHASE_ACTION_SIZES_C[8]
+cdef int _PHASE_ACTION_SIZES_C[9]
 
 
 # =============================================================================
@@ -98,6 +100,7 @@ cdef enum ActionType:
     # ACTION_PASS is the universal "opt out" for every phase that has one:
     # INVEST pass, BID leave-auction, ACQUISITION pass, ACQ_OFFER pass,
     # CLOSING pass, ISSUE pass, IPO pass. They all decode to ACTION_PASS.
+    # PAR has no pass.
     ACTION_PASS = 0
     ACTION_AUCTION = 1         # INVEST: select company_id to auction (price chosen in BID)
     ACTION_BUY_SHARE = 2       # INVEST: buy corp_id
@@ -109,7 +112,8 @@ cdef enum ActionType:
     ACTION_CLOSE = 8           # CLOSING: close company_id
     ACTION_DIVIDEND = 9        # DIVIDENDS: pay dividend of amount
     ACTION_ISSUE = 10          # ISSUE: issue one share
-    ACTION_IPO = 11            # IPO: start corp_id at par index amount
+    ACTION_IPO = 11            # IPO: select corp_id to float (par index chosen in PAR)
+    ACTION_PAR = 12            # PAR: set par index for active_corp (float executed here)
 
 
 # =============================================================================
@@ -119,9 +123,9 @@ cdef enum ActionType:
 cdef struct ActionInfo:
     int phase           # DecisionPhase
     int action_type     # ActionType
-    int corp_id         # -1 if not applicable
+    int corp_id         # -1 if not applicable (IPO corp select, PAR target)
     int company_id      # -1 if not applicable
-    int amount          # bid_offset / price_offset / dividend / par_index / raise_offset / -1
+    int amount          # bid_offset / price_offset / dividend / par_index (PAR) / raise_offset / -1
 
 
 # =============================================================================
@@ -153,8 +157,11 @@ cdef inline int encode_acquisition_fi_buy(int corp_id, int company_id) noexcept 
 cdef inline int encode_closing_close(int company_id) noexcept nogil:
     return 1 + company_id
 
-cdef inline int encode_ipo(int corp_id, int par_index) noexcept nogil:
-    return 1 + corp_id * 14 + par_index
+cdef inline int encode_ipo(int corp_id) noexcept nogil:
+    return 1 + corp_id
+
+cdef inline int encode_par(int par_index) noexcept nogil:
+    return par_index
 
 
 # Reverse of decode_action: pack an ActionInfo back into its phase-local id.

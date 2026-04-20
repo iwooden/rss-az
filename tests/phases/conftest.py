@@ -1223,9 +1223,9 @@ def assert_token_data_invariants(state, msg=""):
 
     # Par / IPO token -----------------------------------------------------
     pm2 = f"{msg}\nPar/IPO token"
-    if phase != int(GamePhases.PHASE_IPO):
+    if phase != int(GamePhases.PHASE_IPO) and phase != int(GamePhases.PHASE_PAR):
         _assert_zero_row(buf[par_tok], T_FLAG,
-                         f"{pm2} must be all-zero outside PHASE_IPO (phase={phase})")
+                         f"{pm2} must be all-zero outside PHASE_IPO/PAR (phase={phase})")
     else:
         # Per-par-price outputs (player_cash / corp_cash / issued_shares)
         # verified via the canonical ``simulate_float`` helper — same

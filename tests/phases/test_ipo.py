@@ -1,18 +1,16 @@
-"""Tests for the IPO phase.
+"""Tests for the IPO phase (corp-select half of Form Corporation).
 
-Covers: pass vs IPO actions, share distribution rules (FV > par → 2 shares each,
-otherwise 1 share each), player/corp cash flows, market space claim, corp
-activation and presidency, processing order (descending face value), legal-action
-enumeration (star tier, market availability, affordability), and the phase
-transition back to INVEST at the start of a new turn.
+Covers: setup, per-company remaining flags, descending face-value processing
+order, pass semantics, corp-select legality (inactive-only, any-affordable-par
+gate, market / star-tier / affordability filters applied via ``_any_par_affordable``),
+and the IPO→PAR transition (active_corp set, phase=PHASE_PAR). Float execution
+and PAR legality live in ``test_par.py``.
 """
-import pytest
-
 from core.actions import (
     ACTION_PASS_PY as ACTION_PASS,
     ACTION_IPO_PY as ACTION_IPO,
 )
-from core.data import GamePhases, GameConstants, ALL_PAR_PRICES
+from core.data import GamePhases, GameConstants
 from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.corp import CORPS
@@ -24,7 +22,6 @@ from tests.phases.conftest import (
     apply_and_verify,
     get_legal_actions,
     find_legal_action,
-    find_all_legal_actions,
     float_corp_for_test,
 )
 from tests.phases.helpers.finance import set_player_cashs
@@ -42,20 +39,6 @@ CO_2S = 6      # first orange (star 2, FV 11)
 CO_3S = 14     # first yellow (star 3, FV 20)
 CO_4S = 22     # first green  (star 4, FV 30)
 CO_5S = 35     # CDG (star 5, FV 60)
-
-# Par-price → par-index shortcuts derived from the engine's table.
-# ALL_PAR_PRICES = (10, 11, 12, 13, 14, 16, 18, 20, 22, 24, 27, 30, 33, 37).
-PAR_10 = ALL_PAR_PRICES.index(10)
-PAR_14 = ALL_PAR_PRICES.index(14)
-PAR_16 = ALL_PAR_PRICES.index(16)
-PAR_18 = ALL_PAR_PRICES.index(18)
-PAR_20 = ALL_PAR_PRICES.index(20)
-PAR_22 = ALL_PAR_PRICES.index(22)
-PAR_24 = ALL_PAR_PRICES.index(24)
-PAR_27 = ALL_PAR_PRICES.index(27)
-PAR_30 = ALL_PAR_PRICES.index(30)
-PAR_33 = ALL_PAR_PRICES.index(33)
-PAR_37 = ALL_PAR_PRICES.index(37)
 
 
 def _give_company(state, company_id, player_id=0):
@@ -84,7 +67,7 @@ def _enter_ipo(state, owners, cash_by_player=None):
 # =============================================================================
 
 class TestEnumeration:
-    """Legal actions: pass + (inactive corp × valid par × market available × affordable)."""
+    """Legal actions: pass + (inactive corp × at-least-one-affordable-par)."""
 
     def test_pass_always_legal(self, game_state):
         """PASS is legal in IPO whenever a company is being offered."""
@@ -92,29 +75,21 @@ class TestEnumeration:
         pass_id = find_legal_action(game_state, action_type=ACTION_PASS)
         assert pass_id == 0
 
-    def test_only_valid_par_prices_for_star_tier(self, game_state):
-        """Star-3 company only exposes par indices 5–10 (prices 16–27)."""
-        _enter_ipo(game_state, {CO_3S: 0})
-        ipo_actions = [info for _, info in get_legal_actions(game_state)
-                       if info.action_type == ACTION_IPO]
-        par_indices = {info.amount for info in ipo_actions}
-        assert par_indices == {PAR_16, PAR_18, PAR_20, PAR_22, PAR_24, PAR_27}
-
     def test_all_inactive_corps_offered(self, game_state):
-        """Every inactive corp shows up with every valid par for the star tier."""
+        """Every inactive corp shows up exactly once — par choice is in PAR."""
         _enter_ipo(game_state, {CO_3S: 0}, {0: 1000})
         ipo_actions = [info for _, info in get_legal_actions(game_state)
                        if info.action_type == ACTION_IPO]
-        # 8 corps × 6 valid par prices each (star 3 tier has 6 valid pars)
-        assert len(ipo_actions) == 8 * 6
+        # 8 corps × 1 action each (single corp-select logit).
+        assert len(ipo_actions) == int(GameConstants.NUM_CORPS)
         corp_ids = {info.corp_id for info in ipo_actions}
         assert corp_ids == set(range(int(GameConstants.NUM_CORPS)))
 
     def test_action_id_encoding(self, game_state):
-        """Action id = 1 + corp_id * 14 + par_index."""
+        """Action id for IPO corp-select is ``1 + corp_id``."""
         _enter_ipo(game_state, {CO_3S: 0}, {0: 1000})
-        aid = find_legal_action(game_state, action_type=ACTION_IPO, corp_id=3, amount=PAR_20)
-        assert aid == 1 + 3 * 14 + PAR_20
+        aid = find_legal_action(game_state, action_type=ACTION_IPO, corp_id=3)
+        assert aid == 1 + 3
 
     def test_active_corp_excluded(self, game_state):
         """An already-floated corp is not a valid IPO target."""
@@ -128,34 +103,29 @@ class TestEnumeration:
         assert 0 not in corp_ids
         assert len(corp_ids) == int(GameConstants.NUM_CORPS) - 1
 
-    def test_occupied_market_space_excludes_par(self, game_state):
-        """Par whose market slot is occupied is not offered."""
-        _enter_ipo(game_state, {CO_3S: 0}, {0: 1000})
-        # Block the market space for par price 20.
+    def test_corp_excluded_when_no_par_affordable(self, game_state):
+        """Corp hidden from IPO if player can't afford *any* valid par price."""
+        # CO_3S (FV=20): cheapest valid par is 20 (cost 0). With $0, par=20 is
+        # affordable (cost 0). Use CO_4S (FV=30): cheapest affordable par costs
+        # more than $0 for all pars except equality — par=30 costs 0.
+        # So we need a company where every par costs > 0. Use CO_3S but charge
+        # $-1 — not possible. Instead, block the $0-cost par market slot.
+        _enter_ipo(game_state, {CO_3S: 0}, {0: 0})
+        # CO_3S: FV=20 so par=20 has cost 0 (the sole affordable par at $0).
         MARKET.set_space_available(game_state, MARKET.get_index_for_price(20), False)
-        for _, info in get_legal_actions(game_state):
-            if info.action_type == ACTION_IPO:
-                assert info.amount != PAR_20
+        actions = get_legal_actions(game_state)
+        # No corp-select should be legal — only PASS.
+        assert len(actions) == 1
+        assert actions[0][1].action_type == ACTION_PASS
 
-    def test_unaffordable_par_excluded(self, game_state):
-        """Par prices the player cannot pay for are filtered."""
-        # Company 14 (FV=20): par 16 cost 12, par 20 cost 0, par 22 cost 2.
+    def test_corp_included_when_any_par_affordable(self, game_state):
+        """Corp remains legal if at least one par satisfies the triple gate."""
+        # Player has $1: CO_3S (FV=20) par=20 is cost 0 (affordable), others
+        # cost >= 2 (not affordable) but corp should still be offered.
         _enter_ipo(game_state, {CO_3S: 0}, {0: 1})
         ipo_actions = [info for _, info in get_legal_actions(game_state)
                        if info.action_type == ACTION_IPO]
-        par_indices = {info.amount for info in ipo_actions}
-        # par 16 (cost 12) and par 22 (cost 2) are excluded; par 20 (cost 0) remains.
-        assert PAR_16 not in par_indices
-        assert PAR_22 not in par_indices
-        assert PAR_20 in par_indices
-
-    def test_zero_cash_keeps_equal_par(self, game_state):
-        """With $0 cash the player can still float at par == face (cost 0)."""
-        _enter_ipo(game_state, {CO_3S: 0}, {0: 0})
-        ipo_actions = [info for _, info in get_legal_actions(game_state)
-                       if info.action_type == ACTION_IPO]
-        par_indices = {info.amount for info in ipo_actions}
-        assert par_indices == {PAR_20}  # FV=20 matches par 20 only
+        assert len(ipo_actions) == int(GameConstants.NUM_CORPS)
 
     def test_no_inactive_corps_only_pass(self, game_state):
         """If every corp is active, only PASS remains."""
@@ -219,168 +189,46 @@ class TestPassAction:
 
 
 # =============================================================================
-# IPO ACTION — SHARE DISTRIBUTION
+# IPO → PAR TRANSITION
 # =============================================================================
 
-class TestShareDistribution:
-    """Share split depends on whether face value exceeds par price."""
+class TestIpoToParTransition:
+    """Corp-select advances to PHASE_PAR with active_corp seeded."""
 
-    def test_fv_greater_than_par_gives_two_shares_each(self, game_state):
-        """FV > par → player and bank each get 2 shares (4 issued)."""
-        # CO_3S face=20; par=16 → FV > par.
+    def test_corp_select_sets_active_corp(self, game_state):
+        """Applying an IPO corp-select seeds active_corp with the chosen id."""
         _enter_ipo(game_state, {CO_3S: 0})
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=0, amount=PAR_16)
+        aid = find_legal_action(game_state, action_type=ACTION_IPO, corp_id=3)
         apply_and_verify(game_state, aid)
 
-        assert PLAYERS[0].get_shares(game_state, 0) == 2
-        assert CORPS[0].get_issued_shares(game_state) == 4
-        assert CORPS[0].get_bank_shares(game_state) == 2
+        assert TURN.get_active_corp(game_state) == 3
 
-    def test_fv_equal_to_par_gives_one_share_each(self, game_state):
-        """FV == par → player and bank each get 1 share (2 issued)."""
+    def test_corp_select_switches_to_par_phase(self, game_state):
+        """Applying an IPO corp-select transitions to PHASE_PAR."""
         _enter_ipo(game_state, {CO_3S: 0})
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=0, amount=PAR_20)
+        aid = find_legal_action(game_state, action_type=ACTION_IPO, corp_id=0)
         apply_and_verify(game_state, aid)
 
-        assert PLAYERS[0].get_shares(game_state, 0) == 1
-        assert CORPS[0].get_issued_shares(game_state) == 2
-        assert CORPS[0].get_bank_shares(game_state) == 1
+        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_PAR)
 
-    def test_fv_less_than_par_gives_one_share_each(self, game_state):
-        """FV < par → player and bank each get 1 share."""
+    def test_corp_select_keeps_active_company(self, game_state):
+        """active_company is preserved across the IPO→PAR handoff."""
         _enter_ipo(game_state, {CO_3S: 0})
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=0, amount=PAR_27)
+        aid = find_legal_action(game_state, action_type=ACTION_IPO, corp_id=0)
         apply_and_verify(game_state, aid)
 
-        assert PLAYERS[0].get_shares(game_state, 0) == 1
-        assert CORPS[0].get_issued_shares(game_state) == 2
-        assert CORPS[0].get_bank_shares(game_state) == 1
+        assert TURN.get_active_company(game_state) == CO_3S
 
-
-# =============================================================================
-# IPO ACTION — CASH FLOWS
-# =============================================================================
-
-class TestCashFlows:
-    """Player pays (shares × par) − face; corp receives player + bank payments."""
-
-    def test_player_payment_fv_greater_than_par(self, game_state):
-        """Player pays 2*par − face when FV > par."""
+    def test_corp_select_does_not_float_yet(self, game_state):
+        """IPO corp-select is pure state machine — no cash / share movement."""
         _enter_ipo(game_state, {CO_3S: 0}, {0: 100})
-        # par=16, FV=20: cost = 2*16 - 20 = 12
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=0, amount=PAR_16)
+        aid = find_legal_action(game_state, action_type=ACTION_IPO, corp_id=0)
         apply_and_verify(game_state, aid)
-        assert PLAYERS[0].get_cash(game_state) == 100 - 12
 
-    def test_player_payment_zero_when_fv_equals_par(self, game_state):
-        """Player pays nothing when par == face (1 share at face)."""
-        _enter_ipo(game_state, {CO_3S: 0}, {0: 50})
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=0, amount=PAR_20)
-        apply_and_verify(game_state, aid)
-        assert PLAYERS[0].get_cash(game_state) == 50
-
-    def test_player_payment_fv_less_than_par(self, game_state):
-        """Player pays par − face when FV < par (1 share each)."""
-        _enter_ipo(game_state, {CO_3S: 0}, {0: 100})
-        # par=27, FV=20: cost = 1*27 - 20 = 7
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=0, amount=PAR_27)
-        apply_and_verify(game_state, aid)
-        assert PLAYERS[0].get_cash(game_state) == 100 - 7
-
-    def test_corp_treasury_sums_both_payments(self, game_state):
-        """Corp starts with player_payment + bank_payment cash."""
-        _enter_ipo(game_state, {CO_3S: 0}, {0: 100})
-        # par=16, FV=20: player=12, bank=32, total=44
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=0, amount=PAR_16)
-        apply_and_verify(game_state, aid)
-        assert CORPS[0].get_cash(game_state) == 12 + 32
-
-    def test_corp_treasury_five_star_zero_player_payment(self, game_state):
-        """5-star FV=60, par=30: player payment=0, bank=60 → corp cash=60."""
-        _enter_ipo(game_state, {CO_5S: 0}, {0: 0})
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=0, amount=PAR_30)
-        apply_and_verify(game_state, aid)
-        assert PLAYERS[0].get_cash(game_state) == 0
-        assert CORPS[0].get_cash(game_state) == 60
-
-
-# =============================================================================
-# IPO ACTION — CORP & COMPANY SIDE EFFECTS
-# =============================================================================
-
-class TestCorpAndCompanyEffects:
-    """IPO activates the corp, moves the company, claims market, sets presidency."""
-
-    def test_corp_is_activated(self, game_state):
-        """IPO activates the chosen corporation."""
-        _enter_ipo(game_state, {CO_3S: 0})
+        # Corp still inactive, player still holds the company, no cash moved.
         assert not CORPS[0].is_active(game_state)
-
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=0, amount=PAR_20)
-        apply_and_verify(game_state, aid)
-
-        assert CORPS[0].is_active(game_state)
-
-    def test_company_moves_to_corp(self, game_state):
-        """The floating company transfers from player to corp."""
-        _enter_ipo(game_state, {CO_3S: 0})
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=0, amount=PAR_20)
-        apply_and_verify(game_state, aid)
-
-        assert COMPANIES[CO_3S].get_location(game_state) == CompanyLocation.LOC_CORP
-        assert COMPANIES[CO_3S].get_owner_id(game_state) == 0
-
-    def test_price_index_matches_par_price(self, game_state):
-        """Corp's price index matches the selected par price's market slot."""
-        _enter_ipo(game_state, {CO_3S: 0})
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=0, amount=PAR_24)
-        apply_and_verify(game_state, aid)
-
-        assert CORPS[0].get_price_index(game_state) == MARKET.get_index_for_price(24)
-        assert CORPS[0].get_share_price(game_state) == 24
-
-    def test_market_space_claimed(self, game_state):
-        """Chosen par price's market slot becomes unavailable."""
-        _enter_ipo(game_state, {CO_3S: 0})
-        mkt = MARKET.get_index_for_price(18)
-        assert MARKET.is_space_available(game_state, mkt)
-
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=0, amount=PAR_18)
-        apply_and_verify(game_state, aid)
-
-        assert not MARKET.is_space_available(game_state, mkt)
-
-    def test_player_becomes_president(self, game_state):
-        """Floating player becomes the corp's president."""
-        _enter_ipo(game_state, {CO_3S: 0})
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=0, amount=PAR_20)
-        apply_and_verify(game_state, aid)
-
-        assert CORPS[0].get_president_id(game_state) == 0
-
-    def test_ipo_clears_remaining_flag(self, game_state):
-        """After IPO, the company's ipo_remaining flag is cleared."""
-        _enter_ipo(game_state, {CO_3S: 0})
-        assert TURN.is_ipo_remaining(game_state, CO_3S)
-
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=0, amount=PAR_20)
-        apply_and_verify(game_state, aid)
-
-        assert not TURN.is_ipo_remaining(game_state, CO_3S)
+        assert COMPANIES[CO_3S].get_location(game_state) == CompanyLocation.LOC_PLAYER
+        assert PLAYERS[0].get_cash(game_state) == 100
 
 
 # =============================================================================
@@ -424,11 +272,11 @@ class TestProcessingOrder:
 
 
 # =============================================================================
-# PHASE TRANSITIONS
+# PHASE TRANSITIONS (pass-only paths — PAR paths are in test_par.py)
 # =============================================================================
 
 class TestPhaseTransitions:
-    """IPO ends after every player-owned company is resolved."""
+    """IPO ends (→ INVEST) after every player-owned company is resolved."""
 
     def test_no_companies_transitions_immediately(self, game_state):
         """With no player-owned companies, setup transitions straight out of IPO."""
@@ -443,15 +291,6 @@ class TestPhaseTransitions:
         _enter_ipo(game_state, {CO_3S: 0})
         pass_id = find_legal_action(game_state, action_type=ACTION_PASS)
         apply_and_verify(game_state, pass_id)
-
-        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_INVEST)
-
-    def test_single_ipo_transitions(self, game_state):
-        """After IPO on the only company, phase leaves IPO."""
-        _enter_ipo(game_state, {CO_3S: 0})
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=0, amount=PAR_20)
-        apply_and_verify(game_state, aid)
 
         assert TURN.get_phase(game_state) == int(GamePhases.PHASE_INVEST)
 
@@ -485,31 +324,6 @@ class TestPhaseTransitions:
 
         assert TURN.get_active_company(game_state) == -1
 
-    def test_mixed_pass_and_ipo_sequence(self, game_state):
-        """Multi-company flow with both pass and IPO actions transitions out."""
-        _enter_ipo(game_state, {CO_5S: 0, CO_3S: 0, CO_1S_A: 0}, {0: 300})
-
-        # CO_5S (60) — IPO into corp 0 at par=30 (cost 0)
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=0, amount=PAR_30)
-        apply_and_verify(game_state, aid)
-        assert CORPS[0].is_active(game_state)
-
-        # CO_3S (20) — pass
-        assert TURN.get_active_company(game_state) == CO_3S
-        pass_id = find_legal_action(game_state, action_type=ACTION_PASS)
-        apply_and_verify(game_state, pass_id)
-
-        # CO_1S_A (1) — IPO into corp 1 at par=10 (cost 9)
-        assert TURN.get_active_company(game_state) == CO_1S_A
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=1, amount=PAR_10)
-        apply_and_verify(game_state, aid)
-        assert CORPS[1].is_active(game_state)
-
-        # Out of IPO
-        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_INVEST)
-
 
 # =============================================================================
 # REMAINING FLAGS
@@ -542,34 +356,3 @@ class TestRemainingFlags:
 
         assert not TURN.is_ipo_remaining(game_state, CO_3S)
         assert TURN.is_ipo_remaining(game_state, CO_1S_A)
-
-
-# =============================================================================
-# BOUNDARY
-# =============================================================================
-
-class TestBoundary:
-    """Exact-threshold affordability and cash checks."""
-
-    def test_cost_exactly_equals_cash(self, game_state):
-        """Player with cash equal to cost can afford the IPO."""
-        # CO_3S, par=16 costs 12.
-        _enter_ipo(game_state, {CO_3S: 0}, {0: 12})
-        aid = find_legal_action(game_state, action_type=ACTION_IPO,
-                                corp_id=0, amount=PAR_16)
-        apply_and_verify(game_state, aid)
-        assert PLAYERS[0].get_cash(game_state) == 0
-
-    def test_cost_one_more_than_cash_excluded(self, game_state):
-        """Par requiring $1 more than the player has is filtered out."""
-        _enter_ipo(game_state, {CO_3S: 0}, {0: 11})
-        par_indices = {info.amount for _, info in get_legal_actions(game_state)
-                       if info.action_type == ACTION_IPO}
-        assert PAR_16 not in par_indices  # cost 12 > 11
-
-    def test_cost_one_less_than_cash_legal(self, game_state):
-        """Par costing $1 less than the player's cash is legal."""
-        _enter_ipo(game_state, {CO_3S: 0}, {0: 13})
-        aids = find_all_legal_actions(game_state, action_type=ACTION_IPO,
-                                      corp_id=0, amount=PAR_16)
-        assert len(aids) == 1

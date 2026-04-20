@@ -269,7 +269,7 @@ class NNEvaluator(BaseEvaluator):
               canonical order (already non-rotated from the model).
             - action_ids: shape (n_legal,) uint16, phase-local legal action ids.
             - n_legal: count of legal actions at this state.
-            - phase_id: decision phase id 0-7.
+            - phase_id: decision phase id 0-8.
         """
         phase_id = get_decision_phase_py(state)
         n_legal = enumerate_legal_actions_py(state, self._enum_scratch)

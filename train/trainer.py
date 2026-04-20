@@ -29,11 +29,12 @@ from train.replay_buffer import ReplayBuffer
 TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
 K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 
-# Matches core.data.DecisionPhase order (DPHASE_INVEST..DPHASE_IPO, 8 entries).
-# PAR was folded into IPO; ACQ_OFFER is a first-class decision phase.
+# Matches core.data.DecisionPhase order (DPHASE_INVEST..DPHASE_PAR, 9 entries).
+# IPO splits into IPO (corp select) + PAR (price select); ACQ_OFFER is a
+# first-class decision phase.
 _PHASE_NAMES = [
     "invest", "bid", "acq", "acq_offer",
-    "close", "div", "issue", "ipo",
+    "close", "div", "issue", "ipo", "par",
 ]
 
 
