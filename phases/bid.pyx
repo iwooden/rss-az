@@ -4,10 +4,15 @@ Handles the two BID actions: LEAVE (pass-class) and RAISE.
 
 - LEAVE: mark the active player ``has_passed`` and either resolve the
   auction (when only one bidder remains) or advance control to the next
-  non-passed bidder in turn order.
-- RAISE: set the new auction price to ``face_value + 1 + bid_offset``,
-  update the high bidder to the raising player, and advance control to
-  the next non-passed bidder. The raising player is never marked passed.
+  non-passed bidder in turn order. Illegal on the opening bid (the
+  starter just committed to this company); the enumerator omits it
+  while ``auction_high_bidder == -1``.
+- RAISE: set the new auction price to ``face_value + bid_offset``, update
+  the high bidder to the raising player, and advance control to the next
+  non-passed bidder. On the opening bid (``auction_high_bidder == -1``)
+  any offset ≥ 0 is legal (new_bid ≥ face_value). On subsequent bids the
+  enumerator requires ``new_bid > current_bid``. The raising player is
+  never marked passed.
 
 When the auction resolves, the winner pays the final bid to the bank,
 receives the company, a replacement card is drawn (``LOC_REVEALED`` —
@@ -121,20 +126,27 @@ cdef void _handle_leave(GameState state) noexcept:
 
 
 cdef void _handle_raise(GameState state, int bid_offset) noexcept:
-    """Active player raises to ``face_value + 1 + bid_offset``."""
+    """Active player bids ``face_value + bid_offset``.
+
+    Opening bid (``high_bidder == -1``) accepts any offset ≥ 0; subsequent
+    bids must strictly exceed the current bid. Both gates are enforced
+    upstream by the enumerator — asserts here only catch driver drift.
+    """
     cdef int pid = turn_module.TURN.get_active_player(state)
     cdef int company_id = turn_module.TURN.get_active_company(state)
+    cdef int prev_high_bidder = turn_module.TURN.get_auction_high_bidder(state)
     cdef int new_bid
 
     # Defensive invariants (compile out under python -O). These catch
     # driver/enumerator drift, not rule-level legality.
-    assert 0 <= bid_offset < <int>AUCTION_CAP - 1, \
-        f"_handle_raise: bid_offset {bid_offset} out of [0, {<int>AUCTION_CAP - 1})"
+    assert 0 <= bid_offset < <int>AUCTION_CAP, \
+        f"_handle_raise: bid_offset {bid_offset} out of [0, {<int>AUCTION_CAP})"
     assert company_id >= 0, "_handle_raise: active_company unset"
 
-    new_bid = COMPANY_FACE_VALUE[company_id] + bid_offset + 1
+    new_bid = COMPANY_FACE_VALUE[company_id] + bid_offset
 
-    assert new_bid > turn_module.TURN.get_auction_price(state), \
+    # Strict-increase invariant only applies once a bid exists.
+    assert prev_high_bidder < 0 or new_bid > turn_module.TURN.get_auction_price(state), \
         f"_handle_raise: new bid {new_bid} not greater than current"
     assert new_bid <= player_module.PLAYERS[pid].get_cash(state), \
         f"_handle_raise: new bid {new_bid} exceeds player {pid} cash"
@@ -143,8 +155,10 @@ cdef void _handle_raise(GameState state, int bid_offset) noexcept:
     turn_module.TURN.set_auction_high_bidder(state, pid)
 
     # The raising player stays in the auction — has_passed is untouched.
-    # The previous high bidder is still in, so there is always a distinct
-    # next non-passed player for advance_to_next_bidder to land on.
+    # After the opening bid there is always another live bidder (the
+    # starter placed the first bid and the round started with everyone
+    # unpassed); after a raise the previous high bidder is still in,
+    # so advance_to_next_bidder always has a distinct target.
     turn_module.TURN.advance_to_next_bidder(state)
 
 

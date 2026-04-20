@@ -39,8 +39,8 @@ Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 97):
   Global  (20): num_players onehot (3) + phase onehot (8) + CoO onehot
                 (7) + end_card_flipped + cards_remaining
   Invest  (17): consecutive_passes + buy_impacts (8) + sell_impacts (8)
-  Auction (12): price_index + price_value + high_bidder onehot (5) +
-                starter onehot (5)
+  Auction (13): min_bid_index + min_bid_value + is_first_bid +
+                high_bidder onehot (5) + starter onehot (5)
   Divd    (34): dividend_impacts (26) + dividend_remaining (8)
   Issue    (9): issue_impact + issue_remaining (8)
   IPO     (50): player_cash_required (14) + resulting_corp_cash (14) +
@@ -699,23 +699,33 @@ cdef void _fill_auction_token(
     float[:, ::1] buffer,
     int tok,
 ) noexcept nogil:
-    cdef int OFF_PRICE_IDX   = 0
-    cdef int OFF_PRICE_VALUE = 1
-    cdef int OFF_HIGH_BIDDER = 2   # 5 slots
-    cdef int OFF_STARTER     = 7   # 5 slots
+    # Price slots carry the *minimum legal next bid* rather than the last
+    # bid placed. On the opening bid (is_first_bid == 1) the minimum is
+    # face_value (offset 0); afterwards it's current_bid + 1.
+    cdef int OFF_MIN_BID_IDX   = 0
+    cdef int OFF_MIN_BID_VALUE = 1
+    cdef int OFF_IS_FIRST_BID  = 2
+    cdef int OFF_HIGH_BIDDER   = 3   # 5 slots
+    cdef int OFF_STARTER       = 8   # 5 slots
 
     cdef int auction_price = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_price]
     cdef int high_bidder = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_high_bidder]
     cdef int starter = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.auction_starter]
     cdef int active_company = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_company]
-    cdef int face_value, offset
+    cdef bint is_first_bid = high_bidder < 0
+    cdef int face_value, min_bid, min_offset
 
     if 0 <= active_company < NUM_COMPANIES:
         face_value = COMPANY_FACE_VALUE[active_company]
-        offset = auction_price - face_value
-        buffer[tok, OFF_PRICE_IDX] = <float>offset / <float>AUCTION_CAP_INT
+        if is_first_bid:
+            min_bid = face_value
+        else:
+            min_bid = auction_price + 1
+        min_offset = min_bid - face_value
+        buffer[tok, OFF_MIN_BID_IDX] = <float>min_offset / <float>AUCTION_CAP_INT
+        buffer[tok, OFF_MIN_BID_VALUE] = <float>min_bid / COMPANY_PRICE_DIVISOR
 
-    buffer[tok, OFF_PRICE_VALUE] = <float>auction_price / COMPANY_PRICE_DIVISOR
+    buffer[tok, OFF_IS_FIRST_BID] = 1.0 if is_first_bid else 0.0
 
     if 0 <= high_bidder < MAX_MODEL_PLAYERS:
         buffer[tok, OFF_HIGH_BIDDER + high_bidder] = 1.0

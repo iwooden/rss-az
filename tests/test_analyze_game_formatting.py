@@ -44,7 +44,7 @@ def test_format_action_invest_auction_uses_old_slot_bid_style() -> None:
 
     assert rendered.startswith("AUCTION slot ")
     assert COMPANY_NAMES[info.company_id] in rendered
-    assert "bid $" in rendered
+    assert "face $" in rendered
 
 
 def test_format_action_issue_uses_active_corp_name() -> None:

@@ -71,10 +71,8 @@ def _auction_companies(state: GameState) -> list[tuple[int, int]]:
     return result
 
 
-def _format_auction_bid(company_id: int, bid_offset: int) -> str:
+def _format_auction_company(company_id: int) -> str:
     face = COMPANIES[company_id].get_face_value()
-    if bid_offset > 0:
-        return f"${face}+{bid_offset}"
     return f"${face}"
 
 
@@ -116,15 +114,16 @@ def format_action(phase_id: int, action_id: int, state: GameState | None = None)
         return f"PASS ({DECISION_PHASE_NAMES.get(phase_id, str(phase_id))})"
 
     if at == ACTION_AUCTION:
+        face = _format_auction_company(info.company_id)
         if state is None:
-            return f"AUCTION {COMPANY_NAMES[info.company_id]} bid {_format_auction_bid(info.company_id, info.amount)}"
+            return f"AUCTION {COMPANY_NAMES[info.company_id]} (face {face})"
         slot = next(
             (slot_id for slot_id, company_id in _auction_companies(state) if company_id == info.company_id),
             "?",
         )
         return (
             f"AUCTION slot {slot} "
-            f"({COMPANY_NAMES[info.company_id]}, bid {_format_auction_bid(info.company_id, info.amount)})"
+            f"({COMPANY_NAMES[info.company_id]}, face {face})"
         )
 
     if at == ACTION_BUY_SHARE:
@@ -134,7 +133,12 @@ def format_action(phase_id: int, action_id: int, state: GameState | None = None)
         return f"SELL {CORP_NAMES[info.corp_id]} share"
 
     if at == ACTION_RAISE:
-        return f"RAISE BID +{info.amount + 1}"
+        if state is not None:
+            active_company = TURN.get_active_company(state)
+            if 0 <= active_company < NUM_COMPANIES:
+                face = COMPANIES[active_company].get_face_value()
+                return f"BID ${face + info.amount}"
+        return f"BID face+{info.amount}"
 
     if at == ACTION_ACQ_PRICE:
         price = COMPANIES[info.company_id].get_low_price() + info.amount

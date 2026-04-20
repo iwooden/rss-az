@@ -1,13 +1,16 @@
 """INVEST phase handler.
 
-Handles the four INVEST actions: PASS, AUCTION (start), BUY_SHARE, SELL_SHARE.
+Handles the four INVEST actions: PASS, AUCTION (select), BUY_SHARE, SELL_SHARE.
 
 - PASS: increments consecutive_passes. Once all players have passed in a row,
   clears per-player round-trip tracking scratch and transitions to
   ``PHASE_WRAP_UP``.
-- AUCTION: seeds auction state (company, price, high bidder, starter),
-  clears per-player has_passed flags, transitions to ``PHASE_BID``,
-  and advances past the starter to the next bidder.
+- AUCTION: select a LOC_AUCTION company to put up for bidding. Seeds only
+  the auction *target* (active_company, starter) — the opening bid is placed
+  in BID. auction_price is 0 and auction_high_bidder is -1 on BID entry so
+  the enumerator can detect ``is_first_bid``. Clears per-player has_passed
+  flags and transitions to ``PHASE_BID`` without advancing the active player
+  (the starter places the opening bid).
 - BUY_SHARE: moves corp price up to the next available index, charges the
   player the *new* (higher) price, transfers the share, tracks the buy.
   Buying the $75 slot (market index 26) immediately transitions to
@@ -34,7 +37,6 @@ from core.actions cimport (
 from core.data cimport (
     GameConstants,
     GamePhases,
-    COMPANY_FACE_VALUE,
     MARKET_PRICES,
 )
 from entities.company cimport company_is_for_auction
@@ -84,11 +86,15 @@ cdef void _handle_pass(GameState state) noexcept:
     _advance_active_player(state)
 
 
-cdef void _handle_auction(GameState state, int company_id, int bid_offset) noexcept:
-    """INVEST auction start: set up auction context, transition to BID."""
+cdef void _handle_auction(GameState state, int company_id) noexcept:
+    """INVEST select-company: mark the target and transition to BID.
+
+    No opening bid is placed here — the starter places it in BID as the
+    first RAISE. ``auction_high_bidder == -1`` is the sentinel the BID
+    enumerator reads to detect the opening-bid state (pass is illegal
+    until the starter has placed a bid).
+    """
     cdef int starter = turn_module.TURN.get_active_player(state)
-    cdef int face_value = COMPANY_FACE_VALUE[company_id]
-    cdef int bid_price = face_value + bid_offset
 
     # Defensive invariant: the enumerator only emits auctions for
     # LOC_AUCTION companies. If this fires, the enumerator and the
@@ -100,8 +106,8 @@ cdef void _handle_auction(GameState state, int company_id, int bid_offset) noexc
     # auction target — no dedicated ``auction_company`` slot exists in
     # the turn block.
     turn_module.TURN.set_active_company(state, company_id)
-    turn_module.TURN.set_auction_price(state, bid_price)
-    turn_module.TURN.set_auction_high_bidder(state, starter)
+    turn_module.TURN.set_auction_price(state, 0)
+    turn_module.TURN.clear_auction_high_bidder(state)
     turn_module.TURN.set_auction_starter(state, starter)
 
     # Fresh auction: nobody has left yet. Clear any leftover has_passed
@@ -113,12 +119,9 @@ cdef void _handle_auction(GameState state, int company_id, int bid_offset) noexc
     # Non-pass action resets the pass counter.
     turn_module.TURN.clear_consecutive_passes(state)
 
-    # Transition to BID. The starter has already placed the opening bid
-    # (recorded in auction_price / auction_high_bidder), so control moves
-    # to the next non-passed bidder. With freshly-cleared has_passed flags
-    # this is just the next player in turn order.
+    # Transition to BID. The starter stays as the active player and is
+    # the first bidder — pass is illegal until they commit a bid.
     turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_BID)
-    turn_module.TURN.advance_to_next_bidder(state)
 
 
 cdef void _handle_buy_share(GameState state, int corp_id) noexcept:
@@ -234,7 +237,7 @@ cdef void apply_invest_action(GameState state, ActionInfo* info) noexcept:
     if action_type == ACTION_PASS:
         _handle_pass(state)
     elif action_type == ACTION_AUCTION:
-        _handle_auction(state, info.company_id, info.amount)
+        _handle_auction(state, info.company_id)
     elif action_type == ACTION_BUY_SHARE:
         _handle_buy_share(state, info.corp_id)
     elif action_type == ACTION_SELL_SHARE:

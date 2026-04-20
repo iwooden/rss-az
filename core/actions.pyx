@@ -153,7 +153,7 @@ cdef int encode_action(ActionInfo info) noexcept nogil:
         if info.action_type == ACTION_PASS:
             return 0
         if info.action_type == ACTION_AUCTION:
-            return encode_invest_auction(info.company_id, info.amount)
+            return encode_invest_auction(info.company_id)
         if info.action_type == ACTION_BUY_SHARE:
             return encode_invest_buy(info.corp_id)
         if info.action_type == ACTION_SELL_SHARE:
@@ -227,15 +227,13 @@ cdef ActionInfo decode_action(int phase_id, int action_id) noexcept nogil:
     if phase_id == DPHASE_INVEST:
         if action_id == 0:
             info.action_type = ACTION_PASS
-        elif action_id < 1 + <int>GameConstants.NUM_COMPANIES * <int>AUCTION_CAP:
-            # Auction: 1 + company_id * AUCTION_CAP + bid_offset
+        elif action_id < 1 + <int>GameConstants.NUM_COMPANIES:
+            # Select company: 1 + company_id. Price is chosen in BID.
             info.action_type = ACTION_AUCTION
-            idx = action_id - 1
-            info.company_id = idx // <int>AUCTION_CAP
-            info.amount = idx % <int>AUCTION_CAP
+            info.company_id = action_id - 1
         else:
-            # Trade: 1 + NUM_COMPANIES*AUCTION_CAP + corp_id * 2 + {0=buy, 1=sell}
-            idx = action_id - (1 + <int>GameConstants.NUM_COMPANIES * <int>AUCTION_CAP)
+            # Trade: 1 + NUM_COMPANIES + corp_id * 2 + {0=buy, 1=sell}
+            idx = action_id - (1 + <int>GameConstants.NUM_COMPANIES)
             info.corp_id = idx // 2
             if (idx & 1) == 0:
                 info.action_type = ACTION_BUY_SHARE
@@ -360,11 +358,11 @@ cdef int _enumerate_invest(
     ``core/actions.pxd``):
 
       1. ``id 0``: pass (always legal)
-      2. ``ids 1..540``: auction starts, ``1 + company_id * AUCTION_CAP + bid_offset``.
-         Emitted for each LOC_AUCTION company, for each affordable bid offset.
-         Offsets are monotone in cost so the inner loop breaks as soon as
-         ``face_value + offset`` exceeds the active player's cash.
-      3. ``ids 541..556``: trade actions, ``541 + corp_id * 2 + {0=buy,1=sell}``.
+      2. ``ids 1..36``: select company, ``1 + company_id``. Emitted for each
+         LOC_AUCTION company that the active player can afford at face value
+         (the minimum legal opening bid in BID). Price selection itself is
+         deferred to the BID phase.
+      3. ``ids 37..52``: trade actions, ``37 + corp_id * 2 + {0=buy,1=sell}``.
          Emitted for each active corp, gated on the round-trip limit
          (per-player ``min(buys, sells) < 2`` over that corp), then on
          buy/sell-specific legality:
@@ -374,10 +372,8 @@ cdef int _enumerate_invest(
 
     Returns the number of IDs written.
 
-    Practical upper bound: ``1 + num_players * AUCTION_CAP + 16``. Worst case at
-    the game's maximum of 6 players is 107 — well under
-    ``MAX_LEGAL_ACTIONS = 256``. The naive bound of 557 is unreachable
-    because only ``num_players`` companies are LOC_AUCTION at any time.
+    Practical upper bound: ``1 + num_players + 16``. Worst case at the game's
+    maximum of 6 players is 23 — well under ``MAX_LEGAL_ACTIONS``.
 
     Reads state via direct slot arithmetic and entity-owned primitives
     where available. This is the intentional
@@ -396,31 +392,26 @@ cdef int _enumerate_invest(
     cdef int player_cash = <int>state._data[player_base + PLAYER_FIELDS.cash]
     cdef int16_t* market_ptr = state._data + LAYOUT.market_offset
 
-    cdef int company_id, bid_offset, face_value
+    cdef int company_id, face_value
     cdef int corp_id, buys, sells, current_index, buy_index, i
 
     # --- id 0: pass ---------------------------------------------------------
     ids[count] = 0
     count += 1
 
-    # --- ids 1..540: auctions ----------------------------------------------
+    # --- ids 1..36: select company ------------------------------------------
     for company_id in range(<int>GameConstants.NUM_COMPANIES):
         if company_location(state, company_id) != <int>LOC_AUCTION:
             continue
         face_value = COMPANY_FACE_VALUE[company_id]
         if face_value > player_cash:
-            # Can't afford even the opening bid; no legal offset exists.
+            # Can't afford the minimum opening bid in BID — no legal select.
             continue
-        for bid_offset in range(<int>AUCTION_CAP):
-            if face_value + bid_offset > player_cash:
-                # Monotone in offset — once unaffordable, every higher
-                # offset is also unaffordable.
-                break
-            _require_action_capacity(count, b"INVEST_AUCTION")
-            ids[count] = <uint16_t>encode_invest_auction(company_id, bid_offset)
-            count += 1
+        _require_action_capacity(count, b"INVEST_AUCTION")
+        ids[count] = <uint16_t>encode_invest_auction(company_id)
+        count += 1
 
-    # --- ids 541..556: buy / sell ------------------------------------------
+    # --- ids 37..52: buy / sell ---------------------------------------------
     for corp_id in range(<int>GameConstants.NUM_CORPS):
         # Round-trip gate applies to *both* buy and sell: a player who has
         # already completed 2 paired buy/sells against this corp is locked
@@ -474,17 +465,19 @@ cdef int _enumerate_bid(
     Ordering (phase-local IDs match the ``encode_bid_*`` helpers in
     ``core/actions.pxd``):
 
-      1. ``id 0``: leave the auction (always legal — decodes to
-         ``ACTION_PASS``).
-      2. ``ids 1..14``: raise to ``face_value + 1 + offset``, emitted for
-         each legal ``offset in 0..13``. Both the strictly-greater-than
-         current bid gate and the affordability gate are monotone in
-         ``offset``, so the inner loop starts at the smallest legal
-         offset and breaks as soon as the new bid exceeds the active
-         player's cash.
+      1. ``id 0``: leave the auction — legal only *after* the opening bid
+         has been placed. On the first bid (auction_high_bidder == -1) the
+         starter is committed to this company and pass is omitted.
+      2. ``ids 1..15``: bid ``face_value + offset`` for ``offset in 0..14``.
+         - First bid: ``min_offset = 0`` (any price ≥ face_value).
+         - Subsequent bid: ``min_offset = max(0, current_bid - face + 1)``
+           so ``new_bid > current_bid``.
+         Affordability gates ``max_offset`` at ``player_cash - face``.
+         Both gates are monotone so the inner loop breaks on the first
+         unaffordable offset.
 
-    Returns the number of IDs written. Worst case: 1 + 14 = 15 — well
-    under ``MAX_LEGAL_ACTIONS = 256``.
+    Returns the number of IDs written. Worst case: 1 + AUCTION_CAP = 16 —
+    well under ``MAX_LEGAL_ACTIONS``.
 
     Reads state via direct slot arithmetic against the module-level
     layout constants and entity-owned primitives, matching the
@@ -502,26 +495,33 @@ cdef int _enumerate_bid(
     cdef int current_bid = <int>state._data[
         LAYOUT.turn_offset + TURN_OFFSETS.auction_price
     ]
+    cdef int high_bidder = <int>state._data[
+        LAYOUT.turn_offset + TURN_OFFSETS.auction_high_bidder
+    ]
     cdef int face, offset, new_bid, min_offset
+    cdef bint is_first_bid = high_bidder < 0
 
-    # --- id 0: leave the auction (always legal) ----------------------------
-    ids[count] = 0
-    count += 1
+    # --- id 0: leave the auction (illegal on the opening bid) --------------
+    if not is_first_bid:
+        ids[count] = 0
+        count += 1
 
     # A BID state with no active_company is a driver bug — nothing to
-    # auction, nothing to raise on.
+    # auction, nothing to bid on.
     assert company_id >= 0, "_enumerate_bid: active_company unset"
 
     face = COMPANY_FACE_VALUE[company_id]
-    # Smallest legal offset: the first ``offset`` where
-    # ``face + offset + 1 > current_bid``. Solving gives
-    # ``offset >= current_bid - face``; clamp to 0 since negative offsets
-    # are not part of the encoding.
-    min_offset = current_bid - face
-    if min_offset < 0:
+    # Opening bid: any offset that the starter can afford (min = face).
+    # Subsequent bid: offset must produce ``new_bid > current_bid``, so
+    # ``offset >= current_bid - face + 1``. Clamp to 0 defensively.
+    if is_first_bid:
         min_offset = 0
-    for offset in range(min_offset, <int>AUCTION_CAP - 1):
-        new_bid = face + offset + 1
+    else:
+        min_offset = current_bid - face + 1
+        if min_offset < 0:
+            min_offset = 0
+    for offset in range(min_offset, <int>AUCTION_CAP):
+        new_bid = face + offset
         if new_bid > player_cash:
             # Affordability is monotone in offset — once we can't afford
             # the next step, we can't afford any higher one.
@@ -935,7 +935,7 @@ ACTION_IPO_PY = ACTION_IPO
 # to ``nn/transformer.py`` is needed anymore.
 
 assert encode_invest_sell(7) == ACTION_SIZE_INVEST - 1
-assert encode_bid_raise(13) == ACTION_SIZE_BID - 1
+assert encode_bid_raise(<int>AUCTION_CAP - 1) == ACTION_SIZE_BID - 1
 assert encode_acquisition_fi_buy(7, 35) == ACTION_SIZE_ACQUISITION - 1
 assert 1 == ACTION_SIZE_ACQ_OFFER - 1
 assert encode_closing_close(35) == ACTION_SIZE_CLOSING - 1

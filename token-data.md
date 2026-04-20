@@ -21,9 +21,10 @@
   - Buy share invest impacts (vector, 8 slots, normalized by IMPACT_DIVISOR). The number of market price indices that the corresponding corp would move if a share was bought.
   - Sell share invest impacts (vector, 8 slots, normalized by IMPACT_DIVISOR). The number of market price indices that the corresponding corp would move if a share was sold.
 - Auction token:
-  - Auction price index (scalar, should match the action encoding data: represents price offset from face value, normalized by AUCTION_CAP)
-  - Auction price value (scalar, current auction price as a cash value. Normalized by COMPANY_PRICE_DIVISOR)
-  - Auction high bidder (one-hot, 5 slots for 5 max players (0-padded for 3/4 players))
+  - Minimum legal next-bid index (scalar, offset from face value of the current auction company, normalized by AUCTION_CAP). Equals 0 on the opening bid (bid at face_value) and `current_bid - face + 1` afterwards — the model can always score BID offsets against this floor.
+  - Minimum legal next-bid value (scalar, dollar amount of the minimum legal next bid. Normalized by COMPANY_PRICE_DIVISOR)
+  - Is-first-bid flag (scalar, 1.0 on the opening bid — when `auction_high_bidder == -1` — and 0.0 afterwards. Pass / leave-auction is illegal while this flag is set.)
+  - Auction high bidder (one-hot, 5 slots for 5 max players (0-padded for 3/4 players). All zero on the opening bid since no bid has been placed yet.)
   - Auction starter (one-hot, 5 slots for 5 max players (0-padded for 3/4 players))
 - Acquisition offer token:
   - Offer price index (scalar, normalized by 51.0). Matches acquisition action encoding - represents price offset from target company's low price. 

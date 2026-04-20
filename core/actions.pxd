@@ -99,10 +99,10 @@ cdef enum ActionType:
     # INVEST pass, BID leave-auction, ACQUISITION pass, ACQ_OFFER pass,
     # CLOSING pass, ISSUE pass, IPO pass. They all decode to ACTION_PASS.
     ACTION_PASS = 0
-    ACTION_AUCTION = 1         # INVEST: start auction on company_id at face+amount
+    ACTION_AUCTION = 1         # INVEST: select company_id to auction (price chosen in BID)
     ACTION_BUY_SHARE = 2       # INVEST: buy corp_id
     ACTION_SELL_SHARE = 3      # INVEST: sell corp_id
-    ACTION_RAISE = 4           # BID: raise current bid by (face + 1 + amount)
+    ACTION_RAISE = 4           # BID: bid face_value + amount (amount ∈ [0, AUCTION_CAP))
     ACTION_ACQ_PRICE = 5       # ACQUISITION: corp_id acquires company_id at low+amount
     ACTION_ACQ_FI_BUY = 6      # ACQUISITION: corp_id buys company_id from FI at fixed price
     ACTION_ACQ_OFFER_ACCEPT = 7  # ACQ_OFFER: accept the offered acquisition
@@ -132,14 +132,14 @@ cdef struct ActionInfo:
 # assumed valid (asserts guard bounds). The functions are ``inline`` nogil
 # so Cython can fold them away in hot paths.
 
-cdef inline int encode_invest_auction(int company_id, int bid_offset) noexcept nogil:
-    return 1 + company_id * <int>AUCTION_CAP + bid_offset
+cdef inline int encode_invest_auction(int company_id) noexcept nogil:
+    return 1 + company_id
 
 cdef inline int encode_invest_buy(int corp_id) noexcept nogil:
-    return 1 + <int>NUM_COMPANIES * <int>AUCTION_CAP + corp_id * 2
+    return 1 + <int>NUM_COMPANIES + corp_id * 2
 
 cdef inline int encode_invest_sell(int corp_id) noexcept nogil:
-    return 1 + <int>NUM_COMPANIES * <int>AUCTION_CAP + corp_id * 2 + 1
+    return 1 + <int>NUM_COMPANIES + corp_id * 2 + 1
 
 cdef inline int encode_bid_raise(int raise_offset) noexcept nogil:
     return 1 + raise_offset

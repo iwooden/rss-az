@@ -92,8 +92,8 @@ cpdef enum CorpIndices:
 # Any change here must stay consistent with the ``encode_*`` arithmetic in
 # ``core/actions.pxd``; that file still holds the roundtrip asserts.
 cpdef enum ActionSize:
-    ACTION_SIZE_INVEST = 557        # 1 pass + 36*AUCTION_CAP auction + 8*2 trade
-    ACTION_SIZE_BID = 15            # 1 pass (= leave auction) + (AUCTION_CAP-1) raises
+    ACTION_SIZE_INVEST = 53         # 1 pass + 36 company-select + 8*2 trade
+    ACTION_SIZE_BID = 16            # 1 pass (= leave auction) + AUCTION_CAP raise offsets
     ACTION_SIZE_ACQUISITION = 14977 # 1 pass + 8*36*52 corp x company x {51 price + FI_BUY}
     ACTION_SIZE_ACQ_OFFER = 2       # pass + buy
     ACTION_SIZE_CLOSING = 37        # 1 pass + 36 company closes

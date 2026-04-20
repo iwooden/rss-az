@@ -1121,23 +1121,35 @@ def assert_token_data_invariants(state, msg=""):
         _assert_zero_row(buf[auction_tok], T_FLAG,
                          f"{am} must be all-zero outside PHASE_BID (phase={phase})")
     else:
-        # Price index scalar: (auction_price - face_value) / AUCTION_CAP_INT=15
+        # Slots represent the *minimum legal next bid*:
+        #   - first bid (high_bidder == -1): min = face_value (offset 0)
+        #   - otherwise: min = auction_price + 1
+        high = TURN.get_auction_high_bidder(state)
+        is_first_bid = high < 0
         if 0 <= active_company < num_companies:
             face = COMPANIES[active_company].get_face_value()
-            exp_offset = (TURN.get_auction_price(state) - face) / 15.0
+            if is_first_bid:
+                min_bid = face
+            else:
+                min_bid = TURN.get_auction_price(state) + 1
+            exp_offset = (min_bid - face) / 15.0
             _assert_close(buf[auction_tok, 0], exp_offset, T_SCALE,
-                          f"{am}: price_idx offset (auction-face)/15")
+                          f"{am}: min_bid_idx offset (min-face)/15")
+            _assert_close(buf[auction_tok, 1] * PY_COMPANY_PRICE_DIVISOR,
+                          min_bid, T_SCALE,
+                          f"{am}: min_bid_value scalar")
         else:
             _assert_close(buf[auction_tok, 0], 0.0, T_FLAG,
-                          f"{am}: price_idx must be zero with no active company")
-        _assert_close(buf[auction_tok, 1] * PY_COMPANY_PRICE_DIVISOR,
-                      TURN.get_auction_price(state), T_SCALE,
-                      f"{am}: auction_price scalar")
+                          f"{am}: min_bid_idx must be zero with no active company")
+            _assert_close(buf[auction_tok, 1], 0.0, T_FLAG,
+                          f"{am}: min_bid_value must be zero with no active company")
+
+        _assert_close(buf[auction_tok, 2], 1.0 if is_first_bid else 0.0, T_FLAG,
+                      f"{am}: is_first_bid flag")
 
         # high_bidder / starter one-hots (zero when the respective field is -1)
-        high_slice = buf[auction_tok, 2:7]
-        starter_slice = buf[auction_tok, 7:12]
-        high = TURN.get_auction_high_bidder(state)
+        high_slice = buf[auction_tok, 3:8]
+        starter_slice = buf[auction_tok, 8:13]
         starter = TURN.get_auction_starter(state)
         if 0 <= high < 5:
             _assert_close(high_slice.sum(), 1.0, T_FLAG,
@@ -1155,7 +1167,7 @@ def assert_token_data_invariants(state, msg=""):
         else:
             _assert_close(starter_slice.sum(), 0.0, T_FLAG,
                           f"{am}: starter one-hot must be zero for starter={starter}")
-        _assert_zero_row(buf[auction_tok, 12:], T_FLAG, f"{am}: tail")
+        _assert_zero_row(buf[auction_tok, 13:], T_FLAG, f"{am}: tail")
 
     # Dividend token ------------------------------------------------------
     dm = f"{msg}\nDividend token"

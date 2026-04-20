@@ -1,6 +1,7 @@
 from core.actions import (
     ACTION_ACQ_OFFER_ACCEPT_PY as ACTION_ACQ_OFFER_ACCEPT,
     ACTION_AUCTION_PY as ACTION_AUCTION,
+    ACTION_RAISE_PY as ACTION_RAISE,
 )
 from core.data import GamePhases
 from core.driver import (
@@ -57,21 +58,32 @@ def _make_acq_offer_accept_state():
     return state, accept_id
 
 
-def _enter_bid_phase(state, bid_offset=0):
+def _enter_bid_phase_with_opening_bid(state, offset=0):
+    """Select a company in INVEST and have the starter place the opening bid."""
     actions = get_legal_actions(state)
     for action_id, info in actions:
-        if info.action_type == ACTION_AUCTION and info.amount == bid_offset:
+        if info.action_type == ACTION_AUCTION:
             company_id = info.company_id
-            bid_price = COMPANIES[company_id].get_face_value() + bid_offset
             apply_and_verify(state, action_id)
+            # Opening bid at face_value + offset.
+            raise_id = find_legal_action(state, action_type=ACTION_RAISE, amount=offset)
+            apply_and_verify(state, raise_id)
+            bid_price = COMPANIES[company_id].get_face_value() + offset
             return company_id, bid_price
-    raise AssertionError(f"No auction action with offset={bid_offset}")
+    raise AssertionError("No auction action found in INVEST")
 
 
 def _make_forced_bid_state():
+    """Make a BID state with exactly one legal action.
+
+    Enters BID via INVEST auction-select, has the starter place the opening
+    bid at face_value (offset 0), then pins the next bidder's cash to the
+    bid price — they can't raise (need cash > bid_price), so only leave
+    remains legal.
+    """
     state = GameState(3)
     state.initialize_game(3, seed=42)
-    _, bid_price = _enter_bid_phase(state)
+    _, bid_price = _enter_bid_phase_with_opening_bid(state)
     active = TURN.get_active_player(state)
     PLAYERS[active].set_cash(state, bid_price)
     actions = get_legal_actions(state)

@@ -3,8 +3,6 @@
 Covers: PASS, AUCTION (start), BUY_SHARE, SELL_SHARE actions, round-trip
 limits, legal-action enumeration, price movement, and phase transitions.
 """
-import pytest
-
 from core.driver import STATUS_GAME_OVER_PY as STATUS_GAME_OVER
 from core.actions import (
     ACTION_PASS_PY as ACTION_PASS,
@@ -135,55 +133,29 @@ class TestStartAuction:
         apply_and_verify(game_state, aid)
         assert TURN.get_active_company(game_state) == expected_company
 
-    def test_auction_sets_price_at_face_value(self, game_state):
-        """Auction with offset=0 sets price to exactly face value."""
-        actions = get_legal_actions(game_state)
-        # Pick the first company with offset=0
-        for aid, info in actions:
-            if info.action_type == ACTION_AUCTION and info.amount == 0:
-                face = COMPANIES[info.company_id].get_face_value()
-                apply_and_verify(game_state, aid)
-                assert TURN.get_auction_price(game_state) == face
-                return
-        pytest.fail("No offset-0 auction found")
+    def test_auction_clears_price_and_high_bidder(self, game_state):
+        """Selecting a company enters BID with no opening bid placed."""
+        action_id = find_legal_action(game_state, action_type=ACTION_AUCTION)
+        apply_and_verify(game_state, action_id)
+        assert TURN.get_auction_price(game_state) == 0
+        assert TURN.get_auction_high_bidder(game_state) == -1
 
-    def test_auction_with_positive_offset(self, game_state):
-        """Auction with offset > 0 sets price to face + offset."""
-        actions = get_legal_actions(game_state)
-        positive_offset_auctions = [
-            (aid, info)
-            for aid, info in actions
-            if info.action_type == ACTION_AUCTION and info.amount > 0
-        ]
-        assert positive_offset_auctions, (
-            "Expected a positive-offset auction in the seeded INVEST opening state"
-        )
-
-        aid, info = positive_offset_auctions[0]
-        face = COMPANIES[info.company_id].get_face_value()
-        apply_and_verify(game_state, aid)
-        assert TURN.get_auction_price(game_state) == face + info.amount
-
-    def test_auction_sets_high_bidder_to_starter(self, game_state):
-        """Auction starter is recorded as the high bidder."""
+    def test_auction_records_starter(self, game_state):
+        """Auction starter is recorded, but no high bidder exists yet."""
         starter = TURN.get_active_player(game_state)
         action_id = find_legal_action(game_state, action_type=ACTION_AUCTION)
         apply_and_verify(game_state, action_id)
-        assert TURN.get_auction_high_bidder(game_state) == starter
         assert TURN.get_auction_starter(game_state) == starter
+        # No opening bid yet — high_bidder sentinel remains -1.
+        assert TURN.get_auction_high_bidder(game_state) == -1
 
-    def test_auction_advances_past_starter(self, game_state):
-        """After starting auction, active player is the next bidder."""
-        num_players = TURN.get_num_players(game_state)
+    def test_auction_keeps_starter_as_active_player(self, game_state):
+        """Starter stays as the active player and places the opening bid."""
         starter = TURN.get_active_player(game_state)
         action_id = find_legal_action(game_state, action_type=ACTION_AUCTION)
         apply_and_verify(game_state, action_id)
 
-        new_active = TURN.get_active_player(game_state)
-        assert new_active != starter
-        starter_pos = PLAYERS[starter].get_turn_order(game_state)
-        new_pos = PLAYERS[new_active].get_turn_order(game_state)
-        assert new_pos == (starter_pos + 1) % num_players
+        assert TURN.get_active_player(game_state) == starter
 
     def test_auction_clears_consecutive_passes(self, game_state):
         """Auction start resets the consecutive-passes counter."""
@@ -195,7 +167,7 @@ class TestStartAuction:
         apply_and_verify(game_state, action_id)
         assert TURN.get_consecutive_passes(game_state) == 0
 
-    def test_auction_blocked_when_cannot_afford(self, game_state):
+    def test_auction_blocked_when_cannot_afford_face_value(self, game_state):
         """No auction actions when player has 0 cash."""
         active = TURN.get_active_player(game_state)
         PLAYERS[active].set_cash(game_state, 0)
@@ -207,24 +179,25 @@ class TestStartAuction:
         pass_actions = [a for _, a in actions if a.action_type == ACTION_PASS]
         assert len(pass_actions) == 1
 
-    def test_auction_offsets_limited_by_cash(self, game_state):
-        """Auction offsets above (cash - face_value) are not legal."""
+    def test_auction_requires_face_value_affordable(self, game_state):
+        """Select-company is legal iff player cash >= company face value."""
         actions = get_legal_actions(game_state)
         auction_actions = [(aid, info) for aid, info in actions
                           if info.action_type == ACTION_AUCTION]
-        assert auction_actions, "Expected at least one auction action in fresh INVEST state"
+        assert auction_actions, "Expected at least one auction action"
 
-        # Pick a company and set cash to face + 2
+        # Pick a company and drop cash to one below its face value.
         company_id = auction_actions[0][1].company_id
         face = COMPANIES[company_id].get_face_value()
         active = TURN.get_active_player(game_state)
-        PLAYERS[active].set_cash(game_state, face + 2)
+        PLAYERS[active].set_cash(game_state, face - 1)
 
         new_actions = get_legal_actions(game_state)
-        offsets = sorted(info.amount for _, info in new_actions
-                        if info.action_type == ACTION_AUCTION
-                        and info.company_id == company_id)
-        assert offsets == [0, 1, 2]
+        selectable_companies = {
+            info.company_id for _, info in new_actions
+            if info.action_type == ACTION_AUCTION
+        }
+        assert company_id not in selectable_companies
 
 
 # =============================================================================
@@ -641,13 +614,19 @@ class TestPhaseTransitions:
         assert TURN.get_turn_number(game_state) == initial_turn + 1
 
     def test_auction_returns_to_invest_after_resolution(self, game_state):
-        """Auction -> BID -> all leave -> back to INVEST."""
+        """Auction -> BID -> starter bids, others leave -> back to INVEST."""
+        from core.actions import ACTION_RAISE_PY as ACTION_RAISE
         num_players = TURN.get_num_players(game_state)
         action_id = find_legal_action(game_state, action_type=ACTION_AUCTION)
         apply_and_verify(game_state, action_id)
         assert TURN.get_phase(game_state) == int(GamePhases.PHASE_BID)
 
-        # All other players leave the auction (pass in BID = leave)
+        # Starter places the opening bid at face_value (offset 0). Pass is
+        # not legal on the opening bid.
+        opening = find_legal_action(game_state, action_type=ACTION_RAISE, amount=0)
+        apply_and_verify(game_state, opening)
+
+        # All other players leave the auction (pass in BID = leave).
         for _ in range(num_players - 1):
             leave_id = find_legal_action(game_state, action_type=ACTION_PASS)
             apply_and_verify(game_state, leave_id)

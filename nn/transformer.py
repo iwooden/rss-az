@@ -208,9 +208,12 @@ class RSSTransformerNet(nn.Module):
         # in the input pass_embeds, which travel through the trunk and become
         # phase-specific representations by the time they reach this head.
         self.pass_head = nn.Linear(d, 1)
+        # INVEST now just selects which company to auction (price chosen in
+        # BID). One logit per company token; MLP shape kept wide for future
+        # sharing with CLOSING / ACQ_SELECT_COMPANY per phase-refactor.md.
         self.company_auction_head = nn.Sequential(
             nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, int(AUCTION_CAP)),  # AUCTION_CAP price offsets per company
+            nn.Linear(d // 2, 1),
         )
         self.corp_trade_head = nn.Sequential(
             nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
@@ -218,10 +221,12 @@ class RSSTransformerNet(nn.Module):
         )
         self.company_close_head = nn.Linear(d, 1)  # per-company close logit
 
-        # Phase-specific context token heads
+        # Phase-specific context token heads. BID bids at face_value + offset
+        # for offset ∈ [0, AUCTION_CAP), so the head produces AUCTION_CAP
+        # logits — one per legal bid offset (both opening and subsequent).
         self.auction_raise_head = nn.Sequential(
             nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, int(AUCTION_CAP) - 1),  # AUCTION_CAP-1 raise amounts
+            nn.Linear(d // 2, int(AUCTION_CAP)),
         )
         self.dividend_head = nn.Sequential(
             nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
@@ -329,19 +334,20 @@ class RSSTransformerNet(nn.Module):
     # ------------------------------------------------------------------
 
     def _policy_invest(self, t: torch.Tensor) -> torch.Tensor:
-        """INVEST: pass(1) + auction(36*AUCTION_CAP) + trade(8*2) = 557."""
+        """INVEST: pass(1) + company-select(36) + trade(8*2) = 53."""
         pass_logit = self.pass_head(t[:, self._pass_invest_idx])              # (n, 1)
-        auction = self.company_auction_head(t[:, self._company_slice])        # (n, 36, AUCTION_CAP)
+        # (n, 36, 1) → (n, 36) company-select logits, one per company token.
+        auction = self.company_auction_head(t[:, self._company_slice]).squeeze(-1)
         trade = self.corp_trade_head(t[:, self._corp_slice])                  # (n, 8, 2)
         # flatten(1) instead of reshape(n, -1): the latter is ambiguous when
         # n == 0 (empty mask in dispatch), since 0 elements / 0 rows is
         # undefined for the inferred dim.
-        return torch.cat([pass_logit, auction.flatten(1), trade.flatten(1)], dim=-1)
+        return torch.cat([pass_logit, auction, trade.flatten(1)], dim=-1)
 
     def _policy_bid(self, t: torch.Tensor) -> torch.Tensor:
-        """BID: pass(1) + raises(AUCTION_CAP-1) = AUCTION_CAP. Pass = leave the auction."""
+        """BID: pass(1) + offsets(AUCTION_CAP) = 16. Pass = leave the auction."""
         pass_logit = self.pass_head(t[:, self._pass_bid_idx])                 # (n, 1)
-        raises = self.auction_raise_head(t[:, self._auction_idx])             # (n, 14)
+        raises = self.auction_raise_head(t[:, self._auction_idx])             # (n, 15)
         return torch.cat([pass_logit, raises], dim=-1)
 
     def _policy_acquisition(self, t: torch.Tensor) -> torch.Tensor:

@@ -287,8 +287,8 @@ The engine has 12 `GamePhases`; the model only sees the 8 decision phases where 
 
 | DecisionPhase       | ID | Action count | Layout |
 |---------------------|----|-------------:|--------|
-| `DPHASE_INVEST`     | 0  | 557   | 1 pass + 36×15 auction (company-indexed) + 8×2 trade (buy/sell) |
-| `DPHASE_BID`        | 1  | 15    | 1 pass (= leave auction) + 14 raise offsets |
+| `DPHASE_INVEST`     | 0  | 53    | 1 pass + 36 company-select + 8×2 trade (buy/sell) |
+| `DPHASE_BID`        | 1  | 16    | 1 pass (= leave auction, illegal on opening bid) + AUCTION_CAP (15) bid offsets |
 | `DPHASE_ACQUISITION`| 2  | 14977 | 1 pass + 8×36×52 corp × company × {51 price offsets + FI_BUY} |
 | `DPHASE_ACQ_OFFER`  | 3  | 2     | pass + buy (FI preemption) |
 | `DPHASE_CLOSING`    | 4  | 37    | 1 pass + 36 per-company close |
@@ -307,13 +307,13 @@ Highlighted encoder layouts:
 ```
 INVEST:
   0                                    = pass
-  1 + company_id*15 + bid_offset       = start auction on company at face + (bid_offset + 0..14)
-  541 + corp_id*2                      = buy share in corp
-  541 + corp_id*2 + 1                  = sell share in corp
+  1 + company_id                       = select company to auction (price chosen in BID)
+  37 + corp_id*2                       = buy share in corp
+  37 + corp_id*2 + 1                   = sell share in corp
 
 BID:
-  0                                    = leave auction (pass-class action)
-  1 + raise_offset                     = raise by (face + 1 + raise_offset)
+  0                                    = leave auction (pass-class action, illegal on opening bid)
+  1 + bid_offset                       = bid face_value + bid_offset (bid_offset ∈ [0, AUCTION_CAP))
 
 ACQUISITION:
   0                                    = pass
@@ -363,10 +363,10 @@ Python-accessible wrappers (for tests + diagnostics):
 | Value | Type | Used by | Meaning |
 |-------|------|---------|---------|
 | 0  | `ACTION_PASS`          | INVEST, BID, ACQUISITION, ACQ_OFFER, CLOSING, ISSUE, IPO | Universal pass/opt-out. In BID this means "leave the auction". |
-| 1  | `ACTION_AUCTION`       | INVEST     | Start auction on `company_id` at face + `amount` (bid_offset) |
+| 1  | `ACTION_AUCTION`       | INVEST     | Select `company_id` to put up for auction; price is chosen in BID (`amount` unused) |
 | 2  | `ACTION_BUY_SHARE`     | INVEST     | Buy share in `corp_id` |
 | 3  | `ACTION_SELL_SHARE`    | INVEST     | Sell share in `corp_id` |
-| 4  | `ACTION_RAISE`         | BID        | Raise current bid by (face + 1 + `amount`) |
+| 4  | `ACTION_RAISE`         | BID        | Bid `face_value + amount` (amount ∈ [0, `AUCTION_CAP`)); opening bid allows any offset ≥ 0, subsequent bids must strictly exceed current |
 | 5  | `ACTION_ACQ_PRICE`     | ACQUISITION| `corp_id` acquires `company_id` at low_price + `amount` |
 | 6  | `ACTION_ACQ_FI_BUY`    | ACQUISITION| `corp_id` buys `company_id` from FI at fixed price (OS=face, others=high) |
 | 7  | `ACTION_ACQ_OFFER_ACCEPT` | ACQ_OFFER  | Preempting corp / contested owner accepts the offered acquisition |
