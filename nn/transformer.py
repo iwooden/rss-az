@@ -27,7 +27,7 @@ from core.data import (
     AUCTION_CAP,
     PHASE_ACTION_SIZES,
 )
-from core.token_data import TokenDataSize
+from core.token_data import TokenDataSize, TokenWidth, get_token_widths
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -68,13 +68,54 @@ class TransformerConfig:
 
     @property
     def num_tokens(self) -> int:
-        """Input-buffer token count: N players + 56 fixed entity/phase tokens.
+        """Input-buffer token count: 65 fixed entity/phase tokens + N players.
 
         The trunk sequence is 7 wider because ``_project_tokens`` concatenates
         7 learned per-phase pass anchors after projection; those rows have no
         input features so they don't exist in the engine-side buffer.
         """
-        return self.num_players + 56
+        return self.num_players + 65
+
+
+def _validate_layout(num_players: int) -> None:
+    """Assert the hardcoded token indices in ``RSSTransformerNet.__init__``
+    line up with ``core.token_data.get_token_widths`` for the given player
+    count.
+
+    The two layouts are sources of truth for the same buffer: the Cython
+    side writes each token's features, the Python side slices them into
+    per-type projections. Drift between them is invisible at runtime (the
+    trunk just sees permuted / mis-sized rows) so we check once at
+    construction and crash loudly on mismatch.
+    """
+    expected = (
+        [int(TokenWidth.TW_MARKET_SLOT_PRICES)]
+        + [int(TokenWidth.TW_COMPANY)] * 36
+        + [int(TokenWidth.TW_MARKET_AVAILABILITY)]
+        + [int(TokenWidth.TW_COMPANY_LOCATION)] * 4
+        + [int(TokenWidth.TW_COMPANY_ADJ_INCOME)]
+        + [int(TokenWidth.TW_FI)]
+        + [int(TokenWidth.TW_ACTIVE_PLAYER)]
+        + [int(TokenWidth.TW_ACTIVE_CORP)]
+        + [int(TokenWidth.TW_ACTIVE_COMPANY)]
+        + [int(TokenWidth.TW_PHASE)]
+        + [int(TokenWidth.TW_NUM_PLAYERS)]
+        + [int(TokenWidth.TW_GAME_PROGRESS)]
+        + [int(TokenWidth.TW_INVEST)]
+        + [int(TokenWidth.TW_AUCTION)]
+        + [int(TokenWidth.TW_DIVIDEND)]
+        + [int(TokenWidth.TW_ISSUE)]
+        + [int(TokenWidth.TW_PAR)]
+        + [int(TokenWidth.TW_ACQ_OFFER)]
+        + [int(TokenWidth.TW_ACQ_PRICE)]
+        + [int(TokenWidth.TW_CORP)] * 8
+        + [int(TokenWidth.TW_PLAYER)] * num_players
+    )
+    actual = get_token_widths(num_players).tolist()
+    assert actual == expected, (
+        f"token layout drift between nn/transformer.py and core/token_data.pyx "
+        f"for {num_players}p: actual widths {actual} vs expected {expected}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -145,42 +186,76 @@ class RSSTransformerNet(nn.Module):
         np_ = cfg.num_players
 
         # --- Token index bookkeeping ---
-        self._player_slice = slice(0, np_)
-        self._corp_slice = slice(np_, np_ + 8)
-        self._company_slice = slice(np_ + 8, np_ + 44)
-        self._fi_idx = np_ + 44
-        self._market_idx = np_ + 45
-        self._phase_idx = np_ + 46
-        self._num_players_idx = np_ + 47
-        self._game_progress_idx = np_ + 48
-        self._invest_idx = np_ + 49
-        self._auction_idx = np_ + 50
-        self._dividend_idx = np_ + 51
-        self._issue_idx = np_ + 52
-        self._par_idx = np_ + 53
-        self._acq_offer_idx = np_ + 54
-        self._acq_price_info_idx = np_ + 55
+        # Buffer layout (matches core/token_data.pyx::_fill_buffer):
+        #   static: market_slot_prices, companies×36
+        #   dynamic: market_availability, company_location×4 (REMOVED / AUCTION
+        #     / REVEALED / CORP_ACQ), company_adj_income, FI, active_player,
+        #     active_corp, active_company, phase, num_players, game_progress
+        #   phase-specific: invest, auction, dividend, issue, par, acq_offer,
+        #     acq_price_info
+        #   corps×8, then players×N (trailing so padding for higher player
+        #   counts is a no-op on the prefix).
+        # Pass anchors (×7) are concatenated after projection; see
+        # ``_project_tokens``. They live beyond the player slice, so player
+        # indices stay contiguous for the value head and the padding contract.
+        self._market_slot_prices_idx = 0
+        self._company_slice = slice(1, 37)
+        self._market_idx = 37                          # market_availability
+        self._company_location_slice = slice(38, 42)   # REMOVED/AUCTION/REVEALED/CORP_ACQ
+        self._company_adj_income_idx = 42
+        self._fi_idx = 43
+        self._active_player_idx = 44
+        self._active_corp_idx = 45
+        self._active_company_idx = 46
+        self._phase_idx = 47
+        self._num_players_idx = 48
+        self._game_progress_idx = 49
+        self._invest_idx = 50
+        self._auction_idx = 51
+        self._dividend_idx = 52
+        self._issue_idx = 53
+        self._par_idx = 54
+        self._acq_offer_idx = 55
+        self._acq_price_info_idx = 56
+        self._corp_slice = slice(57, 65)
+        self._player_slice = slice(65, 65 + np_)
         # Per-phase pass tokens — one learned anchor per pass-using phase, each
         # with no input features. DIVIDENDS is excluded (no pass action), and
         # ACQ_SELECT_COMPANY / ACQ_SELECT_PRICE have no pass (committing to
-        # SELECT_CORP locks the player in).
-        self._pass_invest_idx = np_ + 56
-        self._pass_bid_idx = np_ + 57
-        self._pass_acq_select_corp_idx = np_ + 58
-        self._pass_acq_offer_idx = np_ + 59
-        self._pass_closing_idx = np_ + 60
-        self._pass_issue_idx = np_ + 61
-        self._pass_ipo_idx = np_ + 62
+        # SELECT_CORP locks the player in). Appended after the player slice.
+        self._pass_invest_idx = 65 + np_
+        self._pass_bid_idx = 66 + np_
+        self._pass_acq_select_corp_idx = 67 + np_
+        self._pass_acq_offer_idx = 68 + np_
+        self._pass_closing_idx = 69 + np_
+        self._pass_issue_idx = 70 + np_
+        self._pass_ipo_idx = 71 + np_
+
+        # Drift guard: hardcoded positions above must match the Cython-side
+        # ``get_token_widths`` layout. Checking here fires loudly at model
+        # construction rather than silently feeding mis-aligned features to
+        # the trunk.
+        _validate_layout(np_)
 
         # --- Type-specific input projections ---
         # All take the full zero-padded token_dim input. Weights for always-zero
-        # feature positions are inert; the simplicity is worth the ~2% extra params.
+        # feature positions are inert; the simplicity is worth the ~2% extra
+        # params. ``company_location_proj`` is shared across all four location
+        # tokens (REMOVED / AUCTION / REVEALED / CORP_ACQ) — they carry the
+        # same 36-bit "which companies are at this location" bitmap semantics,
+        # so distinct weights would just be four copies of the same mapping.
         tdim = cfg.token_dim
         self.player_proj = nn.Linear(tdim, d)
         self.corp_proj = nn.Linear(tdim, d)
         self.company_proj = nn.Linear(tdim, d)
         self.fi_proj = nn.Linear(tdim, d)
         self.market_proj = nn.Linear(tdim, d)
+        self.market_slot_prices_proj = nn.Linear(tdim, d)
+        self.company_location_proj = nn.Linear(tdim, d)
+        self.company_adj_income_proj = nn.Linear(tdim, d)
+        self.active_player_proj = nn.Linear(tdim, d)
+        self.active_corp_proj = nn.Linear(tdim, d)
+        self.active_company_proj = nn.Linear(tdim, d)
         self.phase_proj = nn.Linear(tdim, d)
         self.num_players_proj = nn.Linear(tdim, d)
         self.game_progress_proj = nn.Linear(tdim, d)
@@ -319,20 +394,26 @@ class RSSTransformerNet(nn.Module):
         input buffer), so the output sequence is 7 wider than the input.
 
         Args:
-            x: (batch, num_players + 56, token_dim) zero-padded raw features.
+            x: (batch, num_players + 65, token_dim) zero-padded raw features.
         Returns:
-            (batch, num_players + 63, d_model) embeddings: projected input
+            (batch, num_players + 72, d_model) embeddings: projected input
             tokens followed by the 7 per-phase pass anchors.
         """
         B = x.shape[0]
 
-        # All projections take the full zero-padded token_dim input.
+        # Parts order matches the engine-side buffer layout so concatenation
+        # preserves token positions. All projections take the full zero-padded
+        # token_dim input.
         parts: list[torch.Tensor] = [
-            self.player_proj(x[:, self._player_slice]),               # (B, N, d)
-            self.corp_proj(x[:, self._corp_slice]),                   # (B, 8, d)
-            self.company_proj(x[:, self._company_slice]),             # (B, 36, d)
-            self.fi_proj(x[:, self._fi_idx]).unsqueeze(1),            # (B, 1, d)
+            self.market_slot_prices_proj(x[:, self._market_slot_prices_idx]).unsqueeze(1),
+            self.company_proj(x[:, self._company_slice]),                      # (B, 36, d)
             self.market_proj(x[:, self._market_idx]).unsqueeze(1),
+            self.company_location_proj(x[:, self._company_location_slice]),    # (B, 4, d)
+            self.company_adj_income_proj(x[:, self._company_adj_income_idx]).unsqueeze(1),
+            self.fi_proj(x[:, self._fi_idx]).unsqueeze(1),
+            self.active_player_proj(x[:, self._active_player_idx]).unsqueeze(1),
+            self.active_corp_proj(x[:, self._active_corp_idx]).unsqueeze(1),
+            self.active_company_proj(x[:, self._active_company_idx]).unsqueeze(1),
             self.phase_proj(x[:, self._phase_idx]).unsqueeze(1),
             self.num_players_proj(x[:, self._num_players_idx]).unsqueeze(1),
             self.game_progress_proj(x[:, self._game_progress_idx]).unsqueeze(1),
@@ -343,6 +424,8 @@ class RSSTransformerNet(nn.Module):
             self.par_proj(x[:, self._par_idx]).unsqueeze(1),
             self.acq_offer_proj(x[:, self._acq_offer_idx]).unsqueeze(1),
             self.acq_price_proj(x[:, self._acq_price_info_idx]).unsqueeze(1),
+            self.corp_proj(x[:, self._corp_slice]),                            # (B, 8, d)
+            self.player_proj(x[:, self._player_slice]),                        # (B, N, d)
             self.pass_embeds.unsqueeze(0).expand(B, -1, -1),  # (B, 7, d) per-phase anchors
         ]
         tokens = torch.cat(parts, dim=1)                      # (B, num_tokens, d)
@@ -591,7 +674,9 @@ if __name__ == "__main__":
     # --- Parameter breakdown ---
     proj_modules = [
         model.player_proj, model.corp_proj, model.company_proj,
-        model.fi_proj, model.market_proj,
+        model.fi_proj, model.market_proj, model.market_slot_prices_proj,
+        model.company_location_proj, model.company_adj_income_proj,
+        model.active_player_proj, model.active_corp_proj, model.active_company_proj,
         model.phase_proj, model.num_players_proj, model.game_progress_proj,
         model.invest_proj, model.auction_proj, model.dividend_proj,
         model.issue_proj, model.par_proj, model.acq_offer_proj,
