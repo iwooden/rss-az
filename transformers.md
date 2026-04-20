@@ -29,7 +29,9 @@ The authoritative per-token feature spec is in `token-data.md`. The table below 
 | Company | 36 | identity, active company flag, location flags, ownership (corp/player/FI), adjusted income, static data (prices, stars, base income), 36-dim synergy |
 | FI | 1 | cash, income, owned companies (36) |
 | Market | 1 | 27 availability flags |
-| Global | 1 | num players (3-slot one-hot), phase (11-slot one-hot), CoO (7-slot one-hot), end-card flipped, cards remaining |
+| Phase | 1 | decision-phase one-hot (11 slots, one per DecisionPhase; all-zero in automated / terminal engine phases) |
+| NumPlayers | 1 | player-count one-hot (3 slots: 3p/4p/5p) |
+| GameProgress | 1 | CoO (7-slot one-hot), end-card flipped, cards remaining |
 | Invest | 1 | consecutive passes, buy/sell share price impacts per corp (8+8). Zeroed outside INVEST. |
 | Auction | 1 | price index+value, high bidder (5-slot), starter (5-slot). Zeroed outside BID. |
 | Dividend | 1 | 26 dividend-amount price impacts, dividend remaining (8 corp flags). Zeroed outside DIVIDENDS. |
@@ -38,7 +40,7 @@ The authoritative per-token feature spec is in `token-data.md`. The table below 
 | Acq Offer | 1 | offer price index+value, offer corp (8-slot), FI-company flag. Zeroed outside ACQ_OFFER. |
 | Acq Price Info | 1 | active corp (8-slot), active company (36-slot), cash-affordable / star-affordable flags. Zeroed outside ACQ_SELECT_PRICE. |
 
-**Input buffer total: 54 + N tokens** (57 for 3p, 58 for 4p, 59 for 5p). The trunk sequence is 7 wider because the model concatenates 7 learned per-phase pass anchors after projection — see *Per-phase pass anchors* below.
+**Input buffer total: 56 + N tokens** (59 for 3p, 60 for 4p, 61 for 5p). The trunk sequence is 7 wider because the model concatenates 7 learned per-phase pass anchors after projection — see *Per-phase pass anchors* below.
 
 ### What disappears from the state vector
 
@@ -69,13 +71,13 @@ Seven learned `nn.Parameter` rows — one per pass-using decision phase (INVEST,
 **Implementation: `nn/transformer.py`** (~2.39M params at default config)
 
 ```
-Input tokens (57 for 3p)
+Input tokens (59 for 3p)
     ↓
 Type-specific linear projections → d_model, then concat 7 per-phase pass anchors
     ↓
 L transformer blocks (pre-RMSNorm, multi-head self-attention + SwiGLU FFN)
     ↓
-Output token representations (64 × d_model for 3p)
+Output token representations (66 × d_model for 3p)
     ↓
 Entity-readout policy heads (11-phase dispatch) + value head
 ```
@@ -175,7 +177,7 @@ PAR:                14 (par indices, no pass)                                 = 
 
 Per-phase action indices (no global action vector). The largest phase is INVEST at 53 actions. All sizes are **fixed across player counts**.
 
-ACQ_SELECT_CORP, ACQ_SELECT_COMPANY, ACQ_SELECT_PRICE, and ACQ_OFFER are all distinct phases from the model's perspective (separate one-hot IDs in the Global token's phase encoding), even though the game engine treats ACQ_OFFER and the three ACQ select sub-phases as one coordinated flow. IPO / PAR follow the same pattern.
+ACQ_SELECT_CORP, ACQ_SELECT_COMPANY, ACQ_SELECT_PRICE, and ACQ_OFFER are all distinct phases from the model's perspective (separate one-hot IDs in the Phase token's encoding), even though the game engine treats ACQ_OFFER and the three ACQ select sub-phases as one coordinated flow. IPO / PAR follow the same pattern.
 
 **ACQ flow:**
 - **ACQ_SELECT_CORP** → the acting player picks which of their corps makes the acquisition, or passes to end the ACQ sequence. `turn.active_corp` / `turn.active_company` both sit at `-1`; the chosen corp is staged into `active_corp` on resolution.
@@ -284,7 +286,7 @@ GameState (int16, 469 slots at 3p)  ── engine-only, raw values ──
                      ↓
            get_token_data(state, buffer)   ← Cython, nogil
                      ↓
-           eval_buffer: (batch, num_players + 54, 97)  float32
+           eval_buffer: (batch, num_players + 56, 97)  float32
                      ↓
            Type-specific projections → d_model → transformer trunk
 ```
@@ -306,18 +308,18 @@ cpdef void get_token_data_batch(
 )
 ```
 
-Implementation lives in `core/token_data.{pyx,pxd}`. Feature spec: `token-data.md`. Each `_fill_*_token()` helper reads from the compact state and writes raw/lightly-normalized features into the buffer inside a single `nogil` block. Token order is fixed: `[players..., corps..., companies..., FI, market, global, invest, auction, dividend, issue, par, acq_offer, acq_price_info]`. The 7 per-phase pass anchors are added inside the model after projection and don't appear in the engine-side buffer.
+Implementation lives in `core/token_data.{pyx,pxd}`. Feature spec: `token-data.md`. Each `_fill_*_token()` helper reads from the compact state and writes raw/lightly-normalized features into the buffer inside a single `nogil` block. Token order is fixed: `[players..., corps..., companies..., FI, market, phase, num_players, game_progress, invest, auction, dividend, issue, par, acq_offer, acq_price_info]`. The 7 per-phase pass anchors are added inside the model after projection and don't appear in the engine-side buffer.
 
-Both entries accept C-contiguous `float32` memoryviews sized to at least `(num_players + 54, TOKEN_DIM)` (single) or `(n, num_players + 54, TOKEN_DIM)` (batch). `get_token_data_batch` reuses a single scratch `GameState` across rows via `rebind`, amortizing Python dispatch over the whole batch — this is the path the evaluator and eval server use on their hot paths. A small GIL-held prologue runs `refresh_player_cache_if_dirty` for each player before the nogil fill body, so the fill itself can read cached net-worth / liquidity / income slots directly.
+Both entries accept C-contiguous `float32` memoryviews sized to at least `(num_players + 56, TOKEN_DIM)` (single) or `(n, num_players + 56, TOKEN_DIM)` (batch). `get_token_data_batch` reuses a single scratch `GameState` across rows via `rebind`, amortizing Python dispatch over the whole batch — this is the path the evaluator and eval server use on their hot paths. A small GIL-held prologue runs `refresh_player_cache_if_dirty` for each player before the nogil fill body, so the fill itself can read cached net-worth / liquidity / income slots directly.
 
 Static features (synergies, face values, etc.) are written every call — it's a straight memcpy and the simplicity is worth more than the minor bandwidth savings. Phase-specific tokens are left at the zeroed default when the current engine phase does not match.
 
 ### Eval buffer sizing
 
 The eval buffer is `(batch_size, num_tokens, token_dim)`:
-- `num_tokens = num_players + 54` — 57 (3p), 58 (4p), 59 (5p)
+- `num_tokens = num_players + 56` — 59 (3p), 60 (4p), 61 (5p)
 - `token_dim = 97` (all token types zero-padded to the same width; `TokenDataSize.TOKEN_DIM`)
-- Total per sample: 57 × 97 = 5,529 floats (~21.6 KiB) for 3p
+- Total per sample: 59 × 97 = 5,723 floats (~22.4 KiB) for 3p
 
 The rectangular layout enables clean GPU operations. All type-specific projections take the same `token_dim` input (no per-type slicing needed).
 
@@ -385,7 +387,7 @@ All three simplifications follow the same pattern: the MLP needed a small, fixed
 - Delete one-hot encoding, normalization-on-write, entity duplication — **done.**
 - Reduce `core/data.{pxd,pyx}` to pure data + constants — **done.** All field-level accessors removed; the file exposes only the static arrays (company/corp/market/CoO/par tables, synergy matrix), the shared enums (`GameConstants`, `GamePhases`, `DecisionPhase`, `CorpIndices`, `ActionSize`), and the normalization divisors used by token extraction. Computational helpers that used to live here (synergy aggregation, required stars, cost-of-ownership lookup, par-price validity) now live as private cdef functions in the entity that uses them.
 - Update entity handles (Player, Corp, Company, FI, Market, Deck, TurnState) for the new offset layout — **done.** Every handle is fully stateless: no per-instance offset cache, no `initialize()` step, no normalization-on-read. Each accessor reads its slot inline from the module-level `LAYOUT` / `PLAYER_FIELDS` / `CORP_FIELDS` / `TURN_OFFSETS` / `COMPANY_OFFSETS` / `DECK_OFFSETS` / `FI_OFFSETS` constants, so the singletons in `PLAYERS` / `CORPS` / `COMPANIES` are reused with any `GameState` at any player count. Company ownership is read from the shared `company_locations` / `company_owner_ids` arrays — the per-player and per-corp `owned_companies` bitmaps are gone.
-- Implement `get_token_data()` in Cython — **done.** `core/token_data.{pyx,pxd}` fills a `(num_players + 54, 97)` float32 memoryview inside a single nogil block, with a batched `get_token_data_batch` variant that amortizes per-state Python dispatch via `GameState.rebind`. `TokenDataSize.TOKEN_DIM` is the single source of truth for the padded width shared with `nn/transformer.py`.
+- Implement `get_token_data()` in Cython — **done.** `core/token_data.{pyx,pxd}` fills a `(num_players + 56, 97)` float32 memoryview inside a single nogil block, with a batched `get_token_data_batch` variant that amortizes per-state Python dispatch via `GameState.rebind`. `TokenDataSize.TOKEN_DIM` is the single source of truth for the padded width shared with `nn/transformer.py`.
 
 ### Phase 2: Action space refactor (core/actions.pyx) ✅
 - **Done.** Per-phase action indices, company-indexed auctions/closes, three-sub-phase ACQ (SELECT_CORP / SELECT_COMPANY / SELECT_PRICE), two-sub-phase IPO (IPO / PAR).

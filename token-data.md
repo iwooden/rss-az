@@ -1,9 +1,16 @@
 # Rough token data spec:
 
-## Global token
-- Global token:
-  - Num players (one-hot, 3 slots designating 3/4/5 players)
-  - Phase (one-hot, 8 slots for each decision phase)
+## Phase token
+- Phase token:
+  - Decision phase (one-hot, 11 slots — one per `DecisionPhase`). All-zero in
+    automated / terminal engine phases.
+
+## NumPlayers token
+- NumPlayers token:
+  - Num players (one-hot, 3 slots designating 3/4/5 players).
+
+## GameProgress token
+- GameProgress token:
   - CoO level (one-hot, 7 slots for each CoO level)
   - End card flipped (scalar, 0/1)
   - Cards remaining (scalar, normalized by NUM_COMPANIES)

@@ -68,13 +68,13 @@ class TransformerConfig:
 
     @property
     def num_tokens(self) -> int:
-        """Input-buffer token count: N players + 54 fixed entity/phase tokens.
+        """Input-buffer token count: N players + 56 fixed entity/phase tokens.
 
         The trunk sequence is 7 wider because ``_project_tokens`` concatenates
         7 learned per-phase pass anchors after projection; those rows have no
         input features so they don't exist in the engine-side buffer.
         """
-        return self.num_players + 54
+        return self.num_players + 56
 
 
 # ---------------------------------------------------------------------------
@@ -150,25 +150,27 @@ class RSSTransformerNet(nn.Module):
         self._company_slice = slice(np_ + 8, np_ + 44)
         self._fi_idx = np_ + 44
         self._market_idx = np_ + 45
-        self._global_idx = np_ + 46
-        self._invest_idx = np_ + 47
-        self._auction_idx = np_ + 48
-        self._dividend_idx = np_ + 49
-        self._issue_idx = np_ + 50
-        self._par_idx = np_ + 51
-        self._acq_offer_idx = np_ + 52
-        self._acq_price_info_idx = np_ + 53
+        self._phase_idx = np_ + 46
+        self._num_players_idx = np_ + 47
+        self._game_progress_idx = np_ + 48
+        self._invest_idx = np_ + 49
+        self._auction_idx = np_ + 50
+        self._dividend_idx = np_ + 51
+        self._issue_idx = np_ + 52
+        self._par_idx = np_ + 53
+        self._acq_offer_idx = np_ + 54
+        self._acq_price_info_idx = np_ + 55
         # Per-phase pass tokens — one learned anchor per pass-using phase, each
         # with no input features. DIVIDENDS is excluded (no pass action), and
         # ACQ_SELECT_COMPANY / ACQ_SELECT_PRICE have no pass (committing to
         # SELECT_CORP locks the player in).
-        self._pass_invest_idx = np_ + 54
-        self._pass_bid_idx = np_ + 55
-        self._pass_acq_select_corp_idx = np_ + 56
-        self._pass_acq_offer_idx = np_ + 57
-        self._pass_closing_idx = np_ + 58
-        self._pass_issue_idx = np_ + 59
-        self._pass_ipo_idx = np_ + 60
+        self._pass_invest_idx = np_ + 56
+        self._pass_bid_idx = np_ + 57
+        self._pass_acq_select_corp_idx = np_ + 58
+        self._pass_acq_offer_idx = np_ + 59
+        self._pass_closing_idx = np_ + 60
+        self._pass_issue_idx = np_ + 61
+        self._pass_ipo_idx = np_ + 62
 
         # --- Type-specific input projections ---
         # All take the full zero-padded token_dim input. Weights for always-zero
@@ -179,7 +181,9 @@ class RSSTransformerNet(nn.Module):
         self.company_proj = nn.Linear(tdim, d)
         self.fi_proj = nn.Linear(tdim, d)
         self.market_proj = nn.Linear(tdim, d)
-        self.global_proj = nn.Linear(tdim, d)
+        self.phase_proj = nn.Linear(tdim, d)
+        self.num_players_proj = nn.Linear(tdim, d)
+        self.game_progress_proj = nn.Linear(tdim, d)
         self.invest_proj = nn.Linear(tdim, d)
         self.auction_proj = nn.Linear(tdim, d)
         self.dividend_proj = nn.Linear(tdim, d)
@@ -315,9 +319,9 @@ class RSSTransformerNet(nn.Module):
         input buffer), so the output sequence is 7 wider than the input.
 
         Args:
-            x: (batch, num_players + 54, token_dim) zero-padded raw features.
+            x: (batch, num_players + 56, token_dim) zero-padded raw features.
         Returns:
-            (batch, num_players + 61, d_model) embeddings: projected input
+            (batch, num_players + 63, d_model) embeddings: projected input
             tokens followed by the 7 per-phase pass anchors.
         """
         B = x.shape[0]
@@ -329,7 +333,9 @@ class RSSTransformerNet(nn.Module):
             self.company_proj(x[:, self._company_slice]),             # (B, 36, d)
             self.fi_proj(x[:, self._fi_idx]).unsqueeze(1),            # (B, 1, d)
             self.market_proj(x[:, self._market_idx]).unsqueeze(1),
-            self.global_proj(x[:, self._global_idx]).unsqueeze(1),
+            self.phase_proj(x[:, self._phase_idx]).unsqueeze(1),
+            self.num_players_proj(x[:, self._num_players_idx]).unsqueeze(1),
+            self.game_progress_proj(x[:, self._game_progress_idx]).unsqueeze(1),
             self.invest_proj(x[:, self._invest_idx]).unsqueeze(1),
             self.auction_proj(x[:, self._auction_idx]).unsqueeze(1),
             self.dividend_proj(x[:, self._dividend_idx]).unsqueeze(1),
@@ -585,7 +591,8 @@ if __name__ == "__main__":
     # --- Parameter breakdown ---
     proj_modules = [
         model.player_proj, model.corp_proj, model.company_proj,
-        model.fi_proj, model.market_proj, model.global_proj,
+        model.fi_proj, model.market_proj,
+        model.phase_proj, model.num_players_proj, model.game_progress_proj,
         model.invest_proj, model.auction_proj, model.dividend_proj,
         model.issue_proj, model.par_proj, model.acq_offer_proj,
         model.acq_price_proj,

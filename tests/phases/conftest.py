@@ -559,21 +559,23 @@ def assert_invariants(state, msg=""):
 # =============================================================================
 #
 # Phase-specific tokens are laid out after the fixed tokens. The token buffer
-# carries (num_players + 54, TOKEN_DIM=97) float32 rows in this order:
+# carries (num_players + 56, TOKEN_DIM=97) float32 rows in this order:
 #
 #     [0, num_players)              : player tokens (3-5p)
 #     [num_players, num_players+8)  : corp tokens    (8)
 #     [num_players+8, num_players+44): company tokens (36)
 #     num_players+44                : FI
 #     num_players+45                : Market
-#     num_players+46                : Global
-#     num_players+47                : Invest  (zeroed outside PHASE_INVEST)
-#     num_players+48                : Auction (zeroed outside PHASE_BID)
-#     num_players+49                : Dividend(zeroed outside PHASE_DIVIDENDS)
-#     num_players+50                : Issue   (zeroed outside PHASE_ISSUE_SHARES)
-#     num_players+51                : Par/IPO (zeroed outside PHASE_IPO/PAR)
-#     num_players+52                : AcqOffer(zeroed outside PHASE_ACQ_OFFER)
-#     num_players+53                : AcqPriceInfo (zeroed outside PHASE_ACQ_SELECT_PRICE)
+#     num_players+46                : Phase       (decision-phase one-hot)
+#     num_players+47                : NumPlayers  (3p/4p/5p one-hot)
+#     num_players+48                : GameProgress (CoO + end_card + cards_remaining)
+#     num_players+49                : Invest  (zeroed outside PHASE_INVEST)
+#     num_players+50                : Auction (zeroed outside PHASE_BID)
+#     num_players+51                : Dividend(zeroed outside PHASE_DIVIDENDS)
+#     num_players+52                : Issue   (zeroed outside PHASE_ISSUE_SHARES)
+#     num_players+53                : Par/IPO (zeroed outside PHASE_IPO/PAR)
+#     num_players+54                : AcqOffer(zeroed outside PHASE_ACQ_OFFER)
+#     num_players+55                : AcqPriceInfo (zeroed outside PHASE_ACQ_SELECT_PRICE)
 #
 # The 7 per-phase pass anchors live inside the model (concatenated after
 # projection) and are not part of the input buffer.
@@ -697,14 +699,16 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
     company_base = num_players + num_corps
     fi_tok = company_base + num_companies
     market_tok = fi_tok + 1
-    global_tok = fi_tok + 2
-    invest_tok = fi_tok + 3
-    auction_tok = fi_tok + 4
-    dividend_tok = fi_tok + 5
-    issue_tok = fi_tok + 6
-    par_tok = fi_tok + 7
-    acq_offer_tok = fi_tok + 8
-    acq_price_info_tok = fi_tok + 9
+    phase_tok = fi_tok + 2
+    num_players_tok = fi_tok + 3
+    game_progress_tok = fi_tok + 4
+    invest_tok = fi_tok + 5
+    auction_tok = fi_tok + 6
+    dividend_tok = fi_tok + 7
+    issue_tok = fi_tok + 8
+    par_tok = fi_tok + 9
+    acq_offer_tok = fi_tok + 10
+    acq_price_info_tok = fi_tok + 11
     num_tokens = get_num_tokens(num_players)
     assert num_tokens == acq_price_info_tok + 1, (
         f"{msg}\nget_num_tokens({num_players})={num_tokens} "
@@ -1045,45 +1049,54 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
                      f"{mm}: tail beyond availability flags")
 
     # =========================================================================
-    # GLOBAL TOKEN
+    # PHASE TOKEN
     # =========================================================================
-    gm = f"{msg}\nGlobal token"
-    OFF_NUM_PLAYERS = 0
-    OFF_PHASE = 3
-    OFF_COO = 14
-    OFF_END_CARD = 21
-    OFF_CARDS_REM = 22
-
+    pm = f"{msg}\nPhase token"
     num_decision_phases = int(GameConstants.NUM_DECISION_PHASES)
     num_engine_phases = int(GameConstants.NUM_PHASES)
-
-    # num_players one-hot (3 slots, 3p→0, 4p→1, 5p→2)
-    np_slice = buf[global_tok, OFF_NUM_PLAYERS:OFF_NUM_PLAYERS + 3]
-    _assert_close(np_slice.sum(), 1.0, T_FLAG, f"{gm}: num_players one-hot sum")
-    _assert_close(np_slice[num_players - 3], 1.0, T_FLAG,
-                  f"{gm}: num_players bit at slot {num_players - 3}")
 
     # Phase one-hot (one slot per decision phase). Exactly one bit must be set
     # in every decision-phase state; the one-hot must be all-zero in automated /
     # terminal engine phases. When the driver's history-recorded phase_id is
     # provided, use it as ground truth — that check is independent of
     # ENGINE_TO_DECISION_PHASE and catches filler-vs-checker blind spots.
-    phase_slice = buf[global_tok, OFF_PHASE:OFF_PHASE + num_decision_phases]
+    phase_slice = buf[phase_tok, 0:num_decision_phases]
     if expected_decision_phase is None:
         dp = ENGINE_TO_DECISION_PHASE[phase] if 0 <= phase < num_engine_phases else -1
     else:
         dp = int(expected_decision_phase)
     if 0 <= dp < num_decision_phases:
         _assert_close(phase_slice.sum(), 1.0, T_FLAG,
-                      f"{gm}: phase one-hot sum (engine phase={phase}, dp={dp})")
+                      f"{pm}: phase one-hot sum (engine phase={phase}, dp={dp})")
         _assert_close(phase_slice[dp], 1.0, T_FLAG,
-                      f"{gm}: phase bit at decision slot {dp} (engine phase={phase})")
+                      f"{pm}: phase bit at decision slot {dp} (engine phase={phase})")
     else:
         _assert_close(phase_slice.sum(), 0.0, T_FLAG,
-                      f"{gm}: phase one-hot must be zero for automated/terminal phase={phase}")
+                      f"{pm}: phase one-hot must be zero for automated/terminal phase={phase}")
+    _assert_zero_row(buf[phase_tok, num_decision_phases:], T_FLAG,
+                     f"{pm}: tail beyond phase one-hot")
+
+    # =========================================================================
+    # NUM_PLAYERS TOKEN
+    # =========================================================================
+    nm = f"{msg}\nNumPlayers token"
+    np_slice = buf[num_players_tok, 0:3]
+    _assert_close(np_slice.sum(), 1.0, T_FLAG, f"{nm}: num_players one-hot sum")
+    _assert_close(np_slice[num_players - 3], 1.0, T_FLAG,
+                  f"{nm}: num_players bit at slot {num_players - 3}")
+    _assert_zero_row(buf[num_players_tok, 3:], T_FLAG,
+                     f"{nm}: tail beyond num_players one-hot")
+
+    # =========================================================================
+    # GAME_PROGRESS TOKEN
+    # =========================================================================
+    gm = f"{msg}\nGameProgress token"
+    OFF_COO = 0
+    OFF_END_CARD = 7
+    OFF_CARDS_REM = 8
 
     # CoO one-hot (7 slots; level 1..7 → slots 0..6)
-    coo_slice = buf[global_tok, OFF_COO:OFF_COO + 7]
+    coo_slice = buf[game_progress_tok, OFF_COO:OFF_COO + 7]
     coo = TURN.get_coo_level(state)
     if 1 <= coo <= 7:
         _assert_close(coo_slice.sum(), 1.0, T_FLAG, f"{gm}: CoO one-hot sum")
@@ -1093,16 +1106,16 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
         _assert_close(coo_slice.sum(), 0.0, T_FLAG,
                       f"{gm}: CoO one-hot must be zero for level {coo}")
 
-    _assert_close(buf[global_tok, OFF_END_CARD],
+    _assert_close(buf[game_progress_tok, OFF_END_CARD],
                   1.0 if TURN.is_end_card_flipped(state) else 0.0, T_FLAG,
                   f"{gm}: end_card flag")
-    _assert_close(buf[global_tok, OFF_CARDS_REM] * num_companies,
+    _assert_close(buf[game_progress_tok, OFF_CARDS_REM] * num_companies,
                   TURN.get_cards_remaining(state), T_SCALE,
                   f"{gm}: cards_remaining")
 
-    # Tail beyond the 20 defined slots must be zero
-    _assert_zero_row(buf[global_tok, OFF_CARDS_REM + 1:], T_FLAG,
-                     f"{gm}: tail beyond global token features")
+    # Tail beyond the 9 defined slots must be zero
+    _assert_zero_row(buf[game_progress_tok, OFF_CARDS_REM + 1:], T_FLAG,
+                     f"{gm}: tail beyond game_progress features")
 
     # =========================================================================
     # PHASE-SPECIFIC TOKENS

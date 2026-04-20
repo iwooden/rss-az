@@ -7,10 +7,11 @@ features from a compact GameState. It is called once per NN evaluation,
 so the trunk + MCTS throughput depends on this being fast.
 
 Token order (matches ``nn/transformer.py``):
-    [players..., corps..., companies..., FI, market, global,
+    [players..., corps..., companies..., FI, market,
+     phase, num_players, game_progress,
      invest, auction, dividend, issue, par, acq_offer, acq_price_info]
 
-Total tokens in the buffer = num_players + 54. The model concatenates 7
+Total tokens in the buffer = num_players + 56. The model concatenates 7
 learned pass-token anchors to the projected trunk sequence internally
 (one per pass-using decision phase — INVEST, BID, ACQ_SELECT_CORP,
 ACQ_OFFER, CLOSING, ISSUE, IPO — the rest have no pass action), so the
@@ -37,8 +38,9 @@ Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 97):
                 synergies (36)
   FI      (38): cash + income + owned_companies (36)
   Market  (27): availability flags (27)
-  Global  (23): num_players onehot (3) + phase onehot (11) + CoO onehot
-                (7) + end_card_flipped + cards_remaining
+  Phase   (11): decision phase onehot (11)
+  NumPlyr  (3): num_players onehot (3)
+  Progress (9): CoO onehot (7) + end_card_flipped + cards_remaining
   Invest  (17): consecutive_passes + buy_impacts (8) + sell_impacts (8)
   Auction (13): min_bid_index + min_bid_value + is_first_bid +
                 high_bidder onehot (5) + starter onehot (5)
@@ -61,6 +63,7 @@ net_worth / liquidity / income slots directly.
 """
 
 from libc.stdint cimport int16_t
+from libc.string cimport memset
 
 from core.state cimport (
     GameState, LAYOUT, TURN_OFFSETS, CORP_FIELDS, PLAYER_FIELDS,
@@ -158,21 +161,21 @@ DEF CONSECUTIVE_PASSES_DIVISOR = 5.0
 # =============================================================================
 
 cpdef int get_num_tokens(int num_players) noexcept nogil:
-    """Input-buffer token count for the given player count (num_players + 54).
+    """Input-buffer token count for the given player count (num_players + 56).
 
     The model-side trunk is wider by 7 (per-phase pass anchors concatenated
     inside ``RSSTransformerNet._project_tokens``), but those rows are
     learned anchors with no input features, so the engine-side buffer
     doesn't carry them.
     """
-    return num_players + 54
+    return num_players + 56
 
 
 cpdef void get_token_data(GameState state, float[:, ::1] buffer):
     """Fill ``buffer`` with per-token NN features for ``state``.
 
     ``buffer`` must be a writable C-contiguous float32 memoryview at least
-    ``(num_players + 54, TOKEN_DIM)`` in size. Training is scoped to
+    ``(num_players + 56, TOKEN_DIM)`` in size. Training is scoped to
     3-5 players; other player counts are rejected.
 
     The cache-refresh prologue and ``_fill_buffer`` run in a single nogil
@@ -181,7 +184,7 @@ cpdef void get_token_data(GameState state, float[:, ::1] buffer):
     ``PLAYERS[i].get_net_worth(state)`` lookup it used to.
     """
     cdef int num_players = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.num_players]
-    cdef int num_tokens = num_players + 54
+    cdef int num_tokens = num_players + 56
     cdef int i
 
     assert 3 <= num_players <= 5, \
@@ -215,10 +218,10 @@ cpdef void get_token_data_batch(
             layout (same constraint as ``GameState.rebind``).
         num_players: Training player count (3-5). Applies to every state
             array in the batch — mixed-player batches are not supported.
-        buffer: ``(n, num_players + 54, TOKEN_DIM)`` float32 output, C-contig.
+        buffer: ``(n, num_players + 56, TOKEN_DIM)`` float32 output, C-contig.
     """
     cdef int n = len(state_arrays)
-    cdef int num_tokens = num_players + 54
+    cdef int num_tokens = num_players + 56
     cdef int i, p
     cdef GameState scratch_gs
 
@@ -255,13 +258,11 @@ cdef void _fill_buffer(
     int num_players,
     int num_tokens,
 ) noexcept nogil:
-    cdef int i, j, tok
+    cdef int i, tok
 
     # Zero the region we'll write. Phase-specific tokens rely on this to
     # stay at zero when the current phase does not match.
-    for i in range(num_tokens):
-        for j in range(<int>TokenDataSize.TOKEN_DIM):
-            buffer[i, j] = 0.0
+    memset(&buffer[0, 0], 0, num_tokens * <int>TokenDataSize.TOKEN_DIM * sizeof(float))
 
     tok = 0
 
@@ -288,8 +289,16 @@ cdef void _fill_buffer(
     _fill_market_token(state, buffer, tok)
     tok += 1
 
-    # Global token
-    _fill_global_token(state, buffer, tok, num_players)
+    # Phase token (decision-phase one-hot)
+    _fill_phase_token(state, buffer, tok)
+    tok += 1
+
+    # Num-players token (3/4/5 one-hot)
+    _fill_num_players_token(buffer, tok, num_players)
+    tok += 1
+
+    # Game-progress token (CoO + end-card + cards-remaining)
+    _fill_game_progress_token(state, buffer, tok)
     tok += 1
 
     # Phase-specific tokens. Each slot is left at zero when the current
@@ -629,38 +638,49 @@ cdef void _fill_market_token(
 
 
 # =============================================================================
-# GLOBAL TOKEN
+# PHASE / NUM_PLAYERS / GAME_PROGRESS TOKENS
 # =============================================================================
 
-cdef void _fill_global_token(
+cdef void _fill_phase_token(
     GameState state,
+    float[:, ::1] buffer,
+    int tok,
+) noexcept nogil:
+    # Phase one-hot over decision phases — one slot per DecisionPhase.
+    # Automated / terminal engine phases map to -1 and leave all slots zero.
+    cdef int phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
+    cdef int decision_phase
+
+    assert 0 <= phase < <int>GameConstants.NUM_PHASES, \
+        f"_fill_phase_token: corrupt engine phase {phase}"
+    decision_phase = ENGINE_TO_DECISION_PHASE[phase]
+    if 0 <= decision_phase < NUM_DECISION_PHASES:
+        buffer[tok, decision_phase] = 1.0
+
+
+cdef void _fill_num_players_token(
     float[:, ::1] buffer,
     int tok,
     int num_players,
 ) noexcept nogil:
-    cdef int OFF_NUM_PLAYERS    = 0   # 3 slots (3p/4p/5p)
-    cdef int OFF_PHASE          = 3   # 11 slots (one per decision phase)
-    cdef int OFF_COO            = 14  # 7 slots
-    cdef int OFF_END_CARD       = 21
-    cdef int OFF_CARDS_REM      = 22
+    # num_players one-hot: slot 0 = 3p, slot 1 = 4p, slot 2 = 5p.
+    # Training scope is 3-5p; other counts leave the token zero.
+    if 3 <= num_players <= 5:
+        buffer[tok, num_players - 3] = 1.0
 
-    cdef int phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
+
+cdef void _fill_game_progress_token(
+    GameState state,
+    float[:, ::1] buffer,
+    int tok,
+) noexcept nogil:
+    cdef int OFF_COO            = 0   # 7 slots (CoO level 1..7 → slots 0..6)
+    cdef int OFF_END_CARD       = 7
+    cdef int OFF_CARDS_REM      = 8
+
     cdef int coo = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.coo_level]
     cdef int end_card = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.end_card_flipped]
     cdef int cards_rem = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.cards_remaining]
-    cdef int decision_phase
-
-    # num_players one-hot: slot 0 = 3p, slot 1 = 4p, slot 2 = 5p
-    if 3 <= num_players <= 5:
-        buffer[tok, OFF_NUM_PLAYERS + (num_players - 3)] = 1.0
-
-    # Phase one-hot over decision phases — one slot per DecisionPhase.
-    # Automated / terminal engine phases map to -1 and leave all slots zero.
-    assert 0 <= phase < <int>GameConstants.NUM_PHASES, \
-        f"_fill_global_token: corrupt engine phase {phase}"
-    decision_phase = ENGINE_TO_DECISION_PHASE[phase]
-    if 0 <= decision_phase < NUM_DECISION_PHASES:
-        buffer[tok, OFF_PHASE + decision_phase] = 1.0
 
     # CoO one-hot: levels 1-7 → slots 0-6
     if 1 <= coo <= NUM_COO_LEVELS:
