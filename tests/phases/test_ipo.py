@@ -105,16 +105,11 @@ class TestEnumeration:
 
     def test_corp_excluded_when_no_par_affordable(self, game_state):
         """Corp hidden from IPO if player can't afford *any* valid par price."""
-        # CO_3S (FV=20): cheapest valid par is 20 (cost 0). With $0, par=20 is
-        # affordable (cost 0). Use CO_4S (FV=30): cheapest affordable par costs
-        # more than $0 for all pars except equality — par=30 costs 0.
-        # So we need a company where every par costs > 0. Use CO_3S but charge
-        # $-1 — not possible. Instead, block the $0-cost par market slot.
+        # CO_3S FV=20 at $0 cash: only par=20 (cost 0) is affordable. Block
+        # its market slot and no par remains, so every corp-select is filtered.
         _enter_ipo(game_state, {CO_3S: 0}, {0: 0})
-        # CO_3S: FV=20 so par=20 has cost 0 (the sole affordable par at $0).
         MARKET.set_space_available(game_state, MARKET.get_index_for_price(20), False)
         actions = get_legal_actions(game_state)
-        # No corp-select should be legal — only PASS.
         assert len(actions) == 1
         assert actions[0][1].action_type == ACTION_PASS
 

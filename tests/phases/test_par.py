@@ -64,10 +64,6 @@ def _enter_par(state, company_id, corp_id, *, owners=None, cash_by_player=None):
     Routes through PHASE_IPO and applies an IPO corp-select action so the
     PAR handler sees the same active_corp/active_company seeding production
     code would produce.
-
-    Caller must ensure the chosen cash leaves at least two legal par prices
-    — if only one remains the driver's auto-chain will force past PAR into
-    PHASE_IPO / PHASE_INVEST, and the PAR-level assertion below will trip.
     """
     if owners is None:
         owners = {company_id: 0}
@@ -83,7 +79,14 @@ def _enter_par(state, company_id, corp_id, *, owners=None, cash_by_player=None):
     )
     aid = find_legal_action(state, action_type=ACTION_IPO, corp_id=corp_id)
     apply_and_verify(state, aid)
-    assert TURN.get_phase(state) == int(GamePhases.PHASE_PAR)
+    # If the PAR state has only one legal par price, driver auto-chain resolves
+    # it immediately and pushes us out of PHASE_PAR. Callers must pick cash /
+    # star-tier leaving ≥2 legal pars so the test observes a real decision.
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_PAR), (
+        f"_enter_par: expected PHASE_PAR after IPO corp-select, got phase="
+        f"{TURN.get_phase(state)}. The driver auto-chains past PAR when only "
+        f"one par price is legal — increase cash or pick a company with ≥2 pars."
+    )
     assert TURN.get_active_corp(state) == corp_id
     assert TURN.get_active_company(state) == company_id
 

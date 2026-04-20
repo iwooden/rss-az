@@ -757,30 +757,37 @@ cdef int _enumerate_issue(
     return 2
 
 
+cdef inline bint _is_par_legal(
+    int par_index, int star_tier, int face_value,
+    int player_cash, const int16_t* market_ptr,
+) noexcept nogil:
+    """Triple-gate predicate: par is star-valid, market-available, affordable.
+
+    Single source of truth for IPO's any-affordable-par gate and PAR's
+    per-index emission — sharing this avoids the class of bugs where IPO
+    offers a corp with no legal PAR follow-up.
+    """
+    cdef int par_price, market_index, float_shares, player_payment
+    if PAR_PRICE_VALID[star_tier - 1][par_index] == 0:
+        return False
+    par_price = ALL_PAR_PRICES[par_index]
+    market_index = PRICE_TO_MARKET_INDEX[par_price]
+    if market_ptr[market_index] == 0:
+        return False
+    float_shares = 2 if face_value > par_price else 1
+    player_payment = (float_shares * par_price) - face_value
+    if player_payment > player_cash:
+        return False
+    return True
+
+
 cdef inline bint _any_par_affordable(
     int star_tier, int face_value, int player_cash, const int16_t* market_ptr,
 ) noexcept nogil:
-    """Return True iff at least one par price is valid for the star tier,
-    has an available market slot, and is affordable by the active player.
-
-    Shared predicate between _enumerate_ipo (per-corp any-affordable gate)
-    and _enumerate_par (per-par emission). Keeping the inner arithmetic
-    identical between the two avoids a class of bugs where IPO offers a
-    corp with no legal PAR follow-up.
-    """
-    cdef int par_index, par_price, market_index, float_shares, player_payment
+    cdef int par_index
     for par_index in range(<int>GameConstants.NUM_PAR_PRICES):
-        if PAR_PRICE_VALID[star_tier - 1][par_index] == 0:
-            continue
-        par_price = ALL_PAR_PRICES[par_index]
-        market_index = PRICE_TO_MARKET_INDEX[par_price]
-        if market_ptr[market_index] == 0:
-            continue
-        float_shares = 2 if face_value > par_price else 1
-        player_payment = (float_shares * par_price) - face_value
-        if player_payment > player_cash:
-            continue
-        return True
+        if _is_par_legal(par_index, star_tier, face_value, player_cash, market_ptr):
+            return True
     return False
 
 
@@ -792,9 +799,10 @@ cdef int _enumerate_ipo(
     Ordering:
       1. ``id 0``: pass (always legal)
       2. ``ids 1..8``: ``1 + corp_id``. Emitted for each inactive corp
-         for which at least one par price is star-valid, market-available,
-         and affordable by the active player. The PAR handler re-checks
-         per-par legality when the corp is committed.
+         when at least one par price is star-valid, market-available, and
+         affordable. The any-affordable check is invariant in corp_id
+         (depends on active_company + active_player), so it's hoisted out
+         of the corp loop. The PAR handler re-checks per-par legality.
 
     Returns the number of IDs written. Worst case: 9 (pass + 8 corps).
     """
@@ -818,11 +826,13 @@ cdef int _enumerate_ipo(
     ids[count] = 0
     count += 1
 
+    # No affordable par for this (company, player, market) — only PASS.
+    if not _any_par_affordable(star_tier, face_value, player_cash, market_ptr):
+        return count
+
     # --- ids 1..8: corp-select -----------------------------------------------
     for corp_id in range(<int>GameConstants.NUM_CORPS):
         if corp_is_active(state, corp_id):
-            continue
-        if not _any_par_affordable(star_tier, face_value, player_cash, market_ptr):
             continue
         _require_action_capacity(count, b"IPO")
         ids[count] = <uint16_t>encode_ipo(corp_id)
@@ -855,19 +865,12 @@ cdef int _enumerate_par(
     cdef int player_id = <int>d[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
     cdef int player_base = LAYOUT.players_offset + player_id * PLAYER_FIELDS.size
     cdef int player_cash = <int>d[player_base + PLAYER_FIELDS.cash]
+    cdef const int16_t* market_ptr = d + LAYOUT.market_offset
 
-    cdef int par_index, par_price, market_index, float_shares, player_payment
+    cdef int par_index
 
     for par_index in range(<int>GameConstants.NUM_PAR_PRICES):
-        if PAR_PRICE_VALID[star_tier - 1][par_index] == 0:
-            continue
-        par_price = ALL_PAR_PRICES[par_index]
-        market_index = PRICE_TO_MARKET_INDEX[par_price]
-        if <int>d[LAYOUT.market_offset + market_index] == 0:
-            continue
-        float_shares = 2 if face_value > par_price else 1
-        player_payment = (float_shares * par_price) - face_value
-        if player_payment > player_cash:
+        if not _is_par_legal(par_index, star_tier, face_value, player_cash, market_ptr):
             continue
         _require_action_capacity(count, b"PAR")
         ids[count] = <uint16_t>encode_par(par_index)

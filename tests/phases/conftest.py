@@ -268,7 +268,11 @@ def apply_and_verify(state, action_id, msg="", expected_status=STATUS_OK):
         f"{msg}\nAction {action_id} returned status {status}, expected {expected_status}"
     )
 
-    # Check invariants on every intermediate state (captured BEFORE each action)
+    # Check invariants on every intermediate state (captured BEFORE each action).
+    # History phase_id is the driver's ground truth: >=0 = dispatched decision
+    # (DecisionPhase id), -1 = automated engine phase. Passing it to the token
+    # invariant asserts the global-token phase one-hot matches what the driver
+    # actually dispatched, independent of ENGINE_TO_DECISION_PHASE.
     for i, (state_array, phase_id, act_id) in enumerate(history):
         intermediate = GameState.from_array(state_array, num_players)
         ctx = (
@@ -276,9 +280,12 @@ def apply_and_verify(state, action_id, msg="", expected_status=STATUS_OK):
             f"before phase={phase_id} action={act_id}"
         )
         assert_invariants(intermediate, ctx)
-        assert_token_data_invariants(intermediate, ctx)
+        assert_token_data_invariants(intermediate, ctx,
+                                     expected_decision_phase=phase_id)
 
-    # Check invariants on final state (AFTER all actions)
+    # Check invariants on final state (AFTER all actions). No history phase_id
+    # here — the final state may be in a decision phase awaiting the next
+    # action, or PHASE_GAME_OVER. Fall back to the table-lookup branch.
     assert_invariants(state, f"{msg}\nFinal state after action chain")
     assert_token_data_invariants(state, f"{msg}\nFinal state after action chain")
 
@@ -646,7 +653,7 @@ def _assert_zero_row(row, tol, msg):
     assert mx <= tol, f"{msg} (max|row|={mx})"
 
 
-def assert_token_data_invariants(state, msg=""):
+def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
     """Assert ``get_token_data`` produces a structurally valid buffer.
 
     Checks, for every intermediate state visited by the driver:
@@ -661,6 +668,15 @@ def assert_token_data_invariants(state, msg=""):
       - Each phase-specific token is all-zero outside its phase and carries
         the expected per-phase scalars/flags inside it.
       - Pass token is always all-zero (type embedding only).
+
+    Args:
+      expected_decision_phase: Optional driver-ground-truth DecisionPhase
+        (``>= 0`` for dispatched decisions, ``-1`` for automated engine
+        phases, as recorded in the driver's history tuples). When provided,
+        the global-token phase one-hot is cross-checked against it
+        *independently* of ``ENGINE_TO_DECISION_PHASE`` — this catches the
+        class of bug where both the extractor and the table-lookup share a
+        blind spot (e.g., hardcoded bounds that miss a newly-added phase).
 
     Training is scoped to 3-5p; this function is a no-op for 2p/6p states
     (``get_token_data`` rejects those with an assert).
@@ -1032,9 +1048,12 @@ def assert_token_data_invariants(state, msg=""):
     gm = f"{msg}\nGlobal token"
     OFF_NUM_PLAYERS = 0
     OFF_PHASE = 3
-    OFF_COO = 11
-    OFF_END_CARD = 18
-    OFF_CARDS_REM = 19
+    OFF_COO = 12
+    OFF_END_CARD = 19
+    OFF_CARDS_REM = 20
+
+    num_decision_phases = int(GameConstants.NUM_DECISION_PHASES)
+    num_engine_phases = int(GameConstants.NUM_PHASES)
 
     # num_players one-hot (3 slots, 3p→0, 4p→1, 5p→2)
     np_slice = buf[global_tok, OFF_NUM_PLAYERS:OFF_NUM_PLAYERS + 3]
@@ -1042,11 +1061,19 @@ def assert_token_data_invariants(state, msg=""):
     _assert_close(np_slice[num_players - 3], 1.0, T_FLAG,
                   f"{gm}: num_players bit at slot {num_players - 3}")
 
-    # Phase one-hot (8 slots). Active only for decision phases.
-    phase_slice = buf[global_tok, OFF_PHASE:OFF_PHASE + 8]
-    dp = ENGINE_TO_DECISION_PHASE[phase] if 0 <= phase < 12 else -1
-    if 0 <= dp < 8:
-        _assert_close(phase_slice.sum(), 1.0, T_FLAG, f"{gm}: phase one-hot sum")
+    # Phase one-hot (one slot per decision phase). Exactly one bit must be set
+    # in every decision-phase state; the one-hot must be all-zero in automated /
+    # terminal engine phases. When the driver's history-recorded phase_id is
+    # provided, use it as ground truth — that check is independent of
+    # ENGINE_TO_DECISION_PHASE and catches filler-vs-checker blind spots.
+    phase_slice = buf[global_tok, OFF_PHASE:OFF_PHASE + num_decision_phases]
+    if expected_decision_phase is None:
+        dp = ENGINE_TO_DECISION_PHASE[phase] if 0 <= phase < num_engine_phases else -1
+    else:
+        dp = int(expected_decision_phase)
+    if 0 <= dp < num_decision_phases:
+        _assert_close(phase_slice.sum(), 1.0, T_FLAG,
+                      f"{gm}: phase one-hot sum (engine phase={phase}, dp={dp})")
         _assert_close(phase_slice[dp], 1.0, T_FLAG,
                       f"{gm}: phase bit at decision slot {dp} (engine phase={phase})")
     else:

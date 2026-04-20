@@ -36,7 +36,7 @@ Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 97):
                 synergies (36)
   FI      (38): cash + income + owned_companies (36)
   Market  (27): availability flags (27)
-  Global  (20): num_players onehot (3) + phase onehot (8) + CoO onehot
+  Global  (21): num_players onehot (3) + phase onehot (9) + CoO onehot
                 (7) + end_card_flipped + cards_remaining
   Invest  (17): consecutive_passes + buy_impacts (8) + sell_impacts (8)
   Auction (13): min_bid_index + min_bid_value + is_first_bid +
@@ -631,10 +631,10 @@ cdef void _fill_global_token(
     int num_players,
 ) noexcept nogil:
     cdef int OFF_NUM_PLAYERS    = 0   # 3 slots (3p/4p/5p)
-    cdef int OFF_PHASE          = 3   # 8 slots
-    cdef int OFF_COO            = 11  # 7 slots
-    cdef int OFF_END_CARD       = 18
-    cdef int OFF_CARDS_REM      = 19
+    cdef int OFF_PHASE          = 3   # 9 slots (one per decision phase)
+    cdef int OFF_COO            = 12  # 7 slots
+    cdef int OFF_END_CARD       = 19
+    cdef int OFF_CARDS_REM      = 20
 
     cdef int phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
     cdef int coo = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.coo_level]
@@ -646,12 +646,13 @@ cdef void _fill_global_token(
     if 3 <= num_players <= 5:
         buffer[tok, OFF_NUM_PLAYERS + (num_players - 3)] = 1.0
 
-    # Phase one-hot over decision phases only — automated / terminal
-    # phases map to -1 and leave all 8 slots zero.
-    if 0 <= phase < 12:
-        decision_phase = ENGINE_TO_DECISION_PHASE[phase]
-        if 0 <= decision_phase < NUM_DECISION_PHASES:
-            buffer[tok, OFF_PHASE + decision_phase] = 1.0
+    # Phase one-hot over decision phases — one slot per DecisionPhase.
+    # Automated / terminal engine phases map to -1 and leave all slots zero.
+    assert 0 <= phase < <int>GameConstants.NUM_PHASES, \
+        f"_fill_global_token: corrupt engine phase {phase}"
+    decision_phase = ENGINE_TO_DECISION_PHASE[phase]
+    if 0 <= decision_phase < NUM_DECISION_PHASES:
+        buffer[tok, OFF_PHASE + decision_phase] = 1.0
 
     # CoO one-hot: levels 1-7 → slots 0-6
     if 1 <= coo <= NUM_COO_LEVELS:

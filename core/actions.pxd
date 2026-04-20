@@ -123,7 +123,7 @@ cdef enum ActionType:
 cdef struct ActionInfo:
     int phase           # DecisionPhase
     int action_type     # ActionType
-    int corp_id         # -1 if not applicable (IPO corp select, PAR target)
+    int corp_id         # -1 if not applicable
     int company_id      # -1 if not applicable
     int amount          # bid_offset / price_offset / dividend / par_index (PAR) / raise_offset / -1
 

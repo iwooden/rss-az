@@ -28,10 +28,9 @@ from core.actions import (
     get_decision_phase_py,
     MAX_LEGAL_ACTIONS_PY,
 )
-from core.data import GamePhases, MAX_ACTION_SIZE
+from core.data import GamePhases, GameConstants, MAX_ACTION_SIZE
 from core.driver import DRIVER
 from core.state import GameState, get_layout
-from entities.company import COMPANIES
 from entities.player import PLAYERS
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator, compute_terminal_values, fill_token_buffer
@@ -1017,7 +1016,7 @@ class TestNNEvaluator:
         assert values.dtype == np.float32
         assert action_ids.shape == (n_legal,)
         assert action_ids.dtype == np.uint16
-        assert 0 <= phase_id <= 7  # 8 decision phases
+        assert 0 <= phase_id < int(GameConstants.NUM_DECISION_PHASES)
 
     def test_evaluate_priors_sum_to_one(self, game_state, evaluator):
         priors, _, _, _, _ = evaluator.evaluate(game_state)
@@ -1069,7 +1068,7 @@ class TestNNEvaluator:
     def test_evaluate_batch_multiple_states(self, game_state, evaluator):
         results = evaluator.evaluate_batch([game_state, game_state, game_state])
         assert len(results) == 3
-        for priors, values, action_ids, n_legal, phase_id in results:
+        for priors, values, _action_ids, n_legal, _phase_id in results:
             assert priors.shape == (n_legal,)
             assert values.shape == (NUM_PLAYERS,)
             assert priors.sum() == pytest.approx(1.0, abs=1e-5)
