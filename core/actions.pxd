@@ -241,4 +241,5 @@ cdef int enumerate_legal_actions(
 
 cpdef int get_phase_action_size(int phase_id)
 cpdef object decode_action_py(int phase_id, int action_id)
+cpdef int encode_action_py(object info)
 cpdef int enumerate_legal_actions_py(GameState state, cnp.ndarray action_ids)

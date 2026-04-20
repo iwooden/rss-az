@@ -1083,6 +1083,22 @@ cpdef object decode_action_py(int phase_id, int action_id):
     return ActionInfoTuple(info.phase, info.action_type, info.corp_id, info.company_id, info.amount)
 
 
+cpdef int encode_action_py(object info):
+    """Python wrapper around ``encode_action``.
+
+    Accepts an ``ActionInfoTuple`` (or any object with phase / action_type /
+    corp_id / company_id / amount attributes, e.g. the tuple returned by
+    ``decode_action_py``). Used by the encode/decode round-trip test.
+    """
+    cdef ActionInfo c_info
+    c_info.phase = info.phase
+    c_info.action_type = info.action_type
+    c_info.corp_id = info.corp_id
+    c_info.company_id = info.company_id
+    c_info.amount = info.amount
+    return encode_action(c_info)
+
+
 cpdef int get_decision_phase_py(GameState state):
     """Python wrapper around ``get_decision_phase``."""
     return get_decision_phase(state)
