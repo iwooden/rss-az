@@ -158,7 +158,6 @@ from entities.company cimport (
     company_adjusted_income,
 )
 from entities.market cimport (
-    copy_market_availability,
     market_find_next_higher_space,
     market_find_next_lower_space,
 )
@@ -308,8 +307,11 @@ cpdef void get_token_data(GameState state, float[:, ::1] buffer):
         f"get_token_data: num_players must be 3-5, got {num_players}"
     assert buffer.shape[0] >= num_tokens, \
         f"get_token_data: buffer rows {buffer.shape[0]} < num_tokens {num_tokens}"
-    assert buffer.shape[1] >= <int>TokenDataSize.TOKEN_DIM, \
-        f"get_token_data: buffer cols {buffer.shape[1]} < TOKEN_DIM {<int>TokenDataSize.TOKEN_DIM}"
+    # Exact-match on the padded width: the nogil memset in ``_fill_buffer``
+    # writes ``num_tokens * TOKEN_DIM * 4`` contiguous bytes, so a wider
+    # buffer would silently clobber across rows.
+    assert buffer.shape[1] == <int>TokenDataSize.TOKEN_DIM, \
+        f"get_token_data: buffer cols {buffer.shape[1]} != TOKEN_DIM {<int>TokenDataSize.TOKEN_DIM}"
 
     with nogil:
         for i in range(num_players):
@@ -350,8 +352,10 @@ cpdef void get_token_data_batch(
         f"get_token_data_batch: buffer batch {buffer.shape[0]} < n {n}"
     assert buffer.shape[1] >= num_tokens, \
         f"get_token_data_batch: buffer rows {buffer.shape[1]} < num_tokens {num_tokens}"
-    assert buffer.shape[2] >= <int>TokenDataSize.TOKEN_DIM, \
-        f"get_token_data_batch: buffer cols {buffer.shape[2]} < TOKEN_DIM {<int>TokenDataSize.TOKEN_DIM}"
+    # Exact-match on the padded width: see ``get_token_data`` for the same
+    # constraint — memset writes assume rows are tightly packed at TOKEN_DIM.
+    assert buffer.shape[2] == <int>TokenDataSize.TOKEN_DIM, \
+        f"get_token_data_batch: buffer cols {buffer.shape[2]} != TOKEN_DIM {<int>TokenDataSize.TOKEN_DIM}"
 
     scratch_gs = GameState.from_buffer(state_arrays[0], num_players)
 
@@ -782,8 +786,8 @@ cdef void _fill_active_player_token(
     # player is selected (active_player == -1 on automated/terminal phases).
     # Any value outside [-1, MAX_MODEL_PLAYERS) is an engine invariant break.
     cdef int active_player = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
-    assert active_player < MAX_MODEL_PLAYERS, \
-        f"_fill_active_player_token: active_player {active_player} >= MAX_MODEL_PLAYERS"
+    assert -1 <= active_player < MAX_MODEL_PLAYERS, \
+        f"_fill_active_player_token: active_player {active_player} out of [-1, {MAX_MODEL_PLAYERS})"
     if active_player >= 0:
         buffer[tok, active_player] = 1.0
 
@@ -796,8 +800,8 @@ cdef void _fill_active_corp_token(
     # 8-slot one-hot; all zero when no active corp is selected. Any value
     # outside [-1, NUM_CORPS) is an engine invariant break.
     cdef int active_corp = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_corp]
-    assert active_corp < NUM_CORPS, \
-        f"_fill_active_corp_token: active_corp {active_corp} >= NUM_CORPS"
+    assert -1 <= active_corp < NUM_CORPS, \
+        f"_fill_active_corp_token: active_corp {active_corp} out of [-1, {NUM_CORPS})"
     if active_corp >= 0:
         buffer[tok, active_corp] = 1.0
 
@@ -810,8 +814,8 @@ cdef void _fill_active_company_token(
     # 36-slot one-hot; all zero when no active company is selected. Any value
     # outside [-1, NUM_COMPANIES) is an engine invariant break.
     cdef int active_company = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_company]
-    assert active_company < NUM_COMPANIES, \
-        f"_fill_active_company_token: active_company {active_company} >= NUM_COMPANIES"
+    assert -1 <= active_company < NUM_COMPANIES, \
+        f"_fill_active_company_token: active_company {active_company} out of [-1, {NUM_COMPANIES})"
     if active_company >= 0:
         buffer[tok, active_company] = 1.0
 
@@ -864,8 +868,8 @@ cdef void _fill_phase_token(
     decision_phase = ENGINE_TO_DECISION_PHASE[phase]
     # Automated / terminal engine phases map to -1; anything else is a
     # corrupt ENGINE_TO_DECISION_PHASE entry.
-    assert decision_phase < NUM_DECISION_PHASES, \
-        f"_fill_phase_token: decision_phase {decision_phase} >= NUM_DECISION_PHASES for engine phase {phase}"
+    assert -1 <= decision_phase < NUM_DECISION_PHASES, \
+        f"_fill_phase_token: decision_phase {decision_phase} out of [-1, {NUM_DECISION_PHASES}) for engine phase {phase}"
     if decision_phase >= 0:
         buffer[tok, decision_phase] = 1.0
 
