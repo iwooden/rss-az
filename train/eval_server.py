@@ -82,6 +82,7 @@ import copy
 import queue as _queue
 import signal
 import threading
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
 
@@ -104,7 +105,84 @@ from mcts.evaluator import BaseEvaluator
 from nn.transformer import NUM_PHASES, UNIFIED_LOGIT_DIM, build_action_lut
 from train.profile_stats import EvalClientStats, EvalServerStats
 
-TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
+TOKEN_DIM=int(TokenDataSize.TOKEN_DIM)
+
+
+@dataclass(frozen=True)
+class RequestBatchGroup:
+    start: int
+    end: int
+    actual_n: int
+
+
+def _next_power_of_two(n: int) -> int:
+    if n < 1:
+        raise ValueError(f"n must be >= 1, got {n}")
+    return 1 << (n - 1).bit_length()
+
+
+def _resolve_actual_launch_cap(
+    *,
+    max_batch: int,
+    batch_shape_mode: str,
+    max_batch_size: int,
+) -> int:
+    if batch_shape_mode == "bucketed" and max_batch_size > 0:
+        return max_batch_size
+    return max_batch
+
+
+def _resolve_max_launch_batch_size(
+    *,
+    max_batch: int,
+    batch_shape_mode: str,
+    max_batch_size: int,
+) -> int:
+    actual_launch_cap = _resolve_actual_launch_cap(
+        max_batch=max_batch,
+        batch_shape_mode=batch_shape_mode,
+        max_batch_size=max_batch_size,
+    )
+    if batch_shape_mode == "bucketed":
+        return _next_power_of_two(actual_launch_cap)
+    return actual_launch_cap
+
+
+def _resolve_launch_batch_size(*, actual_n: int, batch_shape_mode: str) -> int:
+    if batch_shape_mode == "bucketed":
+        return _next_power_of_two(actual_n)
+    return actual_n
+
+
+def _partition_request_groups(
+    cnts: np.ndarray,
+    *,
+    n_req: int,
+    actual_launch_cap: int,
+) -> list[RequestBatchGroup]:
+    if actual_launch_cap < 1:
+        raise ValueError(
+            f"actual_launch_cap must be >= 1, got {actual_launch_cap}"
+        )
+    groups: list[RequestBatchGroup] = []
+    start = 0
+    actual_n = 0
+    for idx in range(n_req):
+        cnt = int(cnts[idx])
+        if cnt < 0:
+            raise ValueError(f"request count must be >= 0, got {cnt}")
+        if cnt > actual_launch_cap:
+            raise ValueError(
+                f"request count {cnt} exceeds actual_launch_cap {actual_launch_cap}"
+            )
+        if actual_n > 0 and actual_n + cnt > actual_launch_cap:
+            groups.append(RequestBatchGroup(start=start, end=idx, actual_n=actual_n))
+            start = idx
+            actual_n = 0
+        actual_n += cnt
+    if actual_n > 0:
+        groups.append(RequestBatchGroup(start=start, end=n_req, actual_n=actual_n))
+    return groups
 
 
 class SharedEvalBuffers:
@@ -307,6 +385,8 @@ def _eval_server_main(
     gpu_vendor: str = "cpu",
     min_batch_size: int = 0,
     min_batch_timeout_ms: float = 10.0,
+    batch_shape_mode: str = "dynamic",
+    max_batch_size: int = 0,
     eval_dtype: str | None = None,
 ) -> None:
     """Eval server process entry point.
@@ -331,6 +411,8 @@ def _eval_server_main(
             gpu_vendor=gpu_vendor,
             min_batch_size=min_batch_size,
             min_batch_timeout_ms=min_batch_timeout_ms,
+            batch_shape_mode=batch_shape_mode,
+            max_batch_size=max_batch_size,
             eval_dtype=eval_dtype,
         )
     except Exception:
@@ -356,22 +438,25 @@ def _eval_server_serve(
     gpu_vendor: str = "cpu",
     min_batch_size: int = 0,
     min_batch_timeout_ms: float = 10.0,
+    batch_shape_mode: str = "dynamic",
+    max_batch_size: int = 0,
     eval_dtype: str | None = None,
 ) -> None:
     """Inner serve loop for an eval server process.
 
-    Two modes based on min_batch_size:
+    Two scheduling modes based on min_batch_size:
 
     **Min-batch mode** (min_batch_size > 0): Accumulates drained requests
     until the sum of pending states reaches min_batch_size, then submits.
     If the accumulator is non-empty but below the floor, waits on the
     doorbell with ``min_batch_timeout_ms`` and flushes the partial batch
-    on timeout (anti-starvation for epoch end / root eval). Batch size
-    is variable up to the partition's natural max — no padding.
+    on timeout (anti-starvation for epoch end / root eval). Any oversized
+    drained work is partitioned into contiguous launch groups before
+    gather/infer/scatter.
 
     **Greedy mode** (min_batch_size == 0): Drains all pending requests
-    and submits immediately with exact batch size. No accumulation, no
-    timeout.
+    and submits immediately. Any oversized drain is still split into one
+    or more contiguous launch groups before inference.
     """
     # Prevent OpenMP oversubscription (same as worker processes)
     torch.set_num_threads(1)
@@ -388,6 +473,19 @@ def _eval_server_serve(
     _dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16}
     eval_autocast_dtype: torch.dtype | None = _dtype_map.get(eval_dtype) if eval_dtype else None
 
+    partition_size = worker_end - worker_start
+    max_batch = partition_size * shared_bufs.batch_size
+    actual_launch_cap = _resolve_actual_launch_cap(
+        max_batch=max_batch,
+        batch_shape_mode=batch_shape_mode,
+        max_batch_size=max_batch_size,
+    )
+    max_launch_batch = _resolve_max_launch_batch_size(
+        max_batch=max_batch,
+        batch_shape_mode=batch_shape_mode,
+        max_batch_size=max_batch_size,
+    )
+
     num_tokens = shared_bufs.num_tokens
     token_dim = shared_bufs.token_dim
     u_dim = shared_bufs.unified_dim
@@ -398,18 +496,21 @@ def _eval_server_serve(
         ckw = compile_kwargs if compile_kwargs is not None else {}
         model = torch.compile(model, **ckw)  # type: ignore[assignment]
         model.eval()
-        # Warm up with the EXACT call signature the hot path uses —
-        # (states, legal_mask). Dynamic-shape strategy (see
-        # ``train/gpu/{amd,nvidia}.py`` for why we dropped global
-        # ``dynamic=True``): the batch dim gets ``mark_unbacked`` so the
-        # single compiled graph handles all batch sizes 1..max_batch, and
-        # in particular sizes 0 and 1 don't get framework-level specialized.
-        # Any reasonable warmup batch size works — pick at least
-        # ``NUM_PHASES`` so the per-row policy heads all get traced against
-        # a batch with some legal-slot variety rather than a single
-        # all-illegal row.
-        warmup_n = NUM_PHASES
         lut = build_action_lut()
+        if batch_shape_mode == "dynamic":
+            # Warm up with the EXACT call signature the hot path uses —
+            # (states, legal_mask). Dynamic-shape strategy (see
+            # ``train/gpu/{amd,nvidia}.py`` for why we dropped global
+            # ``dynamic=True``): the batch dim gets ``mark_unbacked`` so the
+            # single compiled graph handles all batch sizes 1..max_batch, and
+            # in particular sizes 0 and 1 don't get framework-level specialized.
+            warmup_batches = [NUM_PHASES]
+        else:
+            warmup_batches = []
+            warmup_n = 1
+            while warmup_n <= max_launch_batch:
+                warmup_batches.append(warmup_n)
+                warmup_n <<= 1
         with torch.inference_mode(), torch.autocast(
             device.type,
             dtype=eval_autocast_dtype,
@@ -420,34 +521,29 @@ def _eval_server_serve(
             # hot path triggers a one-shot recompile on the first serve.
             cache_enabled=False,
         ):
-            dummy_s = torch.randn(
-                warmup_n, num_tokens, token_dim, device=device,
-                dtype=torch.float16,
-            )
-            # Build one legal mask per phase so every phase's slots get
-            # exercised at least once during compilation.
-            dummy_mask = torch.zeros(
-                warmup_n, u_dim, dtype=torch.bool, device=device,
-            )
-            for i in range(warmup_n):
-                n = PHASE_ACTION_SIZES[i]
-                dummy_mask[i, lut[i, :n].to(device)] = True
-            for _t in (dummy_s, dummy_mask):
-                mark_unbacked(_t, 0)
-            model(dummy_s, dummy_mask)
-            del dummy_s, dummy_mask
+            for warmup_n in warmup_batches:
+                dummy_s = torch.randn(
+                    warmup_n, num_tokens, token_dim, device=device,
+                    dtype=torch.float16,
+                )
+                # Build one legal mask per phase so every phase's slots get
+                # exercised at least once during compilation.
+                dummy_mask = torch.zeros(
+                    warmup_n, u_dim, dtype=torch.bool, device=device,
+                )
+                for i in range(warmup_n):
+                    phase_id = i % NUM_PHASES
+                    n = PHASE_ACTION_SIZES[phase_id]
+                    dummy_mask[i, lut[phase_id, :n].to(device)] = True
+                if batch_shape_mode == "dynamic":
+                    for _t in (dummy_s, dummy_mask):
+                        mark_unbacked(_t, 0)
+                model(dummy_s, dummy_mask)
+                del dummy_s, dummy_mask
         torch.cuda.synchronize()
 
-    # Allocate pinned CPU buffers and GPU tensors in this process's CUDA context
-    partition_size = worker_end - worker_start
-    max_batch = partition_size * shared_bufs.batch_size
-    # One extra "trash" row appended at index padded_n each forward. Keeps
-    # the batch dim ≥ 1 for the forward pass even when total_n == 0 (which
-    # can't happen on the drain path but the slot is cheap and the
-    # output-slicing contract [:total_n] makes it safe — the trash row's
-    # mask is all-zero so its logits are all -1e9, softmax is uniform, and
-    # the result is never copied back).
-    alloc_batch = max_batch + 1
+    # Allocate pinned CPU buffers and GPU tensors in this process's CUDA context.
+    alloc_batch = max_launch_batch
 
     # Ping-pong depth for pinned I/O buffers. While the GPU computes batch
     # N and the scatter thread reads slot N's pinned outputs, the main loop
@@ -478,17 +574,16 @@ def _eval_server_serve(
         alloc_batch, num_tokens, token_dim, dtype=torch.float16, device=device,
     )
 
-    # GPU mask buffer is zero-initialized once and the tail [total_n:alloc_batch]
-    # is never written again — per-batch H→D copies only touch [:total_n].
-    # The trash row at index padded_n therefore sees an all-zero mask; its
-    # logits collapse to -1e9 and its softmax output is discarded via
-    # [:total_n] slicing.
+    # Shared-memory mask gather stays uint8, but bucketed launches use a
+    # preallocated bool tensor at the model call site so the GPU-visible
+    # invocation shape is static apart from the chosen bucket size.
     pin_mask_list = [
         torch.empty(alloc_batch, u_dim, dtype=torch.uint8, pin_memory=use_cuda)
         for _ in range(buf_depth)
     ]
     pin_mask_np_list = [p.numpy() for p in pin_mask_list]
     gpu_mask = torch.zeros(alloc_batch, u_dim, dtype=torch.uint8, device=device)
+    gpu_mask_bool = torch.zeros(alloc_batch, u_dim, dtype=torch.bool, device=device)
 
     # --- Outputs: pinned CPU + GPU side ---
     pin_priors_list = [
@@ -582,7 +677,7 @@ def _eval_server_serve(
             job = _scatter_jobs.get()
             if job is None:
                 return
-            (event, slot, widx_copy, cnts_copy, n_req, total_n,
+            (event, slot, widx_copy, cnts_copy, n_req, actual_n,
              start_ti) = job
             if event is not None:
                 event.synchronize()
@@ -600,7 +695,7 @@ def _eval_server_serve(
                 done_cond.notify_all()
             if stats is not None:
                 with _stats_lock:
-                    stats.record_batch(total_n, perf_counter() - start_ti)
+                    stats.record_batch(actual_n, perf_counter() - start_ti)
             _free_slots.put(slot)
 
     _scatter_thread = threading.Thread(
@@ -625,7 +720,7 @@ def _eval_server_serve(
             n_req: Number of workers in this batch.
 
         Returns:
-            total_n: Actual number of states processed.
+            actual_n: Actual number of states processed.
         """
         # Acquire a free ping-pong slot. Blocks until the scatter thread
         # finishes processing an in-flight slot (the GPU sync happens
@@ -641,12 +736,15 @@ def _eval_server_serve(
 
         # Gather states + masks into the pinned buffers via Cython memcpy.
         # States go through the byte-level path (fp16 on the wire).
-        total_n = _gather_states(
+        actual_n = _gather_states(
             pin_s_flat_bytes, all_states_bytes, widx, cnts, n_req,
             states_row_bytes,
         )
         _gather_masks(pin_mask_np, all_masks_np, widx, cnts, n_req)
-        padded_n = total_n
+        launch_n = _resolve_launch_batch_size(
+            actual_n=actual_n,
+            batch_shape_mode=batch_shape_mode,
+        )
 
         start_ti = perf_counter() if stats is not None else 0.0
 
@@ -655,38 +753,37 @@ def _eval_server_serve(
         widx_copy = widx[:n_req].copy()
         cnts_copy = cnts[:n_req].copy()
 
-        # Append one trash row at index padded_n (see alloc_batch comment).
-        # Every forward sees (padded_n + 1) rows; the trash row keeps the
-        # batch dim ≥ 1 even when total_n == 0. Its mask stays all-zero
-        # (gpu_mask was zero-initialized, tail never overwritten).
-        effective_n = padded_n + 1
-        gpu_s_batch = gpu_s[:effective_n]
-        gpu_s_batch[:total_n].copy_(pin_s_slot[:total_n], non_blocking=True)
-        gpu_mask[:total_n].copy_(pin_mask_slot[:total_n], non_blocking=True)
+        gpu_s_batch = gpu_s[:launch_n]
+        gpu_s_batch[:actual_n].copy_(pin_s_slot[:actual_n], non_blocking=True)
+        gpu_mask[:actual_n].copy_(pin_mask_slot[:actual_n], non_blocking=True)
+        if launch_n > actual_n:
+            gpu_s_batch[actual_n:launch_n].zero_()
+            gpu_mask[actual_n:launch_n].zero_()
+            gpu_mask_bool[actual_n:launch_n].zero_()
+
+        if batch_shape_mode == "bucketed":
+            gpu_mask_bool[:launch_n].copy_(gpu_mask[:launch_n], non_blocking=True)
+            mask_batch = gpu_mask_bool[:launch_n]
+        else:
+            mask_batch = gpu_mask[:launch_n].to(torch.bool)
 
         with torch.inference_mode():
             # Autocast region is already active (entered once for the whole
-            # serve loop). The model returns dense (padded_n, U) logits
-            # with illegal slots at -1e9; softmaxing inside the autocast
-            # region keeps the narrow logits tensor in bf16/fp16 until the
-            # final f32 copy.
-            logits, values = model(
-                gpu_s_batch,
-                gpu_mask[:effective_n].to(torch.bool),
-            )
-            # logits: (effective_n, UNIFIED_LOGIT_DIM)  in autocast dtype
-            # values: (effective_n, num_players)        in autocast dtype
-            gpu_priors[:total_n] = logits[:total_n].softmax(dim=1).to(torch.float32)
-            gpu_val[:total_n] = values[:total_n].to(torch.float32)
+            # serve loop). The model sees ``launch_n`` rows, but only the first
+            # ``actual_n`` rows contain real gathered work and only those rows
+            # are copied back to shared memory.
+            logits, values = model(gpu_s_batch, mask_batch)
+            gpu_priors[:actual_n] = logits[:actual_n].softmax(dim=1).to(torch.float32)
+            gpu_val[:actual_n] = values[:actual_n].to(torch.float32)
 
-            pin_priors_slot[:total_n].copy_(gpu_priors[:total_n], non_blocking=True)
-            pin_val_slot[:total_n].copy_(gpu_val[:total_n], non_blocking=True)
+            pin_priors_slot[:actual_n].copy_(gpu_priors[:actual_n], non_blocking=True)
+            pin_val_slot[:actual_n].copy_(gpu_val[:actual_n], non_blocking=True)
 
         if use_cuda:
             event = torch.cuda.Event()
             event.record()
             _scatter_jobs.put((
-                event, slot, widx_copy, cnts_copy, n_req, total_n, start_ti,
+                event, slot, widx_copy, cnts_copy, n_req, actual_n, start_ti,
             ))
         else:
             # CPU path: no event, scatter inline to keep semantics simple.
@@ -700,9 +797,9 @@ def _eval_server_serve(
                     done_flags_np[widx_copy[i]] = 1
                 done_cond.notify_all()
             if stats is not None:
-                stats.record_batch(total_n, perf_counter() - start_ti)
+                stats.record_batch(actual_n, perf_counter() - start_ti)
             _free_slots.put(slot)
-        return total_n
+        return actual_n
 
     def _check_stats_report() -> None:
         """Send stats to main process if requested.
@@ -787,11 +884,16 @@ def _eval_server_serve(
             # of it in one forward pass (bounded by the partition's
             # natural max_batch).
             if _accum_states >= min_batch_size:
-                _infer_and_scatter(
-                    _accum_widx[:_accum_n],
-                    _accum_cnts[:_accum_n],
-                    _accum_n,
-                )
+                for group in _partition_request_groups(
+                    _accum_cnts,
+                    n_req=_accum_n,
+                    actual_launch_cap=actual_launch_cap,
+                ):
+                    _infer_and_scatter(
+                        _accum_widx[group.start:group.end],
+                        _accum_cnts[group.start:group.end],
+                        group.end - group.start,
+                    )
                 _accum_n = 0
                 _accum_states = 0
 
@@ -810,11 +912,16 @@ def _eval_server_serve(
                 server_event.clear()
                 if not _peek(submitted_masks, server_id, num_words):
                     if not server_event.wait(timeout=_timeout_s):
-                        _infer_and_scatter(
-                            _accum_widx[:_accum_n],
-                            _accum_cnts[:_accum_n],
-                            _accum_n,
-                        )
+                        for group in _partition_request_groups(
+                            _accum_cnts,
+                            n_req=_accum_n,
+                            actual_launch_cap=actual_launch_cap,
+                        ):
+                            _infer_and_scatter(
+                                _accum_widx[group.start:group.end],
+                                _accum_cnts[group.start:group.end],
+                                group.end - group.start,
+                            )
                         _accum_n = 0
                         _accum_states = 0
     else:
@@ -836,10 +943,16 @@ def _eval_server_serve(
                 _idle_wait()
                 continue
 
-            _infer_and_scatter(
-                _widx_buf[:num_requests], _cnt_buf[:num_requests],
-                num_requests,
-            )
+            for group in _partition_request_groups(
+                _cnt_buf,
+                n_req=num_requests,
+                actual_launch_cap=actual_launch_cap,
+            ):
+                _infer_and_scatter(
+                    _widx_buf[group.start:group.end],
+                    _cnt_buf[group.start:group.end],
+                    group.end - group.start,
+                )
             _check_stats_report()
 
     # Drain the scatter thread: any batches launched before stop_event was
@@ -883,6 +996,8 @@ class EvaluationServer:
         gpu_vendor: str = "cpu",
         min_batch_size: int = 0,
         min_batch_timeout_ms: float = 10.0,
+        batch_shape_mode: str = "dynamic",
+        max_batch_size: int = 0,
         eval_dtype: str | None = None,
     ) -> None:
         import multiprocessing
@@ -909,6 +1024,8 @@ class EvaluationServer:
             "gpu_vendor": gpu_vendor,
             "min_batch_size": min_batch_size,
             "min_batch_timeout_ms": min_batch_timeout_ms,
+            "batch_shape_mode": batch_shape_mode,
+            "max_batch_size": max_batch_size,
             "eval_dtype": eval_dtype,
         }
         self._mp_context = ctx

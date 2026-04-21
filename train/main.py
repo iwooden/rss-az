@@ -76,6 +76,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Timeout (ms) the min-batch loop waits for more arrivals "
              "before flushing a partial batch (default: 10)",
     )
+    parser.add_argument(
+        "--eval-batch-shape-mode",
+        type=str,
+        choices=["dynamic", "bucketed"],
+        help="Eval GPU batch-shape policy: current fully dynamic behavior or "
+             "power-of-2 bucketed launches",
+    )
+    parser.add_argument(
+        "--eval-max-batch-size",
+        type=int,
+        help="Bucketed mode only: maximum actual states per eval launch before "
+             "padding (0 uses the partition max)",
+    )
     parser.add_argument("--checkpoint-dir", type=str)
     parser.add_argument("--tensorboard-dir", type=str)
     parser.add_argument("--seed", type=int)
@@ -141,6 +154,7 @@ _CLI_FIELDS = (
     "mcts_sims_start", "mcts_sims_end", "mcts_ramp_start_epoch", "mcts_ramp_end_epoch",
     "num_workers", "num_eval_servers",
     "eval_min_batch_size", "eval_min_batch_timeout_ms",
+    "eval_batch_shape_mode", "eval_max_batch_size",
     "checkpoint_dir", "tensorboard_dir", "seed",
     "temp_initial", "temp_anneal_start", "temp_anneal_end", "temp_final",
     "c_puct_initial", "c_puct_final", "c_puct_anneal_epochs",
@@ -486,7 +500,10 @@ def main() -> None:
 
         shared_bufs.init_bitmap(partitions, ctx)
 
-        eval_compile_kwargs = gpu.get_compile_kwargs(for_training=False)
+        eval_compile_kwargs = gpu.get_compile_kwargs(
+            for_training=False,
+            eval_batch_shape_mode=config.eval_batch_shape_mode,
+        )
         for i, (ws, we) in enumerate(partitions):
             server = EvaluationServer(
                 model, device, shared_bufs,
@@ -500,6 +517,8 @@ def main() -> None:
                 gpu_vendor=gpu.vendor,
                 min_batch_size=config.eval_min_batch_size,
                 min_batch_timeout_ms=config.eval_min_batch_timeout_ms,
+                batch_shape_mode=config.eval_batch_shape_mode,
+                max_batch_size=config.eval_max_batch_size,
                 eval_dtype=config.eval_dtype,
             )
             server.start()
@@ -542,12 +561,27 @@ def main() -> None:
             workers.append(p)
 
         if config.eval_min_batch_size > 0:
-            batch_detail = (
-                f", min batch: {config.eval_min_batch_size} states "
+            launch_policy = (
+                f"min-batch floor {config.eval_min_batch_size} states "
                 f"(timeout {config.eval_min_batch_timeout_ms:g}ms)"
             )
         else:
-            batch_detail = ", batch mode: greedy"
+            launch_policy = "greedy"
+        if config.eval_batch_shape_mode == "bucketed":
+            max_actual = (
+                str(config.eval_max_batch_size)
+                if config.eval_max_batch_size > 0 else "partition max"
+            )
+            batch_detail = (
+                f", eval batching: bucketed powers-of-2, {launch_policy}, "
+                f"max actual batch {max_actual}"
+            )
+            if gpu.vendor == "nvidia" and not args.no_compile:
+                batch_detail += ", CUDA graphs enabled"
+        else:
+            batch_detail = f", eval batching: dynamic, {launch_policy}"
+            if gpu.vendor == "nvidia" and not args.no_compile:
+                batch_detail += ", no CUDA graphs"
         print(
             f"Started {config.num_workers} self-play workers, "
             f"{n_servers} eval server{'s' if n_servers > 1 else ''}"

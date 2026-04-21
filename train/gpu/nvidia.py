@@ -6,12 +6,12 @@ When running on NVIDIA hardware, these optimizations are applied:
    with minimal precision loss (19-bit mantissa vs 23-bit). Affects the float32
    backward pass and any non-autocast matmuls.
 
-2. **torch.compile default mode** (Inductor fusion, no CUDA graphs):
-   CUDA-graph capture (mode="reduce-overhead") is NOT used because
-   ``RSSTransformerNet.forward`` runs over a ``mark_unbacked`` batch
-   dim that varies every call with MCTS workload pressure — CUDA
-   graphs require static shapes. Default-mode Inductor still removes
-   most Python dispatch overhead via Triton fusion.
+2. **torch.compile eval policy**:
+   Dynamic eval batching stays on the no-CUDA-graphs baseline
+   (``max-autotune-no-cudagraphs``) because ``mark_unbacked`` batch dims
+   vary every call with MCTS workload pressure. Bucketed eval batching can
+   switch to the cudagraph-enabled ``reduce-overhead`` baseline because the
+   GPU-visible shapes are constrained to a small repeated set.
 
 3. **non_blocking H2D transfers**: Allows CPU work to overlap with GPU DMA.
    Especially beneficial on GH200 with NVLink-C2C (900 GB/s).
@@ -82,22 +82,28 @@ def _resolve_mode_options(mode: str) -> dict[str, Any]:
             "max_autotune": True,
             "coordinate_descent_tuning": True,
         }
+    if mode == "reduce-overhead":
+        return {
+            "triton.cudagraphs": True,
+        }
     return {}
 
 
-def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
+def get_compile_kwargs(
+    *,
+    for_training: bool = False,
+    eval_batch_shape_mode: str = "dynamic",
+) -> dict[str, Any]:
     """Return torch.compile kwargs optimized for NVIDIA GPUs.
 
-    Use the ``max-autotune-no-cudagraphs`` NVIDIA baseline, but expand it
-    into explicit Inductor options before returning. PyTorch documents that
-    mode as the max-autotune path without CUDA graphs: we keep the stronger
-    GEMM/autotune choices that help a transformer-heavy model on a large
-    NVIDIA GPU, while avoiding the cudagraph capture assumptions that do not
-    fit this repo's dynamic eval batching. Expanding the mode is necessary
-    because some torch versions reject passing both ``mode=...`` and
-    ``options=...`` together, and we need repo-specific overrides on top.
+    Eval compile policy depends on the GPU-visible batch-shape strategy.
+    ``dynamic`` keeps the current ``max-autotune-no-cudagraphs`` baseline.
+    ``bucketed`` switches eval inference to the cudagraph-enabled
+    ``reduce-overhead`` baseline, assuming the caller constrains launches to
+    a small fixed bucket set. Training remains on the existing dynamic-shape
+    path regardless of the eval knob.
 
-    ``reduce-overhead`` remains a poor fit because eval_server /
+    For ``dynamic`` eval we keep the existing rationale:
     single-process warmup applies ``mark_unbacked`` to the batch dim (so
     a single compiled artifact handles every batch size 1..max_batch) —
     CUDA graphs would require re-capture per batch size, defeating the
@@ -138,7 +144,10 @@ def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
             which is why eval_server is unaffected. Disabling costs only
             a small forward-graph constant-folding optimization.
     """
-    options: dict[str, Any] = _resolve_mode_options("max-autotune-no-cudagraphs")
+    mode = "max-autotune-no-cudagraphs"
+    if not for_training and eval_batch_shape_mode == "bucketed":
+        mode = "reduce-overhead"
+    options: dict[str, Any] = _resolve_mode_options(mode)
     options.update({
         "triton.autotune_at_compile_time": True,
         "shape_padding": False,

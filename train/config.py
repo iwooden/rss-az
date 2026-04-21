@@ -102,6 +102,14 @@ class TrainingConfig:
     # partial accumulation is submitted — anti-starvation for epoch-end
     # and single-root-eval cases.
     eval_min_batch_timeout_ms: float = 10.0
+    # Eval batch-shape policy. "dynamic" preserves the current fully variable
+    # batch path. "bucketed" will round launches to a small fixed bucket set
+    # for CUDA-graph-friendly eval inference.
+    eval_batch_shape_mode: str = "dynamic"
+    # In bucketed mode, optional ceiling on actual states per launch before
+    # power-of-2 padding. 0 means use the partition's natural max batch.
+    # This is distinct from eval_min_batch_size, which controls when to launch.
+    eval_max_batch_size: int = 0
 
     # --- Temperature Schedule (linear ramp) ---
     # temp_initial from move 0 to temp_anneal_start, then linearly decreases
@@ -320,6 +328,40 @@ class TrainingConfig:
                 f"eval_min_batch_timeout_ms must be >= 0, "
                 f"got {self.eval_min_batch_timeout_ms}"
             )
+        if self.eval_batch_shape_mode not in {"dynamic", "bucketed"}:
+            raise ValueError(
+                "eval_batch_shape_mode must be 'dynamic' or 'bucketed', "
+                f"got {self.eval_batch_shape_mode!r}"
+            )
+        if self.eval_max_batch_size < 0:
+            raise ValueError(
+                f"eval_max_batch_size must be >= 0, got {self.eval_max_batch_size}"
+            )
+        if self.eval_batch_shape_mode == "dynamic":
+            if self.eval_max_batch_size != 0:
+                raise ValueError(
+                    "eval_max_batch_size must be 0 when eval_batch_shape_mode is "
+                    f"'dynamic', got {self.eval_max_batch_size}"
+                )
+        elif self.eval_max_batch_size > 0:
+            if self.eval_max_batch_size & (self.eval_max_batch_size - 1):
+                raise ValueError(
+                    "eval_max_batch_size must be a power of 2 in bucketed mode, "
+                    f"got {self.eval_max_batch_size}"
+                )
+            if self.num_workers > 0:
+                max_partition = -(-self.num_workers // self.num_eval_servers)
+                max_batch = max_partition * self.search_batch_size
+                if self.eval_max_batch_size > max_batch:
+                    raise ValueError(
+                        f"eval_max_batch_size ({self.eval_max_batch_size}) must be <= "
+                        f"partition_size * search_batch_size ({max_batch})"
+                    )
+            if self.eval_min_batch_size > 0 and self.eval_max_batch_size < self.eval_min_batch_size:
+                raise ValueError(
+                    f"eval_max_batch_size ({self.eval_max_batch_size}) must be >= "
+                    f"eval_min_batch_size ({self.eval_min_batch_size}) in bucketed mode"
+                )
         if self.buffer_capacity <= self.min_buffer_size:
             raise ValueError(
                 f"buffer_capacity ({self.buffer_capacity}) must exceed "
