@@ -26,6 +26,7 @@ from core.actions import MAX_LEGAL_ACTIONS_PY
 from core.data import (
     AUCTION_CAP,
     PHASE_ACTION_SIZES,
+    DecisionPhase,
 )
 from core.token_data import TokenDataSize, TokenWidth, get_token_widths
 
@@ -37,10 +38,25 @@ from core.token_data import TokenDataSize, TokenWidth, get_token_widths
 # above. This module is strictly a consumer; editing policy head widths or
 # adding token types happens over there.
 
-NUM_PHASES = 11
+NUM_PHASES = len(DecisionPhase)
 K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 
 _GELU_APPROX = "tanh"
+
+
+def _slice_proj(x: torch.Tensor, proj: nn.Linear, idx: int | slice) -> torch.Tensor:
+    """Slice ``x`` to ``proj.in_features`` at ``idx`` and project.
+
+    Output shape depends on ``idx``: int → ``(B, d)``, slice → ``(B, n, d)``.
+    Int call sites add a trailing ``.unsqueeze(1)`` themselves — keeping the
+    per-site fixup explicit avoids a Python-side isinstance branch that
+    Dynamo would have to trace through.
+
+    Module-level rather than a closure or staticmethod so Dynamo can inline
+    it without guarding on a fresh function id per call or routing through
+    class-attribute lookup.
+    """
+    return proj(x[:, idx, :proj.in_features])
 
 
 # ---------------------------------------------------------------------------
@@ -70,9 +86,9 @@ class TransformerConfig:
     def num_tokens(self) -> int:
         """Input-buffer token count: 65 fixed entity/phase tokens + N players.
 
-        The trunk sequence is 7 wider because ``_project_tokens`` concatenates
-        7 learned per-phase pass anchors after projection; those rows have no
-        input features so they don't exist in the engine-side buffer.
+        The trunk sequence is 1 wider because ``_project_tokens`` concatenates
+        a single learned pass anchor after projection; that row has no
+        input features so it doesn't exist in the engine-side buffer.
         """
         return self.num_players + 65
 
@@ -195,8 +211,8 @@ class RSSTransformerNet(nn.Module):
         #     acq_price_info
         #   corps×8, then players×N (trailing so padding for higher player
         #   counts is a no-op on the prefix).
-        # Pass anchors (×7) are concatenated after projection; see
-        # ``_project_tokens``. They live beyond the player slice, so player
+        # The pass anchor is concatenated after projection; see
+        # ``_project_tokens``. It lives beyond the player slice, so player
         # indices stay contiguous for the value head and the padding contract.
         self._market_slot_prices_idx = 0
         self._company_slice = slice(1, 37)
@@ -219,17 +235,10 @@ class RSSTransformerNet(nn.Module):
         self._acq_price_info_idx = 56
         self._corp_slice = slice(57, 65)
         self._player_slice = slice(65, 65 + np_)
-        # Per-phase pass tokens — one learned anchor per pass-using phase, each
-        # with no input features. DIVIDENDS is excluded (no pass action), and
-        # ACQ_SELECT_COMPANY / ACQ_SELECT_PRICE have no pass (committing to
-        # SELECT_CORP locks the player in). Appended after the player slice.
-        self._pass_invest_idx = 65 + np_
-        self._pass_bid_idx = 66 + np_
-        self._pass_acq_select_corp_idx = 67 + np_
-        self._pass_acq_offer_idx = 68 + np_
-        self._pass_closing_idx = 69 + np_
-        self._pass_issue_idx = 70 + np_
-        self._pass_ipo_idx = 71 + np_
+        # Single learned pass anchor, appended after the player slice. Shared
+        # across every pass-using phase — the trunk picks up phase-specific
+        # context through attention so one anchor can back all 7 passes.
+        self._pass_idx = 65 + np_
 
         # Drift guard: hardcoded positions above must match the Cython-side
         # ``get_token_widths`` layout. Checking here fires loudly at model
@@ -238,45 +247,45 @@ class RSSTransformerNet(nn.Module):
         _validate_layout(np_)
 
         # --- Type-specific input projections ---
-        # All take the full zero-padded token_dim input. Weights for always-zero
-        # feature positions are inert; the simplicity is worth the ~2% extra
-        # params. ``company_location_proj`` is shared across all four location
-        # tokens (REMOVED / AUCTION / REVEALED / CORP_ACQ) — they carry the
-        # same 36-bit "which companies are at this location" bitmap semantics,
-        # so distinct weights would just be four copies of the same mapping.
-        tdim = cfg.token_dim
-        self.player_proj = nn.Linear(tdim, d)
-        self.corp_proj = nn.Linear(tdim, d)
-        self.company_proj = nn.Linear(tdim, d)
-        self.fi_proj = nn.Linear(tdim, d)
-        self.market_proj = nn.Linear(tdim, d)
-        self.market_slot_prices_proj = nn.Linear(tdim, d)
-        self.company_location_proj = nn.Linear(tdim, d)
-        self.company_adj_income_proj = nn.Linear(tdim, d)
-        self.active_player_proj = nn.Linear(tdim, d)
-        self.active_corp_proj = nn.Linear(tdim, d)
-        self.active_company_proj = nn.Linear(tdim, d)
-        self.phase_proj = nn.Linear(tdim, d)
-        self.num_players_proj = nn.Linear(tdim, d)
-        self.game_progress_proj = nn.Linear(tdim, d)
-        self.invest_proj = nn.Linear(tdim, d)
-        self.auction_proj = nn.Linear(tdim, d)
-        self.dividend_proj = nn.Linear(tdim, d)
-        self.issue_proj = nn.Linear(tdim, d)
-        self.par_proj = nn.Linear(tdim, d)
-        self.acq_offer_proj = nn.Linear(tdim, d)
-        self.acq_price_proj = nn.Linear(tdim, d)
-        # Pass tokens: no input features. Each pass-using phase gets its own
-        # learned anchor (BERT [CLS]-style) that rides the residual stream and
-        # picks up game-state context through attention. Per-phase anchors let
-        # the trunk produce phase-specific pass representations rather than
-        # forcing one vector to serve 7 different decisions. Rows 0..6 follow
-        # the pass-using order {INVEST, BID, ACQ_SELECT_CORP, ACQ_OFFER,
-        # CLOSING, ISSUE, IPO} — DIVIDENDS / PAR / ACQ_SELECT_COMPANY /
-        # ACQ_SELECT_PRICE have no pass action so they are absent. All other
-        # token types are discriminated via their own per-type projection (and
-        # its bias), so a shared type-embedding table would be redundant there.
-        self.pass_embeds = nn.Parameter(torch.empty(7, d))
+        # Each projection takes only its ``TokenWidth.TW_<type>`` prefix of the
+        # zero-padded token row. The engine-side buffer is rectangular at
+        # ``TOKEN_DIM=92`` so ``get_token_data`` can fill it with a single
+        # nogil memcpy pattern, but projection weights on the padding are
+        # inert waste — slicing to the actual width here (both in sizing and
+        # in ``_project_tokens``) drops those parameters. Widths are pulled
+        # from ``TokenWidth`` so the model and the Cython extractor can't
+        # drift out of sync. ``company_location_proj`` is shared across all
+        # four location tokens (REMOVED / AUCTION / REVEALED / CORP_ACQ) —
+        # they carry the same 36-bit "which companies are at this location"
+        # bitmap semantics, so distinct weights would just be four copies of
+        # the same mapping.
+        self.player_proj = nn.Linear(int(TokenWidth.TW_PLAYER), d)
+        self.corp_proj = nn.Linear(int(TokenWidth.TW_CORP), d)
+        self.company_proj = nn.Linear(int(TokenWidth.TW_COMPANY), d)
+        self.fi_proj = nn.Linear(int(TokenWidth.TW_FI), d)
+        self.market_proj = nn.Linear(int(TokenWidth.TW_MARKET_AVAILABILITY), d)
+        self.market_slot_prices_proj = nn.Linear(int(TokenWidth.TW_MARKET_SLOT_PRICES), d)
+        self.company_location_proj = nn.Linear(int(TokenWidth.TW_COMPANY_LOCATION), d)
+        self.company_adj_income_proj = nn.Linear(int(TokenWidth.TW_COMPANY_ADJ_INCOME), d)
+        self.active_player_proj = nn.Linear(int(TokenWidth.TW_ACTIVE_PLAYER), d)
+        self.active_corp_proj = nn.Linear(int(TokenWidth.TW_ACTIVE_CORP), d)
+        self.active_company_proj = nn.Linear(int(TokenWidth.TW_ACTIVE_COMPANY), d)
+        self.phase_proj = nn.Linear(int(TokenWidth.TW_PHASE), d)
+        self.num_players_proj = nn.Linear(int(TokenWidth.TW_NUM_PLAYERS), d)
+        self.game_progress_proj = nn.Linear(int(TokenWidth.TW_GAME_PROGRESS), d)
+        self.invest_proj = nn.Linear(int(TokenWidth.TW_INVEST), d)
+        self.auction_proj = nn.Linear(int(TokenWidth.TW_AUCTION), d)
+        self.dividend_proj = nn.Linear(int(TokenWidth.TW_DIVIDEND), d)
+        self.issue_proj = nn.Linear(int(TokenWidth.TW_ISSUE), d)
+        self.par_proj = nn.Linear(int(TokenWidth.TW_PAR), d)
+        self.acq_offer_proj = nn.Linear(int(TokenWidth.TW_ACQ_OFFER), d)
+        self.acq_price_proj = nn.Linear(int(TokenWidth.TW_ACQ_PRICE), d)
+        # Pass token: no input features. Its representation is a single learned
+        # vector (BERT [CLS]-style) that rides the residual stream and picks up
+        # game-state context through attention. All other token types are
+        # discriminated via their own per-type projection (and its bias), so a
+        # shared type-embedding table would be redundant there.
+        self.pass_embed = nn.Parameter(torch.empty(d))
 
         # --- Transformer trunk ---
         self.blocks = nn.ModuleList([
@@ -286,80 +295,87 @@ class RSSTransformerNet(nn.Module):
         self.final_norm = nn.RMSNorm(d)
 
         # --- Entity-readout policy heads ---
-        # Shared per-entity-type heads (weight-shared across all tokens of same type).
-        # pass_head is also shared across phases — per-phase specialization lives
-        # in the input pass_embeds, which travel through the trunk and become
-        # phase-specific representations by the time they reach this head.
-        self.pass_head = nn.Linear(d, 1)
-        # INVEST now just selects which company to auction (price chosen in
-        # BID). One logit per company token; MLP shape kept wide for future
-        # sharing with CLOSING / ACQ_SELECT_COMPANY per phase-refactor.md.
-        self.company_auction_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 1),
+        # Shared per-entity-type heads (weight-shared across all tokens of same type)
+        self.pass_head = nn.Sequential(
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 1)
+        )
+        # Shared company-selection head used by INVEST (which company to
+        # auction), ACQ_SELECT_COMPANY (which company to acquire), and CLOSING
+        # (which company to close). One logit per company token; the phase
+        # context that discriminates the three decisions arrives through the
+        # trunk's phase-specific context tokens + attention.
+        self.company_select_head = nn.Sequential(
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 1)
+        )
+        # Shared corp-selection head used by ACQ_SELECT_CORP (which corp does
+        # the acquiring) and IPO (which corp floats the active company). Same
+        # structure as company_select_head; phase context reaches each corp
+        # token through attention on the phase-specific context tokens.
+        self.corp_select_head = nn.Sequential(
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 1)
         )
         self.corp_trade_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 2),  # buy, sell
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 2),  # buy, sell
         )
-        self.company_close_head = nn.Linear(d, 1)  # per-company close logit
 
         # Phase-specific context token heads. BID bids at face_value + offset
         # for offset ∈ [0, AUCTION_CAP), so the head produces AUCTION_CAP
         # logits — one per legal bid offset (both opening and subsequent).
         self.auction_raise_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, int(AUCTION_CAP)),
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, int(AUCTION_CAP)),
         )
         self.dividend_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 26),  # 26 dividend levels
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 26),  # 26 dividend levels
         )
-        self.issue_head = nn.Linear(d, 1)  # issue logit (pass from pass_head)
-        self.acq_offer_head = nn.Linear(d, 1)  # buy logit (pass from pass_head)
+        self.issue_head = nn.Sequential(
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 1),  # issue logit (pass from pass_head)
+        )
+        self.acq_offer_head = nn.Sequential(
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 1),  # buy logit (pass from pass_head)
+        )
 
         # ACQ is factored into three sequential single-entity selections:
-        # pick the acquiring corp, pick the target company, pick the price.
-        # Each sub-phase gets its own per-sub-phase-head pattern (matching the
-        # IPO/PAR split). Cross-phase head sharing (e.g. unifying
-        # company_select across INVEST / ACQ_SELECT_COMPANY / CLOSING, or
-        # corp_select across ACQ_SELECT_CORP / IPO) is intentionally deferred.
-        self.corp_acq_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 1),
-        )
-        self.company_acq_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 1),
-        )
+        # pick the acquiring corp (shared corp_select_head above), pick the
+        # target company (shared company_select_head above), pick the price.
         # SELECT_PRICE: 51 price offsets + FI_BUY = 52 logits, read off a
         # dedicated acq_price_info token that the engine populates with
         # (active_corp, active_company) context during PHASE_ACQ_SELECT_PRICE.
         self.price_acq_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 52),
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 52),
         )
 
-        # IPO selects which corp floats the active company; par price is chosen
-        # in the separate PAR phase. One logit per corp token — clean
-        # entity-readout signal.
-        self.corp_ipo_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 1),
-        )
         # PAR reads 14 par-price logits from the par info token. No pass
         # anchor: PAR has no pass action — once a corp is selected the owner
         # must commit to a price.
         self.par_price_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 14),
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 14),
         )
 
         # --- Value head (applied per player token) ---
         self.value_head = nn.Sequential(
-            nn.Linear(d, d // 2),
-            nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 1),
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 1),
             nn.Tanh(),
         )
 
@@ -370,15 +386,35 @@ class RSSTransformerNet(nn.Module):
             "_k_range", torch.arange(K_MAX, dtype=torch.long), persistent=False,
         )
 
-        # Per-phase head dispatch, indexed by phase_id 0..10 in DecisionPhase
-        # order. Built once; the bound-method refs stay valid for the
-        # module's lifetime.
-        self._dispatch = (
-            self._policy_invest, self._policy_bid,
-            self._policy_acq_select_corp, self._policy_acq_offer,
-            self._policy_closing, self._policy_dividends,
-            self._policy_issue, self._policy_ipo, self._policy_par,
-            self._policy_acq_select_company, self._policy_acq_select_price,
+        # Per-phase head dispatch, keyed by ``DecisionPhase`` member so
+        # re-ordering the enum can't silently misroute logits. Materialized
+        # to a tuple indexed by integer phase id after asserting that all
+        # members are covered and their ids pack into ``[0, NUM_PHASES)`` —
+        # the same drift-guard pattern ``_validate_layout`` uses for token
+        # widths. Bound-method refs stay valid for the module's lifetime.
+        dispatch_by_phase: dict[DecisionPhase, Callable[[torch.Tensor], torch.Tensor]] = {
+            DecisionPhase.DPHASE_INVEST: self._policy_invest,
+            DecisionPhase.DPHASE_BID: self._policy_bid,
+            DecisionPhase.DPHASE_ACQ_SELECT_CORP: self._policy_acq_select_corp,
+            DecisionPhase.DPHASE_ACQ_OFFER: self._policy_acq_offer,
+            DecisionPhase.DPHASE_CLOSING: self._policy_closing,
+            DecisionPhase.DPHASE_DIVIDENDS: self._policy_dividends,
+            DecisionPhase.DPHASE_ISSUE: self._policy_issue,
+            DecisionPhase.DPHASE_IPO: self._policy_ipo,
+            DecisionPhase.DPHASE_PAR: self._policy_par,
+            DecisionPhase.DPHASE_ACQ_SELECT_COMPANY: self._policy_acq_select_company,
+            DecisionPhase.DPHASE_ACQ_SELECT_PRICE: self._policy_acq_select_price,
+        }
+        assert len(dispatch_by_phase) == NUM_PHASES, (
+            f"dispatch covers {len(dispatch_by_phase)} phases but "
+            f"NUM_PHASES={NUM_PHASES} — DecisionPhase gained/lost a member"
+        )
+        phase_ids = sorted(int(p) for p in dispatch_by_phase)
+        assert phase_ids == list(range(NUM_PHASES)), (
+            f"DecisionPhase ids must pack into [0, {NUM_PHASES}), got {phase_ids}"
+        )
+        self._dispatch = tuple(
+            dispatch_by_phase[DecisionPhase(i)] for i in range(NUM_PHASES)
         )
 
         self._init_weights()
@@ -390,43 +426,52 @@ class RSSTransformerNet(nn.Module):
     def _project_tokens(self, x: torch.Tensor) -> torch.Tensor:
         """Project raw token features to d_model via type-specific projections.
 
-        The 7 per-phase pass anchors are concatenated here (not present in the
-        input buffer), so the output sequence is 7 wider than the input.
+        The pass anchor is concatenated here (not present in the input buffer),
+        so the output sequence is 1 wider than the input.
+
+        Each row is sliced to its projection's ``in_features`` width before
+        projecting. The engine-side buffer is rectangularly zero-padded to
+        ``TOKEN_DIM=92`` so ``get_token_data`` can fill it with a uniform
+        nogil memcpy pattern, but each type only uses its ``TokenWidth.TW_*``
+        prefix — the tail is zero padding that would otherwise be multiplied
+        against inert projection weights.
 
         Args:
             x: (batch, num_players + 65, token_dim) zero-padded raw features.
         Returns:
-            (batch, num_players + 72, d_model) embeddings: projected input
-            tokens followed by the 7 per-phase pass anchors.
+            (batch, num_players + 66, d_model) embeddings: projected input
+            tokens followed by the single pass anchor.
         """
-        B = x.shape[0]
-
-        # Parts order matches the engine-side buffer layout so concatenation
-        # preserves token positions. All projections take the full zero-padded
-        # token_dim input.
+        # Pass anchor: (d,) → (B, 1, d) without mixing SymInt with ``-1`` in
+        # the expand target. Under AOT autograd, ``.expand(B, 1, -1)`` where
+        # ``B`` is ``x.shape[0]`` sometimes concretizes the batch size into
+        # a static guard and forces per-batch-size recompiles; feeding the
+        # last dim explicitly lets the symbolic-shape tracker carry ``B``
+        # cleanly through.
+        d = self.cfg.d_model
         parts: list[torch.Tensor] = [
-            self.market_slot_prices_proj(x[:, self._market_slot_prices_idx]).unsqueeze(1),
-            self.company_proj(x[:, self._company_slice]),                      # (B, 36, d)
-            self.market_proj(x[:, self._market_idx]).unsqueeze(1),
-            self.company_location_proj(x[:, self._company_location_slice]),    # (B, 4, d)
-            self.company_adj_income_proj(x[:, self._company_adj_income_idx]).unsqueeze(1),
-            self.fi_proj(x[:, self._fi_idx]).unsqueeze(1),
-            self.active_player_proj(x[:, self._active_player_idx]).unsqueeze(1),
-            self.active_corp_proj(x[:, self._active_corp_idx]).unsqueeze(1),
-            self.active_company_proj(x[:, self._active_company_idx]).unsqueeze(1),
-            self.phase_proj(x[:, self._phase_idx]).unsqueeze(1),
-            self.num_players_proj(x[:, self._num_players_idx]).unsqueeze(1),
-            self.game_progress_proj(x[:, self._game_progress_idx]).unsqueeze(1),
-            self.invest_proj(x[:, self._invest_idx]).unsqueeze(1),
-            self.auction_proj(x[:, self._auction_idx]).unsqueeze(1),
-            self.dividend_proj(x[:, self._dividend_idx]).unsqueeze(1),
-            self.issue_proj(x[:, self._issue_idx]).unsqueeze(1),
-            self.par_proj(x[:, self._par_idx]).unsqueeze(1),
-            self.acq_offer_proj(x[:, self._acq_offer_idx]).unsqueeze(1),
-            self.acq_price_proj(x[:, self._acq_price_info_idx]).unsqueeze(1),
-            self.corp_proj(x[:, self._corp_slice]),                            # (B, 8, d)
-            self.player_proj(x[:, self._player_slice]),                        # (B, N, d)
-            self.pass_embeds.unsqueeze(0).expand(B, -1, -1),  # (B, 7, d) per-phase anchors
+            _slice_proj(x, self.market_slot_prices_proj, self._market_slot_prices_idx).unsqueeze(1),
+            _slice_proj(x, self.company_proj, self._company_slice),                      # (B, 36, d)
+            _slice_proj(x, self.market_proj, self._market_idx).unsqueeze(1),
+            _slice_proj(x, self.company_location_proj, self._company_location_slice),    # (B, 4, d)
+            _slice_proj(x, self.company_adj_income_proj, self._company_adj_income_idx).unsqueeze(1),
+            _slice_proj(x, self.fi_proj, self._fi_idx).unsqueeze(1),
+            _slice_proj(x, self.active_player_proj, self._active_player_idx).unsqueeze(1),
+            _slice_proj(x, self.active_corp_proj, self._active_corp_idx).unsqueeze(1),
+            _slice_proj(x, self.active_company_proj, self._active_company_idx).unsqueeze(1),
+            _slice_proj(x, self.phase_proj, self._phase_idx).unsqueeze(1),
+            _slice_proj(x, self.num_players_proj, self._num_players_idx).unsqueeze(1),
+            _slice_proj(x, self.game_progress_proj, self._game_progress_idx).unsqueeze(1),
+            _slice_proj(x, self.invest_proj, self._invest_idx).unsqueeze(1),
+            _slice_proj(x, self.auction_proj, self._auction_idx).unsqueeze(1),
+            _slice_proj(x, self.dividend_proj, self._dividend_idx).unsqueeze(1),
+            _slice_proj(x, self.issue_proj, self._issue_idx).unsqueeze(1),
+            _slice_proj(x, self.par_proj, self._par_idx).unsqueeze(1),
+            _slice_proj(x, self.acq_offer_proj, self._acq_offer_idx).unsqueeze(1),
+            _slice_proj(x, self.acq_price_proj, self._acq_price_info_idx).unsqueeze(1),
+            _slice_proj(x, self.corp_proj, self._corp_slice),                            # (B, 8, d)
+            _slice_proj(x, self.player_proj, self._player_slice),                        # (B, N, d)
+            self.pass_embed.view(1, 1, d).expand(x.shape[0], 1, d),  # Pass: learned anchor
         ]
         tokens = torch.cat(parts, dim=1)                      # (B, num_tokens, d)
         return tokens
@@ -437,9 +482,9 @@ class RSSTransformerNet(nn.Module):
 
     def _policy_invest(self, t: torch.Tensor) -> torch.Tensor:
         """INVEST: pass(1) + company-select(36) + trade(8*2) = 53."""
-        pass_logit = self.pass_head(t[:, self._pass_invest_idx])              # (n, 1)
+        pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
         # (n, 36, 1) → (n, 36) company-select logits, one per company token.
-        auction = self.company_auction_head(t[:, self._company_slice]).squeeze(-1)
+        auction = self.company_select_head(t[:, self._company_slice]).squeeze(-1)
         trade = self.corp_trade_head(t[:, self._corp_slice])                  # (n, 8, 2)
         # flatten(1) instead of reshape(n, -1): the latter is ambiguous when
         # n == 0 (empty mask in dispatch), since 0 elements / 0 rows is
@@ -448,19 +493,19 @@ class RSSTransformerNet(nn.Module):
 
     def _policy_bid(self, t: torch.Tensor) -> torch.Tensor:
         """BID: pass(1) + offsets(AUCTION_CAP) = 16. Pass = leave the auction."""
-        pass_logit = self.pass_head(t[:, self._pass_bid_idx])                 # (n, 1)
+        pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
         raises = self.auction_raise_head(t[:, self._auction_idx])             # (n, 15)
         return torch.cat([pass_logit, raises], dim=-1)
 
     def _policy_acq_select_corp(self, t: torch.Tensor) -> torch.Tensor:
         """ACQ_SELECT_CORP: pass(1) + per-corp select logit(8) = 9."""
-        pass_logit = self.pass_head(t[:, self._pass_acq_select_corp_idx])     # (n, 1)
-        select = self.corp_acq_head(t[:, self._corp_slice]).squeeze(-1)       # (n, 8)
+        pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
+        select = self.corp_select_head(t[:, self._corp_slice]).squeeze(-1)    # (n, 8)
         return torch.cat([pass_logit, select], dim=-1)
 
     def _policy_acq_select_company(self, t: torch.Tensor) -> torch.Tensor:
         """ACQ_SELECT_COMPANY: 36 company-select logits. No pass."""
-        return self.company_acq_head(t[:, self._company_slice]).squeeze(-1)   # (n, 36)
+        return self.company_select_head(t[:, self._company_slice]).squeeze(-1)  # (n, 36)
 
     def _policy_acq_select_price(self, t: torch.Tensor) -> torch.Tensor:
         """ACQ_SELECT_PRICE: 52 price logits (51 offsets + FI_BUY). No pass."""
@@ -468,14 +513,14 @@ class RSSTransformerNet(nn.Module):
 
     def _policy_acq_offer(self, t: torch.Tensor) -> torch.Tensor:
         """ACQ_OFFER: pass(1) + buy(1) = 2."""
-        pass_logit = self.pass_head(t[:, self._pass_acq_offer_idx])           # (n, 1)
+        pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
         buy = self.acq_offer_head(t[:, self._acq_offer_idx])                  # (n, 1)
         return torch.cat([pass_logit, buy], dim=-1)
 
     def _policy_closing(self, t: torch.Tensor) -> torch.Tensor:
         """CLOSING: pass(1) + company_close(36) = 37."""
-        pass_logit = self.pass_head(t[:, self._pass_closing_idx])             # (n, 1)
-        close = self.company_close_head(t[:, self._company_slice])            # (n, 36, 1)
+        pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
+        close = self.company_select_head(t[:, self._company_slice])           # (n, 36, 1)
         return torch.cat([pass_logit, close.squeeze(-1)], dim=-1)
 
     def _policy_dividends(self, t: torch.Tensor) -> torch.Tensor:
@@ -484,14 +529,14 @@ class RSSTransformerNet(nn.Module):
 
     def _policy_issue(self, t: torch.Tensor) -> torch.Tensor:
         """ISSUE: pass(1) + issue(1) = 2."""
-        pass_logit = self.pass_head(t[:, self._pass_issue_idx])               # (n, 1)
+        pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
         issue = self.issue_head(t[:, self._issue_idx])                        # (n, 1)
         return torch.cat([pass_logit, issue], dim=-1)
 
     def _policy_ipo(self, t: torch.Tensor) -> torch.Tensor:
         """IPO: pass(1) + per-corp select logit(8) = 9."""
-        pass_logit = self.pass_head(t[:, self._pass_ipo_idx])                 # (n, 1)
-        select = self.corp_ipo_head(t[:, self._corp_slice]).squeeze(-1)       # (n, 8)
+        pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
+        select = self.corp_select_head(t[:, self._corp_slice]).squeeze(-1)    # (n, 8)
         return torch.cat([pass_logit, select], dim=-1)
 
     def _policy_par(self, t: torch.Tensor) -> torch.Tensor:
@@ -639,9 +684,8 @@ class RSSTransformerNet(nn.Module):
             elif isinstance(module, nn.RMSNorm):
                 nn.init.ones_(module.weight)
 
-        # Pass tokens: small-random learned anchors (BERT [CLS] convention),
-        # one row per pass-using phase.
-        nn.init.trunc_normal_(self.pass_embeds, std=0.02)
+        # Pass token: small-random learned anchor (BERT [CLS] convention).
+        nn.init.trunc_normal_(self.pass_embed, std=0.02)
 
         # Zero-init residual outputs so each block starts as identity
         for block in self.blocks:
@@ -683,17 +727,16 @@ if __name__ == "__main__":
         model.acq_price_proj,
     ]
     proj_params = sum(sum(p.numel() for p in m.parameters()) for m in proj_modules)
-    pass_params = model.pass_embeds.numel()
+    pass_params = model.pass_embed.numel()
     trunk_params = (
         sum(p.numel() for p in model.blocks.parameters())
         + sum(p.numel() for p in model.final_norm.parameters())
     )
     policy_modules = [
-        model.pass_head, model.company_auction_head, model.corp_trade_head,
-        model.company_close_head, model.auction_raise_head, model.dividend_head,
+        model.pass_head, model.company_select_head, model.corp_select_head,
+        model.corp_trade_head, model.auction_raise_head, model.dividend_head,
         model.issue_head, model.acq_offer_head,
-        model.corp_acq_head, model.company_acq_head, model.price_acq_head,
-        model.corp_ipo_head, model.par_price_head,
+        model.price_acq_head, model.par_price_head,
     ]
     policy_params = sum(sum(p.numel() for p in m.parameters()) for m in policy_modules)
     value_params = sum(p.numel() for p in model.value_head.parameters())
@@ -701,7 +744,7 @@ if __name__ == "__main__":
     print("Parameter breakdown:")
     for name, count in [
         ("Input projections", proj_params),
-        ("Pass tokens", pass_params),
+        ("Pass token", pass_params),
         ("Transformer trunk", trunk_params),
         ("Policy heads", policy_params),
         ("Value head", value_params),
