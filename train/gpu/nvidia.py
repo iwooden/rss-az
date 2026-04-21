@@ -64,15 +64,21 @@ def apply_nvidia_optimizations() -> dict[str, str]:
 def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
     """Return torch.compile kwargs optimized for NVIDIA GPUs.
 
-    Uses default (automatic-dynamic) mode. ``reduce-overhead`` was
-    dropped because eval_server / single-process warmup applies
-    ``mark_unbacked`` to the batch dim (so a single compiled artifact
-    handles every batch size 1..max_batch) — CUDA graphs would require
-    re-capture per batch size, defeating the point. Global
-    ``dynamic=True`` is explicitly discouraged by the PyTorch docs
-    (forces every dim and module parameter dynamic, error-prone, can
-    cause perf regressions); ``mark_unbacked`` on just the batch dim
-    is the targeted alternative.
+    Use ``mode="max-autotune-no-cudagraphs"`` as the NVIDIA baseline.
+    PyTorch documents this mode as the max-autotune path without CUDA
+    graphs: we keep the stronger GEMM/autotune choices that help a
+    transformer-heavy model on a large NVIDIA GPU, while avoiding the
+    cudagraph capture assumptions that do not fit this repo's dynamic
+    eval batching.
+
+    ``reduce-overhead`` remains a poor fit because eval_server /
+    single-process warmup applies ``mark_unbacked`` to the batch dim (so
+    a single compiled artifact handles every batch size 1..max_batch) —
+    CUDA graphs would require re-capture per batch size, defeating the
+    point. Global ``dynamic=True`` is explicitly discouraged by the
+    PyTorch docs (forces every dim and module parameter dynamic,
+    error-prone, can cause perf regressions); ``mark_unbacked`` on just
+    the batch dim is the targeted alternative.
 
     ``triton.autotune_at_compile_time`` moves per-kernel Triton autotune
     from runtime to compile time. The unbacked batch symbol is
@@ -112,4 +118,7 @@ def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
     }
     if for_training:
         options["joint_graph_constant_folding"] = False
-    return {"options": options}
+    return {
+        "mode": "max-autotune-no-cudagraphs",
+        "options": options,
+    }

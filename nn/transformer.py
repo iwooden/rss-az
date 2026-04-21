@@ -465,13 +465,12 @@ class RSSTransformerNet(nn.Module):
 
         Args:
             x: (batch, num_players + 65, token_dim) zero-padded raw features.
-                Any float dtype works — eval-server ships fp16 on the wire
-                (halves IPC bytes); trainer passes fp32. Inside autocast(bf16)
-                Linear promotes both to bf16; outside autocast the caller is
-                responsible for matching the projection weight dtype (fp32
-                today). No explicit upcast here: an unconditional
-                ``x.to(bf16)`` would mismatch fp32 Linear weights in
-                non-autocast paths (e.g., in-process NNEvaluator tests).
+                Supported caller patterns are: fp16/fp32 under autocast on the
+                eval path, or fp32 matching the projection weights on the
+                non-autocast trainer / CPU paths. No explicit upcast happens
+                here: an unconditional ``x.to(bf16)`` would mismatch fp32
+                Linear weights in non-autocast paths (for example in-process
+                NNEvaluator tests).
         Returns:
             (batch, num_players + 66, d_model) embeddings: projected input
             tokens followed by the single pass anchor.
@@ -567,23 +566,47 @@ class RSSTransformerNet(nn.Module):
         """Run the transformer.
 
         Args:
-            x: (batch, num_tokens, token_dim) token features, zero-padded.
-                Any float dtype (fp16 / fp32) — upcast to bf16 at trunk entry.
-            legal_mask: (batch, UNIFIED_LOGIT_DIM) bool tensor. ``True`` marks
-                a slot as legal for the current state's phase / entities;
-                illegal slots are masked to ``-1e9`` so they vanish after
-                softmax. Callers build this from sparse (phase_id, action_ids)
-                via the ``build_action_lut`` mapping.
+            x: ``(batch, cfg.num_tokens, cfg.token_dim)`` floating-point token
+                features, zero-padded to ``cfg.token_dim``. There is no
+                unconditional dtype conversion here: eval paths rely on
+                autocast to run the projections/trunk in bf16/fp16, while the
+                trainer and CPU tests pass fp32 directly.
+            legal_mask: ``(batch, UNIFIED_LOGIT_DIM)`` bool tensor on the same
+                device as ``x``. ``True`` marks a slot as legal for the current
+                state's phase / entities; illegal slots are masked to ``-1e9``.
+                Every real row must mark at least one legal slot. An all-false
+                row is only valid for caller-reserved scratch rows whose output
+                will be ignored (for example the eval server's trash row);
+                if such a row is consumed by softmax downstream it becomes a
+                near-uniform distribution over the unified slots.
 
         Returns:
-            policy_logits: (batch, UNIFIED_LOGIT_DIM) fp32 logits with illegal
-                slots set to ``-1e9``. Static-shape regardless of phase.
-            values: (batch, num_players) per-player expected outcomes in [-1, 1].
+            policy_logits: ``(batch, UNIFIED_LOGIT_DIM)`` fp32 logits with
+                illegal slots set to ``-1e9``. Static-shape regardless of phase.
+            values: ``(batch, num_players)`` per-player expected outcomes in
+                ``[-1, 1]``.
         """
-        assert legal_mask.dtype == torch.bool, (
-            f"legal_mask must be bool (uint8 would make ~legal_mask a bitwise "
-            f"complement, not logical NOT); got {legal_mask.dtype}"
-        )
+        if x.ndim != 3:
+            raise AssertionError(f"x must be rank-3 (batch, num_tokens, token_dim); got {tuple(x.shape)}")
+        expected_x_shape = (x.shape[0], self.cfg.num_tokens, self.cfg.token_dim)
+        if tuple(x.shape) != expected_x_shape:
+            raise AssertionError(f"x shape must be {expected_x_shape}; got {tuple(x.shape)}")
+        if not x.is_floating_point():
+            raise AssertionError(f"x must be floating-point token features; got {x.dtype}")
+        if legal_mask.dtype != torch.bool:
+            raise AssertionError(
+                f"legal_mask must be bool (uint8 would make ~legal_mask a bitwise "
+                f"complement, not logical NOT); got {legal_mask.dtype}"
+            )
+        expected_mask_shape = (x.shape[0], UNIFIED_LOGIT_DIM)
+        if tuple(legal_mask.shape) != expected_mask_shape:
+            raise AssertionError(
+                f"legal_mask shape must be {expected_mask_shape}; got {tuple(legal_mask.shape)}"
+            )
+        if legal_mask.device != x.device:
+            raise AssertionError(
+                f"legal_mask device must match x device; got {legal_mask.device} vs {x.device}"
+            )
         tokens = self._project_tokens(x)
 
         for block in self.blocks:
@@ -592,7 +615,10 @@ class RSSTransformerNet(nn.Module):
 
         # Cast to fp32 before the sentinel: under autocast ``unified`` is in
         # the autocast dtype (bf16/fp16) but downstream softmax / log_softmax
-        # wants stable fp32 ``-1e9`` sentinels.
+        # wants stable fp32 ``-1e9`` sentinels. Real rows are expected to have
+        # at least one legal slot; all-false rows are reserved for caller-owned
+        # scratch entries whose output will be dropped before softmax consumers
+        # interpret them.
         unified = self._build_unified_logits(tokens).to(torch.float32)          # (B, U)
         policy_logits = unified.masked_fill(~legal_mask, -1e9)
 

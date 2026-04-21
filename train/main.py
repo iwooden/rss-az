@@ -351,8 +351,6 @@ def main() -> None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # --- GPU vendor detection and optimizations ---
-    torch.set_float32_matmul_precision("high")  # TF32 matmul where available
-    torch.backends.cuda.matmul.allow_tf32 = True
     from train.gpu import detect_gpu
 
     gpu = detect_gpu(device.type)
