@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 
+from train.gpu import GpuConfig
 from train.gpu.nvidia import apply_nvidia_optimizations, get_compile_kwargs
 
 
@@ -42,6 +43,15 @@ def test_training_compile_kwargs_ignore_eval_batch_shape_mode() -> None:
 
     assert dynamic == bucketed
     assert "triton.cudagraphs" not in bucketed["options"]
+
+
+def test_gpu_config_threads_eval_batch_shape_mode_for_nvidia() -> None:
+    kwargs = GpuConfig(vendor="nvidia").get_compile_kwargs(
+        for_training=False,
+        eval_batch_shape_mode="bucketed",
+    )
+
+    assert kwargs["options"]["triton.cudagraphs"] is True
 
 
 def test_apply_nvidia_optimizations_enables_tf32_controls(monkeypatch) -> None:

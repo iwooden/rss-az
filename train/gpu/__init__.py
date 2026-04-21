@@ -38,12 +38,20 @@ class GpuConfig:
             return apply_amd_optimizations()
         return {}
 
-    def get_compile_kwargs(self, *, for_training: bool = False) -> dict[str, Any]:
+    def get_compile_kwargs(
+        self,
+        *,
+        for_training: bool = False,
+        eval_batch_shape_mode: str = "dynamic",
+    ) -> dict[str, Any]:
         """Return torch.compile kwargs appropriate for this vendor."""
         if self.vendor == "nvidia":
             from train.gpu.nvidia import get_compile_kwargs
 
-            return get_compile_kwargs(for_training=for_training)
+            return get_compile_kwargs(
+                for_training=for_training,
+                eval_batch_shape_mode=eval_batch_shape_mode,
+            )
         elif self.vendor == "amd":
             from train.gpu.amd import get_compile_kwargs
 
