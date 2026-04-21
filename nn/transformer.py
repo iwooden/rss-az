@@ -151,9 +151,9 @@ class TransformerConfig:
 
     # Core architecture
     num_players: int = 3  # 3-5 supported
-    d_model: int = 128
-    num_heads: int = 2
-    num_layers: int = 10
+    d_model: int = 192
+    num_heads: int = 3
+    num_layers: int = 15
     ff_mult: float = 3.0  # FFN inner dimension = ceil(ff_mult * d_model)
 
     # Raw feature width per token (zero-padded to same size across types).
@@ -373,9 +373,8 @@ class RSSTransformerNet(nn.Module):
         # --- Entity-readout policy heads ---
         # Shared per-entity-type heads (weight-shared across all tokens of same type)
         self.pass_head = nn.Sequential(
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, 1)
+            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d // 2, 1)
         )
         # Shared company-selection head used by INVEST (which company to
         # auction), ACQ_SELECT_COMPANY (which company to acquire), and CLOSING
@@ -383,23 +382,20 @@ class RSSTransformerNet(nn.Module):
         # context that discriminates the three decisions arrives through the
         # trunk's phase-specific context tokens + attention.
         self.company_select_head = nn.Sequential(
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, 1)
+            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d // 2, 1)
         )
         # Shared corp-selection head used by ACQ_SELECT_CORP (which corp does
         # the acquiring) and IPO (which corp floats the active company). Same
         # structure as company_select_head; phase context reaches each corp
         # token through attention on the phase-specific context tokens.
         self.corp_select_head = nn.Sequential(
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, 1)
+            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d // 2, 1)
         )
         self.corp_trade_head = nn.Sequential(
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, 2),  # buy, sell
+            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d // 2, 2)
         )
 
         # Phase-specific context token heads. BID bids at face_value + offset
@@ -411,19 +407,16 @@ class RSSTransformerNet(nn.Module):
             nn.Linear(d, int(AUCTION_CAP)),
         )
         self.dividend_head = nn.Sequential(
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, 26),  # 26 dividend levels
+            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d // 2, 26)
         )
         self.issue_head = nn.Sequential(
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, 1),  # issue logit (pass from pass_head)
+            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d // 2, 1)
         )
         self.acq_offer_head = nn.Sequential(
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, 1),  # buy logit (pass from pass_head)
+            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d // 2, 1)
         )
 
         # ACQ is factored into three sequential single-entity selections:
@@ -433,25 +426,22 @@ class RSSTransformerNet(nn.Module):
         # dedicated acq_price_info token that the engine populates with
         # (active_corp, active_company) context during PHASE_ACQ_SELECT_PRICE.
         self.price_acq_head = nn.Sequential(
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, 52),
+            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d // 2, 52)
         )
 
         # PAR reads 14 par-price logits from the par info token. No pass
         # anchor: PAR has no pass action — once a corp is selected the owner
         # must commit to a price.
         self.par_price_head = nn.Sequential(
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, 14),
+            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d // 2, 14)
         )
 
         # --- Value head (applied per player token) ---
         self.value_head = nn.Sequential(
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, 1),
+            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d // 2, 1),
             nn.Tanh(),
         )
 
