@@ -576,13 +576,13 @@ def main() -> None:
                 dummy_tokens = torch.randn(
                     1, num_tokens, token_dim, device=device,
                 )
-                dummy_phase = torch.zeros(1, dtype=torch.long, device=device)
                 dummy_action_ids = torch.zeros(
                     1, K_MAX, dtype=torch.long, device=device,
                 )
                 dummy_n_legals = torch.zeros(1, dtype=torch.long, device=device)
-                model(dummy_tokens, dummy_phase, dummy_action_ids, dummy_n_legals)
-                del dummy_tokens, dummy_phase, dummy_action_ids, dummy_n_legals
+                dummy_phase_ids = torch.zeros(1, dtype=torch.long, device=device)
+                model(dummy_tokens, dummy_action_ids, dummy_n_legals, dummy_phase_ids)
+                del dummy_tokens, dummy_action_ids, dummy_n_legals, dummy_phase_ids
             torch.cuda.synchronize()
             print("  Model compiled.")
 

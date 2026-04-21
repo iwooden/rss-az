@@ -13,7 +13,6 @@ from typing import Any
 
 import numpy as np
 import torch
-from torch._dynamo.decorators import mark_unbacked
 
 from core.token_data import (
     get_num_tokens,
@@ -27,7 +26,6 @@ from core.actions import (
     MAX_LEGAL_ACTIONS_PY,
 )
 from entities.player import PLAYERS
-from nn.transformer import NUM_PHASES
 
 K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
@@ -229,10 +227,12 @@ class NNEvaluator(BaseEvaluator):
         # Device: separate on CUDA, aliased on CPU (no copy needed).
         if pm:
             self._tok_d = torch.empty((cap, nt, td), dtype=torch.float32, device=self.device)
+            self._phase_d = torch.empty(cap, dtype=torch.long, device=self.device)
             self._aid_d = torch.empty((cap, K_MAX), dtype=torch.long, device=self.device)
             self._nl_d = torch.empty(cap, dtype=torch.long, device=self.device)
         else:
             self._tok_d = self._tok_h
+            self._phase_d = self._phase_h
             self._aid_d = self._aid_h
             self._nl_d = self._nl_h
 
@@ -246,6 +246,7 @@ class NNEvaluator(BaseEvaluator):
         if self.device.type != "cuda":
             return
         self._tok_d[:n].copy_(self._tok_h[:n], non_blocking=True)
+        self._phase_d[:n].copy_(self._phase_h[:n], non_blocking=True)
         self._aid_d[:n].copy_(self._aid_h[:n], non_blocking=True)
         self._nl_d[:n].copy_(self._nl_h[:n], non_blocking=True)
 
@@ -416,41 +417,14 @@ class NNEvaluator(BaseEvaluator):
         softmax and copy back to host.
         """
         self._h2d(n)
-        phase_indices = self._build_phase_indices(n)
 
         with torch.autocast(self.device.type, dtype=self._autocast_dtype,
                             enabled=self._autocast_dtype is not None):
             logits, value_output = self.model(
                 self._tok_d[:n],
-                self._aid_d[:n], self._nl_d[:n], phase_indices,
+                self._aid_d[:n], self._nl_d[:n], self._phase_d[:n],
             )
             priors = logits.softmax(dim=1).to(torch.float32)
             values = value_output.to(torch.float32)
 
         return priors.cpu().numpy(), values.cpu().numpy()
-
-    def _build_phase_indices(self, n: int) -> list[torch.Tensor]:
-        """Build per-phase int64 row indices on host, async-shipped to device.
-
-        Computed from the already-filled ``_phase_h_np[:n]`` slice. Avoids
-        the per-iteration host sync that boolean indexing inside the model
-        would otherwise force (the masked-tensor size is data-dependent).
-        On CPU device, the returned tensors share memory with the numpy
-        arrays.
-
-        Each returned tensor is marked ``unbacked`` on dim 0 so that
-        ``torch.compile`` doesn't specialize on its size. Without this,
-        every distinct combination of per-phase row counts (and there are
-        many — up to ``C(N+7, 7)``) triggers a recompile, blowing past
-        the default ``recompile_limit`` after a handful of batches.
-        """
-        phase_view = self._phase_h_np[:n]
-        out: list[torch.Tensor] = []
-        for p in range(NUM_PHASES):
-            idx_np = np.nonzero(phase_view == p)[0].astype(np.int64, copy=False)
-            t = torch.from_numpy(idx_np)
-            if self.device.type == "cuda":
-                t = t.to(self.device, non_blocking=True)
-            mark_unbacked(t, 0)
-            out.append(t)
-        return out

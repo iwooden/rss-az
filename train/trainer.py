@@ -17,7 +17,6 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch._dynamo.decorators import mark_unbacked
 
 from core.actions import MAX_LEGAL_ACTIONS_PY
 from core.state import get_layout
@@ -199,6 +198,7 @@ class Trainer:
             self._tok_d = torch.empty(
                 (cap, nt, td), dtype=torch.float32, device=self.device,
             )
+            self._phase_d = torch.empty(cap, dtype=torch.long, device=self.device)
             self._aid_d = torch.empty(
                 (cap, K_MAX), dtype=torch.long, device=self.device,
             )
@@ -209,6 +209,7 @@ class Trainer:
             self._vt_d = torch.empty((cap, N), dtype=torch.float32, device=self.device)
         else:
             self._tok_d = self._tok_h
+            self._phase_d = self._phase_h
             self._aid_d = self._aid_h
             self._nl_d = self._nl_h
             self._pt_d = self._pt_h
@@ -224,6 +225,7 @@ class Trainer:
         if self.device.type != "cuda":
             return
         self._tok_d[:n].copy_(self._tok_h[:n], non_blocking=True)
+        self._phase_d[:n].copy_(self._phase_h[:n], non_blocking=True)
         self._aid_d[:n].copy_(self._aid_h[:n], non_blocking=True)
         self._nl_d[:n].copy_(self._nl_h[:n], non_blocking=True)
         self._pt_d[:n].copy_(self._pt_h[:n], non_blocking=True)
@@ -290,33 +292,26 @@ class Trainer:
         self._h2d(B)
 
         tokens = self._tok_d[:B]
+        phase_ids = self._phase_d[:B]
         action_ids = self._aid_d[:B]
         n_legals = self._nl_d[:B]
         policy_targets = self._pt_d[:B]
         value_targets = self._vt_d[:B]
 
-        # Build per-phase row indices on host so the model's policy gather
-        # uses index_select / index_copy_ instead of boolean masking
-        # (which forces one H←D sync per phase × NUM_PHASES per forward).
-        # mark_unbacked keeps torch.compile from specializing on per-phase
-        # row counts (which would blow the recompile limit).
+        # Per-phase row counts: needed only to filter empty buckets out of
+        # the host-side per-phase loss report. Numpy nonzero on the already-
+        # filled host slice; no GPU sync.
         phase_view = self._phase_h_np[:B]
-        phase_indices: list[torch.Tensor] = []
-        phase_counts: list[int] = []
-        for _p in range(NUM_PHASES):
-            _idx_np = np.nonzero(phase_view == _p)[0].astype(np.int64, copy=False)
-            _t = torch.from_numpy(_idx_np)
-            if self.device.type == "cuda":
-                _t = _t.to(self.device, non_blocking=True)
-            mark_unbacked(_t, 0)
-            phase_indices.append(_t)
-            phase_counts.append(int(_idx_np.shape[0]))
+        phase_counts: list[int] = [
+            int((phase_view == _p).sum()) for _p in range(NUM_PHASES)
+        ]
 
         # --- Forward: sparse (B, K_MAX) logits + (B, N) values ---
-        # The model gathers per-row legal slices internally and fills the
-        # [n_legal:K_MAX] tail with -1e9, so we can log_softmax directly.
+        # The model gathers per-row legal slices internally via the unified
+        # logits + LUT path and fills the [n_legal:K_MAX] tail with -1e9, so
+        # we can log_softmax directly.
         policy_logits, values = self.model(
-            tokens, action_ids, n_legals, phase_indices,
+            tokens, action_ids, n_legals, phase_ids,
         )
 
         # Policy loss: sparse cross-entropy over legal actions only.
@@ -340,17 +335,21 @@ class Trainer:
             + self.config.value_loss_weight * value_loss
         )
 
-        # Per-phase policy loss: computed on device using the same
-        # phase_indices as the model's policy gather. Each phase does
-        # one index_select + mean (no host sync); empty buckets get a
-        # zero placeholder that we filter out on the host side using
-        # phase_counts (already known from the numpy nonzero build).
+        # Per-phase policy loss: scatter-add into a (NUM_PHASES,) bucket
+        # tensor using phase_ids as the index. Single fused op replaces
+        # the per-phase index_select + mean loop; empty buckets stay zero
+        # and are filtered out on the host side using phase_counts.
         per_phase = per_example_policy_loss.detach()
         device = per_phase.device
-        per_phase_means = torch.zeros(NUM_PHASES, device=device, dtype=per_phase.dtype)
-        for p in range(NUM_PHASES):
-            if phase_counts[p] > 0:
-                per_phase_means[p] = per_phase.index_select(0, phase_indices[p]).mean()
+        per_phase_sums = torch.zeros(NUM_PHASES, device=device, dtype=per_phase.dtype)
+        per_phase_sums.index_add_(0, phase_ids, per_phase)
+        # ``ones_like`` mirrors per_phase's dtype; counts in fp avoid
+        # an int↔float divide guard later.
+        per_phase_counts = torch.zeros(NUM_PHASES, device=device, dtype=per_phase.dtype)
+        per_phase_counts.index_add_(0, phase_ids, torch.ones_like(per_phase))
+        # Empty buckets divide 0 / 1 = 0 — same placeholder behavior the
+        # old per-phase mean loop produced, and the host filter drops them.
+        per_phase_means = per_phase_sums / per_phase_counts.clamp(min=1)
 
         # Pack every scalar we want to read back into one tensor so the
         # host read is a single H←D sync instead of 3 + 8 separate .item()

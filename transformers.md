@@ -353,7 +353,7 @@ Option B is simpler for a very small-scale prototype, but expensive at current t
 - **Eval buffers**: `(batch, num_tokens, token_dim)` rank-3 tensor in shared memory. All token types use the same padded width.
 - **Action layout**: Per-phase action indices (max 53 for INVEST, after the ACQ split). Update `actions.pyx` layout and mask generation.
 - **Evaluator**: Remove state rotation. Remove un-rotation of values. Simpler.
-- **Model interface**: `forward(x, action_ids, n_legals, phase_indices) → (policy_logits, values)` where `x` is `(batch, num_tokens, token_dim)`. Policy logits are per-row gathered against each row's legal slice (shape `(B, K_MAX)`), with `-1e9` beyond `n_legals[i]`.
+- **Model interface**: `forward(x, action_ids, n_legals, phase_ids) → (policy_logits, values)` where `x` is `(batch, num_tokens, token_dim)` and `phase_ids` is `(B,)` int. Policy logits are per-row gathered against each row's legal slice (shape `(B, K_MAX)`), with `-1e9` beyond `n_legals[i]`.
 
 ### Game engine simplifications
 
@@ -380,13 +380,13 @@ All three simplifications follow the same pattern: the MLP needed a small, fixed
 
 2. ~~**`get_token_data()` feature lists / implementation**~~: **Done.** See `token-data.md` for the per-token feature spec and `core/token_data.{pyx,pxd}` for the implementation (nogil fill + batched `get_token_data_batch`).
 
-3. ~~**Head dispatch efficiency**~~: **Resolved.** The model emits per-row gathered logits of shape `(B, K_MAX)` — never a per-phase dense pad — by gathering against each row's legal-action list inside `_policy_forward`. Callers pass precomputed per-phase row indices (`phase_indices`) so the dispatch uses `index_select` / `index_copy_` with no H↔D sync.
+3. ~~**Head dispatch efficiency**~~: **Resolved.** The model emits per-row gathered logits of shape `(B, K_MAX)` — never a per-phase dense pad — by gathering against each row's legal-action list inside `_policy_forward`. Every per-row head runs once on the full batch into a unified `(B, UNIFIED_LOGIT_DIM)` tensor; a static `(NUM_PHASES, MAX_PHASE_ACTION_SIZE)` LUT remaps each row's phase-local action ids into unified slots, so the dispatch is two `gather` ops with no per-phase Python loop and no H↔D sync. Wasted FLOPs are ~2% of trunk (heads run on rows whose phase doesn't reference them; the n_legals mask zeros those out).
 
 4. **Batching with variable token counts** (Phase 6): For 3-5p training, batches contain games with different numbers of player tokens (68–70 input-buffer rows). Options: pad to the max and use attention mask, or batch by player count. Padding is simpler; batching by count is more efficient.
 
 5. **Replay storage strategy**: Currently Option A — the replay buffer stores compact state + phase id + enumerated legal ids + sparse policy/value targets, and re-runs `get_token_data_batch` at training time. Option B (pre-extracted token buffers) is not planned at current buffer sizes.
 
-6. **Inference speed**: Validated via self-play throughput on CPU + ROCm; per-layer `F.scaled_dot_product_attention` fuses cleanly under `torch.compile` with `mark_unbacked` applied to each per-phase row-index tensor so recompile counts stay bounded.
+6. **Inference speed**: Validated via self-play throughput on CPU + ROCm; per-layer `F.scaled_dot_product_attention` fuses cleanly under `torch.compile`. The unified-head policy dispatch removes per-phase row-index tensors entirely (only the batch dim needs `mark_unbacked`), so recompile counts stay bounded by the batch-size variation alone.
 
 ## Implementation Phases
 
@@ -414,8 +414,8 @@ All three simplifications follow the same pattern: the MLP needed a small, fixed
 - Pre-RMSNorm transformer blocks with SwiGLU FFN; attention via packed QKV + `F.scaled_dot_product_attention` (traces cleanly under `torch.compile`, unlike `nn.MultiheadAttention`).
 - Type-specific projections (uniform `token_dim=92` input), entity-readout heads for every decision phase.
 - Three per-sub-phase ACQ heads (corp-select, company-select, 52-logit price head off `acq_price_info` token) and a two-head IPO→PAR pair (per-corp select + per-par readout off the `par` token).
-- Per-phase head dispatch uses precomputed per-phase row indices (`phase_indices`) with `index_select` / `index_copy_`, so the policy gather has no H↔D sync. All callers (trainer, evaluator, eval server) build them on the host before the H→D copy.
-- `forward(x, action_ids, n_legals, phase_indices)` returns `(policy_logits, values)` where `policy_logits` has shape `(B, K_MAX)` gathered against each row's legal-action slice — the trainer, evaluator, and eval server never allocate anything wider than the per-phase head output (max 52 for ACQ_SELECT_PRICE).
+- Unified-head policy dispatch: every per-row head runs once on the full batch into a single `(B, UNIFIED_LOGIT_DIM=170)` tensor; a static `(NUM_PHASES, MAX_PHASE_ACTION_SIZE)` int64 LUT (`_action_lut`, built from the `core/actions.pxd` encoders) remaps each row's phase-local action ids into unified slots. Two `gather` ops, no per-phase loop, no H↔D sync. All callers ship a `(B,)` `phase_ids` tensor instead of a per-phase row-index list.
+- `forward(x, action_ids, n_legals, phase_ids)` returns `(policy_logits, values)` where `policy_logits` has shape `(B, K_MAX)` gathered against each row's legal-action slice — the trainer, evaluator, and eval server never allocate anything wider than `UNIFIED_LOGIT_DIM` (170 floats per row).
 - Smoke test covers all 11 phases: shapes, finite logits inside the legal slice, `-1e9` tail, values ∈ [-1, 1].
 
 ### Phase 4: Evaluator integration (mcts/evaluator.py) ✅

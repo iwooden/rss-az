@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Callable
 
 import torch
 import torch.nn as nn
@@ -40,8 +39,87 @@ from core.token_data import TokenDataSize, TokenWidth, get_token_widths
 
 NUM_PHASES = len(DecisionPhase)
 K_MAX = int(MAX_LEGAL_ACTIONS_PY)
+MAX_PHASE_ACTION_SIZE = max(PHASE_ACTION_SIZES)  # 53 (INVEST: pass + 36 + 16)
+
+# Unified policy slot layout. Every per-row policy head emits its logits
+# into a single (B, UNIFIED_LOGIT_DIM) tensor; per-row gather uses a
+# static (NUM_PHASES, MAX_PHASE_ACTION_SIZE) lookup table to remap each
+# row's phase-local action ids into unified slots. Offsets MUST match the
+# concat order in ``RSSTransformerNet._build_unified_logits`` and the LUT
+# construction in ``_build_action_lut``.
+_PASS_OFF = 0                                            # 1
+_COMPANY_SELECT_OFF = _PASS_OFF + 1                      # 36
+_CORP_SELECT_OFF = _COMPANY_SELECT_OFF + 36              # 8
+_CORP_TRADE_OFF = _CORP_SELECT_OFF + 8                   # 16 (per-corp buy,sell)
+_AUCTION_RAISE_OFF = _CORP_TRADE_OFF + 16                # AUCTION_CAP
+_DIVIDEND_OFF = _AUCTION_RAISE_OFF + int(AUCTION_CAP)    # 26
+_ISSUE_OFF = _DIVIDEND_OFF + 26                          # 1
+_ACQ_OFFER_OFF = _ISSUE_OFF + 1                          # 1
+_PRICE_OFF = _ACQ_OFFER_OFF + 1                          # 52
+_PAR_OFF = _PRICE_OFF + 52                               # 14
+UNIFIED_LOGIT_DIM = _PAR_OFF + 14
 
 _GELU_APPROX = "tanh"
+
+
+def _build_action_lut() -> torch.Tensor:
+    """Static (NUM_PHASES, MAX_PHASE_ACTION_SIZE) int64 LUT mapping each
+    phase's phase-local action id to a slot in the unified logit tensor.
+
+    Tail entries (id >= PHASE_ACTION_SIZES[phase]) are 0 — a safe in-range
+    sentinel that the post-gather n_legals mask overwrites with -1e9.
+
+    Encoded layouts here MUST match the engine-side encoders in
+    ``core/actions.pxd`` (``encode_invest_*`` etc). The smoke test below
+    spot-checks the round-trip; the per-phase tests in ``tests/phases/``
+    cover the action semantics end to end.
+    """
+    lut = torch.zeros(NUM_PHASES, MAX_PHASE_ACTION_SIZE, dtype=torch.long)
+
+    # INVEST: 0=pass | 1..37=auction company 0..35 | 37..53=trade (corp i × {buy,sell})
+    lut[DecisionPhase.DPHASE_INVEST, 0] = _PASS_OFF
+    lut[DecisionPhase.DPHASE_INVEST, 1:37] = _COMPANY_SELECT_OFF + torch.arange(36)
+    lut[DecisionPhase.DPHASE_INVEST, 37:53] = _CORP_TRADE_OFF + torch.arange(16)
+
+    # BID: 0=pass | 1..16=raise offset 0..14
+    lut[DecisionPhase.DPHASE_BID, 0] = _PASS_OFF
+    lut[DecisionPhase.DPHASE_BID, 1:1 + int(AUCTION_CAP)] = (
+        _AUCTION_RAISE_OFF + torch.arange(int(AUCTION_CAP))
+    )
+
+    # ACQ_SELECT_CORP: 0=pass | 1..9=corp 0..7
+    lut[DecisionPhase.DPHASE_ACQ_SELECT_CORP, 0] = _PASS_OFF
+    lut[DecisionPhase.DPHASE_ACQ_SELECT_CORP, 1:9] = _CORP_SELECT_OFF + torch.arange(8)
+
+    # ACQ_OFFER: 0=pass | 1=accept-buy
+    lut[DecisionPhase.DPHASE_ACQ_OFFER, 0] = _PASS_OFF
+    lut[DecisionPhase.DPHASE_ACQ_OFFER, 1] = _ACQ_OFFER_OFF
+
+    # CLOSING: 0=pass | 1..37=close company 0..35
+    lut[DecisionPhase.DPHASE_CLOSING, 0] = _PASS_OFF
+    lut[DecisionPhase.DPHASE_CLOSING, 1:37] = _COMPANY_SELECT_OFF + torch.arange(36)
+
+    # DIVIDENDS: 0..26=level 0..25
+    lut[DecisionPhase.DPHASE_DIVIDENDS, :26] = _DIVIDEND_OFF + torch.arange(26)
+
+    # ISSUE: 0=pass | 1=issue
+    lut[DecisionPhase.DPHASE_ISSUE, 0] = _PASS_OFF
+    lut[DecisionPhase.DPHASE_ISSUE, 1] = _ISSUE_OFF
+
+    # IPO: 0=pass | 1..9=corp 0..7 (shares same corp_select head as ACQ_SELECT_CORP)
+    lut[DecisionPhase.DPHASE_IPO, 0] = _PASS_OFF
+    lut[DecisionPhase.DPHASE_IPO, 1:9] = _CORP_SELECT_OFF + torch.arange(8)
+
+    # PAR: 0..14=par index 0..13
+    lut[DecisionPhase.DPHASE_PAR, :14] = _PAR_OFF + torch.arange(14)
+
+    # ACQ_SELECT_COMPANY: 0..36=company 0..35 (no pass; shares company_select head)
+    lut[DecisionPhase.DPHASE_ACQ_SELECT_COMPANY, :36] = _COMPANY_SELECT_OFF + torch.arange(36)
+
+    # ACQ_SELECT_PRICE: 0..52=offset 0..50 + FI_BUY at 51 (no pass)
+    lut[DecisionPhase.DPHASE_ACQ_SELECT_PRICE, :52] = _PRICE_OFF + torch.arange(52)
+
+    return lut
 
 
 def _slice_proj(x: torch.Tensor, proj: nn.Linear, idx: int | slice) -> torch.Tensor:
@@ -192,8 +270,7 @@ class RSSTransformerNet(nn.Module):
     # Declared for pyright: ``register_buffer`` adds dynamic attributes whose
     # type isn't otherwise visible to the checker.
     _k_range: torch.Tensor
-    # Cached per-phase head dispatch tuple, indexed by phase_id 0..10.
-    _dispatch: tuple[Callable[[torch.Tensor], torch.Tensor], ...]
+    _action_lut: torch.Tensor
 
     def __init__(self, cfg: TransformerConfig) -> None:
         super().__init__()
@@ -379,43 +456,18 @@ class RSSTransformerNet(nn.Module):
             nn.Tanh(),
         )
 
-        # Index range used by per-phase output masking. Registered as a
-        # non-persistent buffer so it rides the module's device and shows
-        # up in `.to(...)`, but is not saved to checkpoints.
+        # Index range used by output masking. Registered as a non-persistent
+        # buffer so it rides the module's device and shows up in `.to(...)`,
+        # but is not saved to checkpoints.
         self.register_buffer(
             "_k_range", torch.arange(K_MAX, dtype=torch.long), persistent=False,
         )
-
-        # Per-phase head dispatch, keyed by ``DecisionPhase`` member so
-        # re-ordering the enum can't silently misroute logits. Materialized
-        # to a tuple indexed by integer phase id after asserting that all
-        # members are covered and their ids pack into ``[0, NUM_PHASES)`` —
-        # the same drift-guard pattern ``_validate_layout`` uses for token
-        # widths. Bound-method refs stay valid for the module's lifetime.
-        dispatch_by_phase: dict[DecisionPhase, Callable[[torch.Tensor], torch.Tensor]] = {
-            DecisionPhase.DPHASE_INVEST: self._policy_invest,
-            DecisionPhase.DPHASE_BID: self._policy_bid,
-            DecisionPhase.DPHASE_ACQ_SELECT_CORP: self._policy_acq_select_corp,
-            DecisionPhase.DPHASE_ACQ_OFFER: self._policy_acq_offer,
-            DecisionPhase.DPHASE_CLOSING: self._policy_closing,
-            DecisionPhase.DPHASE_DIVIDENDS: self._policy_dividends,
-            DecisionPhase.DPHASE_ISSUE: self._policy_issue,
-            DecisionPhase.DPHASE_IPO: self._policy_ipo,
-            DecisionPhase.DPHASE_PAR: self._policy_par,
-            DecisionPhase.DPHASE_ACQ_SELECT_COMPANY: self._policy_acq_select_company,
-            DecisionPhase.DPHASE_ACQ_SELECT_PRICE: self._policy_acq_select_price,
-        }
-        assert len(dispatch_by_phase) == NUM_PHASES, (
-            f"dispatch covers {len(dispatch_by_phase)} phases but "
-            f"NUM_PHASES={NUM_PHASES} — DecisionPhase gained/lost a member"
-        )
-        phase_ids = sorted(int(p) for p in dispatch_by_phase)
-        assert phase_ids == list(range(NUM_PHASES)), (
-            f"DecisionPhase ids must pack into [0, {NUM_PHASES}), got {phase_ids}"
-        )
-        self._dispatch = tuple(
-            dispatch_by_phase[DecisionPhase(i)] for i in range(NUM_PHASES)
-        )
+        # Static (NUM_PHASES, MAX_PHASE_ACTION_SIZE) LUT mapping phase-local
+        # action ids to slots in the unified logits tensor. Built once at
+        # construction; the gather is a single fancy-indexed op against
+        # this buffer in ``_policy_forward``. Non-persistent — derived
+        # entirely from the action encoding in ``core/actions.pxd``.
+        self.register_buffer("_action_lut", _build_action_lut(), persistent=False)
 
         self._init_weights()
 
@@ -477,153 +529,104 @@ class RSSTransformerNet(nn.Module):
         return tokens
 
     # ------------------------------------------------------------------
-    # Phase-specific policy heads
+    # Unified policy: every head runs once on the full batch
     # ------------------------------------------------------------------
 
-    def _policy_invest(self, t: torch.Tensor) -> torch.Tensor:
-        """INVEST: pass(1) + company-select(36) + trade(8*2) = 53."""
-        pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
-        # (n, 36, 1) → (n, 36) company-select logits, one per company token.
-        auction = self.company_select_head(t[:, self._company_slice]).squeeze(-1)
-        trade = self.corp_trade_head(t[:, self._corp_slice])                  # (n, 8, 2)
-        # flatten(1) instead of reshape(n, -1): the latter is ambiguous when
-        # n == 0 (empty mask in dispatch), since 0 elements / 0 rows is
-        # undefined for the inferred dim.
-        return torch.cat([pass_logit, auction, trade.flatten(1)], dim=-1)
+    def _build_unified_logits(self, tokens: torch.Tensor) -> torch.Tensor:
+        """Run every per-row policy head once on the full batch and concat
+        into a single ``(B, UNIFIED_LOGIT_DIM)`` tensor.
 
-    def _policy_bid(self, t: torch.Tensor) -> torch.Tensor:
-        """BID: pass(1) + offsets(AUCTION_CAP) = 16. Pass = leave the auction."""
-        pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
-        raises = self.auction_raise_head(t[:, self._auction_idx])             # (n, 15)
-        return torch.cat([pass_logit, raises], dim=-1)
-
-    def _policy_acq_select_corp(self, t: torch.Tensor) -> torch.Tensor:
-        """ACQ_SELECT_CORP: pass(1) + per-corp select logit(8) = 9."""
-        pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
-        select = self.corp_select_head(t[:, self._corp_slice]).squeeze(-1)    # (n, 8)
-        return torch.cat([pass_logit, select], dim=-1)
-
-    def _policy_acq_select_company(self, t: torch.Tensor) -> torch.Tensor:
-        """ACQ_SELECT_COMPANY: 36 company-select logits. No pass."""
-        return self.company_select_head(t[:, self._company_slice]).squeeze(-1)  # (n, 36)
-
-    def _policy_acq_select_price(self, t: torch.Tensor) -> torch.Tensor:
-        """ACQ_SELECT_PRICE: 52 price logits (51 offsets + FI_BUY). No pass."""
-        return self.price_acq_head(t[:, self._acq_price_info_idx])            # (n, 52)
-
-    def _policy_acq_offer(self, t: torch.Tensor) -> torch.Tensor:
-        """ACQ_OFFER: pass(1) + buy(1) = 2."""
-        pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
-        buy = self.acq_offer_head(t[:, self._acq_offer_idx])                  # (n, 1)
-        return torch.cat([pass_logit, buy], dim=-1)
-
-    def _policy_closing(self, t: torch.Tensor) -> torch.Tensor:
-        """CLOSING: pass(1) + company_close(36) = 37."""
-        pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
-        close = self.company_select_head(t[:, self._company_slice])           # (n, 36, 1)
-        return torch.cat([pass_logit, close.squeeze(-1)], dim=-1)
-
-    def _policy_dividends(self, t: torch.Tensor) -> torch.Tensor:
-        """DIVIDENDS: 26 amounts."""
-        return self.dividend_head(t[:, self._dividend_idx])                   # (n, 26)
-
-    def _policy_issue(self, t: torch.Tensor) -> torch.Tensor:
-        """ISSUE: pass(1) + issue(1) = 2."""
-        pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
-        issue = self.issue_head(t[:, self._issue_idx])                        # (n, 1)
-        return torch.cat([pass_logit, issue], dim=-1)
-
-    def _policy_ipo(self, t: torch.Tensor) -> torch.Tensor:
-        """IPO: pass(1) + per-corp select logit(8) = 9."""
-        pass_logit = self.pass_head(t[:, self._pass_idx])                     # (n, 1)
-        select = self.corp_select_head(t[:, self._corp_slice]).squeeze(-1)    # (n, 8)
-        return torch.cat([pass_logit, select], dim=-1)
-
-    def _policy_par(self, t: torch.Tensor) -> torch.Tensor:
-        """PAR: 14 par-price logits. No pass."""
-        return self.par_price_head(t[:, self._par_idx])                       # (n, 14)
-
-    # ------------------------------------------------------------------
-    # Policy dispatch (handles mixed-phase batches)
-    # ------------------------------------------------------------------
+        Concat order MUST match the ``_*_OFF`` constants and ``_build_action_lut``.
+        Each head reads the token(s) it cares about — companies / corps for the
+        entity-readout heads, the phase-context tokens (auction, dividend, etc.)
+        for the others, and the shared pass anchor. Heads run unconditionally
+        regardless of which phase a given row is in: the per-row LUT gather
+        in ``_policy_forward`` selects the right slots and the n_legals mask
+        zeroes out the rest. Total wasted FLOPs are ~2% of the trunk at
+        d_model=128 — well below the cost of the per-phase ``index_select`` /
+        ``index_copy_`` dance this replaces.
+        """
+        # All single-token heads keep their input dim of (B, d_model); their
+        # output is (B, head_width). Multi-token heads stay (B, n_tokens, ...)
+        # → flattened to (B, n_tokens * out_dim).
+        pass_logit = self.pass_head(tokens[:, self._pass_idx])                  # (B, 1)
+        # company_select_head: shared by INVEST / ACQ_SELECT_COMPANY / CLOSING.
+        company_select = self.company_select_head(
+            tokens[:, self._company_slice]
+        ).squeeze(-1)                                                           # (B, 36)
+        # corp_select_head: shared by ACQ_SELECT_CORP / IPO.
+        corp_select = self.corp_select_head(
+            tokens[:, self._corp_slice]
+        ).squeeze(-1)                                                           # (B, 8)
+        # corp_trade_head: only INVEST. Layout matches encode_invest_buy /
+        # encode_invest_sell — slot 2i = corp i buy, slot 2i+1 = corp i sell.
+        corp_trade = self.corp_trade_head(
+            tokens[:, self._corp_slice]
+        ).flatten(1)                                                            # (B, 16)
+        auction_raise = self.auction_raise_head(tokens[:, self._auction_idx])   # (B, 15)
+        dividend = self.dividend_head(tokens[:, self._dividend_idx])            # (B, 26)
+        issue = self.issue_head(tokens[:, self._issue_idx])                     # (B, 1)
+        acq_offer = self.acq_offer_head(tokens[:, self._acq_offer_idx])         # (B, 1)
+        price_acq = self.price_acq_head(tokens[:, self._acq_price_info_idx])    # (B, 52)
+        par_price = self.par_price_head(tokens[:, self._par_idx])               # (B, 14)
+        return torch.cat(
+            [
+                pass_logit, company_select, corp_select, corp_trade,
+                auction_raise, dividend, issue, acq_offer, price_acq, par_price,
+            ],
+            dim=-1,
+        )                                                                        # (B, UNIFIED_LOGIT_DIM)
 
     def _policy_forward(
         self, tokens: torch.Tensor,
         action_ids: torch.Tensor, n_legals: torch.Tensor,
-        phase_indices: list[torch.Tensor],
+        phase_ids: torch.Tensor,
     ) -> torch.Tensor:
-        """Route each batch element to its phase-specific policy head and
-        gather the per-row legal slice in one shot.
+        """Per-row policy gather via the unified logits + LUT path.
 
-        The per-phase heads emit logits of shape ``(n_phase, phase_action_size)``
-        — much narrower than the full ``MAX_ACTION_SIZE = 14977`` pad. Gathering
-        against ``action_ids`` inside the model keeps the source tensor at
-        phase-local width, so the evaluator / trainer / eval-server never have
-        to allocate or scatter into the full ACQUISITION-wide scratch.
+        Builds a ``(B, UNIFIED_LOGIT_DIM)`` tensor by running every head once
+        on the full batch, then maps each row's phase-local ``action_ids`` to
+        unified slots via the static LUT and gathers in a single op. Replaces
+        the per-phase dispatch loop (one ``index_select`` / ``index_copy_``
+        per phase × NUM_PHASES launches per forward) with a straight-line
+        graph that ``torch.compile`` can fuse without per-phase shape guards.
 
         Args:
             tokens: (batch, num_tokens, d_model) final token representations.
             action_ids: (batch, K_MAX) int tensor, phase-local legal action ids
                 per row. Tail positions ([n_legals[i]:]) may hold arbitrary
-                values — they are rewritten to 0 before ``gather`` and
-                masked out before softmax.
+                values — they are clamped before gather and masked out below.
             n_legals: (batch,) int tensor, legal action count per row.
-            phase_indices: List of ``NUM_PHASES`` int64 tensors on
-                ``tokens.device``. ``phase_indices[p]`` holds the row indices
-                whose ``phase_id == p``. Dispatch uses ``index_select`` /
-                ``index_copy_`` so the policy gather has no H←D sync — the
-                per-iteration sync that boolean indexing would force (it has
-                to read the mask's true-count to size the masked tensor)
-                dominated eval latency on CPU-bound workloads. All callers
-                build these on CPU from the pinned phase_ids buffer before the
-                H→D copy and pass them in.
+            phase_ids: (batch,) int tensor, decision phase id per row in
+                ``[0, NUM_PHASES)``. Used as the first axis index into
+                ``_action_lut``.
 
         Returns:
             (batch, K_MAX) float tensor of gathered logits, with positions
             beyond ``n_legals[i]`` filled with ``-1e9`` so they vanish after
             softmax.
         """
-        B, K = action_ids.shape
-        # Explicit fp32 rather than tokens.new_full: sentinels need no
-        # precision, and a fixed dtype avoids a silent coupling to whatever
-        # autocast leaves `tokens` as post-final_norm.
-        out = torch.full((B, K), -1e9, dtype=torch.float32, device=tokens.device)
+        unified = self._build_unified_logits(tokens)                            # (B, U)
 
-        # No `if not mask.any(): continue` early-exit: that path forces a
-        # GPU→CPU sync (NUM_PHASES per forward) which dominates eval latency
-        # on CPU-bound workloads like analyze_game. Empty masks/indices flow
-        # cleanly through linear / cat / gather / masked_scatter as no-op
-        # (0,*) ops, so we just dispatch all phases unconditionally and let
-        # the GPU pipeline absorb the extra small launches.
-        # `action_ids` tail positions [n_legals[i]:] may hold stale
-        # garbage (shared-memory worker slots are reused across phases
-        # and only [:n_legals[i]] is written per enumeration). We clamp
-        # sub_ids to the phase head width before gather so the compiled
-        # kernel never indexes out of range into narrow phase heads
-        # (ACQ_OFFER / ISSUE have width 2). Clamp rather than
-        # ``masked_fill(invalid, 0)``: Inductor will reorder a mask
-        # whose effect is "overwritten later by -1e9" past the gather,
-        # since the reasoning is that the gathered value at invalid
-        # positions doesn't matter. That reordering is unsafe on CUDA
-        # where gather bounds-checks and device-asserts regardless of
-        # what happens to the result. An unconditional clamp has no
-        # such dependence and survives fusion. Output is identical:
-        # invalid-position values get masked to -1e9 after gather
-        # either way.
-        for phase_id in range(NUM_PHASES):
-            idx = phase_indices[phase_id]
-            phase_logits = self._dispatch[phase_id](tokens.index_select(0, idx))
-            sub_ids = action_ids.index_select(0, idx).long()
-            safe_ids = sub_ids.clamp(min=0, max=phase_logits.shape[1] - 1)
-            gathered = phase_logits.gather(1, safe_ids)
-            invalid = self._k_range[None, :] >= n_legals.index_select(0, idx)[:, None]
-            # Cast to out.dtype: under autocast, tokens (post-RMSNorm) is
-            # fp32 but phase_logits (from Linear) is bf16 — index_copy_
-            # requires matching dtypes. torch.compile hides the mismatch
-            # via fusion; eager (NNEvaluator) surfaces it.
-            out.index_copy_(0, idx, gathered.masked_fill(invalid, -1e9).to(out.dtype))
+        # Map (B, K_MAX) phase-local action_ids → unified slots in two gathers.
+        # Step 1: row-broadcast LUT to (B, MAX_PHASE_ACTION_SIZE) keyed by phase_ids.
+        # Step 2: per-row gather along the phase-local action axis.
+        # Clamp action_ids into the LUT's column range — tail positions may
+        # be garbage (workers reuse buffer slots across phases). Clamp rather
+        # than ``masked_fill(invalid, 0)``: Inductor will reorder a mask whose
+        # effect is "overwritten later by -1e9" past the gather, but CUDA
+        # gather bounds-checks regardless of what happens to the result.
+        # An unconditional clamp has no such dependence and survives fusion.
+        lut_per_row = self._action_lut.index_select(0, phase_ids.long())       # (B, M)
+        safe_aids = action_ids.long().clamp(min=0, max=MAX_PHASE_ACTION_SIZE - 1)
+        unified_ids = lut_per_row.gather(1, safe_aids)                          # (B, K_MAX)
+        gathered = unified.gather(1, unified_ids)                               # (B, K_MAX)
 
-        return out
+        # Cast to fp32 for the sentinel — same reasoning as the old path:
+        # under autocast, ``unified`` (Linear output) is bf16 but the
+        # downstream log_softmax / softmax wants stable fp32 sentinels.
+        invalid = self._k_range[None, :] >= n_legals[:, None]
+        return gathered.to(torch.float32).masked_fill(invalid, -1e9)
 
     # ------------------------------------------------------------------
     # Forward
@@ -632,7 +635,7 @@ class RSSTransformerNet(nn.Module):
     def forward(
         self, x: torch.Tensor,
         action_ids: torch.Tensor, n_legals: torch.Tensor,
-        phase_indices: list[torch.Tensor],
+        phase_ids: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the transformer.
 
@@ -642,10 +645,8 @@ class RSSTransformerNet(nn.Module):
                 ids per row. Tail ([n_legals[i]:]) may be arbitrary — sanitized
                 inside ``_policy_forward`` before gather.
             n_legals: (batch,) int tensor, legal action count per row.
-            phase_indices: ``NUM_PHASES``-length list of int64 row indices per
-                phase; see ``_policy_forward`` for details. Required — the
-                policy gather uses ``index_select`` / ``index_copy_`` to avoid
-                the per-batch H←D sync that boolean indexing would force.
+            phase_ids: (batch,) int tensor, decision phase id per row. Used
+                to index the static action LUT in ``_policy_forward``.
 
         Returns:
             policy_logits: (batch, K_MAX) gathered logits over the per-row
@@ -660,7 +661,7 @@ class RSSTransformerNet(nn.Module):
         tokens = self.final_norm(tokens)
 
         policy_logits = self._policy_forward(
-            tokens, action_ids, n_legals, phase_indices,
+            tokens, action_ids, n_legals, phase_ids,
         )
         values = self.value_head(tokens[:, self._player_slice]).squeeze(-1)  # (B, N)
         return policy_logits, values
@@ -772,9 +773,9 @@ if __name__ == "__main__":
         n = min(K_MAX, PHASE_ACTION_SIZES[i])
         action_ids[i, :n] = torch.arange(n)
         n_legals[i] = n
-    phase_indices = [torch.tensor([i], dtype=torch.int64) for i in range(NUM_PHASES)]
+    phase_ids = torch.arange(NUM_PHASES, dtype=torch.long)
 
-    policy_logits, values = model(x, action_ids, n_legals, phase_indices)
+    policy_logits, values = model(x, action_ids, n_legals, phase_ids)
 
     print(f"policy_logits: {tuple(policy_logits.shape)}")
     print(f"values:        {tuple(values.shape)}")

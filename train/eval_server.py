@@ -403,7 +403,7 @@ def _eval_server_serve(
         model = torch.compile(model, **ckw)  # type: ignore[assignment]
         model.eval()
         # Warm up with the EXACT call signature the hot path uses — same
-        # positional args, same dtypes, and a ``phase_indices`` list.
+        # positional args, same dtypes, and a ``phase_ids`` (B,) tensor.
         #
         # Dynamic-shape strategy (see ``train/gpu/{amd,nvidia}.py`` for
         # why we dropped global ``dynamic=True``). Every runtime-varying
@@ -435,40 +435,15 @@ def _eval_server_serve(
             dummy_s = torch.randn(
                 warmup_n, num_tokens, token_dim, device=device,
             )
-            # Spread phase ids across 0..NUM_PHASES-1 so every phase
-            # head gets traced; the hot path dispatches all NUM_PHASES
-            # even when only a subset of rows belongs to each phase.
-            dummy_p_cpu = torch.arange(warmup_n, dtype=torch.int8) % NUM_PHASES
+            # Spread phase ids across 0..NUM_PHASES-1 so the LUT lookup
+            # touches every row of the action table at least once.
+            dummy_p = (torch.arange(warmup_n, dtype=torch.int8) % NUM_PHASES).to(device)
             dummy_a = torch.zeros(warmup_n, k_max, dtype=torch.int16, device=device)
             dummy_nl = torch.ones(warmup_n, dtype=torch.int16, device=device)
-            for _t in (dummy_s, dummy_a, dummy_nl):
+            for _t in (dummy_s, dummy_a, dummy_nl, dummy_p):
                 mark_unbacked(_t, 0)
-            # Produce views into a single GPU int64 buffer to match the
-            # runtime packing pattern (one H→D copy + per-phase slices via
-            # build_phase_buckets). Keeping the warmup call signature
-            # identical avoids a guard mismatch recompile on the first
-            # real batch.
-            _dummy_packed_cpu = torch.cat([
-                (dummy_p_cpu == _p).nonzero(as_tuple=False).squeeze(-1).to(torch.int64)
-                for _p in range(NUM_PHASES)
-            ])
-            _dummy_packed_gpu = _dummy_packed_cpu.to(device, non_blocking=True)
-            _dummy_offset = 0
-            dummy_phase_indices: list[torch.Tensor] = []
-            for _p in range(NUM_PHASES):
-                _n_p = int((dummy_p_cpu == _p).sum().item())
-                # ``.clone()`` here resets storage_offset to 0. Dynamo
-                # guards on ``storage_offset()`` on the runtime path, so
-                # a direct slice view with varying offset triggers a
-                # recompile every time the per-phase row count shifts.
-                # The clone is a tiny on-device memcpy (NUM_PHASES * few
-                # int64s) — the H→D batching win still stands.
-                _t = _dummy_packed_gpu[_dummy_offset:_dummy_offset + _n_p].clone()
-                _dummy_offset += _n_p
-                mark_unbacked(_t, 0)
-                dummy_phase_indices.append(_t)
-            model(dummy_s, dummy_a, dummy_nl, dummy_phase_indices)
-            del dummy_s, dummy_a, dummy_nl, dummy_phase_indices
+            model(dummy_s, dummy_a, dummy_nl, dummy_p)
+            del dummy_s, dummy_a, dummy_nl, dummy_p
         torch.cuda.synchronize()
 
     # Allocate pinned CPU buffers and GPU tensors in this process's CUDA context
@@ -506,19 +481,19 @@ def _eval_server_serve(
         alloc_batch, num_tokens, token_dim, dtype=torch.float32, device=device,
     )
 
-    # GPU action/n_legals buffers are zero-initialized once and the
+    # GPU action/n_legals/phase_ids buffers are zero-initialized once and the
     # tail [total_n:alloc_batch] is never written again — per-batch H→D copies
     # only touch [:total_n]. The model gathers [:padded_n + 1] each forward
     # (padded_n real rows + 1 trash), so any padded-tail rows read in-range
-    # zeros for action_ids and n_legals=0 (which masks the row out via the
-    # model's invalid mask).
-    # Phase ids stay host-only: they feed ``phase_indices`` construction on
-    # the CPU (one nonzero per phase), which is async-shipped to the GPU.
+    # zeros for action_ids, n_legals=0 (which masks the row out via the
+    # model's invalid mask), and phase_ids=0 (LUT row 0 is INVEST — gather
+    # produces something in range and the n_legals mask zeros it).
     pin_phase_ids_list = [
         torch.empty(alloc_batch, dtype=torch.int8, pin_memory=use_cuda)
         for _ in range(buf_depth)
     ]
     pin_phase_ids_np_list = [p.numpy() for p in pin_phase_ids_list]
+    gpu_phase_ids = torch.zeros(alloc_batch, dtype=torch.int8, device=device)
 
     pin_action_ids_list = [
         torch.empty(alloc_batch, k_max, dtype=torch.int16, pin_memory=use_cuda)
@@ -535,22 +510,6 @@ def _eval_server_serve(
     ]
     pin_n_legals_np_list = [p.numpy() for p in pin_n_legals_list]
     gpu_n_legals = torch.zeros(alloc_batch, dtype=torch.int16, device=device)
-
-    # Packed per-phase row indices: all NUM_PHASES index lists live back-to-back
-    # in a single int64 buffer so the host → device transfer collapses from
-    # NUM_PHASES separate non-blocking .to() launches (one per phase) to one.
-    # Upper-bound capacity is (alloc_batch + NUM_PHASES): at most alloc_batch
-    # real indices, plus one trash slot per empty phase (see build_phase_buckets).
-    phase_idx_cap = alloc_batch + NUM_PHASES
-    pin_phase_idx_list = [
-        torch.empty(phase_idx_cap, dtype=torch.int64, pin_memory=use_cuda)
-        for _ in range(buf_depth)
-    ]
-    pin_phase_idx_np_list = [p.numpy() for p in pin_phase_idx_list]
-    gpu_phase_idx = torch.zeros(phase_idx_cap, dtype=torch.int64, device=device)
-    # Host-side scratch for the Cython packer (overwritten each batch).
-    phase_offsets_np = np.empty(NUM_PHASES, dtype=np.int32)
-    phase_lengths_np = np.empty(NUM_PHASES, dtype=np.int32)
 
     # --- Outputs: pinned CPU + GPU side ---
     # Priors are (alloc_batch, K_MAX) f32 (sparse, already softmaxed on GPU).
@@ -578,7 +537,6 @@ def _eval_server_serve(
 
     # Cython gather/scatter helpers (nogil memcpy, no per-worker Python loop).
     from mcts.mcts_core import (
-        build_phase_buckets as _build_phase_buckets,
         gather_action_ids as _gather_action_ids,
         gather_n_legals as _gather_n_legals,
         gather_phase_ids as _gather_phase_ids,
@@ -702,13 +660,12 @@ def _eval_server_serve(
 
         pin_s_slot = pin_s_list[slot]
         pin_s_flat_np = pin_s_flat_np_list[slot]
+        pin_phase_ids_slot = pin_phase_ids_list[slot]
         pin_phase_ids_np = pin_phase_ids_np_list[slot]
         pin_action_ids_slot = pin_action_ids_list[slot]
         pin_action_ids_np = pin_action_ids_np_list[slot]
         pin_n_legals_slot = pin_n_legals_list[slot]
         pin_n_legals_np = pin_n_legals_np_list[slot]
-        pin_phase_idx_slot = pin_phase_idx_list[slot]
-        pin_phase_idx_np = pin_phase_idx_np_list[slot]
         pin_priors_slot = pin_priors_list[slot]
         pin_val_slot = pin_val_list[slot]
 
@@ -735,65 +692,18 @@ def _eval_server_serve(
         cnts_copy = cnts[:n_req].copy()
 
         # Append one trash row at index padded_n (see alloc_batch comment).
-        # Every forward sees (padded_n + 1) rows; the trash row absorbs
-        # any otherwise-empty phase's dispatch so u1 ≥ 1 always.
+        # Every forward sees (padded_n + 1) rows; the trash row keeps the
+        # batch dim ≥ 1 even when total_n == 0.
         effective_n = padded_n + 1
         gpu_s_batch = gpu_s[:effective_n]
         gpu_s_batch[:total_n].copy_(pin_s_slot[:total_n], non_blocking=True)
         gpu_action_ids[:total_n].copy_(pin_action_ids_slot[:total_n], non_blocking=True)
         gpu_n_legals[:total_n].copy_(pin_n_legals_slot[:total_n], non_blocking=True)
-        # Tail [total_n:effective_n] is permanently zero (see allocation),
-        # including the trash slot at index padded_n.
-
-        # Build per-phase row indices on host so the model's policy gather
-        # can use index_select / index_copy_ instead of boolean masking
-        # (which would force a per-iteration H←D sync — that scatter
-        # dominated analyze_game profiles before this change). Padded
-        # rows [total_n:padded_n] have phase_id=0 on the GPU side
-        # (zero-init tail), so we mirror that on the host before reading.
-        # Each phase tensor is marked unbacked so torch.compile treats
-        # its dim 0 as truly data-dependent — without this, every new
-        # combination of per-phase row counts triggers a recompile and
-        # we hit recompile_limit within the first few epochs.
-        #
-        # Empty phases get the trash index [padded_n] so the compiled
-        # kernel never sees u1=0. Several empty phases may co-write that
-        # slot — fine, nothing reads it.
-        #
-        # Packing: one Cython scan over phase_ids[:padded_n] writes all
-        # NUM_PHASES index lists back-to-back into a single pinned int64
-        # buffer (with one trash slot for each empty phase). A single
-        # non-blocking H→D copy ships the used prefix, then per-phase
-        # zero-copy slices replace the old NUM_PHASES separate .to()
-        # launches.
-        if padded_n > total_n:
-            pin_phase_ids_np[total_n:padded_n] = 0
-        total_idx = _build_phase_buckets(
-            pin_phase_ids_np[:padded_n], pin_phase_idx_np,
-            phase_offsets_np, phase_lengths_np,
-            padded_n, NUM_PHASES, padded_n,
-        )
-        if use_cuda:
-            gpu_phase_idx[:total_idx].copy_(
-                pin_phase_idx_slot[:total_idx], non_blocking=True,
-            )
-            phase_idx_base = gpu_phase_idx
-        else:
-            phase_idx_base = pin_phase_idx_slot
-        phase_indices: list[torch.Tensor] = []
-        for _p in range(NUM_PHASES):
-            _off = int(phase_offsets_np[_p])
-            _n = int(phase_lengths_np[_p])
-            _len = _n if _n > 0 else 1
-            # ``.clone()`` resets storage_offset to 0. The slice is a
-            # view into ``phase_idx_base`` with a varying ``_off`` per
-            # phase per batch; Dynamo guards on ``storage_offset()`` and
-            # recompiles every time it shifts. The clone is a tiny
-            # on-device memcpy — the single-H→D-copy batching win still
-            # stands.
-            _t = phase_idx_base[_off:_off + _len].clone()
-            mark_unbacked(_t, 0)
-            phase_indices.append(_t)
+        # Phase ids ship the same way as the other inputs. Tail
+        # [total_n:effective_n] stays zero (DPHASE_INVEST) — the n_legals
+        # mask zeroes those rows out of any softmax / loss anyway, so the
+        # exact LUT row hit doesn't matter as long as it's in range.
+        gpu_phase_ids[:total_n].copy_(pin_phase_ids_slot[:total_n], non_blocking=True)
 
         with torch.inference_mode():
             # Autocast region is already active (entered once for the whole
@@ -804,7 +714,7 @@ def _eval_server_serve(
             logits_sparse, values = model(
                 gpu_s_batch,
                 gpu_action_ids[:effective_n], gpu_n_legals[:effective_n],
-                phase_indices,
+                gpu_phase_ids[:effective_n],
             )
             # logits_sparse: (effective_n, K_MAX)       in autocast dtype
             # values:        (effective_n, num_players) in autocast dtype
