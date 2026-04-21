@@ -1,11 +1,15 @@
 from setuptools import setup, Extension, Command
+from setuptools.command.build_ext import build_ext as _build_ext
 from Cython.Build import cythonize
 import numpy as np
 import os
+import platform
 import shutil
 import glob
 import sys
 import sysconfig
+
+NUM_BUILD_JOBS = os.cpu_count() or 1
 
 
 RELEASE_FLAG = '--release'
@@ -14,6 +18,15 @@ RELEASE_BUILD = RELEASE_FLAG in sys.argv
 # Strip our custom flag before setuptools parses argv.
 if RELEASE_BUILD:
     sys.argv = [arg for arg in sys.argv if arg != RELEASE_FLAG]
+
+
+class ParallelBuildExt(_build_ext):
+    """build_ext that defaults to one C compile job per logical CPU."""
+
+    def finalize_options(self):
+        super().finalize_options()
+        if not self.parallel:
+            self.parallel = NUM_BUILD_JOBS
 
 
 class CleanCommand(Command):
@@ -110,7 +123,7 @@ def get_extra_compile_args():
     if not RELEASE_BUILD:
         return args
 
-    if os.name == 'nt':
+    if platform.system() == 'Windows':
         args.extend(['/O2', '/GL'])
     else:
         args.extend(['-O3', '-march=native', get_lto_flag()])
@@ -124,7 +137,7 @@ def get_extra_link_args():
     if not RELEASE_BUILD:
         return []
 
-    if os.name == 'nt':
+    if platform.system() == 'Windows':
         return ['/O2', '/LTCG']
     return ['-O3', get_lto_flag()]
 
@@ -180,6 +193,7 @@ else:
         extensions,
         compiler_directives=compiler_directives,
         annotate=True,  # Generates HTML annotation files showing Python interaction
+        nthreads=NUM_BUILD_JOBS,
     )
 
 setup(
@@ -188,6 +202,7 @@ setup(
     ext_modules=ext_modules,
     cmdclass={
         'clean': CleanCommand,
+        'build_ext': ParallelBuildExt,
     },
     include_package_data=True,
     zip_safe=False,
