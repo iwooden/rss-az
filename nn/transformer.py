@@ -151,9 +151,9 @@ class TransformerConfig:
 
     # Core architecture
     num_players: int = 3  # 3-5 supported
-    d_model: int = 192
-    num_heads: int = 3
-    num_layers: int = 15
+    d_model: int = 128
+    num_heads: int = 2
+    num_layers: int = 10
     ff_mult: float = 3.0  # FFN inner dimension = ceil(ff_mult * d_model)
 
     # Raw feature width per token (zero-padded to same size across types).
@@ -402,9 +402,8 @@ class RSSTransformerNet(nn.Module):
         # for offset ∈ [0, AUCTION_CAP), so the head produces AUCTION_CAP
         # logits — one per legal bid offset (both opening and subsequent).
         self.auction_raise_head = nn.Sequential(
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, int(AUCTION_CAP)),
+            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d // 2, int(AUCTION_CAP))
         )
         self.dividend_head = nn.Sequential(
             nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
