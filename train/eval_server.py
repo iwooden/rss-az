@@ -414,6 +414,11 @@ def _eval_server_serve(
             device.type,
             dtype=eval_autocast_dtype,
             enabled=eval_autocast_dtype is not None,
+            # Match the hot-path persistent context (see ``cache_enabled``
+            # rationale below). Dynamo guards on the full autocast state,
+            # including ``cache_enabled``; a mismatch between warmup and
+            # hot path triggers a one-shot recompile on the first serve.
+            cache_enabled=False,
         ):
             dummy_s = torch.randn(
                 warmup_n, num_tokens, token_dim, device=device,
@@ -990,7 +995,7 @@ class RemoteEvaluator(BaseEvaluator):
     """
 
     # Seconds to wait for eval server response before raising.
-    _EVAL_TIMEOUT = 60.0
+    _EVAL_TIMEOUT = 120.0
 
     def __init__(
         self,

@@ -15,11 +15,13 @@ from typing import Any, cast
 import numpy as np
 import torch
 import torch.multiprocessing as mp
+from torch._dynamo.decorators import mark_unbacked
 
+from core.data import PHASE_ACTION_SIZES
 from core.state import get_layout
 from core.token_data import TokenDataSize, get_num_tokens
 from nn import create_model
-from nn.transformer import UNIFIED_LOGIT_DIM
+from nn.transformer import NUM_PHASES, UNIFIED_LOGIT_DIM, build_action_lut
 from train.checkpoint import (
     cleanup_checkpoints,
     find_latest_checkpoint,
@@ -564,19 +566,32 @@ def main() -> None:
         print("Wrote procids.txt")
     else:
         # Single-process: compile for both training and self-play evaluation.
-        # Let torch.compile manage any needed dynamism automatically.
         if not args.no_compile and device.type == "cuda":
             sp_compile_kwargs = gpu.get_compile_kwargs(for_training=False)
             print(f"Compiling model with torch.compile ({sp_compile_kwargs})...")
             model = cast(torch.nn.Module, torch.compile(model, **sp_compile_kwargs))  # type: ignore[call-overload]
             model.train()
+            # Warmup mirrors train/eval_server.py: NUM_PHASES rows so every
+            # per-row policy head is traced against a real legal mask, and
+            # ``mark_unbacked`` on BOTH inputs so the batch dim stays
+            # symbolic. Without marking both, dynamo bakes a static guard
+            # on the unmarked input's shape and recompiles on the first
+            # batch != warmup_n; warming up at batch=1 also wastes a
+            # specialization that the runtime never reuses.
+            warmup_n = NUM_PHASES
+            lut = build_action_lut()
             with torch.inference_mode():
                 dummy_tokens = torch.randn(
-                    1, num_tokens, token_dim, device=device,
+                    warmup_n, num_tokens, token_dim, device=device,
                 )
-                dummy_mask = torch.ones(
-                    1, UNIFIED_LOGIT_DIM, dtype=torch.bool, device=device,
+                dummy_mask = torch.zeros(
+                    warmup_n, UNIFIED_LOGIT_DIM, dtype=torch.bool, device=device,
                 )
+                for i in range(warmup_n):
+                    n = PHASE_ACTION_SIZES[i]
+                    dummy_mask[i, lut[i, :n].to(device)] = True
+                for _t in (dummy_tokens, dummy_mask):
+                    mark_unbacked(_t, 0)
                 model(dummy_tokens, dummy_mask)
                 del dummy_tokens, dummy_mask
             torch.cuda.synchronize()

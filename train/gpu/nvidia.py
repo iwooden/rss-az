@@ -8,10 +8,10 @@ When running on NVIDIA hardware, these optimizations are applied:
 
 2. **torch.compile default mode** (Inductor fusion, no CUDA graphs):
    CUDA-graph capture (mode="reduce-overhead") is NOT used because
-   ``nn/transformer.py::_policy_forward`` uses ``index_select`` with
-   data-dependent per-phase row counts — CUDA graphs require static
-   shapes. Default-mode Inductor still removes most Python dispatch
-   overhead via Triton fusion.
+   ``RSSTransformerNet.forward`` runs over a ``mark_unbacked`` batch
+   dim that varies every call with MCTS workload pressure — CUDA
+   graphs require static shapes. Default-mode Inductor still removes
+   most Python dispatch overhead via Triton fusion.
 
 3. **non_blocking H2D transfers**: Allows CPU work to overlap with GPU DMA.
    Especially beneficial on GH200 with NVLink-C2C (900 GB/s).
@@ -65,18 +65,20 @@ def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
     """Return torch.compile kwargs optimized for NVIDIA GPUs.
 
     Uses default (automatic-dynamic) mode. ``reduce-overhead`` was
-    dropped because our policy-head dispatch uses ``index_select`` with
-    per-phase row counts that vary every batch — CUDA graphs require
-    static shapes. Global ``dynamic=True`` is explicitly discouraged by
-    the PyTorch docs (forces every dim and module parameter dynamic,
-    error-prone, can cause perf regressions); the eval-server warmup
-    site applies ``mark_unbacked`` on the runtime-varying dims instead.
+    dropped because eval_server / single-process warmup applies
+    ``mark_unbacked`` to the batch dim (so a single compiled artifact
+    handles every batch size 1..max_batch) — CUDA graphs would require
+    re-capture per batch size, defeating the point. Global
+    ``dynamic=True`` is explicitly discouraged by the PyTorch docs
+    (forces every dim and module parameter dynamic, error-prone, can
+    cause perf regressions); ``mark_unbacked`` on just the batch dim
+    is the targeted alternative.
 
     ``triton.autotune_at_compile_time`` moves per-kernel Triton autotune
-    from runtime to compile time. At runtime our unbacked per-phase row
-    counts can legitimately be 0 (a batch with no rows for a given
-    phase), and Inductor's runtime autotune divides by that dim inside
-    its block/grid heuristic → ``ZeroDivisionError`` during
+    from runtime to compile time. The unbacked batch symbol is
+    symbolically unconstrained at the lower bound, so Inductor's runtime
+    autotune can sketch a 0-batch case and divide by that dim inside its
+    block/grid heuristic → ``ZeroDivisionError`` during
     ``autotune_to_one_config``. Compile-time autotune synthesizes
     benchmark inputs using a non-zero size hint for unbacked symints,
     sidestepping the crash. Observed on CUDA 12.8 / torch 2.11; ROCm
@@ -97,13 +99,12 @@ def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
             ``joint_graph_constant_folding`` pass. That pass calls
             ``fake_tensor.is_contiguous`` on uniform-valued nodes
             (e.g. backward-pass ``zeros_like`` tensors) and guards on
-            ``Eq(K * u, 0)`` to test emptiness. When the shape carries a
-            ``mark_unbacked`` symbol (our per-phase row counts do), the
-            guard is undecidable and compilation crashes. The pass is a
-            training-only concern — inference skips the joint-graph
-            backward partition entirely, which is why eval_server is
-            unaffected. Disabling costs only a small forward-graph
-            constant-folding optimization.
+            ``Eq(K * u, 0)`` to test emptiness. The batch dim carries a
+            ``mark_unbacked`` symbol, so this guard is undecidable and
+            compilation crashes. The pass is a training-only concern —
+            inference skips the joint-graph backward partition entirely,
+            which is why eval_server is unaffected. Disabling costs only
+            a small forward-graph constant-folding optimization.
     """
     options: dict[str, Any] = {
         "triton.autotune_at_compile_time": True,
