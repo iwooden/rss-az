@@ -151,8 +151,14 @@ def _state_acq_offer():
 
 
 def _state_closing():
-    """CLOSING: close company 35 emits id 36 (= ACTION_SIZE_CLOSING - 1)."""
+    """CLOSING: close company 35 emits id 36 (= ACTION_SIZE_CLOSING - 1).
+
+    Blue companies (stars=5) have CoO cost 0 at every CoO level, so their
+    adjusted income is always positive. The enumerator width test needs
+    the unrestricted legality surface, so we flip the compatibility flag.
+    """
     state = _fresh_state()
+    state.allow_positive_income_closing = True
     active = TURN.get_active_player(state)
     give_company_to_player(state, 35, active)
     TURN.set_phase(state, int(GamePhases.PHASE_CLOSING))

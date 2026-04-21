@@ -19,6 +19,10 @@ from train.analyze_game import format_action, format_phase_context, format_state
 def _make_state(num_players: int = 3, seed: int = 42) -> GameState:
     state = GameState(num_players)
     state.initialize_game(num_players, seed=seed)
+    # Formatting tests exercise the full legality surface; flip on the
+    # compatibility flag so CLOSING doesn't short-circuit to INCOME when
+    # the setup only provides positive-income companies.
+    state.allow_positive_income_closing = True
     return state
 
 

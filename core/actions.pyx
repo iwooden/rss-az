@@ -74,6 +74,7 @@ from entities.company cimport (
     LOC_FI,
     LOC_CORP,
     LOC_PLAYER,
+    company_adjusted_income,
     company_location,
     company_owner_id,
     company_owned_by_player,
@@ -810,12 +811,19 @@ cdef int _enumerate_closing(
          the active player presides the corp, the corp is not in
          receivership, and the corp retains at least 2 companies.
 
+    When ``state.allow_positive_income_closing`` is False (the default),
+    individual companies are only emitted if their CoO-adjusted income is
+    strictly negative. This is the training-time gate: the model only gets
+    to close companies that are losing money. The 18xx replay tests flip
+    the flag to True to recover the unrestricted behavior.
+
     Returns the number of IDs written. Worst case: 37 (pass + 36 companies).
     """
     cdef int count = 0
     cdef int active_player = <int>state._data[
         LAYOUT.turn_offset + TURN_OFFSETS.active_player
     ]
+    cdef bint allow_positive = state.allow_positive_income_closing
     cdef int loc, owner
     cdef int company_id
 
@@ -827,16 +835,22 @@ cdef int _enumerate_closing(
     for company_id in range(<int>GameConstants.NUM_COMPANIES):
         loc = company_location(state, company_id)
         if loc == <int>LOC_PLAYER:
-            if company_owned_by_player(state, company_id, active_player):
-                _require_action_capacity(count, b"CLOSING_PLAYER")
-                ids[count] = <uint16_t>encode_closing_close(company_id)
-                count += 1
+            if not company_owned_by_player(state, company_id, active_player):
+                continue
         elif loc == <int>LOC_CORP:
             owner = company_owner_id(state, company_id)
-            if _corp_closable_by_player(state, owner, active_player):
-                _require_action_capacity(count, b"CLOSING_CORP")
-                ids[count] = <uint16_t>encode_closing_close(company_id)
-                count += 1
+            if not _corp_closable_by_player(state, owner, active_player):
+                continue
+        else:
+            continue
+
+        if (not allow_positive
+                and company_adjusted_income(state, company_id) >= 0):
+            continue
+
+        _require_action_capacity(count, b"CLOSING")
+        ids[count] = <uint16_t>encode_closing_close(company_id)
+        count += 1
 
     return count
 

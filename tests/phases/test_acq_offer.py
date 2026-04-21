@@ -507,6 +507,7 @@ class TestCrossPresidentAccept:
     def _make_state(num_players):
         state = GameState(num_players, acq_same_president=False)
         state.initialize_game(num_players, seed=42)
+        state.allow_positive_income_closing = True
         return state
 
     def test_corp_to_corp_accept_transfers_company(self):
@@ -631,6 +632,7 @@ class TestCrossPresidentDecline:
     def _make_state(num_players):
         state = GameState(num_players, acq_same_president=False)
         state.initialize_game(num_players, seed=42)
+        state.allow_positive_income_closing = True
         return state
 
     def test_decline_cancels_acquisition(self):
@@ -774,6 +776,7 @@ class TestIntegrationCrossPresident:
     def _make_state(num_players):
         state = GameState(num_players, acq_same_president=False)
         state.initialize_game(num_players, seed=42)
+        state.allow_positive_income_closing = True
         return state
 
     def test_cross_president_full_flow_accept(self):

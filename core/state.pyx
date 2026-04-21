@@ -679,12 +679,14 @@ cdef class GameState:
     is delegated to Entity handles and Phase classes.
     """
     def __cinit__(self, unsigned int num_players, bint _alloc=True,
-                  bint acq_same_president=True):
+                  bint acq_same_president=True,
+                  bint allow_positive_income_closing=False):
         assert 2 <= num_players <= <unsigned int>GameConstants.MAX_PLAYERS, \
             f"num_players must be 2-{GameConstants.MAX_PLAYERS}, got {num_players}"
 
         self.step_mode = False
         self.acq_same_president = acq_same_president
+        self.allow_positive_income_closing = allow_positive_income_closing
 
         if not _alloc:
             # Caller will set _array and _data (used by from_buffer). The

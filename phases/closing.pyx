@@ -213,13 +213,22 @@ cdef bint _player_has_closable(GameState state, int player_id) noexcept:
     - Any player-owned private (LOC_PLAYER)
     - Any company owned by a non-receivership corp they preside, provided the
       corp retains at least 2 companies.
-    No income filter — any company is eligible for voluntary close.
+
+    When ``state.allow_positive_income_closing`` is False (the default), a
+    candidate company must also have strictly negative CoO-adjusted income,
+    matching the enumeration gate in ``_enumerate_closing``. This keeps the
+    "skip players with nothing to decide" optimization in sync with the
+    legality filter: a player with only positive-income companies has
+    nothing but PASS to do and should not take a turn.
     """
+    cdef bint allow_positive = state.allow_positive_income_closing
     cdef int i, corp_id
 
     # Check player-owned privates
     for i in range(<int>GameConstants.NUM_COMPANIES):
-        if company_owned_by_player(state, i, player_id):
+        if not company_owned_by_player(state, i, player_id):
+            continue
+        if allow_positive or company_adjusted_income(state, i) < 0:
             return True
 
     # Check corp subsidiaries
@@ -232,9 +241,15 @@ cdef bint _player_has_closable(GameState state, int player_id) noexcept:
             continue
         if count_corp_companies(state, corp_id, False) <= 1:
             continue
-        # This corp has >=2 companies and the player presides — at least one
-        # is closable (any except the last).
-        return True
+        if allow_positive:
+            # Any of this corp's companies is a candidate (except the last).
+            return True
+        # Otherwise, need at least one corp-owned company with negative
+        # adjusted income.
+        for i in range(<int>GameConstants.NUM_COMPANIES):
+            if (company_owned_by_corp(state, i, corp_id)
+                    and company_adjusted_income(state, i) < 0):
+                return True
 
     return False
 
@@ -319,6 +334,12 @@ cdef void apply_closing_action(GameState state, ActionInfo* info) noexcept:
         # Determine who owns the company and validate
         loc = company_location(state, company_id)
         owner_id = company_owner_id(state, company_id)
+
+        assert (state.allow_positive_income_closing
+                or company_adjusted_income(state, company_id) < 0), \
+            f"apply_closing_action: company {company_id} has non-negative " \
+            f"adjusted income {company_adjusted_income(state, company_id)} " \
+            f"but allow_positive_income_closing=False"
 
         if loc == <int>LOC_PLAYER:
             assert owner_id == pid, \

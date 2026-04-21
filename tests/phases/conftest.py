@@ -1479,9 +1479,16 @@ def assert_post_auto(state, expected_phase, msg=""):
 
 @pytest.fixture(params=[2, 3, 4, 5, 6])
 def game_state(request):
-    """Fresh game state in INVEST phase, parameterized across all player counts."""
+    """Fresh game state in INVEST phase, parameterized across all player counts.
+
+    ``allow_positive_income_closing`` is set to True so phase tests see the
+    full unrestricted CLOSING legality surface. The new training-time gate
+    (default False on GameState itself) is exercised by the dedicated
+    ``TestNegativeIncomeGate`` suite in ``test_closing.py``.
+    """
     num_players = request.param
     state = GameState(num_players)
     state.initialize_game(num_players, seed=42)
+    state.allow_positive_income_closing = True
     assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
     return state

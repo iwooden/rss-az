@@ -227,3 +227,74 @@ class TestPlayerOrder:
         assert PLAYERS[0].has_passed(game_state)
         assert TURN.get_active_player(game_state) == 2
         assert_invariants(game_state, "after skipping players without closable companies")
+
+
+class TestNegativeIncomeGate:
+    """Training-time gate (``allow_positive_income_closing=False``): only
+    companies with negative CoO-adjusted income may be closed. PASS stays
+    legal.
+
+    The shared ``game_state`` fixture flips the flag to True so phase tests
+    see the full unrestricted CLOSING surface; these tests flip it back to
+    False on entry to exercise the new default.
+    """
+
+    def test_positive_income_player_private_is_not_closable_under_default(self, game_state):
+        game_state.allow_positive_income_closing = False
+        # Default CoO=1 — red company 0 has base income 1, CoO 0 → adjusted +1.
+        give_company_to_player(game_state, 0, 0)
+
+        setup_closing_phase_py(game_state)
+
+        # No player has a negative-income company, so setup short-circuits
+        # through mandatory-close into INCOME without entering CLOSING.
+        assert TURN.get_phase(game_state) == PHASE_INCOME
+        assert not COMPANIES[0].is_removed(game_state)
+        assert_invariants(game_state, "positive-income private skipped at setup")
+
+    def test_negative_income_private_is_closable_under_default(self, game_state):
+        game_state.allow_positive_income_closing = False
+        # At CoO=7, red company 0 has adjusted income 1 - 10 = -9.
+        TURN.set_coo_level(game_state, 7)
+        give_company_to_player(game_state, 0, 0)
+
+        setup_closing_phase_py(game_state)
+
+        assert TURN.get_phase(game_state) == PHASE_CLOSING
+        assert TURN.get_active_player(game_state) == 0
+        close_actions = find_all_legal_actions_with_info(
+            game_state, action_type=ACTION_CLOSE
+        )
+        assert [info.company_id for _, info in close_actions] == [0]
+        assert_invariants(game_state, "negative-income private closable")
+
+    def test_mixed_income_corp_only_emits_negative_subsidiaries(self, game_state):
+        game_state.allow_positive_income_closing = False
+        # At CoO=5, red stars cost 4 and orange stars cost 4:
+        #   - company 0 (red, base 1) adjusted = 1 - 4 = -3  (closable)
+        #   - company 14 (yellow, base 5) adjusted = 5 - 0 = +5 (protected)
+        TURN.set_coo_level(game_state, 5)
+        float_corp_for_test(game_state, corp_id=1, company_id=14, player_id=0)
+        give_company_to_corp(game_state, 0, 1)
+
+        setup_closing_phase_py(game_state)
+
+        assert TURN.get_phase(game_state) == PHASE_CLOSING
+        assert TURN.get_active_player(game_state) == 0
+        close_actions = find_all_legal_actions_with_info(
+            game_state, action_type=ACTION_CLOSE
+        )
+        assert [info.company_id for _, info in close_actions] == [0]
+        assert_invariants(game_state, "only negative-income corp subsidiaries closable")
+
+    def test_pass_remains_legal_when_player_has_only_negative_income_companies(self, game_state):
+        game_state.allow_positive_income_closing = False
+        TURN.set_coo_level(game_state, 7)
+        give_company_to_player(game_state, 0, 0)
+
+        setup_closing_phase_py(game_state)
+
+        assert TURN.get_phase(game_state) == PHASE_CLOSING
+        # PASS is always available in CLOSING regardless of the gate.
+        assert find_legal_action(game_state, action_type=ACTION_PASS) == 0
+        assert_invariants(game_state, "PASS legal with negative-income candidate")

@@ -35,6 +35,11 @@ PHASE_ACQ_OFFER = int(GamePhases.PHASE_ACQ_OFFER)
 def _make_acq_offer_accept_state():
     state = GameState(3)
     state.initialize_game(3, seed=42)
+    # Needed for ``test_apply_action_without_step_mode_auto_chains_to_closing``
+    # to pause in CLOSING. The CoO=1 default would leave every private with
+    # positive adjusted income, so the training-default legality gate would
+    # short-circuit CLOSING straight through to INCOME.
+    state.allow_positive_income_closing = True
 
     fi_co = draw_to_fi(state)
     # Use a valid FI-preemption setup: preemptor and original buyer have
