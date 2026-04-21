@@ -528,30 +528,33 @@ def increment_visits(list path, leaf):
 # They differ only by dtype and row width. scatter_results is the inverse.
 
 def gather_states(
-    float[:, :] dst,
-    float[:, :, :] src,
+    char[:, :] dst,
+    const char[:, :, :] src,
     const int[:] worker_indices,
     const int[:] counts,
     int num_requests,
+    int row_bytes,
 ):
     """Gather per-leaf NN input rows into a contiguous batch buffer.
 
-    Row width is `num_tokens * token_dim` floats — callers reshape the logical
-    ``(W, B, num_tokens, token_dim)`` buffer to 3-D ``(W, B, row_floats)``
-    before calling; the memcpy is the same.
+    Dtype-agnostic byte-level memcpy — callers pass byte views
+    (``numpy.ndarray.view(np.int8)``) of their typed shm buffers and
+    supply the row size in bytes. The eval-server path uses this with
+    fp16 token buffers (``row_bytes = num_tokens * token_dim * 2``) so
+    the shm→pinned copy is half the bytes of the old fp32 format.
 
     Args:
-        dst: Contiguous destination buffer, shape (max_batch, row_floats).
-        src: Per-worker input rows, shape (num_workers, batch_size, row_floats).
+        dst: Contiguous destination bytes, shape (max_batch, row_bytes).
+        src: Per-worker input rows as bytes, shape (num_workers, batch_size, row_bytes).
         worker_indices: Worker index per request, shape (num_requests,).
         counts: Number of rows per request, shape (num_requests,).
         num_requests: Number of requests in this batch.
+        row_bytes: Bytes per row (== dst.shape[1]); passed explicitly so
+            the nogil memcpy doesn't need to reach across shapes.
 
     Returns:
         Total number of rows gathered.
     """
-    cdef int row_floats = dst.shape[1]
-    cdef int row_bytes = row_floats * sizeof(float)
     cdef int total = 0
     cdef int i, n, widx
     with nogil:

@@ -363,16 +363,25 @@ class TestExpandNodeSparse:
 
 class TestGatherScatter:
     def test_gather_states_concatenates_per_request_rows(self):
-        """Each (worker_idx, count) request contributes count rows starting at src[widx, 0]."""
+        """Each (worker_idx, count) request contributes count rows starting at src[widx, 0].
+
+        ``gather_states`` is byte-level (matches scatter_results), so the
+        caller passes ``.view(np.int8)`` of the typed buffer plus an
+        explicit ``row_bytes``. Assertions stay on the typed view since the
+        memcpy is bit-exact.
+        """
         num_workers, batch, row = 2, 4, 6
         src = np.arange(
-            num_workers * batch * row, dtype=np.float32,
+            num_workers * batch * row, dtype=np.float16,
         ).reshape(num_workers, batch, row)
-        dst = np.zeros((num_workers * batch, row), dtype=np.float32)
+        dst = np.zeros((num_workers * batch, row), dtype=np.float16)
         worker_indices = np.array([0, 1], dtype=np.int32)
         counts = np.array([3, 2], dtype=np.int32)
 
-        total = gather_states(dst, src, worker_indices, counts, 2)
+        total = gather_states(
+            dst.view(np.int8), src.view(np.int8),
+            worker_indices, counts, 2, row * 2,  # fp16 == 2 B per element
+        )
 
         assert total == 5
         np.testing.assert_array_equal(dst[:3], src[0, :3])
@@ -383,13 +392,13 @@ class TestGatherScatter:
     def test_gather_states_empty_requests(self):
         """num_requests=0 is a legal no-op that returns 0."""
         num_workers, batch, row = 2, 2, 3
-        src = np.ones((num_workers, batch, row), dtype=np.float32)
-        dst = np.zeros((num_workers * batch, row), dtype=np.float32)
+        src = np.ones((num_workers, batch, row), dtype=np.float16)
+        dst = np.zeros((num_workers * batch, row), dtype=np.float16)
         total = gather_states(
-            dst, src,
+            dst.view(np.int8), src.view(np.int8),
             np.zeros(0, dtype=np.int32),
             np.zeros(0, dtype=np.int32),
-            0,
+            0, row * 2,
         )
         assert total == 0
         np.testing.assert_array_equal(dst, 0)

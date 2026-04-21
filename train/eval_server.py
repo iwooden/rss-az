@@ -9,12 +9,20 @@ to eval servers automatically.
 Communication uses shared memory (torch tensors with share_memory_()):
 
   Worker → Server (inputs)
-      states      : float32 (W, B, num_tokens, token_dim)
+      states      : float16 (W, B, num_tokens, token_dim)
       legal_mask  : uint8   (W, B, UNIFIED_LOGIT_DIM)  — 1=legal slot
 
   Server → Worker (outputs — dense over unified slots, softmaxed on GPU)
       priors  : float32 (W, B, UNIFIED_LOGIT_DIM)  — legal slots sum to 1
-      values  : float32 (W, B, num_players)         — canonical order (no rotation)
+      values  : float32 (W, B, num_players)         — canonical order
+
+Token buffers are fp16 on the wire (half the shm + pinned + H→D bytes of
+the old fp32 path). Cython's ``get_token_data`` still fills fp32, and the
+worker casts into fp16 once at the shm boundary (one vectorized numpy
+astype per eval request). Model-side the fp16 input is upcast to bf16 at
+trunk entry, matching the autocast dtype the rest of the forward runs
+under; all token feature values sit in [-1, ~3] post-normalization, so
+fp16 round-trip error is <1e-3 absolute (see scratchpad/fp16_token_precision.py). (no rotation)
 
 The unified policy tensor (width ``UNIFIED_LOGIT_DIM``) is the wire format.
 Workers build a dense legal-mask (via the same ``build_action_lut`` mapping
@@ -109,7 +117,7 @@ class SharedEvalBuffers:
     values back into the same per-worker slot.
 
     Inputs (worker → server):
-        states      (W, B, num_tokens, token_dim) float32
+        states      (W, B, num_tokens, token_dim) float16
         legal_mask  (W, B, UNIFIED_LOGIT_DIM)     uint8 (1=legal slot)
 
     Outputs (server → worker):
@@ -135,9 +143,13 @@ class SharedEvalBuffers:
         self.unified_dim = UNIFIED_LOGIT_DIM
 
         # --- Inputs (worker → server) ---
+        # fp16 on the wire: halves shm footprint + pinned→GPU copy vs. the
+        # old fp32 buffer. Cython's ``get_token_data`` still writes fp32 into
+        # a per-worker scratch (numpy has no stable fp16 scalar arithmetic);
+        # the worker casts into this fp16 slot at the shm boundary.
         self._states = torch.zeros(
             num_workers, batch_size, self.num_tokens, self.token_dim,
-            dtype=torch.float32,
+            dtype=torch.float16,
         ).share_memory_()
         self._legal_mask = torch.zeros(
             num_workers, batch_size, self.unified_dim, dtype=torch.uint8,
@@ -180,7 +192,7 @@ class SharedEvalBuffers:
     # ------------------------------------------------------------------
 
     def get_input_states_np(self, worker_idx: int) -> np.ndarray:
-        """(batch, num_tokens, token_dim) float32 view into this worker's input slot."""
+        """(batch, num_tokens, token_dim) float16 view into this worker's input slot."""
         return self._states[worker_idx].numpy()
 
     def get_input_legal_mask_np(self, worker_idx: int) -> np.ndarray:
@@ -405,6 +417,7 @@ def _eval_server_serve(
         ):
             dummy_s = torch.randn(
                 warmup_n, num_tokens, token_dim, device=device,
+                dtype=torch.float16,
             )
             # Build one legal mask per phase so every phase's slots get
             # exercised at least once during compilation.
@@ -439,20 +452,25 @@ def _eval_server_serve(
     buf_depth = 2 if use_cuda else 1
 
     # --- Inputs: pinned CPU + GPU side ---
+    # fp16 token buffers — half the pinned allocation and H→D bytes of the
+    # old fp32 path. The model upcasts to bf16 at trunk entry so compute
+    # dtype is unchanged.
     pin_s_list = [
         torch.empty(
             alloc_batch, num_tokens, token_dim,
-            dtype=torch.float32, pin_memory=use_cuda,
+            dtype=torch.float16, pin_memory=use_cuda,
         )
         for _ in range(buf_depth)
     ]
     pin_s_np_list = [p.numpy() for p in pin_s_list]
-    # Flat 2-D view for the row-agnostic Cython memcpy gather.
-    pin_s_flat_np_list = [
-        p.reshape(alloc_batch, num_tokens * token_dim) for p in pin_s_np_list
+    # Flat byte view for the dtype-agnostic Cython memcpy gather.
+    pin_s_flat_bytes_list = [
+        p.reshape(alloc_batch, num_tokens * token_dim).view(np.int8)
+        for p in pin_s_np_list
     ]
+    states_row_bytes = num_tokens * token_dim * 2  # fp16 == 2 bytes
     gpu_s = torch.empty(
-        alloc_batch, num_tokens, token_dim, dtype=torch.float32, device=device,
+        alloc_batch, num_tokens, token_dim, dtype=torch.float16, device=device,
     )
 
     # GPU mask buffer is zero-initialized once and the tail [total_n:alloc_batch]
@@ -499,10 +517,11 @@ def _eval_server_serve(
     )
     # Contiguous views of the shared-memory tensors (views don't survive
     # pickling, so they're built per-process here).
-    # states: (W, B, num_tokens, token_dim) f32 → flatten last two for gather.
-    all_states_np = shared_bufs._states.numpy().reshape(
+    # states: (W, B, num_tokens, token_dim) fp16 → flatten last two and view
+    # as bytes so the Cython gather is dtype-agnostic (matches scatter_results).
+    all_states_bytes = shared_bufs._states.numpy().reshape(
         shared_bufs.num_workers, shared_bufs.batch_size, num_tokens * token_dim,
-    )
+    ).view(np.int8)
     all_masks_np = shared_bufs._legal_mask.numpy()
     all_priors_np = shared_bufs._priors.numpy()
     all_values_np = shared_bufs._values.numpy()
@@ -609,15 +628,17 @@ def _eval_server_serve(
         slot = _free_slots.get()
 
         pin_s_slot = pin_s_list[slot]
-        pin_s_flat_np = pin_s_flat_np_list[slot]
+        pin_s_flat_bytes = pin_s_flat_bytes_list[slot]
         pin_mask_slot = pin_mask_list[slot]
         pin_mask_np = pin_mask_np_list[slot]
         pin_priors_slot = pin_priors_list[slot]
         pin_val_slot = pin_val_list[slot]
 
         # Gather states + masks into the pinned buffers via Cython memcpy.
+        # States go through the byte-level path (fp16 on the wire).
         total_n = _gather_states(
-            pin_s_flat_np, all_states_np, widx, cnts, n_req,
+            pin_s_flat_bytes, all_states_bytes, widx, cnts, n_req,
+            states_row_bytes,
         )
         _gather_masks(pin_mask_np, all_masks_np, widx, cnts, n_req)
         padded_n = total_n
@@ -984,8 +1005,15 @@ class RemoteEvaluator(BaseEvaluator):
         self._worker_idx = worker_idx
 
         # Input views (worker writes these).
+        # ``_in_states_np`` is fp16 (wire dtype); ``get_token_data`` writes
+        # fp32 so we keep a per-worker fp32 scratch and cast into the shm
+        # slot at the boundary. Scratch sized to the full batch so both the
+        # single-state and batched paths share it.
         self._in_states_np = shared_bufs.get_input_states_np(worker_idx)
         self._in_legal_mask_np = shared_bufs.get_input_legal_mask_np(worker_idx)
+        self._states_scratch_fp32 = np.empty(
+            self._in_states_np.shape, dtype=np.float32,
+        )
 
         # Output views (worker reads these; already softmaxed + canonical).
         self._out_priors_np = shared_bufs.get_output_priors_np(worker_idx)
@@ -1079,7 +1107,8 @@ class RemoteEvaluator(BaseEvaluator):
             - phase_id: decision phase id 0-10.
         """
         phase_id = get_decision_phase_py(state)
-        get_token_data(state, self._in_states_np[0])
+        get_token_data(state, self._states_scratch_fp32[0])
+        self._in_states_np[0] = self._states_scratch_fp32[0].astype(np.float16)
         n = enumerate_legal_actions_py(state, self._enum_scratch)
         self._fill_mask_row(0, phase_id, self._enum_scratch[:n])
 
@@ -1135,8 +1164,12 @@ class RemoteEvaluator(BaseEvaluator):
 
         # Batched token fill — single Cython entry amortizes per-leaf Python
         # dispatch + GameState wrapper construction (rebind across rows
-        # internally).
-        get_token_data_batch(state_arrays, self.num_players, self._in_states_np[:n])
+        # internally). Fill fp32 scratch first, then cast into the fp16 shm
+        # slot at the boundary (one vectorized astype, ~tens of μs).
+        get_token_data_batch(
+            state_arrays, self.num_players, self._states_scratch_fp32[:n],
+        )
+        self._in_states_np[:n] = self._states_scratch_fp32[:n].astype(np.float16)
         # Caller already has the dense mask — copy it straight into shm.
         np.copyto(self._in_legal_mask_np[:n], legal_mask, casting="unsafe")
 

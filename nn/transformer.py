@@ -466,6 +466,13 @@ class RSSTransformerNet(nn.Module):
 
         Args:
             x: (batch, num_players + 65, token_dim) zero-padded raw features.
+                Any float dtype works — eval-server ships fp16 on the wire
+                (halves IPC bytes); trainer passes fp32. Inside autocast(bf16)
+                Linear promotes both to bf16; outside autocast the caller is
+                responsible for matching the projection weight dtype (fp32
+                today). No explicit upcast here: an unconditional
+                ``x.to(bf16)`` would mismatch fp32 Linear weights in
+                non-autocast paths (e.g., in-process NNEvaluator tests).
         Returns:
             (batch, num_players + 66, d_model) embeddings: projected input
             tokens followed by the single pass anchor.
@@ -562,6 +569,7 @@ class RSSTransformerNet(nn.Module):
 
         Args:
             x: (batch, num_tokens, token_dim) token features, zero-padded.
+                Any float dtype (fp16 / fp32) — upcast to bf16 at trunk entry.
             legal_mask: (batch, UNIFIED_LOGIT_DIM) bool tensor. ``True`` marks
                 a slot as legal for the current state's phase / entities;
                 illegal slots are masked to ``-1e9`` so they vanish after
