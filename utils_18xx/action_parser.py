@@ -14,12 +14,15 @@ from core.actions import (
     ACTION_ACQ_FI_BUY_PY as ACTION_ACQ_FI_BUY,
     ACTION_ACQ_OFFER_ACCEPT_PY as ACTION_ACQ_OFFER_ACCEPT,
     ACTION_ACQ_PRICE_PY as ACTION_ACQ_PRICE,
+    ACTION_ACQ_SELECT_COMPANY_PY as ACTION_ACQ_SELECT_COMPANY,
+    ACTION_ACQ_SELECT_CORP_PY as ACTION_ACQ_SELECT_CORP,
     ACTION_AUCTION_PY as ACTION_AUCTION,
     ACTION_BUY_SHARE_PY as ACTION_BUY_SHARE,
     ACTION_CLOSE_PY as ACTION_CLOSE,
     ACTION_DIVIDEND_PY as ACTION_DIVIDEND,
     ACTION_IPO_PY as ACTION_IPO,
     ACTION_ISSUE_PY as ACTION_ISSUE,
+    ACTION_PAR_PY as ACTION_PAR,
     ACTION_PASS_PY as ACTION_PASS,
     ACTION_RAISE_PY as ACTION_RAISE,
     ACTION_SELL_SHARE_PY as ACTION_SELL_SHARE,
@@ -47,7 +50,7 @@ LOC_FI = CompanyLocation.LOC_FI
 PHASE_INVEST = GamePhases.PHASE_INVEST
 PHASE_BID = GamePhases.PHASE_BID
 PHASE_WRAP_UP = GamePhases.PHASE_WRAP_UP
-PHASE_ACQ = GamePhases.PHASE_ACQUISITION
+PHASE_ACQ_SELECT_CORP = GamePhases.PHASE_ACQ_SELECT_CORP
 PHASE_ACQ_OFFER = GamePhases.PHASE_ACQ_OFFER
 PHASE_CLOSING = GamePhases.PHASE_CLOSING
 PHASE_INCOME = GamePhases.PHASE_INCOME
@@ -55,7 +58,14 @@ PHASE_DIVIDENDS = GamePhases.PHASE_DIVIDENDS
 PHASE_END_CARD = GamePhases.PHASE_END_CARD
 PHASE_ISSUE = GamePhases.PHASE_ISSUE_SHARES
 PHASE_IPO = GamePhases.PHASE_IPO
+PHASE_PAR = GamePhases.PHASE_PAR
+PHASE_ACQ_SELECT_COMPANY = GamePhases.PHASE_ACQ_SELECT_COMPANY
+PHASE_ACQ_SELECT_PRICE = GamePhases.PHASE_ACQ_SELECT_PRICE
 PHASE_GAME_OVER = GamePhases.PHASE_GAME_OVER
+
+# Legacy compatibility alias for older helpers that still import PHASE_ACQ.
+# Do not treat this as the full post-refactor acquisition phase group.
+PHASE_ACQ = PHASE_ACQ_SELECT_CORP
 
 
 @dataclass(frozen=True)
@@ -268,13 +278,10 @@ def map_invest_action(state: GameState, action: dict, layout: ActionLayout | Non
 
     if atype == "bid":
         company_id = COMPANY_NAME_TO_ID[action["company"]]
-        price = int(action["price"])
-        amount = price - COMPANIES[company_id].get_face_value()
         return find_legal_action(
             state,
             action_type=ACTION_AUCTION,
             company_id=company_id,
-            amount=amount,
         )
 
     if atype == "buy_shares":
@@ -297,7 +304,7 @@ def map_bid_action(state: GameState, action: dict, layout: ActionLayout | None =
     if atype == "bid":
         company_id = COMPANY_NAME_TO_ID[action["company"]]
         price = int(action["price"])
-        amount = price - COMPANIES[company_id].get_face_value() - 1
+        amount = price - COMPANIES[company_id].get_face_value()
         return find_legal_action(
             state,
             action_type=ACTION_RAISE,
@@ -315,15 +322,23 @@ def map_ipo_action(state: GameState, action: dict, layout: ActionLayout | None =
 
     if atype == "par":
         corp_id = CORP_NAME_TO_ID[action["corporation"]]
-        par_index = _parse_par_index(action)
         return find_legal_action(
             state,
             action_type=ACTION_IPO,
             corp_id=corp_id,
-            amount=par_index,
         )
 
     raise ValueError(f"Unrecognised IPO action type: {atype!r}")
+
+
+def map_par_action(state: GameState, action: dict, layout: ActionLayout | None = None) -> int:
+    if action["type"] != "par":
+        raise ValueError(f"Unrecognised PAR action type: {action['type']!r}")
+    return find_legal_action(
+        state,
+        action_type=ACTION_PAR,
+        amount=_parse_par_index(action),
+    )
 
 
 def map_dividend_action(state: GameState, action: dict, layout: ActionLayout | None = None) -> int:
@@ -345,27 +360,45 @@ def map_issue_action(state: GameState, action: dict, layout: ActionLayout | None
     raise ValueError(f"Unrecognised ISSUE action type: {atype!r}")
 
 
-def map_acquisition_action(state: GameState, action: dict, layout: ActionLayout | None = None) -> int:
+def map_acquisition_action(
+    state: GameState,
+    action: dict,
+    phase: int,
+    layout: ActionLayout | None = None,
+) -> int:
     if action["type"] != "offer":
         raise ValueError(f"Unrecognised ACQUISITION action type: {action['type']!r}")
 
     company_id = COMPANY_NAME_TO_ID[action["company"]]
     corp_id = CORP_NAME_TO_ID[action["corporation"]]
 
+    if phase == PHASE_ACQ_SELECT_CORP:
+        return find_legal_action(
+            state,
+            action_type=ACTION_ACQ_SELECT_CORP,
+            corp_id=corp_id,
+        )
+
+    if phase == PHASE_ACQ_SELECT_COMPANY:
+        return find_legal_action(
+            state,
+            action_type=ACTION_ACQ_SELECT_COMPANY,
+            company_id=company_id,
+        )
+
+    if phase != PHASE_ACQ_SELECT_PRICE:
+        raise ValueError(f"Offer cannot be mapped in phase {phase}")
+
     if COMPANIES[company_id].get_location(state) == LOC_FI:
         return find_legal_action(
             state,
             action_type=ACTION_ACQ_FI_BUY,
-            corp_id=corp_id,
-            company_id=company_id,
         )
 
     amount = int(action["price"]) - COMPANIES[company_id].get_low_price()
     return find_legal_action(
         state,
         action_type=ACTION_ACQ_PRICE,
-        corp_id=corp_id,
-        company_id=company_id,
         amount=amount,
     )
 
@@ -444,6 +477,11 @@ def map_action(
             return map_ipo_action(state, action, layout)
         return None
 
+    if phase == PHASE_PAR:
+        if atype == "par":
+            return map_par_action(state, action, layout)
+        return None
+
     if phase == PHASE_DIVIDENDS:
         if atype in DIVIDEND_ACTIONS and entity_type == "corporation":
             return map_dividend_action(state, action, layout)
@@ -454,10 +492,10 @@ def map_action(
             return map_issue_action(state, action, layout)
         return None
 
-    if phase == PHASE_ACQ:
+    if phase in (PHASE_ACQ_SELECT_CORP, PHASE_ACQ_SELECT_COMPANY, PHASE_ACQ_SELECT_PRICE):
         if atype == "offer":
-            return map_acquisition_action(state, action, layout)
-        if atype == "pass":
+            return map_acquisition_action(state, action, phase, layout)
+        if atype == "pass" and phase == PHASE_ACQ_SELECT_CORP:
             return find_legal_action(state, action_type=ACTION_PASS)
         return None
 

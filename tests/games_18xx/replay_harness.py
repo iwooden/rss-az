@@ -9,6 +9,7 @@ from pathlib import Path
 
 from core.driver import DRIVER, STATUS_INVALID_PY as STATUS_INVALID
 from core.data import COMPANY_NAMES, COMPANY_NAME_TO_ID, CORP_NAME_TO_ID, CORP_NAMES
+from core.state import GameState
 from entities.company import COMPANIES, CompanyLocation
 from entities.corp import CORPS
 from entities.deck import DECK
@@ -17,8 +18,10 @@ from entities.player import PLAYERS
 from entities.turn import TURN
 from utils_18xx.action_parser import (
     ActionLayout,
-    PHASE_ACQ,
     PHASE_ACQ_OFFER,
+    PHASE_ACQ_SELECT_COMPANY,
+    PHASE_ACQ_SELECT_CORP,
+    PHASE_ACQ_SELECT_PRICE,
     PHASE_BID,
     PHASE_CLOSING,
     PHASE_DIVIDENDS,
@@ -28,9 +31,11 @@ from utils_18xx.action_parser import (
     PHASE_INVEST,
     PHASE_IPO,
     PHASE_ISSUE,
+    PHASE_PAR,
     PHASE_WRAP_UP,
     filter_actions,
     flatten_auto_actions,
+    get_legal_actions,
     map_action,
 )
 from utils_18xx.replay_state import (
@@ -42,6 +47,14 @@ from utils_18xx.replay_state import (
 
 LOC_AUCTION = CompanyLocation.LOC_AUCTION
 LOC_REVEALED = CompanyLocation.LOC_REVEALED
+INVEST_PHASES = (PHASE_INVEST, PHASE_BID)
+IPO_PHASES = (PHASE_IPO, PHASE_PAR)
+ACQ_PHASES = (
+    PHASE_ACQ_SELECT_CORP,
+    PHASE_ACQ_SELECT_COMPANY,
+    PHASE_ACQ_SELECT_PRICE,
+    PHASE_ACQ_OFFER,
+)
 
 
 @dataclass
@@ -162,7 +175,7 @@ class ReplayHarness:
                 action_idx += 1
                 continue
 
-            if phase in (PHASE_ACQ, PHASE_ACQ_OFFER):
+            if phase in ACQ_PHASES:
                 action_idx = self._run_acquisition_round(state, actions, action_idx, layout, ref_by_action)
                 continue
 
@@ -213,17 +226,34 @@ class ReplayHarness:
             self._last_ref = ref_by_action[action_id]
             return idx + 1
 
-        self._map_and_apply_action(
-            state,
-            action,
-            layout,
-            action_id=action_id,
-            phase_name=self._get_phase_name(state),
-            mapping_expected="mapped action",
-            mapping_context=f"18xx_type={action.get('type')} entity={action.get('entity')}",
-            invalid_expected="non-invalid status",
-            invalid_context=f"18xx_type={action.get('type')} entity={action.get('entity')}",
-        )
+        if action.get("type") == "bid" and TURN.get_phase(state) in INVEST_PHASES:
+            self._apply_composite_simple_action(
+                state,
+                action,
+                layout,
+                action_id=action_id,
+                phase_group=INVEST_PHASES,
+            )
+        elif action.get("type") == "par" and TURN.get_phase(state) in IPO_PHASES:
+            self._apply_composite_simple_action(
+                state,
+                action,
+                layout,
+                action_id=action_id,
+                phase_group=IPO_PHASES,
+            )
+        else:
+            self._map_and_apply_action(
+                state,
+                action,
+                layout,
+                action_id=action_id,
+                phase_name=self._get_phase_name(state),
+                mapping_expected="mapped action",
+                mapping_context=f"18xx_type={action.get('type')} entity={action.get('entity')}",
+                invalid_expected="non-invalid status",
+                invalid_context=f"18xx_type={action.get('type')} entity={action.get('entity')}",
+            )
 
         if has_ref:
             self._last_ref = ref_by_action[action_id]
@@ -231,6 +261,74 @@ class ReplayHarness:
             self._last_ref = None
 
         return idx + 1
+
+    def _apply_composite_simple_action(self, state, action, layout, *, action_id: int, phase_group: tuple[int, ...]) -> None:
+        current_phase = TURN.get_phase(state)
+        try:
+            start_idx = phase_group.index(current_phase)
+        except ValueError:
+            return
+
+        for expected_phase in phase_group[start_idx:]:
+            if TURN.get_phase(state) != expected_phase:
+                return
+            phase_name = self._get_phase_name(state)
+            if self._try_map_action(state, action, layout) is None:
+                if self._composite_action_step_already_satisfied(state, action, expected_phase):
+                    return
+                self._map_and_apply_action(
+                    state,
+                    action,
+                    layout,
+                    action_id=action_id,
+                    phase_name=phase_name,
+                    mapping_expected="mapped action",
+                    mapping_context=f"18xx_type={action.get('type')} entity={action.get('entity')}",
+                    invalid_expected="non-invalid status",
+                    invalid_context=f"18xx_type={action.get('type')} entity={action.get('entity')}",
+                )
+                return
+            if not self._map_and_apply_action(
+                state,
+                action,
+                layout,
+                action_id=action_id,
+                phase_name=phase_name,
+                mapping_expected="mapped action",
+                mapping_context=f"18xx_type={action.get('type')} entity={action.get('entity')}",
+                invalid_expected="non-invalid status",
+                invalid_context=f"18xx_type={action.get('type')} entity={action.get('entity')}",
+            ):
+                return
+            settle_to_player_choice(state)
+
+    def _composite_action_step_already_satisfied(self, state, action, expected_phase: int) -> bool:
+        if expected_phase != PHASE_BID or action.get("type") != "bid":
+            return False
+
+        get_active_player = getattr(TURN, "get_active_player", None)
+        get_auction_price = getattr(TURN, "get_auction_price", None)
+        get_auction_high_bidder = getattr(TURN, "get_auction_high_bidder", None)
+        if not all(callable(fn) for fn in (get_active_player, get_auction_price, get_auction_high_bidder)):
+            return False
+
+        entity = action.get("entity")
+        try:
+            price = int(action["price"])
+        except (KeyError, TypeError, ValueError):
+            return False
+
+        high_bidder = get_auction_high_bidder(state)
+        active_player = get_active_player(state)
+        if high_bidder < 0 or active_player < 0:
+            return False
+        if high_bidder >= len(self._engine_index_to_player_id) or active_player >= len(self._engine_index_to_player_id):
+            return False
+        return (
+            self._engine_index_to_player_id[high_bidder] == entity
+            and get_auction_price(state) == price
+            and self._engine_index_to_player_id[active_player] != entity
+        )
 
     def _should_skip_pre_action_compare(self, state, action) -> bool:
         if not isinstance(self._last_ref, dict):
@@ -276,7 +374,7 @@ class ReplayHarness:
                 actions,
                 idx,
                 layout,
-                valid_phases=(PHASE_ACQ, PHASE_ACQ_OFFER),
+                valid_phases=ACQ_PHASES,
                 phase_name="ACQ",
             )
 
@@ -297,8 +395,48 @@ class ReplayHarness:
         for _ in range(max_turns):
             settle_to_player_choice(state)
             phase = TURN.get_phase(state)
-            if phase not in (PHASE_ACQ, PHASE_ACQ_OFFER):
+            if phase not in ACQ_PHASES:
                 break
+
+            if pending_offer is not None and phase != PHASE_ACQ_OFFER:
+                response_action = explicit_responses.get(pending_offer.get("id", -1))
+                if (
+                    phase == PHASE_ACQ_SELECT_CORP
+                    and self._external_offer_matches_ref_buyer(pending_offer, response_action, ref_by_action)
+                ):
+                    pending_offer = None
+                    continue
+                engine_action = self._try_map_action(state, pending_offer, layout)
+                if engine_action is not None:
+                    result = DRIVER.apply_action(state, engine_action)
+                    if result == STATUS_INVALID:
+                        self.mismatches.append(
+                            Mismatch(
+                                action_id=pending_offer.get("id", first_action_id),
+                                phase=self._get_phase_name(state),
+                                field="action_validity",
+                                expected="non-invalid status",
+                                actual="STATUS_INVALID",
+                                context=f"engine_action={engine_action} 18xx_type={pending_offer.get('type')}",
+                            )
+                        )
+                        pending_offer = None
+                    continue
+                if self._finish_unmappable_pending_offer(
+                    state,
+                    pending_offer,
+                    explicit_responses,
+                    ref_by_action,
+                    remaining_actions=remaining_actions,
+                ):
+                    pending_offer = None
+                    continue
+                if phase in (PHASE_ACQ_SELECT_COMPANY, PHASE_ACQ_SELECT_PRICE):
+                    TURN.clear_acquisition_context(state)
+                    TURN.set_phase(state, PHASE_ACQ_SELECT_CORP)
+                    pending_offer = None
+                    continue
+                pending_offer = None
 
             if phase == PHASE_ACQ_OFFER:
                 if pending_offer is None:
@@ -493,7 +631,7 @@ class ReplayHarness:
         for _ in trailing_auto_passes:
             settle_to_player_choice(state)
             phase_name = self._get_phase_name(state)
-            if TURN.get_phase(state) not in (PHASE_ACQ, PHASE_CLOSING):
+            if TURN.get_phase(state) not in (*ACQ_PHASES, PHASE_CLOSING):
                 break
             if TURN.get_phase(state) == PHASE_CLOSING:
                 if self._find_mappable_closing_action_for_active_player(state, actions, end_idx, layout) is not None:
@@ -631,20 +769,16 @@ class ReplayHarness:
             settle_to_player_choice(state)
             if TURN.get_phase(state) not in valid_phases:
                 return cursor
-            if TURN.get_phase(state) == PHASE_ACQ_OFFER:
-                self._apply_offer_response(state, accept=False, action_id=action_id, layout=layout)
-            else:
-                self._apply_phase_pass(state, layout, action_id=action_id, phase_name=phase_name)
+            if not self._apply_silent_phase_step(state, layout, action_id=action_id, phase_name=phase_name):
+                return cursor
             cursor += 1
 
         for _ in range(max_turns):
             settle_to_player_choice(state)
             if TURN.get_phase(state) not in valid_phases:
                 return cursor
-            if TURN.get_phase(state) == PHASE_ACQ_OFFER:
-                self._apply_offer_response(state, accept=False, action_id=action_id, layout=layout)
-            else:
-                self._apply_phase_pass(state, layout, action_id=action_id, phase_name=phase_name)
+            if not self._apply_silent_phase_step(state, layout, action_id=action_id, phase_name=phase_name):
+                return cursor
 
         return cursor
 
@@ -744,13 +878,126 @@ class ReplayHarness:
         except (ValueError, KeyError, IndexError):
             return None
 
+    @staticmethod
+    def _get_single_legal_action_id(state):
+        actions = get_legal_actions(state)
+        if len(actions) == 1:
+            return actions[0][0]
+        return None
+
+    def _apply_silent_phase_step(self, state, layout, *, action_id: int, phase_name: str) -> bool:
+        if TURN.get_phase(state) == PHASE_ACQ_OFFER:
+            self._apply_offer_response(state, accept=False, action_id=action_id, layout=layout)
+            return True
+
+        pass_action = self._try_map_action(state, {"type": "pass"}, layout)
+        if pass_action is not None:
+            return self._map_and_apply_action(
+                state,
+                {"type": "pass"},
+                layout,
+                action_id=action_id,
+                phase_name=phase_name,
+                mapping_expected="mapped pass action",
+                mapping_context="silent phase advance",
+                invalid_expected="non-invalid status",
+                invalid_context="silent phase advance",
+            )
+
+        forced_action = self._get_single_legal_action_id(state)
+        if forced_action is None:
+            return False
+
+        result = DRIVER.apply_action(state, forced_action)
+        if result == STATUS_INVALID:
+            self.mismatches.append(
+                Mismatch(
+                    action_id=action_id,
+                    phase=self._get_phase_name(state),
+                    field="action_validity",
+                    expected="non-invalid status",
+                    actual="STATUS_INVALID",
+                    context="silent forced phase advance",
+                )
+            )
+            return False
+        return True
+
     def _find_first_mappable_acquisition_offer(self, state, remaining_actions, layout):
         for idx, action in enumerate(remaining_actions):
             if action.get("type") != "offer":
                 continue
-            if self._try_map_action(state, action, layout) is not None:
+            if self._offer_has_live_path(state, action, layout):
                 return idx
         return None
+
+    def _offer_already_on_buyer_acq_pile(self, state, offer) -> bool:
+        company_name = offer.get("company")
+        corp_name = offer.get("corporation")
+        if company_name is None or corp_name is None:
+            return False
+
+        try:
+            company_id = COMPANY_NAME_TO_ID[company_name]
+            buyer_corp_id = CORP_NAME_TO_ID[corp_name]
+        except KeyError:
+            return False
+
+        return (
+            COMPANIES[company_id].get_location(state) == int(CompanyLocation.LOC_CORP_ACQ)
+            and COMPANIES[company_id].get_owner_id(state) == buyer_corp_id
+        )
+
+    def _clone_offer_probe_state(self, state):
+        probe = GameState.from_array(state._array.copy(), len(self._engine_index_to_player_id))
+        if hasattr(state, "step_mode"):
+            probe.step_mode = state.step_mode
+        if hasattr(state, "acq_same_president"):
+            probe.acq_same_president = state.acq_same_president
+        return probe
+
+    def _offer_has_live_path(self, state, offer, layout) -> bool:
+        live_engine_action = self._try_map_action(state, offer, layout)
+        if live_engine_action is None:
+            return False
+
+        live_phase = TURN.get_phase(state)
+        if live_phase in (PHASE_ACQ_SELECT_COMPANY, PHASE_ACQ_SELECT_PRICE):
+            return True
+
+        if (
+            live_phase == PHASE_ACQ_SELECT_CORP
+            and self._offer_already_on_buyer_acq_pile(state, offer)
+        ):
+            return True
+
+        try:
+            probe = self._clone_offer_probe_state(state)
+        except Exception:
+            return True
+
+        for _ in range(4):
+            phase = TURN.get_phase(probe)
+            if phase not in ACQ_PHASES:
+                return True
+
+            engine_action = self._try_map_action(probe, offer, layout)
+            if engine_action is None:
+                return False
+
+            result = DRIVER.apply_action(probe, engine_action)
+            if result == STATUS_INVALID:
+                return False
+
+            phase = TURN.get_phase(probe)
+            if phase == PHASE_ACQ_OFFER:
+                return True
+            if phase == PHASE_ACQ_SELECT_CORP:
+                return True
+            if phase not in ACQ_PHASES:
+                return True
+
+        return False
 
     def _find_ref_company_owner(self, ref, company_name: str):
         for corp in ref.get("corporations", []):
@@ -765,31 +1012,40 @@ class ReplayHarness:
             return "offering", None
         return None, None
 
-    def _is_self_player_corp_offer(self, state, action) -> bool:
+    def _offer_is_by_buyer_president(self, state, action) -> tuple[int, int] | None:
         if action.get("type") != "offer":
-            return False
+            return None
 
         company_name = action.get("company")
         corp_name = action.get("corporation")
         entity = action.get("entity")
         if company_name is None or corp_name is None or entity is None:
-            return False
+            return None
 
         try:
             company_id = COMPANY_NAME_TO_ID[company_name]
             buyer_corp_id = CORP_NAME_TO_ID[corp_name]
         except KeyError:
-            return False
+            return None
 
         buyer_president_idx = CORPS[buyer_corp_id].get_president_id(state)
         if buyer_president_idx < 0:
-            return False
+            return None
         buyer_president_player_id = self._engine_index_to_player_id[buyer_president_idx]
         if buyer_president_player_id != entity:
+            return None
+
+        return company_id, buyer_corp_id
+
+    def _is_self_player_corp_offer(self, state, action) -> bool:
+        offer_ids = self._offer_is_by_buyer_president(state, action)
+        if offer_ids is None:
             return False
 
+        company_id, _buyer_corp_id = offer_ids
         location = COMPANIES[company_id].get_location(state)
         owner_idx = COMPANIES[company_id].get_owner_id(state)
+        entity = action.get("entity")
         if location == int(CompanyLocation.LOC_PLAYER):
             if owner_idx < 0:
                 return False
@@ -806,6 +1062,14 @@ class ReplayHarness:
             return seller_president_player_id == entity
 
         return False
+
+    def _is_implicit_fi_offer(self, state, action) -> bool:
+        offer_ids = self._offer_is_by_buyer_president(state, action)
+        if offer_ids is None:
+            return False
+
+        company_id, _buyer_corp_id = offer_ids
+        return COMPANIES[company_id].get_location(state) == int(CompanyLocation.LOC_FI)
 
     def _external_offer_matches_ref_buyer(self, offer, response_action, ref_by_action) -> bool:
         terminal_action_id = offer.get("id", -1)
@@ -825,23 +1089,72 @@ class ReplayHarness:
 
         engine_player_id = self._engine_index_to_player_id[active_player]
         first_mappable_idx = self._find_first_mappable_acquisition_offer(state, remaining_actions, layout)
-        if first_mappable_idx is None:
-            return None
+        scan_limit = len(remaining_actions) if first_mappable_idx is None else first_mappable_idx
 
-        for idx, action in enumerate(remaining_actions[:first_mappable_idx]):
+        for idx, action in enumerate(remaining_actions[:scan_limit]):
             if action.get("type") != "offer":
                 continue
             action_id = action.get("id", -1)
             response_action = explicit_responses.get(action_id)
-            if response_action is not None:
+            accepted_durable_offer = (
+                response_action is not None
+                and self._response_accepts(response_action)
+            )
+            implicit_durable_offer = (
+                response_action is None
+                and (
+                    self._is_self_player_corp_offer(state, action)
+                    or self._is_implicit_fi_offer(state, action)
+                )
+            )
+            if not (accepted_durable_offer or implicit_durable_offer):
                 continue
-            if not self._is_self_player_corp_offer(state, action):
+            if not self._external_offer_matches_ref_buyer(action, response_action, ref_by_action):
                 continue
-            if not self._external_offer_matches_ref_buyer(action, None, ref_by_action):
+            if response_action is None and self._try_map_action(state, action, layout) is not None:
                 continue
-            if self._try_map_action(state, action, layout) is not None:
+
+            earlier_accepted_offer_pending = False
+            for earlier in remaining_actions[:idx]:
+                if earlier.get("type") != "offer":
+                    continue
+                earlier_response = explicit_responses.get(earlier.get("id", -1))
+                if earlier_response is not None and self._response_accepts(earlier_response):
+                    earlier_accepted_offer_pending = True
+                    break
+            if earlier_accepted_offer_pending:
                 continue
+
             return idx
+
+        if first_mappable_idx is None:
+            for idx, action in enumerate(remaining_actions):
+                if action.get("type") != "offer":
+                    continue
+                if action.get("entity") == engine_player_id:
+                    continue
+
+                earlier_accepted_offer_pending = False
+                for earlier in remaining_actions[:idx]:
+                    if earlier.get("type") != "offer":
+                        continue
+                    earlier_response = explicit_responses.get(earlier.get("id", -1))
+                    if earlier_response is not None and self._response_accepts(earlier_response):
+                        earlier_accepted_offer_pending = True
+                        break
+                if earlier_accepted_offer_pending:
+                    continue
+
+                action_id = action.get("id", -1)
+                response_action = explicit_responses.get(action_id)
+                if response_action is None or not self._response_accepts(response_action):
+                    continue
+                if not self._external_offer_matches_ref_buyer(action, response_action, ref_by_action):
+                    continue
+                if self._try_map_action(state, action, layout) is not None:
+                    continue
+                return idx
+            return None
 
         blocked_offer_idx = None
         for idx, action in enumerate(remaining_actions[:first_mappable_idx]):
@@ -920,6 +1233,30 @@ class ReplayHarness:
         )
         return False
 
+    def _finish_unmappable_pending_offer(
+        self,
+        state,
+        pending_offer,
+        explicit_responses,
+        ref_by_action,
+        *,
+        remaining_actions,
+    ) -> bool:
+        action_id = pending_offer.get("id", -1)
+        response_action = explicit_responses.get(action_id)
+        if not self._external_offer_matches_ref_buyer(pending_offer, response_action, ref_by_action):
+            return False
+        if response_action is not None:
+            remaining_actions[:] = self._remove_action_by_id(
+                remaining_actions,
+                response_action.get("id", -1),
+            )
+        if not self._apply_external_acquisition_offer(state, pending_offer, explicit_responses):
+            return False
+        TURN.clear_acquisition_context(state)
+        TURN.set_phase(state, PHASE_ACQ_SELECT_CORP)
+        return True
+
     def _find_externalizable_offer_before_pass(self, state, remaining_actions, pass_idx, explicit_responses, layout, ref_by_action):
         for idx, action in enumerate(remaining_actions[:pass_idx]):
             if action.get("type") != "offer":
@@ -929,7 +1266,10 @@ class ReplayHarness:
             response_action = explicit_responses.get(action_id)
             if response_action is not None:
                 continue
-            if not self._is_self_player_corp_offer(state, action):
+            if not (
+                self._is_self_player_corp_offer(state, action)
+                or self._is_implicit_fi_offer(state, action)
+            ):
                 continue
             if not self._external_offer_matches_ref_buyer(action, None, ref_by_action):
                 continue
@@ -1199,7 +1539,7 @@ class ReplayHarness:
                 final_ref is not None
                 and self._matches_ref(state, final_ref, "final already satisfied")
             )
-            if (not final_already_satisfied) and TURN.get_phase(state) in (PHASE_ACQ, PHASE_ACQ_OFFER, PHASE_CLOSING):
+            if (not final_already_satisfied) and TURN.get_phase(state) in (*ACQ_PHASES, PHASE_CLOSING):
                 drain_offer_phases(state, layout)
                 settle_to_player_choice(state)
 
@@ -1212,7 +1552,9 @@ class ReplayHarness:
             PHASE_INVEST: "INVEST",
             PHASE_BID: "BID",
             PHASE_WRAP_UP: "WRAP_UP",
-            PHASE_ACQ: "ACQ",
+            PHASE_ACQ_SELECT_CORP: "ACQ_SELECT_CORP",
+            PHASE_ACQ_SELECT_COMPANY: "ACQ_SELECT_COMPANY",
+            PHASE_ACQ_SELECT_PRICE: "ACQ_SELECT_PRICE",
             PHASE_ACQ_OFFER: "ACQ_OFFER",
             PHASE_CLOSING: "CLOSING",
             PHASE_INCOME: "INCOME",
@@ -1220,15 +1562,16 @@ class ReplayHarness:
             PHASE_END_CARD: "END_CARD",
             PHASE_ISSUE: "ISSUE",
             PHASE_IPO: "IPO",
+            PHASE_PAR: "PAR",
             PHASE_GAME_OVER: "GAME_OVER",
         }
         return names.get(phase, f"UNKNOWN({phase})")
 
     @staticmethod
     def _phase_stage_key(phase: int) -> int:
-        if phase in (PHASE_INVEST, PHASE_BID):
+        if phase in INVEST_PHASES:
             return 0
-        if phase in (PHASE_ACQ, PHASE_ACQ_OFFER):
+        if phase in ACQ_PHASES:
             return 1
         if phase == PHASE_CLOSING:
             return 2
@@ -1236,7 +1579,7 @@ class ReplayHarness:
             return 3
         if phase == PHASE_ISSUE:
             return 4
-        if phase == PHASE_IPO:
+        if phase in IPO_PHASES:
             return 5
         return -1
 
@@ -1266,9 +1609,8 @@ class ReplayHarness:
         ref_round = ref.get("round", "")
 
         phases_aligned = (
-            (phase == PHASE_INVEST and ref_round == "INV")
-            or (phase == PHASE_BID and ref_round == "INV")
-            or (phase == PHASE_IPO and ref_round == "IPO")
+            (phase in INVEST_PHASES and ref_round == "INV")
+            or (phase in IPO_PHASES and ref_round == "IPO")
             or (phase == PHASE_DIVIDENDS and ref_round == "DIV")
             or (phase == PHASE_ISSUE and ref_round == "ISS")
         )
@@ -1277,7 +1619,7 @@ class ReplayHarness:
             ref_active_player = ref.get("active_player")
             ref_action_type = ref.get("action_type", "")
             skip_active_player = ref_action_type == "end_game"
-            if ref_active_player is not None and phase in (PHASE_INVEST, PHASE_BID, PHASE_IPO) and not skip_active_player:
+            if ref_active_player is not None and phase in (*INVEST_PHASES, *IPO_PHASES) and not skip_active_player:
                 our_active = TURN.get_active_player(state)
                 expected_idx = self._player_id_to_index.get(ref_active_player)
                 if expected_idx is not None and our_active != expected_idx:

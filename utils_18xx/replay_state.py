@@ -25,8 +25,10 @@ from entities.player import PLAYERS
 from entities.turn import TURN
 
 from .action_parser import (
-    PHASE_ACQ,
     PHASE_ACQ_OFFER,
+    PHASE_ACQ_SELECT_COMPANY,
+    PHASE_ACQ_SELECT_CORP,
+    PHASE_ACQ_SELECT_PRICE,
     PHASE_CLOSING,
     find_legal_action,
     get_legal_actions,
@@ -37,6 +39,12 @@ from .action_parser import (
 LOC_PLAYER = CompanyLocation.LOC_PLAYER
 LOC_FI = CompanyLocation.LOC_FI
 LOC_CORP = CompanyLocation.LOC_CORP
+ACQ_PHASES = (
+    PHASE_ACQ_SELECT_CORP,
+    PHASE_ACQ_SELECT_COMPANY,
+    PHASE_ACQ_SELECT_PRICE,
+    PHASE_ACQ_OFFER,
+)
 
 
 def initialize_replay_state(
@@ -52,8 +60,10 @@ def initialize_replay_state(
     """Create a replay state on the live ACQ/CLO surface.
 
     ``pause_before_*`` arguments remain accepted for compatibility with older
-    callers, but current replay code relies on step mode and driver support
-    rather than custom pause flags on ``GameState``.
+    callers, but current replay code does not currently enable
+    ``state.step_mode`` by default. The harness instead relies on normal driver
+    auto-chaining plus explicit calls to ``settle_to_player_choice(...)`` rather
+    than custom pause flags on ``GameState``.
     """
     del pause_before_acq_transition, pause_before_closing_transition
 
@@ -214,34 +224,26 @@ def replay_acquisition_offer(
     """Replay a direct ACQ/ACQ_OFFER acquisition on the live engine surface."""
     del layout
 
+    offer_action = {
+        "type": "offer",
+        "corporation": CORPS[buyer_corp_id].name,
+        "company": COMPANIES[company_id].name,
+        "price": price,
+    }
+
     for _ in range(max_iterations):
         settle_to_player_choice(state)
         phase = TURN.get_phase(state)
 
-        if phase == PHASE_ACQ:
+        if phase in (PHASE_ACQ_SELECT_CORP, PHASE_ACQ_SELECT_COMPANY, PHASE_ACQ_SELECT_PRICE):
             try:
-                if COMPANIES[company_id].get_location(state) == LOC_FI:
-                    action_id = find_legal_action(
-                        state,
-                        action_type=ACTION_ACQ_FI_BUY,
-                        corp_id=buyer_corp_id,
-                        company_id=company_id,
-                    )
-                else:
-                    amount = price - COMPANIES[company_id].get_low_price()
-                    action_id = find_legal_action(
-                        state,
-                        action_type=ACTION_ACQ_PRICE,
-                        corp_id=buyer_corp_id,
-                        company_id=company_id,
-                        amount=amount,
-                    )
-            except ValueError:
+                action_id = map_action(state, offer_action, phase, None)
+            except (ValueError, KeyError, IndexError):
                 try:
-                    pass_id = find_legal_action(state, action_type=ACTION_PASS)
+                    action_id = find_legal_action(state, action_type=ACTION_PASS)
                 except ValueError:
                     return False
-                result = DRIVER.apply_action(state, pass_id)
+                result = DRIVER.apply_action(state, action_id)
                 if result == STATUS_INVALID:
                     return False
                 continue
@@ -249,10 +251,11 @@ def replay_acquisition_offer(
             result = DRIVER.apply_action(state, action_id)
             if result == STATUS_INVALID:
                 return False
-            if TURN.get_phase(state) != PHASE_ACQ_OFFER:
+            if TURN.get_phase(state) not in ACQ_PHASES:
                 return True
+            continue
 
-        elif phase == PHASE_ACQ_OFFER:
+        if phase == PHASE_ACQ_OFFER:
             try:
                 action_id = find_legal_action(
                     state,
@@ -263,8 +266,7 @@ def replay_acquisition_offer(
             result = DRIVER.apply_action(state, action_id)
             return result != STATUS_INVALID
 
-        else:
-            return False
+        return False
 
     raise RuntimeError("Exceeded ACQ replay iteration limit")
 
@@ -277,7 +279,7 @@ def drain_offer_phases(state: GameState, layout, max_iterations: int = 500) -> N
         settle_to_player_choice(state)
         phase = TURN.get_phase(state)
 
-        if phase not in (PHASE_ACQ, PHASE_ACQ_OFFER, PHASE_CLOSING):
+        if phase not in (*ACQ_PHASES, PHASE_CLOSING):
             return
 
         try:
