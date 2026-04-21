@@ -64,7 +64,7 @@ def test_format_action_issue_uses_active_corp_name() -> None:
     assert CORP_NAMES[-1] not in rendered
 
 
-def test_format_action_ipo_includes_company_corp_and_par() -> None:
+def test_format_action_ipo_includes_company_and_corp() -> None:
     state = _make_state()
     give_company_to_player(state, 14, 0)
     setup_ipo_phase_py(state)
@@ -75,7 +75,7 @@ def test_format_action_ipo_includes_company_corp_and_par() -> None:
 
     assert COMPANY_NAMES[14] in rendered
     assert CORP_NAMES[0] in rendered
-    assert "@$" in rendered
+    assert "float" in rendered
 
 
 def test_format_phase_context_closing_lists_closable_targets() -> None:
