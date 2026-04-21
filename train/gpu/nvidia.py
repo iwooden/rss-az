@@ -46,6 +46,13 @@ def apply_nvidia_optimizations() -> dict[str, str]:
     torch.backends.cudnn.allow_tf32 = True  # type: ignore[attr-defined]
     enabled["tf32"] = "matmul + cudnn"
 
+    # CUDAGraph-friendly bucketed eval can legitimately exercise more than the
+    # default eight Dynamo specializations (e.g. power-of-2 buckets up to 512
+    # already imply 9-10 shapes). Raise the per-process limit before any
+    # torch.compile call sites run.
+    torch._dynamo.config.recompile_limit = 16
+    enabled["recompile_limit"] = "16"
+
     cap = get_compute_capability()
     if cap is not None:
         enabled["compute_capability"] = f"{cap[0]}.{cap[1]}"

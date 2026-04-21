@@ -54,7 +54,9 @@ def test_gpu_config_threads_eval_batch_shape_mode_for_nvidia() -> None:
     assert kwargs["options"]["triton.cudagraphs"] is True
 
 
-def test_apply_nvidia_optimizations_enables_tf32_controls(monkeypatch) -> None:
+def test_apply_nvidia_optimizations_enables_tf32_controls_and_raises_recompile_limit(
+    monkeypatch,
+) -> None:
     recorded: list[str] = []
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -69,17 +71,22 @@ def test_apply_nvidia_optimizations_enables_tf32_controls(monkeypatch) -> None:
 
     old_matmul_tf32 = torch.backends.cuda.matmul.allow_tf32
     old_cudnn_tf32 = torch.backends.cudnn.allow_tf32
+    old_recompile_limit = torch._dynamo.config.recompile_limit
     try:
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
+        torch._dynamo.config.recompile_limit = 8
 
         enabled = apply_nvidia_optimizations()
 
         assert recorded == ["precision=high"]
         assert torch.backends.cuda.matmul.allow_tf32 is True
         assert torch.backends.cudnn.allow_tf32 is True
+        assert torch._dynamo.config.recompile_limit == 16
         assert enabled["tf32"] == "matmul + cudnn"
         assert enabled["architecture"] == "Blackwell"
+        assert enabled["recompile_limit"] == "16"
     finally:
         torch.backends.cuda.matmul.allow_tf32 = old_matmul_tf32
         torch.backends.cudnn.allow_tf32 = old_cudnn_tf32
+        torch._dynamo.config.recompile_limit = old_recompile_limit
