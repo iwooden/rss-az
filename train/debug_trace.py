@@ -11,12 +11,15 @@ from core.actions import (
     ACTION_ACQ_FI_BUY_PY as ACTION_ACQ_FI_BUY,
     ACTION_ACQ_OFFER_ACCEPT_PY as ACTION_ACQ_OFFER_ACCEPT,
     ACTION_ACQ_PRICE_PY as ACTION_ACQ_PRICE,
+    ACTION_ACQ_SELECT_COMPANY_PY as ACTION_ACQ_SELECT_COMPANY,
+    ACTION_ACQ_SELECT_CORP_PY as ACTION_ACQ_SELECT_CORP,
     ACTION_AUCTION_PY as ACTION_AUCTION,
     ACTION_BUY_SHARE_PY as ACTION_BUY_SHARE,
     ACTION_CLOSE_PY as ACTION_CLOSE,
     ACTION_DIVIDEND_PY as ACTION_DIVIDEND,
     ACTION_IPO_PY as ACTION_IPO,
     ACTION_ISSUE_PY as ACTION_ISSUE,
+    ACTION_PAR_PY as ACTION_PAR,
     ACTION_PASS_PY as ACTION_PASS,
     ACTION_RAISE_PY as ACTION_RAISE,
     ACTION_SELL_SHARE_PY as ACTION_SELL_SHARE,
@@ -147,12 +150,26 @@ def format_action(phase_id: int, action_id: int, state: GameState | None = None)
         return f"BID face+{info.amount}"
 
     if at == ACTION_ACQ_PRICE:
-        price = COMPANIES[info.company_id].get_low_price() + info.amount
-        return f"ACQUIRE {COMPANY_NAMES[info.company_id]} with {CORP_NAMES[info.corp_id]} @ ${price}"
+        if state is not None:
+            corp_id = TURN.get_active_corp(state)
+            company_id = TURN.get_active_company(state)
+            if corp_id >= 0 and company_id >= 0:
+                price = COMPANIES[company_id].get_low_price() + info.amount
+                return f"ACQUIRE {COMPANY_NAMES[company_id]} with {CORP_NAMES[corp_id]} @ ${price}"
+        return f"ACQUIRE at low+{info.amount}"
 
     if at == ACTION_ACQ_FI_BUY:
-        price = COMPANIES[info.company_id].get_face_value() if info.corp_id == int(CorpIndices.CORP_OS) else COMPANIES[info.company_id].get_high_price()
-        return f"ACQUIRE {COMPANY_NAMES[info.company_id]} from FI with {CORP_NAMES[info.corp_id]} @ ${price}"
+        if state is not None:
+            corp_id = TURN.get_active_corp(state)
+            company_id = TURN.get_active_company(state)
+            if corp_id >= 0 and company_id >= 0:
+                price = (
+                    COMPANIES[company_id].get_face_value()
+                    if corp_id == int(CorpIndices.CORP_OS)
+                    else COMPANIES[company_id].get_high_price()
+                )
+                return f"ACQUIRE {COMPANY_NAMES[company_id]} from FI with {CORP_NAMES[corp_id]} @ ${price}"
+        return "ACQUIRE from FI"
 
     if at == ACTION_ACQ_OFFER_ACCEPT:
         if state is not None:
@@ -177,12 +194,32 @@ def format_action(phase_id: int, action_id: int, state: GameState | None = None)
         return "ISSUE shares"
 
     if at == ACTION_IPO:
-        par = ALL_PAR_PRICES[info.amount]
         if state is not None:
             company_id = TURN.get_active_company(state)
             if company_id >= 0:
-                return f"IPO {COMPANY_NAMES[company_id]} → {CORP_NAMES[info.corp_id]} @${par}"
-        return f"IPO → select {CORP_NAMES[info.corp_id]} @${par}"
+                return f"IPO {COMPANY_NAMES[company_id]} → float {CORP_NAMES[info.corp_id]}"
+        return f"IPO → float {CORP_NAMES[info.corp_id]}"
+
+    if at == ACTION_PAR:
+        par = ALL_PAR_PRICES[info.amount]
+        if state is not None:
+            corp_id = TURN.get_active_corp(state)
+            company_id = TURN.get_active_company(state)
+            if corp_id >= 0 and company_id >= 0:
+                return f"PAR {CORP_NAMES[corp_id]} @${par} (IPO {COMPANY_NAMES[company_id]})"
+            if corp_id >= 0:
+                return f"PAR {CORP_NAMES[corp_id]} @${par}"
+        return f"PAR @${par}"
+
+    if at == ACTION_ACQ_SELECT_CORP:
+        return f"ACQ select {CORP_NAMES[info.corp_id]}"
+
+    if at == ACTION_ACQ_SELECT_COMPANY:
+        if state is not None:
+            corp_id = TURN.get_active_corp(state)
+            if corp_id >= 0:
+                return f"ACQ target {COMPANY_NAMES[info.company_id]} (with {CORP_NAMES[corp_id]})"
+        return f"ACQ target {COMPANY_NAMES[info.company_id]}"
 
     return f"UNKNOWN(phase={phase_id}, action={action_id}, type={at})"
 
