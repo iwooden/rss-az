@@ -61,15 +61,41 @@ def apply_nvidia_optimizations() -> dict[str, str]:
     return enabled
 
 
+def _resolve_mode_options(mode: str) -> dict[str, Any]:
+    """Expand a torch.compile mode into explicit Inductor options.
+
+    Some deployed torch versions reject specifying both ``mode`` and
+    ``options`` in the same ``torch.compile(...)`` call. We still need to
+    layer repo-specific options on top of the chosen NVIDIA baseline, so we
+    resolve the mode eagerly and return a pure-options dict instead.
+    """
+    list_mode_options = getattr(torch._inductor, "list_mode_options", None)
+    if list_mode_options is not None:
+        resolved = list_mode_options().get(mode)
+        if resolved is not None:
+            return dict(resolved)
+
+    # Fallback for older/newer torch builds where ``list_mode_options`` is
+    # unavailable or the mode table changes shape.
+    if mode == "max-autotune-no-cudagraphs":
+        return {
+            "max_autotune": True,
+            "coordinate_descent_tuning": True,
+        }
+    return {}
+
+
 def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
     """Return torch.compile kwargs optimized for NVIDIA GPUs.
 
-    Use ``mode="max-autotune-no-cudagraphs"`` as the NVIDIA baseline.
-    PyTorch documents this mode as the max-autotune path without CUDA
-    graphs: we keep the stronger GEMM/autotune choices that help a
-    transformer-heavy model on a large NVIDIA GPU, while avoiding the
-    cudagraph capture assumptions that do not fit this repo's dynamic
-    eval batching.
+    Use the ``max-autotune-no-cudagraphs`` NVIDIA baseline, but expand it
+    into explicit Inductor options before returning. PyTorch documents that
+    mode as the max-autotune path without CUDA graphs: we keep the stronger
+    GEMM/autotune choices that help a transformer-heavy model on a large
+    NVIDIA GPU, while avoiding the cudagraph capture assumptions that do not
+    fit this repo's dynamic eval batching. Expanding the mode is necessary
+    because some torch versions reject passing both ``mode=...`` and
+    ``options=...`` together, and we need repo-specific overrides on top.
 
     ``reduce-overhead`` remains a poor fit because eval_server /
     single-process warmup applies ``mark_unbacked`` to the batch dim (so
@@ -112,13 +138,11 @@ def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
             which is why eval_server is unaffected. Disabling costs only
             a small forward-graph constant-folding optimization.
     """
-    options: dict[str, Any] = {
+    options: dict[str, Any] = _resolve_mode_options("max-autotune-no-cudagraphs")
+    options.update({
         "triton.autotune_at_compile_time": True,
         "shape_padding": False,
-    }
+    })
     if for_training:
         options["joint_graph_constant_folding"] = False
-    return {
-        "mode": "max-autotune-no-cudagraphs",
-        "options": options,
-    }
+    return {"options": options}

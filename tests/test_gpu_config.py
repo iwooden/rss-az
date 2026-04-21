@@ -5,10 +5,12 @@ import torch
 from train.gpu.nvidia import apply_nvidia_optimizations, get_compile_kwargs
 
 
-def test_nvidia_compile_kwargs_use_max_autotune_without_cudagraphs_for_eval() -> None:
+def test_nvidia_compile_kwargs_expand_mode_into_options_for_eval() -> None:
     kwargs = get_compile_kwargs(for_training=False)
 
-    assert kwargs["mode"] == "max-autotune-no-cudagraphs"
+    assert "mode" not in kwargs
+    assert kwargs["options"]["max_autotune"] is True
+    assert kwargs["options"]["coordinate_descent_tuning"] is True
     assert kwargs["options"]["triton.autotune_at_compile_time"] is True
     assert kwargs["options"]["shape_padding"] is False
     assert "joint_graph_constant_folding" not in kwargs["options"]
@@ -17,7 +19,9 @@ def test_nvidia_compile_kwargs_use_max_autotune_without_cudagraphs_for_eval() ->
 def test_nvidia_compile_kwargs_disable_joint_graph_constant_folding_for_training() -> None:
     kwargs = get_compile_kwargs(for_training=True)
 
-    assert kwargs["mode"] == "max-autotune-no-cudagraphs"
+    assert "mode" not in kwargs
+    assert kwargs["options"]["max_autotune"] is True
+    assert kwargs["options"]["coordinate_descent_tuning"] is True
     assert kwargs["options"]["joint_graph_constant_folding"] is False
 
 
