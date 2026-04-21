@@ -16,17 +16,16 @@ import numpy as np
 import pytest
 import torch
 
-from core.actions import MAX_LEGAL_ACTIONS_PY
 from core.driver import DRIVER
 from core.state import GameState, get_layout
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool, prepare_reuse_root, run_search
-from nn.transformer import RSSTransformerNet, TransformerConfig
+from nn.transformer import UNIFIED_LOGIT_DIM, RSSTransformerNet, TransformerConfig
 from train.config import TrainingConfig
 from train.self_play import play_game
 
 
-K_MAX = int(MAX_LEGAL_ACTIONS_PY)
+U_DIM = int(UNIFIED_LOGIT_DIM)
 NUM_PLAYERS = 3
 
 
@@ -48,9 +47,9 @@ def test_play_game_full_3p_game_produces_valid_record(evaluator):
     """A full 3p self-play game completes and emits well-formed examples.
 
     play_game's loop only exits on STATUS_GAME_OVER (or raises), so
-    returning a record at all proves terminal status was reached. Sparse
-    invariants (policy sum, padding, n_legal bound, value range) are
-    checked per-move across the whole game.
+    returning a record at all proves terminal status was reached. Dense
+    unified-slot invariants (policy sum, legal-slot coverage, value
+    range) are checked per-move across the whole game.
     """
     config = TrainingConfig(num_players=NUM_PLAYERS, num_simulations=64)
     rng = np.random.default_rng(0)
@@ -63,19 +62,21 @@ def test_play_game_full_3p_game_produces_valid_record(evaluator):
     # Game-over invariant: player net worth is non-negative (RULES.md).
     assert all(nw >= 0 for nw in record.net_worths)
 
-    # Sparse policy invariants per move.
-    assert record.n_legals.shape == (record.num_examples,)
-    assert record.policy_targets.shape == (record.num_examples, K_MAX)
+    # Dense policy invariants per move.
+    assert record.legal_masks.shape == (record.num_examples, U_DIM)
+    assert record.legal_masks.dtype == np.uint8
+    assert record.policy_targets.shape == (record.num_examples, U_DIM)
     for i in range(record.num_examples):
-        n = int(record.n_legals[i])
-        assert 0 < n <= K_MAX, f"move {i}: n_legal={n} out of range"
-        row = record.policy_targets[i, :n]
+        mask = record.legal_masks[i].astype(bool)
+        n_legal = int(mask.sum())
+        assert 0 < n_legal <= U_DIM, f"move {i}: n_legal={n_legal} out of range"
+        row = record.policy_targets[i]
         assert float(row.sum()) == pytest.approx(1.0, abs=1e-5), (
             f"move {i}: policy_target sum={float(row.sum())}"
         )
-        # Zero-padded tail past n_legal.
-        assert not record.policy_targets[i, n:].any(), (
-            f"move {i}: policy_target nonzero past n_legal"
+        # Target mass lives only on legal slots.
+        assert not row[~mask].any(), (
+            f"move {i}: policy_target nonzero on illegal slot"
         )
 
     # Value targets per-player, clamped to the tanh head's [-1, +1] range.

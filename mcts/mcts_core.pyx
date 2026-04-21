@@ -6,7 +6,7 @@ overhead dominates actual computation.
 """
 
 from libc.math cimport sqrtf, isinf, INFINITY
-from libc.stdint cimport int8_t, int16_t, int64_t, uint16_t, uint64_t
+from libc.stdint cimport int8_t, int16_t, int64_t, uint8_t, uint16_t, uint64_t
 from libc.string cimport memcpy
 
 cdef extern from "<assert.h>" nogil:
@@ -522,7 +522,7 @@ def increment_visits(list path, leaf):
 # ---------------------------------------------------------------------------
 # Eval-server shared-memory gather/scatter helpers
 # ---------------------------------------------------------------------------
-# All gather_* helpers share the same skeleton: a nogil loop that walks the
+# Both gather helpers share the same skeleton: a nogil loop that walks the
 # (worker_indices, counts) request list and memcpys each request's contiguous
 # row block from the per-worker shared-mem slot into a flat batch buffer.
 # They differ only by dtype and row width. scatter_results is the inverse.
@@ -564,62 +564,33 @@ def gather_states(
     return total
 
 
-def gather_phase_ids(
-    int8_t[:] dst,
-    const int8_t[:, :] src,
+def gather_masks(
+    uint8_t[:, :] dst,
+    const uint8_t[:, :, :] src,
     const int[:] worker_indices,
     const int[:] counts,
     int num_requests,
 ):
-    """Gather per-leaf phase ids from per-worker shared-mem into a flat batch buffer.
+    """Gather per-leaf ``(UNIFIED_LOGIT_DIM,)`` legal-action masks into a
+    contiguous batch buffer.
+
+    Row width is ``UNIFIED_LOGIT_DIM`` bytes (uint8: 1 == legal slot). This
+    replaces the old per-phase (phase_ids, action_ids, n_legals) triple — a
+    dense 170-byte mask carries the same legality information without the
+    per-phase LUT gather on the GPU.
 
     Args:
-        dst: Contiguous destination buffer, shape (max_batch,) int8.
-        src: Per-worker phase id slots, shape (num_workers, batch_size) int8.
-        worker_indices: Worker index per request, shape (num_requests,).
-        counts: Number of ids per request, shape (num_requests,).
-        num_requests: Number of requests in this batch.
-
-    Returns:
-        Total number of phase ids gathered.
-    """
-    cdef int total = 0
-    cdef int i, n, widx
-    with nogil:
-        for i in range(num_requests):
-            widx = worker_indices[i]
-            n = counts[i]
-            assert_c(total + n <= <int>dst.shape[0])
-            memcpy(&dst[total], &src[widx, 0], n * <int>sizeof(int8_t))
-            total = total + n
-    return total
-
-
-def gather_action_ids(
-    int16_t[:, :] dst,
-    const int16_t[:, :, :] src,
-    const int[:] worker_indices,
-    const int[:] counts,
-    int num_requests,
-):
-    """Gather per-leaf legal-action id rows into a contiguous batch buffer.
-
-    Stored as int16 because ``torch.uint16`` doesn't exist; action ids top out
-    at 14976 ≪ 32767 so the signed view is bit-reinterpretable with a
-    worker-side uint16 numpy view over the same memory.
-
-    Args:
-        dst: Contiguous destination buffer, shape (max_batch, K_MAX) int16.
-        src: Per-worker action id slots, shape (num_workers, batch_size, K_MAX) int16.
+        dst: Contiguous destination buffer, shape (max_batch, UNIFIED_LOGIT_DIM) uint8.
+        src: Per-worker mask slots, shape (num_workers, batch_size, UNIFIED_LOGIT_DIM) uint8.
         worker_indices: Worker index per request, shape (num_requests,).
         counts: Number of rows per request, shape (num_requests,).
         num_requests: Number of requests in this batch.
 
     Returns:
-        Total number of action-id rows gathered.
+        Total number of mask rows gathered.
     """
-    cdef int k_max = dst.shape[1]
-    cdef int row_bytes = k_max * <int>sizeof(int16_t)
+    cdef int u = dst.shape[1]
+    cdef int row_bytes = u * <int>sizeof(uint8_t)
     cdef int total = 0
     cdef int i, n, widx
     with nogil:
@@ -628,37 +599,6 @@ def gather_action_ids(
             n = counts[i]
             assert_c(total + n <= <int>dst.shape[0])
             memcpy(&dst[total, 0], &src[widx, 0, 0], n * row_bytes)
-            total = total + n
-    return total
-
-
-def gather_n_legals(
-    int16_t[:] dst,
-    const int16_t[:, :] src,
-    const int[:] worker_indices,
-    const int[:] counts,
-    int num_requests,
-):
-    """Gather per-leaf n_legal scalars from per-worker shared-mem into a flat batch buffer.
-
-    Args:
-        dst: Contiguous destination buffer, shape (max_batch,) int16.
-        src: Per-worker n_legal slots, shape (num_workers, batch_size) int16.
-        worker_indices: Worker index per request, shape (num_requests,).
-        counts: Number of scalars per request, shape (num_requests,).
-        num_requests: Number of requests in this batch.
-
-    Returns:
-        Total number of n_legal scalars gathered.
-    """
-    cdef int total = 0
-    cdef int i, n, widx
-    with nogil:
-        for i in range(num_requests):
-            widx = worker_indices[i]
-            n = counts[i]
-            assert_c(total + n <= <int>dst.shape[0])
-            memcpy(&dst[total], &src[widx, 0], n * <int>sizeof(int16_t))
             total = total + n
     return total
 

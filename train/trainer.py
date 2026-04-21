@@ -1,11 +1,14 @@
 """AlphaZero training step with policy and value losses.
 
-Sparse post-refactor contract: batches carry compact int16 game states and
-per-row sparse legal-action data (`phase_id`, `n_legal`, `action_ids`,
-`policy_target`). The trainer materializes the
-``(batch, num_tokens, token_dim)`` float32 token buffer at training time via
-``core.token_data.get_token_data`` and runs policy CE over the legal set only
-— no dense ``-1e9`` mask, no state rotation, no per-player augmentation.
+Dense unified-slot contract: batches carry compact int16 game states,
+dense ``legal_mask`` + ``policy_target`` rows over the model's unified
+logit space, canonical per-player ``value_target``, and a pure-reporting
+``phase_id`` that the model never sees. The trainer materializes the
+``(batch, num_tokens, token_dim)`` float32 token buffer at training time
+via ``core.token_data.get_token_data`` and runs policy cross-entropy
+directly against the dense softmax (illegal slots are masked to -1e9 by
+the model and carry 0 in the target, so their log-probs contribute
+nothing to the loss).
 """
 
 from __future__ import annotations
@@ -18,15 +21,14 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from core.actions import MAX_LEGAL_ACTIONS_PY
 from core.state import get_layout
 from core.token_data import TokenDataSize, get_num_tokens, get_token_data_batch
-from nn.transformer import NUM_PHASES
+from nn.transformer import NUM_PHASES, UNIFIED_LOGIT_DIM
 from train.config import TrainingConfig
 from train.replay_buffer import ReplayBuffer
 
 TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
-K_MAX = int(MAX_LEGAL_ACTIONS_PY)
+U_DIM = int(UNIFIED_LOGIT_DIM)
 
 # Matches core.data.DecisionPhase order. DPHASE_INVEST..DPHASE_PAR occupy
 # slots 0..8; DPHASE_ACQ_SELECT_COMPANY / DPHASE_ACQ_SELECT_PRICE are
@@ -166,9 +168,8 @@ class Trainer:
         genuinely async-ships. On CPU, device tensors alias the host
         tensors and no H→D copy is needed.
 
-        Integer fields are stored as ``torch.long`` to match the model's
-        input contract — widening from the replay buffer's compact
-        dtypes (int8/int16/uint16) happens once on the CPU fill.
+        ``phase_ids`` widens to ``torch.long`` for ``index_add_`` on the
+        TB bucketing path; it never enters the model graph.
         """
         if n <= self._scratch_cap:
             return
@@ -185,11 +186,9 @@ class Trainer:
         self._tok_h_np = self._tok_h.numpy()
         self._phase_h = torch.empty(cap, dtype=torch.long, pin_memory=pm)
         self._phase_h_np = self._phase_h.numpy()
-        self._aid_h = torch.empty((cap, K_MAX), dtype=torch.long, pin_memory=pm)
-        self._aid_h_np = self._aid_h.numpy()
-        self._nl_h = torch.empty(cap, dtype=torch.long, pin_memory=pm)
-        self._nl_h_np = self._nl_h.numpy()
-        self._pt_h = torch.empty((cap, K_MAX), dtype=torch.float32, pin_memory=pm)
+        self._mask_h = torch.empty((cap, U_DIM), dtype=torch.uint8, pin_memory=pm)
+        self._mask_h_np = self._mask_h.numpy()
+        self._pt_h = torch.empty((cap, U_DIM), dtype=torch.float32, pin_memory=pm)
         self._pt_h_np = self._pt_h.numpy()
         self._vt_h = torch.empty((cap, N), dtype=torch.float32, pin_memory=pm)
         self._vt_h_np = self._vt_h.numpy()
@@ -199,19 +198,17 @@ class Trainer:
                 (cap, nt, td), dtype=torch.float32, device=self.device,
             )
             self._phase_d = torch.empty(cap, dtype=torch.long, device=self.device)
-            self._aid_d = torch.empty(
-                (cap, K_MAX), dtype=torch.long, device=self.device,
+            self._mask_d = torch.empty(
+                (cap, U_DIM), dtype=torch.uint8, device=self.device,
             )
-            self._nl_d = torch.empty(cap, dtype=torch.long, device=self.device)
             self._pt_d = torch.empty(
-                (cap, K_MAX), dtype=torch.float32, device=self.device,
+                (cap, U_DIM), dtype=torch.float32, device=self.device,
             )
             self._vt_d = torch.empty((cap, N), dtype=torch.float32, device=self.device)
         else:
             self._tok_d = self._tok_h
             self._phase_d = self._phase_h
-            self._aid_d = self._aid_h
-            self._nl_d = self._nl_h
+            self._mask_d = self._mask_h
             self._pt_d = self._pt_h
             self._vt_d = self._vt_h
 
@@ -226,8 +223,7 @@ class Trainer:
             return
         self._tok_d[:n].copy_(self._tok_h[:n], non_blocking=True)
         self._phase_d[:n].copy_(self._phase_h[:n], non_blocking=True)
-        self._aid_d[:n].copy_(self._aid_h[:n], non_blocking=True)
-        self._nl_d[:n].copy_(self._nl_h[:n], non_blocking=True)
+        self._mask_d[:n].copy_(self._mask_h[:n], non_blocking=True)
         self._pt_d[:n].copy_(self._pt_h[:n], non_blocking=True)
         self._vt_d[:n].copy_(self._vt_h[:n], non_blocking=True)
 
@@ -268,8 +264,7 @@ class Trainer:
             B, rng,
             self._states_np[:B],
             self._phase_h_np[:B],
-            self._nl_h_np[:B],
-            self._aid_h_np[:B],
+            self._mask_h_np[:B],
             self._pt_h_np[:B],
             self._vt_h_np[:B],
         )
@@ -293,8 +288,7 @@ class Trainer:
 
         tokens = self._tok_d[:B]
         phase_ids = self._phase_d[:B]
-        action_ids = self._aid_d[:B]
-        n_legals = self._nl_d[:B]
+        legal_masks = self._mask_d[:B].to(torch.bool)
         policy_targets = self._pt_d[:B]
         value_targets = self._vt_d[:B]
 
@@ -306,18 +300,16 @@ class Trainer:
             int((phase_view == _p).sum()) for _p in range(NUM_PHASES)
         ]
 
-        # --- Forward: sparse (B, K_MAX) logits + (B, N) values ---
-        # The model gathers per-row legal slices internally via the unified
-        # logits + LUT path and fills the [n_legal:K_MAX] tail with -1e9, so
-        # we can log_softmax directly.
-        policy_logits, values = self.model(
-            tokens, action_ids, n_legals, phase_ids,
-        )
+        # --- Forward: dense (B, UNIFIED_LOGIT_DIM) logits + (B, N) values ---
+        # The model returns logits with illegal slots already masked to
+        # -1e9 via ``legal_masks``, so log_softmax normalizes over the
+        # legal set only (illegal log-probs are ~-∞ × 0 = 0 in the loss).
+        policy_logits, values = self.model(tokens, legal_masks)
 
-        # Policy loss: sparse cross-entropy over legal actions only.
-        # log_softmax is numerically stable (x - logsumexp), so the tail
-        # log_probs are finite-but-very-negative; multiplied by the zero
-        # tail of policy_targets they contribute nothing.
+        # Policy loss: dense cross-entropy over the unified slot space.
+        # ``policy_targets`` is zero on illegal slots, so only legal slots
+        # contribute; masked-to-``-1e9`` illegal log-probs multiplied by
+        # zero targets vanish cleanly.
         log_probs = F.log_softmax(policy_logits, dim=-1)
         per_example_policy_loss = -(policy_targets * log_probs).sum(dim=-1)
         policy_loss = per_example_policy_loss.mean()

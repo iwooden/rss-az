@@ -1,10 +1,12 @@
 """Self-play game generation via MCTS.
 
-Post-refactor contract: sparse policy targets over legal actions, no state
-rotation, raw int16 game state stored on examples. The trainer consumes
-(state, phase_id, action_ids, policy_target, value_target) — it runs
-``get_token_data`` at training time to materialize the token buffer, and
-computes policy cross-entropy over the legal list only (no dense −∞ mask).
+Post-refactor contract: dense unified-slot policy targets + legal masks,
+no state rotation, raw int16 game state stored on examples. The trainer
+consumes ``(state, phase_id, legal_mask, policy_target, value_target)`` —
+it runs ``get_token_data`` at training time to materialize the token
+buffer, and computes policy cross-entropy over the full unified-logit
+slot space (illegal slots are already zero in ``policy_target`` and
+masked to -1e9 inside the model).
 """
 
 from __future__ import annotations
@@ -31,12 +33,14 @@ from entities.corp import CORPS
 from entities.player import PLAYERS
 from mcts.evaluator import compute_terminal_values
 from mcts.search import StatePool, get_greedy_leaf_value, prepare_reuse_root, run_search
+from nn.transformer import UNIFIED_LOGIT_DIM, build_action_lut
 from train.config import EpochConfig, TrainingConfig
 from train.eval_server import RemoteEvaluator
 from train.profile_stats import EvalClientStats, GameProfileData, SearchStats
 
 
 K_MAX = int(MAX_LEGAL_ACTIONS_PY)
+U_DIM = int(UNIFIED_LOGIT_DIM)
 
 
 @dataclass
@@ -45,16 +49,15 @@ class SelfPlayExample:
 
     Raw compact int16 game state — the trainer runs ``get_token_data`` at
     training time to build the (num_tokens, token_dim) float32 eval buffer.
-    Policy target and action_ids are sparse over the leaf's legal-action
-    list (length ``n_legal``); value target is canonical per-player (no
-    active-player rotation).
+    ``legal_mask`` and ``policy_target`` are dense over the unified-logit
+    slot space; slots outside the current phase's legal set are zero in
+    both. ``phase_id`` is carried purely for per-phase TB bucketing.
     """
 
     state: np.ndarray  # (total_int16_size,), int16 — raw compact state
-    phase_id: int  # decision phase id 0-10
-    n_legal: int  # number of legal actions at this state
-    action_ids: np.ndarray  # (n_legal,), uint16 — phase-local legal ids
-    policy_target: np.ndarray  # (n_legal,), float32 — MCTS visit probs
+    phase_id: int  # decision phase id 0-10 (TB reporting only)
+    legal_mask: np.ndarray  # (UNIFIED_LOGIT_DIM,), uint8 — 1 = legal slot
+    policy_target: np.ndarray  # (UNIFIED_LOGIT_DIM,), float32 — MCTS visit probs
     value_target: np.ndarray  # (num_players,), float32 — canonical A0GB
 
 
@@ -62,18 +65,17 @@ class SelfPlayExample:
 class GameRecord:
     """Results from a single self-play game.
 
-    Training data is pre-stacked into contiguous arrays (6 arrays instead
-    of N×6 small arrays) so that pickling through mp.Queue is a fast
-    memcpy rather than per-object serialization. Sparse fields
-    (``action_ids``, ``policy_targets``) are zero-padded to ``K_MAX``;
-    only ``[i, :n_legals[i]]`` is meaningful per row.
+    Training data is pre-stacked into contiguous arrays (5 arrays instead
+    of N×5 small arrays) so that pickling through mp.Queue is a fast
+    memcpy rather than per-object serialization. ``legal_masks`` and
+    ``policy_targets`` are dense over ``UNIFIED_LOGIT_DIM`` unified
+    slots; illegal slots carry 0 in both.
     """
 
     states: np.ndarray  # (num_examples, total_int16_size), int16
-    phase_ids: np.ndarray  # (num_examples,), int8
-    n_legals: np.ndarray  # (num_examples,), int16
-    action_ids: np.ndarray  # (num_examples, K_MAX), uint16 — zero-padded
-    policy_targets: np.ndarray  # (num_examples, K_MAX), float32 — zero-padded
+    phase_ids: np.ndarray  # (num_examples,), int8 — TB reporting only
+    legal_masks: np.ndarray  # (num_examples, UNIFIED_LOGIT_DIM), uint8
+    policy_targets: np.ndarray  # (num_examples, UNIFIED_LOGIT_DIM), float32
     value_targets: np.ndarray  # (num_examples, num_players), float32
     num_examples: int  # Number of training examples
     total_moves: int  # Decision points (MCTS searches)
@@ -163,6 +165,10 @@ def play_game(
     # Scratch buffer for enumerating legal actions at each decision point.
     # Copied-out per move so the buffer is free to be reused.
     legal_scratch = np.empty(K_MAX, dtype=np.uint16)
+    # Static LUT mapping (phase_id, phase-local action id) → unified slot.
+    # Used once per decision to scatter the sparse visit distribution and
+    # legal set into dense (UNIFIED_LOGIT_DIM,) rows for the trainer.
+    action_lut_np = build_action_lut().numpy()
 
     while True:
         phase_id = get_decision_phase_py(state)
@@ -203,13 +209,21 @@ def play_game(
         entropy_sum += float(-np.sum(nonzero * np.log(nonzero)))
         top1_sum += float(np.max(sample_probs))
 
+        # Scatter sparse visit probs + legal set into dense unified-slot
+        # rows. The same LUT the model uses to collapse its dense forward
+        # back to phase-local ids gives us the inverse mapping here.
+        slots = action_lut_np[phase_id, legal_actions]
+        dense_legal_mask = np.zeros(U_DIM, dtype=np.uint8)
+        dense_legal_mask[slots] = 1
+        dense_policy_target = np.zeros(U_DIM, dtype=np.float32)
+        dense_policy_target[slots] = policy_target_sparse
+
         examples.append(
             SelfPlayExample(
                 state=state._array.copy(),
                 phase_id=phase_id,
-                n_legal=n_legal,
-                action_ids=legal_actions,
-                policy_target=policy_target_sparse,
+                legal_mask=dense_legal_mask,
+                policy_target=dense_policy_target,
                 value_target=value_target,
             )
         )
@@ -287,22 +301,21 @@ def play_game(
     avg_active_corp_price = sum(active_prices) / len(active_prices) if active_prices else 0.0
     has_max_price_corp = any(p == 75 for p in active_prices)
 
-    # Pre-stack training data into contiguous arrays (6 large arrays instead
-    # of N×6 small ones) so pickle through mp.Queue is a fast memcpy. Sparse
-    # fields are zero-padded to K_MAX; only [:n_legals[i]] per row is valid.
+    # Pre-stack training data into contiguous arrays (5 large arrays instead
+    # of N×5 small ones) so pickle through mp.Queue is a fast memcpy. Rows
+    # are dense over UNIFIED_LOGIT_DIM; illegal slots are zero in both the
+    # mask and the policy target.
     n_examples = len(examples)
     stacked_states = np.empty((n_examples, total_int16_size), dtype=np.int16)
     stacked_phase_ids = np.empty(n_examples, dtype=np.int8)
-    stacked_n_legals = np.empty(n_examples, dtype=np.int16)
-    stacked_action_ids = np.zeros((n_examples, K_MAX), dtype=np.uint16)
-    stacked_policy_targets = np.zeros((n_examples, K_MAX), dtype=np.float32)
+    stacked_legal_masks = np.empty((n_examples, U_DIM), dtype=np.uint8)
+    stacked_policy_targets = np.empty((n_examples, U_DIM), dtype=np.float32)
     stacked_value_targets = np.empty((n_examples, num_players), dtype=np.float32)
     for i, ex in enumerate(examples):
         stacked_states[i] = ex.state
         stacked_phase_ids[i] = ex.phase_id
-        stacked_n_legals[i] = ex.n_legal
-        stacked_action_ids[i, :ex.n_legal] = ex.action_ids
-        stacked_policy_targets[i, :ex.n_legal] = ex.policy_target
+        stacked_legal_masks[i] = ex.legal_mask
+        stacked_policy_targets[i] = ex.policy_target
         stacked_value_targets[i] = ex.value_target
 
     # Blend A0GB value targets with canonical game outcome if configured.
@@ -332,8 +345,7 @@ def play_game(
     return GameRecord(
         states=stacked_states,
         phase_ids=stacked_phase_ids,
-        n_legals=stacked_n_legals,
-        action_ids=stacked_action_ids,
+        legal_masks=stacked_legal_masks,
         policy_targets=stacked_policy_targets,
         value_targets=stacked_value_targets,
         num_examples=n_examples,

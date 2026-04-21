@@ -16,10 +16,10 @@ import numpy as np
 import torch
 import torch.multiprocessing as mp
 
-from core.actions import MAX_LEGAL_ACTIONS_PY
 from core.state import get_layout
 from core.token_data import TokenDataSize, get_num_tokens
 from nn import create_model
+from nn.transformer import UNIFIED_LOGIT_DIM
 from train.checkpoint import (
     cleanup_checkpoints,
     find_latest_checkpoint,
@@ -35,8 +35,6 @@ from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool
 from train.self_play import play_game, self_play_worker
 from train.trainer import Trainer
-
-K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -576,13 +574,11 @@ def main() -> None:
                 dummy_tokens = torch.randn(
                     1, num_tokens, token_dim, device=device,
                 )
-                dummy_action_ids = torch.zeros(
-                    1, K_MAX, dtype=torch.long, device=device,
+                dummy_mask = torch.ones(
+                    1, UNIFIED_LOGIT_DIM, dtype=torch.bool, device=device,
                 )
-                dummy_n_legals = torch.zeros(1, dtype=torch.long, device=device)
-                dummy_phase_ids = torch.zeros(1, dtype=torch.long, device=device)
-                model(dummy_tokens, dummy_action_ids, dummy_n_legals, dummy_phase_ids)
-                del dummy_tokens, dummy_action_ids, dummy_n_legals, dummy_phase_ids
+                model(dummy_tokens, dummy_mask)
+                del dummy_tokens, dummy_mask
             torch.cuda.synchronize()
             print("  Model compiled.")
 
@@ -649,8 +645,7 @@ def main() -> None:
                 buffer.add_stacked(  # type: ignore[union-attr]
                     record.states,  # type: ignore[union-attr]
                     record.phase_ids,  # type: ignore[union-attr]
-                    record.n_legals,  # type: ignore[union-attr]
-                    record.action_ids,  # type: ignore[union-attr]
+                    record.legal_masks,  # type: ignore[union-attr]
                     record.policy_targets,  # type: ignore[union-attr]
                     record.value_targets,  # type: ignore[union-attr]
                 )

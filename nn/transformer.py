@@ -8,7 +8,8 @@ Key differences from the MLP model (nn/template.py):
   - No state rotation: active player marked with is_active flag
   - Entity-readout policy: each entity token produces its own action logits
   - ACQ factored into three single-entity sub-phases (corp/company/price)
-  - Per-phase action indices (max 53 for INVEST), not a global action vector
+  - Unified policy output: every head writes into a static (B, UNIFIED_LOGIT_DIM)
+    tensor and illegal slots are masked to -1e9 via a caller-supplied mask
   - Value read from player tokens directly (no un-rotation needed)
 """
 
@@ -21,7 +22,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from core.actions import MAX_LEGAL_ACTIONS_PY
 from core.data import (
     AUCTION_CAP,
     PHASE_ACTION_SIZES,
@@ -38,15 +38,16 @@ from core.token_data import TokenDataSize, TokenWidth, get_token_widths
 # adding token types happens over there.
 
 NUM_PHASES = len(DecisionPhase)
-K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 MAX_PHASE_ACTION_SIZE = max(PHASE_ACTION_SIZES)  # 53 (INVEST: pass + 36 + 16)
 
 # Unified policy slot layout. Every per-row policy head emits its logits
-# into a single (B, UNIFIED_LOGIT_DIM) tensor; per-row gather uses a
-# static (NUM_PHASES, MAX_PHASE_ACTION_SIZE) lookup table to remap each
-# row's phase-local action ids into unified slots. Offsets MUST match the
-# concat order in ``RSSTransformerNet._build_unified_logits`` and the LUT
-# construction in ``_build_action_lut``.
+# into a single (B, UNIFIED_LOGIT_DIM) tensor; callers pass a matching
+# (B, UNIFIED_LOGIT_DIM) legal-mask so illegal slots can be zeroed before
+# softmax. The static (NUM_PHASES, MAX_PHASE_ACTION_SIZE) action LUT maps
+# each phase's phase-local action ids to unified slots — exposed via
+# ``build_action_lut`` so callers can build masks and scatter training
+# targets against the same layout. Offsets MUST match the concat order in
+# ``RSSTransformerNet._build_unified_logits`` and the LUT construction.
 _PASS_OFF = 0                                            # 1
 _COMPANY_SELECT_OFF = _PASS_OFF + 1                      # 36
 _CORP_SELECT_OFF = _COMPANY_SELECT_OFF + 36              # 8
@@ -62,12 +63,15 @@ UNIFIED_LOGIT_DIM = _PAR_OFF + 14
 _GELU_APPROX = "tanh"
 
 
-def _build_action_lut() -> torch.Tensor:
+def build_action_lut() -> torch.Tensor:
     """Static (NUM_PHASES, MAX_PHASE_ACTION_SIZE) int64 LUT mapping each
     phase's phase-local action id to a slot in the unified logit tensor.
 
-    Tail entries (id >= PHASE_ACTION_SIZES[phase]) are 0 — a safe in-range
-    sentinel that the post-gather n_legals mask overwrites with -1e9.
+    Used externally by workers (to build (B, UNIFIED_LOGIT_DIM) legal masks
+    from sparse (phase_id, action_ids[:n]) tuples) and by the trainer (to
+    scatter sparse MCTS visit probabilities into dense (B, UNIFIED_LOGIT_DIM)
+    policy targets). Tail entries (id >= PHASE_ACTION_SIZES[phase]) are 0 —
+    a sentinel slot that workers must never mark as legal.
 
     Encoded layouts here MUST match the engine-side encoders in
     ``core/actions.pxd`` (``encode_invest_*`` etc). The smoke test below
@@ -267,11 +271,6 @@ class TransformerBlock(nn.Module):
 class RSSTransformerNet(nn.Module):
     """Transformer with entity-readout policy heads and per-player value output."""
 
-    # Declared for pyright: ``register_buffer`` adds dynamic attributes whose
-    # type isn't otherwise visible to the checker.
-    _k_range: torch.Tensor
-    _action_lut: torch.Tensor
-
     def __init__(self, cfg: TransformerConfig) -> None:
         super().__init__()
         self.cfg = cfg
@@ -456,19 +455,6 @@ class RSSTransformerNet(nn.Module):
             nn.Tanh(),
         )
 
-        # Index range used by output masking. Registered as a non-persistent
-        # buffer so it rides the module's device and shows up in `.to(...)`,
-        # but is not saved to checkpoints.
-        self.register_buffer(
-            "_k_range", torch.arange(K_MAX, dtype=torch.long), persistent=False,
-        )
-        # Static (NUM_PHASES, MAX_PHASE_ACTION_SIZE) LUT mapping phase-local
-        # action ids to slots in the unified logits tensor. Built once at
-        # construction; the gather is a single fancy-indexed op against
-        # this buffer in ``_policy_forward``. Non-persistent — derived
-        # entirely from the action encoding in ``core/actions.pxd``.
-        self.register_buffer("_action_lut", _build_action_lut(), persistent=False)
-
         self._init_weights()
 
     # ------------------------------------------------------------------
@@ -536,15 +522,13 @@ class RSSTransformerNet(nn.Module):
         """Run every per-row policy head once on the full batch and concat
         into a single ``(B, UNIFIED_LOGIT_DIM)`` tensor.
 
-        Concat order MUST match the ``_*_OFF`` constants and ``_build_action_lut``.
+        Concat order MUST match the ``_*_OFF`` constants and ``build_action_lut``.
         Each head reads the token(s) it cares about — companies / corps for the
         entity-readout heads, the phase-context tokens (auction, dividend, etc.)
         for the others, and the shared pass anchor. Heads run unconditionally
-        regardless of which phase a given row is in: the per-row LUT gather
-        in ``_policy_forward`` selects the right slots and the n_legals mask
-        zeroes out the rest. Total wasted FLOPs are ~2% of the trunk at
-        d_model=128 — well below the cost of the per-phase ``index_select`` /
-        ``index_copy_`` dance this replaces.
+        regardless of which phase a given row is in: the caller's legal mask
+        zeroes out slots outside the current phase's action space. Total wasted
+        FLOPs are ~2% of the trunk at d_model=128.
         """
         # All single-token heads keep their input dim of (B, d_model); their
         # output is (B, head_width). Multi-token heads stay (B, n_tokens, ...)
@@ -577,92 +561,44 @@ class RSSTransformerNet(nn.Module):
             dim=-1,
         )                                                                        # (B, UNIFIED_LOGIT_DIM)
 
-    def _policy_forward(
-        self, tokens: torch.Tensor,
-        action_ids: torch.Tensor, n_legals: torch.Tensor,
-        phase_ids: torch.Tensor,
-    ) -> torch.Tensor:
-        """Per-row policy gather via the unified logits + LUT path.
-
-        Builds a ``(B, UNIFIED_LOGIT_DIM)`` tensor by running every head once
-        on the full batch, then maps each row's phase-local ``action_ids`` to
-        unified slots via the static LUT and gathers in a single op. Replaces
-        the per-phase dispatch loop (one ``index_select`` / ``index_copy_``
-        per phase × NUM_PHASES launches per forward) with a straight-line
-        graph that ``torch.compile`` can fuse without per-phase shape guards.
-
-        Args:
-            tokens: (batch, num_tokens, d_model) final token representations.
-            action_ids: (batch, K_MAX) int tensor, phase-local legal action ids
-                per row. Tail positions ([n_legals[i]:]) may hold arbitrary
-                values — they are clamped before gather and masked out below.
-            n_legals: (batch,) int tensor, legal action count per row.
-            phase_ids: (batch,) int tensor, decision phase id per row in
-                ``[0, NUM_PHASES)``. Used as the first axis index into
-                ``_action_lut``.
-
-        Returns:
-            (batch, K_MAX) float tensor of gathered logits, with positions
-            beyond ``n_legals[i]`` filled with ``-1e9`` so they vanish after
-            softmax.
-        """
-        unified = self._build_unified_logits(tokens)                            # (B, U)
-
-        # Map (B, K_MAX) phase-local action_ids → unified slots in two gathers.
-        # Step 1: row-broadcast LUT to (B, MAX_PHASE_ACTION_SIZE) keyed by phase_ids.
-        # Step 2: per-row gather along the phase-local action axis.
-        # Clamp action_ids into the LUT's column range — tail positions may
-        # be garbage (workers reuse buffer slots across phases). Clamp rather
-        # than ``masked_fill(invalid, 0)``: Inductor will reorder a mask whose
-        # effect is "overwritten later by -1e9" past the gather, but CUDA
-        # gather bounds-checks regardless of what happens to the result.
-        # An unconditional clamp has no such dependence and survives fusion.
-        lut_per_row = self._action_lut.index_select(0, phase_ids.long())       # (B, M)
-        safe_aids = action_ids.long().clamp(min=0, max=MAX_PHASE_ACTION_SIZE - 1)
-        unified_ids = lut_per_row.gather(1, safe_aids)                          # (B, K_MAX)
-        gathered = unified.gather(1, unified_ids)                               # (B, K_MAX)
-
-        # Cast to fp32 for the sentinel — same reasoning as the old path:
-        # under autocast, ``unified`` (Linear output) is bf16 but the
-        # downstream log_softmax / softmax wants stable fp32 sentinels.
-        invalid = self._k_range[None, :] >= n_legals[:, None]
-        return gathered.to(torch.float32).masked_fill(invalid, -1e9)
-
     # ------------------------------------------------------------------
     # Forward
     # ------------------------------------------------------------------
 
     def forward(
-        self, x: torch.Tensor,
-        action_ids: torch.Tensor, n_legals: torch.Tensor,
-        phase_ids: torch.Tensor,
+        self, x: torch.Tensor, legal_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the transformer.
 
         Args:
             x: (batch, num_tokens, token_dim) token features, zero-padded.
-            action_ids: (batch, K_MAX) int tensor, phase-local legal action
-                ids per row. Tail ([n_legals[i]:]) may be arbitrary — sanitized
-                inside ``_policy_forward`` before gather.
-            n_legals: (batch,) int tensor, legal action count per row.
-            phase_ids: (batch,) int tensor, decision phase id per row. Used
-                to index the static action LUT in ``_policy_forward``.
+            legal_mask: (batch, UNIFIED_LOGIT_DIM) bool tensor. ``True`` marks
+                a slot as legal for the current state's phase / entities;
+                illegal slots are masked to ``-1e9`` so they vanish after
+                softmax. Callers build this from sparse (phase_id, action_ids)
+                via the ``build_action_lut`` mapping.
 
         Returns:
-            policy_logits: (batch, K_MAX) gathered logits over the per-row
-                legal-action slice. Positions beyond ``n_legals[i]`` are
-                filled with ``-1e9``.
+            policy_logits: (batch, UNIFIED_LOGIT_DIM) fp32 logits with illegal
+                slots set to ``-1e9``. Static-shape regardless of phase.
             values: (batch, num_players) per-player expected outcomes in [-1, 1].
         """
+        assert legal_mask.dtype == torch.bool, (
+            f"legal_mask must be bool (uint8 would make ~legal_mask a bitwise "
+            f"complement, not logical NOT); got {legal_mask.dtype}"
+        )
         tokens = self._project_tokens(x)
 
         for block in self.blocks:
             tokens = block(tokens)
         tokens = self.final_norm(tokens)
 
-        policy_logits = self._policy_forward(
-            tokens, action_ids, n_legals, phase_ids,
-        )
+        # Cast to fp32 before the sentinel: under autocast ``unified`` is in
+        # the autocast dtype (bf16/fp16) but downstream softmax / log_softmax
+        # wants stable fp32 ``-1e9`` sentinels.
+        unified = self._build_unified_logits(tokens).to(torch.float32)          # (B, U)
+        policy_logits = unified.masked_fill(~legal_mask, -1e9)
+
         values = self.value_head(tokens[:, self._player_slice]).squeeze(-1)  # (B, N)
         return policy_logits, values
 
@@ -765,34 +701,32 @@ if __name__ == "__main__":
     print()
     batch_size = NUM_PHASES  # one sample per phase
     x = torch.randn(batch_size, cfg.num_tokens, cfg.token_dim)
-    # Per-phase legal-action synthesis: use the first min(K_MAX, phase_size)
-    # ids from each phase. Unused tail is zero-padded; n_legals masks it.
-    action_ids = torch.zeros(batch_size, K_MAX, dtype=torch.long)
-    n_legals = torch.zeros(batch_size, dtype=torch.long)
-    for i in range(NUM_PHASES):
-        n = min(K_MAX, PHASE_ACTION_SIZES[i])
-        action_ids[i, :n] = torch.arange(n)
-        n_legals[i] = n
-    phase_ids = torch.arange(NUM_PHASES, dtype=torch.long)
 
-    policy_logits, values = model(x, action_ids, n_legals, phase_ids)
+    # Synthesize a legal mask per row by running every phase's full
+    # phase-local action list through the LUT. Row i gets phase i.
+    lut = build_action_lut()
+    legal_mask = torch.zeros(batch_size, UNIFIED_LOGIT_DIM, dtype=torch.bool)
+    for i in range(NUM_PHASES):
+        n = PHASE_ACTION_SIZES[i]
+        legal_mask[i, lut[i, :n]] = True
+
+    policy_logits, values = model(x, legal_mask)
 
     print(f"policy_logits: {tuple(policy_logits.shape)}")
     print(f"values:        {tuple(values.shape)}")
 
-    assert policy_logits.shape == (batch_size, K_MAX)
+    assert policy_logits.shape == (batch_size, UNIFIED_LOGIT_DIM)
     assert values.shape == (batch_size, cfg.num_players)
 
     assert values.min() >= -1.0 and values.max() <= 1.0, "tanh output out of range"
     print("values in [-1, 1]: ok")
 
     for i in range(NUM_PHASES):
-        n = int(n_legals[i])
-        active = policy_logits[i, :n]
-        inactive = policy_logits[i, n:]
-        assert torch.isfinite(active).all(), f"{phase_names[i]}: non-finite logits"
-        if inactive.numel() > 0:
-            assert (inactive == -1e9).all(), f"{phase_names[i]}: leak beyond legal slice"
-    print("per-row legal slice: ok")
+        legal = policy_logits[i][legal_mask[i]]
+        illegal = policy_logits[i][~legal_mask[i]]
+        assert torch.isfinite(legal).all(), f"{phase_names[i]}: non-finite legal logits"
+        if illegal.numel() > 0:
+            assert (illegal == -1e9).all(), f"{phase_names[i]}: leak into illegal slots"
+    print("per-row legal mask: ok")
 
     print("\nSmoke test passed.")

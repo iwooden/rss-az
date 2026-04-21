@@ -26,6 +26,7 @@ from core.actions import (
     MAX_LEGAL_ACTIONS_PY,
 )
 from entities.player import PLAYERS
+from nn.transformer import UNIFIED_LOGIT_DIM, build_action_lut
 
 K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
@@ -154,14 +155,15 @@ class NNEvaluator(BaseEvaluator):
 
     Used for single-process tests and anything that doesn't go through
     the shared-mem eval server. Fills a preallocated pinned-host token
-    buffer from compact state, async-copies it to the device, and runs
-    inference — the model returns already-gathered ``(B, K_MAX)`` sparse
-    logits over each row's legal-action list, mirroring the eval server's
-    GPU-side gather+softmax path.
+    buffer + ``(UNIFIED_LOGIT_DIM,)`` legal mask from compact state,
+    async-copies to the device, and runs inference. The model returns
+    dense ``(B, UNIFIED_LOGIT_DIM)`` logits with illegal slots at -1e9;
+    we softmax on-device then gather the per-leaf legal prior slice
+    using the same ``action_lut`` the mask was built from.
 
-    All per-batch scratch tensors (tokens, phase_ids, action_ids, n_legals)
-    are preallocated pinned-host + device pairs, grown on demand. On a CPU
-    device the "device" half aliases the host half and no copy runs.
+    All per-batch scratch tensors (tokens, masks) are preallocated
+    pinned-host + device pairs, grown on demand. On a CPU device the
+    "device" half aliases the host half and no copy runs.
     """
 
     _DTYPE_MAP = {"bfloat16": torch.bfloat16, "float16": torch.float16}
@@ -178,11 +180,13 @@ class NNEvaluator(BaseEvaluator):
 
         # Preallocated scratch — grows lazily via ``_ensure_scratch``.
         self._scratch_cap: int = 0
-        # Persistent uint16 buffer for enumerate_legal_actions_py calls
-        # (the Cython function takes a uint16 memoryview, not int64). One
-        # row is enough: we enumerate per-state and copy into the batched
-        # int64 action-id scratch.
+        # Persistent uint16 buffer for enumerate_legal_actions_py calls.
         self._enum_scratch: np.ndarray = np.empty(K_MAX, dtype=np.uint16)
+        # Worker-local LUT mapping (phase_id, phase_local_action_id) to a
+        # slot in the unified logit vector. Used both to set mask bits
+        # pre-forward and to gather priors post-forward. Owned here instead
+        # of the model so CPU-side mask builds don't touch GPU tensors.
+        self._action_lut_np: np.ndarray = build_action_lut().numpy()
 
         # Catch model/player-count mismatch before it reaches boundscheck=False
         # Cython code. The new transformer config only exposes num_players
@@ -214,29 +218,43 @@ class NNEvaluator(BaseEvaluator):
         pm = self.device.type == "cuda"
         nt, td = self.num_tokens, self.token_dim
 
-        # Host (pinned on CUDA): exposed as numpy for Cython fills.
+        # Host (pinned on CUDA): exposed as numpy for the mask scatter.
+        # Mask is zero-initialized so ``_build_mask_row`` only touches
+        # legal slots — the full row is reset on each fill via a
+        # contiguous ``row[:] = 0`` before the scatter.
         self._tok_h = torch.empty((cap, nt, td), dtype=torch.float32, pin_memory=pm)
         self._tok_h_np = self._tok_h.numpy()
-        self._phase_h = torch.empty(cap, dtype=torch.long, pin_memory=pm)
-        self._phase_h_np = self._phase_h.numpy()
-        self._aid_h = torch.empty((cap, K_MAX), dtype=torch.long, pin_memory=pm)
-        self._aid_h_np = self._aid_h.numpy()
-        self._nl_h = torch.empty(cap, dtype=torch.long, pin_memory=pm)
-        self._nl_h_np = self._nl_h.numpy()
+        self._mask_h = torch.zeros(
+            (cap, UNIFIED_LOGIT_DIM), dtype=torch.bool, pin_memory=pm,
+        )
+        self._mask_h_np = self._mask_h.numpy()
 
         # Device: separate on CUDA, aliased on CPU (no copy needed).
         if pm:
-            self._tok_d = torch.empty((cap, nt, td), dtype=torch.float32, device=self.device)
-            self._phase_d = torch.empty(cap, dtype=torch.long, device=self.device)
-            self._aid_d = torch.empty((cap, K_MAX), dtype=torch.long, device=self.device)
-            self._nl_d = torch.empty(cap, dtype=torch.long, device=self.device)
+            self._tok_d = torch.empty(
+                (cap, nt, td), dtype=torch.float32, device=self.device,
+            )
+            self._mask_d = torch.empty(
+                (cap, UNIFIED_LOGIT_DIM), dtype=torch.bool, device=self.device,
+            )
         else:
             self._tok_d = self._tok_h
-            self._phase_d = self._phase_h
-            self._aid_d = self._aid_h
-            self._nl_d = self._nl_h
+            self._mask_d = self._mask_h
 
         self._scratch_cap = cap
+
+    def _build_mask_row(
+        self, row_idx: int, phase_id: int, action_ids_legal: np.ndarray,
+    ) -> None:
+        """Zero host mask row ``row_idx``, then mark legal unified slots.
+
+        ``action_ids_legal`` is the phase-local id slice for this leaf;
+        ``action_lut[phase_id, action_ids_legal]`` gives the unified
+        ``UNIFIED_LOGIT_DIM``-wide slots to flip to True.
+        """
+        self._mask_h_np[row_idx] = False
+        slots = self._action_lut_np[phase_id, action_ids_legal]
+        self._mask_h_np[row_idx, slots] = True
 
     def _h2d(self, n: int) -> None:
         """Async copy preallocated host scratch [:n] into device scratch [:n].
@@ -246,9 +264,7 @@ class NNEvaluator(BaseEvaluator):
         if self.device.type != "cuda":
             return
         self._tok_d[:n].copy_(self._tok_h[:n], non_blocking=True)
-        self._phase_d[:n].copy_(self._phase_h[:n], non_blocking=True)
-        self._aid_d[:n].copy_(self._aid_h[:n], non_blocking=True)
-        self._nl_d[:n].copy_(self._nl_h[:n], non_blocking=True)
+        self._mask_d[:n].copy_(self._mask_h[:n], non_blocking=True)
 
     # ------------------------------------------------------------------
     # Evaluation API
@@ -278,14 +294,12 @@ class NNEvaluator(BaseEvaluator):
         # Fill preallocated scratch row 0.
         self._ensure_scratch(1)
         fill_token_buffer(state, self._tok_h_np[0])
-        self._phase_h_np[0] = phase_id
-        self._aid_h_np[0, :n_legal] = self._enum_scratch[:n_legal]
-        self._aid_h_np[0, n_legal:] = 0   # safe in-range gather indices
-        self._nl_h_np[0] = n_legal
+        self._build_mask_row(0, phase_id, self._enum_scratch[:n_legal])
 
         priors_np, values_np = self._forward(1)
+        slots = self._action_lut_np[phase_id, self._enum_scratch[:n_legal]]
         return (
-            priors_np[0, :n_legal].copy(),
+            priors_np[0, slots].copy(),
             values_np[0],
             self._enum_scratch[:n_legal].copy(),
             n_legal,
@@ -321,31 +335,29 @@ class NNEvaluator(BaseEvaluator):
         )
         phase_ids: list[int] = [0] * n
         n_legals: list[int] = [0] * n
+        # Buffer to hold the enumerated ids across rows so we can gather
+        # priors after forward without re-enumerating.
+        all_action_ids = np.empty((n, K_MAX), dtype=np.uint16)
         for i, s in enumerate(states):
             phase_ids[i] = get_decision_phase_py(s)
             nl = enumerate_legal_actions_py(s, self._enum_scratch)
             n_legals[i] = nl
-            self._aid_h_np[i, :nl] = self._enum_scratch[:nl]
-            self._aid_h_np[i, nl:] = 0
-            self._nl_h_np[i] = nl
-            self._phase_h_np[i] = phase_ids[i]
+            all_action_ids[i, :nl] = self._enum_scratch[:nl]
+            self._build_mask_row(i, phase_ids[i], self._enum_scratch[:nl])
 
         priors_np, values_np = self._forward(n)
-
-        # Return a per-row action_ids copy reflecting what the caller asked
-        # for (each state's enumerated legals). The batched aid scratch
-        # tail is masked out upstream, so copying it is equivalent.
-        return [
-            (
-                priors_np[i, :n_legals[i]].copy(),
+        results: list[tuple[np.ndarray, np.ndarray, np.ndarray, int, int]] = []
+        for i in range(n):
+            nl = n_legals[i]
+            slots = self._action_lut_np[phase_ids[i], all_action_ids[i, :nl]]
+            results.append((
+                priors_np[i, slots].copy(),
                 values_np[i],
-                # uint16 is the public contract for the legal list.
-                self._aid_h_np[i, :n_legals[i]].astype(np.uint16),
-                n_legals[i],
+                all_action_ids[i, :nl].copy(),
+                nl,
                 phase_ids[i],
-            )
-            for i in range(n)
-        ]
+            ))
+        return results
 
     @torch.inference_mode()
     def evaluate_leaves(
@@ -360,7 +372,7 @@ class NNEvaluator(BaseEvaluator):
         Optimized hot path for MCTS: the caller has already enumerated legal
         actions and computed phase ids during selection, so we just fill token
         buffers from the raw state arrays and forward. Mirrors the eval
-        server's GPU gather + softmax, but in-process.
+        server's GPU mask + softmax, but in-process.
 
         Args:
             state_arrays: Raw int16 state arrays (pool row views), each
@@ -391,18 +403,18 @@ class NNEvaluator(BaseEvaluator):
             state_arrays, self.num_players, self._tok_h_np[:n],
         )
 
-        # Copy phase_ids / action_ids / n_legals into pinned host scratch.
-        # Numpy's assignment casts uint16→int64 for action_ids and handles
-        # Python-list → int64 for phase_ids/n_legals.
-        self._phase_h_np[:n] = phase_ids
-        self._aid_h_np[:n] = action_ids_buf
-        self._nl_h_np[:n] = n_legals
+        for i in range(n):
+            self._build_mask_row(
+                i, phase_ids[i], action_ids_buf[i, :n_legals[i]],
+            )
 
         priors_np, values_np = self._forward(n)
-        return [
-            (priors_np[i, :n_legals[i]].copy(), values_np[i])
-            for i in range(n)
-        ]
+        results: list[tuple[np.ndarray, np.ndarray]] = []
+        for i in range(n):
+            nl = n_legals[i]
+            slots = self._action_lut_np[phase_ids[i], action_ids_buf[i, :nl]]
+            results.append((priors_np[i, slots].copy(), values_np[i]))
+        return results
 
     # ------------------------------------------------------------------
     # Shared forward (batched)
@@ -411,18 +423,19 @@ class NNEvaluator(BaseEvaluator):
     def _forward(self, n: int) -> tuple[np.ndarray, np.ndarray]:
         """Async-copy host→device, run the model, return (priors, values) as numpy.
 
-        Assumes host scratch rows [:n] have been filled with tokens,
-        phase_ids, action_ids, and n_legals. The model returns already
-        per-row gathered + masked logits of shape ``(n, K_MAX)`` — we just
-        softmax and copy back to host.
+        Assumes host scratch rows [:n] have been filled with tokens and
+        legal masks. The model returns dense ``(n, UNIFIED_LOGIT_DIM)``
+        logits with illegal slots at -1e9; we softmax on-device so illegal
+        slots collapse to ~0 and the legal slots carry a proper distribution.
+        Callers pick the per-leaf legal prior slice out of the returned
+        numpy array via the same ``action_lut`` used to build the mask.
         """
         self._h2d(n)
 
         with torch.autocast(self.device.type, dtype=self._autocast_dtype,
                             enabled=self._autocast_dtype is not None):
             logits, value_output = self.model(
-                self._tok_d[:n],
-                self._aid_d[:n], self._nl_d[:n], self._phase_d[:n],
+                self._tok_d[:n], self._mask_d[:n],
             )
             priors = logits.softmax(dim=1).to(torch.float32)
             values = value_output.to(torch.float32)

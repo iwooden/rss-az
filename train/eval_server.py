@@ -9,21 +9,31 @@ to eval servers automatically.
 Communication uses shared memory (torch tensors with share_memory_()):
 
   Worker → Server (inputs)
-      states     : float32 (W, B, num_tokens, token_dim)
-      phase_ids  : int8    (W, B)
-      action_ids : int16   (W, B, K_MAX)   — bit-reinterpretable as uint16
-      n_legals   : int16   (W, B)
+      states      : float32 (W, B, num_tokens, token_dim)
+      legal_mask  : uint8   (W, B, UNIFIED_LOGIT_DIM)  — 1=legal slot
 
-  Server → Worker (outputs — sparse, already softmaxed on GPU)
-      priors     : float32 (W, B, K_MAX)   — over legal actions only
-      values     : float32 (W, B, num_players)   — canonical order (no rotation)
+  Server → Worker (outputs — dense over unified slots, softmaxed on GPU)
+      priors  : float32 (W, B, UNIFIED_LOGIT_DIM)  — legal slots sum to 1
+      values  : float32 (W, B, num_players)         — canonical order (no rotation)
 
-Dense per-phase logits (width ``MAX_ACTION_SIZE``) never cross the IPC
-boundary: the server gathers dense logits at per-leaf ``action_ids[:n_legal]``
-and softmaxes on the GPU inside the autocast region before copy-back. This
-killed the old dense-logits shared-mem buffer (historically 14977-wide when
-ACQUISITION was one joint phase; MAX_ACTION_SIZE is now 53 after the ACQ
-split) and the worker-side masked-softmax step outright.
+The unified policy tensor (width ``UNIFIED_LOGIT_DIM``) is the wire format.
+Workers build a dense legal-mask (via the same ``build_action_lut`` mapping
+the model uses) from the phase-local action ids they already enumerated for
+MCTS, then ship the mask rather than the sparse (phase_id, action_ids,
+n_legals) triple. The server feeds the mask straight into the model's
+forward, which masks-then-softmaxes on-device; the returned row is a proper
+distribution over legal slots (illegal slots carry near-zero mass from
+softmax of -1e9). Workers gather the per-leaf legal prior slice out of
+that dense row using the same LUT, without any softmax on the worker side.
+
+Wins vs the old sparse IPC protocol (K_MAX=1024):
+  * inbound action_ids/n_legals/phase_ids (2048+3 B/state) collapses to a
+    170 B/state uint8 mask (~12x cut on the send leg).
+  * outbound priors (K_MAX=1024 f32 = 4096 B/state) shrinks to
+    UNIFIED_LOGIT_DIM=170 f32 = 680 B/state (~6x cut on the return leg).
+  * on-GPU per-phase gather, K_MAX specialization, and n_legals scan all
+    drop out of the model forward — torch.compile sees a fully static
+    (B, 170) policy path.
 
 **Signaling protocol:**
 
@@ -77,6 +87,7 @@ from core.actions import (
     enumerate_legal_actions_py,
     get_decision_phase_py,
 )
+from core.data import PHASE_ACTION_SIZES
 from core.token_data import (
     TokenDataSize,
     get_num_tokens,
@@ -84,7 +95,7 @@ from core.token_data import (
     get_token_data_batch,
 )
 from mcts.evaluator import BaseEvaluator
-from nn.transformer import NUM_PHASES
+from nn.transformer import NUM_PHASES, UNIFIED_LOGIT_DIM, build_action_lut
 from train.profile_stats import EvalClientStats, EvalServerStats
 
 K_MAX = int(MAX_LEGAL_ACTIONS_PY)
@@ -97,24 +108,21 @@ class SharedEvalBuffers:
     All tensors are created once in the main process via ``share_memory_()``
     and picked up by worker/server processes after fork/spawn. Workers write
     into their own row of each per-worker tensor; the server reads those rows,
-    runs inference, and writes already-softmaxed sparse priors + canonical
+    runs inference, and writes already-softmaxed dense priors + canonical
     values back into the same per-worker slot.
 
     Inputs (worker → server):
-        states     (W, B, num_tokens, token_dim) float32
-        phase_ids  (W, B)                        int8
-        action_ids (W, B, K_MAX)                 int16 (uint16 via bit-reinterp)
-        n_legals   (W, B)                        int16
+        states      (W, B, num_tokens, token_dim) float32
+        legal_mask  (W, B, UNIFIED_LOGIT_DIM)     uint8 (1=legal slot)
 
     Outputs (server → worker):
-        priors     (W, B, K_MAX)           float32  (sparse, softmaxed on GPU)
-        values     (W, B, num_players)     float32  (canonical order)
+        priors  (W, B, UNIFIED_LOGIT_DIM)  float32  (softmaxed over legal slots)
+        values  (W, B, num_players)        float32  (canonical order)
 
-    ``MAX_ACTION_SIZE`` (the dense model-head width) intentionally does not
-    appear in any shape here — the server gathers dense logits down to the
-    sparse legal list before the copy-back. Shared-mem output footprint is
-    ``workers × batch × K_MAX × 4`` bytes (~0.8 MB at typical settings),
-    independent of ``MAX_ACTION_SIZE``.
+    ``K_MAX`` intentionally does not appear in any shape here — the dense
+    unified representation is narrower than K_MAX and carries the same
+    legality information via a per-slot mask. Shared-mem output footprint
+    is ``workers × batch × UNIFIED_LOGIT_DIM × 4`` bytes.
     """
 
     def __init__(
@@ -128,32 +136,24 @@ class SharedEvalBuffers:
         self.num_players = num_players
         self.num_tokens = get_num_tokens(num_players)
         self.token_dim = TOKEN_DIM
-        self.k_max = K_MAX
+        self.unified_dim = UNIFIED_LOGIT_DIM
 
         # --- Inputs (worker → server) ---
         self._states = torch.zeros(
             num_workers, batch_size, self.num_tokens, self.token_dim,
             dtype=torch.float32,
         ).share_memory_()
-        self._phase_ids = torch.zeros(
-            num_workers, batch_size, dtype=torch.int8,
-        ).share_memory_()
-        # torch.uint16 doesn't exist; store signed and reinterpret via
-        # numpy .view(np.uint16). Max action id is 14976 ≪ 32767, so the
-        # signed view is lossless and bit-identical.
-        self._action_ids = torch.zeros(
-            num_workers, batch_size, self.k_max, dtype=torch.int16,
-        ).share_memory_()
-        self._n_legals = torch.zeros(
-            num_workers, batch_size, dtype=torch.int16,
+        self._legal_mask = torch.zeros(
+            num_workers, batch_size, self.unified_dim, dtype=torch.uint8,
         ).share_memory_()
 
         # --- Outputs (server → worker) ---
-        # Sparse priors over the legal action list, already softmaxed on the
-        # GPU inside the server's autocast region. Padded slots [n_legal:K_MAX]
-        # carry near-zero mass (softmax of -1e9) and must never be read.
+        # Dense priors over unified slots, already masked + softmaxed on the
+        # GPU inside the server's autocast region. Illegal slots carry near-
+        # zero mass (softmax of -1e9). Callers use the same ``action_lut``
+        # that built the mask to gather the per-leaf legal prior slice.
         self._priors = torch.zeros(
-            num_workers, batch_size, self.k_max, dtype=torch.float32,
+            num_workers, batch_size, self.unified_dim, dtype=torch.float32,
         ).share_memory_()
         self._values = torch.zeros(
             num_workers, batch_size, num_players, dtype=torch.float32,
@@ -187,28 +187,16 @@ class SharedEvalBuffers:
         """(batch, num_tokens, token_dim) float32 view into this worker's input slot."""
         return self._states[worker_idx].numpy()
 
-    def get_input_phase_ids_np(self, worker_idx: int) -> np.ndarray:
-        """(batch,) int8 view into this worker's phase-id slot."""
-        return self._phase_ids[worker_idx].numpy()
-
-    def get_input_action_ids_np(self, worker_idx: int) -> np.ndarray:
-        """(batch, K_MAX) uint16 view into this worker's action-id slot.
-
-        The underlying storage is int16 because torch lacks uint16; this
-        ``.view(np.uint16)`` is a bit-reinterpretation over the same memory.
-        """
-        return self._action_ids[worker_idx].numpy().view(np.uint16)
-
-    def get_input_n_legals_np(self, worker_idx: int) -> np.ndarray:
-        """(batch,) int16 view into this worker's n_legal slot."""
-        return self._n_legals[worker_idx].numpy()
+    def get_input_legal_mask_np(self, worker_idx: int) -> np.ndarray:
+        """(batch, UNIFIED_LOGIT_DIM) uint8 view into this worker's legal-mask slot."""
+        return self._legal_mask[worker_idx].numpy()
 
     # ------------------------------------------------------------------
     # Per-worker output accessors.
     # ------------------------------------------------------------------
 
     def get_output_priors_np(self, worker_idx: int) -> np.ndarray:
-        """(batch, K_MAX) float32 view of this worker's sparse-prior output slot."""
+        """(batch, UNIFIED_LOGIT_DIM) float32 view of this worker's prior output slot."""
         return self._priors[worker_idx].numpy()
 
     def get_output_values_np(self, worker_idx: int) -> np.ndarray:
@@ -394,7 +382,7 @@ def _eval_server_serve(
 
     num_tokens = shared_bufs.num_tokens
     token_dim = shared_bufs.token_dim
-    k_max = shared_bufs.k_max
+    u_dim = shared_bufs.unified_dim
     npl = shared_bufs.num_players
 
     # Optionally compile the model (per-process compilation).
@@ -402,31 +390,18 @@ def _eval_server_serve(
         ckw = compile_kwargs if compile_kwargs is not None else {}
         model = torch.compile(model, **ckw)  # type: ignore[assignment]
         model.eval()
-        # Warm up with the EXACT call signature the hot path uses — same
-        # positional args, same dtypes, and a ``phase_ids`` (B,) tensor.
-        #
-        # Dynamic-shape strategy (see ``train/gpu/{amd,nvidia}.py`` for
-        # why we dropped global ``dynamic=True``). Every runtime-varying
-        # dim gets ``mark_unbacked``:
-        #   * batch dim of (s, action_ids, n_legals):
-        #     ``maybe_mark_dynamic`` still triggers a recompile the
-        #     first time a size-1 batch appears (framework-level 0/1
-        #     specialization is separate from user-level dynamic
-        #     hints); strict ``mark_dynamic`` also fails because
-        #     Inductor's fusion heuristics generate size-dependent
-        #     guards (e.g. ``(12416*B) / (12416 + 225*B) > 0.043``).
-        #     ``mark_unbacked`` is what the runtime itself suggests in
-        #     that recompile message, and it gives us a single compiled
-        #     graph that handles all batch sizes 1..max_batch.
-        #   * per-phase row indices: same story — sizes 0 and 1 are
-        #     both legitimate (a phase may have no rows, or exactly
-        #     one).
+        # Warm up with the EXACT call signature the hot path uses —
+        # (states, legal_mask). Dynamic-shape strategy (see
+        # ``train/gpu/{amd,nvidia}.py`` for why we dropped global
+        # ``dynamic=True``): the batch dim gets ``mark_unbacked`` so the
+        # single compiled graph handles all batch sizes 1..max_batch, and
+        # in particular sizes 0 and 1 don't get framework-level specialized.
         # Any reasonable warmup batch size works — pick at least
-        # ``NUM_PHASES`` so each phase head gets traced. mark_unbacked on
-        # the batch dim lets the single compiled graph handle every
-        # runtime size from 1 to max_batch, so the warmup size itself
-        # carries no semantic weight.
+        # ``NUM_PHASES`` so the per-row policy heads all get traced against
+        # a batch with some legal-slot variety rather than a single
+        # all-illegal row.
         warmup_n = NUM_PHASES
+        lut = build_action_lut()
         with torch.inference_mode(), torch.autocast(
             device.type,
             dtype=eval_autocast_dtype,
@@ -435,26 +410,29 @@ def _eval_server_serve(
             dummy_s = torch.randn(
                 warmup_n, num_tokens, token_dim, device=device,
             )
-            # Spread phase ids across 0..NUM_PHASES-1 so the LUT lookup
-            # touches every row of the action table at least once.
-            dummy_p = (torch.arange(warmup_n, dtype=torch.int8) % NUM_PHASES).to(device)
-            dummy_a = torch.zeros(warmup_n, k_max, dtype=torch.int16, device=device)
-            dummy_nl = torch.ones(warmup_n, dtype=torch.int16, device=device)
-            for _t in (dummy_s, dummy_a, dummy_nl, dummy_p):
+            # Build one legal mask per phase so every phase's slots get
+            # exercised at least once during compilation.
+            dummy_mask = torch.zeros(
+                warmup_n, u_dim, dtype=torch.bool, device=device,
+            )
+            for i in range(warmup_n):
+                n = PHASE_ACTION_SIZES[i]
+                dummy_mask[i, lut[i, :n].to(device)] = True
+            for _t in (dummy_s, dummy_mask):
                 mark_unbacked(_t, 0)
-            model(dummy_s, dummy_a, dummy_nl, dummy_p)
-            del dummy_s, dummy_a, dummy_nl, dummy_p
+            model(dummy_s, dummy_mask)
+            del dummy_s, dummy_mask
         torch.cuda.synchronize()
 
     # Allocate pinned CPU buffers and GPU tensors in this process's CUDA context
     partition_size = worker_end - worker_start
     max_batch = partition_size * shared_bufs.batch_size
-    # One extra "trash" row appended at index padded_n each forward. Any
-    # phase that would otherwise have zero rows in a batch is pointed at
-    # this slot so the compiled per-phase gather kernel never sees an
-    # unbacked row count of 0 (which would ZeroDivisionError inside the
-    # generated Triton launcher on CUDA 12.8 / torch 2.11). Trash row is
-    # never read back (output slicing stays [:total_n]).
+    # One extra "trash" row appended at index padded_n each forward. Keeps
+    # the batch dim ≥ 1 for the forward pass even when total_n == 0 (which
+    # can't happen on the drain path but the slot is cheap and the
+    # output-slicing contract [:total_n] makes it safe — the trash row's
+    # mask is all-zero so its logits are all -1e9, softmax is uniform, and
+    # the result is never copied back).
     alloc_batch = max_batch + 1
 
     # Ping-pong depth for pinned I/O buffers. While the GPU computes batch
@@ -481,48 +459,28 @@ def _eval_server_serve(
         alloc_batch, num_tokens, token_dim, dtype=torch.float32, device=device,
     )
 
-    # GPU action/n_legals/phase_ids buffers are zero-initialized once and the
-    # tail [total_n:alloc_batch] is never written again — per-batch H→D copies
-    # only touch [:total_n]. The model gathers [:padded_n + 1] each forward
-    # (padded_n real rows + 1 trash), so any padded-tail rows read in-range
-    # zeros for action_ids, n_legals=0 (which masks the row out via the
-    # model's invalid mask), and phase_ids=0 (LUT row 0 is INVEST — gather
-    # produces something in range and the n_legals mask zeros it).
-    pin_phase_ids_list = [
-        torch.empty(alloc_batch, dtype=torch.int8, pin_memory=use_cuda)
+    # GPU mask buffer is zero-initialized once and the tail [total_n:alloc_batch]
+    # is never written again — per-batch H→D copies only touch [:total_n].
+    # The trash row at index padded_n therefore sees an all-zero mask; its
+    # logits collapse to -1e9 and its softmax output is discarded via
+    # [:total_n] slicing.
+    pin_mask_list = [
+        torch.empty(alloc_batch, u_dim, dtype=torch.uint8, pin_memory=use_cuda)
         for _ in range(buf_depth)
     ]
-    pin_phase_ids_np_list = [p.numpy() for p in pin_phase_ids_list]
-    gpu_phase_ids = torch.zeros(alloc_batch, dtype=torch.int8, device=device)
-
-    pin_action_ids_list = [
-        torch.empty(alloc_batch, k_max, dtype=torch.int16, pin_memory=use_cuda)
-        for _ in range(buf_depth)
-    ]
-    pin_action_ids_np_list = [p.numpy() for p in pin_action_ids_list]
-    gpu_action_ids = torch.zeros(
-        alloc_batch, k_max, dtype=torch.int16, device=device,
-    )
-
-    pin_n_legals_list = [
-        torch.empty(alloc_batch, dtype=torch.int16, pin_memory=use_cuda)
-        for _ in range(buf_depth)
-    ]
-    pin_n_legals_np_list = [p.numpy() for p in pin_n_legals_list]
-    gpu_n_legals = torch.zeros(alloc_batch, dtype=torch.int16, device=device)
+    pin_mask_np_list = [p.numpy() for p in pin_mask_list]
+    gpu_mask = torch.zeros(alloc_batch, u_dim, dtype=torch.uint8, device=device)
 
     # --- Outputs: pinned CPU + GPU side ---
-    # Priors are (alloc_batch, K_MAX) f32 (sparse, already softmaxed on GPU).
-    # This REPLACES the old (max_batch, MAX_ACTION_SIZE) dense-logits buffer.
     pin_priors_list = [
         torch.empty(
-            alloc_batch, k_max, dtype=torch.float32, pin_memory=use_cuda,
+            alloc_batch, u_dim, dtype=torch.float32, pin_memory=use_cuda,
         )
         for _ in range(buf_depth)
     ]
     pin_priors_np_list = [p.numpy() for p in pin_priors_list]
     gpu_priors = torch.empty(
-        alloc_batch, k_max, dtype=torch.float32, device=device,
+        alloc_batch, u_dim, dtype=torch.float32, device=device,
     )
 
     pin_val_list = [
@@ -537,9 +495,7 @@ def _eval_server_serve(
 
     # Cython gather/scatter helpers (nogil memcpy, no per-worker Python loop).
     from mcts.mcts_core import (
-        gather_action_ids as _gather_action_ids,
-        gather_n_legals as _gather_n_legals,
-        gather_phase_ids as _gather_phase_ids,
+        gather_masks as _gather_masks,
         gather_states as _gather_states,
         scatter_results as _scatter_results,
         server_drain_bitmap as _drain,
@@ -551,12 +507,10 @@ def _eval_server_serve(
     all_states_np = shared_bufs._states.numpy().reshape(
         shared_bufs.num_workers, shared_bufs.batch_size, num_tokens * token_dim,
     )
-    all_phase_ids_np = shared_bufs._phase_ids.numpy()
-    all_action_ids_np = shared_bufs._action_ids.numpy()
-    all_n_legals_np = shared_bufs._n_legals.numpy()
+    all_masks_np = shared_bufs._legal_mask.numpy()
     all_priors_np = shared_bufs._priors.numpy()
     all_values_np = shared_bufs._values.numpy()
-    priors_row_bytes = k_max * 4  # f32 = 4 bytes per element
+    priors_row_bytes = u_dim * 4  # f32 = 4 bytes per element
 
     # Bitmap and event handles
     submitted_masks, sig_counts = shared_bufs.get_bitmap_arrays()
@@ -660,28 +614,16 @@ def _eval_server_serve(
 
         pin_s_slot = pin_s_list[slot]
         pin_s_flat_np = pin_s_flat_np_list[slot]
-        pin_phase_ids_slot = pin_phase_ids_list[slot]
-        pin_phase_ids_np = pin_phase_ids_np_list[slot]
-        pin_action_ids_slot = pin_action_ids_list[slot]
-        pin_action_ids_np = pin_action_ids_np_list[slot]
-        pin_n_legals_slot = pin_n_legals_list[slot]
-        pin_n_legals_np = pin_n_legals_np_list[slot]
+        pin_mask_slot = pin_mask_list[slot]
+        pin_mask_np = pin_mask_np_list[slot]
         pin_priors_slot = pin_priors_list[slot]
         pin_val_slot = pin_val_list[slot]
 
-        # Gather all four inputs into the pinned buffers via Cython memcpy.
+        # Gather states + masks into the pinned buffers via Cython memcpy.
         total_n = _gather_states(
             pin_s_flat_np, all_states_np, widx, cnts, n_req,
         )
-        _gather_phase_ids(
-            pin_phase_ids_np, all_phase_ids_np, widx, cnts, n_req,
-        )
-        _gather_action_ids(
-            pin_action_ids_np, all_action_ids_np, widx, cnts, n_req,
-        )
-        _gather_n_legals(
-            pin_n_legals_np, all_n_legals_np, widx, cnts, n_req,
-        )
+        _gather_masks(pin_mask_np, all_masks_np, widx, cnts, n_req)
         padded_n = total_n
 
         start_ti = perf_counter() if stats is not None else 0.0
@@ -693,32 +635,26 @@ def _eval_server_serve(
 
         # Append one trash row at index padded_n (see alloc_batch comment).
         # Every forward sees (padded_n + 1) rows; the trash row keeps the
-        # batch dim ≥ 1 even when total_n == 0.
+        # batch dim ≥ 1 even when total_n == 0. Its mask stays all-zero
+        # (gpu_mask was zero-initialized, tail never overwritten).
         effective_n = padded_n + 1
         gpu_s_batch = gpu_s[:effective_n]
         gpu_s_batch[:total_n].copy_(pin_s_slot[:total_n], non_blocking=True)
-        gpu_action_ids[:total_n].copy_(pin_action_ids_slot[:total_n], non_blocking=True)
-        gpu_n_legals[:total_n].copy_(pin_n_legals_slot[:total_n], non_blocking=True)
-        # Phase ids ship the same way as the other inputs. Tail
-        # [total_n:effective_n] stays zero (DPHASE_INVEST) — the n_legals
-        # mask zeroes those rows out of any softmax / loss anyway, so the
-        # exact LUT row hit doesn't matter as long as it's in range.
-        gpu_phase_ids[:total_n].copy_(pin_phase_ids_slot[:total_n], non_blocking=True)
+        gpu_mask[:total_n].copy_(pin_mask_slot[:total_n], non_blocking=True)
 
         with torch.inference_mode():
             # Autocast region is already active (entered once for the whole
-            # serve loop). The model gathers per-row legal slices internally
-            # and returns (padded_n, K_MAX) sparse logits, so softmaxing
-            # inside the autocast region keeps the narrow logits tensor in
-            # bf16/fp16 until the final f32 copy.
-            logits_sparse, values = model(
+            # serve loop). The model returns dense (padded_n, U) logits
+            # with illegal slots at -1e9; softmaxing inside the autocast
+            # region keeps the narrow logits tensor in bf16/fp16 until the
+            # final f32 copy.
+            logits, values = model(
                 gpu_s_batch,
-                gpu_action_ids[:effective_n], gpu_n_legals[:effective_n],
-                gpu_phase_ids[:effective_n],
+                gpu_mask[:effective_n].to(torch.bool),
             )
-            # logits_sparse: (effective_n, K_MAX)       in autocast dtype
-            # values:        (effective_n, num_players) in autocast dtype
-            gpu_priors[:total_n] = logits_sparse[:total_n].softmax(dim=1).to(torch.float32)
+            # logits: (effective_n, UNIFIED_LOGIT_DIM)  in autocast dtype
+            # values: (effective_n, num_players)        in autocast dtype
+            gpu_priors[:total_n] = logits[:total_n].softmax(dim=1).to(torch.float32)
             gpu_val[:total_n] = values[:total_n].to(torch.float32)
 
             pin_priors_slot[:total_n].copy_(gpu_priors[:total_n], non_blocking=True)
@@ -1054,13 +990,20 @@ class RemoteEvaluator(BaseEvaluator):
 
         # Input views (worker writes these).
         self._in_states_np = shared_bufs.get_input_states_np(worker_idx)
-        self._in_phase_ids_np = shared_bufs.get_input_phase_ids_np(worker_idx)
-        self._in_action_ids_np = shared_bufs.get_input_action_ids_np(worker_idx)
-        self._in_n_legals_np = shared_bufs.get_input_n_legals_np(worker_idx)
+        self._in_legal_mask_np = shared_bufs.get_input_legal_mask_np(worker_idx)
 
         # Output views (worker reads these; already softmaxed + canonical).
         self._out_priors_np = shared_bufs.get_output_priors_np(worker_idx)
         self._out_values_np = shared_bufs.get_output_values_np(worker_idx)
+
+        # Worker-local LUT (phase_id, phase-local action id) → unified slot.
+        # Used both to set legal-mask bits pre-publish and to gather the
+        # per-leaf legal prior slice out of the dense server response.
+        self._action_lut_np: np.ndarray = build_action_lut().numpy()
+        # Scratch for enumerate_legal_actions_py on the single-state path.
+        self._enum_scratch: np.ndarray = np.empty(
+            int(MAX_LEGAL_ACTIONS_PY), dtype=np.uint16,
+        )
 
         self._profile = profile
         self._stats: EvalClientStats | None = EvalClientStats() if profile else None
@@ -1079,6 +1022,18 @@ class RemoteEvaluator(BaseEvaluator):
         self._done_cond = shared_bufs.done_conds[self._server_id]
         self._done_flags_np = shared_bufs.get_done_flags_np()
         self._server_event = shared_bufs.server_events[self._server_id]
+
+    def _fill_mask_row(
+        self, i: int, phase_id: int, action_ids_legal: np.ndarray,
+    ) -> None:
+        """Zero shm mask row ``i``, then flip legal unified slots to 1.
+
+        ``action_ids_legal`` is the phase-local id slice; the LUT maps
+        each id into its slot in the ``UNIFIED_LOGIT_DIM``-wide mask.
+        """
+        self._in_legal_mask_np[i] = 0
+        slots = self._action_lut_np[phase_id, action_ids_legal]
+        self._in_legal_mask_np[i, slots] = 1
 
     def _request_eval(self, n: int) -> None:
         """Publish request via bitmap, wake server if needed, sleep until done.
@@ -1129,21 +1084,16 @@ class RemoteEvaluator(BaseEvaluator):
         """
         phase_id = get_decision_phase_py(state)
         get_token_data(state, self._in_states_np[0])
-        self._in_phase_ids_np[0] = phase_id
-        # enumerate writes phase-local action ids directly into shared mem.
-        n = enumerate_legal_actions_py(state, self._in_action_ids_np[0])
-        # Zero the tail so stale ids from a prior (possibly larger-phase)
-        # enumeration don't reach the model's gather. Matches the
-        # contract run_search and NNEvaluator already honor.
-        self._in_action_ids_np[0, n:] = 0
-        self._in_n_legals_np[0] = n
+        n = enumerate_legal_actions_py(state, self._enum_scratch)
+        self._fill_mask_row(0, phase_id, self._enum_scratch[:n])
 
         self._request_eval(1)
 
+        slots = self._action_lut_np[phase_id, self._enum_scratch[:n]]
         return (
-            self._out_priors_np[0, :n].copy(),
+            self._out_priors_np[0, slots].copy(),
             self._out_values_np[0].copy(),
-            self._in_action_ids_np[0, :n].copy(),
+            self._enum_scratch[:n].copy(),
             n,
             phase_id,
         )
@@ -1158,9 +1108,10 @@ class RemoteEvaluator(BaseEvaluator):
         """Evaluate pre-enumerated leaf data in a single round-trip to the server.
 
         MCTS has already enumerated legal actions + computed phase ids during
-        selection, so we just fill the per-leaf input rows and submit one
-        batch. Returned priors are already softmaxed over each leaf's legal
-        list on the GPU.
+        selection, so we just build per-leaf legal masks and submit one
+        batch. The server returns dense priors over unified slots; this
+        method gathers the per-leaf legal prior slice via the same LUT
+        used to build each row's mask.
 
         Args:
             state_arrays: Raw int16 state arrays (pool row views), one per
@@ -1171,7 +1122,7 @@ class RemoteEvaluator(BaseEvaluator):
             n_legals: Count of legal actions per leaf, length n.
 
         Returns:
-            List of ``(priors_legal[:n], values_canonical)`` tuples.
+            List of ``(priors_legal, values_canonical)`` tuples.
         """
         n = len(state_arrays)
         if n == 0:
@@ -1184,14 +1135,12 @@ class RemoteEvaluator(BaseEvaluator):
 
         # Batched token fill — single Cython entry amortizes per-leaf Python
         # dispatch + GameState wrapper construction (rebind across rows
-        # internally). Phase / action / n_legal fills are single numpy
-        # memcpys; action_ids_buf has zero-padded tails per the caller's
-        # contract (run_search clears [n_legals[i]:]), so a whole-row copy
-        # is safe.
+        # internally).
         get_token_data_batch(state_arrays, self.num_players, self._in_states_np[:n])
-        self._in_phase_ids_np[:n] = phase_ids
-        self._in_action_ids_np[:n] = action_ids_buf[:n]
-        self._in_n_legals_np[:n] = n_legals
+        for i in range(n):
+            self._fill_mask_row(
+                i, phase_ids[i], action_ids_buf[i, :n_legals[i]],
+            )
 
         if _stats is not None:
             _t1 = perf_counter()
@@ -1203,13 +1152,14 @@ class RemoteEvaluator(BaseEvaluator):
             _t2 = perf_counter()
             _stats.wait_secs += _t2 - _t1
 
-        results = [
-            (
-                self._out_priors_np[i, :n_legals[i]].copy(),
+        results: list[tuple[np.ndarray, np.ndarray]] = []
+        for i in range(n):
+            nl = n_legals[i]
+            slots = self._action_lut_np[phase_ids[i], action_ids_buf[i, :nl]]
+            results.append((
+                self._out_priors_np[i, slots].copy(),
                 self._out_values_np[i].copy(),
-            )
-            for i in range(n)
-        ]
+            ))
 
         if _stats is not None:
             _stats.result_secs += perf_counter() - _t2

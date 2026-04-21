@@ -37,9 +37,7 @@ from mcts.evaluator import NNEvaluator, compute_terminal_values, fill_token_buff
 from mcts.mcts_core import (
     backup,
     expand_node_sparse,
-    gather_action_ids,
-    gather_n_legals,
-    gather_phase_ids,
+    gather_masks,
     gather_states,
     increment_visits,
     scatter_results,
@@ -398,67 +396,29 @@ class TestGatherScatter:
         assert total == 0
         np.testing.assert_array_equal(dst, 0)
 
-    def test_gather_phase_ids_respects_worker_order(self):
-        """Scheduling order controls the output layout, not worker index."""
-        num_workers, batch = 3, 4
-        src = np.array(
-            [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]],
-            dtype=np.int8,
-        )
-        dst = np.zeros(num_workers * batch, dtype=np.int8)
-        worker_indices = np.array([2, 0], dtype=np.int32)
-        counts = np.array([3, 2], dtype=np.int32)
+    def test_gather_masks_preserves_uint8_rows(self):
+        """Per-leaf legal masks are copied row-at-a-time, not reinterpreted.
 
-        total = gather_phase_ids(dst, src, worker_indices, counts, 2)
-
-        assert total == 5
-        assert dst[:3].tolist() == [8, 9, 10]  # worker 2, first 3
-        assert dst[3:5].tolist() == [0, 1]     # worker 0, first 2
-
-    def test_gather_action_ids_preserves_int16_values(self):
-        """int16 rows copied verbatim; large ids up to 32767 round-trip."""
-        num_workers, batch, k_max = 2, 3, 4
+        ``gather_masks`` is the sole input-gather helper in the dense IPC
+        protocol — workers write a ``(UNIFIED_LOGIT_DIM,)`` uint8 mask per
+        leaf, the server memcpys selected rows into a flat batch buffer
+        for the model forward.
+        """
+        num_workers, batch, u = 2, 3, 6
         src = np.arange(
-            num_workers * batch * k_max, dtype=np.int16,
-        ).reshape(num_workers, batch, k_max)
-        dst = np.zeros((num_workers * batch, k_max), dtype=np.int16)
+            num_workers * batch * u, dtype=np.uint8,
+        ).reshape(num_workers, batch, u)
+        dst = np.zeros((num_workers * batch, u), dtype=np.uint8)
         worker_indices = np.array([1, 0], dtype=np.int32)
         counts = np.array([2, 1], dtype=np.int32)
 
-        total = gather_action_ids(dst, src, worker_indices, counts, 2)
+        total = gather_masks(dst, src, worker_indices, counts, 2)
 
         assert total == 3
         np.testing.assert_array_equal(dst[:2], src[1, :2])
         np.testing.assert_array_equal(dst[2:3], src[0, :1])
-
-    def test_gather_action_ids_handles_large_ids(self):
-        """uint16-range ids (post-refactor MAX_ACTION_SIZE=14977) fit in int16."""
-        k_max = 2
-        src = np.array([[[14976, 32767]]], dtype=np.int16)
-        dst = np.zeros((1, k_max), dtype=np.int16)
-        total = gather_action_ids(
-            dst, src,
-            np.array([0], dtype=np.int32),
-            np.array([1], dtype=np.int32),
-            1,
-        )
-        assert total == 1
-        assert dst[0, 0] == 14976
-        assert dst[0, 1] == 32767
-
-    def test_gather_n_legals_scalar_copy(self):
-        """n_legal per leaf is a single int16 per batch slot."""
-        num_workers, batch = 2, 3
-        src = np.array([[10, 20, 30], [40, 50, 60]], dtype=np.int16)
-        dst = np.zeros(num_workers * batch, dtype=np.int16)
-        worker_indices = np.array([0, 1], dtype=np.int32)
-        counts = np.array([2, 3], dtype=np.int32)
-
-        total = gather_n_legals(dst, src, worker_indices, counts, 2)
-
-        assert total == 5
-        assert dst[:2].tolist() == [10, 20]
-        assert dst[2:5].tolist() == [40, 50, 60]
+        # Untouched tail stays zero.
+        np.testing.assert_array_equal(dst[3:], 0)
 
     def test_scatter_results_round_trips_priors_and_values(self):
         """scatter_results is the inverse of the gather_* pass for eval outputs."""
