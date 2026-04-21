@@ -69,6 +69,7 @@ def initialize_replay_state(
 
     state = GameState(num_players, acq_same_president=False)
     state.initialize_game(num_players, seed=42)
+    state.allow_positive_income_closing = True
     state.step_mode = step_mode
     override_deck_and_offering(state, deck_order_names, offering_names)
     if cost_level is not None:

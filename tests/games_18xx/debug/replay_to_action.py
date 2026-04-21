@@ -103,6 +103,7 @@ def main():
 
             state = GameState(num_players)
             state.initialize_game(seed=42)
+            state.allow_positive_income_closing = True
             self._override_deck_and_offering(state, deck_order_names, offering_names)
             self._last_ref = initial
 

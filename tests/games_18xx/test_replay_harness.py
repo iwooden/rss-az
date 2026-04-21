@@ -452,8 +452,13 @@ def test_clone_offer_probe_state_preserves_replay_flags(monkeypatch):
         _array=SimpleNamespace(copy=lambda: [1, 2, 3]),
         step_mode=True,
         acq_same_president=False,
+        allow_positive_income_closing=True,
     )
-    probe = SimpleNamespace(step_mode=False, acq_same_president=True)
+    probe = SimpleNamespace(
+        step_mode=False,
+        acq_same_president=True,
+        allow_positive_income_closing=False,
+    )
 
     monkeypatch.setattr(
         replay_harness,
@@ -467,6 +472,41 @@ def test_clone_offer_probe_state_preserves_replay_flags(monkeypatch):
     assert cloned is probe
     assert cloned.step_mode is True
     assert cloned.acq_same_president is False
+    assert cloned.allow_positive_income_closing is True
+
+
+def test_initialize_replay_state_enables_positive_income_closing(monkeypatch):
+    state = SimpleNamespace(
+        allow_positive_income_closing=False,
+        step_mode=None,
+    )
+
+    class FakeGameState:
+        def __init__(self, num_players, acq_same_president=True):
+            assert num_players == 3
+            assert acq_same_president is False
+            self._state = state
+
+        def initialize_game(self, num_players, seed):
+            assert num_players == 3
+            assert seed == 42
+
+        def __setattr__(self, name, value):
+            if name == "_state":
+                object.__setattr__(self, name, value)
+            else:
+                setattr(self._state, name, value)
+
+        def __getattr__(self, name):
+            return getattr(self._state, name)
+
+    monkeypatch.setattr(replay_state, "GameState", FakeGameState)
+    monkeypatch.setattr(replay_state, "override_deck_and_offering", lambda *args, **kwargs: None)
+
+    initialized = replay_state.initialize_replay_state(3, ["BPM"], ["BPM"], step_mode=True)
+
+    assert initialized.allow_positive_income_closing is True
+    assert initialized.step_mode is True
 
 
 def test_replay_acquisition_offer_passes_until_offer_maps(monkeypatch):

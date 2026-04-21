@@ -954,6 +954,8 @@ class ReplayHarness:
             probe.step_mode = state.step_mode
         if hasattr(state, "acq_same_president"):
             probe.acq_same_president = state.acq_same_president
+        if hasattr(state, "allow_positive_income_closing"):
+            probe.allow_positive_income_closing = state.allow_positive_income_closing
         return probe
 
     def _offer_has_live_path(self, state, offer, layout) -> bool:
