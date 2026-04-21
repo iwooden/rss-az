@@ -30,7 +30,8 @@ class MCTSNode:
         pending_n: Count of legal actions cached for this leaf at child
             creation. 0 until a batch evaluator fills in the buffer.
             The action ids themselves are packed directly into the shared
-            (batch, K_MAX) eval buffer at creation time — no per-node copy.
+            (batch, MAX_ACTION_SIZE) eval buffer at creation time — no
+            per-node copy.
         pending_phase: Decision phase id (0-10) of the state at child
             creation. Needed because the model dispatches per-leaf phase_ids.
             -1 until populated.

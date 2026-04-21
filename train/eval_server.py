@@ -26,14 +26,13 @@ distribution over legal slots (illegal slots carry near-zero mass from
 softmax of -1e9). Workers gather the per-leaf legal prior slice out of
 that dense row using the same LUT, without any softmax on the worker side.
 
-Wins vs the old sparse IPC protocol (K_MAX=1024):
+Wins vs the old sparse IPC protocol (1024-wide sparse action buffers):
   * inbound action_ids/n_legals/phase_ids (2048+3 B/state) collapses to a
     170 B/state uint8 mask (~12x cut on the send leg).
-  * outbound priors (K_MAX=1024 f32 = 4096 B/state) shrinks to
+  * outbound priors (1024 f32 = 4096 B/state) shrinks to
     UNIFIED_LOGIT_DIM=170 f32 = 680 B/state (~6x cut on the return leg).
-  * on-GPU per-phase gather, K_MAX specialization, and n_legals scan all
-    drop out of the model forward — torch.compile sees a fully static
-    (B, 170) policy path.
+  * on-GPU per-phase gather and n_legals scan drop out of the model
+    forward — torch.compile sees a fully static (B, 170) policy path.
 
 **Signaling protocol:**
 
@@ -83,11 +82,10 @@ import torch
 from torch._dynamo.decorators import mark_unbacked
 
 from core.actions import (
-    MAX_LEGAL_ACTIONS_PY,
     enumerate_legal_actions_py,
     get_decision_phase_py,
 )
-from core.data import PHASE_ACTION_SIZES
+from core.data import MAX_ACTION_SIZE, PHASE_ACTION_SIZES
 from core.token_data import (
     TokenDataSize,
     get_num_tokens,
@@ -98,7 +96,6 @@ from mcts.evaluator import BaseEvaluator
 from nn.transformer import NUM_PHASES, UNIFIED_LOGIT_DIM, build_action_lut
 from train.profile_stats import EvalClientStats, EvalServerStats
 
-K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
 
 
@@ -119,10 +116,9 @@ class SharedEvalBuffers:
         priors  (W, B, UNIFIED_LOGIT_DIM)  float32  (softmaxed over legal slots)
         values  (W, B, num_players)        float32  (canonical order)
 
-    ``K_MAX`` intentionally does not appear in any shape here — the dense
-    unified representation is narrower than K_MAX and carries the same
-    legality information via a per-slot mask. Shared-mem output footprint
-    is ``workers × batch × UNIFIED_LOGIT_DIM × 4`` bytes.
+    The dense unified representation carries legality via a per-slot mask
+    — no sparse action-id buffer appears in any shape here. Shared-mem
+    output footprint is ``workers × batch × UNIFIED_LOGIT_DIM × 4`` bytes.
     """
 
     def __init__(
@@ -955,12 +951,11 @@ class RemoteEvaluator(BaseEvaluator):
     interface as NNEvaluator, so it can be used as a drop-in replacement.
 
     Hot path is pure numpy: workers fill ``(num_tokens, token_dim)`` f32
-    token buffers via ``core.token_data.get_token_data``, write phase_id /
-    action_ids / n_legal scalars into their shared-mem slots, publish a
-    bitmap bit, and sleep on the per-server done-condition until a
+    token buffers via ``core.token_data.get_token_data`` and a dense
+    ``UNIFIED_LOGIT_DIM`` legal mask into their shared-mem slots, publish
+    a bitmap bit, and sleep on the per-server done-condition until a
     shared-memory done flag flips. The returned priors are already
-    softmaxed over the legal action list on the GPU — no worker-side
-    gather or softmax.
+    masked + softmaxed on the GPU — no worker-side softmax.
 
     Communication uses per-server uint64 bitmap arrays (W cache-line-padded
     words each) for lockfree request submission (atomic fetch-or) and a
@@ -997,12 +992,13 @@ class RemoteEvaluator(BaseEvaluator):
         self._out_values_np = shared_bufs.get_output_values_np(worker_idx)
 
         # Worker-local LUT (phase_id, phase-local action id) → unified slot.
-        # Used both to set legal-mask bits pre-publish and to gather the
-        # per-leaf legal prior slice out of the dense server response.
+        # Used in the single-state ``evaluate`` path to set legal-mask bits
+        # pre-publish and gather the sparse prior slice post-forward; the
+        # dense ``evaluate_leaves`` path bypasses it entirely.
         self._action_lut_np: np.ndarray = build_action_lut().numpy()
         # Scratch for enumerate_legal_actions_py on the single-state path.
         self._enum_scratch: np.ndarray = np.empty(
-            int(MAX_LEGAL_ACTIONS_PY), dtype=np.uint16,
+            MAX_ACTION_SIZE, dtype=np.uint16,
         )
 
         self._profile = profile
@@ -1101,32 +1097,36 @@ class RemoteEvaluator(BaseEvaluator):
     def evaluate_leaves(
         self,
         state_arrays: list[np.ndarray],
-        phase_ids: list[int],
-        action_ids_buf: np.ndarray,
-        n_legals: list[int],
-    ) -> list[tuple[np.ndarray, np.ndarray]]:
-        """Evaluate pre-enumerated leaf data in a single round-trip to the server.
+        legal_mask: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Evaluate pre-masked leaf data in a single round-trip to the server.
 
-        MCTS has already enumerated legal actions + computed phase ids during
-        selection, so we just build per-leaf legal masks and submit one
-        batch. The server returns dense priors over unified slots; this
-        method gathers the per-leaf legal prior slice via the same LUT
-        used to build each row's mask.
+        MCTS has already built the dense per-leaf legal mask during
+        selection, so we copy tokens + mask into shared memory and submit
+        one batch. The server returns dense priors over unified slots;
+        this method hands them back as a contiguous ``(n, UNIFIED_LOGIT_DIM)``
+        view — the caller gathers the sparse legal slice (if needed) via
+        whatever LUT they used to build the mask.
 
         Args:
             state_arrays: Raw int16 state arrays (pool row views), one per
                 leaf. Each ``(total_size,)`` int16.
-            phase_ids: Decision phase ids per leaf, length n.
-            action_ids_buf: Legal phase-local action ids, shape
-                ``(>= n, K_MAX)`` uint16. Only ``[i, :n_legals[i]]`` is read.
-            n_legals: Count of legal actions per leaf, length n.
+            legal_mask: Dense legal slot mask, shape
+                ``(n, UNIFIED_LOGIT_DIM)`` uint8 or bool.
 
         Returns:
-            List of ``(priors_legal, values_canonical)`` tuples.
+            ``(priors, values)`` where ``priors`` is
+            ``(n, UNIFIED_LOGIT_DIM)`` float32 (softmaxed on the GPU with
+            illegal slots near zero) and ``values`` is
+            ``(n, num_players)`` float32 in canonical order. Both are
+            fresh copies — the shared-mem slots are free after return.
         """
         n = len(state_arrays)
         if n == 0:
-            return []
+            return (
+                np.empty((0, UNIFIED_LOGIT_DIM), dtype=np.float32),
+                np.empty((0, self.num_players), dtype=np.float32),
+            )
 
         _stats = self._stats
         _t0 = _t1 = _t2 = 0.0
@@ -1137,10 +1137,8 @@ class RemoteEvaluator(BaseEvaluator):
         # dispatch + GameState wrapper construction (rebind across rows
         # internally).
         get_token_data_batch(state_arrays, self.num_players, self._in_states_np[:n])
-        for i in range(n):
-            self._fill_mask_row(
-                i, phase_ids[i], action_ids_buf[i, :n_legals[i]],
-            )
+        # Caller already has the dense mask — copy it straight into shm.
+        np.copyto(self._in_legal_mask_np[:n], legal_mask, casting="unsafe")
 
         if _stats is not None:
             _t1 = perf_counter()
@@ -1152,21 +1150,15 @@ class RemoteEvaluator(BaseEvaluator):
             _t2 = perf_counter()
             _stats.wait_secs += _t2 - _t1
 
-        results: list[tuple[np.ndarray, np.ndarray]] = []
-        for i in range(n):
-            nl = n_legals[i]
-            slots = self._action_lut_np[phase_ids[i], action_ids_buf[i, :nl]]
-            results.append((
-                self._out_priors_np[i, slots].copy(),
-                self._out_values_np[i].copy(),
-            ))
+        priors = self._out_priors_np[:n].copy()
+        values = self._out_values_np[:n].copy()
 
         if _stats is not None:
             _stats.result_secs += perf_counter() - _t2
             _stats.num_calls += 1
             _stats.total_states += n
 
-        return results
+        return priors, values
 
     def reset_profile_stats(self) -> None:
         """Reset profile stats for a new game."""

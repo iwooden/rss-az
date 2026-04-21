@@ -3,10 +3,10 @@
 Each ``_enumerate_*`` helper in ``core/actions.pyx`` writes phase-local legal
 action ids into a sparse buffer. The ids it emits must stay within the
 declared ``ACTION_SIZE`` for that phase — otherwise the model's per-phase
-policy head (and the replay buffer's ``K_MAX`` padding) silently misalign.
+policy head silently misaligns.
 
-``_require_action_capacity`` only guards against the global
-``MAX_LEGAL_ACTIONS`` pad width (1024). It does **not** check per-phase
+``_require_action_capacity`` guards against the global ``MAX_ACTION_SIZE``
+upper bound (tight across all phases). It does **not** check per-phase
 ``ACTION_SIZE``. This file supplies the missing invariant test: for every
 decision phase, construct a state that drives the enumerator to its maximum
 plausible action id, then assert:
@@ -20,7 +20,6 @@ import numpy as np
 import pytest
 
 from core.actions import (
-    MAX_LEGAL_ACTIONS_PY as MAX_LEGAL_ACTIONS,
     enumerate_legal_actions_py,
     get_decision_phase_py,
 )
@@ -28,6 +27,7 @@ from core.data import (
     DecisionPhase,
     GamePhases,
     GameConstants,
+    MAX_ACTION_SIZE,
     PHASE_ACTION_SIZES,
 )
 from core.state import GameState
@@ -56,7 +56,7 @@ def _fresh_state(num_players=3, seed=42):
 
 def _enumerate(state):
     """Return (phase_id, list_of_legal_ids) for the current decision phase."""
-    buf = np.zeros(MAX_LEGAL_ACTIONS, dtype=np.uint16)
+    buf = np.zeros(MAX_ACTION_SIZE, dtype=np.uint16)
     count = enumerate_legal_actions_py(state, buf)
     phase_id = get_decision_phase_py(state)
     return phase_id, [int(buf[i]) for i in range(count)]

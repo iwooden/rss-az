@@ -26,7 +26,6 @@ import torch
 from core.actions import (
     enumerate_legal_actions_py,
     get_decision_phase_py,
-    MAX_LEGAL_ACTIONS_PY,
 )
 from core.data import GamePhases, GameConstants, MAX_ACTION_SIZE
 from core.driver import DRIVER
@@ -57,11 +56,10 @@ from mcts.search import (
     prepare_reuse_root,
     run_search,
 )
-from nn.transformer import RSSTransformerNet, TransformerConfig
+from nn.transformer import RSSTransformerNet, TransformerConfig, UNIFIED_LOGIT_DIM, build_action_lut
 from train.config import MCTSConfig
 
 
-K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 NUM_PLAYERS = 3
 
 
@@ -939,9 +937,13 @@ class TestStatePool:
         assert pool._path_pool is None
         pool.ensure_pending_bufs(4, NUM_PLAYERS)
         assert pool._pending_action_ids_buf is not None
-        assert pool._pending_action_ids_buf.shape == (4, K_MAX)
+        assert pool._pending_action_ids_buf.shape == (4, MAX_ACTION_SIZE)
+        assert pool._pending_legal_mask_buf is not None
+        assert pool._pending_legal_mask_buf.shape == (4, UNIFIED_LOGIT_DIM)
         assert pool._pending_n_buf is not None
         assert pool._pending_n_buf.shape == (4,)
+        assert pool._pending_phase_buf is not None
+        assert pool._pending_phase_buf.shape == (4,)
         assert pool._saved_values_buf is not None
         assert pool._saved_values_buf.shape == (4, NUM_PLAYERS)
         assert pool._path_pool is not None
@@ -949,7 +951,8 @@ class TestStatePool:
 
         # Growing the batch reallocates / extends
         pool.ensure_pending_bufs(8, NUM_PLAYERS)
-        assert pool._pending_action_ids_buf.shape == (8, K_MAX)
+        assert pool._pending_action_ids_buf.shape == (8, MAX_ACTION_SIZE)
+        assert pool._pending_legal_mask_buf.shape == (8, UNIFIED_LOGIT_DIM)
         assert pool._saved_values_buf.shape == (8, NUM_PLAYERS)
         assert len(pool._path_pool) == 8
 
@@ -994,7 +997,7 @@ class TestNNEvaluator:
 
     def test_evaluate_action_ids_match_enumerator(self, game_state, evaluator):
         _, _, action_ids, n_legal, _ = evaluator.evaluate(game_state)
-        scratch = np.empty(K_MAX, dtype=np.uint16)
+        scratch = np.empty(MAX_ACTION_SIZE, dtype=np.uint16)
         expected_n = enumerate_legal_actions_py(game_state, scratch)
         assert n_legal == expected_n
         np.testing.assert_array_equal(action_ids[:n_legal], scratch[:expected_n])
@@ -1035,30 +1038,31 @@ class TestNNEvaluator:
             assert (values >= -1.0 - 1e-5).all() and (values <= 1.0 + 1e-5).all()
 
     def test_evaluate_leaves_matches_evaluate(self, game_state, evaluator):
-        """evaluate_leaves should agree with evaluate on the same state."""
+        """evaluate_leaves dense output should agree with evaluate's sparse output."""
         priors_ref, values_ref, action_ids, n_legal, phase_id = (
             evaluator.evaluate(game_state)
         )
-        # Build the packed inputs the way run_search does.
-        state_arrays = [game_state._array]
-        phase_ids = [phase_id]
-        action_ids_buf = np.zeros((1, K_MAX), dtype=np.uint16)
-        action_ids_buf[0, :n_legal] = action_ids
-        n_legals = [n_legal]
-        leaves = evaluator.evaluate_leaves(
-            state_arrays, phase_ids, action_ids_buf, n_legals,
+        # Build the dense legal mask the way run_search does via the LUT.
+        lut = build_action_lut().numpy()
+        legal_mask = np.zeros((1, UNIFIED_LOGIT_DIM), dtype=np.uint8)
+        legal_mask[0, lut[phase_id, action_ids[:n_legal]]] = 1
+        priors_dense, values = evaluator.evaluate_leaves(
+            [game_state._array], legal_mask,
         )
-        assert len(leaves) == 1
-        priors, values = leaves[0]
-        assert priors.shape == (n_legal,)
-        np.testing.assert_array_almost_equal(priors, priors_ref)
-        np.testing.assert_array_almost_equal(values, values_ref)
+        assert priors_dense.shape == (1, UNIFIED_LOGIT_DIM)
+        assert values.shape == (1, NUM_PLAYERS)
+        # Gather the sparse prior slice and compare against evaluate().
+        slots = lut[phase_id, action_ids[:n_legal]]
+        priors_sparse = priors_dense[0, slots]
+        np.testing.assert_array_almost_equal(priors_sparse, priors_ref)
+        np.testing.assert_array_almost_equal(values[0], values_ref)
 
     def test_evaluate_leaves_empty(self, evaluator):
-        result = evaluator.evaluate_leaves(
-            [], [], np.empty((0, K_MAX), dtype=np.uint16), [],
+        priors, values = evaluator.evaluate_leaves(
+            [], np.empty((0, UNIFIED_LOGIT_DIM), dtype=np.uint8),
         )
-        assert result == []
+        assert priors.shape == (0, UNIFIED_LOGIT_DIM)
+        assert values.shape == (0, NUM_PLAYERS)
 
     def test_model_num_players_mismatch_rejected(self, model):
         """Evaluator-model num_players mismatch raises at construction."""
@@ -1291,15 +1295,11 @@ class TestBatchedSearch:
             def evaluate(self, state):
                 return self._inner.evaluate(state)
 
-            def evaluate_leaves(
-                self, state_arrays, phase_ids, action_ids_buf, n_legals,
-            ):
+            def evaluate_leaves(self, state_arrays, legal_mask):
                 addrs = [a.ctypes.data for a in state_arrays]
                 if len(addrs) != len(set(addrs)):
                     self.found_dup = True
-                return self._inner.evaluate_leaves(
-                    state_arrays, phase_ids, action_ids_buf, n_legals,
-                )
+                return self._inner.evaluate_leaves(state_arrays, legal_mask)
 
             def evaluate_terminal(self, state):
                 return self._inner.evaluate_terminal(state)
@@ -1326,18 +1326,14 @@ class TestBatchedSearch:
             def evaluate(self, state):
                 return self._inner.evaluate(state)
 
-            def evaluate_leaves(
-                self, state_arrays, phase_ids, action_ids_buf, n_legals,
-            ):
+            def evaluate_leaves(self, state_arrays, legal_mask):
                 self.sizes.append(len(state_arrays))
-                return self._inner.evaluate_leaves(
-                    state_arrays, phase_ids, action_ids_buf, n_legals,
-                )
+                return self._inner.evaluate_leaves(state_arrays, legal_mask)
 
             def evaluate_terminal(self, state):
                 return self._inner.evaluate_terminal(state)
 
-        scratch = np.empty(K_MAX, dtype=np.uint16)
+        scratch = np.empty(MAX_ACTION_SIZE, dtype=np.uint16)
         legal_count = int(enumerate_legal_actions_py(game_state, scratch))
         tracker = BatchSizeTracker(evaluator)
         config = MCTSConfig(
@@ -1673,13 +1669,9 @@ class TestSubtreeReuse:
                 self.count += 1
                 return self._inner.evaluate(state)
 
-            def evaluate_leaves(
-                self, state_arrays, phase_ids, action_ids_buf, n_legals,
-            ):
+            def evaluate_leaves(self, state_arrays, legal_mask):
                 self.count += len(state_arrays)
-                return self._inner.evaluate_leaves(
-                    state_arrays, phase_ids, action_ids_buf, n_legals,
-                )
+                return self._inner.evaluate_leaves(state_arrays, legal_mask)
 
             def evaluate_terminal(self, state):
                 return self._inner.evaluate_terminal(state)

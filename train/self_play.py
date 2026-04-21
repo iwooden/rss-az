@@ -21,11 +21,10 @@ import numpy as np
 import torch
 
 from core.actions import (
-    MAX_LEGAL_ACTIONS_PY,
     enumerate_legal_actions_py,
     get_decision_phase_py,
 )
-from core.data import GameConstants
+from core.data import GameConstants, MAX_ACTION_SIZE
 from core.driver import DRIVER, STATUS_GAME_OVER_PY
 from core.state import GameState, get_layout
 from entities.company import COMPANIES
@@ -39,7 +38,6 @@ from train.eval_server import RemoteEvaluator
 from train.profile_stats import EvalClientStats, GameProfileData, SearchStats
 
 
-K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 U_DIM = int(UNIFIED_LOGIT_DIM)
 
 
@@ -164,7 +162,7 @@ def play_game(
 
     # Scratch buffer for enumerating legal actions at each decision point.
     # Copied-out per move so the buffer is free to be reused.
-    legal_scratch = np.empty(K_MAX, dtype=np.uint16)
+    legal_scratch = np.empty(MAX_ACTION_SIZE, dtype=np.uint16)
     # Static LUT mapping (phase_id, phase-local action id) → unified slot.
     # Used once per decision to scatter the sparse visit distribution and
     # legal set into dense (UNIFIED_LOGIT_DIM,) rows for the trainer.

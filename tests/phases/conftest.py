@@ -26,12 +26,12 @@ from core.actions import (
     enumerate_legal_actions_py,
     decode_action_py,
     get_decision_phase_py,
-    MAX_LEGAL_ACTIONS_PY as MAX_LEGAL_ACTIONS,
 )
 from core.data import (
     GamePhases,
     GameConstants,
     CorpIndices,
+    MAX_ACTION_SIZE,
     ENGINE_TO_DECISION_PHASE,
     PY_PAR_PRICE_VALID,
     PY_CASH_DIVISOR,
@@ -73,7 +73,7 @@ def get_legal_actions(state):
         List of (action_id, info) tuples where info is a namedtuple with
         fields: phase, action_type, corp_id, company_id, amount.
     """
-    buf = np.zeros(MAX_LEGAL_ACTIONS, dtype=np.uint16)
+    buf = np.zeros(MAX_ACTION_SIZE, dtype=np.uint16)
     count = enumerate_legal_actions_py(state, buf)
     phase_id = get_decision_phase_py(state)
     assert phase_id >= 0, f"not in a decision phase (engine phase={TURN.get_phase(state)})"
@@ -256,7 +256,7 @@ def apply_and_verify(state, action_id, msg="", expected_status=STATUS_OK):
     num_players = TURN.get_num_players(state)
 
     # Verify action is legal before applying
-    buf = np.zeros(MAX_LEGAL_ACTIONS, dtype=np.uint16)
+    buf = np.zeros(MAX_ACTION_SIZE, dtype=np.uint16)
     count = enumerate_legal_actions_py(state, buf)
     legal_ids = set(int(buf[i]) for i in range(count))
     assert action_id in legal_ids, (
@@ -296,7 +296,7 @@ def apply_and_verify(state, action_id, msg="", expected_status=STATUS_OK):
     if phase != GamePhases.PHASE_GAME_OVER:
         decision_phase = get_decision_phase_py(state)
         if decision_phase >= 0:
-            buf2 = np.zeros(MAX_LEGAL_ACTIONS, dtype=np.uint16)
+            buf2 = np.zeros(MAX_ACTION_SIZE, dtype=np.uint16)
             count2 = enumerate_legal_actions_py(state, buf2)
             assert count2 > 0, f"{msg}\nNo legal actions after action {action_id}"
 

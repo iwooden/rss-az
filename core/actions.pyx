@@ -47,6 +47,7 @@ from core.data cimport (
     ACTION_SIZE_ISSUE,
     ACTION_SIZE_IPO,
     ACTION_SIZE_PAR,
+    MAX_ACTION_SIZE,
     DPHASE_INVEST,
     DPHASE_BID,
     DPHASE_ACQ_SELECT_CORP,
@@ -127,16 +128,17 @@ _init_phase_action_sizes()
 cdef inline void _require_action_capacity(int count, const char* context) noexcept nogil:
     """Abort if the sparse legal-action buffer would overflow.
 
-    ``MAX_LEGAL_ACTIONS`` is an empirical training-time bound. Exceeding it is
-    a configuration bug that must fail in optimized builds too, before writing
-    past the caller's fixed-size scratch buffer.
+    ``MAX_ACTION_SIZE`` is the tight per-phase upper bound (max over all
+    ``ACTION_SIZE_*``). Exceeding it is a configuration bug that must fail
+    in optimized builds too, before writing past the caller's fixed-size
+    scratch buffer.
     """
-    if count >= MAX_LEGAL_ACTIONS:
+    if count >= MAX_ACTION_SIZE:
         fprintf(
             stderr,
-            b"enumerate_legal_actions overflow in %s: MAX_LEGAL_ACTIONS=%d\n",
+            b"enumerate_legal_actions overflow in %s: MAX_ACTION_SIZE=%d\n",
             context,
-            MAX_LEGAL_ACTIONS,
+            <int>MAX_ACTION_SIZE,
         )
         abort()
 
@@ -406,7 +408,7 @@ cdef int _enumerate_invest(
     Returns the number of IDs written.
 
     Practical upper bound: ``1 + num_players + 16``. Worst case at the game's
-    maximum of 6 players is 23 — well under ``MAX_LEGAL_ACTIONS``.
+    maximum of 6 players is 23 — well under ``MAX_ACTION_SIZE``.
 
     Reads state via direct slot arithmetic and entity-owned primitives
     where available. This is the intentional
@@ -510,7 +512,7 @@ cdef int _enumerate_bid(
          unaffordable offset.
 
     Returns the number of IDs written. Worst case: 1 + AUCTION_CAP = 16 —
-    well under ``MAX_LEGAL_ACTIONS``.
+    well under ``MAX_ACTION_SIZE``.
 
     Reads state via direct slot arithmetic against the module-level
     layout constants and entity-owned primitives, matching the
@@ -1047,12 +1049,12 @@ cdef int enumerate_legal_actions(
 
     # Overflow is a configuration bug, not a recoverable condition. This is
     # intentionally checked in release builds, not only with Python asserts.
-    if count > MAX_LEGAL_ACTIONS:
+    if count > MAX_ACTION_SIZE:
         fprintf(
             stderr,
-            b"enumerate_legal_actions returned count=%d > MAX_LEGAL_ACTIONS=%d\n",
+            b"enumerate_legal_actions returned count=%d > MAX_ACTION_SIZE=%d\n",
             count,
-            MAX_LEGAL_ACTIONS,
+            <int>MAX_ACTION_SIZE,
         )
         abort()
     return count
@@ -1108,8 +1110,8 @@ cpdef int enumerate_legal_actions_py(GameState state, cnp.ndarray action_ids):
     """Python wrapper around ``enumerate_legal_actions``.
 
     Caller supplies a pre-allocated uint16 numpy array of at least
-    ``MAX_LEGAL_ACTIONS`` elements. Returns the number of legal action
-    IDs written into the buffer.
+    ``MAX_ACTION_SIZE`` elements (the tight upper bound across all phases).
+    Returns the number of legal action IDs written into the buffer.
     """
     cdef uint16_t* buf_ptr = <uint16_t*>cnp.PyArray_DATA(action_ids)
     return enumerate_legal_actions(state, buf_ptr)
@@ -1121,10 +1123,8 @@ cpdef int enumerate_legal_actions_py(GameState state, cnp.ndarray action_ids):
 #
 # ``DecisionPhase`` lives on ``core.data`` — Python consumers should use
 # ``from core.data import DecisionPhase`` and reference ``DPHASE_*`` as
-# attributes. Only constants that are specific to the actions API (action
-# type tags, legal-action buffer width) are mirrored here.
-
-MAX_LEGAL_ACTIONS_PY = MAX_LEGAL_ACTIONS
+# attributes. The legal-action buffer width for Python callers is
+# ``core.data.MAX_ACTION_SIZE``. Only action-type tags are mirrored here.
 
 ACTION_PASS_PY = ACTION_PASS
 ACTION_AUCTION_PY = ACTION_AUCTION

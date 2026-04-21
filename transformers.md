@@ -336,8 +336,8 @@ The rectangular layout enables clean GPU operations. All type-specific projectio
 The replay buffer stores training examples. With per-phase action indices, each example contains:
 - **Token data**: the eval buffer contents (or the compact state + `get_token_data()` at training time)
 - **Phase ID**: which phase this decision was in (determines action space)
-- **Legal action list**: sparse, padded to `K_MAX = MAX_LEGAL_ACTIONS`
-- **Policy target**: MCTS visit distribution (sparse, same width as the legal list)
+- **Legal mask**: dense over `UNIFIED_LOGIT_DIM` (`uint8`, 1 = legal slot)
+- **Policy target**: MCTS visit distribution scattered into a dense `UNIFIED_LOGIT_DIM`-wide row (zeros outside the legal slots)
 - **Value target**: A0GB values (N floats)
 
 Option A: store the compact state and re-extract tokens at training time. Smallest storage.
@@ -353,7 +353,7 @@ Option B is simpler for a very small-scale prototype, but expensive at current t
 - **Eval buffers**: `(batch, num_tokens, token_dim)` rank-3 tensor in shared memory. All token types use the same padded width.
 - **Action layout**: Per-phase action indices (max 53 for INVEST, after the ACQ split). Update `actions.pyx` layout and mask generation.
 - **Evaluator**: Remove state rotation. Remove un-rotation of values. Simpler.
-- **Model interface**: `forward(x, action_ids, n_legals, phase_ids) → (policy_logits, values)` where `x` is `(batch, num_tokens, token_dim)` and `phase_ids` is `(B,)` int. Policy logits are per-row gathered against each row's legal slice (shape `(B, K_MAX)`), with `-1e9` beyond `n_legals[i]`.
+- **Model interface**: `forward(x, legal_mask) → (policy_logits, values)` where `x` is `(batch, num_tokens, token_dim)` and `legal_mask` is `(batch, UNIFIED_LOGIT_DIM)` bool. Dense logits over unified slots; illegal slots are masked to `-1e9` so softmax collapses them to ~0.
 
 ### Game engine simplifications
 
@@ -380,7 +380,7 @@ All three simplifications follow the same pattern: the MLP needed a small, fixed
 
 2. ~~**`get_token_data()` feature lists / implementation**~~: **Done.** See `token-data.md` for the per-token feature spec and `core/token_data.{pyx,pxd}` for the implementation (nogil fill + batched `get_token_data_batch`).
 
-3. ~~**Head dispatch efficiency**~~: **Resolved.** The model emits per-row gathered logits of shape `(B, K_MAX)` — never a per-phase dense pad — by gathering against each row's legal-action list inside `_policy_forward`. Every per-row head runs once on the full batch into a unified `(B, UNIFIED_LOGIT_DIM)` tensor; a static `(NUM_PHASES, MAX_PHASE_ACTION_SIZE)` LUT remaps each row's phase-local action ids into unified slots, so the dispatch is two `gather` ops with no per-phase Python loop and no H↔D sync. Wasted FLOPs are ~2% of trunk (heads run on rows whose phase doesn't reference them; the n_legals mask zeros those out).
+3. ~~**Head dispatch efficiency**~~: **Resolved.** The model emits dense logits over `UNIFIED_LOGIT_DIM` (=170) unified slots. Every per-row head runs once on the full batch into the unified `(B, UNIFIED_LOGIT_DIM)` tensor; callers supply a dense `(B, UNIFIED_LOGIT_DIM)` legal mask and illegal slots are set to `-1e9` before softmax. A static `(NUM_PHASES, MAX_PHASE_ACTION_SIZE)` LUT built from the `core/actions.pxd` encoders is used *externally* (workers, trainer, tests) to translate between phase-local action ids and unified slots. Wasted FLOPs are ~2% of trunk (heads run on rows whose phase doesn't reference them; the legal mask zeros those out).
 
 4. **Batching with variable token counts** (Phase 6): For 3-5p training, batches contain games with different numbers of player tokens (68–70 input-buffer rows). Options: pad to the max and use attention mask, or batch by player count. Padding is simpler; batching by count is more efficient.
 
@@ -400,7 +400,7 @@ All three simplifications follow the same pattern: the MLP needed a small, fixed
 ### Phase 2: Action space refactor (core/actions.pyx) ✅
 - **Done.** Per-phase action indices, company-indexed auctions/closes, three-sub-phase ACQ (SELECT_CORP / SELECT_COMPANY / SELECT_PRICE), two-sub-phase IPO (IPO / PAR).
 - 11 decision phases, all `_enumerate_*` helpers implemented with real mask logic.
-- Deterministic enumeration order, `MAX_LEGAL_ACTIONS=256` overflow asserts.
+- Deterministic enumeration order, `MAX_ACTION_SIZE=53` overflow asserts (tight per-phase upper bound).
 - Import-time roundtrip assert in `core/actions.pyx` catches drift between `encode_*` arithmetic and the `ActionSize` enum in `core/data.pxd`.
 
 ### Phase 2b: Driver + phase handlers (core/driver.pyx, phases/*.pyx) ✅
@@ -415,7 +415,7 @@ All three simplifications follow the same pattern: the MLP needed a small, fixed
 - Type-specific projections (uniform `token_dim=92` input), entity-readout heads for every decision phase.
 - Three per-sub-phase ACQ heads (corp-select, company-select, 52-logit price head off `acq_price_info` token) and a two-head IPO→PAR pair (per-corp select + per-par readout off the `par` token).
 - Unified-head policy dispatch: every per-row head runs once on the full batch into a single `(B, UNIFIED_LOGIT_DIM=170)` tensor; a static `(NUM_PHASES, MAX_PHASE_ACTION_SIZE)` int64 LUT (`_action_lut`, built from the `core/actions.pxd` encoders) remaps each row's phase-local action ids into unified slots. Two `gather` ops, no per-phase loop, no H↔D sync. All callers ship a `(B,)` `phase_ids` tensor instead of a per-phase row-index list.
-- `forward(x, action_ids, n_legals, phase_ids)` returns `(policy_logits, values)` where `policy_logits` has shape `(B, K_MAX)` gathered against each row's legal-action slice — the trainer, evaluator, and eval server never allocate anything wider than `UNIFIED_LOGIT_DIM` (170 floats per row).
+- `forward(x, legal_mask)` returns `(policy_logits, values)` where `policy_logits` has shape `(B, UNIFIED_LOGIT_DIM=170)` — dense over unified slots with illegal slots pushed to `-1e9` before softmax. The trainer, evaluator, and eval server all speak the same dense representation — no sparse action-id buffer appears in any shape on this path.
 - Smoke test covers all 11 phases: shapes, finite logits inside the legal slice, `-1e9` tail, values ∈ [-1, 1].
 
 ### Phase 4: Evaluator integration (mcts/evaluator.py) ✅

@@ -39,15 +39,15 @@ from mcts.mcts_core import (
 from core.actions import (
     get_decision_phase_py,
     enumerate_legal_actions_py,
-    MAX_LEGAL_ACTIONS_PY,
 )
 from core.data import MAX_ACTION_SIZE, GamePhases
 from core.driver import DRIVER, STATUS_GAME_OVER_PY, STATUS_INVALID_PY
 from core.state import GameState, get_layout
 from entities.turn import TURN
+from nn.transformer import UNIFIED_LOGIT_DIM, build_action_lut
 
 
-K_MAX = int(MAX_LEGAL_ACTIONS_PY)
+U_DIM = int(UNIFIED_LOGIT_DIM)
 
 
 class StatePool:
@@ -57,17 +57,23 @@ class StatePool:
     lifetime. Each row stores one node's full compact int16 game state.
     ``reset()`` is called at the start of each run_search to reuse the
     same memory. The pool also owns per-search scratch buffers
-    (``_legal_scratch``, ``_pending_action_ids_buf``, ``_pending_n_buf``,
+    (``_legal_scratch``, ``_pending_action_ids_buf``,
+    ``_pending_legal_mask_buf``, ``_pending_n_buf``, ``_pending_phase_buf``,
     ``_saved_values_buf``, ``_path_pool``) so ``run_search`` never
-    allocates per simulation.
+    allocates per simulation. The per-search ``_action_lut_np`` is owned
+    here too so the mask scatter + post-forward sparse gather don't
+    re-build the LUT on every search.
     """
 
     __slots__ = (
         "states",
         "_next",
+        "_action_lut_np",
         "_legal_scratch",
         "_pending_action_ids_buf",
+        "_pending_legal_mask_buf",
         "_pending_n_buf",
+        "_pending_phase_buf",
         "_saved_values_buf",
         "_path_pool",
     )
@@ -79,15 +85,23 @@ class StatePool:
         # the raw int16 state arrays.
         self.states = np.zeros((capacity, state_size), dtype=np.int16)
         self._next = 0
+        # (phase_id, phase-local action id) → unified-slot LUT. Used both
+        # to scatter the dense legal mask per leaf and to gather the sparse
+        # prior slice out of the server's dense priors for node.expand.
+        self._action_lut_np: np.ndarray = build_action_lut().numpy()
         # Per-leaf enumerate scratch — written by enumerate_legal_actions_py,
         # then copied directly into the per-leaf row of _pending_action_ids_buf
         # at child creation time (no intermediate per-node allocation).
-        self._legal_scratch = np.empty(K_MAX, dtype=np.uint16)
-        # Packed (batch_size, K_MAX) buffer + int32 n_legals array handed
-        # to evaluate_leaves each batch. Lazy-allocated because batch_size
-        # isn't known at pool construction.
+        self._legal_scratch = np.empty(MAX_ACTION_SIZE, dtype=np.uint16)
+        # Packed (batch_size, MAX_ACTION_SIZE) buffer + int32 n_legals /
+        # phase arrays carried through the batch. ``_pending_legal_mask_buf``
+        # is the dense (batch_size, UNIFIED_LOGIT_DIM) uint8 mask fed to
+        # evaluate_leaves. Lazy-allocated because batch_size isn't known
+        # at pool construction.
         self._pending_action_ids_buf: np.ndarray | None = None
+        self._pending_legal_mask_buf: np.ndarray | None = None
         self._pending_n_buf: np.ndarray | None = None
+        self._pending_phase_buf: np.ndarray | None = None
         # Per-batch saved-Q rows for leaf-lock unlock. One row per pending
         # slot, memcpy'd from parent.value_sums at lock time and back at
         # unlock time — no per-leaf np.copy() allocation.
@@ -141,9 +155,13 @@ class StatePool:
         buf = self._pending_action_ids_buf
         if buf is None or buf.shape[0] < batch_size:
             self._pending_action_ids_buf = np.empty(
-                (batch_size, K_MAX), dtype=np.uint16,
+                (batch_size, MAX_ACTION_SIZE), dtype=np.uint16,
+            )
+            self._pending_legal_mask_buf = np.empty(
+                (batch_size, U_DIM), dtype=np.uint8,
             )
             self._pending_n_buf = np.empty(batch_size, dtype=np.int32)
+            self._pending_phase_buf = np.empty(batch_size, dtype=np.int32)
         sv = self._saved_values_buf
         if sv is None or sv.shape[0] < batch_size or sv.shape[1] < num_players:
             self._saved_values_buf = np.empty(
@@ -289,12 +307,16 @@ def run_search(
     # Ensure per-batch scratch buffers are sized for this search
     state_pool.ensure_pending_bufs(batch_size, num_players)
     pending_action_ids_buf = state_pool._pending_action_ids_buf
+    pending_legal_mask_buf = state_pool._pending_legal_mask_buf
     pending_n_buf = state_pool._pending_n_buf
+    pending_phase_buf = state_pool._pending_phase_buf
     saved_values_buf = state_pool._saved_values_buf
     path_pool = state_pool._path_pool
     assert pending_action_ids_buf is not None and pending_n_buf is not None
+    assert pending_legal_mask_buf is not None and pending_phase_buf is not None
     assert saved_values_buf is not None and path_pool is not None
     legal_scratch = state_pool._legal_scratch
+    action_lut_np = state_pool._action_lut_np
 
     # Scratch GameState rebound to each pool row via rebind()
     scratch_gs = GameState.from_buffer(state_pool.row(0), num_players)
@@ -368,24 +390,28 @@ def run_search(
                         scratch_gs,
                     )
                 else:
-                    # Pack legal actions directly into the eval batch
-                    # buffer at the slot this leaf will occupy when
-                    # queued. Newly created non-terminal children always
-                    # queue next (no virtual-backup / terminal / dedup
-                    # bailout applies), so len(pending) is the slot.
-                    # Zero the [n:] tail: the downstream torch.gather on
-                    # the eval server indexes the full K_MAX width before
-                    # masked_fill, so stale ids from a prior larger batch
-                    # would blow the dense-logits range.
-                    child.pending_phase = get_decision_phase_py(scratch_gs)
+                    # Pack legal actions + dense legal mask directly into
+                    # the eval batch buffers at the slot this leaf will
+                    # occupy when queued. Newly created non-terminal
+                    # children always queue next (no virtual-backup /
+                    # terminal / dedup bailout applies), so len(pending)
+                    # is the slot.
+                    phase_id = get_decision_phase_py(scratch_gs)
+                    child.pending_phase = phase_id
                     n = enumerate_legal_actions_py(
                         scratch_gs, legal_scratch,
                     )
                     child.pending_n = n
                     slot = len(pending)
                     pending_action_ids_buf[slot, :n] = legal_scratch[:n]
-                    pending_action_ids_buf[slot, n:] = 0
                     pending_n_buf[slot] = n
+                    pending_phase_buf[slot] = phase_id
+                    # Dense mask for evaluate_leaves: zero the row, then
+                    # flip legal unified-logit slots via the LUT.
+                    pending_legal_mask_buf[slot] = 0
+                    pending_legal_mask_buf[
+                        slot, action_lut_np[phase_id, legal_scratch[:n]]
+                    ] = 1
                 parent.children[action_idx] = child
                 node = child
             else:
@@ -443,27 +469,22 @@ def run_search(
             _t1 = perf_counter()
             profile.selection_secs += _t1 - _t0
 
-        # pending_action_ids_buf and pending_n_buf are already packed per-leaf
-        # at child-creation time; no extra pass needed here.
+        # pending_action_ids_buf / pending_legal_mask_buf / pending_n_buf /
+        # pending_phase_buf are already packed per-leaf at child-creation
+        # time; no extra pass needed here.
         n_pending = len(pending)
 
         leaf_arrays = [state_pool.row(node.state_idx) for _, node in pending]
-        phase_ids = [node.pending_phase for _, node in pending]
-        n_legals = pending_n_buf[:n_pending].tolist()
-        results = evaluator.evaluate_leaves(
+        priors_dense, values_batch = evaluator.evaluate_leaves(
             leaf_arrays,
-            phase_ids,
-            pending_action_ids_buf[:n_pending],
-            n_legals,
+            pending_legal_mask_buf[:n_pending],
         )
 
         if profile is not None:
             _t2 = perf_counter()
             profile.eval_secs += _t2 - _t1
 
-        for i, ((path, node), (priors, values)) in enumerate(
-            zip(pending, results),
-        ):
+        for i, (path, node) in enumerate(pending):
             # Unlock parent edge: restore saved Q values
             parent, _, parent_aidx = path[-1]
             assert parent.value_sums is not None
@@ -472,15 +493,20 @@ def run_search(
             # Recursively unlock propagation-locked ancestor edges
             _propagate_unlock(path)
 
-            # Expand the leaf. Priors are already sparse + softmaxed by the
-            # evaluator (GPU-side gather + softmax on the server path,
-            # torch.gather + softmax in-process for NNEvaluator). The
-            # action_ids view into pending_action_ids_buf is consumed
-            # synchronously by expand_node_sparse (copies into a fresh
-            # per-node array), so the buffer slot is free for reuse next batch.
+            # Gather per-leaf sparse prior slice out of the dense
+            # server response using the same LUT the mask was built
+            # from. Dense priors are softmaxed on the server / inside
+            # NNEvaluator, so illegal slots carry ~0 mass and the
+            # gathered slice is already a valid distribution.
             n = node.pending_n
+            phase_id = int(pending_phase_buf[i])
+            action_ids = pending_action_ids_buf[i, :n]
+            slots = action_lut_np[phase_id, action_ids]
+            priors_legal = priors_dense[i, slots].copy()
+            values = values_batch[i]
+
             node.expand(
-                pending_action_ids_buf[i, :n], n, priors,
+                action_ids, n, priors_legal,
                 num_players=num_players, default_value=values,
             )
             # Clear per-leaf pending state — consumed by expansion.

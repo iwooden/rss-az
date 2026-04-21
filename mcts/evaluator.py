@@ -23,12 +23,11 @@ from core.token_data import (
 from core.actions import (
     get_decision_phase_py,
     enumerate_legal_actions_py,
-    MAX_LEGAL_ACTIONS_PY,
 )
+from core.data import MAX_ACTION_SIZE
 from entities.player import PLAYERS
 from nn.transformer import UNIFIED_LOGIT_DIM, build_action_lut
 
-K_MAX = int(MAX_LEGAL_ACTIONS_PY)
 TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
 
 
@@ -181,11 +180,11 @@ class NNEvaluator(BaseEvaluator):
         # Preallocated scratch — grows lazily via ``_ensure_scratch``.
         self._scratch_cap: int = 0
         # Persistent uint16 buffer for enumerate_legal_actions_py calls.
-        self._enum_scratch: np.ndarray = np.empty(K_MAX, dtype=np.uint16)
+        self._enum_scratch: np.ndarray = np.empty(MAX_ACTION_SIZE, dtype=np.uint16)
         # Worker-local LUT mapping (phase_id, phase_local_action_id) to a
-        # slot in the unified logit vector. Used both to set mask bits
-        # pre-forward and to gather priors post-forward. Owned here instead
-        # of the model so CPU-side mask builds don't touch GPU tensors.
+        # slot in the unified logit vector. Used in evaluate()/evaluate_batch
+        # to set mask bits pre-forward and gather sparse priors post-forward;
+        # the dense ``evaluate_leaves`` path bypasses it entirely.
         self._action_lut_np: np.ndarray = build_action_lut().numpy()
 
         # Catch model/player-count mismatch before it reaches boundscheck=False
@@ -337,7 +336,7 @@ class NNEvaluator(BaseEvaluator):
         n_legals: list[int] = [0] * n
         # Buffer to hold the enumerated ids across rows so we can gather
         # priors after forward without re-enumerating.
-        all_action_ids = np.empty((n, K_MAX), dtype=np.uint16)
+        all_action_ids = np.empty((n, MAX_ACTION_SIZE), dtype=np.uint16)
         for i, s in enumerate(states):
             phase_ids[i] = get_decision_phase_py(s)
             nl = enumerate_legal_actions_py(s, self._enum_scratch)
@@ -363,36 +362,37 @@ class NNEvaluator(BaseEvaluator):
     def evaluate_leaves(
         self,
         state_arrays: list[np.ndarray],
-        phase_ids: list[int],
-        action_ids_buf: np.ndarray,
-        n_legals: list[int],
-    ) -> list[tuple[np.ndarray, np.ndarray]]:
-        """Evaluate pre-enumerated leaf data in a single NN forward pass.
+        legal_mask: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Evaluate pre-masked leaf data in a single NN forward pass.
 
-        Optimized hot path for MCTS: the caller has already enumerated legal
-        actions and computed phase ids during selection, so we just fill token
-        buffers from the raw state arrays and forward. Mirrors the eval
-        server's GPU mask + softmax, but in-process.
+        Optimized hot path for MCTS: the caller has already built the dense
+        ``(n, UNIFIED_LOGIT_DIM)`` legal mask during selection, so we just
+        fill token buffers from the raw state arrays, copy the mask into
+        device scratch, and forward. Mirrors the eval server's GPU mask
+        + softmax, but in-process.
 
         Args:
             state_arrays: Raw int16 state arrays (pool row views), each
                 ``(total_size,)``.
-            phase_ids: Decision phase ids per leaf, length n.
-            action_ids_buf: Legal phase-local action ids, shape
-                ``(n, K_MAX)`` uint16. Only ``[i, :n_legals[i]]`` is read.
-            n_legals: Count of legal actions per leaf, length n.
+            legal_mask: Dense legal slot mask, shape
+                ``(n, UNIFIED_LOGIT_DIM)`` uint8 or bool. One row per leaf.
 
         Returns:
-            List of ``(sparse_priors[:n_legal], canonical_values)`` tuples.
-            Priors are softmaxed over the legal list; values are canonical.
+            ``(priors, values)`` where ``priors`` is
+            ``(n, UNIFIED_LOGIT_DIM)`` float32 (softmaxed; illegal slots
+            collapse to ~0) and ``values`` is ``(n, num_players)`` float32
+            in canonical order. The caller gathers the per-leaf legal
+            prior slice (via whatever LUT they used to build the mask).
         """
         n = len(state_arrays)
         if n == 0:
-            return []
-        assert len(phase_ids) == n, f"{len(phase_ids)} phase_ids vs {n} states"
-        assert len(n_legals) == n, f"{len(n_legals)} n_legals vs {n} states"
-        assert action_ids_buf.shape == (n, K_MAX), \
-            f"action_ids_buf shape {action_ids_buf.shape} != ({n}, {K_MAX})"
+            return (
+                np.empty((0, UNIFIED_LOGIT_DIM), dtype=np.float32),
+                np.empty((0, self.num_players), dtype=np.float32),
+            )
+        assert legal_mask.shape == (n, UNIFIED_LOGIT_DIM), \
+            f"legal_mask shape {legal_mask.shape} != ({n}, {UNIFIED_LOGIT_DIM})"
 
         self._ensure_scratch(n)
         # Fill token buffers in one batched Cython call — avoids the
@@ -402,19 +402,11 @@ class NNEvaluator(BaseEvaluator):
         fill_token_buffer_batch(
             state_arrays, self.num_players, self._tok_h_np[:n],
         )
+        # Copy caller's dense mask into host scratch — cheaper than
+        # per-row LUT scatter because the caller built it once already.
+        np.copyto(self._mask_h_np[:n], legal_mask, casting="unsafe")
 
-        for i in range(n):
-            self._build_mask_row(
-                i, phase_ids[i], action_ids_buf[i, :n_legals[i]],
-            )
-
-        priors_np, values_np = self._forward(n)
-        results: list[tuple[np.ndarray, np.ndarray]] = []
-        for i in range(n):
-            nl = n_legals[i]
-            slots = self._action_lut_np[phase_ids[i], action_ids_buf[i, :nl]]
-            results.append((priors_np[i, slots].copy(), values_np[i]))
-        return results
+        return self._forward(n)
 
     # ------------------------------------------------------------------
     # Shared forward (batched)
@@ -427,7 +419,7 @@ class NNEvaluator(BaseEvaluator):
         legal masks. The model returns dense ``(n, UNIFIED_LOGIT_DIM)``
         logits with illegal slots at -1e9; we softmax on-device so illegal
         slots collapse to ~0 and the legal slots carry a proper distribution.
-        Callers pick the per-leaf legal prior slice out of the returned
+        Callers that need a sparse legal slice pick it out of the returned
         numpy array via the same ``action_lut`` used to build the mask.
         """
         self._h2d(n)

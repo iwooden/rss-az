@@ -23,12 +23,18 @@ from core.actions import (
     ACTION_PASS_PY as ACTION_PASS,
     ACTION_RAISE_PY as ACTION_RAISE,
     ACTION_SELL_SHARE_PY as ACTION_SELL_SHARE,
-    MAX_LEGAL_ACTIONS_PY as MAX_LEGAL_ACTIONS,
+    ActionInfoTuple,
     decode_action_py,
     enumerate_legal_actions_py,
     get_decision_phase_py,
 )
-from core.data import ALL_PAR_PRICES, COMPANY_NAME_TO_ID, CORP_NAME_TO_ID, GamePhases
+from core.data import (
+    ALL_PAR_PRICES,
+    COMPANY_NAME_TO_ID,
+    CORP_NAME_TO_ID,
+    GamePhases,
+    MAX_ACTION_SIZE,
+)
 from core.state import GameState
 from entities.company import COMPANIES, CompanyLocation
 from entities.deck import DECK
@@ -164,13 +170,13 @@ def entity_to_player_index(players_json: list, entity_id) -> int:
     raise ValueError(f"Player with entity_id={entity_id!r} not found in players list")
 
 
-def get_legal_actions(state: GameState) -> list[tuple[int, object]]:
+def get_legal_actions(state: GameState) -> list[tuple[int, ActionInfoTuple]]:
     """Enumerate and decode all currently legal actions."""
     phase_id = get_decision_phase_py(state)
     if phase_id < 0:
         return []
 
-    buf = np.zeros(MAX_LEGAL_ACTIONS, dtype=np.uint16)
+    buf = np.zeros(MAX_ACTION_SIZE, dtype=np.uint16)
     count = int(enumerate_legal_actions_py(state, buf))
     return [
         (int(buf[i]), decode_action_py(phase_id, int(buf[i])))
@@ -185,7 +191,7 @@ def find_legal_actions(
     corp_id: int | None = None,
     company_id: int | None = None,
     amount: int | None = None,
-) -> list[tuple[int, object]]:
+) -> list[tuple[int, ActionInfoTuple]]:
     """Return all legal actions matching decoded action fields."""
     matches = []
     for action_id, info in get_legal_actions(state):

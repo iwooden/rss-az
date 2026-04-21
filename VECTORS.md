@@ -304,7 +304,7 @@ The engine has 15 `GamePhases`; the model only sees the 11 decision phases where
 | `DPHASE_ACQ_SELECT_COMPANY`  | 9  | 36  | 36 per-company select under `active_corp` (no pass) |
 | `DPHASE_ACQ_SELECT_PRICE`    | 10 | 52  | 51 price offsets + FI_BUY under `active_corp` / `active_company` (no pass) |
 
-Max action id fits comfortably in `uint16`. `MAX_ACTION_SIZE = 53` (INVEST). The sparse legal-action buffer width is `MAX_LEGAL_ACTIONS`; any enumeration that exceeds this is a bug and `enumerate_legal_actions` aborts on overflow.
+Max action id fits comfortably in `uint16`. `MAX_ACTION_SIZE = 53` (INVEST) is the tight per-phase upper bound and doubles as the legal-action buffer width; any enumeration that exceeds this is a bug and `enumerate_legal_actions` aborts on overflow.
 
 ### Encode / decode contract
 
@@ -370,7 +370,7 @@ Python-accessible wrappers (for tests + diagnostics):
 | `get_phase_action_size(phase_id)` | Per-phase action count from `core.data.PHASE_ACTION_SIZES` |
 | `decode_action_py(phase_id, action_id)` | Tuple `(phase, action_type, corp_id, company_id, amount)` |
 | `get_decision_phase_py(state)` | Decision-phase id (0-10) or `-1` for automated/terminal engine phases |
-| `enumerate_legal_actions_py(state, action_ids)` | Number of legal actions written into the caller-provided `uint16` ndarray (which must hold ≥ `MAX_LEGAL_ACTIONS` slots) |
+| `enumerate_legal_actions_py(state, action_ids)` | Number of legal actions written into the caller-provided `uint16` ndarray (which must hold ≥ `MAX_ACTION_SIZE` slots) |
 
 ### ActionType enum (decoded semantics)
 
@@ -403,13 +403,12 @@ Python-accessible wrappers (for tests + diagnostics):
 ```python
 import numpy as np
 from core.state import GameState, get_layout, get_player_fields
-from core.data import PHASE_ACTION_SIZES
+from core.data import PHASE_ACTION_SIZES, MAX_ACTION_SIZE
 from core.actions import (
     decode_action_py,
     enumerate_legal_actions_py,
     get_decision_phase_py,
     get_phase_action_size,
-    MAX_LEGAL_ACTIONS_PY,
 )
 from entities.player import PLAYERS
 
@@ -435,9 +434,9 @@ print(get_phase_action_size(2))       # 9 (ACQ_SELECT_CORP)
 print(decode_action_py(0, 0))         # (0, 0, -1, -1, -1) — INVEST pass
 
 # Sparse legal actions: caller supplies a uint16 buffer of at least
-# MAX_LEGAL_ACTIONS slots; the call returns the number written.
+# MAX_ACTION_SIZE slots; the call returns the number written.
 phase_id = get_decision_phase_py(state)                       # 0 for INVEST
-buf = np.empty(MAX_LEGAL_ACTIONS_PY, dtype=np.uint16)
+buf = np.empty(MAX_ACTION_SIZE, dtype=np.uint16)
 n_legal = enumerate_legal_actions_py(state, buf)
 legal_ids = buf[:n_legal]
 ```

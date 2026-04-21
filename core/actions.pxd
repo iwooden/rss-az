@@ -70,26 +70,6 @@ from core.data cimport (
 )
 
 
-# =============================================================================
-# SPARSE LEGAL-ACTION BUFFER WIDTH
-# =============================================================================
-#
-# Per-phase sizes (``ACTION_SIZE_*``, ``MAX_ACTION_SIZE``) and the decision
-# phase enum (``DPHASE_*``) are cimported from ``core.data`` above — that
-# module is the single source of truth for both. ``MAX_LEGAL_ACTIONS`` is
-# the pad width for the sparse legal-action buffer and lives here because
-# it's a property of the enumeration API, not the policy head geometry.
-
-cdef enum:
-    # Padded-sparse buffer width. Every replay/IPC tensor pads to this size.
-    # Legal counts above this are considered a bug (see sparse-refactor.md),
-    # but late-game ACQUISITION price surfaces in replay fixtures have already
-    # exceeded both 256 and 512. Keep enough headroom here that replay and
-    # driver legality checks stay memory-safe while we continue collecting
-    # empirical maxima.
-    MAX_LEGAL_ACTIONS = 1024
-
-
 # Module-private C array of per-phase sizes, indexed by ``DecisionPhase``.
 # Filled in at import time from the ``ActionSize`` enum so callers can look
 # sizes up without a per-phase switch. Named ``_PHASE_ACTION_SIZES_C`` to
@@ -218,8 +198,9 @@ cpdef int get_decision_phase_py(GameState state)
 # Reads the decision phase from ``state`` via ``get_decision_phase``, then
 # writes legal phase-local action IDs into ``action_ids`` in a deterministic,
 # phase-specific order and returns the count. The buffer must hold at least
-# ``MAX_LEGAL_ACTIONS`` slots. Enumeration aborts the process if a phase
-# produces more legal actions than ``MAX_LEGAL_ACTIONS`` — that is a
+# ``MAX_ACTION_SIZE`` slots (from ``core.data``) — that is the tight upper
+# bound across all phases. Enumeration aborts the process if a phase
+# produces more legal actions than ``MAX_ACTION_SIZE`` — that is a
 # configuration bug and must fail loudly in optimized training builds.
 #
 # Returns 0 for automated/terminal engine phases (decision phase == -1).

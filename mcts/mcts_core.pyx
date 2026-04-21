@@ -615,10 +615,10 @@ def scatter_results(
 ):
     """Scatter sparse-prior + canonical-value results back to per-worker shared memory.
 
-    The eval server has already gathered the dense model logits at each leaf's
-    legal action ids and softmaxed on the GPU before copy-back, so the scattered
-    row is a length-K_MAX prior vector (zero-padded past n_legal) that the
-    worker expands directly — no further transform needed.
+    The eval server has already masked + softmaxed the dense model logits
+    on the GPU before copy-back, so the scattered row is a dense
+    UNIFIED_LOGIT_DIM-wide prior vector (illegal slots carry ~0 mass) that
+    the worker reads directly — no further transform needed.
 
     Priors use a byte (char) view so the caller can plug in any float dtype
     (f32 in the canonical path) without branching here.
@@ -631,7 +631,7 @@ def scatter_results(
         worker_indices: Worker index per request, shape (num_requests,).
         counts: Number of rows per request, shape (num_requests,).
         num_requests: Number of requests in this batch.
-        priors_row_bytes: Bytes per priors row (K_MAX * 4 for f32).
+        priors_row_bytes: Bytes per priors row (UNIFIED_LOGIT_DIM * 4 for f32).
     """
     cdef int npl = src_values.shape[1]
     cdef int val_row_bytes = npl * <int>sizeof(float)
