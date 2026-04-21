@@ -82,6 +82,16 @@ def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
     sidestepping the crash. Observed on CUDA 12.8 / torch 2.11; ROCm
     uses a different Triton heuristic and is unaffected.
 
+    ``shape_padding`` is disabled. Inductor's ``pad_mm`` pass reads
+    concrete ``mm`` sizes via ``is_mm_compute_bound`` to decide whether
+    to zero-pad operands for better tiling — this bakes batch-size
+    range guards (e.g. ``3 <= x.size(0) <= 4``) into the compiled
+    artifact, forcing a recompile every time the batch size crosses a
+    compute-vs-memory-bound threshold. Our batch sizes vary continuously
+    with MCTS workload pressure, so the pass blows the recompile limit
+    on its own. ``mark_unbacked`` doesn't reach this pass (it runs
+    inside Inductor, after Dynamo).
+
     Args:
         for_training: If True, disables Inductor's
             ``joint_graph_constant_folding`` pass. That pass calls
@@ -95,7 +105,10 @@ def get_compile_kwargs(*, for_training: bool = False) -> dict[str, Any]:
             unaffected. Disabling costs only a small forward-graph
             constant-folding optimization.
     """
-    options: dict[str, Any] = {"triton.autotune_at_compile_time": True}
+    options: dict[str, Any] = {
+        "triton.autotune_at_compile_time": True,
+        "shape_padding": False,
+    }
     if for_training:
         options["joint_graph_constant_folding"] = False
     return {"options": options}

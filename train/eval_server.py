@@ -457,7 +457,13 @@ def _eval_server_serve(
             dummy_phase_indices: list[torch.Tensor] = []
             for _p in range(NUM_PHASES):
                 _n_p = int((dummy_p_cpu == _p).sum().item())
-                _t = _dummy_packed_gpu[_dummy_offset:_dummy_offset + _n_p]
+                # ``.clone()`` here resets storage_offset to 0. Dynamo
+                # guards on ``storage_offset()`` on the runtime path, so
+                # a direct slice view with varying offset triggers a
+                # recompile every time the per-phase row count shifts.
+                # The clone is a tiny on-device memcpy (NUM_PHASES * few
+                # int64s) — the H→D batching win still stands.
+                _t = _dummy_packed_gpu[_dummy_offset:_dummy_offset + _n_p].clone()
                 _dummy_offset += _n_p
                 mark_unbacked(_t, 0)
                 dummy_phase_indices.append(_t)
@@ -779,7 +785,13 @@ def _eval_server_serve(
             _off = int(phase_offsets_np[_p])
             _n = int(phase_lengths_np[_p])
             _len = _n if _n > 0 else 1
-            _t = phase_idx_base[_off:_off + _len]
+            # ``.clone()`` resets storage_offset to 0. The slice is a
+            # view into ``phase_idx_base`` with a varying ``_off`` per
+            # phase per batch; Dynamo guards on ``storage_offset()`` and
+            # recompiles every time it shifts. The clone is a tiny
+            # on-device memcpy — the single-H→D-copy batching win still
+            # stands.
+            _t = phase_idx_base[_off:_off + _len].clone()
             mark_unbacked(_t, 0)
             phase_indices.append(_t)
 
