@@ -36,11 +36,11 @@ that dense row using the same LUT, without any softmax on the worker side.
 
 Wins vs the old sparse IPC protocol (1024-wide sparse action buffers):
   * inbound action_ids/n_legals/phase_ids (2048+3 B/state) collapses to a
-    170 B/state uint8 mask (~12x cut on the send leg).
+    169 B/state uint8 mask (~12x cut on the send leg).
   * outbound priors (1024 f32 = 4096 B/state) shrinks to
-    UNIFIED_LOGIT_DIM=170 f32 = 680 B/state (~6x cut on the return leg).
+    UNIFIED_LOGIT_DIM=169 f32 = 676 B/state (~6x cut on the return leg).
   * on-GPU per-phase gather and n_legals scan drop out of the model
-    forward — torch.compile sees a fully static (B, 170) policy path.
+    forward — torch.compile sees a fully static (B, 169) policy path.
 
 **Signaling protocol:**
 

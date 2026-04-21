@@ -37,10 +37,7 @@ from entities.corp import CORPS
 from entities.company import COMPANIES, CompanyLocation
 
 from tests.phases.conftest import float_corp_for_test
-from tests.phases.helpers.ownership import (
-    give_company_to_player,
-    give_company_to_fi,
-)
+from tests.phases.helpers.ownership import give_company_to_player
 
 
 NUM_CORPS = int(GameConstants.NUM_CORPS)  # 8
@@ -128,13 +125,17 @@ def _state_acq_select_company():
 
 
 def _state_acq_select_price():
-    """ACQ_SELECT_PRICE: LOC_FI target → FI_BUY emits id 51 (= ACTION_SIZE_ACQ_SELECT_PRICE - 1)."""
+    """ACQ_SELECT_PRICE: LOC_PLAYER target with max price spread emits id 50 (= ACTION_SIZE_ACQ_SELECT_PRICE - 1).
+
+    Company 35 (CDG) has a 50-offset spread (low=$25, high=$75). Corp 7
+    with unlimited cash makes every offset 0..50 legal, landing the max
+    emitted id at 50 = ACTION_SIZE_ACQ_SELECT_PRICE - 1.
+    """
     state = _fresh_state()
     active = TURN.get_active_player(state)
     float_corp_for_test(state, corp_id=7, player_id=active, par_index=10, float_shares=2)
     CORPS[7].set_cash(state, 10_000)
-    # Move company 35 to FI — FI_BUY emits exactly id 51 regardless of price.
-    give_company_to_fi(state, 35)
+    give_company_to_player(state, 35, active)
     TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_PRICE))
     TURN.set_active_corp(state, 7)
     TURN.set_active_company(state, 35)

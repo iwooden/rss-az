@@ -355,10 +355,10 @@ class TestTransitions:
 # BOUNDARY: FI TARGET AUTO-CHAINS
 # =============================================================================
 
-class TestFiTargetAutoChain:
-    """FI targets collapse SELECT_PRICE to a single action — observe end state."""
+class TestFiTargetDirectExecution:
+    """FI targets execute during SELECT_COMPANY — no SELECT_PRICE decision."""
 
-    def test_single_fi_target_auto_chains_through_price(self, game_state):
+    def test_single_fi_target_executes_during_select_company(self, game_state):
         """When only one legal target (FI) exists, SELECT_COMPANY auto-chains to execution."""
         fi_co = draw_to_fi(game_state)
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
@@ -371,8 +371,8 @@ class TestFiTargetAutoChain:
         )
         apply_and_verify(game_state, aid)
 
-        # SELECT_COMPANY had 1 legal action; SELECT_PRICE for FI had 1. Driver
-        # auto-chained through both and executed the buy.
+        # SELECT_COMPANY had 1 legal action. The handler runs the FI buy
+        # directly; SELECT_PRICE is not entered at all.
         loc = COMPANIES[fi_co].get_location(game_state)
         assert loc in (int(CompanyLocation.LOC_CORP_ACQ), int(CompanyLocation.LOC_CORP))
         assert COMPANIES[fi_co].get_owner_id(game_state) == 0

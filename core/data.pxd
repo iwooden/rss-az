@@ -103,7 +103,7 @@ cpdef enum ActionSize:
     ACTION_SIZE_BID = 16                # 1 pass (= leave auction) + AUCTION_CAP raise offsets
     ACTION_SIZE_ACQ_SELECT_CORP = 9     # 1 pass + 8 corp-select (company/price chosen later)
     ACTION_SIZE_ACQ_SELECT_COMPANY = 36 # 36 company-select (no pass; SELECT_CORP commits)
-    ACTION_SIZE_ACQ_SELECT_PRICE = 52   # 51 price offsets + FI_BUY (no pass)
+    ACTION_SIZE_ACQ_SELECT_PRICE = 51   # 51 price offsets (no pass; FI targets handled in SELECT_COMPANY)
     ACTION_SIZE_ACQ_OFFER = 2           # pass + buy
     ACTION_SIZE_CLOSING = 37            # 1 pass + 36 company closes
     ACTION_SIZE_DIVIDENDS = 26          # dividend amounts 0..25

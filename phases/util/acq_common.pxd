@@ -11,6 +11,8 @@ from core.state cimport GameState
 
 cdef void _clear_acquisition_context(GameState state) noexcept
 cdef void _clear_acq_offer_flags(GameState state) noexcept
+cdef void _clear_acq_pair(GameState state) noexcept
+cdef void _handle_player_fi_buy(GameState state, int corp_id, int company_id) noexcept
 cdef int _get_fi_purchase_price(int corp_id, int company_id) noexcept
 cdef int _find_first_preemptor(GameState state, int company_id, int original_corp) noexcept
 cdef int _find_first_active_player(GameState state) noexcept

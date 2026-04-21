@@ -8,7 +8,6 @@ space and the current ACQ_OFFER / merged IPO flow.
 from __future__ import annotations
 
 from core.actions import (
-    ACTION_ACQ_FI_BUY_PY as ACTION_ACQ_FI_BUY,
     ACTION_ACQ_OFFER_ACCEPT_PY as ACTION_ACQ_OFFER_ACCEPT,
     ACTION_ACQ_PRICE_PY as ACTION_ACQ_PRICE,
     ACTION_ACQ_SELECT_COMPANY_PY as ACTION_ACQ_SELECT_COMPANY,
@@ -157,19 +156,6 @@ def format_action(phase_id: int, action_id: int, state: GameState | None = None)
                 price = COMPANIES[company_id].get_low_price() + info.amount
                 return f"ACQUIRE {COMPANY_NAMES[company_id]} with {CORP_NAMES[corp_id]} @ ${price}"
         return f"ACQUIRE at low+{info.amount}"
-
-    if at == ACTION_ACQ_FI_BUY:
-        if state is not None:
-            corp_id = TURN.get_active_corp(state)
-            company_id = TURN.get_active_company(state)
-            if corp_id >= 0 and company_id >= 0:
-                price = (
-                    COMPANIES[company_id].get_face_value()
-                    if corp_id == int(CorpIndices.CORP_OS)
-                    else COMPANIES[company_id].get_high_price()
-                )
-                return f"ACQUIRE {COMPANY_NAMES[company_id]} from FI with {CORP_NAMES[corp_id]} @ ${price}"
-        return "ACQUIRE from FI"
 
     if at == ACTION_ACQ_OFFER_ACCEPT:
         if state is not None:

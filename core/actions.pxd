@@ -30,8 +30,8 @@ Conventions
 - Action IDs are **phase-local**: the same integer means different things in
   different phases. Callers must always carry the ``phase_id`` alongside the
   ``action_id``.
-- Action IDs fit comfortably in ``uint16`` (max 52 in ``ACQ_SELECT_PRICE``;
-  ``MAX_ACTION_SIZE = 53`` from ``INVEST``).
+- Action IDs fit comfortably in ``uint16`` (``MAX_ACTION_SIZE = 53`` from
+  ``INVEST``).
 - The sparse legal-action path is the only public contract. There is no
   dense per-phase mask surface; any dense consumer should scatter from the
   sparse list.
@@ -94,15 +94,14 @@ cdef enum ActionType:
     ACTION_SELL_SHARE = 3      # INVEST: sell corp_id
     ACTION_RAISE = 4           # BID: bid face_value + amount (amount ∈ [0, AUCTION_CAP))
     ACTION_ACQ_PRICE = 5       # ACQ_SELECT_PRICE: acquire active_company at low+amount
-    ACTION_ACQ_FI_BUY = 6      # ACQ_SELECT_PRICE: buy active_company from FI at fixed price
-    ACTION_ACQ_OFFER_ACCEPT = 7  # ACQ_OFFER: accept the offered acquisition
-    ACTION_CLOSE = 8           # CLOSING: close company_id
-    ACTION_DIVIDEND = 9        # DIVIDENDS: pay dividend of amount
-    ACTION_ISSUE = 10          # ISSUE: issue one share
-    ACTION_IPO = 11            # IPO: select corp_id to float (par index chosen in PAR)
-    ACTION_PAR = 12            # PAR: set par index for active_corp (float executed here)
-    ACTION_ACQ_SELECT_CORP = 13    # ACQ_SELECT_CORP: select corp_id to make the acquisition
-    ACTION_ACQ_SELECT_COMPANY = 14 # ACQ_SELECT_COMPANY: select company_id as the target
+    ACTION_ACQ_OFFER_ACCEPT = 6  # ACQ_OFFER: accept the offered acquisition
+    ACTION_CLOSE = 7           # CLOSING: close company_id
+    ACTION_DIVIDEND = 8        # DIVIDENDS: pay dividend of amount
+    ACTION_ISSUE = 9           # ISSUE: issue one share
+    ACTION_IPO = 10            # IPO: select corp_id to float (par index chosen in PAR)
+    ACTION_PAR = 11            # PAR: set par index for active_corp (float executed here)
+    ACTION_ACQ_SELECT_CORP = 12    # ACQ_SELECT_CORP: select corp_id to make the acquisition
+    ACTION_ACQ_SELECT_COMPANY = 13 # ACQ_SELECT_COMPANY: select company_id (FI targets execute directly)
 
 
 # =============================================================================
@@ -145,9 +144,6 @@ cdef inline int encode_acq_select_company(int company_id) noexcept nogil:
 
 cdef inline int encode_acq_select_price(int price_offset) noexcept nogil:
     return price_offset
-
-cdef inline int encode_acq_select_fi_buy() noexcept nogil:
-    return 51
 
 cdef inline int encode_closing_close(int company_id) noexcept nogil:
     return 1 + company_id

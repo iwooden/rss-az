@@ -56,8 +56,8 @@ _AUCTION_RAISE_OFF = _CORP_TRADE_OFF + 16                # AUCTION_CAP
 _DIVIDEND_OFF = _AUCTION_RAISE_OFF + int(AUCTION_CAP)    # 26
 _ISSUE_OFF = _DIVIDEND_OFF + 26                          # 1
 _ACQ_OFFER_OFF = _ISSUE_OFF + 1                          # 1
-_PRICE_OFF = _ACQ_OFFER_OFF + 1                          # 52
-_PAR_OFF = _PRICE_OFF + 52                               # 14
+_PRICE_OFF = _ACQ_OFFER_OFF + 1                          # 51
+_PAR_OFF = _PRICE_OFF + 51                               # 14
 UNIFIED_LOGIT_DIM = _PAR_OFF + 14
 
 _GELU_APPROX = "tanh"
@@ -120,8 +120,8 @@ def build_action_lut() -> torch.Tensor:
     # ACQ_SELECT_COMPANY: 0..36=company 0..35 (no pass; shares company_select head)
     lut[DecisionPhase.DPHASE_ACQ_SELECT_COMPANY, :36] = _COMPANY_SELECT_OFF + torch.arange(36)
 
-    # ACQ_SELECT_PRICE: 0..52=offset 0..50 + FI_BUY at 51 (no pass)
-    lut[DecisionPhase.DPHASE_ACQ_SELECT_PRICE, :52] = _PRICE_OFF + torch.arange(52)
+    # ACQ_SELECT_PRICE: 0..51=offset 0..50 (no pass; FI targets execute in SELECT_COMPANY)
+    lut[DecisionPhase.DPHASE_ACQ_SELECT_PRICE, :51] = _PRICE_OFF + torch.arange(51)
 
     return lut
 
@@ -421,12 +421,14 @@ class RSSTransformerNet(nn.Module):
         # ACQ is factored into three sequential single-entity selections:
         # pick the acquiring corp (shared corp_select_head above), pick the
         # target company (shared company_select_head above), pick the price.
-        # SELECT_PRICE: 51 price offsets + FI_BUY = 52 logits, read off a
-        # dedicated acq_price_info token that the engine populates with
-        # (active_corp, active_company) context during PHASE_ACQ_SELECT_PRICE.
+        # SELECT_PRICE: 51 price offsets, read off a dedicated acq_price_info
+        # token that the engine populates with (active_corp, active_company)
+        # context during PHASE_ACQ_SELECT_PRICE. FI targets execute in
+        # SELECT_COMPANY at the fixed FI price, so this head never fires for
+        # them.
         self.price_acq_head = nn.Sequential(
             nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 52)
+            nn.Linear(d // 2, 51)
         )
 
         # PAR reads 14 par-price logits from the par info token. No pass
@@ -546,7 +548,7 @@ class RSSTransformerNet(nn.Module):
         dividend = self.dividend_head(tokens[:, self._dividend_idx])            # (B, 26)
         issue = self.issue_head(tokens[:, self._issue_idx])                     # (B, 1)
         acq_offer = self.acq_offer_head(tokens[:, self._acq_offer_idx])         # (B, 1)
-        price_acq = self.price_acq_head(tokens[:, self._acq_price_info_idx])    # (B, 52)
+        price_acq = self.price_acq_head(tokens[:, self._acq_price_info_idx])    # (B, 51)
         par_price = self.par_price_head(tokens[:, self._par_idx])               # (B, 14)
         return torch.cat(
             [

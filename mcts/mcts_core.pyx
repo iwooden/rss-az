@@ -579,8 +579,8 @@ def gather_masks(
 
     Row width is ``UNIFIED_LOGIT_DIM`` bytes (uint8: 1 == legal slot). This
     replaces the old per-phase (phase_ids, action_ids, n_legals) triple — a
-    dense 170-byte mask carries the same legality information without the
-    per-phase LUT gather on the GPU.
+    dense mask carries the same legality information without the per-phase
+    LUT gather on the GPU.
 
     Args:
         dst: Contiguous destination buffer, shape (max_batch, UNIFIED_LOGIT_DIM) uint8.

@@ -15,7 +15,6 @@ import pytest
 from core.actions import (
     ACTION_PASS_PY as ACTION_PASS,
     ACTION_ACQ_PRICE_PY as ACTION_ACQ_PRICE,
-    ACTION_ACQ_FI_BUY_PY as ACTION_ACQ_FI_BUY,
     ACTION_ACQ_SELECT_CORP_PY as ACTION_ACQ_SELECT_CORP,
     ACTION_ACQ_SELECT_COMPANY_PY as ACTION_ACQ_SELECT_COMPANY,
 )
@@ -53,7 +52,8 @@ def _acquire(state, corp_id, company_id, amount=None):
     Picks the minimum legal offset if ``amount`` is omitted. Auto-chain may
     swallow SELECT_COMPANY / SELECT_PRICE when only one legal action exists
     (e.g. single target, FI target, single affordable offset) — this helper
-    tolerates that.
+    tolerates that. FI targets execute during SELECT_COMPANY without a
+    SELECT_PRICE decision.
     """
     aid = find_legal_action(
         state, action_type=ACTION_ACQ_SELECT_CORP, corp_id=corp_id,
@@ -67,14 +67,10 @@ def _acquire(state, corp_id, company_id, amount=None):
         apply_and_verify(state, aid)
 
     if TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_SELECT_PRICE):
-        loc = COMPANIES[company_id].get_location(state)
-        if loc == int(CompanyLocation.LOC_FI):
-            aid = find_legal_action(state, action_type=ACTION_ACQ_FI_BUY)
-        else:
-            aid = find_legal_action(
-                state, action_type=ACTION_ACQ_PRICE,
-                amount=0 if amount is None else amount,
-            )
+        aid = find_legal_action(
+            state, action_type=ACTION_ACQ_PRICE,
+            amount=0 if amount is None else amount,
+        )
         apply_and_verify(state, aid)
 
 
@@ -105,8 +101,8 @@ class TestEnumeration:
                         if info.action_type == ACTION_PASS]
         assert len(pass_actions) == 1
 
-    def test_no_price_or_fi_buy_actions_enumerated(self, game_state):
-        """SELECT_CORP never exposes ACQ_PRICE or ACQ_FI_BUY — those are SELECT_PRICE."""
+    def test_no_price_actions_enumerated(self, game_state):
+        """SELECT_CORP never exposes ACQ_PRICE — that lives in SELECT_PRICE."""
         draw_to_fi(game_state)
         float_corp_for_test(game_state, corp_id=0, player_id=0, par_index=10)
         CORPS[0].set_cash(game_state, 200)
@@ -115,7 +111,6 @@ class TestEnumeration:
 
         actions = get_legal_actions(game_state)
         assert not any(info.action_type == ACTION_ACQ_PRICE for _, info in actions)
-        assert not any(info.action_type == ACTION_ACQ_FI_BUY for _, info in actions)
 
     def test_action_id_encoding(self, game_state):
         """SELECT_CORP corp-select action id is ``1 + corp_id``."""

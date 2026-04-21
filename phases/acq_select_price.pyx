@@ -2,16 +2,17 @@
 
 Final leg of the three-step ACQ flow: SELECT_CORP → SELECT_COMPANY →
 SELECT_PRICE. Reads ``active_corp`` + ``active_company`` from the turn
-block and executes the acquisition.
+block and executes the acquisition at the model-chosen price.
 
-Action semantics (all decoded from DPHASE_ACQ_SELECT_PRICE):
+Only reached for non-FI targets. FI purchases execute directly in
+SELECT_COMPANY (no price decision — OS pays face, others pay high), so
+an FI company never reaches this handler.
+
+Action semantics:
   ACTION_ACQ_PRICE (amount ∈ [0, 50]): negotiated-price acquisition.
     Cross-president (LOC_CORP or LOC_PLAYER with foreign owner under
     ``acq_same_president=False``) enters ACQ_OFFER; otherwise transfer
     executes directly.
-  ACTION_ACQ_FI_BUY: FI purchase at the fixed price, with preemption
-    check. If a higher-priority player-owned corp can intervene, push
-    into ACQ_OFFER for that player's accept/pass decision.
 
 After direct execution (no ACQ_OFFER entry): clear active_corp +
 active_company and walk back to PHASE_ACQ_SELECT_CORP with the active
@@ -24,18 +25,13 @@ split rationale.
 """
 
 from core.state cimport GameState
-from core.data cimport (
-    GamePhases,
-    COMPANY_LOW_PRICE,
-)
+from core.data cimport COMPANY_LOW_PRICE
 from core.actions cimport (
     ActionInfo,
     ACTION_ACQ_PRICE,
-    ACTION_ACQ_FI_BUY,
 )
 from entities.company cimport (
     LOC_PLAYER,
-    LOC_FI,
     LOC_CORP,
     company_location,
     company_owner_id,
@@ -47,11 +43,8 @@ from entities.corp cimport (
     corp_president_id,
 )
 from phases.util.acq_common cimport (
-    _clear_acq_offer_flags,
+    _clear_acq_pair,
     _execute_acq_transfer,
-    _execute_fi_buy,
-    _get_fi_purchase_price,
-    _find_first_preemptor,
     _enter_acq_offer,
 )
 
@@ -61,13 +54,6 @@ from entities import turn as turn_module
 # =============================================================================
 # PRIVATE HELPERS
 # =============================================================================
-
-cdef void _clear_acq_pair(GameState state) noexcept:
-    """Reset active_corp + active_company and walk back to SELECT_CORP."""
-    turn_module.TURN.clear_active_corp(state)
-    turn_module.TURN.clear_active_company(state)
-    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_ACQ_SELECT_CORP)
-
 
 cdef void _handle_acq_price(GameState state, int corp_id, int company_id, int amount) noexcept:
     """Execute a negotiated-price acquisition (corp-to-corp or corp-to-player).
@@ -106,42 +92,6 @@ cdef void _handle_acq_price(GameState state, int corp_id, int company_id, int am
     _clear_acq_pair(state)
 
 
-cdef void _handle_fi_buy(GameState state, int corp_id, int company_id) noexcept:
-    """Execute an FI purchase, with preemption check."""
-    cdef int first_preemptor, price, deciding_player
-
-    assert company_location(state, company_id) == <int>LOC_FI, \
-        f"_handle_fi_buy: company {company_id} not LOC_FI"
-    assert corp_is_active(state, corp_id), \
-        f"_handle_fi_buy: corp {corp_id} not active"
-    assert corp_cash(state, corp_id) >= _get_fi_purchase_price(corp_id, company_id), \
-        f"_handle_fi_buy: corp {corp_id} can't afford FI company {company_id}"
-
-    # Clear per-corp passed_acq_offer flags before consulting the preemptor
-    # list (matches the receivership-forced-buy prelude in SELECT_CORP).
-    _clear_acq_offer_flags(state)
-
-    first_preemptor = _find_first_preemptor(state, company_id, corp_id)
-    if first_preemptor < 0 or first_preemptor == corp_id:
-        _execute_fi_buy(state, corp_id, company_id)
-        _clear_acq_pair(state)
-        return
-
-    # Higher-priority receivership corps have no president to ask — their
-    # FI purchase is automatic. Player-controlled corps enter ACQ_OFFER.
-    if corp_is_in_receivership(state, first_preemptor):
-        _execute_fi_buy(state, first_preemptor, company_id)
-        _clear_acq_pair(state)
-        return
-
-    price = _get_fi_purchase_price(first_preemptor, company_id)
-    deciding_player = corp_president_id(state, first_preemptor)
-    _enter_acq_offer(
-        state, first_preemptor, company_id, price,
-        corp_id, deciding_player,
-    )
-
-
 # =============================================================================
 # PUBLIC ENTRY POINT
 # =============================================================================
@@ -152,14 +102,10 @@ cdef void apply_acq_select_price_action(GameState state, ActionInfo* info) noexc
     cdef int company_id = turn_module.TURN.get_active_company(state)
     assert corp_id >= 0, "apply_acq_select_price_action: active_corp unset"
     assert company_id >= 0, "apply_acq_select_price_action: active_company unset"
+    assert info.action_type == <int>ACTION_ACQ_PRICE, \
+        f"apply_acq_select_price_action: unexpected type {info.action_type}"
 
-    if info.action_type == <int>ACTION_ACQ_PRICE:
-        _handle_acq_price(state, corp_id, company_id, info.amount)
-    elif info.action_type == <int>ACTION_ACQ_FI_BUY:
-        _handle_fi_buy(state, corp_id, company_id)
-    else:
-        assert False, \
-            f"apply_acq_select_price_action: unexpected type {info.action_type}"
+    _handle_acq_price(state, corp_id, company_id, info.amount)
 
 
 # =============================================================================

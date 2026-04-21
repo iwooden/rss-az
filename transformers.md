@@ -228,7 +228,8 @@ self.acq_offer_head = nn.Linear(d_model, 1)  # buy logit (pass from pass_head)
 
 # ACQ factored into three single-entity sub-phases. SELECT_CORP reads one
 # logit per corp token (8); SELECT_COMPANY reads one logit per company token
-# (36); SELECT_PRICE reads 52 logits off the dedicated acq_price_info token.
+# (36); SELECT_PRICE reads 51 logits off the dedicated acq_price_info token
+# (FI targets execute in SELECT_COMPANY, so this head never fires for them).
 # Cross-phase head sharing (e.g. unifying company_select across
 # INVEST / ACQ_SELECT_COMPANY / CLOSING, or corp_select across
 # ACQ_SELECT_CORP / IPO) is intentionally deferred — see phase-refactor.md.
@@ -245,7 +246,7 @@ self.company_acq_head = nn.Sequential(
 self.price_acq_head = nn.Sequential(
     nn.Linear(d_model, d_model // 2),
     nn.GELU(),
-    nn.Linear(d_model // 2, 52),  # 51 price offsets + FI_BUY
+    nn.Linear(d_model // 2, 51),  # 51 price offsets (FI targets handled in SELECT_COMPANY)
 )
 
 # IPO selects which corp floats; par price is picked in the separate PAR
@@ -414,8 +415,8 @@ All three simplifications follow the same pattern: the MLP needed a small, fixed
 - Pre-RMSNorm transformer blocks with SwiGLU FFN; attention via packed QKV + `F.scaled_dot_product_attention` (traces cleanly under `torch.compile`, unlike `nn.MultiheadAttention`).
 - Type-specific projections (uniform `token_dim=92` input), entity-readout heads for every decision phase.
 - Three per-sub-phase ACQ heads (corp-select, company-select, 52-logit price head off `acq_price_info` token) and a two-head IPO→PAR pair (per-corp select + per-par readout off the `par` token).
-- Unified-head policy dispatch: every per-row head runs once on the full batch into a single `(B, UNIFIED_LOGIT_DIM=170)` tensor; a static `(NUM_PHASES, MAX_PHASE_ACTION_SIZE)` int64 LUT (`_action_lut`, built from the `core/actions.pxd` encoders) remaps each row's phase-local action ids into unified slots. Two `gather` ops, no per-phase loop, no H↔D sync. All callers ship a `(B,)` `phase_ids` tensor instead of a per-phase row-index list.
-- `forward(x, legal_mask)` returns `(policy_logits, values)` where `policy_logits` has shape `(B, UNIFIED_LOGIT_DIM=170)` — dense over unified slots with illegal slots pushed to `-1e9` before softmax. The trainer, evaluator, and eval server all speak the same dense representation — no sparse action-id buffer appears in any shape on this path.
+- Unified-head policy dispatch: every per-row head runs once on the full batch into a single `(B, UNIFIED_LOGIT_DIM=169)` tensor; a static `(NUM_PHASES, MAX_PHASE_ACTION_SIZE)` int64 LUT (`_action_lut`, built from the `core/actions.pxd` encoders) remaps each row's phase-local action ids into unified slots. Two `gather` ops, no per-phase loop, no H↔D sync. All callers ship a `(B,)` `phase_ids` tensor instead of a per-phase row-index list.
+- `forward(x, legal_mask)` returns `(policy_logits, values)` where `policy_logits` has shape `(B, UNIFIED_LOGIT_DIM=169)` — dense over unified slots with illegal slots pushed to `-1e9` before softmax. The trainer, evaluator, and eval server all speak the same dense representation — no sparse action-id buffer appears in any shape on this path.
 - Smoke test covers all 11 phases: shapes, finite logits inside the legal slice, `-1e9` tail, values ∈ [-1, 1].
 
 ### Phase 4: Evaluator integration (mcts/evaluator.py) ✅

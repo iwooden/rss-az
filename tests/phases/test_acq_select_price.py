@@ -1,12 +1,15 @@
 """Tests for the ACQ_SELECT_PRICE phase (final leg of three-step Acquisition).
 
-Entered via SELECT_CORP → SELECT_COMPANY. No pass. Covers:
+Entered via SELECT_CORP → SELECT_COMPANY, only for non-FI targets. No pass.
+Covers:
 
-  - enumeration (price offsets for LOC_CORP / LOC_PLAYER targets; single FI_BUY
-    for LOC_FI targets; affordability cap; action id encoding)
+  - enumeration (price offsets for LOC_CORP / LOC_PLAYER targets;
+    affordability cap; action id encoding)
   - direct (same-president) execution — cash flows to player / seller
     corp proceeds pile, company moves to LOC_CORP_ACQ, active pair cleared
-  - FI buy execution (face vs high price, preemption entry into ACQ_OFFER)
+  - FI buy execution (face vs high price, preemption entry into ACQ_OFFER) —
+    the FI purchase is now dispatched from SELECT_COMPANY, but the observable
+    end-state is tested here for continuity with the game-mechanic coverage.
   - cross-president gates — LOC_CORP and LOC_PLAYER foreign-owner paths enter
     ACQ_OFFER
   - stay-on-same-player after direct execution.
@@ -112,7 +115,7 @@ def _enter_select_price(state, corp_id, company_id):
 # =============================================================================
 
 class TestEnumeration:
-    """SELECT_PRICE legality: price offsets (LOC_CORP/LOC_PLAYER) or FI_BUY (LOC_FI). No pass."""
+    """SELECT_PRICE legality: price offsets for non-FI targets. No pass."""
 
     def test_no_pass_action(self, game_state):
         """SELECT_PRICE has no pass — SELECT_COMPANY already committed."""
@@ -178,14 +181,8 @@ class TestEnumeration:
         assert offsets[0] == 0
         assert offsets[-1] == min(high - low, 50)
 
-    def test_fi_buy_sole_action_for_fi_target(self, game_state):
-        """LOC_FI target exposes only FI_BUY — SELECT_PRICE auto-chains past it.
-
-        Observable via legal-action inspection at SELECT_CORP-entry time:
-        force SELECT_COMPANY to land on an FI target with more than 1 option
-        in SELECT_COMPANY, then step through SELECT_COMPANY to SELECT_PRICE
-        manually; at that moment enumeration should contain exactly FI_BUY.
-        """
+    def test_fi_target_skips_select_price(self, game_state):
+        """FI targets execute during SELECT_COMPANY — SELECT_PRICE is never entered."""
         # Two FI targets so SELECT_COMPANY is a real decision.
         fi_a = draw_to_fi(game_state)
         fi_b = draw_to_fi(game_state)
@@ -197,25 +194,25 @@ class TestEnumeration:
             game_state, action_type=ACTION_ACQ_SELECT_CORP, corp_id=0,
         )
         apply_and_verify(game_state, aid)
-        # Now in SELECT_COMPANY with 2 legal targets. Apply SELECT_COMPANY for
-        # fi_a — SELECT_PRICE has 1 legal action (FI_BUY) so the driver auto-
-        # chains past the phase. Inspect intermediate state for FI_BUY-only.
+
+        # In SELECT_COMPANY with 2 legal targets. Apply SELECT_COMPANY for fi_a:
+        # the handler runs the FI buy directly (no price decision).
         select_company_aid = find_legal_action(
             game_state, action_type=ACTION_ACQ_SELECT_COMPANY, company_id=fi_a,
         )
         result = apply_and_verify(game_state, select_company_aid)
 
-        # Find the SELECT_PRICE step in the driver's history.
+        # No SELECT_PRICE step should appear in the history.
         from core.data import DecisionPhase
         price_steps = [
             (state_array, phase_id, act_id)
             for (state_array, phase_id, act_id) in result.history
             if phase_id == int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)
         ]
-        assert len(price_steps) == 1
-        # The action id recorded on that step must be the FI_BUY encoding (51).
-        assert price_steps[0][2] == 51
-        # fi_b untouched
+        assert price_steps == []
+        # fi_a transferred to corp; fi_b untouched.
+        loc_a = COMPANIES[fi_a].get_location(game_state)
+        assert loc_a in (int(CompanyLocation.LOC_CORP_ACQ), int(CompanyLocation.LOC_CORP))
         assert COMPANIES[fi_b].get_location(game_state) == int(CompanyLocation.LOC_FI)
 
 

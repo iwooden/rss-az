@@ -190,8 +190,6 @@ cdef int encode_action(ActionInfo info) noexcept nogil:
     elif phase == DPHASE_ACQ_SELECT_PRICE:
         if info.action_type == ACTION_ACQ_PRICE:
             return encode_acq_select_price(info.amount)
-        if info.action_type == ACTION_ACQ_FI_BUY:
-            return encode_acq_select_fi_buy()
 
     elif phase == DPHASE_ACQ_OFFER:
         if info.action_type == ACTION_PASS:
@@ -292,11 +290,8 @@ cdef ActionInfo decode_action(int phase_id, int action_id) noexcept nogil:
 
     # --- ACQ_SELECT_PRICE -------------------------------------------------
     if phase_id == DPHASE_ACQ_SELECT_PRICE:
-        if action_id < 51:
-            info.action_type = ACTION_ACQ_PRICE
-            info.amount = action_id
-        else:
-            info.action_type = ACTION_ACQ_FI_BUY
+        info.action_type = ACTION_ACQ_PRICE
+        info.amount = action_id
         return info
 
     # --- ACQ_OFFER --------------------------------------------------------
@@ -739,16 +734,15 @@ cdef int _enumerate_acq_select_price(
     """Emit every legal DPHASE_ACQ_SELECT_PRICE action in deterministic order.
 
     Ordering:
-      - LOC_FI target: single ``id 51`` (FI_BUY, fixed price).
-      - LOC_CORP / LOC_PLAYER target: ``ids 0..max_offset`` where
-        ``max_offset = min(high - low, cash - low, 50)``.
+      ``ids 0..max_offset`` where
+      ``max_offset = min(high - low, cash - low, 50)``.
 
     Trusts SELECT_COMPANY's filter: by the time we're here, the
     (active_corp, active_company) pair has at least one legal price and
-    the seller-side ownership gates have been validated. Only the
-    per-offset affordability is recomputed.
+    the seller-side ownership gates have been validated. LOC_FI targets
+    never reach SELECT_PRICE — they execute directly during SELECT_COMPANY.
 
-    Returns the number of IDs written. Worst case: 52 (51 offsets + FI_BUY).
+    Returns the number of IDs written. Worst case: 51.
     """
     cdef int count = 0
     cdef int corp_id = <int>state._data[
@@ -759,28 +753,24 @@ cdef int _enumerate_acq_select_price(
     ]
     assert corp_id >= 0, "_enumerate_acq_select_price: active_corp unset"
     assert company_id >= 0, "_enumerate_acq_select_price: active_company unset"
+    assert company_location(state, company_id) != <int>LOC_FI, \
+        f"_enumerate_acq_select_price: LOC_FI target {company_id} should " \
+        f"have executed in SELECT_COMPANY"
 
     cdef int cash = corp_cash(state, corp_id)
-    cdef int loc = company_location(state, company_id)
-    cdef int low_price, high_price, max_offset, price_offset
+    cdef int low_price = COMPANY_LOW_PRICE[company_id]
+    cdef int high_price = COMPANY_HIGH_PRICE[company_id]
+    cdef int max_offset = high_price - low_price
+    cdef int price_offset
 
-    if loc == <int>LOC_FI:
-        _require_action_capacity(count, b"ACQ_SELECT_PRICE_FI")
-        ids[count] = <uint16_t>encode_acq_select_fi_buy()
+    if cash - low_price < max_offset:
+        max_offset = cash - low_price
+    if max_offset > 50:
+        max_offset = 50
+    for price_offset in range(max_offset + 1):
+        _require_action_capacity(count, b"ACQ_SELECT_PRICE")
+        ids[count] = <uint16_t>encode_acq_select_price(price_offset)
         count += 1
-    else:
-        # LOC_CORP / LOC_PLAYER — emit affordable offsets.
-        low_price = COMPANY_LOW_PRICE[company_id]
-        high_price = COMPANY_HIGH_PRICE[company_id]
-        max_offset = high_price - low_price
-        if cash - low_price < max_offset:
-            max_offset = cash - low_price
-        if max_offset > 50:
-            max_offset = 50
-        for price_offset in range(max_offset + 1):
-            _require_action_capacity(count, b"ACQ_SELECT_PRICE")
-            ids[count] = <uint16_t>encode_acq_select_price(price_offset)
-            count += 1
 
     return count
 
@@ -1146,7 +1136,6 @@ ACTION_BUY_SHARE_PY = ACTION_BUY_SHARE
 ACTION_SELL_SHARE_PY = ACTION_SELL_SHARE
 ACTION_RAISE_PY = ACTION_RAISE
 ACTION_ACQ_PRICE_PY = ACTION_ACQ_PRICE
-ACTION_ACQ_FI_BUY_PY = ACTION_ACQ_FI_BUY
 ACTION_ACQ_OFFER_ACCEPT_PY = ACTION_ACQ_OFFER_ACCEPT
 ACTION_CLOSE_PY = ACTION_CLOSE
 ACTION_DIVIDEND_PY = ACTION_DIVIDEND
@@ -1172,7 +1161,7 @@ assert encode_invest_sell(7) == ACTION_SIZE_INVEST - 1
 assert encode_bid_raise(<int>AUCTION_CAP - 1) == ACTION_SIZE_BID - 1
 assert encode_acq_select_corp(7) == ACTION_SIZE_ACQ_SELECT_CORP - 1
 assert encode_acq_select_company(35) == ACTION_SIZE_ACQ_SELECT_COMPANY - 1
-assert encode_acq_select_fi_buy() == ACTION_SIZE_ACQ_SELECT_PRICE - 1
+assert encode_acq_select_price(50) == ACTION_SIZE_ACQ_SELECT_PRICE - 1
 assert 1 == ACTION_SIZE_ACQ_OFFER - 1
 assert encode_closing_close(35) == ACTION_SIZE_CLOSING - 1
 assert 25 == ACTION_SIZE_DIVIDENDS - 1

@@ -2,8 +2,14 @@
 
 Middle of the three-step ACQ flow: SELECT_CORP → SELECT_COMPANY →
 SELECT_PRICE. No pass here — SELECT_CORP already committed the player to
-picking a target. Pure state mutation: stamp active_company and step
-the engine phase to PHASE_ACQ_SELECT_PRICE.
+picking a target.
+
+Dispatch:
+  - LOC_FI target: run the FI buy (with preemption) directly. FI purchases
+    have a fixed price (face for OS, high otherwise), so the model never
+    sees a price decision for them — SELECT_PRICE is skipped.
+  - LOC_CORP / LOC_PLAYER target: stamp active_company and transition to
+    PHASE_ACQ_SELECT_PRICE.
 
 Reference: RULES.md Acquisition procedure. See phase-refactor.md for the
 split rationale.
@@ -12,6 +18,8 @@ split rationale.
 from core.state cimport GameState
 from core.data cimport GamePhases
 from core.actions cimport ActionInfo, ACTION_ACQ_SELECT_COMPANY
+from entities.company cimport LOC_FI, company_location
+from phases.util.acq_common cimport _handle_player_fi_buy
 
 from entities import turn as turn_module
 
@@ -21,11 +29,23 @@ from entities import turn as turn_module
 # =============================================================================
 
 cdef void apply_acq_select_company_action(GameState state, ActionInfo* info) noexcept:
-    """Stamp active_company and advance to SELECT_PRICE."""
+    """Stamp active_company and dispatch.
+
+    FI targets execute immediately (preemption via ACQ_OFFER if applicable);
+    non-FI targets advance to SELECT_PRICE.
+    """
     assert info.action_type == <int>ACTION_ACQ_SELECT_COMPANY, \
         f"apply_acq_select_company_action: unexpected type {info.action_type}"
-    turn_module.TURN.set_active_company(state, info.company_id)
-    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_ACQ_SELECT_PRICE)
+    cdef int corp_id = turn_module.TURN.get_active_corp(state)
+    cdef int company_id = info.company_id
+    assert corp_id >= 0, "apply_acq_select_company_action: active_corp unset"
+
+    turn_module.TURN.set_active_company(state, company_id)
+
+    if company_location(state, company_id) == <int>LOC_FI:
+        _handle_player_fi_buy(state, corp_id, company_id)
+    else:
+        turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_ACQ_SELECT_PRICE)
 
 
 # =============================================================================

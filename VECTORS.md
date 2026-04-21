@@ -246,11 +246,11 @@ Stored as a raw integer at `LAYOUT.turn_offset + TURN_OFFSETS.phase`. Defined in
 | 11 | PHASE_GAME_OVER            | Terminal state |
 | 12 | PHASE_PAR                  | Second IPO sub-phase: pick the par price for the corp chosen in IPO |
 | 13 | PHASE_ACQ_SELECT_COMPANY   | Second ACQ sub-phase: pick the target company |
-| 14 | PHASE_ACQ_SELECT_PRICE     | Third ACQ sub-phase: pick the price offset (or FI_BUY) |
+| 14 | PHASE_ACQ_SELECT_PRICE     | Third ACQ sub-phase: pick the price offset (non-FI targets only) |
 
 **IPO is split into IPO → PAR.** Each IPO decision picks a corp, then the PAR sub-phase picks a par price for that corp. There is no pass in PAR — committing to IPO locks the player into a par selection.
 
-**ACQUISITION is split into three sub-phases.** The joint `(corp, company, offset)` head is gone. Instead, ACQ_SELECT_CORP picks the acquiring corp (or passes, ending the ACQ sequence), ACQ_SELECT_COMPANY picks the target company under `active_corp`, and ACQ_SELECT_PRICE picks the 51-price offset or FI_BUY under `active_corp` / `active_company`. The two trailing sub-phases have no pass — SELECT_CORP commits the player to finishing the sequence. Enum values for the two new phases are appended at the end (13, 14) rather than inserted mid-range to keep the existing numeric contract stable; `ENGINE_TO_DECISION_PHASE` and tests hard-code numeric values.
+**ACQUISITION is split into three sub-phases.** The joint `(corp, company, offset)` head is gone. Instead, ACQ_SELECT_CORP picks the acquiring corp (or passes, ending the ACQ sequence), ACQ_SELECT_COMPANY picks the target company under `active_corp`, and ACQ_SELECT_PRICE picks a price offset (51 offsets) under `active_corp` / `active_company`. FI-owned targets have a fixed FI price (OS pays face, others pay high) and no price decision — SELECT_COMPANY executes the FI purchase directly, bypassing SELECT_PRICE. The two trailing sub-phases have no pass — SELECT_CORP commits the player to finishing the sequence. Enum values for the two new phases are appended at the end (13, 14) rather than inserted mid-range to keep the existing numeric contract stable; `ENGINE_TO_DECISION_PHASE` and tests hard-code numeric values.
 
 **`PHASE_ACQ_OFFER` is the FI-priority resolution phase.** It is a first-class engine phase, not a hidden sub-state of ACQUISITION. The engine enters ACQ_OFFER whenever a player or receivership corp attempts to acquire an FI-owned company AND one or more higher-priority corps exist (OS has absolute priority at face value; remaining corps ordered by descending share price at high value). Each higher-priority corp is offered, in turn, a 2-action `{pass, buy}` choice; once all decline, control returns to the original ACQ sequence. The turn block's existing `active_corp` / `active_company` / `active_player` selectors carry the preempting corp, the contested FI company, and that corp's president for the duration.
 
@@ -302,7 +302,7 @@ The engine has 15 `GamePhases`; the model only sees the 11 decision phases where
 | `DPHASE_IPO`                 | 7  | 9   | 1 pass + 8 per-corp select (par chosen in `DPHASE_PAR`) |
 | `DPHASE_PAR`                 | 8  | 14  | 14 par indices (no pass; IPO committed the player) |
 | `DPHASE_ACQ_SELECT_COMPANY`  | 9  | 36  | 36 per-company select under `active_corp` (no pass) |
-| `DPHASE_ACQ_SELECT_PRICE`    | 10 | 52  | 51 price offsets + FI_BUY under `active_corp` / `active_company` (no pass) |
+| `DPHASE_ACQ_SELECT_PRICE`    | 10 | 51  | 51 price offsets under `active_corp` / `active_company` (no pass; FI targets handled in SELECT_COMPANY) |
 
 Max action id fits comfortably in `uint16`. `MAX_ACTION_SIZE = 53` (INVEST) is the tight per-phase upper bound and doubles as the legal-action buffer width; any enumeration that exceeds this is a bug and `enumerate_legal_actions` aborts on overflow.
 
@@ -331,8 +331,8 @@ ACQ_SELECT_COMPANY:
   company_id                           = select company_id as the target (no pass)
 
 ACQ_SELECT_PRICE:
-  k < 51                               → acquire (active_corp, active_company) at low_price + k
-  k == 51                              → FI_BUY (fixed price: OS=face, others=high)
+  k                                    → acquire (active_corp, active_company) at low_price + k
+                                         (k ∈ [0, 50]; FI targets handled in SELECT_COMPANY)
 
 ACQ_OFFER:
   0 = pass
@@ -384,15 +384,14 @@ Python-accessible wrappers (for tests + diagnostics):
 | 3  | `ACTION_SELL_SHARE`        | INVEST              | Sell share in `corp_id` |
 | 4  | `ACTION_RAISE`             | BID                 | Bid `face_value + amount` (amount ∈ [0, `AUCTION_CAP`)); opening bid allows any offset ≥ 0, subsequent bids must strictly exceed current |
 | 5  | `ACTION_ACQ_PRICE`         | ACQ_SELECT_PRICE    | Acquire `active_company` by `active_corp` at low_price + `amount` |
-| 6  | `ACTION_ACQ_FI_BUY`        | ACQ_SELECT_PRICE    | `active_corp` buys `active_company` from FI at fixed price (OS=face, others=high) |
-| 7  | `ACTION_ACQ_OFFER_ACCEPT`  | ACQ_OFFER           | Preempting corp / contested owner accepts the offered acquisition |
-| 8  | `ACTION_CLOSE`             | CLOSING             | Close `company_id` |
-| 9  | `ACTION_DIVIDEND`          | DIVIDENDS           | Pay dividend of `amount` per share |
-| 10 | `ACTION_ISSUE`             | ISSUE               | Issue one share |
-| 11 | `ACTION_IPO`               | IPO                 | Select `corp_id` to float (par index chosen in PAR) |
-| 12 | `ACTION_PAR`               | PAR                 | Start `active_corp` at par price `ALL_PAR_PRICES[amount]` |
-| 13 | `ACTION_ACQ_SELECT_CORP`   | ACQ_SELECT_CORP     | Select `corp_id` as the acquiring corp |
-| 14 | `ACTION_ACQ_SELECT_COMPANY`| ACQ_SELECT_COMPANY  | Select `company_id` as the target of the pending acquisition |
+| 6  | `ACTION_ACQ_OFFER_ACCEPT`  | ACQ_OFFER           | Preempting corp / contested owner accepts the offered acquisition |
+| 7  | `ACTION_CLOSE`             | CLOSING             | Close `company_id` |
+| 8  | `ACTION_DIVIDEND`          | DIVIDENDS           | Pay dividend of `amount` per share |
+| 9  | `ACTION_ISSUE`             | ISSUE               | Issue one share |
+| 10 | `ACTION_IPO`               | IPO                 | Select `corp_id` to float (par index chosen in PAR) |
+| 11 | `ACTION_PAR`               | PAR                 | Start `active_corp` at par price `ALL_PAR_PRICES[amount]` |
+| 12 | `ACTION_ACQ_SELECT_CORP`   | ACQ_SELECT_CORP     | Select `corp_id` as the acquiring corp |
+| 13 | `ACTION_ACQ_SELECT_COMPANY`| ACQ_SELECT_COMPANY  | Select `company_id` as the target. FI-owned targets execute immediately at the fixed FI price (OS=face, others=high); other targets advance to ACQ_SELECT_PRICE for the price offset. |
 
 ---
 

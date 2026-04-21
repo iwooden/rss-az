@@ -61,6 +61,64 @@ cdef void _clear_acq_offer_flags(GameState state) noexcept:
         corp_module.CORPS[c].set_passed_acq_offer(state, False)
 
 
+cdef void _clear_acq_pair(GameState state) noexcept:
+    """Reset active_corp + active_company and walk back to SELECT_CORP.
+
+    Shared post-execution cleanup for direct-buy paths: SELECT_COMPANY's
+    FI-target flow and SELECT_PRICE's ACQ_PRICE handler both land here.
+    """
+    turn_module.TURN.clear_active_corp(state)
+    turn_module.TURN.clear_active_company(state)
+    turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_ACQ_SELECT_CORP)
+
+
+cdef void _handle_player_fi_buy(GameState state, int corp_id, int company_id) noexcept:
+    """Execute a player-initiated FI purchase with preemption check.
+
+    Called from SELECT_COMPANY when the active player selects an FI-owned
+    target. FI purchases have no price choice (OS pays face, others pay
+    high), so SELECT_PRICE is skipped entirely — this helper collapses
+    the old ACQ_SELECT_PRICE FI_BUY path into the SELECT_COMPANY handler.
+
+    If a higher-priority corp can preempt, push into ACQ_OFFER for that
+    corp's president. Otherwise (or if the preemptor is a receivership
+    corp, which auto-buys without a decision) execute the transfer and
+    walk back to SELECT_CORP.
+    """
+    cdef int first_preemptor, price, deciding_player
+
+    assert company_location(state, company_id) == <int>LOC_FI, \
+        f"_handle_player_fi_buy: company {company_id} not LOC_FI"
+    assert corp_is_active(state, corp_id), \
+        f"_handle_player_fi_buy: corp {corp_id} not active"
+    assert corp_cash(state, corp_id) >= _get_fi_purchase_price(corp_id, company_id), \
+        f"_handle_player_fi_buy: corp {corp_id} can't afford FI company {company_id}"
+
+    # Clear per-corp passed_acq_offer flags before consulting the preemptor
+    # list (matches the receivership-forced-buy prelude in SELECT_CORP).
+    _clear_acq_offer_flags(state)
+
+    first_preemptor = _find_first_preemptor(state, company_id, corp_id)
+    if first_preemptor < 0 or first_preemptor == corp_id:
+        _execute_fi_buy(state, corp_id, company_id)
+        _clear_acq_pair(state)
+        return
+
+    # Higher-priority receivership corps have no president to ask — their
+    # FI purchase is automatic. Player-controlled corps enter ACQ_OFFER.
+    if corp_is_in_receivership(state, first_preemptor):
+        _execute_fi_buy(state, first_preemptor, company_id)
+        _clear_acq_pair(state)
+        return
+
+    price = _get_fi_purchase_price(first_preemptor, company_id)
+    deciding_player = corp_president_id(state, first_preemptor)
+    _enter_acq_offer(
+        state, first_preemptor, company_id, price,
+        corp_id, deciding_player,
+    )
+
+
 cdef int _get_fi_purchase_price(int corp_id, int company_id) noexcept:
     """Return the fixed FI purchase price for this corp/company pair."""
     if corp_id == <int>CorpIndices.CORP_OS:
