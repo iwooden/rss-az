@@ -151,8 +151,8 @@ class TransformerConfig:
 
     # Core architecture
     num_players: int = 3  # 3-5 supported
-    d_model: int = 128
-    num_heads: int = 2
+    d_model: int = 192
+    num_heads: int = 3
     num_layers: int = 10
     ff_mult: float = 3.0  # FFN inner dimension = ceil(ff_mult * d_model)
 
