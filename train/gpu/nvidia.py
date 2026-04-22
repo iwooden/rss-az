@@ -92,6 +92,8 @@ def _resolve_mode_options(mode: str) -> dict[str, Any]:
     if mode == "reduce-overhead":
         return {
             "triton.cudagraphs": True,
+            "max_autotune": True,
+            "coordinate_descent_tuning": True,
         }
     return {}
 
@@ -157,7 +159,6 @@ def get_compile_kwargs(
     options: dict[str, Any] = _resolve_mode_options(mode)
     options.update({
         "triton.autotune_at_compile_time": True,
-        "shape_padding": False,
     })
     if for_training:
         options["joint_graph_constant_folding"] = False
