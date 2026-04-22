@@ -134,6 +134,18 @@ def test_format_token_dump_denormalizes_rows_into_compact_table() -> None:
     assert f"cards_remaining={TURN.get_cards_remaining(state)}" in progress_row
 
 
+def test_format_token_dump_skip_static_tokens_omits_market_and_company_rows() -> None:
+    state = _make_state()
+
+    rendered = format_token_dump(state, skip_static_tokens=True)
+
+    assert "idx | token" in rendered
+    assert "| market_prices |" not in rendered
+    assert "| company[0] |" not in rendered
+    assert "37 | market_availability |" in rendered
+    assert "| game_progress |" in rendered
+
+
 def test_analyze_game_token_dump_flag_includes_token_tables() -> None:
     torch.manual_seed(0)
     model = create_model(num_players=3).to(torch.device("cpu"))
@@ -153,3 +165,27 @@ def test_analyze_game_token_dump_flag_includes_token_tables() -> None:
     assert "## Token Dump" in rendered
     assert "idx | token" in rendered
     assert "market_prices" in rendered
+
+
+def test_analyze_game_skip_static_tokens_flag_omits_static_token_rows() -> None:
+    torch.manual_seed(0)
+    model = create_model(num_players=3).to(torch.device("cpu"))
+    model.eval()
+    config = TrainingConfig(num_players=3)
+
+    rendered = analyze_game(
+        model,
+        torch.device("cpu"),
+        config,
+        seed=1,
+        num_simulations=1,
+        top_n=1,
+        token_dump=True,
+        skip_static_tokens=True,
+    )
+
+    assert "## Token Dump" in rendered
+    assert "idx | token" in rendered
+    assert "| market_prices |" not in rendered
+    assert "| company[0] |" not in rendered
+    assert "37 | market_availability |" in rendered

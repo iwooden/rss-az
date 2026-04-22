@@ -292,6 +292,7 @@ def analyze_game(
     c_puct: float | None = None,
     mcts_stats_only: bool = False,
     token_dump: bool = False,
+    skip_static_tokens: bool = False,
 ) -> str:
     """Play a self-play game with full MCTS and return a detailed log."""
     num_players = config.num_players
@@ -413,7 +414,7 @@ def analyze_game(
             if token_dump:
                 lines.append("## Token Dump")
                 lines.append("")
-                lines.append(format_token_dump(state))
+                lines.append(format_token_dump(state, skip_static_tokens=skip_static_tokens))
                 lines.append("")
             lines.extend(_format_nn_eval(
                 priors, values, action_ids_arr, phase_id, num_players, state, top_n,
@@ -447,7 +448,7 @@ def analyze_game(
             if token_dump:
                 lines.append("## Token Dump")
                 lines.append("")
-                lines.append(format_token_dump(state))
+                lines.append(format_token_dump(state, skip_static_tokens=skip_static_tokens))
                 lines.append("")
             per_move_stats.append({
                 **metrics,
@@ -553,6 +554,11 @@ def main() -> None:
         help="Dump denormalized token rows for every decision state",
     )
     parser.add_argument(
+        "--skip-static-tokens",
+        action="store_true",
+        help="With --token-dump, omit the static prefix (market_prices + company[0..35])",
+    )
+    parser.add_argument(
         "--mcts-stats-only", action="store_true",
         help="Compact one-line-per-move MCTS summary plus end-of-game aggregates",
     )
@@ -626,6 +632,7 @@ def main() -> None:
         c_puct=args.c_puct,
         mcts_stats_only=args.mcts_stats_only,
         token_dump=args.token_dump,
+        skip_static_tokens=args.skip_static_tokens,
     )
 
     if args.output:

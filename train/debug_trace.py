@@ -54,6 +54,7 @@ from entities.turn import TURN
 
 NUM_COMPANIES = 36
 NUM_CORPS = 8
+NUM_STATIC_TOKENS = 1 + NUM_COMPANIES
 PY_PRICE_RANGE_DIVISOR = 51.0
 FLOAT_SHARES_MAX = 4.0
 CARDS_REMAINING_DIVISOR = float(NUM_COMPANIES)
@@ -326,7 +327,7 @@ def _summarize_token_values(token_label: str, values: list[int]) -> str:
     return str(values)
 
 
-def format_token_dump(state: GameState) -> str:
+def format_token_dump(state: GameState, *, skip_static_tokens: bool = False) -> str:
     num_players = TURN.get_num_players(state)
     if not (3 <= num_players <= 5):
         return f"token dump unavailable for num_players={num_players}"
@@ -338,9 +339,11 @@ def format_token_dump(state: GameState) -> str:
     widths = get_token_widths(num_players)
     labels = _token_labels(num_players)
 
+    start_index = NUM_STATIC_TOKENS if skip_static_tokens else 0
     lines = ["idx | token | width | values", "--- | --- | ---: | ---"]
-    for token_index, (label, width) in enumerate(zip(labels, widths, strict=True)):
-        width_int = int(width)
+    for token_index in range(start_index, len(labels)):
+        label = labels[token_index]
+        width_int = int(widths[token_index])
         values = _denormalize_token_values(label, buffer[token_index, :width_int])
         lines.append(f"{token_index:02d} | {label} | {width_int} | {_summarize_token_values(label, values)}")
     return "\n".join(lines)
