@@ -68,36 +68,6 @@ def apply_nvidia_optimizations() -> dict[str, str]:
     return enabled
 
 
-def _resolve_mode_options(mode: str) -> dict[str, Any]:
-    """Expand a torch.compile mode into explicit Inductor options.
-
-    Some deployed torch versions reject specifying both ``mode`` and
-    ``options`` in the same ``torch.compile(...)`` call. We still need to
-    layer repo-specific options on top of the chosen NVIDIA baseline, so we
-    resolve the mode eagerly and return a pure-options dict instead.
-    """
-    list_mode_options = getattr(torch._inductor, "list_mode_options", None)
-    if list_mode_options is not None:
-        resolved = list_mode_options().get(mode)
-        if resolved is not None:
-            return dict(resolved)
-
-    # Fallback for older/newer torch builds where ``list_mode_options`` is
-    # unavailable or the mode table changes shape.
-    if mode == "max-autotune-no-cudagraphs":
-        return {
-            "max_autotune": True,
-            "coordinate_descent_tuning": True,
-        }
-    if mode == "reduce-overhead":
-        return {
-            "triton.cudagraphs": True,
-            "max_autotune": True,
-            "coordinate_descent_tuning": True,
-        }
-    return {}
-
-
 def get_compile_kwargs(
     *,
     for_training: bool = False,
@@ -106,11 +76,17 @@ def get_compile_kwargs(
     """Return torch.compile kwargs optimized for NVIDIA GPUs.
 
     Eval compile policy depends on the GPU-visible batch-shape strategy.
-    ``dynamic`` keeps the current ``max-autotune-no-cudagraphs`` baseline.
-    ``bucketed`` switches eval inference to the cudagraph-enabled
-    ``reduce-overhead`` baseline, assuming the caller constrains launches to
-    a small fixed bucket set. Training remains on the existing dynamic-shape
+    ``dynamic`` runs autotune without CUDA graphs (the
+    ``max-autotune-no-cudagraphs`` baseline). ``bucketed`` adds
+    ``triton.cudagraphs`` on top, assuming the caller constrains launches
+    to a small fixed bucket set. Training remains on the dynamic-shape
     path regardless of the eval knob.
+
+    Options are set explicitly rather than via ``mode=`` so the policy is
+    invariant to ``torch._inductor.list_mode_options()`` table churn
+    across torch versions, and so we can layer repo-specific flags
+    (autotune_at_compile_time, joint_graph_constant_folding) without the
+    "can't pass both mode and options" restriction in older builds.
 
     For ``dynamic`` eval we keep the existing rationale:
     single-process warmup applies ``mark_unbacked`` to the batch dim (so
@@ -153,13 +129,13 @@ def get_compile_kwargs(
             which is why eval_server is unaffected. Disabling costs only
             a small forward-graph constant-folding optimization.
     """
-    mode = "max-autotune-no-cudagraphs"
-    if not for_training and eval_batch_shape_mode == "bucketed":
-        mode = "reduce-overhead"
-    options: dict[str, Any] = _resolve_mode_options(mode)
-    options.update({
+    options: dict[str, Any] = {
+        "max_autotune": True,
+        "coordinate_descent_tuning": True,
         "triton.autotune_at_compile_time": True,
-    })
+    }
+    if not for_training and eval_batch_shape_mode == "bucketed":
+        options["triton.cudagraphs"] = True
     if for_training:
         options["joint_graph_constant_folding"] = False
     return {"options": options}

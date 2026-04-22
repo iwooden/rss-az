@@ -13,9 +13,9 @@ def test_nvidia_compile_kwargs_expand_mode_into_options_for_dynamic_eval() -> No
     assert kwargs["options"]["max_autotune"] is True
     assert kwargs["options"]["coordinate_descent_tuning"] is True
     assert kwargs["options"]["triton.autotune_at_compile_time"] is True
-    assert kwargs["options"]["shape_padding"] is False
     assert "joint_graph_constant_folding" not in kwargs["options"]
     assert "triton.cudagraphs" not in kwargs["options"]
+    assert "shape_padding" not in kwargs["options"]
 
 
 def test_nvidia_compile_kwargs_enable_cudagraphs_for_bucketed_eval() -> None:
@@ -23,9 +23,11 @@ def test_nvidia_compile_kwargs_enable_cudagraphs_for_bucketed_eval() -> None:
 
     assert "mode" not in kwargs
     assert kwargs["options"]["triton.cudagraphs"] is True
-    assert kwargs["options"]["shape_padding"] is False
     assert kwargs["options"]["triton.autotune_at_compile_time"] is True
+    assert kwargs["options"]["max_autotune"] is True
+    assert kwargs["options"]["coordinate_descent_tuning"] is True
     assert "joint_graph_constant_folding" not in kwargs["options"]
+    assert "shape_padding" not in kwargs["options"]
 
 
 def test_nvidia_compile_kwargs_disable_joint_graph_constant_folding_for_training() -> None:
