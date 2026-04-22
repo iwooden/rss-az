@@ -1,3 +1,5 @@
+import torch
+
 from core.actions import (
     ACTION_AUCTION_PY as ACTION_AUCTION,
     ACTION_ISSUE_PY as ACTION_ISSUE,
@@ -8,12 +10,14 @@ from core.state import GameState
 from core.data import COMPANY_NAMES, CORP_NAMES
 from entities.company import COMPANIES
 from entities.turn import TURN
+from nn import create_model
 from phases.closing import setup_closing_phase_py
 from phases.issue import setup_issue_phase_py
 from phases.ipo import setup_ipo_phase_py
 from tests.phases.conftest import float_corp_for_test, find_legal_action_with_info
 from tests.phases.helpers.ownership import give_company_to_corp, give_company_to_player
-from train.analyze_game import format_action, format_phase_context, format_state_full
+from train.analyze_game import analyze_game, format_action, format_phase_context, format_state_full, format_token_dump
+from train.config import TrainingConfig
 
 
 def _make_state(num_players: int = 3, seed: int = 42) -> GameState:
@@ -109,3 +113,43 @@ def test_format_phase_context_acq_offer_describes_original_and_offered_corp() ->
     assert CORP_NAMES[2] in rendered
     assert COMPANY_NAMES[7] in rendered
     assert "$33" in rendered
+
+
+def test_format_token_dump_denormalizes_rows_into_compact_table() -> None:
+    state = _make_state()
+
+    rendered = format_token_dump(state)
+
+    market_row = next(line for line in rendered.splitlines() if "| market_prices |" in line)
+    company_row = next(line for line in rendered.splitlines() if "| company[0] |" in line)
+    progress_row = next(line for line in rendered.splitlines() if "| game_progress |" in line)
+    company0 = COMPANIES[0]
+
+    assert "idx | token" in rendered
+    assert market_row.startswith("00 | market_prices | 27 | [0, 5, 6, 7,")
+    assert (
+        f"id=0 low={company0.get_low_price()} face={company0.get_face_value()} "
+        f"high={company0.get_high_price()}"
+    ) in company_row
+    assert f"cards_remaining={TURN.get_cards_remaining(state)}" in progress_row
+
+
+def test_analyze_game_token_dump_flag_includes_token_tables() -> None:
+    torch.manual_seed(0)
+    model = create_model(num_players=3).to(torch.device("cpu"))
+    model.eval()
+    config = TrainingConfig(num_players=3)
+
+    rendered = analyze_game(
+        model,
+        torch.device("cpu"),
+        config,
+        seed=1,
+        num_simulations=1,
+        top_n=1,
+        token_dump=True,
+    )
+
+    assert "## Token Dump" in rendered
+    assert "idx | token" in rendered
+    assert "market_prices" in rendered

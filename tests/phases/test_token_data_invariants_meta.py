@@ -20,9 +20,17 @@ Token positions below match the conftest layout banner.
 """
 import pytest
 
+from core.actions import (
+    ACTION_ACQ_SELECT_COMPANY_PY as ACTION_ACQ_SELECT_COMPANY,
+    ACTION_ACQ_SELECT_CORP_PY as ACTION_ACQ_SELECT_CORP,
+    ACTION_PASS_PY as ACTION_PASS,
+)
 from core.data import GamePhases, GameConstants
 from core.state import GameState
+from entities.company import COMPANIES
+from entities.corp import CORPS
 from entities.turn import TURN
+from phases.acq_select_corp import setup_acquisition_phase_py
 from tests.phases import conftest as phase_conftest
 from tests.phases.conftest import assert_token_data_invariants
 
@@ -64,6 +72,53 @@ def _invest_state():
     assert TURN.get_active_player(state) == 0
     assert TURN.get_active_corp(state) == -1
     assert TURN.get_active_company(state) == -1
+    return state
+
+
+def _active_corp_invest_state():
+    state = _invest_state()
+    company_id = phase_conftest.float_corp_for_test(
+        state, corp_id=0, player_id=0, par_index=10,
+    )
+    assert TURN.get_phase(state) == GamePhases.PHASE_INVEST
+    assert CORPS[0].is_active(state)
+    assert CORPS[0].count_companies(state, include_acquisition=True) >= 1
+    assert company_id >= 0
+    return state
+
+
+def _select_price_state():
+    state = _invest_state()
+    private_co = phase_conftest.draw_to_player(state, 0)
+    phase_conftest.float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
+    CORPS[0].set_cash(state, COMPANIES[private_co].get_low_price() + 2)
+
+    setup_acquisition_phase_py(state)
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_SELECT_CORP)
+
+    target_president = CORPS[0].get_president_id(state)
+    for _ in range(16):
+        if TURN.get_active_player(state) == target_president:
+            break
+        assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_SELECT_CORP)
+        pass_id = phase_conftest.find_legal_action(state, action_type=ACTION_PASS)
+        phase_conftest.apply_and_verify(state, pass_id)
+    else:
+        assert False, "_select_price_state: never reached corp 0 president"
+
+    aid = phase_conftest.find_legal_action(
+        state, action_type=ACTION_ACQ_SELECT_CORP, corp_id=0,
+    )
+    phase_conftest.apply_and_verify(state, aid)
+    if TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_SELECT_COMPANY):
+        aid = phase_conftest.find_legal_action(
+            state, action_type=ACTION_ACQ_SELECT_COMPANY, company_id=private_co,
+        )
+        phase_conftest.apply_and_verify(state, aid)
+
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_SELECT_PRICE)
+    assert TURN.get_active_corp(state) == 0
+    assert TURN.get_active_company(state) == private_co
     return state
 
 
@@ -242,6 +297,50 @@ def corrupt_player_presidency(buf):
     buf[PLAYER_BASE_TOK + 0, 40] = 1.0             # OFF_PRESIDENCIES: none held
 
 
+def corrupt_player_tail(buf):
+    buf[PLAYER_BASE_TOK + 0, 84] = 1.0             # padding past TW_PLAYER must stay 0
+
+
+def corrupt_company_tail(buf):
+    buf[COMPANY_BASE_TOK + 0, 78] = 1.0            # padding past TW_COMPANY must stay 0
+
+
+def corrupt_inactive_corp_companies(buf):
+    buf[CORP_BASE_TOK + 0, 56] = 1.0               # inactive corp company bitmap must be 0
+
+
+def corrupt_active_corp_pending_move(buf):
+    buf[CORP_BASE_TOK + 0, 42] = 0.0               # active corp pending move
+
+
+def corrupt_active_corp_raw_revenue(buf):
+    buf[CORP_BASE_TOK + 0, 47] = 0.0               # active corp raw revenue
+
+
+def corrupt_active_corp_synergy(buf):
+    buf[CORP_BASE_TOK + 0, 48] = 1.0               # active corp synergy income
+
+
+def corrupt_active_corp_coo_cost(buf):
+    buf[CORP_BASE_TOK + 0, 49] = 1.0               # active corp CoO cost
+
+
+def corrupt_active_corp_ability(buf):
+    buf[CORP_BASE_TOK + 0, 50] = 1.0               # active corp ability income
+
+
+def corrupt_acq_price_info_max_offset(buf):
+    buf[ACQ_PRICE_INFO_TOK, 0] = 0.0
+
+
+def corrupt_acq_price_info_fi_flag(buf):
+    buf[ACQ_PRICE_INFO_TOK, 1] = 1.0
+
+
+def corrupt_acq_price_info_total_synergies(buf):
+    buf[ACQ_PRICE_INFO_TOK, 2] = 0.0
+
+
 # Each case: (mutation_fn, expected-error-substring).
 # The match argument to pytest.raises is re.search on the assertion text;
 # substrings here are chosen to uniquely identify the block being checked.
@@ -290,6 +389,25 @@ CASES = [
     (corrupt_player_id_onehot,             "player_id one-hot"),
     (corrupt_player_cash,                  r"player token p=0.*: cash"),
     (corrupt_player_presidency,            "presidency"),
+    (corrupt_player_tail,                  "tail beyond TW_PLAYER features"),
+    (corrupt_company_tail,                 "tail beyond TW_COMPANY features"),
+    (corrupt_inactive_corp_companies,      "inactive corp owned_company region must be zero"),
+]
+
+
+ACTIVE_CORP_CASES = [
+    (corrupt_active_corp_pending_move,     "pending_price_move"),
+    (corrupt_active_corp_raw_revenue,      "raw_revenue"),
+    (corrupt_active_corp_synergy,          "synergy_income"),
+    (corrupt_active_corp_coo_cost,         "coo_cost"),
+    (corrupt_active_corp_ability,          "ability_income"),
+]
+
+
+ACQ_PRICE_INFO_CASES = [
+    (corrupt_acq_price_info_max_offset,      "max_offset"),
+    (corrupt_acq_price_info_fi_flag,         "fi_flag"),
+    (corrupt_acq_price_info_total_synergies, "total_synergies"),
 ]
 
 
@@ -314,3 +432,27 @@ def test_baseline_passes_without_corruption():
     """
     state = _invest_state()
     assert_token_data_invariants(state)
+
+
+@pytest.mark.parametrize(
+    "mutation,msg_pattern",
+    ACTIVE_CORP_CASES,
+    ids=[fn.__name__ for fn, _ in ACTIVE_CORP_CASES],
+)
+def test_invariants_catch_active_corp_corruption(monkeypatch, mutation, msg_pattern):
+    state = _active_corp_invest_state()
+    _patch(monkeypatch, mutation)
+    with pytest.raises(AssertionError, match=msg_pattern):
+        assert_token_data_invariants(state)
+
+
+@pytest.mark.parametrize(
+    "mutation,msg_pattern",
+    ACQ_PRICE_INFO_CASES,
+    ids=[fn.__name__ for fn, _ in ACQ_PRICE_INFO_CASES],
+)
+def test_invariants_catch_acq_price_info_corruption(monkeypatch, mutation, msg_pattern):
+    state = _select_price_state()
+    _patch(monkeypatch, mutation)
+    with pytest.raises(AssertionError, match=msg_pattern):
+        assert_token_data_invariants(state)

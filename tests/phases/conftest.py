@@ -683,7 +683,6 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
         agrees with `TURN.get_*`.
       - Each phase-specific token is all-zero outside its phase and carries
         the expected per-phase scalars/flags inside it.
-      - Pass token is always all-zero (type embedding only).
 
     Args:
       expected_decision_phase: Optional driver-ground-truth DecisionPhase
@@ -851,6 +850,8 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
             expected = 1.0 if (loc == int(CompanyLocation.LOC_PLAYER) and owner == p) else 0.0
             _assert_close(buf[tok, _PLAYER_OFF["COMPANIES"] + cid], expected, T_FLAG,
                           f"{pm}: owned_company[{cid}]")
+        _assert_zero_row(buf[tok, _PLAYER_OFF["COMPANIES"] + num_companies:], T_FLAG,
+                         f"{pm}: tail beyond TW_PLAYER features")
 
     # =========================================================================
     # CORP TOKENS
@@ -898,6 +899,9 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
             _assert_close(buf[tok, _CORP_OFF["SHARE_PRICE"]] * PY_SHARE_PRICE_DIVISOR,
                           corp.get_share_price(state), T_SCALE,
                           f"{cm}: share_price")
+            _assert_close(buf[tok, _CORP_OFF["PENDING_MOVE"]] * PY_IMPACT_DIVISOR,
+                          corp.get_pending_price_move(state), T_SCALE,
+                          f"{cm}: pending_price_move")
             _assert_close(buf[tok, _CORP_OFF["CASH"]] * PY_CASH_DIVISOR,
                           corp.get_cash(state), T_SCALE, f"{cm}: cash")
             _assert_close(buf[tok, _CORP_OFF["ACQ_PROCEEDS"]] * PY_CASH_DIVISOR,
@@ -907,6 +911,18 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
                           corp.get_income(state), T_SCALE, f"{cm}: income")
             _assert_close(buf[tok, _CORP_OFF["STARS"]] * PY_CORP_STAR_DIVISOR,
                           corp.get_total_stars(state), T_SCALE, f"{cm}: total_stars")
+            _assert_close(buf[tok, _CORP_OFF["RAW_REVENUE"]] * PY_ENTITY_INCOME_DIVISOR,
+                          corp.get_raw_revenue(state), T_SCALE,
+                          f"{cm}: raw_revenue")
+            _assert_close(buf[tok, _CORP_OFF["SYNERGY"]] * PY_ENTITY_INCOME_DIVISOR,
+                          corp.get_synergy_income(state), T_SCALE,
+                          f"{cm}: synergy_income")
+            _assert_close(buf[tok, _CORP_OFF["COO_COST"]] * PY_ENTITY_INCOME_DIVISOR,
+                          corp.get_coo_cost(state), T_SCALE,
+                          f"{cm}: coo_cost")
+            _assert_close(buf[tok, _CORP_OFF["ABILITY"]] * PY_ENTITY_INCOME_DIVISOR,
+                          corp.get_ability_income(state), T_SCALE,
+                          f"{cm}: ability_income")
 
             # President one-hot: inactive OR in-receivership corps leave it zero
             if corp.is_in_receivership(state):
@@ -939,6 +955,11 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
                         "ABILITY"):
                 _assert_close(buf[tok, _CORP_OFF[key]], 0.0, T_FLAG,
                               f"{cm}: inactive corp {key} must be zero")
+            _assert_zero_row(
+                buf[tok, _CORP_OFF["COMPANIES"]:_CORP_OFF["COMPANIES"] + num_companies],
+                T_FLAG,
+                f"{cm}: inactive corp owned_company region must be zero",
+            )
 
     # =========================================================================
     # COMPANY TOKENS
@@ -988,6 +1009,8 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
                       COMPANIES[k].get_synergy_with(cid))
             _assert_close(buf[tok, syn_base + k] * PY_COMPANY_INCOME_DIVISOR,
                           syn, T_SCALE, f"{km}: synergy[{k}]")
+        _assert_zero_row(buf[tok, syn_base + num_companies:], T_FLAG,
+                         f"{km}: tail beyond TW_COMPANY features")
 
     # =========================================================================
     # MARKET SLOT PRICES TOKEN (static $0..$75 normalized)
@@ -1424,15 +1447,49 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
                          f"{aom}: tail beyond FI_COMPANY flag")
 
     # Acq-price-info token ------------------------------------------------
-    # In-phase scalars depend on corp_candidate_synergy_delta which is
-    # cdef-only; asserting the "zero outside PHASE_ACQ_SELECT_PRICE"
-    # invariant is the minimum that pairs with the extractor's phase gate.
-    # In-phase assertions can be added when a Python wrapper is exposed.
     apim = f"{msg}\nAcqPriceInfo token"
     if phase != int(GamePhases.PHASE_ACQ_SELECT_PRICE):
         _assert_zero_row(buf[acq_price_info_tok], T_FLAG,
                          f"{apim} must be all-zero outside PHASE_ACQ_SELECT_PRICE "
                          f"(phase={phase})")
+    else:
+        assert 0 <= active_corp < num_corps, (
+            f"{apim}: active_corp {active_corp} unset in SELECT_PRICE"
+        )
+        assert 0 <= active_company < num_companies, (
+            f"{apim}: active_company {active_company} unset in SELECT_PRICE"
+        )
+        low = COMPANIES[active_company].get_low_price()
+        high = COMPANIES[active_company].get_high_price()
+        _assert_close(buf[acq_price_info_tok, 0] * PY_PRICE_RANGE_DIVISOR,
+                      high - low + 1, T_SCALE,
+                      f"{apim}: max_offset")
+        exp_fi = 1.0 if COMPANIES[active_company].get_location(state) == int(CompanyLocation.LOC_FI) else 0.0
+        _assert_close(buf[acq_price_info_tok, 1], exp_fi, T_FLAG,
+                      f"{apim}: fi_flag")
+
+        expected_delta = 0
+        for cid in range(num_companies):
+            loc = COMPANIES[cid].get_location(state)
+            owner = COMPANIES[cid].get_owner_id(state)
+            in_portfolio = (
+                (loc == int(CompanyLocation.LOC_CORP) and owner == active_corp)
+                or
+                (loc == int(CompanyLocation.LOC_CORP_ACQ) and owner == active_corp)
+            )
+            if not in_portfolio:
+                continue
+            bonus_to_candidate = COMPANIES[cid].get_synergy_with(active_company)
+            bonus_from_candidate = COMPANIES[active_company].get_synergy_with(cid)
+            if bonus_to_candidate > 0:
+                expected_delta += bonus_to_candidate
+            if bonus_from_candidate > 0:
+                expected_delta += bonus_from_candidate
+        _assert_close(buf[acq_price_info_tok, 2] * PY_ENTITY_INCOME_DIVISOR,
+                      expected_delta, T_SCALE,
+                      f"{apim}: total_synergies")
+        _assert_zero_row(buf[acq_price_info_tok, 3:], T_FLAG,
+                         f"{apim}: tail")
 
 
 

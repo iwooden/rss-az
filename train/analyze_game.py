@@ -33,7 +33,13 @@ from mcts.search import StatePool, get_greedy_leaf_value, prepare_reuse_root, ru
 from nn import create_model
 from train.checkpoint import find_latest_checkpoint, load_checkpoint
 from train.config import MCTSConfig, TrainingConfig
-from train.debug_trace import PHASE_NAMES, format_action, format_phase_context, format_state_full
+from train.debug_trace import (
+    PHASE_NAMES,
+    format_action,
+    format_phase_context,
+    format_state_full,
+    format_token_dump,
+)
 from train.profile_stats import SearchStats
 
 
@@ -285,6 +291,7 @@ def analyze_game(
     terminal_blend: float | None = None,
     c_puct: float | None = None,
     mcts_stats_only: bool = False,
+    token_dump: bool = False,
 ) -> str:
     """Play a self-play game with full MCTS and return a detailed log."""
     num_players = config.num_players
@@ -403,6 +410,11 @@ def analyze_game(
             if phase_ctx:
                 lines.append(f"  {phase_ctx}")
                 lines.append("")
+            if token_dump:
+                lines.append("## Token Dump")
+                lines.append("")
+                lines.append(format_token_dump(state))
+                lines.append("")
             lines.extend(_format_nn_eval(
                 priors, values, action_ids_arr, phase_id, num_players, state, top_n,
                 noised_priors=noised_map,
@@ -432,6 +444,11 @@ def analyze_game(
                 step, cur_turn, active_player, cur_phase, action_str,
                 metrics, search_stats, auto_count,
             ))
+            if token_dump:
+                lines.append("## Token Dump")
+                lines.append("")
+                lines.append(format_token_dump(state))
+                lines.append("")
             per_move_stats.append({
                 **metrics,
                 "num_eval_batches": search_stats.num_eval_batches,
@@ -531,6 +548,11 @@ def main() -> None:
     parser.add_argument("--top-n", type=int, default=10, help="Top N actions to show")
     parser.add_argument("--verbose", action="store_true", help="Full state dump every step")
     parser.add_argument(
+        "--token-dump",
+        action="store_true",
+        help="Dump denormalized token rows for every decision state",
+    )
+    parser.add_argument(
         "--mcts-stats-only", action="store_true",
         help="Compact one-line-per-move MCTS summary plus end-of-game aggregates",
     )
@@ -603,6 +625,7 @@ def main() -> None:
         terminal_blend=args.terminal_blend,
         c_puct=args.c_puct,
         mcts_stats_only=args.mcts_stats_only,
+        token_dump=args.token_dump,
     )
 
     if args.output:
