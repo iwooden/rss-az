@@ -131,6 +131,120 @@ def _token_labels(num_players: int) -> list[str]:
     return labels
 
 
+def _field_names(prefix: str, count: int) -> list[str]:
+    return [f"{prefix}[{idx}]" for idx in range(count)]
+
+
+def _token_field_labels(token_label: str) -> list[str]:
+    if token_label == "market_prices":
+        return _field_names("market_price", 27)
+    if token_label.startswith("company["):
+        return (
+            _field_names("company_id", 36)
+            + ["low_price", "face_value", "high_price", "low_high_diff", "income", "stars"]
+            + _field_names("synergy", 36)
+        )
+    if token_label == "market_availability":
+        return _field_names("market_available", 27)
+    if token_label == "company_loc_removed":
+        return _field_names("removed_company", 36)
+    if token_label == "company_loc_auction":
+        return _field_names("auction_company", 36)
+    if token_label == "company_loc_revealed":
+        return _field_names("revealed_company", 36)
+    if token_label == "company_loc_corp_acq":
+        return _field_names("corp_acq_company", 36)
+    if token_label == "company_adj_income":
+        return _field_names("company_adj_income", 36)
+    if token_label == "fi":
+        return ["cash", "income"] + _field_names("owned_company", 36)
+    if token_label == "active_player":
+        return _field_names("active_player", 5)
+    if token_label == "active_corp":
+        return _field_names("active_corp", 8)
+    if token_label == "active_company":
+        return _field_names("active_company", 36)
+    if token_label == "phase":
+        return _field_names("phase", 11)
+    if token_label == "num_players":
+        return _field_names("num_players", 3)
+    if token_label == "game_progress":
+        return _field_names("coo_level", 7) + ["end_card_flipped", "cards_remaining"]
+    if token_label == "invest":
+        return ["consecutive_passes"] + _field_names("buy_impact", 8) + _field_names("sell_impact", 8)
+    if token_label == "auction":
+        return ["min_bid_index", "min_bid_value", "is_first_bid"] + _field_names("high_bidder", 5) + _field_names("starter", 5)
+    if token_label == "dividend":
+        return _field_names("dividend_impact", 26) + _field_names("dividend_remaining", 8)
+    if token_label == "issue":
+        return ["issue_impact"] + _field_names("issue_remaining", 8)
+    if token_label == "par":
+        return (
+            _field_names("player_cash_required", 14)
+            + _field_names("resulting_corp_cash", 14)
+            + _field_names("resulting_issued_shares", 14)
+            + _field_names("ipo_remaining", 8)
+        )
+    if token_label == "acq_offer":
+        return ["offer_price_index", "offer_price"] + _field_names("offer_corp", 8) + ["fi_company"]
+    if token_label == "acq_price":
+        return ["max_offset", "fi_flag", "total_synergies"]
+    if token_label.startswith("corp["):
+        return (
+            _field_names("corp_id", 8)
+            + [
+                "active",
+                "in_receivership",
+                "passed_acq_offer",
+                "unissued_shares",
+                "issued_shares",
+                "bank_shares",
+            ]
+            + _field_names("price_index", 27)
+            + [
+                "share_price",
+                "pending_price_move",
+                "cash",
+                "acq_proceeds",
+                "income",
+                "stars",
+                "raw_revenue",
+                "synergy_income",
+                "coo_cost",
+                "ability_income",
+            ]
+            + _field_names("president_id", 5)
+            + _field_names("owned_company", 36)
+        )
+    if token_label.startswith("player["):
+        return (
+            _field_names("player_id", 5)
+            + _field_names("turn_order", 5)
+            + ["has_passed", "cash", "net_worth", "liquidity", "income"]
+            + _field_names("owned_share", 8)
+            + ["round_trips"]
+            + _field_names("share_buy", 8)
+            + _field_names("share_sell", 8)
+            + _field_names("presidency", 8)
+            + _field_names("owned_company", 36)
+        )
+    raise ValueError(f"unknown token label: {token_label}")
+
+
+def _extract_token_buffer(state: GameState) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    num_players = TURN.get_num_players(state)
+    if not (3 <= num_players <= 5):
+        raise ValueError(f"token dump unavailable for num_players={num_players}")
+
+    num_tokens = get_num_tokens(num_players)
+    token_dim = int(TokenDataSize.TOKEN_DIM)
+    buffer = np.zeros((num_tokens, token_dim), dtype=np.float32)
+    get_token_data(state, buffer)
+    widths = np.asarray(get_token_widths(num_players), dtype=np.int32)
+    labels = _token_labels(num_players)
+    return buffer, widths, labels
+
+
 def _denormalize_token_values(token_label: str, row: np.ndarray) -> list[int]:
     if token_label == "market_prices":
         return _round_values(row[:27], PY_SHARE_PRICE_DIVISOR)
@@ -328,17 +442,25 @@ def _summarize_token_values(token_label: str, values: list[int]) -> str:
 
 
 def format_token_dump(state: GameState, *, skip_static_tokens: bool = False) -> str:
-    num_players = TURN.get_num_players(state)
-    if not (3 <= num_players <= 5):
-        return f"token dump unavailable for num_players={num_players}"
+    try:
+        buffer, widths, labels = _extract_token_buffer(state)
+    except ValueError as exc:
+        return str(exc)
+    return format_token_dump_from_buffer(
+        buffer,
+        widths,
+        labels,
+        skip_static_tokens=skip_static_tokens,
+    )
 
-    num_tokens = get_num_tokens(num_players)
-    token_dim = int(TokenDataSize.TOKEN_DIM)
-    buffer = np.zeros((num_tokens, token_dim), dtype=np.float32)
-    get_token_data(state, buffer)
-    widths = get_token_widths(num_players)
-    labels = _token_labels(num_players)
 
+def format_token_dump_from_buffer(
+    buffer: np.ndarray,
+    widths: np.ndarray,
+    labels: list[str],
+    *,
+    skip_static_tokens: bool = False,
+) -> str:
     start_index = NUM_STATIC_TOKENS if skip_static_tokens else 0
     lines = ["idx | token | width | values", "--- | --- | ---: | ---"]
     for token_index in range(start_index, len(labels)):
@@ -347,6 +469,84 @@ def format_token_dump(state: GameState, *, skip_static_tokens: bool = False) -> 
         values = _denormalize_token_values(label, buffer[token_index, :width_int])
         lines.append(f"{token_index:02d} | {label} | {width_int} | {_summarize_token_values(label, values)}")
     return "\n".join(lines)
+
+
+class TokenNormalizationAccumulator:
+    THRESHOLDS = (1.00, 1.10, 1.25)
+
+    def __init__(self, num_players: int):
+        if not (3 <= num_players <= 5):
+            raise ValueError(f"token normalization unavailable for num_players={num_players}")
+        self.labels = _token_labels(num_players)
+        self.widths = np.asarray(get_token_widths(num_players), dtype=np.int32)
+        token_dim = int(TokenDataSize.TOKEN_DIM)
+        self._mins = np.full((len(self.labels), token_dim), np.inf, dtype=np.float64)
+        self._maxs = np.full((len(self.labels), token_dim), -np.inf, dtype=np.float64)
+        self._sums = np.zeros((len(self.labels), token_dim), dtype=np.float64)
+        self.samples = 0
+
+    def add_state(self, state: GameState) -> np.ndarray:
+        buffer, widths, labels = _extract_token_buffer(state)
+        assert labels == self.labels
+        if not np.array_equal(widths, self.widths):
+            raise ValueError("token width mismatch while accumulating normalization stats")
+
+        for token_index, width in enumerate(self.widths):
+            width_int = int(width)
+            row = buffer[token_index, :width_int].astype(np.float64, copy=False)
+            self._mins[token_index, :width_int] = np.minimum(self._mins[token_index, :width_int], row)
+            self._maxs[token_index, :width_int] = np.maximum(self._maxs[token_index, :width_int], row)
+            self._sums[token_index, :width_int] += row
+
+        self.samples += 1
+        return buffer
+
+    def _iter_field_stats(self, *, skip_static_tokens: bool = False):
+        start_index = NUM_STATIC_TOKENS if skip_static_tokens else 0
+        for token_index in range(start_index, len(self.labels)):
+            token_label = self.labels[token_index]
+            field_labels = _token_field_labels(token_label)
+            width_int = int(self.widths[token_index])
+            if len(field_labels) != width_int:
+                raise ValueError(
+                    f"field label width mismatch for {token_label}: {len(field_labels)} != {width_int}"
+                )
+            for field_index in range(width_int):
+                min_val = float(self._mins[token_index, field_index])
+                max_val = float(self._maxs[token_index, field_index])
+                avg = float(self._sums[token_index, field_index] / self.samples)
+                yield token_label, field_labels[field_index], min_val, max_val, avg
+
+    def format_report(self, *, skip_static_tokens: bool = False) -> str:
+        if self.samples == 0:
+            return "token normalization report unavailable (no token states captured)"
+
+        field_stats = list(self._iter_field_stats(skip_static_tokens=skip_static_tokens))
+        lines = [f"Captured {self.samples} decision-state token dumps.", "", "### Threshold Summary", ""]
+        lines.extend([
+            "threshold | fields_exceeding | worst_abs | worst_field",
+            "---: | ---: | ---: | ---",
+        ])
+        for threshold in self.THRESHOLDS:
+            offenders: list[tuple[float, str, str]] = []
+            for token_label, field_label, min_val, max_val, _avg in field_stats:
+                peak_abs = max(abs(min_val), abs(max_val))
+                if peak_abs > threshold:
+                    offenders.append((peak_abs, token_label, field_label))
+            if offenders:
+                peak_abs, token_label, field_label = max(offenders, key=lambda item: item[0])
+                worst_field = f"{token_label} | {field_label}"
+            else:
+                peak_abs = 0.0
+                worst_field = "-"
+            lines.append(f"> {threshold:.2f} | {len(offenders)} | {peak_abs:+.4f} | {worst_field}")
+
+        lines.extend(["", "token | field | min | max | avg", "--- | --- | ---: | ---: | ---:"])
+        for token_label, field_label, min_val, max_val, avg in field_stats:
+            lines.append(
+                f"{token_label} | {field_label} | {min_val:+.4f} | {max_val:+.4f} | {avg:+.4f}"
+            )
+        return "\n".join(lines)
 
 
 def _auction_companies(state: GameState) -> list[tuple[int, int]]:

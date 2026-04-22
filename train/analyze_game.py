@@ -35,10 +35,12 @@ from train.checkpoint import find_latest_checkpoint, load_checkpoint
 from train.config import MCTSConfig, TrainingConfig
 from train.debug_trace import (
     PHASE_NAMES,
+    TokenNormalizationAccumulator,
     format_action,
     format_phase_context,
     format_state_full,
     format_token_dump,
+    format_token_dump_from_buffer,
 )
 from train.profile_stats import SearchStats
 
@@ -323,6 +325,7 @@ def analyze_game(
     rng = np.random.default_rng(seed)
 
     lines: list[str] = []
+    token_normalization = TokenNormalizationAccumulator(num_players) if token_dump else None
     noise_desc = f"epsilon={mcts_config.dirichlet_epsilon}"
     if mcts_config.dirichlet_epsilon > 0:
         if mcts_config.dirichlet_dynamic:
@@ -364,6 +367,16 @@ def analyze_game(
         # Phase id is needed for action rendering in both modes, so compute
         # it unconditionally — cheap lookup off the state.
         phase_id = get_decision_phase_py(state)
+
+        token_dump_text: str | None = None
+        if token_normalization is not None:
+            token_buffer = token_normalization.add_state(state)
+            token_dump_text = format_token_dump_from_buffer(
+                token_buffer,
+                token_normalization.widths,
+                token_normalization.labels,
+                skip_static_tokens=skip_static_tokens,
+            )
 
         # Raw NN evaluation for the log. Only needed for the full log mode;
         # stats-only mode skips this extra forward pass. Keeping the raw
@@ -411,10 +424,10 @@ def analyze_game(
             if phase_ctx:
                 lines.append(f"  {phase_ctx}")
                 lines.append("")
-            if token_dump:
+            if token_dump_text is not None:
                 lines.append("## Token Dump")
                 lines.append("")
-                lines.append(format_token_dump(state, skip_static_tokens=skip_static_tokens))
+                lines.append(token_dump_text)
                 lines.append("")
             lines.extend(_format_nn_eval(
                 priors, values, action_ids_arr, phase_id, num_players, state, top_n,
@@ -445,10 +458,10 @@ def analyze_game(
                 step, cur_turn, active_player, cur_phase, action_str,
                 metrics, search_stats, auto_count,
             ))
-            if token_dump:
+            if token_dump_text is not None:
                 lines.append("## Token Dump")
                 lines.append("")
-                lines.append(format_token_dump(state, skip_static_tokens=skip_static_tokens))
+                lines.append(token_dump_text)
                 lines.append("")
             per_move_stats.append({
                 **metrics,
@@ -518,6 +531,14 @@ def analyze_game(
         terminal_values = compute_terminal_values(net_worths, num_players, terminal_rank_weight)
         tv_parts = [f"P{i}={terminal_values[i]:+.3f}" for i in range(num_players)]
         lines.append(f"Terminal values (blend={terminal_rank_weight}): {', '.join(tv_parts)}")
+
+    if token_normalization is not None:
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+        lines.append("## Token Normalization Report")
+        lines.append("")
+        lines.append(token_normalization.format_report(skip_static_tokens=skip_static_tokens))
 
     return "\n".join(lines)
 

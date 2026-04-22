@@ -189,3 +189,31 @@ def test_analyze_game_skip_static_tokens_flag_omits_static_token_rows() -> None:
     assert "| market_prices |" not in rendered
     assert "| company[0] |" not in rendered
     assert "37 | market_availability |" in rendered
+
+
+def test_analyze_game_token_dump_flag_appends_normalization_report() -> None:
+    torch.manual_seed(0)
+    model = create_model(num_players=3).to(torch.device("cpu"))
+    model.eval()
+    config = TrainingConfig(num_players=3)
+
+    rendered = analyze_game(
+        model,
+        torch.device("cpu"),
+        config,
+        seed=1,
+        num_simulations=1,
+        top_n=1,
+        token_dump=True,
+    )
+
+    assert "## Token Normalization Report" in rendered
+    assert "### Threshold Summary" in rendered
+    assert "threshold | fields_exceeding | worst_abs | worst_field" in rendered
+    assert "> 1.00 |" in rendered
+    assert "> 1.10 |" in rendered
+    assert "> 1.25 |" in rendered
+    assert "token | field | min | max | avg" in rendered
+    assert "market_prices | market_price[0] |" in rendered
+    assert "company[0] | low_price |" in rendered
+    assert "game_progress | cards_remaining |" in rendered
