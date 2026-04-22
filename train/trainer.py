@@ -314,12 +314,10 @@ class Trainer:
         per_example_policy_loss = -(policy_targets * log_probs).sum(dim=-1)
         policy_loss = per_example_policy_loss.mean()
 
-        # Value loss: sum squared error across the N-player value vector,
-        # then mean across batch. F.mse_loss's default mean-over-everything
-        # hides a 1/N factor and makes value_loss_weight's meaning drift
-        # across 3p/4p/5p configs; sum-over-players keeps the full vector
-        # signal per row.
-        value_loss = ((values - value_targets) ** 2).sum(dim=-1).mean()
+        # Value loss: mean squared error over the full (B, N) value tensor.
+        # This keeps each sampled position at a stable scale instead of
+        # magnifying the loss by the player count.
+        value_loss = F.mse_loss(values, value_targets)
 
         # Combined loss
         total_loss = (
