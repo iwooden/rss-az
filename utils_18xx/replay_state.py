@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from core.actions import (
-    ACTION_ACQ_FI_BUY_PY as ACTION_ACQ_FI_BUY,
     ACTION_ACQ_OFFER_ACCEPT_PY as ACTION_ACQ_OFFER_ACCEPT,
     ACTION_ACQ_PRICE_PY as ACTION_ACQ_PRICE,
     ACTION_CLOSE_PY as ACTION_CLOSE,

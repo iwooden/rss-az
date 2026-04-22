@@ -11,7 +11,6 @@ from dataclasses import dataclass
 import numpy as np
 
 from core.actions import (
-    ACTION_ACQ_FI_BUY_PY as ACTION_ACQ_FI_BUY,
     ACTION_ACQ_OFFER_ACCEPT_PY as ACTION_ACQ_OFFER_ACCEPT,
     ACTION_ACQ_PRICE_PY as ACTION_ACQ_PRICE,
     ACTION_ACQ_SELECT_COMPANY_PY as ACTION_ACQ_SELECT_COMPANY,
@@ -390,10 +389,7 @@ def map_acquisition_action(
         raise ValueError(f"Offer cannot be mapped in phase {phase}")
 
     if COMPANIES[company_id].get_location(state) == LOC_FI:
-        return find_legal_action(
-            state,
-            action_type=ACTION_ACQ_FI_BUY,
-        )
+        raise ValueError("FI target should execute during ACQ_SELECT_COMPANY, not ACQ_SELECT_PRICE")
 
     amount = int(action["price"]) - COMPANIES[company_id].get_low_price()
     return find_legal_action(
