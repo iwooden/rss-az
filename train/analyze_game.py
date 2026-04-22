@@ -538,7 +538,7 @@ def analyze_game(
         lines.append("")
         lines.append("## Token Normalization Report")
         lines.append("")
-        lines.append(token_normalization.format_report(skip_static_tokens=skip_static_tokens))
+        lines.append(token_normalization.format_report(skip_static_tokens=False))
 
     return "\n".join(lines)
 

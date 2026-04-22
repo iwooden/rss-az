@@ -122,6 +122,7 @@ cdef extern from *:
     #define CASH_DIVISOR 150.0f
     #define NET_WORTH_DIVISOR 200.0f
     #define COMPANY_INCOME_DIVISOR 10.0f
+    #define COMPANY_SYNERGY_DIVISOR 16.0f
     #define ENTITY_INCOME_DIVISOR 80.0f
     #define SHARE_DIVISOR 7.0f
     #define COMPANY_PRICE_DIVISOR 80.0f
@@ -135,6 +136,7 @@ cdef extern from *:
     const float CASH_DIVISOR
     const float NET_WORTH_DIVISOR
     const float COMPANY_INCOME_DIVISOR
+    const float COMPANY_SYNERGY_DIVISOR
     const float ENTITY_INCOME_DIVISOR
     const float SHARE_DIVISOR
     const float COMPANY_PRICE_DIVISOR

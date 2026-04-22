@@ -34,6 +34,7 @@ from core.data import (
     GamePhases,
     PY_CASH_DIVISOR,
     PY_COMPANY_INCOME_DIVISOR,
+    PY_COMPANY_SYNERGY_DIVISOR,
     PY_COMPANY_PRICE_DIVISOR,
     PY_COMPANY_STAR_DIVISOR,
     PY_CORP_STAR_DIVISOR,
@@ -255,7 +256,7 @@ def _denormalize_token_values(token_label: str, row: np.ndarray) -> list[int]:
             + _round_values(row[39:40], PY_PRICE_RANGE_DIVISOR)
             + _round_values(row[40:41], PY_COMPANY_INCOME_DIVISOR)
             + _round_values(row[41:42], PY_COMPANY_STAR_DIVISOR)
-            + _round_values(row[42:78], PY_COMPANY_INCOME_DIVISOR)
+            + _round_values(row[42:78], PY_COMPANY_SYNERGY_DIVISOR)
         )
     if token_label == "market_availability":
         return _round_values(row[:27])

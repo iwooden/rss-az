@@ -18,6 +18,7 @@ cases run against a fresh 3p INVEST state (seed=42), whose layout is:
 
 Token positions below match the conftest layout banner.
 """
+import numpy as np
 import pytest
 
 from core.actions import (
@@ -164,6 +165,10 @@ def corrupt_company_base_income(buf):
 
 def corrupt_company_stars(buf):
     buf[COMPANY_BASE_TOK + 5, 41] = 0.0            # STARS offset
+
+
+def corrupt_company_synergy(buf):
+    buf[COMPANY_BASE_TOK + 32, 42 + 35] = 0.0      # MAD→CDG max synergy is 16
 
 # ---- Market availability -------------------------------------------------
 
@@ -352,6 +357,7 @@ CASES = [
     (corrupt_company_low_high_diff,        "low_high_diff"),
     (corrupt_company_base_income,          "base_income"),
     (corrupt_company_stars,                ": stars"),
+    (corrupt_company_synergy,              r"synergy\[35\]"),
     (corrupt_market_avail_boundary,        r"slot 0 \(\$0\) must always be available"),
     (corrupt_market_avail_tail,            "tail beyond availability flags"),
     (corrupt_loc_removed_bit,              r"CompanyLocation\[REMOVED\]"),
@@ -432,6 +438,27 @@ def test_baseline_passes_without_corruption():
     """
     state = _invest_state()
     assert_token_data_invariants(state)
+
+
+def test_company_token_synergy_uses_company_synergy_divisor() -> None:
+    state = _invest_state()
+    num_tokens = phase_conftest.get_num_tokens(TURN.get_num_players(state))
+    token_dim = int(phase_conftest.TokenDataSize.TOKEN_DIM)
+    buf = np.zeros((num_tokens, token_dim), dtype=np.float32)
+    phase_conftest.get_token_data(state, buf)
+
+    company_id = 32
+    other_company_id = 35
+    tok = COMPANY_BASE_TOK + company_id
+    syn_slot = phase_conftest._COMPANY_OFF["SYNERGIES"] + other_company_id
+    expected_syn = max(
+        COMPANIES[company_id].get_synergy_with(other_company_id),
+        COMPANIES[other_company_id].get_synergy_with(company_id),
+    )
+
+    assert expected_syn == 16
+    assert buf[tok, syn_slot] == pytest.approx(expected_syn / 16.0)
+    assert abs(float(buf[tok, syn_slot])) <= 1.0
 
 
 @pytest.mark.parametrize(

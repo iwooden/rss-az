@@ -116,6 +116,7 @@ from core.data cimport (
     CASH_DIVISOR,
     NET_WORTH_DIVISOR,
     COMPANY_INCOME_DIVISOR,
+    COMPANY_SYNERGY_DIVISOR,
     ENTITY_INCOME_DIVISOR,
     SHARE_DIVISOR,
     COMPANY_PRICE_DIVISOR,
@@ -705,6 +706,8 @@ cdef void _fill_company_token(
     # Synergies: value of synergy with each other company (in either
     # direction). The matrix is directional, so we take the max-magnitude
     # direction to surface the bonus regardless of which side holds it.
+    # Use a dedicated divisor here: some static synergy entries reach 16,
+    # which is larger than the base-income normalization range.
     cdef int syn_ab, syn_ba, syn
     for k in range(NUM_COMPANIES):
         if k == company_id:
@@ -713,7 +716,7 @@ cdef void _fill_company_token(
         syn_ba = COMPANY_SYNERGY[k][company_id]
         syn = syn_ab if syn_ab >= syn_ba else syn_ba
         if syn != 0:
-            buffer[tok, OFF_SYNERGIES + k] = <float>syn / COMPANY_INCOME_DIVISOR
+            buffer[tok, OFF_SYNERGIES + k] = <float>syn / COMPANY_SYNERGY_DIVISOR
 
 
 # =============================================================================

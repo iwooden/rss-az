@@ -39,6 +39,7 @@ from core.data import (
     PY_SHARE_DIVISOR,
     PY_ENTITY_INCOME_DIVISOR,
     PY_COMPANY_INCOME_DIVISOR,
+    PY_COMPANY_SYNERGY_DIVISOR,
     PY_COMPANY_PRICE_DIVISOR,
     PY_SHARE_PRICE_DIVISOR,
     PY_CORP_STAR_DIVISOR,
@@ -1007,7 +1008,7 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
                 continue
             syn = max(company.get_synergy_with(k),
                       COMPANIES[k].get_synergy_with(cid))
-            _assert_close(buf[tok, syn_base + k] * PY_COMPANY_INCOME_DIVISOR,
+            _assert_close(buf[tok, syn_base + k] * PY_COMPANY_SYNERGY_DIVISOR,
                           syn, T_SCALE, f"{km}: synergy[{k}]")
         _assert_zero_row(buf[tok, syn_base + num_companies:], T_FLAG,
                          f"{km}: tail beyond TW_COMPANY features")

@@ -189,6 +189,9 @@ def test_analyze_game_skip_static_tokens_flag_omits_static_token_rows() -> None:
     assert "| market_prices |" not in rendered
     assert "| company[0] |" not in rendered
     assert "37 | market_availability |" in rendered
+    assert "## Token Normalization Report" in rendered
+    assert "market_prices | market_price[0] |" in rendered
+    assert "company[0] | low_price |" in rendered
 
 
 def test_analyze_game_token_dump_flag_appends_normalization_report() -> None:
