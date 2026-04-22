@@ -4,7 +4,7 @@
   "num_epochs": 500,
   "num_simulations": 800,
   "search_batch_size": 8,
-  "num_workers": 64,
+  "num_workers": 128,
   "num_eval_servers": 1,
   "dirichlet_dynamic": true,
   "temp_initial": 1.0,
@@ -17,12 +17,16 @@
   "value_blend_start_epoch": 10,
   "value_blend_end_epoch": 300,
   "terminal_blend": 0.75,
-  "lr_decay_end_epoch": 400,
+  "lr_decay_end_epoch": 500,
   "mcts_sims_start": 800,
   "mcts_sims_end": 1600,
   "mcts_ramp_start_epoch": 200,
   "mcts_ramp_end_epoch": 400,
   "profile": true,
   "eval_dtype": "bfloat16",
-  "optimizer": "adamw"
+  "optimizer": "adamw",
+  "grad_clip": 0,
+  "eval_min_batch_size": 8,
+  "eval_batch_shape_mode": "bucketed",
+  "eval_max_batch_size": 256
 }
