@@ -1052,15 +1052,28 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
         (company_loc_revealed_tok, int(CompanyLocation.LOC_REVEALED), "REVEALED"),
         (company_loc_corp_acq_tok, int(CompanyLocation.LOC_CORP_ACQ), "CORP_ACQ"),
     )
+    # The REMOVED bitmap also flags LOC_EXCLUDED companies whose star tier
+    # the CoO has moved past — the exclusion is publicly observable once
+    # the deck has advanced out of that colour group.
+    coo_level = TURN.get_coo_level(state)
+    loc_removed = int(CompanyLocation.LOC_REMOVED)
+    loc_excluded = int(CompanyLocation.LOC_EXCLUDED)
     for loc_tok, target_loc, tag in loc_token_map:
         lm = f"{msg}\nCompanyLocation[{tag}] token"
         expected_count = 0
         for cid in range(num_companies):
             loc = COMPANIES[cid].get_location(state)
-            expected = 1.0 if loc == target_loc else 0.0
+            if target_loc == loc_removed:
+                expected_hot = loc == loc_removed or (
+                    loc == loc_excluded
+                    and coo_level > COMPANIES[cid].get_stars()
+                )
+            else:
+                expected_hot = loc == target_loc
+            expected = 1.0 if expected_hot else 0.0
             _assert_close(buf[loc_tok, cid], expected, T_FLAG,
                           f"{lm}: bit[{cid}] (company loc={loc})")
-            if loc == target_loc:
+            if expected_hot:
                 expected_count += 1
         _assert_close(buf[loc_tok, 0:num_companies].sum(), expected_count, T_FLAG,
                       f"{lm}: bitmap sum must equal companies at {tag}")

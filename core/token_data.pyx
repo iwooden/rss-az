@@ -59,7 +59,12 @@ currently pinned by the Corp token):
   CompanyLoc* (36, four tokens): 1 per company_id if the company is
                 currently at the matching location, else 0. The four
                 tokens (in buffer order) cover LOC_REMOVED, LOC_AUCTION,
-                LOC_REVEALED, and LOC_CORP_ACQ.
+                LOC_REVEALED, and LOC_CORP_ACQ. The LOC_REMOVED bitmap
+                additionally flags setup-excluded companies (LOC_EXCLUDED)
+                once CoO has advanced past their star tier — the deck is
+                past that colour group, so the exclusion is publicly
+                observable and the bit can be set without leaking setup
+                randomness.
   CompanyAdjIncome (36): per-company CoO-adjusted income normalized by
                 COMPANY_INCOME_DIVISOR (may be negative).
   ActivePlayer (5): one-hot over active player (padded to 5 slots);
@@ -153,7 +158,7 @@ from entities.corp cimport (
 )
 from entities.company cimport (
     LOC_AUCTION, LOC_REVEALED, LOC_PLAYER, LOC_FI, LOC_CORP, LOC_CORP_ACQ,
-    LOC_REMOVED,
+    LOC_REMOVED, LOC_EXCLUDED,
     company_location,
     company_owner_id,
     company_adjusted_income,
@@ -407,8 +412,10 @@ cdef void _fill_buffer(
     tok += 1
 
     # Company-location tokens: one 36-wide bitmap per target location, with
-    # a 1 at company_id if that company is currently at the location.
-    _fill_company_location_token(state, buffer, tok, <int>LOC_REMOVED)
+    # a 1 at company_id if that company is currently at the location. The
+    # REMOVED bitmap also flags LOC_EXCLUDED companies whose tier the CoO
+    # has moved past (see _fill_company_removed_token).
+    _fill_company_removed_token(state, buffer, tok)
     tok += 1
     _fill_company_location_token(state, buffer, tok, <int>LOC_AUCTION)
     tok += 1
@@ -758,6 +765,30 @@ cdef void _fill_company_location_token(
     cdef int c
     for c in range(NUM_COMPANIES):
         if company_location(state, c) == target_location:
+            buffer[tok, c] = 1.0
+
+
+cdef void _fill_company_removed_token(
+    GameState state,
+    float[:, ::1] buffer,
+    int tok,
+) noexcept nogil:
+    # Same shape as the other company-location bitmaps, but with two kinds
+    # of "removed":
+    #   * LOC_REMOVED — closed during play.
+    #   * LOC_EXCLUDED — filtered out at setup, BUT only once the deck has
+    #     revealed this: CoO level L means the current top-of-deck tier is
+    #     L (red=1 … blue=5), so a star-S company is publicly known-gone
+    #     iff coo > S. Flagging LOC_EXCLUDED unconditionally would leak
+    #     which specific cards were cut at setup — information the players
+    #     don't have until the deck has advanced past that tier.
+    cdef int c, loc
+    cdef int coo = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.coo_level]
+    for c in range(NUM_COMPANIES):
+        loc = company_location(state, c)
+        if loc == <int>LOC_REMOVED:
+            buffer[tok, c] = 1.0
+        elif loc == <int>LOC_EXCLUDED and coo > COMPANY_STARS[c]:
             buffer[tok, c] = 1.0
 
 
