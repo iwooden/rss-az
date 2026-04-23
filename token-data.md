@@ -63,8 +63,7 @@ affected entity's own token rather than as standalone selector tokens.
 - at_revealed (scalar, 0/1). 1 for LOC_REVEALED.
 - at_corp_acq (scalar, 0/1). 1 for LOC_CORP_ACQ.
 - owner_corp (one-hot, 8 slots). 1 at the owning corp iff the company is at
-  LOC_CORP. Retained in the engine buffer, but the current transformer skips
-  this slice and re-injects it directly from `corp_id_embed`.
+  LOC_CORP.
 - owner_player (one-hot, 5 slots, padded for num_players < 5). 1 at the
   owning player iff the company is at LOC_PLAYER.
 - owner_fi (scalar, 0/1). 1 iff the company is at LOC_FI.
@@ -72,8 +71,11 @@ affected entity's own token rather than as standalone selector tokens.
 The three ownership groups (`owner_corp` / `owner_player` / `owner_fi`) are
 mutually exclusive: only the group matching the current location is
 non-zero. Companies at LOC_CORP_ACQ or any unowned location (AUCTION /
-REVEALED / REMOVED / DECK / EXCLUDED) leave all three groups zero; the
-`at_*` flags encode those cases.
+REVEALED / REMOVED / DECK / EXCLUDED) leave all three groups zero; `at_*`
+flags encode those cases. The current transformer skips this full ownership
+tail in `company_proj` and re-injects the active owner reference from a
+concatenated `corp_id_embed` / `player_id_embed` / FI type-embedding owner
+table.
 
 Synergies are no longer surfaced on the Company token. The ACQ_SELECT_COMPANY
 phase-specific token carries the per-candidate marginal synergy delta for the
@@ -189,7 +191,9 @@ floated and operational); the decision-flow selector is the separate
 ---
 
 ## Player tokens (85, ×N, N ∈ {3, 4, 5})
-- Player ID (one-hot, 5 slots for 5 max players, 0-padded for 3/4 players)
+- Player ID (one-hot, 5 slots for 5 max players, 0-padded for 3/4 players).
+  Retained in the engine buffer, but the current transformer skips this slice
+  and adds learned `player_id_embed[player_id]` to each player token.
 - Turn order (one-hot, 5 slots for 5 max players, 0-padded for 3/4 players)
 - Has passed (scalar, 1/0)
 - Cash (scalar, normalized by CASH_DIVISOR)

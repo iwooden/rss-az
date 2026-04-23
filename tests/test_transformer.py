@@ -93,27 +93,62 @@ def test_corp_projection_uses_learned_identity_embedding(model: RSSTransformerNe
     assert torch.allclose(actual_delta, expected_delta)
 
 
-def test_company_projection_uses_shared_corp_owner_embedding(model: RSSTransformerNet) -> None:
+def test_player_projection_uses_learned_identity_embedding(model: RSSTransformerNet) -> None:
+    cfg = model.cfg
+    num_player_slots = 5
+    assert model.player_proj.in_features == int(TokenWidth.TW_PLAYER) - num_player_slots
+    assert tuple(model.player_id_embed.weight.shape) == (num_player_slots, cfg.d_model)
+
+    x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
+    x_with_ids = x.clone()
+    x_with_ids[:, model._player_slice, :num_player_slots] = (
+        torch.eye(num_player_slots)[:cfg.num_players].unsqueeze(0)
+    )
+
+    projected_without_ids = model._project_tokens(x)[:, model._player_slice]
+    projected_with_ids = model._project_tokens(x_with_ids)[:, model._player_slice]
+    assert torch.allclose(projected_without_ids, projected_with_ids)
+
+    expected_delta = model.player_id_embed.weight[1] - model.player_id_embed.weight[0]
+    actual_delta = projected_without_ids[0, 1] - projected_without_ids[0, 0]
+    assert torch.allclose(actual_delta, expected_delta)
+
+
+def test_company_projection_uses_shared_owner_embeddings(model: RSSTransformerNet) -> None:
     cfg = model.cfg
     num_corps = int(GameConstants.NUM_CORPS)
-    owner_start = model._company_owner_corp_offset
-    owner_stop = owner_start + num_corps
+    num_player_slots = 5
+    owner_start = model._company_owner_offset
+    owner_width = num_corps + num_player_slots + 1
+    owner_stop = owner_start + owner_width
 
-    assert model.company_proj.in_features == int(TokenWidth.TW_COMPANY) - num_corps
+    assert model._company_owner_corp_offset == owner_start
+    assert model._company_owner_player_offset == owner_start + num_corps
+    assert model._company_owner_fi_offset == owner_start + num_corps + num_player_slots
+    assert owner_stop == int(TokenWidth.TW_COMPANY)
+    assert model.company_proj.in_features == int(TokenWidth.TW_COMPANY) - owner_width
 
     x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
     x_with_owner = x.clone()
-    x_with_owner[:, model._company_slice, owner_start:owner_stop] = (
-        torch.eye(num_corps).repeat(5, 1)[:36].unsqueeze(0)
-    )
+    owner_indices = torch.arange(36) % owner_width
+    x_with_owner[:, model._company_slice, owner_start:owner_stop] = torch.eye(
+        owner_width
+    )[owner_indices].unsqueeze(0)
 
     company_without_owner = model._project_tokens(x)[:, model._company_slice]
     company_with_owner = model._project_tokens(x_with_owner)[:, model._company_slice]
     actual_delta = company_with_owner - company_without_owner
 
-    expected_delta = model.corp_id_embed.weight[
-        torch.arange(36) % num_corps
-    ].unsqueeze(0)
+    fi_type_id = int(model._type_ids[model._fi_idx].item())
+    owner_ref_table = torch.cat(
+        [
+            model.corp_id_embed.weight,
+            model.player_id_embed.weight,
+            model.type_embeds[fi_type_id].unsqueeze(0),
+        ],
+        dim=0,
+    )
+    expected_delta = owner_ref_table[owner_indices].unsqueeze(0)
     assert torch.allclose(actual_delta, expected_delta)
 
 
