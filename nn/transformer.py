@@ -347,51 +347,27 @@ class RSSTransformerNet(nn.Module):
 
         # --- Entity-readout policy heads ---
         # Shared per-entity-type heads (weight-shared across all tokens of same type)
-        self.pass_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 1)
-        )
+        self.pass_head = self._make_policy_head(1)
         # Shared company-selection head used by INVEST (which company to
         # auction), ACQ_SELECT_COMPANY (which company to acquire), and CLOSING
         # (which company to close). One logit per company token; the phase
         # context that discriminates the three decisions arrives through the
         # trunk's phase-specific context tokens + attention.
-        self.company_select_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 1)
-        )
+        self.company_select_head = self._make_policy_head(1)
         # Shared corp-selection head used by ACQ_SELECT_CORP (which corp does
         # the acquiring) and IPO (which corp floats the active company). Same
         # structure as company_select_head; phase context reaches each corp
         # token through attention on the phase-specific context tokens.
-        self.corp_select_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 1)
-        )
-        self.corp_trade_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 2)
-        )
+        self.corp_select_head = self._make_policy_head(1)
+        self.corp_trade_head = self._make_policy_head(2)
 
         # Phase-specific context token heads. BID bids at face_value + offset
         # for offset ∈ [0, AUCTION_CAP), so the head produces AUCTION_CAP
         # logits — one per legal bid offset (both opening and subsequent).
-        self.auction_raise_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, int(AUCTION_CAP))
-        )
-        self.dividend_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 26)
-        )
-        self.issue_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 1)
-        )
-        self.acq_offer_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 1)
-        )
+        self.auction_raise_head = self._make_policy_head(int(AUCTION_CAP))
+        self.dividend_head = self._make_policy_head(26)
+        self.issue_head = self._make_policy_head(1)
+        self.acq_offer_head = self._make_policy_head(1)
 
         # ACQ is factored into three sequential single-entity selections:
         # pick the acquiring corp (shared corp_select_head above), pick the
@@ -401,18 +377,12 @@ class RSSTransformerNet(nn.Module):
         # context during PHASE_ACQ_SELECT_PRICE. FI targets execute in
         # SELECT_COMPANY at the fixed FI price, so this head never fires for
         # them.
-        self.price_acq_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 51)
-        )
+        self.price_acq_head = self._make_policy_head(51)
 
         # PAR reads 14 par-price logits from the par info token. No pass
         # anchor: PAR has no pass action — once a corp is selected the owner
         # must commit to a price.
-        self.par_price_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 14)
-        )
+        self.par_price_head = self._make_policy_head(14)
 
         # --- Value head (applied per player token) ---
         self.value_head = nn.Sequential(
@@ -422,6 +392,14 @@ class RSSTransformerNet(nn.Module):
         )
 
         self._init_weights()
+
+    def _make_policy_head(self, out_features: int) -> nn.Sequential:
+        """Standard 2-layer policy head: Linear(d, d//2) -> GELU -> Linear(d//2, out)."""
+        d = self.cfg.d_model
+        return nn.Sequential(
+            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d // 2, out_features),
+        )
 
     # ------------------------------------------------------------------
     # Input projection
