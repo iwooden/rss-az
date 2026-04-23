@@ -139,7 +139,13 @@ def test_corp_projection_uses_shared_relation_embeddings(model: RSSTransformerNe
 def test_player_projection_uses_learned_identity_embedding(model: RSSTransformerNet) -> None:
     cfg = model.cfg
     num_player_slots = 5
-    assert model.player_proj.in_features == int(TokenWidth.TW_PLAYER)
+    assert model.player_proj.in_features == model._player_rel_offset
+    assert model._player_shares_offset == model._player_rel_offset
+    assert model._player_companies_offset == model._player_shares_offset + model._player_shares_width
+    assert (
+        model._player_companies_offset + model._player_companies_width
+        == int(TokenWidth.TW_PLAYER)
+    )
     assert tuple(model.player_id_embed.weight.shape) == (num_player_slots, cfg.d_model)
 
     x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
@@ -147,6 +153,53 @@ def test_player_projection_uses_learned_identity_embedding(model: RSSTransformer
 
     expected_delta = model.player_id_embed.weight[1] - model.player_id_embed.weight[0]
     actual_delta = projected_without_ids[0, 1] - projected_without_ids[0, 0]
+    assert torch.allclose(actual_delta, expected_delta)
+
+
+def test_player_projection_uses_shared_relation_embeddings(model: RSSTransformerNet) -> None:
+    num_corps = int(GameConstants.NUM_CORPS)
+    num_companies = int(GameConstants.NUM_COMPANIES)
+
+    shares_start = model._player_shares_offset
+    shares_stop = shares_start + model._player_shares_width
+    companies_start = model._player_companies_offset
+    companies_stop = companies_start + model._player_companies_width
+
+    assert model._player_shares_width == num_corps
+    assert model._player_companies_width == num_companies
+    assert companies_stop == int(TokenWidth.TW_PLAYER)
+    assert model.player_proj.in_features == shares_start
+
+    x = torch.zeros(1, model.cfg.num_tokens, model.cfg.token_dim)
+    x_with_relations = x.clone()
+
+    owned_shares = torch.zeros(model.cfg.num_players, num_corps)
+    owned_shares[0, 0] = 0.2
+    owned_shares[0, 1] = 0.4
+    owned_shares[1, 2] = 0.6
+    owned_shares[2, 7] = 1.0
+    x_with_relations[:, model._player_slice, shares_start:shares_stop] = (
+        owned_shares.unsqueeze(0)
+    )
+
+    owned_company_bitmap = torch.zeros(model.cfg.num_players, num_companies)
+    owned_company_bitmap[0, [0, 5]] = 1.0
+    owned_company_bitmap[1, [7, 13]] = 1.0
+    owned_company_bitmap[2, [35]] = 1.0
+    x_with_relations[:, model._player_slice, companies_start:companies_stop] = (
+        owned_company_bitmap.unsqueeze(0)
+    )
+
+    player_without_relations = model._project_tokens(x)[:, model._player_slice]
+    player_with_relations = model._project_tokens(x_with_relations)[:, model._player_slice]
+    actual_delta = player_with_relations - player_without_relations
+
+    expected_delta = (
+        owned_shares.to(model.corp_id_embed.weight.dtype)
+        @ model.corp_id_embed.weight
+        + owned_company_bitmap.to(model.company_id_embed.weight.dtype)
+        @ model.company_id_embed.weight
+    ).unsqueeze(0)
     assert torch.allclose(actual_delta, expected_delta)
 
 

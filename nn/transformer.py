@@ -100,6 +100,9 @@ _CORP_PRESIDENT_WIDTH = _MAX_MODEL_PLAYERS
 _CORP_COMPANIES_WIDTH = _NUM_COMPANIES
 _FI_COMPANIES_OFFSET = 2
 _FI_COMPANIES_WIDTH = _NUM_COMPANIES
+_PLAYER_REL_OFFSET = 12
+_PLAYER_SHARES_WIDTH = _NUM_CORPS
+_PLAYER_COMPANIES_WIDTH = _NUM_COMPANIES
 _COMPANY_OWNER_OFFSET = 12
 _COMPANY_OWNER_WIDTH = _NUM_CORPS + _MAX_MODEL_PLAYERS + 1
 
@@ -334,14 +337,21 @@ class RSSTransformerNet(nn.Module):
         # tokens skip their trailing president/company ownership fields and
         # receive additive player/company references from the same ID tables.
         # FI skips its trailing owned-company bitmap and receives additive
-        # company references from ``company_id_embed``.
+        # company references from ``company_id_embed``. Player tokens skip
+        # their trailing owned-share/company fields and receive additive
+        # corp/company references from the same ID tables.
         # The engine-side buffer is rectangular at ``TOKEN_DIM=85`` so
         # ``get_token_data`` can fill it with a single nogil memcpy pattern,
         # but projection weights on padding / replaced relation fields are inert
         # waste — slicing in both sizing and ``_project_tokens`` drops them.
         # Widths are pulled from ``TokenWidth`` so the model and the Cython
         # extractor can't drift out of sync.
-        self.player_proj = nn.Linear(int(TokenWidth.TW_PLAYER), d)
+        self._player_rel_offset = _PLAYER_REL_OFFSET
+        self._player_shares_offset = _PLAYER_REL_OFFSET
+        self._player_shares_width = _PLAYER_SHARES_WIDTH
+        self._player_companies_offset = self._player_shares_offset + self._player_shares_width
+        self._player_companies_width = _PLAYER_COMPANIES_WIDTH
+        self.player_proj = nn.Linear(self._player_rel_offset, d)
         self._corp_rel_offset = _CORP_REL_OFFSET
         self._corp_president_offset = _CORP_REL_OFFSET
         self._corp_president_width = _CORP_PRESIDENT_WIDTH
@@ -587,15 +597,39 @@ class RSSTransformerNet(nn.Module):
         return fi_token + owned_company_refs.to(fi_token.dtype)
 
     def _project_player_tokens(self, x: torch.Tensor) -> torch.Tensor:
-        """Project player tokens, adding row-order learned identity."""
-        player_tokens = self.player_proj(
-            x[
-                :,
-                self._player_slice,
-                :self.player_proj.in_features,
-            ]
+        """Project player tokens, adding row-order ID and relational references."""
+        player_raw = x[
+            :,
+            self._player_slice,
+            :int(TokenWidth.TW_PLAYER),
+        ]
+        player_tokens = self.player_proj(player_raw[:, :, :self._player_rel_offset])
+        player_tokens = (
+            player_tokens
+            + self.player_id_embed(self._player_ids).to(player_tokens.dtype)
         )
-        return player_tokens + self.player_id_embed(self._player_ids).to(player_tokens.dtype)
+
+        shares_start = self._player_shares_offset
+        shares_stop = shares_start + self._player_shares_width
+        owned_shares = player_raw[:, :, shares_start:shares_stop]
+        share_refs = (
+            owned_shares.to(self.corp_id_embed.weight.dtype)
+            @ self.corp_id_embed.weight
+        )
+
+        companies_start = self._player_companies_offset
+        companies_stop = companies_start + self._player_companies_width
+        owned_company_bitmap = player_raw[:, :, companies_start:companies_stop]
+        owned_company_refs = (
+            owned_company_bitmap.to(self.company_id_embed.weight.dtype)
+            @ self.company_id_embed.weight
+        )
+
+        return (
+            player_tokens
+            + share_refs.to(player_tokens.dtype)
+            + owned_company_refs.to(player_tokens.dtype)
+        )
 
     @staticmethod
     def _policy_head_width(head: nn.Module) -> int:
@@ -724,11 +758,13 @@ class RSSTransformerNet(nn.Module):
         player / FI additive owner reference directly. Corp rows skip the
         president / owned-company tail and receive additive player / company
         references directly. FI skips its owned-company tail and receives
-        additive company references directly. The engine-side buffer is
-        rectangularly zero-padded to ``TOKEN_DIM=85`` so ``get_token_data`` can
-        fill it with a uniform nogil memcpy pattern, but each type only uses
-        its meaningful feature slice — padding and replaced relation fields
-        would otherwise be multiplied against projection weights.
+        additive company references directly. Player rows skip their owned
+        shares / owned-company tail and receive additive corp / company
+        references directly. The engine-side buffer is rectangularly
+        zero-padded to ``TOKEN_DIM=85`` so ``get_token_data`` can fill it with
+        a uniform nogil memcpy pattern, but each type only uses its meaningful
+        feature slice — padding and replaced relation fields would otherwise be
+        multiplied against projection weights.
 
         Args:
             x: (batch, num_players + 55, token_dim) zero-padded raw features.

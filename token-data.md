@@ -219,3 +219,10 @@ Player identity is inferred from row order; the model adds learned
 Relational tail:
 - Owned shares (vector, 8 slots for 8 corps, normalized by SHARE_DIVISOR)
 - Owned companies (vector, 36 slots)
+
+The current transformer skips this relational tail in `player_proj` and
+re-injects it as additive references: `owned_shares @ corp_id_embed.weight`
+plus `owned_companies @ company_id_embed.weight`. Because owned shares are
+normalized fractional values, corp references scale with the player's stake.
+`player_proj` only sees the non-relational player features from slots 0
+through 11.
