@@ -61,7 +61,9 @@ Known stale-prose traps:
   inside the model for entity-readout pass phases, not emitted by the engine.
 - `nn/transformer.py`: active model. Token-based entity readout, unified dense
   policy output over `UNIFIED_LOGIT_DIM = 255`, legal mask supplied by caller,
-  canonical-order per-player values.
+  canonical-order per-player values. Corp token identity uses learned
+  `corp_id_embed`; the leading corp ID one-hot remains in token data but is
+  skipped by `corp_proj`.
 - `mcts/search.py`, `mcts/node.py`, `mcts/evaluator.py`, `mcts/mcts_core.pyx`:
   sparse/token search stack with batched leaf eval and subtree reuse.
 - `train/eval_server.py`, `train/self_play.py`, `train/replay_buffer.py`,

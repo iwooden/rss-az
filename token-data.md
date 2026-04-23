@@ -161,7 +161,9 @@ kept deliberately minimal — only what can't be read off those tokens directly:
 The `active` slot below is the lifecycle float flag (1 iff the corp is
 floated and operational); the decision-flow selector is the separate
 `is_selected` bit at the end of the token.
-- Corp ID (one-hot, 8 slots for each corp)
+- Corp ID (one-hot, 8 slots for each corp; retained in the engine buffer, but
+  the current transformer skips this slice and adds learned `corp_id_embed`
+  identity after projecting the remaining corp features)
 - Active (scalar, 1/0 — 1 if the corp has floated and is in play)
 - In receivership (scalar, 1/0)
 - Passed on ACQ_OFFER (scalar, 1/0)

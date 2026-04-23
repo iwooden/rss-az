@@ -24,6 +24,7 @@ import torch.nn.functional as F
 
 from core.data import (
     AUCTION_CAP,
+    GameConstants,
     PHASE_ACTION_SIZES,
     DecisionPhase,
 )
@@ -91,6 +92,7 @@ _TYPE_PLAYER = 13
 NUM_TOKEN_TYPES = 14
 
 _GELU_APPROX = "tanh"
+_NUM_CORPS = int(GameConstants.NUM_CORPS)
 
 
 def _phase_action_size(phase: DecisionPhase) -> int:
@@ -264,6 +266,7 @@ class RSSTransformerNet(nn.Module):
     # returns ``Tensor | Module | None`` per pytorch's stubs, which breaks
     # ``type_embeds[self._type_ids]`` indexing.
     _type_ids: torch.Tensor
+    _corp_ids: torch.Tensor
 
     def __init__(self, cfg: TransformerConfig) -> None:
         super().__init__()
@@ -312,16 +315,22 @@ class RSSTransformerNet(nn.Module):
         _validate_layout(np_)
 
         # --- Type-specific input projections ---
-        # Each projection takes only its ``TokenWidth.TW_<type>`` prefix of the
-        # zero-padded token row. The engine-side buffer is rectangular at
-        # ``TOKEN_DIM=93`` so ``get_token_data`` can fill it with a single
-        # nogil memcpy pattern, but projection weights on the padding are
-        # inert waste — slicing to the actual width here (both in sizing and
-        # in ``_project_tokens``) drops those parameters. Widths are pulled
-        # from ``TokenWidth`` so the model and the Cython extractor can't
-        # drift out of sync.
+        # Most projections take only their ``TokenWidth.TW_<type>`` prefix of
+        # the zero-padded token row. Corp tokens intentionally skip their
+        # leading ID one-hot and get learned identity via ``corp_id_embed``.
+        # The engine-side buffer is rectangular at ``TOKEN_DIM=93`` so
+        # ``get_token_data`` can fill it with a single nogil memcpy pattern,
+        # but projection weights on padding / replaced ID fields are inert
+        # waste — slicing in both sizing and ``_project_tokens`` drops them.
+        # Widths are pulled from ``TokenWidth`` so the model and the Cython
+        # extractor can't drift out of sync.
         self.player_proj = nn.Linear(int(TokenWidth.TW_PLAYER), d)
-        self.corp_proj = nn.Linear(int(TokenWidth.TW_CORP), d)
+        # Corp token identity lives in ``corp_id_embed`` below. The engine
+        # still writes the leading one-hot ID slice for token-schema stability,
+        # but the projection intentionally skips it so identity has its own
+        # learned pathway instead of being mixed into generic corp features.
+        self._corp_id_width = _NUM_CORPS
+        self.corp_proj = nn.Linear(int(TokenWidth.TW_CORP) - self._corp_id_width, d)
         self.company_proj = nn.Linear(int(TokenWidth.TW_COMPANY), d)
         self.fi_proj = nn.Linear(int(TokenWidth.TW_FI), d)
         self.market_info_proj = nn.Linear(int(TokenWidth.TW_MARKET_INFO), d)
@@ -339,6 +348,11 @@ class RSSTransformerNet(nn.Module):
         # residual stream and pick up game-state context through attention.
         # Direct-token phases read pass from their phase-info token instead.
         self.pass_embeds = nn.Parameter(torch.empty(NUM_PASS_PHASES, d))
+        # Learned corp identity, added to corp tokens after the non-ID corp
+        # feature projection. This replaces the leading corp-id one-hot as the
+        # model's self-identity signal for corp tokens without changing the
+        # Cython token buffer layout.
+        self.corp_id_embed = nn.Embedding(_NUM_CORPS, d)
         # Per-type additive embedding for every non-pass token. Added
         # post-projection in ``_project_tokens`` so the trunk still sees a
         # type-distinct vector even when a token's feature slice is all-zero
@@ -348,7 +362,8 @@ class RSSTransformerNet(nn.Module):
         # zero vector on day one, and the only path to type discrimination is
         # an indirect gradient through the Linear's bias. Broadcast across
         # all instances of a type (36 companies, 8 corps, N players) — per-
-        # instance identity still comes from the onehot ids in the features.
+        # instance identity still comes from the onehot ids in the features,
+        # except corp identity which comes from ``corp_id_embed``.
         self.type_embeds = nn.Parameter(torch.empty(NUM_TOKEN_TYPES, d))
         # Static (num_players + 55,) type-id lookup. Built once here so
         # ``_project_tokens`` can do a single indexed gather against
@@ -370,6 +385,9 @@ class RSSTransformerNet(nn.Module):
         type_ids[self._corp_slice] = _TYPE_CORP
         type_ids[self._player_slice] = _TYPE_PLAYER
         self.register_buffer("_type_ids", type_ids, persistent=False)
+        self.register_buffer(
+            "_corp_ids", torch.arange(_NUM_CORPS, dtype=torch.long), persistent=False,
+        )
 
         # --- Transformer trunk ---
         self.blocks = nn.ModuleList([
@@ -573,12 +591,13 @@ class RSSTransformerNet(nn.Module):
         buffer), so the output sequence is ``NUM_PASS_PHASES`` wider than the
         input.
 
-        Each row is sliced to its projection's ``in_features`` width before
-        projecting. The engine-side buffer is rectangularly zero-padded to
-        ``TOKEN_DIM=93`` so ``get_token_data`` can fill it with a uniform
-        nogil memcpy pattern, but each type only uses its ``TokenWidth.TW_*``
-        prefix — the tail is zero padding that would otherwise be multiplied
-        against inert projection weights.
+        Most rows are sliced to their projection's ``in_features`` width
+        before projecting. Corp rows skip the leading ID one-hot and receive a
+        learned additive identity embedding instead. The engine-side buffer is
+        rectangularly zero-padded to ``TOKEN_DIM=93`` so ``get_token_data`` can
+        fill it with a uniform nogil memcpy pattern, but each type only uses
+        its meaningful feature slice — padding and replaced ID fields would
+        otherwise be multiplied against inert projection weights.
 
         Args:
             x: (batch, num_players + 55, token_dim) zero-padded raw features.
@@ -599,6 +618,17 @@ class RSSTransformerNet(nn.Module):
         # per-batch-size recompiles; feeding the last dim explicitly lets the
         # symbolic-shape tracker carry ``B`` cleanly through.
         d = self.cfg.d_model
+        corp_tokens = self.corp_proj(
+            x[
+                :,
+                self._corp_slice,
+                self._corp_id_width:self._corp_id_width + self.corp_proj.in_features,
+            ]
+        )
+        corp_tokens = (
+            corp_tokens
+            + self.corp_id_embed(self._corp_ids).to(corp_tokens.dtype)
+        )
         input_parts: list[torch.Tensor] = [
             _slice_proj(x, self.market_info_proj, self._market_info_idx).unsqueeze(1),
             _slice_proj(x, self.company_proj, self._company_slice),                      # (B, 36, d)
@@ -612,7 +642,7 @@ class RSSTransformerNet(nn.Module):
             _slice_proj(x, self.acq_select_company_proj, self._acq_select_company_idx).unsqueeze(1),
             _slice_proj(x, self.acq_offer_proj, self._acq_offer_idx).unsqueeze(1),
             _slice_proj(x, self.acq_price_proj, self._acq_price_info_idx).unsqueeze(1),
-            _slice_proj(x, self.corp_proj, self._corp_slice),                            # (B, 8, d)
+            corp_tokens,                                                                # (B, 8, d)
             _slice_proj(x, self.player_proj, self._player_slice),                        # (B, N, d)
         ]
         # Additive per-type embedding broadcast over the batch. A single
@@ -787,6 +817,7 @@ class RSSTransformerNet(nn.Module):
 
         # Pass anchors: small-random learned per-phase vectors (BERT [CLS] convention).
         nn.init.trunc_normal_(self.pass_embeds, std=0.02)
+        nn.init.trunc_normal_(self.corp_id_embed.weight, std=0.02)
         # Per-type additive embeddings: same small-random init.
         nn.init.trunc_normal_(self.type_embeds, std=0.02)
 
@@ -827,6 +858,7 @@ if __name__ == "__main__":
         model.acq_offer_proj, model.acq_price_proj,
     ]
     proj_params = sum(sum(p.numel() for p in m.parameters()) for m in proj_modules)
+    corp_id_params = model.corp_id_embed.weight.numel()
     pass_params = model.pass_embeds.numel()
     type_params = model.type_embeds.numel()
     trunk_params = (
@@ -848,6 +880,7 @@ if __name__ == "__main__":
     print("Parameter breakdown:")
     for name, count in [
         ("Input projections", proj_params),
+        ("Corp ID embeds", corp_id_params),
         ("Pass anchors", pass_params),
         ("Type embeds", type_params),
         ("Transformer trunk", trunk_params),

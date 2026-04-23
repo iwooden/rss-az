@@ -10,7 +10,8 @@ from nn.transformer import (
     TransformerConfig,
     build_action_lut,
 )
-from core.data import PHASE_ACTION_SIZES
+from core.data import GameConstants, PHASE_ACTION_SIZES
+from core.token_data import TokenWidth
 
 
 NUM_PLAYERS = 3
@@ -71,6 +72,25 @@ def test_project_tokens_preserves_autocast_dtype(model: RSSTransformerNet) -> No
 
 def test_policy_layout_matches_phase_action_sizes(model: RSSTransformerNet) -> None:
     model._validate_policy_layout()
+
+
+def test_corp_projection_uses_learned_identity_embedding(model: RSSTransformerNet) -> None:
+    cfg = model.cfg
+    num_corps = int(GameConstants.NUM_CORPS)
+    assert model.corp_proj.in_features == int(TokenWidth.TW_CORP) - num_corps
+    assert tuple(model.corp_id_embed.weight.shape) == (num_corps, cfg.d_model)
+
+    x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
+    x_with_ids = x.clone()
+    x_with_ids[:, model._corp_slice, :num_corps] = torch.eye(num_corps).unsqueeze(0)
+
+    projected_without_ids = model._project_tokens(x)[:, model._corp_slice]
+    projected_with_ids = model._project_tokens(x_with_ids)[:, model._corp_slice]
+    assert torch.allclose(projected_without_ids, projected_with_ids)
+
+    expected_delta = model.corp_id_embed.weight[1] - model.corp_id_embed.weight[0]
+    actual_delta = projected_without_ids[0, 1] - projected_without_ids[0, 0]
+    assert torch.allclose(actual_delta, expected_delta)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for device mismatch test")
