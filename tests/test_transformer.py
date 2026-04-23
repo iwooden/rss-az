@@ -57,6 +57,20 @@ def test_forward_rejects_wrong_token_dim(model: RSSTransformerNet, valid_inputs:
         model(wrong_x, legal_mask)
 
 
+def test_project_tokens_preserves_autocast_dtype(model: RSSTransformerNet) -> None:
+    cfg = model.cfg
+    x = torch.randn(2, cfg.num_tokens, cfg.token_dim)
+
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        tokens = model._project_tokens(x)
+
+    assert tokens.dtype == torch.bfloat16
+
+
+def test_policy_layout_matches_phase_action_sizes(model: RSSTransformerNet) -> None:
+    model._validate_policy_layout()
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for device mismatch test")
 def test_forward_rejects_legal_mask_on_different_device() -> None:
     model = RSSTransformerNet(TransformerConfig(num_players=NUM_PLAYERS)).to(torch.device("cuda"))

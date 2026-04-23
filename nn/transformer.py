@@ -96,6 +96,10 @@ NUM_TOKEN_TYPES = 14
 _GELU_APPROX = "tanh"
 
 
+def _phase_action_size(phase: DecisionPhase) -> int:
+    return int(PHASE_ACTION_SIZES[int(phase)])
+
+
 def build_action_lut() -> torch.Tensor:
     """Static (NUM_PHASES, MAX_PHASE_ACTION_SIZE) int64 LUT mapping each
     phase's phase-local action id to a slot in the unified logit tensor.
@@ -403,10 +407,17 @@ class RSSTransformerNet(nn.Module):
         # Phase-specific context token heads. BID bids at face_value + offset
         # for offset ∈ [0, AUCTION_CAP), so the head produces AUCTION_CAP
         # logits — one per legal bid offset (both opening and subsequent).
-        self.auction_raise_head = self._make_policy_head(int(AUCTION_CAP))
-        self.dividend_head = self._make_policy_head(26)
-        self.issue_head = self._make_policy_head(1)
-        self.acq_offer_head = self._make_policy_head(1)
+        bid_raise_width = _phase_action_size(DecisionPhase.DPHASE_BID) - 1
+        self.auction_raise_head = self._make_policy_head(bid_raise_width)
+        self.dividend_head = self._make_policy_head(
+            _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS)
+        )
+        self.issue_head = self._make_policy_head(
+            _phase_action_size(DecisionPhase.DPHASE_ISSUE) - 1
+        )
+        self.acq_offer_head = self._make_policy_head(
+            _phase_action_size(DecisionPhase.DPHASE_ACQ_OFFER) - 1
+        )
 
         # ACQ is factored into three sequential single-entity selections:
         # pick the acquiring corp (``acq_select_corp_head``), pick the target
@@ -416,12 +427,16 @@ class RSSTransformerNet(nn.Module):
         # context during PHASE_ACQ_SELECT_PRICE. FI targets execute in
         # SELECT_COMPANY at the fixed FI price, so this head never fires for
         # them.
-        self.price_acq_head = self._make_policy_head(51)
+        self.price_acq_head = self._make_policy_head(
+            _phase_action_size(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)
+        )
 
         # PAR reads 14 par-price logits from the par info token. No pass
         # anchor: PAR has no pass action — once a corp is selected the owner
         # must commit to a price.
-        self.par_price_head = self._make_policy_head(14)
+        self.par_price_head = self._make_policy_head(
+            _phase_action_size(DecisionPhase.DPHASE_PAR)
+        )
 
         # --- Value head (applied per player token) ---
         self.value_head = nn.Sequential(
@@ -430,6 +445,7 @@ class RSSTransformerNet(nn.Module):
             nn.Tanh(),
         )
 
+        self._validate_policy_layout()
         self._init_weights()
 
     def _make_policy_head(self, out_features: int) -> nn.Sequential:
@@ -439,6 +455,115 @@ class RSSTransformerNet(nn.Module):
             nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
             nn.Linear(d // 2, out_features),
         )
+
+    @staticmethod
+    def _policy_head_width(head: nn.Module) -> int:
+        if not isinstance(head, nn.Sequential) or len(head) == 0:
+            raise AssertionError(
+                f"policy head must be a non-empty Sequential, got {type(head)!r}"
+            )
+        last = head[-1]
+        if not isinstance(last, nn.Linear):
+            raise AssertionError(f"policy head must end in Linear, got {type(last)!r}")
+        return int(last.out_features)
+
+    def _validate_policy_layout(self) -> None:
+        """Validate policy head widths against the shared action-size table.
+
+        The unified output is manually concatenated in DecisionPhase order.
+        This guard catches action-space edits that update ``core.data`` but
+        forget to adjust the corresponding model head or block layout.
+        """
+        if len(PHASE_ACTION_SIZES) != NUM_PHASES:
+            raise AssertionError(
+                f"PHASE_ACTION_SIZES has {len(PHASE_ACTION_SIZES)} entries, "
+                f"expected {NUM_PHASES}"
+            )
+        if int(AUCTION_CAP) != _phase_action_size(DecisionPhase.DPHASE_BID) - 1:
+            raise AssertionError(
+                f"AUCTION_CAP {int(AUCTION_CAP)} does not match BID raise width "
+                f"{_phase_action_size(DecisionPhase.DPHASE_BID) - 1}"
+            )
+
+        company_start = self._company_slice.start
+        company_stop = self._company_slice.stop
+        corp_start = self._corp_slice.start
+        corp_stop = self._corp_slice.stop
+        if (
+            company_start is None or company_stop is None
+            or corp_start is None or corp_stop is None
+        ):
+            raise AssertionError(
+                f"entity slices must be bounded; companies={self._company_slice}, "
+                f"corps={self._corp_slice}"
+            )
+        num_companies = company_stop - company_start
+        num_corps = corp_stop - corp_start
+        if num_companies <= 0 or num_corps <= 0:
+            raise AssertionError(
+                f"invalid entity slices: companies={num_companies}, corps={num_corps}"
+            )
+
+        pass_widths = [
+            self._policy_head_width(head) for head in self.pass_heads
+        ]
+        if len(pass_widths) != NUM_PASS_PHASES or any(w != 1 for w in pass_widths):
+            raise AssertionError(
+                f"pass heads must be {NUM_PASS_PHASES} single-logit heads; "
+                f"got widths {pass_widths}"
+            )
+
+        block_widths = [0] * NUM_PHASES
+        block_widths[int(DecisionPhase.DPHASE_INVEST)] = (
+            pass_widths[0]
+            + num_companies * self._policy_head_width(self.invest_company_select_head)
+            + num_corps * self._policy_head_width(self.corp_trade_head)
+        )
+        block_widths[int(DecisionPhase.DPHASE_BID)] = (
+            pass_widths[1] + self._policy_head_width(self.auction_raise_head)
+        )
+        block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_CORP)] = (
+            pass_widths[2]
+            + num_corps * self._policy_head_width(self.acq_select_corp_head)
+        )
+        block_widths[int(DecisionPhase.DPHASE_ACQ_OFFER)] = (
+            pass_widths[3] + self._policy_head_width(self.acq_offer_head)
+        )
+        block_widths[int(DecisionPhase.DPHASE_CLOSING)] = (
+            pass_widths[4]
+            + num_companies * self._policy_head_width(self.closing_company_select_head)
+        )
+        block_widths[int(DecisionPhase.DPHASE_DIVIDENDS)] = self._policy_head_width(
+            self.dividend_head
+        )
+        block_widths[int(DecisionPhase.DPHASE_ISSUE)] = (
+            pass_widths[5] + self._policy_head_width(self.issue_head)
+        )
+        block_widths[int(DecisionPhase.DPHASE_IPO)] = (
+            pass_widths[6]
+            + num_corps * self._policy_head_width(self.ipo_corp_select_head)
+        )
+        block_widths[int(DecisionPhase.DPHASE_PAR)] = self._policy_head_width(
+            self.par_price_head
+        )
+        block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_COMPANY)] = (
+            num_companies * self._policy_head_width(self.acq_select_company_head)
+        )
+        block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)] = (
+            self._policy_head_width(self.price_acq_head)
+        )
+
+        expected = [int(size) for size in PHASE_ACTION_SIZES]
+        if block_widths != expected:
+            raise AssertionError(
+                f"policy block widths {block_widths} do not match "
+                f"PHASE_ACTION_SIZES {expected}"
+            )
+        if sum(block_widths) != UNIFIED_LOGIT_DIM:
+            raise AssertionError(
+                f"policy block total {sum(block_widths)} != UNIFIED_LOGIT_DIM "
+                f"{UNIFIED_LOGIT_DIM}"
+            )
 
     # ------------------------------------------------------------------
     # Input projection
@@ -497,7 +622,11 @@ class RSSTransformerNet(nn.Module):
         # type-distinct signal even when its feature slice is all-zero.
         input_tokens = torch.cat(input_parts, dim=1)                                     # (B, num_players+55, d)
         input_tokens = input_tokens + self.type_embeds[self._type_ids].to(input_tokens.dtype)
-        pass_rows = self.pass_embeds.view(1, NUM_PASS_PHASES, d).expand(x.shape[0], NUM_PASS_PHASES, d)
+        pass_rows = (
+            self.pass_embeds.to(dtype=input_tokens.dtype)
+            .view(1, NUM_PASS_PHASES, d)
+            .expand(x.shape[0], NUM_PASS_PHASES, d)
+        )
         tokens = torch.cat([input_tokens, pass_rows], dim=1)                             # (B, num_tokens, d)
         return tokens
 
