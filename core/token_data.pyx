@@ -17,11 +17,11 @@ Token order (matches ``nn/transformer.py``):
     # for higher player counts later with the extra rows masked out in attention.
      corps..., players...]
 
-Total tokens in the buffer = num_players + 55. The model concatenates 7
+Total tokens in the buffer = num_players + 55. The model concatenates 4
 learned pass-token anchors to the projected trunk sequence internally
-(one per pass-using decision phase — INVEST, BID, ACQ_SELECT_CORP,
-ACQ_OFFER, CLOSING, ISSUE, IPO — the rest have no pass action), so the
-input buffer carries no pass rows.
+(INVEST, ACQ_SELECT_CORP, CLOSING, IPO). BID, ACQ_OFFER, and ISSUE read
+their pass logits from phase-specific information tokens, so the input
+buffer still carries no pass rows.
 
 Active-entity selectors (active_player / active_corp / active_company
 in TURN_OFFSETS) are surfaced as ``is_selected`` scalar flags on each
@@ -205,10 +205,10 @@ DEF CONSECUTIVE_PASSES_DIVISOR = 5.0
 cpdef int get_num_tokens(int num_players) noexcept nogil:
     """Input-buffer token count for the given player count (num_players + 55).
 
-    The model-side trunk is wider by 7 (per-phase pass anchors concatenated
-    inside ``RSSTransformerNet._project_tokens``), but those rows are
-    learned anchors with no input features, so the engine-side buffer
-    doesn't carry them.
+    The model-side trunk is wider by 4 (pass anchors concatenated inside
+    ``RSSTransformerNet._project_tokens``), but those rows are learned
+    anchors with no input features, so the engine-side buffer doesn't carry
+    them.
     """
     return num_players + 55
 

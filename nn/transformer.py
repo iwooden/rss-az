@@ -55,21 +55,18 @@ for _size in PHASE_ACTION_SIZES:
     _PHASE_OFFSETS.append(_PHASE_OFFSETS[-1] + int(_size))
 UNIFIED_LOGIT_DIM = _PHASE_OFFSETS[-1]  # 255
 
-# 7 pass-using DecisionPhases, in DecisionPhase order. Indexes into the
-# per-phase ``pass_embeds`` Parameter (learnable anchor appended to the
-# trunk sequence) and ``pass_heads`` ModuleList. The 4 remaining phases
-# (DIVIDENDS, PAR, ACQ_SELECT_COMPANY, ACQ_SELECT_PRICE) have no pass
-# action — their action-size blocks in the unified layout are all-non-pass.
+# Pass actions that do not have a natural phase-info-token readout. These use
+# learned anchors appended to the trunk sequence, one per phase below. BID,
+# ACQ_OFFER, and ISSUE also have pass actions, but their full phase blocks are
+# read directly from phase-specific information tokens because those tokens
+# already score the non-pass alternatives.
 PASS_PHASE_IDS: tuple[int, ...] = (
     int(DecisionPhase.DPHASE_INVEST),
-    int(DecisionPhase.DPHASE_BID),
     int(DecisionPhase.DPHASE_ACQ_SELECT_CORP),
-    int(DecisionPhase.DPHASE_ACQ_OFFER),
     int(DecisionPhase.DPHASE_CLOSING),
-    int(DecisionPhase.DPHASE_ISSUE),
     int(DecisionPhase.DPHASE_IPO),
 )
-NUM_PASS_PHASES = len(PASS_PHASE_IDS)  # 7
+NUM_PASS_PHASES = len(PASS_PHASE_IDS)  # 4
 
 # Input-buffer token-type taxonomy. Index order must stay stable — the static
 # ``_type_ids`` buffer built in ``RSSTransformerNet.__init__`` indexes into
@@ -166,9 +163,9 @@ class TransformerConfig:
         """Input-buffer token count: 55 fixed entity/phase tokens + N players.
 
         The trunk sequence is ``NUM_PASS_PHASES`` wider because
-        ``_project_tokens`` concatenates one learned pass anchor per
-        pass-using phase after projection; those rows have no input
-        features so they don't exist in the engine-side buffer.
+        ``_project_tokens`` concatenates learned pass anchors for
+        entity-readout pass phases after projection; those rows have no
+        input features so they don't exist in the engine-side buffer.
         """
         return self.num_players + 55
 
@@ -301,10 +298,10 @@ class RSSTransformerNet(nn.Module):
         self._acq_price_info_idx = 46
         self._corp_slice = slice(47, 55)
         self._player_slice = slice(55, 55 + np_)
-        # One learned pass anchor per pass-using phase, appended after the
-        # player slice as a contiguous block. Distinct embeddings + distinct
-        # heads avoid cross-phase gradient interference on a shared readout.
-        # Indices aligned with ``PASS_PHASE_IDS`` (DecisionPhase order).
+        # One learned pass anchor per entity-readout pass phase, appended
+        # after the player slice as a contiguous block. Direct-token phases
+        # (BID, ACQ_OFFER, ISSUE) emit pass logits from their info-token heads.
+        # Indices aligned with ``PASS_PHASE_IDS``.
         self._pass_base = 55 + np_
         self._pass_idxs: list[int] = [self._pass_base + i for i in range(NUM_PASS_PHASES)]
 
@@ -337,11 +334,10 @@ class RSSTransformerNet(nn.Module):
         self.acq_select_company_proj = nn.Linear(int(TokenWidth.TW_ACQ_SELECT_COMPANY), d)
         self.acq_offer_proj = nn.Linear(int(TokenWidth.TW_ACQ_OFFER), d)
         self.acq_price_proj = nn.Linear(int(TokenWidth.TW_ACQ_PRICE), d)
-        # Pass tokens: no input features. Each pass-using phase gets its own
-        # learned (d_model,) vector (BERT [CLS]-style anchors) that rides the
-        # residual stream and picks up game-state context through attention.
-        # Distinct per-phase embeddings avoid cross-phase gradient interference
-        # — the same reason the pass/select heads below are per-phase.
+        # Pass tokens: no input features. Entity-readout pass phases get
+        # learned (d_model,) vectors (BERT [CLS]-style anchors) that ride the
+        # residual stream and pick up game-state context through attention.
+        # Direct-token phases read pass from their phase-info token instead.
         self.pass_embeds = nn.Parameter(torch.empty(NUM_PASS_PHASES, d))
         # Per-type additive embedding for every non-pass token. Added
         # post-projection in ``_project_tokens`` so the trunk still sees a
@@ -383,7 +379,7 @@ class RSSTransformerNet(nn.Module):
         self.final_norm = nn.RMSNorm(d)
 
         # --- Entity-readout policy heads ---
-        # Per-phase pass heads (one per pass-using DecisionPhase, aligned with
+        # Per-phase pass heads for entity-readout pass actions (aligned with
         # ``PASS_PHASE_IDS`` / ``pass_embeds``). Each reads its own anchor and
         # emits a single pass logit.
         self.pass_heads = nn.ModuleList(
@@ -404,19 +400,20 @@ class RSSTransformerNet(nn.Module):
         self.ipo_corp_select_head = self._make_policy_head(1)
         self.corp_trade_head = self._make_policy_head(2)
 
-        # Phase-specific context token heads. BID bids at face_value + offset
-        # for offset ∈ [0, AUCTION_CAP), so the head produces AUCTION_CAP
-        # logits — one per legal bid offset (both opening and subsequent).
-        bid_raise_width = _phase_action_size(DecisionPhase.DPHASE_BID) - 1
-        self.auction_raise_head = self._make_policy_head(bid_raise_width)
+        # Phase-specific context token heads. BID / ACQ_OFFER / ISSUE emit
+        # full phase blocks from their phase-info tokens, including the pass
+        # logit at phase-local action 0.
+        self.bid_head = self._make_policy_head(
+            _phase_action_size(DecisionPhase.DPHASE_BID)
+        )
         self.dividend_head = self._make_policy_head(
             _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS)
         )
         self.issue_head = self._make_policy_head(
-            _phase_action_size(DecisionPhase.DPHASE_ISSUE) - 1
+            _phase_action_size(DecisionPhase.DPHASE_ISSUE)
         )
         self.acq_offer_head = self._make_policy_head(
-            _phase_action_size(DecisionPhase.DPHASE_ACQ_OFFER) - 1
+            _phase_action_size(DecisionPhase.DPHASE_ACQ_OFFER)
         )
 
         # ACQ is factored into three sequential single-entity selections:
@@ -519,28 +516,28 @@ class RSSTransformerNet(nn.Module):
             + num_companies * self._policy_head_width(self.invest_company_select_head)
             + num_corps * self._policy_head_width(self.corp_trade_head)
         )
-        block_widths[int(DecisionPhase.DPHASE_BID)] = (
-            pass_widths[1] + self._policy_head_width(self.auction_raise_head)
+        block_widths[int(DecisionPhase.DPHASE_BID)] = self._policy_head_width(
+            self.bid_head
         )
         block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_CORP)] = (
-            pass_widths[2]
+            pass_widths[1]
             + num_corps * self._policy_head_width(self.acq_select_corp_head)
         )
-        block_widths[int(DecisionPhase.DPHASE_ACQ_OFFER)] = (
-            pass_widths[3] + self._policy_head_width(self.acq_offer_head)
+        block_widths[int(DecisionPhase.DPHASE_ACQ_OFFER)] = self._policy_head_width(
+            self.acq_offer_head
         )
         block_widths[int(DecisionPhase.DPHASE_CLOSING)] = (
-            pass_widths[4]
+            pass_widths[2]
             + num_companies * self._policy_head_width(self.closing_company_select_head)
         )
         block_widths[int(DecisionPhase.DPHASE_DIVIDENDS)] = self._policy_head_width(
             self.dividend_head
         )
-        block_widths[int(DecisionPhase.DPHASE_ISSUE)] = (
-            pass_widths[5] + self._policy_head_width(self.issue_head)
+        block_widths[int(DecisionPhase.DPHASE_ISSUE)] = self._policy_head_width(
+            self.issue_head
         )
         block_widths[int(DecisionPhase.DPHASE_IPO)] = (
-            pass_widths[6]
+            pass_widths[3]
             + num_corps * self._policy_head_width(self.ipo_corp_select_head)
         )
         block_widths[int(DecisionPhase.DPHASE_PAR)] = self._policy_head_width(
@@ -572,8 +569,9 @@ class RSSTransformerNet(nn.Module):
     def _project_tokens(self, x: torch.Tensor) -> torch.Tensor:
         """Project raw token features to d_model via type-specific projections.
 
-        The pass anchor is concatenated here (not present in the input buffer),
-        so the output sequence is 1 wider than the input.
+        The pass anchors are concatenated here (not present in the input
+        buffer), so the output sequence is ``NUM_PASS_PHASES`` wider than the
+        input.
 
         Each row is sliced to its projection's ``in_features`` width before
         projecting. The engine-side buffer is rectangularly zero-padded to
@@ -639,10 +637,10 @@ class RSSTransformerNet(nn.Module):
         into a single ``(B, UNIFIED_LOGIT_DIM)`` tensor.
 
         Blocks are emitted in DecisionPhase order (matching the offsets baked
-        into ``build_action_lut``). Within each block, pass-using phases lead
-        with the per-phase pass logit (read from that phase's pass anchor);
-        entity-readout heads follow, each reading its source tokens with
-        weights unshared across phases. Heads run unconditionally regardless
+        into ``build_action_lut``). Entity-readout phases with pass actions
+        lead with a per-phase pass-anchor logit. Direct-token phases (BID,
+        ACQ_OFFER, ISSUE) emit the whole phase block from their info token,
+        including phase-local action 0. Heads run unconditionally regardless
         of which phase a given row is in: the caller's legal mask zeroes out
         slots outside the current phase's action space. Total wasted FLOPs
         are a small fraction of the trunk at d_model=128.
@@ -654,28 +652,25 @@ class RSSTransformerNet(nn.Module):
 
         # Pass anchors. ``self._pass_idxs[i]`` backs ``PASS_PHASE_IDS[i]``.
         pass_invest = self.pass_heads[0](tokens[:, self._pass_idxs[0]])          # (B, 1)
-        pass_bid = self.pass_heads[1](tokens[:, self._pass_idxs[1]])             # (B, 1)
-        pass_acq_select_corp = self.pass_heads[2](tokens[:, self._pass_idxs[2]]) # (B, 1)
-        pass_acq_offer = self.pass_heads[3](tokens[:, self._pass_idxs[3]])       # (B, 1)
-        pass_closing = self.pass_heads[4](tokens[:, self._pass_idxs[4]])         # (B, 1)
-        pass_issue = self.pass_heads[5](tokens[:, self._pass_idxs[5]])           # (B, 1)
-        pass_ipo = self.pass_heads[6](tokens[:, self._pass_idxs[6]])             # (B, 1)
+        pass_acq_select_corp = self.pass_heads[1](tokens[:, self._pass_idxs[1]]) # (B, 1)
+        pass_closing = self.pass_heads[2](tokens[:, self._pass_idxs[2]])         # (B, 1)
+        pass_ipo = self.pass_heads[3](tokens[:, self._pass_idxs[3]])             # (B, 1)
 
         # INVEST: pass + 36 company-select + 16 corp-trade (2i buy, 2i+1 sell).
         invest_company = self.invest_company_select_head(company_tokens).squeeze(-1)   # (B, 36)
         corp_trade = self.corp_trade_head(corp_tokens).flatten(1)                # (B, 16)
         # BID: pass + AUCTION_CAP raise offsets.
-        auction_raise = self.auction_raise_head(tokens[:, self._auction_idx])    # (B, 15)
+        bid = self.bid_head(tokens[:, self._auction_idx])                        # (B, 16)
         # ACQ_SELECT_CORP: pass + 8 corps.
         acq_select_corp = self.acq_select_corp_head(corp_tokens).squeeze(-1)     # (B, 8)
         # ACQ_OFFER: pass + 1 accept-buy.
-        acq_offer = self.acq_offer_head(tokens[:, self._acq_offer_idx])          # (B, 1)
+        acq_offer = self.acq_offer_head(tokens[:, self._acq_offer_idx])          # (B, 2)
         # CLOSING: pass + 36 company-close.
         closing_company = self.closing_company_select_head(company_tokens).squeeze(-1)  # (B, 36)
         # DIVIDENDS: 26 levels (no pass).
         dividend = self.dividend_head(tokens[:, self._dividend_idx])             # (B, 26)
         # ISSUE: pass + 1 issue.
-        issue = self.issue_head(tokens[:, self._issue_idx])                      # (B, 1)
+        issue = self.issue_head(tokens[:, self._issue_idx])                      # (B, 2)
         # IPO: pass + 8 corps.
         ipo_corp = self.ipo_corp_select_head(corp_tokens).squeeze(-1)            # (B, 8)
         # PAR: 14 par indices (no pass).
@@ -688,12 +683,12 @@ class RSSTransformerNet(nn.Module):
         return torch.cat(
             [
                 pass_invest, invest_company, corp_trade,           # INVEST           (53)
-                pass_bid, auction_raise,                           # BID              (16)
+                bid,                                               # BID              (16)
                 pass_acq_select_corp, acq_select_corp,             # ACQ_SELECT_CORP  ( 9)
-                pass_acq_offer, acq_offer,                         # ACQ_OFFER        ( 2)
+                acq_offer,                                         # ACQ_OFFER        ( 2)
                 pass_closing, closing_company,                     # CLOSING          (37)
                 dividend,                                          # DIVIDENDS        (26)
-                pass_issue, issue,                                 # ISSUE            ( 2)
+                issue,                                             # ISSUE            ( 2)
                 pass_ipo, ipo_corp,                                # IPO              ( 9)
                 par_price,                                         # PAR              (14)
                 acq_select_company,                                # ACQ_SELECT_CO.   (36)
@@ -843,7 +838,7 @@ if __name__ == "__main__":
         model.invest_company_select_head, model.closing_company_select_head,
         model.acq_select_company_head,
         model.acq_select_corp_head, model.ipo_corp_select_head,
-        model.corp_trade_head, model.auction_raise_head, model.dividend_head,
+        model.corp_trade_head, model.bid_head, model.dividend_head,
         model.issue_head, model.acq_offer_head,
         model.price_acq_head, model.par_price_head,
     ]
@@ -853,7 +848,7 @@ if __name__ == "__main__":
     print("Parameter breakdown:")
     for name, count in [
         ("Input projections", proj_params),
-        ("Pass token", pass_params),
+        ("Pass anchors", pass_params),
         ("Type embeds", type_params),
         ("Transformer trunk", trunk_params),
         ("Policy heads", policy_params),

@@ -16,8 +16,9 @@ Matches `core/token_data.pyx::_fill_buffer` and the per-type projections in
 4. **Player tokens** (×N, N ∈ {3, 4, 5})
 
 Total tokens = `num_players + 55` (58 / 59 / 60 for 3p / 4p / 5p). The model
-adds 7 learned per-phase pass anchors after projection; they don't appear in
-the engine-side buffer.
+adds 4 learned pass anchors after projection for entity-readout pass phases;
+they don't appear in the engine-side buffer. BID, ISSUE, and ACQ_OFFER read
+their pass logits from their phase-specific informational tokens.
 
 Each token is zero-padded to `TOKEN_DIM = 93` (max width across all token
 types, currently pinned by the Corp token). The per-type non-padded widths

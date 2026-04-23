@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from nn.transformer import (
+    NUM_PASS_PHASES,
     UNIFIED_LOGIT_DIM,
     RSSTransformerNet,
     TransformerConfig,
@@ -65,6 +66,7 @@ def test_project_tokens_preserves_autocast_dtype(model: RSSTransformerNet) -> No
         tokens = model._project_tokens(x)
 
     assert tokens.dtype == torch.bfloat16
+    assert tokens.shape == (2, cfg.num_tokens + NUM_PASS_PHASES, cfg.d_model)
 
 
 def test_policy_layout_matches_phase_action_sizes(model: RSSTransformerNet) -> None:
