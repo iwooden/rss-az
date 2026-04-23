@@ -95,6 +95,9 @@ _GELU_APPROX = "tanh"
 _NUM_COMPANIES = int(GameConstants.NUM_COMPANIES)
 _NUM_CORPS = int(GameConstants.NUM_CORPS)
 _MAX_MODEL_PLAYERS = 5
+_CORP_REL_OFFSET = 44
+_CORP_PRESIDENT_WIDTH = _MAX_MODEL_PLAYERS
+_CORP_COMPANIES_WIDTH = _NUM_COMPANIES
 _COMPANY_OWNER_OFFSET = 12
 _COMPANY_OWNER_WIDTH = _NUM_CORPS + _MAX_MODEL_PLAYERS + 1
 
@@ -325,7 +328,9 @@ class RSSTransformerNet(nn.Module):
         # the zero-padded token row. Company, corp, and player identity comes
         # from row order plus learned ID embeddings, not raw ID fields. Company
         # tokens skip their trailing ownership fields and receive an additive
-        # owner reference from the matching corp / player / FI embedding.
+        # owner reference from the matching corp / player / FI embedding. Corp
+        # tokens skip their trailing president/company ownership fields and
+        # receive additive player/company references from the same ID tables.
         # The engine-side buffer is rectangular at ``TOKEN_DIM=85`` so
         # ``get_token_data`` can fill it with a single nogil memcpy pattern,
         # but projection weights on padding / replaced relation fields are inert
@@ -333,7 +338,12 @@ class RSSTransformerNet(nn.Module):
         # Widths are pulled from ``TokenWidth`` so the model and the Cython
         # extractor can't drift out of sync.
         self.player_proj = nn.Linear(int(TokenWidth.TW_PLAYER), d)
-        self.corp_proj = nn.Linear(int(TokenWidth.TW_CORP), d)
+        self._corp_rel_offset = _CORP_REL_OFFSET
+        self._corp_president_offset = _CORP_REL_OFFSET
+        self._corp_president_width = _CORP_PRESIDENT_WIDTH
+        self._corp_companies_offset = self._corp_president_offset + self._corp_president_width
+        self._corp_companies_width = _CORP_COMPANIES_WIDTH
+        self.corp_proj = nn.Linear(self._corp_rel_offset, d)
         self._company_owner_offset = _COMPANY_OWNER_OFFSET
         self._company_owner_corp_offset = _COMPANY_OWNER_OFFSET
         self._company_owner_player_offset = _COMPANY_OWNER_OFFSET + _NUM_CORPS
@@ -376,8 +386,8 @@ class RSSTransformerNet(nn.Module):
         # zero vector on day one, and the only path to type discrimination is
         # an indirect gradient through the Linear's bias. Broadcast across
         # all instances of a type (36 companies, 8 corps, N players). Company,
-        # corp, and player self-identity, plus company ownership references,
-        # come from their dedicated learned additive paths.
+        # corp, and player self-identity, plus relational references, come
+        # from their dedicated learned additive paths.
         self.type_embeds = nn.Parameter(torch.empty(NUM_TOKEN_TYPES, d))
         # Static (num_players + 55,) type-id lookup. Built once here so
         # ``_project_tokens`` can do a single indexed gather against
@@ -518,6 +528,41 @@ class RSSTransformerNet(nn.Module):
         owner_refs = owner_onehot.to(owner_ref_table.dtype) @ owner_ref_table
         return company_tokens + owner_refs.to(company_tokens.dtype)
 
+    def _project_corp_tokens(self, x: torch.Tensor) -> torch.Tensor:
+        """Project corp tokens, adding row-order ID and relational references."""
+        corp_raw = x[
+            :,
+            self._corp_slice,
+            :int(TokenWidth.TW_CORP),
+        ]
+        corp_tokens = self.corp_proj(corp_raw[:, :, :self._corp_rel_offset])
+        corp_tokens = (
+            corp_tokens
+            + self.corp_id_embed(self._corp_ids).to(corp_tokens.dtype)
+        )
+
+        president_start = self._corp_president_offset
+        president_stop = president_start + self._corp_president_width
+        president_onehot = corp_raw[:, :, president_start:president_stop]
+        president_refs = (
+            president_onehot.to(self.player_id_embed.weight.dtype)
+            @ self.player_id_embed.weight
+        )
+
+        companies_start = self._corp_companies_offset
+        companies_stop = companies_start + self._corp_companies_width
+        owned_company_bitmap = corp_raw[:, :, companies_start:companies_stop]
+        owned_company_refs = (
+            owned_company_bitmap.to(self.company_id_embed.weight.dtype)
+            @ self.company_id_embed.weight
+        )
+
+        return (
+            corp_tokens
+            + president_refs.to(corp_tokens.dtype)
+            + owned_company_refs.to(corp_tokens.dtype)
+        )
+
     def _project_player_tokens(self, x: torch.Tensor) -> torch.Tensor:
         """Project player tokens, adding row-order learned identity."""
         player_tokens = self.player_proj(
@@ -653,9 +698,10 @@ class RSSTransformerNet(nn.Module):
         before projecting. Company, corp, and player identities are inferred
         from row order and added as learned additive identity embeddings.
         Company rows skip the ownership tail and receive the matching corp /
-        player / FI additive owner reference directly. The engine-side buffer is
-        rectangularly zero-padded to ``TOKEN_DIM=85`` so ``get_token_data`` can
-        fill it with
+        player / FI additive owner reference directly. Corp rows skip the
+        president / owned-company tail and receive additive player / company
+        references directly. The engine-side buffer is rectangularly
+        zero-padded to ``TOKEN_DIM=85`` so ``get_token_data`` can fill it with
         a uniform nogil memcpy pattern, but each type only uses its meaningful
         feature slice — padding and replaced relation fields would otherwise be
         multiplied against projection weights.
@@ -680,17 +726,7 @@ class RSSTransformerNet(nn.Module):
         # symbolic-shape tracker carry ``B`` cleanly through.
         d = self.cfg.d_model
         company_tokens = self._project_company_tokens(x)
-        corp_tokens = self.corp_proj(
-            x[
-                :,
-                self._corp_slice,
-                :self.corp_proj.in_features,
-            ]
-        )
-        corp_tokens = (
-            corp_tokens
-            + self.corp_id_embed(self._corp_ids).to(corp_tokens.dtype)
-        )
+        corp_tokens = self._project_corp_tokens(x)
         input_parts: list[torch.Tensor] = [
             _slice_proj(x, self.market_info_proj, self._market_info_idx).unsqueeze(1),
             company_tokens,                                                             # (B, 36, d)

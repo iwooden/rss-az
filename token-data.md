@@ -192,6 +192,11 @@ Relational tail:
 - President ID (one-hot, 5 slots for max 5 players, 0-padded for 3/4 players). All 0 if inactive / in receivership.
 - Owned companies (vector, 36 slots). Includes companies sitting in the corp's acquisition pile.
 
+The current transformer skips this relational tail in `corp_proj` and
+re-injects it as additive references: `president_id @ player_id_embed.weight`
+plus `owned_companies @ company_id_embed.weight`. `corp_proj` only sees the
+non-relational corp features from slots 0 through 43.
+
 ---
 
 ## Player tokens (80, ×N, N ∈ {3, 4, 5})

@@ -77,7 +77,13 @@ def test_policy_layout_matches_phase_action_sizes(model: RSSTransformerNet) -> N
 def test_corp_projection_uses_learned_identity_embedding(model: RSSTransformerNet) -> None:
     cfg = model.cfg
     num_corps = int(GameConstants.NUM_CORPS)
-    assert model.corp_proj.in_features == int(TokenWidth.TW_CORP)
+    assert model.corp_proj.in_features == model._corp_rel_offset
+    assert model._corp_president_offset == model._corp_rel_offset
+    assert model._corp_companies_offset == model._corp_president_offset + model._corp_president_width
+    assert (
+        model._corp_companies_offset + model._corp_companies_width
+        == int(TokenWidth.TW_CORP)
+    )
     assert tuple(model.corp_id_embed.weight.shape) == (num_corps, cfg.d_model)
 
     x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
@@ -85,6 +91,48 @@ def test_corp_projection_uses_learned_identity_embedding(model: RSSTransformerNe
 
     expected_delta = model.corp_id_embed.weight[1] - model.corp_id_embed.weight[0]
     actual_delta = projected_without_ids[0, 1] - projected_without_ids[0, 0]
+    assert torch.allclose(actual_delta, expected_delta)
+
+
+def test_corp_projection_uses_shared_relation_embeddings(model: RSSTransformerNet) -> None:
+    num_corps = int(GameConstants.NUM_CORPS)
+    num_companies = int(GameConstants.NUM_COMPANIES)
+    num_player_slots = 5
+
+    president_start = model._corp_president_offset
+    president_stop = president_start + model._corp_president_width
+    companies_start = model._corp_companies_offset
+    companies_stop = companies_start + model._corp_companies_width
+
+    assert model._corp_president_width == num_player_slots
+    assert model._corp_companies_width == num_companies
+    assert companies_stop == int(TokenWidth.TW_CORP)
+    assert model.corp_proj.in_features == president_start
+
+    x = torch.zeros(1, model.cfg.num_tokens, model.cfg.token_dim)
+    x_with_relations = x.clone()
+    president_indices = torch.arange(num_corps) % num_player_slots
+    x_with_relations[:, model._corp_slice, president_start:president_stop] = torch.eye(
+        num_player_slots
+    )[president_indices].unsqueeze(0)
+
+    owned_company_bitmap = torch.zeros(num_corps, num_companies)
+    corp_indices = torch.arange(num_corps)
+    owned_company_bitmap[corp_indices, corp_indices] = 1.0
+    owned_company_bitmap[corp_indices, corp_indices + num_corps] = 1.0
+    x_with_relations[:, model._corp_slice, companies_start:companies_stop] = (
+        owned_company_bitmap.unsqueeze(0)
+    )
+
+    corp_without_relations = model._project_tokens(x)[:, model._corp_slice]
+    corp_with_relations = model._project_tokens(x_with_relations)[:, model._corp_slice]
+    actual_delta = corp_with_relations - corp_without_relations
+
+    expected_delta = (
+        model.player_id_embed.weight[president_indices]
+        + owned_company_bitmap.to(model.company_id_embed.weight.dtype)
+        @ model.company_id_embed.weight
+    ).unsqueeze(0)
     assert torch.allclose(actual_delta, expected_delta)
 
 
