@@ -120,30 +120,18 @@ def test_format_token_dump_denormalizes_rows_into_compact_table() -> None:
 
     rendered = format_token_dump(state)
 
-    market_row = next(line for line in rendered.splitlines() if "| market_prices |" in line)
+    market_row = next(line for line in rendered.splitlines() if "| market_info |" in line)
     company_row = next(line for line in rendered.splitlines() if "| company[0] |" in line)
-    progress_row = next(line for line in rendered.splitlines() if "| game_progress |" in line)
+    global_row = next(line for line in rendered.splitlines() if "| global_info |" in line)
     company0 = COMPANIES[0]
 
     assert "idx | token" in rendered
-    assert market_row.startswith("00 | market_prices | 27 | [0, 5, 6, 7,")
+    assert market_row.startswith("00 | market_info | 54 | prices=[0, 5, 6, 7,")
     assert (
         f"id=0 low={company0.get_low_price()} face={company0.get_face_value()} "
         f"high={company0.get_high_price()}"
     ) in company_row
-    assert f"cards_remaining={TURN.get_cards_remaining(state)}" in progress_row
-
-
-def test_format_token_dump_skip_static_tokens_omits_market_and_company_rows() -> None:
-    state = _make_state()
-
-    rendered = format_token_dump(state, skip_static_tokens=True)
-
-    assert "idx | token" in rendered
-    assert "| market_prices |" not in rendered
-    assert "| company[0] |" not in rendered
-    assert "37 | market_availability |" in rendered
-    assert "| game_progress |" in rendered
+    assert f"cards_remaining={TURN.get_cards_remaining(state)}" in global_row
 
 
 def test_analyze_game_token_dump_flag_includes_token_tables() -> None:
@@ -164,34 +152,7 @@ def test_analyze_game_token_dump_flag_includes_token_tables() -> None:
 
     assert "## Token Dump" in rendered
     assert "idx | token" in rendered
-    assert "market_prices" in rendered
-
-
-def test_analyze_game_skip_static_tokens_flag_omits_static_token_rows() -> None:
-    torch.manual_seed(0)
-    model = create_model(num_players=3).to(torch.device("cpu"))
-    model.eval()
-    config = TrainingConfig(num_players=3)
-
-    rendered = analyze_game(
-        model,
-        torch.device("cpu"),
-        config,
-        seed=1,
-        num_simulations=1,
-        top_n=1,
-        token_dump=True,
-        skip_static_tokens=True,
-    )
-
-    assert "## Token Dump" in rendered
-    assert "idx | token" in rendered
-    assert "| market_prices |" not in rendered
-    assert "| company[0] |" not in rendered
-    assert "37 | market_availability |" in rendered
-    assert "## Token Normalization Report" in rendered
-    assert "market_prices | market_price[0] |" in rendered
-    assert "company[0] | low_price |" in rendered
+    assert "market_info" in rendered
 
 
 def test_analyze_game_token_dump_flag_appends_normalization_report() -> None:
@@ -217,6 +178,6 @@ def test_analyze_game_token_dump_flag_appends_normalization_report() -> None:
     assert "> 1.10 |" in rendered
     assert "> 1.25 |" in rendered
     assert "token | field | min | max | avg" in rendered
-    assert "market_prices | market_price[0] |" in rendered
+    assert "market_info | market_price[0] |" in rendered
     assert "company[0] | low_price |" in rendered
-    assert "game_progress | cards_remaining |" in rendered
+    assert "global_info | cards_remaining |" in rendered

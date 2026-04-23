@@ -166,13 +166,13 @@ class TransformerConfig:
 
     @property
     def num_tokens(self) -> int:
-        """Input-buffer token count: 65 fixed entity/phase tokens + N players.
+        """Input-buffer token count: 55 fixed entity/phase tokens + N players.
 
         The trunk sequence is 1 wider because ``_project_tokens`` concatenates
         a single learned pass anchor after projection; that row has no
         input features so it doesn't exist in the engine-side buffer.
         """
-        return self.num_players + 65
+        return self.num_players + 55
 
 
 def _validate_layout(num_players: int) -> None:
@@ -187,23 +187,16 @@ def _validate_layout(num_players: int) -> None:
     construction and crash loudly on mismatch.
     """
     expected = (
-        [int(TokenWidth.TW_MARKET_SLOT_PRICES)]
+        [int(TokenWidth.TW_MARKET_INFO)]
         + [int(TokenWidth.TW_COMPANY)] * 36
-        + [int(TokenWidth.TW_MARKET_AVAILABILITY)]
-        + [int(TokenWidth.TW_COMPANY_LOCATION)] * 4
-        + [int(TokenWidth.TW_COMPANY_ADJ_INCOME)]
         + [int(TokenWidth.TW_FI)]
-        + [int(TokenWidth.TW_ACTIVE_PLAYER)]
-        + [int(TokenWidth.TW_ACTIVE_CORP)]
-        + [int(TokenWidth.TW_ACTIVE_COMPANY)]
-        + [int(TokenWidth.TW_PHASE)]
-        + [int(TokenWidth.TW_NUM_PLAYERS)]
-        + [int(TokenWidth.TW_GAME_PROGRESS)]
+        + [int(TokenWidth.TW_GLOBAL_INFO)]
         + [int(TokenWidth.TW_INVEST)]
         + [int(TokenWidth.TW_AUCTION)]
         + [int(TokenWidth.TW_DIVIDEND)]
         + [int(TokenWidth.TW_ISSUE)]
         + [int(TokenWidth.TW_PAR)]
+        + [int(TokenWidth.TW_ACQ_SELECT_COMPANY)]
         + [int(TokenWidth.TW_ACQ_OFFER)]
         + [int(TokenWidth.TW_ACQ_PRICE)]
         + [int(TokenWidth.TW_CORP)] * 8
@@ -279,42 +272,35 @@ class RSSTransformerNet(nn.Module):
 
         # --- Token index bookkeeping ---
         # Buffer layout (matches core/token_data.pyx::_fill_buffer):
-        #   static: market_slot_prices, companies×36
-        #   dynamic: market_availability, company_location×4 (REMOVED / AUCTION
-        #     / REVEALED / CORP_ACQ), company_adj_income, FI, active_player,
-        #     active_corp, active_company, phase, num_players, game_progress
-        #   phase-specific: invest, auction, dividend, issue, par, acq_offer,
-        #     acq_price_info
+        #   info: market_info (slot prices + per-space availability),
+        #     companies×36 (static data + CoO-adjusted income + is_selected +
+        #     at_*/owner_* groups), FI, global_info (decision phase + CoO +
+        #     end-card + cards-remaining + num_players)
+        #   phase-specific: invest, auction, dividend, issue, par,
+        #     acq_select_company, acq_offer, acq_price_info
         #   corps×8, then players×N (trailing so padding for higher player
         #   counts is a no-op on the prefix).
         # The pass anchor is concatenated after projection; see
         # ``_project_tokens``. It lives beyond the player slice, so player
         # indices stay contiguous for the value head and the padding contract.
-        self._market_slot_prices_idx = 0
+        self._market_info_idx = 0
         self._company_slice = slice(1, 37)
-        self._market_idx = 37                          # market_availability
-        self._company_location_slice = slice(38, 42)   # REMOVED/AUCTION/REVEALED/CORP_ACQ
-        self._company_adj_income_idx = 42
-        self._fi_idx = 43
-        self._active_player_idx = 44
-        self._active_corp_idx = 45
-        self._active_company_idx = 46
-        self._phase_idx = 47
-        self._num_players_idx = 48
-        self._game_progress_idx = 49
-        self._invest_idx = 50
-        self._auction_idx = 51
-        self._dividend_idx = 52
-        self._issue_idx = 53
-        self._par_idx = 54
-        self._acq_offer_idx = 55
-        self._acq_price_info_idx = 56
-        self._corp_slice = slice(57, 65)
-        self._player_slice = slice(65, 65 + np_)
+        self._fi_idx = 37
+        self._global_info_idx = 38
+        self._invest_idx = 39
+        self._auction_idx = 40
+        self._dividend_idx = 41
+        self._issue_idx = 42
+        self._par_idx = 43
+        self._acq_select_company_idx = 44
+        self._acq_offer_idx = 45
+        self._acq_price_info_idx = 46
+        self._corp_slice = slice(47, 55)
+        self._player_slice = slice(55, 55 + np_)
         # Single learned pass anchor, appended after the player slice. Shared
         # across every pass-using phase — the trunk picks up phase-specific
         # context through attention so one anchor can back all 7 passes.
-        self._pass_idx = 65 + np_
+        self._pass_idx = 55 + np_
 
         # Drift guard: hardcoded positions above must match the Cython-side
         # ``get_token_widths`` layout. Checking here fires loudly at model
@@ -325,35 +311,24 @@ class RSSTransformerNet(nn.Module):
         # --- Type-specific input projections ---
         # Each projection takes only its ``TokenWidth.TW_<type>`` prefix of the
         # zero-padded token row. The engine-side buffer is rectangular at
-        # ``TOKEN_DIM=92`` so ``get_token_data`` can fill it with a single
+        # ``TOKEN_DIM=93`` so ``get_token_data`` can fill it with a single
         # nogil memcpy pattern, but projection weights on the padding are
         # inert waste — slicing to the actual width here (both in sizing and
         # in ``_project_tokens``) drops those parameters. Widths are pulled
         # from ``TokenWidth`` so the model and the Cython extractor can't
-        # drift out of sync. ``company_location_proj`` is shared across all
-        # four location tokens (REMOVED / AUCTION / REVEALED / CORP_ACQ) —
-        # they carry the same 36-bit "which companies are at this location"
-        # bitmap semantics, so distinct weights would just be four copies of
-        # the same mapping.
+        # drift out of sync.
         self.player_proj = nn.Linear(int(TokenWidth.TW_PLAYER), d)
         self.corp_proj = nn.Linear(int(TokenWidth.TW_CORP), d)
         self.company_proj = nn.Linear(int(TokenWidth.TW_COMPANY), d)
         self.fi_proj = nn.Linear(int(TokenWidth.TW_FI), d)
-        self.market_proj = nn.Linear(int(TokenWidth.TW_MARKET_AVAILABILITY), d)
-        self.market_slot_prices_proj = nn.Linear(int(TokenWidth.TW_MARKET_SLOT_PRICES), d)
-        self.company_location_proj = nn.Linear(int(TokenWidth.TW_COMPANY_LOCATION), d)
-        self.company_adj_income_proj = nn.Linear(int(TokenWidth.TW_COMPANY_ADJ_INCOME), d)
-        self.active_player_proj = nn.Linear(int(TokenWidth.TW_ACTIVE_PLAYER), d)
-        self.active_corp_proj = nn.Linear(int(TokenWidth.TW_ACTIVE_CORP), d)
-        self.active_company_proj = nn.Linear(int(TokenWidth.TW_ACTIVE_COMPANY), d)
-        self.phase_proj = nn.Linear(int(TokenWidth.TW_PHASE), d)
-        self.num_players_proj = nn.Linear(int(TokenWidth.TW_NUM_PLAYERS), d)
-        self.game_progress_proj = nn.Linear(int(TokenWidth.TW_GAME_PROGRESS), d)
+        self.market_info_proj = nn.Linear(int(TokenWidth.TW_MARKET_INFO), d)
+        self.global_info_proj = nn.Linear(int(TokenWidth.TW_GLOBAL_INFO), d)
         self.invest_proj = nn.Linear(int(TokenWidth.TW_INVEST), d)
         self.auction_proj = nn.Linear(int(TokenWidth.TW_AUCTION), d)
         self.dividend_proj = nn.Linear(int(TokenWidth.TW_DIVIDEND), d)
         self.issue_proj = nn.Linear(int(TokenWidth.TW_ISSUE), d)
         self.par_proj = nn.Linear(int(TokenWidth.TW_PAR), d)
+        self.acq_select_company_proj = nn.Linear(int(TokenWidth.TW_ACQ_SELECT_COMPANY), d)
         self.acq_offer_proj = nn.Linear(int(TokenWidth.TW_ACQ_OFFER), d)
         self.acq_price_proj = nn.Linear(int(TokenWidth.TW_ACQ_PRICE), d)
         # Pass token: no input features. Its representation is a single learned
@@ -460,13 +435,13 @@ class RSSTransformerNet(nn.Module):
 
         Each row is sliced to its projection's ``in_features`` width before
         projecting. The engine-side buffer is rectangularly zero-padded to
-        ``TOKEN_DIM=92`` so ``get_token_data`` can fill it with a uniform
+        ``TOKEN_DIM=93`` so ``get_token_data`` can fill it with a uniform
         nogil memcpy pattern, but each type only uses its ``TokenWidth.TW_*``
         prefix — the tail is zero padding that would otherwise be multiplied
         against inert projection weights.
 
         Args:
-            x: (batch, num_players + 65, token_dim) zero-padded raw features.
+            x: (batch, num_players + 55, token_dim) zero-padded raw features.
                 Supported caller patterns are: fp16/fp32 under autocast on the
                 eval path, or fp32 matching the projection weights on the
                 non-autocast trainer / CPU paths. No explicit upcast happens
@@ -474,7 +449,7 @@ class RSSTransformerNet(nn.Module):
                 Linear weights in non-autocast paths (for example in-process
                 NNEvaluator tests).
         Returns:
-            (batch, num_players + 66, d_model) embeddings: projected input
+            (batch, num_players + 56, d_model) embeddings: projected input
             tokens followed by the single pass anchor.
         """
         # Pass anchor: (d,) → (B, 1, d) without mixing SymInt with ``-1`` in
@@ -485,23 +460,16 @@ class RSSTransformerNet(nn.Module):
         # cleanly through.
         d = self.cfg.d_model
         parts: list[torch.Tensor] = [
-            _slice_proj(x, self.market_slot_prices_proj, self._market_slot_prices_idx).unsqueeze(1),
+            _slice_proj(x, self.market_info_proj, self._market_info_idx).unsqueeze(1),
             _slice_proj(x, self.company_proj, self._company_slice),                      # (B, 36, d)
-            _slice_proj(x, self.market_proj, self._market_idx).unsqueeze(1),
-            _slice_proj(x, self.company_location_proj, self._company_location_slice),    # (B, 4, d)
-            _slice_proj(x, self.company_adj_income_proj, self._company_adj_income_idx).unsqueeze(1),
             _slice_proj(x, self.fi_proj, self._fi_idx).unsqueeze(1),
-            _slice_proj(x, self.active_player_proj, self._active_player_idx).unsqueeze(1),
-            _slice_proj(x, self.active_corp_proj, self._active_corp_idx).unsqueeze(1),
-            _slice_proj(x, self.active_company_proj, self._active_company_idx).unsqueeze(1),
-            _slice_proj(x, self.phase_proj, self._phase_idx).unsqueeze(1),
-            _slice_proj(x, self.num_players_proj, self._num_players_idx).unsqueeze(1),
-            _slice_proj(x, self.game_progress_proj, self._game_progress_idx).unsqueeze(1),
+            _slice_proj(x, self.global_info_proj, self._global_info_idx).unsqueeze(1),
             _slice_proj(x, self.invest_proj, self._invest_idx).unsqueeze(1),
             _slice_proj(x, self.auction_proj, self._auction_idx).unsqueeze(1),
             _slice_proj(x, self.dividend_proj, self._dividend_idx).unsqueeze(1),
             _slice_proj(x, self.issue_proj, self._issue_idx).unsqueeze(1),
             _slice_proj(x, self.par_proj, self._par_idx).unsqueeze(1),
+            _slice_proj(x, self.acq_select_company_proj, self._acq_select_company_idx).unsqueeze(1),
             _slice_proj(x, self.acq_offer_proj, self._acq_offer_idx).unsqueeze(1),
             _slice_proj(x, self.acq_price_proj, self._acq_price_info_idx).unsqueeze(1),
             _slice_proj(x, self.corp_proj, self._corp_slice),                            # (B, 8, d)
@@ -680,13 +648,10 @@ if __name__ == "__main__":
     # --- Parameter breakdown ---
     proj_modules = [
         model.player_proj, model.corp_proj, model.company_proj,
-        model.fi_proj, model.market_proj, model.market_slot_prices_proj,
-        model.company_location_proj, model.company_adj_income_proj,
-        model.active_player_proj, model.active_corp_proj, model.active_company_proj,
-        model.phase_proj, model.num_players_proj, model.game_progress_proj,
+        model.fi_proj, model.market_info_proj, model.global_info_proj,
         model.invest_proj, model.auction_proj, model.dividend_proj,
-        model.issue_proj, model.par_proj, model.acq_offer_proj,
-        model.acq_price_proj,
+        model.issue_proj, model.par_proj, model.acq_select_company_proj,
+        model.acq_offer_proj, model.acq_price_proj,
     ]
     proj_params = sum(sum(p.numel() for p in m.parameters()) for m in proj_modules)
     pass_params = model.pass_embed.numel()

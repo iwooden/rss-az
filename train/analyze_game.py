@@ -294,7 +294,6 @@ def analyze_game(
     c_puct: float | None = None,
     mcts_stats_only: bool = False,
     token_dump: bool = False,
-    skip_static_tokens: bool = False,
 ) -> str:
     """Play a self-play game with full MCTS and return a detailed log."""
     num_players = config.num_players
@@ -375,7 +374,6 @@ def analyze_game(
                 token_buffer,
                 token_normalization.widths,
                 token_normalization.labels,
-                skip_static_tokens=skip_static_tokens,
             )
 
         # Raw NN evaluation for the log. Only needed for the full log mode;
@@ -538,7 +536,7 @@ def analyze_game(
         lines.append("")
         lines.append("## Token Normalization Report")
         lines.append("")
-        lines.append(token_normalization.format_report(skip_static_tokens=False))
+        lines.append(token_normalization.format_report())
 
     return "\n".join(lines)
 
@@ -573,11 +571,6 @@ def main() -> None:
         "--token-dump",
         action="store_true",
         help="Dump denormalized token rows for every decision state",
-    )
-    parser.add_argument(
-        "--skip-static-tokens",
-        action="store_true",
-        help="With --token-dump, omit the static prefix (market_prices + company[0..35])",
     )
     parser.add_argument(
         "--mcts-stats-only", action="store_true",
@@ -653,7 +646,6 @@ def main() -> None:
         c_puct=args.c_puct,
         mcts_stats_only=args.mcts_stats_only,
         token_dump=args.token_dump,
-        skip_static_tokens=args.skip_static_tokens,
     )
 
     if args.output:

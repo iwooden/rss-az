@@ -7,80 +7,86 @@ features from a compact GameState. It is called once per NN evaluation,
 so the trunk + MCTS throughput depends on this being fast.
 
 Token order (matches ``nn/transformer.py``):
-    # Static data tokens (pure game-setup data; layout-stable across a game).
-    # Placed first so a self-play worker can prefill them once into the shared
-    # buffer and skip rewriting them on every extraction (see beads qa4m).
-    [market_slot_prices, companies...,
-    # Dynamic informational tokens.
-     market_availability,
-     company_removed, company_auction, company_revealed, company_acq_pile,
-     company_adjusted_income, FI,
-     active_player, active_corp, active_company,
-     phase, num_players, game_progress,
+    # Informational tokens. Every token carries at least some dynamic
+    # data, so there is no pure-static prefix to prefill once per worker.
+    [market_info, companies..., FI, global_info,
     # Phase-specific tokens (left zero unless the engine is in the matching phase).
-     invest, auction, dividend, issue, par, acq_offer, acq_price_info,
+     invest, auction, dividend, issue, par,
+     acq_select_company, acq_offer, acq_price_info,
     # Corp tokens, then player tokens — players last so the buffer can be padded
     # for higher player counts later with the extra rows masked out in attention.
      corps..., players...]
 
-Total tokens in the buffer = num_players + 65. The model concatenates 7
+Total tokens in the buffer = num_players + 55. The model concatenates 7
 learned pass-token anchors to the projected trunk sequence internally
 (one per pass-using decision phase — INVEST, BID, ACQ_SELECT_CORP,
 ACQ_OFFER, CLOSING, ISSUE, IPO — the rest have no pass action), so the
 input buffer carries no pass rows.
 
-Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 92 = max width,
+Active-entity selectors (active_player / active_corp / active_company
+in TURN_OFFSETS) are surfaced as ``is_selected`` scalar flags on each
+entity's own token, not as standalone one-hot tokens.
+
+Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 93 = max width,
 currently pinned by the Corp token):
 
-  Player (84):  player_id onehot (5) + turn_order onehot (5) + has_passed
+  Player (85):  player_id onehot (5) + turn_order onehot (5) + has_passed
                 (1) + cash (1) + net_worth (1) + liquidity (1) + income
                 (1) + owned_shares (8) + round_trips (1) + share_buys (8)
                 + share_sells (8) + presidencies (8) + owned_companies
-                (36)
-  Corp   (92):  corp_id onehot (8) + active (1) + in_receivership (1) +
+                (36) + is_selected (1)
+  Corp   (93):  corp_id onehot (8) + active (1) + in_receivership (1) +
                 passed_acq_offer (1) + unissued/issued/bank shares (3) +
                 price_index onehot (27) + share_price (1) +
                 pending_price_move (1) + cash (1) + acq_proceeds (1) +
                 income (1) + stars (1) + raw_revenue (1) + synergy_income
                 (1) + coo_cost (1) + ability_income (1) + president_id
-                onehot (5) + owned_companies (36)
-  Company (78): company_id onehot (36) + static data [low/face/high/
-                low_high_diff/income/stars] (6) + synergies (36). This
-                token is now pure static game-setup data — ownership,
-                location, CoO-adjusted income, and active-entity selection
-                all live in dedicated tokens. ``low_high_diff`` is the
-                ACQ_SELECT_PRICE offset count (``high - low + 1``), the
-                same quantity the price head conditions on, normalized by
-                PRICE_RANGE_DIVISOR (max is 51 for CDG).
+                onehot (5) + owned_companies (36) + is_selected (1). The
+                ``active`` slot still means "corp is floated / operational"
+                (matches ``corp_is_active``); the decision-flow selector
+                is the separate ``is_selected`` flag at the end.
+  Company (62): company_id onehot (36) + static data [low/face/high/
+                low_high_diff/base_income/stars] (6) + adjusted_income
+                (1) + is_selected (1) + at_removed/at_auction/at_revealed/
+                at_corp_acq (4) + owner_corp onehot (8) + owner_player
+                onehot (5, padded for num_players < 5) + owner_fi (1).
+                The three ownership groups are mutually exclusive: only
+                the group matching the current location (LOC_CORP /
+                LOC_PLAYER / LOC_FI) is non-zero; the other two are
+                zero. Companies at LOC_CORP_ACQ or any unowned location
+                (AUCTION / REVEALED / REMOVED / etc.) leave all three
+                groups zero. ``low_high_diff`` is the ACQ_SELECT_PRICE
+                offset count (``high - low + 1``), the same quantity
+                the price head conditions on, normalized by
+                PRICE_RANGE_DIVISOR (max is 51 for CDG). ``at_removed``
+                is 1 for LOC_REMOVED, and additionally 1 for
+                LOC_EXCLUDED once the CoO has advanced past the
+                company's star tier — the exclusion is publicly
+                observable then; setting it unconditionally would leak
+                setup randomness.
   FI      (38): cash + income + owned_companies (36)
-  MarketAvail (27): availability flags (27)
-  MarketPrices (27): static market-space prices normalized by
-                SHARE_PRICE_DIVISOR ($0..$75 / 75)
-  CompanyLoc* (36, four tokens): 1 per company_id if the company is
-                currently at the matching location, else 0. The four
-                tokens (in buffer order) cover LOC_REMOVED, LOC_AUCTION,
-                LOC_REVEALED, and LOC_CORP_ACQ. The LOC_REMOVED bitmap
-                additionally flags setup-excluded companies (LOC_EXCLUDED)
-                once CoO has advanced past their star tier — the deck is
-                past that colour group, so the exclusion is publicly
-                observable and the bit can be set without leaking setup
-                randomness.
-  CompanyAdjIncome (36): per-company CoO-adjusted income normalized by
-                COMPANY_INCOME_DIVISOR (may be negative).
-  ActivePlayer (5): one-hot over active player (padded to 5 slots);
-                all-zero when no active player is selected.
-  ActiveCorp (8): one-hot over active corp; all-zero when unset.
-  ActiveCompany (36): one-hot over active company; all-zero when unset.
-  Phase   (11): decision phase onehot (11)
-  NumPlyr  (3): num_players onehot (3)
-  Progress (9): CoO onehot (7) + end_card_flipped + cards_remaining
+  MarketInfo (54): static market-space prices normalized by
+                SHARE_PRICE_DIVISOR ($0..$75 / 75) (27) + per-space
+                availability flags (27). The prices half is constant
+                across a game; the availability half is overwritten
+                every extraction.
+  GlobalInfo (23): decision phase onehot (11) + CoO onehot (7) +
+                end_card_flipped (1) + cards_remaining (1) +
+                num_players onehot (3)
   Invest  (17): consecutive_passes + buy_impacts (8) + sell_impacts (8)
   Auction (13): min_bid_index + min_bid_value + is_first_bid +
                 high_bidder onehot (5) + starter onehot (5)
   Divd    (34): dividend_impacts (26) + dividend_remaining (8)
   Issue    (9): issue_impact + issue_remaining (8)
-  IPO     (50): player_cash_required (14) + resulting_corp_cash (14) +
-                resulting_issued_shares (14) + ipo_remaining (8)
+  PAR     (50): player_cash_required (14) + resulting_corp_cash (14) +
+                resulting_issued_shares (14) + ipo_remaining (8). Filled
+                during both PHASE_IPO and PHASE_PAR — the data is
+                identical across those two phases.
+  AcqSelectCompany (36): per-company marginal synergy income the active
+                corp would gain by acquiring each candidate, normalized by
+                ENTITY_INCOME_DIVISOR. Slots for companies already in the
+                active corp's portfolio (owned or in its acquisition pile)
+                stay at zero, since "acquiring" them is a no-op.
   AcqOff  (11): offer_price_index + offer_price + offer_corp onehot (8) +
                 fi_company
   AcqPrice (3): max_offset (ACQ offset count for target) + fi_flag +
@@ -115,13 +121,11 @@ from core.data cimport (
     COMPANY_HIGH_PRICE,
     COMPANY_STARS,
     COMPANY_INCOME,
-    COMPANY_SYNERGY,
     MARKET_PRICES,
     PAR_PRICE_VALID,
     CASH_DIVISOR,
     NET_WORTH_DIVISOR,
     COMPANY_INCOME_DIVISOR,
-    COMPANY_SYNERGY_DIVISOR,
     ENTITY_INCOME_DIVISOR,
     SHARE_DIVISOR,
     COMPANY_PRICE_DIVISOR,
@@ -199,14 +203,14 @@ DEF CONSECUTIVE_PASSES_DIVISOR = 5.0
 # =============================================================================
 
 cpdef int get_num_tokens(int num_players) noexcept nogil:
-    """Input-buffer token count for the given player count (num_players + 65).
+    """Input-buffer token count for the given player count (num_players + 55).
 
     The model-side trunk is wider by 7 (per-phase pass anchors concatenated
     inside ``RSSTransformerNet._project_tokens``), but those rows are
     learned anchors with no input features, so the engine-side buffer
     doesn't carry them.
     """
-    return num_players + 65
+    return num_players + 55
 
 
 cpdef object get_token_widths(int num_players):
@@ -214,52 +218,34 @@ cpdef object get_token_widths(int num_players):
 
     Each ``buffer[i]`` row is TOKEN_DIM wide but only the first
     ``widths[i]`` slots carry features — the rest are zero padding. The
-    returned array mirrors the buffer layout (static data first, then
-    dynamic info, phase-specific, corp, player) so the caller can slice
+    returned array mirrors the buffer layout (informational tokens,
+    phase-specific tokens, corps, players) so the caller can slice
     ``buffer[i, :widths[i]]`` or group positions by type for per-type
     projection modules without duplicating the layout logic.
 
-    Returns a uint8 ``(num_players + 65,)`` numpy array; all widths fit
-    in a byte (max is TW_CORP = 92 < 256).
+    Returns a uint8 ``(num_players + 55,)`` numpy array; all widths fit
+    in a byte (max is TW_CORP = 93 < 256).
     """
     assert 3 <= num_players <= 5, \
         f"get_token_widths: num_players must be 3-5, got {num_players}"
 
-    cdef int num_tokens = num_players + 65
+    cdef int num_tokens = num_players + 55
     widths = np.empty(num_tokens, dtype=np.uint8)
     cdef unsigned char[::1] w = widths
 
     cdef int i
     cdef int tok = 0
 
-    # Static data tokens
-    w[tok] = <unsigned char>TokenWidth.TW_MARKET_SLOT_PRICES
+    # Informational tokens
+    w[tok] = <unsigned char>TokenWidth.TW_MARKET_INFO
     tok += 1
     for i in range(NUM_COMPANIES):
         w[tok] = <unsigned char>TokenWidth.TW_COMPANY
         tok += 1
 
-    # Dynamic informational tokens
-    w[tok] = <unsigned char>TokenWidth.TW_MARKET_AVAILABILITY
-    tok += 1
-    for i in range(4):  # REMOVED, AUCTION, REVEALED, CORP_ACQ
-        w[tok] = <unsigned char>TokenWidth.TW_COMPANY_LOCATION
-        tok += 1
-    w[tok] = <unsigned char>TokenWidth.TW_COMPANY_ADJ_INCOME
-    tok += 1
     w[tok] = <unsigned char>TokenWidth.TW_FI
     tok += 1
-    w[tok] = <unsigned char>TokenWidth.TW_ACTIVE_PLAYER
-    tok += 1
-    w[tok] = <unsigned char>TokenWidth.TW_ACTIVE_CORP
-    tok += 1
-    w[tok] = <unsigned char>TokenWidth.TW_ACTIVE_COMPANY
-    tok += 1
-    w[tok] = <unsigned char>TokenWidth.TW_PHASE
-    tok += 1
-    w[tok] = <unsigned char>TokenWidth.TW_NUM_PLAYERS
-    tok += 1
-    w[tok] = <unsigned char>TokenWidth.TW_GAME_PROGRESS
+    w[tok] = <unsigned char>TokenWidth.TW_GLOBAL_INFO
     tok += 1
 
     # Phase-specific tokens — the slots exist regardless of the current
@@ -274,6 +260,8 @@ cpdef object get_token_widths(int num_players):
     w[tok] = <unsigned char>TokenWidth.TW_ISSUE
     tok += 1
     w[tok] = <unsigned char>TokenWidth.TW_PAR
+    tok += 1
+    w[tok] = <unsigned char>TokenWidth.TW_ACQ_SELECT_COMPANY
     tok += 1
     w[tok] = <unsigned char>TokenWidth.TW_ACQ_OFFER
     tok += 1
@@ -297,7 +285,7 @@ cpdef void get_token_data(GameState state, float[:, ::1] buffer):
     """Fill ``buffer`` with per-token NN features for ``state``.
 
     ``buffer`` must be a writable C-contiguous float32 memoryview at least
-    ``(num_players + 65, TOKEN_DIM)`` in size. Training is scoped to
+    ``(num_players + 55, TOKEN_DIM)`` in size. Training is scoped to
     3-5 players; other player counts are rejected.
 
     The cache-refresh prologue and ``_fill_buffer`` run in a single nogil
@@ -306,7 +294,7 @@ cpdef void get_token_data(GameState state, float[:, ::1] buffer):
     ``PLAYERS[i].get_net_worth(state)`` lookup it used to.
     """
     cdef int num_players = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.num_players]
-    cdef int num_tokens = num_players + 65
+    cdef int num_tokens = num_players + 55
     cdef int i
 
     assert 3 <= num_players <= 5, \
@@ -343,10 +331,10 @@ cpdef void get_token_data_batch(
             layout (same constraint as ``GameState.rebind``).
         num_players: Training player count (3-5). Applies to every state
             array in the batch — mixed-player batches are not supported.
-        buffer: ``(n, num_players + 65, TOKEN_DIM)`` float32 output, C-contig.
+        buffer: ``(n, num_players + 55, TOKEN_DIM)`` float32 output, C-contig.
     """
     cdef int n = len(state_arrays)
-    cdef int num_tokens = num_players + 65
+    cdef int num_tokens = num_players + 55
     cdef int i, p
     cdef GameState scratch_gs
 
@@ -388,71 +376,28 @@ cdef void _fill_buffer(
     cdef int i, tok
     cdef int phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
 
-    # Zero the region we'll write. Phase-specific tokens rely on this to
-    # stay at zero when the current phase does not match.
+    # Zero the region we'll write. Many slots are written conditionally
+    # (phase-specific tokens when the phase doesn't match, company
+    # owner/location groups outside the current location, ACQ_SELECT_COMPANY
+    # slots for companies already in the portfolio, etc.) and rely on a
+    # zeroed baseline.
     memset(&buffer[0, 0], 0, num_tokens * <int>TokenDataSize.TOKEN_DIM * sizeof(float))
 
     tok = 0
 
-    # --- Static data tokens (pre-populatable; see beads qa4m) ---
+    # --- Informational tokens ---
 
-    # Market slot-prices token (static $0..$75 normalized)
-    _fill_market_slot_prices_token(buffer, tok)
+    _fill_market_info_token(state, buffer, tok)
     tok += 1
 
-    # Company tokens (static game-setup data — face/low/high/income/stars/synergies)
     for i in range(NUM_COMPANIES):
         _fill_company_token(state, buffer, tok, i, num_players)
         tok += 1
 
-    # --- Dynamic informational tokens ---
-
-    # Market availability token (27 per-space flags)
-    _fill_market_availability_token(state, buffer, tok)
-    tok += 1
-
-    # Company-location tokens: one 36-wide bitmap per target location, with
-    # a 1 at company_id if that company is currently at the location. The
-    # REMOVED bitmap also flags LOC_EXCLUDED companies whose tier the CoO
-    # has moved past (see _fill_company_removed_token).
-    _fill_company_removed_token(state, buffer, tok)
-    tok += 1
-    _fill_company_location_token(state, buffer, tok, <int>LOC_AUCTION)
-    tok += 1
-    _fill_company_location_token(state, buffer, tok, <int>LOC_REVEALED)
-    tok += 1
-    _fill_company_location_token(state, buffer, tok, <int>LOC_CORP_ACQ)
-    tok += 1
-
-    # Company-adjusted-income token: per-company CoO-adjusted income, 36 wide.
-    _fill_company_adjusted_income_token(state, buffer, tok)
-    tok += 1
-
-    # FI token
     _fill_fi_token(state, buffer, tok)
     tok += 1
 
-    # Active-entity tokens: dedicated one-hots for the currently-selected
-    # player / corp / company. Factored out so the per-entity tokens can stay
-    # permutation-equivariant (each entity's own token no longer carries an
-    # "am I active?" bit) and so the model can attend to the selector directly.
-    _fill_active_player_token(state, buffer, tok)
-    tok += 1
-    _fill_active_corp_token(state, buffer, tok)
-    tok += 1
-    _fill_active_company_token(state, buffer, tok)
-    tok += 1
-
-    # Phase token (decision-phase one-hot)
-    _fill_phase_token(state, buffer, tok)
-    tok += 1
-
-    # Num-players token (3/4/5 one-hot)
-    _fill_num_players_token(buffer, tok, num_players)
-    tok += 1
-
-    # Game-progress token (CoO + end-card + cards-remaining)
-    _fill_game_progress_token(state, buffer, tok)
+    _fill_global_info_token(state, buffer, tok, num_players)
     tok += 1
 
     # --- Phase-specific tokens (left zero when the current phase doesn't match) ---
@@ -475,6 +420,10 @@ cdef void _fill_buffer(
 
     if phase == <int>GamePhases.PHASE_IPO or phase == <int>GamePhases.PHASE_PAR:
         _fill_par_token(state, buffer, tok)
+    tok += 1
+
+    if phase == <int>GamePhases.PHASE_ACQ_SELECT_COMPANY:
+        _fill_acq_select_company_token(state, buffer, tok)
     tok += 1
 
     if phase == <int>GamePhases.PHASE_ACQ_OFFER:
@@ -507,8 +456,8 @@ cdef void _fill_player_token(
     int player_id,
     int num_players,
 ) noexcept nogil:
-    # Feature offsets within the player token. Active-player selection lives
-    # in the dedicated ``active_player`` token, not here.
+    # Feature offsets within the player token. ``OFF_IS_SELECTED`` is
+    # set iff this player is the current active_player selector.
     cdef int OFF_PLAYER_ID    = 0    # 5 slots
     cdef int OFF_TURN_ORDER   = 5    # 5 slots
     cdef int OFF_HAS_PASSED   = 10
@@ -522,6 +471,7 @@ cdef void _fill_player_token(
     cdef int OFF_SHARE_SELLS  = 32   # 8 slots
     cdef int OFF_PRESIDENCIES = 40   # 8 slots
     cdef int OFF_COMPANIES    = 48   # 36 slots
+    cdef int OFF_IS_SELECTED  = 84
 
     cdef int player_base = LAYOUT.players_offset + player_id * PLAYER_FIELDS.size
     cdef int turn_order = <int>state._data[player_base + PLAYER_FIELDS.turn_order]
@@ -586,6 +536,13 @@ cdef void _fill_player_token(
         if comp_owner == player_id:
             buffer[tok, OFF_COMPANIES + c] = 1.0
 
+    # Active-player selector flag.
+    cdef int active_player = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
+    assert -1 <= active_player < MAX_MODEL_PLAYERS, \
+        f"_fill_player_token: active_player {active_player} out of [-1, {MAX_MODEL_PLAYERS})"
+    if active_player == player_id:
+        buffer[tok, OFF_IS_SELECTED] = 1.0
+
 
 # =============================================================================
 # CORP TOKEN
@@ -598,8 +555,11 @@ cdef void _fill_corp_token(
     int corp_id,
     int num_players,
 ) noexcept nogil:
-    # Feature offsets within the corp token. Active-corp selection lives in
-    # the dedicated ``active_corp`` token, not here.
+    # Feature offsets within the corp token. Two distinct "active"-ish
+    # bits: ``OFF_ACTIVE`` is the lifecycle float flag
+    # (``corp_is_active``, set once the corp is floated and operational);
+    # ``OFF_IS_SELECTED`` is the decision-flow selector (set iff this
+    # corp is the current active_corp).
     cdef int OFF_CORP_ID       = 0    # 8 slots
     cdef int OFF_ACTIVE        = 8
     cdef int OFF_IN_RECV       = 9
@@ -620,6 +580,7 @@ cdef void _fill_corp_token(
     cdef int OFF_ABILITY       = 50
     cdef int OFF_PRESIDENT     = 51   # 5 slots
     cdef int OFF_COMPANIES     = 56   # 36 slots
+    cdef int OFF_IS_SELECTED   = 92
 
     cdef bint active = corp_is_active(state, corp_id)
     cdef int price_idx, president, company_id
@@ -666,6 +627,13 @@ cdef void _fill_corp_token(
             elif corp_has_acquisition_company(state, corp_id, company_id):
                 buffer[tok, OFF_COMPANIES + company_id] = 1.0
 
+    # Active-corp selector flag (independent of the lifecycle ``OFF_ACTIVE``).
+    cdef int active_corp = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_corp]
+    assert -1 <= active_corp < NUM_CORPS, \
+        f"_fill_corp_token: active_corp {active_corp} out of [-1, {NUM_CORPS})"
+    if active_corp == corp_id:
+        buffer[tok, OFF_IS_SELECTED] = 1.0
+
 
 # =============================================================================
 # COMPANY TOKEN
@@ -678,10 +646,15 @@ cdef void _fill_company_token(
     int company_id,
     int num_players,
 ) noexcept nogil:
-    # The company token now carries only static (game-setup) data. Active-
-    # company selection lives in the ``active_company`` token; ownership lives
-    # in the player / corp / FI tokens; location lives in the four per-location
-    # tokens; CoO-adjusted income lives in the ``company_adjusted_income`` token.
+    # Feature offsets within the company token. Static game-setup data
+    # (id one-hot, prices, base_income, stars) plus per-company dynamic
+    # scalars: CoO-adjusted income, active-company selector, the four
+    # observable locations (REMOVED / AUCTION / REVEALED / CORP_ACQ), and
+    # the mutually-exclusive ownership groups (LOC_CORP / LOC_PLAYER /
+    # LOC_FI). The at_* and owner_* groups are both driven by the same
+    # location dispatch below — exactly one group is set at a time; all
+    # zero when the company is at LOC_DECK (unrevealed) or LOC_EXCLUDED
+    # below the revealed-tier threshold.
     cdef int OFF_COMPANY_ID     = 0    # 36 slots
     cdef int OFF_LOW_PRICE      = 36
     cdef int OFF_FACE_VALUE     = 37
@@ -689,9 +662,15 @@ cdef void _fill_company_token(
     cdef int OFF_LOW_HIGH_DIFF  = 39
     cdef int OFF_BASE_INCOME    = 40
     cdef int OFF_STARS          = 41
-    cdef int OFF_SYNERGIES      = 42   # 36 slots
-
-    cdef int k
+    cdef int OFF_ADJ_INCOME     = 42
+    cdef int OFF_IS_SELECTED    = 43
+    cdef int OFF_AT_REMOVED     = 44
+    cdef int OFF_AT_AUCTION     = 45
+    cdef int OFF_AT_REVEALED    = 46
+    cdef int OFF_AT_CORP_ACQ    = 47
+    cdef int OFF_OWNER_CORP     = 48   # 8 slots
+    cdef int OFF_OWNER_PLAYER   = 56   # 5 slots (padded for num_players < 5)
+    cdef int OFF_OWNER_FI       = 61
 
     # Company ID one-hot
     buffer[tok, OFF_COMPANY_ID + company_id] = 1.0
@@ -710,20 +689,55 @@ cdef void _fill_company_token(
     buffer[tok, OFF_BASE_INCOME] = <float>COMPANY_INCOME[company_id] / COMPANY_INCOME_DIVISOR
     buffer[tok, OFF_STARS] = <float>COMPANY_STARS[company_id] / COMPANY_STAR_DIVISOR
 
-    # Synergies: value of synergy with each other company (in either
-    # direction). The matrix is directional, so we take the max-magnitude
-    # direction to surface the bonus regardless of which side holds it.
-    # Use a dedicated divisor here: some static synergy entries reach 16,
-    # which is larger than the base-income normalization range.
-    cdef int syn_ab, syn_ba, syn
-    for k in range(NUM_COMPANIES):
-        if k == company_id:
-            continue
-        syn_ab = COMPANY_SYNERGY[company_id][k]
-        syn_ba = COMPANY_SYNERGY[k][company_id]
-        syn = syn_ab if syn_ab >= syn_ba else syn_ba
-        if syn != 0:
-            buffer[tok, OFF_SYNERGIES + k] = <float>syn / COMPANY_SYNERGY_DIVISOR
+    # CoO-adjusted income (may be negative; a company's income can be
+    # pushed below zero by CoO-dependent penalties).
+    buffer[tok, OFF_ADJ_INCOME] = (
+        <float>company_adjusted_income(state, company_id) / COMPANY_INCOME_DIVISOR
+    )
+
+    # Active-company selector flag.
+    cdef int active_company = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_company]
+    assert -1 <= active_company < NUM_COMPANIES, \
+        f"_fill_company_token: active_company {active_company} out of [-1, {NUM_COMPANIES})"
+    if active_company == company_id:
+        buffer[tok, OFF_IS_SELECTED] = 1.0
+
+    # Location dispatch: writes exactly one flag (for the at_* group) or
+    # one slot (for the owner_* group), depending on the company's
+    # current location. LOC_DECK / LOC_EXCLUDED below the revealed-tier
+    # threshold leave everything zero.
+    #
+    # LOC_REMOVED additionally absorbs LOC_EXCLUDED once CoO has advanced
+    # past this company's star tier — the deck is past the colour group
+    # so the exclusion is publicly observable. Flagging LOC_EXCLUDED
+    # unconditionally would leak which specific cards were cut at setup
+    # (information the players don't have until the deck has advanced
+    # past that tier).
+    cdef int loc = company_location(state, company_id)
+    cdef int coo = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.coo_level]
+    cdef int owner_id
+    if loc == <int>LOC_REMOVED:
+        buffer[tok, OFF_AT_REMOVED] = 1.0
+    elif loc == <int>LOC_EXCLUDED and coo > COMPANY_STARS[company_id]:
+        buffer[tok, OFF_AT_REMOVED] = 1.0
+    elif loc == <int>LOC_AUCTION:
+        buffer[tok, OFF_AT_AUCTION] = 1.0
+    elif loc == <int>LOC_REVEALED:
+        buffer[tok, OFF_AT_REVEALED] = 1.0
+    elif loc == <int>LOC_CORP_ACQ:
+        buffer[tok, OFF_AT_CORP_ACQ] = 1.0
+    elif loc == <int>LOC_CORP:
+        owner_id = company_owner_id(state, company_id)
+        assert 0 <= owner_id < NUM_CORPS, \
+            f"_fill_company_token: LOC_CORP owner {owner_id} out of [0, {NUM_CORPS}) for company {company_id}"
+        buffer[tok, OFF_OWNER_CORP + owner_id] = 1.0
+    elif loc == <int>LOC_PLAYER:
+        owner_id = company_owner_id(state, company_id)
+        assert 0 <= owner_id < MAX_MODEL_PLAYERS, \
+            f"_fill_company_token: LOC_PLAYER owner {owner_id} out of [0, {MAX_MODEL_PLAYERS}) for company {company_id}"
+        buffer[tok, OFF_OWNER_PLAYER + owner_id] = 1.0
+    elif loc == <int>LOC_FI:
+        buffer[tok, OFF_OWNER_FI] = 1.0
 
 
 # =============================================================================
@@ -752,196 +766,81 @@ cdef void _fill_fi_token(
 
 
 # =============================================================================
-# COMPANY-LOCATION TOKENS
+# MARKET INFO TOKEN
 # =============================================================================
 
-cdef void _fill_company_location_token(
-    GameState state,
-    float[:, ::1] buffer,
-    int tok,
-    int target_location,
-) noexcept nogil:
-    # 36-slot bitmap: buffer[tok, c] = 1.0 iff company c is at ``target_location``.
-    cdef int c
-    for c in range(NUM_COMPANIES):
-        if company_location(state, c) == target_location:
-            buffer[tok, c] = 1.0
-
-
-cdef void _fill_company_removed_token(
+cdef void _fill_market_info_token(
     GameState state,
     float[:, ::1] buffer,
     int tok,
 ) noexcept nogil:
-    # Same shape as the other company-location bitmaps, but with two kinds
-    # of "removed":
-    #   * LOC_REMOVED — closed during play.
-    #   * LOC_EXCLUDED — filtered out at setup, BUT only once the deck has
-    #     revealed this: CoO level L means the current top-of-deck tier is
-    #     L (red=1 … blue=5), so a star-S company is publicly known-gone
-    #     iff coo > S. Flagging LOC_EXCLUDED unconditionally would leak
-    #     which specific cards were cut at setup — information the players
-    #     don't have until the deck has advanced past that tier.
-    cdef int c, loc
-    cdef int coo = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.coo_level]
-    for c in range(NUM_COMPANIES):
-        loc = company_location(state, c)
-        if loc == <int>LOC_REMOVED:
-            buffer[tok, c] = 1.0
-        elif loc == <int>LOC_EXCLUDED and coo > COMPANY_STARS[c]:
-            buffer[tok, c] = 1.0
-
-
-cdef void _fill_company_adjusted_income_token(
-    GameState state,
-    float[:, ::1] buffer,
-    int tok,
-) noexcept nogil:
-    # 36-slot vector: per-company CoO-adjusted income, normalized by
-    # COMPANY_INCOME_DIVISOR. Values may be negative (a company's income can
-    # be pushed below zero by CoO-dependent penalties).
-    cdef int c
-    for c in range(NUM_COMPANIES):
-        buffer[tok, c] = (
-            <float>company_adjusted_income(state, c) / COMPANY_INCOME_DIVISOR
+    # First 27 slots: static $0..$75 slot prices normalized by
+    # SHARE_PRICE_DIVISOR. Next 27 slots: per-space availability flags
+    # (int16 0/1 read directly from the market section; direct cast is
+    # enough, no ternary needed).
+    cdef int OFF_SLOT_PRICES  = 0                   # 27 slots
+    cdef int OFF_AVAILABILITY = NUM_MARKET_SPACES   # 27 slots
+    cdef int i
+    for i in range(NUM_MARKET_SPACES):
+        buffer[tok, OFF_SLOT_PRICES + i] = (
+            <float>MARKET_PRICES[i] / SHARE_PRICE_DIVISOR
+        )
+        buffer[tok, OFF_AVAILABILITY + i] = (
+            <float>state._data[LAYOUT.market_offset + i]
         )
 
 
 # =============================================================================
-# ACTIVE-ENTITY TOKENS
+# GLOBAL INFO TOKEN
 # =============================================================================
 
-cdef void _fill_active_player_token(
+cdef void _fill_global_info_token(
     GameState state,
-    float[:, ::1] buffer,
-    int tok,
-) noexcept nogil:
-    # 5-slot one-hot (padded to MAX_MODEL_PLAYERS). All zero when no active
-    # player is selected (active_player == -1 on automated/terminal phases).
-    # Any value outside [-1, MAX_MODEL_PLAYERS) is an engine invariant break.
-    cdef int active_player = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
-    assert -1 <= active_player < MAX_MODEL_PLAYERS, \
-        f"_fill_active_player_token: active_player {active_player} out of [-1, {MAX_MODEL_PLAYERS})"
-    if active_player >= 0:
-        buffer[tok, active_player] = 1.0
-
-
-cdef void _fill_active_corp_token(
-    GameState state,
-    float[:, ::1] buffer,
-    int tok,
-) noexcept nogil:
-    # 8-slot one-hot; all zero when no active corp is selected. Any value
-    # outside [-1, NUM_CORPS) is an engine invariant break.
-    cdef int active_corp = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_corp]
-    assert -1 <= active_corp < NUM_CORPS, \
-        f"_fill_active_corp_token: active_corp {active_corp} out of [-1, {NUM_CORPS})"
-    if active_corp >= 0:
-        buffer[tok, active_corp] = 1.0
-
-
-cdef void _fill_active_company_token(
-    GameState state,
-    float[:, ::1] buffer,
-    int tok,
-) noexcept nogil:
-    # 36-slot one-hot; all zero when no active company is selected. Any value
-    # outside [-1, NUM_COMPANIES) is an engine invariant break.
-    cdef int active_company = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_company]
-    assert -1 <= active_company < NUM_COMPANIES, \
-        f"_fill_active_company_token: active_company {active_company} out of [-1, {NUM_COMPANIES})"
-    if active_company >= 0:
-        buffer[tok, active_company] = 1.0
-
-
-# =============================================================================
-# MARKET TOKENS
-# =============================================================================
-
-cdef void _fill_market_availability_token(
-    GameState state,
-    float[:, ::1] buffer,
-    int tok,
-) noexcept nogil:
-    cdef int i
-    # Market section is a flat run of 27 int16 0/1 availability flags;
-    # direct cast is enough (no need for a ternary).
-    for i in range(NUM_MARKET_SPACES):
-        buffer[tok, i] = <float>state._data[LAYOUT.market_offset + i]
-
-
-cdef void _fill_market_slot_prices_token(
-    float[:, ::1] buffer,
-    int tok,
-) noexcept nogil:
-    # Static $0..$75 slot prices normalized by SHARE_PRICE_DIVISOR. Written
-    # every call — it's a short loop and the token carries no state, so a
-    # rotating "static constants" token is simpler than gating on a first-use
-    # flag.
-    cdef int i
-    for i in range(NUM_MARKET_SPACES):
-        buffer[tok, i] = <float>MARKET_PRICES[i] / SHARE_PRICE_DIVISOR
-
-
-# =============================================================================
-# PHASE / NUM_PLAYERS / GAME_PROGRESS TOKENS
-# =============================================================================
-
-cdef void _fill_phase_token(
-    GameState state,
-    float[:, ::1] buffer,
-    int tok,
-) noexcept nogil:
-    # Phase one-hot over decision phases — one slot per DecisionPhase.
-    # Automated / terminal engine phases map to -1 and leave all slots zero.
-    cdef int phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
-    cdef int decision_phase
-
-    assert 0 <= phase < <int>GameConstants.NUM_PHASES, \
-        f"_fill_phase_token: corrupt engine phase {phase}"
-    decision_phase = ENGINE_TO_DECISION_PHASE[phase]
-    # Automated / terminal engine phases map to -1; anything else is a
-    # corrupt ENGINE_TO_DECISION_PHASE entry.
-    assert -1 <= decision_phase < NUM_DECISION_PHASES, \
-        f"_fill_phase_token: decision_phase {decision_phase} out of [-1, {NUM_DECISION_PHASES}) for engine phase {phase}"
-    if decision_phase >= 0:
-        buffer[tok, decision_phase] = 1.0
-
-
-cdef void _fill_num_players_token(
     float[:, ::1] buffer,
     int tok,
     int num_players,
 ) noexcept nogil:
-    # num_players one-hot: slot 0 = 3p, slot 1 = 4p, slot 2 = 5p.
-    # Training scope is 3-5p; the entry-point assert already rejects
-    # anything outside that range, so re-assert here rather than silently
-    # leaving the token zero for mis-sized states.
-    assert 3 <= num_players <= 5, \
-        f"_fill_num_players_token: num_players {num_players} out of [3, 5]"
-    buffer[tok, num_players - 3] = 1.0
+    # Bundled game-level scalars: decision-phase one-hot, CoO one-hot,
+    # end-card flag, a normalized cards-remaining scalar, and the
+    # num_players one-hot (slot 0 = 3p, slot 1 = 4p, slot 2 = 5p).
+    # Automated / terminal engine phases map to decision_phase == -1 and
+    # leave the phase one-hot all-zero.
+    cdef int OFF_PHASE        = 0    # 11 slots (one per DecisionPhase)
+    cdef int OFF_COO          = 11   # 7 slots (CoO level 1..7 → slots 0..6)
+    cdef int OFF_END_CARD     = 18
+    cdef int OFF_CARDS_REM    = 19
+    cdef int OFF_NUM_PLAYERS  = 20   # 3 slots (3p/4p/5p)
 
-
-cdef void _fill_game_progress_token(
-    GameState state,
-    float[:, ::1] buffer,
-    int tok,
-) noexcept nogil:
-    cdef int OFF_COO            = 0   # 7 slots (CoO level 1..7 → slots 0..6)
-    cdef int OFF_END_CARD       = 7
-    cdef int OFF_CARDS_REM      = 8
-
+    cdef int phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
+    cdef int decision_phase
     cdef int coo = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.coo_level]
     cdef int end_card = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.end_card_flipped]
     cdef int cards_rem = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.cards_remaining]
 
+    assert 0 <= phase < <int>GameConstants.NUM_PHASES, \
+        f"_fill_global_info_token: corrupt engine phase {phase}"
+    decision_phase = ENGINE_TO_DECISION_PHASE[phase]
+    # Automated / terminal engine phases map to -1; anything else is a
+    # corrupt ENGINE_TO_DECISION_PHASE entry.
+    assert -1 <= decision_phase < NUM_DECISION_PHASES, \
+        f"_fill_global_info_token: decision_phase {decision_phase} out of [-1, {NUM_DECISION_PHASES}) for engine phase {phase}"
+    if decision_phase >= 0:
+        buffer[tok, OFF_PHASE + decision_phase] = 1.0
+
     # CoO one-hot: levels 1-7 → slots 0-6
     assert 1 <= coo <= NUM_COO_LEVELS, \
-        f"_fill_game_progress_token: coo_level {coo} out of [1, 7]"
+        f"_fill_global_info_token: coo_level {coo} out of [1, 7]"
     buffer[tok, OFF_COO + (coo - 1)] = 1.0
 
     buffer[tok, OFF_END_CARD] = 1.0 if end_card else 0.0
     buffer[tok, OFF_CARDS_REM] = <float>cards_rem / <float>NUM_COMPANIES
+
+    # Training scope is 3-5p; the entry-point assert already rejects
+    # anything outside that range, so re-assert here rather than silently
+    # leaving the slot zero for mis-sized states.
+    assert 3 <= num_players <= 5, \
+        f"_fill_global_info_token: num_players {num_players} out of [3, 5]"
+    buffer[tok, OFF_NUM_PLAYERS + (num_players - 3)] = 1.0
 
 
 # =============================================================================
@@ -1165,6 +1064,36 @@ cdef void _fill_acq_offer_token(
 
     buffer[tok, OFF_PRICE_VALUE] = <float>offer_price / COMPANY_PRICE_DIVISOR
     buffer[tok, OFF_OFFER_CORP + offer_corp] = 1.0
+
+
+cdef void _fill_acq_select_company_token(
+    GameState state,
+    float[:, ::1] buffer,
+    int tok,
+) noexcept nogil:
+    # 36-slot vector: per-company marginal synergy income the active
+    # corp would gain by acquiring each candidate, normalized by
+    # ENTITY_INCOME_DIVISOR. Slots for companies already in the active
+    # corp's portfolio (owned or in its acquisition pile) stay at zero
+    # — ``corp_candidate_synergy_delta`` asserts the candidate is not
+    # already there, and a self-acquisition is a no-op anyway.
+    cdef int active_corp = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_corp]
+    cdef int c, delta
+
+    # Driver contract for PHASE_ACQ_SELECT_COMPANY: active_corp is stamped
+    # to a live, active corp that's making the acquisition decision.
+    assert 0 <= active_corp < NUM_CORPS, \
+        f"_fill_acq_select_company_token: active_corp {active_corp} unset or out of range"
+    assert corp_is_active(state, active_corp), \
+        f"_fill_acq_select_company_token: active_corp {active_corp} not active"
+
+    for c in range(NUM_COMPANIES):
+        if corp_owns_company(state, active_corp, c):
+            continue
+        if corp_has_acquisition_company(state, active_corp, c):
+            continue
+        delta = corp_candidate_synergy_delta(state, active_corp, c)
+        buffer[tok, c] = <float>delta / ENTITY_INCOME_DIVISOR
 
 
 cdef void _fill_acq_price_info_token(

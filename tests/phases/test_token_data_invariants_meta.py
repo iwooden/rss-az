@@ -18,7 +18,6 @@ cases run against a fresh 3p INVEST state (seed=42), whose layout is:
 
 Token positions below match the conftest layout banner.
 """
-import numpy as np
 import pytest
 
 from core.actions import (
@@ -40,30 +39,20 @@ NUM_CORPS = int(GameConstants.NUM_CORPS)
 NUM_COMPANIES = int(GameConstants.NUM_COMPANIES)
 
 # Token positions for a 3p buffer.
-MARKET_SLOT_PRICES_TOK = 0
-COMPANY_BASE_TOK       = 1       # companies 0..35 at positions 1..36
-MARKET_AVAIL_TOK       = 37
-LOC_REMOVED_TOK        = 38
-LOC_AUCTION_TOK        = 39
-LOC_REVEALED_TOK       = 40
-LOC_CORP_ACQ_TOK       = 41
-COMPANY_ADJ_INCOME_TOK = 42
-FI_TOK                 = 43
-ACTIVE_PLAYER_TOK      = 44
-ACTIVE_CORP_TOK        = 45
-ACTIVE_COMPANY_TOK     = 46
-PHASE_TOK              = 47
-NUM_PLAYERS_TOK        = 48
-GAME_PROGRESS_TOK      = 49
-INVEST_TOK             = 50
-AUCTION_TOK            = 51
-DIVIDEND_TOK           = 52
-ISSUE_TOK              = 53
-PAR_TOK                = 54
-ACQ_OFFER_TOK          = 55
-ACQ_PRICE_INFO_TOK     = 56
-CORP_BASE_TOK          = 57
-PLAYER_BASE_TOK        = 65
+MARKET_INFO_TOK         = 0
+COMPANY_BASE_TOK        = 1       # companies 0..35 at positions 1..36
+FI_TOK                  = 37
+GLOBAL_INFO_TOK         = 38
+INVEST_TOK              = 39
+AUCTION_TOK             = 40
+DIVIDEND_TOK            = 41
+ISSUE_TOK               = 42
+PAR_TOK                 = 43
+ACQ_SELECT_COMPANY_TOK  = 44
+ACQ_OFFER_TOK           = 45
+ACQ_PRICE_INFO_TOK      = 46
+CORP_BASE_TOK           = 47
+PLAYER_BASE_TOK         = 55
 
 
 def _invest_state():
@@ -141,15 +130,23 @@ def _patch(monkeypatch, mutation):
 # fixture, produces a value the helper's assertions reject. Named rather
 # than lambdas so pytest IDs come out readable.
 
-# ---- Static data: market slot prices -------------------------------------
+# MarketInfo token layout: 27 slot prices (0..26) + 27 availability (27..53).
+_MI_AVAIL_BASE = 27
+
+# ---- MarketInfo: slot prices ---------------------------------------------
 
 def corrupt_market_slot_price(buf):
-    buf[MARKET_SLOT_PRICES_TOK, 5] = 0.0           # real value ≈ 9/75
+    buf[MARKET_INFO_TOK, 5] = 0.0                  # real value ≈ 9/75
 
-def corrupt_market_slot_prices_tail(buf):
-    buf[MARKET_SLOT_PRICES_TOK, 27] = 0.5          # tail must stay 0
+# ---- MarketInfo: availability --------------------------------------------
 
-# ---- Company token (static game-setup data) ------------------------------
+def corrupt_market_avail_boundary(buf):
+    buf[MARKET_INFO_TOK, _MI_AVAIL_BASE + 0] = 0.0  # slot 0 ($0) must be 1.0
+
+def corrupt_market_info_tail(buf):
+    buf[MARKET_INFO_TOK, _MI_AVAIL_BASE + 27] = 1.0  # tail past 54 slots
+
+# ---- Company token: static data ------------------------------------------
 
 def corrupt_company_id_onehot(buf):
     buf[COMPANY_BASE_TOK + 0, 0] = 0.0             # drop id bit
@@ -166,39 +163,34 @@ def corrupt_company_base_income(buf):
 def corrupt_company_stars(buf):
     buf[COMPANY_BASE_TOK + 5, 41] = 0.0            # STARS offset
 
-
-def corrupt_company_synergy(buf):
-    buf[COMPANY_BASE_TOK + 32, 42 + 35] = 0.0      # MAD→CDG max synergy is 16
-
-# ---- Market availability -------------------------------------------------
-
-def corrupt_market_avail_boundary(buf):
-    buf[MARKET_AVAIL_TOK, 0] = 0.0                 # slot 0 ($0) must be 1.0
-
-def corrupt_market_avail_tail(buf):
-    buf[MARKET_AVAIL_TOK, 27] = 1.0                # tail must stay 0
-
-# ---- Company-location bitmaps (REMOVED, AUCTION, REVEALED, CORP_ACQ) -----
-
-def corrupt_loc_removed_bit(buf):
-    buf[LOC_REMOVED_TOK, 0] = 1.0                  # company 0 is not at REMOVED
-
-def corrupt_loc_auction_bit(buf):
-    buf[LOC_AUCTION_TOK, 5] = 0.0                  # company 5 IS at AUCTION
-
-def corrupt_loc_revealed_bit(buf):
-    buf[LOC_REVEALED_TOK, 0] = 1.0                 # nothing at REVEALED initially
-
-def corrupt_loc_corp_acq_tail(buf):
-    buf[LOC_CORP_ACQ_TOK, 36] = 1.0                # tail must stay 0
-
-# ---- Company adjusted income --------------------------------------------
+# ---- Company token: dynamic (adj_income / is_selected / at_* / owner_*) --
 
 def corrupt_company_adj_income(buf):
-    buf[COMPANY_ADJ_INCOME_TOK, 5] = 9.99          # per-company value mismatch
+    buf[COMPANY_BASE_TOK + 5, 42] = 9.99           # ADJ_INCOME mismatch
 
-def corrupt_company_adj_income_tail(buf):
-    buf[COMPANY_ADJ_INCOME_TOK, 36] = 1.0
+def corrupt_company_is_selected(buf):
+    buf[COMPANY_BASE_TOK + 0, 43] = 1.0            # active_company=-1 so must be 0
+
+def corrupt_company_at_auction_wrong(buf):
+    buf[COMPANY_BASE_TOK + 5, 45] = 0.0            # company 5 IS at AUCTION
+
+def corrupt_company_at_removed_false(buf):
+    buf[COMPANY_BASE_TOK + 0, 44] = 1.0            # company 0 is NOT at REMOVED
+
+def corrupt_company_at_revealed_false(buf):
+    buf[COMPANY_BASE_TOK + 0, 46] = 1.0            # nothing at REVEALED initially
+
+def corrupt_company_owner_corp_false(buf):
+    buf[COMPANY_BASE_TOK + 0, 48] = 1.0            # no corp owns anything initially
+
+def corrupt_company_owner_player_false(buf):
+    buf[COMPANY_BASE_TOK + 0, 56] = 1.0            # no player owns anything initially
+
+def corrupt_company_owner_fi_false(buf):
+    buf[COMPANY_BASE_TOK + 0, 61] = 1.0            # FI owns nothing initially
+
+def corrupt_company_tail(buf):
+    buf[COMPANY_BASE_TOK + 0, 62] = 1.0            # padding past TW_COMPANY must stay 0
 
 # ---- FI ------------------------------------------------------------------
 
@@ -214,42 +206,25 @@ def corrupt_fi_owned(buf):
 def corrupt_fi_tail(buf):
     buf[FI_TOK, 2 + NUM_COMPANIES] = 1.0           # tail past bitmap
 
-# ---- Active-entity one-hots ---------------------------------------------
+# ---- GlobalInfo (phase + CoO + end_card + cards_remaining + num_players) -
 
-def corrupt_active_player_onehot(buf):
-    buf[ACTIVE_PLAYER_TOK, 0] = 0.0                # active_player=0 → bit 0 set
+def corrupt_global_phase_onehot(buf):
+    buf[GLOBAL_INFO_TOK, 0] = 0.0                  # INVEST dp=0 bit set
 
-def corrupt_active_player_tail(buf):
-    buf[ACTIVE_PLAYER_TOK, 5] = 1.0                # padding slot
+def corrupt_global_coo_onehot(buf):
+    buf[GLOBAL_INFO_TOK, 11] = 0.0                 # CoO level 1 → slot 0 of COO region
 
-def corrupt_active_corp_unset(buf):
-    buf[ACTIVE_CORP_TOK, 0] = 1.0                  # active_corp=-1 → all zero
+def corrupt_global_end_card(buf):
+    buf[GLOBAL_INFO_TOK, 18] = 1.0                 # end_card unflipped initially
 
-def corrupt_active_company_unset(buf):
-    buf[ACTIVE_COMPANY_TOK, 0] = 1.0               # active_company=-1 → all zero
+def corrupt_global_cards_remaining(buf):
+    buf[GLOBAL_INFO_TOK, 19] = 0.0                 # cards_remaining = 17 != 0
 
-# ---- Phase / num_players / game_progress --------------------------------
+def corrupt_global_num_players(buf):
+    buf[GLOBAL_INFO_TOK, 20] = 0.0                 # 3p → slot 20 set
 
-def corrupt_phase_onehot(buf):
-    buf[PHASE_TOK, 0] = 0.0                        # INVEST dp=0 bit set
-
-def corrupt_phase_tail(buf):
-    buf[PHASE_TOK, 11] = 1.0                       # tail past decision phases
-
-def corrupt_num_players(buf):
-    buf[NUM_PLAYERS_TOK, 0] = 0.0                  # 3p → slot 0 set
-
-def corrupt_num_players_tail(buf):
-    buf[NUM_PLAYERS_TOK, 3] = 1.0
-
-def corrupt_coo_onehot(buf):
-    buf[GAME_PROGRESS_TOK, 0] = 0.0                # CoO level 1 → slot 0 set
-
-def corrupt_end_card(buf):
-    buf[GAME_PROGRESS_TOK, 7] = 1.0                # end_card unflipped initially
-
-def corrupt_cards_remaining(buf):
-    buf[GAME_PROGRESS_TOK, 8] = 0.0                # cards_remaining = 17 != 0
+def corrupt_global_info_tail(buf):
+    buf[GLOBAL_INFO_TOK, 23] = 1.0                 # tail past 23 slots
 
 # ---- Invest token (in-phase) --------------------------------------------
 
@@ -273,6 +248,9 @@ def corrupt_issue_out_of_phase(buf):
 def corrupt_par_out_of_phase(buf):
     buf[PAR_TOK, 0] = 1.0
 
+def corrupt_acq_select_company_out_of_phase(buf):
+    buf[ACQ_SELECT_COMPANY_TOK, 0] = 1.0
+
 def corrupt_acq_offer_out_of_phase(buf):
     buf[ACQ_OFFER_TOK, 0] = 1.0
 
@@ -290,6 +268,13 @@ def corrupt_corp_inactive_active_flag(buf):
 def corrupt_corp_inactive_price_idx(buf):
     buf[CORP_BASE_TOK + 0, 14] = 1.0               # inactive → price_idx zeros
 
+def corrupt_corp_is_selected(buf):
+    buf[CORP_BASE_TOK + 0, 92] = 1.0               # active_corp=-1 so must be 0
+
+# The corp token pins TOKEN_DIM (TW_CORP=93 == TOKEN_DIM=93), so there is
+# no zero-padded tail past TW_CORP to corrupt. The conftest tail check
+# runs vacuously on the empty slice.
+
 # ---- Player token --------------------------------------------------------
 
 def corrupt_player_id_onehot(buf):
@@ -301,13 +286,11 @@ def corrupt_player_cash(buf):
 def corrupt_player_presidency(buf):
     buf[PLAYER_BASE_TOK + 0, 40] = 1.0             # OFF_PRESIDENCIES: none held
 
+def corrupt_player_is_selected_wrong(buf):
+    buf[PLAYER_BASE_TOK + 1, 84] = 1.0             # active_player=0 so player 1 must be 0
 
 def corrupt_player_tail(buf):
-    buf[PLAYER_BASE_TOK + 0, 84] = 1.0             # padding past TW_PLAYER must stay 0
-
-
-def corrupt_company_tail(buf):
-    buf[COMPANY_BASE_TOK + 0, 78] = 1.0            # padding past TW_COMPANY must stay 0
+    buf[PLAYER_BASE_TOK + 0, 85] = 1.0             # padding past TW_PLAYER must stay 0
 
 
 def corrupt_inactive_corp_companies(buf):
@@ -350,54 +333,52 @@ def corrupt_acq_price_info_total_synergies(buf):
 # The match argument to pytest.raises is re.search on the assertion text;
 # substrings here are chosen to uniquely identify the block being checked.
 CASES = [
-    (corrupt_market_slot_price,            "price slot 5"),
-    (corrupt_market_slot_prices_tail,      "tail beyond price slots"),
-    (corrupt_company_id_onehot,            "company_id one-hot"),
-    (corrupt_company_face_value,           "face_value"),
-    (corrupt_company_low_high_diff,        "low_high_diff"),
-    (corrupt_company_base_income,          "base_income"),
-    (corrupt_company_stars,                ": stars"),
-    (corrupt_company_synergy,              r"synergy\[35\]"),
-    (corrupt_market_avail_boundary,        r"slot 0 \(\$0\) must always be available"),
-    (corrupt_market_avail_tail,            "tail beyond availability flags"),
-    (corrupt_loc_removed_bit,              r"CompanyLocation\[REMOVED\]"),
-    (corrupt_loc_auction_bit,              r"CompanyLocation\[AUCTION\]"),
-    (corrupt_loc_revealed_bit,             r"CompanyLocation\[REVEALED\]"),
-    (corrupt_loc_corp_acq_tail,            "tail beyond company bitmap"),
-    (corrupt_company_adj_income,           "adjusted_income"),
-    (corrupt_company_adj_income_tail,      "tail beyond per-company income"),
-    (corrupt_fi_cash,                      r"FI token: cash"),
-    (corrupt_fi_income,                    r"FI token: income"),
-    (corrupt_fi_owned,                     r"FI token: owned"),
-    (corrupt_fi_tail,                      "tail beyond owned bitmap"),
-    (corrupt_active_player_onehot,         "ActivePlayer token"),
-    (corrupt_active_player_tail,           "ActivePlayer token: tail"),
-    (corrupt_active_corp_unset,            "ActiveCorp token: must be all-zero"),
-    (corrupt_active_company_unset,         "ActiveCompany token: must be all-zero"),
-    (corrupt_phase_onehot,                 "Phase token"),
-    (corrupt_phase_tail,                   "tail beyond phase one-hot"),
-    (corrupt_num_players,                  "num_players one-hot"),
-    (corrupt_num_players_tail,             "tail beyond num_players one-hot"),
-    (corrupt_coo_onehot,                   "CoO one-hot"),
-    (corrupt_end_card,                     "end_card flag"),
-    (corrupt_cards_remaining,              "cards_remaining"),
-    (corrupt_invest_passes,                "consecutive_passes"),
-    (corrupt_invest_tail,                  r"Invest token: tail"),
-    (corrupt_auction_out_of_phase,         r"Auction token.*all-zero outside PHASE_BID"),
-    (corrupt_dividend_out_of_phase,        r"Dividend token.*all-zero outside PHASE_DIVIDENDS"),
-    (corrupt_issue_out_of_phase,           r"Issue token.*all-zero outside PHASE_ISSUE_SHARES"),
-    (corrupt_par_out_of_phase,             r"Par/IPO token.*all-zero outside PHASE_IPO"),
-    (corrupt_acq_offer_out_of_phase,       r"Acq-offer token.*all-zero outside PHASE_ACQ_OFFER"),
-    (corrupt_acq_price_info_out_of_phase,  r"AcqPriceInfo token"),
-    (corrupt_corp_id_onehot,               "corp_id one-hot"),
-    (corrupt_corp_inactive_active_flag,    ": active flag"),
-    (corrupt_corp_inactive_price_idx,      "inactive corp price_idx"),
-    (corrupt_player_id_onehot,             "player_id one-hot"),
-    (corrupt_player_cash,                  r"player token p=0.*: cash"),
-    (corrupt_player_presidency,            "presidency"),
-    (corrupt_player_tail,                  "tail beyond TW_PLAYER features"),
-    (corrupt_company_tail,                 "tail beyond TW_COMPANY features"),
-    (corrupt_inactive_corp_companies,      "inactive corp owned_company region must be zero"),
+    (corrupt_market_slot_price,               "price slot 5"),
+    (corrupt_market_avail_boundary,           r"slot 0 \(\$0\) must always be available"),
+    (corrupt_market_info_tail,                "tail beyond availability flags"),
+    (corrupt_company_id_onehot,               "company_id one-hot"),
+    (corrupt_company_face_value,              "face_value"),
+    (corrupt_company_low_high_diff,           "low_high_diff"),
+    (corrupt_company_base_income,             "base_income"),
+    (corrupt_company_stars,                   ": stars"),
+    (corrupt_company_adj_income,              "adjusted_income"),
+    (corrupt_company_is_selected,             "is_selected"),
+    (corrupt_company_at_auction_wrong,        "at_auction"),
+    (corrupt_company_at_removed_false,        "at_removed"),
+    (corrupt_company_at_revealed_false,       "at_revealed"),
+    (corrupt_company_owner_corp_false,        "owner_corp"),
+    (corrupt_company_owner_player_false,      "owner_player"),
+    (corrupt_company_owner_fi_false,          "owner_fi"),
+    (corrupt_company_tail,                    "tail beyond TW_COMPANY features"),
+    (corrupt_fi_cash,                         r"FI token: cash"),
+    (corrupt_fi_income,                       r"FI token: income"),
+    (corrupt_fi_owned,                        r"FI token: owned"),
+    (corrupt_fi_tail,                         "tail beyond owned bitmap"),
+    (corrupt_global_phase_onehot,             "Phase token"),
+    (corrupt_global_coo_onehot,               "CoO one-hot"),
+    (corrupt_global_end_card,                 "end_card flag"),
+    (corrupt_global_cards_remaining,          "cards_remaining"),
+    (corrupt_global_num_players,              "num_players one-hot"),
+    (corrupt_global_info_tail,                "tail beyond global_info features"),
+    (corrupt_invest_passes,                   "consecutive_passes"),
+    (corrupt_invest_tail,                     r"Invest token: tail"),
+    (corrupt_auction_out_of_phase,            r"Auction token.*all-zero outside PHASE_BID"),
+    (corrupt_dividend_out_of_phase,           r"Dividend token.*all-zero outside PHASE_DIVIDENDS"),
+    (corrupt_issue_out_of_phase,              r"Issue token.*all-zero outside PHASE_ISSUE_SHARES"),
+    (corrupt_par_out_of_phase,                r"Par/IPO token.*all-zero outside PHASE_IPO"),
+    (corrupt_acq_select_company_out_of_phase, r"AcqSelectCompany token.*all-zero outside PHASE_ACQ_SELECT_COMPANY"),
+    (corrupt_acq_offer_out_of_phase,          r"Acq-offer token.*all-zero outside PHASE_ACQ_OFFER"),
+    (corrupt_acq_price_info_out_of_phase,     r"AcqPriceInfo token"),
+    (corrupt_corp_id_onehot,                  "corp_id one-hot"),
+    (corrupt_corp_inactive_active_flag,       ": active flag"),
+    (corrupt_corp_inactive_price_idx,         "inactive corp price_idx"),
+    (corrupt_corp_is_selected,                "is_selected"),
+    (corrupt_player_id_onehot,                "player_id one-hot"),
+    (corrupt_player_cash,                     r"player token p=0.*: cash"),
+    (corrupt_player_presidency,               "presidency"),
+    (corrupt_player_is_selected_wrong,        "is_selected"),
+    (corrupt_player_tail,                     "tail beyond TW_PLAYER features"),
+    (corrupt_inactive_corp_companies,         "inactive corp owned_company region must be zero"),
 ]
 
 
@@ -438,27 +419,6 @@ def test_baseline_passes_without_corruption():
     """
     state = _invest_state()
     assert_token_data_invariants(state)
-
-
-def test_company_token_synergy_uses_company_synergy_divisor() -> None:
-    state = _invest_state()
-    num_tokens = phase_conftest.get_num_tokens(TURN.get_num_players(state))
-    token_dim = int(phase_conftest.TokenDataSize.TOKEN_DIM)
-    buf = np.zeros((num_tokens, token_dim), dtype=np.float32)
-    phase_conftest.get_token_data(state, buf)
-
-    company_id = 32
-    other_company_id = 35
-    tok = COMPANY_BASE_TOK + company_id
-    syn_slot = phase_conftest._COMPANY_OFF["SYNERGIES"] + other_company_id
-    expected_syn = max(
-        COMPANIES[company_id].get_synergy_with(other_company_id),
-        COMPANIES[other_company_id].get_synergy_with(company_id),
-    )
-
-    assert expected_syn == 16
-    assert buf[tok, syn_slot] == pytest.approx(expected_syn / 16.0)
-    assert abs(float(buf[tok, syn_slot])) <= 1.0
 
 
 @pytest.mark.parametrize(

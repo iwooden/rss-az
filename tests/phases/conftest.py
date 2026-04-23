@@ -39,7 +39,6 @@ from core.data import (
     PY_SHARE_DIVISOR,
     PY_ENTITY_INCOME_DIVISOR,
     PY_COMPANY_INCOME_DIVISOR,
-    PY_COMPANY_SYNERGY_DIVISOR,
     PY_COMPANY_PRICE_DIVISOR,
     PY_SHARE_PRICE_DIVISOR,
     PY_CORP_STAR_DIVISOR,
@@ -561,38 +560,29 @@ def assert_invariants(state, msg=""):
 # TOKEN DATA INVARIANTS
 # =============================================================================
 #
-# The token buffer carries (num_players + 65, TOKEN_DIM=92) float32 rows.
-# Static-data tokens come first (pre-populatable, layout-stable across a
-# game); then dynamic informational tokens; then phase-specific; then
-# per-corp and per-player rows. Indexing (for 3-5p, corp_base = 57):
+# The token buffer carries (num_players + 55, TOKEN_DIM=93) float32 rows.
+# Informational tokens come first (every token now carries at least some
+# dynamic content, so there is no pure-static prefix); then phase-specific;
+# then per-corp and per-player rows. Indexing (for 3-5p, corp_base = 47):
 #
-#     0                          : MarketSlotPrices  (static $0..$75)
-#     [1, 37)                    : Company tokens    (36; static setup data)
-#     37                         : MarketAvailability
-#     38                         : CompanyLoc[REMOVED]
-#     39                         : CompanyLoc[AUCTION]
-#     40                         : CompanyLoc[REVEALED]
-#     41                         : CompanyLoc[CORP_ACQ]
-#     42                         : CompanyAdjustedIncome
-#     43                         : FI
-#     44                         : ActivePlayer
-#     45                         : ActiveCorp
-#     46                         : ActiveCompany
-#     47                         : Phase             (decision-phase one-hot)
-#     48                         : NumPlayers        (3p/4p/5p one-hot)
-#     49                         : GameProgress      (CoO + end_card + cards_remaining)
-#     50                         : Invest            (zeroed outside PHASE_INVEST)
-#     51                         : Auction           (zeroed outside PHASE_BID)
-#     52                         : Dividend          (zeroed outside PHASE_DIVIDENDS)
-#     53                         : Issue             (zeroed outside PHASE_ISSUE_SHARES)
-#     54                         : Par/IPO           (zeroed outside PHASE_IPO/PAR)
-#     55                         : AcqOffer          (zeroed outside PHASE_ACQ_OFFER)
-#     56                         : AcqPriceInfo      (zeroed outside PHASE_ACQ_SELECT_PRICE)
-#     [57, 65)                   : Corp tokens       (8)
-#     [65, 65 + num_players)     : Player tokens
+#     0                          : MarketInfo        (slot prices + availability)
+#     [1, 37)                    : Company tokens    (36; static data + dynamic flags)
+#     37                         : FI
+#     38                         : GlobalInfo        (phase + CoO + end_card +
+#                                                     cards_remaining + num_players)
+#     39                         : Invest            (zeroed outside PHASE_INVEST)
+#     40                         : Auction           (zeroed outside PHASE_BID)
+#     41                         : Dividend          (zeroed outside PHASE_DIVIDENDS)
+#     42                         : Issue             (zeroed outside PHASE_ISSUE_SHARES)
+#     43                         : Par/IPO           (zeroed outside PHASE_IPO/PAR)
+#     44                         : AcqSelectCompany  (zeroed outside PHASE_ACQ_SELECT_COMPANY)
+#     45                         : AcqOffer          (zeroed outside PHASE_ACQ_OFFER)
+#     46                         : AcqPriceInfo      (zeroed outside PHASE_ACQ_SELECT_PRICE)
+#     [47, 55)                   : Corp tokens       (8)
+#     [55, 55 + num_players)     : Player tokens
 #
-# The 7 per-phase pass anchors live inside the model (concatenated after
-# projection) and are not part of the input buffer.
+# The single learned pass anchor lives inside the model (concatenated after
+# projection) and is not part of the input buffer.
 #
 # The feature-offset layouts below mirror core/token_data.pyx — treat that
 # file as the source of truth if these ever drift. Per-position widths are
@@ -600,9 +590,9 @@ def assert_invariants(state, msg=""):
 
 
 # Feature offsets within each token type (must match core/token_data.pyx).
-# Active-entity selection lives in dedicated tokens, not in player/corp/
-# company rows — the per-entity offsets below intentionally omit the old
-# "am I active?" bits so the entity tokens stay permutation-equivariant.
+# Active-entity selection is now carried as an ``IS_SELECTED`` flag on the
+# player / corp / company token for the currently-selected entity; the
+# standalone active-entity one-hot tokens have been removed.
 _PLAYER_OFF = {
     "PLAYER_ID":    0,   # 5 slots
     "TURN_ORDER":   5,   # 5 slots
@@ -617,6 +607,7 @@ _PLAYER_OFF = {
     "SHARE_SELLS":  32,  # 8 slots
     "PRESIDENCIES": 40,  # 8 slots
     "COMPANIES":    48,  # 36 slots
+    "IS_SELECTED":  84,
 }
 _CORP_OFF = {
     "CORP_ID":       0,   # 8 slots
@@ -639,9 +630,11 @@ _CORP_OFF = {
     "ABILITY":       50,
     "PRESIDENT":     51,  # 5 slots
     "COMPANIES":     56,  # 36 slots
+    "IS_SELECTED":   92,
 }
-# Company token is now pure static data (ownership, location, adjusted
-# income, and active-company selection moved to dedicated tokens).
+# Company token now carries static game-setup data plus per-company
+# dynamic scalars (CoO-adjusted income, active-company selector, the four
+# observable location flags, and the mutually-exclusive owner groups).
 _COMPANY_OFF = {
     "COMPANY_ID":     0,   # 36 slots
     "LOW_PRICE":      36,
@@ -650,7 +643,15 @@ _COMPANY_OFF = {
     "LOW_HIGH_DIFF":  39,  # (high - low + 1) / PRICE_RANGE_DIVISOR (51.0)
     "BASE_INCOME":    40,
     "STARS":          41,
-    "SYNERGIES":      42,  # 36 slots
+    "ADJ_INCOME":     42,
+    "IS_SELECTED":    43,
+    "AT_REMOVED":     44,
+    "AT_AUCTION":     45,
+    "AT_REVEALED":    46,
+    "AT_CORP_ACQ":    47,
+    "OWNER_CORP":     48,  # 8 slots
+    "OWNER_PLAYER":   56,  # 5 slots (padded for num_players < 5)
+    "OWNER_FI":       61,
 }
 # Denominator for the static company low/high price-range slot. Mirrors
 # core/data.pxd's PRICE_RANGE_DIVISOR (max offset count, CDG: 51). Not
@@ -707,30 +708,20 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
     token_dim = int(TokenDataSize.TOKEN_DIM)
 
     # Token slot positions (see block comment above).
-    market_slot_prices_tok = 0
+    market_info_tok = 0
     company_base = 1
-    market_avail_tok = company_base + num_companies          # 37
-    company_loc_removed_tok = market_avail_tok + 1           # 38
-    company_loc_auction_tok = market_avail_tok + 2           # 39
-    company_loc_revealed_tok = market_avail_tok + 3          # 40
-    company_loc_corp_acq_tok = market_avail_tok + 4          # 41
-    company_adj_income_tok = market_avail_tok + 5            # 42
-    fi_tok = market_avail_tok + 6                            # 43
-    active_player_tok = fi_tok + 1                           # 44
-    active_corp_tok = fi_tok + 2                             # 45
-    active_company_tok = fi_tok + 3                          # 46
-    phase_tok = fi_tok + 4                                   # 47
-    num_players_tok = fi_tok + 5                             # 48
-    game_progress_tok = fi_tok + 6                           # 49
-    invest_tok = fi_tok + 7                                  # 50
-    auction_tok = fi_tok + 8                                 # 51
-    dividend_tok = fi_tok + 9                                # 52
-    issue_tok = fi_tok + 10                                  # 53
-    par_tok = fi_tok + 11                                    # 54
-    acq_offer_tok = fi_tok + 12                              # 55
-    acq_price_info_tok = fi_tok + 13                         # 56
-    corp_base = acq_price_info_tok + 1                       # 57
-    player_base = corp_base + num_corps                      # 65
+    fi_tok = company_base + num_companies                    # 37
+    global_info_tok = fi_tok + 1                             # 38
+    invest_tok = fi_tok + 2                                  # 39
+    auction_tok = fi_tok + 3                                 # 40
+    dividend_tok = fi_tok + 4                                # 41
+    issue_tok = fi_tok + 5                                   # 42
+    par_tok = fi_tok + 6                                     # 43
+    acq_select_company_tok = fi_tok + 7                      # 44
+    acq_offer_tok = fi_tok + 8                               # 45
+    acq_price_info_tok = fi_tok + 9                          # 46
+    corp_base = acq_price_info_tok + 1                       # 47
+    player_base = corp_base + num_corps                      # 55
     num_tokens = get_num_tokens(num_players)
     assert num_tokens == player_base + num_players, (
         f"{msg}\nget_num_tokens({num_players})={num_tokens} "
@@ -744,9 +735,12 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
         f"{msg}\nget_token_widths({num_players}).shape={widths.shape} "
         f"!= ({num_tokens},)"
     )
-    expected_widths = [27] + [78] * num_companies + [27] + [36] * 4 + [36, 38,
-                       5, 8, 36, 11, 3, 9, 17, 13, 34, 9, 50, 11, 3] \
-                       + [92] * num_corps + [84] * num_players
+    expected_widths = (
+        [54] + [62] * num_companies
+        + [38, 23, 17, 13, 34, 9, 50, 36, 11, 3]
+        + [93] * num_corps
+        + [85] * num_players
+    )
     assert list(widths) == expected_widths, (
         f"{msg}\nget_token_widths({num_players}) mismatch:\n"
         f"  got:      {list(widths)}\n"
@@ -851,7 +845,13 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
             expected = 1.0 if (loc == int(CompanyLocation.LOC_PLAYER) and owner == p) else 0.0
             _assert_close(buf[tok, _PLAYER_OFF["COMPANIES"] + cid], expected, T_FLAG,
                           f"{pm}: owned_company[{cid}]")
-        _assert_zero_row(buf[tok, _PLAYER_OFF["COMPANIES"] + num_companies:], T_FLAG,
+
+        # is_selected: set iff this player is the current active_player.
+        expected_selected = 1.0 if active_player == p else 0.0
+        _assert_close(buf[tok, _PLAYER_OFF["IS_SELECTED"]], expected_selected, T_FLAG,
+                      f"{pm}: is_selected (active_player={active_player})")
+
+        _assert_zero_row(buf[tok, _PLAYER_OFF["IS_SELECTED"] + 1:], T_FLAG,
                          f"{pm}: tail beyond TW_PLAYER features")
 
     # =========================================================================
@@ -962,12 +962,38 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
                 f"{cm}: inactive corp owned_company region must be zero",
             )
 
+        # is_selected: set iff this corp is the current active_corp. The
+        # selector is independent of the lifecycle ACTIVE flag — an inactive
+        # corp can legitimately be selected during IPO / PAR, for example.
+        expected_selected = 1.0 if active_corp == c else 0.0
+        _assert_close(buf[tok, _CORP_OFF["IS_SELECTED"]], expected_selected, T_FLAG,
+                      f"{cm}: is_selected (active_corp={active_corp})")
+
+        _assert_zero_row(buf[tok, _CORP_OFF["IS_SELECTED"] + 1:], T_FLAG,
+                         f"{cm}: tail beyond TW_CORP features")
+
     # =========================================================================
     # COMPANY TOKENS
     # =========================================================================
-    # Company tokens are now pure static game-setup data. Ownership,
-    # location, CoO-adjusted income, and active-entity selection all live
-    # in dedicated tokens asserted below.
+    # Company tokens carry static game-setup data (id one-hot, prices,
+    # base income, stars) plus per-company dynamic scalars: CoO-adjusted
+    # income, active-company selector, the four observable location flags
+    # (REMOVED / AUCTION / REVEALED / CORP_ACQ), and the mutually-exclusive
+    # ownership groups (LOC_CORP → owner_corp, LOC_PLAYER → owner_player,
+    # LOC_FI → owner_fi). The at_* and owner_* groups are both driven by
+    # the same location dispatch — exactly one at_* flag or one owner_*
+    # slot is set at a time; both groups are zero when the company is at
+    # LOC_DECK (unrevealed) or LOC_EXCLUDED below the revealed-tier
+    # threshold.
+    loc_removed = int(CompanyLocation.LOC_REMOVED)
+    loc_auction = int(CompanyLocation.LOC_AUCTION)
+    loc_revealed = int(CompanyLocation.LOC_REVEALED)
+    loc_corp_acq = int(CompanyLocation.LOC_CORP_ACQ)
+    loc_corp = int(CompanyLocation.LOC_CORP)
+    loc_player = int(CompanyLocation.LOC_PLAYER)
+    loc_fi = int(CompanyLocation.LOC_FI)
+    loc_excluded = int(CompanyLocation.LOC_EXCLUDED)
+    coo_level = TURN.get_coo_level(state)
     for cid in range(num_companies):
         tok = company_base + cid
         km = f"{msg}\ncompany token cid={cid}"
@@ -997,100 +1023,110 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
         _assert_close(buf[tok, _COMPANY_OFF["STARS"]] * PY_COMPANY_STAR_DIVISOR,
                       company.get_stars(), T_SCALE, f"{km}: stars")
 
-        # Synergy row: extractor takes max of both directions, so verify
-        # against max(get_synergy_with(cid→k), get_synergy_with(k→cid)).
-        # Self-slot (cid == k) is always zero.
-        syn_base = _COMPANY_OFF["SYNERGIES"]
-        _assert_close(buf[tok, syn_base + cid], 0.0, T_FLAG,
-                      f"{km}: self-synergy slot must be zero")
-        for k in range(num_companies):
-            if k == cid:
-                continue
-            syn = max(company.get_synergy_with(k),
-                      COMPANIES[k].get_synergy_with(cid))
-            _assert_close(buf[tok, syn_base + k] * PY_COMPANY_SYNERGY_DIVISOR,
-                          syn, T_SCALE, f"{km}: synergy[{k}]")
-        _assert_zero_row(buf[tok, syn_base + num_companies:], T_FLAG,
+        # CoO-adjusted income (may be negative when CoO penalties push a
+        # company below zero).
+        _assert_close(buf[tok, _COMPANY_OFF["ADJ_INCOME"]] * PY_COMPANY_INCOME_DIVISOR,
+                      company.get_adjusted_income(state), T_SCALE,
+                      f"{km}: adjusted_income")
+
+        # is_selected: set iff this company is the current active_company.
+        expected_selected = 1.0 if active_company == cid else 0.0
+        _assert_close(buf[tok, _COMPANY_OFF["IS_SELECTED"]], expected_selected, T_FLAG,
+                      f"{km}: is_selected (active_company={active_company})")
+
+        # Location dispatch: determine which at_* / owner_* slot should
+        # light up, then cross-check every slot in both groups. Exactly
+        # one slot across the union of the two groups is set when the
+        # location is observable; both groups are entirely zero when the
+        # company is at LOC_DECK or LOC_EXCLUDED below its revealed tier.
+        loc = company.get_location(state)
+        expected_at_removed = expected_at_auction = 0.0
+        expected_at_revealed = expected_at_corp_acq = 0.0
+        expected_owner_corp = -1
+        expected_owner_player = -1
+        expected_owner_fi = 0.0
+        if loc == loc_removed:
+            expected_at_removed = 1.0
+        elif loc == loc_excluded and coo_level > company.get_stars():
+            expected_at_removed = 1.0
+        elif loc == loc_auction:
+            expected_at_auction = 1.0
+        elif loc == loc_revealed:
+            expected_at_revealed = 1.0
+        elif loc == loc_corp_acq:
+            expected_at_corp_acq = 1.0
+        elif loc == loc_corp:
+            expected_owner_corp = company.get_owner_id(state)
+            assert 0 <= expected_owner_corp < num_corps, (
+                f"{km}: LOC_CORP owner {expected_owner_corp} out of range"
+            )
+        elif loc == loc_player:
+            expected_owner_player = company.get_owner_id(state)
+            assert 0 <= expected_owner_player < num_players, (
+                f"{km}: LOC_PLAYER owner {expected_owner_player} out of range"
+            )
+        elif loc == loc_fi:
+            expected_owner_fi = 1.0
+
+        _assert_close(buf[tok, _COMPANY_OFF["AT_REMOVED"]], expected_at_removed, T_FLAG,
+                      f"{km}: at_removed (loc={loc})")
+        _assert_close(buf[tok, _COMPANY_OFF["AT_AUCTION"]], expected_at_auction, T_FLAG,
+                      f"{km}: at_auction (loc={loc})")
+        _assert_close(buf[tok, _COMPANY_OFF["AT_REVEALED"]], expected_at_revealed, T_FLAG,
+                      f"{km}: at_revealed (loc={loc})")
+        _assert_close(buf[tok, _COMPANY_OFF["AT_CORP_ACQ"]], expected_at_corp_acq, T_FLAG,
+                      f"{km}: at_corp_acq (loc={loc})")
+
+        owner_corp_slice = buf[tok, _COMPANY_OFF["OWNER_CORP"]:_COMPANY_OFF["OWNER_CORP"] + num_corps]
+        if expected_owner_corp >= 0:
+            _assert_close(owner_corp_slice.sum(), 1.0, T_FLAG,
+                          f"{km}: owner_corp one-hot sum")
+            _assert_close(owner_corp_slice[expected_owner_corp], 1.0, T_FLAG,
+                          f"{km}: owner_corp bit at {expected_owner_corp}")
+        else:
+            _assert_close(owner_corp_slice.sum(), 0.0, T_FLAG,
+                          f"{km}: owner_corp must be all-zero (loc={loc})")
+
+        owner_player_slice = buf[tok, _COMPANY_OFF["OWNER_PLAYER"]:_COMPANY_OFF["OWNER_PLAYER"] + 5]
+        if expected_owner_player >= 0:
+            _assert_close(owner_player_slice.sum(), 1.0, T_FLAG,
+                          f"{km}: owner_player one-hot sum")
+            _assert_close(owner_player_slice[expected_owner_player], 1.0, T_FLAG,
+                          f"{km}: owner_player bit at {expected_owner_player}")
+        else:
+            _assert_close(owner_player_slice.sum(), 0.0, T_FLAG,
+                          f"{km}: owner_player must be all-zero (loc={loc})")
+
+        _assert_close(buf[tok, _COMPANY_OFF["OWNER_FI"]], expected_owner_fi, T_FLAG,
+                      f"{km}: owner_fi (loc={loc})")
+
+        _assert_zero_row(buf[tok, _COMPANY_OFF["OWNER_FI"] + 1:], T_FLAG,
                          f"{km}: tail beyond TW_COMPANY features")
 
     # =========================================================================
-    # MARKET SLOT PRICES TOKEN (static $0..$75 normalized)
+    # MARKET INFO TOKEN (static slot prices + per-space availability)
     # =========================================================================
-    mspm = f"{msg}\nMarket slot-prices token"
+    # First 27 slots: static $0..$75 slot prices normalized by
+    # SHARE_PRICE_DIVISOR. Next 27 slots: per-space availability flags.
+    mm = f"{msg}\nMarketInfo token"
+    OFF_MI_SLOT_PRICES = 0
+    OFF_MI_AVAILABILITY = num_market
     for i in range(num_market):
-        _assert_close(buf[market_slot_prices_tok, i] * PY_SHARE_PRICE_DIVISOR,
+        _assert_close(buf[market_info_tok, OFF_MI_SLOT_PRICES + i] * PY_SHARE_PRICE_DIVISOR,
                       MARKET.get_price_at_index(i), T_SCALE,
-                      f"{mspm}: price slot {i}")
-    _assert_zero_row(buf[market_slot_prices_tok, num_market:], T_FLAG,
-                     f"{mspm}: tail beyond price slots")
-
-    # =========================================================================
-    # MARKET AVAILABILITY TOKEN
-    # =========================================================================
-    mm = f"{msg}\nMarket availability token"
+                      f"{mm}: price slot {i}")
     # Boundary spaces always available
-    _assert_close(buf[market_avail_tok, 0], 1.0, T_FLAG,
+    _assert_close(buf[market_info_tok, OFF_MI_AVAILABILITY + 0], 1.0, T_FLAG,
                   f"{mm}: slot 0 ($0) must always be available")
-    _assert_close(buf[market_avail_tok, num_market - 1], 1.0, T_FLAG,
+    _assert_close(buf[market_info_tok, OFF_MI_AVAILABILITY + num_market - 1], 1.0, T_FLAG,
                   f"{mm}: slot {num_market - 1} ($75) must always be available")
     for i in range(num_market):
         expected = 1.0 if MARKET.is_space_available(state, i) else 0.0
-        _assert_close(buf[market_avail_tok, i], expected, T_FLAG,
+        _assert_close(buf[market_info_tok, OFF_MI_AVAILABILITY + i], expected, T_FLAG,
                       f"{mm}: availability slot {i}")
-    # Tail beyond the 27 slots must be zero
-    _assert_zero_row(buf[market_avail_tok, num_market:], T_FLAG,
+    # Tail beyond the 54 defined slots must be zero
+    _assert_zero_row(buf[market_info_tok, OFF_MI_AVAILABILITY + num_market:], T_FLAG,
                      f"{mm}: tail beyond availability flags")
-
-    # =========================================================================
-    # COMPANY-LOCATION TOKENS (one 36-wide bitmap per target location)
-    # =========================================================================
-    # Buffer order (see _fill_buffer in core/token_data.pyx):
-    #   REMOVED, AUCTION, REVEALED, CORP_ACQ.
-    loc_token_map = (
-        (company_loc_removed_tok,  int(CompanyLocation.LOC_REMOVED),  "REMOVED"),
-        (company_loc_auction_tok,  int(CompanyLocation.LOC_AUCTION),  "AUCTION"),
-        (company_loc_revealed_tok, int(CompanyLocation.LOC_REVEALED), "REVEALED"),
-        (company_loc_corp_acq_tok, int(CompanyLocation.LOC_CORP_ACQ), "CORP_ACQ"),
-    )
-    # The REMOVED bitmap also flags LOC_EXCLUDED companies whose star tier
-    # the CoO has moved past — the exclusion is publicly observable once
-    # the deck has advanced out of that colour group.
-    coo_level = TURN.get_coo_level(state)
-    loc_removed = int(CompanyLocation.LOC_REMOVED)
-    loc_excluded = int(CompanyLocation.LOC_EXCLUDED)
-    for loc_tok, target_loc, tag in loc_token_map:
-        lm = f"{msg}\nCompanyLocation[{tag}] token"
-        expected_count = 0
-        for cid in range(num_companies):
-            loc = COMPANIES[cid].get_location(state)
-            if target_loc == loc_removed:
-                expected_hot = loc == loc_removed or (
-                    loc == loc_excluded
-                    and coo_level > COMPANIES[cid].get_stars()
-                )
-            else:
-                expected_hot = loc == target_loc
-            expected = 1.0 if expected_hot else 0.0
-            _assert_close(buf[loc_tok, cid], expected, T_FLAG,
-                          f"{lm}: bit[{cid}] (company loc={loc})")
-            if expected_hot:
-                expected_count += 1
-        _assert_close(buf[loc_tok, 0:num_companies].sum(), expected_count, T_FLAG,
-                      f"{lm}: bitmap sum must equal companies at {tag}")
-        # Exactly 36 slots; no tail padding inside TOKEN_DIM beyond cid count
-        _assert_zero_row(buf[loc_tok, num_companies:], T_FLAG,
-                         f"{lm}: tail beyond company bitmap")
-
-    # =========================================================================
-    # COMPANY ADJUSTED INCOME TOKEN (per-company CoO-adjusted income)
-    # =========================================================================
-    cim = f"{msg}\nCompanyAdjustedIncome token"
-    for cid in range(num_companies):
-        _assert_close(buf[company_adj_income_tok, cid] * PY_COMPANY_INCOME_DIVISOR,
-                      COMPANIES[cid].get_adjusted_income(state), T_SCALE,
-                      f"{cim}: adjusted_income[{cid}]")
-    _assert_zero_row(buf[company_adj_income_tok, num_companies:], T_FLAG,
-                     f"{cim}: tail beyond per-company income")
 
     # =========================================================================
     # FI TOKEN
@@ -1110,102 +1146,38 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
                      f"{fm}: tail beyond owned bitmap")
 
     # =========================================================================
-    # ACTIVE-ENTITY TOKENS (one-hot if set, all-zero if -1)
+    # GLOBAL INFO TOKEN (phase + CoO + end_card + cards_remaining + num_players)
     # =========================================================================
-    ap_slice = buf[active_player_tok, 0:5]
-    if active_player >= 0:
-        assert 0 <= active_player < num_players, (
-            f"{msg}\nactive_player {active_player} out of range [0, {num_players})"
-        )
-        _assert_close(ap_slice.sum(), 1.0, T_FLAG,
-                      f"{msg}\nActivePlayer token: one-hot sum")
-        _assert_close(ap_slice[active_player], 1.0, T_FLAG,
-                      f"{msg}\nActivePlayer token: bit at {active_player}")
-    else:
-        _assert_close(ap_slice.sum(), 0.0, T_FLAG,
-                      f"{msg}\nActivePlayer token: must be all-zero when unset")
-    _assert_zero_row(buf[active_player_tok, 5:], T_FLAG,
-                     f"{msg}\nActivePlayer token: tail beyond 5 slots")
-
-    ac_slice = buf[active_corp_tok, 0:num_corps]
-    if active_corp >= 0:
-        assert 0 <= active_corp < num_corps, (
-            f"{msg}\nactive_corp {active_corp} out of range [0, {num_corps})"
-        )
-        _assert_close(ac_slice.sum(), 1.0, T_FLAG,
-                      f"{msg}\nActiveCorp token: one-hot sum")
-        _assert_close(ac_slice[active_corp], 1.0, T_FLAG,
-                      f"{msg}\nActiveCorp token: bit at {active_corp}")
-    else:
-        _assert_close(ac_slice.sum(), 0.0, T_FLAG,
-                      f"{msg}\nActiveCorp token: must be all-zero when unset")
-    _assert_zero_row(buf[active_corp_tok, num_corps:], T_FLAG,
-                     f"{msg}\nActiveCorp token: tail beyond corp slots")
-
-    aco_slice = buf[active_company_tok, 0:num_companies]
-    if active_company >= 0:
-        assert 0 <= active_company < num_companies, (
-            f"{msg}\nactive_company {active_company} out of range [0, {num_companies})"
-        )
-        _assert_close(aco_slice.sum(), 1.0, T_FLAG,
-                      f"{msg}\nActiveCompany token: one-hot sum")
-        _assert_close(aco_slice[active_company], 1.0, T_FLAG,
-                      f"{msg}\nActiveCompany token: bit at {active_company}")
-    else:
-        _assert_close(aco_slice.sum(), 0.0, T_FLAG,
-                      f"{msg}\nActiveCompany token: must be all-zero when unset")
-    _assert_zero_row(buf[active_company_tok, num_companies:], T_FLAG,
-                     f"{msg}\nActiveCompany token: tail beyond company slots")
-
-    # =========================================================================
-    # PHASE TOKEN
-    # =========================================================================
-    pm = f"{msg}\nPhase token"
+    gm = f"{msg}\nGlobalInfo token"
     num_decision_phases = int(GameConstants.NUM_DECISION_PHASES)
     num_engine_phases = int(GameConstants.NUM_PHASES)
+    OFF_GI_PHASE = 0                                  # 11 slots
+    OFF_GI_COO = OFF_GI_PHASE + num_decision_phases   # 11 (7 slots)
+    OFF_GI_END_CARD = OFF_GI_COO + 7                  # 18
+    OFF_GI_CARDS_REM = OFF_GI_END_CARD + 1            # 19
+    OFF_GI_NUM_PLAYERS = OFF_GI_CARDS_REM + 1         # 20 (3 slots)
 
     # Phase one-hot (one slot per decision phase). Exactly one bit must be set
     # in every decision-phase state; the one-hot must be all-zero in automated /
     # terminal engine phases. When the driver's history-recorded phase_id is
     # provided, use it as ground truth — that check is independent of
     # ENGINE_TO_DECISION_PHASE and catches filler-vs-checker blind spots.
-    phase_slice = buf[phase_tok, 0:num_decision_phases]
+    phase_slice = buf[global_info_tok, OFF_GI_PHASE:OFF_GI_PHASE + num_decision_phases]
     if expected_decision_phase is None:
         dp = ENGINE_TO_DECISION_PHASE[phase] if 0 <= phase < num_engine_phases else -1
     else:
         dp = int(expected_decision_phase)
     if 0 <= dp < num_decision_phases:
         _assert_close(phase_slice.sum(), 1.0, T_FLAG,
-                      f"{pm}: phase one-hot sum (engine phase={phase}, dp={dp})")
+                      f"{gm}: Phase token: phase one-hot sum (engine phase={phase}, dp={dp})")
         _assert_close(phase_slice[dp], 1.0, T_FLAG,
-                      f"{pm}: phase bit at decision slot {dp} (engine phase={phase})")
+                      f"{gm}: Phase token: phase bit at decision slot {dp} (engine phase={phase})")
     else:
         _assert_close(phase_slice.sum(), 0.0, T_FLAG,
-                      f"{pm}: phase one-hot must be zero for automated/terminal phase={phase}")
-    _assert_zero_row(buf[phase_tok, num_decision_phases:], T_FLAG,
-                     f"{pm}: tail beyond phase one-hot")
-
-    # =========================================================================
-    # NUM_PLAYERS TOKEN
-    # =========================================================================
-    nm = f"{msg}\nNumPlayers token"
-    np_slice = buf[num_players_tok, 0:3]
-    _assert_close(np_slice.sum(), 1.0, T_FLAG, f"{nm}: num_players one-hot sum")
-    _assert_close(np_slice[num_players - 3], 1.0, T_FLAG,
-                  f"{nm}: num_players bit at slot {num_players - 3}")
-    _assert_zero_row(buf[num_players_tok, 3:], T_FLAG,
-                     f"{nm}: tail beyond num_players one-hot")
-
-    # =========================================================================
-    # GAME_PROGRESS TOKEN
-    # =========================================================================
-    gm = f"{msg}\nGameProgress token"
-    OFF_COO = 0
-    OFF_END_CARD = 7
-    OFF_CARDS_REM = 8
+                      f"{gm}: Phase token: phase one-hot must be zero for automated/terminal phase={phase}")
 
     # CoO one-hot (7 slots; level 1..7 → slots 0..6)
-    coo_slice = buf[game_progress_tok, OFF_COO:OFF_COO + 7]
+    coo_slice = buf[global_info_tok, OFF_GI_COO:OFF_GI_COO + 7]
     coo = TURN.get_coo_level(state)
     if 1 <= coo <= 7:
         _assert_close(coo_slice.sum(), 1.0, T_FLAG, f"{gm}: CoO one-hot sum")
@@ -1215,16 +1187,21 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
         _assert_close(coo_slice.sum(), 0.0, T_FLAG,
                       f"{gm}: CoO one-hot must be zero for level {coo}")
 
-    _assert_close(buf[game_progress_tok, OFF_END_CARD],
+    _assert_close(buf[global_info_tok, OFF_GI_END_CARD],
                   1.0 if TURN.is_end_card_flipped(state) else 0.0, T_FLAG,
                   f"{gm}: end_card flag")
-    _assert_close(buf[game_progress_tok, OFF_CARDS_REM] * num_companies,
+    _assert_close(buf[global_info_tok, OFF_GI_CARDS_REM] * num_companies,
                   TURN.get_cards_remaining(state), T_SCALE,
                   f"{gm}: cards_remaining")
 
-    # Tail beyond the 9 defined slots must be zero
-    _assert_zero_row(buf[game_progress_tok, OFF_CARDS_REM + 1:], T_FLAG,
-                     f"{gm}: tail beyond game_progress features")
+    np_slice = buf[global_info_tok, OFF_GI_NUM_PLAYERS:OFF_GI_NUM_PLAYERS + 3]
+    _assert_close(np_slice.sum(), 1.0, T_FLAG, f"{gm}: num_players one-hot sum")
+    _assert_close(np_slice[num_players - 3], 1.0, T_FLAG,
+                  f"{gm}: num_players bit at slot {num_players - 3}")
+
+    # Tail beyond the 23 defined slots must be zero
+    _assert_zero_row(buf[global_info_tok, OFF_GI_NUM_PLAYERS + 3:], T_FLAG,
+                     f"{gm}: tail beyond global_info features")
 
     # =========================================================================
     # PHASE-SPECIFIC TOKENS
@@ -1421,6 +1398,47 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
             _assert_close(buf[par_tok, 42 + c], expected, T_FLAG,
                           f"{pm2}: remaining[{c}]")
         _assert_zero_row(buf[par_tok, 42 + num_corps:], T_FLAG, f"{pm2}: tail")
+
+    # Acq-select-company token --------------------------------------------
+    # Per-candidate marginal synergy delta for the active corp: the
+    # ENTITY_INCOME_DIVISOR-normalized sum of bidirectional positive
+    # synergies between each candidate company and every company already
+    # in the active corp's portfolio (owned + acquisition pile). Slots
+    # for candidates already in the portfolio stay zero.
+    ascm = f"{msg}\nAcqSelectCompany token"
+    if phase != int(GamePhases.PHASE_ACQ_SELECT_COMPANY):
+        _assert_zero_row(buf[acq_select_company_tok], T_FLAG,
+                         f"{ascm} must be all-zero outside PHASE_ACQ_SELECT_COMPANY "
+                         f"(phase={phase})")
+    else:
+        assert 0 <= active_corp < num_corps, (
+            f"{ascm}: active_corp {active_corp} unset in SELECT_COMPANY"
+        )
+        portfolio = [
+            cid for cid in range(num_companies)
+            if COMPANIES[cid].get_location(state) in (
+                int(CompanyLocation.LOC_CORP), int(CompanyLocation.LOC_CORP_ACQ)
+            ) and COMPANIES[cid].get_owner_id(state) == active_corp
+        ]
+        for candidate in range(num_companies):
+            if candidate in portfolio:
+                _assert_close(buf[acq_select_company_tok, candidate], 0.0, T_FLAG,
+                              f"{ascm}: candidate {candidate} already in portfolio "
+                              f"must be zero")
+                continue
+            expected_delta = 0
+            for held in portfolio:
+                bonus_held_to_candidate = COMPANIES[held].get_synergy_with(candidate)
+                bonus_candidate_to_held = COMPANIES[candidate].get_synergy_with(held)
+                if bonus_held_to_candidate > 0:
+                    expected_delta += bonus_held_to_candidate
+                if bonus_candidate_to_held > 0:
+                    expected_delta += bonus_candidate_to_held
+            _assert_close(buf[acq_select_company_tok, candidate] * PY_ENTITY_INCOME_DIVISOR,
+                          expected_delta, T_SCALE,
+                          f"{ascm}: candidate {candidate} synergy delta")
+        _assert_zero_row(buf[acq_select_company_tok, num_companies:], T_FLAG,
+                         f"{ascm}: tail beyond per-company slots")
 
     # Acq-offer token -----------------------------------------------------
     aom = f"{msg}\nAcq-offer token"
