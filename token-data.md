@@ -42,7 +42,9 @@ affected entity's own token rather than as standalone selector tokens.
   available.
 
 ### Company tokens (62, ×36)
-- Company ID (one-hot, 36 slots)
+- Company ID (one-hot, 36 slots). Retained in the engine buffer, but the
+  current transformer skips this slice and adds learned
+  `company_id_embed[company_id]` to each company token.
 - Low price (scalar, normalized by COMPANY_PRICE_DIVISOR)
 - Face value (scalar, normalized by COMPANY_PRICE_DIVISOR)
 - High price (scalar, normalized by COMPANY_PRICE_DIVISOR)
@@ -75,7 +77,8 @@ REVEALED / REMOVED / DECK / EXCLUDED) leave all three groups zero; `at_*`
 flags encode those cases. The current transformer skips this full ownership
 tail in `company_proj` and re-injects the active owner reference from a
 concatenated `corp_id_embed` / `player_id_embed` / FI type-embedding owner
-table.
+table. With both skips, `company_proj` only sees the non-ID, non-owner company
+features from slots 36 through 47.
 
 Synergies are no longer surfaced on the Company token. The ACQ_SELECT_COMPANY
 phase-specific token carries the per-candidate marginal synergy delta for the

@@ -114,8 +114,33 @@ def test_player_projection_uses_learned_identity_embedding(model: RSSTransformer
     assert torch.allclose(actual_delta, expected_delta)
 
 
+def test_company_projection_uses_learned_identity_embedding(model: RSSTransformerNet) -> None:
+    cfg = model.cfg
+    num_companies = int(GameConstants.NUM_COMPANIES)
+    assert (
+        model.company_proj.in_features
+        == int(TokenWidth.TW_COMPANY) - num_companies - model._company_owner_width
+    )
+    assert tuple(model.company_id_embed.weight.shape) == (num_companies, cfg.d_model)
+
+    x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
+    x_with_ids = x.clone()
+    x_with_ids[:, model._company_slice, :num_companies] = torch.eye(
+        num_companies
+    ).unsqueeze(0)
+
+    projected_without_ids = model._project_tokens(x)[:, model._company_slice]
+    projected_with_ids = model._project_tokens(x_with_ids)[:, model._company_slice]
+    assert torch.allclose(projected_without_ids, projected_with_ids)
+
+    expected_delta = model.company_id_embed.weight[1] - model.company_id_embed.weight[0]
+    actual_delta = projected_without_ids[0, 1] - projected_without_ids[0, 0]
+    assert torch.allclose(actual_delta, expected_delta)
+
+
 def test_company_projection_uses_shared_owner_embeddings(model: RSSTransformerNet) -> None:
     cfg = model.cfg
+    num_companies = int(GameConstants.NUM_COMPANIES)
     num_corps = int(GameConstants.NUM_CORPS)
     num_player_slots = 5
     owner_start = model._company_owner_offset
@@ -126,7 +151,9 @@ def test_company_projection_uses_shared_owner_embeddings(model: RSSTransformerNe
     assert model._company_owner_player_offset == owner_start + num_corps
     assert model._company_owner_fi_offset == owner_start + num_corps + num_player_slots
     assert owner_stop == int(TokenWidth.TW_COMPANY)
-    assert model.company_proj.in_features == int(TokenWidth.TW_COMPANY) - owner_width
+    assert model.company_proj.in_features == (
+        int(TokenWidth.TW_COMPANY) - num_companies - owner_width
+    )
 
     x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
     x_with_owner = x.clone()
