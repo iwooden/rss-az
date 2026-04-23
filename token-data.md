@@ -29,6 +29,10 @@ positions carry no parameters.
 Active-entity selection (the turn's `active_player` / `active_corp` /
 `active_company`) is surfaced as a single `is_selected` bit on each
 affected entity's own token rather than as standalone selector tokens.
+The transformer uses those bits to build active player/corp/company ID
+references and broadcasts them to every projected token plus learned pass
+anchors, except MarketInfo, GlobalInfo, and tokens of the same entity type as
+the active reference.
 
 ---
 

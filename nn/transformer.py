@@ -281,6 +281,9 @@ class RSSTransformerNet(nn.Module):
     _company_ids: torch.Tensor
     _corp_ids: torch.Tensor
     _player_ids: torch.Tensor
+    _active_player_targets: torch.Tensor
+    _active_corp_targets: torch.Tensor
+    _active_company_targets: torch.Tensor
 
     def __init__(self, cfg: TransformerConfig) -> None:
         super().__init__()
@@ -425,6 +428,25 @@ class RSSTransformerNet(nn.Module):
         type_ids[self._corp_slice] = _TYPE_CORP
         type_ids[self._player_slice] = _TYPE_PLAYER
         self.register_buffer("_type_ids", type_ids, persistent=False)
+
+        # Active-entity reference targets span the projected engine tokens plus
+        # the learned pass anchors. MarketInfo and GlobalInfo are intentionally
+        # pure context tokens; entity tokens do not receive their own active
+        # identity reference, but do receive the other active entity refs.
+        projected_tokens = np_ + 55 + NUM_PASS_PHASES
+        active_player_targets = torch.ones(projected_tokens, dtype=torch.float32)
+        active_corp_targets = torch.ones(projected_tokens, dtype=torch.float32)
+        active_company_targets = torch.ones(projected_tokens, dtype=torch.float32)
+        for targets in (active_player_targets, active_corp_targets, active_company_targets):
+            targets[self._market_info_idx] = 0.0
+            targets[self._global_info_idx] = 0.0
+        active_player_targets[self._player_slice] = 0.0
+        active_corp_targets[self._corp_slice] = 0.0
+        active_company_targets[self._company_slice] = 0.0
+        self.register_buffer("_active_player_targets", active_player_targets, persistent=False)
+        self.register_buffer("_active_corp_targets", active_corp_targets, persistent=False)
+        self.register_buffer("_active_company_targets", active_company_targets, persistent=False)
+
         self.register_buffer(
             "_company_ids", torch.arange(_NUM_COMPANIES, dtype=torch.long), persistent=False,
         )
@@ -631,6 +653,48 @@ class RSSTransformerNet(nn.Module):
             + owned_company_refs.to(player_tokens.dtype)
         )
 
+    def _active_entity_refs(
+        self,
+        x: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return active player/corp/company identity refs from is_selected slots."""
+        active_player_ref = (
+            x[:, self._player_slice, 0].to(self.player_id_embed.weight.dtype)
+            @ self.player_id_embed(self._player_ids)
+        )
+        active_corp_ref = (
+            x[:, self._corp_slice, 0].to(self.corp_id_embed.weight.dtype)
+            @ self.corp_id_embed.weight
+        )
+        active_company_ref = (
+            x[:, self._company_slice, 0].to(self.company_id_embed.weight.dtype)
+            @ self.company_id_embed.weight
+        )
+        return active_player_ref, active_corp_ref, active_company_ref
+
+    def _add_active_entity_refs(
+        self,
+        tokens: torch.Tensor,
+        active_player_ref: torch.Tensor,
+        active_corp_ref: torch.Tensor,
+        active_company_ref: torch.Tensor,
+    ) -> torch.Tensor:
+        """Broadcast active entity refs to all eligible projected/pass tokens."""
+        dtype = tokens.dtype
+        tokens = tokens + (
+            active_player_ref.to(dtype)[:, None, :]
+            * self._active_player_targets.to(dtype=dtype).view(1, -1, 1)
+        )
+        tokens = tokens + (
+            active_corp_ref.to(dtype)[:, None, :]
+            * self._active_corp_targets.to(dtype=dtype).view(1, -1, 1)
+        )
+        tokens = tokens + (
+            active_company_ref.to(dtype)[:, None, :]
+            * self._active_company_targets.to(dtype=dtype).view(1, -1, 1)
+        )
+        return tokens
+
     @staticmethod
     def _policy_head_width(head: nn.Module) -> int:
         if not isinstance(head, nn.Sequential) or len(head) == 0:
@@ -764,7 +828,9 @@ class RSSTransformerNet(nn.Module):
         zero-padded to ``TOKEN_DIM=85`` so ``get_token_data`` can fill it with
         a uniform nogil memcpy pattern, but each type only uses its meaningful
         feature slice — padding and replaced relation fields would otherwise be
-        multiplied against projection weights.
+        multiplied against projection weights. After pass anchors are appended,
+        active player/corp/company identity refs are broadcast to every eligible
+        token except MarketInfo, GlobalInfo, and same-entity token rows.
 
         Args:
             x: (batch, num_players + 55, token_dim) zero-padded raw features.
@@ -814,6 +880,13 @@ class RSSTransformerNet(nn.Module):
             .expand(x.shape[0], NUM_PASS_PHASES, d)
         )
         tokens = torch.cat([input_tokens, pass_rows], dim=1)                             # (B, num_tokens, d)
+        active_player_ref, active_corp_ref, active_company_ref = self._active_entity_refs(x)
+        tokens = self._add_active_entity_refs(
+            tokens,
+            active_player_ref,
+            active_corp_ref,
+            active_company_ref,
+        )
         return tokens
 
     # ------------------------------------------------------------------

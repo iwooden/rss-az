@@ -203,6 +203,72 @@ def test_player_projection_uses_shared_relation_embeddings(model: RSSTransformer
     assert torch.allclose(actual_delta, expected_delta)
 
 
+def test_active_entity_refs_broadcast_to_eligible_tokens(model: RSSTransformerNet) -> None:
+    cfg = model.cfg
+    x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
+    x_active = x.clone()
+
+    active_company = 0
+    active_corp = 1
+    active_player = 2
+    x_active[:, model._company_slice.start + active_company, 0] = 1.0
+    x_active[:, model._corp_slice.start + active_corp, 0] = 1.0
+    x_active[:, model._player_slice.start + active_player, 0] = 1.0
+
+    without_active = model._project_tokens(x)
+    with_active = model._project_tokens(x_active)
+    delta = with_active - without_active
+
+    active_company_ref = model.company_id_embed.weight[active_company]
+    active_corp_ref = model.corp_id_embed.weight[active_corp]
+    active_player_ref = model.player_id_embed.weight[active_player]
+    all_refs = active_company_ref + active_corp_ref + active_player_ref
+
+    assert torch.allclose(delta[0, model._market_info_idx], torch.zeros_like(all_refs))
+    assert torch.allclose(delta[0, model._global_info_idx], torch.zeros_like(all_refs))
+    assert torch.allclose(delta[0, model._invest_idx], all_refs)
+    assert torch.allclose(delta[0, model._pass_idxs[0]], all_refs)
+
+    inactive_company_idx = model._company_slice.start + 1
+    assert torch.allclose(
+        delta[0, inactive_company_idx],
+        active_player_ref + active_corp_ref,
+    )
+    active_company_idx = model._company_slice.start + active_company
+    expected_active_company_delta = (
+        model.company_proj.weight[:, 0]
+        + active_player_ref
+        + active_corp_ref
+    )
+    assert torch.allclose(delta[0, active_company_idx], expected_active_company_delta)
+
+    inactive_corp_idx = model._corp_slice.start
+    assert torch.allclose(
+        delta[0, inactive_corp_idx],
+        active_player_ref + active_company_ref,
+    )
+    active_corp_idx = model._corp_slice.start + active_corp
+    expected_active_corp_delta = (
+        model.corp_proj.weight[:, 0]
+        + active_player_ref
+        + active_company_ref
+    )
+    assert torch.allclose(delta[0, active_corp_idx], expected_active_corp_delta)
+
+    inactive_player_idx = model._player_slice.start
+    assert torch.allclose(
+        delta[0, inactive_player_idx],
+        active_corp_ref + active_company_ref,
+    )
+    active_player_idx = model._player_slice.start + active_player
+    expected_active_player_delta = (
+        model.player_proj.weight[:, 0]
+        + active_corp_ref
+        + active_company_ref
+    )
+    assert torch.allclose(delta[0, active_player_idx], expected_active_player_delta)
+
+
 def test_company_projection_uses_learned_identity_embedding(model: RSSTransformerNet) -> None:
     cfg = model.cfg
     num_companies = int(GameConstants.NUM_COMPANIES)
