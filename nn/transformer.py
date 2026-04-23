@@ -71,6 +71,28 @@ PASS_PHASE_IDS: tuple[int, ...] = (
 )
 NUM_PASS_PHASES = len(PASS_PHASE_IDS)  # 7
 
+# Input-buffer token-type taxonomy. Index order must stay stable — the static
+# ``_type_ids`` buffer built in ``RSSTransformerNet.__init__`` indexes into
+# ``type_embeds`` using these ids, and multi-instance types (company / corp
+# / player) share a single row. Pass tokens are absent here — they're
+# already pure learned anchors (``pass_embeds``) so no type embedding is
+# needed for them.
+_TYPE_MARKET_INFO = 0
+_TYPE_COMPANY = 1
+_TYPE_FI = 2
+_TYPE_GLOBAL_INFO = 3
+_TYPE_INVEST = 4
+_TYPE_AUCTION = 5
+_TYPE_DIVIDEND = 6
+_TYPE_ISSUE = 7
+_TYPE_PAR = 8
+_TYPE_ACQ_SELECT_COMPANY = 9
+_TYPE_ACQ_OFFER = 10
+_TYPE_ACQ_PRICE = 11
+_TYPE_CORP = 12
+_TYPE_PLAYER = 13
+NUM_TOKEN_TYPES = 14
+
 _GELU_APPROX = "tanh"
 
 
@@ -236,6 +258,12 @@ class TransformerBlock(nn.Module):
 class RSSTransformerNet(nn.Module):
     """Transformer with entity-readout policy heads and per-player value output."""
 
+    # Class-level annotation so pyright knows ``self._type_ids`` (registered
+    # as a buffer in ``__init__``) is a Tensor. ``register_buffer`` otherwise
+    # returns ``Tensor | Module | None`` per pytorch's stubs, which breaks
+    # ``type_embeds[self._type_ids]`` indexing.
+    _type_ids: torch.Tensor
+
     def __init__(self, cfg: TransformerConfig) -> None:
         super().__init__()
         self.cfg = cfg
@@ -309,11 +337,39 @@ class RSSTransformerNet(nn.Module):
         # learned (d_model,) vector (BERT [CLS]-style anchors) that rides the
         # residual stream and picks up game-state context through attention.
         # Distinct per-phase embeddings avoid cross-phase gradient interference
-        # — the same reason the pass/select heads below are per-phase. All
-        # other token types are discriminated via their own per-type
-        # projection (and its bias), so a shared type-embedding table would
-        # be redundant there.
+        # — the same reason the pass/select heads below are per-phase.
         self.pass_embeds = nn.Parameter(torch.empty(NUM_PASS_PHASES, d))
+        # Per-type additive embedding for every non-pass token. Added
+        # post-projection in ``_project_tokens`` so the trunk still sees a
+        # type-distinct vector even when a token's feature slice is all-zero
+        # (e.g. the DIVIDEND context token outside DIVIDENDS, or the owned-
+        # company field of a player with no companies). Without this, zero
+        # features + zero-initialized Linear biases collapse the token to the
+        # zero vector on day one, and the only path to type discrimination is
+        # an indirect gradient through the Linear's bias. Broadcast across
+        # all instances of a type (36 companies, 8 corps, N players) — per-
+        # instance identity still comes from the onehot ids in the features.
+        self.type_embeds = nn.Parameter(torch.empty(NUM_TOKEN_TYPES, d))
+        # Static (num_players + 55,) type-id lookup. Built once here so
+        # ``_project_tokens`` can do a single indexed gather against
+        # ``type_embeds``. Registered as a buffer so ``.to(device)`` carries
+        # it along. Must match the concat order inside ``_project_tokens``.
+        type_ids = torch.empty(np_ + 55, dtype=torch.long)
+        type_ids[self._market_info_idx] = _TYPE_MARKET_INFO
+        type_ids[self._company_slice] = _TYPE_COMPANY
+        type_ids[self._fi_idx] = _TYPE_FI
+        type_ids[self._global_info_idx] = _TYPE_GLOBAL_INFO
+        type_ids[self._invest_idx] = _TYPE_INVEST
+        type_ids[self._auction_idx] = _TYPE_AUCTION
+        type_ids[self._dividend_idx] = _TYPE_DIVIDEND
+        type_ids[self._issue_idx] = _TYPE_ISSUE
+        type_ids[self._par_idx] = _TYPE_PAR
+        type_ids[self._acq_select_company_idx] = _TYPE_ACQ_SELECT_COMPANY
+        type_ids[self._acq_offer_idx] = _TYPE_ACQ_OFFER
+        type_ids[self._acq_price_info_idx] = _TYPE_ACQ_PRICE
+        type_ids[self._corp_slice] = _TYPE_CORP
+        type_ids[self._player_slice] = _TYPE_PLAYER
+        self.register_buffer("_type_ids", type_ids, persistent=False)
 
         # --- Transformer trunk ---
         self.blocks = nn.ModuleList([
@@ -420,7 +476,7 @@ class RSSTransformerNet(nn.Module):
         # per-batch-size recompiles; feeding the last dim explicitly lets the
         # symbolic-shape tracker carry ``B`` cleanly through.
         d = self.cfg.d_model
-        parts: list[torch.Tensor] = [
+        input_parts: list[torch.Tensor] = [
             _slice_proj(x, self.market_info_proj, self._market_info_idx).unsqueeze(1),
             _slice_proj(x, self.company_proj, self._company_slice),                      # (B, 36, d)
             _slice_proj(x, self.fi_proj, self._fi_idx).unsqueeze(1),
@@ -435,9 +491,14 @@ class RSSTransformerNet(nn.Module):
             _slice_proj(x, self.acq_price_proj, self._acq_price_info_idx).unsqueeze(1),
             _slice_proj(x, self.corp_proj, self._corp_slice),                            # (B, 8, d)
             _slice_proj(x, self.player_proj, self._player_slice),                        # (B, N, d)
-            self.pass_embeds.view(1, NUM_PASS_PHASES, d).expand(x.shape[0], NUM_PASS_PHASES, d),
         ]
-        tokens = torch.cat(parts, dim=1)                      # (B, num_tokens, d)
+        # Additive per-type embedding broadcast over the batch. A single
+        # indexed gather against ``type_embeds`` gives every non-pass token a
+        # type-distinct signal even when its feature slice is all-zero.
+        input_tokens = torch.cat(input_parts, dim=1)                                     # (B, num_players+55, d)
+        input_tokens = input_tokens + self.type_embeds[self._type_ids].to(input_tokens.dtype)
+        pass_rows = self.pass_embeds.view(1, NUM_PASS_PHASES, d).expand(x.shape[0], NUM_PASS_PHASES, d)
+        tokens = torch.cat([input_tokens, pass_rows], dim=1)                             # (B, num_tokens, d)
         return tokens
 
     # ------------------------------------------------------------------
@@ -602,6 +663,8 @@ class RSSTransformerNet(nn.Module):
 
         # Pass anchors: small-random learned per-phase vectors (BERT [CLS] convention).
         nn.init.trunc_normal_(self.pass_embeds, std=0.02)
+        # Per-type additive embeddings: same small-random init.
+        nn.init.trunc_normal_(self.type_embeds, std=0.02)
 
         # Zero-init residual outputs so each block starts as identity
         for block in self.blocks:
@@ -641,6 +704,7 @@ if __name__ == "__main__":
     ]
     proj_params = sum(sum(p.numel() for p in m.parameters()) for m in proj_modules)
     pass_params = model.pass_embeds.numel()
+    type_params = model.type_embeds.numel()
     trunk_params = (
         sum(p.numel() for p in model.blocks.parameters())
         + sum(p.numel() for p in model.final_norm.parameters())
@@ -661,6 +725,7 @@ if __name__ == "__main__":
     for name, count in [
         ("Input projections", proj_params),
         ("Pass token", pass_params),
+        ("Type embeds", type_params),
         ("Transformer trunk", trunk_params),
         ("Policy heads", policy_params),
         ("Value head", value_params),
