@@ -140,7 +140,7 @@ def _slice_proj(x: torch.Tensor, proj: nn.Linear, idx: int | slice) -> torch.Ten
 
 @dataclass(frozen=True)
 class TransformerConfig:
-    """All dimensions parameterized. Defaults are 3-player with d_model=128."""
+    """All dimensions parameterized. Defaults are 3-player with d_model=192."""
 
     # Core architecture
     num_players: int = 3  # 3-5 supported

@@ -45,7 +45,7 @@ scratchpad/  Ad-hoc scripts (gitignored)
 - **Actions.** Phase-local integer ids (see `VECTORS.md` Action Space). 11 decision phases (`DecisionPhase` in `core/data.pxd`); engine's 15 `GamePhases` fold to them via `ENGINE_TO_DECISION_PHASE`. Sparse legal-action enumeration via `enumerate_legal_actions(state, uint16_t* ids)`; buffers size to `MAX_ACTION_SIZE` (the tight per-phase upper bound, 53) and overflow is a loud assert.
 - **Driver.** `core/driver.pyx::GameDriver` routes a phase-local `action_id` through legality check → phase handler → auto-chain (fast-forward through automated phases + forced decisions until a real multi-choice decision or `PHASE_GAME_OVER`). Optional `history` list records `(state._array.copy(), phase_id, action_id)` tuples pre-mutation.
 - **Token extraction.** `core/token_data.get_token_data(state, buffer)` fills `(num_players + 55, TOKEN_DIM=93)` float32 inside one nogil block; `get_token_data_batch` amortizes Python dispatch via `GameState.rebind`. Sole engine → NN bridge. Player tokens trail so higher-player padding masks cleanly. The 7 per-phase pass anchors (BERT `[CLS]`-style learned `nn.Parameter`) are appended inside the model after projection — not in the engine-side buffer.
-- **Model.** `nn/transformer.py::RSSTransformerNet` — pre-RMSNorm + SwiGLU, permutation-equivariant (no positional encoding), entity-readout heads, unified-head policy dispatch via static action LUT (`build_action_lut`). `TransformerConfig` defaults: 3p, d_model=128, 10 layers, 2 heads, ~2.39M params. `forward(x, legal_mask) → (policy_logits[B, UNIFIED_LOGIT_DIM=255], values[B, N])` — dense output over unified slots (block-per-phase in `DecisionPhase` order, sized by `PHASE_ACTION_SIZES`), illegal slots masked to `-1e9`. Values read from player tokens in canonical order; **no state rotation anywhere in the pipeline**.
+- **Model.** `nn/transformer.py::RSSTransformerNet` — pre-RMSNorm + SwiGLU, permutation-equivariant (no positional encoding), entity-readout heads, unified-head policy dispatch via static action LUT (`build_action_lut`). `TransformerConfig` defaults: 3p, d_model=192, 10 layers, 3 heads, ~5.29M params. `forward(x, legal_mask) → (policy_logits[B, UNIFIED_LOGIT_DIM=255], values[B, N])` — dense output over unified slots (block-per-phase in `DecisionPhase` order, sized by `PHASE_ACTION_SIZES`), illegal slots masked to `-1e9`. Values read from player tokens in canonical order; **no state rotation anywhere in the pipeline**.
 - **Evaluator / MCTS / training.** `mcts/evaluator.py` (`NNEvaluator`, `RemoteEvaluator`) speaks token buffers + dense `(B, UNIFIED_LOGIT_DIM)` legal masks end-to-end. `mcts/search.py` does leaf-batched PUCT with subtree reuse. Eval-server IPC carries tokens + legal masks in, softmaxed priors + canonical values out — GPU gather / softmax runs inside the server's autocast region. `train/*` runs full self-play + training loop on 3p.
 
 ## Code conventions
@@ -75,10 +75,10 @@ scratchpad/  Ad-hoc scripts (gitignored)
 
 ## Testing
 
-- `pytest tests/` — phase suite (`tests/phases/`), driver step-mode, MCTS, end-to-end self-play smoke. 1400+ tests; runs clean.
+- `pytest tests/` — phase suite (`tests/phases/`), driver step-mode, MCTS, end-to-end self-play smoke. 1800+ tests; runs clean.
 - Prefer invariant assertions (cash conservation, share counts, ownership consistency) at transitions over narrow field-level checks.
 - **When a test fails, assume the implementation is broken** until proven otherwise.
-- `tests/games_18xx/data/` holds 18xx.games JSON fixtures; the replay harness for the new driver is pending. Known rule divergences to remember when it returns: (1) cross-president ACQ transfers, (2) directly offering positive-income company closes in CLOSING.
+- `tests/games_18xx/data/` holds 18xx.games JSON fixtures; `tests/games_18xx/replay_harness.py` replays them against the current driver (`test_replay.py` / `test_replay_harness.py`). Known rule divergences: (1) cross-president ACQ transfers, (2) directly offering positive-income company closes in CLOSING.
 
 ## Key files by task
 
@@ -94,7 +94,7 @@ scratchpad/  Ad-hoc scripts (gitignored)
 | Model | `nn/transformer.py` | — |
 | Evaluator / MCTS | `mcts/evaluator.py`, `mcts/search.py`, `mcts/node.py`, `mcts/mcts_core.pyx` | — |
 | Training loop | `train/main.py`, `train/trainer.py`, `train/self_play.py` | `train/replay_buffer.py`, `train/eval_server.py` |
-| Training schedules | `train/config.py` (`TrainingConfig.get_schedule`) | — |
+| Training schedules | `train/config.py` (`TrainingConfig.get_schedule`) | `train_configs/3p.json` (production overrides) |
 
 ## Training pipeline specifics
 
@@ -113,7 +113,7 @@ Non-vanilla AlphaZero choices baked into this codebase. Mostly invisible from a 
 
 ## Devbox
 
-WSL2 on Windows. AMD Ryzen 9 9950X3D (32 cores). AMD Radeon RX 9070 XT (ROCm 7.2.0). Training defaults: 96 self-play workers, 2 eval servers.
+WSL2 on Windows. AMD Ryzen 9 9950X3D (32 cores). AMD Radeon RX 9070 XT (ROCm 7.2.0). Production training is driven by `train_configs/3p.json` (128 self-play workers, 1 eval server, 800→1600 MCTS sims ramped over epochs 200–400). Only 3p is trained currently; 4p/5p configs were removed. Launch with `python -m train <config.json>`.
 
 ---
 
