@@ -93,6 +93,7 @@ NUM_TOKEN_TYPES = 14
 
 _GELU_APPROX = "tanh"
 _NUM_CORPS = int(GameConstants.NUM_CORPS)
+_COMPANY_OWNER_CORP_OFFSET = 48
 
 
 def _phase_action_size(phase: DecisionPhase) -> int:
@@ -317,7 +318,9 @@ class RSSTransformerNet(nn.Module):
         # --- Type-specific input projections ---
         # Most projections take only their ``TokenWidth.TW_<type>`` prefix of
         # the zero-padded token row. Corp tokens intentionally skip their
-        # leading ID one-hot and get learned identity via ``corp_id_embed``.
+        # leading ID one-hot and get learned identity via ``corp_id_embed``;
+        # company tokens skip their owner-corp one-hot and reuse that same
+        # shared corp identity table directly for ownership references.
         # The engine-side buffer is rectangular at ``TOKEN_DIM=93`` so
         # ``get_token_data`` can fill it with a single nogil memcpy pattern,
         # but projection weights on padding / replaced ID fields are inert
@@ -331,7 +334,12 @@ class RSSTransformerNet(nn.Module):
         # learned pathway instead of being mixed into generic corp features.
         self._corp_id_width = _NUM_CORPS
         self.corp_proj = nn.Linear(int(TokenWidth.TW_CORP) - self._corp_id_width, d)
-        self.company_proj = nn.Linear(int(TokenWidth.TW_COMPANY), d)
+        self._company_owner_corp_offset = _COMPANY_OWNER_CORP_OFFSET
+        self._company_owner_corp_width = _NUM_CORPS
+        self.company_proj = nn.Linear(
+            int(TokenWidth.TW_COMPANY) - self._company_owner_corp_width,
+            d,
+        )
         self.fi_proj = nn.Linear(int(TokenWidth.TW_FI), d)
         self.market_info_proj = nn.Linear(int(TokenWidth.TW_MARKET_INFO), d)
         self.global_info_proj = nn.Linear(int(TokenWidth.TW_GLOBAL_INFO), d)
@@ -363,7 +371,8 @@ class RSSTransformerNet(nn.Module):
         # an indirect gradient through the Linear's bias. Broadcast across
         # all instances of a type (36 companies, 8 corps, N players) — per-
         # instance identity still comes from the onehot ids in the features,
-        # except corp identity which comes from ``corp_id_embed``.
+        # except corp identity and company corp ownership references which
+        # come from ``corp_id_embed``.
         self.type_embeds = nn.Parameter(torch.empty(NUM_TOKEN_TYPES, d))
         # Static (num_players + 55,) type-id lookup. Built once here so
         # ``_project_tokens`` can do a single indexed gather against
@@ -470,6 +479,28 @@ class RSSTransformerNet(nn.Module):
             nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
             nn.Linear(d // 2, out_features),
         )
+
+    def _project_company_tokens(self, x: torch.Tensor) -> torch.Tensor:
+        """Project company tokens, replacing owner-corp one-hot with shared corp refs."""
+        owner_start = self._company_owner_corp_offset
+        owner_stop = owner_start + self._company_owner_corp_width
+        company_raw = x[
+            :,
+            self._company_slice,
+            :int(TokenWidth.TW_COMPANY),
+        ]
+        company_features = torch.cat(
+            [
+                company_raw[:, :, :owner_start],
+                company_raw[:, :, owner_stop:],
+            ],
+            dim=-1,
+        )
+        company_tokens = self.company_proj(company_features)
+        owner_corp = company_raw[:, :, owner_start:owner_stop]
+        owner_ref_table = self.corp_id_embed.weight
+        owner_refs = owner_corp.to(owner_ref_table.dtype) @ owner_ref_table
+        return company_tokens + owner_refs.to(company_tokens.dtype)
 
     @staticmethod
     def _policy_head_width(head: nn.Module) -> int:
@@ -593,11 +624,13 @@ class RSSTransformerNet(nn.Module):
 
         Most rows are sliced to their projection's ``in_features`` width
         before projecting. Corp rows skip the leading ID one-hot and receive a
-        learned additive identity embedding instead. The engine-side buffer is
-        rectangularly zero-padded to ``TOKEN_DIM=93`` so ``get_token_data`` can
-        fill it with a uniform nogil memcpy pattern, but each type only uses
-        its meaningful feature slice — padding and replaced ID fields would
-        otherwise be multiplied against inert projection weights.
+        learned additive identity embedding instead. Company rows skip the
+        owner-corp one-hot and receive the shared corp identity embedding
+        directly. The engine-side buffer is rectangularly
+        zero-padded to ``TOKEN_DIM=93`` so ``get_token_data`` can fill it with
+        a uniform nogil memcpy pattern, but each type only uses its meaningful
+        feature slice — padding and replaced ID fields would otherwise be
+        multiplied against inert projection weights.
 
         Args:
             x: (batch, num_players + 55, token_dim) zero-padded raw features.
@@ -618,6 +651,7 @@ class RSSTransformerNet(nn.Module):
         # per-batch-size recompiles; feeding the last dim explicitly lets the
         # symbolic-shape tracker carry ``B`` cleanly through.
         d = self.cfg.d_model
+        company_tokens = self._project_company_tokens(x)
         corp_tokens = self.corp_proj(
             x[
                 :,
@@ -631,7 +665,7 @@ class RSSTransformerNet(nn.Module):
         )
         input_parts: list[torch.Tensor] = [
             _slice_proj(x, self.market_info_proj, self._market_info_idx).unsqueeze(1),
-            _slice_proj(x, self.company_proj, self._company_slice),                      # (B, 36, d)
+            company_tokens,                                                             # (B, 36, d)
             _slice_proj(x, self.fi_proj, self._fi_idx).unsqueeze(1),
             _slice_proj(x, self.global_info_proj, self._global_info_idx).unsqueeze(1),
             _slice_proj(x, self.invest_proj, self._invest_idx).unsqueeze(1),

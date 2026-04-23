@@ -63,7 +63,8 @@ affected entity's own token rather than as standalone selector tokens.
 - at_revealed (scalar, 0/1). 1 for LOC_REVEALED.
 - at_corp_acq (scalar, 0/1). 1 for LOC_CORP_ACQ.
 - owner_corp (one-hot, 8 slots). 1 at the owning corp iff the company is at
-  LOC_CORP.
+  LOC_CORP. Retained in the engine buffer, but the current transformer skips
+  this slice and re-injects it directly from `corp_id_embed`.
 - owner_player (one-hot, 5 slots, padded for num_players < 5). 1 at the
   owning player iff the company is at LOC_PLAYER.
 - owner_fi (scalar, 0/1). 1 iff the company is at LOC_FI.

@@ -93,6 +93,30 @@ def test_corp_projection_uses_learned_identity_embedding(model: RSSTransformerNe
     assert torch.allclose(actual_delta, expected_delta)
 
 
+def test_company_projection_uses_shared_corp_owner_embedding(model: RSSTransformerNet) -> None:
+    cfg = model.cfg
+    num_corps = int(GameConstants.NUM_CORPS)
+    owner_start = model._company_owner_corp_offset
+    owner_stop = owner_start + num_corps
+
+    assert model.company_proj.in_features == int(TokenWidth.TW_COMPANY) - num_corps
+
+    x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
+    x_with_owner = x.clone()
+    x_with_owner[:, model._company_slice, owner_start:owner_stop] = (
+        torch.eye(num_corps).repeat(5, 1)[:36].unsqueeze(0)
+    )
+
+    company_without_owner = model._project_tokens(x)[:, model._company_slice]
+    company_with_owner = model._project_tokens(x_with_owner)[:, model._company_slice]
+    actual_delta = company_with_owner - company_without_owner
+
+    expected_delta = model.corp_id_embed.weight[
+        torch.arange(36) % num_corps
+    ].unsqueeze(0)
+    assert torch.allclose(actual_delta, expected_delta)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for device mismatch test")
 def test_forward_rejects_legal_mask_on_different_device() -> None:
     model = RSSTransformerNet(TransformerConfig(num_players=NUM_PLAYERS)).to(torch.device("cuda"))
