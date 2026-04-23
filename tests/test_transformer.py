@@ -202,6 +202,34 @@ def test_company_projection_uses_shared_owner_embeddings(model: RSSTransformerNe
     assert torch.allclose(actual_delta, expected_delta)
 
 
+def test_fi_projection_uses_owned_company_embeddings(model: RSSTransformerNet) -> None:
+    num_companies = int(GameConstants.NUM_COMPANIES)
+    companies_start = model._fi_companies_offset
+    companies_stop = companies_start + model._fi_companies_width
+
+    assert model.fi_proj.in_features == companies_start
+    assert model._fi_companies_width == num_companies
+    assert companies_stop == int(TokenWidth.TW_FI)
+
+    x = torch.zeros(1, model.cfg.num_tokens, model.cfg.token_dim)
+    x_with_companies = x.clone()
+    owned_company_bitmap = torch.zeros(num_companies)
+    owned_company_bitmap[[0, 7, 35]] = 1.0
+    x_with_companies[:, model._fi_idx, companies_start:companies_stop] = (
+        owned_company_bitmap.unsqueeze(0)
+    )
+
+    fi_without_companies = model._project_tokens(x)[:, model._fi_idx]
+    fi_with_companies = model._project_tokens(x_with_companies)[:, model._fi_idx]
+    actual_delta = fi_with_companies - fi_without_companies
+
+    expected_delta = (
+        owned_company_bitmap.to(model.company_id_embed.weight.dtype)
+        @ model.company_id_embed.weight
+    ).unsqueeze(0)
+    assert torch.allclose(actual_delta, expected_delta)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for device mismatch test")
 def test_forward_rejects_legal_mask_on_different_device() -> None:
     model = RSSTransformerNet(TransformerConfig(num_players=NUM_PLAYERS)).to(torch.device("cuda"))

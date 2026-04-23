@@ -98,6 +98,8 @@ _MAX_MODEL_PLAYERS = 5
 _CORP_REL_OFFSET = 44
 _CORP_PRESIDENT_WIDTH = _MAX_MODEL_PLAYERS
 _CORP_COMPANIES_WIDTH = _NUM_COMPANIES
+_FI_COMPANIES_OFFSET = 2
+_FI_COMPANIES_WIDTH = _NUM_COMPANIES
 _COMPANY_OWNER_OFFSET = 12
 _COMPANY_OWNER_WIDTH = _NUM_CORPS + _MAX_MODEL_PLAYERS + 1
 
@@ -331,6 +333,8 @@ class RSSTransformerNet(nn.Module):
         # owner reference from the matching corp / player / FI embedding. Corp
         # tokens skip their trailing president/company ownership fields and
         # receive additive player/company references from the same ID tables.
+        # FI skips its trailing owned-company bitmap and receives additive
+        # company references from ``company_id_embed``.
         # The engine-side buffer is rectangular at ``TOKEN_DIM=85`` so
         # ``get_token_data`` can fill it with a single nogil memcpy pattern,
         # but projection weights on padding / replaced relation fields are inert
@@ -356,7 +360,9 @@ class RSSTransformerNet(nn.Module):
             self._company_owner_offset,
             d,
         )
-        self.fi_proj = nn.Linear(int(TokenWidth.TW_FI), d)
+        self._fi_companies_offset = _FI_COMPANIES_OFFSET
+        self._fi_companies_width = _FI_COMPANIES_WIDTH
+        self.fi_proj = nn.Linear(self._fi_companies_offset, d)
         self.market_info_proj = nn.Linear(int(TokenWidth.TW_MARKET_INFO), d)
         self.global_info_proj = nn.Linear(int(TokenWidth.TW_GLOBAL_INFO), d)
         self.invest_proj = nn.Linear(int(TokenWidth.TW_INVEST), d)
@@ -563,6 +569,23 @@ class RSSTransformerNet(nn.Module):
             + owned_company_refs.to(corp_tokens.dtype)
         )
 
+    def _project_fi_token(self, x: torch.Tensor) -> torch.Tensor:
+        """Project the FI token, adding owned-company references."""
+        fi_raw = x[
+            :,
+            self._fi_idx,
+            :int(TokenWidth.TW_FI),
+        ]
+        fi_token = self.fi_proj(fi_raw[:, :self._fi_companies_offset])
+        companies_start = self._fi_companies_offset
+        companies_stop = companies_start + self._fi_companies_width
+        owned_company_bitmap = fi_raw[:, companies_start:companies_stop]
+        owned_company_refs = (
+            owned_company_bitmap.to(self.company_id_embed.weight.dtype)
+            @ self.company_id_embed.weight
+        )
+        return fi_token + owned_company_refs.to(fi_token.dtype)
+
     def _project_player_tokens(self, x: torch.Tensor) -> torch.Tensor:
         """Project player tokens, adding row-order learned identity."""
         player_tokens = self.player_proj(
@@ -700,11 +723,12 @@ class RSSTransformerNet(nn.Module):
         Company rows skip the ownership tail and receive the matching corp /
         player / FI additive owner reference directly. Corp rows skip the
         president / owned-company tail and receive additive player / company
-        references directly. The engine-side buffer is rectangularly
-        zero-padded to ``TOKEN_DIM=85`` so ``get_token_data`` can fill it with
-        a uniform nogil memcpy pattern, but each type only uses its meaningful
-        feature slice — padding and replaced relation fields would otherwise be
-        multiplied against projection weights.
+        references directly. FI skips its owned-company tail and receives
+        additive company references directly. The engine-side buffer is
+        rectangularly zero-padded to ``TOKEN_DIM=85`` so ``get_token_data`` can
+        fill it with a uniform nogil memcpy pattern, but each type only uses
+        its meaningful feature slice — padding and replaced relation fields
+        would otherwise be multiplied against projection weights.
 
         Args:
             x: (batch, num_players + 55, token_dim) zero-padded raw features.
@@ -730,7 +754,7 @@ class RSSTransformerNet(nn.Module):
         input_parts: list[torch.Tensor] = [
             _slice_proj(x, self.market_info_proj, self._market_info_idx).unsqueeze(1),
             company_tokens,                                                             # (B, 36, d)
-            _slice_proj(x, self.fi_proj, self._fi_idx).unsqueeze(1),
+            self._project_fi_token(x).unsqueeze(1),
             _slice_proj(x, self.global_info_proj, self._global_info_idx).unsqueeze(1),
             _slice_proj(x, self.invest_proj, self._invest_idx).unsqueeze(1),
             _slice_proj(x, self.auction_proj, self._auction_idx).unsqueeze(1),

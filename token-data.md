@@ -92,6 +92,10 @@ target-specific total from AcqPriceInfo.
 - Owned companies (vector, 36 slots — 1 if the corresponding company is at
   LOC_FI, 0 otherwise)
 
+The current transformer skips the owned-company bitmap in `fi_proj` and
+re-injects it as `owned_companies @ company_id_embed.weight`. `fi_proj` only
+sees the cash/income prefix from slots 0 through 1.
+
 ### GlobalInfo token (23)
 Bundled game-level scalars:
 - Decision phase (one-hot, 11 slots — one per `DecisionPhase`; all-zero in
