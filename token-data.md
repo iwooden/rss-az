@@ -20,7 +20,7 @@ adds 4 learned pass anchors after projection for entity-readout pass phases;
 they don't appear in the engine-side buffer. BID, ISSUE, and ACQ_OFFER read
 their pass logits from their phase-specific informational tokens.
 
-Each token is zero-padded to `TOKEN_DIM = 93` (max width across all token
+Each token is zero-padded to `TOKEN_DIM = 85` (max width across all token
 types, currently pinned by the Corp token). The per-type non-padded widths
 live in `TokenWidth` (`core/token_data.pxd`); the model slices
 `buffer[i, :TW_<type>]` before its type-specific projection so padding
@@ -41,10 +41,11 @@ affected entity's own token rather than as standalone selector tokens.
   unoccupied, 0 otherwise). First and last spaces ($0 and $75) always
   available.
 
-### Company tokens (62, ×36)
-- Company ID (one-hot, 36 slots). Retained in the engine buffer, but the
-  current transformer skips this slice and adds learned
-  `company_id_embed[company_id]` to each company token.
+### Company tokens (26, ×36)
+Company identity is inferred from row order; the model adds learned
+`company_id_embed[company_id]` after projection.
+
+- is_selected (scalar, 0/1). 1 iff this is the current `active_company`.
 - Low price (scalar, normalized by COMPANY_PRICE_DIVISOR)
 - Face value (scalar, normalized by COMPANY_PRICE_DIVISOR)
 - High price (scalar, normalized by COMPANY_PRICE_DIVISOR)
@@ -56,7 +57,6 @@ affected entity's own token rather than as standalone selector tokens.
 - Adjusted income (scalar, normalized by COMPANY_INCOME_DIVISOR). Per-company
   CoO-adjusted income; may be negative (a company's income can be pushed
   below zero by CoO-dependent penalties).
-- is_selected (scalar, 0/1). 1 iff this is the current `active_company`.
 - at_removed (scalar, 0/1). 1 for LOC_REMOVED; also 1 for LOC_EXCLUDED once
   the CoO has advanced past the company's star tier — the exclusion is
   publicly observable then; setting it unconditionally would leak setup
@@ -77,8 +77,8 @@ REVEALED / REMOVED / DECK / EXCLUDED) leave all three groups zero; `at_*`
 flags encode those cases. The current transformer skips this full ownership
 tail in `company_proj` and re-injects the active owner reference from a
 concatenated `corp_id_embed` / `player_id_embed` / FI type-embedding owner
-table. With both skips, `company_proj` only sees the non-ID, non-owner company
-features from slots 36 through 47.
+table. `company_proj` only sees the non-owner company features from slots 0
+through 11.
 
 Synergies are no longer surfaced on the Company token. The ACQ_SELECT_COMPANY
 phase-specific token carries the per-candidate marginal synergy delta for the
@@ -163,13 +163,13 @@ kept deliberately minimal — only what can't be read off those tokens directly:
 
 ---
 
-## Corp tokens (93, ×8)
+## Corp tokens (85, ×8)
 The `active` slot below is the lifecycle float flag (1 iff the corp is
 floated and operational); the decision-flow selector is the separate
-`is_selected` bit at the end of the token.
-- Corp ID (one-hot, 8 slots for each corp; retained in the engine buffer, but
-  the current transformer skips this slice and adds learned `corp_id_embed`
-  identity after projecting the remaining corp features)
+`is_selected` bit before the relational tail. Corp identity is inferred from
+row order; the model adds learned `corp_id_embed[corp_id]` after projection.
+
+- is_selected (scalar, 0/1). 1 iff this is the current `active_corp`.
 - Active (scalar, 1/0 — 1 if the corp has floated and is in play)
 - In receivership (scalar, 1/0)
 - Passed on ACQ_OFFER (scalar, 1/0)
@@ -187,26 +187,29 @@ floated and operational); the decision-flow selector is the separate
 - Synergy income (scalar, normalized by ENTITY_INCOME_DIVISOR)
 - CoO cost (scalar, normalized by ENTITY_INCOME_DIVISOR)
 - Ability income (scalar, normalized by ENTITY_INCOME_DIVISOR)
+
+Relational tail:
 - President ID (one-hot, 5 slots for max 5 players, 0-padded for 3/4 players). All 0 if inactive / in receivership.
 - Owned companies (vector, 36 slots). Includes companies sitting in the corp's acquisition pile.
-- is_selected (scalar, 0/1). 1 iff this is the current `active_corp`.
 
 ---
 
-## Player tokens (85, ×N, N ∈ {3, 4, 5})
-- Player ID (one-hot, 5 slots for 5 max players, 0-padded for 3/4 players).
-  Retained in the engine buffer, but the current transformer skips this slice
-  and adds learned `player_id_embed[player_id]` to each player token.
+## Player tokens (80, ×N, N ∈ {3, 4, 5})
+Player identity is inferred from row order; the model adds learned
+`player_id_embed[player_id]` after projection.
+
+- is_selected (scalar, 0/1). 1 iff this is the current `active_player`.
 - Turn order (one-hot, 5 slots for 5 max players, 0-padded for 3/4 players)
 - Has passed (scalar, 1/0)
 - Cash (scalar, normalized by CASH_DIVISOR)
 - Net worth (scalar, normalized by NET_WORTH_DIVISOR)
 - Liquidity (scalar, normalized by NET_WORTH_DIVISOR)
 - Income (scalar, normalized by ENTITY_INCOME_DIVISOR)
-- Owned shares (vector, 8 slots for 8 corps, normalized by SHARE_DIVISOR)
 - Round trips (scalar, 1 if any share buy/sell would be affected by the round-trip limit, 0 otherwise)
+
+Relational tail:
+- Owned shares (vector, 8 slots for 8 corps, normalized by SHARE_DIVISOR)
 - Share buys (vector, 8 slots for 8 corps, normalized by SHARE_DIVISOR)
 - Share sells (vector, 8 slots for 8 corps, normalized by SHARE_DIVISOR)
 - Presidencies (vector, 8 slots for 8 corps — 1 if this player is president of the corresponding corp)
 - Owned companies (vector, 36 slots)
-- is_selected (scalar, 0/1). 1 iff this is the current `active_player`.

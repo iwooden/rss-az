@@ -560,7 +560,7 @@ def assert_invariants(state, msg=""):
 # TOKEN DATA INVARIANTS
 # =============================================================================
 #
-# The token buffer carries (num_players + 55, TOKEN_DIM=93) float32 rows.
+# The token buffer carries (num_players + 55, TOKEN_DIM=85) float32 rows.
 # Informational tokens come first (every token now carries at least some
 # dynamic content, so there is no pure-static prefix); then phase-specific;
 # then per-corp and per-player rows. Indexing (for 3-5p, corp_base = 47):
@@ -594,64 +594,61 @@ def assert_invariants(state, msg=""):
 # player / corp / company token for the currently-selected entity; the
 # standalone active-entity one-hot tokens have been removed.
 _PLAYER_OFF = {
-    "PLAYER_ID":    0,   # 5 slots
-    "TURN_ORDER":   5,   # 5 slots
-    "HAS_PASSED":   10,
-    "CASH":         11,
-    "NET_WORTH":    12,
-    "LIQUIDITY":    13,
-    "INCOME":       14,
-    "SHARES":       15,  # 8 slots
-    "ROUND_TRIPS":  23,
-    "SHARE_BUYS":   24,  # 8 slots
-    "SHARE_SELLS":  32,  # 8 slots
-    "PRESIDENCIES": 40,  # 8 slots
-    "COMPANIES":    48,  # 36 slots
-    "IS_SELECTED":  84,
+    "IS_SELECTED":  0,
+    "TURN_ORDER":   1,   # 5 slots
+    "HAS_PASSED":   6,
+    "CASH":         7,
+    "NET_WORTH":    8,
+    "LIQUIDITY":    9,
+    "INCOME":       10,
+    "ROUND_TRIPS":  11,
+    "SHARES":       12,  # 8 slots
+    "SHARE_BUYS":   20,  # 8 slots
+    "SHARE_SELLS":  28,  # 8 slots
+    "PRESIDENCIES": 36,  # 8 slots
+    "COMPANIES":    44,  # 36 slots
 }
 _CORP_OFF = {
-    "CORP_ID":       0,   # 8 slots
-    "ACTIVE":        8,
-    "IN_RECV":       9,
-    "PASSED_ACQ":    10,
-    "UNISSUED":      11,
-    "ISSUED":        12,
-    "BANK":          13,
-    "PRICE_IDX":     14,  # 27 slots
-    "SHARE_PRICE":   41,
-    "PENDING_MOVE":  42,
-    "CASH":          43,
-    "ACQ_PROCEEDS":  44,
-    "INCOME":        45,
-    "STARS":         46,
-    "RAW_REVENUE":   47,
-    "SYNERGY":       48,
-    "COO_COST":      49,
-    "ABILITY":       50,
-    "PRESIDENT":     51,  # 5 slots
-    "COMPANIES":     56,  # 36 slots
-    "IS_SELECTED":   92,
+    "IS_SELECTED":   0,
+    "ACTIVE":        1,
+    "IN_RECV":       2,
+    "PASSED_ACQ":    3,
+    "UNISSUED":      4,
+    "ISSUED":        5,
+    "BANK":          6,
+    "PRICE_IDX":     7,   # 27 slots
+    "SHARE_PRICE":   34,
+    "PENDING_MOVE":  35,
+    "CASH":          36,
+    "ACQ_PROCEEDS":  37,
+    "INCOME":        38,
+    "STARS":         39,
+    "RAW_REVENUE":   40,
+    "SYNERGY":       41,
+    "COO_COST":      42,
+    "ABILITY":       43,
+    "PRESIDENT":     44,  # 5 slots
+    "COMPANIES":     49,  # 36 slots
 }
 # Company token now carries static game-setup data plus per-company
 # dynamic scalars (CoO-adjusted income, active-company selector, the four
 # observable location flags, and the mutually-exclusive owner groups).
 _COMPANY_OFF = {
-    "COMPANY_ID":     0,   # 36 slots
-    "LOW_PRICE":      36,
-    "FACE_VALUE":     37,
-    "HIGH_PRICE":     38,
-    "LOW_HIGH_DIFF":  39,  # (high - low + 1) / PRICE_RANGE_DIVISOR (51.0)
-    "BASE_INCOME":    40,
-    "STARS":          41,
-    "ADJ_INCOME":     42,
-    "IS_SELECTED":    43,
-    "AT_REMOVED":     44,
-    "AT_AUCTION":     45,
-    "AT_REVEALED":    46,
-    "AT_CORP_ACQ":    47,
-    "OWNER_CORP":     48,  # 8 slots
-    "OWNER_PLAYER":   56,  # 5 slots (padded for num_players < 5)
-    "OWNER_FI":       61,
+    "IS_SELECTED":    0,
+    "LOW_PRICE":      1,
+    "FACE_VALUE":     2,
+    "HIGH_PRICE":     3,
+    "LOW_HIGH_DIFF":  4,   # (high - low + 1) / PRICE_RANGE_DIVISOR (51.0)
+    "BASE_INCOME":    5,
+    "STARS":          6,
+    "ADJ_INCOME":     7,
+    "AT_REMOVED":     8,
+    "AT_AUCTION":     9,
+    "AT_REVEALED":    10,
+    "AT_CORP_ACQ":    11,
+    "OWNER_CORP":     12,  # 8 slots
+    "OWNER_PLAYER":   20,  # 5 slots (padded for num_players < 5)
+    "OWNER_FI":       25,
 }
 # Denominator for the static company low/high price-range slot. Mirrors
 # core/data.pxd's PRICE_RANGE_DIVISOR (max offset count, CDG: 51). Not
@@ -676,7 +673,8 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
 
     Checks, for every intermediate state visited by the driver:
       - Buffer is the right shape and contains only finite values.
-      - Player/corp/company one-hots are correct and well-formed.
+      - Player/corp/company row-order identity is assumed by callers; remaining
+        one-hots are correct and well-formed.
       - Cash / share / price normalizations match the entity handles.
       - Ownership flags and location flags match the canonical
         `CompanyLocation` + owner slots.
@@ -736,10 +734,10 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
         f"!= ({num_tokens},)"
     )
     expected_widths = (
-        [54] + [62] * num_companies
+        [54] + [26] * num_companies
         + [38, 23, 17, 13, 34, 9, 50, 36, 11, 3]
-        + [93] * num_corps
-        + [85] * num_players
+        + [85] * num_corps
+        + [80] * num_players
     )
     assert list(widths) == expected_widths, (
         f"{msg}\nget_token_widths({num_players}) mismatch:\n"
@@ -774,13 +772,6 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
     for p in range(num_players):
         tok = player_base + p
         pm = f"{msg}\nplayer token p={p}"
-
-        # Player ID one-hot (padded to 5; p < num_players ≤ 5)
-        player_id_slice = buf[tok, _PLAYER_OFF["PLAYER_ID"]:_PLAYER_OFF["PLAYER_ID"] + 5]
-        _assert_close(player_id_slice.sum(), 1.0, T_FLAG,
-                      f"{pm}: player_id one-hot must sum to 1")
-        _assert_close(player_id_slice[p], 1.0, T_FLAG,
-                      f"{pm}: player_id one-hot bit")
 
         # Turn order one-hot
         to = PLAYERS[p].get_turn_order(state)
@@ -851,7 +842,7 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
         _assert_close(buf[tok, _PLAYER_OFF["IS_SELECTED"]], expected_selected, T_FLAG,
                       f"{pm}: is_selected (active_player={active_player})")
 
-        _assert_zero_row(buf[tok, _PLAYER_OFF["IS_SELECTED"] + 1:], T_FLAG,
+        _assert_zero_row(buf[tok, _PLAYER_OFF["COMPANIES"] + num_companies:], T_FLAG,
                          f"{pm}: tail beyond TW_PLAYER features")
 
     # =========================================================================
@@ -862,11 +853,6 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
         cm = f"{msg}\ncorp token c={c}"
         corp = CORPS[c]
         active = corp.is_active(state)
-
-        # Corp ID one-hot (always set)
-        corp_id_slice = buf[tok, _CORP_OFF["CORP_ID"]:_CORP_OFF["CORP_ID"] + num_corps]
-        _assert_close(corp_id_slice.sum(), 1.0, T_FLAG, f"{cm}: corp_id one-hot sum")
-        _assert_close(corp_id_slice[c], 1.0, T_FLAG, f"{cm}: corp_id one-hot bit")
 
         # Active / receivership / passed_acq flags
         _assert_close(buf[tok, _CORP_OFF["ACTIVE"]], 1.0 if active else 0.0, T_FLAG,
@@ -969,14 +955,14 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
         _assert_close(buf[tok, _CORP_OFF["IS_SELECTED"]], expected_selected, T_FLAG,
                       f"{cm}: is_selected (active_corp={active_corp})")
 
-        _assert_zero_row(buf[tok, _CORP_OFF["IS_SELECTED"] + 1:], T_FLAG,
+        _assert_zero_row(buf[tok, _CORP_OFF["COMPANIES"] + num_companies:], T_FLAG,
                          f"{cm}: tail beyond TW_CORP features")
 
     # =========================================================================
     # COMPANY TOKENS
     # =========================================================================
-    # Company tokens carry static game-setup data (id one-hot, prices,
-    # base income, stars) plus per-company dynamic scalars: CoO-adjusted
+    # Company tokens carry static game-setup data (prices, base income, stars)
+    # plus per-company dynamic scalars: CoO-adjusted
     # income, active-company selector, the four observable location flags
     # (REMOVED / AUCTION / REVEALED / CORP_ACQ), and the mutually-exclusive
     # ownership groups (LOC_CORP → owner_corp, LOC_PLAYER → owner_player,
@@ -998,11 +984,6 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
         tok = company_base + cid
         km = f"{msg}\ncompany token cid={cid}"
         company = COMPANIES[cid]
-
-        # Company ID one-hot (always set)
-        id_slice = buf[tok, _COMPANY_OFF["COMPANY_ID"]:_COMPANY_OFF["COMPANY_ID"] + num_companies]
-        _assert_close(id_slice.sum(), 1.0, T_FLAG, f"{km}: company_id one-hot sum")
-        _assert_close(id_slice[cid], 1.0, T_FLAG, f"{km}: company_id one-hot bit")
 
         # Static price data (normalization scale)
         low = company.get_low_price()

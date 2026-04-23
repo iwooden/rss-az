@@ -148,49 +148,46 @@ def corrupt_market_info_tail(buf):
 
 # ---- Company token: static data ------------------------------------------
 
-def corrupt_company_id_onehot(buf):
-    buf[COMPANY_BASE_TOK + 0, 0] = 0.0             # drop id bit
-
 def corrupt_company_face_value(buf):
-    buf[COMPANY_BASE_TOK + 5, 37] = 0.0            # FACE_VALUE offset
+    buf[COMPANY_BASE_TOK + 5, 2] = 0.0             # FACE_VALUE offset
 
 def corrupt_company_low_high_diff(buf):
-    buf[COMPANY_BASE_TOK + 5, 39] = 0.0            # LOW_HIGH_DIFF offset
+    buf[COMPANY_BASE_TOK + 5, 4] = 0.0             # LOW_HIGH_DIFF offset
 
 def corrupt_company_base_income(buf):
-    buf[COMPANY_BASE_TOK + 5, 40] = 0.0            # BASE_INCOME offset
+    buf[COMPANY_BASE_TOK + 5, 5] = 0.0             # BASE_INCOME offset
 
 def corrupt_company_stars(buf):
-    buf[COMPANY_BASE_TOK + 5, 41] = 0.0            # STARS offset
+    buf[COMPANY_BASE_TOK + 5, 6] = 0.0             # STARS offset
 
 # ---- Company token: dynamic (adj_income / is_selected / at_* / owner_*) --
 
 def corrupt_company_adj_income(buf):
-    buf[COMPANY_BASE_TOK + 5, 42] = 9.99           # ADJ_INCOME mismatch
+    buf[COMPANY_BASE_TOK + 5, 7] = 9.99            # ADJ_INCOME mismatch
 
 def corrupt_company_is_selected(buf):
-    buf[COMPANY_BASE_TOK + 0, 43] = 1.0            # active_company=-1 so must be 0
+    buf[COMPANY_BASE_TOK + 0, 0] = 1.0             # active_company=-1 so must be 0
 
 def corrupt_company_at_auction_wrong(buf):
-    buf[COMPANY_BASE_TOK + 5, 45] = 0.0            # company 5 IS at AUCTION
+    buf[COMPANY_BASE_TOK + 5, 9] = 0.0             # company 5 IS at AUCTION
 
 def corrupt_company_at_removed_false(buf):
-    buf[COMPANY_BASE_TOK + 0, 44] = 1.0            # company 0 is NOT at REMOVED
+    buf[COMPANY_BASE_TOK + 0, 8] = 1.0             # company 0 is NOT at REMOVED
 
 def corrupt_company_at_revealed_false(buf):
-    buf[COMPANY_BASE_TOK + 0, 46] = 1.0            # nothing at REVEALED initially
+    buf[COMPANY_BASE_TOK + 0, 10] = 1.0            # nothing at REVEALED initially
 
 def corrupt_company_owner_corp_false(buf):
-    buf[COMPANY_BASE_TOK + 0, 48] = 1.0            # no corp owns anything initially
+    buf[COMPANY_BASE_TOK + 0, 12] = 1.0            # no corp owns anything initially
 
 def corrupt_company_owner_player_false(buf):
-    buf[COMPANY_BASE_TOK + 0, 56] = 1.0            # no player owns anything initially
+    buf[COMPANY_BASE_TOK + 0, 20] = 1.0            # no player owns anything initially
 
 def corrupt_company_owner_fi_false(buf):
-    buf[COMPANY_BASE_TOK + 0, 61] = 1.0            # FI owns nothing initially
+    buf[COMPANY_BASE_TOK + 0, 25] = 1.0            # FI owns nothing initially
 
 def corrupt_company_tail(buf):
-    buf[COMPANY_BASE_TOK + 0, 62] = 1.0            # padding past TW_COMPANY must stay 0
+    buf[COMPANY_BASE_TOK + 0, 26] = 1.0            # padding past TW_COMPANY must stay 0
 
 # ---- FI ------------------------------------------------------------------
 
@@ -259,62 +256,56 @@ def corrupt_acq_price_info_out_of_phase(buf):
 
 # ---- Corp token (inactive) ----------------------------------------------
 
-def corrupt_corp_id_onehot(buf):
-    buf[CORP_BASE_TOK + 0, 0] = 0.0                # corp 0 id bit
-
 def corrupt_corp_inactive_active_flag(buf):
-    buf[CORP_BASE_TOK + 0, 8] = 1.0                # OFF_ACTIVE; corp 0 inactive
+    buf[CORP_BASE_TOK + 0, 1] = 1.0                # OFF_ACTIVE; corp 0 inactive
 
 def corrupt_corp_inactive_price_idx(buf):
-    buf[CORP_BASE_TOK + 0, 14] = 1.0               # inactive → price_idx zeros
+    buf[CORP_BASE_TOK + 0, 7] = 1.0                # inactive → price_idx zeros
 
 def corrupt_corp_is_selected(buf):
-    buf[CORP_BASE_TOK + 0, 92] = 1.0               # active_corp=-1 so must be 0
+    buf[CORP_BASE_TOK + 0, 0] = 1.0                # active_corp=-1 so must be 0
 
-# The corp token pins TOKEN_DIM (TW_CORP=93 == TOKEN_DIM=93), so there is
+# The corp token pins TOKEN_DIM (TW_CORP=85 == TOKEN_DIM=85), so there is
 # no zero-padded tail past TW_CORP to corrupt. The conftest tail check
 # runs vacuously on the empty slice.
 
 # ---- Player token --------------------------------------------------------
 
-def corrupt_player_id_onehot(buf):
-    buf[PLAYER_BASE_TOK + 0, 0] = 0.0              # player 0 id bit
-
 def corrupt_player_cash(buf):
-    buf[PLAYER_BASE_TOK + 0, 11] = 0.0             # OFF_CASH; player 0 cash=30
+    buf[PLAYER_BASE_TOK + 0, 7] = 0.0              # OFF_CASH; player 0 cash=30
 
 def corrupt_player_presidency(buf):
-    buf[PLAYER_BASE_TOK + 0, 40] = 1.0             # OFF_PRESIDENCIES: none held
+    buf[PLAYER_BASE_TOK + 0, 36] = 1.0             # OFF_PRESIDENCIES: none held
 
 def corrupt_player_is_selected_wrong(buf):
-    buf[PLAYER_BASE_TOK + 1, 84] = 1.0             # active_player=0 so player 1 must be 0
+    buf[PLAYER_BASE_TOK + 1, 0] = 1.0              # active_player=0 so player 1 must be 0
 
 def corrupt_player_tail(buf):
-    buf[PLAYER_BASE_TOK + 0, 85] = 1.0             # padding past TW_PLAYER must stay 0
+    buf[PLAYER_BASE_TOK + 0, 80] = 1.0             # padding past TW_PLAYER must stay 0
 
 
 def corrupt_inactive_corp_companies(buf):
-    buf[CORP_BASE_TOK + 0, 56] = 1.0               # inactive corp company bitmap must be 0
+    buf[CORP_BASE_TOK + 0, 49] = 1.0               # inactive corp company bitmap must be 0
 
 
 def corrupt_active_corp_pending_move(buf):
-    buf[CORP_BASE_TOK + 0, 42] = 0.0               # active corp pending move
+    buf[CORP_BASE_TOK + 0, 35] = 0.0               # active corp pending move
 
 
 def corrupt_active_corp_raw_revenue(buf):
-    buf[CORP_BASE_TOK + 0, 47] = 0.0               # active corp raw revenue
+    buf[CORP_BASE_TOK + 0, 40] = 0.0               # active corp raw revenue
 
 
 def corrupt_active_corp_synergy(buf):
-    buf[CORP_BASE_TOK + 0, 48] = 1.0               # active corp synergy income
+    buf[CORP_BASE_TOK + 0, 41] = 1.0               # active corp synergy income
 
 
 def corrupt_active_corp_coo_cost(buf):
-    buf[CORP_BASE_TOK + 0, 49] = 1.0               # active corp CoO cost
+    buf[CORP_BASE_TOK + 0, 42] = 1.0               # active corp CoO cost
 
 
 def corrupt_active_corp_ability(buf):
-    buf[CORP_BASE_TOK + 0, 50] = 1.0               # active corp ability income
+    buf[CORP_BASE_TOK + 0, 43] = 1.0               # active corp ability income
 
 
 def corrupt_acq_price_info_max_offset(buf):
@@ -336,7 +327,6 @@ CASES = [
     (corrupt_market_slot_price,               "price slot 5"),
     (corrupt_market_avail_boundary,           r"slot 0 \(\$0\) must always be available"),
     (corrupt_market_info_tail,                "tail beyond availability flags"),
-    (corrupt_company_id_onehot,               "company_id one-hot"),
     (corrupt_company_face_value,              "face_value"),
     (corrupt_company_low_high_diff,           "low_high_diff"),
     (corrupt_company_base_income,             "base_income"),
@@ -369,11 +359,9 @@ CASES = [
     (corrupt_acq_select_company_out_of_phase, r"AcqSelectCompany token.*all-zero outside PHASE_ACQ_SELECT_COMPANY"),
     (corrupt_acq_offer_out_of_phase,          r"Acq-offer token.*all-zero outside PHASE_ACQ_OFFER"),
     (corrupt_acq_price_info_out_of_phase,     r"AcqPriceInfo token"),
-    (corrupt_corp_id_onehot,                  "corp_id one-hot"),
     (corrupt_corp_inactive_active_flag,       ": active flag"),
     (corrupt_corp_inactive_price_idx,         "inactive corp price_idx"),
     (corrupt_corp_is_selected,                "is_selected"),
-    (corrupt_player_id_onehot,                "player_id one-hot"),
     (corrupt_player_cash,                     r"player token p=0.*: cash"),
     (corrupt_player_presidency,               "presidency"),
     (corrupt_player_is_selected_wrong,        "is_selected"),

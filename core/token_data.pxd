@@ -13,10 +13,10 @@ from core.state cimport GameState
 
 # Maximum feature count across all token types (== raw token_dim input
 # to ``nn/transformer.py``). All tokens are zero-padded to this width.
-# Equals ``max(TokenWidth.*)``; currently pinned by ``TW_CORP = 93``.
+# Equals ``max(TokenWidth.*)``; currently pinned by ``TW_CORP = 85``.
 # See the companion .pyx for the per-token feature layout and counts.
 cpdef enum TokenDataSize:
-    TOKEN_DIM = 93
+    TOKEN_DIM = 85
 
 
 # Non-padded feature width per token type (single source of truth for the
@@ -29,7 +29,7 @@ cpdef enum TokenDataSize:
 # per-position widths array that matches ``_fill_buffer``'s layout.
 cpdef enum TokenWidth:
     TW_MARKET_INFO           = 54
-    TW_COMPANY               = 62
+    TW_COMPANY               = 26
     TW_FI                    = 38
     TW_GLOBAL_INFO           = 23
     TW_INVEST                = 17
@@ -40,8 +40,8 @@ cpdef enum TokenWidth:
     TW_ACQ_SELECT_COMPANY    = 36
     TW_ACQ_OFFER             = 11
     TW_ACQ_PRICE             = 3
-    TW_CORP                  = 93
-    TW_PLAYER                = 85
+    TW_CORP                  = 85
+    TW_PLAYER                = 80
 
 
 # Number of tokens for a given player count (num_players + 55 fixed entities).

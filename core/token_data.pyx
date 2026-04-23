@@ -27,29 +27,30 @@ Active-entity selectors (active_player / active_corp / active_company
 in TURN_OFFSETS) are surfaced as ``is_selected`` scalar flags on each
 entity's own token, not as standalone one-hot tokens.
 
-Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 93 = max width,
+Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 85 = max width,
 currently pinned by the Corp token):
 
-  Player (85):  player_id onehot (5) + turn_order onehot (5) + has_passed
-                (1) + cash (1) + net_worth (1) + liquidity (1) + income
-                (1) + owned_shares (8) + round_trips (1) + share_buys (8)
-                + share_sells (8) + presidencies (8) + owned_companies
-                (36) + is_selected (1)
-  Corp   (93):  corp_id onehot (8) + active (1) + in_receivership (1) +
+  Player (80):  is_selected (1) + turn_order onehot (5) + has_passed (1) +
+                cash (1) + net_worth (1) + liquidity (1) + income (1) +
+                round_trips (1) + relational tail: owned_shares (8) +
+                share_buys (8) + share_sells (8) + presidencies (8) +
+                owned_companies (36)
+  Corp   (85):  is_selected (1) + active (1) + in_receivership (1) +
                 passed_acq_offer (1) + unissued/issued/bank shares (3) +
                 price_index onehot (27) + share_price (1) +
                 pending_price_move (1) + cash (1) + acq_proceeds (1) +
                 income (1) + stars (1) + raw_revenue (1) + synergy_income
-                (1) + coo_cost (1) + ability_income (1) + president_id
-                onehot (5) + owned_companies (36) + is_selected (1). The
+                (1) + coo_cost (1) + ability_income (1) + relational tail:
+                president_id onehot (5) +
+                owned_companies (36). The
                 ``active`` slot still means "corp is floated / operational"
-                (matches ``corp_is_active``); the decision-flow selector
-                is the separate ``is_selected`` flag at the end.
-  Company (62): company_id onehot (36) + static data [low/face/high/
-                low_high_diff/base_income/stars] (6) + adjusted_income
-                (1) + is_selected (1) + at_removed/at_auction/at_revealed/
-                at_corp_acq (4) + owner_corp onehot (8) + owner_player
-                onehot (5, padded for num_players < 5) + owner_fi (1).
+                (matches ``corp_is_active``); the decision-flow selector is
+                the leading ``is_selected`` flag.
+  Company (26): is_selected (1) + static data [low/face/high/
+                low_high_diff/base_income/stars] (6) + adjusted_income (1)
+                + at_removed/at_auction/at_revealed/at_corp_acq (4) +
+                relational tail: owner_corp onehot (8) + owner_player onehot
+                (5, padded for num_players < 5) + owner_fi (1).
                 The three ownership groups are mutually exclusive: only
                 the group matching the current location (LOC_CORP /
                 LOC_PLAYER / LOC_FI) is non-zero; the other two are
@@ -224,7 +225,7 @@ cpdef object get_token_widths(int num_players):
     projection modules without duplicating the layout logic.
 
     Returns a uint8 ``(num_players + 55,)`` numpy array; all widths fit
-    in a byte (max is TW_CORP = 93 < 256).
+    in a byte (max is TW_CORP = 85 < 256).
     """
     assert 3 <= num_players <= 5, \
         f"get_token_widths: num_players must be 3-5, got {num_players}"
@@ -457,21 +458,22 @@ cdef void _fill_player_token(
     int num_players,
 ) noexcept nogil:
     # Feature offsets within the player token. ``OFF_IS_SELECTED`` is
-    # set iff this player is the current active_player selector.
-    cdef int OFF_PLAYER_ID    = 0    # 5 slots
-    cdef int OFF_TURN_ORDER   = 5    # 5 slots
-    cdef int OFF_HAS_PASSED   = 10
-    cdef int OFF_CASH         = 11
-    cdef int OFF_NET_WORTH    = 12
-    cdef int OFF_LIQUIDITY    = 13
-    cdef int OFF_INCOME       = 14
-    cdef int OFF_SHARES       = 15   # 8 slots
-    cdef int OFF_ROUND_TRIPS  = 23
-    cdef int OFF_SHARE_BUYS   = 24   # 8 slots
-    cdef int OFF_SHARE_SELLS  = 32   # 8 slots
-    cdef int OFF_PRESIDENCIES = 40   # 8 slots
-    cdef int OFF_COMPANIES    = 48   # 36 slots
-    cdef int OFF_IS_SELECTED  = 84
+    # set iff this player is the current active_player selector. Identity is
+    # inferred from row order and added by the model as ``player_id_embed``.
+    # Relational fields are grouped at the end for model-side replacement.
+    cdef int OFF_IS_SELECTED  = 0
+    cdef int OFF_TURN_ORDER   = 1    # 5 slots
+    cdef int OFF_HAS_PASSED   = 6
+    cdef int OFF_CASH         = 7
+    cdef int OFF_NET_WORTH    = 8
+    cdef int OFF_LIQUIDITY    = 9
+    cdef int OFF_INCOME       = 10
+    cdef int OFF_ROUND_TRIPS  = 11
+    cdef int OFF_SHARES       = 12   # 8 slots
+    cdef int OFF_SHARE_BUYS   = 20   # 8 slots
+    cdef int OFF_SHARE_SELLS  = 28   # 8 slots
+    cdef int OFF_PRESIDENCIES = 36   # 8 slots
+    cdef int OFF_COMPANIES    = 44   # 36 slots
 
     cdef int player_base = LAYOUT.players_offset + player_id * PLAYER_FIELDS.size
     cdef int turn_order = <int>state._data[player_base + PLAYER_FIELDS.turn_order]
@@ -482,12 +484,8 @@ cdef void _fill_player_token(
     cdef int income = <int>state._data[player_base + PLAYER_FIELDS.income]
     cdef int c, shares, buys, sells, roundtrip_flag
 
-    # Player ID one-hot (padded to 5 slots). player_id is always
-    # 0 <= player_id < num_players <= MAX_MODEL_PLAYERS — the caller loops
-    # over range(num_players) and the entry assert pins num_players to [3,5].
     assert 0 <= player_id < MAX_MODEL_PLAYERS, \
         f"_fill_player_token: player_id {player_id} out of range"
-    buffer[tok, OFF_PLAYER_ID + player_id] = 1.0
 
     # Turn order one-hot (padded to 5 slots)
     assert 0 <= turn_order < MAX_MODEL_PLAYERS, \
@@ -560,33 +558,32 @@ cdef void _fill_corp_token(
     # (``corp_is_active``, set once the corp is floated and operational);
     # ``OFF_IS_SELECTED`` is the decision-flow selector (set iff this
     # corp is the current active_corp).
-    cdef int OFF_CORP_ID       = 0    # 8 slots
-    cdef int OFF_ACTIVE        = 8
-    cdef int OFF_IN_RECV       = 9
-    cdef int OFF_PASSED_ACQ    = 10
-    cdef int OFF_UNISSUED      = 11
-    cdef int OFF_ISSUED        = 12
-    cdef int OFF_BANK          = 13
-    cdef int OFF_PRICE_IDX     = 14   # 27 slots
-    cdef int OFF_SHARE_PRICE   = 41
-    cdef int OFF_PENDING_MOVE  = 42
-    cdef int OFF_CASH          = 43
-    cdef int OFF_ACQ_PROCEEDS  = 44
-    cdef int OFF_INCOME        = 45
-    cdef int OFF_STARS         = 46
-    cdef int OFF_RAW_REVENUE   = 47
-    cdef int OFF_SYNERGY       = 48
-    cdef int OFF_COO_COST      = 49
-    cdef int OFF_ABILITY       = 50
-    cdef int OFF_PRESIDENT     = 51   # 5 slots
-    cdef int OFF_COMPANIES     = 56   # 36 slots
-    cdef int OFF_IS_SELECTED   = 92
+    # Corp identity is inferred from row order and added by the model as
+    # ``corp_id_embed``. Relational fields are grouped at the end for
+    # model-side replacement.
+    cdef int OFF_IS_SELECTED   = 0
+    cdef int OFF_ACTIVE        = 1
+    cdef int OFF_IN_RECV       = 2
+    cdef int OFF_PASSED_ACQ    = 3
+    cdef int OFF_UNISSUED      = 4
+    cdef int OFF_ISSUED        = 5
+    cdef int OFF_BANK          = 6
+    cdef int OFF_PRICE_IDX     = 7    # 27 slots
+    cdef int OFF_SHARE_PRICE   = 34
+    cdef int OFF_PENDING_MOVE  = 35
+    cdef int OFF_CASH          = 36
+    cdef int OFF_ACQ_PROCEEDS  = 37
+    cdef int OFF_INCOME        = 38
+    cdef int OFF_STARS         = 39
+    cdef int OFF_RAW_REVENUE   = 40
+    cdef int OFF_SYNERGY       = 41
+    cdef int OFF_COO_COST      = 42
+    cdef int OFF_ABILITY       = 43
+    cdef int OFF_PRESIDENT     = 44   # 5 slots
+    cdef int OFF_COMPANIES     = 49   # 36 slots
 
     cdef bint active = corp_is_active(state, corp_id)
     cdef int price_idx, president, company_id
-
-    # Corp ID one-hot
-    buffer[tok, OFF_CORP_ID + corp_id] = 1.0
 
     buffer[tok, OFF_ACTIVE] = 1.0 if active else 0.0
 
@@ -646,34 +643,25 @@ cdef void _fill_company_token(
     int company_id,
     int num_players,
 ) noexcept nogil:
-    # Feature offsets within the company token. Static game-setup data
-    # (id one-hot, prices, base_income, stars) plus per-company dynamic
-    # scalars: CoO-adjusted income, active-company selector, the four
-    # observable locations (REMOVED / AUCTION / REVEALED / CORP_ACQ), and
-    # the mutually-exclusive ownership groups (LOC_CORP / LOC_PLAYER /
-    # LOC_FI). The at_* and owner_* groups are both driven by the same
-    # location dispatch below — exactly one group is set at a time; all
-    # zero when the company is at LOC_DECK (unrevealed) or LOC_EXCLUDED
-    # below the revealed-tier threshold.
-    cdef int OFF_COMPANY_ID     = 0    # 36 slots
-    cdef int OFF_LOW_PRICE      = 36
-    cdef int OFF_FACE_VALUE     = 37
-    cdef int OFF_HIGH_PRICE     = 38
-    cdef int OFF_LOW_HIGH_DIFF  = 39
-    cdef int OFF_BASE_INCOME    = 40
-    cdef int OFF_STARS          = 41
-    cdef int OFF_ADJ_INCOME     = 42
-    cdef int OFF_IS_SELECTED    = 43
-    cdef int OFF_AT_REMOVED     = 44
-    cdef int OFF_AT_AUCTION     = 45
-    cdef int OFF_AT_REVEALED    = 46
-    cdef int OFF_AT_CORP_ACQ    = 47
-    cdef int OFF_OWNER_CORP     = 48   # 8 slots
-    cdef int OFF_OWNER_PLAYER   = 56   # 5 slots (padded for num_players < 5)
-    cdef int OFF_OWNER_FI       = 61
-
-    # Company ID one-hot
-    buffer[tok, OFF_COMPANY_ID + company_id] = 1.0
+    # Feature offsets within the company token. Company identity is inferred
+    # from row order and added by the model as ``company_id_embed``. Static
+    # game-setup data plus non-relational dynamic fields come first; the
+    # mutually-exclusive ownership groups form a relational tail.
+    cdef int OFF_IS_SELECTED    = 0
+    cdef int OFF_LOW_PRICE      = 1
+    cdef int OFF_FACE_VALUE     = 2
+    cdef int OFF_HIGH_PRICE     = 3
+    cdef int OFF_LOW_HIGH_DIFF  = 4
+    cdef int OFF_BASE_INCOME    = 5
+    cdef int OFF_STARS          = 6
+    cdef int OFF_ADJ_INCOME     = 7
+    cdef int OFF_AT_REMOVED     = 8
+    cdef int OFF_AT_AUCTION     = 9
+    cdef int OFF_AT_REVEALED    = 10
+    cdef int OFF_AT_CORP_ACQ    = 11
+    cdef int OFF_OWNER_CORP     = 12   # 8 slots
+    cdef int OFF_OWNER_PLAYER   = 20   # 5 slots (padded for num_players < 5)
+    cdef int OFF_OWNER_FI       = 25
 
     # Static data
     buffer[tok, OFF_LOW_PRICE] = <float>COMPANY_LOW_PRICE[company_id] / COMPANY_PRICE_DIVISOR

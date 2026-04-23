@@ -57,15 +57,15 @@ Known stale-prose traps:
 - `core/driver.pyx`: stateless dispatch, legality check, auto-chaining through
   automated phases and forced actions, plus step-mode helpers.
 - `core/token_data.{pxd,pyx}`: token extraction. Engine-side tokens are
-  `num_players + 55` rows, `TOKEN_DIM = 93`; 4 learned pass anchors are appended
+  `num_players + 55` rows, `TOKEN_DIM = 85`; 4 learned pass anchors are appended
   inside the model for entity-readout pass phases, not emitted by the engine.
 - `nn/transformer.py`: active model. Token-based entity readout, unified dense
   policy output over `UNIFIED_LOGIT_DIM = 255`, legal mask supplied by caller,
   canonical-order per-player values. Company/corp/player token identity uses
-  learned `company_id_embed` / `corp_id_embed` / `player_id_embed`; the ID
-  one-hots remain in token data but are skipped by the corresponding
-  projections. Company ownership fields are skipped by `company_proj` and
-  re-injected from corp/player/FI owner-reference embeddings.
+  learned `company_id_embed` / `corp_id_embed` / `player_id_embed` inferred
+  from token row order; entity ID one-hots are not emitted. Company ownership
+  fields are skipped by `company_proj` and re-injected from corp/player/FI
+  owner-reference embeddings.
 - `mcts/search.py`, `mcts/node.py`, `mcts/evaluator.py`, `mcts/mcts_core.pyx`:
   sparse/token search stack with batched leaf eval and subtree reuse.
 - `train/eval_server.py`, `train/self_play.py`, `train/replay_buffer.py`,
