@@ -603,10 +603,7 @@ _PLAYER_OFF = {
     "INCOME":       10,
     "ROUND_TRIPS":  11,
     "SHARES":       12,  # 8 slots
-    "SHARE_BUYS":   20,  # 8 slots
-    "SHARE_SELLS":  28,  # 8 slots
-    "PRESIDENCIES": 36,  # 8 slots
-    "COMPANIES":    44,  # 36 slots
+    "COMPANIES":    20,  # 36 slots
 }
 _CORP_OFF = {
     "IS_SELECTED":   0,
@@ -737,7 +734,7 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
         [54] + [26] * num_companies
         + [38, 23, 17, 13, 34, 9, 50, 36, 11, 3]
         + [85] * num_corps
-        + [80] * num_players
+        + [56] * num_players
     )
     assert list(widths) == expected_widths, (
         f"{msg}\nget_token_widths({num_players}) mismatch:\n"
@@ -804,7 +801,7 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
                       PLAYERS[p].get_income(state), T_SCALE,
                       f"{pm}: income")
 
-        # Per-corp shares / buys / sells / presidencies
+        # Per-corp shares, with buys/sells summarized by the round-trip flag.
         any_roundtrip = False
         for c in range(num_corps):
             shares = PLAYERS[p].get_shares(state, c)
@@ -813,14 +810,6 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
 
             _assert_close(buf[tok, _PLAYER_OFF["SHARES"] + c] * PY_SHARE_DIVISOR,
                           shares, T_SCALE, f"{pm}: shares[{c}]")
-            _assert_close(buf[tok, _PLAYER_OFF["SHARE_BUYS"] + c] * PY_SHARE_DIVISOR,
-                          buys, T_SCALE, f"{pm}: share_buys[{c}]")
-            _assert_close(buf[tok, _PLAYER_OFF["SHARE_SELLS"] + c] * PY_SHARE_DIVISOR,
-                          sells, T_SCALE, f"{pm}: share_sells[{c}]")
-
-            expected_pres = 1.0 if CORPS[c].get_president_id(state) == p else 0.0
-            _assert_close(buf[tok, _PLAYER_OFF["PRESIDENCIES"] + c], expected_pres, T_FLAG,
-                          f"{pm}: presidency[{c}]")
 
             if buys >= 2 or sells >= 2:
                 any_roundtrip = True

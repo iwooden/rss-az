@@ -203,7 +203,7 @@ non-relational corp features from slots 0 through 43.
 
 ---
 
-## Player tokens (80, ×N, N ∈ {3, 4, 5})
+## Player tokens (56, ×N, N ∈ {3, 4, 5})
 Player identity is inferred from row order; the model adds learned
 `player_id_embed[player_id]` after projection.
 
@@ -218,7 +218,4 @@ Player identity is inferred from row order; the model adds learned
 
 Relational tail:
 - Owned shares (vector, 8 slots for 8 corps, normalized by SHARE_DIVISOR)
-- Share buys (vector, 8 slots for 8 corps, normalized by SHARE_DIVISOR)
-- Share sells (vector, 8 slots for 8 corps, normalized by SHARE_DIVISOR)
-- Presidencies (vector, 8 slots for 8 corps — 1 if this player is president of the corresponding corp)
 - Owned companies (vector, 36 slots)

@@ -41,7 +41,7 @@ cpdef enum TokenWidth:
     TW_ACQ_OFFER             = 11
     TW_ACQ_PRICE             = 3
     TW_CORP                  = 85
-    TW_PLAYER                = 80
+    TW_PLAYER                = 56
 
 
 # Number of tokens for a given player count (num_players + 55 fixed entities).

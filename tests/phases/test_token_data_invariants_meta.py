@@ -274,14 +274,11 @@ def corrupt_corp_is_selected(buf):
 def corrupt_player_cash(buf):
     buf[PLAYER_BASE_TOK + 0, 7] = 0.0              # OFF_CASH; player 0 cash=30
 
-def corrupt_player_presidency(buf):
-    buf[PLAYER_BASE_TOK + 0, 36] = 1.0             # OFF_PRESIDENCIES: none held
-
 def corrupt_player_is_selected_wrong(buf):
     buf[PLAYER_BASE_TOK + 1, 0] = 1.0              # active_player=0 so player 1 must be 0
 
 def corrupt_player_tail(buf):
-    buf[PLAYER_BASE_TOK + 0, 80] = 1.0             # padding past TW_PLAYER must stay 0
+    buf[PLAYER_BASE_TOK + 0, 56] = 1.0             # padding past TW_PLAYER must stay 0
 
 
 def corrupt_inactive_corp_companies(buf):
@@ -363,7 +360,6 @@ CASES = [
     (corrupt_corp_inactive_price_idx,         "inactive corp price_idx"),
     (corrupt_corp_is_selected,                "is_selected"),
     (corrupt_player_cash,                     r"player token p=0.*: cash"),
-    (corrupt_player_presidency,               "presidency"),
     (corrupt_player_is_selected_wrong,        "is_selected"),
     (corrupt_player_tail,                     "tail beyond TW_PLAYER features"),
     (corrupt_inactive_corp_companies,         "inactive corp owned_company region must be zero"),

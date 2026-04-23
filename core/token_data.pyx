@@ -30,10 +30,9 @@ entity's own token, not as standalone one-hot tokens.
 Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 85 = max width,
 currently pinned by the Corp token):
 
-  Player (80):  is_selected (1) + turn_order onehot (5) + has_passed (1) +
+  Player (56):  is_selected (1) + turn_order onehot (5) + has_passed (1) +
                 cash (1) + net_worth (1) + liquidity (1) + income (1) +
                 round_trips (1) + relational tail: owned_shares (8) +
-                share_buys (8) + share_sells (8) + presidencies (8) +
                 owned_companies (36)
   Corp   (85):  is_selected (1) + active (1) + in_receivership (1) +
                 passed_acq_offer (1) + unissued/issued/bank shares (3) +
@@ -470,10 +469,7 @@ cdef void _fill_player_token(
     cdef int OFF_INCOME       = 10
     cdef int OFF_ROUND_TRIPS  = 11
     cdef int OFF_SHARES       = 12   # 8 slots
-    cdef int OFF_SHARE_BUYS   = 20   # 8 slots
-    cdef int OFF_SHARE_SELLS  = 28   # 8 slots
-    cdef int OFF_PRESIDENCIES = 36   # 8 slots
-    cdef int OFF_COMPANIES    = 44   # 36 slots
+    cdef int OFF_COMPANIES    = 20   # 36 slots
 
     cdef int player_base = LAYOUT.players_offset + player_id * PLAYER_FIELDS.size
     cdef int turn_order = <int>state._data[player_base + PLAYER_FIELDS.turn_order]
@@ -501,7 +497,7 @@ cdef void _fill_player_token(
     buffer[tok, OFF_LIQUIDITY] = <float>liquidity / NET_WORTH_DIVISOR
     buffer[tok, OFF_INCOME] = <float>income / ENTITY_INCOME_DIVISOR
 
-    # Per-corp: shares, buys, sells, presidency, round-trip flag
+    # Per-corp: shares and the aggregated round-trip flag.
     roundtrip_flag = 0
     for c in range(NUM_CORPS):
         shares = <int>state._data[player_base + PLAYER_FIELDS.owned_shares + c]
@@ -509,12 +505,6 @@ cdef void _fill_player_token(
         sells = <int>state._data[player_base + PLAYER_FIELDS.share_sells + c]
 
         buffer[tok, OFF_SHARES + c] = <float>shares / SHARE_DIVISOR
-        buffer[tok, OFF_SHARE_BUYS + c] = <float>buys / SHARE_DIVISOR
-        buffer[tok, OFF_SHARE_SELLS + c] = <float>sells / SHARE_DIVISOR
-
-        # Presidency: 1.0 if this player is the corp's president
-        if corp_president_id(state, c) == player_id:
-            buffer[tok, OFF_PRESIDENCIES + c] = 1.0
 
         # Round-trip threshold: once the player hits the buy+sell cap on
         # any corp, any further buy/sell in that corp is illegal this turn.
