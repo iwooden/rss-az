@@ -269,6 +269,38 @@ def test_active_entity_refs_broadcast_to_eligible_tokens(model: RSSTransformerNe
     assert torch.allclose(delta[0, active_player_idx], expected_active_player_delta)
 
 
+def test_phase_ref_broadcasts_to_all_but_global_info(model: RSSTransformerNet) -> None:
+    cfg = model.cfg
+    phase_width = len(PHASE_ACTION_SIZES)
+    assert model._global_phase_width == phase_width
+    assert model.global_info_proj.in_features == int(TokenWidth.TW_GLOBAL_INFO) - phase_width
+    assert tuple(model.phase_embed.weight.shape) == (phase_width, cfg.d_model)
+
+    x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
+    phase_id = 1
+    x_with_phase = x.clone()
+    x_with_phase[:, model._global_info_idx, phase_id] = 1.0
+
+    without_phase = model._project_tokens(x)
+    with_phase = model._project_tokens(x_with_phase)
+    delta = with_phase - without_phase
+
+    phase_ref = model.phase_embed.weight[phase_id]
+    assert torch.allclose(delta[0, model._global_info_idx], torch.zeros_like(phase_ref))
+    assert torch.allclose(delta[0, model._market_info_idx], phase_ref)
+    assert torch.allclose(delta[0, model._company_slice.start], phase_ref)
+    assert torch.allclose(delta[0, model._invest_idx], phase_ref)
+    assert torch.allclose(delta[0, model._pass_idxs[0]], phase_ref)
+
+    x_with_global_suffix = x.clone()
+    x_with_global_suffix[:, model._global_info_idx, phase_width] = 1.0
+    with_global_suffix = model._project_tokens(x_with_global_suffix)
+    suffix_delta = with_global_suffix - without_phase
+    expected_global_delta = model.global_info_proj.weight[:, 0]
+    assert torch.allclose(suffix_delta[0, model._global_info_idx], expected_global_delta)
+    assert torch.allclose(suffix_delta[0, model._market_info_idx], torch.zeros_like(phase_ref))
+
+
 def test_company_projection_uses_learned_identity_embedding(model: RSSTransformerNet) -> None:
     cfg = model.cfg
     num_companies = int(GameConstants.NUM_COMPANIES)

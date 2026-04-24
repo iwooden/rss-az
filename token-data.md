@@ -109,6 +109,12 @@ Bundled game-level scalars:
 - Cards remaining (scalar, normalized by NUM_COMPANIES).
 - num_players (one-hot, 3 slots — slot 0 = 3p, slot 1 = 4p, slot 2 = 5p).
 
+The current transformer skips the decision-phase one-hot in
+`global_info_proj` and re-injects it as `phase_onehot @ phase_embed.weight` to
+every projected token plus learned pass anchors except GlobalInfo itself.
+`global_info_proj` only sees the non-phase global features from slots 11
+through 22.
+
 ---
 
 ## Phase-specific tokens (8 total)

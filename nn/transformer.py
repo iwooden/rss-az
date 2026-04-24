@@ -105,6 +105,7 @@ _PLAYER_SHARES_WIDTH = _NUM_CORPS
 _PLAYER_COMPANIES_WIDTH = _NUM_COMPANIES
 _COMPANY_OWNER_OFFSET = 12
 _COMPANY_OWNER_WIDTH = _NUM_CORPS + _MAX_MODEL_PLAYERS + 1
+_GLOBAL_PHASE_WIDTH = NUM_PHASES
 
 
 def _phase_action_size(phase: DecisionPhase) -> int:
@@ -284,6 +285,7 @@ class RSSTransformerNet(nn.Module):
     _active_player_targets: torch.Tensor
     _active_corp_targets: torch.Tensor
     _active_company_targets: torch.Tensor
+    _phase_ref_targets: torch.Tensor
 
     def __init__(self, cfg: TransformerConfig) -> None:
         super().__init__()
@@ -377,7 +379,11 @@ class RSSTransformerNet(nn.Module):
         self._fi_companies_width = _FI_COMPANIES_WIDTH
         self.fi_proj = nn.Linear(self._fi_companies_offset, d)
         self.market_info_proj = nn.Linear(int(TokenWidth.TW_MARKET_INFO), d)
-        self.global_info_proj = nn.Linear(int(TokenWidth.TW_GLOBAL_INFO), d)
+        self._global_phase_width = _GLOBAL_PHASE_WIDTH
+        self.global_info_proj = nn.Linear(
+            int(TokenWidth.TW_GLOBAL_INFO) - self._global_phase_width,
+            d,
+        )
         self.invest_proj = nn.Linear(int(TokenWidth.TW_INVEST), d)
         self.auction_proj = nn.Linear(int(TokenWidth.TW_AUCTION), d)
         self.dividend_proj = nn.Linear(int(TokenWidth.TW_DIVIDEND), d)
@@ -396,6 +402,7 @@ class RSSTransformerNet(nn.Module):
         self.company_id_embed = nn.Embedding(_NUM_COMPANIES, d)
         self.corp_id_embed = nn.Embedding(_NUM_CORPS, d)
         self.player_id_embed = nn.Embedding(_MAX_MODEL_PLAYERS, d)
+        self.phase_embed = nn.Embedding(NUM_PHASES, d)
         # Per-type additive embedding for every non-pass token. Added
         # post-projection in ``_project_tokens`` so the trunk still sees a
         # type-distinct vector even when a token's feature slice is all-zero
@@ -446,6 +453,10 @@ class RSSTransformerNet(nn.Module):
         self.register_buffer("_active_player_targets", active_player_targets, persistent=False)
         self.register_buffer("_active_corp_targets", active_corp_targets, persistent=False)
         self.register_buffer("_active_company_targets", active_company_targets, persistent=False)
+
+        phase_ref_targets = torch.ones(projected_tokens, dtype=torch.float32)
+        phase_ref_targets[self._global_info_idx] = 0.0
+        self.register_buffer("_phase_ref_targets", phase_ref_targets, persistent=False)
 
         self.register_buffer(
             "_company_ids", torch.arange(_NUM_COMPANIES, dtype=torch.long), persistent=False,
@@ -619,6 +630,16 @@ class RSSTransformerNet(nn.Module):
         )
         return fi_token + owned_company_refs.to(fi_token.dtype)
 
+    def _project_global_info_token(self, x: torch.Tensor) -> torch.Tensor:
+        """Project global info, excluding the phase one-hot prefix."""
+        return self.global_info_proj(
+            x[
+                :,
+                self._global_info_idx,
+                self._global_phase_width:int(TokenWidth.TW_GLOBAL_INFO),
+            ]
+        )
+
     def _project_player_tokens(self, x: torch.Tensor) -> torch.Tensor:
         """Project player tokens, adding row-order ID and relational references."""
         player_raw = x[
@@ -695,6 +716,23 @@ class RSSTransformerNet(nn.Module):
             * self._active_company_targets.to(dtype=dtype).view(1, -1, 1)
         )
         return tokens
+
+    def _phase_ref(self, x: torch.Tensor) -> torch.Tensor:
+        """Return the current decision-phase ref from GlobalInfo's phase one-hot."""
+        phase_onehot = x[
+            :,
+            self._global_info_idx,
+            :self._global_phase_width,
+        ]
+        return phase_onehot.to(self.phase_embed.weight.dtype) @ self.phase_embed.weight
+
+    def _add_phase_ref(self, tokens: torch.Tensor, phase_ref: torch.Tensor) -> torch.Tensor:
+        """Broadcast the phase ref to every token except GlobalInfo."""
+        dtype = tokens.dtype
+        return tokens + (
+            phase_ref.to(dtype)[:, None, :]
+            * self._phase_ref_targets.to(dtype=dtype).view(1, -1, 1)
+        )
 
     @staticmethod
     def _policy_head_width(head: nn.Module) -> int:
@@ -831,7 +869,9 @@ class RSSTransformerNet(nn.Module):
         feature slice — padding and replaced relation fields would otherwise be
         multiplied against projection weights. After pass anchors are appended,
         active player/corp/company identity refs are broadcast to every eligible
-        token except MarketInfo, GlobalInfo, and same-entity token rows.
+        token except MarketInfo, GlobalInfo, and same-entity token rows. The
+        decision-phase one-hot is also sliced out of GlobalInfo and broadcast
+        as a learned phase ref to every token except GlobalInfo itself.
 
         Args:
             x: (batch, num_players + 55, token_dim) zero-padded raw features.
@@ -858,7 +898,7 @@ class RSSTransformerNet(nn.Module):
             _slice_proj(x, self.market_info_proj, self._market_info_idx).unsqueeze(1),
             company_tokens,                                                             # (B, 36, d)
             self._project_fi_token(x).unsqueeze(1),
-            _slice_proj(x, self.global_info_proj, self._global_info_idx).unsqueeze(1),
+            self._project_global_info_token(x).unsqueeze(1),
             _slice_proj(x, self.invest_proj, self._invest_idx).unsqueeze(1),
             _slice_proj(x, self.auction_proj, self._auction_idx).unsqueeze(1),
             _slice_proj(x, self.dividend_proj, self._dividend_idx).unsqueeze(1),
@@ -881,6 +921,7 @@ class RSSTransformerNet(nn.Module):
             .expand(x.shape[0], NUM_PASS_PHASES, d)
         )
         tokens = torch.cat([input_tokens, pass_rows], dim=1)                             # (B, num_tokens, d)
+        tokens = self._add_phase_ref(tokens, self._phase_ref(x))
         active_player_ref, active_corp_ref, active_company_ref = self._active_entity_refs(x)
         tokens = self._add_active_entity_refs(
             tokens,
@@ -1052,6 +1093,7 @@ class RSSTransformerNet(nn.Module):
         nn.init.trunc_normal_(self.company_id_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.corp_id_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.player_id_embed.weight, std=0.02)
+        nn.init.trunc_normal_(self.phase_embed.weight, std=0.02)
         # Per-type additive embeddings: same small-random init.
         nn.init.trunc_normal_(self.type_embeds, std=0.02)
 
@@ -1095,6 +1137,7 @@ if __name__ == "__main__":
     company_id_params = model.company_id_embed.weight.numel()
     corp_id_params = model.corp_id_embed.weight.numel()
     player_id_params = model.player_id_embed.weight.numel()
+    phase_params = model.phase_embed.weight.numel()
     pass_params = model.pass_embeds.numel()
     type_params = model.type_embeds.numel()
     trunk_params = (
@@ -1119,6 +1162,7 @@ if __name__ == "__main__":
         ("Company ID embeds", company_id_params),
         ("Corp ID embeds", corp_id_params),
         ("Player ID embeds", player_id_params),
+        ("Phase embeds", phase_params),
         ("Pass anchors", pass_params),
         ("Type embeds", type_params),
         ("Transformer trunk", trunk_params),
