@@ -81,6 +81,38 @@ class CleanCommand(Command):
         print(f'Clean complete: {files_removed} files, {dirs_removed} directories removed.')
 
 
+class CleanArtifactsCommand(Command):
+    """Remove training artifacts so a fresh run starts clean.
+
+    Deletes top-level *.pt checkpoints and top-level *.0 tfevents files.
+    Subdirectories (e.g. checkpoints/backups, runs/pre-plus) are preserved.
+    """
+    description = 'Delete top-level *.pt from checkpoints/ and *.0 from runs/.'
+    user_options = []
+
+    def initialize_options(self):
+        pass
+
+    def finalize_options(self):
+        pass
+
+    def run(self):
+        targets = [
+            ('checkpoints', '*.pt'),
+            ('runs', '*.0'),
+        ]
+        total = 0
+        for directory, pattern in targets:
+            if not os.path.isdir(directory):
+                continue
+            for path in glob.glob(os.path.join(directory, pattern)):
+                if os.path.isfile(path):
+                    os.remove(path)
+                    print(f'removed {path}')
+                    total += 1
+        print(f'clean_artifacts complete: {total} files removed.')
+
+
 class CleanBuildCommand(Command):
     """Clean all build artifacts, then rebuild extensions in-place.
 
@@ -215,7 +247,7 @@ for pyx_file in pyx_files:
 # Skip cythonize for commands that don't need built extensions. Without this
 # guard, even `setup.py clean` triggers a full Cython compile at module-load
 # time, which fails (and blocks the clean) whenever any .pyx is mid-refactor.
-SKIP_CYTHONIZE_COMMANDS = {'clean', 'clean_build'}
+SKIP_CYTHONIZE_COMMANDS = {'clean', 'clean_build', 'clean_artifacts'}
 if any(cmd in sys.argv for cmd in SKIP_CYTHONIZE_COMMANDS):
     ext_modules = []
 else:
@@ -233,6 +265,7 @@ setup(
     cmdclass={
         'clean': CleanCommand,
         'clean_build': CleanBuildCommand,
+        'clean_artifacts': CleanArtifactsCommand,
         'build_ext': ParallelBuildExt,
     },
     include_package_data=True,
