@@ -3,6 +3,7 @@
 Regressions this catches:
 - norm scale weights (LayerNorm/RMSNorm) silently routed to a decay group
 - bias params routed to a decay group
+- Muon claiming embedding/anchor tables instead of leaving them to AdamW
 - any trainable param orphaned from, or double-claimed by, the optimizer(s)
 """
 
@@ -71,6 +72,16 @@ def _bias_param_ids(model: nn.Module) -> set[int]:
     return ids
 
 
+def _embedding_param_ids(model: nn.Module) -> dict[str, int]:
+    ids: dict[str, int] = {}
+    for module_name, module in model.named_modules():
+        for pname, p in module.named_parameters(recurse=False):
+            full_name = f"{module_name}.{pname}" if module_name else pname
+            if isinstance(module, nn.Embedding) or pname.endswith("embeds"):
+                ids[full_name] = id(p)
+    return ids
+
+
 @pytest.mark.parametrize("optimizer", ["adamw", "muon"])
 def test_every_trainable_param_claimed_exactly_once(optimizer: str) -> None:
     trainer = _make_trainer(optimizer)
@@ -113,4 +124,26 @@ def test_bias_params_are_not_decayed(optimizer: str) -> None:
         assert g is not None, "bias param not routed to any group"
         assert g["weight_decay"] == 0.0, (
             f"bias routed to weight_decay={g['weight_decay']} group"
+        )
+
+
+def test_muon_routes_embedding_params_to_aux_adamw_decay_group() -> None:
+    trainer = _make_trainer("muon")
+    assert trainer._aux_optimizer is not None, "expected Muon to have aux AdamW"
+
+    muon_ids = {
+        id(p)
+        for g in trainer.optimizer.param_groups
+        for p in g["params"]
+    }
+    aux_groups = list(trainer._aux_optimizer.param_groups)
+    embedding_ids = _embedding_param_ids(trainer.model)
+    assert embedding_ids, "expected model to contain embedding params"
+
+    for name, pid in embedding_ids.items():
+        assert pid not in muon_ids, f"{name} was routed to Muon"
+        g = _group_of(pid, aux_groups)
+        assert g is not None, f"{name} not routed to aux AdamW"
+        assert g["weight_decay"] == trainer.config.weight_decay, (
+            f"{name} routed to aux AdamW with weight_decay={g['weight_decay']}"
         )

@@ -115,7 +115,7 @@ class Trainer:
     def _setup_muon(
         self, model: torch.nn.Module, config: TrainingConfig
     ) -> None:
-        """Muon for 2D weights, auxiliary AdamW for 1D params.
+        """Muon for 2D hidden-layer weights, auxiliary AdamW for other params.
 
         Uses adjust_lr_fn="match_rms_adamw" (Moonshot) so Muon reuses
         the same LR and weight decay as AdamW — no separate tuning needed.
@@ -128,11 +128,16 @@ class Trainer:
                 if not param.requires_grad:
                     continue
                 is_norm = isinstance(module, (torch.nn.LayerNorm, torch.nn.RMSNorm))
+                is_embedding = (
+                    isinstance(module, torch.nn.Embedding)
+                    or pname.endswith("embeds")
+                )
                 # Muon only supports 2D matrix params. Stacked (3D+) tensors —
                 # e.g. the per-offset ACQ bilinear factors — go to AdamW decay:
                 # Newton-Schulz orthogonalization across the stack axis isn't
-                # what Muon means by "matrix."
-                if param.ndim == 2 and not is_norm:
+                # what Muon means by "matrix." Embedding/anchor tables are
+                # also kept on AdamW per Muon's intended hidden-layer scope.
+                if param.ndim == 2 and not is_norm and not is_embedding:
                     muon_params.append(param)
                 elif is_norm or pname == "bias":
                     adam_no_decay.append(param)
