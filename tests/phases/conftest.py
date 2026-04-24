@@ -580,8 +580,9 @@ def assert_invariants(state, msg=""):
 #     [46, 54)                   : Corp tokens       (8)
 #     [54, 54 + num_players)     : Player tokens
 #
-# The single learned pass anchor lives inside the model (concatenated after
-# projection) and is not part of the input buffer.
+# Learned pass anchors and the synthetic removed-companies token live inside
+# the model (concatenated after projection) and are not part of the input
+# buffer.
 #
 # The feature-offset layouts below mirror core/token_data.pyx — treat that
 # file as the source of truth if these ever drift. Per-position widths are

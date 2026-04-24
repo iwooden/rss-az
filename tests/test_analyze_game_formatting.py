@@ -126,9 +126,9 @@ def test_format_token_dump_denormalizes_rows_into_compact_table() -> None:
     company0 = COMPANIES[0]
 
     assert "idx | token" in rendered
-    assert market_row.startswith("00 | market_info | 54 | prices=[0, 5, 6, 7,")
+    assert market_row.startswith("00 | market_info | 55 | attn=1 prices=[0, 5, 6, 7,")
     assert (
-        f"id=0 low={company0.get_low_price()} face={company0.get_face_value()} "
+        f"low={company0.get_low_price()} face={company0.get_face_value()} "
         f"high={company0.get_high_price()}"
     ) in company_row
     assert f"cards_remaining={TURN.get_cards_remaining(state)}" in global_row

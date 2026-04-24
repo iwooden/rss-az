@@ -3,8 +3,8 @@
 This documents the engine-side token buffer filled by
 `core/token_data.pyx:get_token_data(...)` and `get_token_data_batch(...)`.
 It reflects the staged token-schema refactor in `core/token_data.{pyx,pxd}`.
-The companion model/test updates are still pending, so any old slicing in
-`nn/transformer.py` should be treated as stale until that pass lands.
+The companion model/test updates live in `nn/transformer.py` and
+`tests/test_transformer.py`.
 
 ## Token Order
 
@@ -37,8 +37,8 @@ For 3p, row indices are:
 - 46..53: Corp 0..7
 - 54..56: Player 0..2
 
-The model adds 4 learned pass anchors after projection for entity-readout pass
-phases; they do not appear in the engine-side buffer.
+The model adds 4 learned pass anchors plus one synthetic removed-companies
+token after projection; they do not appear in the engine-side buffer.
 
 Each token row is zero-padded to `TOKEN_DIM = 92`, currently pinned by the
 Corp token. Per-type widths live in `TokenWidth`:

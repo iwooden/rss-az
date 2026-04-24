@@ -115,7 +115,6 @@ def _token_labels(num_players: int) -> list[str]:
         "dividend",
         "issue",
         "par",
-        "acq_select_company",
         "acq_offer",
         "acq_price",
     ])
@@ -131,61 +130,55 @@ def _field_names(prefix: str, count: int) -> list[str]:
 def _token_field_labels(token_label: str) -> list[str]:
     if token_label == "market_info":
         return (
-            _field_names("market_price", NUM_MARKET_SPACES)
+            ["attn_mask"]
+            + _field_names("market_price", NUM_MARKET_SPACES)
             + _field_names("market_available", NUM_MARKET_SPACES)
         )
     if token_label.startswith("company["):
         return (
-            _field_names("company_id", NUM_COMPANIES)
+            ["attn_mask", "is_selected"]
             + ["low_price", "face_value", "high_price", "low_high_diff", "base_income", "stars"]
-            + ["adj_income", "is_selected"]
+            + ["adj_income"]
             + ["at_removed", "at_auction", "at_revealed", "at_corp_acq"]
+            + ["acq_select_synergy_delta"]
             + _field_names("owner_corp", NUM_CORPS)
             + _field_names("owner_player", NUM_PLAYER_SLOTS)
             + ["owner_fi"]
         )
     if token_label == "fi":
-        return ["cash", "income"] + _field_names("owned_company", NUM_COMPANIES)
+        return ["attn_mask", "cash", "income"] + _field_names("owned_company", NUM_COMPANIES)
     if token_label == "global_info":
         return (
-            _field_names("phase", NUM_DECISION_PHASES)
+            ["attn_mask"]
+            + _field_names("phase", NUM_DECISION_PHASES)
             + _field_names("coo_level", NUM_COO_LEVELS)
             + ["end_card_flipped", "cards_remaining"]
             + _field_names("num_players", 3)
         )
     if token_label == "invest":
-        return ["consecutive_passes"] + _field_names("buy_impact", 8) + _field_names("sell_impact", 8)
+        return ["attn_mask", "consecutive_passes"]
     if token_label == "auction":
-        return (
-            ["min_bid_index", "min_bid_value", "is_first_bid"]
-            + _field_names("high_bidder", NUM_PLAYER_SLOTS)
-            + _field_names("starter", NUM_PLAYER_SLOTS)
-        )
+        return ["attn_mask", "min_bid_index", "min_bid_value", "is_first_bid"]
     if token_label == "dividend":
-        return _field_names("dividend_impact", 26) + _field_names("dividend_remaining", 8)
+        return ["attn_mask"] + _field_names("dividend_impact", 26)
     if token_label == "issue":
-        return ["issue_impact"] + _field_names("issue_remaining", 8)
+        return ["attn_mask", "issue_impact"]
     if token_label == "par":
         return (
-            _field_names("player_cash_required", 14)
+            ["attn_mask"]
+            + _field_names("player_cash_required", 14)
             + _field_names("resulting_corp_cash", 14)
             + _field_names("resulting_issued_shares", 14)
-            + _field_names("ipo_remaining", 8)
         )
-    if token_label == "acq_select_company":
-        return _field_names("synergy_delta", NUM_COMPANIES)
     if token_label == "acq_offer":
-        return (
-            ["offer_price_index", "offer_price"]
-            + _field_names("offer_corp", NUM_CORPS)
-            + ["fi_company"]
-        )
+        return ["attn_mask", "offer_price_index", "offer_price", "fi_company"]
     if token_label == "acq_price":
-        return ["max_offset", "fi_flag", "total_synergies"]
+        return ["attn_mask", "max_offset", "fi_flag", "total_synergies"]
     if token_label.startswith("corp["):
         return (
-            _field_names("corp_id", NUM_CORPS)
-            + [
+            [
+                "attn_mask",
+                "is_selected",
                 "active",
                 "in_receivership",
                 "passed_acq_offer",
@@ -205,23 +198,24 @@ def _token_field_labels(token_label: str) -> list[str]:
                 "synergy_income",
                 "coo_cost",
                 "ability_income",
+                "acq_offer_corp",
+                "dividend_remaining",
+                "issue_remaining",
+                "ipo_remaining",
+                "buy_impact",
+                "sell_impact",
             ]
             + _field_names("president_id", NUM_PLAYER_SLOTS)
             + _field_names("owned_company", NUM_COMPANIES)
-            + ["is_selected"]
         )
     if token_label.startswith("player["):
         return (
-            _field_names("player_id", NUM_PLAYER_SLOTS)
+            ["attn_mask", "is_selected"]
             + _field_names("turn_order", NUM_PLAYER_SLOTS)
             + ["has_passed", "cash", "net_worth", "liquidity", "income"]
+            + ["auction_high_bidder", "auction_starter", "round_trips"]
             + _field_names("owned_share", NUM_CORPS)
-            + ["round_trips"]
-            + _field_names("share_buy", NUM_CORPS)
-            + _field_names("share_sell", NUM_CORPS)
-            + _field_names("presidency", NUM_CORPS)
             + _field_names("owned_company", NUM_COMPANIES)
-            + ["is_selected"]
         )
     raise ValueError(f"unknown token label: {token_label}")
 
@@ -243,93 +237,97 @@ def _extract_token_buffer(state: GameState) -> tuple[np.ndarray, np.ndarray, lis
 def _denormalize_token_values(token_label: str, row: np.ndarray) -> list[int]:
     if token_label == "market_info":
         return (
-            _round_values(row[:27], PY_SHARE_PRICE_DIVISOR)
-            + _round_values(row[27:54])
+            _round_values(row[:1])
+            + _round_values(row[1:28], PY_SHARE_PRICE_DIVISOR)
+            + _round_values(row[28:55])
         )
     if token_label.startswith("company["):
         return (
-            _round_values(row[:36])
-            + _round_values(row[36:39], PY_COMPANY_PRICE_DIVISOR)
-            + _round_values(row[39:40], PY_PRICE_RANGE_DIVISOR)
-            + _round_values(row[40:41], PY_COMPANY_INCOME_DIVISOR)
-            + _round_values(row[41:42], PY_COMPANY_STAR_DIVISOR)
-            + _round_values(row[42:43], PY_COMPANY_INCOME_DIVISOR)
-            + _round_values(row[43:62])
+            _round_values(row[:2])
+            + _round_values(row[2:5], PY_COMPANY_PRICE_DIVISOR)
+            + _round_values(row[5:6], PY_PRICE_RANGE_DIVISOR)
+            + _round_values(row[6:7], PY_COMPANY_INCOME_DIVISOR)
+            + _round_values(row[7:8], PY_COMPANY_STAR_DIVISOR)
+            + _round_values(row[8:9], PY_COMPANY_INCOME_DIVISOR)
+            + _round_values(row[9:13])
+            + _round_values(row[13:14], PY_ENTITY_INCOME_DIVISOR)
+            + _round_values(row[14:28])
         )
     if token_label == "fi":
         return (
-            _round_values(row[:1], PY_CASH_DIVISOR)
-            + _round_values(row[1:2], PY_ENTITY_INCOME_DIVISOR)
-            + _round_values(row[2:38])
+            _round_values(row[:1])
+            + _round_values(row[1:2], PY_CASH_DIVISOR)
+            + _round_values(row[2:3], PY_ENTITY_INCOME_DIVISOR)
+            + _round_values(row[3:39])
         )
     if token_label == "global_info":
         return (
-            _round_values(row[:19])
-            + _round_values(row[19:20], CARDS_REMAINING_DIVISOR)
-            + _round_values(row[20:23])
+            _round_values(row[:20])
+            + _round_values(row[20:21], CARDS_REMAINING_DIVISOR)
+            + _round_values(row[21:24])
         )
     if token_label == "invest":
         return (
-            _round_values(row[:1], CONSECUTIVE_PASSES_DIVISOR)
-            + _round_values(row[1:17], PY_IMPACT_DIVISOR)
+            _round_values(row[:1])
+            + _round_values(row[1:2], CONSECUTIVE_PASSES_DIVISOR)
         )
     if token_label == "auction":
         return (
-            _round_values(row[:1], AUCTION_OFFSET_DIVISOR)
-            + _round_values(row[1:2], PY_COMPANY_PRICE_DIVISOR)
-            + _round_values(row[2:13])
+            _round_values(row[:1])
+            + _round_values(row[1:2], AUCTION_OFFSET_DIVISOR)
+            + _round_values(row[2:3], PY_COMPANY_PRICE_DIVISOR)
+            + _round_values(row[3:4])
         )
     if token_label == "dividend":
-        return _round_values(row[:26], PY_IMPACT_DIVISOR) + _round_values(row[26:34])
+        return _round_values(row[:1]) + _round_values(row[1:27], PY_IMPACT_DIVISOR)
     if token_label == "issue":
-        return _round_values(row[:1], PY_IMPACT_DIVISOR) + _round_values(row[1:9])
+        return _round_values(row[:1]) + _round_values(row[1:2], PY_IMPACT_DIVISOR)
     if token_label == "par":
         return (
-            _round_values(row[:14], PY_CASH_DIVISOR)
-            + _round_values(row[14:28], PY_CASH_DIVISOR)
-            + _round_values(row[28:42], FLOAT_SHARES_MAX)
-            + _round_values(row[42:50])
+            _round_values(row[:1])
+            + _round_values(row[1:15], PY_CASH_DIVISOR)
+            + _round_values(row[15:29], PY_CASH_DIVISOR)
+            + _round_values(row[29:43], FLOAT_SHARES_MAX)
         )
-    if token_label == "acq_select_company":
-        return _round_values(row[:36], PY_ENTITY_INCOME_DIVISOR)
     if token_label == "acq_offer":
         return (
-            _round_values(row[:1], ACQ_OFFSET_DIVISOR)
-            + _round_values(row[1:2], PY_COMPANY_PRICE_DIVISOR)
-            + _round_values(row[2:11])
+            _round_values(row[:1])
+            + _round_values(row[1:2], ACQ_OFFSET_DIVISOR)
+            + _round_values(row[2:3], PY_COMPANY_PRICE_DIVISOR)
+            + _round_values(row[3:4])
         )
     if token_label == "acq_price":
         return (
-            _round_values(row[:1], PY_PRICE_RANGE_DIVISOR)
-            + _round_values(row[1:2])
-            + _round_values(row[2:3], PY_ENTITY_INCOME_DIVISOR)
+            _round_values(row[:1])
+            + _round_values(row[1:2], PY_PRICE_RANGE_DIVISOR)
+            + _round_values(row[2:3])
+            + _round_values(row[3:4], PY_ENTITY_INCOME_DIVISOR)
         )
     if token_label.startswith("corp["):
         return (
-            _round_values(row[:11])
-            + _round_values(row[11:14], PY_SHARE_DIVISOR)
-            + _round_values(row[14:41])
-            + _round_values(row[41:42], PY_SHARE_PRICE_DIVISOR)
-            + _round_values(row[42:43], PY_IMPACT_DIVISOR)
-            + _round_values(row[43:45], PY_CASH_DIVISOR)
-            + _round_values(row[45:46], PY_ENTITY_INCOME_DIVISOR)
-            + _round_values(row[46:47], PY_CORP_STAR_DIVISOR)
-            + _round_values(row[47:51], PY_ENTITY_INCOME_DIVISOR)
+            _round_values(row[:5])
+            + _round_values(row[5:8], PY_SHARE_DIVISOR)
+            + _round_values(row[8:35])
+            + _round_values(row[35:36], PY_SHARE_PRICE_DIVISOR)
+            + _round_values(row[36:37], PY_IMPACT_DIVISOR)
+            + _round_values(row[37:39], PY_CASH_DIVISOR)
+            + _round_values(row[39:40], PY_ENTITY_INCOME_DIVISOR)
+            + _round_values(row[40:41], PY_CORP_STAR_DIVISOR)
+            + _round_values(row[41:45], PY_ENTITY_INCOME_DIVISOR)
+            + _round_values(row[45:49])
+            + _round_values(row[49:51], PY_IMPACT_DIVISOR)
             + _round_values(row[51:56])
             + _round_values(row[56:92])
-            + _round_values(row[92:93])
         )
     if token_label.startswith("player["):
         return (
-            _round_values(row[:11])
-            + _round_values(row[11:12], PY_CASH_DIVISOR)
-            + _round_values(row[12:14], PY_NET_WORTH_DIVISOR)
-            + _round_values(row[14:15], PY_ENTITY_INCOME_DIVISOR)
+            _round_values(row[:8])
+            + _round_values(row[8:9], PY_CASH_DIVISOR)
+            + _round_values(row[9:11], PY_NET_WORTH_DIVISOR)
+            + _round_values(row[11:12], PY_ENTITY_INCOME_DIVISOR)
+            + _round_values(row[12:15])
             + _round_values(row[15:23], PY_SHARE_DIVISOR)
-            + _round_values(row[23:24])
-            + _round_values(row[24:40], PY_SHARE_DIVISOR)
-            + _round_values(row[40:84])
-            + _round_values(row[84:85])
+            + _round_values(row[23:59])
         )
     raise ValueError(f"unknown token label: {token_label}")
 
@@ -349,76 +347,72 @@ def _one_hot_index(values: list[int]) -> int | None:
 
 def _summarize_token_values(token_label: str, values: list[int]) -> str:
     if token_label == "market_info":
-        return f"prices={values[:27]} open={_nonzero_indices(values[27:54])}"
+        return f"attn={values[0]} prices={values[1:28]} open={_nonzero_indices(values[28:55])}"
     if token_label.startswith("company["):
-        owner_corp = _one_hot_index(values[48:56])
-        owner_player = _one_hot_index(values[56:61])
+        owner_corp = _one_hot_index(values[14:22])
+        owner_player = _one_hot_index(values[22:27])
         return (
-            f"id={_one_hot_index(values[:36])} low={values[36]} face={values[37]} "
-            f"high={values[38]} range={values[39]} base_inc={values[40]} "
-            f"stars={values[41]} adj_inc={values[42]} selected={values[43]} "
-            f"at=[rem={values[44]},auc={values[45]},rev={values[46]},corp_acq={values[47]}] "
-            f"owner_corp={owner_corp} owner_player={owner_player} owner_fi={values[61]}"
+            f"attn={values[0]} low={values[2]} face={values[3]} "
+            f"high={values[4]} range={values[5]} base_inc={values[6]} "
+            f"stars={values[7]} adj_inc={values[8]} selected={values[1]} "
+            f"at=[rem={values[9]},auc={values[10]},rev={values[11]},corp_acq={values[12]}] "
+            f"acq_synergy={values[13]} owner_corp={owner_corp} "
+            f"owner_player={owner_player} owner_fi={values[27]}"
         )
     if token_label == "fi":
-        return f"cash={values[0]} income={values[1]} companies={_nonzero_indices(values[2:38])}"
+        return f"attn={values[0]} cash={values[1]} income={values[2]} companies={_nonzero_indices(values[3:39])}"
     if token_label == "global_info":
-        phase_idx = _one_hot_index(values[:11])
-        coo = _one_hot_index(values[11:18])
-        np_idx = _one_hot_index(values[20:23])
+        phase_idx = _one_hot_index(values[1:12])
+        coo = _one_hot_index(values[12:19])
+        np_idx = _one_hot_index(values[21:24])
         phase_str = DECISION_PHASE_NAMES.get(phase_idx, str(phase_idx)) if phase_idx is not None else "None"
         return (
-            f"phase={phase_str} "
+            f"attn={values[0]} phase={phase_str} "
             f"coo={None if coo is None else coo + 1} "
-            f"end_card={values[18]} cards_remaining={values[19]} "
+            f"end_card={values[19]} cards_remaining={values[20]} "
             f"num_players={None if np_idx is None else np_idx + 3}"
         )
     if token_label == "invest":
-        return (
-            f"passes={values[0]} buy_impacts={_nonzero_map(values[1:9])} "
-            f"sell_impacts={_nonzero_map(values[9:17])}"
-        )
+        return f"attn={values[0]} passes={values[1]}"
     if token_label == "auction":
         return (
-            f"min_bid_offset={values[0]} min_bid={values[1]} first_bid={values[2]} "
-            f"high_bidder={_one_hot_index(values[3:8])} starter={_one_hot_index(values[8:13])}"
+            f"attn={values[0]} min_bid_offset={values[1]} "
+            f"min_bid={values[2]} first_bid={values[3]}"
         )
     if token_label == "dividend":
-        return f"impacts={_nonzero_map(values[:26])} remaining={_nonzero_indices(values[26:34])}"
+        return f"attn={values[0]} impacts={_nonzero_map(values[1:27])}"
     if token_label == "issue":
-        return f"impact={values[0]} remaining={_nonzero_indices(values[1:9])}"
+        return f"attn={values[0]} impact={values[1]}"
     if token_label == "par":
         return (
-            f"player_cash={_nonzero_map(values[:14])} corp_cash={_nonzero_map(values[14:28])} "
-            f"issued={_nonzero_map(values[28:42])} remaining={_nonzero_indices(values[42:50])}"
+            f"attn={values[0]} player_cash={_nonzero_map(values[1:15])} "
+            f"corp_cash={_nonzero_map(values[15:29])} issued={_nonzero_map(values[29:43])}"
         )
-    if token_label == "acq_select_company":
-        return f"synergy_deltas={_nonzero_map(values[:36])}"
     if token_label == "acq_offer":
         return (
-            f"offer_offset={values[0]} offer_price={values[1]} offer_corp={_one_hot_index(values[2:10])} "
-            f"fi_company={values[10]}"
+            f"attn={values[0]} offer_offset={values[1]} "
+            f"offer_price={values[2]} fi_company={values[3]}"
         )
     if token_label == "acq_price":
-        return f"max_offset={values[0]} fi_flag={values[1]} total_synergies={values[2]}"
+        return f"attn={values[0]} max_offset={values[1]} fi_flag={values[2]} total_synergies={values[3]}"
     if token_label.startswith("corp["):
         return (
-            f"id={_one_hot_index(values[:8])} active={values[8]} recv={values[9]} passed_acq={values[10]} "
-            f"unissued={values[11]} issued={values[12]} bank={values[13]} "
-            f"price_idx={_one_hot_index(values[14:41])} share_price={values[41]} pending_move={values[42]} "
-            f"cash={values[43]} acq_proceeds={values[44]} income={values[45]} stars={values[46]} "
-            f"raw_revenue={values[47]} synergy={values[48]} coo_cost={values[49]} ability={values[50]} "
+            f"attn={values[0]} selected={values[1]} active={values[2]} recv={values[3]} "
+            f"passed_acq={values[4]} unissued={values[5]} issued={values[6]} bank={values[7]} "
+            f"price_idx={_one_hot_index(values[8:35])} share_price={values[35]} pending_move={values[36]} "
+            f"cash={values[37]} acq_proceeds={values[38]} income={values[39]} stars={values[40]} "
+            f"raw_revenue={values[41]} synergy={values[42]} coo_cost={values[43]} ability={values[44]} "
+            f"offer_corp={values[45]} div_rem={values[46]} issue_rem={values[47]} ipo_rem={values[48]} "
+            f"buy_impact={values[49]} sell_impact={values[50]} "
             f"president={_one_hot_index(values[51:56])} companies={_nonzero_indices(values[56:92])} "
-            f"selected={values[92]}"
         )
     if token_label.startswith("player["):
         return (
-            f"id={_one_hot_index(values[:5])} order={_one_hot_index(values[5:10])} passed={values[10]} "
-            f"cash={values[11]} net_worth={values[12]} liquidity={values[13]} income={values[14]} "
-            f"shares={_nonzero_map(values[15:23])} round_trip={values[23]} "
-            f"buys={_nonzero_map(values[24:32])} sells={_nonzero_map(values[32:40])} "
-            f"presidencies={_nonzero_indices(values[40:48])} companies={_nonzero_indices(values[48:84])} "
-            f"selected={values[84]}"
+            f"attn={values[0]} selected={values[1]} order={_one_hot_index(values[2:7])} "
+            f"passed={values[7]} cash={values[8]} net_worth={values[9]} "
+            f"liquidity={values[10]} income={values[11]} auc_high={values[12]} "
+            f"auc_starter={values[13]} round_trip={values[14]} "
+            f"shares={_nonzero_map(values[15:23])} companies={_nonzero_indices(values[23:59])}"
         )
     return str(values)
 

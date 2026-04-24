@@ -5,6 +5,8 @@ import torch
 
 from nn.transformer import (
     NUM_PASS_PHASES,
+    NUM_SYNTHETIC_TOKENS,
+    PASS_PHASE_IDS,
     UNIFIED_LOGIT_DIM,
     RSSTransformerNet,
     TransformerConfig,
@@ -28,6 +30,7 @@ def model() -> RSSTransformerNet:
 def valid_inputs(model: RSSTransformerNet) -> tuple[torch.Tensor, torch.Tensor]:
     cfg = model.cfg
     x = torch.randn(2, cfg.num_tokens, cfg.token_dim)
+    x[:, :, 0] = 1.0
     lut = build_action_lut()
     legal_mask = torch.zeros(2, U_DIM, dtype=torch.bool)
     legal_mask[0, lut[0, : int(PHASE_ACTION_SIZES[0])]] = True
@@ -67,7 +70,57 @@ def test_project_tokens_preserves_autocast_dtype(model: RSSTransformerNet) -> No
         tokens = model._project_tokens(x)
 
     assert tokens.dtype == torch.bfloat16
-    assert tokens.shape == (2, cfg.num_tokens + NUM_PASS_PHASES, cfg.d_model)
+    assert tokens.shape == (
+        2,
+        cfg.num_tokens + NUM_PASS_PHASES + NUM_SYNTHETIC_TOKENS,
+        cfg.d_model,
+    )
+
+
+def test_project_tokens_ignores_attention_mask_slot(model: RSSTransformerNet) -> None:
+    cfg = model.cfg
+    x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
+    x_with_masks = x.clone()
+    x_with_masks[:, :, 0] = 1.0
+
+    assert torch.allclose(model._project_tokens(x), model._project_tokens(x_with_masks))
+
+
+def test_attention_mask_combines_input_rows_and_pass_anchors(
+    model: RSSTransformerNet,
+) -> None:
+    cfg = model.cfg
+    x = torch.zeros(2, cfg.num_tokens, cfg.token_dim)
+
+    x[0, model._global_info_idx, 0] = 1.0
+    x[0, model._fi_idx, 0] = 1.0
+    x[0, model._global_info_idx, model._global_phase_offset + PASS_PHASE_IDS[0]] = 1.0
+
+    x[1, model._market_info_idx, 0] = 1.0
+    x[1, model._global_info_idx, 0] = 1.0
+    x[1, model._global_info_idx, model._global_phase_offset + PASS_PHASE_IDS[2]] = 1.0
+
+    attn_mask = model._attention_mask(x)
+
+    assert attn_mask.dtype == torch.bool
+    assert attn_mask.shape == (
+        2,
+        1,
+        1,
+        cfg.num_tokens + NUM_PASS_PHASES + NUM_SYNTHETIC_TOKENS,
+    )
+
+    flat_mask = attn_mask[:, 0, 0, :]
+    assert torch.equal(flat_mask[:, :cfg.num_tokens], x[:, :, 0].to(torch.bool))
+
+    expected_pass_mask = torch.zeros(2, NUM_PASS_PHASES, dtype=torch.bool)
+    expected_pass_mask[0, 0] = True
+    expected_pass_mask[1, 2] = True
+    assert torch.equal(
+        flat_mask[:, cfg.num_tokens:cfg.num_tokens + NUM_PASS_PHASES],
+        expected_pass_mask,
+    )
+    assert flat_mask[:, -NUM_SYNTHETIC_TOKENS:].all()
 
 
 def test_policy_layout_matches_phase_action_sizes(model: RSSTransformerNet) -> None:
@@ -77,7 +130,9 @@ def test_policy_layout_matches_phase_action_sizes(model: RSSTransformerNet) -> N
 def test_corp_projection_uses_learned_identity_embedding(model: RSSTransformerNet) -> None:
     cfg = model.cfg
     num_corps = int(GameConstants.NUM_CORPS)
-    assert model.corp_proj.in_features == model._corp_rel_offset
+    assert model.corp_proj.in_features == (
+        model._corp_rel_offset - model._token_feature_start
+    )
     assert model._corp_president_offset == model._corp_rel_offset
     assert model._corp_companies_offset == model._corp_president_offset + model._corp_president_width
     assert (
@@ -107,7 +162,7 @@ def test_corp_projection_uses_gated_relation_embeddings(model: RSSTransformerNet
     assert model._corp_president_width == num_player_slots
     assert model._corp_companies_width == num_companies
     assert companies_stop == int(TokenWidth.TW_CORP)
-    assert model.corp_proj.in_features == president_start
+    assert model.corp_proj.in_features == president_start - model._token_feature_start
     assert tuple(model.company_ownership_gate.shape) == (model.cfg.d_model,)
     assert tuple(model.corp_president_gate.shape) == (model.cfg.d_model,)
 
@@ -169,7 +224,9 @@ def test_corp_projection_uses_gated_relation_embeddings(model: RSSTransformerNet
 def test_player_projection_uses_learned_identity_embedding(model: RSSTransformerNet) -> None:
     cfg = model.cfg
     num_player_slots = 5
-    assert model.player_proj.in_features == model._player_rel_offset
+    assert model.player_proj.in_features == (
+        model._player_rel_offset - model._token_feature_start
+    )
     assert model._player_shares_offset == model._player_rel_offset
     assert model._player_companies_offset == model._player_shares_offset + model._player_shares_width
     assert (
@@ -198,7 +255,7 @@ def test_player_projection_uses_gated_relation_embeddings(model: RSSTransformerN
     assert model._player_shares_width == num_corps
     assert model._player_companies_width == num_companies
     assert companies_stop == int(TokenWidth.TW_PLAYER)
-    assert model.player_proj.in_features == shares_start
+    assert model.player_proj.in_features == shares_start - model._token_feature_start
     assert tuple(model.company_ownership_gate.shape) == (model.cfg.d_model,)
     assert tuple(model.share_ownership_gate.shape) == (model.cfg.d_model,)
 
@@ -275,9 +332,15 @@ def test_active_entity_refs_broadcast_to_phase_tokens_and_pass_anchors(
     active_company = 0
     active_corp = 1
     active_player = 2
-    x_active[:, model._company_slice.start + active_company, 0] = 1.0
-    x_active[:, model._corp_slice.start + active_corp, 0] = 1.0
-    x_active[:, model._player_slice.start + active_player, 0] = 1.0
+    x_active[
+        :, model._company_slice.start + active_company, model._is_selected_offset
+    ] = 1.0
+    x_active[
+        :, model._corp_slice.start + active_corp, model._is_selected_offset
+    ] = 1.0
+    x_active[
+        :, model._player_slice.start + active_player, model._is_selected_offset
+    ] = 1.0
 
     active_company_ref = model.company_id_embed.weight[active_company]
     active_corp_ref = model.corp_id_embed.weight[active_corp]
@@ -370,13 +433,17 @@ def test_phase_ref_broadcasts_to_all_but_global_info(model: RSSTransformerNet) -
     cfg = model.cfg
     phase_width = len(PHASE_ACTION_SIZES)
     assert model._global_phase_width == phase_width
-    assert model.global_info_proj.in_features == int(TokenWidth.TW_GLOBAL_INFO) - phase_width
+    assert model.global_info_proj.in_features == (
+        int(TokenWidth.TW_GLOBAL_INFO)
+        - model._global_phase_offset
+        - phase_width
+    )
     assert tuple(model.phase_embed.weight.shape) == (phase_width, cfg.d_model)
 
     x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
     phase_id = 1
     x_with_phase = x.clone()
-    x_with_phase[:, model._global_info_idx, phase_id] = 1.0
+    x_with_phase[:, model._global_info_idx, model._global_phase_offset + phase_id] = 1.0
 
     without_phase = model._project_tokens(x)
     with_phase = model._project_tokens(x_with_phase)
@@ -390,7 +457,11 @@ def test_phase_ref_broadcasts_to_all_but_global_info(model: RSSTransformerNet) -
     assert torch.allclose(delta[0, model._pass_idxs[0]], phase_ref)
 
     x_with_global_suffix = x.clone()
-    x_with_global_suffix[:, model._global_info_idx, phase_width] = 1.0
+    x_with_global_suffix[
+        :,
+        model._global_info_idx,
+        model._global_phase_offset + phase_width,
+    ] = 1.0
     with_global_suffix = model._project_tokens(x_with_global_suffix)
     suffix_delta = with_global_suffix - without_phase
     expected_global_delta = model.global_info_proj.weight[:, 0]
@@ -401,7 +472,9 @@ def test_phase_ref_broadcasts_to_all_but_global_info(model: RSSTransformerNet) -
 def test_company_projection_uses_learned_identity_embedding(model: RSSTransformerNet) -> None:
     cfg = model.cfg
     num_companies = int(GameConstants.NUM_COMPANIES)
-    assert model.company_proj.in_features == model._company_owner_offset
+    assert model.company_proj.in_features == (
+        model._company_owner_offset - model._token_feature_start
+    )
     assert tuple(model.company_id_embed.weight.shape) == (num_companies, cfg.d_model)
 
     x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
@@ -409,6 +482,33 @@ def test_company_projection_uses_learned_identity_embedding(model: RSSTransforme
 
     expected_delta = model.company_id_embed.weight[1] - model.company_id_embed.weight[0]
     actual_delta = projected_without_ids[0, 1] - projected_without_ids[0, 0]
+    assert torch.allclose(actual_delta, expected_delta)
+
+
+def test_removed_companies_token_uses_scaled_company_id_embeddings(
+    model: RSSTransformerNet,
+) -> None:
+    cfg = model.cfg
+    removed_company_ids = torch.tensor([0, 7, 35], dtype=torch.long)
+    x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
+    x_removed = x.clone()
+    x_removed[
+        :,
+        model._company_slice.start + removed_company_ids,
+        model._company_removed_offset,
+    ] = 1.0
+
+    without_removed = model._project_tokens(x)
+    with_removed = model._project_tokens(x_removed)
+    actual_delta = (
+        with_removed[:, model._removed_companies_idx]
+        - without_removed[:, model._removed_companies_idx]
+    )
+
+    expected_delta = (
+        model.company_id_embed.weight[removed_company_ids].sum(dim=0)
+        / float(len(removed_company_ids)) ** 0.5
+    ).unsqueeze(0)
     assert torch.allclose(actual_delta, expected_delta)
 
 
@@ -424,7 +524,7 @@ def test_company_projection_uses_gated_owned_by_embeddings(model: RSSTransformer
     assert model._company_owner_player_offset == owner_start + num_corps
     assert model._company_owner_fi_offset == owner_start + num_corps + num_player_slots
     assert owner_stop == int(TokenWidth.TW_COMPANY)
-    assert model.company_proj.in_features == owner_start
+    assert model.company_proj.in_features == owner_start - model._token_feature_start
     assert tuple(model.company_owned_by_gate.shape) == (cfg.d_model,)
 
     x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
@@ -473,7 +573,7 @@ def test_fi_projection_uses_gated_owned_company_embeddings(model: RSSTransformer
     companies_start = model._fi_companies_offset
     companies_stop = companies_start + model._fi_companies_width
 
-    assert model.fi_proj.in_features == companies_start
+    assert model.fi_proj.in_features == companies_start - model._token_feature_start
     assert model._fi_companies_width == num_companies
     assert companies_stop == int(TokenWidth.TW_FI)
     assert tuple(model.company_ownership_gate.shape) == (model.cfg.d_model,)
