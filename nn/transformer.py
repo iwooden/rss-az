@@ -282,9 +282,7 @@ class RSSTransformerNet(nn.Module):
     _company_ids: torch.Tensor
     _corp_ids: torch.Tensor
     _player_ids: torch.Tensor
-    _active_player_targets: torch.Tensor
-    _active_corp_targets: torch.Tensor
-    _active_company_targets: torch.Tensor
+    _active_ref_targets: torch.Tensor
     _phase_ref_targets: torch.Tensor
 
     def __init__(self, cfg: TransformerConfig) -> None:
@@ -436,23 +434,16 @@ class RSSTransformerNet(nn.Module):
         type_ids[self._player_slice] = _TYPE_PLAYER
         self.register_buffer("_type_ids", type_ids, persistent=False)
 
-        # Active-entity reference targets span the projected engine tokens plus
-        # the learned pass anchors. MarketInfo and GlobalInfo are intentionally
-        # pure context tokens; entity tokens do not receive their own active
-        # identity reference, but do receive the other active entity refs.
+        # Active-entity reference targets span the phase/query tokens plus the
+        # learned pass anchors. MarketInfo, GlobalInfo, FI, and player/corp/
+        # company entity tokens keep their own factual representations clean:
+        # entity rows still carry ``is_selected`` in their projected feature
+        # prefix, so the trunk can recover active identity through attention.
         projected_tokens = np_ + 55 + NUM_PASS_PHASES
-        active_player_targets = torch.ones(projected_tokens, dtype=torch.float32)
-        active_corp_targets = torch.ones(projected_tokens, dtype=torch.float32)
-        active_company_targets = torch.ones(projected_tokens, dtype=torch.float32)
-        for targets in (active_player_targets, active_corp_targets, active_company_targets):
-            targets[self._market_info_idx] = 0.0
-            targets[self._global_info_idx] = 0.0
-        active_player_targets[self._player_slice] = 0.0
-        active_corp_targets[self._corp_slice] = 0.0
-        active_company_targets[self._company_slice] = 0.0
-        self.register_buffer("_active_player_targets", active_player_targets, persistent=False)
-        self.register_buffer("_active_corp_targets", active_corp_targets, persistent=False)
-        self.register_buffer("_active_company_targets", active_company_targets, persistent=False)
+        active_ref_targets = torch.zeros(projected_tokens, dtype=torch.float32)
+        active_ref_targets[self._invest_idx:self._acq_price_info_idx + 1] = 1.0
+        active_ref_targets[self._pass_idxs] = 1.0
+        self.register_buffer("_active_ref_targets", active_ref_targets, persistent=False)
 
         phase_ref_targets = torch.ones(projected_tokens, dtype=torch.float32)
         phase_ref_targets[self._global_info_idx] = 0.0
@@ -701,21 +692,17 @@ class RSSTransformerNet(nn.Module):
         active_corp_ref: torch.Tensor,
         active_company_ref: torch.Tensor,
     ) -> torch.Tensor:
-        """Broadcast active entity refs to all eligible projected/pass tokens."""
+        """Broadcast active entity refs to phase/query tokens and pass anchors."""
         dtype = tokens.dtype
-        tokens = tokens + (
-            active_player_ref.to(dtype)[:, None, :]
-            * self._active_player_targets.to(dtype=dtype).view(1, -1, 1)
+        active_ref = (
+            active_player_ref.to(dtype)
+            + active_corp_ref.to(dtype)
+            + active_company_ref.to(dtype)
         )
-        tokens = tokens + (
-            active_corp_ref.to(dtype)[:, None, :]
-            * self._active_corp_targets.to(dtype=dtype).view(1, -1, 1)
+        return tokens + (
+            active_ref[:, None, :]
+            * self._active_ref_targets.to(dtype=dtype).view(1, -1, 1)
         )
-        tokens = tokens + (
-            active_company_ref.to(dtype)[:, None, :]
-            * self._active_company_targets.to(dtype=dtype).view(1, -1, 1)
-        )
-        return tokens
 
     def _phase_ref(self, x: torch.Tensor) -> torch.Tensor:
         """Return the current decision-phase ref from GlobalInfo's phase one-hot."""
@@ -868,10 +855,11 @@ class RSSTransformerNet(nn.Module):
         a uniform nogil memcpy pattern, but each type only uses its meaningful
         feature slice — padding and replaced relation fields would otherwise be
         multiplied against projection weights. After pass anchors are appended,
-        active player/corp/company identity refs are broadcast to every eligible
-        token except MarketInfo, GlobalInfo, and same-entity token rows. The
-        decision-phase one-hot is also sliced out of GlobalInfo and broadcast
-        as a learned phase ref to every token except GlobalInfo itself.
+        active player/corp/company identity refs are broadcast only to phase/
+        query tokens and learned pass anchors, leaving MarketInfo, GlobalInfo,
+        FI, and entity rows unmodified by active refs. The decision-phase
+        one-hot is also sliced out of GlobalInfo and broadcast as a learned
+        phase ref to every token except GlobalInfo itself.
 
         Args:
             x: (batch, num_players + 55, token_dim) zero-padded raw features.

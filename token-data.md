@@ -30,9 +30,10 @@ Active-entity selection (the turn's `active_player` / `active_corp` /
 `active_company`) is surfaced as a single `is_selected` bit on each
 affected entity's own token rather than as standalone selector tokens.
 The transformer uses those bits to build active player/corp/company ID
-references and broadcasts them to every projected token plus learned pass
-anchors, except MarketInfo, GlobalInfo, and tokens of the same entity type as
-the active reference.
+references and broadcasts their sum to phase-specific query tokens plus
+learned pass anchors. MarketInfo, GlobalInfo, FI, and player/corp/company
+entity tokens do not receive active entity references; the selected entity rows
+still expose their own `is_selected` bit through their normal projection.
 
 ---
 

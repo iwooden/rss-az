@@ -203,7 +203,9 @@ def test_player_projection_uses_shared_relation_embeddings(model: RSSTransformer
     assert torch.allclose(actual_delta, expected_delta)
 
 
-def test_active_entity_refs_broadcast_to_eligible_tokens(model: RSSTransformerNet) -> None:
+def test_active_entity_refs_broadcast_to_phase_tokens_and_pass_anchors(
+    model: RSSTransformerNet,
+) -> None:
     cfg = model.cfg
     x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
     x_active = x.clone()
@@ -226,46 +228,36 @@ def test_active_entity_refs_broadcast_to_eligible_tokens(model: RSSTransformerNe
 
     assert torch.allclose(delta[0, model._market_info_idx], torch.zeros_like(all_refs))
     assert torch.allclose(delta[0, model._global_info_idx], torch.zeros_like(all_refs))
+    assert torch.allclose(delta[0, model._fi_idx], torch.zeros_like(all_refs))
     assert torch.allclose(delta[0, model._invest_idx], all_refs)
+    assert torch.allclose(delta[0, model._acq_price_info_idx], all_refs)
     assert torch.allclose(delta[0, model._pass_idxs[0]], all_refs)
 
     inactive_company_idx = model._company_slice.start + 1
     assert torch.allclose(
         delta[0, inactive_company_idx],
-        active_player_ref + active_corp_ref,
+        torch.zeros_like(all_refs),
     )
     active_company_idx = model._company_slice.start + active_company
-    expected_active_company_delta = (
-        model.company_proj.weight[:, 0]
-        + active_player_ref
-        + active_corp_ref
-    )
+    expected_active_company_delta = model.company_proj.weight[:, 0]
     assert torch.allclose(delta[0, active_company_idx], expected_active_company_delta)
 
     inactive_corp_idx = model._corp_slice.start
     assert torch.allclose(
         delta[0, inactive_corp_idx],
-        active_player_ref + active_company_ref,
+        torch.zeros_like(all_refs),
     )
     active_corp_idx = model._corp_slice.start + active_corp
-    expected_active_corp_delta = (
-        model.corp_proj.weight[:, 0]
-        + active_player_ref
-        + active_company_ref
-    )
+    expected_active_corp_delta = model.corp_proj.weight[:, 0]
     assert torch.allclose(delta[0, active_corp_idx], expected_active_corp_delta)
 
     inactive_player_idx = model._player_slice.start
     assert torch.allclose(
         delta[0, inactive_player_idx],
-        active_corp_ref + active_company_ref,
+        torch.zeros_like(all_refs),
     )
     active_player_idx = model._player_slice.start + active_player
-    expected_active_player_delta = (
-        model.player_proj.weight[:, 0]
-        + active_corp_ref
-        + active_company_ref
-    )
+    expected_active_player_delta = model.player_proj.weight[:, 0]
     assert torch.allclose(delta[0, active_player_idx], expected_active_player_delta)
 
 
