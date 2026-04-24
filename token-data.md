@@ -68,8 +68,11 @@ Rules:
 - MarketInfo, GlobalInfo, and FI tokens always set `attn_mask = 1`.
 - Emitted player tokens always set `attn_mask = 1`; only live player rows for
   `num_players` are emitted.
-- Corp tokens set `attn_mask = 1` iff the corp is active, except in
-  `PHASE_IPO`, where the rule is inverted and only inactive corps set it.
+- Corp tokens set `attn_mask = 1` iff the corp is active, with two
+  exceptions: in `PHASE_IPO` every corp is visible (floated corps still
+  inform which inactive corp to float next); in `PHASE_PAR` active corps
+  plus the selected corp (`active_corp == corp_id`) are visible, while
+  inactive non-selected corps stay hidden.
 - Company tokens set `attn_mask = 1` iff location is not `LOC_DECK`,
   `LOC_REMOVED`, or `LOC_EXCLUDED`.
 - Phase-specific tokens set `attn_mask = 1` only when `_fill_buffer` calls the
@@ -192,8 +195,9 @@ Buy/sell invest impacts moved to Corp tokens.
 - Resulting issued shares (14 slots), normalized by `FLOAT_SHARES_MAX`
 
 `ipo_remaining` moved to Corp tokens. It is written for inactive corps in both
-`PHASE_IPO` and `PHASE_PAR`; the corp `attn_mask` exposes inactive corp rows
-only in `PHASE_IPO`.
+`PHASE_IPO` and `PHASE_PAR`. In `PHASE_IPO` every corp row is attention-visible
+so the model can weigh the already-floated set; in `PHASE_PAR` only active
+corps plus the just-selected inactive corp are visible.
 
 ### AcqOffer Token (4)
 

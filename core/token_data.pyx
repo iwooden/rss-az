@@ -604,10 +604,22 @@ cdef void _fill_corp_token(
     cdef bint active = corp_is_active(state, corp_id)
     cdef int price_idx, president, company_id, current_idx, new_idx, delta
     cdef int phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
+    cdef int active_corp = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_corp]
     cdef int offer_corp
 
+    assert -1 <= active_corp < NUM_CORPS, \
+        f"_fill_corp_token: active_corp {active_corp} out of [-1, {NUM_CORPS})"
+
+    # attn_mask gates which corp rows the model attends to.
+    #   IPO:   every corp — floated corps still inform which inactive corp to float
+    #   PAR:   active corps plus the selected (just-IPO'd) corp; inactive
+    #          non-selected corps stay hidden since they're irrelevant to par choice
+    #   else:  active corps only
     if phase == <int>GamePhases.PHASE_IPO:
-        buffer[tok, OFF_ATTN_MASK] = 0.0 if active else 1.0
+        buffer[tok, OFF_ATTN_MASK] = 1.0
+    elif phase == <int>GamePhases.PHASE_PAR:
+        if active or active_corp == corp_id:
+            buffer[tok, OFF_ATTN_MASK] = 1.0
     elif active:
         buffer[tok, OFF_ATTN_MASK] = 1.0
 
@@ -683,9 +695,6 @@ cdef void _fill_corp_token(
         buffer[tok, OFF_SELL_IMPACT] = <float>delta / IMPACT_DIVISOR
 
     # Active-corp selector flag (independent of the lifecycle ``OFF_ACTIVE``).
-    cdef int active_corp = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_corp]
-    assert -1 <= active_corp < NUM_CORPS, \
-        f"_fill_corp_token: active_corp {active_corp} out of [-1, {NUM_CORPS})"
     if active_corp == corp_id:
         buffer[tok, OFF_IS_SELECTED] = 1.0
 

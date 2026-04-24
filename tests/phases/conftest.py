@@ -883,9 +883,14 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
         corp = CORPS[c]
         active = corp.is_active(state)
 
-        expected_attn = 1.0 if active else 0.0
+        # IPO: all corps visible. PAR: active corps + the selected (just-IPO'd)
+        # corp. Otherwise: active corps only.
         if phase == int(GamePhases.PHASE_IPO):
-            expected_attn = 0.0 if active else 1.0
+            expected_attn = 1.0
+        elif phase == int(GamePhases.PHASE_PAR):
+            expected_attn = 1.0 if (active or active_corp == c) else 0.0
+        else:
+            expected_attn = 1.0 if active else 0.0
         _assert_close(buf[tok, _CORP_OFF["ATTN_MASK"]], expected_attn, T_FLAG,
                       f"{cm}: attention mask")
 
