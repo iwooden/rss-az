@@ -535,6 +535,7 @@ class RSSTransformerNet(nn.Module):
         """Standard 2-layer policy head: Linear(d, d//2) -> GELU -> Linear(d//2, out)."""
         d = self.cfg.d_model
         return nn.Sequential(
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
             nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
             nn.Linear(d // 2, out_features),
         )
