@@ -186,7 +186,7 @@ def test_player_projection_uses_learned_identity_embedding(model: RSSTransformer
     assert torch.allclose(actual_delta, expected_delta)
 
 
-def test_player_projection_uses_shared_relation_embeddings(model: RSSTransformerNet) -> None:
+def test_player_projection_uses_gated_relation_embeddings(model: RSSTransformerNet) -> None:
     num_corps = int(GameConstants.NUM_CORPS)
     num_companies = int(GameConstants.NUM_COMPANIES)
 
@@ -200,6 +200,7 @@ def test_player_projection_uses_shared_relation_embeddings(model: RSSTransformer
     assert companies_stop == int(TokenWidth.TW_PLAYER)
     assert model.player_proj.in_features == shares_start
     assert tuple(model.company_ownership_gate.shape) == (model.cfg.d_model,)
+    assert tuple(model.share_ownership_gate.shape) == (model.cfg.d_model,)
 
     x = torch.zeros(1, model.cfg.num_tokens, model.cfg.token_dim)
     x_with_relations = x.clone()
@@ -221,16 +222,25 @@ def test_player_projection_uses_shared_relation_embeddings(model: RSSTransformer
         owned_company_bitmap.unsqueeze(0)
     )
 
-    original_gate = model.company_ownership_gate.detach().clone()
-    test_gate = torch.linspace(
+    original_company_gate = model.company_ownership_gate.detach().clone()
+    original_share_gate = model.share_ownership_gate.detach().clone()
+    company_gate = torch.linspace(
         0.5,
         1.5,
         model.cfg.d_model,
         dtype=model.company_ownership_gate.dtype,
         device=model.company_ownership_gate.device,
     )
+    share_gate = torch.linspace(
+        1.5,
+        0.5,
+        model.cfg.d_model,
+        dtype=model.share_ownership_gate.dtype,
+        device=model.share_ownership_gate.device,
+    )
     with torch.no_grad():
-        model.company_ownership_gate.copy_(test_gate)
+        model.company_ownership_gate.copy_(company_gate)
+        model.share_ownership_gate.copy_(share_gate)
     try:
         player_without_relations = model._project_tokens(x)[:, model._player_slice]
         player_with_relations = model._project_tokens(x_with_relations)[:, model._player_slice]
@@ -240,15 +250,19 @@ def test_player_projection_uses_shared_relation_embeddings(model: RSSTransformer
             owned_company_bitmap.to(model.company_id_embed.weight.dtype)
             @ model.company_id_embed.weight
         ) / owned_company_bitmap.sum(dim=-1, keepdim=True).sqrt()
-        expected_delta = (
+        share_delta = (
             owned_shares.to(model.corp_id_embed.weight.dtype)
             @ model.corp_id_embed.weight
-            + owned_company_delta * test_gate.view(1, -1)
+        )
+        expected_delta = (
+            share_delta * share_gate.view(1, -1)
+            + owned_company_delta * company_gate.view(1, -1)
         ).unsqueeze(0)
         assert torch.allclose(actual_delta, expected_delta)
     finally:
         with torch.no_grad():
-            model.company_ownership_gate.copy_(original_gate)
+            model.company_ownership_gate.copy_(original_company_gate)
+            model.share_ownership_gate.copy_(original_share_gate)
 
 
 def test_active_entity_refs_broadcast_to_phase_tokens_and_pass_anchors(

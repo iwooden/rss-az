@@ -342,7 +342,7 @@ class RSSTransformerNet(nn.Module):
         # gated company ownership references from the same ID tables. FI skips
         # its trailing owned-company bitmap and receives gated additive company
         # references from ``company_id_embed``. Player tokens skip their
-        # trailing owned-share/company fields and receive additive corp
+        # trailing owned-share/company fields and receive gated share ownership
         # references plus gated company ownership references from the same ID
         # tables.
         # The engine-side buffer is rectangular at ``TOKEN_DIM=85`` so
@@ -409,6 +409,7 @@ class RSSTransformerNet(nn.Module):
         self.company_ownership_gate = nn.Parameter(torch.empty(d))
         self.company_owned_by_gate = nn.Parameter(torch.empty(d))
         self.corp_president_gate = nn.Parameter(torch.empty(d))
+        self.share_ownership_gate = nn.Parameter(torch.empty(d))
         # Per-type additive embedding for every non-pass token. Added
         # post-projection in ``_project_tokens`` so the trunk still sees a
         # type-distinct vector even when a token's feature slice is all-zero
@@ -679,6 +680,7 @@ class RSSTransformerNet(nn.Module):
             owned_shares.to(self.corp_id_embed.weight.dtype)
             @ self.corp_id_embed.weight
         )
+        share_refs = share_refs * self.share_ownership_gate.to(share_refs.dtype)
 
         companies_start = self._player_companies_offset
         companies_stop = companies_start + self._player_companies_width
@@ -887,8 +889,8 @@ class RSSTransformerNet(nn.Module):
         through the ``corp_president`` gate and company references through the
         ``company_ownership`` gate. FI skips its owned-company tail and
         receives gated additive company references. Player rows skip their
-        owned shares / owned-company tail and receive additive corp refs plus
-        gated company ownership refs. The engine-side buffer is rectangularly
+        owned shares / owned-company tail and receive gated share ownership
+        refs plus gated company ownership refs. The engine-side buffer is rectangularly
         zero-padded to ``TOKEN_DIM=85`` so ``get_token_data`` can fill it with
         a uniform nogil memcpy pattern, but each type only uses its meaningful
         feature slice — padding and replaced relation fields would otherwise be
@@ -1123,6 +1125,7 @@ class RSSTransformerNet(nn.Module):
         nn.init.ones_(self.company_ownership_gate)
         nn.init.ones_(self.company_owned_by_gate)
         nn.init.ones_(self.corp_president_gate)
+        nn.init.ones_(self.share_ownership_gate)
         # Per-type additive embeddings: same small-random init.
         nn.init.trunc_normal_(self.type_embeds, std=0.02)
 
@@ -1171,6 +1174,7 @@ if __name__ == "__main__":
         model.company_ownership_gate.numel()
         + model.company_owned_by_gate.numel()
         + model.corp_president_gate.numel()
+        + model.share_ownership_gate.numel()
     )
     pass_params = model.pass_embeds.numel()
     type_params = model.type_embeds.numel()
