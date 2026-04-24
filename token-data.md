@@ -1,239 +1,275 @@
-# Rough token data spec
+# Token Data Spec
 
-## Token order
+This documents the engine-side token buffer filled by
+`core/token_data.pyx:get_token_data(...)` and `get_token_data_batch(...)`.
+It reflects the staged token-schema refactor in `core/token_data.{pyx,pxd}`.
+The companion model/test updates are still pending, so any old slicing in
+`nn/transformer.py` should be treated as stale until that pass lands.
 
-Matches `core/token_data.pyx::_fill_buffer` and the per-type projections in
-`nn/transformer.py::RSSTransformerNet._project_tokens`:
+## Token Order
 
-1. **Informational tokens** (every slot carries at least some dynamic
-   content — there is no pure-static prefix):
-   `market_info`, `companies` (×36), `FI`, `global_info`
-2. **Phase-specific tokens** (zero unless the engine is in the matching
-   phase):
-   `invest`, `auction`, `dividend`, `issue`, `par`, `acq_select_company`,
-   `acq_offer`, `acq_price_info`
-3. **Corp tokens** (×8)
-4. **Player tokens** (×N, N ∈ {3, 4, 5})
+Matches `core/token_data.pyx::_fill_buffer`:
 
-Total tokens = `num_players + 55` (58 / 59 / 60 for 3p / 4p / 5p). The model
-adds 4 learned pass anchors after projection for entity-readout pass phases;
-they don't appear in the engine-side buffer. BID, ISSUE, and ACQ_OFFER read
-their pass logits from their phase-specific informational tokens.
+1. Informational/entity prefix:
+   `market_info`, `companies` (x36), `FI`, `global_info`
+2. Phase-specific tokens:
+   `invest`, `auction`, `dividend`, `issue`, `par`, `acq_offer`,
+   `acq_price_info`
+3. Corp tokens (x8)
+4. Player tokens (xN, N in {3, 4, 5})
 
-Each token is zero-padded to `TOKEN_DIM = 85` (max width across all token
-types, currently pinned by the Corp token). The per-type non-padded widths
-live in `TokenWidth` (`core/token_data.pxd`); the model slices
-`buffer[i, :TW_<type>]` before its type-specific projection so padding
-positions carry no parameters.
+Fixed engine rows: 54. Total tokens = `num_players + 54`
+(57 / 58 / 59 for 3p / 4p / 5p).
 
-Active-entity selection (the turn's `active_player` / `active_corp` /
-`active_company`) is surfaced as a single `is_selected` bit on each
-affected entity's own token rather than as standalone selector tokens.
-The transformer uses those bits to build active player/corp/company ID
-references and broadcasts their sum to phase-specific query tokens plus
-learned pass anchors. MarketInfo, GlobalInfo, FI, and player/corp/company
-entity tokens do not receive active entity references; the selected entity rows
-still expose their own `is_selected` bit through their normal projection.
+For 3p, row indices are:
 
----
+- 0: MarketInfo
+- 1..36: Company 0..35
+- 37: FI
+- 38: GlobalInfo
+- 39: Invest
+- 40: Auction
+- 41: Dividend
+- 42: Issue
+- 43: PAR / IPO
+- 44: AcqOffer
+- 45: AcqPriceInfo
+- 46..53: Corp 0..7
+- 54..56: Player 0..2
 
-## Informational tokens
+The model adds 4 learned pass anchors after projection for entity-readout pass
+phases; they do not appear in the engine-side buffer.
 
-### MarketInfo token (54)
-- Slot prices (vector, 27 slots — static $0..$75 market-space prices, each
-  normalized by SHARE_PRICE_DIVISOR). Constant across a game.
-- Availability (vector, 27 slots — 1 if the corresponding market space is
-  unoccupied, 0 otherwise). First and last spaces ($0 and $75) always
-  available.
+Each token row is zero-padded to `TOKEN_DIM = 92`, currently pinned by the
+Corp token. Per-type widths live in `TokenWidth`:
 
-### Company tokens (26, ×36)
-Company identity is inferred from row order; the model adds learned
-`company_id_embed[company_id]` after projection.
+- `TW_MARKET_INFO = 55`
+- `TW_COMPANY = 28`
+- `TW_FI = 39`
+- `TW_GLOBAL_INFO = 24`
+- `TW_INVEST = 2`
+- `TW_AUCTION = 4`
+- `TW_DIVIDEND = 27`
+- `TW_ISSUE = 2`
+- `TW_PAR = 43`
+- `TW_ACQ_OFFER = 4`
+- `TW_ACQ_PRICE = 4`
+- `TW_CORP = 92`
+- `TW_PLAYER = 59`
 
-- is_selected (scalar, 0/1). 1 iff this is the current `active_company`.
-- Low price (scalar, normalized by COMPANY_PRICE_DIVISOR)
-- Face value (scalar, normalized by COMPANY_PRICE_DIVISOR)
-- High price (scalar, normalized by COMPANY_PRICE_DIVISOR)
-- low_high_diff (scalar, normalized by PRICE_RANGE_DIVISOR — count of valid
-  ACQ_SELECT_PRICE offsets for this company, `high - low + 1`, max 51 for
-  CDG). Same quantity as `max_offset` on the AcqPriceInfo token.
-- Base income (scalar, normalized by COMPANY_INCOME_DIVISOR)
-- Stars (scalar, normalized by COMPANY_STAR_DIVISOR)
-- Adjusted income (scalar, normalized by COMPANY_INCOME_DIVISOR). Per-company
-  CoO-adjusted income; may be negative (a company's income can be pushed
-  below zero by CoO-dependent penalties).
-- at_removed (scalar, 0/1). 1 for LOC_REMOVED; also 1 for LOC_EXCLUDED once
-  the CoO has advanced past the company's star tier — the exclusion is
-  publicly observable then; setting it unconditionally would leak setup
-  randomness.
-- at_auction (scalar, 0/1). 1 for LOC_AUCTION.
-- at_revealed (scalar, 0/1). 1 for LOC_REVEALED.
-- at_corp_acq (scalar, 0/1). 1 for LOC_CORP_ACQ.
-- owner_corp (one-hot, 8 slots). 1 at the owning corp iff the company is at
-  LOC_CORP.
-- owner_player (one-hot, 5 slots, padded for num_players < 5). 1 at the
-  owning player iff the company is at LOC_PLAYER.
-- owner_fi (scalar, 0/1). 1 iff the company is at LOC_FI.
+## Attention Mask Slot
 
-The three ownership groups (`owner_corp` / `owner_player` / `owner_fi`) are
-mutually exclusive: only the group matching the current location is
-non-zero. Companies at LOC_CORP_ACQ or any unowned location (AUCTION /
-REVEALED / REMOVED / DECK / EXCLUDED) leave all three groups zero; `at_*`
-flags encode those cases. The current transformer skips this full ownership
-tail in `company_proj` and re-injects the active owner reference from a
-concatenated `corp_id_embed` / `player_id_embed` / FI type-embedding owner
-table. `company_proj` only sees the non-owner company features from slots 0
-through 11.
+Every token type starts with:
 
-Synergies are no longer surfaced on the Company token. The ACQ_SELECT_COMPANY
-phase-specific token carries the per-candidate marginal synergy delta for the
-active corp; in other phases synergies are summarized on the Corp token
-(`synergy_income`) and the acquisition price head reads the
-target-specific total from AcqPriceInfo.
+- `attn_mask` at slot 0 (scalar, 0/1)
 
-### FI token (38)
-- Cash (scalar, normalized by CASH_DIVISOR)
-- Income (scalar, normalized by ENTITY_INCOME_DIVISOR)
-- Owned companies (vector, 36 slots — 1 if the corresponding company is at
-  LOC_FI, 0 otherwise)
+Rules:
 
-The current transformer skips the owned-company bitmap in `fi_proj` and
-re-injects it as `owned_companies @ company_id_embed.weight`. `fi_proj` only
-sees the cash/income prefix from slots 0 through 1.
+- MarketInfo, GlobalInfo, and FI tokens always set `attn_mask = 1`.
+- Emitted player tokens always set `attn_mask = 1`; only live player rows for
+  `num_players` are emitted.
+- Corp tokens set `attn_mask = 1` iff the corp is active, except in
+  `PHASE_IPO`, where the rule is inverted and only inactive corps set it.
+- Company tokens set `attn_mask = 1` iff location is not `LOC_DECK`,
+  `LOC_REMOVED`, or `LOC_EXCLUDED`.
+- Phase-specific tokens set `attn_mask = 1` only when `_fill_buffer` calls the
+  matching phase helper. The PAR token is shared and sets the mask in both
+  `PHASE_IPO` and `PHASE_PAR`.
 
-### GlobalInfo token (23)
-Bundled game-level scalars:
-- Decision phase (one-hot, 11 slots — one per `DecisionPhase`; all-zero in
-  automated / terminal engine phases).
-- CoO level (one-hot, 7 slots — CoO levels 1..7 → slots 0..6).
-- End card flipped (scalar, 0/1).
-- Cards remaining (scalar, normalized by NUM_COMPANIES).
-- num_players (one-hot, 3 slots — slot 0 = 3p, slot 1 = 4p, slot 2 = 5p).
+## Active Entity Selection
 
-The current transformer skips the decision-phase one-hot in
-`global_info_proj` and re-injects it as `phase_onehot @ phase_embed.weight` to
-every projected token plus learned pass anchors except GlobalInfo itself.
-`global_info_proj` only sees the non-phase global features from slots 11
-through 22.
+`active_player`, `active_corp`, and `active_company` are surfaced as
+`is_selected` scalar flags on their own entity tokens. They are not standalone
+selector tokens. The selected entity flags now live at slot 1 because slot 0 is
+reserved for `attn_mask`.
 
----
+## Informational Tokens
 
-## Phase-specific tokens (8 total)
+### MarketInfo Token (55)
 
-**Overall note** — these are zeroed when the game state is not in the relevant
-phase.
+- `attn_mask`
+- Slot prices (27 slots). Static $0..$75 market-space prices, normalized by
+  `SHARE_PRICE_DIVISOR`.
+- Availability (27 slots). 1 if the corresponding market space is available,
+  0 otherwise.
 
-### Invest token
-- Consecutive passes (scalar, normalized by 5 — the max training player count).
-- Buy-share invest impacts (vector, 8 slots, normalized by IMPACT_DIVISOR). Market price index delta for buying one share of the corresponding corp.
-- Sell-share invest impacts (vector, 8 slots, normalized by IMPACT_DIVISOR). Market price index delta for selling one share of the corresponding corp.
+### Company Tokens (28, x36)
 
-### Auction token
-- Minimum legal next-bid index (scalar, offset from the current auction company's face value, normalized by AUCTION_CAP). Equals 0 on the opening bid (bid at face_value) and `current_bid - face + 1` afterwards — the model can always score BID offsets against this floor.
-- Minimum legal next-bid value (scalar, dollar amount of the minimum legal next bid, normalized by COMPANY_PRICE_DIVISOR).
-- Is-first-bid flag (scalar, 1.0 on the opening bid — when `auction_high_bidder == -1` — and 0.0 afterwards. Pass / leave-auction is illegal while this flag is set.)
-- Auction high bidder (one-hot, 5 slots for 5 max players (0-padded for 3/4 players). All zero on the opening bid since no bid has been placed yet.)
-- Auction starter (one-hot, 5 slots for 5 max players (0-padded for 3/4 players)).
+Company identity is inferred from row order.
 
-### Dividend token
-- Dividend impact (vector, 26 slots for dividend amounts 0..25). Market price index delta (up or down) for the active corp if the corresponding dividend amount is paid, each value normalized by IMPACT_DIVISOR.
-- Dividend remaining (vector, 8 slots — 1 per corp that has yet to act in this dividend phase).
-
-### Issue token
-- Issue impact (scalar, normalized by IMPACT_DIVISOR). Price impact for the active corp if it issues a share.
-- Issue remaining (vector, 8 slots — 1 per corp that has yet to act in this issue phase).
-
-### PAR (IPO) token
-Shared by PHASE_IPO and PHASE_PAR — both sub-phases reference the same
-per-par-price slate.
-- Player cash required (vector, 14 slots for each valid par price). Amount the active player needs to pay to float at each par price; 0 for invalid par prices.
-- Resulting corp cash (vector, 14 slots). Corp cash after floating at each par price; 0 for invalid par prices.
-- Resulting issued shares (vector, 14 slots). Shares issued at each par price; 0 for invalid par prices. Values are 0/2/4 in practice, normalized by 4.0 as the maximum.
-- IPO remaining (vector, 8 slots — 1 per corp that is still inactive and therefore available for IPO).
-
-### AcqSelectCompany token
-Populated during PHASE_ACQ_SELECT_COMPANY. Per-company marginal synergy
-context for the active corp's SELECT_COMPANY decision; the per-company
-select logits themselves are still read from company tokens.
-- Synergy delta (vector, 36 slots, normalized by ENTITY_INCOME_DIVISOR).
-  Marginal synergy income the active corp would gain by acquiring the
-  corresponding candidate. Slots for companies already in the active corp's
-  portfolio (owned or in its acquisition pile) stay at zero — self-
-  acquisition is a no-op.
-
-### AcqOffer token
-- Offer price index (scalar, normalized by 51.0). Matches acquisition action encoding — offset from the target company's low price.
-- Offer price (scalar, normalized by COMPANY_PRICE_DIVISOR).
-- Offer corp (one-hot, 8 slots for each corp).
-- FI company (scalar, 0/1 — 1 if the target company is FI-owned).
-
-### AcqPriceInfo token
-Populated during PHASE_ACQ_SELECT_PRICE. Every (active_corp, active_company)-
-level scalar is already on the corp / company / active-entity / company-
-location tokens and reaches the price head via attention, so this token is
-kept deliberately minimal — only what can't be read off those tokens directly:
-- max_offset (scalar, normalized by PRICE_RANGE_DIVISOR). Valid ACQ price-offset count for the target company (`high - low + 1`). Same quantity as the Company token's low_high_diff — duplicated here so the head doesn't have to cross-attend through company-id lookup.
-- fi_flag (scalar, 0/1). 1 if the target company is FI-owned. A hard discontinuity for the head: FI sale is a single fixed-price FI_BUY action with no offset to pick.
-- total_synergies (scalar, normalized by ENTITY_INCOME_DIVISOR). Marginal synergy income the active corp would gain by adding the target company to its portfolio.
-
----
-
-## Corp tokens (85, ×8)
-The `active` slot below is the lifecycle float flag (1 iff the corp is
-floated and operational); the decision-flow selector is the separate
-`is_selected` bit before the relational tail. Corp identity is inferred from
-row order; the model adds learned `corp_id_embed[corp_id]` after projection.
-
-- is_selected (scalar, 0/1). 1 iff this is the current `active_corp`.
-- Active (scalar, 1/0 — 1 if the corp has floated and is in play)
-- In receivership (scalar, 1/0)
-- Passed on ACQ_OFFER (scalar, 1/0)
-- Unissued shares (scalar, normalized by SHARE_DIVISOR)
-- Issued shares (scalar, normalized by SHARE_DIVISOR)
-- Bank shares (scalar, normalized by SHARE_DIVISOR)
-- Share price index (one-hot, 27 slots — current market price index)
-- Share price (scalar, normalized by SHARE_PRICE_DIVISOR)
-- Pending price move (scalar, normalized by IMPACT_DIVISOR)
-- Cash (scalar, normalized by CASH_DIVISOR)
-- Acquisition proceeds (scalar, normalized by CASH_DIVISOR)
-- Income (scalar, normalized by ENTITY_INCOME_DIVISOR)
-- Stars (scalar, normalized by CORP_STAR_DIVISOR). *Total* stars — owned companies + cash + SI bonus.
-- Raw revenue (scalar, normalized by ENTITY_INCOME_DIVISOR)
-- Synergy income (scalar, normalized by ENTITY_INCOME_DIVISOR)
-- CoO cost (scalar, normalized by ENTITY_INCOME_DIVISOR)
-- Ability income (scalar, normalized by ENTITY_INCOME_DIVISOR)
+- `attn_mask`
+- `is_selected`. 1 iff this is the current `active_company`.
+- Low price, normalized by `COMPANY_PRICE_DIVISOR`
+- Face value, normalized by `COMPANY_PRICE_DIVISOR`
+- High price, normalized by `COMPANY_PRICE_DIVISOR`
+- `low_high_diff`, normalized by `PRICE_RANGE_DIVISOR`. Count of valid
+  ACQ_SELECT_PRICE offsets (`high - low + 1`).
+- Base income, normalized by `COMPANY_INCOME_DIVISOR`
+- Stars, normalized by `COMPANY_STAR_DIVISOR`
+- Adjusted income, normalized by `COMPANY_INCOME_DIVISOR`
+- `at_removed`. 1 for `LOC_REMOVED`; also 1 for observable `LOC_EXCLUDED`
+  once CoO has advanced past the company's star tier.
+- `at_auction`. 1 for `LOC_AUCTION`.
+- `at_revealed`. 1 for `LOC_REVEALED`.
+- `at_corp_acq`. 1 for `LOC_CORP_ACQ`.
+- `acq_select_synergy_delta`. During `PHASE_ACQ_SELECT_COMPANY`, marginal
+  synergy income the active corp would gain by acquiring this company,
+  normalized by `ENTITY_INCOME_DIVISOR`. Zero outside the phase and zero for
+  companies already in the active corp's owned/acquisition portfolio.
 
 Relational tail:
-- President ID (one-hot, 5 slots for max 5 players, 0-padded for 3/4 players). All 0 if inactive / in receivership.
-- Owned companies (vector, 36 slots). Includes companies sitting in the corp's acquisition pile.
 
-The current transformer skips this relational tail in `corp_proj` and
-re-injects it as additive references: `president_id @ player_id_embed.weight`
-plus `owned_companies @ company_id_embed.weight`. `corp_proj` only sees the
-non-relational corp features from slots 0 through 43.
+- `owner_corp` (8 slots). 1 at the owning corp iff location is `LOC_CORP` or
+  `LOC_CORP_ACQ`.
+- `owner_player` (5 slots, padded for lower player counts). 1 at the owning
+  player iff location is `LOC_PLAYER`.
+- `owner_fi`. 1 iff location is `LOC_FI`.
 
----
+The ownership groups are mutually exclusive. `LOC_CORP_ACQ` sets both
+`at_corp_acq` and the owning corp's `owner_corp` slot. Unowned locations leave
+all owner groups zero.
 
-## Player tokens (56, ×N, N ∈ {3, 4, 5})
-Player identity is inferred from row order; the model adds learned
-`player_id_embed[player_id]` after projection.
+### FI Token (39)
 
-- is_selected (scalar, 0/1). 1 iff this is the current `active_player`.
-- Turn order (one-hot, 5 slots for 5 max players, 0-padded for 3/4 players)
-- Has passed (scalar, 1/0)
-- Cash (scalar, normalized by CASH_DIVISOR)
-- Net worth (scalar, normalized by NET_WORTH_DIVISOR)
-- Liquidity (scalar, normalized by NET_WORTH_DIVISOR)
-- Income (scalar, normalized by ENTITY_INCOME_DIVISOR)
-- Round trips (scalar, 1 if any share buy/sell would be affected by the round-trip limit, 0 otherwise)
+- `attn_mask`
+- Cash, normalized by `CASH_DIVISOR`
+- Income, normalized by `ENTITY_INCOME_DIVISOR`
+- Owned companies (36 slots). 1 if the company is at `LOC_FI`.
+
+### GlobalInfo Token (24)
+
+- `attn_mask`
+- Decision phase one-hot (11 slots; all-zero in automated / terminal engine
+  phases)
+- CoO level one-hot (7 slots)
+- End card flipped
+- Cards remaining, normalized by `NUM_COMPANIES`
+- `num_players` one-hot (3 slots for 3p/4p/5p)
+
+## Phase-Specific Tokens
+
+Phase-specific token rows exist in every buffer but remain all-zero outside
+their matching phase. The shared PAR token is filled in both `PHASE_IPO` and
+`PHASE_PAR`.
+
+### Invest Token (2)
+
+- `attn_mask`
+- Consecutive passes, normalized by 5
+
+Buy/sell invest impacts moved to Corp tokens.
+
+### Auction Token (4)
+
+- `attn_mask`
+- Minimum legal next-bid index. Offset from the current auction company's face
+  value, normalized by `AUCTION_CAP`.
+- Minimum legal next-bid value, normalized by `COMPANY_PRICE_DIVISOR`
+- `is_first_bid`. 1 when `auction_high_bidder == -1`.
+
+`auction_high_bidder` and `auction_starter` moved to Player tokens.
+
+### Dividend Token (27)
+
+- `attn_mask`
+- Dividend impacts (26 slots for amounts 0..25), normalized by
+  `IMPACT_DIVISOR`
+
+`dividend_remaining` moved to Corp tokens.
+
+### Issue Token (2)
+
+- `attn_mask`
+- Issue impact for the active corp, normalized by `IMPACT_DIVISOR`
+
+`issue_remaining` moved to Corp tokens.
+
+### PAR / IPO Token (43)
+
+- `attn_mask`
+- Player cash required (14 slots)
+- Resulting corp cash (14 slots)
+- Resulting issued shares (14 slots), normalized by `FLOAT_SHARES_MAX`
+
+`ipo_remaining` moved to Corp tokens. It is written for inactive corps in both
+`PHASE_IPO` and `PHASE_PAR`; the corp `attn_mask` exposes inactive corp rows
+only in `PHASE_IPO`.
+
+### AcqOffer Token (4)
+
+- `attn_mask`
+- Offer price index, normalized by `ACQ_PRICE_OFFSETS`
+- Offer price, normalized by `COMPANY_PRICE_DIVISOR`
+- `fi_company`. 1 if the target company is FI-owned.
+
+`acq_offer_corp` moved to Corp tokens.
+
+### AcqPriceInfo Token (4)
+
+- `attn_mask`
+- `max_offset`, normalized by `PRICE_RANGE_DIVISOR`
+- `fi_flag`. 1 if the target company is FI-owned.
+- `total_synergies`, normalized by `ENTITY_INCOME_DIVISOR`
+
+## Corp Tokens (92, x8)
+
+Corp identity is inferred from row order.
+
+- `attn_mask`
+- `is_selected`. 1 iff this is the current `active_corp`.
+- Active lifecycle flag. 1 if floated / operational.
+- In receivership
+- Passed on ACQ_OFFER
+- Unissued shares, normalized by `SHARE_DIVISOR`
+- Issued shares, normalized by `SHARE_DIVISOR`
+- Bank shares, normalized by `SHARE_DIVISOR`
+- Share price index one-hot (27 slots)
+- Share price, normalized by `SHARE_PRICE_DIVISOR`
+- Pending price move, normalized by `IMPACT_DIVISOR`
+- Cash, normalized by `CASH_DIVISOR`
+- Acquisition proceeds, normalized by `CASH_DIVISOR`
+- Income, normalized by `ENTITY_INCOME_DIVISOR`
+- Stars, normalized by `CORP_STAR_DIVISOR`
+- Raw revenue, normalized by `ENTITY_INCOME_DIVISOR`
+- Synergy income, normalized by `ENTITY_INCOME_DIVISOR`
+- CoO cost, normalized by `ENTITY_INCOME_DIVISOR`
+- Ability income, normalized by `ENTITY_INCOME_DIVISOR`
+- `acq_offer_corp`. During `PHASE_ACQ_OFFER`, 1 on the original offer corp.
+- `dividend_remaining`. During `PHASE_DIVIDENDS`, 1 if this corp still needs
+  to act.
+- `issue_remaining`. During `PHASE_ISSUE_SHARES`, 1 if this corp still needs
+  to act.
+- `ipo_remaining`. During `PHASE_IPO` / `PHASE_PAR`, 1 if this corp is
+  inactive.
+- Buy impact. During `PHASE_INVEST`, active corp's buy-one-share market index
+  delta, normalized by `IMPACT_DIVISOR`.
+- Sell impact. During `PHASE_INVEST`, active corp's sell-one-share market
+  index delta, normalized by `IMPACT_DIVISOR`.
 
 Relational tail:
-- Owned shares (vector, 8 slots for 8 corps, normalized by SHARE_DIVISOR)
-- Owned companies (vector, 36 slots)
 
-The current transformer skips this relational tail in `player_proj` and
-re-injects it as additive references: `owned_shares @ corp_id_embed.weight`
-plus `owned_companies @ company_id_embed.weight`. Because owned shares are
-normalized fractional values, corp references scale with the player's stake.
-`player_proj` only sees the non-relational player features from slots 0
-through 11.
+- President ID (5 slots). All zero if inactive / receivership.
+- Owned companies (36 slots). Includes companies in the acquisition pile.
+
+## Player Tokens (59, xN, N in {3, 4, 5})
+
+Player identity is inferred from row order.
+
+- `attn_mask`
+- `is_selected`. 1 iff this is the current `active_player`.
+- Turn order one-hot (5 slots)
+- Has passed
+- Cash, normalized by `CASH_DIVISOR`
+- Net worth, normalized by `NET_WORTH_DIVISOR`
+- Liquidity, normalized by `NET_WORTH_DIVISOR`
+- Income, normalized by `ENTITY_INCOME_DIVISOR`
+- `auction_high_bidder`. During `PHASE_BID`, 1 on the high bidder; all zero
+  on the opening bid before a bid has been placed.
+- `auction_starter`. During `PHASE_BID`, 1 on the auction starter.
+- Round trips. 1 if any share buy/sell would be affected by the round-trip
+  limit.
+
+Relational tail:
+
+- Owned shares (8 slots), normalized by `SHARE_DIVISOR`
+- Owned companies (36 slots)

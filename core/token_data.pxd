@@ -13,10 +13,10 @@ from core.state cimport GameState
 
 # Maximum feature count across all token types (== raw token_dim input
 # to ``nn/transformer.py``). All tokens are zero-padded to this width.
-# Equals ``max(TokenWidth.*)``; currently pinned by ``TW_CORP = 85``.
+# Equals ``max(TokenWidth.*)``; currently pinned by ``TW_CORP = 92``.
 # See the companion .pyx for the per-token feature layout and counts.
 cpdef enum TokenDataSize:
-    TOKEN_DIM = 85
+    TOKEN_DIM = 92
 
 
 # Non-padded feature width per token type (single source of truth for the
@@ -28,28 +28,27 @@ cpdef enum TokenDataSize:
 # inside those helpers. Used by ``get_token_widths`` to build the
 # per-position widths array that matches ``_fill_buffer``'s layout.
 cpdef enum TokenWidth:
-    TW_MARKET_INFO           = 54
-    TW_COMPANY               = 26
-    TW_FI                    = 38
-    TW_GLOBAL_INFO           = 23
-    TW_INVEST                = 17
-    TW_AUCTION               = 13
-    TW_DIVIDEND              = 34
-    TW_ISSUE                 = 9
-    TW_PAR                   = 50
-    TW_ACQ_SELECT_COMPANY    = 36
-    TW_ACQ_OFFER             = 11
-    TW_ACQ_PRICE             = 3
-    TW_CORP                  = 85
-    TW_PLAYER                = 56
+    TW_MARKET_INFO           = 55
+    TW_COMPANY               = 28
+    TW_FI                    = 39
+    TW_GLOBAL_INFO           = 24
+    TW_INVEST                = 2
+    TW_AUCTION               = 4
+    TW_DIVIDEND              = 27
+    TW_ISSUE                 = 2
+    TW_PAR                   = 43
+    TW_ACQ_OFFER             = 4
+    TW_ACQ_PRICE             = 4
+    TW_CORP                  = 92
+    TW_PLAYER                = 59
 
 
-# Number of tokens for a given player count (num_players + 55 fixed entities).
+# Number of tokens for a given player count (num_players + 54 fixed tokens).
 cpdef int get_num_tokens(int num_players) noexcept nogil
 
 
 # Per-position non-padded feature widths matching ``_fill_buffer``'s layout.
-# Returns a ``(num_players + 55,)`` uint8 numpy array; each entry is the
+# Returns a ``(num_players + 54,)`` uint8 numpy array; each entry is the
 # width of the corresponding buffer row (<= TOKEN_DIM). The model can use
 # this to slice ``buffer[i, :widths[i]]`` into the per-type projection.
 cpdef object get_token_widths(int num_players)
@@ -58,7 +57,7 @@ cpdef object get_token_widths(int num_players)
 # Fill a (num_tokens, TOKEN_DIM) float32 memoryview with per-token features.
 # The buffer is zeroed by the function; phase-specific tokens remain zero
 # when the current engine phase does not match. Requires a C-contiguous
-# float32 memoryview sized for at least (num_players + 55, TOKEN_DIM).
+# float32 memoryview sized for at least (num_players + 54, TOKEN_DIM).
 cpdef void get_token_data(GameState state, float[:, ::1] buffer)
 
 
@@ -68,7 +67,7 @@ cpdef void get_token_data(GameState state, float[:, ::1] buffer)
 # over a single entry. Cache refresh + ``_fill_buffer`` run together in one
 # nogil block per row via ``refresh_player_cache_if_dirty``; only ``rebind``
 # itself stays GIL-held (Python-level validation + ``_array`` attr write).
-# Requires a C-contiguous (n, num_players + 55, TOKEN_DIM) float32 buffer.
+# Requires a C-contiguous (n, num_players + 54, TOKEN_DIM) float32 buffer.
 cpdef void get_token_data_batch(
     list state_arrays, int num_players, float[:, :, ::1] buffer,
 )
