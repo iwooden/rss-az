@@ -108,6 +108,7 @@ def test_corp_projection_uses_shared_relation_embeddings(model: RSSTransformerNe
     assert model._corp_companies_width == num_companies
     assert companies_stop == int(TokenWidth.TW_CORP)
     assert model.corp_proj.in_features == president_start
+    assert tuple(model.company_ownership_gate.shape) == (model.cfg.d_model,)
 
     x = torch.zeros(1, model.cfg.num_tokens, model.cfg.token_dim)
     x_with_relations = x.clone()
@@ -124,19 +125,33 @@ def test_corp_projection_uses_shared_relation_embeddings(model: RSSTransformerNe
         owned_company_bitmap.unsqueeze(0)
     )
 
-    corp_without_relations = model._project_tokens(x)[:, model._corp_slice]
-    corp_with_relations = model._project_tokens(x_with_relations)[:, model._corp_slice]
-    actual_delta = corp_with_relations - corp_without_relations
+    original_gate = model.company_ownership_gate.detach().clone()
+    test_gate = torch.linspace(
+        0.5,
+        1.5,
+        model.cfg.d_model,
+        dtype=model.company_ownership_gate.dtype,
+        device=model.company_ownership_gate.device,
+    )
+    with torch.no_grad():
+        model.company_ownership_gate.copy_(test_gate)
+    try:
+        corp_without_relations = model._project_tokens(x)[:, model._corp_slice]
+        corp_with_relations = model._project_tokens(x_with_relations)[:, model._corp_slice]
+        actual_delta = corp_with_relations - corp_without_relations
 
-    expected_delta = (
-        model.player_id_embed.weight[president_indices]
-        + (
+        owned_company_delta = (
             owned_company_bitmap.to(model.company_id_embed.weight.dtype)
             @ model.company_id_embed.weight
-        )
-        / owned_company_bitmap.sum(dim=-1, keepdim=True).sqrt()
-    ).unsqueeze(0)
-    assert torch.allclose(actual_delta, expected_delta)
+        ) / owned_company_bitmap.sum(dim=-1, keepdim=True).sqrt()
+        expected_delta = (
+            model.player_id_embed.weight[president_indices]
+            + owned_company_delta * test_gate.view(1, -1)
+        ).unsqueeze(0)
+        assert torch.allclose(actual_delta, expected_delta)
+    finally:
+        with torch.no_grad():
+            model.company_ownership_gate.copy_(original_gate)
 
 
 def test_player_projection_uses_learned_identity_embedding(model: RSSTransformerNet) -> None:
@@ -172,6 +187,7 @@ def test_player_projection_uses_shared_relation_embeddings(model: RSSTransformer
     assert model._player_companies_width == num_companies
     assert companies_stop == int(TokenWidth.TW_PLAYER)
     assert model.player_proj.in_features == shares_start
+    assert tuple(model.company_ownership_gate.shape) == (model.cfg.d_model,)
 
     x = torch.zeros(1, model.cfg.num_tokens, model.cfg.token_dim)
     x_with_relations = x.clone()
@@ -193,20 +209,34 @@ def test_player_projection_uses_shared_relation_embeddings(model: RSSTransformer
         owned_company_bitmap.unsqueeze(0)
     )
 
-    player_without_relations = model._project_tokens(x)[:, model._player_slice]
-    player_with_relations = model._project_tokens(x_with_relations)[:, model._player_slice]
-    actual_delta = player_with_relations - player_without_relations
+    original_gate = model.company_ownership_gate.detach().clone()
+    test_gate = torch.linspace(
+        0.5,
+        1.5,
+        model.cfg.d_model,
+        dtype=model.company_ownership_gate.dtype,
+        device=model.company_ownership_gate.device,
+    )
+    with torch.no_grad():
+        model.company_ownership_gate.copy_(test_gate)
+    try:
+        player_without_relations = model._project_tokens(x)[:, model._player_slice]
+        player_with_relations = model._project_tokens(x_with_relations)[:, model._player_slice]
+        actual_delta = player_with_relations - player_without_relations
 
-    expected_delta = (
-        owned_shares.to(model.corp_id_embed.weight.dtype)
-        @ model.corp_id_embed.weight
-        + (
+        owned_company_delta = (
             owned_company_bitmap.to(model.company_id_embed.weight.dtype)
             @ model.company_id_embed.weight
-        )
-        / owned_company_bitmap.sum(dim=-1, keepdim=True).sqrt()
-    ).unsqueeze(0)
-    assert torch.allclose(actual_delta, expected_delta)
+        ) / owned_company_bitmap.sum(dim=-1, keepdim=True).sqrt()
+        expected_delta = (
+            owned_shares.to(model.corp_id_embed.weight.dtype)
+            @ model.corp_id_embed.weight
+            + owned_company_delta * test_gate.view(1, -1)
+        ).unsqueeze(0)
+        assert torch.allclose(actual_delta, expected_delta)
+    finally:
+        with torch.no_grad():
+            model.company_ownership_gate.copy_(original_gate)
 
 
 def test_active_entity_refs_broadcast_to_phase_tokens_and_pass_anchors(
@@ -313,7 +343,7 @@ def test_company_projection_uses_learned_identity_embedding(model: RSSTransforme
     assert torch.allclose(actual_delta, expected_delta)
 
 
-def test_company_projection_uses_shared_owner_embeddings(model: RSSTransformerNet) -> None:
+def test_company_projection_uses_gated_owned_by_embeddings(model: RSSTransformerNet) -> None:
     cfg = model.cfg
     num_corps = int(GameConstants.NUM_CORPS)
     num_player_slots = 5
@@ -326,6 +356,7 @@ def test_company_projection_uses_shared_owner_embeddings(model: RSSTransformerNe
     assert model._company_owner_fi_offset == owner_start + num_corps + num_player_slots
     assert owner_stop == int(TokenWidth.TW_COMPANY)
     assert model.company_proj.in_features == owner_start
+    assert tuple(model.company_owned_by_gate.shape) == (cfg.d_model,)
 
     x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
     x_with_owner = x.clone()
@@ -334,24 +365,41 @@ def test_company_projection_uses_shared_owner_embeddings(model: RSSTransformerNe
         owner_width
     )[owner_indices].unsqueeze(0)
 
-    company_without_owner = model._project_tokens(x)[:, model._company_slice]
-    company_with_owner = model._project_tokens(x_with_owner)[:, model._company_slice]
-    actual_delta = company_with_owner - company_without_owner
-
-    fi_type_id = int(model._type_ids[model._fi_idx].item())
-    owner_ref_table = torch.cat(
-        [
-            model.corp_id_embed.weight,
-            model.player_id_embed.weight,
-            model.type_embeds[fi_type_id].unsqueeze(0),
-        ],
-        dim=0,
+    original_gate = model.company_owned_by_gate.detach().clone()
+    test_gate = torch.linspace(
+        0.5,
+        1.5,
+        cfg.d_model,
+        dtype=model.company_owned_by_gate.dtype,
+        device=model.company_owned_by_gate.device,
     )
-    expected_delta = owner_ref_table[owner_indices].unsqueeze(0)
-    assert torch.allclose(actual_delta, expected_delta)
+    with torch.no_grad():
+        model.company_owned_by_gate.copy_(test_gate)
+    try:
+        company_without_owner = model._project_tokens(x)[:, model._company_slice]
+        company_with_owner = model._project_tokens(x_with_owner)[:, model._company_slice]
+        actual_delta = company_with_owner - company_without_owner
+
+        fi_type_id = int(model._type_ids[model._fi_idx].item())
+        owner_ref_table = torch.cat(
+            [
+                model.corp_id_embed.weight,
+                model.player_id_embed.weight,
+                model.type_embeds[fi_type_id].unsqueeze(0),
+            ],
+            dim=0,
+        )
+        expected_delta = (
+            owner_ref_table[owner_indices].unsqueeze(0)
+            * test_gate.view(1, 1, -1)
+        )
+        assert torch.allclose(actual_delta, expected_delta)
+    finally:
+        with torch.no_grad():
+            model.company_owned_by_gate.copy_(original_gate)
 
 
-def test_fi_projection_uses_owned_company_embeddings(model: RSSTransformerNet) -> None:
+def test_fi_projection_uses_gated_owned_company_embeddings(model: RSSTransformerNet) -> None:
     num_companies = int(GameConstants.NUM_COMPANIES)
     companies_start = model._fi_companies_offset
     companies_stop = companies_start + model._fi_companies_width
@@ -359,6 +407,7 @@ def test_fi_projection_uses_owned_company_embeddings(model: RSSTransformerNet) -
     assert model.fi_proj.in_features == companies_start
     assert model._fi_companies_width == num_companies
     assert companies_stop == int(TokenWidth.TW_FI)
+    assert tuple(model.company_ownership_gate.shape) == (model.cfg.d_model,)
 
     x = torch.zeros(1, model.cfg.num_tokens, model.cfg.token_dim)
     x_with_companies = x.clone()
@@ -368,16 +417,30 @@ def test_fi_projection_uses_owned_company_embeddings(model: RSSTransformerNet) -
         owned_company_bitmap.unsqueeze(0)
     )
 
-    fi_without_companies = model._project_tokens(x)[:, model._fi_idx]
-    fi_with_companies = model._project_tokens(x_with_companies)[:, model._fi_idx]
-    actual_delta = fi_with_companies - fi_without_companies
+    original_gate = model.company_ownership_gate.detach().clone()
+    test_gate = torch.linspace(
+        0.5,
+        1.5,
+        model.cfg.d_model,
+        dtype=model.company_ownership_gate.dtype,
+        device=model.company_ownership_gate.device,
+    )
+    with torch.no_grad():
+        model.company_ownership_gate.copy_(test_gate)
+    try:
+        fi_without_companies = model._project_tokens(x)[:, model._fi_idx]
+        fi_with_companies = model._project_tokens(x_with_companies)[:, model._fi_idx]
+        actual_delta = fi_with_companies - fi_without_companies
 
-    expected_delta = (
-        owned_company_bitmap.to(model.company_id_embed.weight.dtype)
-        @ model.company_id_embed.weight
-    ) / owned_company_bitmap.sum(dim=-1, keepdim=True).sqrt()
-    expected_delta = expected_delta.unsqueeze(0)
-    assert torch.allclose(actual_delta, expected_delta)
+        expected_delta = (
+            owned_company_bitmap.to(model.company_id_embed.weight.dtype)
+            @ model.company_id_embed.weight
+        ) / owned_company_bitmap.sum(dim=-1, keepdim=True).sqrt()
+        expected_delta = (expected_delta * test_gate).unsqueeze(0)
+        assert torch.allclose(actual_delta, expected_delta)
+    finally:
+        with torch.no_grad():
+            model.company_ownership_gate.copy_(original_gate)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for device mismatch test")

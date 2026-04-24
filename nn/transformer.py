@@ -335,14 +335,16 @@ class RSSTransformerNet(nn.Module):
         # Most projections take only their ``TokenWidth.TW_<type>`` prefix of
         # the zero-padded token row. Company, corp, and player identity comes
         # from row order plus learned ID embeddings, not raw ID fields. Company
-        # tokens skip their trailing ownership fields and receive an additive
-        # owner reference from the matching corp / player / FI embedding. Corp
-        # tokens skip their trailing president/company ownership fields and
-        # receive additive player/company references from the same ID tables.
-        # FI skips its trailing owned-company bitmap and receives additive
-        # company references from ``company_id_embed``. Player tokens skip
-        # their trailing owned-share/company fields and receive additive
-        # corp/company references from the same ID tables.
+        # tokens skip their trailing ownership fields and receive a gated
+        # additive "owned by" reference from the matching corp / player / FI
+        # embedding. Corp tokens skip their trailing president/company
+        # ownership fields and receive additive player references plus gated
+        # company ownership references from the same ID tables. FI skips its
+        # trailing owned-company bitmap and receives gated additive company
+        # references from ``company_id_embed``. Player tokens skip their
+        # trailing owned-share/company fields and receive additive corp
+        # references plus gated company ownership references from the same ID
+        # tables.
         # The engine-side buffer is rectangular at ``TOKEN_DIM=85`` so
         # ``get_token_data`` can fill it with a single nogil memcpy pattern,
         # but projection weights on padding / replaced relation fields are inert
@@ -401,6 +403,11 @@ class RSSTransformerNet(nn.Module):
         self.corp_id_embed = nn.Embedding(_NUM_CORPS, d)
         self.player_id_embed = nn.Embedding(_MAX_MODEL_PLAYERS, d)
         self.phase_embed = nn.Embedding(NUM_PHASES, d)
+        # Diagonal role gates for both directions of company ownership.
+        # Initialized to ones so ownership starts as exact shared-ID matching,
+        # then training can rescale dimensions for each relation role.
+        self.company_ownership_gate = nn.Parameter(torch.empty(d))
+        self.company_owned_by_gate = nn.Parameter(torch.empty(d))
         # Per-type additive embedding for every non-pass token. Added
         # post-projection in ``_project_tokens`` so the trunk still sees a
         # type-distinct vector even when a token's feature slice is all-zero
@@ -567,6 +574,7 @@ class RSSTransformerNet(nn.Module):
             dim=0,
         )
         owner_refs = owner_onehot.to(owner_ref_table.dtype) @ owner_ref_table
+        owner_refs = owner_refs * self.company_owned_by_gate.to(owner_refs.dtype)
         return company_tokens + owner_refs.to(company_tokens.dtype)
 
     def _project_corp_tokens(self, x: torch.Tensor) -> torch.Tensor:
@@ -601,6 +609,10 @@ class RSSTransformerNet(nn.Module):
         owned_company_refs = owned_company_refs / owned_company_count.sqrt().to(
             owned_company_refs.dtype
         )
+        owned_company_refs = (
+            owned_company_refs
+            * self.company_ownership_gate.to(owned_company_refs.dtype)
+        )
 
         return (
             corp_tokens
@@ -626,6 +638,10 @@ class RSSTransformerNet(nn.Module):
         owned_company_count = owned_company_bitmap.sum(dim=-1, keepdim=True).clamp_min(1.0)
         owned_company_refs = owned_company_refs / owned_company_count.sqrt().to(
             owned_company_refs.dtype
+        )
+        owned_company_refs = (
+            owned_company_refs
+            * self.company_ownership_gate.to(owned_company_refs.dtype)
         )
         return fi_token + owned_company_refs.to(fi_token.dtype)
 
@@ -670,6 +686,10 @@ class RSSTransformerNet(nn.Module):
         owned_company_count = owned_company_bitmap.sum(dim=-1, keepdim=True).clamp_min(1.0)
         owned_company_refs = owned_company_refs / owned_company_count.sqrt().to(
             owned_company_refs.dtype
+        )
+        owned_company_refs = (
+            owned_company_refs
+            * self.company_ownership_gate.to(owned_company_refs.dtype)
         )
 
         return (
@@ -857,12 +877,14 @@ class RSSTransformerNet(nn.Module):
         before projecting. Company, corp, and player identities are inferred
         from row order and added as learned additive identity embeddings.
         Company rows skip the ownership tail and receive the matching corp /
-        player / FI additive owner reference directly. Corp rows skip the
+        player / FI additive owner reference through the ``company_owned_by``
+        diagonal role gate. Corp rows skip the
         president / owned-company tail and receive additive player / company
-        references directly. FI skips its owned-company tail and receives
-        additive company references directly. Player rows skip their owned
-        shares / owned-company tail and receive additive corp / company
-        references directly. The engine-side buffer is rectangularly
+        references, with owned-company refs passing through the
+        ``company_ownership`` gate. FI skips its owned-company tail and
+        receives gated additive company references. Player rows skip their
+        owned shares / owned-company tail and receive additive corp refs plus
+        gated company ownership refs. The engine-side buffer is rectangularly
         zero-padded to ``TOKEN_DIM=85`` so ``get_token_data`` can fill it with
         a uniform nogil memcpy pattern, but each type only uses its meaningful
         feature slice — padding and replaced relation fields would otherwise be
@@ -1094,6 +1116,8 @@ class RSSTransformerNet(nn.Module):
         nn.init.trunc_normal_(self.corp_id_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.player_id_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.phase_embed.weight, std=0.02)
+        nn.init.ones_(self.company_ownership_gate)
+        nn.init.ones_(self.company_owned_by_gate)
         # Per-type additive embeddings: same small-random init.
         nn.init.trunc_normal_(self.type_embeds, std=0.02)
 
@@ -1138,6 +1162,10 @@ if __name__ == "__main__":
     corp_id_params = model.corp_id_embed.weight.numel()
     player_id_params = model.player_id_embed.weight.numel()
     phase_params = model.phase_embed.weight.numel()
+    role_gate_params = (
+        model.company_ownership_gate.numel()
+        + model.company_owned_by_gate.numel()
+    )
     pass_params = model.pass_embeds.numel()
     type_params = model.type_embeds.numel()
     trunk_params = (
@@ -1163,6 +1191,7 @@ if __name__ == "__main__":
         ("Corp ID embeds", corp_id_params),
         ("Player ID embeds", player_id_params),
         ("Phase embeds", phase_params),
+        ("Role gates", role_gate_params),
         ("Pass anchors", pass_params),
         ("Type embeds", type_params),
         ("Transformer trunk", trunk_params),
