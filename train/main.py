@@ -107,6 +107,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--lr-min", type=float, help="Minimum learning rate for cosine decay")
     parser.add_argument(
+        "--warmup-epochs", type=float,
+        help="Linear LR warmup duration in training epochs (default: 1.0)",
+    )
+    parser.add_argument(
         "--lr-decay-end-epoch", type=int,
         help="Epoch at which LR reaches lr_min and stays constant (default: num_epochs)",
     )
@@ -159,7 +163,7 @@ _CLI_FIELDS = (
     "temp_initial", "temp_anneal_start", "temp_anneal_end", "temp_final",
     "c_puct_initial", "c_puct_final", "c_puct_anneal_epochs",
     "value_blend_start_epoch", "value_blend_end_epoch",
-    "terminal_blend", "lr_min", "lr_decay_end_epoch",
+    "terminal_blend", "lr_min", "warmup_epochs", "lr_decay_end_epoch",
     "optimizer", "grad_clip",
     "dirichlet_alpha", "dirichlet_dynamic", "dirichlet_alpha_numerator",
 )

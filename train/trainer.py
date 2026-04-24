@@ -71,7 +71,9 @@ class Trainer:
         # --- LR schedule (shared shape for all optimizers) ---
         decay_epochs = config.lr_decay_end_epoch or config.num_epochs
         total_steps = decay_epochs * config.training_steps_per_epoch
-        warmup_steps = config.warmup_steps
+        warmup_steps = math.ceil(
+            config.warmup_epochs * config.training_steps_per_epoch
+        )
         lr_min_ratio = config.lr_min / config.learning_rate
 
         def lr_lambda(step: int) -> float:

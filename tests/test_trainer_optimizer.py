@@ -32,7 +32,7 @@ def _make_trainer(optimizer: str) -> Trainer:
         batch_size=8,
         num_epochs=1,
         training_steps_per_epoch=10,
-        warmup_steps=0,
+        warmup_epochs=0,
     )
     return Trainer(model, cfg, torch.device("cpu"))
 

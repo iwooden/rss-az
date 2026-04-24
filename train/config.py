@@ -162,8 +162,9 @@ class TrainingConfig:
     training_steps_per_epoch: int = 1000
 
     # --- LR Schedule ---
-    # Cosine annealing with linear warmup
-    warmup_steps: int = 1000
+    # Cosine annealing with linear warmup. Measured in training epochs so
+    # changing training_steps_per_epoch preserves the same schedule shape.
+    warmup_epochs: float = 1.0
     lr_min: float = 1e-4
     lr_decay_end_epoch: int | None = 200  # epoch where LR reaches lr_min (default: num_epochs)
 
@@ -295,6 +296,10 @@ class TrainingConfig:
         if self.grad_clip < 0:
             raise ValueError(
                 f"grad_clip must be >= 0 (0 disables), got {self.grad_clip}"
+            )
+        if self.warmup_epochs < 0:
+            raise ValueError(
+                f"warmup_epochs must be >= 0, got {self.warmup_epochs}"
             )
 
         # Training fields

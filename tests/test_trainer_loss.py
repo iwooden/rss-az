@@ -42,7 +42,7 @@ def test_train_step_value_loss_uses_mean_over_player_dimension() -> None:
         batch_size=1,
         num_epochs=1,
         training_steps_per_epoch=1,
-        warmup_steps=0,
+        warmup_epochs=0,
         learning_rate=1e-3,
         policy_loss_weight=0.0,
         value_loss_weight=1.0,

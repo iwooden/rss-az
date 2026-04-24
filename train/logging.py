@@ -232,7 +232,7 @@ class TrainingLogger:
         decay_end = config.lr_decay_end_epoch or config.num_epochs
         lr_desc = (
             f"{config.learning_rate:.1e} \u2192 {config.lr_min:.1e} "
-            f"(decay to epoch {decay_end})"
+            f"(warmup {config.warmup_epochs:g} epochs, decay to epoch {decay_end})"
         )
         table.add_row("Optimizer", config.optimizer.upper())
         table.add_row("LR", lr_desc)
