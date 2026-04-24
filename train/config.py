@@ -303,6 +303,13 @@ class TrainingConfig:
             )
 
         # Training fields
+        if self.batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {self.batch_size}")
+        if self.training_steps_per_epoch < 1:
+            raise ValueError(
+                f"training_steps_per_epoch must be >= 1, "
+                f"got {self.training_steps_per_epoch}"
+            )
         if self.num_workers < 0:
             raise ValueError(f"num_workers must be >= 0, got {self.num_workers}")
         if self.num_eval_servers < 1:

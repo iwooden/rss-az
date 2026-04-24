@@ -246,6 +246,20 @@ def _apply_overrides(
             setattr(config, field, val)
 
 
+def _scaled_training_steps(config: TrainingConfig, buffer_size: int) -> int:
+    """Scale per-epoch training updates by replay-buffer fullness.
+
+    Early epochs have less data diversity in replay. Scale the configured
+    update budget by the occupied fraction of the buffer so, for example,
+    100k rows in a 500k buffer runs 20% of the configured steps.
+    """
+    if buffer_size < config.min_buffer_size or config.training_steps_per_epoch < 1:
+        return 0
+    capped_size = min(max(buffer_size, 0), config.buffer_capacity)
+    scaled = config.training_steps_per_epoch * capped_size // config.buffer_capacity
+    return max(1, scaled)
+
+
 def _capture_rng_state(master_rng: np.random.Generator) -> dict[str, object]:
     """Capture all RNG states for checkpoint reproducibility."""
     state: dict[str, object] = {
@@ -811,15 +825,16 @@ def main() -> None:
                     games_collected >= config.games_per_epoch
                     and len(buffer) >= config.min_buffer_size
                 ):
-                    # Met quota — run full training phase before exiting
+                    # Met quota — run scaled training phase before exiting
                     print("Game quota met — running training before shutdown...")
                     model.train()
                     shutdown_losses: dict[str, list[float]] = defaultdict(list)
+                    training_steps = _scaled_training_steps(config, len(buffer))
                     logger.begin_training(
                         epoch_num, config.num_epochs,
-                        config.training_steps_per_epoch,
+                        training_steps,
                     )
-                    for step in range(config.training_steps_per_epoch):
+                    for step in range(training_steps):
                         losses = trainer.train_step(
                             buffer, config.batch_size, master_rng,
                         )
@@ -951,15 +966,18 @@ def main() -> None:
                 logger.log_scalars(epoch_num, profile_scalars)
 
             # --- Phase 2: Training ---
+            training_steps_done = 0
             if len(buffer) >= config.min_buffer_size:
                 model.train()
                 epoch_losses: dict[str, list[float]] = defaultdict(list)
+                training_steps = _scaled_training_steps(config, len(buffer))
+                training_steps_done = training_steps
 
                 logger.begin_training(
-                    epoch_num, config.num_epochs, config.training_steps_per_epoch
+                    epoch_num, config.num_epochs, training_steps
                 )
 
-                for step in range(config.training_steps_per_epoch):
+                for step in range(training_steps):
                     # train_step samples directly into pinned host scratch
                     # and raises on NaN in policy / value targets.
                     losses = trainer.train_step(
@@ -991,6 +1009,7 @@ def main() -> None:
                     "epoch/total_loss_avg": avg_losses["total_loss"],
                     "epoch/policy_loss_avg": avg_losses["policy_loss"],
                     "epoch/value_loss_avg": avg_losses["value_loss"],
+                    "epoch/training_steps": float(training_steps_done),
                 }
                 for k, v in avg_losses.items():
                     if k.startswith("policy_loss_"):
@@ -1044,7 +1063,7 @@ def main() -> None:
                     "avg_companies_per_player": avg_companies,
                 },
                 train_stats={
-                    "steps": float(config.training_steps_per_epoch) if avg_losses else 0.0,
+                    "steps": float(training_steps_done) if avg_losses else 0.0,
                     "lr": trainer.lr,
                     **avg_losses,
                 },
