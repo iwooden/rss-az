@@ -279,48 +279,91 @@ def test_active_entity_refs_broadcast_to_phase_tokens_and_pass_anchors(
     x_active[:, model._corp_slice.start + active_corp, 0] = 1.0
     x_active[:, model._player_slice.start + active_player, 0] = 1.0
 
-    without_active = model._project_tokens(x)
-    with_active = model._project_tokens(x_active)
-    delta = with_active - without_active
-
     active_company_ref = model.company_id_embed.weight[active_company]
     active_corp_ref = model.corp_id_embed.weight[active_corp]
     active_player_ref = model.player_id_embed.weight[active_player]
-    all_refs = active_company_ref + active_corp_ref + active_player_ref
+    assert tuple(model.active_player_gate.shape) == (cfg.d_model,)
+    assert tuple(model.active_corp_gate.shape) == (cfg.d_model,)
+    assert tuple(model.active_company_gate.shape) == (cfg.d_model,)
 
-    assert torch.allclose(delta[0, model._market_info_idx], torch.zeros_like(all_refs))
-    assert torch.allclose(delta[0, model._global_info_idx], torch.zeros_like(all_refs))
-    assert torch.allclose(delta[0, model._fi_idx], torch.zeros_like(all_refs))
-    assert torch.allclose(delta[0, model._invest_idx], all_refs)
-    assert torch.allclose(delta[0, model._acq_price_info_idx], all_refs)
-    assert torch.allclose(delta[0, model._pass_idxs[0]], all_refs)
-
-    inactive_company_idx = model._company_slice.start + 1
-    assert torch.allclose(
-        delta[0, inactive_company_idx],
-        torch.zeros_like(all_refs),
+    original_player_gate = model.active_player_gate.detach().clone()
+    original_corp_gate = model.active_corp_gate.detach().clone()
+    original_company_gate = model.active_company_gate.detach().clone()
+    player_gate = torch.linspace(
+        0.5,
+        1.5,
+        cfg.d_model,
+        dtype=model.active_player_gate.dtype,
+        device=model.active_player_gate.device,
     )
-    active_company_idx = model._company_slice.start + active_company
-    expected_active_company_delta = model.company_proj.weight[:, 0]
-    assert torch.allclose(delta[0, active_company_idx], expected_active_company_delta)
-
-    inactive_corp_idx = model._corp_slice.start
-    assert torch.allclose(
-        delta[0, inactive_corp_idx],
-        torch.zeros_like(all_refs),
+    corp_gate = torch.linspace(
+        1.5,
+        0.5,
+        cfg.d_model,
+        dtype=model.active_corp_gate.dtype,
+        device=model.active_corp_gate.device,
     )
-    active_corp_idx = model._corp_slice.start + active_corp
-    expected_active_corp_delta = model.corp_proj.weight[:, 0]
-    assert torch.allclose(delta[0, active_corp_idx], expected_active_corp_delta)
-
-    inactive_player_idx = model._player_slice.start
-    assert torch.allclose(
-        delta[0, inactive_player_idx],
-        torch.zeros_like(all_refs),
+    company_gate = torch.linspace(
+        0.75,
+        1.25,
+        cfg.d_model,
+        dtype=model.active_company_gate.dtype,
+        device=model.active_company_gate.device,
     )
-    active_player_idx = model._player_slice.start + active_player
-    expected_active_player_delta = model.player_proj.weight[:, 0]
-    assert torch.allclose(delta[0, active_player_idx], expected_active_player_delta)
+    with torch.no_grad():
+        model.active_player_gate.copy_(player_gate)
+        model.active_corp_gate.copy_(corp_gate)
+        model.active_company_gate.copy_(company_gate)
+
+    try:
+        without_active = model._project_tokens(x)
+        with_active = model._project_tokens(x_active)
+        delta = with_active - without_active
+
+        all_refs = (
+            active_player_ref * player_gate
+            + active_corp_ref * corp_gate
+            + active_company_ref * company_gate
+        )
+
+        assert torch.allclose(delta[0, model._market_info_idx], torch.zeros_like(all_refs))
+        assert torch.allclose(delta[0, model._global_info_idx], torch.zeros_like(all_refs))
+        assert torch.allclose(delta[0, model._fi_idx], torch.zeros_like(all_refs))
+        assert torch.allclose(delta[0, model._invest_idx], all_refs)
+        assert torch.allclose(delta[0, model._acq_price_info_idx], all_refs)
+        assert torch.allclose(delta[0, model._pass_idxs[0]], all_refs)
+
+        inactive_company_idx = model._company_slice.start + 1
+        assert torch.allclose(
+            delta[0, inactive_company_idx],
+            torch.zeros_like(all_refs),
+        )
+        active_company_idx = model._company_slice.start + active_company
+        expected_active_company_delta = model.company_proj.weight[:, 0]
+        assert torch.allclose(delta[0, active_company_idx], expected_active_company_delta)
+
+        inactive_corp_idx = model._corp_slice.start
+        assert torch.allclose(
+            delta[0, inactive_corp_idx],
+            torch.zeros_like(all_refs),
+        )
+        active_corp_idx = model._corp_slice.start + active_corp
+        expected_active_corp_delta = model.corp_proj.weight[:, 0]
+        assert torch.allclose(delta[0, active_corp_idx], expected_active_corp_delta)
+
+        inactive_player_idx = model._player_slice.start
+        assert torch.allclose(
+            delta[0, inactive_player_idx],
+            torch.zeros_like(all_refs),
+        )
+        active_player_idx = model._player_slice.start + active_player
+        expected_active_player_delta = model.player_proj.weight[:, 0]
+        assert torch.allclose(delta[0, active_player_idx], expected_active_player_delta)
+    finally:
+        with torch.no_grad():
+            model.active_player_gate.copy_(original_player_gate)
+            model.active_corp_gate.copy_(original_corp_gate)
+            model.active_company_gate.copy_(original_company_gate)
 
 
 def test_phase_ref_broadcasts_to_all_but_global_info(model: RSSTransformerNet) -> None:

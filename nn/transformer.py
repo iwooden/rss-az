@@ -410,6 +410,9 @@ class RSSTransformerNet(nn.Module):
         self.company_owned_by_gate = nn.Parameter(torch.empty(d))
         self.corp_president_gate = nn.Parameter(torch.empty(d))
         self.share_ownership_gate = nn.Parameter(torch.empty(d))
+        self.active_player_gate = nn.Parameter(torch.empty(d))
+        self.active_corp_gate = nn.Parameter(torch.empty(d))
+        self.active_company_gate = nn.Parameter(torch.empty(d))
         # Per-type additive embedding for every non-pass token. Added
         # post-projection in ``_project_tokens`` so the trunk still sees a
         # type-distinct vector even when a token's feature slice is all-zero
@@ -733,9 +736,9 @@ class RSSTransformerNet(nn.Module):
         """Broadcast active entity refs to phase/query tokens and pass anchors."""
         dtype = tokens.dtype
         active_ref = (
-            active_player_ref.to(dtype)
-            + active_corp_ref.to(dtype)
-            + active_company_ref.to(dtype)
+            active_player_ref.to(dtype) * self.active_player_gate.to(dtype)
+            + active_corp_ref.to(dtype) * self.active_corp_gate.to(dtype)
+            + active_company_ref.to(dtype) * self.active_company_gate.to(dtype)
         )
         return tokens + (
             active_ref[:, None, :]
@@ -1126,6 +1129,9 @@ class RSSTransformerNet(nn.Module):
         nn.init.ones_(self.company_owned_by_gate)
         nn.init.ones_(self.corp_president_gate)
         nn.init.ones_(self.share_ownership_gate)
+        nn.init.ones_(self.active_player_gate)
+        nn.init.ones_(self.active_corp_gate)
+        nn.init.ones_(self.active_company_gate)
         # Per-type additive embeddings: same small-random init.
         nn.init.trunc_normal_(self.type_embeds, std=0.02)
 
@@ -1175,6 +1181,9 @@ if __name__ == "__main__":
         + model.company_owned_by_gate.numel()
         + model.corp_president_gate.numel()
         + model.share_ownership_gate.numel()
+        + model.active_player_gate.numel()
+        + model.active_corp_gate.numel()
+        + model.active_company_gate.numel()
     )
     pass_params = model.pass_embeds.numel()
     type_params = model.type_embeds.numel()
