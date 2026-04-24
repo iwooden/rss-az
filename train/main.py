@@ -554,7 +554,7 @@ def main() -> None:
             f"to compile..."
         )
         for server in eval_servers:
-            if not server.wait_ready(timeout=300.0):
+            if not server.wait_ready(timeout=1200.0):
                 raise RuntimeError(
                     "Eval server did not become ready within 300s — "
                     "compilation may have failed (check stderr)"
