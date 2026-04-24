@@ -130,8 +130,11 @@ def test_corp_projection_uses_shared_relation_embeddings(model: RSSTransformerNe
 
     expected_delta = (
         model.player_id_embed.weight[president_indices]
-        + owned_company_bitmap.to(model.company_id_embed.weight.dtype)
-        @ model.company_id_embed.weight
+        + (
+            owned_company_bitmap.to(model.company_id_embed.weight.dtype)
+            @ model.company_id_embed.weight
+        )
+        / owned_company_bitmap.sum(dim=-1, keepdim=True).sqrt()
     ).unsqueeze(0)
     assert torch.allclose(actual_delta, expected_delta)
 
