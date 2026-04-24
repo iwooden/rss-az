@@ -54,6 +54,7 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Number of players (default: 3)")
     parser.add_argument("--games-per-epoch", type=int)
     parser.add_argument("--num-epochs", type=int)
+    parser.add_argument("--training-steps-per-epoch", type=int)
     parser.add_argument("--num-simulations", type=int)
     parser.add_argument("--mcts-sims-start", type=int,
                         help="Sim count at ramp start epoch (enables linear ramp)")
@@ -154,7 +155,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 _CLI_FIELDS = (
     "num_players", "eval_dtype",
-    "games_per_epoch", "num_epochs", "num_simulations", "search_batch_size",
+    "games_per_epoch", "num_epochs", "training_steps_per_epoch",
+    "num_simulations", "search_batch_size",
     "mcts_sims_start", "mcts_sims_end", "mcts_ramp_start_epoch", "mcts_ramp_end_epoch",
     "num_workers", "num_eval_servers",
     "eval_min_batch_size", "eval_min_batch_timeout_ms",

@@ -2,6 +2,7 @@
   "num_players": 3,
   "games_per_epoch": 500,
   "num_epochs": 500,
+  "training_steps_per_epoch": 2000,
   "num_simulations": 800,
   "search_batch_size": 8,
   "num_workers": 128,
