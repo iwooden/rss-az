@@ -200,8 +200,11 @@ def test_player_projection_uses_shared_relation_embeddings(model: RSSTransformer
     expected_delta = (
         owned_shares.to(model.corp_id_embed.weight.dtype)
         @ model.corp_id_embed.weight
-        + owned_company_bitmap.to(model.company_id_embed.weight.dtype)
-        @ model.company_id_embed.weight
+        + (
+            owned_company_bitmap.to(model.company_id_embed.weight.dtype)
+            @ model.company_id_embed.weight
+        )
+        / owned_company_bitmap.sum(dim=-1, keepdim=True).sqrt()
     ).unsqueeze(0)
     assert torch.allclose(actual_delta, expected_delta)
 
@@ -372,7 +375,8 @@ def test_fi_projection_uses_owned_company_embeddings(model: RSSTransformerNet) -
     expected_delta = (
         owned_company_bitmap.to(model.company_id_embed.weight.dtype)
         @ model.company_id_embed.weight
-    ).unsqueeze(0)
+    ) / owned_company_bitmap.sum(dim=-1, keepdim=True).sqrt()
+    expected_delta = expected_delta.unsqueeze(0)
     assert torch.allclose(actual_delta, expected_delta)
 
 

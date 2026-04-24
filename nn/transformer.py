@@ -623,6 +623,10 @@ class RSSTransformerNet(nn.Module):
             owned_company_bitmap.to(self.company_id_embed.weight.dtype)
             @ self.company_id_embed.weight
         )
+        owned_company_count = owned_company_bitmap.sum(dim=-1, keepdim=True).clamp_min(1.0)
+        owned_company_refs = owned_company_refs / owned_company_count.sqrt().to(
+            owned_company_refs.dtype
+        )
         return fi_token + owned_company_refs.to(fi_token.dtype)
 
     def _project_global_info_token(self, x: torch.Tensor) -> torch.Tensor:
@@ -662,6 +666,10 @@ class RSSTransformerNet(nn.Module):
         owned_company_refs = (
             owned_company_bitmap.to(self.company_id_embed.weight.dtype)
             @ self.company_id_embed.weight
+        )
+        owned_company_count = owned_company_bitmap.sum(dim=-1, keepdim=True).clamp_min(1.0)
+        owned_company_refs = owned_company_refs / owned_company_count.sqrt().to(
+            owned_company_refs.dtype
         )
 
         return (
