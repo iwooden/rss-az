@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import numpy as np
 import pytest
 import torch
 
+from core.actions import get_decision_phase_py
 from nn.transformer import (
     NUM_PASS_PHASES,
     NUM_SYNTHETIC_TOKENS,
@@ -12,12 +16,17 @@ from nn.transformer import (
     TransformerConfig,
     build_action_lut,
 )
-from core.data import GameConstants, PHASE_ACTION_SIZES
-from core.token_data import TokenWidth
+from core.data import DecisionPhase, GameConstants, PHASE_ACTION_SIZES
+from core.state import GameState
+from core.token_data import TokenDataSize, TokenWidth, get_num_tokens, get_token_data
+from entities.company import COMPANIES, CompanyLocation
+from entities.corp import CORPS
+from entities.turn import TURN
 
 
 NUM_PLAYERS = 3
 U_DIM = int(UNIFIED_LOGIT_DIM)
+STATES_NPZ = Path(__file__).with_name("states.npz")
 
 
 @pytest.fixture(scope="module")
@@ -36,6 +45,26 @@ def valid_inputs(model: RSSTransformerNet) -> tuple[torch.Tensor, torch.Tensor]:
     legal_mask[0, lut[0, : int(PHASE_ACTION_SIZES[0])]] = True
     legal_mask[1, lut[1, : int(PHASE_ACTION_SIZES[1])]] = True
     return x, legal_mask
+
+
+@pytest.fixture(scope="module")
+def attention_mask_model() -> RSSTransformerNet:
+    torch.manual_seed(123)
+    model = RSSTransformerNet(
+        TransformerConfig(
+            num_players=NUM_PLAYERS,
+            d_model=48,
+            num_heads=3,
+            num_layers=2,
+            ff_mult=2.0,
+        )
+    ).to(torch.device("cpu"))
+    with torch.no_grad():
+        for block in model.blocks:
+            torch.nn.init.trunc_normal_(block.out_proj.weight, std=0.02)
+            torch.nn.init.trunc_normal_(block.ffn_down.weight, std=0.02)
+    model.eval()
+    return model
 
 
 def test_forward_rejects_wrong_legal_mask_shape(model: RSSTransformerNet, valid_inputs: tuple[torch.Tensor, torch.Tensor]) -> None:
@@ -121,6 +150,213 @@ def test_attention_mask_combines_input_rows_and_pass_anchors(
         expected_pass_mask,
     )
     assert flat_mask[:, -NUM_SYNTHETIC_TOKENS:].all()
+
+
+def _phase_state_cases() -> list[tuple[str, np.ndarray]]:
+    with np.load(STATES_NPZ, allow_pickle=False) as data:
+        assert int(data["num_players"]) == NUM_PLAYERS
+        phase_names = [str(name) for name in data["phase_names"].tolist()]
+        states = [state.copy() for state in data["states"]]
+    return list(zip(phase_names, states, strict=True))
+
+
+def _token_buffer_for_state(state: GameState) -> torch.Tensor:
+    num_tokens = get_num_tokens(NUM_PLAYERS)
+    buf = np.zeros(
+        (num_tokens, int(TokenDataSize.TOKEN_DIM)),
+        dtype=np.float32,
+    )
+    get_token_data(state, buf)
+    return torch.from_numpy(buf).unsqueeze(0)
+
+
+def _token_labels(model: RSSTransformerNet) -> list[str]:
+    labels = [""] * (
+        model.cfg.num_tokens + NUM_PASS_PHASES + NUM_SYNTHETIC_TOKENS
+    )
+    labels[model._market_info_idx] = "MarketInfo"
+    for cid in range(int(GameConstants.NUM_COMPANIES)):
+        labels[model._company_slice.start + cid] = f"Company[{cid}]"
+    labels[model._fi_idx] = "FI"
+    labels[model._global_info_idx] = "GlobalInfo"
+    labels[model._invest_idx] = "Invest"
+    labels[model._auction_idx] = "Auction"
+    labels[model._dividend_idx] = "Dividend"
+    labels[model._issue_idx] = "Issue"
+    labels[model._par_idx] = "ParIPO"
+    labels[model._acq_offer_idx] = "AcqOffer"
+    labels[model._acq_price_info_idx] = "AcqPriceInfo"
+    for corp_id in range(int(GameConstants.NUM_CORPS)):
+        labels[model._corp_slice.start + corp_id] = f"Corp[{corp_id}]"
+    for player_id in range(NUM_PLAYERS):
+        labels[model._player_slice.start + player_id] = f"Player[{player_id}]"
+    for i, phase_id in enumerate(PASS_PHASE_IDS):
+        labels[model._pass_idxs[i]] = f"PassAnchor[{phase_id}]"
+    labels[model._removed_companies_idx] = "RemovedCompanies"
+    assert all(labels), labels
+    return labels
+
+
+def _expected_attention_mask(
+    model: RSSTransformerNet,
+    state: GameState,
+    phase_id: int,
+) -> torch.Tensor:
+    expected = torch.zeros(
+        model.cfg.num_tokens + NUM_PASS_PHASES + NUM_SYNTHETIC_TOKENS,
+        dtype=torch.bool,
+    )
+
+    expected[model._market_info_idx] = True
+    expected[model._fi_idx] = True
+    expected[model._global_info_idx] = True
+    expected[model._player_slice] = True
+    expected[model._removed_companies_idx] = True
+
+    masked_company_locations = {
+        int(CompanyLocation.LOC_DECK),
+        int(CompanyLocation.LOC_REMOVED),
+        int(CompanyLocation.LOC_EXCLUDED),
+    }
+    for cid in range(int(GameConstants.NUM_COMPANIES)):
+        loc = int(COMPANIES[cid].get_location(state))
+        expected[model._company_slice.start + cid] = loc not in masked_company_locations
+
+    active_corp = int(TURN.get_active_corp(state))
+    for corp_id in range(int(GameConstants.NUM_CORPS)):
+        active = bool(CORPS[corp_id].is_active(state))
+        if phase_id == int(DecisionPhase.DPHASE_IPO):
+            visible = True
+        elif phase_id == int(DecisionPhase.DPHASE_PAR):
+            visible = active or active_corp == corp_id
+        else:
+            visible = active
+        expected[model._corp_slice.start + corp_id] = visible
+
+    phase_token_indices: dict[int, int] = {
+        int(DecisionPhase.DPHASE_INVEST): model._invest_idx,
+        int(DecisionPhase.DPHASE_BID): model._auction_idx,
+        int(DecisionPhase.DPHASE_DIVIDENDS): model._dividend_idx,
+        int(DecisionPhase.DPHASE_ISSUE): model._issue_idx,
+        int(DecisionPhase.DPHASE_IPO): model._par_idx,
+        int(DecisionPhase.DPHASE_PAR): model._par_idx,
+        int(DecisionPhase.DPHASE_ACQ_OFFER): model._acq_offer_idx,
+        int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE): model._acq_price_info_idx,
+    }
+    phase_token_idx = phase_token_indices.get(phase_id)
+    if phase_token_idx is not None:
+        expected[phase_token_idx] = True
+
+    for i, pass_phase_id in enumerate(PASS_PHASE_IDS):
+        expected[model._pass_idxs[i]] = phase_id == int(pass_phase_id)
+
+    return expected
+
+
+def _format_mask_diff(
+    *,
+    actual: torch.Tensor,
+    expected: torch.Tensor,
+    labels: list[str],
+) -> str:
+    bad = torch.nonzero(actual != expected, as_tuple=False).flatten().tolist()
+    return ", ".join(
+        f"{idx}:{labels[idx]} actual={bool(actual[idx])} expected={bool(expected[idx])}"
+        for idx in bad
+    )
+
+
+def _run_trunk_from_projected(
+    model: RSSTransformerNet,
+    tokens: torch.Tensor,
+    attn_mask: torch.Tensor,
+) -> torch.Tensor:
+    for block in model.blocks:
+        tokens = block(tokens, attn_mask)
+    return model.final_norm(tokens)
+
+
+@pytest.mark.parametrize(("phase_name", "state_array"), _phase_state_cases())
+def test_saved_phase_states_attention_mask_matches_visibility_invariants(
+    attention_mask_model: RSSTransformerNet,
+    phase_name: str,
+    state_array: np.ndarray,
+) -> None:
+    state = GameState.from_array(state_array, NUM_PLAYERS)
+    phase_id = int(get_decision_phase_py(state))
+    x = _token_buffer_for_state(state)
+
+    actual = attention_mask_model._attention_mask(x)[0, 0, 0].cpu()
+    expected = _expected_attention_mask(attention_mask_model, state, phase_id)
+
+    assert torch.equal(actual, expected), (
+        f"{phase_name} attention mask mismatch: "
+        f"{_format_mask_diff(actual=actual, expected=expected, labels=_token_labels(attention_mask_model))}"
+    )
+
+
+@pytest.mark.parametrize(("phase_name", "state_array"), _phase_state_cases())
+def test_masked_tokens_do_not_affect_visible_trunk_outputs(
+    attention_mask_model: RSSTransformerNet,
+    phase_name: str,
+    state_array: np.ndarray,
+) -> None:
+    state = GameState.from_array(state_array, NUM_PLAYERS)
+    phase_id = int(get_decision_phase_py(state))
+    x = _token_buffer_for_state(state)
+    expected = _expected_attention_mask(attention_mask_model, state, phase_id)
+    labels = _token_labels(attention_mask_model)
+
+    with torch.no_grad():
+        projected = attention_mask_model._project_tokens(x)
+        attn_mask = attention_mask_model._attention_mask(x)
+        baseline = _run_trunk_from_projected(
+            attention_mask_model,
+            projected,
+            attn_mask,
+        )
+
+        perturb = torch.linspace(
+            -3.0,
+            3.0,
+            attention_mask_model.cfg.d_model,
+            dtype=projected.dtype,
+        ).view(1, 1, -1)
+
+        visible_indices = torch.nonzero(expected, as_tuple=False).flatten()
+        visible_probe = int(visible_indices[0])
+        visible_perturbed = projected.clone()
+        visible_perturbed[:, visible_probe:visible_probe + 1, :] += perturb
+        visible_out = _run_trunk_from_projected(
+            attention_mask_model,
+            visible_perturbed,
+            attn_mask,
+        )
+        visible_rows_except_probe = visible_indices[visible_indices != visible_probe]
+        visible_delta = (
+            visible_out[:, visible_rows_except_probe, :]
+            - baseline[:, visible_rows_except_probe, :]
+        ).abs().max()
+        assert visible_delta > 1e-5, (
+            f"{phase_name}: perturbing visible key {labels[visible_probe]} "
+            "did not affect any other visible trunk output; test model is not sensitive"
+        )
+
+        for token_idx in torch.nonzero(~expected, as_tuple=False).flatten().tolist():
+            perturbed = projected.clone()
+            perturbed[:, token_idx:token_idx + 1, :] += perturb
+            out = _run_trunk_from_projected(
+                attention_mask_model,
+                perturbed,
+                attn_mask,
+            )
+            max_visible_delta = (
+                out[:, visible_indices, :] - baseline[:, visible_indices, :]
+            ).abs().max()
+            assert max_visible_delta <= 1e-6, (
+                f"{phase_name}: masked key {token_idx}:{labels[token_idx]} "
+                f"changed visible trunk output by {float(max_visible_delta)}"
+            )
 
 
 def test_policy_layout_matches_phase_action_sizes(model: RSSTransformerNet) -> None:
