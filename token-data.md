@@ -37,8 +37,8 @@ For 3p, row indices are:
 - 46..53: Corp 0..7
 - 54..56: Player 0..2
 
-The model adds 4 learned pass anchors plus one synthetic removed-companies
-token after projection; they do not appear in the engine-side buffer.
+The model consumes exactly these engine-side rows; it does not append
+synthetic model-side tokens after projection.
 
 Each token row is zero-padded to `TOKEN_DIM = 92`, currently pinned by the
 Corp token. Per-type widths live in `TokenWidth`:
@@ -65,16 +65,8 @@ Every token type starts with:
 
 Rules:
 
-- MarketInfo, GlobalInfo, and FI tokens always set `attn_mask = 1`.
-- Emitted player tokens always set `attn_mask = 1`; only live player rows for
-  `num_players` are emitted.
-- Corp tokens set `attn_mask = 1` iff the corp is active, with two
-  exceptions: in `PHASE_IPO` every corp is visible (floated corps still
-  inform which inactive corp to float next); in `PHASE_PAR` active corps
-  plus the selected corp (`active_corp == corp_id`) are visible, while
-  inactive non-selected corps stay hidden.
-- Company tokens set `attn_mask = 1` iff location is not `LOC_DECK`,
-  `LOC_REMOVED`, or `LOC_EXCLUDED`.
+- MarketInfo, GlobalInfo, FI, company, corp, and emitted player tokens always
+  set `attn_mask = 1`; only live player rows for `num_players` are emitted.
 - Phase-specific tokens set `attn_mask = 1` only when `_fill_buffer` calls the
   matching phase helper. The PAR token is shared and sets the mask in both
   `PHASE_IPO` and `PHASE_PAR`.
@@ -190,14 +182,12 @@ Buy/sell invest impacts moved to Corp tokens.
 ### PAR / IPO Token (43)
 
 - `attn_mask`
-- Player cash required (14 slots)
-- Resulting corp cash (14 slots)
-- Resulting issued shares (14 slots), normalized by `FLOAT_SHARES_MAX`
+- 14 par-price tuples:
+  `(player_cash_required, resulting_corp_cash, resulting_issued_shares)`.
+  Issued shares are normalized by `FLOAT_SHARES_MAX`.
 
 `ipo_remaining` moved to Corp tokens. It is written for inactive corps in both
-`PHASE_IPO` and `PHASE_PAR`. In `PHASE_IPO` every corp row is attention-visible
-so the model can weigh the already-floated set; in `PHASE_PAR` only active
-corps plus the just-selected inactive corp are visible.
+`PHASE_IPO` and `PHASE_PAR`.
 
 ### AcqOffer Token (4)
 

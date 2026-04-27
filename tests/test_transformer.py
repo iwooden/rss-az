@@ -16,9 +16,6 @@ from nn.transformer import (
 from core.data import DecisionPhase, GameConstants, PHASE_ACTION_SIZES
 from core.state import GameState
 from core.token_data import TokenDataSize, TokenWidth, get_num_tokens, get_token_data
-from entities.company import COMPANIES, CompanyLocation
-from entities.corp import CORPS
-from entities.turn import TURN
 
 
 NUM_PLAYERS = 3
@@ -188,27 +185,9 @@ def _expected_attention_mask(
     expected[model._market_info_idx] = True
     expected[model._fi_idx] = True
     expected[model._global_info_idx] = True
+    expected[model._company_slice] = True
+    expected[model._corp_slice] = True
     expected[model._player_slice] = True
-
-    masked_company_locations = {
-        int(CompanyLocation.LOC_DECK),
-        int(CompanyLocation.LOC_REMOVED),
-        int(CompanyLocation.LOC_EXCLUDED),
-    }
-    for cid in range(int(GameConstants.NUM_COMPANIES)):
-        loc = int(COMPANIES[cid].get_location(state))
-        expected[model._company_slice.start + cid] = loc not in masked_company_locations
-
-    active_corp = int(TURN.get_active_corp(state))
-    for corp_id in range(int(GameConstants.NUM_CORPS)):
-        active = bool(CORPS[corp_id].is_active(state))
-        if phase_id == int(DecisionPhase.DPHASE_IPO):
-            visible = True
-        elif phase_id == int(DecisionPhase.DPHASE_PAR):
-            visible = active or active_corp == corp_id
-        else:
-            visible = active
-        expected[model._corp_slice.start + corp_id] = visible
 
     phase_token_indices: dict[int, int] = {
         int(DecisionPhase.DPHASE_INVEST): model._invest_idx,

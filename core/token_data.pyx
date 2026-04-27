@@ -14,15 +14,11 @@ Token order (matches ``nn/transformer.py``):
      invest, auction, dividend, issue, par,
      acq_offer, acq_price_info,
     # Corp tokens, then player tokens — players last so the buffer can be padded
-    # for higher player counts later with the extra rows masked out in attention.
+    # for higher player counts later without reshuffling the fixed prefix.
      corps..., players...]
 
-Total tokens in the buffer = num_players + 54. The model concatenates 4
-learned pass-token anchors (INVEST, ACQ_SELECT_CORP, CLOSING, IPO) plus
-one synthetic removed-companies token to the projected trunk sequence
-internally. BID, ACQ_OFFER, and ISSUE read their pass logits from
-phase-specific information tokens, so the input buffer still carries no
-pass rows.
+Total tokens in the buffer = num_players + 54. The model consumes exactly
+these engine-side rows; no synthetic model-side tokens are appended.
 
 Active-entity selectors (active_player / active_corp / active_company
 in TURN_OFFSETS) are surfaced as ``is_selected`` scalar flags on each
@@ -32,7 +28,9 @@ Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 92 = max width,
 currently pinned by the Corp token):
 
   Every token starts with attn_mask (1), a 0/1 scalar that marks whether
-                the token should be visible to model attention.
+                the token should be visible to model attention. Entity rows,
+                MarketInfo, FI, and GlobalInfo are always visible; phase
+                information rows are visible only in their matching phase.
 
   Player (59):  attn_mask (1) + is_selected (1) + turn_order onehot (5) +
                 has_passed (1) +
@@ -87,9 +85,9 @@ currently pinned by the Corp token):
   Auction  (4): attn_mask (1) + min_bid_index + min_bid_value + is_first_bid
   Divd    (27): attn_mask (1) + dividend_impacts (26)
   Issue    (2): attn_mask (1) + issue_impact
-  PAR     (43): attn_mask (1) + player_cash_required (14) +
-                resulting_corp_cash (14) +
-                resulting_issued_shares (14). Filled
+  PAR     (43): attn_mask (1) + 14 price tuples, each containing
+                player_cash_required, resulting_corp_cash, and
+                resulting_issued_shares. Filled
                 during both PHASE_IPO and PHASE_PAR — the data is
                 identical across those two phases.
   AcqOff   (4): attn_mask (1) + offer_price_index + offer_price + fi_company
@@ -209,10 +207,7 @@ DEF CONSECUTIVE_PASSES_DIVISOR = 5.0
 cpdef int get_num_tokens(int num_players) noexcept nogil:
     """Input-buffer token count for the given player count (num_players + 54).
 
-    The model-side trunk is wider by the learned pass anchors plus synthetic
-    removed-companies token concatenated inside
-    ``RSSTransformerNet._project_tokens``. Those rows have no input-buffer
-    features, so the engine-side buffer doesn't carry them.
+    The model consumes exactly this many engine-side token rows.
     """
     return num_players + 54
 
@@ -454,10 +449,8 @@ cdef void _fill_player_token(
     int player_id,
     int num_players,
 ) noexcept nogil:
-    # Feature offsets within the player token. ``OFF_IS_SELECTED`` is
-    # set iff this player is the current active_player selector. Identity is
-    # inferred from row order and added by the model as ``player_id_embed``.
-    # Relational fields are grouped at the end for model-side replacement.
+    # Feature offsets within the player token. ``OFF_IS_SELECTED`` is set iff
+    # this player is the current active_player selector.
     cdef int OFF_ATTN_MASK    = 0
     cdef int OFF_IS_SELECTED  = 1
     cdef int OFF_TURN_ORDER   = 2    # 5 slots
@@ -610,18 +603,9 @@ cdef void _fill_corp_token(
     assert -1 <= active_corp < NUM_CORPS, \
         f"_fill_corp_token: active_corp {active_corp} out of [-1, {NUM_CORPS})"
 
-    # attn_mask gates which corp rows the model attends to.
-    #   IPO:   every corp — floated corps still inform which inactive corp to float
-    #   PAR:   active corps plus the selected (just-IPO'd) corp; inactive
-    #          non-selected corps stay hidden since they're irrelevant to par choice
-    #   else:  active corps only
-    if phase == <int>GamePhases.PHASE_IPO:
-        buffer[tok, OFF_ATTN_MASK] = 1.0
-    elif phase == <int>GamePhases.PHASE_PAR:
-        if active or active_corp == corp_id:
-            buffer[tok, OFF_ATTN_MASK] = 1.0
-    elif active:
-        buffer[tok, OFF_ATTN_MASK] = 1.0
+    # Entity tokens are always visible to model attention. Lifecycle state is
+    # carried separately by OFF_ACTIVE and the other feature fields.
+    buffer[tok, OFF_ATTN_MASK] = 1.0
 
     buffer[tok, OFF_ACTIVE] = 1.0 if active else 0.0
 
@@ -710,10 +694,9 @@ cdef void _fill_company_token(
     int company_id,
     int num_players,
 ) noexcept nogil:
-    # Feature offsets within the company token. Company identity is inferred
-    # from row order and added by the model as ``company_id_embed``. Static
-    # game-setup data plus non-relational dynamic fields come first; the
-    # mutually-exclusive ownership groups form a relational tail.
+    # Feature offsets within the company token. Static game-setup data plus
+    # non-relational dynamic fields come first; the mutually-exclusive
+    # ownership groups form a relational tail.
     cdef int OFF_ATTN_MASK      = 0
     cdef int OFF_IS_SELECTED    = 1
     cdef int OFF_LOW_PRICE      = 2
@@ -733,8 +716,7 @@ cdef void _fill_company_token(
     cdef int OFF_OWNER_FI       = 27
 
     cdef int loc = company_location(state, company_id)
-    if loc != <int>LOC_DECK and loc != <int>LOC_REMOVED and loc != <int>LOC_EXCLUDED:
-        buffer[tok, OFF_ATTN_MASK] = 1.0
+    buffer[tok, OFF_ATTN_MASK] = 1.0
 
     # Static data
     buffer[tok, OFF_LOW_PRICE] = <float>COMPANY_LOW_PRICE[company_id] / COMPANY_PRICE_DIVISOR
