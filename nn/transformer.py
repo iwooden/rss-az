@@ -27,6 +27,7 @@ from core.data import (
     GameConstants,
     PHASE_ACTION_SIZES,
     DecisionPhase,
+    PY_COMPANY_PRICE_DIVISOR,
 )
 from core.token_data import TokenDataSize, TokenWidth, get_token_widths
 
@@ -80,6 +81,9 @@ _GELU_APPROX = "tanh"
 _NUM_CORPS = int(GameConstants.NUM_CORPS)
 _TOKEN_FEATURE_START = 1
 _IS_SELECTED_OFFSET = 1
+# Offset inside a company feature slice after the attention-mask slot is dropped.
+_COMPANY_LOW_PRICE_FEATURE_OFFSET = 1
+
 
 def _phase_action_size(phase: DecisionPhase) -> int:
     return int(PHASE_ACTION_SIZES[int(phase)])
@@ -265,6 +269,7 @@ class RSSTransformerNet(nn.Module):
     _bid_offset_features: torch.Tensor
     _dividend_amount_features: torch.Tensor
     _par_index_features: torch.Tensor
+    _acq_price_offset_features: torch.Tensor
 
     def __init__(self, cfg: TransformerConfig) -> None:
         super().__init__()
@@ -436,6 +441,23 @@ class RSSTransformerNet(nn.Module):
             par_index_features,
             persistent=False,
         )
+        acq_price_offsets = torch.arange(
+            _phase_action_size(DecisionPhase.DPHASE_ACQ_SELECT_PRICE),
+            dtype=torch.float32,
+        ).view(1, _phase_action_size(DecisionPhase.DPHASE_ACQ_SELECT_PRICE), 1)
+        acq_price_offset_features = torch.cat(
+            [
+                (acq_price_offsets + 1.0)
+                / float(_phase_action_size(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)),
+                acq_price_offsets / float(PY_COMPANY_PRICE_DIVISOR),
+            ],
+            dim=-1,
+        )
+        self.register_buffer(
+            "_acq_price_offset_features",
+            acq_price_offset_features,
+            persistent=False,
+        )
 
         # --- Transformer trunk ---
         self.blocks = nn.ModuleList([
@@ -507,14 +529,16 @@ class RSSTransformerNet(nn.Module):
         # ACQ is factored into three sequential single-entity selections:
         # pick the acquiring corp, pick the target company
         # (``_acq_select_company_logits``), pick the price (below).
-        # SELECT_PRICE: 51 price offsets, read off a dedicated acq_price_info
-        # token that the engine populates with (active_corp, active_company)
-        # context during PHASE_ACQ_SELECT_PRICE. FI targets execute in
-        # SELECT_COMPANY at the fixed FI price, so this head never fires for
-        # them.
-        self.price_acq_head = self._make_policy_head(
-            _phase_action_size(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)
+        # SELECT_PRICE is actor-conditioned with generated price-offset keys.
+        # The key context includes the active company and ACQ price info token;
+        # per-offset features include the candidate price and target range.
+        self.acq_price_actor_proj = nn.Linear(d, dp, bias=False)
+        self.acq_price_info_proj = nn.Linear(2 * d, dp)
+        self.acq_price_offset_embed = nn.Embedding(
+            _phase_action_size(DecisionPhase.DPHASE_ACQ_SELECT_PRICE),
+            dp,
         )
+        self.acq_price_key_mlp = self._make_action_key_mlp(action_feature_width=5)
 
         # PAR is actor-conditioned with generated par-price keys. The key
         # context includes the active corp/company and the PAR info token; the
@@ -733,7 +757,7 @@ class RSSTransformerNet(nn.Module):
         )
         block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_COMPANY)] = num_companies
         block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)] = (
-            self._policy_head_width(self.price_acq_head)
+            self.acq_price_offset_embed.num_embeddings
         )
 
         expected = [int(size) for size in PHASE_ACTION_SIZES]
@@ -1036,6 +1060,74 @@ class RSSTransformerNet(nn.Module):
             self.par_key_mlp,
         )
 
+    def _acq_price_logits(self, ctx: _PolicyContext) -> torch.Tensor:
+        """Build ACQ_SELECT_PRICE logits from active-corp query and offset keys."""
+        batch_size = ctx.tokens.shape[0]
+        num_offsets = self.acq_price_offset_embed.num_embeddings
+        offset_features = self._acq_price_offset_features.to(
+            dtype=ctx.tokens.dtype,
+            device=ctx.tokens.device,
+        ).expand(batch_size, num_offsets, 2)
+        offset_count_norm = offset_features[:, :, 0:1]
+        offset_price_delta = offset_features[:, :, 1:2]
+
+        raw_acq_price = ctx.raw_tokens[
+            :,
+            self._acq_price_info_idx,
+            self._token_feature_start:int(TokenWidth.TW_ACQ_PRICE),
+        ].to(ctx.tokens.dtype)
+        max_offset = raw_acq_price[:, 0:1].unsqueeze(1).expand_as(offset_count_norm)
+        fi_flag = raw_acq_price[:, 1:2].unsqueeze(1).expand_as(offset_count_norm)
+        total_synergies = (
+            raw_acq_price[:, 2:3].unsqueeze(1).expand_as(offset_count_norm)
+        )
+
+        raw_company_features = ctx.raw_tokens[
+            :,
+            self._company_slice,
+            self._token_feature_start:int(TokenWidth.TW_COMPANY),
+        ].to(ctx.tokens.dtype)
+        active_company_selector = ctx.raw_tokens[
+            :,
+            self._company_slice,
+            self._is_selected_offset,
+        ].to(ctx.tokens.dtype)
+        active_company_raw = torch.bmm(
+            active_company_selector.unsqueeze(1),
+            raw_company_features,
+        ).squeeze(1)
+        low_price = active_company_raw[
+            :,
+            _COMPANY_LOW_PRICE_FEATURE_OFFSET:_COMPANY_LOW_PRICE_FEATURE_OFFSET + 1,
+        ]
+        candidate_price = (
+            low_price.unsqueeze(1).expand_as(offset_count_norm) + offset_price_delta
+        )
+        remaining_after_offset = max_offset - offset_count_norm
+        action_features = torch.cat(
+            [
+                remaining_after_offset,
+                candidate_price,
+                max_offset,
+                fi_flag,
+                total_synergies,
+            ],
+            dim=-1,
+        )
+        acq_price_context = torch.cat(
+            [ctx.tokens[:, self._acq_price_info_idx], ctx.active_company],
+            dim=-1,
+        )
+        return self._actor_action_key_logits(
+            ctx.active_corp,
+            acq_price_context,
+            action_features,
+            self.acq_price_actor_proj,
+            self.acq_price_info_proj,
+            self.acq_price_offset_embed,
+            self.acq_price_key_mlp,
+        )
+
     # ------------------------------------------------------------------
     # Unified policy: every head runs once on the full batch
     # ------------------------------------------------------------------
@@ -1078,7 +1170,7 @@ class RSSTransformerNet(nn.Module):
         # ACQ_SELECT_COMPANY: 36 companies (no pass).
         acq_select_company = self._acq_select_company_logits(ctx)                # (B, 36)
         # ACQ_SELECT_PRICE: 51 price offsets (no pass).
-        price_acq = self.price_acq_head(tokens[:, self._acq_price_info_idx])     # (B, 51)
+        price_acq = self._acq_price_logits(ctx)                                  # (B, 51)
 
         return torch.cat(
             [
@@ -1189,6 +1281,7 @@ class RSSTransformerNet(nn.Module):
 
         nn.init.trunc_normal_(self.corp_id_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.bid_offset_embed.weight, std=0.02)
+        nn.init.trunc_normal_(self.acq_price_offset_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.dividend_amount_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.par_price_embed.weight, std=0.02)
         # Per-type additive embeddings: same small-random init.
@@ -1233,6 +1326,7 @@ if __name__ == "__main__":
     proj_params = sum(sum(p.numel() for p in m.parameters()) for m in proj_modules)
     corp_id_params = model.corp_id_embed.weight.numel()
     bid_offset_params = model.bid_offset_embed.weight.numel()
+    acq_price_offset_params = model.acq_price_offset_embed.weight.numel()
     dividend_amount_params = model.dividend_amount_embed.weight.numel()
     par_price_params = model.par_price_embed.weight.numel()
     type_params = model.type_embeds.weight.numel()
@@ -1256,7 +1350,7 @@ if __name__ == "__main__":
         model.bid_key_mlp,
         model.dividend_actor_proj, model.dividend_info_proj, model.dividend_key_mlp,
         model.issue_head, model.acq_offer_head,
-        model.price_acq_head,
+        model.acq_price_actor_proj, model.acq_price_info_proj, model.acq_price_key_mlp,
         model.par_actor_proj, model.par_info_proj, model.par_key_mlp,
     ]
     policy_params = sum(sum(p.numel() for p in m.parameters()) for m in policy_modules)
@@ -1267,6 +1361,7 @@ if __name__ == "__main__":
         ("Input projections", proj_params),
         ("Corp ID embeds", corp_id_params),
         ("Bid offset embeds", bid_offset_params),
+        ("ACQ price offset embeds", acq_price_offset_params),
         ("Dividend amount embeds", dividend_amount_params),
         ("PAR price embeds", par_price_params),
         ("Type embeds", type_params),
