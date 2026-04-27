@@ -94,6 +94,7 @@ NUM_TOKEN_TYPES = 13
 _GELU_APPROX = "tanh"
 _NUM_CORPS = int(GameConstants.NUM_CORPS)
 _TOKEN_FEATURE_START = 1
+_IS_SELECTED_OFFSET = 1
 _GLOBAL_PHASE_OFFSET = 1
 _GLOBAL_PHASE_WIDTH = NUM_PHASES
 
@@ -153,6 +154,7 @@ class TransformerConfig:
     # Core architecture
     num_players: int = 3  # 3-5 supported
     d_model: int = 192
+    d_proj: int = 64
     num_heads: int = 3
     num_layers: int = 10
     ff_mult: float = 3.0  # FFN inner dimension = ceil(ff_mult * d_model)
@@ -164,15 +166,16 @@ class TransformerConfig:
 
     def __post_init__(self) -> None:
         assert 3 <= self.num_players <= 5, f"num_players must be 3-5, got {self.num_players}"
+        assert self.d_proj > 0, f"d_proj must be positive, got {self.d_proj}"
 
     @property
     def num_tokens(self) -> int:
         """Input-buffer token count: fixed entity/phase tokens + N players.
 
         The trunk sequence is wider because ``_project_tokens`` concatenates
-        learned pass anchors for entity-readout pass phases plus synthetic
-        tokens after projection; those rows have no input features so they
-        don't exist in the engine-side buffer.
+        learned pass anchors for entity-readout pass phases after projection;
+        those rows have no input features so they don't exist in the
+        engine-side buffer.
         """
         return self.num_players + NUM_FIXED_TOKENS
 
@@ -258,6 +261,17 @@ class TransformerBlock(nn.Module):
         return x + h
 
 
+@dataclass(frozen=True)
+class _PolicyContext:
+    tokens: torch.Tensor
+    company_tokens: torch.Tensor
+    corp_tokens: torch.Tensor
+    player_tokens: torch.Tensor
+    active_player: torch.Tensor
+    active_corp: torch.Tensor
+    active_company: torch.Tensor
+
+
 # ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
@@ -289,10 +303,9 @@ class RSSTransformerNet(nn.Module):
         #     acq_offer, acq_price_info
         #   corps×8, then players×N (trailing so padding for higher player
         #   counts is a no-op on the prefix).
-        # Learned pass anchors and synthetic tokens are concatenated after
-        # projection; see ``_project_tokens``. They live beyond the player
-        # slice, so player indices stay contiguous for the value head and the
-        # padding contract.
+        # Learned pass anchors are concatenated after projection; see
+        # ``_project_tokens``. They live beyond the player slice, so player
+        # indices stay contiguous for the value head and the padding contract.
         self._market_info_idx = 0
         self._company_slice = slice(1, 37)
         self._fi_idx = 37
@@ -331,6 +344,7 @@ class RSSTransformerNet(nn.Module):
         # Widths are pulled from ``TokenWidth`` so the model and the Cython
         # extractor can't drift out of sync.
         self._token_feature_start = _TOKEN_FEATURE_START
+        self._is_selected_offset = _IS_SELECTED_OFFSET
         self.player_proj = nn.Linear(
             int(TokenWidth.TW_PLAYER) - self._token_feature_start,
             d,
@@ -440,18 +454,28 @@ class RSSTransformerNet(nn.Module):
         self.final_norm = nn.RMSNorm(d)
 
         # --- Entity-readout policy heads ---
-        # Per-phase pass heads for entity-readout pass actions (aligned with
-        # ``PASS_PHASE_IDS`` / ``pass_embeds``). Each reads its own anchor and
-        # emits a single pass logit.
-        self.pass_heads = nn.ModuleList(
-            [self._make_policy_head(1) for _ in range(NUM_PASS_PHASES)]
+        # Invest is actor-conditioned: active-player query projections are
+        # scored against phase/action-specific company/corp key projections.
+        # The output layout stays pass, 36 companies, then interleaved
+        # buy/sell logits for the 8 corps.
+        dp = cfg.d_proj
+        self.invest_pass_head = nn.Linear(d, 1)
+        self.invest_auction_actor_proj = nn.Linear(d, dp, bias=False)
+        self.invest_auction_company_proj = nn.Linear(d, dp, bias=False)
+        self.invest_buy_actor_proj = nn.Linear(d, dp, bias=False)
+        self.invest_buy_corp_proj = nn.Linear(d, dp, bias=False)
+        self.invest_sell_actor_proj = nn.Linear(d, dp, bias=False)
+        self.invest_sell_corp_proj = nn.Linear(d, dp, bias=False)
+
+        # Per-phase pass heads for the remaining entity-readout pass actions
+        # backed by pass anchors: ACQ_SELECT_CORP, CLOSING, and IPO. INVEST
+        # reads pass from the active player token instead.
+        self.anchor_pass_heads = nn.ModuleList(
+            [self._make_policy_head(1) for _ in range(NUM_PASS_PHASES - 1)]
         )
-        # Company-selection heads: one per phase that picks a company. All
-        # three are entity-readout heads — ``Linear(d, 1)`` applied per
-        # company token (weight-shared across the 36 slots of the same phase,
-        # distinct across phases). Phase context reaches company tokens via
-        # attention on the phase-specific context tokens + global_info.
-        self.invest_company_select_head = self._make_policy_head(1)
+        # Company-selection heads: one per non-Invest phase that picks a
+        # company. These remain dense per-entity MLP heads until their phase is
+        # refactored.
         self.closing_company_select_head = self._make_policy_head(1)
         self.acq_select_company_head = self._make_policy_head(1)
         # Corp-selection heads: one per phase that picks a corp. Same
@@ -459,7 +483,6 @@ class RSSTransformerNet(nn.Module):
         # weights for ACQ_SELECT_CORP vs. IPO avoid their gradients colliding.
         self.acq_select_corp_head = self._make_policy_head(1)
         self.ipo_corp_select_head = self._make_policy_head(1)
-        self.corp_trade_head = self._make_policy_head(2)
 
         # Phase-specific context token heads. BID / ACQ_OFFER / ISSUE emit
         # full phase blocks from their phase-info tokens, including the pass
@@ -586,9 +609,11 @@ class RSSTransformerNet(nn.Module):
 
     @staticmethod
     def _policy_head_width(head: nn.Module) -> int:
+        if isinstance(head, nn.Linear):
+            return int(head.out_features)
         if not isinstance(head, nn.Sequential) or len(head) == 0:
             raise AssertionError(
-                f"policy head must be a non-empty Sequential, got {type(head)!r}"
+                f"policy head must be a Linear or non-empty Sequential, got {type(head)!r}"
             )
         last = head[-1]
         if not isinstance(last, nn.Linear):
@@ -632,33 +657,41 @@ class RSSTransformerNet(nn.Module):
                 f"invalid entity slices: companies={num_companies}, corps={num_corps}"
             )
 
-        pass_widths = [
-            self._policy_head_width(head) for head in self.pass_heads
-        ]
-        if len(pass_widths) != NUM_PASS_PHASES or any(w != 1 for w in pass_widths):
+        if self._policy_head_width(self.invest_pass_head) != 1:
             raise AssertionError(
-                f"pass heads must be {NUM_PASS_PHASES} single-logit heads; "
-                f"got widths {pass_widths}"
+                f"invest pass head must be a single-logit head; "
+                f"got width {self._policy_head_width(self.invest_pass_head)}"
+            )
+        anchor_pass_widths = [
+            self._policy_head_width(head) for head in self.anchor_pass_heads
+        ]
+        if (
+            len(anchor_pass_widths) != NUM_PASS_PHASES - 1
+            or any(w != 1 for w in anchor_pass_widths)
+        ):
+            raise AssertionError(
+                f"anchor pass heads must be {NUM_PASS_PHASES - 1} single-logit heads; "
+                f"got widths {anchor_pass_widths}"
             )
 
         block_widths = [0] * NUM_PHASES
         block_widths[int(DecisionPhase.DPHASE_INVEST)] = (
-            pass_widths[0]
-            + num_companies * self._policy_head_width(self.invest_company_select_head)
-            + num_corps * self._policy_head_width(self.corp_trade_head)
+            self._policy_head_width(self.invest_pass_head)
+            + num_companies
+            + num_corps * 2
         )
         block_widths[int(DecisionPhase.DPHASE_BID)] = self._policy_head_width(
             self.bid_head
         )
         block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_CORP)] = (
-            pass_widths[1]
+            anchor_pass_widths[0]
             + num_corps * self._policy_head_width(self.acq_select_corp_head)
         )
         block_widths[int(DecisionPhase.DPHASE_ACQ_OFFER)] = self._policy_head_width(
             self.acq_offer_head
         )
         block_widths[int(DecisionPhase.DPHASE_CLOSING)] = (
-            pass_widths[2]
+            anchor_pass_widths[1]
             + num_companies * self._policy_head_width(self.closing_company_select_head)
         )
         block_widths[int(DecisionPhase.DPHASE_DIVIDENDS)] = self._policy_head_width(
@@ -668,7 +701,7 @@ class RSSTransformerNet(nn.Module):
             self.issue_head
         )
         block_widths[int(DecisionPhase.DPHASE_IPO)] = (
-            pass_widths[3]
+            anchor_pass_widths[2]
             + num_corps * self._policy_head_width(self.ipo_corp_select_head)
         )
         block_widths[int(DecisionPhase.DPHASE_PAR)] = self._policy_head_width(
@@ -755,11 +788,77 @@ class RSSTransformerNet(nn.Module):
         )
         return torch.cat([input_tokens, pass_rows], dim=1)                               # (B, num_tokens, d)
 
+    def _active_token(
+        self,
+        x: torch.Tensor,
+        token_slice: slice,
+        token_embeddings: torch.Tensor,
+    ) -> torch.Tensor:
+        """Select the active entity embedding from a token family."""
+        selector = x[:, token_slice, self._is_selected_offset].to(token_embeddings.dtype)
+        return torch.bmm(selector.unsqueeze(1), token_embeddings).squeeze(1)
+
+    def _policy_context(self, tokens: torch.Tensor, x: torch.Tensor) -> _PolicyContext:
+        """Slice final entity tokens and compute active entity embeddings once."""
+        company_tokens = tokens[:, self._company_slice]
+        corp_tokens = tokens[:, self._corp_slice]
+        player_tokens = tokens[:, self._player_slice]
+        return _PolicyContext(
+            tokens=tokens,
+            company_tokens=company_tokens,
+            corp_tokens=corp_tokens,
+            player_tokens=player_tokens,
+            active_player=self._active_token(x, self._player_slice, player_tokens),
+            active_corp=self._active_token(x, self._corp_slice, corp_tokens),
+            active_company=self._active_token(x, self._company_slice, company_tokens),
+        )
+
+    def _actor_entity_logits(
+        self,
+        actor: torch.Tensor,
+        entities: torch.Tensor,
+        actor_proj: nn.Linear,
+        entity_proj: nn.Linear,
+    ) -> torch.Tensor:
+        """Score each entity key against an actor query using scaled dot products."""
+        query = actor_proj(actor)
+        keys = entity_proj(entities)
+        logits = torch.bmm(keys, query.unsqueeze(-1)).squeeze(-1)
+        return logits / math.sqrt(self.cfg.d_proj)
+
+    def _invest_logits(
+        self,
+        ctx: _PolicyContext,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Build the Invest block: pass, company auction, interleaved buy/sell."""
+        actor = ctx.active_player
+        pass_logit = self.invest_pass_head(actor)
+        auction_company = self._actor_entity_logits(
+            actor,
+            ctx.company_tokens,
+            self.invest_auction_actor_proj,
+            self.invest_auction_company_proj,
+        )
+        buy_corp = self._actor_entity_logits(
+            actor,
+            ctx.corp_tokens,
+            self.invest_buy_actor_proj,
+            self.invest_buy_corp_proj,
+        )
+        sell_corp = self._actor_entity_logits(
+            actor,
+            ctx.corp_tokens,
+            self.invest_sell_actor_proj,
+            self.invest_sell_corp_proj,
+        )
+        corp_trade = torch.stack((buy_corp, sell_corp), dim=-1).flatten(1)
+        return pass_logit, auction_company, corp_trade
+
     # ------------------------------------------------------------------
     # Unified policy: every head runs once on the full batch
     # ------------------------------------------------------------------
 
-    def _build_unified_logits(self, tokens: torch.Tensor) -> torch.Tensor:
+    def _build_unified_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Run every per-phase policy head once on the full batch and concat
         into a single ``(B, UNIFIED_LOGIT_DIM)`` tensor.
 
@@ -774,18 +873,19 @@ class RSSTransformerNet(nn.Module):
         """
         # Shared token reads. Multi-token entity heads stay (B, n_tokens, …)
         # and get squeezed / flattened at use site.
-        company_tokens = tokens[:, self._company_slice]                          # (B, 36, d)
-        corp_tokens = tokens[:, self._corp_slice]                                # (B, 8, d)
+        tokens = ctx.tokens
+        company_tokens = ctx.company_tokens                                      # (B, 36, d)
+        corp_tokens = ctx.corp_tokens                                            # (B, 8, d)
 
         # Pass anchors. ``self._pass_idxs[i]`` backs ``PASS_PHASE_IDS[i]``.
-        pass_invest = self.pass_heads[0](tokens[:, self._pass_idxs[0]])          # (B, 1)
-        pass_acq_select_corp = self.pass_heads[1](tokens[:, self._pass_idxs[1]]) # (B, 1)
-        pass_closing = self.pass_heads[2](tokens[:, self._pass_idxs[2]])         # (B, 1)
-        pass_ipo = self.pass_heads[3](tokens[:, self._pass_idxs[3]])             # (B, 1)
+        # INVEST pass is actor-readout now, so anchor heads start at
+        # ACQ_SELECT_CORP / ``self._pass_idxs[1]``.
+        pass_acq_select_corp = self.anchor_pass_heads[0](tokens[:, self._pass_idxs[1]]) # (B, 1)
+        pass_closing = self.anchor_pass_heads[1](tokens[:, self._pass_idxs[2]])         # (B, 1)
+        pass_ipo = self.anchor_pass_heads[2](tokens[:, self._pass_idxs[3]])             # (B, 1)
 
         # INVEST: pass + 36 company-select + 16 corp-trade (2i buy, 2i+1 sell).
-        invest_company = self.invest_company_select_head(company_tokens).squeeze(-1)   # (B, 36)
-        corp_trade = self.corp_trade_head(corp_tokens).flatten(1)                # (B, 16)
+        pass_invest, invest_company, corp_trade = self._invest_logits(ctx)
         # BID: pass + AUCTION_CAP raise offsets.
         bid = self.bid_head(tokens[:, self._auction_idx])                        # (B, 16)
         # ACQ_SELECT_CORP: pass + 8 corps.
@@ -888,7 +988,8 @@ class RSSTransformerNet(nn.Module):
         # at least one legal slot; all-false rows are reserved for caller-owned
         # scratch entries whose output will be dropped before softmax consumers
         # interpret them.
-        unified = self._build_unified_logits(tokens).to(torch.float32)          # (B, U)
+        policy_ctx = self._policy_context(tokens, x)
+        unified = self._build_unified_logits(policy_ctx).to(torch.float32)      # (B, U)
         policy_logits = unified.masked_fill(~legal_mask, -1e9)
 
         values = self.value_head(tokens[:, self._player_slice]).squeeze(-1)  # (B, N)
@@ -941,7 +1042,7 @@ if __name__ == "__main__":
     total = count_parameters(model)
 
     print(f"Transformer model: {cfg.num_players}p")
-    print(f"  d_model={cfg.d_model}, heads={cfg.num_heads}, "
+    print(f"  d_model={cfg.d_model}, d_proj={cfg.d_proj}, heads={cfg.num_heads}, "
           f"layers={cfg.num_layers}, d_ff={math.ceil(cfg.ff_mult * cfg.d_model)}")
     print(f"  tokens={cfg.num_tokens}, token_dim={cfg.token_dim}")
     print(f"  Trainable parameters: {total:,}")
@@ -964,11 +1065,15 @@ if __name__ == "__main__":
         + sum(p.numel() for p in model.final_norm.parameters())
     )
     policy_modules: list[nn.Module] = [
-        model.pass_heads,
-        model.invest_company_select_head, model.closing_company_select_head,
+        model.invest_pass_head,
+        model.invest_auction_actor_proj, model.invest_auction_company_proj,
+        model.invest_buy_actor_proj, model.invest_buy_corp_proj,
+        model.invest_sell_actor_proj, model.invest_sell_corp_proj,
+        model.anchor_pass_heads,
+        model.closing_company_select_head,
         model.acq_select_company_head,
         model.acq_select_corp_head, model.ipo_corp_select_head,
-        model.corp_trade_head, model.bid_head, model.dividend_head,
+        model.bid_head, model.dividend_head,
         model.issue_head, model.acq_offer_head,
         model.price_acq_head, model.par_price_head,
     ]
