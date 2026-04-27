@@ -263,6 +263,7 @@ class TransformerBlock(nn.Module):
 
 @dataclass(frozen=True)
 class _PolicyContext:
+    raw_tokens: torch.Tensor
     tokens: torch.Tensor
     company_tokens: torch.Tensor
     corp_tokens: torch.Tensor
@@ -490,9 +491,13 @@ class RSSTransformerNet(nn.Module):
         self.bid_head = self._make_policy_head(
             _phase_action_size(DecisionPhase.DPHASE_BID)
         )
-        self.dividend_head = self._make_policy_head(
-            _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS)
+        self.dividend_actor_proj = nn.Linear(d, dp, bias=False)
+        self.dividend_info_proj = nn.Linear(d, dp)
+        self.dividend_amount_embed = nn.Embedding(
+            _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS),
+            dp,
         )
+        self.dividend_key_mlp = self._make_action_key_mlp(action_feature_width=1)
         self.issue_head = self._make_policy_head(
             _phase_action_size(DecisionPhase.DPHASE_ISSUE)
         )
@@ -536,6 +541,15 @@ class RSSTransformerNet(nn.Module):
             nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
             nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
             nn.Linear(d // 2, out_features),
+        )
+
+    def _make_action_key_mlp(self, action_feature_width: int) -> nn.Sequential:
+        """Shared MLP that maps per-action features to policy key vectors."""
+        dp = self.cfg.d_proj
+        return nn.Sequential(
+            nn.Linear(2 * dp + action_feature_width, dp),
+            nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(dp, dp),
         )
 
     def _project_company_tokens(self, x: torch.Tensor) -> torch.Tensor:
@@ -694,8 +708,8 @@ class RSSTransformerNet(nn.Module):
             anchor_pass_widths[1]
             + num_companies * self._policy_head_width(self.closing_company_select_head)
         )
-        block_widths[int(DecisionPhase.DPHASE_DIVIDENDS)] = self._policy_head_width(
-            self.dividend_head
+        block_widths[int(DecisionPhase.DPHASE_DIVIDENDS)] = (
+            self.dividend_amount_embed.num_embeddings
         )
         block_widths[int(DecisionPhase.DPHASE_ISSUE)] = self._policy_head_width(
             self.issue_head
@@ -804,6 +818,7 @@ class RSSTransformerNet(nn.Module):
         corp_tokens = tokens[:, self._corp_slice]
         player_tokens = tokens[:, self._player_slice]
         return _PolicyContext(
+            raw_tokens=x,
             tokens=tokens,
             company_tokens=company_tokens,
             corp_tokens=corp_tokens,
@@ -823,6 +838,35 @@ class RSSTransformerNet(nn.Module):
         """Score each entity key against an actor query using scaled dot products."""
         query = actor_proj(actor)
         keys = entity_proj(entities)
+        logits = torch.bmm(keys, query.unsqueeze(-1)).squeeze(-1)
+        return logits / math.sqrt(self.cfg.d_proj)
+
+    def _actor_action_key_logits(
+        self,
+        actor: torch.Tensor,
+        phase_info: torch.Tensor,
+        action_features: torch.Tensor,
+        actor_proj: nn.Linear,
+        info_proj: nn.Linear,
+        action_embed: nn.Embedding,
+        key_mlp: nn.Module,
+    ) -> torch.Tensor:
+        """Score generated action keys against an actor query."""
+        dtype = phase_info.dtype
+        batch_size, num_actions, _ = action_features.shape
+        query = actor_proj(actor)
+        info = (
+            info_proj(phase_info)
+            .unsqueeze(1)
+            .expand(batch_size, num_actions, self.cfg.d_proj)
+        )
+        action_ids = (
+            action_embed.weight.to(dtype=dtype)
+            .unsqueeze(0)
+            .expand(batch_size, num_actions, self.cfg.d_proj)
+        )
+        key_input = torch.cat([info, action_ids, action_features.to(dtype)], dim=-1)
+        keys = key_mlp(key_input)
         logits = torch.bmm(keys, query.unsqueeze(-1)).squeeze(-1)
         return logits / math.sqrt(self.cfg.d_proj)
 
@@ -853,6 +897,23 @@ class RSSTransformerNet(nn.Module):
         )
         corp_trade = torch.stack((buy_corp, sell_corp), dim=-1).flatten(1)
         return pass_logit, auction_company, corp_trade
+
+    def _dividend_logits(self, ctx: _PolicyContext) -> torch.Tensor:
+        """Build dividend amount logits from active-corp query and action keys."""
+        dividend_impacts = ctx.raw_tokens[
+            :,
+            self._dividend_idx,
+            self._token_feature_start:int(TokenWidth.TW_DIVIDEND),
+        ].unsqueeze(-1)
+        return self._actor_action_key_logits(
+            ctx.active_corp,
+            ctx.tokens[:, self._dividend_idx],
+            dividend_impacts,
+            self.dividend_actor_proj,
+            self.dividend_info_proj,
+            self.dividend_amount_embed,
+            self.dividend_key_mlp,
+        )
 
     # ------------------------------------------------------------------
     # Unified policy: every head runs once on the full batch
@@ -895,7 +956,7 @@ class RSSTransformerNet(nn.Module):
         # CLOSING: pass + 36 company-close.
         closing_company = self.closing_company_select_head(company_tokens).squeeze(-1)  # (B, 36)
         # DIVIDENDS: 26 levels (no pass).
-        dividend = self.dividend_head(tokens[:, self._dividend_idx])             # (B, 26)
+        dividend = self._dividend_logits(ctx)                                    # (B, 26)
         # ISSUE: pass + 1 issue.
         issue = self.issue_head(tokens[:, self._issue_idx])                      # (B, 2)
         # IPO: pass + 8 corps.
@@ -1017,6 +1078,7 @@ class RSSTransformerNet(nn.Module):
         # Pass anchors: small-random learned per-phase vectors (BERT [CLS] convention).
         nn.init.trunc_normal_(self.pass_embeds.weight, std=0.02)
         nn.init.trunc_normal_(self.corp_id_embed.weight, std=0.02)
+        nn.init.trunc_normal_(self.dividend_amount_embed.weight, std=0.02)
         # Per-type additive embeddings: same small-random init.
         nn.init.trunc_normal_(self.type_embeds.weight, std=0.02)
 
@@ -1058,6 +1120,7 @@ if __name__ == "__main__":
     ]
     proj_params = sum(sum(p.numel() for p in m.parameters()) for m in proj_modules)
     corp_id_params = model.corp_id_embed.weight.numel()
+    dividend_amount_params = model.dividend_amount_embed.weight.numel()
     pass_params = model.pass_embeds.weight.numel()
     type_params = model.type_embeds.weight.numel()
     trunk_params = (
@@ -1073,7 +1136,8 @@ if __name__ == "__main__":
         model.closing_company_select_head,
         model.acq_select_company_head,
         model.acq_select_corp_head, model.ipo_corp_select_head,
-        model.bid_head, model.dividend_head,
+        model.bid_head,
+        model.dividend_actor_proj, model.dividend_info_proj, model.dividend_key_mlp,
         model.issue_head, model.acq_offer_head,
         model.price_acq_head, model.par_price_head,
     ]
@@ -1084,6 +1148,7 @@ if __name__ == "__main__":
     for name, count in [
         ("Input projections", proj_params),
         ("Corp ID embeds", corp_id_params),
+        ("Dividend amount embeds", dividend_amount_params),
         ("Pass anchors", pass_params),
         ("Type embeds", type_params),
         ("Transformer trunk", trunk_params),
