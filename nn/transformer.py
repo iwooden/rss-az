@@ -1,15 +1,16 @@
 """Transformer model for Rolling Stock Stars AlphaZero training.
 
 Token-based architecture: each game entity is a separate input token. Type-specific
-linear projections -> L pre-LN transformer blocks -> entity-readout policy heads + value head.
+linear projections feed a pre-LN transformer trunk, actor-conditioned policy
+readouts, and a value head.
 
 Key differences from the MLP model (nn/template.py):
   - Input: (batch, num_tokens, token_dim) token features, not flat state vector
   - No state rotation: active player marked with is_active flag
-  - Entity-readout policy: each entity token produces its own action logits
+  - Actor-conditioned policy: actor queries score entity/action keys
   - ACQ factored into three single-entity sub-phases (corp/company/price)
-  - Unified policy output: every head writes into a static (B, UNIFIED_LOGIT_DIM)
-    tensor and illegal slots are masked to -1e9 via a caller-supplied mask
+  - Unified policy output: every readout writes into a static
+    (B, UNIFIED_LOGIT_DIM) tensor, with illegal slots masked by caller input
   - Value read from player tokens directly (no un-rotation needed)
 """
 
@@ -36,19 +37,19 @@ from core.token_data import TokenDataSize, TokenWidth, get_token_widths
 # ---------------------------------------------------------------------------
 
 # Decision phases / action sizes all live in ``core.data`` and are imported
-# above. This module is strictly a consumer; editing policy head widths or
+# above. This module is strictly a consumer; editing policy readout widths or
 # adding token types happens over there.
 
 NUM_PHASES = len(DecisionPhase)
 NUM_FIXED_TOKENS = 54
 MAX_PHASE_ACTION_SIZE = max(PHASE_ACTION_SIZES)  # 53 (INVEST: pass + 36 + 16)
 
-# Unified policy slot layout. Every per-row policy head emits its logits
+# Unified policy slot layout. Every per-phase readout emits its logits
 # into a single (B, UNIFIED_LOGIT_DIM) tensor; callers pass a matching
-# (B, UNIFIED_LOGIT_DIM) legal-mask so illegal slots can be zeroed before
+# (B, UNIFIED_LOGIT_DIM) legal-mask so illegal slots can be suppressed before
 # softmax. Each DecisionPhase owns a contiguous, non-overlapping block —
 # laid out in DecisionPhase order with block widths from PHASE_ACTION_SIZES.
-# Head weights are unshared across phases (no cross-phase gradient
+# Readout weights are unshared across phases (no cross-phase gradient
 # interference on shared readouts), so the LUT reduces to
 # ``lut[phase, i] = cumsum_offset[phase] + i``. ``build_action_lut`` is the
 # sole public pointer into the layout — callers never import per-block
@@ -75,7 +76,7 @@ _TYPE_ACQ_OFFER = 9
 _TYPE_ACQ_PRICE = 10
 _TYPE_CORP = 11
 _TYPE_PLAYER = 12
-NUM_TOKEN_TYPES = 13
+NUM_TOKEN_TYPES = _TYPE_PLAYER + 1
 
 _GELU_APPROX = "tanh"
 _NUM_CORPS = int(GameConstants.NUM_CORPS)
@@ -247,7 +248,6 @@ class _PolicyContext:
     tokens: torch.Tensor
     company_tokens: torch.Tensor
     corp_tokens: torch.Tensor
-    player_tokens: torch.Tensor
     active_player: torch.Tensor
     active_corp: torch.Tensor
     active_company: torch.Tensor
@@ -258,7 +258,7 @@ class _PolicyContext:
 # ---------------------------------------------------------------------------
 
 class RSSTransformerNet(nn.Module):
-    """Transformer with entity-readout policy heads and per-player value output."""
+    """Transformer with actor-conditioned policy readouts and per-player values."""
 
     # Class-level annotation so pyright knows ``self._type_ids`` (registered
     # as a buffer in ``__init__``) is a Tensor. ``register_buffer`` otherwise
@@ -377,7 +377,7 @@ class RSSTransformerNet(nn.Module):
         # Corp tokens keep a learned row-order identity embedding. Other entity
         # identity and relation fields are consumed as ordinary projected input.
         self.corp_id_embed = nn.Embedding(_NUM_CORPS, d)
-        # Per-type additive embedding for every non-pass token. Added
+        # Per-type additive embedding for every token. Added
         # post-projection in ``_project_tokens`` so the trunk still sees a
         # type-distinct vector even when a token's feature slice is all-zero
         # (e.g. the DIVIDEND context token outside DIVIDENDS, or the owned-
@@ -486,7 +486,7 @@ class RSSTransformerNet(nn.Module):
         ])
         self.final_norm = nn.RMSNorm(d)
 
-        # --- Entity-readout policy heads ---
+        # --- Actor-conditioned policy readouts ---
         # Invest is actor-conditioned: active-player query projections are
         # scored against phase/action-specific company/corp key projections.
         # The output layout stays pass, 36 companies, then interleaved
@@ -587,17 +587,8 @@ class RSSTransformerNet(nn.Module):
         self._validate_policy_layout()
         self._init_weights()
 
-    def _make_policy_head(self, out_features: int) -> nn.Sequential:
-        """Standard 2-layer policy head: Linear(d, d//2) -> GELU -> Linear(d//2, out)."""
-        d = self.cfg.d_model
-        return nn.Sequential(
-            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, out_features),
-        )
-
     def _make_action_key_mlp(self, action_feature_width: int) -> nn.Sequential:
-        """Shared MLP that maps per-action features to policy key vectors."""
+        """Create an MLP that maps per-action features to policy key vectors."""
         dp = self.cfg.d_proj
         return nn.Sequential(
             nn.Linear(2 * dp + action_feature_width, dp),
@@ -666,25 +657,12 @@ class RSSTransformerNet(nn.Module):
         """
         return (x[:, :, 0] > 0.5)[:, None, None, :]
 
-    @staticmethod
-    def _policy_head_width(head: nn.Module) -> int:
-        if isinstance(head, nn.Linear):
-            return int(head.out_features)
-        if not isinstance(head, nn.Sequential) or len(head) == 0:
-            raise AssertionError(
-                f"policy head must be a Linear or non-empty Sequential, got {type(head)!r}"
-            )
-        last = head[-1]
-        if not isinstance(last, nn.Linear):
-            raise AssertionError(f"policy head must end in Linear, got {type(last)!r}")
-        return int(last.out_features)
-
     def _validate_policy_layout(self) -> None:
-        """Validate policy head widths against the shared action-size table.
+        """Validate policy readout widths against the shared action-size table.
 
         The unified output is manually concatenated in DecisionPhase order.
         This guard catches action-space edits that update ``core.data`` but
-        forget to adjust the corresponding model head or block layout.
+        forget to adjust the corresponding model readout or block layout.
         """
         if len(PHASE_ACTION_SIZES) != NUM_PHASES:
             raise AssertionError(
@@ -716,45 +694,45 @@ class RSSTransformerNet(nn.Module):
                 f"invalid entity slices: companies={num_companies}, corps={num_corps}"
             )
 
-        if self._policy_head_width(self.invest_pass_head) != 1:
+        if self.invest_pass_head.out_features != 1:
             raise AssertionError(
                 f"invest pass head must be a single-logit head; "
-                f"got width {self._policy_head_width(self.invest_pass_head)}"
+                f"got width {self.invest_pass_head.out_features}"
             )
         block_widths = [0] * NUM_PHASES
         block_widths[int(DecisionPhase.DPHASE_INVEST)] = (
-            self._policy_head_width(self.invest_pass_head)
+            self.invest_pass_head.out_features
             + num_companies
             + num_corps * 2
         )
-        if self._policy_head_width(self.bid_pass_head) != 1:
+        if self.bid_pass_head.out_features != 1:
             raise AssertionError(
                 f"bid pass head must be a single-logit head; "
-                f"got width {self._policy_head_width(self.bid_pass_head)}"
+                f"got width {self.bid_pass_head.out_features}"
             )
         block_widths[int(DecisionPhase.DPHASE_BID)] = (
-            self._policy_head_width(self.bid_pass_head)
+            self.bid_pass_head.out_features
             + self.bid_offset_embed.num_embeddings
         )
-        if self._policy_head_width(self.acq_select_corp_pass_head) != 1:
+        if self.acq_select_corp_pass_head.out_features != 1:
             raise AssertionError(
                 f"acq select corp pass head must be a single-logit head; "
-                f"got width {self._policy_head_width(self.acq_select_corp_pass_head)}"
+                f"got width {self.acq_select_corp_pass_head.out_features}"
             )
         block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_CORP)] = (
-            self._policy_head_width(self.acq_select_corp_pass_head)
+            self.acq_select_corp_pass_head.out_features
             + num_corps
         )
         block_widths[int(DecisionPhase.DPHASE_ACQ_OFFER)] = (
             self.acq_offer_action_embed.num_embeddings
         )
-        if self._policy_head_width(self.closing_pass_head) != 1:
+        if self.closing_pass_head.out_features != 1:
             raise AssertionError(
                 f"closing pass head must be a single-logit head; "
-                f"got width {self._policy_head_width(self.closing_pass_head)}"
+                f"got width {self.closing_pass_head.out_features}"
             )
         block_widths[int(DecisionPhase.DPHASE_CLOSING)] = (
-            self._policy_head_width(self.closing_pass_head)
+            self.closing_pass_head.out_features
             + num_companies
         )
         block_widths[int(DecisionPhase.DPHASE_DIVIDENDS)] = (
@@ -763,13 +741,13 @@ class RSSTransformerNet(nn.Module):
         block_widths[int(DecisionPhase.DPHASE_ISSUE)] = (
             self.issue_action_embed.num_embeddings
         )
-        if self._policy_head_width(self.ipo_pass_head) != 1:
+        if self.ipo_pass_head.out_features != 1:
             raise AssertionError(
                 f"ipo pass head must be a single-logit head; "
-                f"got width {self._policy_head_width(self.ipo_pass_head)}"
+                f"got width {self.ipo_pass_head.out_features}"
             )
         block_widths[int(DecisionPhase.DPHASE_IPO)] = (
-            self._policy_head_width(self.ipo_pass_head)
+            self.ipo_pass_head.out_features
             + num_corps
         )
         par_feature_width = int(TokenWidth.TW_PAR) - self._token_feature_start
@@ -839,7 +817,7 @@ class RSSTransformerNet(nn.Module):
             self._project_player_tokens(x),                                              # (B, N, d)
         ]
         # Additive per-type embedding broadcast over the batch. A single
-        # indexed gather against ``type_embeds`` gives every non-pass token a
+        # indexed gather against ``type_embeds`` gives every token a
         # type-distinct signal even when its feature slice is all-zero.
         input_tokens = torch.cat(input_parts, dim=1)                                     # (B, cfg.num_tokens, d)
         return input_tokens + self.type_embeds(self._type_ids).to(input_tokens.dtype)    # (B, num_tokens, d)
@@ -858,14 +836,16 @@ class RSSTransformerNet(nn.Module):
         """Slice final entity tokens and compute active entity embeddings once."""
         company_tokens = tokens[:, self._company_slice]
         corp_tokens = tokens[:, self._corp_slice]
-        player_tokens = tokens[:, self._player_slice]
         return _PolicyContext(
             raw_tokens=x,
             tokens=tokens,
             company_tokens=company_tokens,
             corp_tokens=corp_tokens,
-            player_tokens=player_tokens,
-            active_player=self._active_token(x, self._player_slice, player_tokens),
+            active_player=self._active_token(
+                x,
+                self._player_slice,
+                tokens[:, self._player_slice],
+            ),
             active_corp=self._active_token(x, self._corp_slice, corp_tokens),
             active_company=self._active_token(x, self._company_slice, company_tokens),
         )
@@ -1214,26 +1194,20 @@ class RSSTransformerNet(nn.Module):
         )
 
     # ------------------------------------------------------------------
-    # Unified policy: every head runs once on the full batch
+    # Unified policy: every readout runs once on the full batch
     # ------------------------------------------------------------------
 
     def _build_unified_logits(self, ctx: _PolicyContext) -> torch.Tensor:
-        """Run every per-phase policy head once on the full batch and concat
+        """Run every per-phase policy readout once on the full batch and concat
         into a single ``(B, UNIFIED_LOGIT_DIM)`` tensor.
 
         Blocks are emitted in DecisionPhase order (matching the offsets baked
-        into ``build_action_lut``). Pass logits are read from either the actor
-        token or the phase-info token, depending on the phase. Heads run
-        unconditionally regardless of which phase a given row is in: the
-        caller's legal mask zeroes out slots outside the current phase's action
-        space. Total wasted FLOPs are a small fraction of the trunk at
-        d_model=128.
+        into ``build_action_lut``). Phases with a pass/no-op action keep it at
+        phase-local slot 0. Readouts run unconditionally regardless of which
+        phase a given row is in: the caller's legal mask suppresses slots
+        outside the current phase's action space. The extra work is small
+        relative to the trunk.
         """
-        # Shared token reads. Multi-token entity heads stay (B, n_tokens, …)
-        # and get squeezed / flattened at use site.
-        tokens = ctx.tokens
-        company_tokens = ctx.company_tokens                                      # (B, 36, d)
-
         # INVEST: pass + 36 company-select + 16 corp-trade (2i buy, 2i+1 sell).
         pass_invest, invest_company, corp_trade = self._invest_logits(ctx)
         # BID: pass + AUCTION_CAP raise offsets.
