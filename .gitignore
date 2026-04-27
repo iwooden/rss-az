@@ -23,3 +23,6 @@ tests/games_18xx/data/*.json
 .dolt/
 *.db
 .beads-credential-key
+
+# Codex creates a persistent file for some reason
+.codex
