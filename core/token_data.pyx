@@ -1043,13 +1043,12 @@ cdef void _fill_par_token(
     float[:, ::1] buffer,
     int tok,
 ) noexcept nogil:
-    cdef int OFF_ATTN_MASK     = 0
-    cdef int OFF_PLAYER_CASH   = 1    # 14 slots
-    cdef int OFF_CORP_CASH     = 15   # 14 slots
-    cdef int OFF_ISSUED_SHARES = 29   # 14 slots
+    cdef int OFF_ATTN_MASK = 0
+    cdef int OFF_PAR_DATA  = 1    # 14 tuples: player_cash, corp_cash, issued_shares
+    cdef int PAR_STRIDE    = 3
 
     cdef int active_company = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_company]
-    cdef int face_value, star_tier, par_index
+    cdef int face_value, star_tier, par_index, base
     cdef int float_shares, market_index, player_payment, corp_cash_result, issued
 
     # Driver contract for PHASE_IPO / PHASE_PAR: active_company is always
@@ -1070,13 +1069,14 @@ cdef void _fill_par_token(
         (float_shares, market_index, player_payment,
          corp_cash_result, issued) = _simulate_float(face_value, par_index)
 
-        buffer[tok, OFF_PLAYER_CASH + par_index] = (
+        base = OFF_PAR_DATA + par_index * PAR_STRIDE
+        buffer[tok, base] = (
             <float>player_payment / CASH_DIVISOR
         )
-        buffer[tok, OFF_CORP_CASH + par_index] = (
+        buffer[tok, base + 1] = (
             <float>corp_cash_result / CASH_DIVISOR
         )
-        buffer[tok, OFF_ISSUED_SHARES + par_index] = (
+        buffer[tok, base + 2] = (
             <float>issued / FLOAT_SHARES_MAX
         )
 

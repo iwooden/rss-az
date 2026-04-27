@@ -57,11 +57,10 @@ for _size in PHASE_ACTION_SIZES:
     _PHASE_OFFSETS.append(_PHASE_OFFSETS[-1] + int(_size))
 UNIFIED_LOGIT_DIM = _PHASE_OFFSETS[-1]  # 255
 
-# Pass actions that do not have a natural phase-info-token readout. These use
-# learned anchors appended to the trunk sequence, one per phase below. BID,
-# ACQ_OFFER, and ISSUE also have pass actions, but their full phase blocks are
-# read directly from phase-specific information tokens because those tokens
-# already score the non-pass alternatives.
+# Historical pass-anchor phases. The anchors are still appended to the trunk
+# sequence for this commit, but policy logits no longer read directly from
+# them. BID, ACQ_OFFER, and ISSUE have pass actions read from their
+# phase-specific information tokens.
 PASS_PHASE_IDS: tuple[int, ...] = (
     int(DecisionPhase.DPHASE_INVEST),
     int(DecisionPhase.DPHASE_ACQ_SELECT_CORP),
@@ -322,9 +321,9 @@ class RSSTransformerNet(nn.Module):
         self._acq_price_info_idx = 45
         self._corp_slice = slice(46, NUM_FIXED_TOKENS)
         self._player_slice = slice(NUM_FIXED_TOKENS, NUM_FIXED_TOKENS + np_)
-        # One learned pass anchor per entity-readout pass phase, appended
-        # after the player slice as a contiguous block. Direct-token phases
-        # (BID, ACQ_OFFER, ISSUE) emit pass logits from their info-token heads.
+        # One learned pass anchor per historical entity-readout pass phase,
+        # appended after the player slice as a contiguous block. These anchors
+        # are retained temporarily and no policy head reads directly from them.
         # Indices aligned with ``PASS_PHASE_IDS``.
         self._pass_base = NUM_FIXED_TOKENS + np_
         self._pass_idxs: list[int] = [self._pass_base + i for i in range(NUM_PASS_PHASES)]
@@ -491,9 +490,8 @@ class RSSTransformerNet(nn.Module):
         self.invest_sell_actor_proj = nn.Linear(d, dp, bias=False)
         self.invest_sell_corp_proj = nn.Linear(d, dp, bias=False)
 
-        # Per-phase pass heads for the remaining entity-readout pass action
-        # backed by a pass anchor: IPO. INVEST, ACQ_SELECT_CORP, and CLOSING
-        # read pass from the active player token instead.
+        # Historical pass-anchor heads retained until the pass-anchor cleanup
+        # lands. No policy head currently reads these anchors.
         self.anchor_pass_heads = nn.ModuleList(
             [self._make_policy_head(1) for _ in range(NUM_PASS_PHASES - 3)]
         )
@@ -505,8 +503,17 @@ class RSSTransformerNet(nn.Module):
         self.acq_select_corp_pass_head = nn.Linear(d, 1)
         self.acq_select_corp_actor_proj = nn.Linear(d, dp, bias=False)
         self.acq_select_corp_corp_proj = nn.Linear(d, dp, bias=False)
-        # Corp-selection heads that have not been refactored yet.
-        self.ipo_corp_select_head = self._make_policy_head(1)
+        # IPO is actor-conditioned: active-player query, active-company/PAR
+        # context, and one generated key per candidate corp.
+        self.ipo_pass_head = nn.Linear(d, 1)
+        self.ipo_actor_proj = nn.Linear(d, dp, bias=False)
+        self.ipo_corp_proj = nn.Linear(d, dp, bias=False)
+        self.ipo_context_proj = nn.Linear(2 * d, dp)
+        self.ipo_key_mlp = nn.Sequential(
+            nn.Linear(2 * dp, dp),
+            nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(dp, dp),
+        )
 
         # BID is actor-conditioned with a direct active-player pass readout
         # plus generated bid-offset keys conditioned on auction mechanics and
@@ -759,9 +766,14 @@ class RSSTransformerNet(nn.Module):
         block_widths[int(DecisionPhase.DPHASE_ISSUE)] = self._policy_head_width(
             self.issue_head
         )
+        if self._policy_head_width(self.ipo_pass_head) != 1:
+            raise AssertionError(
+                f"ipo pass head must be a single-logit head; "
+                f"got width {self._policy_head_width(self.ipo_pass_head)}"
+            )
         block_widths[int(DecisionPhase.DPHASE_IPO)] = (
-            anchor_pass_widths[0]
-            + num_corps * self._policy_head_width(self.ipo_corp_select_head)
+            self._policy_head_width(self.ipo_pass_head)
+            + num_corps
         )
         block_widths[int(DecisionPhase.DPHASE_PAR)] = self._policy_head_width(
             self.par_price_head
@@ -967,6 +979,22 @@ class RSSTransformerNet(nn.Module):
         )
         return torch.cat([pass_logit, company_logits], dim=-1)
 
+    def _ipo_logits(self, ctx: _PolicyContext) -> torch.Tensor:
+        """Build IPO logits: pass plus one actor-conditioned corp logit each."""
+        actor = ctx.active_player
+        query = self.ipo_actor_proj(actor)
+        context = self.ipo_context_proj(
+            torch.cat([ctx.active_company, ctx.tokens[:, self._par_idx]], dim=-1)
+        )
+        corp_base = self.ipo_corp_proj(ctx.corp_tokens)
+        batch_size, num_corps, _ = corp_base.shape
+        context = context.unsqueeze(1).expand(batch_size, num_corps, self.cfg.d_proj)
+        keys = self.ipo_key_mlp(torch.cat([corp_base, context], dim=-1))
+        corp_logits = torch.bmm(keys, query.unsqueeze(-1)).squeeze(-1)
+        corp_logits = corp_logits / math.sqrt(self.cfg.d_proj)
+        pass_logit = self.ipo_pass_head(actor)
+        return torch.cat([pass_logit, corp_logits], dim=-1)
+
     def _bid_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Build the Bid block: leave-auction pass plus 15 bid offsets."""
         raw_auction = ctx.raw_tokens[
@@ -1042,23 +1070,17 @@ class RSSTransformerNet(nn.Module):
         into a single ``(B, UNIFIED_LOGIT_DIM)`` tensor.
 
         Blocks are emitted in DecisionPhase order (matching the offsets baked
-        into ``build_action_lut``). Entity-readout phases with pass actions
-        lead with a per-phase pass-anchor logit. Direct-token phases (BID,
-        ACQ_OFFER, ISSUE) emit the whole phase block from their info token,
-        including phase-local action 0. Heads run unconditionally regardless
-        of which phase a given row is in: the caller's legal mask zeroes out
-        slots outside the current phase's action space. Total wasted FLOPs
-        are a small fraction of the trunk at d_model=128.
+        into ``build_action_lut``). Pass logits are read from either the actor
+        token or the phase-info token, depending on the phase. Heads run
+        unconditionally regardless of which phase a given row is in: the
+        caller's legal mask zeroes out slots outside the current phase's action
+        space. Total wasted FLOPs are a small fraction of the trunk at
+        d_model=128.
         """
         # Shared token reads. Multi-token entity heads stay (B, n_tokens, …)
         # and get squeezed / flattened at use site.
         tokens = ctx.tokens
         company_tokens = ctx.company_tokens                                      # (B, 36, d)
-        corp_tokens = ctx.corp_tokens                                            # (B, 8, d)
-
-        # Pass anchors. ``self._pass_idxs[i]`` backs ``PASS_PHASE_IDS[i]``.
-        # IPO is the last pass action still reading from an anchor.
-        pass_ipo = self.anchor_pass_heads[0](tokens[:, self._pass_idxs[3]])     # (B, 1)
 
         # INVEST: pass + 36 company-select + 16 corp-trade (2i buy, 2i+1 sell).
         pass_invest, invest_company, corp_trade = self._invest_logits(ctx)
@@ -1075,7 +1097,7 @@ class RSSTransformerNet(nn.Module):
         # ISSUE: pass + 1 issue.
         issue = self.issue_head(tokens[:, self._issue_idx])                      # (B, 2)
         # IPO: pass + 8 corps.
-        ipo_corp = self.ipo_corp_select_head(corp_tokens).squeeze(-1)            # (B, 8)
+        ipo = self._ipo_logits(ctx)                                              # (B, 9)
         # PAR: 14 par indices (no pass).
         par_price = self.par_price_head(tokens[:, self._par_idx])                # (B, 14)
         # ACQ_SELECT_COMPANY: 36 companies (no pass).
@@ -1092,7 +1114,7 @@ class RSSTransformerNet(nn.Module):
                 closing,                                           # CLOSING          (37)
                 dividend,                                          # DIVIDENDS        (26)
                 issue,                                             # ISSUE            ( 2)
-                pass_ipo, ipo_corp,                                # IPO              ( 9)
+                ipo,                                               # IPO              ( 9)
                 par_price,                                         # PAR              (14)
                 acq_select_company,                                # ACQ_SELECT_CO.   (36)
                 price_acq,                                         # ACQ_SELECT_PRICE (51)
@@ -1255,7 +1277,8 @@ if __name__ == "__main__":
         model.acq_select_company_head,
         model.acq_select_corp_pass_head,
         model.acq_select_corp_actor_proj, model.acq_select_corp_corp_proj,
-        model.ipo_corp_select_head,
+        model.ipo_pass_head, model.ipo_actor_proj, model.ipo_corp_proj,
+        model.ipo_context_proj, model.ipo_key_mlp,
         model.bid_pass_head, model.bid_actor_proj, model.bid_info_proj,
         model.bid_key_mlp,
         model.dividend_actor_proj, model.dividend_info_proj, model.dividend_key_mlp,
