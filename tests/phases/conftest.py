@@ -580,10 +580,6 @@ def assert_invariants(state, msg=""):
 #     [46, 54)                   : Corp tokens       (8)
 #     [54, 54 + num_players)     : Player tokens
 #
-# Learned pass anchors and the synthetic removed-companies token live inside
-# the model (concatenated after projection) and are not part of the input
-# buffer.
-#
 # The feature-offset layouts below mirror core/token_data.pyx — treat that
 # file as the source of truth if these ever drift. Per-position widths are
 # additionally cross-checked via get_token_widths() to catch layout drift.
@@ -1432,30 +1428,31 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
             # Any corp works — simulate_float is a pure function of
             # (face_value, par_index), so we borrow CORPS[0].
             for par_index in range(14):
+                base = 1 + par_index * 3
                 if 1 <= star_tier <= 5 and PY_PAR_PRICE_VALID[star_tier - 1][par_index]:
                     float_result = CORPS[0].simulate_float(active_company, par_index)
                     player_pmt = float_result[2]
                     corp_cash_after = float_result[3]
                     issued = float_result[4]
-                    _assert_close(buf[par_tok, 1 + par_index] * PY_CASH_DIVISOR,
+                    _assert_close(buf[par_tok, base] * PY_CASH_DIVISOR,
                                   player_pmt, T_SCALE,
                                   f"{pm2}: player_cash[par={par_index}]")
-                    _assert_close(buf[par_tok, 15 + par_index] * PY_CASH_DIVISOR,
+                    _assert_close(buf[par_tok, base + 1] * PY_CASH_DIVISOR,
                                   corp_cash_after, T_SCALE,
                                   f"{pm2}: corp_cash[par={par_index}]")
                     # Issued shares normalized by FLOAT_SHARES_MAX = 4.0
-                    _assert_close(buf[par_tok, 29 + par_index] * 4.0,
+                    _assert_close(buf[par_tok, base + 2] * 4.0,
                                   issued, T_SCALE,
                                   f"{pm2}: issued_shares[par={par_index}]")
                 else:
                     # Invalid par for this star tier → all three slots zero
-                    _assert_close(buf[par_tok, 1 + par_index], 0.0, T_FLAG,
+                    _assert_close(buf[par_tok, base], 0.0, T_FLAG,
                                   f"{pm2}: player_cash[par={par_index}] "
                                   f"must be zero (invalid for star_tier={star_tier})")
-                    _assert_close(buf[par_tok, 15 + par_index], 0.0, T_FLAG,
+                    _assert_close(buf[par_tok, base + 1], 0.0, T_FLAG,
                                   f"{pm2}: corp_cash[par={par_index}] "
                                   f"must be zero (invalid for star_tier={star_tier})")
-                    _assert_close(buf[par_tok, 29 + par_index], 0.0, T_FLAG,
+                    _assert_close(buf[par_tok, base + 2], 0.0, T_FLAG,
                                   f"{pm2}: issued_shares[par={par_index}] "
                                   f"must be zero (invalid for star_tier={star_tier})")
 
