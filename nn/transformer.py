@@ -287,6 +287,7 @@ class RSSTransformerNet(nn.Module):
     _type_ids: torch.Tensor
     _corp_ids: torch.Tensor
     _pass_phase_ids: torch.Tensor
+    _bid_offset_features: torch.Tensor
 
     def __init__(self, cfg: TransformerConfig) -> None:
         super().__init__()
@@ -446,6 +447,15 @@ class RSSTransformerNet(nn.Module):
         self.register_buffer(
             "_corp_ids", torch.arange(_NUM_CORPS, dtype=torch.long), persistent=False,
         )
+        bid_offset_features = (
+            torch.arange(int(AUCTION_CAP), dtype=torch.float32).view(1, int(AUCTION_CAP), 1)
+            / float(AUCTION_CAP)
+        )
+        self.register_buffer(
+            "_bid_offset_features",
+            bid_offset_features,
+            persistent=False,
+        )
 
         # --- Transformer trunk ---
         self.blocks = nn.ModuleList([
@@ -485,12 +495,18 @@ class RSSTransformerNet(nn.Module):
         self.acq_select_corp_head = self._make_policy_head(1)
         self.ipo_corp_select_head = self._make_policy_head(1)
 
-        # Phase-specific context token heads. BID / ACQ_OFFER / ISSUE emit
-        # full phase blocks from their phase-info tokens, including the pass
-        # logit at phase-local action 0.
-        self.bid_head = self._make_policy_head(
-            _phase_action_size(DecisionPhase.DPHASE_BID)
-        )
+        # BID is actor-conditioned with a direct active-player pass readout
+        # plus generated bid-offset keys conditioned on auction mechanics and
+        # the active company being auctioned.
+        self.bid_pass_head = nn.Linear(d, 1)
+        self.bid_actor_proj = nn.Linear(d, dp, bias=False)
+        self.bid_info_proj = nn.Linear(2 * d, dp)
+        self.bid_offset_embed = nn.Embedding(int(AUCTION_CAP), dp)
+        self.bid_key_mlp = self._make_action_key_mlp(action_feature_width=4)
+
+        # Phase-specific context token heads. ACQ_OFFER / ISSUE emit full
+        # phase blocks from their phase-info tokens, including pass at
+        # phase-local action 0.
         self.dividend_actor_proj = nn.Linear(d, dp, bias=False)
         self.dividend_info_proj = nn.Linear(d, dp)
         self.dividend_amount_embed = nn.Embedding(
@@ -694,8 +710,14 @@ class RSSTransformerNet(nn.Module):
             + num_companies
             + num_corps * 2
         )
-        block_widths[int(DecisionPhase.DPHASE_BID)] = self._policy_head_width(
-            self.bid_head
+        if self._policy_head_width(self.bid_pass_head) != 1:
+            raise AssertionError(
+                f"bid pass head must be a single-logit head; "
+                f"got width {self._policy_head_width(self.bid_pass_head)}"
+            )
+        block_widths[int(DecisionPhase.DPHASE_BID)] = (
+            self._policy_head_width(self.bid_pass_head)
+            + self.bid_offset_embed.num_embeddings
         )
         block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_CORP)] = (
             anchor_pass_widths[0]
@@ -898,6 +920,46 @@ class RSSTransformerNet(nn.Module):
         corp_trade = torch.stack((buy_corp, sell_corp), dim=-1).flatten(1)
         return pass_logit, auction_company, corp_trade
 
+    def _bid_logits(self, ctx: _PolicyContext) -> torch.Tensor:
+        """Build the Bid block: leave-auction pass plus 15 bid offsets."""
+        raw_auction = ctx.raw_tokens[
+            :,
+            self._auction_idx,
+            self._token_feature_start:int(TokenWidth.TW_AUCTION),
+        ]
+        min_bid_idx = raw_auction[:, 0:1]
+        min_bid_value = raw_auction[:, 1:2]
+        is_first_bid = raw_auction[:, 2:3]
+        bid_offsets = self._bid_offset_features.to(
+            dtype=ctx.tokens.dtype,
+            device=ctx.tokens.device,
+        ).expand(ctx.tokens.shape[0], int(AUCTION_CAP), 1)
+        relative_offsets = bid_offsets - min_bid_idx.to(bid_offsets.dtype).unsqueeze(1)
+        action_features = torch.cat(
+            [
+                bid_offsets,
+                relative_offsets,
+                min_bid_value.to(bid_offsets.dtype).unsqueeze(1).expand_as(bid_offsets),
+                is_first_bid.to(bid_offsets.dtype).unsqueeze(1).expand_as(bid_offsets),
+            ],
+            dim=-1,
+        )
+        bid_context = torch.cat(
+            [ctx.tokens[:, self._auction_idx], ctx.active_company],
+            dim=-1,
+        )
+        bid_offsets_logits = self._actor_action_key_logits(
+            ctx.active_player,
+            bid_context,
+            action_features,
+            self.bid_actor_proj,
+            self.bid_info_proj,
+            self.bid_offset_embed,
+            self.bid_key_mlp,
+        )
+        pass_logit = self.bid_pass_head(ctx.active_player)
+        return torch.cat([pass_logit, bid_offsets_logits], dim=-1)
+
     def _dividend_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Build dividend amount logits from active-corp query and action keys."""
         dividend_impacts = ctx.raw_tokens[
@@ -948,7 +1010,7 @@ class RSSTransformerNet(nn.Module):
         # INVEST: pass + 36 company-select + 16 corp-trade (2i buy, 2i+1 sell).
         pass_invest, invest_company, corp_trade = self._invest_logits(ctx)
         # BID: pass + AUCTION_CAP raise offsets.
-        bid = self.bid_head(tokens[:, self._auction_idx])                        # (B, 16)
+        bid = self._bid_logits(ctx)                                              # (B, 16)
         # ACQ_SELECT_CORP: pass + 8 corps.
         acq_select_corp = self.acq_select_corp_head(corp_tokens).squeeze(-1)     # (B, 8)
         # ACQ_OFFER: pass + 1 accept-buy.
@@ -1078,6 +1140,7 @@ class RSSTransformerNet(nn.Module):
         # Pass anchors: small-random learned per-phase vectors (BERT [CLS] convention).
         nn.init.trunc_normal_(self.pass_embeds.weight, std=0.02)
         nn.init.trunc_normal_(self.corp_id_embed.weight, std=0.02)
+        nn.init.trunc_normal_(self.bid_offset_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.dividend_amount_embed.weight, std=0.02)
         # Per-type additive embeddings: same small-random init.
         nn.init.trunc_normal_(self.type_embeds.weight, std=0.02)
@@ -1120,6 +1183,7 @@ if __name__ == "__main__":
     ]
     proj_params = sum(sum(p.numel() for p in m.parameters()) for m in proj_modules)
     corp_id_params = model.corp_id_embed.weight.numel()
+    bid_offset_params = model.bid_offset_embed.weight.numel()
     dividend_amount_params = model.dividend_amount_embed.weight.numel()
     pass_params = model.pass_embeds.weight.numel()
     type_params = model.type_embeds.weight.numel()
@@ -1136,7 +1200,8 @@ if __name__ == "__main__":
         model.closing_company_select_head,
         model.acq_select_company_head,
         model.acq_select_corp_head, model.ipo_corp_select_head,
-        model.bid_head,
+        model.bid_pass_head, model.bid_actor_proj, model.bid_info_proj,
+        model.bid_key_mlp,
         model.dividend_actor_proj, model.dividend_info_proj, model.dividend_key_mlp,
         model.issue_head, model.acq_offer_head,
         model.price_acq_head, model.par_price_head,
@@ -1148,6 +1213,7 @@ if __name__ == "__main__":
     for name, count in [
         ("Input projections", proj_params),
         ("Corp ID embeds", corp_id_params),
+        ("Bid offset embeds", bid_offset_params),
         ("Dividend amount embeds", dividend_amount_params),
         ("Pass anchors", pass_params),
         ("Type embeds", type_params),
