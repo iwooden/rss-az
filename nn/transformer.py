@@ -461,8 +461,8 @@ class RSSTransformerNet(nn.Module):
         self.closing_pass_head = nn.Linear(d, 1)
         self.closing_actor_proj = nn.Linear(d, dp, bias=False)
         self.closing_company_proj = nn.Linear(d, dp, bias=False)
-        # Company-selection heads that have not been refactored yet.
-        self.acq_select_company_head = self._make_policy_head(1)
+        self.acq_select_company_actor_proj = nn.Linear(d, dp, bias=False)
+        self.acq_select_company_company_proj = nn.Linear(d, dp, bias=False)
         self.acq_select_corp_pass_head = nn.Linear(d, 1)
         self.acq_select_corp_actor_proj = nn.Linear(d, dp, bias=False)
         self.acq_select_corp_corp_proj = nn.Linear(d, dp, bias=False)
@@ -506,7 +506,7 @@ class RSSTransformerNet(nn.Module):
 
         # ACQ is factored into three sequential single-entity selections:
         # pick the acquiring corp, pick the target company
-        # (``acq_select_company_head``), pick the price (below).
+        # (``_acq_select_company_logits``), pick the price (below).
         # SELECT_PRICE: 51 price offsets, read off a dedicated acq_price_info
         # token that the engine populates with (active_corp, active_company)
         # context during PHASE_ACQ_SELECT_PRICE. FI targets execute in
@@ -731,9 +731,7 @@ class RSSTransformerNet(nn.Module):
         block_widths[int(DecisionPhase.DPHASE_PAR)] = (
             self.par_price_embed.num_embeddings
         )
-        block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_COMPANY)] = (
-            num_companies * self._policy_head_width(self.acq_select_company_head)
-        )
+        block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_COMPANY)] = num_companies
         block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)] = (
             self._policy_head_width(self.price_acq_head)
         )
@@ -904,6 +902,15 @@ class RSSTransformerNet(nn.Module):
         )
         return torch.cat([pass_logit, corp_logits], dim=-1)
 
+    def _acq_select_company_logits(self, ctx: _PolicyContext) -> torch.Tensor:
+        """Build ACQ_SELECT_COMPANY logits: one active-corp logit per company."""
+        return self._actor_entity_logits(
+            ctx.active_corp,
+            ctx.company_tokens,
+            self.acq_select_company_actor_proj,
+            self.acq_select_company_company_proj,
+        )
+
     def _closing_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Build CLOSING logits: pass plus one logit per company."""
         actor = ctx.active_player
@@ -1069,7 +1076,7 @@ class RSSTransformerNet(nn.Module):
         # PAR: 14 par indices (no pass).
         par_price = self._par_logits(ctx)                                        # (B, 14)
         # ACQ_SELECT_COMPANY: 36 companies (no pass).
-        acq_select_company = self.acq_select_company_head(company_tokens).squeeze(-1)  # (B, 36)
+        acq_select_company = self._acq_select_company_logits(ctx)                # (B, 36)
         # ACQ_SELECT_PRICE: 51 price offsets (no pass).
         price_acq = self.price_acq_head(tokens[:, self._acq_price_info_idx])     # (B, 51)
 
@@ -1240,7 +1247,7 @@ if __name__ == "__main__":
         model.invest_sell_actor_proj, model.invest_sell_corp_proj,
         model.closing_pass_head,
         model.closing_actor_proj, model.closing_company_proj,
-        model.acq_select_company_head,
+        model.acq_select_company_actor_proj, model.acq_select_company_company_proj,
         model.acq_select_corp_pass_head,
         model.acq_select_corp_actor_proj, model.acq_select_corp_corp_proj,
         model.ipo_pass_head, model.ipo_actor_proj, model.ipo_corp_proj,
