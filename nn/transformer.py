@@ -264,6 +264,7 @@ class RSSTransformerNet(nn.Module):
     _corp_ids: torch.Tensor
     _bid_offset_features: torch.Tensor
     _dividend_amount_features: torch.Tensor
+    _par_index_features: torch.Tensor
 
     def __init__(self, cfg: TransformerConfig) -> None:
         super().__init__()
@@ -423,6 +424,18 @@ class RSSTransformerNet(nn.Module):
             dividend_amount_features,
             persistent=False,
         )
+        par_index_features = (
+            torch.arange(
+                _phase_action_size(DecisionPhase.DPHASE_PAR),
+                dtype=torch.float32,
+            ).view(1, _phase_action_size(DecisionPhase.DPHASE_PAR), 1)
+            / float(_phase_action_size(DecisionPhase.DPHASE_PAR))
+        )
+        self.register_buffer(
+            "_par_index_features",
+            par_index_features,
+            persistent=False,
+        )
 
         # --- Transformer trunk ---
         self.blocks = nn.ModuleList([
@@ -503,12 +516,16 @@ class RSSTransformerNet(nn.Module):
             _phase_action_size(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)
         )
 
-        # PAR reads 14 par-price logits from the par info token. No pass
-        # anchor: PAR has no pass action — once a corp is selected the owner
-        # must commit to a price.
-        self.par_price_head = self._make_policy_head(
-            _phase_action_size(DecisionPhase.DPHASE_PAR)
+        # PAR is actor-conditioned with generated par-price keys. The key
+        # context includes the active corp/company and the PAR info token; the
+        # per-action features come from the PAR token's price-specific tuples.
+        self.par_actor_proj = nn.Linear(d, dp, bias=False)
+        self.par_info_proj = nn.Linear(3 * d, dp)
+        self.par_price_embed = nn.Embedding(
+            _phase_action_size(DecisionPhase.DPHASE_PAR),
+            dp,
         )
+        self.par_key_mlp = self._make_action_key_mlp(action_feature_width=4)
 
         # --- Value head (applied per player token) ---
         self.value_head = nn.Sequential(
@@ -705,8 +722,14 @@ class RSSTransformerNet(nn.Module):
             self._policy_head_width(self.ipo_pass_head)
             + num_corps
         )
-        block_widths[int(DecisionPhase.DPHASE_PAR)] = self._policy_head_width(
-            self.par_price_head
+        par_feature_width = int(TokenWidth.TW_PAR) - self._token_feature_start
+        if par_feature_width != self.par_price_embed.num_embeddings * 3:
+            raise AssertionError(
+                f"PAR token feature width {par_feature_width} must equal "
+                f"3 fields * {self.par_price_embed.num_embeddings} par prices"
+            )
+        block_widths[int(DecisionPhase.DPHASE_PAR)] = (
+            self.par_price_embed.num_embeddings
         )
         block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_COMPANY)] = (
             num_companies * self._policy_head_width(self.acq_select_company_head)
@@ -975,6 +998,37 @@ class RSSTransformerNet(nn.Module):
             self.dividend_key_mlp,
         )
 
+    def _par_logits(self, ctx: _PolicyContext) -> torch.Tensor:
+        """Build par-price logits from active-player query and par-price keys."""
+        num_par_prices = self.par_price_embed.num_embeddings
+        par_indices = self._par_index_features.to(
+            dtype=ctx.tokens.dtype,
+            device=ctx.tokens.device,
+        ).expand(ctx.tokens.shape[0], num_par_prices, 1)
+        par_effects = (
+            ctx.raw_tokens[
+                :,
+                self._par_idx,
+                self._token_feature_start:int(TokenWidth.TW_PAR),
+            ]
+            .to(ctx.tokens.dtype)
+            .reshape(ctx.tokens.shape[0], num_par_prices, 3)
+        )
+        action_features = torch.cat([par_indices, par_effects], dim=-1)
+        par_context = torch.cat(
+            [ctx.tokens[:, self._par_idx], ctx.active_corp, ctx.active_company],
+            dim=-1,
+        )
+        return self._actor_action_key_logits(
+            ctx.active_player,
+            par_context,
+            action_features,
+            self.par_actor_proj,
+            self.par_info_proj,
+            self.par_price_embed,
+            self.par_key_mlp,
+        )
+
     # ------------------------------------------------------------------
     # Unified policy: every head runs once on the full batch
     # ------------------------------------------------------------------
@@ -1013,7 +1067,7 @@ class RSSTransformerNet(nn.Module):
         # IPO: pass + 8 corps.
         ipo = self._ipo_logits(ctx)                                              # (B, 9)
         # PAR: 14 par indices (no pass).
-        par_price = self.par_price_head(tokens[:, self._par_idx])                # (B, 14)
+        par_price = self._par_logits(ctx)                                        # (B, 14)
         # ACQ_SELECT_COMPANY: 36 companies (no pass).
         acq_select_company = self.acq_select_company_head(company_tokens).squeeze(-1)  # (B, 36)
         # ACQ_SELECT_PRICE: 51 price offsets (no pass).
@@ -1129,6 +1183,7 @@ class RSSTransformerNet(nn.Module):
         nn.init.trunc_normal_(self.corp_id_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.bid_offset_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.dividend_amount_embed.weight, std=0.02)
+        nn.init.trunc_normal_(self.par_price_embed.weight, std=0.02)
         # Per-type additive embeddings: same small-random init.
         nn.init.trunc_normal_(self.type_embeds.weight, std=0.02)
 
@@ -1172,6 +1227,7 @@ if __name__ == "__main__":
     corp_id_params = model.corp_id_embed.weight.numel()
     bid_offset_params = model.bid_offset_embed.weight.numel()
     dividend_amount_params = model.dividend_amount_embed.weight.numel()
+    par_price_params = model.par_price_embed.weight.numel()
     type_params = model.type_embeds.weight.numel()
     trunk_params = (
         sum(p.numel() for p in model.blocks.parameters())
@@ -1193,7 +1249,8 @@ if __name__ == "__main__":
         model.bid_key_mlp,
         model.dividend_actor_proj, model.dividend_info_proj, model.dividend_key_mlp,
         model.issue_head, model.acq_offer_head,
-        model.price_acq_head, model.par_price_head,
+        model.price_acq_head,
+        model.par_actor_proj, model.par_info_proj, model.par_key_mlp,
     ]
     policy_params = sum(sum(p.numel() for p in m.parameters()) for m in policy_modules)
     value_params = sum(p.numel() for p in model.value_head.parameters())
@@ -1204,6 +1261,7 @@ if __name__ == "__main__":
         ("Corp ID embeds", corp_id_params),
         ("Bid offset embeds", bid_offset_params),
         ("Dividend amount embeds", dividend_amount_params),
+        ("PAR price embeds", par_price_params),
         ("Type embeds", type_params),
         ("Transformer trunk", trunk_params),
         ("Policy heads", policy_params),
