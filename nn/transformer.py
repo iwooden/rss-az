@@ -40,7 +40,6 @@ from core.token_data import TokenDataSize, TokenWidth, get_token_widths
 
 NUM_PHASES = len(DecisionPhase)
 NUM_FIXED_TOKENS = 54
-NUM_SYNTHETIC_TOKENS = 1
 MAX_PHASE_ACTION_SIZE = max(PHASE_ACTION_SIZES)  # 53 (INVEST: pass + 36 + 16)
 
 # Unified policy slot layout. Every per-row policy head emits its logits
@@ -93,22 +92,8 @@ _TYPE_PLAYER = 12
 NUM_TOKEN_TYPES = 13
 
 _GELU_APPROX = "tanh"
-_NUM_COMPANIES = int(GameConstants.NUM_COMPANIES)
 _NUM_CORPS = int(GameConstants.NUM_CORPS)
-_MAX_MODEL_PLAYERS = 5
 _TOKEN_FEATURE_START = 1
-_IS_SELECTED_OFFSET = 1
-_COMPANY_REMOVED_OFFSET = 9
-_CORP_REL_OFFSET = 51
-_CORP_PRESIDENT_WIDTH = _MAX_MODEL_PLAYERS
-_CORP_COMPANIES_WIDTH = _NUM_COMPANIES
-_FI_COMPANIES_OFFSET = 3
-_FI_COMPANIES_WIDTH = _NUM_COMPANIES
-_PLAYER_REL_OFFSET = 15
-_PLAYER_SHARES_WIDTH = _NUM_CORPS
-_PLAYER_COMPANIES_WIDTH = _NUM_COMPANIES
-_COMPANY_OWNER_OFFSET = 14
-_COMPANY_OWNER_WIDTH = _NUM_CORPS + _MAX_MODEL_PLAYERS + 1
 _GLOBAL_PHASE_OFFSET = 1
 _GLOBAL_PHASE_WIDTH = NUM_PHASES
 
@@ -283,13 +268,9 @@ class RSSTransformerNet(nn.Module):
     # Class-level annotation so pyright knows ``self._type_ids`` (registered
     # as a buffer in ``__init__``) is a Tensor. ``register_buffer`` otherwise
     # returns ``Tensor | Module | None`` per pytorch's stubs, which breaks
-    # ``type_embeds[self._type_ids]`` indexing.
+    # ``type_embeds(self._type_ids)`` lookups.
     _type_ids: torch.Tensor
-    _company_ids: torch.Tensor
     _corp_ids: torch.Tensor
-    _player_ids: torch.Tensor
-    _active_ref_targets: torch.Tensor
-    _phase_ref_targets: torch.Tensor
     _pass_phase_ids: torch.Tensor
 
     def __init__(self, cfg: TransformerConfig) -> None:
@@ -331,7 +312,6 @@ class RSSTransformerNet(nn.Module):
         # Indices aligned with ``PASS_PHASE_IDS``.
         self._pass_base = NUM_FIXED_TOKENS + np_
         self._pass_idxs: list[int] = [self._pass_base + i for i in range(NUM_PASS_PHASES)]
-        self._removed_companies_idx = self._pass_base + NUM_PASS_PHASES
 
         # Drift guard: hardcoded positions above must match the Cython-side
         # ``get_token_widths`` layout. Checking here fires loudly at model
@@ -341,61 +321,30 @@ class RSSTransformerNet(nn.Module):
 
         # --- Type-specific input projections ---
         # Projections drop slot 0 (the token attention mask) before feeding
-        # data into Linear layers. Company, corp, and player identity comes
-        # from row order plus learned ID embeddings, not raw ID fields. Company
-        # tokens also skip their trailing ownership fields and receive a gated
-        # additive "owned by" reference from the matching corp / player / FI
-        # embedding. Corp tokens skip their trailing president/company
-        # ownership fields and receive gated player-president references plus
-        # gated company ownership references from the same ID tables. FI skips
-        # its trailing owned-company bitmap and receives gated additive company
-        # references from ``company_id_embed``. Player tokens skip their
-        # trailing owned-share/company fields and receive gated share ownership
-        # references plus gated company ownership references from the same ID
-        # tables.
+        # data into Linear layers. Relation and phase fields remain ordinary
+        # projected inputs; learned additive state is limited to type embeddings,
+        # corp row-order identity embeddings, and learned pass anchors.
         # The engine-side buffer is rectangular at ``TOKEN_DIM=92`` so
         # ``get_token_data`` can fill it with a single nogil memcpy pattern,
-        # but projection weights on padding / replaced relation fields are inert
-        # waste — slicing in both sizing and ``_project_tokens`` drops them.
+        # but each projection still sizes itself to that token type's meaningful
+        # width so padding remains inert.
         # Widths are pulled from ``TokenWidth`` so the model and the Cython
         # extractor can't drift out of sync.
         self._token_feature_start = _TOKEN_FEATURE_START
-        self._is_selected_offset = _IS_SELECTED_OFFSET
-        self._company_removed_offset = _COMPANY_REMOVED_OFFSET
-        self._player_rel_offset = _PLAYER_REL_OFFSET
-        self._player_shares_offset = _PLAYER_REL_OFFSET
-        self._player_shares_width = _PLAYER_SHARES_WIDTH
-        self._player_companies_offset = self._player_shares_offset + self._player_shares_width
-        self._player_companies_width = _PLAYER_COMPANIES_WIDTH
         self.player_proj = nn.Linear(
-            self._player_rel_offset - self._token_feature_start,
+            int(TokenWidth.TW_PLAYER) - self._token_feature_start,
             d,
         )
-        self._corp_rel_offset = _CORP_REL_OFFSET
-        self._corp_president_offset = _CORP_REL_OFFSET
-        self._corp_president_width = _CORP_PRESIDENT_WIDTH
-        self._corp_companies_offset = self._corp_president_offset + self._corp_president_width
-        self._corp_companies_width = _CORP_COMPANIES_WIDTH
         self.corp_proj = nn.Linear(
-            self._corp_rel_offset - self._token_feature_start,
+            int(TokenWidth.TW_CORP) - self._token_feature_start,
             d,
         )
-        self._company_owner_offset = _COMPANY_OWNER_OFFSET
-        self._company_owner_corp_offset = _COMPANY_OWNER_OFFSET
-        self._company_owner_player_offset = _COMPANY_OWNER_OFFSET + _NUM_CORPS
-        self._company_owner_fi_offset = self._company_owner_player_offset + _MAX_MODEL_PLAYERS
-        self._company_owner_width = _COMPANY_OWNER_WIDTH
-        self._company_owner_corp_width = _NUM_CORPS
-        self._company_owner_player_width = _MAX_MODEL_PLAYERS
-        self._company_owner_fi_width = 1
         self.company_proj = nn.Linear(
-            self._company_owner_offset - self._token_feature_start,
+            int(TokenWidth.TW_COMPANY) - self._token_feature_start,
             d,
         )
-        self._fi_companies_offset = _FI_COMPANIES_OFFSET
-        self._fi_companies_width = _FI_COMPANIES_WIDTH
         self.fi_proj = nn.Linear(
-            self._fi_companies_offset - self._token_feature_start,
+            int(TokenWidth.TW_FI) - self._token_feature_start,
             d,
         )
         self.market_info_proj = nn.Linear(
@@ -404,9 +353,8 @@ class RSSTransformerNet(nn.Module):
         )
         self._global_phase_offset = _GLOBAL_PHASE_OFFSET
         self._global_phase_width = _GLOBAL_PHASE_WIDTH
-        global_suffix_offset = self._global_phase_offset + self._global_phase_width
         self.global_info_proj = nn.Linear(
-            int(TokenWidth.TW_GLOBAL_INFO) - global_suffix_offset,
+            int(TokenWidth.TW_GLOBAL_INFO) - self._token_feature_start,
             d,
         )
         self.invest_proj = nn.Linear(
@@ -441,24 +389,10 @@ class RSSTransformerNet(nn.Module):
         # learned (d_model,) vectors (BERT [CLS]-style anchors) that ride the
         # residual stream and pick up game-state context through attention.
         # Direct-token phases read pass from their phase-info token instead.
-        self.pass_embeds = nn.Parameter(torch.empty(NUM_PASS_PHASES, d))
-        self.removed_companies_embed = nn.Parameter(torch.empty(d))
-        # Learned entity identity embeddings are added from token row order.
-        # The engine no longer writes entity ID one-hots into the token rows.
-        self.company_id_embed = nn.Embedding(_NUM_COMPANIES, d)
+        self.pass_embeds = nn.Embedding(NUM_PASS_PHASES, d)
+        # Corp tokens keep a learned row-order identity embedding. Other entity
+        # identity and relation fields are consumed as ordinary projected input.
         self.corp_id_embed = nn.Embedding(_NUM_CORPS, d)
-        self.player_id_embed = nn.Embedding(_MAX_MODEL_PLAYERS, d)
-        self.phase_embed = nn.Embedding(NUM_PHASES, d)
-        # Diagonal role gates for relation references. Initialized to ones so
-        # relations start as exact shared-ID matching, then training can
-        # rescale dimensions for each relation role.
-        self.company_ownership_gate = nn.Parameter(torch.empty(d))
-        self.company_owned_by_gate = nn.Parameter(torch.empty(d))
-        self.corp_president_gate = nn.Parameter(torch.empty(d))
-        self.share_ownership_gate = nn.Parameter(torch.empty(d))
-        self.active_player_gate = nn.Parameter(torch.empty(d))
-        self.active_corp_gate = nn.Parameter(torch.empty(d))
-        self.active_company_gate = nn.Parameter(torch.empty(d))
         # Per-type additive embedding for every non-pass token. Added
         # post-projection in ``_project_tokens`` so the trunk still sees a
         # type-distinct vector even when a token's feature slice is all-zero
@@ -467,10 +401,8 @@ class RSSTransformerNet(nn.Module):
         # features + zero-initialized Linear biases collapse the token to the
         # zero vector on day one, and the only path to type discrimination is
         # an indirect gradient through the Linear's bias. Broadcast across
-        # all instances of a type (36 companies, 8 corps, N players). Company,
-        # corp, and player self-identity, plus relational references, come
-        # from their dedicated learned additive paths.
-        self.type_embeds = nn.Parameter(torch.empty(NUM_TOKEN_TYPES, d))
+        # all instances of a type (36 companies, 8 corps, N players).
+        self.type_embeds = nn.Embedding(NUM_TOKEN_TYPES, d)
         # Static (num_players + NUM_FIXED_TOKENS,) type-id lookup. Built once here so
         # ``_project_tokens`` can do a single indexed gather against
         # ``type_embeds``. Registered as a buffer so ``.to(device)`` carries
@@ -496,31 +428,8 @@ class RSSTransformerNet(nn.Module):
             persistent=False,
         )
 
-        # Active-entity reference targets span the phase/query tokens plus the
-        # learned pass anchors. MarketInfo, GlobalInfo, FI, and player/corp/
-        # company entity tokens keep their own factual representations clean:
-        # entity rows still carry ``is_selected`` in their projected feature
-        # prefix, so the trunk can recover active identity through attention.
-        projected_tokens = (
-            np_ + NUM_FIXED_TOKENS + NUM_PASS_PHASES + NUM_SYNTHETIC_TOKENS
-        )
-        active_ref_targets = torch.zeros(projected_tokens, dtype=torch.float32)
-        active_ref_targets[self._invest_idx:self._acq_price_info_idx + 1] = 1.0
-        active_ref_targets[self._pass_idxs] = 1.0
-        self.register_buffer("_active_ref_targets", active_ref_targets, persistent=False)
-
-        phase_ref_targets = torch.ones(projected_tokens, dtype=torch.float32)
-        phase_ref_targets[self._global_info_idx] = 0.0
-        self.register_buffer("_phase_ref_targets", phase_ref_targets, persistent=False)
-
-        self.register_buffer(
-            "_company_ids", torch.arange(_NUM_COMPANIES, dtype=torch.long), persistent=False,
-        )
         self.register_buffer(
             "_corp_ids", torch.arange(_NUM_CORPS, dtype=torch.long), persistent=False,
-        )
-        self.register_buffer(
-            "_player_ids", torch.arange(np_, dtype=torch.long), persistent=False,
         )
 
         # --- Transformer trunk ---
@@ -607,240 +516,58 @@ class RSSTransformerNet(nn.Module):
         )
 
     def _project_company_tokens(self, x: torch.Tensor) -> torch.Tensor:
-        """Project company tokens, adding row-order ID and owner references."""
-        owner_start = self._company_owner_offset
-        owner_stop = owner_start + self._company_owner_width
-        company_raw = x[
-            :,
-            self._company_slice,
-            :int(TokenWidth.TW_COMPANY),
-        ]
-        company_features = company_raw[:, :, self._token_feature_start:owner_start]
-        company_tokens = self.company_proj(company_features)
-        company_tokens = (
-            company_tokens
-            + self.company_id_embed(self._company_ids).to(company_tokens.dtype)
+        """Project company tokens from their raw feature fields."""
+        return self.company_proj(
+            x[
+                :,
+                self._company_slice,
+                self._token_feature_start:int(TokenWidth.TW_COMPANY),
+            ]
         )
-        owner_onehot = company_raw[:, :, owner_start:owner_stop]
-        owner_ref_table = torch.cat(
-            [
-                self.corp_id_embed.weight,
-                self.player_id_embed.weight,
-                self.type_embeds[_TYPE_FI].unsqueeze(0),
-            ],
-            dim=0,
-        )
-        owner_refs = owner_onehot.to(owner_ref_table.dtype) @ owner_ref_table
-        owner_refs = owner_refs * self.company_owned_by_gate.to(owner_refs.dtype)
-        return company_tokens + owner_refs.to(company_tokens.dtype)
 
     def _project_corp_tokens(self, x: torch.Tensor) -> torch.Tensor:
-        """Project corp tokens, adding row-order ID and relational references."""
-        corp_raw = x[
-            :,
-            self._corp_slice,
-            :int(TokenWidth.TW_CORP),
-        ]
+        """Project corp tokens, adding learned row-order corp identity."""
         corp_tokens = self.corp_proj(
-            corp_raw[:, :, self._token_feature_start:self._corp_rel_offset]
+            x[
+                :,
+                self._corp_slice,
+                self._token_feature_start:int(TokenWidth.TW_CORP),
+            ]
         )
-        corp_tokens = (
-            corp_tokens
-            + self.corp_id_embed(self._corp_ids).to(corp_tokens.dtype)
-        )
-
-        president_start = self._corp_president_offset
-        president_stop = president_start + self._corp_president_width
-        president_onehot = corp_raw[:, :, president_start:president_stop]
-        president_refs = (
-            president_onehot.to(self.player_id_embed.weight.dtype)
-            @ self.player_id_embed.weight
-        )
-        president_refs = president_refs * self.corp_president_gate.to(
-            president_refs.dtype
-        )
-
-        companies_start = self._corp_companies_offset
-        companies_stop = companies_start + self._corp_companies_width
-        owned_company_bitmap = corp_raw[:, :, companies_start:companies_stop]
-        owned_company_refs = (
-            owned_company_bitmap.to(self.company_id_embed.weight.dtype)
-            @ self.company_id_embed.weight
-        )
-        owned_company_count = owned_company_bitmap.sum(dim=-1, keepdim=True).clamp_min(1.0)
-        owned_company_refs = owned_company_refs / owned_company_count.sqrt().to(
-            owned_company_refs.dtype
-        )
-        owned_company_refs = (
-            owned_company_refs
-            * self.company_ownership_gate.to(owned_company_refs.dtype)
-        )
-
-        return (
-            corp_tokens
-            + president_refs.to(corp_tokens.dtype)
-            + owned_company_refs.to(corp_tokens.dtype)
-        )
+        return corp_tokens + self.corp_id_embed(self._corp_ids).to(corp_tokens.dtype)
 
     def _project_fi_token(self, x: torch.Tensor) -> torch.Tensor:
-        """Project the FI token, adding owned-company references."""
-        fi_raw = x[
-            :,
-            self._fi_idx,
-            :int(TokenWidth.TW_FI),
-        ]
-        fi_token = self.fi_proj(
-            fi_raw[:, self._token_feature_start:self._fi_companies_offset]
+        """Project the FI token from its raw feature fields."""
+        return self.fi_proj(
+            x[
+                :,
+                self._fi_idx,
+                self._token_feature_start:int(TokenWidth.TW_FI),
+            ]
         )
-        companies_start = self._fi_companies_offset
-        companies_stop = companies_start + self._fi_companies_width
-        owned_company_bitmap = fi_raw[:, companies_start:companies_stop]
-        owned_company_refs = (
-            owned_company_bitmap.to(self.company_id_embed.weight.dtype)
-            @ self.company_id_embed.weight
-        )
-        owned_company_count = owned_company_bitmap.sum(dim=-1, keepdim=True).clamp_min(1.0)
-        owned_company_refs = owned_company_refs / owned_company_count.sqrt().to(
-            owned_company_refs.dtype
-        )
-        owned_company_refs = (
-            owned_company_refs
-            * self.company_ownership_gate.to(owned_company_refs.dtype)
-        )
-        return fi_token + owned_company_refs.to(fi_token.dtype)
 
     def _project_global_info_token(self, x: torch.Tensor) -> torch.Tensor:
-        """Project global info, excluding attn_mask and phase one-hot prefix."""
-        phase_stop = self._global_phase_offset + self._global_phase_width
+        """Project global info from its raw feature fields."""
         return self.global_info_proj(
             x[
                 :,
                 self._global_info_idx,
-                phase_stop:int(TokenWidth.TW_GLOBAL_INFO),
+                self._token_feature_start:int(TokenWidth.TW_GLOBAL_INFO),
             ]
         )
 
     def _project_player_tokens(self, x: torch.Tensor) -> torch.Tensor:
-        """Project player tokens, adding row-order ID and relational references."""
-        player_raw = x[
-            :,
-            self._player_slice,
-            :int(TokenWidth.TW_PLAYER),
-        ]
-        player_tokens = self.player_proj(
-            player_raw[:, :, self._token_feature_start:self._player_rel_offset]
-        )
-        player_tokens = (
-            player_tokens
-            + self.player_id_embed(self._player_ids).to(player_tokens.dtype)
-        )
-
-        shares_start = self._player_shares_offset
-        shares_stop = shares_start + self._player_shares_width
-        owned_shares = player_raw[:, :, shares_start:shares_stop]
-        share_refs = (
-            owned_shares.to(self.corp_id_embed.weight.dtype)
-            @ self.corp_id_embed.weight
-        )
-        share_refs = share_refs * self.share_ownership_gate.to(share_refs.dtype)
-
-        companies_start = self._player_companies_offset
-        companies_stop = companies_start + self._player_companies_width
-        owned_company_bitmap = player_raw[:, :, companies_start:companies_stop]
-        owned_company_refs = (
-            owned_company_bitmap.to(self.company_id_embed.weight.dtype)
-            @ self.company_id_embed.weight
-        )
-        owned_company_count = owned_company_bitmap.sum(dim=-1, keepdim=True).clamp_min(1.0)
-        owned_company_refs = owned_company_refs / owned_company_count.sqrt().to(
-            owned_company_refs.dtype
-        )
-        owned_company_refs = (
-            owned_company_refs
-            * self.company_ownership_gate.to(owned_company_refs.dtype)
-        )
-
-        return (
-            player_tokens
-            + share_refs.to(player_tokens.dtype)
-            + owned_company_refs.to(player_tokens.dtype)
-        )
-
-    def _project_removed_companies_token(
-        self,
-        x: torch.Tensor,
-        dtype: torch.dtype,
-    ) -> torch.Tensor:
-        """Learned token plus scaled references for companies removed from play."""
-        removed_bitmap = x[
-            :,
-            self._company_slice,
-            self._company_removed_offset,
-        ]
-        removed_bitmap = removed_bitmap.to(self.company_id_embed.weight.dtype)
-        removed_refs = removed_bitmap @ self.company_id_embed.weight
-        removed_count = removed_bitmap.sum(dim=-1, keepdim=True).clamp_min(1.0)
-        removed_refs = removed_refs / removed_count.sqrt().to(removed_refs.dtype)
-        token = self.removed_companies_embed.to(removed_refs.dtype).view(1, -1)
-        return (token + removed_refs).to(dtype)
-
-    def _active_entity_refs(
-        self,
-        x: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return active player/corp/company identity refs from is_selected slots."""
-        active_player_ref = (
-            x[:, self._player_slice, self._is_selected_offset].to(self.player_id_embed.weight.dtype)
-            @ self.player_id_embed(self._player_ids)
-        )
-        active_corp_ref = (
-            x[:, self._corp_slice, self._is_selected_offset].to(self.corp_id_embed.weight.dtype)
-            @ self.corp_id_embed.weight
-        )
-        active_company_ref = (
-            x[:, self._company_slice, self._is_selected_offset].to(self.company_id_embed.weight.dtype)
-            @ self.company_id_embed.weight
-        )
-        return active_player_ref, active_corp_ref, active_company_ref
-
-    def _add_active_entity_refs(
-        self,
-        tokens: torch.Tensor,
-        active_player_ref: torch.Tensor,
-        active_corp_ref: torch.Tensor,
-        active_company_ref: torch.Tensor,
-    ) -> torch.Tensor:
-        """Broadcast active entity refs to phase/query tokens and pass anchors."""
-        dtype = tokens.dtype
-        active_ref = (
-            active_player_ref.to(dtype) * self.active_player_gate.to(dtype)
-            + active_corp_ref.to(dtype) * self.active_corp_gate.to(dtype)
-            + active_company_ref.to(dtype) * self.active_company_gate.to(dtype)
-        )
-        return tokens + (
-            active_ref[:, None, :]
-            * self._active_ref_targets.to(dtype=dtype).view(1, -1, 1)
-        )
-
-    def _phase_ref(self, x: torch.Tensor) -> torch.Tensor:
-        """Return the current decision-phase ref from GlobalInfo's phase one-hot."""
-        phase_onehot = x[
-            :,
-            self._global_info_idx,
-            self._global_phase_offset:self._global_phase_offset + self._global_phase_width,
-        ]
-        return phase_onehot.to(self.phase_embed.weight.dtype) @ self.phase_embed.weight
-
-    def _add_phase_ref(self, tokens: torch.Tensor, phase_ref: torch.Tensor) -> torch.Tensor:
-        """Broadcast the phase ref to every token except GlobalInfo."""
-        dtype = tokens.dtype
-        return tokens + (
-            phase_ref.to(dtype)[:, None, :]
-            * self._phase_ref_targets.to(dtype=dtype).view(1, -1, 1)
+        """Project player tokens from their raw feature fields."""
+        return self.player_proj(
+            x[
+                :,
+                self._player_slice,
+                self._token_feature_start:int(TokenWidth.TW_PLAYER),
+            ]
         )
 
     def _attention_mask(self, x: torch.Tensor) -> torch.Tensor:
-        """Build SDPA key-visibility mask from input, pass, and synthetic rows.
+        """Build SDPA key-visibility mask from input and pass-anchor rows.
 
         Shape is ``(B, 1, 1, N)`` so it broadcasts over heads and query
         positions against SDPA attention weights ``(B, H, N, N)``. The mask is
@@ -854,8 +581,7 @@ class RSSTransformerNet(nn.Module):
             self._global_phase_offset:self._global_phase_offset + self._global_phase_width,
         ]
         pass_mask = phase_onehot.index_select(1, self._pass_phase_ids) > 0.5
-        synthetic_mask = input_mask.new_ones((x.shape[0], NUM_SYNTHETIC_TOKENS))
-        token_mask = torch.cat([input_mask, pass_mask, synthetic_mask], dim=1)
+        token_mask = torch.cat([input_mask, pass_mask], dim=1)
         return token_mask[:, None, None, :]
 
     @staticmethod
@@ -974,32 +700,12 @@ class RSSTransformerNet(nn.Module):
     def _project_tokens(self, x: torch.Tensor) -> torch.Tensor:
         """Project raw token features to d_model via type-specific projections.
 
-        The pass anchors and synthetic removed-company token are concatenated
-        here (not present in the input buffer), so the output sequence is
-        wider than the input.
-
-        Most rows are sliced to their projection's ``in_features`` width
-        before projecting. Company, corp, and player identities are inferred
-        from row order and added as learned additive identity embeddings.
-        Company rows skip the ownership tail and receive the matching corp /
-        player / FI additive owner reference through the ``company_owned_by``
-        diagonal role gate. Corp rows skip the
-        president / owned-company tail and receive player-president refs
-        through the ``corp_president`` gate and company references through the
-        ``company_ownership`` gate. FI skips its owned-company tail and
-        receives gated additive company references. Player rows skip their
-        owned shares / owned-company tail and receive gated share ownership
-        refs plus gated company ownership refs. The engine-side buffer is rectangularly
-        zero-padded to ``TOKEN_DIM=92`` so ``get_token_data`` can fill it with
-        a uniform nogil memcpy pattern, but each type only uses its meaningful
-        feature slice — padding and replaced relation fields would otherwise be
-        multiplied against projection weights. After learned rows are appended,
-        active player/corp/company identity refs are broadcast only to phase/
-        query tokens and learned pass anchors, leaving MarketInfo, GlobalInfo,
-        FI, entity rows, and the synthetic removed-company row unmodified by
-        active refs. The decision-phase one-hot is also sliced out of
-        GlobalInfo and broadcast as a learned phase ref to every token except
-        GlobalInfo itself.
+        Learned pass anchors are concatenated here because they are not present
+        in the input buffer. Non-pass rows receive a learned token-type embed
+        after projection, and corp rows also receive learned row-order corp ID
+        embeds. Other entity IDs, relation references, active-entity refs, and
+        phase refs are left as raw projected features rather than learned
+        additive embeddings.
 
         Args:
             x: (batch, cfg.num_tokens, token_dim) zero-padded raw features.
@@ -1010,9 +716,8 @@ class RSSTransformerNet(nn.Module):
                 Linear weights in non-autocast paths (for example in-process
                 NNEvaluator tests).
         Returns:
-            ``(batch, cfg.num_tokens + NUM_PASS_PHASES + NUM_SYNTHETIC_TOKENS,
-            d_model)`` embeddings: projected input tokens followed by the
-            per-phase pass anchors and synthetic removed-company token.
+            ``(batch, cfg.num_tokens + NUM_PASS_PHASES, d_model)`` embeddings:
+            projected input tokens followed by the per-phase pass anchors.
         """
         # Pass anchors: (NUM_PASS_PHASES, d) → (B, NUM_PASS_PHASES, d) without
         # mixing SymInt with ``-1`` in the expand target. Under AOT autograd,
@@ -1042,26 +747,13 @@ class RSSTransformerNet(nn.Module):
         # indexed gather against ``type_embeds`` gives every non-pass token a
         # type-distinct signal even when its feature slice is all-zero.
         input_tokens = torch.cat(input_parts, dim=1)                                     # (B, cfg.num_tokens, d)
-        input_tokens = input_tokens + self.type_embeds[self._type_ids].to(input_tokens.dtype)
+        input_tokens = input_tokens + self.type_embeds(self._type_ids).to(input_tokens.dtype)
         pass_rows = (
-            self.pass_embeds.to(dtype=input_tokens.dtype)
+            self.pass_embeds.weight.to(dtype=input_tokens.dtype)
             .view(1, NUM_PASS_PHASES, d)
             .expand(x.shape[0], NUM_PASS_PHASES, d)
         )
-        removed_companies_row = self._project_removed_companies_token(
-            x,
-            input_tokens.dtype,
-        ).unsqueeze(1)
-        tokens = torch.cat([input_tokens, pass_rows, removed_companies_row], dim=1)       # (B, num_tokens, d)
-        tokens = self._add_phase_ref(tokens, self._phase_ref(x))
-        active_player_ref, active_corp_ref, active_company_ref = self._active_entity_refs(x)
-        tokens = self._add_active_entity_refs(
-            tokens,
-            active_player_ref,
-            active_corp_ref,
-            active_company_ref,
-        )
-        return tokens
+        return torch.cat([input_tokens, pass_rows], dim=1)                               # (B, num_tokens, d)
 
     # ------------------------------------------------------------------
     # Unified policy: every head runs once on the full batch
@@ -1222,21 +914,10 @@ class RSSTransformerNet(nn.Module):
                 nn.init.ones_(module.weight)
 
         # Pass anchors: small-random learned per-phase vectors (BERT [CLS] convention).
-        nn.init.trunc_normal_(self.pass_embeds, std=0.02)
-        nn.init.trunc_normal_(self.removed_companies_embed, std=0.02)
-        nn.init.trunc_normal_(self.company_id_embed.weight, std=0.02)
+        nn.init.trunc_normal_(self.pass_embeds.weight, std=0.02)
         nn.init.trunc_normal_(self.corp_id_embed.weight, std=0.02)
-        nn.init.trunc_normal_(self.player_id_embed.weight, std=0.02)
-        nn.init.trunc_normal_(self.phase_embed.weight, std=0.02)
-        nn.init.ones_(self.company_ownership_gate)
-        nn.init.ones_(self.company_owned_by_gate)
-        nn.init.ones_(self.corp_president_gate)
-        nn.init.ones_(self.share_ownership_gate)
-        nn.init.ones_(self.active_player_gate)
-        nn.init.ones_(self.active_corp_gate)
-        nn.init.ones_(self.active_company_gate)
         # Per-type additive embeddings: same small-random init.
-        nn.init.trunc_normal_(self.type_embeds, std=0.02)
+        nn.init.trunc_normal_(self.type_embeds.weight, std=0.02)
 
         # Zero-init residual outputs so each block starts as identity
         for block in self.blocks:
@@ -1275,22 +956,9 @@ if __name__ == "__main__":
         model.acq_price_proj,
     ]
     proj_params = sum(sum(p.numel() for p in m.parameters()) for m in proj_modules)
-    company_id_params = model.company_id_embed.weight.numel()
     corp_id_params = model.corp_id_embed.weight.numel()
-    player_id_params = model.player_id_embed.weight.numel()
-    phase_params = model.phase_embed.weight.numel()
-    role_gate_params = (
-        model.company_ownership_gate.numel()
-        + model.company_owned_by_gate.numel()
-        + model.corp_president_gate.numel()
-        + model.share_ownership_gate.numel()
-        + model.active_player_gate.numel()
-        + model.active_corp_gate.numel()
-        + model.active_company_gate.numel()
-    )
-    pass_params = model.pass_embeds.numel()
-    removed_params = model.removed_companies_embed.numel()
-    type_params = model.type_embeds.numel()
+    pass_params = model.pass_embeds.weight.numel()
+    type_params = model.type_embeds.weight.numel()
     trunk_params = (
         sum(p.numel() for p in model.blocks.parameters())
         + sum(p.numel() for p in model.final_norm.parameters())
@@ -1310,13 +978,8 @@ if __name__ == "__main__":
     print("Parameter breakdown:")
     for name, count in [
         ("Input projections", proj_params),
-        ("Company ID embeds", company_id_params),
         ("Corp ID embeds", corp_id_params),
-        ("Player ID embeds", player_id_params),
-        ("Phase embeds", phase_params),
-        ("Role gates", role_gate_params),
         ("Pass anchors", pass_params),
-        ("Removed company token", removed_params),
         ("Type embeds", type_params),
         ("Transformer trunk", trunk_params),
         ("Policy heads", policy_params),
