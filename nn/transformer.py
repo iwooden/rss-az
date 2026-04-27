@@ -57,24 +57,10 @@ for _size in PHASE_ACTION_SIZES:
     _PHASE_OFFSETS.append(_PHASE_OFFSETS[-1] + int(_size))
 UNIFIED_LOGIT_DIM = _PHASE_OFFSETS[-1]  # 255
 
-# Historical pass-anchor phases. The anchors are still appended to the trunk
-# sequence for this commit, but policy logits no longer read directly from
-# them. BID, ACQ_OFFER, and ISSUE have pass actions read from their
-# phase-specific information tokens.
-PASS_PHASE_IDS: tuple[int, ...] = (
-    int(DecisionPhase.DPHASE_INVEST),
-    int(DecisionPhase.DPHASE_ACQ_SELECT_CORP),
-    int(DecisionPhase.DPHASE_CLOSING),
-    int(DecisionPhase.DPHASE_IPO),
-)
-NUM_PASS_PHASES = len(PASS_PHASE_IDS)  # 4
-
 # Input-buffer token-type taxonomy. Index order must stay stable — the static
 # ``_type_ids`` buffer built in ``RSSTransformerNet.__init__`` indexes into
 # ``type_embeds`` using these ids, and multi-instance types (company / corp
-# / player) share a single row. Pass tokens are absent here — they're
-# already pure learned anchors (``pass_embeds``) so no type embedding is
-# needed for them.
+# / player) share a single row.
 _TYPE_MARKET_INFO = 0
 _TYPE_COMPANY = 1
 _TYPE_FI = 2
@@ -94,9 +80,6 @@ _GELU_APPROX = "tanh"
 _NUM_CORPS = int(GameConstants.NUM_CORPS)
 _TOKEN_FEATURE_START = 1
 _IS_SELECTED_OFFSET = 1
-_GLOBAL_PHASE_OFFSET = 1
-_GLOBAL_PHASE_WIDTH = NUM_PHASES
-
 
 def _phase_action_size(phase: DecisionPhase) -> int:
     return int(PHASE_ACTION_SIZES[int(phase)])
@@ -169,13 +152,7 @@ class TransformerConfig:
 
     @property
     def num_tokens(self) -> int:
-        """Input-buffer token count: fixed entity/phase tokens + N players.
-
-        The trunk sequence is wider because ``_project_tokens`` concatenates
-        learned pass anchors for entity-readout pass phases after projection;
-        those rows have no input features so they don't exist in the
-        engine-side buffer.
-        """
+        """Input-buffer token count: fixed entity/phase tokens + N players."""
         return self.num_players + NUM_FIXED_TOKENS
 
 
@@ -285,7 +262,6 @@ class RSSTransformerNet(nn.Module):
     # ``type_embeds(self._type_ids)`` lookups.
     _type_ids: torch.Tensor
     _corp_ids: torch.Tensor
-    _pass_phase_ids: torch.Tensor
     _bid_offset_features: torch.Tensor
     _dividend_amount_features: torch.Tensor
 
@@ -305,9 +281,6 @@ class RSSTransformerNet(nn.Module):
         #     acq_offer, acq_price_info
         #   corps×8, then players×N (trailing so padding for higher player
         #   counts is a no-op on the prefix).
-        # Learned pass anchors are concatenated after projection; see
-        # ``_project_tokens``. They live beyond the player slice, so player
-        # indices stay contiguous for the value head and the padding contract.
         self._market_info_idx = 0
         self._company_slice = slice(1, 37)
         self._fi_idx = 37
@@ -321,12 +294,6 @@ class RSSTransformerNet(nn.Module):
         self._acq_price_info_idx = 45
         self._corp_slice = slice(46, NUM_FIXED_TOKENS)
         self._player_slice = slice(NUM_FIXED_TOKENS, NUM_FIXED_TOKENS + np_)
-        # One learned pass anchor per historical entity-readout pass phase,
-        # appended after the player slice as a contiguous block. These anchors
-        # are retained temporarily and no policy head reads directly from them.
-        # Indices aligned with ``PASS_PHASE_IDS``.
-        self._pass_base = NUM_FIXED_TOKENS + np_
-        self._pass_idxs: list[int] = [self._pass_base + i for i in range(NUM_PASS_PHASES)]
 
         # Drift guard: hardcoded positions above must match the Cython-side
         # ``get_token_widths`` layout. Checking here fires loudly at model
@@ -338,7 +305,7 @@ class RSSTransformerNet(nn.Module):
         # Projections drop slot 0 (the token attention mask) before feeding
         # data into Linear layers. Relation and phase fields remain ordinary
         # projected inputs; learned additive state is limited to type embeddings,
-        # corp row-order identity embeddings, and learned pass anchors.
+        # and corp row-order identity embeddings.
         # The engine-side buffer is rectangular at ``TOKEN_DIM=92`` so
         # ``get_token_data`` can fill it with a single nogil memcpy pattern,
         # but each projection still sizes itself to that token type's meaningful
@@ -367,8 +334,6 @@ class RSSTransformerNet(nn.Module):
             int(TokenWidth.TW_MARKET_INFO) - self._token_feature_start,
             d,
         )
-        self._global_phase_offset = _GLOBAL_PHASE_OFFSET
-        self._global_phase_width = _GLOBAL_PHASE_WIDTH
         self.global_info_proj = nn.Linear(
             int(TokenWidth.TW_GLOBAL_INFO) - self._token_feature_start,
             d,
@@ -401,11 +366,6 @@ class RSSTransformerNet(nn.Module):
             int(TokenWidth.TW_ACQ_PRICE) - self._token_feature_start,
             d,
         )
-        # Pass tokens: no input features. Entity-readout pass phases get
-        # learned (d_model,) vectors (BERT [CLS]-style anchors) that ride the
-        # residual stream and pick up game-state context through attention.
-        # Direct-token phases read pass from their phase-info token instead.
-        self.pass_embeds = nn.Embedding(NUM_PASS_PHASES, d)
         # Corp tokens keep a learned row-order identity embedding. Other entity
         # identity and relation fields are consumed as ordinary projected input.
         self.corp_id_embed = nn.Embedding(_NUM_CORPS, d)
@@ -438,11 +398,6 @@ class RSSTransformerNet(nn.Module):
         type_ids[self._corp_slice] = _TYPE_CORP
         type_ids[self._player_slice] = _TYPE_PLAYER
         self.register_buffer("_type_ids", type_ids, persistent=False)
-        self.register_buffer(
-            "_pass_phase_ids",
-            torch.tensor(PASS_PHASE_IDS, dtype=torch.long),
-            persistent=False,
-        )
 
         self.register_buffer(
             "_corp_ids", torch.arange(_NUM_CORPS, dtype=torch.long), persistent=False,
@@ -490,11 +445,6 @@ class RSSTransformerNet(nn.Module):
         self.invest_sell_actor_proj = nn.Linear(d, dp, bias=False)
         self.invest_sell_corp_proj = nn.Linear(d, dp, bias=False)
 
-        # Historical pass-anchor heads retained until the pass-anchor cleanup
-        # lands. No policy head currently reads these anchors.
-        self.anchor_pass_heads = nn.ModuleList(
-            [self._make_policy_head(1) for _ in range(NUM_PASS_PHASES - 3)]
-        )
         self.closing_pass_head = nn.Linear(d, 1)
         self.closing_actor_proj = nn.Linear(d, dp, bias=False)
         self.closing_company_proj = nn.Linear(d, dp, bias=False)
@@ -640,22 +590,14 @@ class RSSTransformerNet(nn.Module):
         )
 
     def _attention_mask(self, x: torch.Tensor) -> torch.Tensor:
-        """Build SDPA key-visibility mask from input and pass-anchor rows.
+        """Build SDPA key-visibility mask from input token rows.
 
         Shape is ``(B, 1, 1, N)`` so it broadcasts over heads and query
         positions against SDPA attention weights ``(B, H, N, N)``. The mask is
         tensor-only and has no data-dependent branches, keeping it compatible
         with ``torch.compile`` and CUDA graph capture.
         """
-        input_mask = x[:, :, 0] > 0.5
-        phase_onehot = x[
-            :,
-            self._global_info_idx,
-            self._global_phase_offset:self._global_phase_offset + self._global_phase_width,
-        ]
-        pass_mask = phase_onehot.index_select(1, self._pass_phase_ids) > 0.5
-        token_mask = torch.cat([input_mask, pass_mask], dim=1)
-        return token_mask[:, None, None, :]
+        return (x[:, :, 0] > 0.5)[:, None, None, :]
 
     @staticmethod
     def _policy_head_width(head: nn.Module) -> int:
@@ -712,18 +654,6 @@ class RSSTransformerNet(nn.Module):
                 f"invest pass head must be a single-logit head; "
                 f"got width {self._policy_head_width(self.invest_pass_head)}"
             )
-        anchor_pass_widths = [
-            self._policy_head_width(head) for head in self.anchor_pass_heads
-        ]
-        if (
-            len(anchor_pass_widths) != NUM_PASS_PHASES - 3
-            or any(w != 1 for w in anchor_pass_widths)
-        ):
-            raise AssertionError(
-                f"anchor pass heads must be {NUM_PASS_PHASES - 3} single-logit heads; "
-                f"got widths {anchor_pass_widths}"
-            )
-
         block_widths = [0] * NUM_PHASES
         block_widths[int(DecisionPhase.DPHASE_INVEST)] = (
             self._policy_head_width(self.invest_pass_head)
@@ -804,12 +734,10 @@ class RSSTransformerNet(nn.Module):
     def _project_tokens(self, x: torch.Tensor) -> torch.Tensor:
         """Project raw token features to d_model via type-specific projections.
 
-        Learned pass anchors are concatenated here because they are not present
-        in the input buffer. Non-pass rows receive a learned token-type embed
-        after projection, and corp rows also receive learned row-order corp ID
-        embeds. Other entity IDs, relation references, active-entity refs, and
-        phase refs are left as raw projected features rather than learned
-        additive embeddings.
+        Token rows receive a learned token-type embed after projection, and
+        corp rows also receive learned row-order corp ID embeds. Other entity
+        IDs, relation references, active-entity refs, and phase refs are left
+        as raw projected features rather than learned additive embeddings.
 
         Args:
             x: (batch, cfg.num_tokens, token_dim) zero-padded raw features.
@@ -820,16 +748,8 @@ class RSSTransformerNet(nn.Module):
                 Linear weights in non-autocast paths (for example in-process
                 NNEvaluator tests).
         Returns:
-            ``(batch, cfg.num_tokens + NUM_PASS_PHASES, d_model)`` embeddings:
-            projected input tokens followed by the per-phase pass anchors.
+            ``(batch, cfg.num_tokens, d_model)`` projected input embeddings.
         """
-        # Pass anchors: (NUM_PASS_PHASES, d) → (B, NUM_PASS_PHASES, d) without
-        # mixing SymInt with ``-1`` in the expand target. Under AOT autograd,
-        # ``.expand(B, NUM_PASS_PHASES, -1)`` where ``B`` is ``x.shape[0]``
-        # sometimes concretizes the batch size into a static guard and forces
-        # per-batch-size recompiles; feeding the last dim explicitly lets the
-        # symbolic-shape tracker carry ``B`` cleanly through.
-        d = self.cfg.d_model
         company_tokens = self._project_company_tokens(x)
         corp_tokens = self._project_corp_tokens(x)
         input_parts: list[torch.Tensor] = [
@@ -851,13 +771,7 @@ class RSSTransformerNet(nn.Module):
         # indexed gather against ``type_embeds`` gives every non-pass token a
         # type-distinct signal even when its feature slice is all-zero.
         input_tokens = torch.cat(input_parts, dim=1)                                     # (B, cfg.num_tokens, d)
-        input_tokens = input_tokens + self.type_embeds(self._type_ids).to(input_tokens.dtype)
-        pass_rows = (
-            self.pass_embeds.weight.to(dtype=input_tokens.dtype)
-            .view(1, NUM_PASS_PHASES, d)
-            .expand(x.shape[0], NUM_PASS_PHASES, d)
-        )
-        return torch.cat([input_tokens, pass_rows], dim=1)                               # (B, num_tokens, d)
+        return input_tokens + self.type_embeds(self._type_ids).to(input_tokens.dtype)    # (B, num_tokens, d)
 
     def _active_token(
         self,
@@ -1212,8 +1126,6 @@ class RSSTransformerNet(nn.Module):
             elif isinstance(module, nn.RMSNorm):
                 nn.init.ones_(module.weight)
 
-        # Pass anchors: small-random learned per-phase vectors (BERT [CLS] convention).
-        nn.init.trunc_normal_(self.pass_embeds.weight, std=0.02)
         nn.init.trunc_normal_(self.corp_id_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.bid_offset_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.dividend_amount_embed.weight, std=0.02)
@@ -1260,7 +1172,6 @@ if __name__ == "__main__":
     corp_id_params = model.corp_id_embed.weight.numel()
     bid_offset_params = model.bid_offset_embed.weight.numel()
     dividend_amount_params = model.dividend_amount_embed.weight.numel()
-    pass_params = model.pass_embeds.weight.numel()
     type_params = model.type_embeds.weight.numel()
     trunk_params = (
         sum(p.numel() for p in model.blocks.parameters())
@@ -1271,7 +1182,6 @@ if __name__ == "__main__":
         model.invest_auction_actor_proj, model.invest_auction_company_proj,
         model.invest_buy_actor_proj, model.invest_buy_corp_proj,
         model.invest_sell_actor_proj, model.invest_sell_corp_proj,
-        model.anchor_pass_heads,
         model.closing_pass_head,
         model.closing_actor_proj, model.closing_company_proj,
         model.acq_select_company_head,
@@ -1294,7 +1204,6 @@ if __name__ == "__main__":
         ("Corp ID embeds", corp_id_params),
         ("Bid offset embeds", bid_offset_params),
         ("Dividend amount embeds", dividend_amount_params),
-        ("Pass anchors", pass_params),
         ("Type embeds", type_params),
         ("Transformer trunk", trunk_params),
         ("Policy heads", policy_params),
