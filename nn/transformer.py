@@ -270,6 +270,7 @@ class RSSTransformerNet(nn.Module):
     _dividend_amount_features: torch.Tensor
     _par_index_features: torch.Tensor
     _acq_price_offset_features: torch.Tensor
+    _issue_action_features: torch.Tensor
 
     def __init__(self, cfg: TransformerConfig) -> None:
         super().__init__()
@@ -458,6 +459,15 @@ class RSSTransformerNet(nn.Module):
             acq_price_offset_features,
             persistent=False,
         )
+        issue_action_features = torch.arange(
+            _phase_action_size(DecisionPhase.DPHASE_ISSUE),
+            dtype=torch.float32,
+        ).view(1, _phase_action_size(DecisionPhase.DPHASE_ISSUE), 1)
+        self.register_buffer(
+            "_issue_action_features",
+            issue_action_features,
+            persistent=False,
+        )
 
         # --- Transformer trunk ---
         self.blocks = nn.ModuleList([
@@ -509,9 +519,9 @@ class RSSTransformerNet(nn.Module):
         self.bid_offset_embed = nn.Embedding(int(AUCTION_CAP), dp)
         self.bid_key_mlp = self._make_action_key_mlp(action_feature_width=4)
 
-        # Phase-specific context token heads. ACQ_OFFER / ISSUE emit full
-        # phase blocks from their phase-info tokens, including pass at
-        # phase-local action 0.
+        # Phase-specific context token heads. ACQ_OFFER still emits its full
+        # phase block from the phase-info token, including pass at phase-local
+        # action 0.
         self.dividend_actor_proj = nn.Linear(d, dp, bias=False)
         self.dividend_info_proj = nn.Linear(d, dp)
         self.dividend_amount_embed = nn.Embedding(
@@ -519,9 +529,13 @@ class RSSTransformerNet(nn.Module):
             dp,
         )
         self.dividend_key_mlp = self._make_action_key_mlp(action_feature_width=2)
-        self.issue_head = self._make_policy_head(
-            _phase_action_size(DecisionPhase.DPHASE_ISSUE)
+        self.issue_actor_proj = nn.Linear(d, dp, bias=False)
+        self.issue_info_proj = nn.Linear(d, dp)
+        self.issue_action_embed = nn.Embedding(
+            _phase_action_size(DecisionPhase.DPHASE_ISSUE),
+            dp,
         )
+        self.issue_key_mlp = self._make_action_key_mlp(action_feature_width=2)
         self.acq_offer_head = self._make_policy_head(
             _phase_action_size(DecisionPhase.DPHASE_ACQ_OFFER)
         )
@@ -734,8 +748,8 @@ class RSSTransformerNet(nn.Module):
         block_widths[int(DecisionPhase.DPHASE_DIVIDENDS)] = (
             self.dividend_amount_embed.num_embeddings
         )
-        block_widths[int(DecisionPhase.DPHASE_ISSUE)] = self._policy_head_width(
-            self.issue_head
+        block_widths[int(DecisionPhase.DPHASE_ISSUE)] = (
+            self.issue_action_embed.num_embeddings
         )
         if self._policy_head_width(self.ipo_pass_head) != 1:
             raise AssertionError(
@@ -1029,6 +1043,31 @@ class RSSTransformerNet(nn.Module):
             self.dividend_key_mlp,
         )
 
+    def _issue_logits(self, ctx: _PolicyContext) -> torch.Tensor:
+        """Build ISSUE logits: pass/no-issue plus issue one share."""
+        batch_size = ctx.tokens.shape[0]
+        num_actions = self.issue_action_embed.num_embeddings
+        action_is_issue = self._issue_action_features.to(
+            dtype=ctx.tokens.dtype,
+            device=ctx.tokens.device,
+        ).expand(batch_size, num_actions, 1)
+        issue_impact = ctx.raw_tokens[
+            :,
+            self._issue_idx,
+            self._token_feature_start:int(TokenWidth.TW_ISSUE),
+        ].to(ctx.tokens.dtype)
+        issue_impact_taken = action_is_issue * issue_impact.unsqueeze(1)
+        action_features = torch.cat([action_is_issue, issue_impact_taken], dim=-1)
+        return self._actor_action_key_logits(
+            ctx.active_corp,
+            ctx.tokens[:, self._issue_idx],
+            action_features,
+            self.issue_actor_proj,
+            self.issue_info_proj,
+            self.issue_action_embed,
+            self.issue_key_mlp,
+        )
+
     def _par_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Build par-price logits from active-player query and par-price keys."""
         num_par_prices = self.par_price_embed.num_embeddings
@@ -1162,7 +1201,7 @@ class RSSTransformerNet(nn.Module):
         # DIVIDENDS: 26 levels (no pass).
         dividend = self._dividend_logits(ctx)                                    # (B, 26)
         # ISSUE: pass + 1 issue.
-        issue = self.issue_head(tokens[:, self._issue_idx])                      # (B, 2)
+        issue = self._issue_logits(ctx)                                          # (B, 2)
         # IPO: pass + 8 corps.
         ipo = self._ipo_logits(ctx)                                              # (B, 9)
         # PAR: 14 par indices (no pass).
@@ -1283,6 +1322,7 @@ class RSSTransformerNet(nn.Module):
         nn.init.trunc_normal_(self.bid_offset_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.acq_price_offset_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.dividend_amount_embed.weight, std=0.02)
+        nn.init.trunc_normal_(self.issue_action_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.par_price_embed.weight, std=0.02)
         # Per-type additive embeddings: same small-random init.
         nn.init.trunc_normal_(self.type_embeds.weight, std=0.02)
@@ -1328,6 +1368,7 @@ if __name__ == "__main__":
     bid_offset_params = model.bid_offset_embed.weight.numel()
     acq_price_offset_params = model.acq_price_offset_embed.weight.numel()
     dividend_amount_params = model.dividend_amount_embed.weight.numel()
+    issue_action_params = model.issue_action_embed.weight.numel()
     par_price_params = model.par_price_embed.weight.numel()
     type_params = model.type_embeds.weight.numel()
     trunk_params = (
@@ -1349,7 +1390,8 @@ if __name__ == "__main__":
         model.bid_pass_head, model.bid_actor_proj, model.bid_info_proj,
         model.bid_key_mlp,
         model.dividend_actor_proj, model.dividend_info_proj, model.dividend_key_mlp,
-        model.issue_head, model.acq_offer_head,
+        model.issue_actor_proj, model.issue_info_proj, model.issue_key_mlp,
+        model.acq_offer_head,
         model.acq_price_actor_proj, model.acq_price_info_proj, model.acq_price_key_mlp,
         model.par_actor_proj, model.par_info_proj, model.par_key_mlp,
     ]
@@ -1363,6 +1405,7 @@ if __name__ == "__main__":
         ("Bid offset embeds", bid_offset_params),
         ("ACQ price offset embeds", acq_price_offset_params),
         ("Dividend amount embeds", dividend_amount_params),
+        ("Issue action embeds", issue_action_params),
         ("PAR price embeds", par_price_params),
         ("Type embeds", type_params),
         ("Transformer trunk", trunk_params),
