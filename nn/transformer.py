@@ -491,16 +491,16 @@ class RSSTransformerNet(nn.Module):
         self.invest_sell_actor_proj = nn.Linear(d, dp, bias=False)
         self.invest_sell_corp_proj = nn.Linear(d, dp, bias=False)
 
-        # Per-phase pass heads for the remaining entity-readout pass actions
-        # backed by pass anchors: CLOSING and IPO. INVEST and ACQ_SELECT_CORP
+        # Per-phase pass heads for the remaining entity-readout pass action
+        # backed by a pass anchor: IPO. INVEST, ACQ_SELECT_CORP, and CLOSING
         # read pass from the active player token instead.
         self.anchor_pass_heads = nn.ModuleList(
-            [self._make_policy_head(1) for _ in range(NUM_PASS_PHASES - 2)]
+            [self._make_policy_head(1) for _ in range(NUM_PASS_PHASES - 3)]
         )
-        # Company-selection heads: one per non-Invest phase that picks a
-        # company. These remain dense per-entity MLP heads until their phase is
-        # refactored.
-        self.closing_company_select_head = self._make_policy_head(1)
+        self.closing_pass_head = nn.Linear(d, 1)
+        self.closing_actor_proj = nn.Linear(d, dp, bias=False)
+        self.closing_company_proj = nn.Linear(d, dp, bias=False)
+        # Company-selection heads that have not been refactored yet.
         self.acq_select_company_head = self._make_policy_head(1)
         self.acq_select_corp_pass_head = nn.Linear(d, 1)
         self.acq_select_corp_actor_proj = nn.Linear(d, dp, bias=False)
@@ -709,11 +709,11 @@ class RSSTransformerNet(nn.Module):
             self._policy_head_width(head) for head in self.anchor_pass_heads
         ]
         if (
-            len(anchor_pass_widths) != NUM_PASS_PHASES - 2
+            len(anchor_pass_widths) != NUM_PASS_PHASES - 3
             or any(w != 1 for w in anchor_pass_widths)
         ):
             raise AssertionError(
-                f"anchor pass heads must be {NUM_PASS_PHASES - 2} single-logit heads; "
+                f"anchor pass heads must be {NUM_PASS_PHASES - 3} single-logit heads; "
                 f"got widths {anchor_pass_widths}"
             )
 
@@ -744,9 +744,14 @@ class RSSTransformerNet(nn.Module):
         block_widths[int(DecisionPhase.DPHASE_ACQ_OFFER)] = self._policy_head_width(
             self.acq_offer_head
         )
+        if self._policy_head_width(self.closing_pass_head) != 1:
+            raise AssertionError(
+                f"closing pass head must be a single-logit head; "
+                f"got width {self._policy_head_width(self.closing_pass_head)}"
+            )
         block_widths[int(DecisionPhase.DPHASE_CLOSING)] = (
-            anchor_pass_widths[0]
-            + num_companies * self._policy_head_width(self.closing_company_select_head)
+            self._policy_head_width(self.closing_pass_head)
+            + num_companies
         )
         block_widths[int(DecisionPhase.DPHASE_DIVIDENDS)] = (
             self.dividend_amount_embed.num_embeddings
@@ -755,7 +760,7 @@ class RSSTransformerNet(nn.Module):
             self.issue_head
         )
         block_widths[int(DecisionPhase.DPHASE_IPO)] = (
-            anchor_pass_widths[1]
+            anchor_pass_widths[0]
             + num_corps * self._policy_head_width(self.ipo_corp_select_head)
         )
         block_widths[int(DecisionPhase.DPHASE_PAR)] = self._policy_head_width(
@@ -950,6 +955,18 @@ class RSSTransformerNet(nn.Module):
         )
         return torch.cat([pass_logit, corp_logits], dim=-1)
 
+    def _closing_logits(self, ctx: _PolicyContext) -> torch.Tensor:
+        """Build CLOSING logits: pass plus one logit per company."""
+        actor = ctx.active_player
+        pass_logit = self.closing_pass_head(actor)
+        company_logits = self._actor_entity_logits(
+            actor,
+            ctx.company_tokens,
+            self.closing_actor_proj,
+            self.closing_company_proj,
+        )
+        return torch.cat([pass_logit, company_logits], dim=-1)
+
     def _bid_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Build the Bid block: leave-auction pass plus 15 bid offsets."""
         raw_auction = ctx.raw_tokens[
@@ -1040,10 +1057,8 @@ class RSSTransformerNet(nn.Module):
         corp_tokens = ctx.corp_tokens                                            # (B, 8, d)
 
         # Pass anchors. ``self._pass_idxs[i]`` backs ``PASS_PHASE_IDS[i]``.
-        # INVEST and ACQ_SELECT_CORP now read pass from the active player, so
-        # anchor heads start at CLOSING / ``self._pass_idxs[2]``.
-        pass_closing = self.anchor_pass_heads[0](tokens[:, self._pass_idxs[2]]) # (B, 1)
-        pass_ipo = self.anchor_pass_heads[1](tokens[:, self._pass_idxs[3]])     # (B, 1)
+        # IPO is the last pass action still reading from an anchor.
+        pass_ipo = self.anchor_pass_heads[0](tokens[:, self._pass_idxs[3]])     # (B, 1)
 
         # INVEST: pass + 36 company-select + 16 corp-trade (2i buy, 2i+1 sell).
         pass_invest, invest_company, corp_trade = self._invest_logits(ctx)
@@ -1054,7 +1069,7 @@ class RSSTransformerNet(nn.Module):
         # ACQ_OFFER: pass + 1 accept-buy.
         acq_offer = self.acq_offer_head(tokens[:, self._acq_offer_idx])          # (B, 2)
         # CLOSING: pass + 36 company-close.
-        closing_company = self.closing_company_select_head(company_tokens).squeeze(-1)  # (B, 36)
+        closing = self._closing_logits(ctx)                                      # (B, 37)
         # DIVIDENDS: 26 levels (no pass).
         dividend = self._dividend_logits(ctx)                                    # (B, 26)
         # ISSUE: pass + 1 issue.
@@ -1074,7 +1089,7 @@ class RSSTransformerNet(nn.Module):
                 bid,                                               # BID              (16)
                 acq_select_corp,                                   # ACQ_SELECT_CORP  ( 9)
                 acq_offer,                                         # ACQ_OFFER        ( 2)
-                pass_closing, closing_company,                     # CLOSING          (37)
+                closing,                                           # CLOSING          (37)
                 dividend,                                          # DIVIDENDS        (26)
                 issue,                                             # ISSUE            ( 2)
                 pass_ipo, ipo_corp,                                # IPO              ( 9)
@@ -1235,7 +1250,8 @@ if __name__ == "__main__":
         model.invest_buy_actor_proj, model.invest_buy_corp_proj,
         model.invest_sell_actor_proj, model.invest_sell_corp_proj,
         model.anchor_pass_heads,
-        model.closing_company_select_head,
+        model.closing_pass_head,
+        model.closing_actor_proj, model.closing_company_proj,
         model.acq_select_company_head,
         model.acq_select_corp_pass_head,
         model.acq_select_corp_actor_proj, model.acq_select_corp_corp_proj,
