@@ -288,6 +288,7 @@ class RSSTransformerNet(nn.Module):
     _corp_ids: torch.Tensor
     _pass_phase_ids: torch.Tensor
     _bid_offset_features: torch.Tensor
+    _dividend_amount_features: torch.Tensor
 
     def __init__(self, cfg: TransformerConfig) -> None:
         super().__init__()
@@ -456,6 +457,18 @@ class RSSTransformerNet(nn.Module):
             bid_offset_features,
             persistent=False,
         )
+        dividend_amount_features = (
+            torch.arange(
+                _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS),
+                dtype=torch.float32,
+            ).view(1, _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS), 1)
+            / float(_phase_action_size(DecisionPhase.DPHASE_DIVIDENDS))
+        )
+        self.register_buffer(
+            "_dividend_amount_features",
+            dividend_amount_features,
+            persistent=False,
+        )
 
         # --- Transformer trunk ---
         self.blocks = nn.ModuleList([
@@ -513,7 +526,7 @@ class RSSTransformerNet(nn.Module):
             _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS),
             dp,
         )
-        self.dividend_key_mlp = self._make_action_key_mlp(action_feature_width=1)
+        self.dividend_key_mlp = self._make_action_key_mlp(action_feature_width=2)
         self.issue_head = self._make_policy_head(
             _phase_action_size(DecisionPhase.DPHASE_ISSUE)
         )
@@ -962,15 +975,24 @@ class RSSTransformerNet(nn.Module):
 
     def _dividend_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Build dividend amount logits from active-corp query and action keys."""
+        dividend_amounts = self._dividend_amount_features.to(
+            dtype=ctx.tokens.dtype,
+            device=ctx.tokens.device,
+        ).expand(
+            ctx.tokens.shape[0],
+            _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS),
+            1,
+        )
         dividend_impacts = ctx.raw_tokens[
             :,
             self._dividend_idx,
             self._token_feature_start:int(TokenWidth.TW_DIVIDEND),
-        ].unsqueeze(-1)
+        ].to(ctx.tokens.dtype).unsqueeze(-1)
+        action_features = torch.cat([dividend_amounts, dividend_impacts], dim=-1)
         return self._actor_action_key_logits(
             ctx.active_corp,
             ctx.tokens[:, self._dividend_idx],
-            dividend_impacts,
+            action_features,
             self.dividend_actor_proj,
             self.dividend_info_proj,
             self.dividend_amount_embed,
