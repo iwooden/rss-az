@@ -489,10 +489,10 @@ def test_policy_layout_matches_phase_action_sizes(model: RSSTransformerNet) -> N
 
 def test_projection_widths_consume_declared_token_features(model: RSSTransformerNet) -> None:
     start = model._token_feature_start
-    assert model.player_proj.in_features == int(TokenWidth.TW_PLAYER) - start
-    assert model.corp_proj.in_features == int(TokenWidth.TW_CORP) - start
-    assert model.company_proj.in_features == int(TokenWidth.TW_COMPANY) - start
-    assert model.fi_proj.in_features == int(TokenWidth.TW_FI) - start
+    assert model.player_proj.in_features == model._player_rel_tail_start - start
+    assert model.corp_proj.in_features == model._corp_rel_tail_start - start
+    assert model.company_proj.in_features == model._company_rel_tail_start - start
+    assert model.fi_proj.in_features == model._fi_rel_tail_start - start
     assert model.market_info_proj.in_features == int(TokenWidth.TW_MARKET_INFO) - start
     assert model.global_info_proj.in_features == int(TokenWidth.TW_GLOBAL_INFO) - start
     assert model.invest_proj.in_features == int(TokenWidth.TW_INVEST) - start
@@ -502,6 +502,70 @@ def test_projection_widths_consume_declared_token_features(model: RSSTransformer
     assert model.par_proj.in_features == int(TokenWidth.TW_PAR) - start
     assert model.acq_offer_proj.in_features == int(TokenWidth.TW_ACQ_OFFER) - start
     assert model.acq_price_proj.in_features == int(TokenWidth.TW_ACQ_PRICE) - start
+
+
+def test_project_tokens_ignores_entity_relation_tails(model: RSSTransformerNet) -> None:
+    cfg = model.cfg
+    x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
+    x_with_tails = x.clone()
+
+    x_with_tails[
+        :,
+        model._company_slice,
+        model._company_rel_tail_start:int(TokenWidth.TW_COMPANY),
+    ] = torch.randn(
+        1,
+        int(GameConstants.NUM_COMPANIES),
+        int(TokenWidth.TW_COMPANY) - model._company_rel_tail_start,
+    )
+    x_with_tails[
+        :,
+        model._fi_idx,
+        model._fi_rel_tail_start:int(TokenWidth.TW_FI),
+    ] = torch.randn(1, int(TokenWidth.TW_FI) - model._fi_rel_tail_start)
+    x_with_tails[
+        :,
+        model._corp_slice,
+        model._corp_rel_tail_start:int(TokenWidth.TW_CORP),
+    ] = torch.randn(
+        1,
+        int(GameConstants.NUM_CORPS),
+        int(TokenWidth.TW_CORP) - model._corp_rel_tail_start,
+    )
+    x_with_tails[
+        :,
+        model._player_slice,
+        model._player_rel_tail_start:int(TokenWidth.TW_PLAYER),
+    ] = torch.randn(
+        1,
+        cfg.num_players,
+        int(TokenWidth.TW_PLAYER) - model._player_rel_tail_start,
+    )
+
+    assert torch.allclose(model._project_tokens(x), model._project_tokens(x_with_tails))
+
+
+def test_project_tokens_keeps_player_share_amount_features(model: RSSTransformerNet) -> None:
+    cfg = model.cfg
+    x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
+    x_with_shares = x.clone()
+    share_feature_start = 15
+    share_feature_stop = model._player_rel_tail_start
+    x_with_shares[
+        :,
+        model._player_slice,
+        share_feature_start:share_feature_stop,
+    ] = torch.randn(
+        1,
+        cfg.num_players,
+        share_feature_stop - share_feature_start,
+    )
+
+    delta = model._project_tokens(x_with_shares) - model._project_tokens(x)
+    player_delta = delta[:, model._player_slice]
+
+    assert player_delta.abs().max().item() > 0.0
+    assert delta[:, :model._player_slice.start].abs().max().item() == pytest.approx(0.0)
 
 
 def test_type_embedding_table_matches_token_layout(model: RSSTransformerNet) -> None:

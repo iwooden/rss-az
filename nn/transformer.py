@@ -85,6 +85,16 @@ _TOKEN_FEATURE_START = 1
 _IS_SELECTED_OFFSET = 1
 # Offset inside a company feature slice after the attention-mask slot is dropped.
 _COMPANY_LOW_PRICE_FEATURE_OFFSET = 1
+# Raw token offsets where relation/reference tails begin. The engine still
+# emits these fields for compatibility and diagnostics, but the model ignores
+# them in token projection now that relation matrices feed attention directly.
+_COMPANY_REL_TAIL_START = 14
+_FI_REL_TAIL_START = 3
+_CORP_REL_TAIL_START = 51
+# Player share amounts are scalar quantities, not just relation presence:
+# keep OFF_SHARES (8 slots) in projected token features and drop only the
+# owned-company relation tail.
+_PLAYER_REL_TAIL_START = 23
 
 
 def _phase_action_size(phase: DecisionPhase) -> int:
@@ -324,9 +334,10 @@ class RSSTransformerNet(nn.Module):
 
         # --- Type-specific input projections ---
         # Projections drop slot 0 (the token attention mask) before feeding
-        # data into Linear layers. Relation and phase fields remain ordinary
-        # projected inputs; learned additive state is limited to type embeddings,
-        # and corp row-order identity embeddings.
+        # data into Linear layers. Entity relation/reference tails are also
+        # skipped here; those relations now enter the trunk as Graphormer-style
+        # attention bias planes. Learned additive state is limited to type
+        # embeddings and corp row-order identity embeddings.
         # The engine-side buffer is rectangular at ``TOKEN_DIM=92`` so
         # ``get_token_data`` can fill it with a single nogil memcpy pattern,
         # but each projection still sizes itself to that token type's meaningful
@@ -335,20 +346,24 @@ class RSSTransformerNet(nn.Module):
         # extractor can't drift out of sync.
         self._token_feature_start = _TOKEN_FEATURE_START
         self._is_selected_offset = _IS_SELECTED_OFFSET
+        self._company_rel_tail_start = _COMPANY_REL_TAIL_START
+        self._fi_rel_tail_start = _FI_REL_TAIL_START
+        self._corp_rel_tail_start = _CORP_REL_TAIL_START
+        self._player_rel_tail_start = _PLAYER_REL_TAIL_START
         self.player_proj = nn.Linear(
-            int(TokenWidth.TW_PLAYER) - self._token_feature_start,
+            self._player_rel_tail_start - self._token_feature_start,
             d,
         )
         self.corp_proj = nn.Linear(
-            int(TokenWidth.TW_CORP) - self._token_feature_start,
+            self._corp_rel_tail_start - self._token_feature_start,
             d,
         )
         self.company_proj = nn.Linear(
-            int(TokenWidth.TW_COMPANY) - self._token_feature_start,
+            self._company_rel_tail_start - self._token_feature_start,
             d,
         )
         self.fi_proj = nn.Linear(
-            int(TokenWidth.TW_FI) - self._token_feature_start,
+            self._fi_rel_tail_start - self._token_feature_start,
             d,
         )
         self.market_info_proj = nn.Linear(
@@ -629,7 +644,7 @@ class RSSTransformerNet(nn.Module):
             x[
                 :,
                 self._company_slice,
-                self._token_feature_start:int(TokenWidth.TW_COMPANY),
+                self._token_feature_start:self._company_rel_tail_start,
             ]
         )
 
@@ -639,7 +654,7 @@ class RSSTransformerNet(nn.Module):
             x[
                 :,
                 self._corp_slice,
-                self._token_feature_start:int(TokenWidth.TW_CORP),
+                self._token_feature_start:self._corp_rel_tail_start,
             ]
         )
         corp_ids = self._match_dtype_device(self.corp_id_embed(self._corp_ids), corp_tokens)
@@ -651,7 +666,7 @@ class RSSTransformerNet(nn.Module):
             x[
                 :,
                 self._fi_idx,
-                self._token_feature_start:int(TokenWidth.TW_FI),
+                self._token_feature_start:self._fi_rel_tail_start,
             ]
         )
 
@@ -671,7 +686,7 @@ class RSSTransformerNet(nn.Module):
             x[
                 :,
                 self._player_slice,
-                self._token_feature_start:int(TokenWidth.TW_PLAYER),
+                self._token_feature_start:self._player_rel_tail_start,
             ]
         )
 
@@ -830,9 +845,11 @@ class RSSTransformerNet(nn.Module):
         """Project raw token features to d_model via type-specific projections.
 
         Token rows receive a learned token-type embed after projection, and
-        corp rows also receive learned row-order corp ID embeds. Other entity
-        IDs, relation references, active-entity refs, and phase refs are left
-        as raw projected features rather than learned additive embeddings.
+        corp rows also receive learned row-order corp ID embeds. Entity
+        ownership/share/presidency reference tails are intentionally excluded
+        from projection because the same relations are supplied as attention
+        bias planes. Other entity IDs, active-entity refs, and phase refs are
+        left as raw projected features rather than learned additive embeddings.
 
         Args:
             x: (batch, cfg.num_tokens, token_dim) zero-padded raw features.
