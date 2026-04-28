@@ -412,7 +412,7 @@ class RSSTransformerNet(nn.Module):
         )
         bid_offset_features = (
             torch.arange(int(AUCTION_CAP), dtype=torch.float32).view(1, int(AUCTION_CAP), 1)
-            / float(AUCTION_CAP)
+            / float(int(AUCTION_CAP) - 1)
         )
         self.register_buffer(
             "_bid_offset_features",
