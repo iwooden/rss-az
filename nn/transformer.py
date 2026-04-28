@@ -23,6 +23,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.data import (
     AUCTION_CAP,
     GameConstants,
@@ -1296,7 +1297,10 @@ class RSSTransformerNet(nn.Module):
     # ------------------------------------------------------------------
 
     def forward(
-        self, x: torch.Tensor, legal_mask: torch.Tensor,
+        self,
+        x: torch.Tensor,
+        legal_mask: torch.Tensor,
+        relations: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the transformer.
 
@@ -1314,6 +1318,10 @@ class RSSTransformerNet(nn.Module):
                 will be ignored (for example the eval server's trash row);
                 if such a row is consumed by softmax downstream it becomes a
                 near-uniform distribution over the unified slots.
+            relations: Optional ``(batch, NUM_ATTENTION_RELATIONS, num_tokens,
+                num_tokens)`` uint8/bool directed relation planes. This is
+                accepted now so eval servers can pass the shared relation
+                buffer before the attention-bias implementation consumes it.
 
         Returns:
             policy_logits: ``(batch, UNIFIED_LOGIT_DIM)`` fp32 logits with
@@ -1342,6 +1350,25 @@ class RSSTransformerNet(nn.Module):
             raise AssertionError(
                 f"legal_mask device must match x device; got {legal_mask.device} vs {x.device}"
             )
+        if relations is not None:
+            expected_rel_shape = (
+                x.shape[0],
+                NUM_ATTENTION_RELATIONS,
+                self.cfg.num_tokens,
+                self.cfg.num_tokens,
+            )
+            if tuple(relations.shape) != expected_rel_shape:
+                raise AssertionError(
+                    f"relations shape must be {expected_rel_shape}; got {tuple(relations.shape)}"
+                )
+            if relations.dtype not in (torch.bool, torch.uint8):
+                raise AssertionError(
+                    f"relations must be bool or uint8 relation flags; got {relations.dtype}"
+                )
+            if relations.device != x.device:
+                raise AssertionError(
+                    f"relations device must match x device; got {relations.device} vs {x.device}"
+                )
         tokens = self._project_tokens(x)
         attn_mask = self._attention_mask(x)
 

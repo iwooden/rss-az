@@ -520,7 +520,7 @@ def _eval_server_serve(
         lut = build_action_lut()
         if batch_shape_mode == "dynamic":
             # Warm up with the EXACT call signature the hot path uses —
-            # (states, legal_mask). Dynamic-shape strategy (see
+            # (states, legal_mask, relations). Dynamic-shape strategy (see
             # ``train/gpu/{amd,nvidia}.py`` for why we dropped global
             # ``dynamic=True``): the batch dim gets ``mark_unbacked`` so the
             # single compiled graph handles all batch sizes 1..max_batch, and
@@ -547,6 +547,10 @@ def _eval_server_serve(
                     warmup_n, num_tokens, token_dim, device=device,
                     dtype=torch.float16,
                 )
+                dummy_rel = torch.zeros(
+                    warmup_n, shared_bufs.num_relations, num_tokens, num_tokens,
+                    dtype=torch.uint8, device=device,
+                )
                 # Build one legal mask per phase so every phase's slots get
                 # exercised at least once during compilation.
                 dummy_mask = torch.zeros(
@@ -557,10 +561,10 @@ def _eval_server_serve(
                     n = PHASE_ACTION_SIZES[phase_id]
                     dummy_mask[i, lut[phase_id, :n].to(device)] = True
                 if batch_shape_mode == "dynamic":
-                    for _t in (dummy_s, dummy_mask):
+                    for _t in (dummy_s, dummy_mask, dummy_rel):
                         mark_unbacked(_t, 0)
-                model(dummy_s, dummy_mask)
-                del dummy_s, dummy_mask
+                model(dummy_s, dummy_mask, dummy_rel)
+                del dummy_s, dummy_mask, dummy_rel
         torch.cuda.synchronize()
 
     # Allocate pinned CPU buffers and GPU tensors in this process's CUDA context.
@@ -593,6 +597,25 @@ def _eval_server_serve(
     states_row_bytes = num_tokens * token_dim * 2  # fp16 == 2 bytes
     gpu_s = torch.empty(
         alloc_batch, num_tokens, token_dim, dtype=torch.float16, device=device,
+    )
+
+    relation_count = shared_bufs.num_relations
+    relation_row_bytes = relation_count * num_tokens * num_tokens  # uint8 == 1 byte
+    pin_rel_list = [
+        torch.empty(
+            alloc_batch, relation_count, num_tokens, num_tokens,
+            dtype=torch.uint8, pin_memory=use_cuda,
+        )
+        for _ in range(buf_depth)
+    ]
+    pin_rel_np_list = [p.numpy() for p in pin_rel_list]
+    pin_rel_flat_bytes_list = [
+        p.reshape(alloc_batch, relation_row_bytes).view(np.int8)
+        for p in pin_rel_np_list
+    ]
+    gpu_rel = torch.empty(
+        alloc_batch, relation_count, num_tokens, num_tokens,
+        dtype=torch.uint8, device=device,
     )
 
     # Shared-memory mask gather stays uint8, but bucketed launches use a
@@ -642,6 +665,9 @@ def _eval_server_serve(
     # as bytes so the Cython gather is dtype-agnostic (matches scatter_results).
     all_states_bytes = shared_bufs._states.numpy().reshape(
         shared_bufs.num_workers, shared_bufs.batch_size, num_tokens * token_dim,
+    ).view(np.int8)
+    all_relations_bytes = shared_bufs._relations.numpy().reshape(
+        shared_bufs.num_workers, shared_bufs.batch_size, relation_row_bytes,
     ).view(np.int8)
     all_masks_np = shared_bufs._legal_mask.numpy()
     all_priors_np = shared_bufs._priors.numpy()
@@ -750,6 +776,8 @@ def _eval_server_serve(
 
         pin_s_slot = pin_s_list[slot]
         pin_s_flat_bytes = pin_s_flat_bytes_list[slot]
+        pin_rel_slot = pin_rel_list[slot]
+        pin_rel_flat_bytes = pin_rel_flat_bytes_list[slot]
         pin_mask_slot = pin_mask_list[slot]
         pin_mask_np = pin_mask_np_list[slot]
         pin_priors_slot = pin_priors_list[slot]
@@ -761,6 +789,14 @@ def _eval_server_serve(
             pin_s_flat_bytes, all_states_bytes, widx, cnts, n_req,
             states_row_bytes,
         )
+        relation_n = _gather_states(
+            pin_rel_flat_bytes, all_relations_bytes, widx, cnts, n_req,
+            relation_row_bytes,
+        )
+        if relation_n != actual_n:
+            raise AssertionError(
+                f"relation gather count {relation_n} != state gather count {actual_n}"
+            )
         _gather_masks(pin_mask_np, all_masks_np, widx, cnts, n_req)
         launch_n = _resolve_launch_batch_size(
             actual_n=actual_n,
@@ -776,9 +812,11 @@ def _eval_server_serve(
 
         gpu_s_batch = gpu_s[:launch_n]
         gpu_s_batch[:actual_n].copy_(pin_s_slot[:actual_n], non_blocking=True)
+        gpu_rel[:actual_n].copy_(pin_rel_slot[:actual_n], non_blocking=True)
         gpu_mask[:actual_n].copy_(pin_mask_slot[:actual_n], non_blocking=True)
         if launch_n > actual_n:
             gpu_s_batch[actual_n:launch_n].zero_()
+            gpu_rel[actual_n:launch_n].zero_()
             gpu_mask[actual_n:launch_n].zero_()
             gpu_mask_bool[actual_n:launch_n].zero_()
 
@@ -793,7 +831,7 @@ def _eval_server_serve(
             # serve loop). The model sees ``launch_n`` rows, but only the first
             # ``actual_n`` rows contain real gathered work and only those rows
             # are copied back to shared memory.
-            logits, values = model(gpu_s_batch, mask_batch)
+            logits, values = model(gpu_s_batch, mask_batch, gpu_rel[:launch_n])
             gpu_priors[:actual_n] = logits[:actual_n].softmax(dim=1).to(torch.float32)
             gpu_val[:actual_n] = values[:actual_n].to(torch.float32)
 
