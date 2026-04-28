@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from core.actions import get_decision_phase_py
-from core.attention_relations import NUM_ATTENTION_RELATIONS
+from core.attention_relations import NUM_ATTENTION_RELATIONS, AttentionRelation
 from nn.transformer import (
     UNIFIED_LOGIT_DIM,
     RSSTransformerNet,
@@ -129,6 +129,118 @@ def test_forward_rejects_wrong_relation_dtype(model: RSSTransformerNet, valid_in
 
     with pytest.raises(AssertionError, match="relations must be bool or uint8"):
         model(x, legal_mask, relations)
+
+
+def test_relation_bias_multiplier_shape_and_zero_init() -> None:
+    model = RSSTransformerNet(
+        TransformerConfig(
+            num_players=NUM_PLAYERS,
+            d_model=48,
+            num_heads=3,
+            num_layers=2,
+            ff_mult=2.0,
+        )
+    )
+
+    assert tuple(model.relation_bias_mult.shape) == (
+        model.cfg.num_layers,
+        model.cfg.num_heads,
+        NUM_ATTENTION_RELATIONS,
+    )
+    assert torch.count_nonzero(model.relation_bias_mult).item() == 0
+
+
+def test_relation_attention_bias_combines_planes_per_layer_and_head() -> None:
+    model = RSSTransformerNet(
+        TransformerConfig(
+            num_players=NUM_PLAYERS,
+            d_model=48,
+            num_heads=3,
+            num_layers=2,
+            ff_mult=2.0,
+        )
+    )
+    cfg = model.cfg
+    relation_a = int(AttentionRelation.CORP_OWNS_COMPANY)
+    relation_b = int(AttentionRelation.PLAYER_OWNS_COMPANY)
+    relation_flags = torch.zeros(
+        1,
+        NUM_ATTENTION_RELATIONS,
+        cfg.num_tokens,
+        cfg.num_tokens,
+    )
+    relation_flags[0, relation_a, 2, 3] = 1.0
+    relation_flags[0, relation_b, 4, 5] = 1.0
+    ref = torch.empty(1, cfg.num_tokens, cfg.d_model)
+
+    with torch.no_grad():
+        model.relation_bias_mult.zero_()
+        model.relation_bias_mult[1, 0, relation_a] = 2.5
+        model.relation_bias_mult[1, 2, relation_b] = -1.25
+
+    bias = model._relation_attention_bias(relation_flags, 1, ref)
+
+    assert tuple(bias.shape) == (
+        1,
+        cfg.num_heads,
+        cfg.num_tokens,
+        cfg.num_tokens,
+    )
+    assert bias[0, 0, 2, 3].item() == pytest.approx(2.5)
+    assert bias[0, 2, 4, 5].item() == pytest.approx(-1.25)
+    assert bias[0, 1].abs().sum().item() == pytest.approx(0.0)
+
+
+def test_nonzero_relation_bias_changes_forward_outputs() -> None:
+    torch.manual_seed(456)
+    model = RSSTransformerNet(
+        TransformerConfig(
+            num_players=NUM_PLAYERS,
+            d_model=48,
+            num_heads=3,
+            num_layers=2,
+            ff_mult=2.0,
+        )
+    )
+    model.eval()
+    with torch.no_grad():
+        for block in model.blocks:
+            torch.nn.init.trunc_normal_(block.out_proj.weight, std=0.02)
+        relation_id = int(AttentionRelation.PLAYER_OWNS_COMPANY)
+        model.relation_bias_mult[0, :, relation_id] = 8.0
+
+    cfg = model.cfg
+    x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
+    x[:, :, 0] = 1.0
+    x[:, model._player_slice, 1] = 0.0
+    x[:, model._player_slice.start, 1] = 1.0
+    x[:, model._company_slice.start, 1] = 1.0
+
+    lut = build_action_lut()
+    legal_mask = torch.zeros(1, U_DIM, dtype=torch.bool)
+    legal_mask[0, lut[0, : int(PHASE_ACTION_SIZES[0])]] = True
+
+    zero_relations = torch.zeros(
+        1,
+        NUM_ATTENTION_RELATIONS,
+        cfg.num_tokens,
+        cfg.num_tokens,
+        dtype=torch.uint8,
+    )
+    edge_relations = zero_relations.clone()
+    edge_relations[
+        0,
+        relation_id,
+        model._player_slice.start,
+        model._company_slice.start,
+    ] = 1
+
+    logits_without_edge, values_without_edge = model(x, legal_mask, zero_relations)
+    logits_with_edge, values_with_edge = model(x, legal_mask, edge_relations)
+
+    max_logit_delta = (logits_with_edge - logits_without_edge).abs().max()
+    max_value_delta = (values_with_edge - values_without_edge).abs().max()
+    assert max(max_logit_delta.item(), max_value_delta.item()) > 1e-6
 
 
 def test_project_tokens_preserves_autocast_dtype(model: RSSTransformerNet) -> None:

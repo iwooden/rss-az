@@ -227,13 +227,25 @@ class TransformerBlock(nn.Module):
         self.ffn_up = nn.Linear(d_model, d_ff, bias=False)
         self.ffn_down = nn.Linear(d_ff, d_model, bias=False)
 
-    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        attn_mask: torch.Tensor,
+        relation_bias: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         h = self.attn_norm(x)
         B, N, D = h.shape
         qkv = self.qkv_proj(h).reshape(B, N, 3, self.num_heads, self.head_dim)
         # (3, B, heads, N, head_dim) so unbind(0) yields three (B, heads, N, head_dim) tensors.
         q, k, v = qkv.permute(2, 0, 3, 1, 4).unbind(0)
-        attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+        if relation_bias is not None:
+            hidden = torch.finfo(relation_bias.dtype).min
+            visibility_bias = torch.zeros_like(attn_mask, dtype=relation_bias.dtype)
+            visibility_bias = visibility_bias.masked_fill(~attn_mask, hidden)
+            sdpa_mask = relation_bias + visibility_bias
+        else:
+            sdpa_mask = attn_mask
+        attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=sdpa_mask)
         # (B, heads, N, head_dim) -> (B, N, D)
         attn_out = attn_out.transpose(1, 2).reshape(B, N, D)
         h = self.out_proj(attn_out)
@@ -485,6 +497,11 @@ class RSSTransformerNet(nn.Module):
             TransformerBlock(d, cfg.num_heads, math.ceil(cfg.ff_mult * cfg.d_model))
             for _ in range(cfg.num_layers)
         ])
+        self.relation_bias_mult = nn.Parameter(torch.zeros(
+            cfg.num_layers,
+            cfg.num_heads,
+            NUM_ATTENTION_RELATIONS,
+        ))
         self.final_norm = nn.RMSNorm(d)
 
         # --- Actor-conditioned policy readouts ---
@@ -667,6 +684,24 @@ class RSSTransformerNet(nn.Module):
         with ``torch.compile`` and CUDA graph capture.
         """
         return (x[:, :, 0] > 0.5)[:, None, None, :]
+
+    def _relation_attention_bias(
+        self,
+        relation_flags: torch.Tensor,
+        layer_idx: int,
+        ref: torch.Tensor,
+    ) -> torch.Tensor:
+        """Combine relation planes into an SDPA additive bias for one layer.
+
+        ``relation_flags`` is ``(B, R, N, N)``. The learned multipliers for
+        layer ``layer_idx`` are ``(H, R)``, producing ``(B, H, N, N)`` so the
+        result lines up with SDPA attention weights.
+        """
+        relation_mult = self._match_dtype_device(
+            self.relation_bias_mult[layer_idx],
+            ref,
+        )
+        return torch.einsum("brij,hr->bhij", relation_flags, relation_mult)
 
     def _validate_policy_layout(self) -> None:
         """Validate policy readout widths against the shared action-size table.
@@ -1319,9 +1354,10 @@ class RSSTransformerNet(nn.Module):
                 if such a row is consumed by softmax downstream it becomes a
                 near-uniform distribution over the unified slots.
             relations: Optional ``(batch, NUM_ATTENTION_RELATIONS, num_tokens,
-                num_tokens)`` uint8/bool directed relation planes. This is
-                accepted now so eval servers can pass the shared relation
-                buffer before the attention-bias implementation consumes it.
+                num_tokens)`` uint8/bool directed relation planes. Rows are
+                attention queries and columns are attention keys; each layer
+                and head learns one additive SDPA bias multiplier per
+                relation plane.
 
         Returns:
             policy_logits: ``(batch, UNIFIED_LOGIT_DIM)`` fp32 logits with
@@ -1371,9 +1407,19 @@ class RSSTransformerNet(nn.Module):
                 )
         tokens = self._project_tokens(x)
         attn_mask = self._attention_mask(x)
+        relation_flags = (
+            relations.to(dtype=tokens.dtype)
+            if relations is not None
+            else None
+        )
 
-        for block in self.blocks:
-            tokens = block(tokens, attn_mask)
+        for layer_idx, block in enumerate(self.blocks):
+            relation_bias = (
+                self._relation_attention_bias(relation_flags, layer_idx, tokens)
+                if relation_flags is not None
+                else None
+            )
+            tokens = block(tokens, attn_mask, relation_bias)
         tokens = self.final_norm(tokens)
 
         # Cast to fp32 before the sentinel: under autocast ``unified`` is in
@@ -1417,6 +1463,9 @@ class RSSTransformerNet(nn.Module):
         nn.init.trunc_normal_(self.par_price_embed.weight, std=0.02)
         # Per-type additive embeddings: same small-random init.
         nn.init.trunc_normal_(self.type_embeds.weight, std=0.02)
+        # Relation attention starts behavior-preserving; training can learn
+        # positive or negative head/layer-specific biases from zero.
+        nn.init.zeros_(self.relation_bias_mult)
 
         # Zero-init residual outputs so each block starts as identity
         for block in self.blocks:
