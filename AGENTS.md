@@ -10,6 +10,10 @@ loop.
   **Rolling Stock Stars**.
 - **Rolling Stock Stars is not Rolling Stock.** Read `RULES.md` before changing
   rule or phase behavior.
+- **Rolling Stock Stars is not an 18xx game.** It has some surface
+  similarities, but there are no trains, operating rounds, or operating
+  companies. Read `RULES.md` before importing 18xx assumptions into rules,
+  phases, entity semantics, or model features.
 - Engine supports 2-6 players. NN/MCTS/training are scoped to 3-5 players; only
   `train_configs/3p.json` is present currently.
 - Core state is one compact contiguous `int16` array wrapped by `GameState`.
