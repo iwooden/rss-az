@@ -1,10 +1,11 @@
 """NN evaluator for MCTS leaf evaluation.
 
 Fills token buffers from compact int16 game states via
-``core.token_data.get_token_data``, runs NN inference, and returns
-sparse softmax priors over legal actions plus canonical-order values.
-No rotation — the transformer consumes non-rotated state and emits
-values in canonical player order directly.
+``core.token_data.get_token_data`` plus relation-attention planes via
+``core.relations.get_relation_data``, runs NN inference, and returns sparse
+softmax priors over legal actions plus canonical-order values. No rotation —
+the transformer consumes non-rotated state and emits values in canonical
+player order directly.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ from typing import Any
 import numpy as np
 import torch
 
+from core.attention_relations import NUM_ATTENTION_RELATIONS
+from core.relations import get_relation_data, get_relation_data_batch
 from core.token_data import (
     get_num_tokens,
     TokenDataSize,
@@ -54,6 +57,18 @@ def fill_token_buffer_batch(
     is shared across the batch).
     """
     get_token_data_batch(state_arrays, num_players, buf3d)
+
+
+def fill_relation_buffer(state: Any, buf3d: np.ndarray) -> None:
+    """Fill a ``(num_relations, num_tokens, num_tokens)`` uint8 relation buffer."""
+    get_relation_data(state, buf3d)
+
+
+def fill_relation_buffer_batch(
+    state_arrays: list[np.ndarray], num_players: int, buf4d: np.ndarray,
+) -> None:
+    """Fill a ``(n, num_relations, num_tokens, num_tokens)`` relation buffer."""
+    get_relation_data_batch(state_arrays, num_players, buf4d)
 
 
 def compute_terminal_values(
@@ -160,7 +175,7 @@ class NNEvaluator(BaseEvaluator):
     we softmax on-device then gather the per-leaf legal prior slice
     using the same ``action_lut`` the mask was built from.
 
-    All per-batch scratch tensors (tokens, masks) are preallocated
+    All per-batch scratch tensors (tokens, relation planes, masks) are preallocated
     pinned-host + device pairs, grown on demand. On a CPU device the
     "device" half aliases the host half and no copy runs.
     """
@@ -216,6 +231,7 @@ class NNEvaluator(BaseEvaluator):
         cap = max(n, max(self._scratch_cap * 2, 1))
         pm = self.device.type == "cuda"
         nt, td = self.num_tokens, self.token_dim
+        nr = NUM_ATTENTION_RELATIONS
 
         # Host (pinned on CUDA): exposed as numpy for the mask scatter.
         # Mask is zero-initialized so ``_build_mask_row`` only touches
@@ -223,6 +239,8 @@ class NNEvaluator(BaseEvaluator):
         # contiguous ``row[:] = 0`` before the scatter.
         self._tok_h = torch.empty((cap, nt, td), dtype=torch.float32, pin_memory=pm)
         self._tok_h_np = self._tok_h.numpy()
+        self._rel_h = torch.empty((cap, nr, nt, nt), dtype=torch.uint8, pin_memory=pm)
+        self._rel_h_np = self._rel_h.numpy()
         self._mask_h = torch.zeros(
             (cap, UNIFIED_LOGIT_DIM), dtype=torch.bool, pin_memory=pm,
         )
@@ -233,11 +251,15 @@ class NNEvaluator(BaseEvaluator):
             self._tok_d = torch.empty(
                 (cap, nt, td), dtype=torch.float32, device=self.device,
             )
+            self._rel_d = torch.empty(
+                (cap, nr, nt, nt), dtype=torch.uint8, device=self.device,
+            )
             self._mask_d = torch.empty(
                 (cap, UNIFIED_LOGIT_DIM), dtype=torch.bool, device=self.device,
             )
         else:
             self._tok_d = self._tok_h
+            self._rel_d = self._rel_h
             self._mask_d = self._mask_h
 
         self._scratch_cap = cap
@@ -263,6 +285,7 @@ class NNEvaluator(BaseEvaluator):
         if self.device.type != "cuda":
             return
         self._tok_d[:n].copy_(self._tok_h[:n], non_blocking=True)
+        self._rel_d[:n].copy_(self._rel_h[:n], non_blocking=True)
         self._mask_d[:n].copy_(self._mask_h[:n], non_blocking=True)
 
     # ------------------------------------------------------------------
@@ -293,6 +316,7 @@ class NNEvaluator(BaseEvaluator):
         # Fill preallocated scratch row 0.
         self._ensure_scratch(1)
         fill_token_buffer(state, self._tok_h_np[0])
+        fill_relation_buffer(state, self._rel_h_np[0])
         self._build_mask_row(0, phase_id, self._enum_scratch[:n_legal])
 
         priors_np, values_np = self._forward(1)
@@ -331,6 +355,9 @@ class NNEvaluator(BaseEvaluator):
         # Python-side and each state has its own per-phase enumerator.
         fill_token_buffer_batch(
             [s._array for s in states], self.num_players, self._tok_h_np[:n],
+        )
+        fill_relation_buffer_batch(
+            [s._array for s in states], self.num_players, self._rel_h_np[:n],
         )
         phase_ids: list[int] = [0] * n
         n_legals: list[int] = [0] * n
@@ -402,6 +429,9 @@ class NNEvaluator(BaseEvaluator):
         fill_token_buffer_batch(
             state_arrays, self.num_players, self._tok_h_np[:n],
         )
+        fill_relation_buffer_batch(
+            state_arrays, self.num_players, self._rel_h_np[:n],
+        )
         # Copy caller's dense mask into host scratch — cheaper than
         # per-row LUT scatter because the caller built it once already.
         np.copyto(self._mask_h_np[:n], legal_mask, casting="unsafe")
@@ -427,7 +457,7 @@ class NNEvaluator(BaseEvaluator):
         with torch.autocast(self.device.type, dtype=self._autocast_dtype,
                             enabled=self._autocast_dtype is not None):
             logits, value_output = self.model(
-                self._tok_d[:n], self._mask_d[:n],
+                self._tok_d[:n], self._mask_d[:n], self._rel_d[:n],
             )
             priors = logits.softmax(dim=1).to(torch.float32)
             values = value_output.to(torch.float32)

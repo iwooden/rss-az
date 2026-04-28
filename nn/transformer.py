@@ -1335,7 +1335,7 @@ class RSSTransformerNet(nn.Module):
         self,
         x: torch.Tensor,
         legal_mask: torch.Tensor,
-        relations: torch.Tensor | None = None,
+        relations: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the transformer.
 
@@ -1353,7 +1353,7 @@ class RSSTransformerNet(nn.Module):
                 will be ignored (for example the eval server's trash row);
                 if such a row is consumed by softmax downstream it becomes a
                 near-uniform distribution over the unified slots.
-            relations: Optional ``(batch, NUM_ATTENTION_RELATIONS, num_tokens,
+            relations: ``(batch, NUM_ATTENTION_RELATIONS, num_tokens,
                 num_tokens)`` uint8/bool directed relation planes. Rows are
                 attention queries and columns are attention keys; each layer
                 and head learns one additive SDPA bias multiplier per
@@ -1386,38 +1386,35 @@ class RSSTransformerNet(nn.Module):
             raise AssertionError(
                 f"legal_mask device must match x device; got {legal_mask.device} vs {x.device}"
             )
-        if relations is not None:
-            expected_rel_shape = (
-                x.shape[0],
-                NUM_ATTENTION_RELATIONS,
-                self.cfg.num_tokens,
-                self.cfg.num_tokens,
+        if relations is None:
+            raise AssertionError("relations must be supplied")
+        expected_rel_shape = (
+            x.shape[0],
+            NUM_ATTENTION_RELATIONS,
+            self.cfg.num_tokens,
+            self.cfg.num_tokens,
+        )
+        if tuple(relations.shape) != expected_rel_shape:
+            raise AssertionError(
+                f"relations shape must be {expected_rel_shape}; got {tuple(relations.shape)}"
             )
-            if tuple(relations.shape) != expected_rel_shape:
-                raise AssertionError(
-                    f"relations shape must be {expected_rel_shape}; got {tuple(relations.shape)}"
-                )
-            if relations.dtype not in (torch.bool, torch.uint8):
-                raise AssertionError(
-                    f"relations must be bool or uint8 relation flags; got {relations.dtype}"
-                )
-            if relations.device != x.device:
-                raise AssertionError(
-                    f"relations device must match x device; got {relations.device} vs {x.device}"
-                )
+        if relations.dtype not in (torch.bool, torch.uint8):
+            raise AssertionError(
+                f"relations must be bool or uint8 relation flags; got {relations.dtype}"
+            )
+        if relations.device != x.device:
+            raise AssertionError(
+                f"relations device must match x device; got {relations.device} vs {x.device}"
+            )
         tokens = self._project_tokens(x)
         attn_mask = self._attention_mask(x)
-        relation_flags = (
-            relations.to(dtype=tokens.dtype)
-            if relations is not None
-            else None
-        )
+        relation_flags = relations.to(dtype=tokens.dtype)
 
         for layer_idx, block in enumerate(self.blocks):
-            relation_bias = (
-                self._relation_attention_bias(relation_flags, layer_idx, tokens)
-                if relation_flags is not None
-                else None
+            relation_bias = self._relation_attention_bias(
+                relation_flags,
+                layer_idx,
+                tokens,
             )
             tokens = block(tokens, attn_mask, relation_bias)
         tokens = self.final_norm(tokens)
@@ -1574,11 +1571,18 @@ if __name__ == "__main__":
     # phase-local action list through the LUT. Row i gets phase i.
     lut = build_action_lut()
     legal_mask = torch.zeros(batch_size, UNIFIED_LOGIT_DIM, dtype=torch.bool)
+    relations = torch.zeros(
+        batch_size,
+        NUM_ATTENTION_RELATIONS,
+        cfg.num_tokens,
+        cfg.num_tokens,
+        dtype=torch.uint8,
+    )
     for i in range(NUM_PHASES):
         n = PHASE_ACTION_SIZES[i]
         legal_mask[i, lut[i, :n]] = True
 
-    policy_logits, values = model(x, legal_mask)
+    policy_logits, values = model(x, legal_mask, relations)
 
     print(f"policy_logits: {tuple(policy_logits.shape)}")
     print(f"values:        {tuple(values.shape)}")

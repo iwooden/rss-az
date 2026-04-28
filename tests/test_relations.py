@@ -9,7 +9,7 @@ from core.relations import (
     get_relation_data,
     get_relation_data_batch,
 )
-from core.state import GameState
+from core.state import GameState, get_layout
 from core.token_data import get_num_tokens
 from entities.corp import CORPS
 from entities.company import COMPANIES, CompanyLocation
@@ -17,6 +17,7 @@ from entities.deck import DECK
 from entities.player import PLAYERS
 from nn.transformer import UNIFIED_LOGIT_DIM
 from train.eval_server import RemoteEvaluator, SharedEvalBuffers
+from train.replay_buffer import ReplayBuffer
 
 
 NUM_PLAYERS = 3
@@ -317,3 +318,131 @@ def test_remote_evaluator_evaluate_leaves_populates_relation_buffer(
     )
     assert int(relations[0, owns_relation_id].sum()) == 1
     assert int(relations[0, owned_by_relation_id].sum()) == 1
+
+
+def _one_row_training_targets() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    phase_ids = np.array([0], dtype=np.int8)
+    legal_masks = np.zeros((1, int(UNIFIED_LOGIT_DIM)), dtype=np.uint8)
+    legal_masks[0, 0] = 1
+    policy_targets = np.zeros((1, int(UNIFIED_LOGIT_DIM)), dtype=np.float32)
+    policy_targets[0, 0] = 1.0
+    value_targets = np.zeros((1, NUM_PLAYERS), dtype=np.float32)
+    return phase_ids, legal_masks, policy_targets, value_targets
+
+
+def test_replay_buffer_sample_materializes_relation_planes() -> None:
+    corp_id = 2
+    company_id = 5
+    state = _state_with_corp_company(corp_id, company_id)
+    buffer = ReplayBuffer(
+        capacity=1,
+        state_size_int16=get_layout(NUM_PLAYERS).total_size,
+        num_players=NUM_PLAYERS,
+    )
+    phase_ids, legal_masks, policy_targets, value_targets = _one_row_training_targets()
+    buffer.add_stacked(
+        states=state._array[None, :],
+        phase_ids=phase_ids,
+        legal_masks=legal_masks,
+        policy_targets=policy_targets,
+        value_targets=value_targets,
+    )
+
+    batch = buffer.sample(1, np.random.default_rng(0))
+    relations = batch["relations"].numpy()
+
+    owns_relation_id = int(AttentionRelation.CORP_OWNS_COMPANY)
+    owned_by_relation_id = int(AttentionRelation.COMPANY_OWNED_BY_CORP)
+    assert relations.dtype == np.uint8
+    assert relations.shape == (
+        1,
+        NUM_ATTENTION_RELATIONS,
+        get_num_tokens(NUM_PLAYERS),
+        get_num_tokens(NUM_PLAYERS),
+    )
+    assert (
+        relations[
+            0,
+            owns_relation_id,
+            CORP_TOKEN_START + corp_id,
+            COMPANY_TOKEN_START + company_id,
+        ]
+        == 1
+    )
+    assert (
+        relations[
+            0,
+            owned_by_relation_id,
+            COMPANY_TOKEN_START + company_id,
+            CORP_TOKEN_START + corp_id,
+        ]
+        == 1
+    )
+
+
+def test_replay_buffer_sample_into_fills_relation_scratch() -> None:
+    corp_id = 4
+    company_id = 10
+    state = _state_with_corp_company(corp_id, company_id)
+    buffer = ReplayBuffer(
+        capacity=1,
+        state_size_int16=get_layout(NUM_PLAYERS).total_size,
+        num_players=NUM_PLAYERS,
+    )
+    phase_ids, legal_masks, policy_targets, value_targets = _one_row_training_targets()
+    buffer.add_stacked(
+        states=state._array[None, :],
+        phase_ids=phase_ids,
+        legal_masks=legal_masks,
+        policy_targets=policy_targets,
+        value_targets=value_targets,
+    )
+
+    states_out = np.empty((1, get_layout(NUM_PLAYERS).total_size), dtype=np.int16)
+    phase_ids_out = np.empty(1, dtype=np.int64)
+    legal_masks_out = np.empty((1, int(UNIFIED_LOGIT_DIM)), dtype=np.uint8)
+    policy_targets_out = np.empty((1, int(UNIFIED_LOGIT_DIM)), dtype=np.float32)
+    value_targets_out = np.empty((1, NUM_PLAYERS), dtype=np.float32)
+    relations_out = np.full(
+        (
+            1,
+            NUM_ATTENTION_RELATIONS,
+            get_num_tokens(NUM_PLAYERS),
+            get_num_tokens(NUM_PLAYERS),
+        ),
+        7,
+        dtype=np.uint8,
+    )
+
+    buffer.sample_into(
+        1,
+        np.random.default_rng(0),
+        states_out,
+        phase_ids_out,
+        legal_masks_out,
+        policy_targets_out,
+        value_targets_out,
+        relations_out=relations_out,
+    )
+
+    owns_relation_id = int(AttentionRelation.CORP_OWNS_COMPANY)
+    owned_by_relation_id = int(AttentionRelation.COMPANY_OWNED_BY_CORP)
+    assert (
+        relations_out[
+            0,
+            owns_relation_id,
+            CORP_TOKEN_START + corp_id,
+            COMPANY_TOKEN_START + company_id,
+        ]
+        == 1
+    )
+    assert (
+        relations_out[
+            0,
+            owned_by_relation_id,
+            COMPANY_TOKEN_START + company_id,
+            CORP_TOKEN_START + corp_id,
+        ]
+        == 1
+    )
+    assert 7 not in relations_out

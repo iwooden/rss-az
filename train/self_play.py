@@ -3,10 +3,10 @@
 Post-refactor contract: dense unified-slot policy targets + legal masks,
 no state rotation, raw int16 game state stored on examples. The trainer
 consumes ``(state, phase_id, legal_mask, policy_target, value_target)`` —
-it runs ``get_token_data`` at training time to materialize the token
-buffer, and computes policy cross-entropy over the full unified-logit
-slot space (illegal slots are already zero in ``policy_target`` and
-masked to -1e9 inside the model).
+it runs ``get_token_data`` and ``get_relation_data`` at training time to
+materialize token and relation-attention buffers, and computes policy
+cross-entropy over the full unified-logit slot space (illegal slots are
+already zero in ``policy_target`` and masked to -1e9 inside the model).
 """
 
 from __future__ import annotations
@@ -45,8 +45,8 @@ U_DIM = int(UNIFIED_LOGIT_DIM)
 class SelfPlayExample:
     """Single training example from self-play.
 
-    Raw compact int16 game state — the trainer runs ``get_token_data`` at
-    training time to build the (num_tokens, token_dim) float32 eval buffer.
+    Raw compact int16 game state — the trainer derives token and relation
+    buffers from this row at training time.
     ``legal_mask`` and ``policy_target`` are dense over the unified-logit
     slot space; slots outside the current phase's legal set are zero in
     both. ``phase_id`` is carried purely for per-phase TB bucketing.

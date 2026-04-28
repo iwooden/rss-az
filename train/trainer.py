@@ -4,11 +4,12 @@ Dense unified-slot contract: batches carry compact int16 game states,
 dense ``legal_mask`` + ``policy_target`` rows over the model's unified
 logit space, canonical per-player ``value_target``, and a pure-reporting
 ``phase_id`` that the model never sees. The trainer materializes the
-``(batch, num_tokens, token_dim)`` float32 token buffer at training time
-via ``core.token_data.get_token_data`` and runs policy cross-entropy
-directly against the dense softmax (illegal slots are masked to -1e9 by
-the model and carry 0 in the target, so their log-probs contribute
-nothing to the loss).
+``(batch, num_tokens, token_dim)`` float32 token buffer and
+``(batch, num_relations, num_tokens, num_tokens)`` uint8 relation planes at
+training time from those compact states, then runs policy cross-entropy
+directly against the dense softmax (illegal slots are masked to -1e9 by the
+model and carry 0 in the target, so their log-probs contribute nothing to
+the loss).
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.state import get_layout
 from core.token_data import TokenDataSize, get_num_tokens, get_token_data_batch
 from nn.transformer import NUM_PHASES, UNIFIED_LOGIT_DIM
@@ -183,6 +185,7 @@ class Trainer:
         cap = max(n, max(self._scratch_cap * 2, 1))
         pm = self.device.type == "cuda"
         nt, td = self._num_tokens, TOKEN_DIM
+        nr = NUM_ATTENTION_RELATIONS
         N = self._num_players
 
         # Raw states: CPU-only (consumed by get_token_data), never shipped.
@@ -191,6 +194,10 @@ class Trainer:
         # Pinned host (on CUDA). Exposed as numpy for buffer fills.
         self._tok_h = torch.empty((cap, nt, td), dtype=torch.float32, pin_memory=pm)
         self._tok_h_np = self._tok_h.numpy()
+        self._rel_h = torch.empty(
+            (cap, nr, nt, nt), dtype=torch.uint8, pin_memory=pm,
+        )
+        self._rel_h_np = self._rel_h.numpy()
         self._phase_h = torch.empty(cap, dtype=torch.long, pin_memory=pm)
         self._phase_h_np = self._phase_h.numpy()
         self._mask_h = torch.empty((cap, U_DIM), dtype=torch.uint8, pin_memory=pm)
@@ -204,6 +211,9 @@ class Trainer:
             self._tok_d = torch.empty(
                 (cap, nt, td), dtype=torch.float32, device=self.device,
             )
+            self._rel_d = torch.empty(
+                (cap, nr, nt, nt), dtype=torch.uint8, device=self.device,
+            )
             self._phase_d = torch.empty(cap, dtype=torch.long, device=self.device)
             self._mask_d = torch.empty(
                 (cap, U_DIM), dtype=torch.uint8, device=self.device,
@@ -214,6 +224,7 @@ class Trainer:
             self._vt_d = torch.empty((cap, N), dtype=torch.float32, device=self.device)
         else:
             self._tok_d = self._tok_h
+            self._rel_d = self._rel_h
             self._phase_d = self._phase_h
             self._mask_d = self._mask_h
             self._pt_d = self._pt_h
@@ -229,6 +240,7 @@ class Trainer:
         if self.device.type != "cuda":
             return
         self._tok_d[:n].copy_(self._tok_h[:n], non_blocking=True)
+        self._rel_d[:n].copy_(self._rel_h[:n], non_blocking=True)
         self._phase_d[:n].copy_(self._phase_h[:n], non_blocking=True)
         self._mask_d[:n].copy_(self._mask_h[:n], non_blocking=True)
         self._pt_d[:n].copy_(self._pt_h[:n], non_blocking=True)
@@ -274,6 +286,7 @@ class Trainer:
             self._mask_h_np[:B],
             self._pt_h_np[:B],
             self._vt_h_np[:B],
+            relations_out=self._rel_h_np[:B],
         )
 
         # NaN in any training target is a self-play inference bug —
@@ -294,6 +307,7 @@ class Trainer:
         self._h2d(B)
 
         tokens = self._tok_d[:B]
+        relations = self._rel_d[:B]
         phase_ids = self._phase_d[:B]
         legal_masks = self._mask_d[:B].to(torch.bool)
         policy_targets = self._pt_d[:B]
@@ -311,7 +325,7 @@ class Trainer:
         # The model returns logits with illegal slots already masked to
         # -1e9 via ``legal_masks``, so log_softmax normalizes over the
         # legal set only (illegal log-probs are ~-∞ × 0 = 0 in the loss).
-        policy_logits, values = self.model(tokens, legal_masks)
+        policy_logits, values = self.model(tokens, legal_masks, relations)
 
         # Policy loss: dense cross-entropy over the unified slot space.
         # ``policy_targets`` is zero on illegal slots, so only legal slots

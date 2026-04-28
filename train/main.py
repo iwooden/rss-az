@@ -17,6 +17,7 @@ import torch
 import torch.multiprocessing as mp
 from torch._dynamo.decorators import mark_unbacked
 
+from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.data import PHASE_ACTION_SIZES
 from core.state import get_layout
 from core.token_data import TokenDataSize, get_num_tokens
@@ -625,9 +626,9 @@ def main() -> None:
             model.train()
             # Warmup mirrors train/eval_server.py: NUM_PHASES rows so every
             # per-row policy head is traced against a real legal mask, and
-            # ``mark_unbacked`` on BOTH inputs so the batch dim stays
-            # symbolic. Without marking both, dynamo bakes a static guard
-            # on the unmarked input's shape and recompiles on the first
+            # ``mark_unbacked`` on every model input so the batch dim stays
+            # symbolic. If any input is left unmarked, Dynamo bakes a static
+            # guard on that input's shape and recompiles on the first
             # batch != warmup_n; warming up at batch=1 also wastes a
             # specialization that the runtime never reuses.
             warmup_n = NUM_PHASES
@@ -636,16 +637,20 @@ def main() -> None:
                 dummy_tokens = torch.randn(
                     warmup_n, num_tokens, token_dim, device=device,
                 )
+                dummy_relations = torch.zeros(
+                    warmup_n, NUM_ATTENTION_RELATIONS, num_tokens, num_tokens,
+                    dtype=torch.uint8, device=device,
+                )
                 dummy_mask = torch.zeros(
                     warmup_n, UNIFIED_LOGIT_DIM, dtype=torch.bool, device=device,
                 )
                 for i in range(warmup_n):
                     n = PHASE_ACTION_SIZES[i]
                     dummy_mask[i, lut[i, :n].to(device)] = True
-                for _t in (dummy_tokens, dummy_mask):
+                for _t in (dummy_tokens, dummy_mask, dummy_relations):
                     mark_unbacked(_t, 0)
-                model(dummy_tokens, dummy_mask)
-                del dummy_tokens, dummy_mask
+                model(dummy_tokens, dummy_mask, dummy_relations)
+                del dummy_tokens, dummy_mask, dummy_relations
             torch.cuda.synchronize()
             print("  Model compiled.")
 

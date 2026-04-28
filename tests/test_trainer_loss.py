@@ -4,7 +4,9 @@ import numpy as np
 import pytest
 import torch
 
+from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.state import GameState, get_layout
+from core.token_data import get_num_tokens
 from nn.transformer import UNIFIED_LOGIT_DIM
 from train.config import TrainingConfig
 from train.replay_buffer import ReplayBuffer
@@ -19,8 +21,13 @@ class ConstantValueModel(torch.nn.Module):
         self.value_bias = torch.nn.Parameter(torch.zeros(num_players))
 
     def forward(
-        self, tokens: torch.Tensor, legal_masks: torch.Tensor
+        self,
+        tokens: torch.Tensor,
+        legal_masks: torch.Tensor,
+        relations: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        self.last_relations_shape = tuple(relations.shape)
+        self.last_relations_dtype = relations.dtype
         batch = tokens.shape[0]
         policy_logits = torch.zeros(
             (batch, int(UNIFIED_LOGIT_DIM)), dtype=tokens.dtype, device=tokens.device
@@ -72,3 +79,10 @@ def test_train_step_value_loss_uses_mean_over_player_dimension() -> None:
 
     assert losses["value_loss"] == pytest.approx(1.0 / NUM_PLAYERS)
     assert losses["total_loss"] == pytest.approx(1.0 / NUM_PLAYERS)
+    assert model.last_relations_shape == (
+        1,
+        NUM_ATTENTION_RELATIONS,
+        get_num_tokens(NUM_PLAYERS),
+        get_num_tokens(NUM_PLAYERS),
+    )
+    assert model.last_relations_dtype == torch.uint8

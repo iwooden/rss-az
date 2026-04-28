@@ -42,6 +42,23 @@ def valid_inputs(model: RSSTransformerNet) -> tuple[torch.Tensor, torch.Tensor]:
     return x, legal_mask
 
 
+def _zero_relations(
+    model: RSSTransformerNet,
+    batch_size: int,
+    *,
+    dtype: torch.dtype = torch.uint8,
+    device: torch.device | None = None,
+) -> torch.Tensor:
+    return torch.zeros(
+        batch_size,
+        NUM_ATTENTION_RELATIONS,
+        model.cfg.num_tokens,
+        model.cfg.num_tokens,
+        dtype=dtype,
+        device=device,
+    )
+
+
 @pytest.fixture(scope="module")
 def attention_mask_model() -> RSSTransformerNet:
     torch.manual_seed(123)
@@ -65,53 +82,55 @@ def attention_mask_model() -> RSSTransformerNet:
 def test_forward_rejects_wrong_legal_mask_shape(model: RSSTransformerNet, valid_inputs: tuple[torch.Tensor, torch.Tensor]) -> None:
     x, _ = valid_inputs
     wrong_mask = torch.zeros(1, U_DIM, dtype=torch.bool)
+    relations = _zero_relations(model, x.shape[0])
 
     with pytest.raises(AssertionError, match="legal_mask shape"):
-        model(x, wrong_mask)
+        model(x, wrong_mask, relations)
 
 
 def test_forward_rejects_wrong_num_tokens(model: RSSTransformerNet, valid_inputs: tuple[torch.Tensor, torch.Tensor]) -> None:
     x, legal_mask = valid_inputs
     wrong_x = torch.randn(x.shape[0], x.shape[1] - 1, x.shape[2])
+    relations = _zero_relations(model, x.shape[0])
 
     with pytest.raises(AssertionError, match="x shape"):
-        model(wrong_x, legal_mask)
+        model(wrong_x, legal_mask, relations)
 
 
 def test_forward_rejects_wrong_token_dim(model: RSSTransformerNet, valid_inputs: tuple[torch.Tensor, torch.Tensor]) -> None:
     x, legal_mask = valid_inputs
     wrong_x = torch.randn(x.shape[0], x.shape[1], x.shape[2] - 1)
+    relations = _zero_relations(model, x.shape[0])
 
     with pytest.raises(AssertionError, match="x shape"):
-        model(wrong_x, legal_mask)
+        model(wrong_x, legal_mask, relations)
 
 
 def test_forward_accepts_relation_planes(model: RSSTransformerNet, valid_inputs: tuple[torch.Tensor, torch.Tensor]) -> None:
     x, legal_mask = valid_inputs
-    relations = torch.zeros(
-        x.shape[0],
-        NUM_ATTENTION_RELATIONS,
-        model.cfg.num_tokens,
-        model.cfg.num_tokens,
-        dtype=torch.uint8,
-    )
+    uint8_relations = _zero_relations(model, x.shape[0])
+    bool_relations = _zero_relations(model, x.shape[0], dtype=torch.bool)
 
-    logits_with_relations, values_with_relations = model(x, legal_mask, relations)
-    logits_without_relations, values_without_relations = model(x, legal_mask)
+    logits_with_uint8, values_with_uint8 = model(x, legal_mask, uint8_relations)
+    logits_with_bool, values_with_bool = model(x, legal_mask, bool_relations)
 
-    assert torch.allclose(logits_with_relations, logits_without_relations)
-    assert torch.allclose(values_with_relations, values_without_relations)
+    assert torch.allclose(logits_with_uint8, logits_with_bool)
+    assert torch.allclose(values_with_uint8, values_with_bool)
+
+
+def test_forward_requires_relation_planes(model: RSSTransformerNet, valid_inputs: tuple[torch.Tensor, torch.Tensor]) -> None:
+    x, legal_mask = valid_inputs
+
+    with pytest.raises(TypeError):
+        model(x, legal_mask)  # type: ignore[call-arg]
+
+    with pytest.raises(AssertionError, match="relations must be supplied"):
+        model(x, legal_mask, None)  # type: ignore[arg-type]
 
 
 def test_forward_rejects_wrong_relation_shape(model: RSSTransformerNet, valid_inputs: tuple[torch.Tensor, torch.Tensor]) -> None:
     x, legal_mask = valid_inputs
-    relations = torch.zeros(
-        x.shape[0],
-        NUM_ATTENTION_RELATIONS,
-        model.cfg.num_tokens,
-        model.cfg.num_tokens - 1,
-        dtype=torch.uint8,
-    )
+    relations = _zero_relations(model, x.shape[0])[:, :, :, :-1]
 
     with pytest.raises(AssertionError, match="relations shape"):
         model(x, legal_mask, relations)
@@ -119,13 +138,7 @@ def test_forward_rejects_wrong_relation_shape(model: RSSTransformerNet, valid_in
 
 def test_forward_rejects_wrong_relation_dtype(model: RSSTransformerNet, valid_inputs: tuple[torch.Tensor, torch.Tensor]) -> None:
     x, legal_mask = valid_inputs
-    relations = torch.zeros(
-        x.shape[0],
-        NUM_ATTENTION_RELATIONS,
-        model.cfg.num_tokens,
-        model.cfg.num_tokens,
-        dtype=torch.float32,
-    )
+    relations = _zero_relations(model, x.shape[0], dtype=torch.float32)
 
     with pytest.raises(AssertionError, match="relations must be bool or uint8"):
         model(x, legal_mask, relations)
@@ -682,9 +695,10 @@ def test_forward_rejects_legal_mask_on_different_device() -> None:
     lut = build_action_lut()
     legal_mask = torch.zeros(1, U_DIM, dtype=torch.bool)
     legal_mask[0, lut[0, : int(PHASE_ACTION_SIZES[0])]] = True
+    relations = _zero_relations(model, 1, device=torch.device("cuda"))
 
     with pytest.raises(AssertionError, match="legal_mask device"):
-        model(x, legal_mask)
+        model(x, legal_mask, relations)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for device mismatch test")
@@ -695,13 +709,7 @@ def test_forward_rejects_relations_on_different_device() -> None:
     lut = build_action_lut()
     legal_mask = torch.zeros(1, U_DIM, dtype=torch.bool, device=torch.device("cuda"))
     legal_mask[0, lut[0, : int(PHASE_ACTION_SIZES[0])].to(torch.device("cuda"))] = True
-    relations = torch.zeros(
-        1,
-        NUM_ATTENTION_RELATIONS,
-        cfg.num_tokens,
-        cfg.num_tokens,
-        dtype=torch.uint8,
-    )
+    relations = _zero_relations(model, 1)
 
     with pytest.raises(AssertionError, match="relations device"):
         model(x, legal_mask, relations)

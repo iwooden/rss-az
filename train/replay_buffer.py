@@ -7,9 +7,10 @@ TB reporting, dense ``legal_mask`` + ``policy_target`` rows over
 ``value_target``.
 
 The trainer is responsible for calling ``core.token_data.get_token_data``
-per sampled state at training time to materialize the
-``(num_tokens, token_dim)`` float32 token buffer — cheap nogil Cython call,
-fine in DataLoader workers.
+and ``core.relations.get_relation_data`` per sampled state at training time
+to materialize the ``(num_tokens, token_dim)`` float32 token buffer and
+``(num_relations, num_tokens, num_tokens)`` uint8 relation planes. Keeping
+replay in compact state form avoids storing derived NN inputs twice.
 """
 
 from __future__ import annotations
@@ -21,6 +22,9 @@ from typing import NamedTuple
 import numpy as np
 import torch
 
+from core.attention_relations import NUM_ATTENTION_RELATIONS
+from core.relations import get_relation_data_batch
+from core.token_data import get_num_tokens
 from nn.transformer import UNIFIED_LOGIT_DIM
 
 
@@ -54,6 +58,8 @@ class ReplayBuffer:
         self._state_size = state_size_int16
         self._num_players = num_players
         self._unified_dim = int(UNIFIED_LOGIT_DIM)
+        self._num_tokens = get_num_tokens(num_players)
+        self._num_relations = NUM_ATTENTION_RELATIONS
         self._size = 0
         self._index = 0
 
@@ -127,10 +133,8 @@ class ReplayBuffer:
     ) -> dict[str, torch.Tensor]:
         """Sample a random batch. Returns dict of torch tensors (CPU).
 
-        The trainer runs ``get_token_data`` per state to produce the
-        ``(num_tokens, token_dim)`` float32 token buffer — this keeps the
-        replay buffer ~3× smaller (int16 vs float32 tokenized) and lets
-        tokenization run inside DataLoader workers.
+        Relation planes are generated from the sampled compact states rather
+        than stored in the ring buffer, matching the trainer hot path.
 
         Raises ValueError if batch_size > current buffer size.
         """
@@ -139,10 +143,26 @@ class ReplayBuffer:
                 f"batch_size ({batch_size}) exceeds buffer size ({self._size})"
             )
         indices = rng.choice(self._size, size=batch_size, replace=False)
+        states = self._states[indices]
+        relations = np.empty(
+            (
+                batch_size,
+                self._num_relations,
+                self._num_tokens,
+                self._num_tokens,
+            ),
+            dtype=np.uint8,
+        )
+        get_relation_data_batch(
+            [states[i] for i in range(batch_size)],
+            self._num_players,
+            relations,
+        )
         return {
-            "states": torch.from_numpy(self._states[indices]),
+            "states": torch.from_numpy(states),
             "phase_ids": torch.from_numpy(self._phase_ids[indices]),
             "legal_masks": torch.from_numpy(self._legal_masks[indices]),
+            "relations": torch.from_numpy(relations),
             "policy_targets": torch.from_numpy(self._policy_targets[indices]),
             "value_targets": torch.from_numpy(self._value_targets[indices]),
         }
@@ -156,6 +176,7 @@ class ReplayBuffer:
         legal_masks_out: np.ndarray,
         policy_targets_out: np.ndarray,
         value_targets_out: np.ndarray,
+        relations_out: np.ndarray | None = None,
     ) -> None:
         """Fill caller-provided arrays with a random batch.
 
@@ -163,7 +184,9 @@ class ReplayBuffer:
         used by the trainer to fill pinned host scratch, so the
         subsequent H→D copy is genuinely async. Integer outputs may be
         wider than the stored dtype (e.g. int64); widening happens
-        during the fancy-index copy.
+        during the fancy-index copy. If ``relations_out`` is supplied,
+        relation planes are generated from the sampled states into that
+        caller-owned scratch buffer.
         """
         if batch_size > self._size:
             raise ValueError(
@@ -175,6 +198,12 @@ class ReplayBuffer:
         legal_masks_out[:] = self._legal_masks[indices]
         policy_targets_out[:] = self._policy_targets[indices]
         value_targets_out[:] = self._value_targets[indices]
+        if relations_out is not None:
+            get_relation_data_batch(
+                [states_out[i] for i in range(batch_size)],
+                self._num_players,
+                relations_out,
+            )
 
     def __len__(self) -> int:
         return self._size
