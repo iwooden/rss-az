@@ -596,6 +596,15 @@ class RSSTransformerNet(nn.Module):
             nn.Linear(dp, dp),
         )
 
+    @staticmethod
+    def _match_dtype_device(tensor: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+        """Move small buffers/raw slices to the current runtime dtype and device."""
+        return tensor.to(device=ref.device, dtype=ref.dtype)
+
+    def _embedding_weight(self, embedding: nn.Embedding, ref: torch.Tensor) -> torch.Tensor:
+        """Return embedding weights matched to an autocast runtime tensor."""
+        return self._match_dtype_device(embedding.weight, ref)
+
     def _project_company_tokens(self, x: torch.Tensor) -> torch.Tensor:
         """Project company tokens from their raw feature fields."""
         return self.company_proj(
@@ -615,7 +624,8 @@ class RSSTransformerNet(nn.Module):
                 self._token_feature_start:int(TokenWidth.TW_CORP),
             ]
         )
-        return corp_tokens + self.corp_id_embed(self._corp_ids).to(corp_tokens.dtype)
+        corp_ids = self._match_dtype_device(self.corp_id_embed(self._corp_ids), corp_tokens)
+        return corp_tokens + corp_ids
 
     def _project_fi_token(self, x: torch.Tensor) -> torch.Tensor:
         """Project the FI token from its raw feature fields."""
@@ -820,7 +830,8 @@ class RSSTransformerNet(nn.Module):
         # indexed gather against ``type_embeds`` gives every token a
         # type-distinct signal even when its feature slice is all-zero.
         input_tokens = torch.cat(input_parts, dim=1)                                     # (B, cfg.num_tokens, d)
-        return input_tokens + self.type_embeds(self._type_ids).to(input_tokens.dtype)    # (B, num_tokens, d)
+        type_embeds = self._match_dtype_device(self.type_embeds(self._type_ids), input_tokens)
+        return input_tokens + type_embeds                                               # (B, num_tokens, d)
 
     def _active_token(
         self,
@@ -829,7 +840,10 @@ class RSSTransformerNet(nn.Module):
         token_embeddings: torch.Tensor,
     ) -> torch.Tensor:
         """Select the active entity embedding from a token family."""
-        selector = x[:, token_slice, self._is_selected_offset].to(token_embeddings.dtype)
+        selector = self._match_dtype_device(
+            x[:, token_slice, self._is_selected_offset],
+            token_embeddings,
+        )
         return torch.bmm(selector.unsqueeze(1), token_embeddings).squeeze(1)
 
     def _policy_context(self, tokens: torch.Tensor, x: torch.Tensor) -> _PolicyContext:
@@ -874,7 +888,6 @@ class RSSTransformerNet(nn.Module):
         key_mlp: nn.Module,
     ) -> torch.Tensor:
         """Score generated action keys against an actor query."""
-        dtype = phase_info.dtype
         batch_size, num_actions, _ = action_features.shape
         query = actor_proj(actor)
         info = (
@@ -883,11 +896,14 @@ class RSSTransformerNet(nn.Module):
             .expand(batch_size, num_actions, self.cfg.d_proj)
         )
         action_ids = (
-            action_embed.weight.to(dtype=dtype)
+            self._embedding_weight(action_embed, phase_info)
             .unsqueeze(0)
             .expand(batch_size, num_actions, self.cfg.d_proj)
         )
-        key_input = torch.cat([info, action_ids, action_features.to(dtype)], dim=-1)
+        key_input = torch.cat(
+            [info, action_ids, self._match_dtype_device(action_features, phase_info)],
+            dim=-1,
+        )
         keys = key_mlp(key_input)
         logits = torch.bmm(keys, query.unsqueeze(-1)).squeeze(-1)
         return logits / math.sqrt(self.cfg.d_proj)
@@ -979,17 +995,24 @@ class RSSTransformerNet(nn.Module):
         min_bid_idx = raw_auction[:, 0:1]
         min_bid_value = raw_auction[:, 1:2]
         is_first_bid = raw_auction[:, 2:3]
-        bid_offsets = self._bid_offset_features.to(
-            dtype=ctx.tokens.dtype,
-            device=ctx.tokens.device,
+        bid_offsets = self._match_dtype_device(
+            self._bid_offset_features,
+            ctx.tokens,
         ).expand(ctx.tokens.shape[0], int(AUCTION_CAP), 1)
-        relative_offsets = bid_offsets - min_bid_idx.to(bid_offsets.dtype).unsqueeze(1)
+        relative_offsets = (
+            bid_offsets
+            - self._match_dtype_device(min_bid_idx, bid_offsets).unsqueeze(1)
+        )
         action_features = torch.cat(
             [
                 bid_offsets,
                 relative_offsets,
-                min_bid_value.to(bid_offsets.dtype).unsqueeze(1).expand_as(bid_offsets),
-                is_first_bid.to(bid_offsets.dtype).unsqueeze(1).expand_as(bid_offsets),
+                self._match_dtype_device(min_bid_value, bid_offsets)
+                .unsqueeze(1)
+                .expand_as(bid_offsets),
+                self._match_dtype_device(is_first_bid, bid_offsets)
+                .unsqueeze(1)
+                .expand_as(bid_offsets),
             ],
             dim=-1,
         )
@@ -1011,19 +1034,22 @@ class RSSTransformerNet(nn.Module):
 
     def _dividend_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Build dividend amount logits from active-corp query and action keys."""
-        dividend_amounts = self._dividend_amount_features.to(
-            dtype=ctx.tokens.dtype,
-            device=ctx.tokens.device,
+        dividend_amounts = self._match_dtype_device(
+            self._dividend_amount_features,
+            ctx.tokens,
         ).expand(
             ctx.tokens.shape[0],
             _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS),
             1,
         )
-        dividend_impacts = ctx.raw_tokens[
-            :,
-            self._dividend_idx,
-            self._token_feature_start:int(TokenWidth.TW_DIVIDEND),
-        ].to(ctx.tokens.dtype).unsqueeze(-1)
+        dividend_impacts = self._match_dtype_device(
+            ctx.raw_tokens[
+                :,
+                self._dividend_idx,
+                self._token_feature_start:int(TokenWidth.TW_DIVIDEND),
+            ],
+            ctx.tokens,
+        ).unsqueeze(-1)
         action_features = torch.cat([dividend_amounts, dividend_impacts], dim=-1)
         return self._actor_action_key_logits(
             ctx.active_corp,
@@ -1039,15 +1065,18 @@ class RSSTransformerNet(nn.Module):
         """Build ISSUE logits: pass/no-issue plus issue one share."""
         batch_size = ctx.tokens.shape[0]
         num_actions = self.issue_action_embed.num_embeddings
-        action_is_issue = self._issue_action_features.to(
-            dtype=ctx.tokens.dtype,
-            device=ctx.tokens.device,
+        action_is_issue = self._match_dtype_device(
+            self._issue_action_features,
+            ctx.tokens,
         ).expand(batch_size, num_actions, 1)
-        issue_impact = ctx.raw_tokens[
-            :,
-            self._issue_idx,
-            self._token_feature_start:int(TokenWidth.TW_ISSUE),
-        ].to(ctx.tokens.dtype)
+        issue_impact = self._match_dtype_device(
+            ctx.raw_tokens[
+                :,
+                self._issue_idx,
+                self._token_feature_start:int(TokenWidth.TW_ISSUE),
+            ],
+            ctx.tokens,
+        )
         issue_impact_taken = action_is_issue * issue_impact.unsqueeze(1)
         action_features = torch.cat([action_is_issue, issue_impact_taken], dim=-1)
         return self._actor_action_key_logits(
@@ -1064,15 +1093,18 @@ class RSSTransformerNet(nn.Module):
         """Build ACQ_OFFER logits: pass/reject plus accept offer."""
         batch_size = ctx.tokens.shape[0]
         num_actions = self.acq_offer_action_embed.num_embeddings
-        action_is_accept = self._acq_offer_action_features.to(
-            dtype=ctx.tokens.dtype,
-            device=ctx.tokens.device,
+        action_is_accept = self._match_dtype_device(
+            self._acq_offer_action_features,
+            ctx.tokens,
         ).expand(batch_size, num_actions, 1)
-        raw_acq_offer = ctx.raw_tokens[
-            :,
-            self._acq_offer_idx,
-            self._token_feature_start:int(TokenWidth.TW_ACQ_OFFER),
-        ].to(ctx.tokens.dtype)
+        raw_acq_offer = self._match_dtype_device(
+            ctx.raw_tokens[
+                :,
+                self._acq_offer_idx,
+                self._token_feature_start:int(TokenWidth.TW_ACQ_OFFER),
+            ],
+            ctx.tokens,
+        )
         offer_price_index = action_is_accept * raw_acq_offer[:, 0:1].unsqueeze(1)
         offer_price = action_is_accept * raw_acq_offer[:, 1:2].unsqueeze(1)
         fi_company = raw_acq_offer[:, 2:3].unsqueeze(1).expand_as(action_is_accept)
@@ -1097,17 +1129,19 @@ class RSSTransformerNet(nn.Module):
     def _par_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Build par-price logits from active-player query and par-price keys."""
         num_par_prices = self.par_price_embed.num_embeddings
-        par_indices = self._par_index_features.to(
-            dtype=ctx.tokens.dtype,
-            device=ctx.tokens.device,
+        par_indices = self._match_dtype_device(
+            self._par_index_features,
+            ctx.tokens,
         ).expand(ctx.tokens.shape[0], num_par_prices, 1)
         par_effects = (
-            ctx.raw_tokens[
-                :,
-                self._par_idx,
-                self._token_feature_start:int(TokenWidth.TW_PAR),
-            ]
-            .to(ctx.tokens.dtype)
+            self._match_dtype_device(
+                ctx.raw_tokens[
+                    :,
+                    self._par_idx,
+                    self._token_feature_start:int(TokenWidth.TW_PAR),
+                ],
+                ctx.tokens,
+            )
             .reshape(ctx.tokens.shape[0], num_par_prices, 3)
         )
         action_features = torch.cat([par_indices, par_effects], dim=-1)
@@ -1129,34 +1163,43 @@ class RSSTransformerNet(nn.Module):
         """Build ACQ_SELECT_PRICE logits from active-corp query and offset keys."""
         batch_size = ctx.tokens.shape[0]
         num_offsets = self.acq_price_offset_embed.num_embeddings
-        offset_features = self._acq_price_offset_features.to(
-            dtype=ctx.tokens.dtype,
-            device=ctx.tokens.device,
+        offset_features = self._match_dtype_device(
+            self._acq_price_offset_features,
+            ctx.tokens,
         ).expand(batch_size, num_offsets, 2)
         offset_count_norm = offset_features[:, :, 0:1]
         offset_price_delta = offset_features[:, :, 1:2]
 
-        raw_acq_price = ctx.raw_tokens[
-            :,
-            self._acq_price_info_idx,
-            self._token_feature_start:int(TokenWidth.TW_ACQ_PRICE),
-        ].to(ctx.tokens.dtype)
+        raw_acq_price = self._match_dtype_device(
+            ctx.raw_tokens[
+                :,
+                self._acq_price_info_idx,
+                self._token_feature_start:int(TokenWidth.TW_ACQ_PRICE),
+            ],
+            ctx.tokens,
+        )
         max_offset = raw_acq_price[:, 0:1].unsqueeze(1).expand_as(offset_count_norm)
         fi_flag = raw_acq_price[:, 1:2].unsqueeze(1).expand_as(offset_count_norm)
         total_synergies = (
             raw_acq_price[:, 2:3].unsqueeze(1).expand_as(offset_count_norm)
         )
 
-        raw_company_features = ctx.raw_tokens[
-            :,
-            self._company_slice,
-            self._token_feature_start:int(TokenWidth.TW_COMPANY),
-        ].to(ctx.tokens.dtype)
-        active_company_selector = ctx.raw_tokens[
-            :,
-            self._company_slice,
-            self._is_selected_offset,
-        ].to(ctx.tokens.dtype)
+        raw_company_features = self._match_dtype_device(
+            ctx.raw_tokens[
+                :,
+                self._company_slice,
+                self._token_feature_start:int(TokenWidth.TW_COMPANY),
+            ],
+            ctx.tokens,
+        )
+        active_company_selector = self._match_dtype_device(
+            ctx.raw_tokens[
+                :,
+                self._company_slice,
+                self._is_selected_offset,
+            ],
+            ctx.tokens,
+        )
         active_company_raw = torch.bmm(
             active_company_selector.unsqueeze(1),
             raw_company_features,
