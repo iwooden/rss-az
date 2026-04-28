@@ -3,6 +3,8 @@
 Regressions this catches:
 - norm scale weights (LayerNorm/RMSNorm) silently routed to a decay group
 - bias params routed to a decay group
+- embedding/anchor tables routed to a decay group
+- relation attention-bias multipliers routed to a decay group
 - Muon claiming embedding/anchor tables instead of leaving them to AdamW
 - any trainable param orphaned from, or double-claimed by, the optimizer(s)
 """
@@ -82,6 +84,16 @@ def _embedding_param_ids(model: nn.Module) -> dict[str, int]:
     return ids
 
 
+def _relation_bias_param_ids(model: nn.Module) -> dict[str, int]:
+    ids: dict[str, int] = {}
+    for module_name, module in model.named_modules():
+        for pname, p in module.named_parameters(recurse=False):
+            if pname == "relation_bias_mult":
+                full_name = f"{module_name}.{pname}" if module_name else pname
+                ids[full_name] = id(p)
+    return ids
+
+
 @pytest.mark.parametrize("optimizer", ["adamw", "muon"])
 def test_every_trainable_param_claimed_exactly_once(optimizer: str) -> None:
     trainer = _make_trainer(optimizer)
@@ -127,7 +139,37 @@ def test_bias_params_are_not_decayed(optimizer: str) -> None:
         )
 
 
-def test_muon_routes_embedding_params_to_aux_adamw_decay_group() -> None:
+@pytest.mark.parametrize("optimizer", ["adamw", "muon"])
+def test_embedding_params_are_not_decayed(optimizer: str) -> None:
+    trainer = _make_trainer(optimizer)
+    groups = _all_groups(trainer)
+    embedding_ids = _embedding_param_ids(trainer.model)
+    assert embedding_ids, "expected model to contain embedding params"
+
+    for name, pid in embedding_ids.items():
+        g = _group_of(pid, groups)
+        assert g is not None, f"{name} not routed to any optimizer group"
+        assert g["weight_decay"] == 0.0, (
+            f"{name} routed to weight_decay={g['weight_decay']} group"
+        )
+
+
+@pytest.mark.parametrize("optimizer", ["adamw", "muon"])
+def test_relation_bias_params_are_not_decayed(optimizer: str) -> None:
+    trainer = _make_trainer(optimizer)
+    groups = _all_groups(trainer)
+    relation_bias_ids = _relation_bias_param_ids(trainer.model)
+    assert relation_bias_ids, "expected model to contain relation bias params"
+
+    for name, pid in relation_bias_ids.items():
+        g = _group_of(pid, groups)
+        assert g is not None, f"{name} not routed to any optimizer group"
+        assert g["weight_decay"] == 0.0, (
+            f"{name} routed to weight_decay={g['weight_decay']} group"
+        )
+
+
+def test_muon_routes_embedding_params_to_aux_adamw_no_decay_group() -> None:
     trainer = _make_trainer("muon")
     assert trainer._aux_optimizer is not None, "expected Muon to have aux AdamW"
 
@@ -144,6 +186,6 @@ def test_muon_routes_embedding_params_to_aux_adamw_decay_group() -> None:
         assert pid not in muon_ids, f"{name} was routed to Muon"
         g = _group_of(pid, aux_groups)
         assert g is not None, f"{name} not routed to aux AdamW"
-        assert g["weight_decay"] == trainer.config.weight_decay, (
+        assert g["weight_decay"] == 0.0, (
             f"{name} routed to aux AdamW with weight_decay={g['weight_decay']}"
         )

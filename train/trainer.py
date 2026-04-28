@@ -106,7 +106,20 @@ class Trainer:
             for pname, param in module.named_parameters(recurse=False):
                 if not param.requires_grad:
                     continue
-                if isinstance(module, (torch.nn.LayerNorm, torch.nn.RMSNorm)) or pname == "bias":
+                no_weight_decay = (
+                    isinstance(
+                        module,
+                        (
+                            torch.nn.Embedding,
+                            torch.nn.LayerNorm,
+                            torch.nn.RMSNorm,
+                        ),
+                    )
+                    or pname == "bias"
+                    or pname.endswith("embeds")
+                    or pname == "relation_bias_mult"
+                )
+                if no_weight_decay:
                     no_decay_params.append(param)
                 else:
                     decay_params.append(param)
@@ -136,14 +149,20 @@ class Trainer:
                     isinstance(module, torch.nn.Embedding)
                     or pname.endswith("embeds")
                 )
+                no_weight_decay = (
+                    is_norm
+                    or is_embedding
+                    or pname == "bias"
+                    or pname == "relation_bias_mult"
+                )
                 # Muon only supports 2D matrix params. Stacked (3D+) tensors —
                 # e.g. the per-offset ACQ bilinear factors — go to AdamW decay:
                 # Newton-Schulz orthogonalization across the stack axis isn't
                 # what Muon means by "matrix." Embedding/anchor tables are
                 # also kept on AdamW per Muon's intended hidden-layer scope.
-                if param.ndim == 2 and not is_norm and not is_embedding:
+                if param.ndim == 2 and not no_weight_decay:
                     muon_params.append(param)
-                elif is_norm or pname == "bias":
+                elif no_weight_decay:
                     adam_no_decay.append(param)
                 else:
                     adam_decay.append(param)
