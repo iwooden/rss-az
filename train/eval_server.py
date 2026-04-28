@@ -1112,7 +1112,7 @@ class RemoteEvaluator(BaseEvaluator):
     """
 
     # Seconds to wait for eval server response before raising.
-    _EVAL_TIMEOUT = 120.0
+    _EVAL_TIMEOUT = 1200.0
 
     def __init__(
         self,

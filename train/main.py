@@ -554,7 +554,7 @@ def main() -> None:
             f"to compile..."
         )
         for server in eval_servers:
-            if not server.wait_ready(timeout=1200.0):
+            if not server.wait_ready(timeout=2400.0):
                 raise RuntimeError(
                     "Eval server did not become ready within 300s — "
                     "compilation may have failed (check stderr)"
@@ -777,7 +777,7 @@ def main() -> None:
                 # Collect results as they complete
                 for game_idx in range(config.games_per_epoch):
                     try:
-                        record = result_queue.get(timeout=300.0)
+                        record = result_queue.get(timeout=1200.0)
                     except queue.Empty:
                         alive = sum(1 for w in workers if w.is_alive())
                         raise RuntimeError(
