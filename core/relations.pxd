@@ -1,0 +1,36 @@
+"""
+Declaration file for Graphormer-style attention relation extraction.
+
+The relation buffer is ``(num_relations, num_tokens, num_tokens)`` uint8.
+Rows are query tokens and columns are key/value tokens, matching PyTorch
+SDPA's additive attention-bias layout.
+"""
+
+from core.state cimport GameState
+
+
+cpdef enum AttentionRelationIndex:
+    REL_CORP_OWNS_COMPANY = 0
+    REL_COMPANY_OWNED_BY_CORP = 1
+    REL_PLAYER_OWNS_COMPANY = 2
+    REL_COMPANY_OWNED_BY_PLAYER = 3
+    REL_FI_OWNS_COMPANY = 4
+    REL_COMPANY_OWNED_BY_FI = 5
+    REL_PLAYER_OWNS_CORP_SHARES = 6
+    REL_CORP_HAS_PLAYER_SHAREHOLDER = 7
+    REL_PLAYER_PRESIDENT_OF_CORP = 8
+    REL_CORP_PRESIDENT_PLAYER = 9
+    REL_NUM_ATTENTION_RELATIONS = 10
+
+
+cpdef int get_num_attention_relations() noexcept nogil
+
+
+cpdef void get_relation_data(GameState state, unsigned char[:, :, ::1] buffer)
+
+
+cpdef void get_relation_data_batch(
+    list state_arrays,
+    int num_players,
+    unsigned char[:, :, :, ::1] buffer,
+)

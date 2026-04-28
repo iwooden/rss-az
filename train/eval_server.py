@@ -11,6 +11,10 @@ Communication uses shared memory (torch tensors with share_memory_()):
   Worker → Server (inputs)
       states      : float16 (W, B, num_tokens, token_dim)
       legal_mask  : uint8   (W, B, UNIFIED_LOGIT_DIM)  — 1=legal slot
+      relations   : uint8   (W, B, R, num_tokens, num_tokens)
+                    — directed relation planes, 1=edge present. Populated by
+                    workers now; server/model consumption lands with the
+                    attention-bias forward path.
 
   Server → Worker (outputs — dense over unified slots, softmaxed on GPU)
       priors  : float32 (W, B, UNIFIED_LOGIT_DIM)  — legal slots sum to 1
@@ -94,7 +98,9 @@ from core.actions import (
     enumerate_legal_actions_py,
     get_decision_phase_py,
 )
+from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.data import MAX_ACTION_SIZE, PHASE_ACTION_SIZES
+from core.relations import get_relation_data, get_relation_data_batch
 from core.token_data import (
     TokenDataSize,
     get_num_tokens,
@@ -195,8 +201,10 @@ class SharedEvalBuffers:
     values back into the same per-worker slot.
 
     Inputs (worker → server):
-        states      (W, B, num_tokens, token_dim) float16
-        legal_mask  (W, B, UNIFIED_LOGIT_DIM)     uint8 (1=legal slot)
+        states      (W, B, num_tokens, token_dim)       float16
+        legal_mask  (W, B, UNIFIED_LOGIT_DIM)           uint8 (1=legal slot)
+        relations   (W, B, R, num_tokens, num_tokens)   uint8 (1=edge present;
+                    worker-populated, reserved for attention-bias input)
 
     Outputs (server → worker):
         priors  (W, B, UNIFIED_LOGIT_DIM)  float32  (softmaxed over legal slots)
@@ -219,6 +227,7 @@ class SharedEvalBuffers:
         self.num_tokens = get_num_tokens(num_players)
         self.token_dim = TOKEN_DIM
         self.unified_dim = UNIFIED_LOGIT_DIM
+        self.num_relations = NUM_ATTENTION_RELATIONS
 
         # --- Inputs (worker → server) ---
         # fp16 on the wire: halves shm footprint + pinned→GPU copy vs. the
@@ -231,6 +240,14 @@ class SharedEvalBuffers:
         ).share_memory_()
         self._legal_mask = torch.zeros(
             num_workers, batch_size, self.unified_dim, dtype=torch.uint8,
+        ).share_memory_()
+        # Graphormer-style directed relation planes. uint8 is the smallest
+        # practical shared-memory dtype here: torch.bool is also byte-backed,
+        # and bit-packed tensors are not available for direct torch/Numpy IPC.
+        self._relations = torch.zeros(
+            num_workers, batch_size,
+            self.num_relations, self.num_tokens, self.num_tokens,
+            dtype=torch.uint8,
         ).share_memory_()
 
         # --- Outputs (server → worker) ---
@@ -276,6 +293,10 @@ class SharedEvalBuffers:
     def get_input_legal_mask_np(self, worker_idx: int) -> np.ndarray:
         """(batch, UNIFIED_LOGIT_DIM) uint8 view into this worker's legal-mask slot."""
         return self._legal_mask[worker_idx].numpy()
+
+    def get_input_relations_np(self, worker_idx: int) -> np.ndarray:
+        """(batch, num_relations, num_tokens, num_tokens) uint8 relation planes."""
+        return self._relations[worker_idx].numpy()
 
     # ------------------------------------------------------------------
     # Per-worker output accessors.
@@ -1133,6 +1154,7 @@ class RemoteEvaluator(BaseEvaluator):
         # single-state and batched paths share it.
         self._in_states_np = shared_bufs.get_input_states_np(worker_idx)
         self._in_legal_mask_np = shared_bufs.get_input_legal_mask_np(worker_idx)
+        self._in_relations_np = shared_bufs.get_input_relations_np(worker_idx)
         self._states_scratch_fp32 = np.empty(
             self._in_states_np.shape, dtype=np.float32,
         )
@@ -1231,6 +1253,7 @@ class RemoteEvaluator(BaseEvaluator):
         phase_id = get_decision_phase_py(state)
         get_token_data(state, self._states_scratch_fp32[0])
         self._in_states_np[0] = self._states_scratch_fp32[0].astype(np.float16)
+        get_relation_data(state, self._in_relations_np[0])
         n = enumerate_legal_actions_py(state, self._enum_scratch)
         self._fill_mask_row(0, phase_id, self._enum_scratch[:n])
 
@@ -1292,6 +1315,9 @@ class RemoteEvaluator(BaseEvaluator):
             state_arrays, self.num_players, self._states_scratch_fp32[:n],
         )
         self._in_states_np[:n] = self._states_scratch_fp32[:n].astype(np.float16)
+        get_relation_data_batch(
+            state_arrays, self.num_players, self._in_relations_np[:n],
+        )
         # Caller already has the dense mask — copy it straight into shm.
         np.copyto(self._in_legal_mask_np[:n], legal_mask, casting="unsafe")
 

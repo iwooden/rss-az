@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import torch
 
+from core.attention_relations import NUM_ATTENTION_RELATIONS, AttentionRelation
 from train.eval_server import (
     EvaluationServer,
     RequestBatchGroup,
@@ -127,3 +128,37 @@ def test_evaluation_server_threads_batch_shape_mode_and_max_batch_size_into_proc
 
     assert server._process_kwargs["batch_shape_mode"] == "bucketed"
     assert server._process_kwargs["max_batch_size"] == 64
+
+
+def test_attention_relation_count_matches_enum_members() -> None:
+    assert NUM_ATTENTION_RELATIONS == len(AttentionRelation)
+
+
+def test_shared_eval_buffers_allocates_uint8_relation_planes() -> None:
+    shared_bufs = SharedEvalBuffers(
+        num_workers=2,
+        batch_size=4,
+        num_players=3,
+    )
+
+    assert shared_bufs.num_relations == NUM_ATTENTION_RELATIONS
+    assert shared_bufs._relations.dtype == torch.uint8
+    assert tuple(shared_bufs._relations.shape) == (
+        2,
+        4,
+        NUM_ATTENTION_RELATIONS,
+        shared_bufs.num_tokens,
+        shared_bufs.num_tokens,
+    )
+
+    worker_relations = shared_bufs.get_input_relations_np(1)
+    assert worker_relations.dtype == np.uint8
+    assert worker_relations.shape == (
+        4,
+        NUM_ATTENTION_RELATIONS,
+        shared_bufs.num_tokens,
+        shared_bufs.num_tokens,
+    )
+
+    worker_relations[0, 2, 5, 7] = 1
+    assert int(shared_bufs._relations[1, 0, 2, 5, 7].item()) == 1
