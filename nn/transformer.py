@@ -241,20 +241,20 @@ class TransformerBlock(nn.Module):
         self,
         x: torch.Tensor,
         attn_mask: torch.Tensor,
-        relation_bias: torch.Tensor | None = None,
+        relation_bias: torch.Tensor,
     ) -> torch.Tensor:
         h = self.attn_norm(x)
         B, N, D = h.shape
         qkv = self.qkv_proj(h).reshape(B, N, 3, self.num_heads, self.head_dim)
-        # (3, B, heads, N, head_dim) so unbind(0) yields three (B, heads, N, head_dim) tensors.
-        q, k, v = qkv.permute(2, 0, 3, 1, 4).unbind(0)
-        if relation_bias is not None:
-            hidden = torch.finfo(relation_bias.dtype).min
-            visibility_bias = torch.zeros_like(attn_mask, dtype=relation_bias.dtype)
-            visibility_bias = visibility_bias.masked_fill(~attn_mask, hidden)
-            sdpa_mask = relation_bias + visibility_bias
-        else:
-            sdpa_mask = attn_mask
+        # (3, B, heads, N, head_dim) so unbind(0) yields three
+        # (B, heads, N, head_dim) tensors. The contiguous call gives Inductor's
+        # SDPA autotune templates the packed layout they expect instead of the
+        # batch/sequence-strided view produced directly by permute.
+        q, k, v = qkv.permute(2, 0, 3, 1, 4).contiguous().unbind(0)
+        hidden = torch.finfo(relation_bias.dtype).min
+        visibility_bias = torch.zeros_like(attn_mask, dtype=relation_bias.dtype)
+        visibility_bias = visibility_bias.masked_fill(~attn_mask, hidden)
+        sdpa_mask = relation_bias + visibility_bias
         attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=sdpa_mask)
         # (B, heads, N, head_dim) -> (B, N, D)
         attn_out = attn_out.transpose(1, 2).reshape(B, N, D)
@@ -1403,8 +1403,6 @@ class RSSTransformerNet(nn.Module):
             raise AssertionError(
                 f"legal_mask device must match x device; got {legal_mask.device} vs {x.device}"
             )
-        if relations is None:
-            raise AssertionError("relations must be supplied")
         expected_rel_shape = (
             x.shape[0],
             NUM_ATTENTION_RELATIONS,

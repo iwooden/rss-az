@@ -124,9 +124,6 @@ def test_forward_requires_relation_planes(model: RSSTransformerNet, valid_inputs
     with pytest.raises(TypeError):
         model(x, legal_mask)  # type: ignore[call-arg]
 
-    with pytest.raises(AssertionError, match="relations must be supplied"):
-        model(x, legal_mask, None)  # type: ignore[arg-type]
-
 
 def test_forward_rejects_wrong_relation_shape(model: RSSTransformerNet, valid_inputs: tuple[torch.Tensor, torch.Tensor]) -> None:
     x, legal_mask = valid_inputs
@@ -395,8 +392,19 @@ def _run_trunk_from_projected(
     tokens: torch.Tensor,
     attn_mask: torch.Tensor,
 ) -> torch.Tensor:
-    for block in model.blocks:
-        tokens = block(tokens, attn_mask)
+    relation_flags = tokens.new_zeros(
+        tokens.shape[0],
+        NUM_ATTENTION_RELATIONS,
+        model.cfg.num_tokens,
+        model.cfg.num_tokens,
+    )
+    for layer_idx, block in enumerate(model.blocks):
+        relation_bias = model._relation_attention_bias(
+            relation_flags,
+            layer_idx,
+            tokens,
+        )
+        tokens = block(tokens, attn_mask, relation_bias)
     return model.final_norm(tokens)
 
 
