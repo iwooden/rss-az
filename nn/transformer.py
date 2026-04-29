@@ -60,6 +60,19 @@ for _size in PHASE_ACTION_SIZES:
     _PHASE_OFFSETS.append(_PHASE_OFFSETS[-1] + int(_size))
 UNIFIED_LOGIT_DIM = _PHASE_OFFSETS[-1]  # 255
 
+# Decision phases whose pass action is emitted by a separate ``Linear(d, 1)``
+# head rather than as action_id 0 of an action-key MLP. ACQ_OFFER ("reject")
+# and ISSUE ("no issue") put the no-op at slot 0 of their action_embed and
+# score it through the same MLP as the other action, so they are not in this
+# list. Used for the pass-vs-action logit-scale TB diagnostic.
+PHASES_WITH_PASS_HEAD: list[int] = [
+    int(DecisionPhase.DPHASE_INVEST),
+    int(DecisionPhase.DPHASE_BID),
+    int(DecisionPhase.DPHASE_ACQ_SELECT_CORP),
+    int(DecisionPhase.DPHASE_CLOSING),
+    int(DecisionPhase.DPHASE_IPO),
+]
+
 # Input-buffer token-type taxonomy. Index order must stay stable — the static
 # ``_type_ids`` buffer built in ``RSSTransformerNet.__init__`` indexes into
 # ``type_embeds`` using these ids, and multi-instance types (company / corp
@@ -1483,6 +1496,53 @@ class RSSTransformerNet(nn.Module):
     # ------------------------------------------------------------------
     # Diagnostics
     # ------------------------------------------------------------------
+
+    def pass_action_logit_abs(
+        self,
+        policy_logits: torch.Tensor,
+        legal_mask: torch.Tensor,
+        phase_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        """Per-phase mean ``|pass logit|`` and mean ``|action logit|`` over
+        legal slots.
+
+        Used as a TB diagnostic to detect a chronic scale mismatch between the
+        ``Linear(d, 1)`` pass heads and the ``q·k/√dp`` scored logits in the
+        same readout. Pass logits init at ~3.5× the std of scored logits at
+        ``d_model=192, d_proj=64``; if the trained model does not converge to
+        a comparable ratio, the architectural asymmetry is wasting capacity.
+
+        Returns a ``(2 * len(PHASES_WITH_PASS_HEAD),)`` tensor packed as
+        ``[pass_abs_p0, action_abs_p0, pass_abs_p1, action_abs_p1, ...]`` in
+        ``PHASES_WITH_PASS_HEAD`` order. Phases with no rows in the batch (or
+        all-illegal pass slots) return 0 for both stats — the caller is
+        expected to filter via per-phase row counts.
+        """
+        abs_logits = policy_logits.detach().abs()
+        stats: list[torch.Tensor] = []
+        for phase in PHASES_WITH_PASS_HEAD:
+            offset = _PHASE_OFFSETS[phase]
+            size = int(PHASE_ACTION_SIZES[phase])
+            pass_slot = offset
+            action_start = offset + 1
+            action_stop = offset + size
+
+            rows = (phase_ids == phase)
+            pass_legal = legal_mask[:, pass_slot] & rows
+            action_legal = legal_mask[:, action_start:action_stop] & rows.unsqueeze(1)
+
+            pass_count = pass_legal.sum().clamp_min(1).to(abs_logits.dtype)
+            action_count = action_legal.sum().clamp_min(1).to(abs_logits.dtype)
+
+            pass_sum = (abs_logits[:, pass_slot] * pass_legal.to(abs_logits.dtype)).sum()
+            action_sum = (
+                abs_logits[:, action_start:action_stop]
+                * action_legal.to(abs_logits.dtype)
+            ).sum()
+
+            stats.append(pass_sum / pass_count)
+            stats.append(action_sum / action_count)
+        return torch.stack(stats)
 
     def phase_mod_diagnostics(self) -> dict[str, float]:
         """Per-layer phase_mod magnitude + phase-distinguishing component.

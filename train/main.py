@@ -1024,7 +1024,11 @@ def main() -> None:
                     "epoch/training_steps": float(training_steps_done),
                 }
                 for k, v in avg_losses.items():
-                    if k.startswith("policy_loss_"):
+                    if k.startswith((
+                        "policy_loss_",
+                        "pass_logit_abs_",
+                        "action_logit_abs_",
+                    )):
                         epoch_scalars[f"epoch/{k}_avg"] = v
                 logger.log_scalars(epoch_num, epoch_scalars)
             else:

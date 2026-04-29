@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -25,7 +25,12 @@ import torch.nn.functional as F
 from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.state import get_layout
 from core.token_data import TokenDataSize, get_num_tokens, get_token_data_batch
-from nn.transformer import NUM_PHASES, UNIFIED_LOGIT_DIM
+from nn.transformer import (
+    NUM_PHASES,
+    PHASES_WITH_PASS_HEAD,
+    UNIFIED_LOGIT_DIM,
+    RSSTransformerNet,
+)
 from train.config import TrainingConfig
 from train.replay_buffer import ReplayBuffer
 
@@ -53,6 +58,12 @@ class Trainer:
         device: torch.device,
     ) -> None:
         self.model = model
+        # Underlying RSSTransformerNet survives torch.compile wrapping via
+        # ``_orig_mod`` and exposes diagnostic methods that the OptimizedModule
+        # wrapper does not forward.
+        self._base_model = cast(
+            RSSTransformerNet, getattr(model, "_orig_mod", model),
+        )
         self.config = config
         self.device = device
         self._global_step = 0
@@ -384,13 +395,20 @@ class Trainer:
         per_phase_means = per_phase_sums / per_phase_counts.clamp(min=1)
 
         # Pack every scalar we want to read back into one tensor so the
-        # host read is a single H←D sync instead of 3 + 8 separate .item()
-        # calls. Order: policy_loss, value_loss, total_loss, *per-phase.
+        # host read is a single H←D sync instead of separate .item() calls.
+        # Order: policy_loss, value_loss, total_loss, *per-phase, *pass-stats.
+        # ``pass_stats`` carries (pass_abs, action_abs) interleaved over the
+        # phases in PHASES_WITH_PASS_HEAD — used to detect logit-scale drift
+        # between the Linear(d, 1) pass heads and the q·k/√dp scored logits.
+        pass_stats = self._base_model.pass_action_logit_abs(
+            policy_logits, legal_masks, phase_ids,
+        )
         all_scalars = torch.cat([
             torch.stack([
                 policy_loss.detach(), value_loss.detach(), total_loss.detach(),
             ]),
             per_phase_means,
+            pass_stats,
         ])
 
         if torch.isnan(total_loss):
@@ -430,6 +448,14 @@ class Trainer:
         for phase_idx, name in enumerate(_PHASE_NAMES):
             if phase_counts[phase_idx] > 0:
                 result[f"policy_loss_{name}"] = scalars[3 + phase_idx]
+
+        pass_stats_offset = 3 + NUM_PHASES
+        for i, phase_idx in enumerate(PHASES_WITH_PASS_HEAD):
+            if phase_counts[phase_idx] == 0:
+                continue
+            name = _PHASE_NAMES[phase_idx]
+            result[f"pass_logit_abs_{name}"] = scalars[pass_stats_offset + 2 * i]
+            result[f"action_logit_abs_{name}"] = scalars[pass_stats_offset + 2 * i + 1]
 
         return result
 

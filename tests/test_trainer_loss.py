@@ -7,7 +7,7 @@ import torch
 from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.state import GameState, get_layout
 from core.token_data import get_num_tokens
-from nn.transformer import UNIFIED_LOGIT_DIM
+from nn.transformer import PHASES_WITH_PASS_HEAD, UNIFIED_LOGIT_DIM
 from train.config import TrainingConfig
 from train.replay_buffer import ReplayBuffer
 from train.trainer import Trainer
@@ -23,7 +23,7 @@ class ConstantValueModel(torch.nn.Module):
     def forward(
         self,
         tokens: torch.Tensor,
-        legal_masks: torch.Tensor,
+        _legal_masks: torch.Tensor,
         relations: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         self.last_relations_shape = tuple(relations.shape)
@@ -34,6 +34,18 @@ class ConstantValueModel(torch.nn.Module):
         )
         values = self.value_bias.unsqueeze(0).expand(batch, -1)
         return policy_logits, values
+
+    def pass_action_logit_abs(
+        self,
+        policy_logits: torch.Tensor,
+        _legal_mask: torch.Tensor,
+        _phase_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        return torch.zeros(
+            2 * len(PHASES_WITH_PASS_HEAD),
+            dtype=policy_logits.dtype,
+            device=policy_logits.device,
+        )
 
 
 def _make_initialized_state(num_players: int) -> np.ndarray:
