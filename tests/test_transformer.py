@@ -201,6 +201,72 @@ def test_relation_attention_bias_combines_planes_per_layer_and_head() -> None:
     assert bias[0, 1].abs().sum().item() == pytest.approx(0.0)
 
 
+def test_phase_condition_uses_global_info_decision_phase_onehot(model: RSSTransformerNet) -> None:
+    cfg = model.cfg
+    phase_a = int(DecisionPhase.DPHASE_INVEST)
+    phase_b = int(DecisionPhase.DPHASE_PAR)
+    x = torch.zeros(2, cfg.num_tokens, cfg.token_dim)
+    x[0, model._global_info_idx, 1 + phase_a] = 1.0
+    x[1, model._global_info_idx, 1 + phase_b] = 1.0
+
+    phase_condition = model._phase_condition(x)
+    expected = model.phase_embed(torch.tensor([phase_a, phase_b]))
+
+    assert torch.allclose(phase_condition, expected)
+
+
+def test_phase_modulation_is_zero_initialized() -> None:
+    model = RSSTransformerNet(
+        TransformerConfig(
+            num_players=NUM_PLAYERS,
+            d_model=48,
+            num_heads=3,
+            num_layers=2,
+            ff_mult=2.0,
+        )
+    )
+    cfg = model.cfg
+
+    assert isinstance(model.phase_embed, torch.nn.Embedding)
+    assert model.phase_embed.num_embeddings == len(DecisionPhase)
+    assert model.phase_embed.embedding_dim == cfg.d_model
+
+    for block in model.blocks:
+        assert block.phase_mod.in_features == cfg.d_model
+        assert block.phase_mod.out_features == 4 * cfg.d_model
+        assert torch.count_nonzero(block.phase_mod.weight).item() == 0
+        assert torch.count_nonzero(block.phase_mod.bias).item() == 0
+
+
+def test_zero_init_phase_modulation_preserves_block_outputs() -> None:
+    torch.manual_seed(789)
+    model = RSSTransformerNet(
+        TransformerConfig(
+            num_players=NUM_PLAYERS,
+            d_model=48,
+            num_heads=3,
+            num_layers=1,
+            ff_mult=2.0,
+        )
+    )
+    block = model.blocks[0]
+    with torch.no_grad():
+        torch.nn.init.trunc_normal_(block.out_proj.weight, std=0.02)
+        torch.nn.init.trunc_normal_(block.ffn_down.weight, std=0.02)
+
+    cfg = model.cfg
+    tokens = torch.randn(2, cfg.num_tokens, cfg.d_model)
+    attn_mask = torch.ones(2, 1, 1, cfg.num_tokens, dtype=torch.bool)
+    relation_bias = torch.zeros(2, cfg.num_heads, cfg.num_tokens, cfg.num_tokens)
+    phase_a = model.phase_embed(torch.tensor([0, 0]))
+    phase_b = model.phase_embed(torch.tensor([1, 1]))
+
+    out_a = block(tokens, attn_mask, relation_bias, phase_a)
+    out_b = block(tokens, attn_mask, relation_bias, phase_b)
+
+    assert torch.allclose(out_a, out_b)
+
+
 def test_nonzero_relation_bias_changes_forward_outputs() -> None:
     torch.manual_seed(456)
     model = RSSTransformerNet(
@@ -392,6 +458,7 @@ def _run_trunk_from_projected(
     tokens: torch.Tensor,
     attn_mask: torch.Tensor,
 ) -> torch.Tensor:
+    phase_condition = tokens.new_zeros(tokens.shape[0], model.cfg.d_model)
     relation_flags = tokens.new_zeros(
         tokens.shape[0],
         NUM_ATTENTION_RELATIONS,
@@ -404,7 +471,7 @@ def _run_trunk_from_projected(
             layer_idx,
             tokens,
         )
-        tokens = block(tokens, attn_mask, relation_bias)
+        tokens = block(tokens, attn_mask, relation_bias, phase_condition)
     return model.final_norm(tokens)
 
 
@@ -502,7 +569,9 @@ def test_projection_widths_consume_declared_token_features(model: RSSTransformer
     assert model.company_proj.in_features == model._company_rel_tail_start - start
     assert model.fi_proj.in_features == model._fi_rel_tail_start - start
     assert model.market_info_proj.in_features == int(TokenWidth.TW_MARKET_INFO) - start
-    assert model.global_info_proj.in_features == int(TokenWidth.TW_GLOBAL_INFO) - start
+    assert model.global_info_proj.in_features == (
+        int(TokenWidth.TW_GLOBAL_INFO) - (1 + len(DecisionPhase))
+    )
     assert model.invest_proj.in_features == int(TokenWidth.TW_INVEST) - start
     assert model.auction_proj.in_features == int(TokenWidth.TW_AUCTION) - start
     assert model.dividend_proj.in_features == int(TokenWidth.TW_DIVIDEND) - start
@@ -574,6 +643,20 @@ def test_project_tokens_keeps_player_share_amount_features(model: RSSTransformer
 
     assert player_delta.abs().max().item() > 0.0
     assert delta[:, :model._player_slice.start].abs().max().item() == pytest.approx(0.0)
+
+
+def test_project_tokens_ignores_global_info_phase_onehot(model: RSSTransformerNet) -> None:
+    cfg = model.cfg
+    x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
+    x_with_phase = x.clone()
+    phase_start = 1
+    phase_stop = phase_start + len(DecisionPhase)
+    x_with_phase[:, model._global_info_idx, phase_start:phase_stop] = torch.randn(
+        1,
+        phase_stop - phase_start,
+    )
+
+    assert torch.allclose(model._project_tokens(x), model._project_tokens(x_with_phase))
 
 
 def test_type_embedding_table_matches_token_layout(model: RSSTransformerNet) -> None:
@@ -710,7 +793,6 @@ def test_removed_additive_embedding_state_is_absent(model: RSSTransformerNet) ->
         "company_ownership_gate",
         "corp_president_gate",
         "share_ownership_gate",
-        "phase_embed",
         "pass_embeds",
     ]
     for name in removed_names:

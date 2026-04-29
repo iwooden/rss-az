@@ -83,6 +83,8 @@ _GELU_APPROX = "tanh"
 _NUM_CORPS = int(GameConstants.NUM_CORPS)
 _TOKEN_FEATURE_START = 1
 _IS_SELECTED_OFFSET = 1
+_GLOBAL_PHASE_OFFSET = 1
+_GLOBAL_PHASE_STOP = _GLOBAL_PHASE_OFFSET + NUM_PHASES
 # Offset inside a company feature slice after the attention-mask slot is dropped.
 _COMPANY_LOW_PRICE_FEATURE_OFFSET = 1
 # Raw token offsets where relation/reference tails begin. The engine still
@@ -236,14 +238,22 @@ class TransformerBlock(nn.Module):
         self.ffn_gate = nn.Linear(d_model, d_ff, bias=False)
         self.ffn_up = nn.Linear(d_model, d_ff, bias=False)
         self.ffn_down = nn.Linear(d_ff, d_model, bias=False)
+        # Phase-conditioned adaptive RMSNorm modulation. Zero-initialized in
+        # RSSTransformerNet._init_weights so blocks start equivalent to plain
+        # RMSNorm and learn phase-specific scale/shift only if useful.
+        self.phase_mod = nn.Linear(d_model, 4 * d_model)
 
     def forward(
         self,
         x: torch.Tensor,
         attn_mask: torch.Tensor,
         relation_bias: torch.Tensor,
+        phase_condition: torch.Tensor,
     ) -> torch.Tensor:
         h = self.attn_norm(x)
+        mod = self.phase_mod(phase_condition).to(device=h.device, dtype=h.dtype)
+        attn_scale, attn_shift, ffn_scale, ffn_shift = mod.chunk(4, dim=-1)
+        h = h * (1.0 + attn_scale[:, None, :]) + attn_shift[:, None, :]
         B, N, D = h.shape
         qkv = self.qkv_proj(h).reshape(B, N, 3, self.num_heads, self.head_dim)
         # (3, B, heads, N, head_dim) so unbind(0) yields three
@@ -261,6 +271,7 @@ class TransformerBlock(nn.Module):
         h = self.out_proj(attn_out)
         x = x + h
         h = self.ffn_norm(x)
+        h = h * (1.0 + ffn_scale[:, None, :]) + ffn_shift[:, None, :]
         h = self.ffn_down(F.silu(self.ffn_gate(h)) * self.ffn_up(h))
         return x + h
 
@@ -371,7 +382,7 @@ class RSSTransformerNet(nn.Module):
             d,
         )
         self.global_info_proj = nn.Linear(
-            int(TokenWidth.TW_GLOBAL_INFO) - self._token_feature_start,
+            int(TokenWidth.TW_GLOBAL_INFO) - _GLOBAL_PHASE_STOP,
             d,
         )
         self.invest_proj = nn.Linear(
@@ -415,6 +426,11 @@ class RSSTransformerNet(nn.Module):
         # an indirect gradient through the Linear's bias. Broadcast across
         # all instances of a type (36 companies, 8 corps, N players).
         self.type_embeds = nn.Embedding(NUM_TOKEN_TYPES, d)
+        # Learned phase condition for adaptive RMSNorm modulation inside each
+        # transformer block. The active phase id is read from the GlobalInfo
+        # token's decision-phase one-hot; per-layer projections decide how to
+        # turn this shared phase vector into norm scale/shift parameters.
+        self.phase_embed = nn.Embedding(NUM_PHASES, d)
         # Static (num_players + NUM_FIXED_TOKENS,) type-id lookup. Built once here so
         # ``_project_tokens`` can do a single indexed gather against
         # ``type_embeds``. Registered as a buffer so ``.to(device)`` carries
@@ -671,12 +687,12 @@ class RSSTransformerNet(nn.Module):
         )
 
     def _project_global_info_token(self, x: torch.Tensor) -> torch.Tensor:
-        """Project global info from its raw feature fields."""
+        """Project global info, excluding phase one-hot used for conditioning."""
         return self.global_info_proj(
             x[
                 :,
                 self._global_info_idx,
-                self._token_feature_start:int(TokenWidth.TW_GLOBAL_INFO),
+                _GLOBAL_PHASE_STOP:int(TokenWidth.TW_GLOBAL_INFO),
             ]
         )
 
@@ -699,6 +715,16 @@ class RSSTransformerNet(nn.Module):
         with ``torch.compile`` and CUDA graph capture.
         """
         return (x[:, :, 0] > 0.5)[:, None, None, :]
+
+    def _phase_condition(self, x: torch.Tensor) -> torch.Tensor:
+        """Return learned phase-conditioning vectors from GlobalInfo one-hot."""
+        phase_onehot = x[
+            :,
+            self._global_info_idx,
+            _GLOBAL_PHASE_OFFSET:_GLOBAL_PHASE_STOP,
+        ]
+        phase_ids = phase_onehot.argmax(dim=-1)
+        return self.phase_embed(phase_ids)
 
     def _relation_attention_bias(
         self,
@@ -1423,6 +1449,7 @@ class RSSTransformerNet(nn.Module):
             )
         tokens = self._project_tokens(x)
         attn_mask = self._attention_mask(x)
+        phase_condition = self._phase_condition(x)
         relation_flags = relations.to(dtype=tokens.dtype)
 
         for layer_idx, block in enumerate(self.blocks):
@@ -1431,7 +1458,7 @@ class RSSTransformerNet(nn.Module):
                 layer_idx,
                 tokens,
             )
-            tokens = block(tokens, attn_mask, relation_bias)
+            tokens = block(tokens, attn_mask, relation_bias, phase_condition)
         tokens = self.final_norm(tokens)
 
         # Cast to fp32 before the sentinel: under autocast ``unified`` is in
@@ -1475,6 +1502,7 @@ class RSSTransformerNet(nn.Module):
         nn.init.trunc_normal_(self.par_price_embed.weight, std=0.02)
         # Per-type additive embeddings: same small-random init.
         nn.init.trunc_normal_(self.type_embeds.weight, std=0.02)
+        nn.init.trunc_normal_(self.phase_embed.weight, std=0.02)
         # Relation attention starts behavior-preserving; training can learn
         # positive or negative head/layer-specific biases from zero.
         nn.init.zeros_(self.relation_bias_mult)
@@ -1482,6 +1510,8 @@ class RSSTransformerNet(nn.Module):
         # Zero-init residual outputs so each block starts as identity
         for block in self.blocks:
             assert isinstance(block, TransformerBlock)
+            nn.init.zeros_(block.phase_mod.weight)
+            nn.init.zeros_(block.phase_mod.bias)
             nn.init.zeros_(block.ffn_down.weight)
             nn.init.zeros_(block.out_proj.weight)
             nn.init.zeros_(block.out_proj.bias)
@@ -1524,6 +1554,7 @@ if __name__ == "__main__":
     acq_offer_action_params = model.acq_offer_action_embed.weight.numel()
     par_price_params = model.par_price_embed.weight.numel()
     type_params = model.type_embeds.weight.numel()
+    phase_params = model.phase_embed.weight.numel()
     trunk_params = (
         sum(p.numel() for p in model.blocks.parameters())
         + sum(p.numel() for p in model.final_norm.parameters())
@@ -1562,6 +1593,7 @@ if __name__ == "__main__":
         ("ACQ offer action embeds", acq_offer_action_params),
         ("PAR price embeds", par_price_params),
         ("Type embeds", type_params),
+        ("Phase embeds", phase_params),
         ("Transformer trunk", trunk_params),
         ("Policy heads", policy_params),
         ("Value head", value_params),
