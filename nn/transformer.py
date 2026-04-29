@@ -153,10 +153,10 @@ class TransformerConfig:
 
     # Core architecture
     num_players: int = 3  # 3-5 supported
-    d_model: int = 192
+    d_model: int = 256
     d_proj: int = 64
-    num_heads: int = 3
-    num_layers: int = 10
+    num_heads: int = 4
+    num_layers: int = 15
     ff_mult: float = 3.0  # FFN inner dimension = ceil(ff_mult * d_model)
 
     # Raw feature width per token (zero-padded to same size across types).
