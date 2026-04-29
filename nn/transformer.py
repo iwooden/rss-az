@@ -253,8 +253,8 @@ class TransformerBlock(nn.Module):
         self.ffn_down = nn.Linear(d_ff, d_model, bias=False)
         # Direct per-phase adaptive RMSNorm + residual-gate parameters.
         # Zero-initialized in RSSTransformerNet._init_weights, so scale/shift
-        # starts inert and residual gates start at 1.0 via the ``1 + gate``
-        # form below. This avoids a phase-independent bias shortcut.
+        # starts inert and residual gates start closed. This gives the
+        # adaLN-Zero identity start without a phase-independent bias shortcut.
         self.phase_mod = nn.Embedding(
             NUM_PHASES,
             6 * d_model,
@@ -294,11 +294,11 @@ class TransformerBlock(nn.Module):
         # (B, heads, N, head_dim) -> (B, N, D)
         attn_out = attn_out.transpose(1, 2).reshape(B, N, D)
         h = self.out_proj(attn_out)
-        x = x + (1.0 + attn_resid_gate[:, None, :]) * h
+        x = x + attn_resid_gate[:, None, :] * h
         h = self.ffn_norm(x)
         h = h * (1.0 + ffn_scale[:, None, :]) + ffn_shift[:, None, :]
         h = self.ffn_down(F.silu(self.ffn_gate(h)) * self.ffn_up(h))
-        return x + (1.0 + ffn_resid_gate[:, None, :]) * h
+        return x + ffn_resid_gate[:, None, :] * h
 
 
 @dataclass(frozen=True)
@@ -1569,7 +1569,7 @@ class RSSTransformerNet(nn.Module):
     # ------------------------------------------------------------------
 
     def _init_weights(self) -> None:
-        """GPT/LLaMA-style trunc-normal init, zero-init residual outputs for identity start.
+        """GPT/LLaMA-style trunc-normal init, zero-init phase gates for identity start.
 
         kaiming_uniform_(nonlinearity="relu") is wrong for most Linears here
         (SDPA has no ReLU, SwiGLU/GELU heads aren't ReLU, value head feeds
@@ -1596,13 +1596,11 @@ class RSSTransformerNet(nn.Module):
         # positive or negative head/layer-specific biases from zero.
         nn.init.zeros_(self.relation_bias_mult)
 
-        # Zero-init residual outputs so each block starts as identity
+        # Zero-init phase modulation so each block starts as identity while
+        # branch projections keep normal init and can feed gradients to gates.
         for block in self.blocks:
             assert isinstance(block, TransformerBlock)
             nn.init.zeros_(block.phase_mod.weight)
-            nn.init.zeros_(block.ffn_down.weight)
-            nn.init.zeros_(block.out_proj.weight)
-            nn.init.zeros_(block.out_proj.bias)
 
 
 # ---------------------------------------------------------------------------

@@ -77,6 +77,9 @@ def attention_mask_model() -> RSSTransformerNet:
             assert isinstance(block, TransformerBlock)
             torch.nn.init.trunc_normal_(block.out_proj.weight, std=0.02)
             torch.nn.init.trunc_normal_(block.ffn_down.weight, std=0.02)
+            d_model = model.cfg.d_model
+            block.phase_mod.weight[:, 2 * d_model:3 * d_model] = 1.0
+            block.phase_mod.weight[:, 5 * d_model:6 * d_model] = 1.0
     model.eval()
     return model
 
@@ -234,6 +237,8 @@ def test_phase_modulation_is_zero_initialized() -> None:
         assert block.phase_mod.num_embeddings == len(DecisionPhase)
         assert block.phase_mod.embedding_dim == 6 * cfg.d_model
         assert torch.count_nonzero(block.phase_mod.weight).item() == 0
+        assert torch.count_nonzero(block.out_proj.weight).item() > 0
+        assert torch.count_nonzero(block.ffn_down.weight).item() > 0
 
 
 def test_zero_init_phase_modulation_preserves_block_outputs() -> None:
@@ -264,6 +269,7 @@ def test_zero_init_phase_modulation_preserves_block_outputs() -> None:
     out_b = block(tokens, attn_mask, relation_bias, phase_b)
 
     assert torch.allclose(out_a, out_b)
+    assert torch.allclose(out_a, tokens)
 
 
 def test_nonzero_phase_modulation_changes_block_outputs() -> None:
@@ -282,7 +288,8 @@ def test_nonzero_phase_modulation_changes_block_outputs() -> None:
     with torch.no_grad():
         torch.nn.init.trunc_normal_(block.out_proj.weight, std=0.02)
         torch.nn.init.trunc_normal_(block.ffn_down.weight, std=0.02)
-        block.phase_mod.weight[1, :model.cfg.d_model] = 0.5
+        d_model = model.cfg.d_model
+        block.phase_mod.weight[1, 2 * d_model:3 * d_model] = 1.0
 
     cfg = model.cfg
     tokens = torch.randn(2, cfg.num_tokens, cfg.d_model)
@@ -311,6 +318,8 @@ def test_nonzero_relation_bias_changes_forward_outputs() -> None:
         for block in model.blocks:
             assert isinstance(block, TransformerBlock)
             torch.nn.init.trunc_normal_(block.out_proj.weight, std=0.02)
+            d_model = model.cfg.d_model
+            block.phase_mod.weight[0, 2 * d_model:3 * d_model] = 1.0
         relation_id = int(AttentionRelation.PLAYER_OWNS_COMPANY)
         model.relation_bias_mult[0, :, relation_id] = 8.0
 
