@@ -102,7 +102,7 @@ class Trainer:
         """Standard AdamW with decay/no-decay param groups."""
         decay_params = []
         no_decay_params = []
-        for module in model.modules():
+        for module_name, module in model.named_modules():
             for pname, param in module.named_parameters(recurse=False):
                 if not param.requires_grad:
                     continue
@@ -118,6 +118,7 @@ class Trainer:
                     or pname == "bias"
                     or pname.endswith("embeds")
                     or pname == "relation_bias_mult"
+                    or (module_name.endswith("phase_mod") and pname == "weight")
                 )
                 if no_weight_decay:
                     no_decay_params.append(param)
@@ -140,7 +141,7 @@ class Trainer:
         muon_params: list[torch.nn.Parameter] = []
         adam_decay: list[torch.nn.Parameter] = []
         adam_no_decay: list[torch.nn.Parameter] = []
-        for module in model.modules():
+        for module_name, module in model.named_modules():
             for pname, param in module.named_parameters(recurse=False):
                 if not param.requires_grad:
                     continue
@@ -154,6 +155,7 @@ class Trainer:
                     or is_embedding
                     or pname == "bias"
                     or pname == "relation_bias_mult"
+                    or (module_name.endswith("phase_mod") and pname == "weight")
                 )
                 # Muon only supports 2D matrix params. Stacked (3D+) tensors —
                 # e.g. the per-offset ACQ bilinear factors — go to AdamW decay:

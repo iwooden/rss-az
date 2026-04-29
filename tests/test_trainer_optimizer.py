@@ -5,6 +5,7 @@ Regressions this catches:
 - bias params routed to a decay group
 - embedding/anchor tables routed to a decay group
 - relation attention-bias multipliers routed to a decay group
+- phase-conditioning modulation weights routed to a decay group
 - Muon claiming embedding/anchor tables instead of leaving them to AdamW
 - any trainable param orphaned from, or double-claimed by, the optimizer(s)
 """
@@ -94,6 +95,16 @@ def _relation_bias_param_ids(model: nn.Module) -> dict[str, int]:
     return ids
 
 
+def _phase_mod_param_ids(model: nn.Module) -> dict[str, int]:
+    ids: dict[str, int] = {}
+    for module_name, module in model.named_modules():
+        for pname, p in module.named_parameters(recurse=False):
+            if module_name.endswith("phase_mod") and pname == "weight":
+                full_name = f"{module_name}.{pname}" if module_name else pname
+                ids[full_name] = id(p)
+    return ids
+
+
 @pytest.mark.parametrize("optimizer", ["adamw", "muon"])
 def test_every_trainable_param_claimed_exactly_once(optimizer: str) -> None:
     trainer = _make_trainer(optimizer)
@@ -166,6 +177,43 @@ def test_relation_bias_params_are_not_decayed(optimizer: str) -> None:
         assert g is not None, f"{name} not routed to any optimizer group"
         assert g["weight_decay"] == 0.0, (
             f"{name} routed to weight_decay={g['weight_decay']} group"
+        )
+
+
+@pytest.mark.parametrize("optimizer", ["adamw", "muon"])
+def test_phase_mod_params_are_not_decayed(optimizer: str) -> None:
+    trainer = _make_trainer(optimizer)
+    groups = _all_groups(trainer)
+    phase_mod_ids = _phase_mod_param_ids(trainer.model)
+    assert phase_mod_ids, "expected model to contain phase_mod params"
+
+    for name, pid in phase_mod_ids.items():
+        g = _group_of(pid, groups)
+        assert g is not None, f"{name} not routed to any optimizer group"
+        assert g["weight_decay"] == 0.0, (
+            f"{name} routed to weight_decay={g['weight_decay']} group"
+        )
+
+
+def test_muon_routes_phase_mod_params_to_aux_adamw_no_decay_group() -> None:
+    trainer = _make_trainer("muon")
+    assert trainer._aux_optimizer is not None, "expected Muon to have aux AdamW"
+
+    muon_ids = {
+        id(p)
+        for g in trainer.optimizer.param_groups
+        for p in g["params"]
+    }
+    aux_groups = list(trainer._aux_optimizer.param_groups)
+    phase_mod_ids = _phase_mod_param_ids(trainer.model)
+    assert phase_mod_ids, "expected model to contain phase_mod params"
+
+    for name, pid in phase_mod_ids.items():
+        assert pid not in muon_ids, f"{name} was routed to Muon"
+        g = _group_of(pid, aux_groups)
+        assert g is not None, f"{name} not routed to aux AdamW"
+        assert g["weight_decay"] == 0.0, (
+            f"{name} routed to aux AdamW with weight_decay={g['weight_decay']}"
         )
 
 

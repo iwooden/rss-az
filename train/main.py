@@ -22,7 +22,12 @@ from core.data import PHASE_ACTION_SIZES
 from core.state import get_layout
 from core.token_data import TokenDataSize, get_num_tokens
 from nn import create_model
-from nn.transformer import NUM_PHASES, UNIFIED_LOGIT_DIM, build_action_lut
+from nn.transformer import (
+    NUM_PHASES,
+    UNIFIED_LOGIT_DIM,
+    RSSTransformerNet,
+    build_action_lut,
+)
 from train.checkpoint import (
     cleanup_checkpoints,
     find_latest_checkpoint,
@@ -1052,6 +1057,12 @@ def main() -> None:
             # --- Phase 4: Epoch summary ---
             epoch_duration = time.perf_counter() - epoch_start
             logger.log_scalars(epoch_num, {"epoch/duration_secs": epoch_duration})
+            # Underlying RSSTransformerNet survives torch.compile wrapping via
+            # ``_orig_mod``; the diagnostic reads parameters, not behavior.
+            base_model = cast(
+                RSSTransformerNet, getattr(model, "_orig_mod", model)
+            )
+            logger.log_scalars(epoch_num, base_model.phase_mod_diagnostics())
             logger.log_epoch_summary(
                 epoch=epoch_num,
                 num_epochs=config.num_epochs,

@@ -11,6 +11,7 @@ from core.attention_relations import NUM_ATTENTION_RELATIONS, AttentionRelation
 from nn.transformer import (
     UNIFIED_LOGIT_DIM,
     RSSTransformerNet,
+    TransformerBlock,
     TransformerConfig,
     build_action_lut,
 )
@@ -73,6 +74,7 @@ def attention_mask_model() -> RSSTransformerNet:
     ).to(torch.device("cpu"))
     with torch.no_grad():
         for block in model.blocks:
+            assert isinstance(block, TransformerBlock)
             torch.nn.init.trunc_normal_(block.out_proj.weight, std=0.02)
             torch.nn.init.trunc_normal_(block.ffn_down.weight, std=0.02)
     model.eval()
@@ -201,7 +203,7 @@ def test_relation_attention_bias_combines_planes_per_layer_and_head() -> None:
     assert bias[0, 1].abs().sum().item() == pytest.approx(0.0)
 
 
-def test_phase_condition_uses_global_info_decision_phase_onehot(model: RSSTransformerNet) -> None:
+def test_phase_ids_use_global_info_decision_phase_onehot(model: RSSTransformerNet) -> None:
     cfg = model.cfg
     phase_a = int(DecisionPhase.DPHASE_INVEST)
     phase_b = int(DecisionPhase.DPHASE_PAR)
@@ -209,10 +211,10 @@ def test_phase_condition_uses_global_info_decision_phase_onehot(model: RSSTransf
     x[0, model._global_info_idx, 1 + phase_a] = 1.0
     x[1, model._global_info_idx, 1 + phase_b] = 1.0
 
-    phase_condition = model._phase_condition(x)
-    expected = model.phase_embed(torch.tensor([phase_a, phase_b]))
+    phase_ids = model._phase_ids(x)
+    expected = torch.tensor([phase_a, phase_b])
 
-    assert torch.allclose(phase_condition, expected)
+    assert torch.equal(phase_ids, expected)
 
 
 def test_phase_modulation_is_zero_initialized() -> None:
@@ -227,15 +229,11 @@ def test_phase_modulation_is_zero_initialized() -> None:
     )
     cfg = model.cfg
 
-    assert isinstance(model.phase_embed, torch.nn.Embedding)
-    assert model.phase_embed.num_embeddings == len(DecisionPhase)
-    assert model.phase_embed.embedding_dim == cfg.d_model
-
     for block in model.blocks:
-        assert block.phase_mod.in_features == cfg.d_model
-        assert block.phase_mod.out_features == 4 * cfg.d_model
+        assert isinstance(block.phase_mod, torch.nn.Embedding)
+        assert block.phase_mod.num_embeddings == len(DecisionPhase)
+        assert block.phase_mod.embedding_dim == 6 * cfg.d_model
         assert torch.count_nonzero(block.phase_mod.weight).item() == 0
-        assert torch.count_nonzero(block.phase_mod.bias).item() == 0
 
 
 def test_zero_init_phase_modulation_preserves_block_outputs() -> None:
@@ -250,6 +248,7 @@ def test_zero_init_phase_modulation_preserves_block_outputs() -> None:
         )
     )
     block = model.blocks[0]
+    assert isinstance(block, TransformerBlock)
     with torch.no_grad():
         torch.nn.init.trunc_normal_(block.out_proj.weight, std=0.02)
         torch.nn.init.trunc_normal_(block.ffn_down.weight, std=0.02)
@@ -258,13 +257,42 @@ def test_zero_init_phase_modulation_preserves_block_outputs() -> None:
     tokens = torch.randn(2, cfg.num_tokens, cfg.d_model)
     attn_mask = torch.ones(2, 1, 1, cfg.num_tokens, dtype=torch.bool)
     relation_bias = torch.zeros(2, cfg.num_heads, cfg.num_tokens, cfg.num_tokens)
-    phase_a = model.phase_embed(torch.tensor([0, 0]))
-    phase_b = model.phase_embed(torch.tensor([1, 1]))
+    phase_a = torch.tensor([0, 0])
+    phase_b = torch.tensor([1, 1])
 
     out_a = block(tokens, attn_mask, relation_bias, phase_a)
     out_b = block(tokens, attn_mask, relation_bias, phase_b)
 
     assert torch.allclose(out_a, out_b)
+
+
+def test_nonzero_phase_modulation_changes_block_outputs() -> None:
+    torch.manual_seed(790)
+    model = RSSTransformerNet(
+        TransformerConfig(
+            num_players=NUM_PLAYERS,
+            d_model=48,
+            num_heads=3,
+            num_layers=1,
+            ff_mult=2.0,
+        )
+    )
+    block = model.blocks[0]
+    assert isinstance(block, TransformerBlock)
+    with torch.no_grad():
+        torch.nn.init.trunc_normal_(block.out_proj.weight, std=0.02)
+        torch.nn.init.trunc_normal_(block.ffn_down.weight, std=0.02)
+        block.phase_mod.weight[1, :model.cfg.d_model] = 0.5
+
+    cfg = model.cfg
+    tokens = torch.randn(2, cfg.num_tokens, cfg.d_model)
+    attn_mask = torch.ones(2, 1, 1, cfg.num_tokens, dtype=torch.bool)
+    relation_bias = torch.zeros(2, cfg.num_heads, cfg.num_tokens, cfg.num_tokens)
+
+    out_a = block(tokens, attn_mask, relation_bias, torch.tensor([0, 0]))
+    out_b = block(tokens, attn_mask, relation_bias, torch.tensor([1, 1]))
+
+    assert (out_a - out_b).abs().max().item() > 1e-6
 
 
 def test_nonzero_relation_bias_changes_forward_outputs() -> None:
@@ -281,6 +309,7 @@ def test_nonzero_relation_bias_changes_forward_outputs() -> None:
     model.eval()
     with torch.no_grad():
         for block in model.blocks:
+            assert isinstance(block, TransformerBlock)
             torch.nn.init.trunc_normal_(block.out_proj.weight, std=0.02)
         relation_id = int(AttentionRelation.PLAYER_OWNS_COMPANY)
         model.relation_bias_mult[0, :, relation_id] = 8.0
@@ -411,7 +440,6 @@ def _token_labels(model: RSSTransformerNet) -> list[str]:
 
 def _expected_attention_mask(
     model: RSSTransformerNet,
-    state: GameState,
     phase_id: int,
 ) -> torch.Tensor:
     expected = torch.zeros(model.cfg.num_tokens, dtype=torch.bool)
@@ -458,7 +486,7 @@ def _run_trunk_from_projected(
     tokens: torch.Tensor,
     attn_mask: torch.Tensor,
 ) -> torch.Tensor:
-    phase_condition = tokens.new_zeros(tokens.shape[0], model.cfg.d_model)
+    phase_ids = torch.zeros(tokens.shape[0], dtype=torch.long, device=tokens.device)
     relation_flags = tokens.new_zeros(
         tokens.shape[0],
         NUM_ATTENTION_RELATIONS,
@@ -471,7 +499,7 @@ def _run_trunk_from_projected(
             layer_idx,
             tokens,
         )
-        tokens = block(tokens, attn_mask, relation_bias, phase_condition)
+        tokens = block(tokens, attn_mask, relation_bias, phase_ids)
     return model.final_norm(tokens)
 
 
@@ -486,7 +514,7 @@ def test_saved_phase_states_attention_mask_matches_visibility_invariants(
     x = _token_buffer_for_state(state)
 
     actual = attention_mask_model._attention_mask(x)[0, 0, 0].cpu()
-    expected = _expected_attention_mask(attention_mask_model, state, phase_id)
+    expected = _expected_attention_mask(attention_mask_model, phase_id)
 
     assert torch.equal(actual, expected), (
         f"{phase_name} attention mask mismatch: "
@@ -503,7 +531,7 @@ def test_masked_tokens_do_not_affect_visible_trunk_outputs(
     state = GameState.from_array(state_array, NUM_PLAYERS)
     phase_id = int(get_decision_phase_py(state))
     x = _token_buffer_for_state(state)
-    expected = _expected_attention_mask(attention_mask_model, state, phase_id)
+    expected = _expected_attention_mask(attention_mask_model, phase_id)
     labels = _token_labels(attention_mask_model)
 
     with torch.no_grad():
@@ -673,19 +701,22 @@ def test_type_embedding_table_matches_token_layout(model: RSSTransformerNet) -> 
         type_ids[model._company_slice],
         type_ids.new_full(
             (int(GameConstants.NUM_COMPANIES),),
-            type_ids[model._company_slice.start],
+            int(type_ids[model._company_slice.start].item()),
         ),
     )
     assert torch.equal(
         type_ids[model._corp_slice],
         type_ids.new_full(
             (int(GameConstants.NUM_CORPS),),
-            type_ids[model._corp_slice.start],
+            int(type_ids[model._corp_slice.start].item()),
         ),
     )
     assert torch.equal(
         type_ids[model._player_slice],
-        type_ids.new_full((cfg.num_players,), type_ids[model._player_slice.start]),
+        type_ids.new_full(
+            (cfg.num_players,),
+            int(type_ids[model._player_slice.start].item()),
+        ),
     )
 
 
@@ -793,6 +824,7 @@ def test_removed_additive_embedding_state_is_absent(model: RSSTransformerNet) ->
         "company_ownership_gate",
         "corp_president_gate",
         "share_ownership_gate",
+        "phase_embed",
         "pass_embeds",
     ]
     for name in removed_names:
