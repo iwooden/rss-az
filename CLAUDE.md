@@ -4,7 +4,7 @@ Guidance for Claude Code working in this repository.
 
 ## Project
 
-High-performance Cython engine for "Rolling Stock Stars" — AlphaZero self-play target of thousands of games/min. Single contiguous `int16` `GameState`, nogil hot paths, entity-readout transformer NN. Per-token NN features are produced lazily by `get_token_data()`, separate from state storage.
+High-performance Cython engine for "Rolling Stock Stars" — AlphaZero self-play target of thousands of games/min. Single contiguous `int16` `GameState`, nogil hot paths, entity-readout transformer NN with Graphormer-style relational attention bias. NN inputs (token features + relation planes) are produced lazily from state, never stored on it.
 
 > **"Rolling Stock Stars" is NOT "Rolling Stock"** — rules differ. `RULES.md` is authoritative.
 
@@ -24,17 +24,21 @@ Don't auto-load; open when the task needs them.
 ## Directory map
 
 ```
-core/        state.pyx, data.pyx, actions.pyx, driver.pyx, token_data.pyx
+core/        state.pyx, data.pyx, actions.pyx, driver.pyx, token_data.pyx,
+             relations.pyx, attention_relations.py
 entities/    player, corp, company, deck, turn, market, fi — 7 stateless handles
 phases/      14 phase handlers: invest, bid, acq_select_corp, acq_select_company,
              acq_select_price, acq_offer, closing, dividends, income, issue,
              ipo, par, wrap_up, end_card
-nn/          transformer.py — token-based model
+nn/          transformer.py — token-based model with relational attention bias
 mcts/        search.py, node.py, evaluator.py, mcts_core.pyx
-train/       main, self_play, eval_server, trainer, replay_buffer,
-             analyze_game, tournament; gpu/{nvidia,amd}.py
+train/       main, self_play, eval_server, trainer, replay_buffer, config,
+             checkpoint, analyze_game, tournament, profile_stats, tb_reader,
+             debug_trace, logging; gpu/{nvidia,amd}.py
 tests/       phases/ (full phase suite), test_driver_step_mode, test_mcts,
-             test_self_play; games_18xx/data/ (JSON fixtures, replay harness pending)
+             test_self_play, test_transformer, test_relations, test_trainer_*,
+             test_eval_*; games_18xx/ (18xx.games JSON fixtures + live replay
+             harness)
 scratchpad/  Ad-hoc scripts (gitignored)
 ```
 
@@ -44,9 +48,10 @@ scratchpad/  Ad-hoc scripts (gitignored)
 - **Entity handles.** `PLAYERS[i]`, `CORPS[c]`, `COMPANIES[i]`, `TURN`, `FI`, `MARKET`, `DECK` are stateless singletons — one set, reused with any `GameState` at any player count. All state reads and writes go through them.
 - **Actions.** Phase-local integer ids (see `VECTORS.md` Action Space). 11 decision phases (`DecisionPhase` in `core/data.pxd`); engine's 15 `GamePhases` fold to them via `ENGINE_TO_DECISION_PHASE`. Sparse legal-action enumeration via `enumerate_legal_actions(state, uint16_t* ids)`; buffers size to `MAX_ACTION_SIZE` (the tight per-phase upper bound, 53) and overflow is a loud assert.
 - **Driver.** `core/driver.pyx::GameDriver` routes a phase-local `action_id` through legality check → phase handler → auto-chain (fast-forward through automated phases + forced decisions until a real multi-choice decision or `PHASE_GAME_OVER`). Optional `history` list records `(state._array.copy(), phase_id, action_id)` tuples pre-mutation.
-- **Token extraction.** `core/token_data.get_token_data(state, buffer)` fills `(num_players + 54, TOKEN_DIM=92)` float32 inside one nogil block; `get_token_data_batch` amortizes Python dispatch via `GameState.rebind`. Sole engine → NN bridge. Player tokens trail so higher-player padding masks cleanly. Four learned pass anchors for entity-readout pass phases are appended inside the model after projection — not in the engine-side buffer. BID, ISSUE, and ACQ_OFFER read pass logits from their phase-info tokens.
-- **Model.** `nn/transformer.py::RSSTransformerNet` — pre-RMSNorm + SwiGLU, permutation-equivariant (no positional encoding), entity-readout heads, unified-head policy dispatch via static action LUT (`build_action_lut`). Company/corp/player token identity uses learned `company_id_embed` / `corp_id_embed` / `player_id_embed` inferred from token row order; entity ID one-hots are not emitted. Company ownership fields are skipped by `company_proj` then re-injected from corp/player/FI owner-reference embeddings. `TransformerConfig` defaults: 3p, d_model=192, 10 layers, 3 heads, ~5.29M params. `forward(x, legal_mask) → (policy_logits[B, UNIFIED_LOGIT_DIM=255], values[B, N])` — dense output over unified slots (block-per-phase in `DecisionPhase` order, sized by `PHASE_ACTION_SIZES`), illegal slots masked to `-1e9`. Values read from player tokens in canonical order; **no state rotation anywhere in the pipeline**.
-- **Evaluator / MCTS / training.** `mcts/evaluator.py` (`NNEvaluator`, `RemoteEvaluator`) speaks token buffers + dense `(B, UNIFIED_LOGIT_DIM)` legal masks end-to-end. `mcts/search.py` does leaf-batched PUCT with subtree reuse. Eval-server IPC carries tokens + legal masks in, softmaxed priors + canonical values out — GPU gather / softmax runs inside the server's autocast region. `train/*` runs full self-play + training loop on 3p.
+- **Token extraction.** `core/token_data.get_token_data(state, buffer)` fills `(num_players + 54, TOKEN_DIM=95)` float32 inside one nogil block; `get_token_data_batch` amortizes Python dispatch via `GameState.rebind`. Player tokens trail so higher-player padding masks cleanly. Phase-info tokens (INVEST/AUCTION/DIVIDEND/ISSUE/PAR/ACQ_OFFER/ACQ_PRICE) sit between the FI/global tokens and the corp/player tokens — phases without a per-instance entity readout (e.g. dividend, issue, acq_offer) score actions against keys generated from these tokens.
+- **Relations.** `core/relations.get_relation_data(state, buf)` produces a `(NUM_ATTENTION_RELATIONS=10, num_tokens, num_tokens)` uint8 tensor of directed `(query_token, key_token)` planes (corp/player/FI ↔ company ownership, share holdings, presidency). Consumed inside the model as Graphormer-style additive SDPA bias with one learned scalar per `(layer, head, relation)`. Replaces the old "owner-reference embedding" trick; ownership multihots are stripped from each entity's projected feature slice. `core/attention_relations.py` exposes the Python-side enum and constants. The eval IPC ships sparse `(relation_id, query, key)` triplets and materializes dense planes on-device.
+- **Model.** `nn/transformer.py::RSSTransformerNet` — pre-RMSNorm + SwiGLU, permutation-equivariant (no positional encoding), unified-head policy dispatch via static action LUT (`build_action_lut`). Per-block adaLN-Zero `phase_mod` (Embedding(NUM_PHASES, 6·d) → scale/shift/residual-gate) conditions every block on the current decision phase. Only `corp_id_embed` is a learned row-order identity embedding; companies and players are pure permutation-equivariant tokens. `TransformerConfig` defaults: 3p, d_model=256, d_proj=64, 15 layers, 4 heads, ~13.76M params. `forward(x, legal_mask, relations) → (policy_logits[B, UNIFIED_LOGIT_DIM=255], values[B, num_players])` — dense output over unified slots (block-per-phase in `DecisionPhase` order, sized by `PHASE_ACTION_SIZES`), illegal slots masked to `-1e9`. Values read from player tokens in canonical order; **no state rotation anywhere in the pipeline**. `PHASES_WITH_PASS_HEAD` (INVEST, BID, ACQ_SELECT_CORP, CLOSING, IPO) emit the pass slot via a separate `Linear(d, 1)` head; ACQ_OFFER/ISSUE put the no-op at action_id 0 and score it through the same MLP as other actions.
+- **Evaluator / MCTS / training.** `mcts/evaluator.py` (`NNEvaluator`, `RemoteEvaluator`) speaks token buffers + dense `(B, UNIFIED_LOGIT_DIM)` legal masks + relation tensors end-to-end. `mcts/search.py` does leaf-batched PUCT with leaf-lock deduplication, lock propagation up to fully-locked subtrees, and subtree reuse. Eval-server IPC carries fp16 tokens + uint8 legal masks + sparse uint8 relation_coords (`(B, MAX_EDGES=256, 3)` triplets) in, softmaxed dense priors + canonical values out — masking + softmax runs inside the server's autocast region. `train/*` runs full self-play + training loop on 3p.
 
 ## Code conventions
 
@@ -75,10 +80,10 @@ scratchpad/  Ad-hoc scripts (gitignored)
 
 ## Testing
 
-- `pytest tests/` — phase suite (`tests/phases/`), driver step-mode, MCTS, end-to-end self-play smoke. 1800+ tests; runs clean.
+- `pytest tests/` — phase suite (`tests/phases/`), driver step-mode, MCTS, transformer, relations, trainer/eval pieces, end-to-end self-play smoke. ~1970 tests; runs clean.
 - Prefer invariant assertions (cash conservation, share counts, ownership consistency) at transitions over narrow field-level checks.
 - **When a test fails, assume the implementation is broken** until proven otherwise.
-- `tests/games_18xx/data/` holds 18xx.games JSON fixtures; `tests/games_18xx/replay_harness.py` replays them against the current driver (`test_replay.py` / `test_replay_harness.py`). Known rule divergences: (1) cross-president ACQ transfers, (2) directly offering positive-income company closes in CLOSING.
+- `tests/games_18xx/data/` holds 18xx.games JSON fixtures; `tests/games_18xx/replay_harness.py` replays them against the current driver (`test_replay.py` / `test_replay_harness.py`). Known per-game divergences are listed in `test_replay.py::SKIP_GAMES`.
 
 ## Key files by task
 
@@ -91,6 +96,7 @@ scratchpad/  Ad-hoc scripts (gitignored)
 | Phase logic | `phases/<phase>.{pyx,pxd}` | entity handles, `RULES.md` (ask before adding handle methods) |
 | Driver / game loop | `core/driver.{pyx,pxd}` | `phases/*.pyx` |
 | Token features | `core/token_data.{pyx,pxd}` | `token-data.md` |
+| Relation planes | `core/relations.{pyx,pxd}` | `core/attention_relations.py` |
 | Model | `nn/transformer.py` | — |
 | Evaluator / MCTS | `mcts/evaluator.py`, `mcts/search.py`, `mcts/node.py`, `mcts/mcts_core.pyx` | — |
 | Training loop | `train/main.py`, `train/trainer.py`, `train/self_play.py` | `train/replay_buffer.py`, `train/eval_server.py` |
@@ -108,7 +114,7 @@ Non-vanilla AlphaZero choices baked into this codebase. Mostly invisible from a 
 - **c_puct annealing.** Linear `c_puct_initial` (3.5) → `c_puct_final` (2.5) over `c_puct_anneal_epochs` (20).
 - **Temperature annealing.** Per-game, `temp_initial` held until move `temp_anneal_start` (60), linear decay to `temp_final` by move `temp_anneal_end` (120).
 - **Blended terminal rewards.** `terminal_blend` (default 0.75) mixes rank-based (evenly spaced in [-1, +1] by final placement, ties averaged) with margin-based (zero-sum net-worth deviation, scaled `n/(n-1)`) signals.
-- **Unified-policy IPC.** Eval server input is `(W, B, num_tokens, token_dim)` tokens + `(W, B, UNIFIED_LOGIT_DIM)` uint8 legal masks + `(W, B)` int8 phase_ids. Output is `(W, B, UNIFIED_LOGIT_DIM)` f32 priors (already softmaxed over legal slots on GPU) + `(W, B, num_players)` f32 values. No sparse action-id buffers cross the wire; the worker builds the dense mask via `build_action_lut` from phase-local `enumerate_legal_actions` output.
+- **Unified-policy IPC.** Eval server input is `(W, B, num_tokens, token_dim)` fp16 tokens + `(W, B, UNIFIED_LOGIT_DIM)` uint8 legal masks + `(W, B, MAX_ATTENTION_RELATION_EDGES=256, 3)` uint8 sparse relation_coords (rows are `(relation_id, query_token, key_token)` triplets, server materializes dense planes on-device). Output is `(W, B, UNIFIED_LOGIT_DIM)` f32 priors (already mask-softmaxed over legal slots on GPU) + `(W, B, num_players)` f32 values. No sparse action-id buffers cross the wire; the worker builds the dense legal mask via `build_action_lut` from phase-local `enumerate_legal_actions` output. Workers do zero torch ops on the hot path — pure numpy writes + bitmap publish + Event wait.
 - **Graceful shutdown.** `q + Enter` at the training TTY drains workers and saves checkpoint + replay buffer; `Ctrl-C` is hard exit.
 
 ## Devbox
