@@ -33,6 +33,14 @@ def test_training_config_rejects_unknown_eval_batch_shape_mode() -> None:
         TrainingConfig(eval_batch_shape_mode="wrong")
 
 
+def test_training_config_rejects_price_slot_residual_blend_out_of_range() -> None:
+    with pytest.raises(ValueError, match="price_slot_residual_scale"):
+        TrainingConfig(price_slot_residual_scale=-0.1)
+
+    with pytest.raises(ValueError, match="price_slot_residual_scale"):
+        TrainingConfig(price_slot_residual_scale=1.1)
+
+
 def test_training_config_rejects_eval_max_batch_size_in_dynamic_mode() -> None:
     with pytest.raises(ValueError, match="dynamic"):
         TrainingConfig(eval_batch_shape_mode="dynamic", eval_max_batch_size=16)

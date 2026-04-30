@@ -84,9 +84,10 @@ class TrainingConfig:
     # --- Model ---
     # Per-block adaLN-Zero conditioning on the active decision phase.
     phase_conditioning: bool = True
-    # Price-like policy slots use fixed Fourier features for smoothness plus
-    # scaled per-slot residual embeddings for slot identity.
+    # Price-like policy slots blend fixed Fourier projections for smoothness
+    # with learned per-slot embeddings for slot identity.
     price_slot_fourier_bands: int = 4
+    # 0.0 = pure Fourier projection, 1.0 = pure learned slot embedding.
     price_slot_residual_scale: float = 1.0
 
     # --- Self-Play ---
@@ -229,9 +230,9 @@ class TrainingConfig:
                 "price_slot_fourier_bands must be >= 0, "
                 f"got {self.price_slot_fourier_bands}"
             )
-        if self.price_slot_residual_scale < 0.0:
+        if not 0.0 <= self.price_slot_residual_scale <= 1.0:
             raise ValueError(
-                "price_slot_residual_scale must be >= 0, "
+                "price_slot_residual_scale must be in [0, 1], "
                 f"got {self.price_slot_residual_scale}"
             )
 

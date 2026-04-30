@@ -236,7 +236,7 @@ class TrainingLogger:
         table.add_row(
             "Price slot keys",
             f"Fourier bands={config.price_slot_fourier_bands}, "
-            f"residual scale={config.price_slot_residual_scale:g}",
+            f"embedding blend={config.price_slot_residual_scale:g}",
         )
         decay_end = config.lr_decay_end_epoch or config.num_epochs
         lr_desc = (

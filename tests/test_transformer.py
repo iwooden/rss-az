@@ -652,7 +652,7 @@ def test_policy_layout_matches_phase_action_sizes(model: RSSTransformerNet) -> N
     model._validate_policy_layout()
 
 
-def test_price_slot_key_heads_use_fourier_widths_and_residual_embeddings(
+def test_price_slot_key_heads_use_fourier_widths_and_slot_embeddings(
     model: RSSTransformerNet,
 ) -> None:
     bands = model.cfg.price_slot_fourier_bands
@@ -715,7 +715,7 @@ def test_slot_fourier_features_keep_raw_scalars_first(model: RSSTransformerNet) 
     assert torch.allclose(encoded[..., : features.shape[-1]], features)
 
 
-def test_price_slot_residual_scale_is_configured_not_learned() -> None:
+def test_price_slot_residual_scale_blends_fourier_keys_and_embeddings() -> None:
     cfg = TransformerConfig(
         num_players=NUM_PLAYERS,
         d_model=48,
@@ -727,9 +727,10 @@ def test_price_slot_residual_scale_is_configured_not_learned() -> None:
     model = RSSTransformerNet(cfg)
     assert "price_slot_residual_scale" not in dict(model.named_parameters())
 
-    keys = torch.zeros(2, int(GameConstants.AUCTION_CAP), cfg.d_proj)
-    actual = model._with_price_slot_residual(keys, model.bid_offset_embed)
-    expected = 0.5 * model.bid_offset_embed.weight.unsqueeze(0).expand_as(keys)
+    keys = torch.randn(2, int(GameConstants.AUCTION_CAP), cfg.d_proj)
+    learned = model.bid_offset_embed.weight.unsqueeze(0).expand_as(keys)
+    actual = model._blend_price_slot_keys(keys, model.bid_offset_embed)
+    expected = 0.5 * keys + 0.5 * learned
     assert torch.allclose(actual, expected)
 
     zero_cfg = TransformerConfig(
@@ -741,8 +742,29 @@ def test_price_slot_residual_scale_is_configured_not_learned() -> None:
         price_slot_residual_scale=0.0,
     )
     zero_model = RSSTransformerNet(zero_cfg)
-    untouched = zero_model._with_price_slot_residual(keys, zero_model.bid_offset_embed)
+    untouched = zero_model._blend_price_slot_keys(keys, zero_model.bid_offset_embed)
     assert torch.equal(untouched, keys)
+
+    one_cfg = TransformerConfig(
+        num_players=NUM_PLAYERS,
+        d_model=48,
+        num_heads=3,
+        num_layers=1,
+        ff_mult=2.0,
+        price_slot_residual_scale=1.0,
+    )
+    one_model = RSSTransformerNet(one_cfg)
+    pure_embedding = one_model._blend_price_slot_keys(keys, one_model.bid_offset_embed)
+    expected_embedding = one_model.bid_offset_embed.weight.unsqueeze(0).expand_as(keys)
+    assert torch.equal(pure_embedding, expected_embedding)
+
+
+def test_price_slot_residual_scale_must_be_blend_weight() -> None:
+    with pytest.raises(AssertionError, match="price_slot_residual_scale"):
+        TransformerConfig(num_players=NUM_PLAYERS, price_slot_residual_scale=-0.1)
+
+    with pytest.raises(AssertionError, match="price_slot_residual_scale"):
+        TransformerConfig(num_players=NUM_PLAYERS, price_slot_residual_scale=1.1)
 
 
 def test_projection_widths_consume_declared_token_features(model: RSSTransformerNet) -> None:

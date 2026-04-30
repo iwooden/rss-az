@@ -178,7 +178,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--price-slot-residual-scale",
         type=float,
-        help="Multiplier for residual per-slot embeddings in price-like policy heads",
+        help="Blend weight for learned price-slot embeddings: 0=pure Fourier, 1=pure embedding",
     )
     return parser
 

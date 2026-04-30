@@ -183,6 +183,8 @@ class TransformerConfig:
     ff_mult: float = 3.0  # FFN inner dimension = ceil(ff_mult * d_model)
     phase_conditioning: bool = True
     price_slot_fourier_bands: int = 4
+    # Blend weight between projected Fourier slot features and learned per-slot
+    # embeddings: 0.0 = pure Fourier projection, 1.0 = pure embedding.
     price_slot_residual_scale: float = 1.0
 
     # Raw feature width per token (zero-padded to same size across types).
@@ -200,8 +202,8 @@ class TransformerConfig:
             "price_slot_fourier_bands must be >= 0, "
             f"got {self.price_slot_fourier_bands}"
         )
-        assert self.price_slot_residual_scale >= 0.0, (
-            "price_slot_residual_scale must be >= 0, "
+        assert 0.0 <= self.price_slot_residual_scale <= 1.0, (
+            "price_slot_residual_scale must be in [0, 1], "
             f"got {self.price_slot_residual_scale}"
         )
 
@@ -688,7 +690,7 @@ class RSSTransformerNet(nn.Module):
         # plus generated bid-offset keys conditioned on auction mechanics and
         # the active company being auctioned. Slot identity is a Fourier
         # projection of normalized offset + candidate-bid price (face_value +
-        # offset, /80), plus a scaled residual per-offset embedding.
+        # offset, /80), blended with a learned per-offset embedding.
         self.bid_pass_head = nn.Linear(d, 1)
         self.bid_actor_proj = nn.Linear(d, dp, bias=False)
         self.bid_info_proj = nn.Linear(2 * d, dp)
@@ -699,8 +701,8 @@ class RSSTransformerNet(nn.Module):
         # Generated action-key heads for phase-info-token decisions.
         self.dividend_actor_proj = nn.Linear(d, dp, bias=False)
         self.dividend_info_proj = nn.Linear(d, dp)
-        # Slot identity is a Fourier projection of normalized amount plus a
-        # scaled residual per-amount embedding.
+        # Slot identity is a Fourier projection of normalized amount, blended
+        # with a learned per-amount embedding.
         self.dividend_amount_proj = nn.Linear(slot_fourier_1, dp, bias=False)
         self.dividend_amount_embed = nn.Embedding(
             _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS),
@@ -731,7 +733,7 @@ class RSSTransformerNet(nn.Module):
         # Slot identity is a Fourier projection of [slot_position_norm,
         # candidate_price_norm], where slot_position_norm = offset / (K-1) and
         # candidate_price_norm = (low_price + offset) / COMPANY_PRICE_DIVISOR,
-        # plus a scaled residual per-offset embedding. Per-slot action features
+        # blended with a learned per-offset embedding. Per-slot action features
         # carry the remaining context.
         self.acq_price_actor_proj = nn.Linear(d, dp, bias=False)
         self.acq_price_info_proj = nn.Linear(2 * d, dp)
@@ -746,7 +748,7 @@ class RSSTransformerNet(nn.Module):
         # context includes the active corp/company and the PAR info token; the
         # per-action features come from the PAR token's price-specific tuples.
         # Slot identity is a Fourier projection of normalized index + actual
-        # par price (max=37), plus a scaled residual per-par-index embedding.
+        # par price (max=37), blended with a learned per-par-index embedding.
         self.par_actor_proj = nn.Linear(d, dp, bias=False)
         self.par_info_proj = nn.Linear(3 * d, dp)
         self.par_price_proj = nn.Linear(slot_fourier_2, dp, bias=False)
@@ -794,19 +796,21 @@ class RSSTransformerNet(nn.Module):
         sincos = torch.stack((torch.sin(angles), torch.cos(angles)), dim=-1)
         return torch.cat([features, sincos.flatten(start_dim=-3)], dim=-1)
 
-    def _with_price_slot_residual(
+    def _blend_price_slot_keys(
         self,
         keys: torch.Tensor,
         embedding: nn.Embedding,
     ) -> torch.Tensor:
-        """Add scaled per-slot residual embeddings to Fourier-derived keys."""
-        scale = float(self.cfg.price_slot_residual_scale)
-        if scale == 0.0:
+        """Blend Fourier-projected slot keys with learned per-slot embeddings."""
+        blend = float(self.cfg.price_slot_residual_scale)
+        if blend == 0.0:
             return keys
         batch_size, num_actions, _ = keys.shape
-        residual = self._match_dtype_device(embedding.weight, keys)
-        residual = residual.unsqueeze(0).expand(batch_size, num_actions, -1)
-        return keys + scale * residual
+        learned = self._match_dtype_device(embedding.weight, keys)
+        learned = learned.unsqueeze(0).expand(batch_size, num_actions, -1)
+        if blend == 1.0:
+            return learned
+        return (1.0 - blend) * keys + blend * learned
 
     def _project_company_tokens(self, x: torch.Tensor) -> torch.Tensor:
         """Project company tokens from their raw feature fields."""
@@ -1123,8 +1127,8 @@ class RSSTransformerNet(nn.Module):
         ``action_keys`` is a ``(B, num_actions, d_proj)`` tensor of per-slot
         identity vectors. Categorical-key phases pass an
         ``nn.Embedding.weight`` broadcast to the batch dim; price-like phases
-        pass Fourier-projected normalized slot features plus optional scaled
-        residual slot embeddings. Per-batch keys are supported by passing a
+        pass a blend of Fourier-projected normalized slot features and learned
+        slot embeddings. Per-batch keys are supported by passing a
         tensor that already has a batch dim varying with active-entity context.
         """
         batch_size, num_actions, _ = action_features.shape
@@ -1221,8 +1225,8 @@ class RSSTransformerNet(nn.Module):
         """Build the Bid block: leave-auction pass plus 15 bid offsets.
 
         Slot identity is ``bid_offset_proj(fourier([normalized_offset,
-        face_value_norm + offset / COMPANY_PRICE_DIVISOR]))`` plus a scaled
-        residual per-offset embedding. The second scalar is the candidate bid
+        face_value_norm + offset / COMPANY_PRICE_DIVISOR]))``, blended with a
+        learned per-offset embedding. The second scalar is the candidate bid
         for slot k expressed in the same /80 units as the company's normalized
         face_value. Per-slot action features carry only the auction-context
         channels (relative_offset, min_bid_value, is_first_bid).
@@ -1291,7 +1295,7 @@ class RSSTransformerNet(nn.Module):
                 torch.cat([bid_offsets, candidate_bid_norm], dim=-1)
             )
         )
-        bid_keys = self._with_price_slot_residual(bid_keys, self.bid_offset_embed)
+        bid_keys = self._blend_price_slot_keys(bid_keys, self.bid_offset_embed)
 
         bid_context = torch.cat(
             [ctx.tokens[:, self._auction_idx], ctx.active_company],
@@ -1313,7 +1317,7 @@ class RSSTransformerNet(nn.Module):
         """Build dividend amount logits from active-corp query and action keys.
 
         Slot identity comes from ``dividend_amount_proj`` evaluated on Fourier
-        features of the normalized amount, plus a scaled residual per-amount
+        features of the normalized amount, blended with a learned per-amount
         embedding. The only per-slot action feature is the price-move impact
         written into the dividend phase token by the engine; normalized amount
         is already carried by the slot-identity projection.
@@ -1333,7 +1337,7 @@ class RSSTransformerNet(nn.Module):
                 .squeeze(0)
             )
         ).unsqueeze(0).expand(batch_size, -1, -1)
-        amount_keys = self._with_price_slot_residual(
+        amount_keys = self._blend_price_slot_keys(
             amount_keys,
             self.dividend_amount_embed,
         )
@@ -1416,8 +1420,8 @@ class RSSTransformerNet(nn.Module):
         """Build par-price logits from active-player query and par-price keys.
 
         Slot identity is a Fourier projection of static
-        ``[normalized_index, normalized_par_price]`` features, plus a scaled
-        residual per-par-index embedding, broadcast across the batch. Per-slot
+        ``[normalized_index, normalized_par_price]`` features, blended with a
+        learned per-par-index embedding, broadcast across the batch. Per-slot
         action features carry only the PAR token's per-price effect tuple
         (``par_effects``); the price itself is in the slot key.
         """
@@ -1439,7 +1443,7 @@ class RSSTransformerNet(nn.Module):
                 self._match_dtype_device(self._par_price_features, ctx.tokens)
             )
         ).unsqueeze(0).expand(batch_size, -1, -1)
-        par_keys = self._with_price_slot_residual(par_keys, self.par_price_embed)
+        par_keys = self._blend_price_slot_keys(par_keys, self.par_price_embed)
         par_context = torch.cat(
             [ctx.tokens[:, self._par_idx], ctx.active_corp, ctx.active_company],
             dim=-1,
@@ -1458,7 +1462,7 @@ class RSSTransformerNet(nn.Module):
         """Build ACQ_SELECT_PRICE logits from active-corp query and offset keys.
 
         Slot identity is ``acq_price_offset_proj(fourier([slot_position_norm,
-        candidate_price_norm]))`` plus a scaled residual per-offset embedding,
+        candidate_price_norm]))``, blended with a learned per-offset embedding,
         where ``slot_position_norm = offset / (K-1)`` is the 0-indexed slot
         index in [0, 1] (matching BID/PAR/DIVIDENDS) and
         ``candidate_price_norm = (low_price + offset) / COMPANY_PRICE_DIVISOR``.
@@ -1531,7 +1535,7 @@ class RSSTransformerNet(nn.Module):
                 torch.cat([slot_position_norm, candidate_price], dim=-1)
             )
         )
-        acq_price_keys = self._with_price_slot_residual(
+        acq_price_keys = self._blend_price_slot_keys(
             acq_price_keys,
             self.acq_price_offset_embed,
         )
