@@ -449,6 +449,11 @@ class RSSTransformerNet(nn.Module):
         self._fi_rel_tail_start = _FI_REL_TAIL_START
         self._corp_rel_tail_start = _CORP_REL_TAIL_START
         self._player_rel_tail_start = _PLAYER_REL_TAIL_START
+        self._global_info_feature_start = (
+            _GLOBAL_PHASE_STOP
+            if cfg.phase_conditioning
+            else self._token_feature_start
+        )
         self.player_proj = nn.Linear(
             self._player_rel_tail_start - self._token_feature_start,
             d,
@@ -470,7 +475,7 @@ class RSSTransformerNet(nn.Module):
             d,
         )
         self.global_info_proj = nn.Linear(
-            int(TokenWidth.TW_GLOBAL_INFO) - _GLOBAL_PHASE_STOP,
+            int(TokenWidth.TW_GLOBAL_INFO) - self._global_info_feature_start,
             d,
         )
         self.invest_proj = nn.Linear(
@@ -856,12 +861,18 @@ class RSSTransformerNet(nn.Module):
         )
 
     def _project_global_info_token(self, x: torch.Tensor) -> torch.Tensor:
-        """Project global info, excluding phase one-hot used for conditioning."""
+        """Project global info.
+
+        When direct phase conditioning is enabled, the decision-phase one-hot
+        feeds the per-block modulation path and is omitted here. When it is
+        disabled, keep the one-hot in the global token so phase remains visible
+        to the trunk.
+        """
         return self.global_info_proj(
             x[
                 :,
                 self._global_info_idx,
-                _GLOBAL_PHASE_STOP:int(TokenWidth.TW_GLOBAL_INFO),
+                self._global_info_feature_start:int(TokenWidth.TW_GLOBAL_INFO),
             ]
         )
 

@@ -862,7 +862,7 @@ def test_projection_widths_consume_declared_token_features(model: RSSTransformer
     assert model.fi_proj.in_features == model._fi_rel_tail_start - start
     assert model.market_info_proj.in_features == int(TokenWidth.TW_MARKET_INFO) - start
     assert model.global_info_proj.in_features == (
-        int(TokenWidth.TW_GLOBAL_INFO) - (1 + len(DecisionPhase))
+        int(TokenWidth.TW_GLOBAL_INFO) - model._global_info_feature_start
     )
     assert model.invest_proj.in_features == int(TokenWidth.TW_INVEST) - start
     assert model.auction_proj.in_features == int(TokenWidth.TW_AUCTION) - start
@@ -937,7 +937,9 @@ def test_project_tokens_keeps_player_share_amount_features(model: RSSTransformer
     assert delta[:, :model._player_slice.start].abs().max().item() == pytest.approx(0.0)
 
 
-def test_project_tokens_ignores_global_info_phase_onehot(model: RSSTransformerNet) -> None:
+def test_project_tokens_ignores_global_info_phase_onehot_when_conditioned(
+    model: RSSTransformerNet,
+) -> None:
     cfg = model.cfg
     x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
     x_with_phase = x.clone()
@@ -949,6 +951,39 @@ def test_project_tokens_ignores_global_info_phase_onehot(model: RSSTransformerNe
     )
 
     assert torch.allclose(model._project_tokens(x), model._project_tokens(x_with_phase))
+
+
+def test_project_tokens_keeps_global_info_phase_onehot_without_conditioning() -> None:
+    model = RSSTransformerNet(
+        TransformerConfig(
+            num_players=NUM_PLAYERS,
+            d_model=48,
+            num_heads=3,
+            num_layers=1,
+            ff_mult=2.0,
+            phase_conditioning=False,
+        )
+    )
+    cfg = model.cfg
+    x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
+    x_with_phase = x.clone()
+    phase_start = 1
+    phase_stop = phase_start + len(DecisionPhase)
+    x_with_phase[:, model._global_info_idx, phase_start] = 1.0
+
+    with torch.no_grad():
+        model.global_info_proj.weight.zero_()
+        model.global_info_proj.bias.zero_()
+        model.global_info_proj.weight[:, 0] = 1.0
+
+    assert model.global_info_proj.in_features == int(TokenWidth.TW_GLOBAL_INFO) - phase_start
+
+    delta = model._project_tokens(x_with_phase) - model._project_tokens(x)
+    global_delta = delta[:, model._global_info_idx]
+
+    assert global_delta.abs().max().item() > 0.0
+    assert delta[:, :model._global_info_idx].abs().max().item() == pytest.approx(0.0)
+    assert delta[:, model._global_info_idx + 1:].abs().max().item() == pytest.approx(0.0)
 
 
 def test_type_embedding_table_matches_token_layout(model: RSSTransformerNet) -> None:
