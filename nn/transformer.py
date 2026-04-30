@@ -25,6 +25,7 @@ import torch.nn.functional as F
 
 from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.data import (
+    ALL_PAR_PRICES,
     AUCTION_CAP,
     GameConstants,
     PHASE_ACTION_SIZES,
@@ -98,8 +99,9 @@ _TOKEN_FEATURE_START = 1
 _IS_SELECTED_OFFSET = 1
 _GLOBAL_PHASE_OFFSET = 1
 _GLOBAL_PHASE_STOP = _GLOBAL_PHASE_OFFSET + NUM_PHASES
-# Offset inside a company feature slice after the attention-mask slot is dropped.
+# Offsets inside a company feature slice after the attention-mask slot is dropped.
 _COMPANY_LOW_PRICE_FEATURE_OFFSET = 1
+_COMPANY_FACE_VALUE_FEATURE_OFFSET = 2
 # Raw token offsets where relation/reference tails begin. The engine still
 # emits these fields for compatibility and diagnostics, but the model ignores
 # them in token projection now that relation matrices feed attention directly.
@@ -329,8 +331,9 @@ class RSSTransformerNet(nn.Module):
     _type_ids: torch.Tensor
     _corp_ids: torch.Tensor
     _bid_offset_features: torch.Tensor
+    _bid_offset_dollar_norm: torch.Tensor
     _dividend_amount_features: torch.Tensor
-    _par_index_features: torch.Tensor
+    _par_price_features: torch.Tensor
     _acq_price_offset_features: torch.Tensor
     _issue_action_features: torch.Tensor
     _acq_offer_action_features: torch.Tensor
@@ -486,28 +489,50 @@ class RSSTransformerNet(nn.Module):
             bid_offset_features,
             persistent=False,
         )
+        # Per-slot dollar offset in /COMPANY_PRICE_DIVISOR units; added to the
+        # active company's normalized face_value at runtime to form the actual
+        # candidate-bid price channel for the BID slot-key projection.
+        bid_offset_dollar_norm = (
+            torch.arange(int(AUCTION_CAP), dtype=torch.float32).view(1, int(AUCTION_CAP), 1)
+            / float(PY_COMPANY_PRICE_DIVISOR)
+        )
+        self.register_buffer(
+            "_bid_offset_dollar_norm",
+            bid_offset_dollar_norm,
+            persistent=False,
+        )
+        # Normalize by max actual amount (MAX_DIVIDEND - 1 = 25), not slot
+        # count, so the feature is literally amount / max_amount and matches
+        # the price-domain normalization used by BID / ACQ_PRICE / PAR.
         dividend_amount_features = (
             torch.arange(
                 _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS),
                 dtype=torch.float32,
             ).view(1, _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS), 1)
-            / float(_phase_action_size(DecisionPhase.DPHASE_DIVIDENDS))
+            / float(int(GameConstants.MAX_DIVIDEND) - 1)
         )
         self.register_buffer(
             "_dividend_amount_features",
             dividend_amount_features,
             persistent=False,
         )
-        par_index_features = (
-            torch.arange(
-                _phase_action_size(DecisionPhase.DPHASE_PAR),
-                dtype=torch.float32,
-            ).view(1, _phase_action_size(DecisionPhase.DPHASE_PAR), 1)
-            / float(_phase_action_size(DecisionPhase.DPHASE_PAR))
+        # Slot-identity inputs for the PAR ordinal projection: per-slot
+        # ``[normalized_index, par_price / max_par_price]``. Both channels
+        # are static (par prices are a fixed table), so we precompute the
+        # buffer at init and reuse on every forward.
+        num_par_prices = _phase_action_size(DecisionPhase.DPHASE_PAR)
+        par_price_max = float(max(ALL_PAR_PRICES))
+        par_index_norm = torch.arange(num_par_prices, dtype=torch.float32) / float(
+            num_par_prices - 1
         )
+        par_price_norm = torch.tensor(
+            [float(p) / par_price_max for p in ALL_PAR_PRICES],
+            dtype=torch.float32,
+        )
+        par_price_features = torch.stack([par_index_norm, par_price_norm], dim=-1)
         self.register_buffer(
-            "_par_index_features",
-            par_index_features,
+            "_par_price_features",
+            par_price_features,
             persistent=False,
         )
         acq_price_offsets = torch.arange(
@@ -592,21 +617,27 @@ class RSSTransformerNet(nn.Module):
 
         # BID is actor-conditioned with a direct active-player pass readout
         # plus generated bid-offset keys conditioned on auction mechanics and
-        # the active company being auctioned.
+        # the active company being auctioned. Slot identity is an ordinal
+        # projection of normalized offset + candidate-bid price (face_value +
+        # offset, /80), which encodes "this slot bids $N" rather than just
+        # "this is the k-th option."
         self.bid_pass_head = nn.Linear(d, 1)
         self.bid_actor_proj = nn.Linear(d, dp, bias=False)
         self.bid_info_proj = nn.Linear(2 * d, dp)
-        self.bid_offset_embed = nn.Embedding(int(AUCTION_CAP), dp)
-        self.bid_key_mlp = self._make_action_key_mlp(action_feature_width=4)
+        self.bid_offset_proj = nn.Linear(2, dp, bias=False)
+        self.bid_key_mlp = self._make_action_key_mlp(action_feature_width=3)
 
         # Generated action-key heads for phase-info-token decisions.
         self.dividend_actor_proj = nn.Linear(d, dp, bias=False)
         self.dividend_info_proj = nn.Linear(d, dp)
-        self.dividend_amount_embed = nn.Embedding(
-            _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS),
-            dp,
-        )
-        self.dividend_key_mlp = self._make_action_key_mlp(action_feature_width=2)
+        # Ordinal slot identity: a Linear(1, dp) projection of normalized
+        # amount instead of a categorical Embedding(26, dp). Forces all 26
+        # slot keys onto a 1D manifold parameterized by amount, baking in
+        # an ordinal prior so that adjacent amounts have similar keys.
+        self.dividend_amount_proj = nn.Linear(1, dp, bias=False)
+        # action_features now carry only the per-amount price-move impact;
+        # normalized amount is consumed by ``dividend_amount_proj``.
+        self.dividend_key_mlp = self._make_action_key_mlp(action_feature_width=1)
         self.issue_actor_proj = nn.Linear(d, dp, bias=False)
         self.issue_info_proj = nn.Linear(d, dp)
         self.issue_action_embed = nn.Embedding(
@@ -626,26 +657,25 @@ class RSSTransformerNet(nn.Module):
         # pick the acquiring corp, pick the target company
         # (``_acq_select_company_logits``), pick the price (below).
         # SELECT_PRICE is actor-conditioned with generated price-offset keys.
-        # The key context includes the active company and ACQ price info token;
-        # per-offset features include the candidate price and target range.
+        # Slot identity is an ordinal projection of [offset_count_norm,
+        # candidate_price_norm], where candidate_price_norm = low_price + offset
+        # in /COMPANY_PRICE_DIVISOR units. Per-slot action features carry the
+        # remaining auction-context channels.
         self.acq_price_actor_proj = nn.Linear(d, dp, bias=False)
         self.acq_price_info_proj = nn.Linear(2 * d, dp)
-        self.acq_price_offset_embed = nn.Embedding(
-            _phase_action_size(DecisionPhase.DPHASE_ACQ_SELECT_PRICE),
-            dp,
-        )
-        self.acq_price_key_mlp = self._make_action_key_mlp(action_feature_width=5)
+        self.acq_price_offset_proj = nn.Linear(2, dp, bias=False)
+        self.acq_price_key_mlp = self._make_action_key_mlp(action_feature_width=4)
 
         # PAR is actor-conditioned with generated par-price keys. The key
         # context includes the active corp/company and the PAR info token; the
         # per-action features come from the PAR token's price-specific tuples.
+        # Slot identity is an ordinal projection of normalized index + actual
+        # par price (max=37) — adjacent par prices share a manifold rather
+        # than each owning an independent categorical row.
         self.par_actor_proj = nn.Linear(d, dp, bias=False)
         self.par_info_proj = nn.Linear(3 * d, dp)
-        self.par_price_embed = nn.Embedding(
-            _phase_action_size(DecisionPhase.DPHASE_PAR),
-            dp,
-        )
-        self.par_key_mlp = self._make_action_key_mlp(action_feature_width=4)
+        self.par_price_proj = nn.Linear(2, dp, bias=False)
+        self.par_key_mlp = self._make_action_key_mlp(action_feature_width=3)
 
         # --- Value head (applied per player token) ---
         self.value_head = nn.Sequential(
@@ -670,10 +700,6 @@ class RSSTransformerNet(nn.Module):
     def _match_dtype_device(tensor: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
         """Move small buffers/raw slices to the current runtime dtype and device."""
         return tensor.to(device=ref.device, dtype=ref.dtype)
-
-    def _embedding_weight(self, embedding: nn.Embedding, ref: torch.Tensor) -> torch.Tensor:
-        """Return embedding weights matched to an autocast runtime tensor."""
-        return self._match_dtype_device(embedding.weight, ref)
 
     def _project_company_tokens(self, x: torch.Tensor) -> torch.Tensor:
         """Project company tokens from their raw feature fields."""
@@ -819,7 +845,7 @@ class RSSTransformerNet(nn.Module):
             )
         block_widths[int(DecisionPhase.DPHASE_BID)] = (
             self.bid_pass_head.out_features
-            + self.bid_offset_embed.num_embeddings
+            + int(AUCTION_CAP)
         )
         if self.acq_select_corp_pass_head.out_features != 1:
             raise AssertionError(
@@ -843,7 +869,7 @@ class RSSTransformerNet(nn.Module):
             + num_companies
         )
         block_widths[int(DecisionPhase.DPHASE_DIVIDENDS)] = (
-            self.dividend_amount_embed.num_embeddings
+            int(self._dividend_amount_features.shape[1])
         )
         block_widths[int(DecisionPhase.DPHASE_ISSUE)] = (
             self.issue_action_embed.num_embeddings
@@ -857,18 +883,17 @@ class RSSTransformerNet(nn.Module):
             self.ipo_pass_head.out_features
             + num_corps
         )
+        num_par_prices = int(self._par_price_features.shape[0])
         par_feature_width = int(TokenWidth.TW_PAR) - self._token_feature_start
-        if par_feature_width != self.par_price_embed.num_embeddings * 3:
+        if par_feature_width != num_par_prices * 3:
             raise AssertionError(
                 f"PAR token feature width {par_feature_width} must equal "
-                f"3 fields * {self.par_price_embed.num_embeddings} par prices"
+                f"3 fields * {num_par_prices} par prices"
             )
-        block_widths[int(DecisionPhase.DPHASE_PAR)] = (
-            self.par_price_embed.num_embeddings
-        )
+        block_widths[int(DecisionPhase.DPHASE_PAR)] = num_par_prices
         block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_COMPANY)] = num_companies
         block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)] = (
-            self.acq_price_offset_embed.num_embeddings
+            int(self._acq_price_offset_features.shape[1])
         )
 
         expected = [int(size) for size in PHASE_ACTION_SIZES]
@@ -983,10 +1008,20 @@ class RSSTransformerNet(nn.Module):
         action_features: torch.Tensor,
         actor_proj: nn.Linear,
         info_proj: nn.Linear,
-        action_embed: nn.Embedding,
+        action_keys: torch.Tensor,
         key_mlp: nn.Module,
     ) -> torch.Tensor:
-        """Score generated action keys against an actor query."""
+        """Score generated action keys against an actor query.
+
+        ``action_keys`` is a ``(B, num_actions, d_proj)`` tensor of per-slot
+        identity vectors. Categorical-key phases pass an
+        ``nn.Embedding.weight`` broadcast to the batch dim; ordinal phases
+        pass a ``Linear(K, d_proj)`` projection of normalized slot features
+        (index and/or actual price), which forces adjacent-slot keys to lie
+        on a low-dimensional manifold. Per-batch keys are supported by
+        passing a tensor that already has a batch dim varying with the
+        active-entity context.
+        """
         batch_size, num_actions, _ = action_features.shape
         query = actor_proj(actor)
         info = (
@@ -994,11 +1029,7 @@ class RSSTransformerNet(nn.Module):
             .unsqueeze(1)
             .expand(batch_size, num_actions, self.cfg.d_proj)
         )
-        action_ids = (
-            self._embedding_weight(action_embed, phase_info)
-            .unsqueeze(0)
-            .expand(batch_size, num_actions, self.cfg.d_proj)
-        )
+        action_ids = self._match_dtype_device(action_keys, phase_info)
         key_input = torch.cat(
             [info, action_ids, self._match_dtype_device(action_features, phase_info)],
             dim=-1,
@@ -1082,7 +1113,16 @@ class RSSTransformerNet(nn.Module):
         return torch.cat([pass_logit, corp_logits], dim=-1)
 
     def _bid_logits(self, ctx: _PolicyContext) -> torch.Tensor:
-        """Build the Bid block: leave-auction pass plus 15 bid offsets."""
+        """Build the Bid block: leave-auction pass plus 15 bid offsets.
+
+        Slot identity is ``bid_offset_proj([normalized_offset,
+        face_value_norm + offset / COMPANY_PRICE_DIVISOR])`` — the second
+        channel is the candidate bid for slot k expressed in the same /80
+        units as the company's normalized face_value. Per-slot action
+        features carry only the auction-context channels (relative_offset,
+        min_bid_value, is_first_bid).
+        """
+        batch_size = ctx.tokens.shape[0]
         raw_auction = ctx.raw_tokens[
             :,
             self._auction_idx,
@@ -1094,14 +1134,13 @@ class RSSTransformerNet(nn.Module):
         bid_offsets = self._match_dtype_device(
             self._bid_offset_features,
             ctx.tokens,
-        ).expand(ctx.tokens.shape[0], int(AUCTION_CAP), 1)
+        ).expand(batch_size, int(AUCTION_CAP), 1)
         relative_offsets = (
             bid_offsets
             - self._match_dtype_device(min_bid_idx, bid_offsets).unsqueeze(1)
         )
         action_features = torch.cat(
             [
-                bid_offsets,
                 relative_offsets,
                 self._match_dtype_device(min_bid_value, bid_offsets)
                 .unsqueeze(1)
@@ -1112,6 +1151,40 @@ class RSSTransformerNet(nn.Module):
             ],
             dim=-1,
         )
+
+        raw_company_features = self._match_dtype_device(
+            ctx.raw_tokens[
+                :,
+                self._company_slice,
+                self._token_feature_start:int(TokenWidth.TW_COMPANY),
+            ],
+            ctx.tokens,
+        )
+        active_company_selector = self._match_dtype_device(
+            ctx.raw_tokens[
+                :,
+                self._company_slice,
+                self._is_selected_offset,
+            ],
+            ctx.tokens,
+        )
+        active_company_raw = torch.bmm(
+            active_company_selector.unsqueeze(1),
+            raw_company_features,
+        ).squeeze(1)
+        face_value_norm = active_company_raw[
+            :,
+            _COMPANY_FACE_VALUE_FEATURE_OFFSET:_COMPANY_FACE_VALUE_FEATURE_OFFSET + 1,
+        ]
+        candidate_bid_norm = (
+            face_value_norm.unsqueeze(1).expand_as(bid_offsets)
+            + self._match_dtype_device(self._bid_offset_dollar_norm, ctx.tokens)
+            .expand_as(bid_offsets)
+        )
+        bid_keys = self.bid_offset_proj(
+            torch.cat([bid_offsets, candidate_bid_norm], dim=-1)
+        )
+
         bid_context = torch.cat(
             [ctx.tokens[:, self._auction_idx], ctx.active_company],
             dim=-1,
@@ -1122,22 +1195,23 @@ class RSSTransformerNet(nn.Module):
             action_features,
             self.bid_actor_proj,
             self.bid_info_proj,
-            self.bid_offset_embed,
+            bid_keys,
             self.bid_key_mlp,
         )
         pass_logit = self.bid_pass_head(ctx.active_player)
         return torch.cat([pass_logit, bid_offsets_logits], dim=-1)
 
     def _dividend_logits(self, ctx: _PolicyContext) -> torch.Tensor:
-        """Build dividend amount logits from active-corp query and action keys."""
-        dividend_amounts = self._match_dtype_device(
-            self._dividend_amount_features,
-            ctx.tokens,
-        ).expand(
-            ctx.tokens.shape[0],
-            _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS),
-            1,
-        )
+        """Build dividend amount logits from active-corp query and action keys.
+
+        Slot identity comes from ``dividend_amount_proj`` evaluated at the
+        static normalized amounts — a learned line through dp-space rather
+        than 26 independent categorical vectors. The only per-slot action
+        feature is the price-move impact written into the dividend phase
+        token by the engine; normalized amount is already carried by the
+        slot-identity projection.
+        """
+        batch_size = ctx.tokens.shape[0]
         dividend_impacts = self._match_dtype_device(
             ctx.raw_tokens[
                 :,
@@ -1146,14 +1220,17 @@ class RSSTransformerNet(nn.Module):
             ],
             ctx.tokens,
         ).unsqueeze(-1)
-        action_features = torch.cat([dividend_amounts, dividend_impacts], dim=-1)
+        amount_keys = self.dividend_amount_proj(
+            self._match_dtype_device(self._dividend_amount_features, ctx.tokens)
+            .squeeze(0)
+        ).unsqueeze(0).expand(batch_size, -1, -1)
         return self._actor_action_key_logits(
             ctx.active_corp,
             ctx.tokens[:, self._dividend_idx],
-            action_features,
+            dividend_impacts,
             self.dividend_actor_proj,
             self.dividend_info_proj,
-            self.dividend_amount_embed,
+            amount_keys,
             self.dividend_key_mlp,
         )
 
@@ -1181,7 +1258,7 @@ class RSSTransformerNet(nn.Module):
             action_features,
             self.issue_actor_proj,
             self.issue_info_proj,
-            self.issue_action_embed,
+            self.issue_action_embed.weight.unsqueeze(0).expand(batch_size, -1, -1),
             self.issue_key_mlp,
         )
 
@@ -1218,17 +1295,21 @@ class RSSTransformerNet(nn.Module):
             action_features,
             self.acq_offer_actor_proj,
             self.acq_offer_info_proj,
-            self.acq_offer_action_embed,
+            self.acq_offer_action_embed.weight.unsqueeze(0).expand(batch_size, -1, -1),
             self.acq_offer_key_mlp,
         )
 
     def _par_logits(self, ctx: _PolicyContext) -> torch.Tensor:
-        """Build par-price logits from active-player query and par-price keys."""
-        num_par_prices = self.par_price_embed.num_embeddings
-        par_indices = self._match_dtype_device(
-            self._par_index_features,
-            ctx.tokens,
-        ).expand(ctx.tokens.shape[0], num_par_prices, 1)
+        """Build par-price logits from active-player query and par-price keys.
+
+        Slot identity is an ordinal projection of static
+        ``[normalized_index, normalized_par_price]`` features, broadcast
+        across the batch. Per-slot action features carry only the PAR
+        token's per-price effect tuple (``par_effects``); the price itself
+        is in the slot key.
+        """
+        batch_size = ctx.tokens.shape[0]
+        num_par_prices = int(self._par_price_features.shape[0])
         par_effects = (
             self._match_dtype_device(
                 ctx.raw_tokens[
@@ -1238,9 +1319,11 @@ class RSSTransformerNet(nn.Module):
                 ],
                 ctx.tokens,
             )
-            .reshape(ctx.tokens.shape[0], num_par_prices, 3)
+            .reshape(batch_size, num_par_prices, 3)
         )
-        action_features = torch.cat([par_indices, par_effects], dim=-1)
+        par_keys = self.par_price_proj(
+            self._match_dtype_device(self._par_price_features, ctx.tokens)
+        ).unsqueeze(0).expand(batch_size, -1, -1)
         par_context = torch.cat(
             [ctx.tokens[:, self._par_idx], ctx.active_corp, ctx.active_company],
             dim=-1,
@@ -1248,17 +1331,25 @@ class RSSTransformerNet(nn.Module):
         return self._actor_action_key_logits(
             ctx.active_player,
             par_context,
-            action_features,
+            par_effects,
             self.par_actor_proj,
             self.par_info_proj,
-            self.par_price_embed,
+            par_keys,
             self.par_key_mlp,
         )
 
     def _acq_price_logits(self, ctx: _PolicyContext) -> torch.Tensor:
-        """Build ACQ_SELECT_PRICE logits from active-corp query and offset keys."""
+        """Build ACQ_SELECT_PRICE logits from active-corp query and offset keys.
+
+        Slot identity is ``acq_price_offset_proj([offset_count_norm,
+        candidate_price_norm])`` where ``candidate_price_norm = low_price +
+        offset`` in /COMPANY_PRICE_DIVISOR units. The candidate price moves
+        out of the action-feature MLP into the slot key, so action features
+        only carry auction-context (remaining offsets, max offset, fi flag,
+        total synergies).
+        """
         batch_size = ctx.tokens.shape[0]
-        num_offsets = self.acq_price_offset_embed.num_embeddings
+        num_offsets = int(self._acq_price_offset_features.shape[1])
         offset_features = self._match_dtype_device(
             self._acq_price_offset_features,
             ctx.tokens,
@@ -1311,12 +1402,14 @@ class RSSTransformerNet(nn.Module):
         action_features = torch.cat(
             [
                 remaining_after_offset,
-                candidate_price,
                 max_offset,
                 fi_flag,
                 total_synergies,
             ],
             dim=-1,
+        )
+        acq_price_keys = self.acq_price_offset_proj(
+            torch.cat([offset_count_norm, candidate_price], dim=-1)
         )
         acq_price_context = torch.cat(
             [ctx.tokens[:, self._acq_price_info_idx], ctx.active_company],
@@ -1328,7 +1421,7 @@ class RSSTransformerNet(nn.Module):
             action_features,
             self.acq_price_actor_proj,
             self.acq_price_info_proj,
-            self.acq_price_offset_embed,
+            acq_price_keys,
             self.acq_price_key_mlp,
         )
 
@@ -1582,12 +1675,8 @@ class RSSTransformerNet(nn.Module):
                 nn.init.ones_(module.weight)
 
         nn.init.trunc_normal_(self.corp_id_embed.weight, std=0.02)
-        nn.init.trunc_normal_(self.bid_offset_embed.weight, std=0.02)
-        nn.init.trunc_normal_(self.acq_price_offset_embed.weight, std=0.02)
-        nn.init.trunc_normal_(self.dividend_amount_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.issue_action_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.acq_offer_action_embed.weight, std=0.02)
-        nn.init.trunc_normal_(self.par_price_embed.weight, std=0.02)
         # Per-type additive embeddings: same small-random init.
         nn.init.trunc_normal_(self.type_embeds.weight, std=0.02)
         # Relation attention starts behavior-preserving; training can learn
@@ -1631,12 +1720,14 @@ if __name__ == "__main__":
     ]
     proj_params = sum(sum(p.numel() for p in m.parameters()) for m in proj_modules)
     corp_id_params = model.corp_id_embed.weight.numel()
-    bid_offset_params = model.bid_offset_embed.weight.numel()
-    acq_price_offset_params = model.acq_price_offset_embed.weight.numel()
-    dividend_amount_params = model.dividend_amount_embed.weight.numel()
+    bid_offset_params = sum(p.numel() for p in model.bid_offset_proj.parameters())
+    acq_price_offset_params = sum(
+        p.numel() for p in model.acq_price_offset_proj.parameters()
+    )
+    dividend_amount_params = sum(p.numel() for p in model.dividend_amount_proj.parameters())
     issue_action_params = model.issue_action_embed.weight.numel()
     acq_offer_action_params = model.acq_offer_action_embed.weight.numel()
-    par_price_params = model.par_price_embed.weight.numel()
+    par_price_params = sum(p.numel() for p in model.par_price_proj.parameters())
     type_params = model.type_embeds.weight.numel()
     phase_mod_params = 0
     for block in model.blocks:
@@ -1675,12 +1766,12 @@ if __name__ == "__main__":
     for name, count in [
         ("Input projections", proj_params),
         ("Corp ID embeds", corp_id_params),
-        ("Bid offset embeds", bid_offset_params),
-        ("ACQ price offset embeds", acq_price_offset_params),
-        ("Dividend amount embeds", dividend_amount_params),
+        ("Bid offset proj", bid_offset_params),
+        ("ACQ price offset proj", acq_price_offset_params),
+        ("Dividend amount proj", dividend_amount_params),
         ("Issue action embeds", issue_action_params),
         ("ACQ offer action embeds", acq_offer_action_params),
-        ("PAR price embeds", par_price_params),
+        ("PAR price proj", par_price_params),
         ("Type embeds", type_params),
         ("Phase mod embeds", phase_mod_params),
         ("Transformer trunk", trunk_params),
