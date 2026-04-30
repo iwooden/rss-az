@@ -3,9 +3,16 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from core.attention_relations import NUM_ATTENTION_RELATIONS, AttentionRelation
+from core.attention_relations import (
+    ATTENTION_RELATION_COORD_WIDTH,
+    MAX_ATTENTION_RELATION_EDGES,
+    NUM_ATTENTION_RELATIONS,
+    AttentionRelation,
+)
 from core.relations import (
     get_num_attention_relations,
+    get_relation_coord_data,
+    get_relation_coord_data_batch,
     get_relation_data,
     get_relation_data_batch,
 )
@@ -23,6 +30,22 @@ from train.replay_buffer import ReplayBuffer
 NUM_PLAYERS = 3
 COMPANY_TOKEN_START = 1
 CORP_TOKEN_START = 46
+
+
+def _materialize_relation_coords_np(
+    coords: np.ndarray,
+    *,
+    num_tokens: int,
+) -> np.ndarray:
+    dense = np.zeros(
+        (NUM_ATTENTION_RELATIONS, num_tokens, num_tokens),
+        dtype=np.uint8,
+    )
+    for relation_id, query_tok, key_tok in coords:
+        if relation_id == 0 and query_tok == 0 and key_tok == 0:
+            continue
+        dense[int(relation_id), int(query_tok), int(key_tok)] = 1
+    return dense
 
 
 def _state_with_corp_company(corp_id: int, company_id: int) -> GameState:
@@ -279,6 +302,57 @@ def test_get_relation_data_batch_marks_each_row_independently() -> None:
     assert int(relations[1, owned_by_relation_id].sum()) == 1
 
 
+def test_get_relation_coord_data_matches_dense_relation_planes() -> None:
+    state = _state_with_corp_company(corp_id=4, company_id=12)
+    PLAYERS[2].set_shares(state, 4, 1)
+    num_tokens = get_num_tokens(NUM_PLAYERS)
+    dense = np.zeros(
+        (NUM_ATTENTION_RELATIONS, num_tokens, num_tokens),
+        dtype=np.uint8,
+    )
+    coords = np.full(
+        (MAX_ATTENTION_RELATION_EDGES, ATTENTION_RELATION_COORD_WIDTH),
+        7,
+        dtype=np.uint8,
+    )
+
+    get_relation_data(state, dense)
+    count = get_relation_coord_data(state, coords)
+    materialized = _materialize_relation_coords_np(coords, num_tokens=num_tokens)
+
+    assert count == int(dense.sum())
+    np.testing.assert_array_equal(materialized, dense)
+    assert int(coords[count:].sum()) == 0
+
+
+def test_get_relation_coord_data_batch_matches_dense_relation_planes() -> None:
+    states = [
+        _state_with_corp_company(corp_id=0, company_id=3),
+        _state_with_player_company(player_id=2, company_id=14),
+    ]
+    PLAYERS[1].set_shares(states[0], 0, 1)
+    num_tokens = get_num_tokens(NUM_PLAYERS)
+    dense = np.zeros(
+        (2, NUM_ATTENTION_RELATIONS, num_tokens, num_tokens),
+        dtype=np.uint8,
+    )
+    coords = np.full(
+        (2, MAX_ATTENTION_RELATION_EDGES, ATTENTION_RELATION_COORD_WIDTH),
+        7,
+        dtype=np.uint8,
+    )
+
+    get_relation_data_batch([s._array for s in states], NUM_PLAYERS, dense)
+    get_relation_coord_data_batch([s._array for s in states], NUM_PLAYERS, coords)
+
+    for i in range(2):
+        materialized = _materialize_relation_coords_np(
+            coords[i],
+            num_tokens=num_tokens,
+        )
+        np.testing.assert_array_equal(materialized, dense[i])
+
+
 def test_remote_evaluator_evaluate_leaves_populates_relation_buffer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -295,12 +369,15 @@ def test_remote_evaluator_evaluate_leaves_populates_relation_buffer(
 
     evaluator.evaluate_leaves([state._array], legal_mask)
 
-    relations = shared_bufs.get_input_relations_np(0)
+    relation_coords = shared_bufs.get_input_relation_coords_np(0)
+    relations = _materialize_relation_coords_np(
+        relation_coords[0],
+        num_tokens=get_num_tokens(NUM_PLAYERS),
+    )
     owns_relation_id = int(AttentionRelation.CORP_OWNS_COMPANY)
     owned_by_relation_id = int(AttentionRelation.COMPANY_OWNED_BY_CORP)
     assert (
         relations[
-            0,
             owns_relation_id,
             CORP_TOKEN_START + corp_id,
             COMPANY_TOKEN_START + company_id,
@@ -309,15 +386,14 @@ def test_remote_evaluator_evaluate_leaves_populates_relation_buffer(
     )
     assert (
         relations[
-            0,
             owned_by_relation_id,
             COMPANY_TOKEN_START + company_id,
             CORP_TOKEN_START + corp_id,
         ]
         == 1
     )
-    assert int(relations[0, owns_relation_id].sum()) == 1
-    assert int(relations[0, owned_by_relation_id].sum()) == 1
+    assert int(relations[owns_relation_id].sum()) == 1
+    assert int(relations[owned_by_relation_id].sum()) == 1
 
 
 def _one_row_training_targets() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:

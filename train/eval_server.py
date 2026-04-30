@@ -11,10 +11,10 @@ Communication uses shared memory (torch tensors with share_memory_()):
   Worker → Server (inputs)
       states      : float16 (W, B, num_tokens, token_dim)
       legal_mask  : uint8   (W, B, UNIFIED_LOGIT_DIM)  — 1=legal slot
-      relations   : uint8   (W, B, R, num_tokens, num_tokens)
-                    — directed relation planes, 1=edge present. Populated by
-                    workers now; server/model consumption lands with the
-                    attention-bias forward path.
+      relation_coords
+                 : uint8   (W, B, MAX_ATTENTION_RELATION_EDGES, 3)
+                    — sparse (relation_id, query_token, key_token) triplets.
+                    The server materializes dense relation planes on-device.
 
   Server → Worker (outputs — dense over unified slots, softmaxed on GPU)
       priors  : float32 (W, B, UNIFIED_LOGIT_DIM)  — legal slots sum to 1
@@ -39,12 +39,13 @@ softmax of -1e9). Workers gather the per-leaf legal prior slice out of
 that dense row using the same LUT, without any softmax on the worker side.
 
 Wins vs the old sparse IPC protocol (1024-wide sparse action buffers):
-  * inbound action_ids/n_legals/phase_ids (2048+3 B/state) collapses to a
-    169 B/state uint8 mask (~12x cut on the send leg).
+  * inbound action_ids/n_legals/phase_ids collapses to a
+    UNIFIED_LOGIT_DIM-wide uint8 mask.
   * outbound priors (1024 f32 = 4096 B/state) shrinks to
-    UNIFIED_LOGIT_DIM=169 f32 = 676 B/state (~6x cut on the return leg).
+    UNIFIED_LOGIT_DIM f32 values.
   * on-GPU per-phase gather and n_legals scan drop out of the model
-    forward — torch.compile sees a fully static (B, 169) policy path.
+    forward — torch.compile sees a fully static (B, UNIFIED_LOGIT_DIM)
+    policy path.
 
 **Signaling protocol:**
 
@@ -98,9 +99,13 @@ from core.actions import (
     enumerate_legal_actions_py,
     get_decision_phase_py,
 )
-from core.attention_relations import NUM_ATTENTION_RELATIONS
+from core.attention_relations import (
+    ATTENTION_RELATION_COORD_WIDTH,
+    MAX_ATTENTION_RELATION_EDGES,
+    NUM_ATTENTION_RELATIONS,
+)
 from core.data import MAX_ACTION_SIZE, PHASE_ACTION_SIZES
-from core.relations import get_relation_data, get_relation_data_batch
+from core.relations import get_relation_coord_data, get_relation_coord_data_batch
 from core.token_data import (
     TokenDataSize,
     get_num_tokens,
@@ -191,6 +196,48 @@ def _partition_request_groups(
     return groups
 
 
+def _materialize_relation_coords_(
+    *,
+    dense_rel: torch.Tensor,
+    dense_rel_flat: torch.Tensor,
+    relation_coords: torch.Tensor,
+    flat_idx: torch.Tensor,
+    flat_idx_flat: torch.Tensor,
+    tmp_idx: torch.Tensor,
+    batch_offsets: torch.Tensor,
+    sentinel_flat: torch.Tensor,
+    actual_n: int,
+    launch_n: int,
+    num_tokens: int,
+) -> None:
+    """Materialize sparse relation coordinates into dense relation planes.
+
+    ``relation_coords`` is uint8 ``(B, max_edges, 3)`` where each row is
+    ``(relation_id, query_token, key_token)``. Padded rows are ``(0, 0, 0)``;
+    after filling all coordinates, the per-batch sentinel slot is cleared so
+    padding cannot introduce a real edge.
+    """
+    dense_rel[:launch_n].zero_()
+    if actual_n <= 0:
+        return
+
+    coords = relation_coords[:actual_n]
+    idx = flat_idx[:actual_n]
+    tmp = tmp_idx[:actual_n]
+
+    relation_stride = num_tokens * num_tokens
+    idx.copy_(coords[..., 0])
+    idx.mul_(relation_stride)
+    tmp.copy_(coords[..., 1])
+    idx.add_(tmp, alpha=num_tokens)
+    tmp.copy_(coords[..., 2])
+    idx.add_(tmp)
+    idx.add_(batch_offsets[:actual_n])
+
+    dense_rel_flat.index_fill_(0, flat_idx_flat[:idx.numel()], 1)
+    dense_rel_flat.index_fill_(0, sentinel_flat[:actual_n], 0)
+
+
 class SharedEvalBuffers:
     """Pre-allocated shared memory for zero-copy worker <-> server communication.
 
@@ -203,8 +250,9 @@ class SharedEvalBuffers:
     Inputs (worker → server):
         states      (W, B, num_tokens, token_dim)       float16
         legal_mask  (W, B, UNIFIED_LOGIT_DIM)           uint8 (1=legal slot)
-        relations   (W, B, R, num_tokens, num_tokens)   uint8 (1=edge present;
-                    worker-populated, reserved for attention-bias input)
+        relation_coords
+                    (W, B, MAX_ATTENTION_RELATION_EDGES, 3)
+                    uint8 sparse relation triplets
 
     Outputs (server → worker):
         priors  (W, B, UNIFIED_LOGIT_DIM)  float32  (softmaxed over legal slots)
@@ -228,6 +276,8 @@ class SharedEvalBuffers:
         self.token_dim = TOKEN_DIM
         self.unified_dim = UNIFIED_LOGIT_DIM
         self.num_relations = NUM_ATTENTION_RELATIONS
+        self.max_relation_edges = MAX_ATTENTION_RELATION_EDGES
+        self.relation_coord_width = ATTENTION_RELATION_COORD_WIDTH
 
         # --- Inputs (worker → server) ---
         # fp16 on the wire: halves shm footprint + pinned→GPU copy vs. the
@@ -241,12 +291,12 @@ class SharedEvalBuffers:
         self._legal_mask = torch.zeros(
             num_workers, batch_size, self.unified_dim, dtype=torch.uint8,
         ).share_memory_()
-        # Graphormer-style directed relation planes. uint8 is the smallest
-        # practical shared-memory dtype here: torch.bool is also byte-backed,
-        # and bit-packed tensors are not available for direct torch/Numpy IPC.
-        self._relations = torch.zeros(
+        # Sparse Graphormer-style directed relation coordinates. The model
+        # still consumes dense planes; eval servers materialize those on the
+        # device to avoid transferring mostly-zero relation matrices.
+        self._relation_coords = torch.zeros(
             num_workers, batch_size,
-            self.num_relations, self.num_tokens, self.num_tokens,
+            self.max_relation_edges, self.relation_coord_width,
             dtype=torch.uint8,
         ).share_memory_()
 
@@ -294,9 +344,9 @@ class SharedEvalBuffers:
         """(batch, UNIFIED_LOGIT_DIM) uint8 view into this worker's legal-mask slot."""
         return self._legal_mask[worker_idx].numpy()
 
-    def get_input_relations_np(self, worker_idx: int) -> np.ndarray:
-        """(batch, num_relations, num_tokens, num_tokens) uint8 relation planes."""
-        return self._relations[worker_idx].numpy()
+    def get_input_relation_coords_np(self, worker_idx: int) -> np.ndarray:
+        """(batch, max_relation_edges, 3) uint8 sparse relation coordinates."""
+        return self._relation_coords[worker_idx].numpy()
 
     # ------------------------------------------------------------------
     # Per-worker output accessors.
@@ -600,23 +650,40 @@ def _eval_server_serve(
     )
 
     relation_count = shared_bufs.num_relations
-    relation_row_bytes = relation_count * num_tokens * num_tokens  # uint8 == 1 byte
-    pin_rel_list = [
+    max_relation_edges = shared_bufs.max_relation_edges
+    relation_coord_width = shared_bufs.relation_coord_width
+    relation_coord_row_bytes = max_relation_edges * relation_coord_width
+    pin_rel_coord_list = [
         torch.empty(
-            alloc_batch, relation_count, num_tokens, num_tokens,
+            alloc_batch, max_relation_edges, relation_coord_width,
             dtype=torch.uint8, pin_memory=use_cuda,
         )
         for _ in range(buf_depth)
     ]
-    pin_rel_np_list = [p.numpy() for p in pin_rel_list]
-    pin_rel_flat_bytes_list = [
-        p.reshape(alloc_batch, relation_row_bytes).view(np.int8)
-        for p in pin_rel_np_list
+    pin_rel_coord_np_list = [p.numpy() for p in pin_rel_coord_list]
+    pin_rel_coord_flat_bytes_list = [
+        p.reshape(alloc_batch, relation_coord_row_bytes).view(np.int8)
+        for p in pin_rel_coord_np_list
     ]
+    gpu_rel_coord = torch.empty(
+        alloc_batch, max_relation_edges, relation_coord_width,
+        dtype=torch.uint8, device=device,
+    )
     gpu_rel = torch.empty(
         alloc_batch, relation_count, num_tokens, num_tokens,
         dtype=torch.uint8, device=device,
     )
+    gpu_rel_flat = gpu_rel.reshape(-1)
+    relation_flat_idx = torch.empty(
+        alloc_batch, max_relation_edges, dtype=torch.long, device=device,
+    )
+    relation_flat_idx_flat = relation_flat_idx.reshape(-1)
+    relation_tmp_idx = torch.empty_like(relation_flat_idx)
+    relation_batch_offsets = (
+        torch.arange(alloc_batch, dtype=torch.long, device=device)
+        * (relation_count * num_tokens * num_tokens)
+    ).reshape(alloc_batch, 1)
+    relation_sentinel_flat = relation_batch_offsets.reshape(-1).contiguous()
 
     # Shared-memory mask gather stays uint8, but bucketed launches use a
     # preallocated bool tensor at the model call site so the GPU-visible
@@ -666,8 +733,8 @@ def _eval_server_serve(
     all_states_bytes = shared_bufs._states.numpy().reshape(
         shared_bufs.num_workers, shared_bufs.batch_size, num_tokens * token_dim,
     ).view(np.int8)
-    all_relations_bytes = shared_bufs._relations.numpy().reshape(
-        shared_bufs.num_workers, shared_bufs.batch_size, relation_row_bytes,
+    all_relation_coords_bytes = shared_bufs._relation_coords.numpy().reshape(
+        shared_bufs.num_workers, shared_bufs.batch_size, relation_coord_row_bytes,
     ).view(np.int8)
     all_masks_np = shared_bufs._legal_mask.numpy()
     all_priors_np = shared_bufs._priors.numpy()
@@ -776,8 +843,8 @@ def _eval_server_serve(
 
         pin_s_slot = pin_s_list[slot]
         pin_s_flat_bytes = pin_s_flat_bytes_list[slot]
-        pin_rel_slot = pin_rel_list[slot]
-        pin_rel_flat_bytes = pin_rel_flat_bytes_list[slot]
+        pin_rel_coord_slot = pin_rel_coord_list[slot]
+        pin_rel_coord_flat_bytes = pin_rel_coord_flat_bytes_list[slot]
         pin_mask_slot = pin_mask_list[slot]
         pin_mask_np = pin_mask_np_list[slot]
         pin_priors_slot = pin_priors_list[slot]
@@ -789,13 +856,14 @@ def _eval_server_serve(
             pin_s_flat_bytes, all_states_bytes, widx, cnts, n_req,
             states_row_bytes,
         )
-        relation_n = _gather_states(
-            pin_rel_flat_bytes, all_relations_bytes, widx, cnts, n_req,
-            relation_row_bytes,
+        relation_coord_n = _gather_states(
+            pin_rel_coord_flat_bytes, all_relation_coords_bytes, widx, cnts, n_req,
+            relation_coord_row_bytes,
         )
-        if relation_n != actual_n:
+        if relation_coord_n != actual_n:
             raise AssertionError(
-                f"relation gather count {relation_n} != state gather count {actual_n}"
+                f"relation coord gather count {relation_coord_n} "
+                f"!= state gather count {actual_n}"
             )
         _gather_masks(pin_mask_np, all_masks_np, widx, cnts, n_req)
         launch_n = _resolve_launch_batch_size(
@@ -812,13 +880,30 @@ def _eval_server_serve(
 
         gpu_s_batch = gpu_s[:launch_n]
         gpu_s_batch[:actual_n].copy_(pin_s_slot[:actual_n], non_blocking=True)
-        gpu_rel[:actual_n].copy_(pin_rel_slot[:actual_n], non_blocking=True)
+        gpu_rel_coord[:actual_n].copy_(
+            pin_rel_coord_slot[:actual_n],
+            non_blocking=True,
+        )
         gpu_mask[:actual_n].copy_(pin_mask_slot[:actual_n], non_blocking=True)
         if launch_n > actual_n:
             gpu_s_batch[actual_n:launch_n].zero_()
-            gpu_rel[actual_n:launch_n].zero_()
+            gpu_rel_coord[actual_n:launch_n].zero_()
             gpu_mask[actual_n:launch_n].zero_()
             gpu_mask_bool[actual_n:launch_n].zero_()
+
+        _materialize_relation_coords_(
+            dense_rel=gpu_rel,
+            dense_rel_flat=gpu_rel_flat,
+            relation_coords=gpu_rel_coord,
+            flat_idx=relation_flat_idx,
+            flat_idx_flat=relation_flat_idx_flat,
+            tmp_idx=relation_tmp_idx,
+            batch_offsets=relation_batch_offsets,
+            sentinel_flat=relation_sentinel_flat,
+            actual_n=actual_n,
+            launch_n=launch_n,
+            num_tokens=num_tokens,
+        )
 
         if batch_shape_mode == "bucketed":
             gpu_mask_bool[:launch_n].copy_(gpu_mask[:launch_n], non_blocking=True)
@@ -1192,7 +1277,9 @@ class RemoteEvaluator(BaseEvaluator):
         # single-state and batched paths share it.
         self._in_states_np = shared_bufs.get_input_states_np(worker_idx)
         self._in_legal_mask_np = shared_bufs.get_input_legal_mask_np(worker_idx)
-        self._in_relations_np = shared_bufs.get_input_relations_np(worker_idx)
+        self._in_relation_coords_np = shared_bufs.get_input_relation_coords_np(
+            worker_idx
+        )
         self._states_scratch_fp32 = np.empty(
             self._in_states_np.shape, dtype=np.float32,
         )
@@ -1291,7 +1378,7 @@ class RemoteEvaluator(BaseEvaluator):
         phase_id = get_decision_phase_py(state)
         get_token_data(state, self._states_scratch_fp32[0])
         self._in_states_np[0] = self._states_scratch_fp32[0].astype(np.float16)
-        get_relation_data(state, self._in_relations_np[0])
+        get_relation_coord_data(state, self._in_relation_coords_np[0])
         n = enumerate_legal_actions_py(state, self._enum_scratch)
         self._fill_mask_row(0, phase_id, self._enum_scratch[:n])
 
@@ -1353,8 +1440,8 @@ class RemoteEvaluator(BaseEvaluator):
             state_arrays, self.num_players, self._states_scratch_fp32[:n],
         )
         self._in_states_np[:n] = self._states_scratch_fp32[:n].astype(np.float16)
-        get_relation_data_batch(
-            state_arrays, self.num_players, self._in_relations_np[:n],
+        get_relation_coord_data_batch(
+            state_arrays, self.num_players, self._in_relation_coords_np[:n],
         )
         # Caller already has the dense mask — copy it straight into shm.
         np.copyto(self._in_legal_mask_np[:n], legal_mask, casting="unsafe")

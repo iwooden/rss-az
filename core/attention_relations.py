@@ -13,7 +13,12 @@ from __future__ import annotations
 
 from enum import IntEnum
 
-from core.relations import AttentionRelationIndex, get_num_attention_relations
+from core.relations import (
+    AttentionRelationIndex,
+    get_attention_relation_coord_width,
+    get_max_attention_relation_edges,
+    get_num_attention_relations,
+)
 
 
 class AttentionRelation(IntEnum):
@@ -34,3 +39,5 @@ class AttentionRelation(IntEnum):
 
 
 NUM_ATTENTION_RELATIONS = get_num_attention_relations()
+MAX_ATTENTION_RELATION_EDGES = get_max_attention_relation_edges()
+ATTENTION_RELATION_COORD_WIDTH = get_attention_relation_coord_width()

@@ -1,9 +1,10 @@
 """
 Declaration file for Graphormer-style attention relation extraction.
 
-The relation buffer is ``(num_relations, num_tokens, num_tokens)`` uint8.
+Dense relation buffers are ``(num_relations, num_tokens, num_tokens)`` uint8.
 Rows are query tokens and columns are key/value tokens, matching PyTorch
-SDPA's additive attention-bias layout.
+SDPA's additive attention-bias layout. Sparse coordinate buffers carry
+``(relation_id, query_token, key_token)`` uint8 triplets.
 """
 
 from core.state cimport GameState
@@ -23,7 +24,18 @@ cpdef enum AttentionRelationIndex:
     REL_NUM_ATTENTION_RELATIONS = 10
 
 
+cpdef enum AttentionRelationCoordSize:
+    MAX_ATTENTION_RELATION_EDGES = 256
+    ATTENTION_RELATION_COORD_WIDTH = 3
+
+
 cpdef int get_num_attention_relations() noexcept nogil
+
+
+cpdef int get_max_attention_relation_edges() noexcept nogil
+
+
+cpdef int get_attention_relation_coord_width() noexcept nogil
 
 
 cpdef void get_relation_data(GameState state, unsigned char[:, :, ::1] buffer)
@@ -33,4 +45,14 @@ cpdef void get_relation_data_batch(
     list state_arrays,
     int num_players,
     unsigned char[:, :, :, ::1] buffer,
+)
+
+
+cpdef int get_relation_coord_data(GameState state, unsigned char[:, ::1] coords)
+
+
+cpdef void get_relation_coord_data_batch(
+    list state_arrays,
+    int num_players,
+    unsigned char[:, :, ::1] coords,
 )

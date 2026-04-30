@@ -4,11 +4,17 @@ import numpy as np
 import pytest
 import torch
 
-from core.attention_relations import NUM_ATTENTION_RELATIONS, AttentionRelation
+from core.attention_relations import (
+    ATTENTION_RELATION_COORD_WIDTH,
+    MAX_ATTENTION_RELATION_EDGES,
+    NUM_ATTENTION_RELATIONS,
+    AttentionRelation,
+)
 from train.eval_server import (
     EvaluationServer,
     RequestBatchGroup,
     SharedEvalBuffers,
+    _materialize_relation_coords_,
     _next_power_of_two,
     _partition_request_groups,
     _resolve_actual_launch_cap,
@@ -134,7 +140,7 @@ def test_attention_relation_count_matches_enum_members() -> None:
     assert NUM_ATTENTION_RELATIONS == len(AttentionRelation)
 
 
-def test_shared_eval_buffers_allocates_uint8_relation_planes() -> None:
+def test_shared_eval_buffers_allocates_uint8_relation_coords() -> None:
     shared_bufs = SharedEvalBuffers(
         num_workers=2,
         batch_size=4,
@@ -142,23 +148,68 @@ def test_shared_eval_buffers_allocates_uint8_relation_planes() -> None:
     )
 
     assert shared_bufs.num_relations == NUM_ATTENTION_RELATIONS
-    assert shared_bufs._relations.dtype == torch.uint8
-    assert tuple(shared_bufs._relations.shape) == (
+    assert shared_bufs.max_relation_edges == MAX_ATTENTION_RELATION_EDGES
+    assert shared_bufs.relation_coord_width == ATTENTION_RELATION_COORD_WIDTH
+    assert shared_bufs._relation_coords.dtype == torch.uint8
+    assert tuple(shared_bufs._relation_coords.shape) == (
         2,
         4,
-        NUM_ATTENTION_RELATIONS,
-        shared_bufs.num_tokens,
-        shared_bufs.num_tokens,
+        MAX_ATTENTION_RELATION_EDGES,
+        ATTENTION_RELATION_COORD_WIDTH,
     )
 
-    worker_relations = shared_bufs.get_input_relations_np(1)
-    assert worker_relations.dtype == np.uint8
-    assert worker_relations.shape == (
+    worker_coords = shared_bufs.get_input_relation_coords_np(1)
+    assert worker_coords.dtype == np.uint8
+    assert worker_coords.shape == (
         4,
-        NUM_ATTENTION_RELATIONS,
-        shared_bufs.num_tokens,
-        shared_bufs.num_tokens,
+        MAX_ATTENTION_RELATION_EDGES,
+        ATTENTION_RELATION_COORD_WIDTH,
     )
 
-    worker_relations[0, 2, 5, 7] = 1
-    assert int(shared_bufs._relations[1, 0, 2, 5, 7].item()) == 1
+    worker_coords[0, 2] = (2, 5, 7)
+    assert int(shared_bufs._relation_coords[1, 0, 2, 0].item()) == 2
+    assert int(shared_bufs._relation_coords[1, 0, 2, 1].item()) == 5
+    assert int(shared_bufs._relation_coords[1, 0, 2, 2].item()) == 7
+
+
+def test_materialize_relation_coords_fills_dense_planes_and_clears_padding() -> None:
+    batch_size = 3
+    num_relations = NUM_ATTENTION_RELATIONS
+    num_tokens = 57
+    max_edges = 4
+    coords = torch.zeros(batch_size, max_edges, 3, dtype=torch.uint8)
+    coords[0, 0] = torch.tensor([2, 5, 7], dtype=torch.uint8)
+    coords[0, 1] = torch.tensor([0, 0, 0], dtype=torch.uint8)
+    coords[1, 0] = torch.tensor([3, 6, 8], dtype=torch.uint8)
+    dense = torch.full(
+        (batch_size, num_relations, num_tokens, num_tokens),
+        9,
+        dtype=torch.uint8,
+    )
+    flat_idx = torch.empty(batch_size, max_edges, dtype=torch.long)
+    tmp_idx = torch.empty_like(flat_idx)
+    batch_offsets = (
+        torch.arange(batch_size, dtype=torch.long)
+        * (num_relations * num_tokens * num_tokens)
+    ).reshape(batch_size, 1)
+
+    _materialize_relation_coords_(
+        dense_rel=dense,
+        dense_rel_flat=dense.reshape(-1),
+        relation_coords=coords,
+        flat_idx=flat_idx,
+        flat_idx_flat=flat_idx.reshape(-1),
+        tmp_idx=tmp_idx,
+        batch_offsets=batch_offsets,
+        sentinel_flat=batch_offsets.reshape(-1).contiguous(),
+        actual_n=2,
+        launch_n=3,
+        num_tokens=num_tokens,
+    )
+
+    assert int(dense[0, 2, 5, 7].item()) == 1
+    assert int(dense[1, 3, 6, 8].item()) == 1
+    assert int(dense[0, 0, 0, 0].item()) == 0
+    assert int(dense[1, 0, 0, 0].item()) == 0
+    assert int(dense[2].sum().item()) == 0
+    assert int(dense.sum().item()) == 2
