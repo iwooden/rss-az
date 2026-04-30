@@ -590,19 +590,24 @@ def assert_invariants(state, msg=""):
 # player / corp / company token for the currently-selected entity; the
 # standalone active-entity one-hot tokens have been removed.
 _PLAYER_OFF = {
-    "ATTN_MASK":    0,
-    "IS_SELECTED":  1,
-    "TURN_ORDER":   2,   # 5 slots
-    "HAS_PASSED":   7,
-    "CASH":         8,
-    "NET_WORTH":    9,
-    "LIQUIDITY":    10,
-    "INCOME":       11,
-    "AUC_HIGH":     12,
-    "AUC_STARTER":  13,
-    "ROUND_TRIPS":  14,
-    "SHARES":       15,  # 8 slots
-    "COMPANIES":    23,  # 36 slots
+    "ATTN_MASK":      0,
+    "IS_SELECTED":    1,
+    "TURN_ORDER":     2,   # 5 slots
+    "HAS_PASSED":     7,
+    "CASH":           8,
+    "NET_WORTH":      9,
+    "LIQUIDITY":      10,
+    "INCOME":         11,
+    "AUC_HIGH":       12,
+    "AUC_STARTER":    13,
+    "ROUND_TRIPS":    14,
+    "SHARES":         15,  # 8 slots
+    # Relational summary scalars (aggregate views of the multihot tail).
+    "NUM_COMPANIES":  23,
+    "NUM_PRESIDENCIES": 24,
+    "TOTAL_SHARES":   25,
+    # Relational tail (dropped on the model side; relations enter via attention).
+    "COMPANIES":      26,  # 36 slots
 }
 _CORP_OFF = {
     "ATTN_MASK":     0,
@@ -630,8 +635,13 @@ _CORP_OFF = {
     "IPO_REMAIN":    48,
     "BUY_IMPACT":    49,
     "SELL_IMPACT":   50,
-    "PRESIDENT":     51,  # 5 slots
-    "COMPANIES":     56,  # 36 slots
+    # Relational summary scalars (aggregate views of the multihot tail).
+    "NUM_OPERATIONAL": 51,
+    "NUM_ACQ_PILE":    52,
+    "NUM_TOTAL":       53,
+    # Relational tail (dropped on the model side; relations enter via attention).
+    "PRESIDENT":     54,  # 5 slots
+    "COMPANIES":     59,  # 36 slots
 }
 # Company token carries static game-setup data plus per-company dynamic
 # scalars (attention mask, CoO-adjusted income, active-company selector,
@@ -659,6 +669,12 @@ _COMPANY_OFF = {
 # core/data.pxd's PRICE_RANGE_DIVISOR (max offset count, CDG: 51). Not
 # exposed as PY_* because it is only used here.
 PY_PRICE_RANGE_DIVISOR = 51.0
+# Mirrors the relational-summary divisors in core/token_data.pyx. Same
+# rationale as PY_PRICE_RANGE_DIVISOR — test-local, no need to expose
+# from the Cython side.
+PY_OWNED_COMPANIES_DIVISOR = 10.0
+PY_TOTAL_SHARES_DIVISOR    = 20.0
+PY_PRESIDENCIES_DIVISOR    = 8.0
 
 
 def _assert_close(val, expected, tol, msg):
@@ -837,8 +853,13 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
             _assert_close(buf[tok, _PLAYER_OFF["AUC_STARTER"]], 0.0, T_FLAG,
                           f"{pm}: auction_starter flag outside BID")
 
-        # Per-corp shares, with buys/sells summarized by the round-trip flag.
+        # Per-corp shares, with buys/sells summarized by the round-trip flag,
+        # plus the relational-summary aggregates (total shares, presidency
+        # count). Presidency gating mirrors the corp-token's president
+        # one-hot: active && !receivership && president_id == p.
         any_roundtrip = False
+        total_shares = 0
+        num_presidencies = 0
         for c in range(num_corps):
             shares = PLAYERS[p].get_shares(state, c)
             buys = PLAYERS[p].get_share_buys(state, c)
@@ -846,21 +867,39 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
 
             _assert_close(buf[tok, _PLAYER_OFF["SHARES"] + c] * PY_SHARE_DIVISOR,
                           shares, T_SCALE, f"{pm}: shares[{c}]")
+            total_shares += shares
 
             if buys >= 2 or sells >= 2:
                 any_roundtrip = True
 
+            if (
+                CORPS[c].is_active(state)
+                and not CORPS[c].is_in_receivership(state)
+                and CORPS[c].get_president_id(state) == p
+            ):
+                num_presidencies += 1
+
         expected_rt = 1.0 if any_roundtrip else 0.0
         _assert_close(buf[tok, _PLAYER_OFF["ROUND_TRIPS"]], expected_rt, T_FLAG,
                       f"{pm}: round_trips flag")
+        _assert_close(buf[tok, _PLAYER_OFF["TOTAL_SHARES"]] * PY_TOTAL_SHARES_DIVISOR,
+                      total_shares, T_SCALE, f"{pm}: total_owned_shares")
+        _assert_close(buf[tok, _PLAYER_OFF["NUM_PRESIDENCIES"]] * PY_PRESIDENCIES_DIVISOR,
+                      num_presidencies, T_SCALE, f"{pm}: num_presidencies")
 
-        # Owned-companies bitmap
+        # Owned-companies bitmap and aggregate count.
+        num_companies_owned = 0
         for cid in range(num_companies):
             loc = COMPANIES[cid].get_location(state)
             owner = COMPANIES[cid].get_owner_id(state)
-            expected = 1.0 if (loc == int(CompanyLocation.LOC_PLAYER) and owner == p) else 0.0
+            owns = loc == int(CompanyLocation.LOC_PLAYER) and owner == p
+            expected = 1.0 if owns else 0.0
             _assert_close(buf[tok, _PLAYER_OFF["COMPANIES"] + cid], expected, T_FLAG,
                           f"{pm}: owned_company[{cid}]")
+            if owns:
+                num_companies_owned += 1
+        _assert_close(buf[tok, _PLAYER_OFF["NUM_COMPANIES"]] * PY_OWNED_COMPANIES_DIVISOR,
+                      num_companies_owned, T_SCALE, f"{pm}: num_owned_companies")
 
         # is_selected: set iff this player is the current active_player.
         expected_selected = 1.0 if active_player == p else 0.0
@@ -950,7 +989,10 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
                 _assert_close(president_slice[pres], 1.0, T_FLAG,
                               f"{cm}: president bit at {pres}")
 
-            # Owned-companies bitmap = owned OR in acquisition pile
+            # Owned-companies bitmap = owned OR in acquisition pile,
+            # plus the relational-summary counts (operational / acq-pile / total).
+            num_operational = 0
+            num_acq_pile = 0
             for cid in range(num_companies):
                 loc = COMPANIES[cid].get_location(state)
                 owner = COMPANIES[cid].get_owner_id(state)
@@ -959,15 +1001,27 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
                 expected = 1.0 if (is_owned or is_acq) else 0.0
                 _assert_close(buf[tok, _CORP_OFF["COMPANIES"] + cid], expected, T_FLAG,
                               f"{cm}: owned_company[{cid}]")
+                if is_owned:
+                    num_operational += 1
+                if is_acq:
+                    num_acq_pile += 1
+            _assert_close(buf[tok, _CORP_OFF["NUM_OPERATIONAL"]] * PY_OWNED_COMPANIES_DIVISOR,
+                          num_operational, T_SCALE, f"{cm}: num_operational_companies")
+            _assert_close(buf[tok, _CORP_OFF["NUM_ACQ_PILE"]] * PY_OWNED_COMPANIES_DIVISOR,
+                          num_acq_pile, T_SCALE, f"{cm}: num_acq_pile_companies")
+            _assert_close(buf[tok, _CORP_OFF["NUM_TOTAL"]] * PY_OWNED_COMPANIES_DIVISOR,
+                          num_operational + num_acq_pile, T_SCALE,
+                          f"{cm}: num_total_companies")
         else:
-            # Inactive corps: price/president regions and income-side scalars all zero
+            # Inactive corps: price/president regions, income-side scalars,
+            # and relational-summary counts all zero.
             _assert_close(price_slice.sum(), 0.0, T_FLAG,
                           f"{cm}: inactive corp price_idx must be zero")
             _assert_close(president_slice.sum(), 0.0, T_FLAG,
                           f"{cm}: inactive corp president must be zero")
             for key in ("SHARE_PRICE", "PENDING_MOVE", "CASH", "ACQ_PROCEEDS",
                         "INCOME", "STARS", "RAW_REVENUE", "SYNERGY", "COO_COST",
-                        "ABILITY"):
+                        "ABILITY", "NUM_OPERATIONAL", "NUM_ACQ_PILE", "NUM_TOTAL"):
                 _assert_close(buf[tok, _CORP_OFF[key]], 0.0, T_FLAG,
                               f"{cm}: inactive corp {key} must be zero")
             _assert_zero_row(
@@ -1046,7 +1100,6 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
     # OWNER_CORP; LOC_CORP / LOC_PLAYER / LOC_FI set only owner fields.
     # LOC_DECK / LOC_EXCLUDED below the revealed-tier threshold leave both
     # groups zero.
-    loc_deck = int(CompanyLocation.LOC_DECK)
     loc_removed = int(CompanyLocation.LOC_REMOVED)
     loc_auction = int(CompanyLocation.LOC_AUCTION)
     loc_revealed = int(CompanyLocation.LOC_REVEALED)
@@ -1227,13 +1280,20 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
                   f"{fm}: cash")
     _assert_close(buf[fi_tok, 2] * PY_ENTITY_INCOME_DIVISOR, FI.get_income(state),
                   T_SCALE, f"{fm}: income")
-    # Owned-companies bitmap: 1.0 exactly when company is at LOC_FI
+    # Owned-companies bitmap: 1.0 exactly when company is at LOC_FI. Slot 3
+    # is the relational-summary count; the bitmap starts at slot 4.
+    fi_owned_count = 0
     for cid in range(num_companies):
-        expected = 1.0 if COMPANIES[cid].get_location(state) == int(CompanyLocation.LOC_FI) else 0.0
-        _assert_close(buf[fi_tok, 3 + cid], expected, T_FLAG,
+        is_fi = COMPANIES[cid].get_location(state) == int(CompanyLocation.LOC_FI)
+        expected = 1.0 if is_fi else 0.0
+        _assert_close(buf[fi_tok, 4 + cid], expected, T_FLAG,
                       f"{fm}: owned[{cid}]")
+        if is_fi:
+            fi_owned_count += 1
+    _assert_close(buf[fi_tok, 3] * PY_OWNED_COMPANIES_DIVISOR, fi_owned_count,
+                  T_SCALE, f"{fm}: num_owned_companies")
     # Tail beyond the 36-flag region must be zero
-    _assert_zero_row(buf[fi_tok, 3 + num_companies:], T_FLAG,
+    _assert_zero_row(buf[fi_tok, 4 + num_companies:], T_FLAG,
                      f"{fm}: tail beyond owned bitmap")
 
     # =========================================================================

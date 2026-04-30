@@ -40,12 +40,12 @@ For 3p, row indices are:
 The model consumes exactly these engine-side rows; it does not append
 synthetic model-side tokens after projection.
 
-Each token row is zero-padded to `TOKEN_DIM = 92`, currently pinned by the
+Each token row is zero-padded to `TOKEN_DIM = 95`, currently pinned by the
 Corp token. Per-type widths live in `TokenWidth`:
 
 - `TW_MARKET_INFO = 55`
 - `TW_COMPANY = 28`
-- `TW_FI = 39`
+- `TW_FI = 40`
 - `TW_GLOBAL_INFO = 24`
 - `TW_INVEST = 2`
 - `TW_AUCTION = 4`
@@ -54,8 +54,15 @@ Corp token. Per-type widths live in `TokenWidth`:
 - `TW_PAR = 43`
 - `TW_ACQ_OFFER = 4`
 - `TW_ACQ_PRICE = 4`
-- `TW_CORP = 92`
-- `TW_PLAYER = 59`
+- `TW_CORP = 95`
+- `TW_PLAYER = 62`
+
+**Relational summary scalars.** Corp, player, and FI tokens carry a small
+group of aggregate scalars (owned-company counts, presidency count, total
+shares) immediately before their relational tail. The relational tail is
+dropped on the model side in favour of Graphormer-style attention biases;
+the summary scalars stay in the projection so the trunk has a direct
+aggregate view of the data the multihots encode.
 
 ## Attention Mask Slot
 
@@ -124,11 +131,19 @@ The ownership groups are mutually exclusive. `LOC_CORP_ACQ` sets both
 `at_corp_acq` and the owning corp's `owner_corp` slot. Unowned locations leave
 all owner groups zero.
 
-### FI Token (39)
+### FI Token (40)
 
 - `attn_mask`
 - Cash, normalized by `CASH_DIVISOR`
 - Income, normalized by `ENTITY_INCOME_DIVISOR`
+
+Relational summary:
+
+- `num_owned_companies`. Count of companies at `LOC_FI`, normalized by
+  `OWNED_COMPANIES_DIVISOR` (10.0, soft empirical cap).
+
+Relational tail:
+
 - Owned companies (36 slots). 1 if the company is at `LOC_FI`.
 
 ### GlobalInfo Token (24)
@@ -205,7 +220,7 @@ Buy/sell invest impacts moved to Corp tokens.
 - `fi_flag`. 1 if the target company is FI-owned.
 - `total_synergies`, normalized by `ENTITY_INCOME_DIVISOR`
 
-## Corp Tokens (92, x8)
+## Corp Tokens (95, x8)
 
 Corp identity is inferred from row order.
 
@@ -240,12 +255,23 @@ Corp identity is inferred from row order.
 - Sell impact. During `PHASE_INVEST`, active corp's sell-one-share market
   index delta, normalized by `IMPACT_DIVISOR`.
 
+Relational summary (active corps only — inactive corps leave these zero,
+matching the rest of the active-gated fields):
+
+- `num_operational_companies`. Count of companies at `LOC_CORP` owned by
+  this corp, normalized by `OWNED_COMPANIES_DIVISOR`.
+- `num_acq_pile_companies`. Count of companies at `LOC_CORP_ACQ` owned by
+  this corp, normalized by `OWNED_COMPANIES_DIVISOR`.
+- `num_total_companies`. Sum of the two, normalized by
+  `OWNED_COMPANIES_DIVISOR`. Redundant by construction; saves the
+  projection from learning the addition.
+
 Relational tail:
 
 - President ID (5 slots). All zero if inactive / receivership.
 - Owned companies (36 slots). Includes companies in the acquisition pile.
 
-## Player Tokens (59, xN, N in {3, 4, 5})
+## Player Tokens (62, xN, N in {3, 4, 5})
 
 Player identity is inferred from row order.
 
@@ -262,8 +288,21 @@ Player identity is inferred from row order.
 - `auction_starter`. During `PHASE_BID`, 1 on the auction starter.
 - Round trips. 1 if any share buy/sell would be affected by the round-trip
   limit.
+- Owned shares (8 slots), normalized by `SHARE_DIVISOR`. Per-corp share
+  counts are scalar quantities, not just relation presence, so they stay
+  in the projection rather than the relational tail.
+
+Relational summary:
+
+- `num_owned_companies`. Count of companies at `LOC_PLAYER` owned by this
+  player, normalized by `OWNED_COMPANIES_DIVISOR`.
+- `num_presidencies`. Count of corps where this player is president,
+  gated to active && !receivership corps to match the corp-token
+  president one-hot. Normalized by `PRESIDENCIES_DIVISOR` (8.0 = NUM_CORPS,
+  the hard cap).
+- `total_owned_shares`. Sum of the 8-slot owned-shares vector,
+  normalized by `TOTAL_SHARES_DIVISOR` (20.0, soft empirical cap).
 
 Relational tail:
 
-- Owned shares (8 slots), normalized by `SHARE_DIVISOR`
 - Owned companies (36 slots)

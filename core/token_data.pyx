@@ -24,7 +24,7 @@ Active-entity selectors (active_player / active_corp / active_company
 in TURN_OFFSETS) are surfaced as ``is_selected`` scalar flags on each
 entity's own token, not as standalone one-hot tokens.
 
-Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 92 = max width,
+Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 95 = max width,
 currently pinned by the Corp token):
 
   Every token starts with attn_mask (1), a 0/1 scalar that marks whether
@@ -32,13 +32,21 @@ currently pinned by the Corp token):
                 MarketInfo, FI, and GlobalInfo are always visible; phase
                 information rows are visible only in their matching phase.
 
-  Player (59):  attn_mask (1) + is_selected (1) + turn_order onehot (5) +
+  Relational summary scalars sit immediately before the relational tail
+  on corp / player / FI tokens. The relational tail (multihots and
+  one-hots) is dropped on the model side in favour of Graphormer-style
+  attention biases; the summary scalars stay in the projection so the
+  trunk has a direct aggregate view (count, totals) of the same data.
+
+  Player (62):  attn_mask (1) + is_selected (1) + turn_order onehot (5) +
                 has_passed (1) +
                 cash (1) + net_worth (1) + liquidity (1) + income (1) +
                 auction_high_bidder (1) + auction_starter (1) +
-                round_trips (1) + relational tail: owned_shares (8) +
-                owned_companies (36)
-  Corp   (92):  attn_mask (1) + is_selected (1) + active (1) +
+                round_trips (1) + owned_shares (8) +
+                relational summary: num_owned_companies (1) +
+                num_presidencies (1) + total_owned_shares (1) +
+                relational tail: owned_companies (36)
+  Corp   (95):  attn_mask (1) + is_selected (1) + active (1) +
                 in_receivership (1) +
                 passed_acq_offer (1) + unissued/issued/bank shares (3) +
                 price_index onehot (27) + share_price (1) +
@@ -47,8 +55,10 @@ currently pinned by the Corp token):
                 (1) + coo_cost (1) + ability_income (1) +
                 acq_offer_corp (1) + dividend_remaining (1) +
                 issue_remaining (1) + ipo_remaining (1) +
-                buy_impact (1) + sell_impact (1) + relational tail:
-                president_id onehot (5) +
+                buy_impact (1) + sell_impact (1) +
+                relational summary: num_operational_companies (1) +
+                num_acq_pile_companies (1) + num_total_companies (1) +
+                relational tail: president_id onehot (5) +
                 owned_companies (36). The
                 ``active`` slot still means "corp is floated / operational"
                 (matches ``corp_is_active``); the decision-flow selector is
@@ -72,7 +82,9 @@ currently pinned by the Corp token):
                 company's star tier — the exclusion is publicly
                 observable then; setting it unconditionally would leak
                 setup randomness.
-  FI      (39): attn_mask (1) + cash + income + owned_companies (36)
+  FI      (40): attn_mask (1) + cash + income +
+                relational summary: num_owned_companies (1) +
+                relational tail: owned_companies (36)
   MarketInfo (55): attn_mask (1) + static market-space prices normalized by
                 SHARE_PRICE_DIVISOR ($0..$75 / 75) (27) + per-space
                 availability flags (27). The prices half is constant
@@ -198,6 +210,14 @@ DEF ROUNDTRIP_LIMIT = 2            # share buy+sell limit per corp per turn
 # Normalization constant for the invest token's consecutive_passes slot.
 # Matches the max training player count (5).
 DEF CONSECUTIVE_PASSES_DIVISOR = 5.0
+
+# Relational-summary divisors. Soft empirical caps rather than hard
+# upper bounds — ownership counts can in principle exceed 10, but game
+# logs show that's vanishingly rare; saturating slightly past the
+# divisor is fine.
+DEF OWNED_COMPANIES_DIVISOR = 10.0    # corp / player / FI owned-company counts
+DEF TOTAL_SHARES_DIVISOR    = 20.0    # player aggregate shares across all corps
+DEF PRESIDENCIES_DIVISOR    = 8.0     # = NUM_CORPS, hard cap on player presidencies
 
 
 # =============================================================================
@@ -450,20 +470,28 @@ cdef void _fill_player_token(
     int num_players,
 ) noexcept nogil:
     # Feature offsets within the player token. ``OFF_IS_SELECTED`` is set iff
-    # this player is the current active_player selector.
-    cdef int OFF_ATTN_MASK    = 0
-    cdef int OFF_IS_SELECTED  = 1
-    cdef int OFF_TURN_ORDER   = 2    # 5 slots
-    cdef int OFF_HAS_PASSED   = 7
-    cdef int OFF_CASH         = 8
-    cdef int OFF_NET_WORTH    = 9
-    cdef int OFF_LIQUIDITY    = 10
-    cdef int OFF_INCOME       = 11
-    cdef int OFF_AUC_HIGH     = 12
-    cdef int OFF_AUC_STARTER  = 13
-    cdef int OFF_ROUND_TRIPS  = 14
-    cdef int OFF_SHARES       = 15   # 8 slots
-    cdef int OFF_COMPANIES    = 23   # 36 slots
+    # this player is the current active_player selector. The three
+    # OFF_NUM_*/OFF_TOTAL_* slots are relational-summary scalars: aggregate
+    # views of the relational-tail multihots, kept in the projection so the
+    # trunk doesn't have to learn to count via attention.
+    cdef int OFF_ATTN_MASK         = 0
+    cdef int OFF_IS_SELECTED       = 1
+    cdef int OFF_TURN_ORDER        = 2    # 5 slots
+    cdef int OFF_HAS_PASSED        = 7
+    cdef int OFF_CASH              = 8
+    cdef int OFF_NET_WORTH         = 9
+    cdef int OFF_LIQUIDITY         = 10
+    cdef int OFF_INCOME            = 11
+    cdef int OFF_AUC_HIGH          = 12
+    cdef int OFF_AUC_STARTER       = 13
+    cdef int OFF_ROUND_TRIPS       = 14
+    cdef int OFF_SHARES            = 15   # 8 slots
+    # --- relational summary ---
+    cdef int OFF_NUM_COMPANIES     = 23
+    cdef int OFF_NUM_PRESIDENCIES  = 24
+    cdef int OFF_TOTAL_SHARES      = 25
+    # --- relational tail ---
+    cdef int OFF_COMPANIES         = 26   # 36 slots
 
     cdef int player_base = LAYOUT.players_offset + player_id * PLAYER_FIELDS.size
     cdef int turn_order = <int>state._data[player_base + PLAYER_FIELDS.turn_order]
@@ -472,10 +500,12 @@ cdef void _fill_player_token(
     cdef int net_worth = <int>state._data[player_base + PLAYER_FIELDS.net_worth]
     cdef int liquidity = <int>state._data[player_base + PLAYER_FIELDS.liquidity]
     cdef int income = <int>state._data[player_base + PLAYER_FIELDS.income]
-    cdef int c, shares, buys, sells, roundtrip_flag
+    cdef int c, shares, buys, sells, roundtrip_flag, total_shares
     cdef int phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
     cdef int high_bidder
     cdef int starter
+    cdef int num_companies_owned
+    cdef int num_presidencies
 
     assert 0 <= player_id < MAX_MODEL_PLAYERS, \
         f"_fill_player_token: player_id {player_id} out of range"
@@ -512,25 +542,41 @@ cdef void _fill_player_token(
         if starter == player_id:
             buffer[tok, OFF_AUC_STARTER] = 1.0
 
-    # Per-corp: shares and the aggregated round-trip flag.
+    # Per-corp: shares, the aggregated round-trip flag, and total-shares /
+    # presidency aggregates. Presidency count mirrors the gating used by
+    # the corp-token's president one-hot (active && !receivership) so the
+    # scalar matches the relational-tail signal.
     roundtrip_flag = 0
+    total_shares = 0
+    num_presidencies = 0
     for c in range(NUM_CORPS):
         shares = <int>state._data[player_base + PLAYER_FIELDS.owned_shares + c]
         buys = <int>state._data[player_base + PLAYER_FIELDS.share_buys + c]
         sells = <int>state._data[player_base + PLAYER_FIELDS.share_sells + c]
 
         buffer[tok, OFF_SHARES + c] = <float>shares / SHARE_DIVISOR
+        total_shares += shares
 
         # Round-trip threshold: once the player hits the buy+sell cap on
         # any corp, any further buy/sell in that corp is illegal this turn.
         if buys >= ROUNDTRIP_LIMIT or sells >= ROUNDTRIP_LIMIT:
             roundtrip_flag = 1
 
-    buffer[tok, OFF_ROUND_TRIPS] = 1.0 if roundtrip_flag else 0.0
+        if (
+            corp_is_active(state, c)
+            and not corp_is_in_receivership(state, c)
+            and corp_president_id(state, c) == player_id
+        ):
+            num_presidencies += 1
 
-    # Owned companies (36 flags)
+    buffer[tok, OFF_ROUND_TRIPS] = 1.0 if roundtrip_flag else 0.0
+    buffer[tok, OFF_TOTAL_SHARES] = <float>total_shares / TOTAL_SHARES_DIVISOR
+    buffer[tok, OFF_NUM_PRESIDENCIES] = <float>num_presidencies / PRESIDENCIES_DIVISOR
+
+    # Owned companies (36 flags) + count.
     cdef int comp_loc
     cdef int comp_owner
+    num_companies_owned = 0
     for c in range(NUM_COMPANIES):
         comp_loc = company_location(state, c)
         if comp_loc != <int>LOC_PLAYER:
@@ -538,6 +584,8 @@ cdef void _fill_player_token(
         comp_owner = company_owner_id(state, c)
         if comp_owner == player_id:
             buffer[tok, OFF_COMPANIES + c] = 1.0
+            num_companies_owned += 1
+    buffer[tok, OFF_NUM_COMPANIES] = <float>num_companies_owned / OWNED_COMPANIES_DIVISOR
 
     # Active-player selector flag.
     cdef int active_player = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
@@ -566,36 +614,42 @@ cdef void _fill_corp_token(
     # Corp identity is inferred from row order and added by the model as
     # ``corp_id_embed``. Relational fields are grouped at the end for
     # model-side replacement.
-    cdef int OFF_ATTN_MASK     = 0
-    cdef int OFF_IS_SELECTED   = 1
-    cdef int OFF_ACTIVE        = 2
-    cdef int OFF_IN_RECV       = 3
-    cdef int OFF_PASSED_ACQ    = 4
-    cdef int OFF_UNISSUED      = 5
-    cdef int OFF_ISSUED        = 6
-    cdef int OFF_BANK          = 7
-    cdef int OFF_PRICE_IDX     = 8    # 27 slots
-    cdef int OFF_SHARE_PRICE   = 35
-    cdef int OFF_PENDING_MOVE  = 36
-    cdef int OFF_CASH          = 37
-    cdef int OFF_ACQ_PROCEEDS  = 38
-    cdef int OFF_INCOME        = 39
-    cdef int OFF_STARS         = 40
-    cdef int OFF_RAW_REVENUE   = 41
-    cdef int OFF_SYNERGY       = 42
-    cdef int OFF_COO_COST      = 43
-    cdef int OFF_ABILITY       = 44
-    cdef int OFF_ACQ_OFFER     = 45
-    cdef int OFF_DIV_REMAIN    = 46
-    cdef int OFF_ISSUE_REMAIN  = 47
-    cdef int OFF_IPO_REMAIN    = 48
-    cdef int OFF_BUY_IMPACT    = 49
-    cdef int OFF_SELL_IMPACT   = 50
-    cdef int OFF_PRESIDENT     = 51   # 5 slots
-    cdef int OFF_COMPANIES     = 56   # 36 slots
+    cdef int OFF_ATTN_MASK         = 0
+    cdef int OFF_IS_SELECTED       = 1
+    cdef int OFF_ACTIVE            = 2
+    cdef int OFF_IN_RECV           = 3
+    cdef int OFF_PASSED_ACQ        = 4
+    cdef int OFF_UNISSUED          = 5
+    cdef int OFF_ISSUED            = 6
+    cdef int OFF_BANK              = 7
+    cdef int OFF_PRICE_IDX         = 8    # 27 slots
+    cdef int OFF_SHARE_PRICE       = 35
+    cdef int OFF_PENDING_MOVE      = 36
+    cdef int OFF_CASH              = 37
+    cdef int OFF_ACQ_PROCEEDS      = 38
+    cdef int OFF_INCOME            = 39
+    cdef int OFF_STARS             = 40
+    cdef int OFF_RAW_REVENUE       = 41
+    cdef int OFF_SYNERGY           = 42
+    cdef int OFF_COO_COST          = 43
+    cdef int OFF_ABILITY           = 44
+    cdef int OFF_ACQ_OFFER         = 45
+    cdef int OFF_DIV_REMAIN        = 46
+    cdef int OFF_ISSUE_REMAIN      = 47
+    cdef int OFF_IPO_REMAIN        = 48
+    cdef int OFF_BUY_IMPACT        = 49
+    cdef int OFF_SELL_IMPACT       = 50
+    # --- relational summary ---
+    cdef int OFF_NUM_OPERATIONAL   = 51
+    cdef int OFF_NUM_ACQ_PILE      = 52
+    cdef int OFF_NUM_TOTAL         = 53
+    # --- relational tail ---
+    cdef int OFF_PRESIDENT         = 54   # 5 slots
+    cdef int OFF_COMPANIES         = 59   # 36 slots
 
     cdef bint active = corp_is_active(state, corp_id)
     cdef int price_idx, president, company_id, current_idx, new_idx, delta
+    cdef int num_operational, num_acq_pile
     cdef int phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
     cdef int active_corp = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_corp]
     cdef int offer_corp
@@ -639,12 +693,28 @@ cdef void _fill_corp_token(
                 f"_fill_corp_token: president {president} out of range for active corp {corp_id}"
             buffer[tok, OFF_PRESIDENT + president] = 1.0
 
-        # Owned companies (36 flags — owned OR in acquisition pile)
+        # Owned companies (36 flags — owned OR in acquisition pile) plus
+        # the relational-summary aggregate counts. Active-only: inactive /
+        # pre-float corps own nothing, so the slots stay at 0 (matches the
+        # rest of the active-gated fields above).
+        num_operational = 0
+        num_acq_pile = 0
         for company_id in range(NUM_COMPANIES):
             if corp_owns_company(state, corp_id, company_id):
                 buffer[tok, OFF_COMPANIES + company_id] = 1.0
+                num_operational += 1
             elif corp_has_acquisition_company(state, corp_id, company_id):
                 buffer[tok, OFF_COMPANIES + company_id] = 1.0
+                num_acq_pile += 1
+        buffer[tok, OFF_NUM_OPERATIONAL] = (
+            <float>num_operational / OWNED_COMPANIES_DIVISOR
+        )
+        buffer[tok, OFF_NUM_ACQ_PILE] = (
+            <float>num_acq_pile / OWNED_COMPANIES_DIVISOR
+        )
+        buffer[tok, OFF_NUM_TOTAL] = (
+            <float>(num_operational + num_acq_pile) / OWNED_COMPANIES_DIVISOR
+        )
 
     if phase == <int>GamePhases.PHASE_ACQ_OFFER:
         offer_corp = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.acq_offer_corp]
@@ -811,14 +881,18 @@ cdef void _fill_fi_token(
     float[:, ::1] buffer,
     int tok,
 ) noexcept nogil:
-    cdef int OFF_ATTN_MASK = 0
-    cdef int OFF_CASH      = 1
-    cdef int OFF_INCOME    = 2
-    cdef int OFF_COMPANIES = 3   # 36 slots
+    cdef int OFF_ATTN_MASK     = 0
+    cdef int OFF_CASH          = 1
+    cdef int OFF_INCOME        = 2
+    # --- relational summary ---
+    cdef int OFF_NUM_COMPANIES = 3
+    # --- relational tail ---
+    cdef int OFF_COMPANIES     = 4   # 36 slots
 
     cdef int cash = <int>state._data[LAYOUT.fi_offset + FI_OFFSETS.cash]
     cdef int income = <int>state._data[LAYOUT.fi_offset + FI_OFFSETS.income]
     cdef int c
+    cdef int num_companies_owned = 0
 
     buffer[tok, OFF_ATTN_MASK] = 1.0
     buffer[tok, OFF_CASH] = <float>cash / CASH_DIVISOR
@@ -827,6 +901,10 @@ cdef void _fill_fi_token(
     for c in range(NUM_COMPANIES):
         if company_location(state, c) == <int>LOC_FI:
             buffer[tok, OFF_COMPANIES + c] = 1.0
+            num_companies_owned += 1
+    buffer[tok, OFF_NUM_COMPANIES] = (
+        <float>num_companies_owned / OWNED_COMPANIES_DIVISOR
+    )
 
 
 # =============================================================================

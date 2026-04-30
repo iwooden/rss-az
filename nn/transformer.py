@@ -103,13 +103,16 @@ _COMPANY_LOW_PRICE_FEATURE_OFFSET = 1
 # Raw token offsets where relation/reference tails begin. The engine still
 # emits these fields for compatibility and diagnostics, but the model ignores
 # them in token projection now that relation matrices feed attention directly.
+# Aggregate "relational summary" scalars (owned-company counts, presidency
+# count, total shares) sit immediately before each rel-tail start, so they
+# stay in the projection while the multihots they summarize are dropped.
 _COMPANY_REL_TAIL_START = 14
-_FI_REL_TAIL_START = 3
-_CORP_REL_TAIL_START = 51
+_FI_REL_TAIL_START = 4
+_CORP_REL_TAIL_START = 54
 # Player share amounts are scalar quantities, not just relation presence:
 # keep OFF_SHARES (8 slots) in projected token features and drop only the
 # owned-company relation tail.
-_PLAYER_REL_TAIL_START = 23
+_PLAYER_REL_TAIL_START = 26
 
 
 def _phase_action_size(phase: DecisionPhase) -> int:

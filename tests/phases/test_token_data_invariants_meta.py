@@ -196,11 +196,14 @@ def corrupt_fi_cash(buf):
 def corrupt_fi_income(buf):
     buf[FI_TOK, 2] = 0.0                           # FI income = 5 initially
 
+def corrupt_fi_num_companies(buf):
+    buf[FI_TOK, 3] = 1.0                           # OFF_NUM_COMPANIES; FI owns nothing
+
 def corrupt_fi_owned(buf):
-    buf[FI_TOK, 3] = 1.0                           # FI owns nothing initially
+    buf[FI_TOK, 4] = 1.0                           # OFF_COMPANIES bitmap; FI owns nothing
 
 def corrupt_fi_tail(buf):
-    buf[FI_TOK, 3 + NUM_COMPANIES] = 1.0           # tail past bitmap
+    buf[FI_TOK, 4 + NUM_COMPANIES] = 1.0           # tail past bitmap
 
 # ---- GlobalInfo (phase + CoO + end_card + cards_remaining + num_players) -
 
@@ -261,7 +264,7 @@ def corrupt_corp_inactive_price_idx(buf):
 def corrupt_corp_is_selected(buf):
     buf[CORP_BASE_TOK + 0, 1] = 1.0                # active_corp=-1 so must be 0
 
-# The corp token pins TOKEN_DIM (TW_CORP=92 == TOKEN_DIM=92), so there is
+# The corp token pins TOKEN_DIM (TW_CORP=95 == TOKEN_DIM=95), so there is
 # no zero-padded tail past TW_CORP to corrupt. The conftest tail check
 # runs vacuously on the empty slice.
 
@@ -274,11 +277,11 @@ def corrupt_player_is_selected_wrong(buf):
     buf[PLAYER_BASE_TOK + 1, 1] = 1.0              # active_player=0 so player 1 must be 0
 
 def corrupt_player_tail(buf):
-    buf[PLAYER_BASE_TOK + 0, 59] = 1.0             # padding past TW_PLAYER must stay 0
+    buf[PLAYER_BASE_TOK + 0, 62] = 1.0             # padding past TW_PLAYER must stay 0
 
 
 def corrupt_inactive_corp_companies(buf):
-    buf[CORP_BASE_TOK + 0, 56] = 1.0               # inactive corp company bitmap must be 0
+    buf[CORP_BASE_TOK + 0, 59] = 1.0               # inactive corp company bitmap must be 0
 
 
 def corrupt_active_corp_pending_move(buf):
@@ -335,6 +338,7 @@ CASES = [
     (corrupt_company_tail,                    "tail beyond TW_COMPANY features"),
     (corrupt_fi_cash,                         r"FI token: cash"),
     (corrupt_fi_income,                       r"FI token: income"),
+    (corrupt_fi_num_companies,                r"FI token: num_owned_companies"),
     (corrupt_fi_owned,                        r"FI token: owned"),
     (corrupt_fi_tail,                         "tail beyond owned bitmap"),
     (corrupt_global_phase_onehot,             "Phase token"),

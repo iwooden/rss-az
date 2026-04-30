@@ -64,6 +64,10 @@ CARDS_REMAINING_DIVISOR = float(NUM_COMPANIES)
 CONSECUTIVE_PASSES_DIVISOR = 5.0
 AUCTION_OFFSET_DIVISOR = 15.0
 ACQ_OFFSET_DIVISOR = 51.0
+# Mirrors the relational-summary divisors in core/token_data.pyx.
+OWNED_COMPANIES_DIVISOR = 10.0
+TOTAL_SHARES_DIVISOR    = 20.0
+PRESIDENCIES_DIVISOR    = 8.0
 
 # Engine-phase display names used in headers and automated-phase history entries.
 PHASE_NAMES = {
@@ -146,7 +150,10 @@ def _token_field_labels(token_label: str) -> list[str]:
             + ["owner_fi"]
         )
     if token_label == "fi":
-        return ["attn_mask", "cash", "income"] + _field_names("owned_company", NUM_COMPANIES)
+        return (
+            ["attn_mask", "cash", "income", "num_owned_companies"]
+            + _field_names("owned_company", NUM_COMPANIES)
+        )
     if token_label == "global_info":
         return (
             ["attn_mask"]
@@ -204,6 +211,9 @@ def _token_field_labels(token_label: str) -> list[str]:
                 "ipo_remaining",
                 "buy_impact",
                 "sell_impact",
+                "num_operational_companies",
+                "num_acq_pile_companies",
+                "num_total_companies",
             ]
             + _field_names("president_id", NUM_PLAYER_SLOTS)
             + _field_names("owned_company", NUM_COMPANIES)
@@ -215,6 +225,7 @@ def _token_field_labels(token_label: str) -> list[str]:
             + ["has_passed", "cash", "net_worth", "liquidity", "income"]
             + ["auction_high_bidder", "auction_starter", "round_trips"]
             + _field_names("owned_share", NUM_CORPS)
+            + ["num_owned_companies", "num_presidencies", "total_owned_shares"]
             + _field_names("owned_company", NUM_COMPANIES)
         )
     raise ValueError(f"unknown token label: {token_label}")
@@ -258,7 +269,8 @@ def _denormalize_token_values(token_label: str, row: np.ndarray) -> list[int]:
             _round_values(row[:1])
             + _round_values(row[1:2], PY_CASH_DIVISOR)
             + _round_values(row[2:3], PY_ENTITY_INCOME_DIVISOR)
-            + _round_values(row[3:39])
+            + _round_values(row[3:4], OWNED_COMPANIES_DIVISOR)
+            + _round_values(row[4:40])
         )
     if token_label == "global_info":
         return (
@@ -316,8 +328,9 @@ def _denormalize_token_values(token_label: str, row: np.ndarray) -> list[int]:
             + _round_values(row[41:45], PY_ENTITY_INCOME_DIVISOR)
             + _round_values(row[45:49])
             + _round_values(row[49:51], PY_IMPACT_DIVISOR)
-            + _round_values(row[51:56])
-            + _round_values(row[56:92])
+            + _round_values(row[51:54], OWNED_COMPANIES_DIVISOR)
+            + _round_values(row[54:59])
+            + _round_values(row[59:95])
         )
     if token_label.startswith("player["):
         return (
@@ -327,7 +340,10 @@ def _denormalize_token_values(token_label: str, row: np.ndarray) -> list[int]:
             + _round_values(row[11:12], PY_ENTITY_INCOME_DIVISOR)
             + _round_values(row[12:15])
             + _round_values(row[15:23], PY_SHARE_DIVISOR)
-            + _round_values(row[23:59])
+            + _round_values(row[23:24], OWNED_COMPANIES_DIVISOR)
+            + _round_values(row[24:25], PRESIDENCIES_DIVISOR)
+            + _round_values(row[25:26], TOTAL_SHARES_DIVISOR)
+            + _round_values(row[26:62])
         )
     raise ValueError(f"unknown token label: {token_label}")
 
@@ -360,7 +376,10 @@ def _summarize_token_values(token_label: str, values: list[int]) -> str:
             f"owner_player={owner_player} owner_fi={values[27]}"
         )
     if token_label == "fi":
-        return f"attn={values[0]} cash={values[1]} income={values[2]} companies={_nonzero_indices(values[3:39])}"
+        return (
+            f"attn={values[0]} cash={values[1]} income={values[2]} "
+            f"num_companies={values[3]} companies={_nonzero_indices(values[4:40])}"
+        )
     if token_label == "global_info":
         phase_idx = _one_hot_index(values[1:12])
         coo = _one_hot_index(values[12:19])
@@ -404,7 +423,8 @@ def _summarize_token_values(token_label: str, values: list[int]) -> str:
             f"raw_revenue={values[41]} synergy={values[42]} coo_cost={values[43]} ability={values[44]} "
             f"offer_corp={values[45]} div_rem={values[46]} issue_rem={values[47]} ipo_rem={values[48]} "
             f"buy_impact={values[49]} sell_impact={values[50]} "
-            f"president={_one_hot_index(values[51:56])} companies={_nonzero_indices(values[56:92])} "
+            f"num_op={values[51]} num_acq={values[52]} num_total={values[53]} "
+            f"president={_one_hot_index(values[54:59])} companies={_nonzero_indices(values[59:95])} "
         )
     if token_label.startswith("player["):
         return (
@@ -412,7 +432,9 @@ def _summarize_token_values(token_label: str, values: list[int]) -> str:
             f"passed={values[7]} cash={values[8]} net_worth={values[9]} "
             f"liquidity={values[10]} income={values[11]} auc_high={values[12]} "
             f"auc_starter={values[13]} round_trip={values[14]} "
-            f"shares={_nonzero_map(values[15:23])} companies={_nonzero_indices(values[23:59])}"
+            f"shares={_nonzero_map(values[15:23])} "
+            f"num_companies={values[23]} num_pres={values[24]} total_shares={values[25]} "
+            f"companies={_nonzero_indices(values[26:62])}"
         )
     return str(values)
 
@@ -496,7 +518,7 @@ class TokenNormalizationAccumulator:
         ])
         for threshold in self.THRESHOLDS:
             offenders: list[tuple[float, str, str]] = []
-            for token_label, field_label, min_val, max_val, _avg in field_stats:
+            for token_label, field_label, min_val, max_val, _ in field_stats:
                 peak_abs = max(abs(min_val), abs(max_val))
                 if peak_abs > threshold:
                     offenders.append((peak_abs, token_label, field_label))
