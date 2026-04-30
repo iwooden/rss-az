@@ -559,17 +559,15 @@ class RSSTransformerNet(nn.Module):
         self.final_norm = nn.RMSNorm(d)
 
         # --- Actor-conditioned policy readouts ---
-        # Invest is actor-conditioned: active-player query projections are
-        # scored against phase/action-specific company/corp key projections.
+        # Invest is actor-conditioned: one active-player query is scored
+        # against phase/action-specific company/corp key projections.
         # The output layout stays pass, 36 companies, then interleaved
         # buy/sell logits for the 8 corps.
         dp = cfg.d_proj
         self.invest_pass_head = nn.Linear(d, 1)
-        self.invest_auction_actor_proj = nn.Linear(d, dp, bias=False)
+        self.invest_actor_proj = nn.Linear(d, dp, bias=False)
         self.invest_auction_company_proj = nn.Linear(d, dp, bias=False)
-        self.invest_buy_actor_proj = nn.Linear(d, dp, bias=False)
         self.invest_buy_corp_proj = nn.Linear(d, dp, bias=False)
-        self.invest_sell_actor_proj = nn.Linear(d, dp, bias=False)
         self.invest_sell_corp_proj = nn.Linear(d, dp, bias=False)
 
         self.closing_pass_head = nn.Linear(d, 1)
@@ -1016,24 +1014,21 @@ class RSSTransformerNet(nn.Module):
         """Build the Invest block: pass, company auction, interleaved buy/sell."""
         actor = ctx.active_player
         pass_logit = self.invest_pass_head(actor)
-        auction_company = self._actor_entity_logits(
-            actor,
-            ctx.company_tokens,
-            self.invest_auction_actor_proj,
-            self.invest_auction_company_proj,
+        query = self.invest_actor_proj(actor)
+        auction_company_keys = self.invest_auction_company_proj(ctx.company_tokens)
+        buy_corp_keys = self.invest_buy_corp_proj(ctx.corp_tokens)
+        sell_corp_keys = self.invest_sell_corp_proj(ctx.corp_tokens)
+        keys = torch.cat(
+            [auction_company_keys, buy_corp_keys, sell_corp_keys],
+            dim=1,
         )
-        buy_corp = self._actor_entity_logits(
-            actor,
-            ctx.corp_tokens,
-            self.invest_buy_actor_proj,
-            self.invest_buy_corp_proj,
-        )
-        sell_corp = self._actor_entity_logits(
-            actor,
-            ctx.corp_tokens,
-            self.invest_sell_actor_proj,
-            self.invest_sell_corp_proj,
-        )
+        logits = torch.bmm(keys, query.unsqueeze(-1)).squeeze(-1)
+        logits = logits / math.sqrt(self.cfg.d_proj)
+        company_stop = ctx.company_tokens.shape[1]
+        corp_stop = company_stop + ctx.corp_tokens.shape[1]
+        auction_company = logits[:, :company_stop]
+        buy_corp = logits[:, company_stop:corp_stop]
+        sell_corp = logits[:, corp_stop:]
         corp_trade = torch.stack((buy_corp, sell_corp), dim=-1).flatten(1)
         return pass_logit, auction_company, corp_trade
 
@@ -1654,9 +1649,10 @@ if __name__ == "__main__":
     )
     policy_modules: list[nn.Module] = [
         model.invest_pass_head,
-        model.invest_auction_actor_proj, model.invest_auction_company_proj,
-        model.invest_buy_actor_proj, model.invest_buy_corp_proj,
-        model.invest_sell_actor_proj, model.invest_sell_corp_proj,
+        model.invest_actor_proj,
+        model.invest_auction_company_proj,
+        model.invest_buy_corp_proj,
+        model.invest_sell_corp_proj,
         model.closing_pass_head,
         model.closing_actor_proj, model.closing_company_proj,
         model.acq_select_company_actor_proj, model.acq_select_company_company_proj,
