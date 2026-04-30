@@ -81,6 +81,12 @@ class TrainingConfig:
     # --- Inference ---
     eval_dtype: str | None = None  # None = no autocast; "bfloat16" or "float16"
 
+    # --- Model ---
+    # Price-like policy slots use fixed Fourier features for smoothness plus
+    # scaled per-slot residual embeddings for slot identity.
+    price_slot_fourier_bands: int = 4
+    price_slot_residual_scale: float = 1.0
+
     # --- Self-Play ---
     games_per_epoch: int = 500
     num_simulations: int = 800
@@ -211,6 +217,16 @@ class TrainingConfig:
             raise ValueError(
                 f"eval_dtype must be None, 'bfloat16', or 'float16', "
                 f"got {self.eval_dtype!r}"
+            )
+        if self.price_slot_fourier_bands < 0:
+            raise ValueError(
+                "price_slot_fourier_bands must be >= 0, "
+                f"got {self.price_slot_fourier_bands}"
+            )
+        if self.price_slot_residual_scale < 0.0:
+            raise ValueError(
+                "price_slot_residual_scale must be >= 0, "
+                f"got {self.price_slot_residual_scale}"
             )
 
         # MCTS fields

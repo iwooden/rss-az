@@ -229,6 +229,11 @@ class TrainingLogger:
         table.add_row("Games/epoch", f"{config.games_per_epoch:,}")
         table.add_row("Training steps/epoch", f"{config.training_steps_per_epoch:,}")
         table.add_row("Batch size", str(config.batch_size))
+        table.add_row(
+            "Price slot keys",
+            f"Fourier bands={config.price_slot_fourier_bands}, "
+            f"residual scale={config.price_slot_residual_scale:g}",
+        )
         decay_end = config.lr_decay_end_epoch or config.num_epochs
         lr_desc = (
             f"{config.learning_rate:.1e} \u2192 {config.lr_min:.1e} "

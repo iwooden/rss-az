@@ -58,7 +58,11 @@ def _load_model(cp_path: Path, device: torch.device) -> tuple[torch.nn.Module, T
     """Load model from checkpoint. Returns (model, config, epoch)."""
     cp = load_checkpoint(cp_path, device)
     config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
-    model = create_model(num_players=config.num_players).to(device)
+    model = create_model(
+        num_players=config.num_players,
+        price_slot_fourier_bands=config.price_slot_fourier_bands,
+        price_slot_residual_scale=config.price_slot_residual_scale,
+    ).to(device)
     model.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
     model.eval()
     epoch = int(cp.get("epoch", -1))  # type: ignore[arg-type]

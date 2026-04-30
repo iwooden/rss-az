@@ -156,11 +156,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "--eval-dtype", type=str, choices=["bfloat16", "float16"],
         help="Enable autocast for eval inference (default: disabled, fp32)",
     )
+    parser.add_argument(
+        "--price-slot-fourier-bands",
+        type=int,
+        help="Number of fixed Fourier bands for price-like policy slot keys",
+    )
+    parser.add_argument(
+        "--price-slot-residual-scale",
+        type=float,
+        help="Multiplier for residual per-slot embeddings in price-like policy heads",
+    )
     return parser
 
 
 _CLI_FIELDS = (
     "num_players", "eval_dtype",
+    "price_slot_fourier_bands", "price_slot_residual_scale",
     "games_per_epoch", "num_epochs", "training_steps_per_epoch",
     "num_simulations", "search_batch_size",
     "mcts_sims_start", "mcts_sims_end", "mcts_ramp_start_epoch", "mcts_ramp_end_epoch",
@@ -453,7 +464,11 @@ def main() -> None:
         print("  Restored RNG state from checkpoint")
 
     # --- Model ---
-    model = create_model(num_players=config.num_players).to(device)
+    model = create_model(
+        num_players=config.num_players,
+        price_slot_fourier_bands=config.price_slot_fourier_bands,
+        price_slot_residual_scale=config.price_slot_residual_scale,
+    ).to(device)
     param_count = sum(p.numel() for p in model.parameters())
 
     # --- Resume: restore model weights (before compile + Trainer creation) ---

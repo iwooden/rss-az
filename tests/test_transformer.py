@@ -15,7 +15,7 @@ from nn.transformer import (
     TransformerConfig,
     build_action_lut,
 )
-from core.data import DecisionPhase, GameConstants, PHASE_ACTION_SIZES
+from core.data import ALL_PAR_PRICES, DecisionPhase, GameConstants, PHASE_ACTION_SIZES
 from core.state import GameState
 from core.token_data import TokenDataSize, TokenWidth, get_num_tokens, get_token_data
 
@@ -597,6 +597,85 @@ def test_masked_tokens_do_not_affect_visible_trunk_outputs(
 
 def test_policy_layout_matches_phase_action_sizes(model: RSSTransformerNet) -> None:
     model._validate_policy_layout()
+
+
+def test_price_slot_key_heads_use_fourier_widths_and_residual_embeddings(
+    model: RSSTransformerNet,
+) -> None:
+    bands = model.cfg.price_slot_fourier_bands
+    scalar_width = 1 + 2 * bands
+    pair_width = 2 * scalar_width
+
+    assert model.dividend_amount_proj.in_features == scalar_width
+    assert model.bid_offset_proj.in_features == pair_width
+    assert model.acq_price_offset_proj.in_features == pair_width
+    assert model.par_price_proj.in_features == pair_width
+
+    assert model.bid_offset_embed.num_embeddings == int(GameConstants.AUCTION_CAP)
+    assert model.dividend_amount_embed.num_embeddings == int(
+        PHASE_ACTION_SIZES[int(DecisionPhase.DPHASE_DIVIDENDS)]
+    )
+    assert model.acq_price_offset_embed.num_embeddings == int(
+        PHASE_ACTION_SIZES[int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)]
+    )
+    assert model.par_price_embed.num_embeddings == int(
+        PHASE_ACTION_SIZES[int(DecisionPhase.DPHASE_PAR)]
+    )
+
+
+def test_price_slot_static_features_match_action_semantics(
+    model: RSSTransformerNet,
+) -> None:
+    assert model._dividend_amount_features[0, 0, 0].item() == pytest.approx(0.0)
+    assert model._dividend_amount_features[0, -1, 0].item() == pytest.approx(1.0)
+
+    expected_par = torch.tensor(
+        [
+            [idx / (len(ALL_PAR_PRICES) - 1), price / max(ALL_PAR_PRICES)]
+            for idx, price in enumerate(ALL_PAR_PRICES)
+        ],
+        dtype=model._par_price_features.dtype,
+    )
+    assert torch.allclose(model._par_price_features, expected_par)
+
+
+def test_slot_fourier_features_keep_raw_scalars_first(model: RSSTransformerNet) -> None:
+    features = torch.tensor([[[0.25, 0.5]]], dtype=torch.float32)
+    encoded = model._slot_fourier_features(features)
+
+    expected_width = features.shape[-1] * (1 + 2 * model.cfg.price_slot_fourier_bands)
+    assert tuple(encoded.shape) == (1, 1, expected_width)
+    assert torch.allclose(encoded[..., : features.shape[-1]], features)
+
+
+def test_price_slot_residual_scale_is_configured_not_learned() -> None:
+    cfg = TransformerConfig(
+        num_players=NUM_PLAYERS,
+        d_model=48,
+        num_heads=3,
+        num_layers=1,
+        ff_mult=2.0,
+        price_slot_residual_scale=0.5,
+    )
+    model = RSSTransformerNet(cfg)
+    assert "price_slot_residual_scale" not in dict(model.named_parameters())
+
+    keys = torch.zeros(2, int(GameConstants.AUCTION_CAP), cfg.d_proj)
+    actual = model._with_price_slot_residual(keys, model.bid_offset_embed)
+    expected = 0.5 * model.bid_offset_embed.weight.unsqueeze(0).expand_as(keys)
+    assert torch.allclose(actual, expected)
+
+    zero_cfg = TransformerConfig(
+        num_players=NUM_PLAYERS,
+        d_model=48,
+        num_heads=3,
+        num_layers=1,
+        ff_mult=2.0,
+        price_slot_residual_scale=0.0,
+    )
+    zero_model = RSSTransformerNet(zero_cfg)
+    untouched = zero_model._with_price_slot_residual(keys, zero_model.bid_offset_embed)
+    assert torch.equal(untouched, keys)
 
 
 def test_projection_widths_consume_declared_token_features(model: RSSTransformerNet) -> None:
