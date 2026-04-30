@@ -1683,6 +1683,19 @@ class RSSTransformerNet(nn.Module):
         # positive or negative head/layer-specific biases from zero.
         nn.init.zeros_(self.relation_bias_mult)
 
+        # Zero-init pass-head weights so the pass logit starts at exactly 0,
+        # matching the mean of the action-key logits. With trunc_normal(0.02)
+        # and the action path's /sqrt(dp) scaling, an unzeroed pass head has
+        # ~3.6x the action-logit stdev and biases softmax toward pass at init.
+        for pass_head in (
+            self.invest_pass_head,
+            self.bid_pass_head,
+            self.acq_select_corp_pass_head,
+            self.closing_pass_head,
+            self.ipo_pass_head,
+        ):
+            nn.init.zeros_(pass_head.weight)
+
         # Zero-init phase modulation so each block starts as identity while
         # branch projections keep normal init and can feed gradients to gates.
         for block in self.blocks:
