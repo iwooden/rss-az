@@ -14,7 +14,8 @@ Communication uses shared memory (torch tensors with share_memory_()):
       relation_coords
                  : uint8   (W, B, MAX_ATTENTION_RELATION_EDGES, 3)
                     — sparse (relation_id, query_token, key_token) triplets.
-                    The server materializes dense relation planes on-device.
+                    The model builds per-layer attention bias directly from
+                    these sparse coordinates.
 
   Server → Worker (outputs — dense over unified slots, softmaxed on GPU)
       priors  : float32 (W, B, UNIFIED_LOGIT_DIM)  — legal slots sum to 1
@@ -291,9 +292,9 @@ class SharedEvalBuffers:
         self._legal_mask = torch.zeros(
             num_workers, batch_size, self.unified_dim, dtype=torch.uint8,
         ).share_memory_()
-        # Sparse Graphormer-style directed relation coordinates. The model
-        # still consumes dense planes; eval servers materialize those on the
-        # device to avoid transferring mostly-zero relation matrices.
+        # Sparse Graphormer-style directed relation coordinates. The eval
+        # model consumes these directly and builds dense SDPA bias tensors
+        # per layer, avoiding dense relation planes on the IPC/server path.
         self._relation_coords = torch.zeros(
             num_workers, batch_size,
             self.max_relation_edges, self.relation_coord_width,
@@ -598,7 +599,8 @@ def _eval_server_serve(
                     dtype=torch.float16,
                 )
                 dummy_rel = torch.zeros(
-                    warmup_n, shared_bufs.num_relations, num_tokens, num_tokens,
+                    warmup_n, shared_bufs.max_relation_edges,
+                    shared_bufs.relation_coord_width,
                     dtype=torch.uint8, device=device,
                 )
                 # Build one legal mask per phase so every phase's slots get
@@ -649,7 +651,6 @@ def _eval_server_serve(
         alloc_batch, num_tokens, token_dim, dtype=torch.float16, device=device,
     )
 
-    relation_count = shared_bufs.num_relations
     max_relation_edges = shared_bufs.max_relation_edges
     relation_coord_width = shared_bufs.relation_coord_width
     relation_coord_row_bytes = max_relation_edges * relation_coord_width
@@ -669,22 +670,6 @@ def _eval_server_serve(
         alloc_batch, max_relation_edges, relation_coord_width,
         dtype=torch.uint8, device=device,
     )
-    gpu_rel = torch.empty(
-        alloc_batch, relation_count, num_tokens, num_tokens,
-        dtype=torch.uint8, device=device,
-    )
-    gpu_rel_flat = gpu_rel.reshape(-1)
-    relation_flat_idx = torch.empty(
-        alloc_batch, max_relation_edges, dtype=torch.long, device=device,
-    )
-    relation_flat_idx_flat = relation_flat_idx.reshape(-1)
-    relation_tmp_idx = torch.empty_like(relation_flat_idx)
-    relation_batch_offsets = (
-        torch.arange(alloc_batch, dtype=torch.long, device=device)
-        * (relation_count * num_tokens * num_tokens)
-    ).reshape(alloc_batch, 1)
-    relation_sentinel_flat = relation_batch_offsets.reshape(-1).contiguous()
-
     # Shared-memory mask gather stays uint8, but bucketed launches use a
     # preallocated bool tensor at the model call site so the GPU-visible
     # invocation shape is static apart from the chosen bucket size.
@@ -891,20 +876,6 @@ def _eval_server_serve(
             gpu_mask[actual_n:launch_n].zero_()
             gpu_mask_bool[actual_n:launch_n].zero_()
 
-        _materialize_relation_coords_(
-            dense_rel=gpu_rel,
-            dense_rel_flat=gpu_rel_flat,
-            relation_coords=gpu_rel_coord,
-            flat_idx=relation_flat_idx,
-            flat_idx_flat=relation_flat_idx_flat,
-            tmp_idx=relation_tmp_idx,
-            batch_offsets=relation_batch_offsets,
-            sentinel_flat=relation_sentinel_flat,
-            actual_n=actual_n,
-            launch_n=launch_n,
-            num_tokens=num_tokens,
-        )
-
         if batch_shape_mode == "bucketed":
             gpu_mask_bool[:launch_n].copy_(gpu_mask[:launch_n], non_blocking=True)
             mask_batch = gpu_mask_bool[:launch_n]
@@ -916,7 +887,7 @@ def _eval_server_serve(
             # serve loop). The model sees ``launch_n`` rows, but only the first
             # ``actual_n`` rows contain real gathered work and only those rows
             # are copied back to shared memory.
-            logits, values = model(gpu_s_batch, mask_batch, gpu_rel[:launch_n])
+            logits, values = model(gpu_s_batch, mask_batch, gpu_rel_coord[:launch_n])
             gpu_priors[:actual_n] = logits[:actual_n].softmax(dim=1).to(torch.float32)
             gpu_val[:actual_n] = values[:actual_n].to(torch.float32)
 

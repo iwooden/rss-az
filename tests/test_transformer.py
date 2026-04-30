@@ -7,7 +7,12 @@ import pytest
 import torch
 
 from core.actions import get_decision_phase_py
-from core.attention_relations import NUM_ATTENTION_RELATIONS, AttentionRelation
+from core.attention_relations import (
+    ATTENTION_RELATION_COORD_WIDTH,
+    MAX_ATTENTION_RELATION_EDGES,
+    NUM_ATTENTION_RELATIONS,
+    AttentionRelation,
+)
 from nn.transformer import (
     UNIFIED_LOGIT_DIM,
     RSSTransformerNet,
@@ -62,6 +67,20 @@ def _zero_relations(
         model.cfg.num_tokens,
         model.cfg.num_tokens,
         dtype=dtype,
+        device=device,
+    )
+
+
+def _zero_relation_coords(
+    batch_size: int,
+    *,
+    device: torch.device | None = None,
+) -> torch.Tensor:
+    return torch.zeros(
+        batch_size,
+        MAX_ATTENTION_RELATION_EDGES,
+        ATTENTION_RELATION_COORD_WIDTH,
+        dtype=torch.uint8,
         device=device,
     )
 
@@ -150,7 +169,7 @@ def test_forward_rejects_wrong_relation_dtype(model: RSSTransformerNet, valid_in
     x, legal_mask = valid_inputs
     relations = _zero_relations(model, x.shape[0], dtype=torch.float32)
 
-    with pytest.raises(AssertionError, match="relations must be bool or uint8"):
+    with pytest.raises(AssertionError, match="dense relation planes must be bool or uint8"):
         model(x, legal_mask, relations)
 
 
@@ -212,6 +231,74 @@ def test_relation_attention_bias_combines_planes_per_layer_and_head() -> None:
     assert bias[0, 0, 2, 3].item() == pytest.approx(2.5)
     assert bias[0, 2, 4, 5].item() == pytest.approx(-1.25)
     assert bias[0, 1].abs().sum().item() == pytest.approx(0.0)
+
+
+def test_sparse_relation_attention_bias_matches_dense_planes_with_duplicates() -> None:
+    model = RSSTransformerNet(
+        TransformerConfig(
+            num_players=NUM_PLAYERS,
+            d_model=48,
+            num_heads=3,
+            num_layers=2,
+            ff_mult=2.0,
+        )
+    )
+    cfg = model.cfg
+    relation_a = int(AttentionRelation.CORP_OWNS_COMPANY)
+    relation_b = int(AttentionRelation.PLAYER_OWNS_COMPANY)
+    relation_flags = torch.zeros(
+        1,
+        NUM_ATTENTION_RELATIONS,
+        cfg.num_tokens,
+        cfg.num_tokens,
+    )
+    relation_flags[0, relation_a, 2, 3] = 1.0
+    relation_flags[0, relation_b, 2, 3] = 1.0
+    relation_flags[0, relation_a, 4, 5] = 1.0
+    relation_coords = _zero_relation_coords(1)
+    relation_coords[0, 0] = torch.tensor([relation_a, 2, 3], dtype=torch.uint8)
+    relation_coords[0, 1] = torch.tensor([relation_b, 2, 3], dtype=torch.uint8)
+    relation_coords[0, 2] = torch.tensor([relation_a, 4, 5], dtype=torch.uint8)
+    ref = torch.empty(1, cfg.num_tokens, cfg.d_model)
+
+    with torch.no_grad():
+        model.relation_bias_mult.zero_()
+        model.relation_bias_mult[1, 0, relation_a] = 2.5
+        model.relation_bias_mult[1, 0, relation_b] = 0.75
+        model.relation_bias_mult[1, 2, relation_a] = -1.25
+
+    dense_bias = model._relation_attention_bias(relation_flags, 1, ref)
+    sparse_ctx = model._prepare_sparse_relation_context(relation_coords)
+    sparse_bias = model._sparse_relation_attention_bias(sparse_ctx, 1, ref)
+
+    assert torch.allclose(sparse_bias, dense_bias)
+    assert sparse_bias[0, 0, 2, 3].item() == pytest.approx(3.25)
+    assert sparse_bias[0, 2, 4, 5].item() == pytest.approx(-1.25)
+
+
+def test_forward_accepts_sparse_relation_coords(
+    attention_mask_model: RSSTransformerNet,
+    valid_inputs: tuple[torch.Tensor, torch.Tensor],
+) -> None:
+    model = attention_mask_model
+    x, legal_mask = valid_inputs
+    relation_id = int(AttentionRelation.CORP_OWNS_COMPANY)
+    dense_relations = _zero_relations(model, x.shape[0])
+    dense_relations[0, relation_id, 2, 3] = 1
+    dense_relations[1, relation_id, 4, 5] = 1
+    sparse_relations = _zero_relation_coords(x.shape[0])
+    sparse_relations[0, 0] = torch.tensor([relation_id, 2, 3], dtype=torch.uint8)
+    sparse_relations[1, 0] = torch.tensor([relation_id, 4, 5], dtype=torch.uint8)
+
+    with torch.no_grad():
+        model.relation_bias_mult.zero_()
+        model.relation_bias_mult[:, :, relation_id] = 0.5
+
+    logits_with_dense, values_with_dense = model(x, legal_mask, dense_relations)
+    logits_with_sparse, values_with_sparse = model(x, legal_mask, sparse_relations)
+
+    assert torch.allclose(logits_with_sparse, logits_with_dense)
+    assert torch.allclose(values_with_sparse, values_with_dense)
 
 
 def test_phase_ids_use_global_info_decision_phase_onehot(model: RSSTransformerNet) -> None:
