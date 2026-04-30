@@ -73,10 +73,10 @@ currently pinned by the Corp token):
                 LOC_CORP and LOC_CORP_ACQ set owner_corp, LOC_PLAYER sets
                 owner_player, and LOC_FI sets owner_fi. Unowned locations
                 (AUCTION / REVEALED / REMOVED / etc.) leave all three
-                owner groups zero. ``low_high_diff`` is the ACQ_SELECT_PRICE
-                offset count (``high - low + 1``), the same quantity
-                the price head conditions on, normalized by
-                PRICE_RANGE_DIVISOR (max is 51 for CDG). ``at_removed``
+                owner groups zero. ``low_high_diff`` is the 0-indexed
+                maximum legal ACQ_SELECT_PRICE offset (``high - low``), the
+                same quantity the price head conditions on, normalized by
+                PRICE_RANGE_DIVISOR (max is 50 for CDG). ``at_removed``
                 is 1 for LOC_REMOVED, and additionally 1 for
                 LOC_EXCLUDED once the CoO has advanced past the
                 company's star tier — the exclusion is publicly
@@ -792,11 +792,12 @@ cdef void _fill_company_token(
     buffer[tok, OFF_LOW_PRICE] = <float>COMPANY_LOW_PRICE[company_id] / COMPANY_PRICE_DIVISOR
     buffer[tok, OFF_FACE_VALUE] = <float>COMPANY_FACE_VALUE[company_id] / COMPANY_PRICE_DIVISOR
     buffer[tok, OFF_HIGH_PRICE] = <float>COMPANY_HIGH_PRICE[company_id] / COMPANY_PRICE_DIVISOR
-    # low_high_diff: count of valid ACQ_SELECT_PRICE offsets for this company
-    # (high - low + 1). Matches the ``max_off`` ceiling the acq-price head
-    # conditions on. Max 51 (CDG: 80 - 30 + 1).
+    # low_high_diff: 0-indexed maximum legal ACQ_SELECT_PRICE offset for this
+    # company (high - low). Matches the ``max_off`` ceiling the acq-price head
+    # conditions on. Max 50 (CDG: 80 - 30), normalized by PRICE_RANGE_DIVISOR
+    # (50.0) so the field ranges in [0, 1].
     buffer[tok, OFF_LOW_HIGH_DIFF] = (
-        <float>(COMPANY_HIGH_PRICE[company_id] - COMPANY_LOW_PRICE[company_id] + 1)
+        <float>(COMPANY_HIGH_PRICE[company_id] - COMPANY_LOW_PRICE[company_id])
         / PRICE_RANGE_DIVISOR
     )
     buffer[tok, OFF_BASE_INCOME] = <float>COMPANY_INCOME[company_id] / COMPANY_INCOME_DIVISOR
@@ -1180,9 +1181,10 @@ cdef void _fill_acq_price_info_token(
     already on the corp / company / active-entity / company-location
     tokens and reaches the price head via attention. The three slots
     here carry only what can't be read off those tokens directly:
-      * max_offset     — ACQ price-offset count for the target, same as
-                         the company token's ``low_high_diff`` field
-                         ((high - low + 1), normalized by PRICE_RANGE_DIVISOR).
+      * max_offset     — 0-indexed maximum legal ACQ price offset for the
+                         target, same as the company token's ``low_high_diff``
+                         field ((high - low), normalized by
+                         PRICE_RANGE_DIVISOR (50.0)).
       * fi_flag        — 1 if the target company is FI-owned, else 0.
                          A hard discontinuity for the head (FI sale is a
                          single fixed-price action, no offset to pick).
@@ -1216,7 +1218,7 @@ cdef void _fill_acq_price_info_token(
     )
 
     buffer[tok, OFF_MAX_OFFSET] = (
-        <float>(high_price - low_price + 1) / PRICE_RANGE_DIVISOR
+        <float>(high_price - low_price) / PRICE_RANGE_DIVISOR
     )
     if company_location(state, active_company) == <int>LOC_FI:
         buffer[tok, OFF_FI_FLAG] = 1.0

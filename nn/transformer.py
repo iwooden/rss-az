@@ -126,24 +126,6 @@ def _fourier_feature_width(input_width: int, num_bands: int) -> int:
     return input_width * (1 + 2 * num_bands)
 
 
-def _fourier_features(features: torch.Tensor, num_bands: int) -> torch.Tensor:
-    """Expand normalized scalar slot features with fixed Fourier bands.
-
-    The raw features stay first so the key projection can still learn monotone
-    price/offset effects directly; sin/cos bands add slot-distinguishing
-    high-frequency structure without making every slot fully independent.
-    """
-    if num_bands == 0:
-        return features
-    bands = torch.pow(
-        features.new_tensor(2.0),
-        torch.arange(num_bands, device=features.device, dtype=features.dtype),
-    )
-    angles = features.unsqueeze(-1) * bands * (2.0 * math.pi)
-    sincos = torch.stack((torch.sin(angles), torch.cos(angles)), dim=-1)
-    return torch.cat([features, sincos.flatten(start_dim=-3)], dim=-1)
-
-
 def build_action_lut() -> torch.Tensor:
     """Static (NUM_PHASES, MAX_PHASE_ACTION_SIZE) int64 LUT mapping each
     phase's phase-local action id to a slot in the unified logit tensor.
@@ -370,6 +352,7 @@ class RSSTransformerNet(nn.Module):
     _acq_price_offset_features: torch.Tensor
     _issue_action_features: torch.Tensor
     _acq_offer_action_features: torch.Tensor
+    _fourier_band_freqs: torch.Tensor
 
     def __init__(self, cfg: TransformerConfig) -> None:
         super().__init__()
@@ -568,14 +551,21 @@ class RSSTransformerNet(nn.Module):
             par_price_features,
             persistent=False,
         )
-        acq_price_offsets = torch.arange(
-            _phase_action_size(DecisionPhase.DPHASE_ACQ_SELECT_PRICE),
-            dtype=torch.float32,
-        ).view(1, _phase_action_size(DecisionPhase.DPHASE_ACQ_SELECT_PRICE), 1)
+        # Two per-slot channels for ACQ_SELECT_PRICE:
+        #   [0] slot_position_norm = offset / (K-1)        — 0-indexed [0,1],
+        #       feeds the Fourier slot-key projection (matches BID/PAR/DIVIDENDS)
+        #       AND pairs with the engine's ``max_offset = (high - low) / 50``
+        #       (also 0-indexed, divisor 50 = K-1) so
+        #       ``max_offset - slot_position_norm`` is a clean "options
+        #       remaining" feature.
+        #   [1] offset_price_delta = offset / 80           — added to the
+        #       active company's normalized ``low_price`` to recover the
+        #       candidate price in the same /COMPANY_PRICE_DIVISOR units.
+        K = _phase_action_size(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)
+        acq_price_offsets = torch.arange(K, dtype=torch.float32).view(1, K, 1)
         acq_price_offset_features = torch.cat(
             [
-                (acq_price_offsets + 1.0)
-                / float(_phase_action_size(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)),
+                acq_price_offsets / float(K - 1),
                 acq_price_offsets / float(PY_COMPANY_PRICE_DIVISOR),
             ],
             dim=-1,
@@ -601,6 +591,17 @@ class RSSTransformerNet(nn.Module):
         self.register_buffer(
             "_acq_offer_action_features",
             acq_offer_action_features,
+            persistent=False,
+        )
+        # Pre-multiplied Fourier band frequencies for price-slot identity:
+        # ``2^k * 2π`` for k in [0, price_slot_fourier_bands). Empty when bands=0.
+        fourier_band_freqs = torch.pow(
+            torch.tensor(2.0),
+            torch.arange(cfg.price_slot_fourier_bands, dtype=torch.float32),
+        ) * (2.0 * math.pi)
+        self.register_buffer(
+            "_fourier_band_freqs",
+            fourier_band_freqs,
             persistent=False,
         )
 
@@ -694,10 +695,11 @@ class RSSTransformerNet(nn.Module):
         # pick the acquiring corp, pick the target company
         # (``_acq_select_company_logits``), pick the price (below).
         # SELECT_PRICE is actor-conditioned with generated price-offset keys.
-        # Slot identity is a Fourier projection of [offset_count_norm,
-        # candidate_price_norm], where candidate_price_norm = low_price + offset
-        # in /COMPANY_PRICE_DIVISOR units, plus a scaled residual per-offset
-        # embedding. Per-slot action features carry the remaining context.
+        # Slot identity is a Fourier projection of [slot_position_norm,
+        # candidate_price_norm], where slot_position_norm = offset / (K-1) and
+        # candidate_price_norm = (low_price + offset) / COMPANY_PRICE_DIVISOR,
+        # plus a scaled residual per-offset embedding. Per-slot action features
+        # carry the remaining context.
         self.acq_price_actor_proj = nn.Linear(d, dp, bias=False)
         self.acq_price_info_proj = nn.Linear(2 * d, dp)
         self.acq_price_offset_proj = nn.Linear(slot_fourier_2, dp, bias=False)
@@ -746,8 +748,18 @@ class RSSTransformerNet(nn.Module):
         return tensor.to(device=ref.device, dtype=ref.dtype)
 
     def _slot_fourier_features(self, features: torch.Tensor) -> torch.Tensor:
-        """Apply the configured fixed Fourier expansion to slot scalars."""
-        return _fourier_features(features, self.cfg.price_slot_fourier_bands)
+        """Apply the configured fixed Fourier expansion to slot scalars.
+
+        Raw features stay first so the key projection can still learn monotone
+        price/offset effects directly; sin/cos bands add slot-distinguishing
+        high-frequency structure without making every slot fully independent.
+        """
+        if self.cfg.price_slot_fourier_bands == 0:
+            return features
+        bands = self._match_dtype_device(self._fourier_band_freqs, features)
+        angles = features.unsqueeze(-1) * bands
+        sincos = torch.stack((torch.sin(angles), torch.cos(angles)), dim=-1)
+        return torch.cat([features, sincos.flatten(start_dim=-3)], dim=-1)
 
     def _with_price_slot_residual(
         self,
@@ -760,7 +772,7 @@ class RSSTransformerNet(nn.Module):
             return keys
         batch_size, num_actions, _ = keys.shape
         residual = self._match_dtype_device(embedding.weight, keys)
-        residual = residual.unsqueeze(0).expand(batch_size, num_actions, self.cfg.d_proj)
+        residual = residual.unsqueeze(0).expand(batch_size, num_actions, -1)
         return keys + scale * residual
 
     def _project_company_tokens(self, x: torch.Tensor) -> torch.Tensor:
@@ -1412,21 +1424,22 @@ class RSSTransformerNet(nn.Module):
     def _acq_price_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Build ACQ_SELECT_PRICE logits from active-corp query and offset keys.
 
-        Slot identity is ``acq_price_offset_proj(fourier([offset_count_norm,
+        Slot identity is ``acq_price_offset_proj(fourier([slot_position_norm,
         candidate_price_norm]))`` plus a scaled residual per-offset embedding,
-        where ``candidate_price_norm = low_price + offset`` in
-        /COMPANY_PRICE_DIVISOR units. The candidate price moves out of the
-        action-feature MLP into the slot key, so action features only carry
-        auction-context (remaining offsets, max offset, fi flag, total
-        synergies).
+        where ``slot_position_norm = offset / (K-1)`` is the 0-indexed slot
+        index in [0, 1] (matching BID/PAR/DIVIDENDS) and
+        ``candidate_price_norm = (low_price + offset) / COMPANY_PRICE_DIVISOR``.
+        ``slot_position_norm`` doubles as the term subtracted from the
+        engine's ``max_offset = (high - low) / 50`` to produce a clean
+        "options remaining" action feature; both share divisor 50 = K-1.
         """
         batch_size = ctx.tokens.shape[0]
         num_offsets = int(self._acq_price_offset_features.shape[1])
         offset_features = self._match_dtype_device(
             self._acq_price_offset_features,
             ctx.tokens,
-        ).expand(batch_size, num_offsets, 2)
-        offset_count_norm = offset_features[:, :, 0:1]
+        ).expand(batch_size, num_offsets, -1)
+        slot_position_norm = offset_features[:, :, 0:1]
         offset_price_delta = offset_features[:, :, 1:2]
 
         raw_acq_price = self._match_dtype_device(
@@ -1437,10 +1450,10 @@ class RSSTransformerNet(nn.Module):
             ],
             ctx.tokens,
         )
-        max_offset = raw_acq_price[:, 0:1].unsqueeze(1).expand_as(offset_count_norm)
-        fi_flag = raw_acq_price[:, 1:2].unsqueeze(1).expand_as(offset_count_norm)
+        max_offset = raw_acq_price[:, 0:1].unsqueeze(1).expand_as(slot_position_norm)
+        fi_flag = raw_acq_price[:, 1:2].unsqueeze(1).expand_as(slot_position_norm)
         total_synergies = (
-            raw_acq_price[:, 2:3].unsqueeze(1).expand_as(offset_count_norm)
+            raw_acq_price[:, 2:3].unsqueeze(1).expand_as(slot_position_norm)
         )
 
         raw_company_features = self._match_dtype_device(
@@ -1468,9 +1481,9 @@ class RSSTransformerNet(nn.Module):
             _COMPANY_LOW_PRICE_FEATURE_OFFSET:_COMPANY_LOW_PRICE_FEATURE_OFFSET + 1,
         ]
         candidate_price = (
-            low_price.unsqueeze(1).expand_as(offset_count_norm) + offset_price_delta
+            low_price.unsqueeze(1).expand_as(slot_position_norm) + offset_price_delta
         )
-        remaining_after_offset = max_offset - offset_count_norm
+        remaining_after_offset = max_offset - slot_position_norm
         action_features = torch.cat(
             [
                 remaining_after_offset,
@@ -1482,7 +1495,7 @@ class RSSTransformerNet(nn.Module):
         )
         acq_price_keys = self.acq_price_offset_proj(
             self._slot_fourier_features(
-                torch.cat([offset_count_norm, candidate_price], dim=-1)
+                torch.cat([slot_position_norm, candidate_price], dim=-1)
             )
         )
         acq_price_keys = self._with_price_slot_residual(

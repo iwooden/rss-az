@@ -652,7 +652,7 @@ _COMPANY_OFF = {
     "LOW_PRICE":      2,
     "FACE_VALUE":     3,
     "HIGH_PRICE":     4,
-    "LOW_HIGH_DIFF":  5,   # (high - low + 1) / PRICE_RANGE_DIVISOR (51.0)
+    "LOW_HIGH_DIFF":  5,   # (high - low) / PRICE_RANGE_DIVISOR (50.0)
     "BASE_INCOME":    6,
     "STARS":          7,
     "ADJ_INCOME":     8,
@@ -666,9 +666,9 @@ _COMPANY_OFF = {
     "OWNER_FI":       27,
 }
 # Denominator for the static company low/high price-range slot. Mirrors
-# core/data.pxd's PRICE_RANGE_DIVISOR (max offset count, CDG: 51). Not
-# exposed as PY_* because it is only used here.
-PY_PRICE_RANGE_DIVISOR = 51.0
+# core/data.pxd's PRICE_RANGE_DIVISOR (max possible offset value, CDG: 50).
+# Not exposed as PY_* because it is only used here.
+PY_PRICE_RANGE_DIVISOR = 50.0
 # Mirrors the relational-summary divisors in core/token_data.pyx. Same
 # rationale as PY_PRICE_RANGE_DIVISOR — test-local, no need to expose
 # from the Cython side.
@@ -1127,11 +1127,11 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
                       low, T_SCALE, f"{km}: low_price")
         _assert_close(buf[tok, _COMPANY_OFF["HIGH_PRICE"]] * PY_COMPANY_PRICE_DIVISOR,
                       high, T_SCALE, f"{km}: high_price")
-        # low_high_diff = (high - low + 1) / PRICE_RANGE_DIVISOR (CDG == 51).
-        # Matches the ACQ_SELECT_PRICE max-offset count the price head
-        # conditions on.
+        # low_high_diff = (high - low) / PRICE_RANGE_DIVISOR (CDG == 50).
+        # 0-indexed max legal ACQ_SELECT_PRICE offset, matching the
+        # ``max_off`` ceiling the price head conditions on.
         _assert_close(buf[tok, _COMPANY_OFF["LOW_HIGH_DIFF"]] * PY_PRICE_RANGE_DIVISOR,
-                      high - low + 1, T_SCALE, f"{km}: low_high_diff")
+                      high - low, T_SCALE, f"{km}: low_high_diff")
         _assert_close(buf[tok, _COMPANY_OFF["BASE_INCOME"]] * PY_COMPANY_INCOME_DIVISOR,
                       company.get_base_income(), T_SCALE, f"{km}: base_income")
         _assert_close(buf[tok, _COMPANY_OFF["STARS"]] * PY_COMPANY_STAR_DIVISOR,
@@ -1557,7 +1557,7 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
         low = COMPANIES[active_company].get_low_price()
         high = COMPANIES[active_company].get_high_price()
         _assert_close(buf[acq_price_info_tok, 1] * PY_PRICE_RANGE_DIVISOR,
-                      high - low + 1, T_SCALE,
+                      high - low, T_SCALE,
                       f"{apim}: max_offset")
         exp_fi = 1.0 if COMPANIES[active_company].get_location(state) == int(CompanyLocation.LOC_FI) else 0.0
         _assert_close(buf[acq_price_info_tok, 2], exp_fi, T_FLAG,

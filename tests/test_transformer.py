@@ -15,7 +15,13 @@ from nn.transformer import (
     TransformerConfig,
     build_action_lut,
 )
-from core.data import ALL_PAR_PRICES, DecisionPhase, GameConstants, PHASE_ACTION_SIZES
+from core.data import (
+    ALL_PAR_PRICES,
+    PY_COMPANY_PRICE_DIVISOR,
+    DecisionPhase,
+    GameConstants,
+    PHASE_ACTION_SIZES,
+)
 from core.state import GameState
 from core.token_data import TokenDataSize, TokenWidth, get_num_tokens, get_token_data
 
@@ -233,6 +239,7 @@ def test_phase_modulation_is_zero_initialized() -> None:
     cfg = model.cfg
 
     for block in model.blocks:
+        assert isinstance(block, TransformerBlock)
         assert isinstance(block.phase_mod, torch.nn.Embedding)
         assert block.phase_mod.num_embeddings == len(DecisionPhase)
         assert block.phase_mod.embedding_dim == 6 * cfg.d_model
@@ -637,6 +644,20 @@ def test_price_slot_static_features_match_action_semantics(
         dtype=model._par_price_features.dtype,
     )
     assert torch.allclose(model._par_price_features, expected_par)
+
+    # ACQ_SELECT_PRICE buffer carries two channels: 0-indexed slot position
+    # (feeds the Fourier slot key, matching BID/PAR/DIVIDENDS, AND pairs with
+    # engine-side ``max_offset = (high - low) / 50`` for ``remaining_after_offset``),
+    # and the price delta added to ``low_price`` to recover the candidate price.
+    K = int(PHASE_ACTION_SIZES[int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)])
+    expected_acq = torch.tensor(
+        [
+            [k / (K - 1), k / float(PY_COMPANY_PRICE_DIVISOR)]
+            for k in range(K)
+        ],
+        dtype=model._acq_price_offset_features.dtype,
+    ).view(1, K, 2)
+    assert torch.allclose(model._acq_price_offset_features, expected_acq)
 
 
 def test_slot_fourier_features_keep_raw_scalars_first(model: RSSTransformerNet) -> None:

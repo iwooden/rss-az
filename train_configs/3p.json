@@ -26,7 +26,7 @@
   "profile": true,
   "eval_dtype": "bfloat16",
   "price_slot_fourier_bands": 4,
-  "price_slot_residual_scale": 1.0,
+  "price_slot_residual_scale": 0.0,
   "optimizer": "adamw",
   "grad_clip": 0,
   "eval_min_batch_size": 8,

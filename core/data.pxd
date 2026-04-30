@@ -131,7 +131,7 @@ cdef extern from *:
     #define CORP_STAR_DIVISOR 40.0f
     #define MAX_ROUNDTRIPS 2.0f
     #define IMPACT_DIVISOR 5.0f
-    #define PRICE_RANGE_DIVISOR 51.0f
+    #define PRICE_RANGE_DIVISOR 50.0f
     """
     const float CASH_DIVISOR
     const float NET_WORTH_DIVISOR
