@@ -103,9 +103,10 @@ currently pinned by the Corp token):
                 during both PHASE_IPO and PHASE_PAR — the data is
                 identical across those two phases.
   AcqOff   (4): attn_mask (1) + offer_price_index + offer_price + fi_company
-  AcqPrice (4): attn_mask (1) + max_offset (ACQ offset count for target) +
-                fi_flag + total_synergies (marginal synergy income the active corp
-                would gain by adding the target company)
+  AcqPrice (4): attn_mask (1) + max_offset (0-indexed maximum legal ACQ
+                offset for target) + fi_flag + total_synergies (marginal
+                synergy income the active corp would gain by adding the
+                target company)
 
 All values normalized by divisors defined in ``core.data`` (compile-time
 floats inlined by the C compiler). Phase-specific tokens are zeroed out

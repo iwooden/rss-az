@@ -104,8 +104,8 @@ Company identity is inferred from row order.
 - Low price, normalized by `COMPANY_PRICE_DIVISOR`
 - Face value, normalized by `COMPANY_PRICE_DIVISOR`
 - High price, normalized by `COMPANY_PRICE_DIVISOR`
-- `low_high_diff`, normalized by `PRICE_RANGE_DIVISOR`. Count of valid
-  ACQ_SELECT_PRICE offsets (`high - low + 1`).
+- `low_high_diff`, normalized by `PRICE_RANGE_DIVISOR`. The 0-indexed maximum
+  legal ACQ_SELECT_PRICE offset (`high - low`).
 - Base income, normalized by `COMPANY_INCOME_DIVISOR`
 - Stars, normalized by `COMPANY_STAR_DIVISOR`
 - Adjusted income, normalized by `COMPANY_INCOME_DIVISOR`
@@ -216,7 +216,8 @@ Buy/sell invest impacts moved to Corp tokens.
 ### AcqPriceInfo Token (4)
 
 - `attn_mask`
-- `max_offset`, normalized by `PRICE_RANGE_DIVISOR`
+- `max_offset`, normalized by `PRICE_RANGE_DIVISOR`. The 0-indexed maximum
+  legal ACQ_SELECT_PRICE offset (`high - low`).
 - `fi_flag`. 1 if the target company is FI-owned.
 - `total_synergies`, normalized by `ENTITY_INCOME_DIVISOR`
 
