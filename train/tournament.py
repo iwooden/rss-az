@@ -60,6 +60,7 @@ def _load_model(cp_path: Path, device: torch.device) -> tuple[torch.nn.Module, T
     config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
     model = create_model(
         num_players=config.num_players,
+        phase_conditioning=config.phase_conditioning,
         price_slot_fourier_bands=config.price_slot_fourier_bands,
         price_slot_residual_scale=config.price_slot_residual_scale,
     ).to(device)

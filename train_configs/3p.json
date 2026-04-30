@@ -25,6 +25,7 @@
   "mcts_ramp_end_epoch": 400,
   "profile": true,
   "eval_dtype": "bfloat16",
+  "phase_conditioning": true,
   "price_slot_fourier_bands": 4,
   "price_slot_residual_scale": 0.0,
   "optimizer": "adamw",

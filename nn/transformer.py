@@ -181,6 +181,7 @@ class TransformerConfig:
     num_heads: int = 4
     num_layers: int = 15
     ff_mult: float = 3.0  # FFN inner dimension = ceil(ff_mult * d_model)
+    phase_conditioning: bool = True
     price_slot_fourier_bands: int = 4
     price_slot_residual_scale: float = 1.0
 
@@ -192,6 +193,9 @@ class TransformerConfig:
     def __post_init__(self) -> None:
         assert 3 <= self.num_players <= 5, f"num_players must be 3-5, got {self.num_players}"
         assert self.d_proj > 0, f"d_proj must be positive, got {self.d_proj}"
+        assert isinstance(self.phase_conditioning, bool), (
+            f"phase_conditioning must be bool, got {self.phase_conditioning!r}"
+        )
         assert self.price_slot_fourier_bands >= 0, (
             "price_slot_fourier_bands must be >= 0, "
             f"got {self.price_slot_fourier_bands}"
@@ -255,11 +259,19 @@ class TransformerBlock(nn.Module):
     and Inductor fuses it into a single Triton kernel per block.
     """
 
-    def __init__(self, d_model: int, num_heads: int, d_ff: int) -> None:
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        d_ff: int,
+        *,
+        phase_conditioning: bool = True,
+    ) -> None:
         super().__init__()
         assert d_model % num_heads == 0, (
             f"d_model {d_model} must be divisible by num_heads {num_heads}"
         )
+        self.phase_conditioning = phase_conditioning
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
         self.attn_norm = nn.RMSNorm(d_model)
@@ -275,9 +287,10 @@ class TransformerBlock(nn.Module):
         # Zero-initialized in RSSTransformerNet._init_weights, so scale/shift
         # starts inert and residual gates start closed. This gives the
         # adaLN-Zero identity start without a phase-independent bias shortcut.
-        self.phase_mod = nn.Embedding(
-            NUM_PHASES,
-            6 * d_model,
+        self.phase_mod: nn.Embedding | None = (
+            nn.Embedding(NUM_PHASES, 6 * d_model)
+            if phase_conditioning
+            else None
         )
 
     def forward(
@@ -285,21 +298,30 @@ class TransformerBlock(nn.Module):
         x: torch.Tensor,
         attn_mask: torch.Tensor,
         relation_bias: torch.Tensor,
-        phase_ids: torch.Tensor,
+        phase_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         h = self.attn_norm(x)
         B, N, D = h.shape
-        mod = self.phase_mod(phase_ids).to(device=h.device, dtype=h.dtype)
-        (
-            attn_scale,
-            attn_shift,
-            attn_resid_gate,
-            ffn_scale,
-            ffn_shift,
-            ffn_resid_gate,
-        ) = mod.chunk(6, dim=-1)
-
-        h = h * (1.0 + attn_scale[:, None, :]) + attn_shift[:, None, :]
+        phase_mod = self.phase_mod
+        attn_resid_gate: torch.Tensor | None = None
+        ffn_scale: torch.Tensor | None = None
+        ffn_shift: torch.Tensor | None = None
+        ffn_resid_gate: torch.Tensor | None = None
+        if phase_mod is not None:
+            if phase_ids is None:
+                raise AssertionError(
+                    "phase_ids are required when phase_conditioning is enabled"
+                )
+            mod = phase_mod(phase_ids).to(device=h.device, dtype=h.dtype)
+            (
+                attn_scale,
+                attn_shift,
+                attn_resid_gate,
+                ffn_scale,
+                ffn_shift,
+                ffn_resid_gate,
+            ) = mod.chunk(6, dim=-1)
+            h = h * (1.0 + attn_scale[:, None, :]) + attn_shift[:, None, :]
         qkv = self.qkv_proj(h).reshape(B, N, 3, self.num_heads, self.head_dim)
         # (3, B, heads, N, head_dim) so unbind(0) yields three
         # (B, heads, N, head_dim) tensors. The contiguous call gives Inductor's
@@ -314,11 +336,17 @@ class TransformerBlock(nn.Module):
         # (B, heads, N, head_dim) -> (B, N, D)
         attn_out = attn_out.transpose(1, 2).reshape(B, N, D)
         h = self.out_proj(attn_out)
-        x = x + attn_resid_gate[:, None, :] * h
+        if attn_resid_gate is not None:
+            x = x + attn_resid_gate[:, None, :] * h
+        else:
+            x = x + h
         h = self.ffn_norm(x)
-        h = h * (1.0 + ffn_scale[:, None, :]) + ffn_shift[:, None, :]
+        if ffn_scale is not None and ffn_shift is not None:
+            h = h * (1.0 + ffn_scale[:, None, :]) + ffn_shift[:, None, :]
         h = self.ffn_down(F.silu(self.ffn_gate(h)) * self.ffn_up(h))
-        return x + ffn_resid_gate[:, None, :] * h
+        if ffn_resid_gate is not None:
+            return x + ffn_resid_gate[:, None, :] * h
+        return x + h
 
 
 @dataclass(frozen=True)
@@ -607,7 +635,12 @@ class RSSTransformerNet(nn.Module):
 
         # --- Transformer trunk ---
         self.blocks = nn.ModuleList([
-            TransformerBlock(d, cfg.num_heads, math.ceil(cfg.ff_mult * cfg.d_model))
+            TransformerBlock(
+                d,
+                cfg.num_heads,
+                math.ceil(cfg.ff_mult * cfg.d_model),
+                phase_conditioning=cfg.phase_conditioning,
+            )
             for _ in range(cfg.num_layers)
         ])
         self.relation_bias_mult = nn.Parameter(torch.zeros(
@@ -1650,7 +1683,7 @@ class RSSTransformerNet(nn.Module):
             )
         tokens = self._project_tokens(x)
         attn_mask = self._attention_mask(x)
-        phase_ids = self._phase_ids(x)
+        phase_ids = self._phase_ids(x) if self.cfg.phase_conditioning else None
         relation_flags = relations.to(dtype=tokens.dtype)
 
         for layer_idx, block in enumerate(self.blocks):
@@ -1736,9 +1769,12 @@ class RSSTransformerNet(nn.Module):
         ``phase_var`` stays small, indicating adaLN is learning a phase-
         independent constant rather than per-phase modulation.
         """
+        if not self.cfg.phase_conditioning:
+            return {}
         scalars: dict[str, float] = {}
         for layer_idx, block in enumerate(self.blocks):
             assert isinstance(block, TransformerBlock)
+            assert block.phase_mod is not None
             weight = block.phase_mod.weight.detach()
             scalars[f"phase_mod/abs_mean/layer_{layer_idx}"] = weight.abs().mean().item()
             scalars[f"phase_mod/phase_var/layer_{layer_idx}"] = (
@@ -1795,7 +1831,8 @@ class RSSTransformerNet(nn.Module):
         # branch projections keep normal init and can feed gradients to gates.
         for block in self.blocks:
             assert isinstance(block, TransformerBlock)
-            nn.init.zeros_(block.phase_mod.weight)
+            if block.phase_mod is not None:
+                nn.init.zeros_(block.phase_mod.weight)
 
 
 # ---------------------------------------------------------------------------
@@ -1814,6 +1851,7 @@ if __name__ == "__main__":
     print(f"Transformer model: {cfg.num_players}p")
     print(f"  d_model={cfg.d_model}, d_proj={cfg.d_proj}, heads={cfg.num_heads}, "
           f"layers={cfg.num_layers}, d_ff={math.ceil(cfg.ff_mult * cfg.d_model)}")
+    print(f"  phase_conditioning={cfg.phase_conditioning}")
     print(f"  tokens={cfg.num_tokens}, token_dim={cfg.token_dim}")
     print(f"  Trainable parameters: {total:,}")
     print()
@@ -1849,7 +1887,8 @@ if __name__ == "__main__":
     phase_mod_params = 0
     for block in model.blocks:
         assert isinstance(block, TransformerBlock)
-        phase_mod_params += block.phase_mod.weight.numel()
+        if block.phase_mod is not None:
+            phase_mod_params += block.phase_mod.weight.numel()
     trunk_params = (
         sum(p.numel() for p in model.blocks.parameters())
         + sum(p.numel() for p in model.final_norm.parameters())

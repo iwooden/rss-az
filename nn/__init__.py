@@ -10,6 +10,7 @@ __all__ = ["create_model"]
 def create_model(
     num_players: int,
     *,
+    phase_conditioning: bool = True,
     price_slot_fourier_bands: int = 4,
     price_slot_residual_scale: float = 1.0,
 ) -> nn.Module:
@@ -17,8 +18,9 @@ def create_model(
 
     Post-refactor, a single transformer architecture serves every supported
     player count via ``TransformerConfig.num_players``. Price-slot key
-    hyperparameters are exposed here so training configs can sweep the
-    Fourier/residual slot-identity mix without editing model code.
+    hyperparameters are exposed here so training configs can sweep phase
+    conditioning and the Fourier/residual slot-identity mix without editing
+    model code.
 
     Args:
         num_players: Number of players, 3-5.
@@ -26,6 +28,7 @@ def create_model(
     return RSSTransformerNet(
         TransformerConfig(
             num_players=num_players,
+            phase_conditioning=phase_conditioning,
             price_slot_fourier_bands=price_slot_fourier_bands,
             price_slot_residual_scale=price_slot_residual_scale,
         )

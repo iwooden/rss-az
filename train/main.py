@@ -156,6 +156,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--eval-dtype", type=str, choices=["bfloat16", "float16"],
         help="Enable autocast for eval inference (default: disabled, fp32)",
     )
+    phase_group = parser.add_mutually_exclusive_group()
+    phase_group.add_argument(
+        "--phase-conditioning",
+        dest="phase_conditioning",
+        action="store_true",
+        default=None,
+        help="Enable per-block adaLN phase conditioning",
+    )
+    phase_group.add_argument(
+        "--no-phase-conditioning",
+        dest="phase_conditioning",
+        action="store_false",
+        help="Disable per-block adaLN phase conditioning",
+    )
     parser.add_argument(
         "--price-slot-fourier-bands",
         type=int,
@@ -170,7 +184,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 _CLI_FIELDS = (
-    "num_players", "eval_dtype",
+    "num_players", "eval_dtype", "phase_conditioning",
     "price_slot_fourier_bands", "price_slot_residual_scale",
     "games_per_epoch", "num_epochs", "training_steps_per_epoch",
     "num_simulations", "search_batch_size",
@@ -466,6 +480,7 @@ def main() -> None:
     # --- Model ---
     model = create_model(
         num_players=config.num_players,
+        phase_conditioning=config.phase_conditioning,
         price_slot_fourier_bands=config.price_slot_fourier_bands,
         price_slot_residual_scale=config.price_slot_residual_scale,
     ).to(device)

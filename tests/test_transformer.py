@@ -84,8 +84,10 @@ def attention_mask_model() -> RSSTransformerNet:
             torch.nn.init.trunc_normal_(block.out_proj.weight, std=0.02)
             torch.nn.init.trunc_normal_(block.ffn_down.weight, std=0.02)
             d_model = model.cfg.d_model
-            block.phase_mod.weight[:, 2 * d_model:3 * d_model] = 1.0
-            block.phase_mod.weight[:, 5 * d_model:6 * d_model] = 1.0
+            phase_mod = block.phase_mod
+            assert phase_mod is not None
+            phase_mod.weight[:, 2 * d_model:3 * d_model] = 1.0
+            phase_mod.weight[:, 5 * d_model:6 * d_model] = 1.0
     model.eval()
     return model
 
@@ -240,12 +242,52 @@ def test_phase_modulation_is_zero_initialized() -> None:
 
     for block in model.blocks:
         assert isinstance(block, TransformerBlock)
-        assert isinstance(block.phase_mod, torch.nn.Embedding)
-        assert block.phase_mod.num_embeddings == len(DecisionPhase)
-        assert block.phase_mod.embedding_dim == 6 * cfg.d_model
-        assert torch.count_nonzero(block.phase_mod.weight).item() == 0
+        phase_mod = block.phase_mod
+        assert phase_mod is not None
+        assert isinstance(phase_mod, torch.nn.Embedding)
+        assert phase_mod.num_embeddings == len(DecisionPhase)
+        assert phase_mod.embedding_dim == 6 * cfg.d_model
+        assert torch.count_nonzero(phase_mod.weight).item() == 0
         assert torch.count_nonzero(block.out_proj.weight).item() > 0
         assert torch.count_nonzero(block.ffn_down.weight).item() > 0
+
+
+def test_disabled_phase_conditioning_omits_phase_mod_and_skips_phase_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = RSSTransformerNet(
+        TransformerConfig(
+            num_players=NUM_PLAYERS,
+            d_model=48,
+            num_heads=3,
+            num_layers=2,
+            ff_mult=2.0,
+            phase_conditioning=False,
+        )
+    )
+    cfg = model.cfg
+
+    for block in model.blocks:
+        assert isinstance(block, TransformerBlock)
+        assert block.phase_mod is None
+    assert all("phase_mod" not in name for name, _ in model.named_parameters())
+    assert model.phase_mod_diagnostics() == {}
+
+    def fail_phase_ids(_x: torch.Tensor) -> torch.Tensor:
+        raise AssertionError("phase ids should not be read when conditioning is disabled")
+
+    monkeypatch.setattr(model, "_phase_ids", fail_phase_ids)
+    x = torch.randn(1, cfg.num_tokens, cfg.token_dim)
+    x[:, :, 0] = 1.0
+    lut = build_action_lut()
+    legal_mask = torch.zeros(1, U_DIM, dtype=torch.bool)
+    legal_mask[0, lut[0, : int(PHASE_ACTION_SIZES[0])]] = True
+    relations = _zero_relations(model, 1)
+
+    policy_logits, values = model(x, legal_mask, relations)
+
+    assert policy_logits.shape == (1, U_DIM)
+    assert values.shape == (1, NUM_PLAYERS)
 
 
 def test_zero_init_phase_modulation_preserves_block_outputs() -> None:
@@ -296,7 +338,9 @@ def test_nonzero_phase_modulation_changes_block_outputs() -> None:
         torch.nn.init.trunc_normal_(block.out_proj.weight, std=0.02)
         torch.nn.init.trunc_normal_(block.ffn_down.weight, std=0.02)
         d_model = model.cfg.d_model
-        block.phase_mod.weight[1, 2 * d_model:3 * d_model] = 1.0
+        phase_mod = block.phase_mod
+        assert phase_mod is not None
+        phase_mod.weight[1, 2 * d_model:3 * d_model] = 1.0
 
     cfg = model.cfg
     tokens = torch.randn(2, cfg.num_tokens, cfg.d_model)
@@ -326,7 +370,9 @@ def test_nonzero_relation_bias_changes_forward_outputs() -> None:
             assert isinstance(block, TransformerBlock)
             torch.nn.init.trunc_normal_(block.out_proj.weight, std=0.02)
             d_model = model.cfg.d_model
-            block.phase_mod.weight[0, 2 * d_model:3 * d_model] = 1.0
+            phase_mod = block.phase_mod
+            assert phase_mod is not None
+            phase_mod.weight[0, 2 * d_model:3 * d_model] = 1.0
         relation_id = int(AttentionRelation.PLAYER_OWNS_COMPANY)
         model.relation_bias_mult[0, :, relation_id] = 8.0
 

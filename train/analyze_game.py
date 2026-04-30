@@ -612,7 +612,10 @@ def main() -> None:
         assert 3 <= args.num_players <= 5, \
             f"--num-players must be in [3, 5], got {args.num_players}"
         config = TrainingConfig(num_players=args.num_players)
-        model = create_model(num_players=args.num_players).to(device)
+        model = create_model(
+            num_players=args.num_players,
+            phase_conditioning=config.phase_conditioning,
+        ).to(device)
         model.eval()
         print(f"Using freshly-initialized (untrained) model, num_players={args.num_players}, device={device}")
     else:
@@ -630,6 +633,7 @@ def main() -> None:
 
         model = create_model(
             num_players=config.num_players,
+            phase_conditioning=config.phase_conditioning,
             price_slot_fourier_bands=config.price_slot_fourier_bands,
             price_slot_residual_scale=config.price_slot_residual_scale,
         ).to(device)

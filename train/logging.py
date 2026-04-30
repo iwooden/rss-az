@@ -230,6 +230,10 @@ class TrainingLogger:
         table.add_row("Training steps/epoch", f"{config.training_steps_per_epoch:,}")
         table.add_row("Batch size", str(config.batch_size))
         table.add_row(
+            "Phase conditioning",
+            "adaLN enabled" if config.phase_conditioning else "disabled",
+        )
+        table.add_row(
             "Price slot keys",
             f"Fourier bands={config.price_slot_fourier_bands}, "
             f"residual scale={config.price_slot_residual_scale:g}",

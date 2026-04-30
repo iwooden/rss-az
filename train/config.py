@@ -82,6 +82,8 @@ class TrainingConfig:
     eval_dtype: str | None = None  # None = no autocast; "bfloat16" or "float16"
 
     # --- Model ---
+    # Per-block adaLN-Zero conditioning on the active decision phase.
+    phase_conditioning: bool = True
     # Price-like policy slots use fixed Fourier features for smoothness plus
     # scaled per-slot residual embeddings for slot identity.
     price_slot_fourier_bands: int = 4
@@ -217,6 +219,10 @@ class TrainingConfig:
             raise ValueError(
                 f"eval_dtype must be None, 'bfloat16', or 'float16', "
                 f"got {self.eval_dtype!r}"
+            )
+        if not isinstance(self.phase_conditioning, bool):
+            raise ValueError(
+                f"phase_conditioning must be bool, got {self.phase_conditioning!r}"
             )
         if self.price_slot_fourier_bands < 0:
             raise ValueError(

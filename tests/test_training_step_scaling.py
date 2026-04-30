@@ -44,3 +44,26 @@ def test_cli_overrides_training_steps_per_epoch() -> None:
     config.validate()
 
     assert config.training_steps_per_epoch == 2000
+
+
+def test_cli_overrides_phase_conditioning() -> None:
+    parser = _build_parser()
+
+    args = parser.parse_args(["--no-phase-conditioning"])
+    config = TrainingConfig()
+    _apply_overrides(config, args)
+    config.validate()
+    assert config.phase_conditioning is False
+
+    args = parser.parse_args(["--phase-conditioning"])
+    config = TrainingConfig(phase_conditioning=False)
+    _apply_overrides(config, args)
+    config.validate()
+    assert config.phase_conditioning is True
+
+
+def test_json_config_threads_phase_conditioning() -> None:
+    config = TrainingConfig.from_json('{"phase_conditioning": false}')
+
+    assert config.phase_conditioning is False
+    assert '"phase_conditioning": false' in config.to_json()
