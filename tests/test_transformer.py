@@ -339,6 +339,26 @@ def test_phase_modulation_is_zero_initialized() -> None:
         assert torch.count_nonzero(block.ffn_down.weight).item() > 0
 
 
+def test_transformer_trunk_linears_are_biasless() -> None:
+    model = RSSTransformerNet(
+        TransformerConfig(
+            num_players=NUM_PLAYERS,
+            d_model=48,
+            num_heads=3,
+            num_layers=2,
+            ff_mult=2.0,
+        )
+    )
+
+    for block in model.blocks:
+        assert isinstance(block, TransformerBlock)
+        assert block.qkv_proj.bias is None
+        assert block.out_proj.bias is None
+        assert block.ffn_gate.bias is None
+        assert block.ffn_up.bias is None
+        assert block.ffn_down.bias is None
+
+
 def test_disabled_phase_conditioning_omits_phase_mod_and_skips_phase_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -281,10 +281,11 @@ class TransformerBlock(nn.Module):
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
         self.attn_norm = nn.RMSNorm(d_model)
-        # Packed Q/K/V projection. Same parameter count as
-        # nn.MultiheadAttention's in_proj_weight/in_proj_bias.
-        self.qkv_proj = nn.Linear(d_model, 3 * d_model)
-        self.out_proj = nn.Linear(d_model, d_model)
+        # Packed Q/K/V projection. The trunk follows the modern RMSNorm +
+        # SwiGLU convention: projection matrices are biasless, while explicit
+        # conditioning/bias mechanisms live in phase_mod and relation_bias_mult.
+        self.qkv_proj = nn.Linear(d_model, 3 * d_model, bias=False)
+        self.out_proj = nn.Linear(d_model, d_model, bias=False)
         self.ffn_norm = nn.RMSNorm(d_model)
         self.ffn_gate = nn.Linear(d_model, d_ff, bias=False)
         self.ffn_up = nn.Linear(d_model, d_ff, bias=False)
