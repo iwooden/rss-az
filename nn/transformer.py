@@ -284,8 +284,8 @@ class TransformerBlock(nn.Module):
         # Packed Q/K/V projection. The trunk follows the modern RMSNorm +
         # SwiGLU convention: projection matrices are biasless, while explicit
         # conditioning/bias mechanisms live in phase_mod and relation_bias_mult.
-        self.qkv_proj = nn.Linear(d_model, 3 * d_model, bias=False)
-        self.out_proj = nn.Linear(d_model, d_model, bias=False)
+        self.qkv_proj = nn.Linear(d_model, 3 * d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
         self.ffn_norm = nn.RMSNorm(d_model)
         self.ffn_gate = nn.Linear(d_model, d_ff, bias=False)
         self.ffn_up = nn.Linear(d_model, d_ff, bias=False)
@@ -678,24 +678,24 @@ class RSSTransformerNet(nn.Module):
         slot_fourier_1 = _fourier_feature_width(1, cfg.price_slot_fourier_bands)
         slot_fourier_2 = _fourier_feature_width(2, cfg.price_slot_fourier_bands)
         self.invest_pass_head = nn.Linear(d, 1)
-        self.invest_actor_proj = nn.Linear(d, dp, bias=False)
-        self.invest_auction_company_proj = nn.Linear(d, dp, bias=False)
-        self.invest_buy_corp_proj = nn.Linear(d, dp, bias=False)
-        self.invest_sell_corp_proj = nn.Linear(d, dp, bias=False)
+        self.invest_actor_proj = nn.Linear(d, dp)
+        self.invest_auction_company_proj = nn.Linear(d, dp)
+        self.invest_buy_corp_proj = nn.Linear(d, dp)
+        self.invest_sell_corp_proj = nn.Linear(d, dp)
 
         self.closing_pass_head = nn.Linear(d, 1)
-        self.closing_actor_proj = nn.Linear(d, dp, bias=False)
-        self.closing_company_proj = nn.Linear(d, dp, bias=False)
-        self.acq_select_company_actor_proj = nn.Linear(d, dp, bias=False)
-        self.acq_select_company_company_proj = nn.Linear(d, dp, bias=False)
+        self.closing_actor_proj = nn.Linear(d, dp)
+        self.closing_company_proj = nn.Linear(d, dp)
+        self.acq_select_company_actor_proj = nn.Linear(d, dp)
+        self.acq_select_company_company_proj = nn.Linear(d, dp)
         self.acq_select_corp_pass_head = nn.Linear(d, 1)
-        self.acq_select_corp_actor_proj = nn.Linear(d, dp, bias=False)
-        self.acq_select_corp_corp_proj = nn.Linear(d, dp, bias=False)
+        self.acq_select_corp_actor_proj = nn.Linear(d, dp)
+        self.acq_select_corp_corp_proj = nn.Linear(d, dp)
         # IPO is actor-conditioned: active-player query, active-company/PAR
         # context, and one generated key per candidate corp.
         self.ipo_pass_head = nn.Linear(d, 1)
-        self.ipo_actor_proj = nn.Linear(d, dp, bias=False)
-        self.ipo_corp_proj = nn.Linear(d, dp, bias=False)
+        self.ipo_actor_proj = nn.Linear(d, dp)
+        self.ipo_corp_proj = nn.Linear(d, dp)
         self.ipo_context_proj = nn.Linear(2 * d, dp)
         self.ipo_key_mlp = nn.Sequential(
             nn.Linear(2 * dp, dp),
@@ -709,18 +709,18 @@ class RSSTransformerNet(nn.Module):
         # projection of normalized offset + candidate-bid price (face_value +
         # offset, /80), blended with a learned per-offset embedding.
         self.bid_pass_head = nn.Linear(d, 1)
-        self.bid_actor_proj = nn.Linear(d, dp, bias=False)
+        self.bid_actor_proj = nn.Linear(d, dp)
         self.bid_info_proj = nn.Linear(2 * d, dp)
-        self.bid_offset_proj = nn.Linear(slot_fourier_2, dp, bias=False)
+        self.bid_offset_proj = nn.Linear(slot_fourier_2, dp)
         self.bid_offset_embed = nn.Embedding(int(AUCTION_CAP), dp)
         self.bid_key_mlp = self._make_action_key_mlp(action_feature_width=3)
 
         # Generated action-key heads for phase-info-token decisions.
-        self.dividend_actor_proj = nn.Linear(d, dp, bias=False)
+        self.dividend_actor_proj = nn.Linear(d, dp)
         self.dividend_info_proj = nn.Linear(d, dp)
         # Slot identity is a Fourier projection of normalized amount, blended
         # with a learned per-amount embedding.
-        self.dividend_amount_proj = nn.Linear(slot_fourier_1, dp, bias=False)
+        self.dividend_amount_proj = nn.Linear(slot_fourier_1, dp)
         self.dividend_amount_embed = nn.Embedding(
             _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS),
             dp,
@@ -728,14 +728,14 @@ class RSSTransformerNet(nn.Module):
         # action_features now carry only the per-amount price-move impact;
         # normalized amount is consumed by ``dividend_amount_proj``.
         self.dividend_key_mlp = self._make_action_key_mlp(action_feature_width=1)
-        self.issue_actor_proj = nn.Linear(d, dp, bias=False)
+        self.issue_actor_proj = nn.Linear(d, dp)
         self.issue_info_proj = nn.Linear(d, dp)
         self.issue_action_embed = nn.Embedding(
             _phase_action_size(DecisionPhase.DPHASE_ISSUE),
             dp,
         )
         self.issue_key_mlp = self._make_action_key_mlp(action_feature_width=2)
-        self.acq_offer_actor_proj = nn.Linear(d, dp, bias=False)
+        self.acq_offer_actor_proj = nn.Linear(d, dp)
         self.acq_offer_info_proj = nn.Linear(2 * d, dp)
         self.acq_offer_action_embed = nn.Embedding(
             _phase_action_size(DecisionPhase.DPHASE_ACQ_OFFER),
@@ -752,9 +752,9 @@ class RSSTransformerNet(nn.Module):
         # candidate_price_norm = (low_price + offset) / COMPANY_PRICE_DIVISOR,
         # blended with a learned per-offset embedding. Per-slot action features
         # carry the remaining context.
-        self.acq_price_actor_proj = nn.Linear(d, dp, bias=False)
+        self.acq_price_actor_proj = nn.Linear(d, dp)
         self.acq_price_info_proj = nn.Linear(2 * d, dp)
-        self.acq_price_offset_proj = nn.Linear(slot_fourier_2, dp, bias=False)
+        self.acq_price_offset_proj = nn.Linear(slot_fourier_2, dp)
         self.acq_price_offset_embed = nn.Embedding(
             _phase_action_size(DecisionPhase.DPHASE_ACQ_SELECT_PRICE),
             dp,
@@ -766,9 +766,9 @@ class RSSTransformerNet(nn.Module):
         # per-action features come from the PAR token's price-specific tuples.
         # Slot identity is a Fourier projection of normalized index + actual
         # par price (max=37), blended with a learned per-par-index embedding.
-        self.par_actor_proj = nn.Linear(d, dp, bias=False)
+        self.par_actor_proj = nn.Linear(d, dp)
         self.par_info_proj = nn.Linear(3 * d, dp)
-        self.par_price_proj = nn.Linear(slot_fourier_2, dp, bias=False)
+        self.par_price_proj = nn.Linear(slot_fourier_2, dp)
         self.par_price_embed = nn.Embedding(
             _phase_action_size(DecisionPhase.DPHASE_PAR),
             dp,
