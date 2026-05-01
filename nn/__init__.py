@@ -4,8 +4,17 @@ from __future__ import annotations
 
 import torch.nn as nn
 
+from core.resnet_data import get_resnet_vector_size
 from core.token_data import TokenDataSize, get_num_tokens
-from nn.model_contract import ModelInputSpec, ModelKind, normalize_model_type
+from nn.model_contract import (
+    ModelInputSpec,
+    ModelKind,
+    canonical_player_for_relative,
+    normalize_model_type,
+    relative_slot_for_canonical,
+    rotate_values_to_relative,
+    unrotate_values_to_canonical,
+)
 from nn.resnet import RSSResNet, RSSResNetConfig
 from nn.transformer import RSSTransformerNet, TransformerConfig, UNIFIED_LOGIT_DIM
 
@@ -16,8 +25,12 @@ __all__ = [
     "RSSResNetConfig",
     "RSSTransformerNet",
     "TransformerConfig",
+    "canonical_player_for_relative",
     "create_model",
     "get_model_input_spec",
+    "relative_slot_for_canonical",
+    "rotate_values_to_relative",
+    "unrotate_values_to_canonical",
 ]
 
 
@@ -26,9 +39,7 @@ def _config_value(config: object, name: str, default: object) -> object:
 
 
 def _resnet_input_dim(num_players: int) -> int:
-    # Phase 1 bridge: until core.resnet_data lands, the ResNet can consume the
-    # existing token buffer flattened into a dense row.
-    return get_num_tokens(num_players) * int(TokenDataSize.TOKEN_DIM)
+    return get_resnet_vector_size(num_players)
 
 
 def get_model_input_spec(config: object) -> ModelInputSpec:

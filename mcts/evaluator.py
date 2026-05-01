@@ -2,10 +2,11 @@
 
 Fills token buffers from compact int16 game states via
 ``core.token_data.get_token_data`` plus relation-attention planes via
-``core.relations.get_relation_data``, runs NN inference, and returns sparse
-softmax priors over legal actions plus canonical-order values. No rotation —
-the transformer consumes non-rotated state and emits values in canonical
-player order directly.
+``core.relations.get_relation_data`` for transformer models or dense
+``core.resnet_data.get_resnet_data`` vectors for ResNet models, runs NN
+inference, and returns sparse softmax priors over legal actions plus
+canonical-order values. ResNet values are active-relative inside the model and
+are unrotated here before MCTS consumes them.
 """
 
 from __future__ import annotations
@@ -17,6 +18,12 @@ import torch
 
 from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.relations import get_relation_data, get_relation_data_batch
+from core.resnet_data import (
+    get_resnet_data,
+    get_resnet_data_batch,
+    get_resnet_vector_size,
+)
+from core.state import get_layout, get_turn_fields
 from core.token_data import (
     get_num_tokens,
     TokenDataSize,
@@ -29,6 +36,8 @@ from core.actions import (
 )
 from core.data import MAX_ACTION_SIZE
 from entities.player import PLAYERS
+from entities.turn import TURN
+from nn.model_contract import unrotate_values_to_canonical
 from nn.transformer import UNIFIED_LOGIT_DIM, build_action_lut
 
 TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
@@ -69,6 +78,18 @@ def fill_relation_buffer_batch(
 ) -> None:
     """Fill a ``(n, num_relations, num_tokens, num_tokens)`` relation buffer."""
     get_relation_data_batch(state_arrays, num_players, buf4d)
+
+
+def fill_resnet_buffer(state: Any, buf1d: np.ndarray) -> None:
+    """Fill one dense ResNet vector from a GameState."""
+    get_resnet_data(state, buf1d)
+
+
+def fill_resnet_buffer_batch(
+    state_arrays: list[np.ndarray], num_players: int, buf2d: np.ndarray,
+) -> None:
+    """Fill a ``(n, resnet_vector_dim)`` buffer from ``n`` state arrays."""
+    get_resnet_data_batch(state_arrays, num_players, buf2d)
 
 
 def compute_terminal_values(
@@ -138,9 +159,10 @@ class BaseEvaluator:
     """Shared state and post-processing for MCTS evaluators.
 
     Subclassed by NNEvaluator (local model inference) and
-    RemoteEvaluator (shared-memory IPC to eval server). Both speak
-    token buffers — compact int16 state in, sparse softmaxed priors +
-    canonical-order values out.
+    RemoteEvaluator (shared-memory IPC to eval server). Evaluators accept
+    compact int16 state and return sparse softmaxed priors plus canonical-order
+    values; the local evaluator chooses token/relation or ResNet-vector model
+    inputs from the model config.
     """
 
     def __init__(self, num_players: int, terminal_rank_weight: float = 0.5) -> None:
@@ -148,6 +170,9 @@ class BaseEvaluator:
         self.terminal_rank_weight = terminal_rank_weight
         self.num_tokens = get_num_tokens(num_players)
         self.token_dim = TOKEN_DIM
+        layout = get_layout(num_players)
+        turn_fields = get_turn_fields()
+        self._active_player_state_offset = layout.turn_offset + turn_fields.active_player
 
     def evaluate_terminal(self, state: Any) -> np.ndarray:
         """Compute terminal values from a game-over state.
@@ -168,16 +193,17 @@ class NNEvaluator(BaseEvaluator):
     """Wraps a neural network model for in-process MCTS leaf evaluation.
 
     Used for single-process tests and anything that doesn't go through
-    the shared-mem eval server. Fills a preallocated pinned-host token
-    buffer + ``(UNIFIED_LOGIT_DIM,)`` legal mask from compact state,
-    async-copies to the device, and runs inference. The model returns
-    dense ``(B, UNIFIED_LOGIT_DIM)`` logits with illegal slots at -1e9;
-    we softmax on-device then gather the per-leaf legal prior slice
-    using the same ``action_lut`` the mask was built from.
+    the shared-mem eval server. Fills preallocated pinned-host model input
+    buffers (transformer tokens/relations or ResNet dense vectors) plus a
+    ``(UNIFIED_LOGIT_DIM,)`` legal mask from compact state, async-copies to the
+    device, and runs inference. The model returns dense
+    ``(B, UNIFIED_LOGIT_DIM)`` logits with illegal slots at -1e9; we softmax
+    on-device then gather the per-leaf legal prior slice using the same
+    ``action_lut`` the mask was built from.
 
-    All per-batch scratch tensors (tokens, relation planes, masks) are preallocated
-    pinned-host + device pairs, grown on demand. On a CPU device the
-    "device" half aliases the host half and no copy runs.
+    All per-batch scratch tensors are preallocated pinned-host + device pairs,
+    grown on demand. On a CPU device the "device" half aliases the host half
+    and no copy runs.
     """
 
     _DTYPE_MAP = {"bfloat16": torch.bfloat16, "float16": torch.float16}
@@ -191,6 +217,8 @@ class NNEvaluator(BaseEvaluator):
         self.device = device
         self._autocast_dtype = self._DTYPE_MAP.get(eval_dtype) if eval_dtype else None
         self.model.eval()
+        self._uses_resnet_vectors = False
+        self.resnet_vector_dim = 0
 
         # Preallocated scratch — grows lazily via ``_ensure_scratch``.
         self._scratch_cap: int = 0
@@ -214,6 +242,16 @@ class NNEvaluator(BaseEvaluator):
                     f"Model num_players ({model_np}) does not match "
                     f"evaluator num_players ({num_players})"
                 )
+            cfg_input_dim = getattr(cfg, "input_dim", None)
+            if cfg_input_dim is not None:
+                expected_input_dim = get_resnet_vector_size(num_players)
+                if int(cfg_input_dim) != expected_input_dim:
+                    raise ValueError(
+                        f"ResNet input_dim ({cfg_input_dim}) does not match "
+                        f"get_resnet_vector_size({num_players}) ({expected_input_dim})"
+                    )
+                self._uses_resnet_vectors = True
+                self.resnet_vector_dim = expected_input_dim
 
     # ------------------------------------------------------------------
     # Preallocated scratch
@@ -237,29 +275,45 @@ class NNEvaluator(BaseEvaluator):
         # Mask is zero-initialized so ``_build_mask_row`` only touches
         # legal slots — the full row is reset on each fill via a
         # contiguous ``row[:] = 0`` before the scatter.
-        self._tok_h = torch.empty((cap, nt, td), dtype=torch.float32, pin_memory=pm)
-        self._tok_h_np = self._tok_h.numpy()
-        self._rel_h = torch.empty((cap, nr, nt, nt), dtype=torch.uint8, pin_memory=pm)
-        self._rel_h_np = self._rel_h.numpy()
+        if self._uses_resnet_vectors:
+            self._vec_h = torch.empty(
+                (cap, self.resnet_vector_dim), dtype=torch.float32, pin_memory=pm,
+            )
+            self._vec_h_np = self._vec_h.numpy()
+        else:
+            self._tok_h = torch.empty((cap, nt, td), dtype=torch.float32, pin_memory=pm)
+            self._tok_h_np = self._tok_h.numpy()
+            self._rel_h = torch.empty((cap, nr, nt, nt), dtype=torch.uint8, pin_memory=pm)
+            self._rel_h_np = self._rel_h.numpy()
         self._mask_h = torch.zeros(
             (cap, UNIFIED_LOGIT_DIM), dtype=torch.bool, pin_memory=pm,
         )
         self._mask_h_np = self._mask_h.numpy()
+        self._active_players_np = np.empty(cap, dtype=np.int16)
 
         # Device: separate on CUDA, aliased on CPU (no copy needed).
         if pm:
-            self._tok_d = torch.empty(
-                (cap, nt, td), dtype=torch.float32, device=self.device,
-            )
-            self._rel_d = torch.empty(
-                (cap, nr, nt, nt), dtype=torch.uint8, device=self.device,
-            )
+            if self._uses_resnet_vectors:
+                self._vec_d = torch.empty(
+                    (cap, self.resnet_vector_dim), dtype=torch.float32,
+                    device=self.device,
+                )
+            else:
+                self._tok_d = torch.empty(
+                    (cap, nt, td), dtype=torch.float32, device=self.device,
+                )
+                self._rel_d = torch.empty(
+                    (cap, nr, nt, nt), dtype=torch.uint8, device=self.device,
+                )
             self._mask_d = torch.empty(
                 (cap, UNIFIED_LOGIT_DIM), dtype=torch.bool, device=self.device,
             )
         else:
-            self._tok_d = self._tok_h
-            self._rel_d = self._rel_h
+            if self._uses_resnet_vectors:
+                self._vec_d = self._vec_h
+            else:
+                self._tok_d = self._tok_h
+                self._rel_d = self._rel_h
             self._mask_d = self._mask_h
 
         self._scratch_cap = cap
@@ -284,8 +338,11 @@ class NNEvaluator(BaseEvaluator):
         """
         if self.device.type != "cuda":
             return
-        self._tok_d[:n].copy_(self._tok_h[:n], non_blocking=True)
-        self._rel_d[:n].copy_(self._rel_h[:n], non_blocking=True)
+        if self._uses_resnet_vectors:
+            self._vec_d[:n].copy_(self._vec_h[:n], non_blocking=True)
+        else:
+            self._tok_d[:n].copy_(self._tok_h[:n], non_blocking=True)
+            self._rel_d[:n].copy_(self._rel_h[:n], non_blocking=True)
         self._mask_d[:n].copy_(self._mask_h[:n], non_blocking=True)
 
     # ------------------------------------------------------------------
@@ -315,8 +372,12 @@ class NNEvaluator(BaseEvaluator):
 
         # Fill preallocated scratch row 0.
         self._ensure_scratch(1)
-        fill_token_buffer(state, self._tok_h_np[0])
-        fill_relation_buffer(state, self._rel_h_np[0])
+        self._active_players_np[0] = TURN.get_active_player(state)
+        if self._uses_resnet_vectors:
+            fill_resnet_buffer(state, self._vec_h_np[0])
+        else:
+            fill_token_buffer(state, self._tok_h_np[0])
+            fill_relation_buffer(state, self._rel_h_np[0])
         self._build_mask_row(0, phase_id, self._enum_scratch[:n_legal])
 
         priors_np, values_np = self._forward(1)
@@ -349,22 +410,29 @@ class NNEvaluator(BaseEvaluator):
             return [self.evaluate(states[0])]
 
         self._ensure_scratch(n)
-        # Batched token fill — one Cython call amortizes the per-state
+        # Batched model-input fill — one Cython call amortizes the per-state
         # dispatch + GameState-rebind work into a single entry. Phase /
         # legal-action extraction still runs per state since they're
         # Python-side and each state has its own per-phase enumerator.
-        fill_token_buffer_batch(
-            [s._array for s in states], self.num_players, self._tok_h_np[:n],
-        )
-        fill_relation_buffer_batch(
-            [s._array for s in states], self.num_players, self._rel_h_np[:n],
-        )
+        state_arrays = [s._array for s in states]
+        if self._uses_resnet_vectors:
+            fill_resnet_buffer_batch(
+                state_arrays, self.num_players, self._vec_h_np[:n],
+            )
+        else:
+            fill_token_buffer_batch(
+                state_arrays, self.num_players, self._tok_h_np[:n],
+            )
+            fill_relation_buffer_batch(
+                state_arrays, self.num_players, self._rel_h_np[:n],
+            )
         phase_ids: list[int] = [0] * n
         n_legals: list[int] = [0] * n
         # Buffer to hold the enumerated ids across rows so we can gather
         # priors after forward without re-enumerating.
         all_action_ids = np.empty((n, MAX_ACTION_SIZE), dtype=np.uint16)
         for i, s in enumerate(states):
+            self._active_players_np[i] = TURN.get_active_player(s)
             phase_ids[i] = get_decision_phase_py(s)
             nl = enumerate_legal_actions_py(s, self._enum_scratch)
             n_legals[i] = nl
@@ -395,8 +463,8 @@ class NNEvaluator(BaseEvaluator):
 
         Optimized hot path for MCTS: the caller has already built the dense
         ``(n, UNIFIED_LOGIT_DIM)`` legal mask during selection, so we just
-        fill token buffers from the raw state arrays, copy the mask into
-        device scratch, and forward. Mirrors the eval server's GPU mask
+        fill model input buffers from the raw state arrays, copy the mask
+        into device scratch, and forward. Mirrors the eval server's GPU mask
         + softmax, but in-process.
 
         Args:
@@ -422,16 +490,25 @@ class NNEvaluator(BaseEvaluator):
             f"legal_mask shape {legal_mask.shape} != ({n}, {UNIFIED_LOGIT_DIM})"
 
         self._ensure_scratch(n)
-        # Fill token buffers in one batched Cython call — avoids the
+        # Fill model input buffers in one batched Cython call — avoids the
         # per-state Python dispatch + wrapper construction that the prior
         # loop incurred. The batched entry reuses a single scratch
         # GameState internally via rebind.
-        fill_token_buffer_batch(
-            state_arrays, self.num_players, self._tok_h_np[:n],
-        )
-        fill_relation_buffer_batch(
-            state_arrays, self.num_players, self._rel_h_np[:n],
-        )
+        if self._uses_resnet_vectors:
+            fill_resnet_buffer_batch(
+                state_arrays, self.num_players, self._vec_h_np[:n],
+            )
+            for i, state_array in enumerate(state_arrays):
+                self._active_players_np[i] = int(
+                    state_array[self._active_player_state_offset]
+                )
+        else:
+            fill_token_buffer_batch(
+                state_arrays, self.num_players, self._tok_h_np[:n],
+            )
+            fill_relation_buffer_batch(
+                state_arrays, self.num_players, self._rel_h_np[:n],
+            )
         # Copy caller's dense mask into host scratch — cheaper than
         # per-row LUT scatter because the caller built it once already.
         np.copyto(self._mask_h_np[:n], legal_mask, casting="unsafe")
@@ -445,7 +522,7 @@ class NNEvaluator(BaseEvaluator):
     def _forward(self, n: int) -> tuple[np.ndarray, np.ndarray]:
         """Async-copy host→device, run the model, return (priors, values) as numpy.
 
-        Assumes host scratch rows [:n] have been filled with tokens and
+        Assumes host scratch rows [:n] have been filled with model inputs and
         legal masks. The model returns dense ``(n, UNIFIED_LOGIT_DIM)``
         logits with illegal slots at -1e9; we softmax on-device so illegal
         slots collapse to ~0 and the legal slots carry a proper distribution.
@@ -456,10 +533,24 @@ class NNEvaluator(BaseEvaluator):
 
         with torch.autocast(self.device.type, dtype=self._autocast_dtype,
                             enabled=self._autocast_dtype is not None):
-            logits, value_output = self.model(
-                self._tok_d[:n], self._mask_d[:n], self._rel_d[:n],
-            )
+            if self._uses_resnet_vectors:
+                logits, value_output = self.model(
+                    self._vec_d[:n], self._mask_d[:n],
+                )
+            else:
+                logits, value_output = self.model(
+                    self._tok_d[:n], self._mask_d[:n], self._rel_d[:n],
+                )
             priors = logits.softmax(dim=1).to(torch.float32)
             values = value_output.to(torch.float32)
 
-        return priors.cpu().numpy(), values.cpu().numpy()
+        priors_np = priors.cpu().numpy()
+        values_np = values.cpu().numpy()
+        if self._uses_resnet_vectors:
+            for i in range(n):
+                values_np[i] = unrotate_values_to_canonical(
+                    values_np[i],
+                    int(self._active_players_np[i]),
+                    self.num_players,
+                )
+        return priors_np, values_np

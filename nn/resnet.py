@@ -125,13 +125,11 @@ class RSSResNet(nn.Module):
         """Run the ResNet.
 
         Args:
-            x: ``(batch, input_dim)`` dense ResNet vectors. During the Phase 1
-                bridge, callers that still pass token tensors may provide
-                ``(batch, num_tokens, token_dim)`` and those rows are flattened.
+            x: ``(batch, input_dim)`` dense ResNet vectors.
             legal_mask: ``(batch, UNIFIED_LOGIT_DIM)`` bool or uint8 dense
                 unified legal mask.
             relations: Ignored; accepted so generic call sites can share the
-                transformer forward shape until the ResNet projection path lands.
+                transformer forward shape.
         """
         del relations
         if x.ndim == 3:
