@@ -190,10 +190,21 @@ class RSSResNet(nn.Module):
             )
         if legal_mask.dtype != torch.bool:
             raise AssertionError(f"legal_mask must be bool, got {legal_mask.dtype}")
-        if tuple(legal_mask.shape) != (x.shape[0], int(UNIFIED_LOGIT_DIM)):
+        if legal_mask.ndim != 2:
             raise AssertionError(
-                f"legal_mask shape must be {(x.shape[0], int(UNIFIED_LOGIT_DIM))}, "
-                f"got {tuple(legal_mask.shape)}"
+                f"legal_mask must be rank 2, got shape {tuple(legal_mask.shape)}"
+            )
+        if legal_mask.shape[1] != int(UNIFIED_LOGIT_DIM):
+            raise AssertionError(
+                f"legal_mask width must be {int(UNIFIED_LOGIT_DIM)}, "
+                f"got {legal_mask.shape[1]}"
+            )
+        if (
+            not torch.compiler.is_compiling()
+            and legal_mask.shape[0] != x.shape[0]
+        ):
+            raise AssertionError(
+                f"legal_mask batch must be {x.shape[0]}, got {legal_mask.shape[0]}"
             )
         if legal_mask.device != x.device:
             raise AssertionError(

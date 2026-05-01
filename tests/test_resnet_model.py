@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 import torch
+from torch._dynamo.decorators import mark_unbacked
 
 from core.data import PHASE_ACTION_SIZES
 from core.resnet_data import get_resnet_vector_size
@@ -188,3 +189,33 @@ def test_resnet_forward_rejects_non_bool_legal_mask() -> None:
 
     with pytest.raises(AssertionError, match="legal_mask must be bool"):
         model(x, legal_mask)
+
+
+def test_resnet_forward_rejects_wrong_legal_mask_batch_in_eager() -> None:
+    model = _small_model()
+    x = torch.randn(2, model.cfg.input_dim)
+    legal_mask = torch.ones(1, int(UNIFIED_LOGIT_DIM), dtype=torch.bool)
+
+    with pytest.raises(AssertionError, match="legal_mask batch"):
+        model(x, legal_mask)
+
+
+def test_resnet_forward_compiles_with_marked_dynamic_batch() -> None:
+    model = _small_model()
+    model.eval()
+    batch = len(PHASE_ACTION_SIZES)
+    x = torch.randn(batch, model.cfg.input_dim)
+    legal_mask = torch.zeros(batch, int(UNIFIED_LOGIT_DIM), dtype=torch.bool)
+    lut = build_action_lut()
+    for phase_id, phase_size in enumerate(PHASE_ACTION_SIZES):
+        legal_mask[phase_id, lut[phase_id, : int(phase_size)]] = True
+
+    mark_unbacked(x, 0)
+    mark_unbacked(legal_mask, 0)
+    compiled = torch.compile(model, backend="eager", fullgraph=True)
+
+    with torch.inference_mode():
+        policy_logits, values = compiled(x, legal_mask)
+
+    assert policy_logits.shape == (batch, int(UNIFIED_LOGIT_DIM))
+    assert values.shape == (batch, model.cfg.num_players)
