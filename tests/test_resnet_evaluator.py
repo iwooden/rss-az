@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import multiprocessing as mp
+from types import SimpleNamespace
+
 import numpy as np
 import torch
 
@@ -12,6 +15,7 @@ from mcts.evaluator import NNEvaluator
 from nn import get_model_input_spec
 from nn.transformer import UNIFIED_LOGIT_DIM, build_action_lut
 from train.config import TrainingConfig
+from train.eval_server import EvaluationServer, RemoteEvaluator, SharedEvalBuffers
 
 
 NUM_PLAYERS = 3
@@ -21,11 +25,10 @@ class RelativeValueModel(torch.nn.Module):
     def __init__(self, num_players: int = NUM_PLAYERS) -> None:
         super().__init__()
         input_dim = get_resnet_vector_size(num_players)
-        self.cfg = type(
-            "Cfg",
-            (),
-            {"num_players": num_players, "input_dim": input_dim},
-        )()
+        self.cfg = SimpleNamespace(
+            num_players=num_players,
+            input_dim=input_dim,
+        )
         self.input_shapes: list[tuple[int, ...]] = []
 
     def forward(self, x, legal_mask, relations=None):
@@ -161,3 +164,47 @@ def test_resnet_evaluator_infers_spec_from_compiled_wrapper() -> None:
 
     assert model.input_shapes == [(1, model.cfg.input_dim)]
     np.testing.assert_allclose(values, _canonical_values_for_active(1))
+
+
+def test_resnet_remote_evaluator_roundtrip_returns_canonical_values() -> None:
+    config = _small_resnet_config()
+    shared_bufs = SharedEvalBuffers(
+        num_workers=1,
+        batch_size=2,
+        num_players=NUM_PLAYERS,
+        input_spec=get_model_input_spec(config),
+    )
+    ctx = mp.get_context("spawn")
+    shared_bufs.init_bitmap([(0, 1)], ctx)
+    server = EvaluationServer(
+        RelativeValueModel(),
+        torch.device("cpu"),
+        shared_bufs,
+        mp_context=ctx,
+        no_compile=True,
+    )
+
+    try:
+        server.start()
+        assert server.wait_ready(timeout=10.0)
+
+        evaluator = RemoteEvaluator(NUM_PLAYERS, shared_bufs, worker_idx=0)
+        states = [_new_state(0, seed=3), _new_state(2, seed=4)]
+        legal_mask = _dense_legal_mask(states)
+
+        priors, values = evaluator.evaluate_leaves(
+            [state._array for state in states],
+            legal_mask,
+        )
+    finally:
+        server.stop()
+
+    assert priors.shape == (2, int(UNIFIED_LOGIT_DIM))
+    assert values.shape == (2, NUM_PLAYERS)
+    np.testing.assert_allclose(priors.sum(axis=1), np.ones(2, dtype=np.float32))
+    for row, state in enumerate(states):
+        active_player = TURN.get_active_player(state)
+        np.testing.assert_allclose(
+            values[row],
+            _canonical_values_for_active(active_player),
+        )

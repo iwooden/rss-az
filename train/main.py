@@ -544,6 +544,7 @@ def main() -> None:
             num_workers=config.num_workers,
             batch_size=config.search_batch_size,
             num_players=config.num_players,
+            input_spec=model_input_spec,
         )
         # Partition workers across eval servers. Each server owns a
         # contiguous range and scans its partition's bitmap.

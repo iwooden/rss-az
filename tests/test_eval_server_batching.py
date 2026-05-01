@@ -10,6 +10,10 @@ from core.attention_relations import (
     NUM_ATTENTION_RELATIONS,
     AttentionRelation,
 )
+from core.resnet_data import get_resnet_vector_size
+from nn import get_model_input_spec
+from nn.model_contract import ModelKind
+from train.config import TrainingConfig
 from train.eval_server import (
     EvaluationServer,
     RequestBatchGroup,
@@ -147,9 +151,21 @@ def test_shared_eval_buffers_allocates_uint8_relation_coords() -> None:
         num_players=3,
     )
 
+    assert shared_bufs.model_type == ModelKind.TRANSFORMER.value
+    assert shared_bufs.uses_relations is True
+    assert shared_bufs.values_are_active_relative is False
+    assert shared_bufs.input_dim == 0
+    assert shared_bufs._states.dtype == torch.float16
+    assert tuple(shared_bufs._states.shape) == (
+        2,
+        4,
+        shared_bufs.num_tokens,
+        shared_bufs.token_dim,
+    )
     assert shared_bufs.num_relations == NUM_ATTENTION_RELATIONS
     assert shared_bufs.max_relation_edges == MAX_ATTENTION_RELATION_EDGES
     assert shared_bufs.relation_coord_width == ATTENTION_RELATION_COORD_WIDTH
+    assert shared_bufs._relation_coords is not None
     assert shared_bufs._relation_coords.dtype == torch.uint8
     assert tuple(shared_bufs._relation_coords.shape) == (
         2,
@@ -170,6 +186,44 @@ def test_shared_eval_buffers_allocates_uint8_relation_coords() -> None:
     assert int(shared_bufs._relation_coords[1, 0, 2, 0].item()) == 2
     assert int(shared_bufs._relation_coords[1, 0, 2, 1].item()) == 5
     assert int(shared_bufs._relation_coords[1, 0, 2, 2].item()) == 7
+
+
+def test_shared_eval_buffers_allocates_float16_vectors_for_resnet() -> None:
+    config = TrainingConfig(
+        model_type="resnet",
+        resnet_hidden_dim=32,
+        resnet_num_blocks=0,
+    )
+    shared_bufs = SharedEvalBuffers(
+        num_workers=2,
+        batch_size=4,
+        num_players=3,
+        input_spec=get_model_input_spec(config),
+    )
+
+    assert shared_bufs.model_type == ModelKind.RESNET.value
+    assert shared_bufs.uses_relations is False
+    assert shared_bufs.values_are_active_relative is True
+    assert shared_bufs.input_dim == get_resnet_vector_size(3)
+    assert shared_bufs.num_tokens == 0
+    assert shared_bufs.token_dim == 0
+    assert shared_bufs.num_relations == 0
+    assert shared_bufs.max_relation_edges == 0
+    assert shared_bufs.relation_coord_width == 0
+    assert shared_bufs._relation_coords is None
+    assert shared_bufs._states.dtype == torch.float16
+    assert tuple(shared_bufs._states.shape) == (
+        2,
+        4,
+        get_resnet_vector_size(3),
+    )
+
+    worker_vectors = shared_bufs.get_input_vectors_np(1)
+    assert worker_vectors.dtype == np.float16
+    assert worker_vectors.shape == (4, get_resnet_vector_size(3))
+
+    with pytest.raises(RuntimeError, match="relation coordinates"):
+        shared_bufs.get_input_relation_coords_np(1)
 
 
 def test_materialize_relation_coords_fills_dense_planes_and_clears_padding() -> None:
