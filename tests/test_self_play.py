@@ -18,10 +18,11 @@ import torch
 
 from core.driver import DRIVER
 from core.state import GameState, get_layout
-from mcts.evaluator import NNEvaluator
+from mcts.evaluator import NNEvaluator, compute_terminal_values
 from mcts.search import StatePool, prepare_reuse_root, run_search
+from nn import create_model, get_model_input_spec
 from nn.transformer import UNIFIED_LOGIT_DIM, RSSTransformerNet, TransformerConfig
-from train.config import TrainingConfig
+from train.config import EpochConfig, TrainingConfig
 from train.self_play import play_game
 
 
@@ -41,6 +42,24 @@ def model():
 def evaluator(model):
     """In-process NNEvaluator — bypasses the shared-mem eval server path."""
     return NNEvaluator(model, torch.device("cpu"), num_players=NUM_PLAYERS)
+
+
+def _assert_dense_policy_invariants(record) -> None:
+    assert record.legal_masks.shape == (record.num_examples, U_DIM)
+    assert record.legal_masks.dtype == np.uint8
+    assert record.policy_targets.shape == (record.num_examples, U_DIM)
+    for i in range(record.num_examples):
+        mask = record.legal_masks[i].astype(bool)
+        n_legal = int(mask.sum())
+        assert 0 < n_legal <= U_DIM, f"move {i}: n_legal={n_legal} out of range"
+        row = record.policy_targets[i]
+        assert float(row.sum()) == pytest.approx(1.0, abs=1e-5), (
+            f"move {i}: policy_target sum={float(row.sum())}"
+        )
+        # Target mass lives only on legal slots.
+        assert not row[~mask].any(), (
+            f"move {i}: policy_target nonzero on illegal slot"
+        )
 
 
 def test_play_game_full_3p_game_produces_valid_record(evaluator):
@@ -63,27 +82,63 @@ def test_play_game_full_3p_game_produces_valid_record(evaluator):
     assert all(nw >= 0 for nw in record.net_worths)
 
     # Dense policy invariants per move.
-    assert record.legal_masks.shape == (record.num_examples, U_DIM)
-    assert record.legal_masks.dtype == np.uint8
-    assert record.policy_targets.shape == (record.num_examples, U_DIM)
-    for i in range(record.num_examples):
-        mask = record.legal_masks[i].astype(bool)
-        n_legal = int(mask.sum())
-        assert 0 < n_legal <= U_DIM, f"move {i}: n_legal={n_legal} out of range"
-        row = record.policy_targets[i]
-        assert float(row.sum()) == pytest.approx(1.0, abs=1e-5), (
-            f"move {i}: policy_target sum={float(row.sum())}"
-        )
-        # Target mass lives only on legal slots.
-        assert not row[~mask].any(), (
-            f"move {i}: policy_target nonzero on illegal slot"
-        )
+    _assert_dense_policy_invariants(record)
 
     # Value targets per-player, clamped to the tanh head's [-1, +1] range.
     vt = record.value_targets
     assert vt.shape == (record.num_examples, NUM_PLAYERS)
     assert (vt >= -1.0 - 1e-6).all(), f"min value_target={vt.min()}"
     assert (vt <= 1.0 + 1e-6).all(), f"max value_target={vt.max()}"
+
+
+def test_resnet_play_game_short_3p_game_keeps_record_contract():
+    """A short real-ResNet self-play game preserves replay row invariants."""
+    torch.manual_seed(1)
+    config = TrainingConfig(
+        num_players=NUM_PLAYERS,
+        model_type="resnet",
+        resnet_hidden_dim=16,
+        resnet_num_blocks=0,
+        num_simulations=2,
+        search_batch_size=2,
+        dirichlet_epsilon=0.0,
+    )
+    model = create_model(config).to(torch.device("cpu"))
+    evaluator = NNEvaluator(
+        model,
+        torch.device("cpu"),
+        num_players=NUM_PLAYERS,
+        input_spec=get_model_input_spec(config),
+    )
+    rng = np.random.default_rng(7)
+    epoch_config = EpochConfig(
+        c_puct=config.c_puct_final,
+        value_blend_alpha=0.0,
+        num_simulations=config.num_simulations,
+    )
+
+    record = play_game(
+        evaluator, config, game_seed=7, rng=rng, epoch_config=epoch_config,
+    )
+
+    assert record.total_moves > 0
+    assert record.num_examples == record.total_moves
+    _assert_dense_policy_invariants(record)
+
+    assert record.states.dtype == np.int16
+    assert record.states.shape[0] == record.num_examples
+    assert record.value_targets.shape == (record.num_examples, NUM_PLAYERS)
+
+    # With terminal blending forced to 0.0, every replay row should carry
+    # the final canonical game outcome in player-id order.
+    expected = compute_terminal_values(
+        record.net_worths, NUM_PLAYERS, config.terminal_blend,
+    )
+    np.testing.assert_allclose(
+        record.value_targets,
+        np.broadcast_to(expected, record.value_targets.shape),
+        atol=1e-6,
+    )
 
 
 def test_play_game_subtree_reuse_produces_sensible_q_after_move_1(evaluator):

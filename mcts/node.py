@@ -9,9 +9,10 @@ class MCTSNode:
 
     Each node stores visit statistics, value estimates, and per-action arrays
     for vectorized PUCT selection. Values are stored in canonical player order
-    (player 0, 1, 2, ...) so that backpropagation is straightforward — the new
-    token transformer returns canonical-order values (no rotation), matching
-    this layout directly.
+    (player 0, 1, 2, ...) so that backpropagation is straightforward. MCTS
+    evaluators return canonical-order values regardless of model family:
+    transformer models emit them directly, while ResNet values are unrotated
+    from active-relative order before reaching the tree.
 
     Expansion is lazy: expand() sets up per-action arrays (legal_actions,
     priors, visit_counts, value_sums) but does NOT create child MCTSNode

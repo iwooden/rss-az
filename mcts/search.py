@@ -79,10 +79,10 @@ class StatePool:
     )
 
     def __init__(self, capacity: int, state_size: int) -> None:
-        # Compact int16 state storage — the new transformer consumes
-        # (num_tokens, token_dim) float32 buffers built lazily via
-        # core.token_data.get_token_data(). The pool itself just holds
-        # the raw int16 state arrays.
+        # Compact int16 state storage. Evaluators build model-specific
+        # buffers lazily from these rows: transformer token/relation tensors
+        # or dense ResNet vectors. The pool itself only owns raw canonical
+        # state arrays.
         self.states = np.zeros((capacity, state_size), dtype=np.int16)
         self._next = 0
         # (phase_id, phase-local action id) → unified-slot LUT. Used both
