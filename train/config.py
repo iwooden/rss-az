@@ -94,9 +94,7 @@ class TrainingConfig:
     price_slot_residual_scale: float = 1.0
     # Residual MLP model hyperparameters.
     resnet_hidden_dim: int = 256
-    resnet_num_blocks: int = 8
-    resnet_value_hidden_layers: int = 1
-    resnet_input_norm: bool = True
+    resnet_num_blocks: int = 10
 
     # --- Self-Play ---
     games_per_epoch: int = 500
@@ -252,15 +250,6 @@ class TrainingConfig:
         if self.resnet_num_blocks < 0:
             raise ValueError(
                 f"resnet_num_blocks must be >= 0, got {self.resnet_num_blocks}"
-            )
-        if self.resnet_value_hidden_layers < 0:
-            raise ValueError(
-                "resnet_value_hidden_layers must be >= 0, "
-                f"got {self.resnet_value_hidden_layers}"
-            )
-        if not isinstance(self.resnet_input_norm, bool):
-            raise ValueError(
-                f"resnet_input_norm must be bool, got {self.resnet_input_norm!r}"
             )
 
         # MCTS fields

@@ -75,8 +75,6 @@ def test_cli_overrides_model_type_and_resnet_hyperparameters() -> None:
         "--model-type", "resnet",
         "--resnet-hidden-dim", "128",
         "--resnet-num-blocks", "4",
-        "--resnet-value-hidden-layers", "2",
-        "--no-resnet-input-norm",
     ])
     config = TrainingConfig()
 
@@ -86,8 +84,6 @@ def test_cli_overrides_model_type_and_resnet_hyperparameters() -> None:
     assert config.model_type == "resnet"
     assert config.resnet_hidden_dim == 128
     assert config.resnet_num_blocks == 4
-    assert config.resnet_value_hidden_layers == 2
-    assert config.resnet_input_norm is False
 
 
 def test_json_config_threads_model_type() -> None:

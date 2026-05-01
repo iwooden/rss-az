@@ -134,9 +134,5 @@ def create_model(
             input_dim=_resnet_input_dim(cfg_num_players),
             hidden_dim=int(_config_value(config, "resnet_hidden_dim", 256)),
             num_blocks=int(_config_value(config, "resnet_num_blocks", 8)),
-            value_hidden_layers=int(
-                _config_value(config, "resnet_value_hidden_layers", 1)
-            ),
-            input_norm=bool(_config_value(config, "resnet_input_norm", True)),
         )
     )

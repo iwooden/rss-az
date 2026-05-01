@@ -245,7 +245,7 @@ class TrainingLogger:
                 "ResNet",
                 f"hidden={config.resnet_hidden_dim}, "
                 f"blocks={config.resnet_num_blocks}, "
-                f"value_layers={config.resnet_value_hidden_layers}",
+                "head_layers=2",
             )
         decay_end = config.lr_decay_end_epoch or config.num_epochs
         lr_desc = (

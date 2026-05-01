@@ -53,9 +53,6 @@ def test_training_config_rejects_invalid_resnet_hyperparameters() -> None:
     with pytest.raises(ValueError, match="resnet_num_blocks"):
         TrainingConfig(model_type="resnet", resnet_num_blocks=-1)
 
-    with pytest.raises(ValueError, match="resnet_value_hidden_layers"):
-        TrainingConfig(model_type="resnet", resnet_value_hidden_layers=-1)
-
 
 def test_training_config_rejects_eval_max_batch_size_in_dynamic_mode() -> None:
     with pytest.raises(ValueError, match="dynamic"):

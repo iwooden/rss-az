@@ -188,21 +188,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--resnet-hidden-dim", type=int)
     parser.add_argument("--resnet-num-blocks", type=int)
-    parser.add_argument("--resnet-value-hidden-layers", type=int)
-    resnet_norm_group = parser.add_mutually_exclusive_group()
-    resnet_norm_group.add_argument(
-        "--resnet-input-norm",
-        dest="resnet_input_norm",
-        action="store_true",
-        default=None,
-        help="Enable ResNet input LayerNorm",
-    )
-    resnet_norm_group.add_argument(
-        "--no-resnet-input-norm",
-        dest="resnet_input_norm",
-        action="store_false",
-        help="Disable ResNet input LayerNorm",
-    )
     return parser
 
 
@@ -210,7 +195,6 @@ _CLI_FIELDS = (
     "num_players", "eval_dtype", "model_type", "phase_conditioning",
     "price_slot_fourier_bands", "price_slot_residual_scale",
     "resnet_hidden_dim", "resnet_num_blocks",
-    "resnet_value_hidden_layers", "resnet_input_norm",
     "games_per_epoch", "num_epochs", "training_steps_per_epoch",
     "num_simulations", "search_batch_size",
     "mcts_sims_start", "mcts_sims_end", "mcts_ramp_start_epoch", "mcts_ramp_end_epoch",

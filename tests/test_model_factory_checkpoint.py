@@ -17,7 +17,6 @@ def _small_resnet_config() -> TrainingConfig:
         model_type="resnet",
         resnet_hidden_dim=32,
         resnet_num_blocks=1,
-        resnet_value_hidden_layers=0,
     )
 
 
@@ -40,7 +39,6 @@ def test_factory_instantiates_resnet_from_config() -> None:
     assert model.cfg.num_players == config.num_players
     assert model.cfg.hidden_dim == config.resnet_hidden_dim
     assert model.cfg.num_blocks == config.resnet_num_blocks
-    assert model.cfg.value_hidden_layers == config.resnet_value_hidden_layers
 
 
 def test_transformer_factory_output_shapes_remain_unified() -> None:
