@@ -22,10 +22,10 @@ from core.data import PHASE_ACTION_SIZES
 from core.state import get_layout
 from core.token_data import TokenDataSize, get_num_tokens
 from nn import create_model
+from nn.model_contract import ModelKind
 from nn.transformer import (
     NUM_PHASES,
     UNIFIED_LOGIT_DIM,
-    RSSTransformerNet,
     build_action_lut,
 )
 from train.checkpoint import (
@@ -58,6 +58,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", type=str, help="Force device: cuda, cpu")
     parser.add_argument("--num-players", type=int,
                         help="Number of players (default: 3)")
+    parser.add_argument(
+        "--model-type",
+        type=str,
+        choices=["transformer", "resnet"],
+        help="Model family to instantiate",
+    )
     parser.add_argument("--games-per-epoch", type=int)
     parser.add_argument("--num-epochs", type=int)
     parser.add_argument("--training-steps-per-epoch", type=int)
@@ -180,12 +186,31 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         help="Blend weight for learned price-slot embeddings: 0=pure Fourier, 1=pure embedding",
     )
+    parser.add_argument("--resnet-hidden-dim", type=int)
+    parser.add_argument("--resnet-num-blocks", type=int)
+    parser.add_argument("--resnet-value-hidden-layers", type=int)
+    resnet_norm_group = parser.add_mutually_exclusive_group()
+    resnet_norm_group.add_argument(
+        "--resnet-input-norm",
+        dest="resnet_input_norm",
+        action="store_true",
+        default=None,
+        help="Enable ResNet input LayerNorm",
+    )
+    resnet_norm_group.add_argument(
+        "--no-resnet-input-norm",
+        dest="resnet_input_norm",
+        action="store_false",
+        help="Disable ResNet input LayerNorm",
+    )
     return parser
 
 
 _CLI_FIELDS = (
-    "num_players", "eval_dtype", "phase_conditioning",
+    "num_players", "eval_dtype", "model_type", "phase_conditioning",
     "price_slot_fourier_bands", "price_slot_residual_scale",
+    "resnet_hidden_dim", "resnet_num_blocks",
+    "resnet_value_hidden_layers", "resnet_input_norm",
     "games_per_epoch", "num_epochs", "training_steps_per_epoch",
     "num_simulations", "search_batch_size",
     "mcts_sims_start", "mcts_sims_end", "mcts_ramp_start_epoch", "mcts_ramp_end_epoch",
@@ -478,12 +503,7 @@ def main() -> None:
         print("  Restored RNG state from checkpoint")
 
     # --- Model ---
-    model = create_model(
-        num_players=config.num_players,
-        phase_conditioning=config.phase_conditioning,
-        price_slot_fourier_bands=config.price_slot_fourier_bands,
-        price_slot_residual_scale=config.price_slot_residual_scale,
-    ).to(device)
+    model = create_model(config).to(device)
     param_count = sum(p.numel() for p in model.parameters())
 
     # --- Resume: restore model weights (before compile + Trainer creation) ---
@@ -659,8 +679,9 @@ def main() -> None:
             print(f"Compiling model with torch.compile ({sp_compile_kwargs})...")
             model = cast(torch.nn.Module, torch.compile(model, **sp_compile_kwargs))  # type: ignore[call-overload]
             model.train()
-            # Warmup mirrors train/eval_server.py: NUM_PHASES rows so every
-            # per-row policy head is traced against a real legal mask, and
+            # Warmup mirrors train/eval_server.py for transformer inputs:
+            # NUM_PHASES rows so every per-row policy head is traced against
+            # a real legal mask, and
             # ``mark_unbacked`` on every model input so the batch dim stays
             # symbolic. If any input is left unmarked, Dynamo bakes a static
             # guard on that input's shape and recompiles on the first
@@ -669,23 +690,33 @@ def main() -> None:
             warmup_n = NUM_PHASES
             lut = build_action_lut()
             with torch.inference_mode():
-                dummy_tokens = torch.randn(
-                    warmup_n, num_tokens, token_dim, device=device,
-                )
-                dummy_relations = torch.zeros(
-                    warmup_n, NUM_ATTENTION_RELATIONS, num_tokens, num_tokens,
-                    dtype=torch.uint8, device=device,
-                )
                 dummy_mask = torch.zeros(
                     warmup_n, UNIFIED_LOGIT_DIM, dtype=torch.bool, device=device,
                 )
                 for i in range(warmup_n):
                     n = PHASE_ACTION_SIZES[i]
                     dummy_mask[i, lut[i, :n].to(device)] = True
-                for _t in (dummy_tokens, dummy_mask, dummy_relations):
-                    mark_unbacked(_t, 0)
-                model(dummy_tokens, dummy_mask, dummy_relations)
-                del dummy_tokens, dummy_mask, dummy_relations
+                if config.model_type == ModelKind.TRANSFORMER.value:
+                    dummy_tokens = torch.randn(
+                        warmup_n, num_tokens, token_dim, device=device,
+                    )
+                    dummy_relations = torch.zeros(
+                        warmup_n, NUM_ATTENTION_RELATIONS, num_tokens, num_tokens,
+                        dtype=torch.uint8, device=device,
+                    )
+                    for _t in (dummy_tokens, dummy_mask, dummy_relations):
+                        mark_unbacked(_t, 0)
+                    model(dummy_tokens, dummy_mask, dummy_relations)
+                    del dummy_tokens, dummy_relations
+                else:
+                    base_model = getattr(model, "_orig_mod", model)
+                    input_dim = int(getattr(base_model.cfg, "input_dim"))
+                    dummy_vectors = torch.randn(warmup_n, input_dim, device=device)
+                    for _t in (dummy_vectors, dummy_mask):
+                        mark_unbacked(_t, 0)
+                    model(dummy_vectors, dummy_mask)
+                    del dummy_vectors
+                del dummy_mask
             torch.cuda.synchronize()
             print("  Model compiled.")
 
@@ -1091,12 +1122,10 @@ def main() -> None:
             # --- Phase 4: Epoch summary ---
             epoch_duration = time.perf_counter() - epoch_start
             logger.log_scalars(epoch_num, {"epoch/duration_secs": epoch_duration})
-            # Underlying RSSTransformerNet survives torch.compile wrapping via
-            # ``_orig_mod``; the diagnostic reads parameters, not behavior.
-            base_model = cast(
-                RSSTransformerNet, getattr(model, "_orig_mod", model)
-            )
-            logger.log_scalars(epoch_num, base_model.phase_mod_diagnostics())
+            base_model = getattr(model, "_orig_mod", model)
+            diagnostics = base_model.phase_mod_diagnostics()
+            if diagnostics:
+                logger.log_scalars(epoch_num, diagnostics)
             logger.log_epoch_summary(
                 epoch=epoch_num,
                 num_epochs=config.num_epochs,

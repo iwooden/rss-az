@@ -41,6 +41,22 @@ def test_training_config_rejects_price_slot_residual_blend_out_of_range() -> Non
         TrainingConfig(price_slot_residual_scale=1.1)
 
 
+def test_training_config_rejects_unknown_model_type() -> None:
+    with pytest.raises(ValueError, match="model_type"):
+        TrainingConfig(model_type="mlp")
+
+
+def test_training_config_rejects_invalid_resnet_hyperparameters() -> None:
+    with pytest.raises(ValueError, match="resnet_hidden_dim"):
+        TrainingConfig(model_type="resnet", resnet_hidden_dim=0)
+
+    with pytest.raises(ValueError, match="resnet_num_blocks"):
+        TrainingConfig(model_type="resnet", resnet_num_blocks=-1)
+
+    with pytest.raises(ValueError, match="resnet_value_hidden_layers"):
+        TrainingConfig(model_type="resnet", resnet_value_hidden_layers=-1)
+
+
 def test_training_config_rejects_eval_max_batch_size_in_dynamic_mode() -> None:
     with pytest.raises(ValueError, match="dynamic"):
         TrainingConfig(eval_batch_shape_mode="dynamic", eval_max_batch_size=16)
@@ -52,7 +68,7 @@ def test_training_config_rejects_non_power_of_two_bucketed_eval_max_batch_size()
 
 
 def test_training_config_rejects_bucketed_eval_max_batch_size_above_partition_cap() -> None:
-    with pytest.raises(ValueError, match="partition_size \* search_batch_size"):
+    with pytest.raises(ValueError, match=r"partition_size \* search_batch_size"):
         TrainingConfig(
             num_workers=8,
             num_eval_servers=2,

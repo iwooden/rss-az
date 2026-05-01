@@ -36,8 +36,7 @@ from core.state import GameState, get_layout
 from entities.player import PLAYERS
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool, run_search
-from nn import create_model
-from train.checkpoint import load_checkpoint
+from train.checkpoint import load_model_from_checkpoint
 from train.config import MCTSConfig, TrainingConfig
 
 
@@ -56,15 +55,7 @@ class ModelEntry:
 
 def _load_model(cp_path: Path, device: torch.device) -> tuple[torch.nn.Module, TrainingConfig, int]:
     """Load model from checkpoint. Returns (model, config, epoch)."""
-    cp = load_checkpoint(cp_path, device)
-    config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
-    model = create_model(
-        num_players=config.num_players,
-        phase_conditioning=config.phase_conditioning,
-        price_slot_fourier_bands=config.price_slot_fourier_bands,
-        price_slot_residual_scale=config.price_slot_residual_scale,
-    ).to(device)
-    model.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
+    model, config, cp = load_model_from_checkpoint(cp_path, device)
     model.eval()
     epoch = int(cp.get("epoch", -1))  # type: ignore[arg-type]
     return model, config, epoch

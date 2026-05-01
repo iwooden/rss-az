@@ -36,8 +36,7 @@ from entities.player import PLAYERS
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool, run_search
-from nn import create_model
-from train.checkpoint import find_latest_checkpoint, load_checkpoint
+from train.checkpoint import find_latest_checkpoint, load_model_from_checkpoint
 from train.config import MCTSConfig, TrainingConfig
 
 from .action_mapper import engine_action_to_18xx
@@ -94,11 +93,7 @@ class AIServer:
     def _load_checkpoint(self, cp_path: Path) -> None:
         """Load model from checkpoint."""
         logger.info(f"Loading checkpoint: {cp_path}")
-        cp = load_checkpoint(cp_path, self.device)
-        self._config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
-
-        model = create_model(num_players=self._config.num_players).to(self.device)
-        model.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
+        model, self._config, _cp = load_model_from_checkpoint(cp_path, self.device)
         model.eval()
 
         terminal_rank_weight = (

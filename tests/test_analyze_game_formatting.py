@@ -136,9 +136,9 @@ def test_format_token_dump_denormalizes_rows_into_compact_table() -> None:
 
 def test_analyze_game_token_dump_flag_includes_token_tables() -> None:
     torch.manual_seed(0)
-    model = create_model(num_players=3).to(torch.device("cpu"))
-    model.eval()
     config = TrainingConfig(num_players=3)
+    model = create_model(config).to(torch.device("cpu"))
+    model.eval()
 
     rendered = analyze_game(
         model,
@@ -157,9 +157,9 @@ def test_analyze_game_token_dump_flag_includes_token_tables() -> None:
 
 def test_analyze_game_token_dump_flag_appends_normalization_report() -> None:
     torch.manual_seed(0)
-    model = create_model(num_players=3).to(torch.device("cpu"))
-    model.eval()
     config = TrainingConfig(num_players=3)
+    model = create_model(config).to(torch.device("cpu"))
+    model.eval()
 
     rendered = analyze_game(
         model,

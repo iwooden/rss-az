@@ -6,6 +6,8 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from nn.model_contract import ModelKind, normalize_model_type
+
 
 @dataclass
 class MCTSConfig:
@@ -82,6 +84,7 @@ class TrainingConfig:
     eval_dtype: str | None = None  # None = no autocast; "bfloat16" or "float16"
 
     # --- Model ---
+    model_type: str = ModelKind.TRANSFORMER.value
     # Per-block adaLN-Zero conditioning on the active decision phase.
     phase_conditioning: bool = True
     # Price-like policy slots blend fixed Fourier projections for smoothness
@@ -89,6 +92,11 @@ class TrainingConfig:
     price_slot_fourier_bands: int = 4
     # 0.0 = pure Fourier projection, 1.0 = pure learned slot embedding.
     price_slot_residual_scale: float = 1.0
+    # Residual MLP model hyperparameters.
+    resnet_hidden_dim: int = 256
+    resnet_num_blocks: int = 8
+    resnet_value_hidden_layers: int = 1
+    resnet_input_norm: bool = True
 
     # --- Self-Play ---
     games_per_epoch: int = 500
@@ -215,6 +223,8 @@ class TrainingConfig:
         # (num_tokens, token_dim) — there is no flat state width.
         self.action_dim = int(MAX_ACTION_SIZE)
 
+        self.model_type = normalize_model_type(self.model_type).value
+
         # Eval dtype
         if self.eval_dtype is not None and self.eval_dtype not in ("bfloat16", "float16"):
             raise ValueError(
@@ -234,6 +244,23 @@ class TrainingConfig:
             raise ValueError(
                 "price_slot_residual_scale must be in [0, 1], "
                 f"got {self.price_slot_residual_scale}"
+            )
+        if self.resnet_hidden_dim < 1:
+            raise ValueError(
+                f"resnet_hidden_dim must be >= 1, got {self.resnet_hidden_dim}"
+            )
+        if self.resnet_num_blocks < 0:
+            raise ValueError(
+                f"resnet_num_blocks must be >= 0, got {self.resnet_num_blocks}"
+            )
+        if self.resnet_value_hidden_layers < 0:
+            raise ValueError(
+                "resnet_value_hidden_layers must be >= 0, "
+                f"got {self.resnet_value_hidden_layers}"
+            )
+        if not isinstance(self.resnet_input_norm, bool):
+            raise ValueError(
+                f"resnet_input_norm must be bool, got {self.resnet_input_norm!r}"
             )
 
         # MCTS fields

@@ -31,7 +31,7 @@ from mcts.evaluator import NNEvaluator, compute_terminal_values
 from mcts.node import MCTSNode
 from mcts.search import StatePool, get_greedy_leaf_value, prepare_reuse_root, run_search
 from nn import create_model
-from train.checkpoint import find_latest_checkpoint, load_checkpoint
+from train.checkpoint import find_latest_checkpoint, load_model_from_checkpoint
 from train.config import MCTSConfig, TrainingConfig
 from train.debug_trace import (
     PHASE_NAMES,
@@ -612,10 +612,7 @@ def main() -> None:
         assert 3 <= args.num_players <= 5, \
             f"--num-players must be in [3, 5], got {args.num_players}"
         config = TrainingConfig(num_players=args.num_players)
-        model = create_model(
-            num_players=args.num_players,
-            phase_conditioning=config.phase_conditioning,
-        ).to(device)
+        model = create_model(config).to(device)
         model.eval()
         print(f"Using freshly-initialized (untrained) model, num_players={args.num_players}, device={device}")
     else:
@@ -628,16 +625,7 @@ def main() -> None:
             cp_path = Path(args.checkpoint)
 
         print(f"Loading checkpoint: {cp_path}")
-        cp = load_checkpoint(cp_path, device)
-        config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
-
-        model = create_model(
-            num_players=config.num_players,
-            phase_conditioning=config.phase_conditioning,
-            price_slot_fourier_bands=config.price_slot_fourier_bands,
-            price_slot_residual_scale=config.price_slot_residual_scale,
-        ).to(device)
-        model.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
+        model, config, cp = load_model_from_checkpoint(cp_path, device)
         model.eval()
 
         epoch = cp.get("epoch", "?")

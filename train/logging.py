@@ -220,6 +220,7 @@ class TrainingLogger:
         table.add_column(style="bold")
         table.add_column()
         table.add_row("Players", str(config.num_players))
+        table.add_row("Model", config.model_type)
         table.add_row("MCTS simulations", str(config.num_simulations))
         table.add_row("Search batch size", str(config.search_batch_size))
         table.add_row(
@@ -229,15 +230,23 @@ class TrainingLogger:
         table.add_row("Games/epoch", f"{config.games_per_epoch:,}")
         table.add_row("Training steps/epoch", f"{config.training_steps_per_epoch:,}")
         table.add_row("Batch size", str(config.batch_size))
-        table.add_row(
-            "Phase conditioning",
-            "adaLN enabled" if config.phase_conditioning else "disabled",
-        )
-        table.add_row(
-            "Price slot keys",
-            f"Fourier bands={config.price_slot_fourier_bands}, "
-            f"embedding blend={config.price_slot_residual_scale:g}",
-        )
+        if config.model_type == "transformer":
+            table.add_row(
+                "Phase conditioning",
+                "adaLN enabled" if config.phase_conditioning else "disabled",
+            )
+            table.add_row(
+                "Price slot keys",
+                f"Fourier bands={config.price_slot_fourier_bands}, "
+                f"embedding blend={config.price_slot_residual_scale:g}",
+            )
+        else:
+            table.add_row(
+                "ResNet",
+                f"hidden={config.resnet_hidden_dim}, "
+                f"blocks={config.resnet_num_blocks}, "
+                f"value_layers={config.resnet_value_hidden_layers}",
+            )
         decay_end = config.lr_decay_end_epoch or config.num_epochs
         lr_desc = (
             f"{config.learning_rate:.1e} \u2192 {config.lr_min:.1e} "

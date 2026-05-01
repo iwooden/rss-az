@@ -59,6 +59,21 @@ def load_checkpoint(path: Path, device: torch.device) -> dict[str, object]:
     return cp
 
 
+def load_model_from_checkpoint(
+    path: Path,
+    device: torch.device,
+) -> tuple[torch.nn.Module, TrainingConfig, dict[str, object]]:
+    """Load checkpoint data and instantiate the architecture it was saved with."""
+    cp = load_checkpoint(path, device)
+    config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
+
+    from nn import create_model
+
+    model = create_model(config).to(device)
+    model.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
+    return model, config, cp
+
+
 def find_latest_checkpoint(checkpoint_dir: Path) -> Path | None:
     """Find the most recent checkpoint_epoch_NNNN.pt in the directory."""
     if not checkpoint_dir.is_dir():

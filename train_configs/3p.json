@@ -1,5 +1,6 @@
 {
   "num_players": 3,
+  "model_type": "transformer",
   "games_per_epoch": 500,
   "num_epochs": 500,
   "training_steps_per_epoch": 1000,

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import torch
@@ -29,7 +29,6 @@ from nn.transformer import (
     NUM_PHASES,
     PHASES_WITH_PASS_HEAD,
     UNIFIED_LOGIT_DIM,
-    RSSTransformerNet,
 )
 from train.config import TrainingConfig
 from train.replay_buffer import ReplayBuffer
@@ -58,12 +57,9 @@ class Trainer:
         device: torch.device,
     ) -> None:
         self.model = model
-        # Underlying RSSTransformerNet survives torch.compile wrapping via
-        # ``_orig_mod`` and exposes diagnostic methods that the OptimizedModule
-        # wrapper does not forward.
-        self._base_model = cast(
-            RSSTransformerNet, getattr(model, "_orig_mod", model),
-        )
+        # Underlying models survive torch.compile wrapping via ``_orig_mod``;
+        # diagnostics live on the wrapped module, not OptimizedModule.
+        self._base_model = getattr(model, "_orig_mod", model)
         self.config = config
         self.device = device
         self._global_step = 0
