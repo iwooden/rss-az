@@ -30,7 +30,7 @@ from entities.turn import TURN
 from mcts.evaluator import NNEvaluator, compute_terminal_values
 from mcts.node import MCTSNode
 from mcts.search import StatePool, get_greedy_leaf_value, prepare_reuse_root, run_search
-from nn import create_model
+from nn import create_model, get_model_input_spec
 from train.checkpoint import find_latest_checkpoint, load_model_from_checkpoint
 from train.config import MCTSConfig, TrainingConfig
 from train.debug_trace import (
@@ -306,6 +306,7 @@ def analyze_game(
         model, device, num_players=num_players,
         terminal_rank_weight=terminal_rank_weight,
         eval_dtype=config.eval_dtype,
+        input_spec=get_model_input_spec(config),
     )
     mcts_config = config.to_mcts_config(c_puct_override=c_puct)
     mcts_config = MCTSConfig(

@@ -21,7 +21,7 @@ from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.data import PHASE_ACTION_SIZES
 from core.state import get_layout
 from core.token_data import TokenDataSize, get_num_tokens
-from nn import create_model
+from nn import create_model, get_model_input_spec
 from nn.model_contract import ModelKind
 from nn.transformer import (
     NUM_PHASES,
@@ -488,6 +488,7 @@ def main() -> None:
 
     # --- Model ---
     model = create_model(config).to(device)
+    model_input_spec = get_model_input_spec(config)
     param_count = sum(p.numel() for p in model.parameters())
 
     # --- Resume: restore model weights (before compile + Trainer creation) ---
@@ -724,6 +725,7 @@ def main() -> None:
             model, device, num_players=config.num_players,
             terminal_rank_weight=config.terminal_blend,
             eval_dtype=config.eval_dtype,
+            input_spec=model_input_spec,
         )
         state_pool = StatePool(
             2 * (config.max_simulations + 1), state_size_int16,

@@ -37,10 +37,135 @@ from core.actions import (
 from core.data import MAX_ACTION_SIZE
 from entities.player import PLAYERS
 from entities.turn import TURN
-from nn.model_contract import unrotate_values_to_canonical
+from nn.model_contract import (
+    ModelInputSpec,
+    ModelKind,
+    normalize_model_type,
+    unrotate_values_to_canonical,
+)
 from nn.transformer import UNIFIED_LOGIT_DIM, build_action_lut
 
 TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
+
+
+def _unwrap_compiled_model(model: torch.nn.Module) -> torch.nn.Module:
+    """Return the underlying module for ``torch.compile`` wrappers."""
+    return getattr(model, "_orig_mod", model)
+
+
+def _transformer_input_spec(num_players: int) -> ModelInputSpec:
+    return ModelInputSpec(
+        model_type=ModelKind.TRANSFORMER.value,
+        num_players=num_players,
+        policy_dim=int(UNIFIED_LOGIT_DIM),
+        value_dim=num_players,
+        input_dim=None,
+        num_tokens=get_num_tokens(num_players),
+        token_dim=TOKEN_DIM,
+        uses_relations=True,
+        values_are_active_relative=False,
+    )
+
+
+def _resnet_input_spec(num_players: int, input_dim: int) -> ModelInputSpec:
+    return ModelInputSpec(
+        model_type=ModelKind.RESNET.value,
+        num_players=num_players,
+        policy_dim=int(UNIFIED_LOGIT_DIM),
+        value_dim=num_players,
+        input_dim=input_dim,
+        num_tokens=None,
+        token_dim=None,
+        uses_relations=False,
+        values_are_active_relative=True,
+    )
+
+
+def _infer_model_input_spec(
+    model: torch.nn.Module,
+    num_players: int,
+) -> ModelInputSpec:
+    """Infer the evaluator input contract from a model's config.
+
+    Older tests and utility call sites construct ``NNEvaluator`` directly
+    without a training config. Preserve that path, but unwrap compiled models
+    first so ResNet evaluators still see ``cfg.input_dim``.
+    """
+    cfg = getattr(_unwrap_compiled_model(model), "cfg", None)
+    if cfg is None:
+        return _transformer_input_spec(num_players)
+
+    model_np = int(getattr(cfg, "num_players", num_players))
+    if model_np != num_players:
+        raise ValueError(
+            f"Model num_players ({model_np}) does not match "
+            f"evaluator num_players ({num_players})"
+        )
+
+    cfg_input_dim = getattr(cfg, "input_dim", None)
+    if cfg_input_dim is None:
+        return _transformer_input_spec(num_players)
+    return _resnet_input_spec(num_players, int(cfg_input_dim))
+
+
+def _validate_model_input_spec(
+    input_spec: ModelInputSpec,
+    num_players: int,
+) -> ModelInputSpec:
+    """Validate the model/evaluator boundary before scratch allocation."""
+    model_kind = normalize_model_type(input_spec.model_type)
+    if int(input_spec.num_players) != num_players:
+        raise ValueError(
+            f"input_spec num_players ({input_spec.num_players}) does not match "
+            f"evaluator num_players ({num_players})"
+        )
+    if int(input_spec.policy_dim) != int(UNIFIED_LOGIT_DIM):
+        raise ValueError(
+            f"input_spec policy_dim ({input_spec.policy_dim}) does not match "
+            f"UNIFIED_LOGIT_DIM ({int(UNIFIED_LOGIT_DIM)})"
+        )
+    if int(input_spec.value_dim) != num_players:
+        raise ValueError(
+            f"input_spec value_dim ({input_spec.value_dim}) does not match "
+            f"num_players ({num_players})"
+        )
+
+    if model_kind is ModelKind.RESNET:
+        expected_input_dim = get_resnet_vector_size(num_players)
+        if input_spec.input_dim is None:
+            raise ValueError("ResNet input_spec.input_dim must be set")
+        if int(input_spec.input_dim) != expected_input_dim:
+            raise ValueError(
+                f"ResNet input_dim ({input_spec.input_dim}) does not match "
+                f"get_resnet_vector_size({num_players}) ({expected_input_dim})"
+            )
+        if input_spec.uses_relations:
+            raise ValueError("ResNet input_spec.uses_relations must be False")
+        if not input_spec.values_are_active_relative:
+            raise ValueError(
+                "ResNet input_spec.values_are_active_relative must be True"
+            )
+        return input_spec
+
+    if input_spec.input_dim is not None:
+        raise ValueError("Transformer input_spec.input_dim must be None")
+    if int(input_spec.num_tokens or -1) != get_num_tokens(num_players):
+        raise ValueError(
+            f"Transformer input_spec.num_tokens ({input_spec.num_tokens}) "
+            f"does not match get_num_tokens({num_players})"
+        )
+    if int(input_spec.token_dim or -1) != TOKEN_DIM:
+        raise ValueError(
+            f"Transformer input_spec.token_dim ({input_spec.token_dim}) "
+            f"does not match TOKEN_DIM ({TOKEN_DIM})"
+        )
+    if not input_spec.uses_relations:
+        raise ValueError("Transformer input_spec.uses_relations must be True")
+    if input_spec.values_are_active_relative:
+        raise ValueError(
+            "Transformer input_spec.values_are_active_relative must be False"
+        )
+    return input_spec
 
 
 def fill_token_buffer(state: Any, buf2d: np.ndarray) -> None:
@@ -211,14 +336,21 @@ class NNEvaluator(BaseEvaluator):
     def __init__(self, model: torch.nn.Module, device: torch.device,
                  num_players: int = 3, *,
                  terminal_rank_weight: float = 0.5,
-                 eval_dtype: str | None = None) -> None:
+                 eval_dtype: str | None = None,
+                 input_spec: ModelInputSpec | None = None) -> None:
         super().__init__(num_players, terminal_rank_weight)
         self.model = model
         self.device = device
         self._autocast_dtype = self._DTYPE_MAP.get(eval_dtype) if eval_dtype else None
         self.model.eval()
-        self._uses_resnet_vectors = False
-        self.resnet_vector_dim = 0
+        if input_spec is None:
+            input_spec = _infer_model_input_spec(model, num_players)
+        self.input_spec = _validate_model_input_spec(input_spec, num_players)
+        model_kind = normalize_model_type(self.input_spec.model_type)
+        self._uses_resnet_vectors = model_kind is ModelKind.RESNET
+        self.resnet_vector_dim = (
+            int(self.input_spec.input_dim) if self._uses_resnet_vectors else 0
+        )
 
         # Preallocated scratch — grows lazily via ``_ensure_scratch``.
         self._scratch_cap: int = 0
@@ -229,29 +361,6 @@ class NNEvaluator(BaseEvaluator):
         # to set mask bits pre-forward and gather sparse priors post-forward;
         # the dense ``evaluate_leaves`` path bypasses it entirely.
         self._action_lut_np: np.ndarray = build_action_lut().numpy()
-
-        # Catch model/player-count mismatch before it reaches boundscheck=False
-        # Cython code. The new transformer config only exposes num_players
-        # (action-space width is set by PHASE_ACTION_SIZES, shared via
-        # core.data.ActionSize; value-head width always tracks num_players).
-        cfg = getattr(model, "cfg", None)
-        if cfg is not None:
-            model_np = getattr(cfg, "num_players", num_players)
-            if model_np != num_players:
-                raise ValueError(
-                    f"Model num_players ({model_np}) does not match "
-                    f"evaluator num_players ({num_players})"
-                )
-            cfg_input_dim = getattr(cfg, "input_dim", None)
-            if cfg_input_dim is not None:
-                expected_input_dim = get_resnet_vector_size(num_players)
-                if int(cfg_input_dim) != expected_input_dim:
-                    raise ValueError(
-                        f"ResNet input_dim ({cfg_input_dim}) does not match "
-                        f"get_resnet_vector_size({num_players}) ({expected_input_dim})"
-                    )
-                self._uses_resnet_vectors = True
-                self.resnet_vector_dim = expected_input_dim
 
     # ------------------------------------------------------------------
     # Preallocated scratch

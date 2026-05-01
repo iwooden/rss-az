@@ -36,6 +36,7 @@ from core.state import GameState, get_layout
 from entities.player import PLAYERS
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool, run_search
+from nn import get_model_input_spec
 from train.checkpoint import load_model_from_checkpoint
 from train.config import MCTSConfig, TrainingConfig
 
@@ -50,6 +51,7 @@ class ModelEntry:
     path: Path
     epoch: int
     model: torch.nn.Module
+    config: TrainingConfig
     label: str  # short display name
 
 
@@ -267,8 +269,13 @@ def run_tournament(
 ) -> tuple[list[GameResult], float]:
     """Run the full tournament. Returns (results, elapsed_seconds)."""
     evaluators = [
-        NNEvaluator(e.model, device, num_players=num_players,
-                     terminal_rank_weight=terminal_rank_weight)
+        NNEvaluator(
+            e.model,
+            device,
+            num_players=num_players,
+            terminal_rank_weight=terminal_rank_weight,
+            input_spec=get_model_input_spec(e.config),
+        )
         for e in entries
     ]
 
@@ -402,7 +409,7 @@ def main() -> None:
                 sys.exit(1)
 
         label = f"epoch {epoch}" if epoch >= 0 else f"model {i}"
-        entries.append(ModelEntry(cp_path, epoch, model, label))
+        entries.append(ModelEntry(cp_path, epoch, model, config, label))
         print(f"  [{i}] {label}: {cp_path.name}")
 
     assert ref_config is not None
