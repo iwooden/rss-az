@@ -3,13 +3,11 @@
 Dense unified-slot contract: batches carry compact int16 game states,
 dense ``legal_mask`` + ``policy_target`` rows over the model's unified
 logit space, canonical per-player ``value_target``, and a pure-reporting
-``phase_id`` that the model never sees. The trainer materializes the
-``(batch, num_tokens, token_dim)`` float32 token buffer and
-``(batch, num_relations, num_tokens, num_tokens)`` uint8 relation planes at
-training time from those compact states, then runs policy cross-entropy
-directly against the dense softmax (illegal slots are masked to -1e9 by the
-model and carry 0 in the target, so their log-probs contribute nothing to
-the loss).
+``phase_id`` that the model never sees. The trainer materializes
+model-family-specific inputs at training time from those compact states:
+transformer tokens plus relation planes, or dense active-relative ResNet
+vectors. Replay value targets stay canonical; ResNet targets are rotated to
+active-relative order only in the trainer loss path.
 """
 
 from __future__ import annotations
@@ -23,8 +21,14 @@ import torch
 import torch.nn.functional as F
 
 from core.attention_relations import NUM_ATTENTION_RELATIONS
-from core.state import get_layout
+from core.resnet_data import get_resnet_data_batch, get_resnet_vector_size
+from core.state import get_layout, get_turn_fields
 from core.token_data import TokenDataSize, get_num_tokens, get_token_data_batch
+from nn.model_contract import (
+    ModelKind,
+    normalize_model_type,
+    rotate_values_to_relative,
+)
 from nn.transformer import (
     NUM_PHASES,
     PHASES_WITH_PASS_HEAD,
@@ -66,7 +70,18 @@ class Trainer:
 
         self._num_players = config.num_players
         self._num_tokens = get_num_tokens(config.num_players)
-        self._state_size = get_layout(config.num_players).total_size
+        layout = get_layout(config.num_players)
+        turn_fields = get_turn_fields()
+        self._state_size = layout.total_size
+        self._active_player_state_offset = (
+            layout.turn_offset + turn_fields.active_player
+        )
+        self._model_kind = normalize_model_type(config.model_type)
+        self._uses_resnet_vectors = self._model_kind is ModelKind.RESNET
+        self._resnet_vector_dim = (
+            get_resnet_vector_size(config.num_players)
+            if self._uses_resnet_vectors else 0
+        )
 
         # Lazy pinned host + device scratch (see _ensure_scratch).
         self._scratch_cap: int = 0
@@ -220,12 +235,21 @@ class Trainer:
         self._states_np = np.empty((cap, self._state_size), dtype=np.int16)
 
         # Pinned host (on CUDA). Exposed as numpy for buffer fills.
-        self._tok_h = torch.empty((cap, nt, td), dtype=torch.float32, pin_memory=pm)
-        self._tok_h_np = self._tok_h.numpy()
-        self._rel_h = torch.empty(
-            (cap, nr, nt, nt), dtype=torch.uint8, pin_memory=pm,
-        )
-        self._rel_h_np = self._rel_h.numpy()
+        if self._uses_resnet_vectors:
+            self._vec_h = torch.empty(
+                (cap, self._resnet_vector_dim), dtype=torch.float32,
+                pin_memory=pm,
+            )
+            self._vec_h_np = self._vec_h.numpy()
+        else:
+            self._tok_h = torch.empty(
+                (cap, nt, td), dtype=torch.float32, pin_memory=pm,
+            )
+            self._tok_h_np = self._tok_h.numpy()
+            self._rel_h = torch.empty(
+                (cap, nr, nt, nt), dtype=torch.uint8, pin_memory=pm,
+            )
+            self._rel_h_np = self._rel_h.numpy()
         self._phase_h = torch.empty(cap, dtype=torch.long, pin_memory=pm)
         self._phase_h_np = self._phase_h.numpy()
         self._mask_h = torch.empty((cap, U_DIM), dtype=torch.uint8, pin_memory=pm)
@@ -236,12 +260,18 @@ class Trainer:
         self._vt_h_np = self._vt_h.numpy()
 
         if pm:
-            self._tok_d = torch.empty(
-                (cap, nt, td), dtype=torch.float32, device=self.device,
-            )
-            self._rel_d = torch.empty(
-                (cap, nr, nt, nt), dtype=torch.uint8, device=self.device,
-            )
+            if self._uses_resnet_vectors:
+                self._vec_d = torch.empty(
+                    (cap, self._resnet_vector_dim), dtype=torch.float32,
+                    device=self.device,
+                )
+            else:
+                self._tok_d = torch.empty(
+                    (cap, nt, td), dtype=torch.float32, device=self.device,
+                )
+                self._rel_d = torch.empty(
+                    (cap, nr, nt, nt), dtype=torch.uint8, device=self.device,
+                )
             self._phase_d = torch.empty(cap, dtype=torch.long, device=self.device)
             self._mask_d = torch.empty(
                 (cap, U_DIM), dtype=torch.uint8, device=self.device,
@@ -251,8 +281,11 @@ class Trainer:
             )
             self._vt_d = torch.empty((cap, N), dtype=torch.float32, device=self.device)
         else:
-            self._tok_d = self._tok_h
-            self._rel_d = self._rel_h
+            if self._uses_resnet_vectors:
+                self._vec_d = self._vec_h
+            else:
+                self._tok_d = self._tok_h
+                self._rel_d = self._rel_h
             self._phase_d = self._phase_h
             self._mask_d = self._mask_h
             self._pt_d = self._pt_h
@@ -267,8 +300,11 @@ class Trainer:
         """
         if self.device.type != "cuda":
             return
-        self._tok_d[:n].copy_(self._tok_h[:n], non_blocking=True)
-        self._rel_d[:n].copy_(self._rel_h[:n], non_blocking=True)
+        if self._uses_resnet_vectors:
+            self._vec_d[:n].copy_(self._vec_h[:n], non_blocking=True)
+        else:
+            self._tok_d[:n].copy_(self._tok_h[:n], non_blocking=True)
+            self._rel_d[:n].copy_(self._rel_h[:n], non_blocking=True)
         self._phase_d[:n].copy_(self._phase_h[:n], non_blocking=True)
         self._mask_d[:n].copy_(self._mask_h[:n], non_blocking=True)
         self._pt_d[:n].copy_(self._pt_h[:n], non_blocking=True)
@@ -284,6 +320,39 @@ class Trainer:
             self._num_players,
             self._tok_h_np[:n],
         )
+
+    def _fill_resnet_vector_batch(self, n: int) -> None:
+        """Fill ``_vec_h_np[:n]`` from ``_states_np[:n]`` for ResNet."""
+        get_resnet_data_batch(
+            [self._states_np[i] for i in range(n)],
+            self._num_players,
+            self._vec_h_np[:n],
+        )
+
+    def _rotate_value_targets_to_relative(self, n: int) -> None:
+        """Rotate sampled canonical value targets for the ResNet value head."""
+        canonical_targets = self._vt_h_np[:n].copy()
+        for i in range(n):
+            active_player = int(
+                self._states_np[i, self._active_player_state_offset]
+            )
+            self._vt_h_np[i] = rotate_values_to_relative(
+                canonical_targets[i],
+                active_player,
+                self._num_players,
+            )
+
+    def _pass_action_logit_abs(
+        self,
+        policy_logits: torch.Tensor,
+        legal_masks: torch.Tensor,
+        phase_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return optional pass/action logit-scale diagnostics."""
+        diagnostic = getattr(self._base_model, "pass_action_logit_abs", None)
+        if callable(diagnostic):
+            return diagnostic(policy_logits, legal_masks, phase_ids)
+        return policy_logits.new_zeros(2 * len(PHASES_WITH_PASS_HEAD))
 
     def train_step(
         self,
@@ -314,7 +383,7 @@ class Trainer:
             self._mask_h_np[:B],
             self._pt_h_np[:B],
             self._vt_h_np[:B],
-            relations_out=self._rel_h_np[:B],
+            relations_out=None if self._uses_resnet_vectors else self._rel_h_np[:B],
         )
 
         # NaN in any training target is a self-play inference bug —
@@ -328,14 +397,17 @@ class Trainer:
                     f"NaN in sampled '{name}' at step {self._global_step}"
                 )
 
-        # Tokenize states into pinned host tokens buffer.
-        self._fill_token_batch(B)
+        # Materialize model-family-specific inputs and align ResNet value
+        # targets with its active-relative output order.
+        if self._uses_resnet_vectors:
+            self._fill_resnet_vector_batch(B)
+            self._rotate_value_targets_to_relative(B)
+        else:
+            self._fill_token_batch(B)
 
         # Async H→D on CUDA; aliased no-op on CPU.
         self._h2d(B)
 
-        tokens = self._tok_d[:B]
-        relations = self._rel_d[:B]
         phase_ids = self._phase_d[:B]
         legal_masks = self._mask_d[:B].to(torch.bool)
         policy_targets = self._pt_d[:B]
@@ -353,7 +425,12 @@ class Trainer:
         # The model returns logits with illegal slots already masked to
         # -1e9 via ``legal_masks``, so log_softmax normalizes over the
         # legal set only (illegal log-probs are ~-∞ × 0 = 0 in the loss).
-        policy_logits, values = self.model(tokens, legal_masks, relations)
+        if self._uses_resnet_vectors:
+            policy_logits, values = self.model(self._vec_d[:B], legal_masks)
+        else:
+            policy_logits, values = self.model(
+                self._tok_d[:B], legal_masks, self._rel_d[:B],
+            )
 
         # Policy loss: dense cross-entropy over the unified slot space.
         # ``policy_targets`` is zero on illegal slots, so only legal slots
@@ -364,8 +441,8 @@ class Trainer:
         policy_loss = per_example_policy_loss.mean()
 
         # Value loss: mean squared error over the full (B, N) value tensor.
-        # This keeps each sampled position at a stable scale instead of
-        # magnifying the loss by the player count.
+        # Transformer outputs canonical values; ResNet outputs active-relative
+        # values and uses value_targets rotated above.
         value_loss = F.mse_loss(values, value_targets)
 
         # Combined loss
@@ -396,7 +473,7 @@ class Trainer:
         # ``pass_stats`` carries (pass_abs, action_abs) interleaved over the
         # phases in PHASES_WITH_PASS_HEAD — used to detect logit-scale drift
         # between the Linear(d, 1) pass heads and the q·k/√dp scored logits.
-        pass_stats = self._base_model.pass_action_logit_abs(
+        pass_stats = self._pass_action_logit_abs(
             policy_logits, legal_masks, phase_ids,
         )
         all_scalars = torch.cat([

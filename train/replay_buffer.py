@@ -6,11 +6,10 @@ TB reporting, dense ``legal_mask`` + ``policy_target`` rows over
 ``UNIFIED_LOGIT_DIM`` unified logit slots, and canonical-order per-player
 ``value_target``.
 
-The trainer is responsible for calling ``core.token_data.get_token_data``
-and ``core.relations.get_relation_data`` per sampled state at training time
-to materialize the ``(num_tokens, token_dim)`` float32 token buffer and
-``(num_relations, num_tokens, num_tokens)`` uint8 relation planes. Keeping
-replay in compact state form avoids storing derived NN inputs twice.
+The trainer is responsible for materializing model-family-specific inputs per
+sampled state at training time: transformer token/relation tensors or ResNet
+dense vectors. Keeping replay in compact state form avoids storing derived NN
+inputs twice and keeps canonical value targets shared by both model families.
 """
 
 from __future__ import annotations
@@ -134,7 +133,7 @@ class ReplayBuffer:
         """Sample a random batch. Returns dict of torch tensors (CPU).
 
         Relation planes are generated from the sampled compact states rather
-        than stored in the ring buffer, matching the trainer hot path.
+        than stored in the ring buffer for transformer-oriented callers.
 
         Raises ValueError if batch_size > current buffer size.
         """
@@ -186,7 +185,7 @@ class ReplayBuffer:
         wider than the stored dtype (e.g. int64); widening happens
         during the fancy-index copy. If ``relations_out`` is supplied,
         relation planes are generated from the sampled states into that
-        caller-owned scratch buffer.
+        caller-owned scratch buffer; ResNet callers leave it as ``None``.
         """
         if batch_size > self._size:
             raise ValueError(
