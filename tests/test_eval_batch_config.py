@@ -58,6 +58,17 @@ def test_cli_overrides_dirichlet_epsilon() -> None:
     assert config.dirichlet_epsilon == 0.15
 
 
+def test_cli_overrides_buffer_capacity() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["--buffer-capacity", "250000"])
+    config = TrainingConfig()
+
+    _apply_overrides(config, args)
+    config.validate()
+
+    assert config.buffer_capacity == 250_000
+
+
 def test_training_config_rejects_unknown_eval_batch_shape_mode() -> None:
     with pytest.raises(ValueError, match="eval_batch_shape_mode"):
         TrainingConfig(eval_batch_shape_mode="wrong")

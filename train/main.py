@@ -79,6 +79,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--search-batch-size", type=int)
     parser.add_argument("--num-workers", type=int)
     parser.add_argument("--num-eval-servers", type=int)
+    parser.add_argument("--buffer-capacity", type=int)
     parser.add_argument(
         "--eval-min-batch-size", type=int,
         help="Minimum GPU batch size in states before launching a forward "
@@ -204,6 +205,7 @@ _CLI_FIELDS = (
     "num_simulations", "search_batch_size",
     "mcts_sims_start", "mcts_sims_end", "mcts_ramp_start_epoch", "mcts_ramp_end_epoch",
     "num_workers", "num_eval_servers",
+    "buffer_capacity",
     "eval_min_batch_size", "eval_min_batch_timeout_ms",
     "eval_batch_shape_mode", "eval_max_batch_size",
     "checkpoint_dir", "tensorboard_dir", "seed",
