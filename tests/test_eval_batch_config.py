@@ -47,6 +47,17 @@ def test_cli_overrides_policy_target_temperature_schedule() -> None:
     assert config.policy_target_temp_anneal_end == 100
 
 
+def test_cli_overrides_dirichlet_epsilon() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["--dirichlet-epsilon", "0.15"])
+    config = TrainingConfig()
+
+    _apply_overrides(config, args)
+    config.validate()
+
+    assert config.dirichlet_epsilon == 0.15
+
+
 def test_training_config_rejects_unknown_eval_batch_shape_mode() -> None:
     with pytest.raises(ValueError, match="eval_batch_shape_mode"):
         TrainingConfig(eval_batch_shape_mode="wrong")

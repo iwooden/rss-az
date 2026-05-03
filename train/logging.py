@@ -268,6 +268,15 @@ class TrainingLogger:
             f"(anneal moves {config.policy_target_temp_anneal_start}\u2013"
             f"{config.policy_target_temp_anneal_end})",
         )
+        dirichlet_alpha = (
+            f"{config.dirichlet_alpha_numerator:g}/K"
+            if config.dirichlet_dynamic
+            else f"{config.dirichlet_alpha:g}"
+        )
+        table.add_row(
+            "Dirichlet",
+            f"epsilon={config.dirichlet_epsilon:g}, alpha={dirichlet_alpha}",
+        )
         table.add_row(
             "c_puct",
             f"{config.c_puct_initial} \u2192 {config.c_puct_final} "

@@ -140,6 +140,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Global-norm gradient clip (default: 1.0; pass 0 to disable)",
     )
     parser.add_argument("--dirichlet-alpha", type=float)
+    parser.add_argument("--dirichlet-epsilon", type=float)
     dyn_group = parser.add_mutually_exclusive_group()
     dyn_group.add_argument(
         "--dirichlet-dynamic", action="store_true", default=None,
@@ -213,7 +214,8 @@ _CLI_FIELDS = (
     "value_blend_start_epoch", "value_blend_end_epoch",
     "terminal_blend", "lr_min", "warmup_epochs", "lr_decay_end_epoch",
     "optimizer", "grad_clip",
-    "dirichlet_alpha", "dirichlet_dynamic", "dirichlet_alpha_numerator",
+    "dirichlet_alpha", "dirichlet_epsilon",
+    "dirichlet_dynamic", "dirichlet_alpha_numerator",
 )
 
 
