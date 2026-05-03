@@ -135,6 +135,15 @@ class TrainingConfig:
     temp_anneal_end: int = 120
     temp_final: float = 0.5
 
+    # --- Policy target temperature schedule ---
+    # Independent temperature applied to the MCTS visit-count distribution
+    # before storing replay policy targets. Defaults match the historical
+    # action-temperature schedule used by production 3p training.
+    policy_target_temp_initial: float = 1.0
+    policy_target_temp_anneal_start: int = 60
+    policy_target_temp_anneal_end: int = 120
+    policy_target_temp_final: float = 0.5
+
     # --- MCTS simulation ramp (linear) ---
     # When set, num_simulations ramps linearly from mcts_sims_start to
     # mcts_sims_end between mcts_ramp_start_epoch and mcts_ramp_end_epoch.
@@ -298,6 +307,13 @@ class TrainingConfig:
             raise ValueError(
                 f"temp_anneal_start ({self.temp_anneal_start}) must be <= "
                 f"temp_anneal_end ({self.temp_anneal_end})"
+            )
+        if self.policy_target_temp_anneal_start > self.policy_target_temp_anneal_end:
+            raise ValueError(
+                "policy_target_temp_anneal_start "
+                f"({self.policy_target_temp_anneal_start}) must be <= "
+                "policy_target_temp_anneal_end "
+                f"({self.policy_target_temp_anneal_end})"
             )
 
         # c_puct annealing

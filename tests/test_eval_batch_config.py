@@ -28,9 +28,36 @@ def test_cli_overrides_eval_batch_shape_mode_and_eval_max_batch_size() -> None:
     assert config.eval_max_batch_size == 16
 
 
+def test_cli_overrides_policy_target_temperature_schedule() -> None:
+    parser = _build_parser()
+    args = parser.parse_args([
+        "--policy-target-temp-initial", "1.0",
+        "--policy-target-temp-final", "0.25",
+        "--policy-target-temp-anneal-start", "40",
+        "--policy-target-temp-anneal-end", "100",
+    ])
+    config = TrainingConfig()
+
+    _apply_overrides(config, args)
+    config.validate()
+
+    assert config.policy_target_temp_initial == 1.0
+    assert config.policy_target_temp_final == 0.25
+    assert config.policy_target_temp_anneal_start == 40
+    assert config.policy_target_temp_anneal_end == 100
+
+
 def test_training_config_rejects_unknown_eval_batch_shape_mode() -> None:
     with pytest.raises(ValueError, match="eval_batch_shape_mode"):
         TrainingConfig(eval_batch_shape_mode="wrong")
+
+
+def test_training_config_rejects_inverted_policy_target_temp_schedule() -> None:
+    with pytest.raises(ValueError, match="policy_target_temp_anneal_start"):
+        TrainingConfig(
+            policy_target_temp_anneal_start=120,
+            policy_target_temp_anneal_end=60,
+        )
 
 
 def test_training_config_rejects_price_slot_residual_blend_out_of_range() -> None:

@@ -257,9 +257,16 @@ class TrainingLogger:
         table.add_row("Weight decay", f"{config.weight_decay:.1e}")
         table.add_row("Buffer capacity", f"{config.buffer_capacity:,}")
         table.add_row(
-            "Temperature",
+            "Action temp",
             f"{config.temp_initial} \u2192 {config.temp_final} "
             f"(anneal moves {config.temp_anneal_start}\u2013{config.temp_anneal_end})",
+        )
+        table.add_row(
+            "Target temp",
+            f"{config.policy_target_temp_initial} \u2192 "
+            f"{config.policy_target_temp_final} "
+            f"(anneal moves {config.policy_target_temp_anneal_start}\u2013"
+            f"{config.policy_target_temp_anneal_end})",
         )
         table.add_row(
             "c_puct",

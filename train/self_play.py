@@ -103,20 +103,46 @@ class GameRecord:
     profile: GameProfileData | None = None
 
 
-def _compute_temperature(move_count: int, config: TrainingConfig) -> float:
-    """Compute temperature for the current move using the linear ramp schedule.
-
-    Schedule: temp_initial from move 0 to temp_anneal_start, then linearly
-    decreases to temp_final at temp_anneal_end. Stays at temp_final after.
-    """
-    if move_count <= config.temp_anneal_start:
-        return config.temp_initial
-    if move_count >= config.temp_anneal_end:
-        return config.temp_final
+def _compute_linear_temperature(
+    move_count: int,
+    initial: float,
+    anneal_start: int,
+    anneal_end: int,
+    final: float,
+) -> float:
+    """Compute a move-indexed linear temperature schedule."""
+    if move_count <= anneal_start:
+        return initial
+    if move_count >= anneal_end:
+        return final
     # Linear interpolation
-    span = config.temp_anneal_end - config.temp_anneal_start
-    t = (move_count - config.temp_anneal_start) / span
-    return config.temp_initial + t * (config.temp_final - config.temp_initial)
+    span = anneal_end - anneal_start
+    t = (move_count - anneal_start) / span
+    return initial + t * (final - initial)
+
+
+def _compute_temperature(move_count: int, config: TrainingConfig) -> float:
+    """Compute action-sampling temperature for the current move."""
+    return _compute_linear_temperature(
+        move_count,
+        config.temp_initial,
+        config.temp_anneal_start,
+        config.temp_anneal_end,
+        config.temp_final,
+    )
+
+
+def _compute_policy_target_temperature(
+    move_count: int, config: TrainingConfig,
+) -> float:
+    """Compute policy-target temperature for the current move."""
+    return _compute_linear_temperature(
+        move_count,
+        config.policy_target_temp_initial,
+        config.policy_target_temp_anneal_start,
+        config.policy_target_temp_anneal_end,
+        config.policy_target_temp_final,
+    )
 
 
 def play_game(
@@ -192,12 +218,17 @@ def play_game(
             profile=search_stats,
         )
 
-        # Sparse policy target: raw visit-count proportions over legal actions.
+        # Sparse policy target: temperature-shaped visit-count proportions
+        # over legal actions. Setting policy_target_temp_* to a constant 1.0
+        # recovers raw visit-count targets.
         assert root.visit_counts is not None
         counts = root.visit_counts.astype(np.float32)
         counts_sum = float(counts.sum())
         assert counts_sum > 0.0, "run_search produced zero total visits"
-        policy_target_sparse = counts / counts_sum
+        target_temperature = _compute_policy_target_temperature(move_count, config)
+        policy_target_sparse = scale_visit_counts_by_temperature(
+            counts, target_temperature,
+        )
 
         # A0GB value target — already canonical (no np.roll).
         value_target = get_greedy_leaf_value(root, num_players)

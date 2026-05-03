@@ -109,6 +109,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--temp-anneal-start", type=int)
     parser.add_argument("--temp-anneal-end", type=int)
     parser.add_argument("--temp-final", type=float)
+    parser.add_argument("--policy-target-temp-initial", type=float)
+    parser.add_argument("--policy-target-temp-anneal-start", type=int)
+    parser.add_argument("--policy-target-temp-anneal-end", type=int)
+    parser.add_argument("--policy-target-temp-final", type=float)
     parser.add_argument("--c-puct-initial", type=float)
     parser.add_argument("--c-puct-final", type=float)
     parser.add_argument("--c-puct-anneal-epochs", type=int)
@@ -203,6 +207,8 @@ _CLI_FIELDS = (
     "eval_batch_shape_mode", "eval_max_batch_size",
     "checkpoint_dir", "tensorboard_dir", "seed",
     "temp_initial", "temp_anneal_start", "temp_anneal_end", "temp_final",
+    "policy_target_temp_initial", "policy_target_temp_anneal_start",
+    "policy_target_temp_anneal_end", "policy_target_temp_final",
     "c_puct_initial", "c_puct_final", "c_puct_anneal_epochs",
     "value_blend_start_epoch", "value_blend_end_epoch",
     "terminal_blend", "lr_min", "warmup_epochs", "lr_decay_end_epoch",
