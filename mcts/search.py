@@ -48,6 +48,7 @@ from nn.transformer import UNIFIED_LOGIT_DIM, build_action_lut
 
 
 U_DIM = int(UNIFIED_LOGIT_DIM)
+_GREEDY_TEMPERATURE = 1e-8
 
 
 class StatePool:
@@ -550,20 +551,46 @@ def get_action_probabilities(
         return probs
     assert root.visit_counts is not None
 
-    counts = root.visit_counts
+    scaled = scale_visit_counts_by_temperature(root.visit_counts, temperature)
+    probs[root.legal_actions] = scaled
 
-    if temperature < 1e-8:
-        # Greedy: pick the most-visited action
-        best_idx = int(np.argmax(counts))
-        probs[root.legal_actions[best_idx]] = 1.0
+    return probs
+
+
+def scale_visit_counts_by_temperature(
+    counts: np.ndarray,
+    temperature: float,
+) -> np.ndarray:
+    """Return a sparse probability row from MCTS visits.
+
+    Directly computing ``counts ** (1 / temperature)`` overflows quickly for
+    low temperatures: with float32 visits and ``temperature=0.01``, even
+    ``3 ** 100`` is already above the finite range. Log-space softmax keeps the
+    exact same distribution without producing ``inf / inf``.
+    """
+    counts64 = np.asarray(counts, dtype=np.float64)
+    probs = np.zeros(counts64.shape, dtype=np.float32)
+    if counts64.size == 0:
         return probs
 
-    # Temperature-scaled visit counts
-    scaled = counts.astype(np.float32) ** (1.0 / temperature)
-    total = scaled.sum()
-    if total > 0:
-        scaled /= total
-    probs[root.legal_actions] = scaled
+    if not np.isfinite(temperature):
+        raise ValueError(f"temperature must be finite, got {temperature}")
+
+    if temperature < _GREEDY_TEMPERATURE:
+        best_idx = int(np.argmax(counts64))
+        probs[best_idx] = 1.0
+        return probs
+
+    positive = counts64 > 0.0
+    if not np.any(positive):
+        return probs
+
+    log_weights = np.log(counts64[positive]) / float(temperature)
+    log_weights -= float(np.max(log_weights))
+    weights = np.exp(log_weights)
+    total = float(weights.sum())
+    if total > 0.0:
+        probs[positive] = (weights / total).astype(np.float32)
 
     return probs
 

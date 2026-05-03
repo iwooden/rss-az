@@ -34,7 +34,13 @@ from entities.company import COMPANIES
 from entities.corp import CORPS
 from entities.player import PLAYERS
 from mcts.evaluator import compute_terminal_values
-from mcts.search import StatePool, get_greedy_leaf_value, prepare_reuse_root, run_search
+from mcts.search import (
+    StatePool,
+    get_greedy_leaf_value,
+    prepare_reuse_root,
+    run_search,
+    scale_visit_counts_by_temperature,
+)
 from nn.transformer import UNIFIED_LOGIT_DIM, build_action_lut
 from train.config import EpochConfig, TrainingConfig
 from train.eval_server import RemoteEvaluator
@@ -198,12 +204,7 @@ def play_game(
 
         # Temperature-scaled sampling distribution over the same sparse list.
         temperature = _compute_temperature(move_count, config)
-        if temperature < 1e-8:
-            sample_probs = np.zeros(n_legal, dtype=np.float32)
-            sample_probs[int(np.argmax(counts))] = 1.0
-        else:
-            temp_scaled = counts ** (1.0 / temperature)
-            sample_probs = (temp_scaled / temp_scaled.sum()).astype(np.float32)
+        sample_probs = scale_visit_counts_by_temperature(counts, temperature)
 
         # Stats: entropy of the raw visit distribution, top-1 of the
         # temperature-scaled sampling distribution.

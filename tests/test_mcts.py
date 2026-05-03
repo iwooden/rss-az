@@ -55,6 +55,7 @@ from mcts.search import (
     get_greedy_leaf_value,
     prepare_reuse_root,
     run_search,
+    scale_visit_counts_by_temperature,
 )
 from nn.transformer import RSSTransformerNet, TransformerConfig, UNIFIED_LOGIT_DIM, build_action_lut
 from train.config import MCTSConfig
@@ -1120,6 +1121,27 @@ class TestMCTSSearch:
         assert probs.shape == (int(MAX_ACTION_SIZE),)
         assert probs.sum() == pytest.approx(1.0)
         assert (probs == 1.0).sum() == 1
+
+    def test_low_temperature_probabilities_stay_finite(self):
+        counts = np.array([800, 799, 3, 0], dtype=np.float32)
+        sparse_probs = scale_visit_counts_by_temperature(counts, temperature=0.01)
+
+        assert sparse_probs.dtype == np.float32
+        assert np.isfinite(sparse_probs).all()
+        assert sparse_probs.sum() == pytest.approx(1.0, abs=1e-6)
+        assert sparse_probs[0] > sparse_probs[1] > sparse_probs[2]
+        assert sparse_probs[3] == 0.0
+
+        root = _make_expanded_node(
+            active_player=0,
+            num_actions=4,
+            visit_counts=counts.astype(np.int32),
+        )
+        dense_probs = get_action_probabilities(root, temperature=0.01)
+
+        assert np.isfinite(dense_probs).all()
+        assert dense_probs.sum() == pytest.approx(1.0, abs=1e-6)
+        np.testing.assert_allclose(dense_probs[:4], sparse_probs, atol=1e-7)
 
     def test_probabilities_zero_on_illegal_actions(self, search_root):
         """Dense probs vector has mass only at sparse legal ids."""
