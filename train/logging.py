@@ -57,8 +57,10 @@ class TrainingLogger:
         self._sp_rank_net_worths: list[float] = []
         self._sp_rank_mins: list[float] = []
         self._sp_rank_maxs: list[float] = []
-        self._sp_policy_entropy: float = 0.0
-        self._sp_top1_visit_frac: float = 0.0
+        self._sp_target_entropy: float = 0.0
+        self._sp_target_top1_frac: float = 0.0
+        self._sp_sample_entropy: float = 0.0
+        self._sp_sample_top1_frac: float = 0.0
 
         # Training state for panel building
         self._tr_epoch = 0
@@ -82,8 +84,10 @@ class TrainingLogger:
         self._sp_rank_net_worths = []
         self._sp_rank_mins = []
         self._sp_rank_maxs = []
-        self._sp_policy_entropy = 0.0
-        self._sp_top1_visit_frac = 0.0
+        self._sp_target_entropy = 0.0
+        self._sp_target_top1_frac = 0.0
+        self._sp_sample_entropy = 0.0
+        self._sp_sample_top1_frac = 0.0
         self._phase_start = time.perf_counter()
 
         self._live = Live(
@@ -101,8 +105,10 @@ class TrainingLogger:
         rank_net_worths: list[float] | None = None,
         rank_mins: list[float] | None = None,
         rank_maxs: list[float] | None = None,
-        policy_entropy: float | None = None,
-        top1_visit_frac: float | None = None,
+        target_entropy: float | None = None,
+        target_top1_frac: float | None = None,
+        sample_entropy: float | None = None,
+        sample_top1_frac: float | None = None,
     ) -> None:
         self._sp_games_done = games_done
         self._sp_total_examples = total_examples
@@ -113,10 +119,14 @@ class TrainingLogger:
             self._sp_rank_mins = rank_mins
         if rank_maxs is not None:
             self._sp_rank_maxs = rank_maxs
-        if policy_entropy is not None:
-            self._sp_policy_entropy = policy_entropy
-        if top1_visit_frac is not None:
-            self._sp_top1_visit_frac = top1_visit_frac
+        if target_entropy is not None:
+            self._sp_target_entropy = target_entropy
+        if target_top1_frac is not None:
+            self._sp_target_top1_frac = target_top1_frac
+        if sample_entropy is not None:
+            self._sp_sample_entropy = sample_entropy
+        if sample_top1_frac is not None:
+            self._sp_sample_top1_frac = sample_top1_frac
         if self._live is not None:
             self._live.update(self._build_self_play_panel())
 
@@ -147,8 +157,10 @@ class TrainingLogger:
             lines.append(f"Net worth: {', '.join(parts)}\n")
         if self._sp_games_done > 0:
             lines.append(
-                f"Policy entropy: {self._sp_policy_entropy:.3f} nats    "
-                f"Top-1 visit frac: {self._sp_top1_visit_frac:.1%}\n"
+                f"Target policy: H={self._sp_target_entropy:.3f} nats, "
+                f"top-1={self._sp_target_top1_frac:.1%}\n"
+                f"Sample policy: H={self._sp_sample_entropy:.3f} nats, "
+                f"top-1={self._sp_sample_top1_frac:.1%}\n"
             )
         lines.append(f"Elapsed: {_format_duration(elapsed)}")
         return Panel(
@@ -199,7 +211,10 @@ class TrainingLogger:
         pl = self._tr_losses.get("policy_loss", 0.0)
         vl = self._tr_losses.get("value_loss", 0.0)
         tl = self._tr_losses.get("total_loss", 0.0)
+        th = self._tr_losses.get("policy_target_entropy", 0.0)
+        kl = self._tr_losses.get("policy_kl", 0.0)
         lines.append(f"Loss: policy={pl:.3f}  value={vl:.3f}  total={tl:.3f}\n")
+        lines.append(f"Policy fit: target_H={th:.3f}  policy_KL={kl:.3f}\n")
         lines.append(f"LR: {self._tr_lr:.2e}    Elapsed: {_format_duration(elapsed)}")
         return Panel(
             lines,
@@ -340,17 +355,26 @@ class TrainingLogger:
         )
         if nw_str:
             self.console.print(f"{pad}{nw_str}")
-        pol_ent = self_play_stats.get("policy_entropy", 0.0)
-        top1_vf = self_play_stats.get("top1_visit_frac", 0.0)
+        target_entropy = self_play_stats.get("policy_target_entropy", 0.0)
+        target_top1 = self_play_stats.get("policy_target_top1_frac", 0.0)
+        sample_entropy = self_play_stats.get("sample_policy_entropy", 0.0)
+        sample_top1 = self_play_stats.get("sample_top1_frac", 0.0)
         if games > 0:
             self.console.print(
-                f"{pad}  Policy entropy: {pol_ent:.3f} nats, "
-                f"top-1 visit frac: {top1_vf:.1%}"
+                f"{pad}  Target policy: H={target_entropy:.3f} nats, "
+                f"top-1={target_top1:.1%}"
+            )
+            self.console.print(
+                f"{pad}  Sample policy: H={sample_entropy:.3f} nats, "
+                f"top-1={sample_top1:.1%}"
             )
         if steps > 0:
+            th = train_stats.get("policy_target_entropy", 0.0)
+            kl = train_stats.get("policy_kl", 0.0)
             self.console.print(
                 f"{pad}  Training: {steps:,} steps, loss={tl:.3f} "
-                f"(policy={pl:.3f} value={vl:.3f}) lr={lr:.2e}"
+                f"(policy={pl:.3f} value={vl:.3f}) "
+                f"target_H={th:.3f} policy_KL={kl:.3f} lr={lr:.2e}"
             )
         self.console.print(
             f"{pad}  Buffer: {buffer_size:,}/{buffer_capacity:,} ({pct:.1f}%)  "

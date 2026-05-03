@@ -98,8 +98,12 @@ class GameRecord:
     corps_in_receivership: int  # Number of corps in receivership
     has_max_price_corp: bool  # Whether any active corp finished at max share price (75)
     duration_secs: float  # Wall-clock time
-    policy_entropy_mean: float = 0.0  # Mean entropy of MCTS policy targets (nats)
-    top1_visit_fraction: float = 0.0  # Mean fraction of visits on top action
+    policy_entropy_mean: float = 0.0  # Legacy alias: policy target entropy
+    top1_visit_fraction: float = 0.0  # Legacy alias: sample top-1 fraction
+    policy_target_entropy_mean: float = 0.0  # Mean target entropy (nats)
+    policy_target_top1_fraction: float = 0.0  # Mean target top-1 mass
+    sample_policy_entropy_mean: float = 0.0  # Mean action-sampling entropy (nats)
+    sample_top1_action_fraction: float = 0.0  # Mean action-sampling top-1 mass
     profile: GameProfileData | None = None
 
 
@@ -191,8 +195,10 @@ def play_game(
             evaluator.reset_profile_stats()
 
     examples: list[SelfPlayExample] = []
-    entropy_sum = 0.0
-    top1_sum = 0.0
+    target_entropy_sum = 0.0
+    target_top1_sum = 0.0
+    sample_entropy_sum = 0.0
+    sample_top1_sum = 0.0
     move_count = 0
     reuse_root: Any = None
 
@@ -237,11 +243,17 @@ def play_game(
         temperature = _compute_temperature(move_count, config)
         sample_probs = scale_visit_counts_by_temperature(counts, temperature)
 
-        # Stats: entropy of the raw visit distribution, top-1 of the
-        # temperature-scaled sampling distribution.
-        nonzero = policy_target_sparse[policy_target_sparse > 0]
-        entropy_sum += float(-np.sum(nonzero * np.log(nonzero)))
-        top1_sum += float(np.max(sample_probs))
+        # Stats: keep target and action-sampling distributions separate.
+        target_nonzero = policy_target_sparse[policy_target_sparse > 0]
+        sample_nonzero = sample_probs[sample_probs > 0]
+        target_entropy_sum += float(
+            -np.sum(target_nonzero * np.log(target_nonzero))
+        )
+        target_top1_sum += float(np.max(policy_target_sparse))
+        sample_entropy_sum += float(
+            -np.sum(sample_nonzero * np.log(sample_nonzero))
+        )
+        sample_top1_sum += float(np.max(sample_probs))
 
         # Scatter sparse visit probs + legal set into dense unified-slot
         # rows. The same LUT the model uses to collapse its dense forward
@@ -395,8 +407,12 @@ def play_game(
         corps_in_receivership=corps_in_receivership,
         has_max_price_corp=has_max_price_corp,
         duration_secs=time.perf_counter() - t0,
-        policy_entropy_mean=entropy_sum / max(move_count, 1),
-        top1_visit_fraction=top1_sum / max(move_count, 1),
+        policy_entropy_mean=target_entropy_sum / max(move_count, 1),
+        top1_visit_fraction=sample_top1_sum / max(move_count, 1),
+        policy_target_entropy_mean=target_entropy_sum / max(move_count, 1),
+        policy_target_top1_fraction=target_top1_sum / max(move_count, 1),
+        sample_policy_entropy_mean=sample_entropy_sum / max(move_count, 1),
+        sample_top1_action_fraction=sample_top1_sum / max(move_count, 1),
         profile=game_profile,
     )
 

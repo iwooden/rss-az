@@ -369,8 +369,9 @@ class Trainer:
 
         Returns:
             dict with ``policy_loss``, ``value_loss``, ``total_loss`` as
-            floats, plus ``policy_loss_<phase>`` per decision phase
-            bucket present in the batch.
+            floats, ``policy_target_entropy`` / ``policy_loss_residual`` for
+            policy-fit diagnostics, plus ``policy_loss_<phase>`` per decision
+            phase bucket present in the batch.
         """
         self._ensure_scratch(batch_size)
         B = batch_size
@@ -439,6 +440,15 @@ class Trainer:
         log_probs = F.log_softmax(policy_logits, dim=-1)
         per_example_policy_loss = -(policy_targets * log_probs).sum(dim=-1)
         policy_loss = per_example_policy_loss.mean()
+        min_policy_target = torch.finfo(policy_targets.dtype).tiny
+        target_log = torch.where(
+            policy_targets > 0.0,
+            torch.log(policy_targets.clamp_min(min_policy_target)),
+            torch.zeros_like(policy_targets),
+        )
+        per_example_target_entropy = -(policy_targets * target_log).sum(dim=-1)
+        policy_target_entropy = per_example_target_entropy.mean()
+        policy_loss_residual = policy_loss - policy_target_entropy
 
         # Value loss: mean squared error over the full (B, N) value tensor.
         # Transformer outputs canonical values; ResNet outputs active-relative
@@ -469,7 +479,8 @@ class Trainer:
 
         # Pack every scalar we want to read back into one tensor so the
         # host read is a single H←D sync instead of separate .item() calls.
-        # Order: policy_loss, value_loss, total_loss, *per-phase, *pass-stats.
+        # Order: policy_loss, value_loss, total_loss, target_entropy,
+        # policy_loss_residual, *per-phase, *pass-stats.
         # ``pass_stats`` carries (pass_abs, action_abs) interleaved over the
         # phases in PHASES_WITH_PASS_HEAD — used to detect logit-scale drift
         # between the Linear(d, 1) pass heads and the q·k/√dp scored logits.
@@ -479,6 +490,7 @@ class Trainer:
         all_scalars = torch.cat([
             torch.stack([
                 policy_loss.detach(), value_loss.detach(), total_loss.detach(),
+                policy_target_entropy.detach(), policy_loss_residual.detach(),
             ]),
             per_phase_means,
             pass_stats,
@@ -517,12 +529,15 @@ class Trainer:
             "policy_loss": scalars[0],
             "value_loss": scalars[1],
             "total_loss": scalars[2],
+            "policy_target_entropy": scalars[3],
+            "policy_loss_residual": scalars[4],
+            "policy_kl": scalars[4],
         }
         for phase_idx, name in enumerate(_PHASE_NAMES):
             if phase_counts[phase_idx] > 0:
-                result[f"policy_loss_{name}"] = scalars[3 + phase_idx]
+                result[f"policy_loss_{name}"] = scalars[5 + phase_idx]
 
-        pass_stats_offset = 3 + NUM_PHASES
+        pass_stats_offset = 5 + NUM_PHASES
         for i, phase_idx in enumerate(PHASES_WITH_PASS_HEAD):
             if phase_counts[phase_idx] == 0:
                 continue

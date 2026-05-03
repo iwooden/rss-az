@@ -83,6 +83,10 @@ def test_play_game_full_3p_game_produces_valid_record(evaluator):
 
     # Dense policy invariants per move.
     _assert_dense_policy_invariants(record)
+    assert record.policy_target_entropy_mean >= 0.0
+    assert 0.0 <= record.policy_target_top1_fraction <= 1.0
+    assert record.sample_policy_entropy_mean >= 0.0
+    assert 0.0 <= record.sample_top1_action_fraction <= 1.0
 
     # Value targets per-player, clamped to the tanh head's [-1, +1] range.
     vt = record.value_targets

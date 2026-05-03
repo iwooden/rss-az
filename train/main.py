@@ -753,8 +753,10 @@ def main() -> None:
             total_examples = 0
             total_moves = 0
             total_duration = 0.0
-            total_entropy = 0.0
-            total_top1 = 0.0
+            total_target_entropy = 0.0
+            total_target_top1 = 0.0
+            total_sample_entropy = 0.0
+            total_sample_top1 = 0.0
             num_players = config.num_players
             rank_totals = [0.0] * num_players
             rank_mins = [float("inf")] * num_players
@@ -772,7 +774,8 @@ def main() -> None:
 
             def _collect_record(record: object, game_idx: int) -> None:
                 nonlocal total_examples, total_moves, total_duration
-                nonlocal total_entropy, total_top1
+                nonlocal total_target_entropy, total_target_top1
+                nonlocal total_sample_entropy, total_sample_top1
                 nonlocal total_avg_corp_price, total_corps_in_receivership
                 nonlocal games_with_max_price_corp
                 buffer.add_stacked(  # type: ignore[union-attr]
@@ -785,8 +788,10 @@ def main() -> None:
                 total_examples += record.num_examples  # type: ignore[union-attr]
                 total_moves += record.total_moves  # type: ignore[union-attr]
                 total_duration += record.duration_secs  # type: ignore[union-attr]
-                total_entropy += record.policy_entropy_mean  # type: ignore[union-attr]
-                total_top1 += record.top1_visit_fraction  # type: ignore[union-attr]
+                total_target_entropy += record.policy_target_entropy_mean  # type: ignore[union-attr]
+                total_target_top1 += record.policy_target_top1_fraction  # type: ignore[union-attr]
+                total_sample_entropy += record.sample_policy_entropy_mean  # type: ignore[union-attr]
+                total_sample_top1 += record.sample_top1_action_fraction  # type: ignore[union-attr]
                 # Sort players by net worth descending (1st, 2nd, 3rd, ...)
                 ranked = sorted(range(num_players), key=lambda p: record.net_worths[p], reverse=True)  # type: ignore[union-attr]
                 for rank, p in enumerate(ranked):
@@ -816,8 +821,10 @@ def main() -> None:
                     rank_net_worths=[t / n for t in rank_totals],
                     rank_mins=list(rank_mins),
                     rank_maxs=list(rank_maxs),
-                    policy_entropy=total_entropy / n,
-                    top1_visit_frac=total_top1 / n,
+                    target_entropy=total_target_entropy / n,
+                    target_top1_frac=total_target_top1 / n,
+                    sample_entropy=total_sample_entropy / n,
+                    sample_top1_frac=total_sample_top1 / n,
                 )
 
             # Reset eval server profile stats
@@ -966,8 +973,10 @@ def main() -> None:
                 net_worth_scalars[f"self_play/net_worth_{k}_min"] = mn
                 net_worth_scalars[f"self_play/net_worth_{k}_max"] = mx
 
-            avg_entropy = total_entropy / n_games
-            avg_top1 = total_top1 / n_games
+            avg_target_entropy = total_target_entropy / n_games
+            avg_target_top1 = total_target_top1 / n_games
+            avg_sample_entropy = total_sample_entropy / n_games
+            avg_sample_top1 = total_sample_top1 / n_games
             avg_total_nw = sum(rank_totals) / n_games
             avg_shares = [t / n_games for t in total_shares]
             avg_companies = [t / n_games for t in total_companies]
@@ -1000,8 +1009,12 @@ def main() -> None:
                     "self_play/game_length_mean": avg_game_moves,
                     "self_play/duration_mean": avg_game_dur,
                     "self_play/total_examples": float(total_examples),
-                    "self_play/policy_entropy_mean": avg_entropy,
-                    "self_play/top1_visit_fraction": avg_top1,
+                    "self_play/policy_entropy_mean": avg_target_entropy,
+                    "self_play/top1_visit_fraction": avg_sample_top1,
+                    "self_play/policy_target_entropy_mean": avg_target_entropy,
+                    "self_play/policy_target_top1_fraction": avg_target_top1,
+                    "self_play/sample_policy_entropy_mean": avg_sample_entropy,
+                    "self_play/sample_top1_action_fraction": avg_sample_top1,
                     "self_play/total_net_worth": avg_total_nw,
                     "buffer/size": float(len(buffer)),
                     "buffer/utilization": len(buffer) / config.buffer_capacity,
@@ -1064,6 +1077,13 @@ def main() -> None:
                                 "loss/total": losses["total_loss"],
                                 "loss/policy": losses["policy_loss"],
                                 "loss/value": losses["value_loss"],
+                                "loss/policy_target_entropy": losses[
+                                    "policy_target_entropy"
+                                ],
+                                "loss/policy_loss_residual": losses[
+                                    "policy_loss_residual"
+                                ],
+                                "loss/policy_kl": losses["policy_kl"],
                                 "lr": trainer.lr,
                             },
                         )
@@ -1077,6 +1097,13 @@ def main() -> None:
                     "epoch/total_loss_avg": avg_losses["total_loss"],
                     "epoch/policy_loss_avg": avg_losses["policy_loss"],
                     "epoch/value_loss_avg": avg_losses["value_loss"],
+                    "epoch/policy_target_entropy_avg": avg_losses[
+                        "policy_target_entropy"
+                    ],
+                    "epoch/policy_loss_residual_avg": avg_losses[
+                        "policy_loss_residual"
+                    ],
+                    "epoch/policy_kl_avg": avg_losses["policy_kl"],
                     "epoch/training_steps": float(training_steps_done),
                 }
                 for k, v in avg_losses.items():
@@ -1132,8 +1159,12 @@ def main() -> None:
                     "rank_net_worths": rank_avgs,
                     "rank_net_worths_min": rank_mins,
                     "rank_net_worths_max": rank_maxs,
-                    "policy_entropy": avg_entropy,
-                    "top1_visit_frac": avg_top1,
+                    "policy_entropy": avg_target_entropy,
+                    "top1_visit_frac": avg_sample_top1,
+                    "policy_target_entropy": avg_target_entropy,
+                    "policy_target_top1_frac": avg_target_top1,
+                    "sample_policy_entropy": avg_sample_entropy,
+                    "sample_top1_frac": avg_sample_top1,
                     "total_net_worth": avg_total_nw,
                     "avg_shares_per_player": avg_shares,
                     "avg_companies_per_player": avg_companies,
