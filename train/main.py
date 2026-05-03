@@ -137,6 +137,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optimizer type (default: muon)",
     )
     parser.add_argument(
+        "--weight-decay", type=float,
+        help="Decoupled weight decay for decayed optimizer param groups (default: 1e-2)",
+    )
+    parser.add_argument(
         "--grad-clip", type=float,
         help="Global-norm gradient clip (default: 1.0; pass 0 to disable)",
     )
@@ -215,7 +219,7 @@ _CLI_FIELDS = (
     "c_puct_initial", "c_puct_final", "c_puct_anneal_epochs",
     "value_blend_start_epoch", "value_blend_end_epoch",
     "terminal_blend", "lr_min", "warmup_epochs", "lr_decay_end_epoch",
-    "optimizer", "grad_clip",
+    "optimizer", "weight_decay", "grad_clip",
     "dirichlet_alpha", "dirichlet_epsilon",
     "dirichlet_dynamic", "dirichlet_alpha_numerator",
 )

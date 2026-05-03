@@ -69,6 +69,17 @@ def test_cli_overrides_buffer_capacity() -> None:
     assert config.buffer_capacity == 250_000
 
 
+def test_cli_overrides_weight_decay() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["--weight-decay", "0.02"])
+    config = TrainingConfig()
+
+    _apply_overrides(config, args)
+    config.validate()
+
+    assert config.weight_decay == 0.02
+
+
 def test_training_config_rejects_unknown_eval_batch_shape_mode() -> None:
     with pytest.raises(ValueError, match="eval_batch_shape_mode"):
         TrainingConfig(eval_batch_shape_mode="wrong")
