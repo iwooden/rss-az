@@ -17,7 +17,7 @@ Key differences from the MLP model (nn/template.py):
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 
 import torch
@@ -177,9 +177,11 @@ def _slice_proj(x: torch.Tensor, proj: nn.Linear, idx: int | slice) -> torch.Ten
 
 @dataclass(frozen=True)
 class TransformerConfig:
-    """All dimensions parameterized. Defaults are 3-player with d_model=192."""
+    """All dimensions parameterized. Defaults are 3-player with d_model=256."""
 
     # Core architecture
+    # Model player-token capacity. In mixed training this is effective
+    # max_players; each state still encodes its actual player count.
     num_players: int = 3  # 3-5 supported
     d_model: int = 256
     d_proj: int = 64
@@ -194,6 +196,8 @@ class TransformerConfig:
     # can't drift out of sync.
     token_dim: int = int(TokenDataSize.TOKEN_DIM)
 
+    _num_tokens: int = field(init=False, repr=False)
+
     def __post_init__(self) -> None:
         assert 3 <= self.num_players <= 5, f"num_players must be 3-5, got {self.num_players}"
         assert self.d_proj > 0, f"d_proj must be positive, got {self.d_proj}"
@@ -204,11 +208,12 @@ class TransformerConfig:
             "price_slot_fourier_bands must be >= 0, "
             f"got {self.price_slot_fourier_bands}"
         )
+        object.__setattr__(self, "_num_tokens", int(get_num_tokens(self.num_players)))
 
     @property
     def num_tokens(self) -> int:
-        """Input-buffer token count: fixed entity/phase tokens + N players."""
-        return int(get_num_tokens(self.num_players))
+        """Input-buffer token count: fixed entity/phase tokens + player capacity."""
+        return self._num_tokens
 
 
 def _validate_layout(num_players: int) -> None:
@@ -796,7 +801,10 @@ class RSSTransformerNet(nn.Module):
         Shape is ``(B, 1, 1, N)`` so it broadcasts over heads and query
         positions against SDPA attention weights ``(B, H, N, N)``. The mask is
         tensor-only and has no data-dependent branches, keeping it compatible
-        with ``torch.compile`` and CUDA graph capture.
+        with ``torch.compile`` and CUDA graph capture. This suppresses padded
+        rows as keys. Padded player query rows still execute, but their
+        ``is_selected`` flags are zero and downstream consumers ignore their
+        value slots in mixed-count training.
         """
         return (x[:, :, 0] > 0.5)[:, None, None, :]
 
@@ -1478,8 +1486,10 @@ class RSSTransformerNet(nn.Module):
         Returns:
             policy_logits: ``(batch, UNIFIED_LOGIT_DIM)`` fp32 logits with
                 illegal slots set to ``-1e9``. Static-shape regardless of phase.
-            values: ``(batch, num_players)`` per-player expected outcomes in
-                ``[-1, 1]``.
+            values: ``(batch, cfg.num_players)`` per-player expected outcomes
+                in ``[-1, 1]``. In mixed-count training this is padded to the
+                model capacity; callers mask or slice slots beyond the state's
+                actual player count.
         """
         if x.ndim != 3:
             raise AssertionError(f"x must be rank-3 (batch, num_tokens, token_dim); got {tuple(x.shape)}")

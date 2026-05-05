@@ -18,7 +18,13 @@ SUPPORTED_MODEL_TYPES = frozenset(kind.value for kind in ModelKind)
 
 @dataclass(frozen=True)
 class ModelInputSpec:
-    """Resolved model input/output contract for a training config."""
+    """Resolved model input/output contract for a training config.
+
+    For transformer models, ``num_players`` and ``value_dim`` are the padded
+    model capacity. In mixed player-count training this is the config's
+    effective maximum player count, not necessarily the actual players in a
+    given state.
+    """
 
     model_type: str
     num_players: int

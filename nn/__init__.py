@@ -81,6 +81,14 @@ def _config_value(config: object, name: str, default: object) -> object:
     return getattr(config, name, default)
 
 
+def _effective_max_players(config: object) -> int:
+    """Return the model/storage player capacity for transformer inputs."""
+    value = _config_value(config, "effective_max_players", None)
+    if value is not None:
+        return int(value)
+    return int(_config_value(config, "num_players", 3))
+
+
 def _load_model_module(model_path: str) -> ModuleType:
     """Load a model implementation from a module name or Python file path."""
     looks_like_file = model_path.endswith(".py") or "/" in model_path or "\\" in model_path
@@ -149,6 +157,7 @@ def _require_symbol(module: ModuleType, name: str, model_path: str) -> Any:
 def get_model_input_spec(config: object) -> ModelInputSpec:
     """Resolve model input/output dimensions from a training config."""
     num_players = int(_config_value(config, "num_players", 3))
+    max_players = _effective_max_players(config)
     model_kind = normalize_model_type(
         str(_config_value(config, "model_type", ModelKind.TRANSFORMER.value))
     )
@@ -156,16 +165,21 @@ def get_model_input_spec(config: object) -> ModelInputSpec:
     if model_kind is ModelKind.TRANSFORMER:
         return ModelInputSpec(
             model_type=model_kind.value,
-            num_players=num_players,
+            num_players=max_players,
             policy_dim=int(UNIFIED_LOGIT_DIM),
-            value_dim=num_players,
+            value_dim=max_players,
             input_dim=None,
-            num_tokens=get_num_tokens(num_players),
+            num_tokens=get_num_tokens(max_players),
             token_dim=int(TokenDataSize.TOKEN_DIM),
             uses_relations=True,
             values_are_active_relative=False,
         )
 
+    if num_players == 0:
+        raise ValueError(
+            "mixed player-count training is only supported by transformer models; "
+            "ResNet requires a single num_players value"
+        )
     return ModelInputSpec(
         model_type=model_kind.value,
         num_players=num_players,
@@ -219,9 +233,15 @@ def create_model(
         return net_cls(config_cls(**_config_kwargs(config_cls, values)))
 
     cfg_num_players = int(_config_value(config, "num_players", 3))
+    cfg_max_players = _effective_max_players(config)
     model_kind = normalize_model_type(
         str(_config_value(config, "model_type", ModelKind.TRANSFORMER.value))
     )
+    if model_kind is not ModelKind.TRANSFORMER and cfg_num_players == 0:
+        raise ValueError(
+            "mixed player-count training is only supported by transformer models; "
+            "ResNet requires a single num_players value"
+        )
     module = _model_module(config)
     cfg_model_path = str(_config_value(config, "model_path", "")) if module is not None else ""
 
@@ -235,7 +255,7 @@ def create_model(
             if module is not None else TransformerConfig
         )
         values = {
-            "num_players": cfg_num_players,
+            "num_players": cfg_max_players,
             "phase_conditioning": bool(
                 _config_value(config, "phase_conditioning", False)
             ),

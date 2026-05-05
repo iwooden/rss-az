@@ -689,6 +689,131 @@ def test_token_data_batch_reads_actual_player_counts_in_mixed_capacity_batch(
         )
 
 
+def _small_capacity_model(max_players: int = 5) -> RSSTransformerNet:
+    torch.manual_seed(2026)
+    model = RSSTransformerNet(
+        TransformerConfig(
+            num_players=max_players,
+            d_model=48,
+            num_heads=3,
+            num_layers=2,
+            ff_mult=2.0,
+        )
+    )
+    model.eval()
+    return model
+
+
+def _tiny_capacity_model(max_players: int = 5) -> RSSTransformerNet:
+    torch.manual_seed(2028)
+    model = RSSTransformerNet(
+        TransformerConfig(
+            num_players=max_players,
+            d_model=48,
+            num_heads=3,
+            num_layers=1,
+            ff_mult=2.0,
+        )
+    )
+    model.eval()
+    return model
+
+
+def _padded_tokens_for_state(
+    num_players: int,
+    max_players: int,
+) -> torch.Tensor:
+    state = GameState(num_players, max_players=max_players)
+    state.initialize_game(num_players, seed=50 + num_players)
+    buffer = np.zeros(
+        (get_num_tokens(max_players), int(TokenDataSize.TOKEN_DIM)),
+        dtype=np.float32,
+    )
+    get_token_data(state, buffer, max_players=max_players)
+    return torch.from_numpy(buffer).unsqueeze(0)
+
+
+@pytest.mark.parametrize("num_players", [3, 4, 5])
+def test_transformer_forward_accepts_fixed_max_player_inputs(
+    num_players: int,
+) -> None:
+    max_players = 5
+    model = _small_capacity_model(max_players)
+    tokens = _padded_tokens_for_state(num_players, max_players)
+    legal_mask = torch.ones(1, U_DIM, dtype=torch.bool)
+    relations = torch.zeros(
+        1,
+        NUM_ATTENTION_RELATIONS,
+        get_num_tokens(max_players),
+        get_num_tokens(max_players),
+        dtype=torch.uint8,
+    )
+
+    with torch.inference_mode():
+        policy_logits, values = model(tokens, legal_mask, relations)
+
+    assert policy_logits.shape == (1, U_DIM)
+    assert values.shape == (1, max_players)
+    assert torch.isfinite(policy_logits).all()
+    assert torch.isfinite(values).all()
+
+
+def test_transformer_forward_compiles_with_fixed_max_player_shapes() -> None:
+    max_players = 5
+    model = _tiny_capacity_model(max_players)
+    compiled = torch.compile(model, backend="eager", fullgraph=True)
+    tokens = _padded_tokens_for_state(3, max_players)
+    legal_mask = torch.ones(1, U_DIM, dtype=torch.bool)
+    relations = torch.zeros(
+        1,
+        NUM_ATTENTION_RELATIONS,
+        get_num_tokens(max_players),
+        get_num_tokens(max_players),
+        dtype=torch.uint8,
+    )
+
+    with torch.inference_mode():
+        policy_logits, values = compiled(tokens, legal_mask, relations)
+
+    assert policy_logits.shape == (1, U_DIM)
+    assert values.shape == (1, max_players)
+
+
+def test_padded_player_query_rows_do_not_affect_policy_or_real_values() -> None:
+    actual_players = 3
+    max_players = 5
+    model = _small_capacity_model(max_players)
+    tokens = _padded_tokens_for_state(actual_players, max_players)
+    perturbed = tokens.clone()
+    padded_players = slice(
+        model._player_slice.start + actual_players,
+        model._player_slice.stop,
+    )
+    torch.manual_seed(2027)
+    perturbed[:, padded_players, 2:] = torch.randn_like(
+        perturbed[:, padded_players, 2:]
+    )
+    perturbed[:, padded_players, :2] = 0.0
+    legal_mask = torch.ones(1, U_DIM, dtype=torch.bool)
+    relations = torch.zeros(
+        1,
+        NUM_ATTENTION_RELATIONS,
+        get_num_tokens(max_players),
+        get_num_tokens(max_players),
+        dtype=torch.uint8,
+    )
+
+    with torch.inference_mode():
+        baseline_policy, baseline_values = model(tokens, legal_mask, relations)
+        perturbed_policy, perturbed_values = model(perturbed, legal_mask, relations)
+
+    torch.testing.assert_close(perturbed_policy, baseline_policy)
+    torch.testing.assert_close(
+        perturbed_values[:, :actual_players],
+        baseline_values[:, :actual_players],
+    )
+
+
 def _token_labels(model: RSSTransformerNet) -> list[str]:
     labels = [""] * model.cfg.num_tokens
     labels[model._market_info_idx] = "MarketInfo"

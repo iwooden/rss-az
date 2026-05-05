@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 
+import pytest
 import torch
 
 from core.attention_relations import NUM_ATTENTION_RELATIONS
@@ -38,6 +39,23 @@ def test_factory_instantiates_transformer_from_config() -> None:
     assert model.cfg.price_slot_residual_scale == config.price_slot_residual_scale
 
 
+def test_factory_instantiates_mixed_transformer_at_max_player_capacity() -> None:
+    config = TrainingConfig(
+        num_players=0,
+        min_players=3,
+        max_players=5,
+        model_type="transformer",
+    )
+    model = create_model(config)
+    spec = get_model_input_spec(config)
+
+    assert isinstance(model, RSSTransformerNet)
+    assert model.cfg.num_players == config.effective_max_players
+    assert spec.num_players == config.effective_max_players
+    assert spec.value_dim == config.effective_max_players
+    assert spec.num_tokens == get_num_tokens(config.effective_max_players)
+
+
 def test_factory_instantiates_transformer_from_model_path() -> None:
     config = TrainingConfig(
         model_type="transformer",
@@ -54,6 +72,21 @@ def test_factory_instantiates_transformer_from_model_path() -> None:
     assert model.cfg.price_slot_fourier_bands == config.price_slot_fourier_bands
     assert not hasattr(model.cfg, "price_slot_residual_scale")
     assert any(name.endswith("phase_mod.weight") for name, _ in model.named_parameters())
+
+
+def test_factory_instantiates_mixed_model_path_transformer_at_max_player_capacity() -> None:
+    config = TrainingConfig(
+        num_players=0,
+        min_players=3,
+        max_players=5,
+        model_type="transformer",
+        model_path="nn/transformer-v2.py",
+    )
+    model = create_model(config)
+
+    assert model.__class__.__name__ == "RSSTransformerNet"
+    assert model.__class__ is not RSSTransformerNet
+    assert model.cfg.num_players == config.effective_max_players
 
 
 def test_factory_can_disable_model_path_phase_conditioning() -> None:
@@ -131,6 +164,20 @@ def test_model_input_spec_marks_resnet_values_active_relative() -> None:
     assert resnet.uses_relations is False
     assert resnet.values_are_active_relative is True
     assert resnet.input_dim is not None and resnet.input_dim > 0
+
+
+def test_mixed_resnet_config_fails_with_clear_factory_error() -> None:
+    config = TrainingConfig(
+        num_players=0,
+        min_players=3,
+        max_players=5,
+        model_type="resnet",
+    )
+
+    with pytest.raises(ValueError, match="ResNet requires a single num_players"):
+        get_model_input_spec(config)
+    with pytest.raises(ValueError, match="ResNet requires a single num_players"):
+        create_model(config)
 
 
 def test_new_checkpoints_reload_correct_model_type(tmp_path) -> None:
