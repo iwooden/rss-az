@@ -237,6 +237,9 @@ def test_train_step_value_loss_ignores_padded_player_slots() -> None:
     losses = trainer.train_step(buffer, batch_size=1, rng=np.random.default_rng(0))
 
     assert losses["value_loss"] == pytest.approx(1.0 / 3.0)
+    assert losses["value_loss_3p"] == pytest.approx(1.0 / 3.0)
+    assert losses["policy_loss_3p"] == pytest.approx(np.log(int(UNIFIED_LOGIT_DIM)))
+    assert "value_loss_4p" not in losses
     assert losses["total_loss"] == pytest.approx(1.0 / 3.0)
     torch.testing.assert_close(
         model.value_bias.detach()[3:],
@@ -276,6 +279,12 @@ def test_train_step_mixed_batch_uses_masked_value_mse_and_max_width_inputs() -> 
 
     expected_sqerr_sum = 1.0 + 4.0 + 9.0 + 1.0 + 4.0 + 9.0 + 16.0 + 25.0
     assert losses["value_loss"] == pytest.approx(expected_sqerr_sum / 8.0)
+    assert losses["value_loss_3p"] == pytest.approx((1.0 + 4.0 + 9.0) / 3.0)
+    assert losses["value_loss_5p"] == pytest.approx(
+        (1.0 + 4.0 + 9.0 + 16.0 + 25.0) / 5.0
+    )
+    assert losses["policy_loss_3p"] == pytest.approx(np.log(int(UNIFIED_LOGIT_DIM)))
+    assert losses["policy_loss_5p"] == pytest.approx(np.log(int(UNIFIED_LOGIT_DIM)))
     assert losses["total_loss"] == pytest.approx(expected_sqerr_sum / 8.0)
     assert model.last_tokens_shape == (
         2,

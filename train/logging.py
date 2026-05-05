@@ -68,6 +68,51 @@ def _format_rank_net_worths(
     return ", ".join(parts)
 
 
+def _format_count_net_worths(
+    num_players: int,
+    rank_net_worths: list[float],
+    rank_mins: list[float] | None = None,
+    rank_maxs: list[float] | None = None,
+    *,
+    games: int | float | None = None,
+    total_net_worth: float | None = None,
+) -> str:
+    total = sum(rank_net_worths) if total_net_worth is None else total_net_worth
+    parts = []
+    if games is not None:
+        parts.append(f"num games={int(games):,}")
+    parts.append(f"total net worth=${total:,.0f}")
+    rank_text = _format_rank_net_worths(rank_net_worths, rank_mins, rank_maxs)
+    return f"{num_players}p: {', '.join(parts)}; {rank_text}"
+
+
+def _format_training_loss_by_count(stats: dict[str, Any]) -> str:
+    parts = []
+    for num_players in range(3, 7):
+        policy = stats.get(f"policy_loss_{num_players}p")
+        value = stats.get(f"value_loss_{num_players}p")
+        metrics = []
+        if isinstance(policy, (int, float)):
+            metrics.append(f"policy={policy:.3f}")
+        if isinstance(value, (int, float)):
+            metrics.append(f"value={value:.3f}")
+        if metrics:
+            parts.append(f"{num_players}p: {' '.join(metrics)}")
+    return "  ".join(parts)
+
+
+def _format_policy_stats(
+    target_entropy: float,
+    target_top1: float,
+    sample_entropy: float,
+    sample_top1: float,
+) -> str:
+    return (
+        f"Policy: target H={target_entropy:.3f} nats, top-1={target_top1:.1%} | "
+        f"sample H={sample_entropy:.3f} nats, top-1={sample_top1:.1%}"
+    )
+
+
 class TrainingLogger:
     """Tensorboard + Rich live terminal output for training."""
 
@@ -90,6 +135,8 @@ class TrainingLogger:
         self._sp_count_rank_net_worths: dict[int, list[float]] = {}
         self._sp_count_rank_mins: dict[int, list[float]] = {}
         self._sp_count_rank_maxs: dict[int, list[float]] = {}
+        self._sp_count_games: dict[int, int] = {}
+        self._sp_count_total_net_worths: dict[int, float] = {}
         self._sp_target_entropy: float = 0.0
         self._sp_target_top1_frac: float = 0.0
         self._sp_sample_entropy: float = 0.0
@@ -120,6 +167,8 @@ class TrainingLogger:
         self._sp_count_rank_net_worths = {}
         self._sp_count_rank_mins = {}
         self._sp_count_rank_maxs = {}
+        self._sp_count_games = {}
+        self._sp_count_total_net_worths = {}
         self._sp_target_entropy = 0.0
         self._sp_target_top1_frac = 0.0
         self._sp_sample_entropy = 0.0
@@ -148,6 +197,8 @@ class TrainingLogger:
         count_rank_net_worths: dict[int, list[float]] | None = None,
         count_rank_mins: dict[int, list[float]] | None = None,
         count_rank_maxs: dict[int, list[float]] | None = None,
+        count_games: dict[int, int] | None = None,
+        count_total_net_worths: dict[int, float] | None = None,
     ) -> None:
         self._sp_games_done = games_done
         self._sp_total_examples = total_examples
@@ -172,6 +223,10 @@ class TrainingLogger:
             self._sp_count_rank_mins = count_rank_mins
         if count_rank_maxs is not None:
             self._sp_count_rank_maxs = count_rank_maxs
+        if count_games is not None:
+            self._sp_count_games = count_games
+        if count_total_net_worths is not None:
+            self._sp_count_total_net_worths = count_total_net_worths
         if self._live is not None:
             self._live.update(self._build_self_play_panel())
 
@@ -194,12 +249,17 @@ class TrainingLogger:
         if self._sp_count_rank_net_worths:
             lines.append("Net worth:\n")
             for num_players in sorted(self._sp_count_rank_net_worths):
-                formatted = _format_rank_net_worths(
+                formatted = _format_count_net_worths(
+                    num_players,
                     self._sp_count_rank_net_worths[num_players],
                     self._sp_count_rank_mins.get(num_players),
                     self._sp_count_rank_maxs.get(num_players),
+                    games=self._sp_count_games.get(num_players),
+                    total_net_worth=self._sp_count_total_net_worths.get(
+                        num_players,
+                    ),
                 )
-                lines.append(f"  {num_players}p: {formatted}\n")
+                lines.append(f"  {formatted}\n")
         elif self._sp_rank_net_worths:
             formatted = _format_rank_net_worths(
                 self._sp_rank_net_worths,
@@ -209,10 +269,13 @@ class TrainingLogger:
             lines.append(f"Net worth: {formatted}\n")
         if self._sp_games_done > 0:
             lines.append(
-                f"Target policy: H={self._sp_target_entropy:.3f} nats, "
-                f"top-1={self._sp_target_top1_frac:.1%}\n"
-                f"Sample policy: H={self._sp_sample_entropy:.3f} nats, "
-                f"top-1={self._sp_sample_top1_frac:.1%}\n"
+                _format_policy_stats(
+                    self._sp_target_entropy,
+                    self._sp_target_top1_frac,
+                    self._sp_sample_entropy,
+                    self._sp_sample_top1_frac,
+                )
+                + "\n"
             )
         lines.append(f"Elapsed: {_format_duration(elapsed)}")
         return Panel(
@@ -266,6 +329,9 @@ class TrainingLogger:
         th = self._tr_losses.get("policy_target_entropy", 0.0)
         kl = self._tr_losses.get("policy_kl", 0.0)
         lines.append(f"Loss: policy={pl:.3f}  value={vl:.3f}  total={tl:.3f}\n")
+        count_losses = _format_training_loss_by_count(self._tr_losses)
+        if count_losses:
+            lines.append(f"By players: {count_losses}\n")
         lines.append(f"Policy fit: target_H={th:.3f}  policy_KL={kl:.3f}\n")
         lines.append(f"LR: {self._tr_lr:.2e}    Elapsed: {_format_duration(elapsed)}")
         return Panel(
@@ -406,10 +472,27 @@ class TrainingLogger:
                 rank_maxs = stats.get("rank_net_worths_max")
                 mins = rank_mins if isinstance(rank_mins, list) else None
                 maxs = rank_maxs if isinstance(rank_maxs, list) else None
-                self.console.print(
-                    f"{pad}    {int(raw_num_players)}p: "
-                    f"{_format_rank_net_worths(rank_nws, mins, maxs)}"
+                games_value = stats.get("games")
+                total_net_worth = stats.get("total_net_worth")
+                games_for_count = (
+                    games_value
+                    if isinstance(games_value, (int, float))
+                    else None
                 )
+                total_for_count = (
+                    float(total_net_worth)
+                    if isinstance(total_net_worth, (int, float))
+                    else None
+                )
+                formatted = _format_count_net_worths(
+                    int(raw_num_players),
+                    rank_nws,
+                    mins,
+                    maxs,
+                    games=games_for_count,
+                    total_net_worth=total_for_count,
+                )
+                self.console.print(f"{pad}    {formatted}")
         else:
             rank_nws = self_play_stats.get("rank_net_worths")
             if isinstance(rank_nws, list) and rank_nws:
@@ -425,14 +508,13 @@ class TrainingLogger:
         sample_entropy = self_play_stats.get("sample_policy_entropy", 0.0)
         sample_top1 = self_play_stats.get("sample_top1_frac", 0.0)
         if games > 0:
-            self.console.print(
-                f"{pad}  Target policy: H={target_entropy:.3f} nats, "
-                f"top-1={target_top1:.1%}"
+            policy_stats = _format_policy_stats(
+                target_entropy,
+                target_top1,
+                sample_entropy,
+                sample_top1,
             )
-            self.console.print(
-                f"{pad}  Sample policy: H={sample_entropy:.3f} nats, "
-                f"top-1={sample_top1:.1%}"
-            )
+            self.console.print(f"{pad}  {policy_stats}")
         if steps > 0:
             th = train_stats.get("policy_target_entropy", 0.0)
             kl = train_stats.get("policy_kl", 0.0)
@@ -441,6 +523,9 @@ class TrainingLogger:
                 f"(policy={pl:.3f} value={vl:.3f}) "
                 f"target_H={th:.3f} policy_KL={kl:.3f} lr={lr:.2e}"
             )
+            count_losses = _format_training_loss_by_count(train_stats)
+            if count_losses:
+                self.console.print(f"{pad}  Training by count: {count_losses}")
         self.console.print(
             f"{pad}  Buffer: {buffer_size:,}/{buffer_capacity:,} ({pct:.1f}%)  "
             f"Epoch time: {_format_duration(epoch_duration)}"

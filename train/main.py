@@ -1101,6 +1101,14 @@ def main() -> None:
                         n: list(stats["rank_net_worths_max"])
                         for n, stats in count_stats.items()
                     },
+                    count_games={
+                        n: int(stats["games"])
+                        for n, stats in count_stats.items()
+                    },
+                    count_total_net_worths={
+                        n: float(stats["total_net_worth"])
+                        for n, stats in count_stats.items()
+                    },
                 )
 
             # Reset eval server profile stats
@@ -1332,6 +1340,7 @@ def main() -> None:
                 for k, v in avg_losses.items():
                     if k.startswith((
                         "policy_loss_",
+                        "value_loss_",
                         "pass_logit_abs_",
                         "action_logit_abs_",
                     )):

@@ -375,8 +375,9 @@ class Trainer:
         Returns:
             dict with ``policy_loss``, ``value_loss``, ``total_loss`` as
             floats, ``policy_target_entropy`` / ``policy_loss_residual`` for
-            policy-fit diagnostics, plus ``policy_loss_<phase>`` per decision
-            phase bucket present in the batch.
+            policy-fit diagnostics, ``policy_loss_<phase>`` per decision
+            phase bucket, and ``policy_loss_<Np>`` / ``value_loss_<Np>`` per
+            player-count bucket present in the batch.
         """
         self._ensure_scratch(batch_size)
         B = batch_size
@@ -427,6 +428,11 @@ class Trainer:
         phase_view = self._phase_h_np[:B]
         phase_counts: list[int] = [
             int((phase_view == _p).sum()) for _p in range(NUM_PHASES)
+        ]
+        player_count_view = self._pc_h_np[:B]
+        player_count_values = range(3, self._num_players + 1)
+        player_count_counts: list[int] = [
+            int((player_count_view == n).sum()) for n in player_count_values
         ]
 
         # --- Forward: dense (B, UNIFIED_LOGIT_DIM) logits + (B, N) values ---
@@ -491,10 +497,50 @@ class Trainer:
         # old per-phase mean loop produced, and the host filter drops them.
         per_phase_means = per_phase_sums / per_phase_counts.clamp(min=1)
 
+        # Per-player-count policy/value losses. Policy buckets average rows;
+        # value buckets average over real player slots, matching value_loss.
+        count_bucket_count = self._num_players - 2
+        count_bucket_ids = player_counts.to(torch.long) - 3
+        per_count_policy_sums = torch.zeros(
+            count_bucket_count, device=device, dtype=per_phase.dtype,
+        )
+        per_count_policy_sums.index_add_(
+            0, count_bucket_ids, per_example_policy_loss.detach(),
+        )
+        per_count_row_counts = torch.zeros(
+            count_bucket_count, device=device, dtype=per_phase.dtype,
+        )
+        per_count_row_counts.index_add_(
+            0, count_bucket_ids, torch.ones_like(per_example_policy_loss),
+        )
+        per_count_policy_means = (
+            per_count_policy_sums / per_count_row_counts.clamp(min=1)
+        )
+
+        per_example_value_sqerr_sums = (
+            value_sqerr.masked_fill(~value_mask, 0.0).sum(dim=1).detach()
+        )
+        per_count_value_sums = torch.zeros(
+            count_bucket_count, device=device, dtype=value_sqerr.dtype,
+        )
+        per_count_value_sums.index_add_(
+            0, count_bucket_ids, per_example_value_sqerr_sums,
+        )
+        per_count_value_denoms = torch.zeros(
+            count_bucket_count, device=device, dtype=value_sqerr.dtype,
+        )
+        per_count_value_denoms.index_add_(
+            0, count_bucket_ids, player_counts.to(value_sqerr.dtype),
+        )
+        per_count_value_means = (
+            per_count_value_sums / per_count_value_denoms.clamp(min=1)
+        )
+
         # Pack every scalar we want to read back into one tensor so the
         # host read is a single H←D sync instead of separate .item() calls.
         # Order: policy_loss, value_loss, total_loss, target_entropy,
-        # policy_loss_residual, *per-phase, *pass-stats.
+        # policy_loss_residual, *per-phase, *pass-stats, *count policy,
+        # *count value.
         # ``pass_stats`` carries (pass_abs, action_abs) interleaved over the
         # phases in PHASES_WITH_PASS_HEAD — used to detect logit-scale drift
         # between the Linear(d, 1) pass heads and the q·k/√dp scored logits.
@@ -508,6 +554,8 @@ class Trainer:
             ]),
             per_phase_means,
             pass_stats,
+            per_count_policy_means,
+            per_count_value_means,
         ])
 
         if torch.isnan(total_loss):
@@ -558,6 +606,17 @@ class Trainer:
             name = _PHASE_NAMES[phase_idx]
             result[f"pass_logit_abs_{name}"] = scalars[pass_stats_offset + 2 * i]
             result[f"action_logit_abs_{name}"] = scalars[pass_stats_offset + 2 * i + 1]
+
+        count_stats_offset = pass_stats_offset + len(pass_stats)
+        for bucket_idx, num_players in enumerate(player_count_values):
+            if player_count_counts[bucket_idx] == 0:
+                continue
+            result[f"policy_loss_{num_players}p"] = scalars[
+                count_stats_offset + bucket_idx
+            ]
+            result[f"value_loss_{num_players}p"] = scalars[
+                count_stats_offset + count_bucket_count + bucket_idx
+            ]
 
         return result
 
