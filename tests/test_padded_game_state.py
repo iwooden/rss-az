@@ -137,7 +137,9 @@ def test_replay_buffer_samples_padded_state_rows_and_relation_scratch() -> None:
     buffer = ReplayBuffer(
         capacity=2,
         state_size_int16=get_layout(max_players).total_size,
-        num_players=num_players,
+        num_players=max_players,
+        min_players=num_players,
+        max_players=max_players,
     )
     buffer.add_stacked(
         states=state._array.reshape(1, -1).copy(),
@@ -145,6 +147,7 @@ def test_replay_buffer_samples_padded_state_rows_and_relation_scratch() -> None:
         legal_masks=np.zeros((1, int(UNIFIED_LOGIT_DIM)), dtype=np.uint8),
         policy_targets=np.zeros((1, int(UNIFIED_LOGIT_DIM)), dtype=np.float32),
         value_targets=np.zeros((1, num_players), dtype=np.float32),
+        num_players=num_players,
     )
 
     sample = buffer.sample(1, np.random.default_rng(1))
@@ -153,9 +156,11 @@ def test_replay_buffer_samples_padded_state_rows_and_relation_scratch() -> None:
     assert tuple(sample["relations"].shape) == (
         1,
         int(NUM_ATTENTION_RELATIONS),
-        get_num_tokens(num_players),
-        get_num_tokens(num_players),
+        get_num_tokens(max_players),
+        get_num_tokens(max_players),
     )
+    assert tuple(sample["value_targets"].shape) == (1, max_players)
+    assert int(sample["player_counts"][0].item()) == num_players
     turn = get_turn_fields()
     canonical_slot = get_layout(max_players).turn_offset + turn.num_players
     assert int(sample["states"][0, canonical_slot].item()) == num_players

@@ -530,13 +530,16 @@ def main() -> None:
     # --- Components (model-independent) ---
     # Compact int16 state — replay buffer stores raw GameState rows, the
     # trainer builds token buffers per-batch via core.token_data.
-    state_size_int16 = get_layout(config.num_players).total_size
-    num_tokens = get_num_tokens(config.num_players)
+    max_players = config.effective_max_players
+    state_size_int16 = get_layout(max_players).total_size
+    num_tokens = get_num_tokens(max_players)
     token_dim = int(TokenDataSize.TOKEN_DIM)
     buffer = ReplayBuffer(
         config.buffer_capacity,
         state_size_int16,
-        config.num_players,
+        max_players,
+        min_players=config.effective_min_players,
+        max_players=max_players,
     )
     logger = TrainingLogger(config.tensorboard_dir)
 
@@ -573,7 +576,7 @@ def main() -> None:
         shared_bufs = SharedEvalBuffers(
             num_workers=config.num_workers,
             batch_size=config.search_batch_size,
-            num_players=config.num_players,
+            num_players=max_players,
             input_spec=model_input_spec,
         )
         # Partition workers across eval servers. Each server owns a
@@ -753,7 +756,7 @@ def main() -> None:
 
     if config.num_workers == 0:
         evaluator = NNEvaluator(
-            model, device, num_players=config.num_players,
+            model, device, num_players=max_players,
             terminal_rank_weight=config.terminal_blend,
             eval_dtype=config.eval_dtype,
             input_spec=model_input_spec,
@@ -806,6 +809,7 @@ def main() -> None:
                     record.legal_masks,  # type: ignore[union-attr]
                     record.policy_targets,  # type: ignore[union-attr]
                     record.value_targets,  # type: ignore[union-attr]
+                    num_players=record.num_players,  # type: ignore[union-attr]
                 )
                 total_examples += record.num_examples  # type: ignore[union-attr]
                 total_moves += record.total_moves  # type: ignore[union-attr]
