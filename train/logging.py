@@ -46,6 +46,28 @@ def _format_player_range(config: TrainingConfig) -> str:
     return f"{lo}-{hi}"
 
 
+_RANK_LABELS = ("1st", "2nd", "3rd", "4th", "5th", "6th")
+
+
+def _format_rank_net_worths(
+    rank_net_worths: list[float],
+    rank_mins: list[float] | None = None,
+    rank_maxs: list[float] | None = None,
+) -> str:
+    parts = []
+    for i, value in enumerate(rank_net_worths):
+        part = f"{_RANK_LABELS[i]}=${value:,.0f}"
+        if (
+            rank_mins is not None
+            and rank_maxs is not None
+            and i < len(rank_mins)
+            and i < len(rank_maxs)
+        ):
+            part += f" [{rank_mins[i]:,.0f}\u2013{rank_maxs[i]:,.0f}]"
+        parts.append(part)
+    return ", ".join(parts)
+
+
 class TrainingLogger:
     """Tensorboard + Rich live terminal output for training."""
 
@@ -65,6 +87,9 @@ class TrainingLogger:
         self._sp_rank_net_worths: list[float] = []
         self._sp_rank_mins: list[float] = []
         self._sp_rank_maxs: list[float] = []
+        self._sp_count_rank_net_worths: dict[int, list[float]] = {}
+        self._sp_count_rank_mins: dict[int, list[float]] = {}
+        self._sp_count_rank_maxs: dict[int, list[float]] = {}
         self._sp_target_entropy: float = 0.0
         self._sp_target_top1_frac: float = 0.0
         self._sp_sample_entropy: float = 0.0
@@ -92,6 +117,9 @@ class TrainingLogger:
         self._sp_rank_net_worths = []
         self._sp_rank_mins = []
         self._sp_rank_maxs = []
+        self._sp_count_rank_net_worths = {}
+        self._sp_count_rank_mins = {}
+        self._sp_count_rank_maxs = {}
         self._sp_target_entropy = 0.0
         self._sp_target_top1_frac = 0.0
         self._sp_sample_entropy = 0.0
@@ -117,6 +145,9 @@ class TrainingLogger:
         target_top1_frac: float | None = None,
         sample_entropy: float | None = None,
         sample_top1_frac: float | None = None,
+        count_rank_net_worths: dict[int, list[float]] | None = None,
+        count_rank_mins: dict[int, list[float]] | None = None,
+        count_rank_maxs: dict[int, list[float]] | None = None,
     ) -> None:
         self._sp_games_done = games_done
         self._sp_total_examples = total_examples
@@ -135,6 +166,12 @@ class TrainingLogger:
             self._sp_sample_entropy = sample_entropy
         if sample_top1_frac is not None:
             self._sp_sample_top1_frac = sample_top1_frac
+        if count_rank_net_worths is not None:
+            self._sp_count_rank_net_worths = count_rank_net_worths
+        if count_rank_mins is not None:
+            self._sp_count_rank_mins = count_rank_mins
+        if count_rank_maxs is not None:
+            self._sp_count_rank_maxs = count_rank_maxs
         if self._live is not None:
             self._live.update(self._build_self_play_panel())
 
@@ -154,15 +191,22 @@ class TrainingLogger:
             f"Avg moves/game: {self._sp_avg_moves:.1f}    "
             f"Rate: {rate:.1f} games/min\n"
         )
-        if self._sp_rank_net_worths:
-            labels = ["1st", "2nd", "3rd", "4th", "5th", "6th"]
-            parts = []
-            for i, v in enumerate(self._sp_rank_net_worths):
-                part = f"{labels[i]}=${v:,.0f}"
-                if self._sp_rank_mins and self._sp_rank_maxs:
-                    part += f" [{self._sp_rank_mins[i]:,.0f}\u2013{self._sp_rank_maxs[i]:,.0f}]"
-                parts.append(part)
-            lines.append(f"Net worth: {', '.join(parts)}\n")
+        if self._sp_count_rank_net_worths:
+            lines.append("Net worth:\n")
+            for num_players in sorted(self._sp_count_rank_net_worths):
+                formatted = _format_rank_net_worths(
+                    self._sp_count_rank_net_worths[num_players],
+                    self._sp_count_rank_mins.get(num_players),
+                    self._sp_count_rank_maxs.get(num_players),
+                )
+                lines.append(f"  {num_players}p: {formatted}\n")
+        elif self._sp_rank_net_worths:
+            formatted = _format_rank_net_worths(
+                self._sp_rank_net_worths,
+                self._sp_rank_mins,
+                self._sp_rank_maxs,
+            )
+            lines.append(f"Net worth: {formatted}\n")
         if self._sp_games_done > 0:
             lines.append(
                 f"Target policy: H={self._sp_target_entropy:.3f} nats, "
@@ -345,26 +389,37 @@ class TrainingLogger:
         prefix = f"Epoch {epoch}/{num_epochs}"
         pad = " " * len(prefix)
 
-        rank_nws = self_play_stats.get("rank_net_worths")
-        rank_mins = self_play_stats.get("rank_net_worths_min")
-        rank_maxs = self_play_stats.get("rank_net_worths_max")
-        nw_str = ""
-        if isinstance(rank_nws, list):
-            labels = ["1st", "2nd", "3rd", "4th", "5th", "6th"]
-            parts = []
-            for i, v in enumerate(rank_nws):
-                part = f"{labels[i]}=${v:,.0f}"
-                if isinstance(rank_mins, list) and isinstance(rank_maxs, list):
-                    part += f" [{rank_mins[i]:,.0f}\u2013{rank_maxs[i]:,.0f}]"
-                parts.append(part)
-            nw_str = f"  Net worth: {', '.join(parts)}"
-
         self.console.print(
             f"{prefix}  Self-play: {games:,} games, {examples:,} examples "
             f"({avg_moves:.1f} moves/game, {avg_dur:.1f}s/game)"
         )
-        if nw_str:
-            self.console.print(f"{pad}{nw_str}")
+        by_count = self_play_stats.get("by_player_count")
+        if isinstance(by_count, dict) and by_count:
+            self.console.print(f"{pad}  Net worth by count:")
+            for raw_num_players, stats in sorted(by_count.items()):
+                if not isinstance(stats, dict):
+                    continue
+                rank_nws = stats.get("rank_net_worths")
+                if not isinstance(rank_nws, list) or not rank_nws:
+                    continue
+                rank_mins = stats.get("rank_net_worths_min")
+                rank_maxs = stats.get("rank_net_worths_max")
+                mins = rank_mins if isinstance(rank_mins, list) else None
+                maxs = rank_maxs if isinstance(rank_maxs, list) else None
+                self.console.print(
+                    f"{pad}    {int(raw_num_players)}p: "
+                    f"{_format_rank_net_worths(rank_nws, mins, maxs)}"
+                )
+        else:
+            rank_nws = self_play_stats.get("rank_net_worths")
+            if isinstance(rank_nws, list) and rank_nws:
+                rank_mins = self_play_stats.get("rank_net_worths_min")
+                rank_maxs = self_play_stats.get("rank_net_worths_max")
+                mins = rank_mins if isinstance(rank_mins, list) else None
+                maxs = rank_maxs if isinstance(rank_maxs, list) else None
+                self.console.print(
+                    f"{pad}  Net worth: {_format_rank_net_worths(rank_nws, mins, maxs)}"
+                )
         target_entropy = self_play_stats.get("policy_target_entropy", 0.0)
         target_top1 = self_play_stats.get("policy_target_top1_frac", 0.0)
         sample_entropy = self_play_stats.get("sample_policy_entropy", 0.0)
