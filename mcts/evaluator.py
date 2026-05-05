@@ -168,7 +168,12 @@ def _validate_model_input_spec(
     return input_spec
 
 
-def fill_token_buffer(state: Any, buf2d: np.ndarray) -> None:
+def fill_token_buffer(
+    state: Any,
+    buf2d: np.ndarray,
+    *,
+    max_players: int = 0,
+) -> None:
     """Fill a ``(num_tokens, TOKEN_DIM)`` float32 buffer from a GameState.
 
     Thin wrapper around ``core.token_data.get_token_data`` that isolates
@@ -176,7 +181,7 @@ def fill_token_buffer(state: Any, buf2d: np.ndarray) -> None:
     point lives. ``num_players ∉ {3, 4, 5}`` is rejected inside
     ``get_token_data`` via assert.
     """
-    get_token_data(state, buf2d)
+    get_token_data(state, buf2d, max_players=max_players)
 
 
 def fill_token_buffer_batch(
@@ -193,9 +198,24 @@ def fill_token_buffer_batch(
     get_token_data_batch(state_arrays, num_players, buf3d)
 
 
-def fill_relation_buffer(state: Any, buf3d: np.ndarray) -> None:
+def fill_token_buffer_batch_padded(
+    state_arrays: list[np.ndarray],
+    buf3d: np.ndarray,
+    *,
+    max_players: int,
+) -> None:
+    """Fill a padded token batch using each row's actual player count."""
+    get_token_data_batch(state_arrays, buf3d, max_players=max_players)
+
+
+def fill_relation_buffer(
+    state: Any,
+    buf3d: np.ndarray,
+    *,
+    max_players: int = 0,
+) -> None:
     """Fill a ``(num_relations, num_tokens, num_tokens)`` uint8 relation buffer."""
-    get_relation_data(state, buf3d)
+    get_relation_data(state, buf3d, max_players=max_players)
 
 
 def fill_relation_buffer_batch(
@@ -203,6 +223,16 @@ def fill_relation_buffer_batch(
 ) -> None:
     """Fill a ``(n, num_relations, num_tokens, num_tokens)`` relation buffer."""
     get_relation_data_batch(state_arrays, num_players, buf4d)
+
+
+def fill_relation_buffer_batch_padded(
+    state_arrays: list[np.ndarray],
+    buf4d: np.ndarray,
+    *,
+    max_players: int,
+) -> None:
+    """Fill a padded relation batch using each row's actual player count."""
+    get_relation_data_batch(state_arrays, buf4d, max_players=max_players)
 
 
 def fill_resnet_buffer(state: Any, buf1d: np.ndarray) -> None:
@@ -297,7 +327,28 @@ class BaseEvaluator:
         self.token_dim = TOKEN_DIM
         layout = get_layout(num_players)
         turn_fields = get_turn_fields()
+        self._num_players_state_offset = layout.turn_offset + turn_fields.num_players
         self._active_player_state_offset = layout.turn_offset + turn_fields.active_player
+
+    def _actual_num_players(self, state: Any) -> int:
+        """Read the actual player count from a GameState."""
+        return int(TURN.get_num_players(state))
+
+    def _actual_num_players_from_array(self, state_array: np.ndarray) -> int:
+        """Read the actual player count from a raw compact state row."""
+        return int(state_array[self._num_players_state_offset])
+
+    def _actual_num_players_for_rows(self, state_arrays: list[np.ndarray]) -> int:
+        """Return the shared actual count for a search batch of state rows."""
+        actual = self._actual_num_players_from_array(state_arrays[0])
+        for row in state_arrays[1:]:
+            row_actual = self._actual_num_players_from_array(row)
+            if row_actual != actual:
+                raise ValueError(
+                    "evaluate_leaves expects one actual player count per MCTS "
+                    f"batch, got {actual} and {row_actual}"
+                )
+        return actual
 
     def evaluate_terminal(self, state: Any) -> np.ndarray:
         """Compute terminal values from a game-over state.
@@ -308,9 +359,10 @@ class BaseEvaluator:
         Returns:
             Canonical values, shape (num_players,).
         """
-        net_worths = [PLAYERS[i].get_net_worth(state) for i in range(self.num_players)]
+        num_players = self._actual_num_players(state)
+        net_worths = [PLAYERS[i].get_net_worth(state) for i in range(num_players)]
         return compute_terminal_values(
-            net_worths, self.num_players, self.terminal_rank_weight
+            net_worths, num_players, self.terminal_rank_weight
         )
 
 
@@ -476,6 +528,7 @@ class NNEvaluator(BaseEvaluator):
             - n_legal: count of legal actions at this state.
             - phase_id: decision phase id 0-10.
         """
+        actual_num_players = self._actual_num_players(state)
         phase_id = get_decision_phase_py(state)
         n_legal = enumerate_legal_actions_py(state, self._enum_scratch)
 
@@ -485,15 +538,19 @@ class NNEvaluator(BaseEvaluator):
         if self._uses_resnet_vectors:
             fill_resnet_buffer(state, self._vec_h_np[0])
         else:
-            fill_token_buffer(state, self._tok_h_np[0])
-            fill_relation_buffer(state, self._rel_h_np[0])
+            fill_token_buffer(
+                state, self._tok_h_np[0], max_players=self.num_players,
+            )
+            fill_relation_buffer(
+                state, self._rel_h_np[0], max_players=self.num_players,
+            )
         self._build_mask_row(0, phase_id, self._enum_scratch[:n_legal])
 
         priors_np, values_np = self._forward(1)
         slots = self._action_lut_np[phase_id, self._enum_scratch[:n_legal]]
         return (
             priors_np[0, slots].copy(),
-            values_np[0],
+            values_np[0, :actual_num_players].copy(),
             self._enum_scratch[:n_legal].copy(),
             n_legal,
             phase_id,
@@ -529,11 +586,13 @@ class NNEvaluator(BaseEvaluator):
                 state_arrays, self.num_players, self._vec_h_np[:n],
             )
         else:
-            fill_token_buffer_batch(
-                state_arrays, self.num_players, self._tok_h_np[:n],
+            fill_token_buffer_batch_padded(
+                state_arrays, self._tok_h_np[:n],
+                max_players=self.num_players,
             )
-            fill_relation_buffer_batch(
-                state_arrays, self.num_players, self._rel_h_np[:n],
+            fill_relation_buffer_batch_padded(
+                state_arrays, self._rel_h_np[:n],
+                max_players=self.num_players,
             )
         phase_ids: list[int] = [0] * n
         n_legals: list[int] = [0] * n
@@ -552,10 +611,11 @@ class NNEvaluator(BaseEvaluator):
         results: list[tuple[np.ndarray, np.ndarray, np.ndarray, int, int]] = []
         for i in range(n):
             nl = n_legals[i]
+            actual_num_players = self._actual_num_players(states[i])
             slots = self._action_lut_np[phase_ids[i], all_action_ids[i, :nl]]
             results.append((
                 priors_np[i, slots].copy(),
-                values_np[i],
+                values_np[i, :actual_num_players].copy(),
                 all_action_ids[i, :nl].copy(),
                 nl,
                 phase_ids[i],
@@ -595,6 +655,7 @@ class NNEvaluator(BaseEvaluator):
                 np.empty((0, UNIFIED_LOGIT_DIM), dtype=np.float32),
                 np.empty((0, self.num_players), dtype=np.float32),
             )
+        actual_num_players = self._actual_num_players_for_rows(state_arrays)
         assert legal_mask.shape == (n, UNIFIED_LOGIT_DIM), \
             f"legal_mask shape {legal_mask.shape} != ({n}, {UNIFIED_LOGIT_DIM})"
 
@@ -612,17 +673,20 @@ class NNEvaluator(BaseEvaluator):
                     state_array[self._active_player_state_offset]
                 )
         else:
-            fill_token_buffer_batch(
-                state_arrays, self.num_players, self._tok_h_np[:n],
+            fill_token_buffer_batch_padded(
+                state_arrays, self._tok_h_np[:n],
+                max_players=self.num_players,
             )
-            fill_relation_buffer_batch(
-                state_arrays, self.num_players, self._rel_h_np[:n],
+            fill_relation_buffer_batch_padded(
+                state_arrays, self._rel_h_np[:n],
+                max_players=self.num_players,
             )
         # Copy caller's dense mask into host scratch — cheaper than
         # per-row LUT scatter because the caller built it once already.
         np.copyto(self._mask_h_np[:n], legal_mask, casting="unsafe")
 
-        return self._forward(n)
+        priors_np, values_np = self._forward(n)
+        return priors_np, values_np[:, :actual_num_players].copy()
 
     # ------------------------------------------------------------------
     # Shared forward (batched)

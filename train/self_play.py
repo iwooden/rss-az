@@ -85,6 +85,7 @@ class GameRecord:
     legal_masks: np.ndarray  # (num_examples, UNIFIED_LOGIT_DIM), uint8
     policy_targets: np.ndarray  # (num_examples, UNIFIED_LOGIT_DIM), float32
     value_targets: np.ndarray  # (num_examples, num_players), float32
+    num_players: int  # Actual player count for this game
     num_examples: int  # Number of training examples
     total_moves: int  # Decision points (MCTS searches)
     net_worths: list[int]  # Final net worth per player (canonical order)
@@ -149,6 +150,14 @@ def _compute_policy_target_temperature(
     )
 
 
+def _select_game_num_players(config: TrainingConfig, game_seed: int) -> int:
+    """Select the actual player count for a new self-play game."""
+    if config.is_mixed_player_training:
+        count = config.effective_max_players - config.effective_min_players + 1
+        return config.effective_min_players + (game_seed % count)
+    return config.num_players
+
+
 def play_game(
     evaluator: Any,
     config: TrainingConfig,
@@ -168,15 +177,21 @@ def play_game(
     """
     t0 = time.perf_counter()
 
-    num_players = config.num_players
-    state = GameState(num_players)
-    state.initialize_game(num_players, seed=game_seed)
+    num_players = _select_game_num_players(config, game_seed)
+    max_players = config.effective_max_players
+    state = GameState(num_players, max_players=max_players)
+    state.initialize_game(num_players, seed=game_seed, max_players=max_players)
 
-    total_int16_size = get_layout(num_players).total_size
+    total_int16_size = get_layout(max_players).total_size
 
     # Ensure state pool exists for subtree reuse across searches
     if state_pool is None:
         state_pool = StatePool(2 * (config.max_simulations + 1), total_int16_size)
+    elif state_pool.states.shape[1] != total_int16_size:
+        raise ValueError(
+            f"state_pool row width {state_pool.states.shape[1]} does not match "
+            f"configured max-player state width {total_int16_size}"
+        )
 
     # Use epoch-specific overrides if provided
     c_puct_override = epoch_config.c_puct if epoch_config is not None else None
@@ -395,6 +410,7 @@ def play_game(
         legal_masks=stacked_legal_masks,
         policy_targets=stacked_policy_targets,
         value_targets=stacked_value_targets,
+        num_players=num_players,
         num_examples=n_examples,
         total_moves=move_count,
         net_worths=net_worths,
@@ -438,12 +454,12 @@ def self_play_worker(
     torch.set_num_threads(1)  # Prevent OpenMP oversubscription with many workers
 
     evaluator = RemoteEvaluator(
-        config.num_players, shared_bufs, worker_idx,
+        config.effective_max_players, shared_bufs, worker_idx,
         profile=config.profile,
         terminal_rank_weight=config.terminal_blend,
     )
 
-    total_size = get_layout(config.num_players).total_size
+    total_size = get_layout(config.effective_max_players).total_size
     state_pool = StatePool(2 * (config.max_simulations + 1), total_size)
 
     try:

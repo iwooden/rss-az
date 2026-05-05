@@ -260,11 +260,22 @@ def run_search(
         # stats reset by prepare_reuse_root(), don't reset the pool.
         # Full sim budget: virtual backups for existing children are
         # near-free, real search runs once root catches up per action.
+        if reuse_root.value_sum.shape[0] != num_players:
+            raise ValueError(
+                f"reuse_root value width {reuse_root.value_sum.shape[0]} "
+                f"does not match search num_players {num_players}"
+            )
         root = reuse_root
         num_sims = config.num_simulations
     else:
         if root_state is None:
             raise ValueError("root_state is required for fresh searches")
+        actual_num_players = TURN.get_num_players(root_state)
+        if actual_num_players != num_players:
+            raise ValueError(
+                f"root_state num_players {actual_num_players} does not match "
+                f"MCTS config num_players {num_players}"
+            )
 
         # Set up state pool
         if state_pool is None:
@@ -326,6 +337,7 @@ def run_search(
     assert pending_action_ids_buf is not None and pending_n_buf is not None
     assert pending_legal_mask_buf is not None and pending_phase_buf is not None
     assert saved_values_buf is not None and path_pool is not None
+    saved_values_buf = saved_values_buf[:, :num_players]
     legal_scratch = state_pool._legal_scratch
     action_lut_np = state_pool._action_lut_np
 

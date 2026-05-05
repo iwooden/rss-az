@@ -23,7 +23,7 @@ from mcts.search import StatePool, prepare_reuse_root, run_search
 from nn import create_model, get_model_input_spec
 from nn.transformer import UNIFIED_LOGIT_DIM, RSSTransformerNet, TransformerConfig
 from train.config import EpochConfig, TrainingConfig
-from train.self_play import play_game
+from train.self_play import _select_game_num_players, play_game
 
 
 U_DIM = int(UNIFIED_LOGIT_DIM)
@@ -143,6 +143,64 @@ def test_resnet_play_game_short_3p_game_keeps_record_contract():
         np.broadcast_to(expected, record.value_targets.shape),
         atol=1e-6,
     )
+
+
+def test_seed_modulo_player_count_selection_is_deterministic():
+    config = TrainingConfig(num_players=0, min_players=3, max_players=5)
+
+    assert [_select_game_num_players(config, seed) for seed in range(6)] == [
+        3, 4, 5, 3, 4, 5,
+    ]
+
+
+def test_play_game_mixed_config_runs_3p_4p_5p_with_one_max_pool():
+    torch.manual_seed(2)
+    max_players = 5
+    config = TrainingConfig(
+        num_players=0,
+        min_players=3,
+        max_players=max_players,
+        num_simulations=2,
+        search_batch_size=2,
+        dirichlet_epsilon=0.0,
+    )
+    model = create_model(config).to(torch.device("cpu"))
+    evaluator = NNEvaluator(
+        model,
+        torch.device("cpu"),
+        num_players=max_players,
+        input_spec=get_model_input_spec(config),
+    )
+    state_pool = StatePool(
+        2 * (config.max_simulations + 1),
+        get_layout(max_players).total_size,
+    )
+    epoch_config = EpochConfig(
+        c_puct=config.c_puct_final,
+        value_blend_alpha=1.0,
+        num_simulations=config.num_simulations,
+    )
+
+    for seed, expected_players in zip((0, 1, 2), (3, 4, 5), strict=True):
+        record = play_game(
+            evaluator,
+            config,
+            game_seed=seed,
+            rng=np.random.default_rng(seed),
+            state_pool=state_pool,
+            epoch_config=epoch_config,
+        )
+
+        assert record.num_players == expected_players
+        assert record.states.shape == (
+            record.num_examples,
+            get_layout(max_players).total_size,
+        )
+        assert record.value_targets.shape == (
+            record.num_examples,
+            expected_players,
+        )
+        _assert_dense_policy_invariants(record)
 
 
 def test_play_game_subtree_reuse_produces_sensible_q_after_move_1(evaluator):

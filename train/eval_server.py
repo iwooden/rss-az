@@ -1548,6 +1548,7 @@ class RemoteEvaluator(BaseEvaluator):
             - n_legal: count of legal actions.
             - phase_id: decision phase id 0-10.
         """
+        actual_num_players = self._actual_num_players(state)
         phase_id = get_decision_phase_py(state)
         self._active_players_np[0] = int(
             state._array[self._active_player_state_offset]
@@ -1557,9 +1558,15 @@ class RemoteEvaluator(BaseEvaluator):
             self._in_states_np[0] = self._states_scratch_fp32[0].astype(np.float16)
         else:
             assert self._in_relation_coords_np is not None
-            get_token_data(state, self._states_scratch_fp32[0])
+            get_token_data(
+                state, self._states_scratch_fp32[0],
+                max_players=self.num_players,
+            )
             self._in_states_np[0] = self._states_scratch_fp32[0].astype(np.float16)
-            get_relation_coord_data(state, self._in_relation_coords_np[0])
+            get_relation_coord_data(
+                state, self._in_relation_coords_np[0],
+                max_players=self.num_players,
+            )
         n = enumerate_legal_actions_py(state, self._enum_scratch)
         self._fill_mask_row(0, phase_id, self._enum_scratch[:n])
 
@@ -1570,7 +1577,7 @@ class RemoteEvaluator(BaseEvaluator):
         self._unrotate_values_if_needed(values, 1)
         return (
             self._out_priors_np[0, slots].copy(),
-            values[0],
+            values[0, :actual_num_players].copy(),
             self._enum_scratch[:n].copy(),
             n,
             phase_id,
@@ -1609,6 +1616,7 @@ class RemoteEvaluator(BaseEvaluator):
                 np.empty((0, UNIFIED_LOGIT_DIM), dtype=np.float32),
                 np.empty((0, self.num_players), dtype=np.float32),
             )
+        actual_num_players = self._actual_num_players_for_rows(state_arrays)
 
         _stats = self._stats
         _t0 = _t1 = _t2 = 0.0
@@ -1635,13 +1643,15 @@ class RemoteEvaluator(BaseEvaluator):
             # rows internally). Fill fp32 scratch first, then cast into the
             # fp16 shm slot at the boundary (one vectorized astype, ~tens of μs).
             get_token_data_batch(
-                state_arrays, self.num_players, self._states_scratch_fp32[:n],
+                state_arrays, self._states_scratch_fp32[:n],
+                max_players=self.num_players,
             )
             self._in_states_np[:n] = self._states_scratch_fp32[:n].astype(
                 np.float16
             )
             get_relation_coord_data_batch(
-                state_arrays, self.num_players, self._in_relation_coords_np[:n],
+                state_arrays, self._in_relation_coords_np[:n],
+                max_players=self.num_players,
             )
         # Caller already has the dense mask — copy it straight into shm.
         np.copyto(self._in_legal_mask_np[:n], legal_mask, casting="unsafe")
@@ -1665,7 +1675,7 @@ class RemoteEvaluator(BaseEvaluator):
             _stats.num_calls += 1
             _stats.total_states += n
 
-        return priors, values
+        return priors, values[:, :actual_num_players].copy()
 
     def reset_profile_stats(self) -> None:
         """Reset profile stats for a new game."""

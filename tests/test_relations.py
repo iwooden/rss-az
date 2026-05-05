@@ -540,6 +540,37 @@ def test_remote_evaluator_evaluate_leaves_populates_relation_buffer(
     assert int(relations[owned_by_relation_id].sum()) == 1
 
 
+def test_remote_evaluator_slices_max_width_values_to_actual_players(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    max_players = 5
+    num_players = 3
+    state = GameState(num_players, max_players=max_players)
+    state.initialize_game(num_players, seed=777, max_players=max_players)
+    shared_bufs = SharedEvalBuffers(
+        num_workers=1,
+        batch_size=2,
+        num_players=max_players,
+    )
+    shared_bufs.init_bitmap([(0, 1)])
+    evaluator = RemoteEvaluator(max_players, shared_bufs, worker_idx=0)
+    monkeypatch.setattr(evaluator, "_request_eval", lambda n: None)
+
+    shared_bufs.get_output_values_np(0)[0] = np.arange(
+        max_players, dtype=np.float32,
+    )
+    legal_mask = np.zeros((1, int(UNIFIED_LOGIT_DIM)), dtype=np.uint8)
+    legal_mask[0, 0] = 1
+
+    _priors, values = evaluator.evaluate_leaves([state._array], legal_mask)
+
+    assert values.shape == (1, num_players)
+    np.testing.assert_array_equal(
+        values[0],
+        np.arange(num_players, dtype=np.float32),
+    )
+
+
 def _one_row_training_targets() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     phase_ids = np.array([0], dtype=np.int8)
     legal_masks = np.zeros((1, int(UNIFIED_LOGIT_DIM)), dtype=np.uint8)

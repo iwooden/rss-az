@@ -1009,6 +1009,43 @@ class TestStatePool:
             assert int(row[canonical_slot]) == num_players
             np.testing.assert_array_equal(row[padded_start:padded_stop], 0)
 
+    def test_one_max_width_pool_runs_sequential_player_counts(self):
+        max_players = 5
+        torch.manual_seed(123)
+        model = RSSTransformerNet(
+            TransformerConfig(num_players=max_players),
+        ).to(torch.device("cpu"))
+        evaluator = NNEvaluator(
+            model, torch.device("cpu"), num_players=max_players,
+        )
+        pool = StatePool(2 * (4 + 1), get_layout(max_players).total_size)
+
+        for num_players in (5, 3, 4):
+            state = GameState(num_players, max_players=max_players)
+            state.initialize_game(
+                num_players, seed=100 + num_players,
+                max_players=max_players,
+            )
+            cfg = MCTSConfig(
+                num_players=num_players,
+                num_simulations=4,
+                search_batch_size=2,
+                dirichlet_epsilon=0.0,
+            )
+
+            root = run_search(
+                state,
+                evaluator,
+                cfg,
+                rng=np.random.default_rng(num_players),
+                state_pool=pool,
+            )
+
+            assert root.value_sum.shape == (num_players,)
+            assert root.default_value is not None
+            assert root.default_value.shape == (num_players,)
+            assert pool.states.shape[1] == get_layout(max_players).total_size
+
 
 # ---------------------------------------------------------------------------
 # NNEvaluator
@@ -1107,6 +1144,37 @@ class TestNNEvaluator:
         )
         assert priors.shape == (0, UNIFIED_LOGIT_DIM)
         assert values.shape == (0, NUM_PLAYERS)
+
+    def test_max_width_transformer_values_are_sliced_to_actual_players(self):
+        max_players = 5
+        torch.manual_seed(321)
+        model = RSSTransformerNet(
+            TransformerConfig(num_players=max_players),
+        ).to(torch.device("cpu"))
+        evaluator = NNEvaluator(
+            model, torch.device("cpu"), num_players=max_players,
+        )
+
+        for num_players in (3, 4, 5):
+            state = GameState(num_players, max_players=max_players)
+            state.initialize_game(
+                num_players, seed=200 + num_players,
+                max_players=max_players,
+            )
+            priors, values, action_ids, n_legal, phase_id = evaluator.evaluate(
+                state,
+            )
+            assert priors.shape == (n_legal,)
+            assert values.shape == (num_players,)
+
+            lut = build_action_lut().numpy()
+            legal_mask = np.zeros((1, UNIFIED_LOGIT_DIM), dtype=np.uint8)
+            legal_mask[0, lut[phase_id, action_ids[:n_legal]]] = 1
+            priors_dense, values_batch = evaluator.evaluate_leaves(
+                [state._array], legal_mask,
+            )
+            assert priors_dense.shape == (1, UNIFIED_LOGIT_DIM)
+            assert values_batch.shape == (1, num_players)
 
     def test_model_num_players_mismatch_rejected(self, model):
         """Evaluator-model num_players mismatch raises at construction."""
