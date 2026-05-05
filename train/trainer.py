@@ -68,18 +68,18 @@ class Trainer:
         self.device = device
         self._global_step = 0
 
-        self._num_players = config.num_players
-        self._num_tokens = get_num_tokens(config.num_players)
-        layout = get_layout(config.num_players)
+        self._model_kind = normalize_model_type(config.model_type)
+        self._uses_resnet_vectors = self._model_kind is ModelKind.RESNET
+        self._num_players = config.effective_max_players
+        self._num_tokens = get_num_tokens(self._num_players)
+        layout = get_layout(self._num_players)
         turn_fields = get_turn_fields()
         self._state_size = layout.total_size
         self._active_player_state_offset = (
             layout.turn_offset + turn_fields.active_player
         )
-        self._model_kind = normalize_model_type(config.model_type)
-        self._uses_resnet_vectors = self._model_kind is ModelKind.RESNET
         self._resnet_vector_dim = (
-            get_resnet_vector_size(config.num_players)
+            get_resnet_vector_size(self._num_players)
             if self._uses_resnet_vectors else 0
         )
 
@@ -252,6 +252,8 @@ class Trainer:
             self._rel_h_np = self._rel_h.numpy()
         self._phase_h = torch.empty(cap, dtype=torch.long, pin_memory=pm)
         self._phase_h_np = self._phase_h.numpy()
+        self._pc_h = torch.empty(cap, dtype=torch.uint8, pin_memory=pm)
+        self._pc_h_np = self._pc_h.numpy()
         self._mask_h = torch.empty((cap, U_DIM), dtype=torch.uint8, pin_memory=pm)
         self._mask_h_np = self._mask_h.numpy()
         self._pt_h = torch.empty((cap, U_DIM), dtype=torch.float32, pin_memory=pm)
@@ -273,6 +275,7 @@ class Trainer:
                     (cap, nr, nt, nt), dtype=torch.uint8, device=self.device,
                 )
             self._phase_d = torch.empty(cap, dtype=torch.long, device=self.device)
+            self._pc_d = torch.empty(cap, dtype=torch.uint8, device=self.device)
             self._mask_d = torch.empty(
                 (cap, U_DIM), dtype=torch.uint8, device=self.device,
             )
@@ -287,6 +290,7 @@ class Trainer:
                 self._tok_d = self._tok_h
                 self._rel_d = self._rel_h
             self._phase_d = self._phase_h
+            self._pc_d = self._pc_h
             self._mask_d = self._mask_h
             self._pt_d = self._pt_h
             self._vt_d = self._vt_h
@@ -306,6 +310,7 @@ class Trainer:
             self._tok_d[:n].copy_(self._tok_h[:n], non_blocking=True)
             self._rel_d[:n].copy_(self._rel_h[:n], non_blocking=True)
         self._phase_d[:n].copy_(self._phase_h[:n], non_blocking=True)
+        self._pc_d[:n].copy_(self._pc_h[:n], non_blocking=True)
         self._mask_d[:n].copy_(self._mask_h[:n], non_blocking=True)
         self._pt_d[:n].copy_(self._pt_h[:n], non_blocking=True)
         self._vt_d[:n].copy_(self._vt_h[:n], non_blocking=True)
@@ -317,8 +322,8 @@ class Trainer:
         """
         get_token_data_batch(
             [self._states_np[i] for i in range(n)],
-            self._num_players,
             self._tok_h_np[:n],
+            max_players=self._num_players,
         )
 
     def _fill_resnet_vector_batch(self, n: int) -> None:
@@ -385,6 +390,7 @@ class Trainer:
             self._pt_h_np[:B],
             self._vt_h_np[:B],
             relations_out=None if self._uses_resnet_vectors else self._rel_h_np[:B],
+            player_counts_out=self._pc_h_np[:B],
         )
 
         # NaN in any training target is a self-play inference bug —
@@ -411,6 +417,7 @@ class Trainer:
 
         phase_ids = self._phase_d[:B]
         legal_masks = self._mask_d[:B].to(torch.bool)
+        player_counts = self._pc_d[:B]
         policy_targets = self._pt_d[:B]
         value_targets = self._vt_d[:B]
 
@@ -450,10 +457,17 @@ class Trainer:
         policy_target_entropy = per_example_target_entropy.mean()
         policy_loss_residual = policy_loss - policy_target_entropy
 
-        # Value loss: mean squared error over the full (B, N) value tensor.
+        # Value loss: mean squared error over real players only. Mixed-count
+        # transformer batches carry padded value slots up to max_players; those
+        # slots are not game entities and should not contribute to gradients or
+        # the loss denominator. Single-count and ResNet batches get an all-true
+        # mask because their sampled player_counts equal N.
         # Transformer outputs canonical values; ResNet outputs active-relative
         # values and uses value_targets rotated above.
-        value_loss = F.mse_loss(values, value_targets)
+        player_ids = torch.arange(self._num_players, device=self.device)
+        value_mask = player_ids.unsqueeze(0) < player_counts.unsqueeze(1)
+        value_sqerr = (values - value_targets).square()
+        value_loss = value_sqerr.masked_select(value_mask).mean()
 
         # Combined loss
         total_loss = (
