@@ -43,22 +43,26 @@ cpdef enum TokenWidth:
     TW_PLAYER                = 62
 
 
-# Number of tokens for a given player count (num_players + 54 fixed tokens).
-cpdef int get_num_tokens(int num_players) noexcept nogil
+# Number of tokens for a given player-token capacity (max_players + 54 fixed
+# tokens).
+cpdef int get_num_tokens(int max_players) noexcept nogil
 
 
 # Per-position non-padded feature widths matching ``_fill_buffer``'s layout.
-# Returns a ``(num_players + 54,)`` uint8 numpy array; each entry is the
+# Returns a ``(max_players + 54,)`` uint8 numpy array; each entry is the
 # width of the corresponding buffer row (<= TOKEN_DIM). The model can use
 # this to slice ``buffer[i, :widths[i]]`` into the per-type projection.
-cpdef object get_token_widths(int num_players)
+cpdef object get_token_widths(int max_players)
 
 
 # Fill a (num_tokens, TOKEN_DIM) float32 memoryview with per-token features.
 # The buffer is zeroed by the function; phase-specific tokens remain zero
 # when the current engine phase does not match. Requires a C-contiguous
-# float32 memoryview sized for at least (num_players + 54, TOKEN_DIM).
-cpdef void get_token_data(GameState state, float[:, ::1] buffer)
+# float32 memoryview sized for at least (max_players + 54, TOKEN_DIM) when
+# max_players is provided. max_players=0 uses the state's actual player count.
+cpdef void get_token_data(
+    GameState state, float[:, ::1] buffer, int max_players=*,
+)
 
 
 # Batched variant: fill ``buffer[i]`` from ``state_arrays[i]`` for i in [0, n).
@@ -67,7 +71,9 @@ cpdef void get_token_data(GameState state, float[:, ::1] buffer)
 # over a single entry. Cache refresh + ``_fill_buffer`` run together in one
 # nogil block per row via ``refresh_player_cache_if_dirty``; only ``rebind``
 # itself stays GIL-held (Python-level validation + ``_array`` attr write).
-# Requires a C-contiguous (n, num_players + 54, TOKEN_DIM) float32 buffer.
+# Preferred Python call shape is ``(state_arrays, buffer, max_players=0)``.
+# The legacy ``(state_arrays, num_players, buffer)`` shape remains accepted.
+# Requires a C-contiguous (n, max_players + 54, TOKEN_DIM) float32 buffer.
 cpdef void get_token_data_batch(
-    list state_arrays, int num_players, float[:, :, ::1] buffer,
+    list state_arrays, object arg2, object arg3=*, int max_players=*,
 )

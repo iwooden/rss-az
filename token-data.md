@@ -16,10 +16,13 @@ Matches `core/token_data.pyx::_fill_buffer`:
    `invest`, `auction`, `dividend`, `issue`, `par`, `acq_offer`,
    `acq_price_info`
 3. Corp tokens (x8)
-4. Player tokens (xN, N in {3, 4, 5})
+4. Player tokens (xM, M in {3, 4, 5}, where M is the model/storage
+   player-token capacity)
 
-Fixed engine rows: 54. Total tokens = `num_players + 54`
-(57 / 58 / 59 for 3p / 4p / 5p).
+Fixed engine rows: 54. Total tokens = `max_players + 54`
+(57 / 58 / 59 for max 3p / 4p / 5p). Exact-width extraction uses
+`max_players = num_players`; padded extraction can emit, for example, 59 rows
+for an actual 3p state in a max-5 training run.
 
 For 3p, row indices are:
 
@@ -36,6 +39,9 @@ For 3p, row indices are:
 - 45: AcqPriceInfo
 - 46..53: Corp 0..7
 - 54..56: Player 0..2
+
+For a 3p state extracted with `max_players=5`, rows 57..58 are reserved
+player rows and remain all-zero.
 
 The model consumes exactly these engine-side rows; it does not append
 synthetic model-side tokens after projection.
@@ -72,8 +78,10 @@ Every token type starts with:
 
 Rules:
 
-- MarketInfo, GlobalInfo, FI, company, corp, and emitted player tokens always
-  set `attn_mask = 1`; only live player rows for `num_players` are emitted.
+- MarketInfo, GlobalInfo, FI, company, corp, and actual player tokens always
+  set `attn_mask = 1`.
+- Padded player rows in `[num_players, max_players)` remain all-zero, including
+  `attn_mask = 0`, so they are not visible as attention keys.
 - Phase-specific tokens set `attn_mask = 1` only when `_fill_buffer` calls the
   matching phase helper. The PAR token is shared and sets the mask in both
   `PHASE_IPO` and `PHASE_PAR`.
@@ -272,9 +280,14 @@ Relational tail:
 - President ID (5 slots). All zero if inactive / receivership.
 - Owned companies (36 slots). Includes companies in the acquisition pile.
 
-## Player Tokens (62, xN, N in {3, 4, 5})
+## Player Tokens (62, xM, M in {3, 4, 5})
 
 Player identity is inferred from row order.
+
+Rows `[0, num_players)` within the player-token block are filled from the
+actual game state. Rows `[num_players, max_players)` are padding rows and stay
+all-zero. `get_token_widths(max_players)` still reports `TW_PLAYER` for every
+reserved player-token row so the model projection layout is stable.
 
 - `attn_mask`
 - `is_selected`. 1 iff this is the current `active_player`.

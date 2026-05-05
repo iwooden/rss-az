@@ -28,7 +28,14 @@ from core.data import (
     PHASE_ACTION_SIZES,
 )
 from core.state import GameState
-from core.token_data import TokenDataSize, TokenWidth, get_num_tokens, get_token_data
+from core.token_data import (
+    TokenDataSize,
+    TokenWidth,
+    get_num_tokens,
+    get_token_data,
+    get_token_data_batch,
+    get_token_widths,
+)
 
 
 NUM_PLAYERS = 3
@@ -588,6 +595,98 @@ def _token_buffer_for_state(state: GameState) -> torch.Tensor:
     )
     get_token_data(state, buf)
     return torch.from_numpy(buf).unsqueeze(0)
+
+
+def test_token_widths_report_player_widths_for_all_capacity_rows() -> None:
+    max_players = 5
+    widths = get_token_widths(max_players)
+
+    assert widths.shape == (get_num_tokens(max_players),)
+    assert widths[-max_players:].tolist() == [
+        int(TokenWidth.TW_PLAYER),
+    ] * max_players
+
+
+def test_token_data_emits_zero_padded_player_rows_for_larger_capacity(
+    model: RSSTransformerNet,
+) -> None:
+    state = GameState(3, max_players=5)
+    state.initialize_game(3, seed=42)
+    token_dim = int(TokenDataSize.TOKEN_DIM)
+    player_base = model._player_slice.start
+
+    exact = np.zeros((get_num_tokens(3), token_dim), dtype=np.float32)
+    padded = np.full((get_num_tokens(5), token_dim), 7.0, dtype=np.float32)
+
+    get_token_data(state, exact)
+    get_token_data(state, padded, max_players=5)
+
+    assert padded.shape == (get_num_tokens(5), token_dim)
+    np.testing.assert_allclose(padded[:player_base + 3], exact)
+    np.testing.assert_array_equal(
+        padded[player_base + 3:player_base + 5],
+        np.zeros((2, token_dim), dtype=np.float32),
+    )
+
+    assert padded[model._market_info_idx:model._invest_idx, 0].all()
+    assert padded[model._invest_idx, 0] == pytest.approx(1.0)
+    phase_rows_not_in_invest = [
+        model._auction_idx,
+        model._dividend_idx,
+        model._issue_idx,
+        model._par_idx,
+        model._acq_offer_idx,
+        model._acq_price_info_idx,
+    ]
+    assert not padded[phase_rows_not_in_invest, 0].any()
+    assert padded[model._corp_slice, 0].all()
+    assert padded[player_base:player_base + 3, 0].all()
+    assert not padded[player_base + 3:player_base + 5, 0].any()
+
+    np.testing.assert_array_equal(
+        padded[model._global_info_idx, 21:24],
+        np.array([1.0, 0.0, 0.0], dtype=np.float32),
+    )
+
+
+def test_token_data_batch_reads_actual_player_counts_in_mixed_capacity_batch(
+    model: RSSTransformerNet,
+) -> None:
+    player_counts = [3, 4, 5]
+    states: list[GameState] = []
+    token_dim = int(TokenDataSize.TOKEN_DIM)
+    max_tokens = get_num_tokens(5)
+    player_base = model._player_slice.start
+
+    for num_players in player_counts:
+        state = GameState(num_players, max_players=5)
+        state.initialize_game(num_players, seed=40 + num_players)
+        states.append(state)
+
+    batch = np.full(
+        (len(states), max_tokens, token_dim),
+        7.0,
+        dtype=np.float32,
+    )
+
+    get_token_data_batch([state._array for state in states], batch)
+
+    for row, (state, num_players) in enumerate(zip(states, player_counts, strict=True)):
+        exact = np.zeros((get_num_tokens(num_players), token_dim), dtype=np.float32)
+        get_token_data(state, exact)
+
+        np.testing.assert_allclose(batch[row, :player_base + num_players], exact)
+        np.testing.assert_array_equal(
+            batch[row, player_base + num_players:],
+            np.zeros((5 - num_players, token_dim), dtype=np.float32),
+        )
+
+        expected_num_players = np.zeros(3, dtype=np.float32)
+        expected_num_players[num_players - 3] = 1.0
+        np.testing.assert_array_equal(
+            batch[row, model._global_info_idx, 21:24],
+            expected_num_players,
+        )
 
 
 def _token_labels(model: RSSTransformerNet) -> list[str]:

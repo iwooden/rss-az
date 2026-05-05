@@ -17,8 +17,9 @@ Token order (matches ``nn/transformer.py``):
     # for higher player counts later without reshuffling the fixed prefix.
      corps..., players...]
 
-Total tokens in the buffer = num_players + 54. The model consumes exactly
-these engine-side rows; no synthetic model-side tokens are appended.
+Total tokens in the buffer = max_players + 54 when padded extraction is
+requested, otherwise num_players + 54. The model consumes exactly these
+engine-side rows; no synthetic model-side tokens are appended.
 
 Active-entity selectors (active_player / active_corp / active_company
 in TURN_OFFSETS) are surfaced as ``is_selected`` scalar flags on each
@@ -225,15 +226,15 @@ DEF PRESIDENCIES_DIVISOR    = 8.0     # = NUM_CORPS, hard cap on player presiden
 # PUBLIC API
 # =============================================================================
 
-cpdef int get_num_tokens(int num_players) noexcept nogil:
-    """Input-buffer token count for the given player count (num_players + 54).
+cpdef int get_num_tokens(int max_players) noexcept nogil:
+    """Input-buffer token count for the given player capacity (max_players + 54).
 
     The model consumes exactly this many engine-side token rows.
     """
-    return num_players + 54
+    return max_players + 54
 
 
-cpdef object get_token_widths(int num_players):
+cpdef object get_token_widths(int max_players):
     """Per-position non-padded feature widths matching ``_fill_buffer``.
 
     Each ``buffer[i]`` row is TOKEN_DIM wide but only the first
@@ -243,13 +244,13 @@ cpdef object get_token_widths(int num_players):
     ``buffer[i, :widths[i]]`` or group positions by type for per-type
     projection modules without duplicating the layout logic.
 
-    Returns a uint8 ``(num_players + 54,)`` numpy array; all widths fit
-    in a byte (max is TW_CORP = 92 < 256).
+    Returns a uint8 ``(max_players + 54,)`` numpy array; all widths fit
+    in a byte (max is TW_CORP = 95 < 256).
     """
-    assert 3 <= num_players <= 5, \
-        f"get_token_widths: num_players must be 3-5, got {num_players}"
+    assert 3 <= max_players <= 5, \
+        f"get_token_widths: max_players must be 3-5, got {max_players}"
 
-    cdef int num_tokens = num_players + 54
+    cdef int num_tokens = max_players + 54
     widths = np.empty(num_tokens, dtype=np.uint8)
     cdef unsigned char[::1] w = widths
 
@@ -292,19 +293,25 @@ cpdef object get_token_widths(int num_players):
         tok += 1
 
     # Player tokens (trailing)
-    for i in range(num_players):
+    for i in range(max_players):
         w[tok] = <unsigned char>TokenWidth.TW_PLAYER
         tok += 1
 
     return widths
 
 
-cpdef void get_token_data(GameState state, float[:, ::1] buffer):
+cpdef void get_token_data(
+    GameState state,
+    float[:, ::1] buffer,
+    int max_players=0,
+):
     """Fill ``buffer`` with per-token NN features for ``state``.
 
     ``buffer`` must be a writable C-contiguous float32 memoryview at least
-    ``(num_players + 54, TOKEN_DIM)`` in size. Training is scoped to
-    3-5 players; other player counts are rejected.
+    ``(max_players + 54, TOKEN_DIM)`` in size when ``max_players`` is
+    provided. The default ``max_players=0`` preserves exact-width behavior
+    by using the actual player count recorded in ``state``. Training is
+    scoped to 3-5 players; other player counts are rejected.
 
     The cache-refresh prologue and ``_fill_buffer`` run in a single nogil
     block — refresh goes through the module-level
@@ -312,11 +319,13 @@ cpdef void get_token_data(GameState state, float[:, ::1] buffer):
     ``PLAYERS[i].get_net_worth(state)`` lookup it used to.
     """
     cdef int num_players = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.num_players]
-    cdef int num_tokens = num_players + 54
+    cdef int num_tokens
     cdef int i
+    max_players = _resolve_output_max_players(
+        num_players, max_players, "get_token_data",
+    )
+    num_tokens = max_players + 54
 
-    assert 3 <= num_players <= 5, \
-        f"get_token_data: num_players must be 3-5, got {num_players}"
     assert buffer.shape[0] >= num_tokens, \
         f"get_token_data: buffer rows {buffer.shape[0]} < num_tokens {num_tokens}"
     # Exact-match on the padded width: the nogil memset in ``_fill_buffer``
@@ -333,8 +342,9 @@ cpdef void get_token_data(GameState state, float[:, ::1] buffer):
 
 cpdef void get_token_data_batch(
     list state_arrays,
-    int num_players,
-    float[:, :, ::1] buffer,
+    object arg2,
+    object arg3=None,
+    int max_players=0,
 ):
     """Batched ``get_token_data``: fill ``buffer[i]`` for each ``state_arrays[i]``.
 
@@ -345,21 +355,41 @@ cpdef void get_token_data_batch(
 
     Args:
         state_arrays: List of writable C-contiguous int16 state arrays, one
-            per leaf. Every entry must have the same storage capacity; the
-            capacity may be wider than the shared actual ``num_players``.
-        num_players: Training player count (3-5). Applies to every state
-            array in the batch — mixed-player batches are not supported.
-        buffer: ``(n, num_players + 54, TOKEN_DIM)`` float32 output, C-contig.
+            per leaf. Entries may carry different actual player counts.
+        arg2/arg3: Preferred call shape is ``(state_arrays, buffer,
+            max_players=0)``. The legacy shape ``(state_arrays, num_players,
+            buffer)`` is still accepted; when ``max_players`` is omitted, the
+            legacy ``num_players`` is used as the output capacity.
+        max_players: Output player-token capacity. ``0`` derives it from the
+            buffer row count for the preferred call shape.
+        buffer: ``(n, max_players + 54, TOKEN_DIM)`` float32 output, C-contig.
     """
     cdef int n = len(state_arrays)
-    cdef int num_tokens = num_players + 54
-    cdef int i, p, max_players
+    cdef object buffer_obj
+    cdef int legacy_num_players = 0
+    cdef float[:, :, ::1] buffer
+    cdef int num_tokens
+    cdef int i, p, actual_num_players, storage_players
     cdef GameState scratch_gs
 
-    assert 3 <= num_players <= 5, \
-        f"get_token_data_batch: num_players must be 3-5, got {num_players}"
+    if arg3 is None:
+        buffer_obj = arg2
+    else:
+        legacy_num_players = int(arg2)
+        buffer_obj = arg3
+        if max_players == 0:
+            max_players = legacy_num_players
+
+    buffer = buffer_obj
+
     if n == 0:
         return
+
+    if max_players == 0:
+        max_players = <int>buffer.shape[1] - 54
+    _validate_output_max_players(max_players, "get_token_data_batch")
+    num_tokens = max_players + 54
+
     assert buffer.shape[0] >= n, \
         f"get_token_data_batch: buffer batch {buffer.shape[0]} < n {n}"
     assert buffer.shape[1] >= num_tokens, \
@@ -369,21 +399,60 @@ cpdef void get_token_data_batch(
     assert buffer.shape[2] == <int>TokenDataSize.TOKEN_DIM, \
         f"get_token_data_batch: buffer cols {buffer.shape[2]} != TOKEN_DIM {<int>TokenDataSize.TOKEN_DIM}"
 
-    max_players = get_storage_player_capacity(len(state_arrays[0]))
+    actual_num_players = _read_state_array_num_players(state_arrays[0])
+    _resolve_output_max_players(
+        actual_num_players, max_players, "get_token_data_batch",
+    )
+    storage_players = get_storage_player_capacity(len(state_arrays[0]))
     scratch_gs = GameState.from_buffer(
-        state_arrays[0], num_players, max_players=max_players,
+        state_arrays[0], actual_num_players, max_players=storage_players,
     )
 
     for i in range(n):
+        actual_num_players = _read_state_array_num_players(state_arrays[i])
+        _resolve_output_max_players(
+            actual_num_players, max_players, "get_token_data_batch",
+        )
+        storage_players = get_storage_player_capacity(len(state_arrays[i]))
         if i > 0:
             scratch_gs.rebind(
-                state_arrays[i], num_players, max_players=max_players,
+                state_arrays[i], actual_num_players, max_players=storage_players,
             )
 
         with nogil:
-            for p in range(num_players):
+            for p in range(actual_num_players):
                 refresh_player_cache_if_dirty(scratch_gs, p)
-            _fill_buffer(scratch_gs, buffer[i], num_players, num_tokens)
+            _fill_buffer(scratch_gs, buffer[i], actual_num_players, num_tokens)
+
+
+cdef int _validate_output_max_players(int max_players, object func_name) except -1:
+    assert 3 <= max_players <= 5, \
+        f"{func_name}: max_players must be 3-5, got {max_players}"
+    return max_players
+
+
+cdef int _resolve_output_max_players(
+    int num_players,
+    int max_players,
+    object func_name,
+) except -1:
+    assert 3 <= num_players <= 5, \
+        f"{func_name}: num_players must be 3-5, got {num_players}"
+    if max_players == 0:
+        max_players = num_players
+    _validate_output_max_players(max_players, func_name)
+    assert num_players <= max_players, \
+        f"{func_name}: num_players {num_players} must be <= max_players {max_players}"
+    return max_players
+
+
+cdef int _read_state_array_num_players(object state_array) except -1:
+    cdef int num_players = int(
+        state_array[LAYOUT.turn_offset + TURN_OFFSETS.num_players]
+    )
+    assert 3 <= num_players <= 5, \
+        f"get_token_data_batch: row num_players must be 3-5, got {num_players}"
+    return num_players
 
 
 # =============================================================================
