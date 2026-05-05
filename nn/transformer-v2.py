@@ -347,9 +347,10 @@ class RSSTransformerNet(nn.Module):
         self.cfg = cfg
         d = cfg.d_model
         np_ = cfg.num_players
+        self._num_tokens = int(cfg.num_tokens)
         num_companies = int(GameConstants.NUM_COMPANIES)
         num_corps = int(GameConstants.NUM_CORPS)
-        num_fixed_tokens = cfg.num_tokens - np_
+        num_fixed_tokens = self._num_tokens - np_
 
         # --- Token index bookkeeping ---
         # Buffer layout (matches core/token_data.pyx::_fill_buffer):
@@ -486,7 +487,7 @@ class RSSTransformerNet(nn.Module):
         # ``_project_tokens`` can do a single indexed gather against
         # ``type_embeds``. Registered as a buffer so ``.to(device)`` carries
         # it along. Must match the concat order inside ``_project_tokens``.
-        type_ids = torch.empty(cfg.num_tokens, dtype=torch.long)
+        type_ids = torch.empty(self._num_tokens, dtype=torch.long)
         type_ids[self._market_info_idx] = int(_TokenType.MARKET_INFO)
         type_ids[self._company_slice] = int(_TokenType.COMPANY)
         type_ids[self._fi_idx] = int(_TokenType.FI)
@@ -767,7 +768,7 @@ class RSSTransformerNet(nn.Module):
         """Precompute per-forward sparse relation indices shared by all layers."""
         batch_size = relation_coords.shape[0]
         num_heads = self.cfg.num_heads
-        num_tokens = self.cfg.num_tokens
+        num_tokens = self._num_tokens
 
         coords = relation_coords.to(dtype=torch.long)
         relation_ids = coords[..., 0]
@@ -812,7 +813,7 @@ class RSSTransformerNet(nn.Module):
         """
         batch_size = relation_ctx.relation_ids.shape[0]
         num_heads = self.cfg.num_heads
-        num_tokens = self.cfg.num_tokens
+        num_tokens = self._num_tokens
         relation_mult = self._match_dtype_device(
             self.relation_bias_mult[layer_idx],
             ref,
@@ -1416,7 +1417,7 @@ class RSSTransformerNet(nn.Module):
         """
         if x.ndim != 3:
             raise AssertionError(f"x must be rank-3 (batch, num_tokens, token_dim); got {tuple(x.shape)}")
-        expected_x_shape = (x.shape[0], self.cfg.num_tokens, self.cfg.token_dim)
+        expected_x_shape = (x.shape[0], self._num_tokens, self.cfg.token_dim)
         if tuple(x.shape) != expected_x_shape:
             raise AssertionError(f"x shape must be {expected_x_shape}; got {tuple(x.shape)}")
         if not x.is_floating_point():
@@ -1445,8 +1446,8 @@ class RSSTransformerNet(nn.Module):
         expected_dense_rel_shape = (
             x.shape[0],
             NUM_ATTENTION_RELATIONS,
-            self.cfg.num_tokens,
-            self.cfg.num_tokens,
+            self._num_tokens,
+            self._num_tokens,
         )
         expected_sparse_rel_shape = (
             x.shape[0],
