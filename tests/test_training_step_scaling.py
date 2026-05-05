@@ -91,3 +91,21 @@ def test_json_config_threads_model_type() -> None:
 
     assert config.model_type == "resnet"
     assert '"model_type": "resnet"' in config.to_json()
+
+
+def test_cli_overrides_model_path() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["--model-path", "nn/transformer-v2.py"])
+    config = TrainingConfig()
+
+    _apply_overrides(config, args)
+    config.validate()
+
+    assert config.model_path == "nn/transformer-v2.py"
+
+
+def test_json_config_threads_model_path() -> None:
+    config = TrainingConfig.from_json('{"model_path": " nn/transformer-v2.py "}')
+
+    assert config.model_path == "nn/transformer-v2.py"
+    assert '"model_path": "nn/transformer-v2.py"' in config.to_json()

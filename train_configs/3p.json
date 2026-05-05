@@ -42,5 +42,6 @@
   "grad_clip": 5,
   "eval_min_batch_size": 8,
   "eval_batch_shape_mode": "bucketed",
-  "eval_max_batch_size": 256
+  "eval_max_batch_size": 256,
+  "model_path": "nn/transformer-v2.py"
 }

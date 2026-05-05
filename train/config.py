@@ -85,6 +85,9 @@ class TrainingConfig:
 
     # --- Model ---
     model_type: str = ModelKind.TRANSFORMER.value
+    # Optional Python module/file path that provides the implementation for
+    # ``model_type``. For example: "nn/transformer-v2.py".
+    model_path: str | None = None
     # Per-block adaLN-Zero conditioning on the active decision phase.
     phase_conditioning: bool = True
     # Price-like policy slots blend fixed Fourier projections for smoothness
@@ -231,6 +234,13 @@ class TrainingConfig:
         self.action_dim = int(MAX_ACTION_SIZE)
 
         self.model_type = normalize_model_type(self.model_type).value
+        if self.model_path is not None:
+            if not isinstance(self.model_path, str):
+                raise ValueError(
+                    f"model_path must be a string path/module name or None, got {self.model_path!r}"
+                )
+            stripped_model_path = self.model_path.strip()
+            self.model_path = stripped_model_path or None
 
         # Eval dtype
         if self.eval_dtype is not None and self.eval_dtype not in ("bfloat16", "float16"):

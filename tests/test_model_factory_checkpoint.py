@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import multiprocessing as mp
+
 import torch
 
 from core.attention_relations import NUM_ATTENTION_RELATIONS
@@ -10,6 +12,10 @@ from nn.transformer import RSSTransformerNet, UNIFIED_LOGIT_DIM
 from train.analyze_game import analyze_game
 from train.checkpoint import load_model_from_checkpoint, save_checkpoint
 from train.config import TrainingConfig
+
+
+def _put_model_class_name(model_cls: type[torch.nn.Module], queue: object) -> None:
+    queue.put(model_cls.__name__)
 
 
 def _small_resnet_config() -> TrainingConfig:
@@ -29,6 +35,23 @@ def test_factory_instantiates_transformer_from_config() -> None:
     assert model.cfg.phase_conditioning is config.phase_conditioning
     assert model.cfg.price_slot_fourier_bands == config.price_slot_fourier_bands
     assert model.cfg.price_slot_residual_scale == config.price_slot_residual_scale
+
+
+def test_factory_instantiates_transformer_from_model_path() -> None:
+    config = TrainingConfig(
+        model_type="transformer",
+        model_path="nn/transformer-v2.py",
+        phase_conditioning=False,
+        price_slot_residual_scale=0.0,
+    )
+    model = create_model(config)
+
+    assert model.__class__.__name__ == "RSSTransformerNet"
+    assert model.__class__ is not RSSTransformerNet
+    assert model.cfg.num_players == config.num_players
+    assert model.cfg.price_slot_fourier_bands == config.price_slot_fourier_bands
+    assert not hasattr(model.cfg, "phase_conditioning")
+    assert not hasattr(model.cfg, "price_slot_residual_scale")
 
 
 def test_factory_instantiates_resnet_from_config() -> None:
@@ -121,6 +144,59 @@ def test_new_checkpoints_reload_correct_model_type(tmp_path) -> None:
         assert isinstance(loaded, expected_type)
         assert loaded_config.model_type == config.model_type
         assert list(loaded.state_dict().keys()) == list(model.state_dict().keys())
+
+
+def test_checkpoint_reload_uses_model_path(tmp_path) -> None:
+    device = torch.device("cpu")
+    config = TrainingConfig(
+        model_type="transformer",
+        model_path="nn/transformer-v2.py",
+        phase_conditioning=False,
+        price_slot_residual_scale=0.0,
+    )
+    model = create_model(config).to(device)
+    path = tmp_path / "transformer-v2.pt"
+
+    save_checkpoint(
+        path=path,
+        epoch=0,
+        model=model,
+        trainer_state={"global_step": 0},
+        config=config,
+        metrics={},
+        buffer_stats={"size": 0, "capacity": 0},
+    )
+
+    loaded, loaded_config, _cp = load_model_from_checkpoint(path, device)
+
+    assert loaded_config.model_path == config.model_path
+    assert loaded.__class__ is model.__class__
+    assert list(loaded.state_dict().keys()) == list(model.state_dict().keys())
+
+
+def test_model_path_class_pickles_across_spawn() -> None:
+    config = TrainingConfig(
+        model_type="transformer",
+        model_path="nn/transformer-v2.py",
+        phase_conditioning=False,
+        price_slot_residual_scale=0.0,
+    )
+    model = create_model(config)
+    ctx = mp.get_context("spawn")
+    queue = ctx.Queue()
+    process = ctx.Process(
+        target=_put_model_class_name,
+        args=(model.__class__, queue),
+    )
+
+    process.start()
+    process.join(timeout=30)
+    if process.exitcode is None:
+        process.terminate()
+        process.join(timeout=5)
+
+    assert process.exitcode == 0
+    assert queue.get(timeout=1) == "RSSTransformerNet"
 
 
 def test_reloaded_resnet_checkpoint_runs_analyze_game(tmp_path) -> None:

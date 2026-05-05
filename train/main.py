@@ -64,6 +64,11 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["transformer", "resnet"],
         help="Model family to instantiate",
     )
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        help="Optional Python module/file path that provides the selected model implementation",
+    )
     parser.add_argument("--games-per-epoch", type=int)
     parser.add_argument("--num-epochs", type=int)
     parser.add_argument("--training-steps-per-epoch", type=int)
@@ -202,7 +207,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 _CLI_FIELDS = (
-    "num_players", "eval_dtype", "model_type", "phase_conditioning",
+    "num_players", "eval_dtype", "model_type", "model_path", "phase_conditioning",
     "price_slot_fourier_bands", "price_slot_residual_scale",
     "resnet_hidden_dim", "resnet_num_blocks",
     "games_per_epoch", "num_epochs", "training_steps_per_epoch",
