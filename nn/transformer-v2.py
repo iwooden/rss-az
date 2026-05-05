@@ -1552,6 +1552,10 @@ class RSSTransformerNet(nn.Module):
             stats.append(action_sum / action_count)
         return torch.stack(stats)
 
+    def phase_mod_diagnostics(self) -> dict[str, float]:
+        """Return no phase-modulation diagnostics for the unconditioned v2 trunk."""
+        return {}
+
     # ------------------------------------------------------------------
     # Initialization
     # ------------------------------------------------------------------
