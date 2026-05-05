@@ -50,7 +50,7 @@ def test_cli_overrides_phase_conditioning() -> None:
     parser = _build_parser()
 
     args = parser.parse_args(["--no-phase-conditioning"])
-    config = TrainingConfig()
+    config = TrainingConfig(phase_conditioning=True)
     _apply_overrides(config, args)
     config.validate()
     assert config.phase_conditioning is False

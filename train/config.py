@@ -89,7 +89,7 @@ class TrainingConfig:
     # ``model_type``. For example: "nn/transformer-v2.py".
     model_path: str | None = None
     # Per-block adaLN-Zero conditioning on the active decision phase.
-    phase_conditioning: bool = True
+    phase_conditioning: bool = False
     # Price-like policy slots blend fixed Fourier projections for smoothness
     # with learned per-slot embeddings for slot identity.
     price_slot_fourier_bands: int = 4

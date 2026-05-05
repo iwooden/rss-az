@@ -26,7 +26,9 @@ _NORM_TYPES: tuple[type[nn.Module], ...] = (nn.LayerNorm, nn.RMSNorm)
 
 
 def _make_trainer(optimizer: str) -> Trainer:
-    model = RSSTransformerNet(TransformerConfig(num_players=NUM_PLAYERS))
+    model = RSSTransformerNet(
+        TransformerConfig(num_players=NUM_PLAYERS, phase_conditioning=True)
+    )
     cfg = TrainingConfig(
         num_players=NUM_PLAYERS,
         optimizer=optimizer,

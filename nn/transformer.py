@@ -185,7 +185,7 @@ class TransformerConfig:
     num_heads: int = 4
     num_layers: int = 15
     ff_mult: float = 3.0  # FFN inner dimension = ceil(ff_mult * d_model)
-    phase_conditioning: bool = True
+    phase_conditioning: bool = False
     price_slot_fourier_bands: int = 4
     # Blend weight between projected Fourier slot features and learned per-slot
     # embeddings: 0.0 = pure Fourier projection, 1.0 = pure embedding.
@@ -271,7 +271,7 @@ class TransformerBlock(nn.Module):
         num_heads: int,
         d_ff: int,
         *,
-        phase_conditioning: bool = True,
+        phase_conditioning: bool = False,
     ) -> None:
         super().__init__()
         assert d_model % num_heads == 0, (

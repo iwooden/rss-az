@@ -31,6 +31,7 @@ def test_factory_instantiates_transformer_from_config() -> None:
     model = create_model(config)
 
     assert isinstance(model, RSSTransformerNet)
+    assert config.phase_conditioning is False
     assert model.cfg.num_players == config.num_players
     assert model.cfg.phase_conditioning is config.phase_conditioning
     assert model.cfg.price_slot_fourier_bands == config.price_slot_fourier_bands
@@ -41,7 +42,7 @@ def test_factory_instantiates_transformer_from_model_path() -> None:
     config = TrainingConfig(
         model_type="transformer",
         model_path="nn/transformer-v2.py",
-        phase_conditioning=False,
+        phase_conditioning=True,
         price_slot_residual_scale=0.0,
     )
     model = create_model(config)
@@ -49,9 +50,23 @@ def test_factory_instantiates_transformer_from_model_path() -> None:
     assert model.__class__.__name__ == "RSSTransformerNet"
     assert model.__class__ is not RSSTransformerNet
     assert model.cfg.num_players == config.num_players
+    assert model.cfg.phase_conditioning is config.phase_conditioning
     assert model.cfg.price_slot_fourier_bands == config.price_slot_fourier_bands
-    assert not hasattr(model.cfg, "phase_conditioning")
     assert not hasattr(model.cfg, "price_slot_residual_scale")
+    assert any(name.endswith("phase_mod.weight") for name, _ in model.named_parameters())
+
+
+def test_factory_can_disable_model_path_phase_conditioning() -> None:
+    config = TrainingConfig(
+        model_type="transformer",
+        model_path="nn/transformer-v2.py",
+        phase_conditioning=False,
+    )
+    model = create_model(config)
+
+    assert model.cfg.phase_conditioning is False
+    assert model.phase_mod_diagnostics() == {}
+    assert all("phase_mod" not in name for name, _ in model.named_parameters())
 
 
 def test_factory_instantiates_resnet_from_config() -> None:

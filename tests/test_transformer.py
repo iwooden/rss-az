@@ -95,6 +95,7 @@ def attention_mask_model() -> RSSTransformerNet:
             num_heads=3,
             num_layers=2,
             ff_mult=2.0,
+            phase_conditioning=True,
         )
     ).to(torch.device("cpu"))
     with torch.no_grad():
@@ -323,6 +324,7 @@ def test_phase_modulation_is_zero_initialized() -> None:
             num_heads=3,
             num_layers=2,
             ff_mult=2.0,
+            phase_conditioning=True,
         )
     )
     cfg = model.cfg
@@ -369,11 +371,11 @@ def test_disabled_phase_conditioning_omits_phase_mod_and_skips_phase_ids(
             num_heads=3,
             num_layers=2,
             ff_mult=2.0,
-            phase_conditioning=False,
         )
     )
     cfg = model.cfg
 
+    assert cfg.phase_conditioning is False
     for block in model.blocks:
         assert isinstance(block, TransformerBlock)
         assert block.phase_mod is None
@@ -406,6 +408,7 @@ def test_zero_init_phase_modulation_preserves_block_outputs() -> None:
             num_heads=3,
             num_layers=1,
             ff_mult=2.0,
+            phase_conditioning=True,
         )
     )
     block = model.blocks[0]
@@ -437,6 +440,7 @@ def test_nonzero_phase_modulation_changes_block_outputs() -> None:
             num_heads=3,
             num_layers=1,
             ff_mult=2.0,
+            phase_conditioning=True,
         )
     )
     block = model.blocks[0]
@@ -469,6 +473,7 @@ def test_nonzero_relation_bias_changes_forward_outputs() -> None:
             num_heads=3,
             num_layers=2,
             ff_mult=2.0,
+            phase_conditioning=True,
         )
     )
     model.eval()
@@ -957,9 +962,17 @@ def test_project_tokens_keeps_player_share_amount_features(model: RSSTransformer
     assert delta[:, :model._player_slice.start].abs().max().item() == pytest.approx(0.0)
 
 
-def test_project_tokens_ignores_global_info_phase_onehot_when_conditioned(
-    model: RSSTransformerNet,
-) -> None:
+def test_project_tokens_ignores_global_info_phase_onehot_when_conditioned() -> None:
+    model = RSSTransformerNet(
+        TransformerConfig(
+            num_players=NUM_PLAYERS,
+            d_model=48,
+            num_heads=3,
+            num_layers=1,
+            ff_mult=2.0,
+            phase_conditioning=True,
+        )
+    )
     cfg = model.cfg
     x = torch.zeros(1, cfg.num_tokens, cfg.token_dim)
     x_with_phase = x.clone()

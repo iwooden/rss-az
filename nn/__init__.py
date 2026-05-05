@@ -183,7 +183,7 @@ def create_model(
     config: object | int | None = None,
     *,
     num_players: int | None = None,
-    phase_conditioning: bool = True,
+    phase_conditioning: bool = False,
     price_slot_fourier_bands: int = 4,
     price_slot_residual_scale: float = 1.0,
     model_path: str | None = None,
@@ -237,7 +237,7 @@ def create_model(
         values = {
             "num_players": cfg_num_players,
             "phase_conditioning": bool(
-                _config_value(config, "phase_conditioning", True)
+                _config_value(config, "phase_conditioning", False)
             ),
             "price_slot_fourier_bands": int(
                 _config_value(config, "price_slot_fourier_bands", 4)

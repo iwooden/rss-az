@@ -102,6 +102,8 @@ class _TokenType(IntEnum):
 _GELU_APPROX = "tanh"
 _TOKEN_FEATURE_START = 1
 _IS_SELECTED_OFFSET = 1
+_GLOBAL_PHASE_OFFSET = 1
+_GLOBAL_PHASE_STOP = _GLOBAL_PHASE_OFFSET + NUM_PHASES
 # Offsets inside a company feature slice after the attention-mask slot is dropped.
 _COMPANY_LOW_PRICE_FEATURE_OFFSET = 1
 _COMPANY_FACE_VALUE_FEATURE_OFFSET = 2
@@ -184,6 +186,7 @@ class TransformerConfig:
     num_heads: int = 4
     num_layers: int = 15
     ff_mult: float = 3.0  # FFN inner dimension = ceil(ff_mult * d_model)
+    phase_conditioning: bool = False
     price_slot_fourier_bands: int = 4
 
     # Raw feature width per token (zero-padded to same size across types).
@@ -194,6 +197,9 @@ class TransformerConfig:
     def __post_init__(self) -> None:
         assert 3 <= self.num_players <= 5, f"num_players must be 3-5, got {self.num_players}"
         assert self.d_proj > 0, f"d_proj must be positive, got {self.d_proj}"
+        assert isinstance(self.phase_conditioning, bool), (
+            f"phase_conditioning must be bool, got {self.phase_conditioning!r}"
+        )
         assert self.price_slot_fourier_bands >= 0, (
             "price_slot_fourier_bands must be >= 0, "
             f"got {self.price_slot_fourier_bands}"
@@ -258,11 +264,14 @@ class TransformerBlock(nn.Module):
         d_model: int,
         num_heads: int,
         d_ff: int,
+        *,
+        phase_conditioning: bool = False,
     ) -> None:
         super().__init__()
         assert d_model % num_heads == 0, (
             f"d_model {d_model} must be divisible by num_heads {num_heads}"
         )
+        self.phase_conditioning = phase_conditioning
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
         self.attn_norm = nn.RMSNorm(d_model)
@@ -275,15 +284,44 @@ class TransformerBlock(nn.Module):
         self.ffn_gate = nn.Linear(d_model, d_ff, bias=False)
         self.ffn_up = nn.Linear(d_model, d_ff, bias=False)
         self.ffn_down = nn.Linear(d_ff, d_model, bias=False)
+        # Direct per-phase adaptive RMSNorm + residual-gate parameters.
+        # Zero-initialized in RSSTransformerNet._init_weights, so enabling
+        # conditioning starts each block as an identity transform.
+        self.phase_mod: nn.Embedding | None = (
+            nn.Embedding(NUM_PHASES, 6 * d_model)
+            if phase_conditioning
+            else None
+        )
 
     def forward(
         self,
         x: torch.Tensor,
         attn_mask: torch.Tensor,
         relation_bias: torch.Tensor,
+        phase_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         h = self.attn_norm(x)
         B, N, D = h.shape
+        phase_mod = self.phase_mod
+        attn_resid_gate: torch.Tensor | None = None
+        ffn_scale: torch.Tensor | None = None
+        ffn_shift: torch.Tensor | None = None
+        ffn_resid_gate: torch.Tensor | None = None
+        if phase_mod is not None:
+            if phase_ids is None:
+                raise AssertionError(
+                    "phase_ids are required when phase_conditioning is enabled"
+                )
+            mod = phase_mod(phase_ids).to(device=h.device, dtype=h.dtype)
+            (
+                attn_scale,
+                attn_shift,
+                attn_resid_gate,
+                ffn_scale,
+                ffn_shift,
+                ffn_resid_gate,
+            ) = mod.chunk(6, dim=-1)
+            h = h * (1.0 + attn_scale[:, None, :]) + attn_shift[:, None, :]
         qkv = self.qkv_proj(h).reshape(B, N, 3, self.num_heads, self.head_dim)
         # (3, B, heads, N, head_dim) so unbind(0) yields three
         # (B, heads, N, head_dim) tensors. The contiguous call gives Inductor's
@@ -298,9 +336,16 @@ class TransformerBlock(nn.Module):
         # (B, heads, N, head_dim) -> (B, N, D)
         attn_out = attn_out.transpose(1, 2).reshape(B, N, D)
         h = self.out_proj(attn_out)
-        x = x + h
+        if attn_resid_gate is not None:
+            x = x + attn_resid_gate[:, None, :] * h
+        else:
+            x = x + h
         h = self.ffn_norm(x)
+        if ffn_scale is not None and ffn_shift is not None:
+            h = h * (1.0 + ffn_scale[:, None, :]) + ffn_shift[:, None, :]
         h = self.ffn_down(F.silu(self.ffn_gate(h)) * self.ffn_up(h))
+        if ffn_resid_gate is not None:
+            return x + ffn_resid_gate[:, None, :] * h
         return x + h
 
 
@@ -418,6 +463,11 @@ class RSSTransformerNet(nn.Module):
         self._fi_rel_tail_start = _FI_REL_TAIL_START
         self._corp_rel_tail_start = _CORP_REL_TAIL_START
         self._player_rel_tail_start = _PLAYER_REL_TAIL_START
+        self._global_info_feature_start = (
+            _GLOBAL_PHASE_STOP
+            if cfg.phase_conditioning
+            else self._token_feature_start
+        )
         self.player_proj = nn.Linear(
             self._player_rel_tail_start - self._token_feature_start,
             d,
@@ -439,7 +489,7 @@ class RSSTransformerNet(nn.Module):
             d,
         )
         self.global_info_proj = nn.Linear(
-            int(TokenWidth.TW_GLOBAL_INFO) - self._token_feature_start,
+            int(TokenWidth.TW_GLOBAL_INFO) - self._global_info_feature_start,
             d,
         )
         self.invest_proj = nn.Linear(
@@ -603,6 +653,7 @@ class RSSTransformerNet(nn.Module):
                 d,
                 cfg.num_heads,
                 math.ceil(cfg.ff_mult * cfg.d_model),
+                phase_conditioning=cfg.phase_conditioning,
             )
             for _ in range(cfg.num_layers)
         ])
@@ -714,12 +765,18 @@ class RSSTransformerNet(nn.Module):
         )
 
     def _project_global_info_token(self, x: torch.Tensor) -> torch.Tensor:
-        """Project global info, including the decision-phase one-hot."""
+        """Project global info.
+
+        When direct phase conditioning is enabled, the decision-phase one-hot
+        feeds the per-block modulation path and is omitted here. When it is
+        disabled, keep the one-hot in the global token so phase remains visible
+        to the trunk.
+        """
         return self.global_info_proj(
             x[
                 :,
                 self._global_info_idx,
-                self._token_feature_start:int(TokenWidth.TW_GLOBAL_INFO),
+                self._global_info_feature_start:int(TokenWidth.TW_GLOBAL_INFO),
             ]
         )
 
@@ -742,6 +799,15 @@ class RSSTransformerNet(nn.Module):
         with ``torch.compile`` and CUDA graph capture.
         """
         return (x[:, :, 0] > 0.5)[:, None, None, :]
+
+    def _phase_ids(self, x: torch.Tensor) -> torch.Tensor:
+        """Return active decision-phase ids from the GlobalInfo one-hot."""
+        phase_onehot = x[
+            :,
+            self._global_info_idx,
+            _GLOBAL_PHASE_OFFSET:_GLOBAL_PHASE_STOP,
+        ]
+        return phase_onehot.argmax(dim=-1)
 
     def _relation_attention_bias(
         self,
@@ -1473,6 +1539,7 @@ class RSSTransformerNet(nn.Module):
                 f"got {tuple(relations.shape)}"
             )
         attn_mask = self._attention_mask(x)
+        phase_ids = self._phase_ids(x) if self.cfg.phase_conditioning else None
 
         for layer_idx, block in enumerate(self.blocks):
             if relation_flags is not None:
@@ -1488,7 +1555,7 @@ class RSSTransformerNet(nn.Module):
                     layer_idx,
                     tokens,
                 )
-            tokens = block(tokens, attn_mask, relation_bias)
+            tokens = block(tokens, attn_mask, relation_bias, phase_ids)
         tokens = self.final_norm(tokens)
 
         # Cast to fp32 before the sentinel: under autocast ``unified`` is in
@@ -1553,15 +1620,26 @@ class RSSTransformerNet(nn.Module):
         return torch.stack(stats)
 
     def phase_mod_diagnostics(self) -> dict[str, float]:
-        """Return no phase-modulation diagnostics for the unconditioned v2 trunk."""
-        return {}
+        """Per-layer phase_mod magnitude + phase-distinguishing component."""
+        if not self.cfg.phase_conditioning:
+            return {}
+        scalars: dict[str, float] = {}
+        for layer_idx, block in enumerate(self.blocks):
+            assert isinstance(block, TransformerBlock)
+            assert block.phase_mod is not None
+            weight = block.phase_mod.weight.detach()
+            scalars[f"phase_mod/abs_mean/layer_{layer_idx}"] = weight.abs().mean().item()
+            scalars[f"phase_mod/phase_var/layer_{layer_idx}"] = (
+                weight.var(dim=0, unbiased=False).mean().item()
+            )
+        return scalars
 
     # ------------------------------------------------------------------
     # Initialization
     # ------------------------------------------------------------------
 
     def _init_weights(self) -> None:
-        """GPT/LLaMA-style trunc-normal init.
+        """GPT/LLaMA-style trunc-normal init, zero-init phase gates for identity start.
 
         kaiming_uniform_(nonlinearity="relu") is wrong for most Linears here
         (SDPA has no ReLU, SwiGLU/GELU heads aren't ReLU, value head feeds
@@ -1582,6 +1660,13 @@ class RSSTransformerNet(nn.Module):
         # positive or negative head/layer-specific biases from zero.
         nn.init.zeros_(self.relation_bias_mult)
 
+        # Zero-init phase modulation so each conditioned block starts as
+        # identity while branch projections keep normal init and feed gradients.
+        for block in self.blocks:
+            assert isinstance(block, TransformerBlock)
+            if block.phase_mod is not None:
+                nn.init.zeros_(block.phase_mod.weight)
+
 
 # ---------------------------------------------------------------------------
 # Smoke test
@@ -1599,6 +1684,7 @@ if __name__ == "__main__":
     print(f"Transformer model: {cfg.num_players}p")
     print(f"  d_model={cfg.d_model}, d_proj={cfg.d_proj}, heads={cfg.num_heads}, "
           f"layers={cfg.num_layers}, d_ff={math.ceil(cfg.ff_mult * cfg.d_model)}")
+    print(f"  phase_conditioning={cfg.phase_conditioning}")
     print(f"  tokens={cfg.num_tokens}, token_dim={cfg.token_dim}")
     print(f"  Trainable parameters: {total:,}")
     print()
@@ -1615,9 +1701,15 @@ if __name__ == "__main__":
     corp_id_params = model.corp_id_embed.weight.numel()
     price_slot_params = sum(p.numel() for p in model.price_slot_proj.parameters())
     type_params = model.type_embeds.weight.numel()
+    phase_mod_params = 0
+    for block in model.blocks:
+        assert isinstance(block, TransformerBlock)
+        if block.phase_mod is not None:
+            phase_mod_params += block.phase_mod.weight.numel()
     trunk_params = (
         sum(p.numel() for p in model.blocks.parameters())
         + sum(p.numel() for p in model.final_norm.parameters())
+        - phase_mod_params
     )
     policy_modules: list[nn.Module] = [
         model.invest_query_proj,
@@ -1650,6 +1742,7 @@ if __name__ == "__main__":
         ("Price slot proj", price_slot_params),
         ("Type embeds", type_params),
         ("Transformer trunk", trunk_params),
+        ("Phase mod embeds", phase_mod_params),
         ("Policy heads", policy_params),
         ("Value head", value_params),
     ]:
