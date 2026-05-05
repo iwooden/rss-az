@@ -2,9 +2,10 @@
 Attention-relation extraction: compact GameState -> directed relation planes.
 
 ``get_relation_data`` fills a ``(num_relations, num_tokens, num_tokens)``
-uint8 buffer. Each plane is directed: row ``i`` is the query token being
-updated, column ``j`` is the key/value token it may attend to. A 1 marks that
-the relation is present for that ordered token pair.
+uint8 buffer, where ``num_tokens`` is ``max_players + 54`` when padded
+extraction is requested. Each plane is directed: row ``i`` is the query token
+being updated, column ``j`` is the key/value token it may attend to. A 1 marks
+that the relation is present for that ordered token pair.
 
 ``get_relation_coord_data`` emits the same information as sparse
 ``(relation_id, query_token, key_token)`` uint8 triplets for the eval-server
@@ -71,7 +72,11 @@ cpdef int get_attention_relation_coord_width() noexcept nogil:
     return <int>ATTENTION_RELATION_COORD_WIDTH
 
 
-cpdef void get_relation_data(GameState state, unsigned char[:, :, ::1] buffer):
+cpdef void get_relation_data(
+    GameState state,
+    unsigned char[:, :, ::1] buffer,
+    int max_players=0,
+):
     """Fill ``buffer`` with directed attention relations for ``state``.
 
     ``buffer`` must be a C-contiguous uint8 array with exact shape
@@ -82,11 +87,13 @@ cpdef void get_relation_data(GameState state, unsigned char[:, :, ::1] buffer):
     cdef int num_players = <int>state._data[
         LAYOUT.turn_offset + TURN_OFFSETS.num_players
     ]
-    cdef int num_tokens = num_players + NUM_FIXED_TOKENS
+    cdef int num_tokens
     cdef int relation_count = <int>REL_NUM_ATTENTION_RELATIONS
 
-    assert 3 <= num_players <= 5, \
-        f"get_relation_data: num_players must be 3-5, got {num_players}"
+    max_players = _resolve_output_max_players(
+        num_players, max_players, "get_relation_data",
+    )
+    num_tokens = max_players + NUM_FIXED_TOKENS
     assert buffer.shape[0] == relation_count, \
         (
             f"get_relation_data: relation planes {buffer.shape[0]} != "
@@ -107,29 +114,48 @@ cpdef void get_relation_data(GameState state, unsigned char[:, :, ::1] buffer):
         )
 
     with nogil:
-        _fill_relations(state, buffer, num_tokens)
+        _fill_relations(state, buffer, num_players, num_tokens)
 
 
 cpdef void get_relation_data_batch(
     list state_arrays,
-    int num_players,
-    unsigned char[:, :, :, ::1] buffer,
+    object arg2,
+    object arg3=None,
+    int max_players=0,
 ):
     """Batched ``get_relation_data`` for compact int16 state arrays.
 
     Reuses one scratch ``GameState`` across all rows, matching the
     ``core.token_data.get_token_data_batch`` pattern used on the eval hot path.
+    Preferred Python call shape is ``(state_arrays, buffer, max_players=0)``;
+    the legacy ``(state_arrays, num_players, buffer)`` shape remains accepted.
     """
     cdef int n = len(state_arrays)
-    cdef int num_tokens = num_players + NUM_FIXED_TOKENS
+    cdef object buffer_obj
+    cdef int legacy_num_players = 0
+    cdef unsigned char[:, :, :, ::1] buffer
+    cdef int num_tokens
     cdef int relation_count = <int>REL_NUM_ATTENTION_RELATIONS
-    cdef int i, max_players
+    cdef int i, actual_num_players, storage_players
     cdef GameState scratch_gs
 
-    assert 3 <= num_players <= 5, \
-        f"get_relation_data_batch: num_players must be 3-5, got {num_players}"
+    if arg3 is None:
+        buffer_obj = arg2
+    else:
+        legacy_num_players = int(arg2)
+        buffer_obj = arg3
+        if max_players == 0:
+            max_players = legacy_num_players
+
+    buffer = buffer_obj
+
     if n == 0:
         return
+    if max_players == 0:
+        max_players = <int>buffer.shape[2] - NUM_FIXED_TOKENS
+    _validate_output_max_players(max_players, "get_relation_data_batch")
+    num_tokens = max_players + NUM_FIXED_TOKENS
+
     assert buffer.shape[0] >= n, \
         f"get_relation_data_batch: buffer batch {buffer.shape[0]} < n {n}"
     assert buffer.shape[1] == relation_count, \
@@ -159,21 +185,38 @@ cpdef void get_relation_data_batch(
         f"{relation_count * num_tokens * num_tokens}"
     )
 
-    max_players = get_storage_player_capacity(len(state_arrays[0]))
+    actual_num_players = _read_state_array_num_players(
+        state_arrays[0], "get_relation_data_batch",
+    )
+    _resolve_output_max_players(
+        actual_num_players, max_players, "get_relation_data_batch",
+    )
+    storage_players = get_storage_player_capacity(len(state_arrays[0]))
     scratch_gs = GameState.from_buffer(
-        state_arrays[0], num_players, max_players=max_players,
+        state_arrays[0], actual_num_players, max_players=storage_players,
     )
 
     for i in range(n):
+        actual_num_players = _read_state_array_num_players(
+            state_arrays[i], "get_relation_data_batch",
+        )
+        _resolve_output_max_players(
+            actual_num_players, max_players, "get_relation_data_batch",
+        )
+        storage_players = get_storage_player_capacity(len(state_arrays[i]))
         if i > 0:
             scratch_gs.rebind(
-                state_arrays[i], num_players, max_players=max_players,
+                state_arrays[i], actual_num_players, max_players=storage_players,
             )
         with nogil:
-            _fill_relations(scratch_gs, buffer[i], num_tokens)
+            _fill_relations(scratch_gs, buffer[i], actual_num_players, num_tokens)
 
 
-cpdef int get_relation_coord_data(GameState state, unsigned char[:, ::1] coords):
+cpdef int get_relation_coord_data(
+    GameState state,
+    unsigned char[:, ::1] coords,
+    int max_players=0,
+):
     """Fill sparse directed attention-relation coordinates for ``state``.
 
     ``coords`` must be C-contiguous with exact shape
@@ -187,13 +230,13 @@ cpdef int get_relation_coord_data(GameState state, unsigned char[:, ::1] coords)
     cdef int num_players = <int>state._data[
         LAYOUT.turn_offset + TURN_OFFSETS.num_players
     ]
-    cdef int num_tokens = num_players + NUM_FIXED_TOKENS
     cdef int count
     cdef int max_edges = <int>MAX_ATTENTION_RELATION_EDGES
     cdef int coord_width = <int>ATTENTION_RELATION_COORD_WIDTH
 
-    assert 3 <= num_players <= 5, \
-        f"get_relation_coord_data: num_players must be 3-5, got {num_players}"
+    _resolve_output_max_players(
+        num_players, max_players, "get_relation_coord_data",
+    )
     assert coords.shape[0] == max_edges, \
         (
             f"get_relation_coord_data: coord rows {coords.shape[0]} != "
@@ -213,7 +256,7 @@ cpdef int get_relation_coord_data(GameState state, unsigned char[:, ::1] coords)
         )
 
     with nogil:
-        count = _fill_relation_coords(state, coords, num_tokens)
+        count = _fill_relation_coords(state, coords, num_players)
     assert count <= max_edges, (
         f"get_relation_coord_data: emitted {count} relation coordinates, "
         f"capacity is {max_edges}"
@@ -223,22 +266,40 @@ cpdef int get_relation_coord_data(GameState state, unsigned char[:, ::1] coords)
 
 cpdef void get_relation_coord_data_batch(
     list state_arrays,
-    int num_players,
-    unsigned char[:, :, ::1] coords,
+    object arg2,
+    object arg3=None,
+    int max_players=0,
 ):
-    """Batched ``get_relation_coord_data`` for compact int16 state arrays."""
+    """Batched ``get_relation_coord_data`` for compact int16 state arrays.
+
+    Preferred Python call shape is ``(state_arrays, coords, max_players=0)``;
+    the legacy ``(state_arrays, num_players, coords)`` shape remains accepted.
+    """
     cdef int n = len(state_arrays)
-    cdef int num_tokens = num_players + NUM_FIXED_TOKENS
-    cdef int i, max_players
+    cdef object coords_obj
+    cdef int legacy_num_players = 0
+    cdef unsigned char[:, :, ::1] coords
+    cdef int i, actual_num_players, storage_players
     cdef int count
     cdef int max_edges = <int>MAX_ATTENTION_RELATION_EDGES
     cdef int coord_width = <int>ATTENTION_RELATION_COORD_WIDTH
     cdef GameState scratch_gs
 
-    assert 3 <= num_players <= 5, \
-        f"get_relation_coord_data_batch: num_players must be 3-5, got {num_players}"
+    if arg3 is None:
+        coords_obj = arg2
+    else:
+        legacy_num_players = int(arg2)
+        coords_obj = arg3
+        if max_players == 0:
+            max_players = legacy_num_players
+
+    coords = coords_obj
+
     if n == 0:
         return
+    if max_players != 0:
+        _validate_output_max_players(max_players, "get_relation_coord_data_batch")
+
     assert coords.shape[0] >= n, \
         f"get_relation_coord_data_batch: buffer batch {coords.shape[0]} < n {n}"
     assert coords.shape[1] == max_edges, \
@@ -263,27 +324,73 @@ cpdef void get_relation_coord_data_batch(
         f"{max_edges * coord_width}"
     )
 
-    max_players = get_storage_player_capacity(len(state_arrays[0]))
+    actual_num_players = _read_state_array_num_players(
+        state_arrays[0], "get_relation_coord_data_batch",
+    )
+    if max_players != 0:
+        _resolve_output_max_players(
+            actual_num_players, max_players, "get_relation_coord_data_batch",
+        )
+    storage_players = get_storage_player_capacity(len(state_arrays[0]))
     scratch_gs = GameState.from_buffer(
-        state_arrays[0], num_players, max_players=max_players,
+        state_arrays[0], actual_num_players, max_players=storage_players,
     )
 
     for i in range(n):
+        actual_num_players = _read_state_array_num_players(
+            state_arrays[i], "get_relation_coord_data_batch",
+        )
+        if max_players != 0:
+            _resolve_output_max_players(
+                actual_num_players, max_players, "get_relation_coord_data_batch",
+            )
+        storage_players = get_storage_player_capacity(len(state_arrays[i]))
         if i > 0:
             scratch_gs.rebind(
-                state_arrays[i], num_players, max_players=max_players,
+                state_arrays[i], actual_num_players, max_players=storage_players,
             )
         with nogil:
-            count = _fill_relation_coords(scratch_gs, coords[i], num_tokens)
+            count = _fill_relation_coords(scratch_gs, coords[i], actual_num_players)
         assert count <= max_edges, (
             f"get_relation_coord_data_batch: row {i} emitted {count} "
             f"relation coordinates, capacity is {max_edges}"
         )
 
 
+cdef int _validate_output_max_players(int max_players, object func_name) except -1:
+    assert 3 <= max_players <= 5, \
+        f"{func_name}: max_players must be 3-5, got {max_players}"
+    return max_players
+
+
+cdef int _resolve_output_max_players(
+    int num_players,
+    int max_players,
+    object func_name,
+) except -1:
+    assert 3 <= num_players <= 5, \
+        f"{func_name}: num_players must be 3-5, got {num_players}"
+    if max_players == 0:
+        max_players = num_players
+    _validate_output_max_players(max_players, func_name)
+    assert num_players <= max_players, \
+        f"{func_name}: num_players {num_players} must be <= max_players {max_players}"
+    return max_players
+
+
+cdef int _read_state_array_num_players(object state_array, object func_name) except -1:
+    cdef int num_players = int(
+        state_array[LAYOUT.turn_offset + TURN_OFFSETS.num_players]
+    )
+    assert 3 <= num_players <= 5, \
+        f"{func_name}: row num_players must be 3-5, got {num_players}"
+    return num_players
+
+
 cdef void _fill_relations(
     GameState state,
     unsigned char[:, :, ::1] buffer,
+    int num_players,
     int num_tokens,
 ) noexcept nogil:
     cdef int corp_id
@@ -325,7 +432,7 @@ cdef void _fill_relations(
             buffer[<int>REL_FI_OWNS_COMPANY, TOKEN_FI, company_tok] = 1
             buffer[<int>REL_COMPANY_OWNED_BY_FI, company_tok, TOKEN_FI] = 1
         else:
-            for player_id in range(num_tokens - TOKEN_PLAYER_START):
+            for player_id in range(num_players):
                 if company_owned_by_player(state, company_id, player_id):
                     player_tok = TOKEN_PLAYER_START + player_id
                     buffer[<int>REL_PLAYER_OWNS_COMPANY, player_tok, company_tok] = 1
@@ -337,7 +444,7 @@ cdef void _fill_relations(
     # directed relation pair.
     for corp_id in range(NUM_CORPS):
         corp_tok = TOKEN_CORP_START + corp_id
-        for player_id in range(num_tokens - TOKEN_PLAYER_START):
+        for player_id in range(num_players):
             player_tok = TOKEN_PLAYER_START + player_id
             if _player_shares(state, player_id, corp_id) > 0:
                 buffer[<int>REL_PLAYER_OWNS_CORP_SHARES, player_tok, corp_tok] = 1
@@ -345,7 +452,7 @@ cdef void _fill_relations(
 
         if not corp_is_in_receivership(state, corp_id):
             president_id = corp_president_id(state, corp_id)
-            if 0 <= president_id < num_tokens - TOKEN_PLAYER_START:
+            if 0 <= president_id < num_players:
                 player_tok = TOKEN_PLAYER_START + president_id
                 buffer[<int>REL_PLAYER_PRESIDENT_OF_CORP, player_tok, corp_tok] = 1
                 buffer[<int>REL_CORP_PRESIDENT_PLAYER, corp_tok, player_tok] = 1
@@ -354,7 +461,7 @@ cdef void _fill_relations(
 cdef int _fill_relation_coords(
     GameState state,
     unsigned char[:, ::1] coords,
-    int num_tokens,
+    int num_players,
 ) noexcept nogil:
     cdef int corp_id
     cdef int company_id
@@ -417,7 +524,7 @@ cdef int _fill_relation_coords(
                 TOKEN_FI,
             )
         else:
-            for player_id in range(num_tokens - TOKEN_PLAYER_START):
+            for player_id in range(num_players):
                 if company_owned_by_player(state, company_id, player_id):
                     player_tok = TOKEN_PLAYER_START + player_id
                     count = _append_relation_coord(
@@ -439,7 +546,7 @@ cdef int _fill_relation_coords(
     # Player/corp shareholding and presidency.
     for corp_id in range(NUM_CORPS):
         corp_tok = TOKEN_CORP_START + corp_id
-        for player_id in range(num_tokens - TOKEN_PLAYER_START):
+        for player_id in range(num_players):
             player_tok = TOKEN_PLAYER_START + player_id
             if _player_shares(state, player_id, corp_id) > 0:
                 count = _append_relation_coord(
@@ -459,7 +566,7 @@ cdef int _fill_relation_coords(
 
         if not corp_is_in_receivership(state, corp_id):
             president_id = corp_president_id(state, corp_id)
-            if 0 <= president_id < num_tokens - TOKEN_PLAYER_START:
+            if 0 <= president_id < num_players:
                 player_tok = TOKEN_PLAYER_START + president_id
                 count = _append_relation_coord(
                     coords,

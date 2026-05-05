@@ -1,8 +1,9 @@
 """Attention-relation planes for Graphormer-style token attention bias.
 
 Each relation plane is a directed ``(query_token, key_token)`` boolean
-matrix. For example, ``CORP_OWNS_COMPANY`` marks ``[corp_token, company_token]``
-so a corp query can be biased toward reading from its owned company key.
+matrix over the token capacity used by the model. For example,
+``CORP_OWNS_COMPANY`` marks ``[corp_token, company_token]`` so a corp query
+can be biased toward reading from its owned company key.
 
 The shared eval IPC path stores these planes as uint8, not torch.bool, because
 PyTorch/Numpy boolean tensors are still byte-addressed and uint8 matches the

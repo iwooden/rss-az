@@ -30,6 +30,7 @@ from train.replay_buffer import ReplayBuffer
 NUM_PLAYERS = 3
 COMPANY_TOKEN_START = 1
 CORP_TOKEN_START = 46
+PLAYER_TOKEN_START = 54
 
 
 def _materialize_relation_coords_np(
@@ -69,6 +70,24 @@ def _state_with_corp_company(corp_id: int, company_id: int) -> GameState:
 def _state_with_player_company(player_id: int, company_id: int) -> GameState:
     state = GameState(NUM_PLAYERS)
     state.initialize_game(NUM_PLAYERS, seed=200 + player_id * 10 + company_id)
+    DECK.set_company_location(
+        state,
+        company_id,
+        int(CompanyLocation.LOC_PLAYER),
+        player_id,
+    )
+    return state
+
+
+def _state_with_player_company_for_players(
+    num_players: int,
+    player_id: int,
+    company_id: int,
+    *,
+    max_players: int = 0,
+) -> GameState:
+    state = GameState(num_players, max_players=max_players)
+    state.initialize_game(num_players, seed=400 + num_players * 100 + company_id)
     DECK.set_company_location(
         state,
         company_id,
@@ -346,6 +365,131 @@ def test_get_relation_coord_data_batch_matches_dense_relation_planes() -> None:
     get_relation_coord_data_batch([s._array for s in states], NUM_PLAYERS, coords)
 
     for i in range(2):
+        materialized = _materialize_relation_coords_np(
+            coords[i],
+            num_tokens=num_tokens,
+        )
+        np.testing.assert_array_equal(materialized, dense[i])
+
+
+def test_get_relation_data_with_max_players_pads_relation_planes() -> None:
+    num_players = 3
+    max_players = 5
+    player_id = 2
+    company_id = 15
+    state = _state_with_player_company_for_players(
+        num_players,
+        player_id,
+        company_id,
+        max_players=max_players,
+    )
+    num_tokens = get_num_tokens(max_players)
+    relations = np.full(
+        (NUM_ATTENTION_RELATIONS, num_tokens, num_tokens),
+        7,
+        dtype=np.uint8,
+    )
+
+    get_relation_data(state, relations, max_players=max_players)
+
+    owns_relation_id = int(AttentionRelation.PLAYER_OWNS_COMPANY)
+    owned_by_relation_id = int(AttentionRelation.COMPANY_OWNED_BY_PLAYER)
+    player_tok = PLAYER_TOKEN_START + player_id
+    company_tok = COMPANY_TOKEN_START + company_id
+    padded_start = PLAYER_TOKEN_START + num_players
+    assert relations.shape == (
+        NUM_ATTENTION_RELATIONS,
+        get_num_tokens(max_players),
+        get_num_tokens(max_players),
+    )
+    assert relations[owns_relation_id, player_tok, company_tok] == 1
+    assert relations[owned_by_relation_id, company_tok, player_tok] == 1
+    assert int(relations[:, padded_start:, :].sum()) == 0
+    assert int(relations[:, :, padded_start:].sum()) == 0
+
+
+def test_get_relation_coord_data_with_max_players_omits_padded_player_tokens() -> None:
+    num_players = 3
+    max_players = 5
+    state = _state_with_player_company_for_players(
+        num_players,
+        player_id=2,
+        company_id=16,
+        max_players=max_players,
+    )
+    dense = np.zeros(
+        (
+            NUM_ATTENTION_RELATIONS,
+            get_num_tokens(max_players),
+            get_num_tokens(max_players),
+        ),
+        dtype=np.uint8,
+    )
+    coords = np.full(
+        (MAX_ATTENTION_RELATION_EDGES, ATTENTION_RELATION_COORD_WIDTH),
+        7,
+        dtype=np.uint8,
+    )
+
+    get_relation_data(state, dense, max_players=max_players)
+    count = get_relation_coord_data(state, coords, max_players=max_players)
+    materialized = _materialize_relation_coords_np(
+        coords,
+        num_tokens=get_num_tokens(max_players),
+    )
+
+    assert count == int(dense.sum())
+    assert count > 0
+    assert int(coords[count:].sum()) == 0
+    assert np.all(coords[:count, 1:] < PLAYER_TOKEN_START + num_players)
+    np.testing.assert_array_equal(materialized, dense)
+
+
+def test_relation_batch_handles_mixed_player_counts_with_max_players() -> None:
+    max_players = 5
+    states = [
+        _state_with_player_company_for_players(
+            num_players,
+            player_id=num_players - 1,
+            company_id=17 + i,
+            max_players=max_players,
+        )
+        for i, num_players in enumerate((3, 4, 5))
+    ]
+    num_tokens = get_num_tokens(max_players)
+    dense = np.zeros(
+        (len(states), NUM_ATTENTION_RELATIONS, num_tokens, num_tokens),
+        dtype=np.uint8,
+    )
+    coords = np.full(
+        (
+            len(states),
+            MAX_ATTENTION_RELATION_EDGES,
+            ATTENTION_RELATION_COORD_WIDTH,
+        ),
+        7,
+        dtype=np.uint8,
+    )
+
+    get_relation_data_batch([s._array for s in states], dense, max_players=max_players)
+    get_relation_coord_data_batch(
+        [s._array for s in states],
+        coords,
+        max_players=max_players,
+    )
+
+    owns_relation_id = int(AttentionRelation.PLAYER_OWNS_COMPANY)
+    owned_by_relation_id = int(AttentionRelation.COMPANY_OWNED_BY_PLAYER)
+    for i, num_players in enumerate((3, 4, 5)):
+        player_tok = PLAYER_TOKEN_START + num_players - 1
+        company_tok = COMPANY_TOKEN_START + 17 + i
+        assert dense[i, owns_relation_id, player_tok, company_tok] == 1
+        assert dense[i, owned_by_relation_id, company_tok, player_tok] == 1
+
+        padded_start = PLAYER_TOKEN_START + num_players
+        assert int(dense[i, :, padded_start:, :].sum()) == 0
+        assert int(dense[i, :, :, padded_start:].sum()) == 0
+
         materialized = _materialize_relation_coords_np(
             coords[i],
             num_tokens=num_tokens,
