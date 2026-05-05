@@ -11,6 +11,7 @@ from libc.string cimport memset
 
 from core.state cimport (
     GameState, LAYOUT, TURN_OFFSETS, PLAYER_FIELDS, FI_OFFSETS,
+    get_storage_player_capacity,
 )
 from core.data cimport (
     GameConstants,
@@ -193,7 +194,7 @@ cpdef void get_resnet_data_batch(
     """Batched ``get_resnet_data`` over compact int16 state arrays."""
     cdef int n = len(state_arrays)
     cdef int vector_size = _resnet_vector_size(num_players)
-    cdef int i, p, c
+    cdef int i, p, c, max_players
     cdef int active_player
     cdef GameState scratch_gs
 
@@ -206,11 +207,16 @@ cpdef void get_resnet_data_batch(
     assert buffer.shape[1] == vector_size, \
         f"get_resnet_data_batch: buffer width {buffer.shape[1]} != {vector_size}"
 
-    scratch_gs = GameState.from_buffer(state_arrays[0], num_players)
+    max_players = get_storage_player_capacity(len(state_arrays[0]))
+    scratch_gs = GameState.from_buffer(
+        state_arrays[0], num_players, max_players=max_players,
+    )
 
     for i in range(n):
         if i > 0:
-            scratch_gs.rebind(state_arrays[i], num_players)
+            scratch_gs.rebind(
+                state_arrays[i], num_players, max_players=max_players,
+            )
         active_player = <int>scratch_gs._data[
             LAYOUT.turn_offset + TURN_OFFSETS.active_player
         ]

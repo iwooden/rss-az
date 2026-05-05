@@ -182,9 +182,12 @@ cdef CompanyOffsets COMPANY_OFFSETS
 cdef DeckOffsets DECK_OFFSETS
 cdef FIOffsets FI_OFFSETS
 
+cpdef int get_storage_player_capacity(int state_size_int16) except -1
+
 cdef class GameState:
     cdef int16_t* _data
     cdef public object _array
+    cdef public int max_players
 
     # Driver config flags (Python-level, not in state array)
     cdef public bint step_mode
@@ -192,4 +195,4 @@ cdef class GameState:
     cdef public bint allow_positive_income_closing
 
     # Game initialization (note: __cinit__ takes acq_same_president=True)
-    cpdef void initialize_game(self, int num_players, int seed=*)
+    cpdef void initialize_game(self, int num_players, int seed=*, int max_players=*)

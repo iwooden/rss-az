@@ -19,7 +19,9 @@ fixed 54-token prefix.
 from libc.stddef cimport size_t
 from libc.string cimport memset
 
-from core.state cimport GameState, LAYOUT, PLAYER_FIELDS, TURN_OFFSETS
+from core.state cimport (
+    GameState, LAYOUT, PLAYER_FIELDS, TURN_OFFSETS, get_storage_player_capacity,
+)
 from core.relations cimport (
     REL_COMPANY_OWNED_BY_FI,
     REL_COMPANY_OWNED_BY_PLAYER,
@@ -121,7 +123,7 @@ cpdef void get_relation_data_batch(
     cdef int n = len(state_arrays)
     cdef int num_tokens = num_players + NUM_FIXED_TOKENS
     cdef int relation_count = <int>REL_NUM_ATTENTION_RELATIONS
-    cdef int i
+    cdef int i, max_players
     cdef GameState scratch_gs
 
     assert 3 <= num_players <= 5, \
@@ -157,11 +159,16 @@ cpdef void get_relation_data_batch(
         f"{relation_count * num_tokens * num_tokens}"
     )
 
-    scratch_gs = GameState.from_buffer(state_arrays[0], num_players)
+    max_players = get_storage_player_capacity(len(state_arrays[0]))
+    scratch_gs = GameState.from_buffer(
+        state_arrays[0], num_players, max_players=max_players,
+    )
 
     for i in range(n):
         if i > 0:
-            scratch_gs.rebind(state_arrays[i], num_players)
+            scratch_gs.rebind(
+                state_arrays[i], num_players, max_players=max_players,
+            )
         with nogil:
             _fill_relations(scratch_gs, buffer[i], num_tokens)
 
@@ -222,7 +229,7 @@ cpdef void get_relation_coord_data_batch(
     """Batched ``get_relation_coord_data`` for compact int16 state arrays."""
     cdef int n = len(state_arrays)
     cdef int num_tokens = num_players + NUM_FIXED_TOKENS
-    cdef int i
+    cdef int i, max_players
     cdef int count
     cdef int max_edges = <int>MAX_ATTENTION_RELATION_EDGES
     cdef int coord_width = <int>ATTENTION_RELATION_COORD_WIDTH
@@ -256,11 +263,16 @@ cpdef void get_relation_coord_data_batch(
         f"{max_edges * coord_width}"
     )
 
-    scratch_gs = GameState.from_buffer(state_arrays[0], num_players)
+    max_players = get_storage_player_capacity(len(state_arrays[0]))
+    scratch_gs = GameState.from_buffer(
+        state_arrays[0], num_players, max_players=max_players,
+    )
 
     for i in range(n):
         if i > 0:
-            scratch_gs.rebind(state_arrays[i], num_players)
+            scratch_gs.rebind(
+                state_arrays[i], num_players, max_players=max_players,
+            )
         with nogil:
             count = _fill_relation_coords(scratch_gs, coords[i], num_tokens)
         assert count <= max_edges, (

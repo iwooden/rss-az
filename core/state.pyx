@@ -444,6 +444,23 @@ def get_layout(int num_players):
     )
 
 
+cpdef int get_storage_player_capacity(int state_size_int16) except -1:
+    """Return the player-stride capacity implied by a state buffer length."""
+    cdef int player_region = state_size_int16 - LAYOUT.players_offset
+    cdef int max_players
+    assert player_region >= 0, \
+        f"state_size_int16 {state_size_int16} is smaller than fixed layout " \
+        f"prefix {LAYOUT.players_offset}"
+    assert player_region % PLAYER_FIELDS.size == 0, \
+        f"state_size_int16 {state_size_int16} is not aligned to player stride " \
+        f"{PLAYER_FIELDS.size}"
+    max_players = player_region // PLAYER_FIELDS.size
+    assert 2 <= max_players <= <int>GameConstants.MAX_PLAYERS, \
+        f"state_size_int16 {state_size_int16} implies player capacity " \
+        f"{max_players}, expected 2-{GameConstants.MAX_PLAYERS}"
+    return max_players
+
+
 def get_player_fields():
     """Python-accessible player field sub-offsets within each player's data block.
 
@@ -585,13 +602,38 @@ cdef inline int _expected_size(int num_players) noexcept nogil:
     return LAYOUT.players_offset + PLAYER_FIELDS.size * num_players
 
 
+cdef inline int _validate_storage_players(
+    int num_players,
+    int max_players,
+) except -1:
+    assert 2 <= num_players <= <int>GameConstants.MAX_PLAYERS, \
+        f"num_players must be 2-{GameConstants.MAX_PLAYERS}, got {num_players}"
+    if max_players == 0:
+        max_players = num_players
+    assert num_players <= max_players, \
+        f"num_players {num_players} must be <= max_players {max_players}"
+    assert 2 <= max_players <= <int>GameConstants.MAX_PLAYERS, \
+        f"max_players must be 2-{GameConstants.MAX_PLAYERS}, got {max_players}"
+    return max_players
+
+
+cdef inline int _resolve_storage_players(
+    GameState state,
+    int num_players,
+    int max_players,
+) except -1:
+    if max_players == 0 and state.max_players >= num_players:
+        max_players = state.max_players
+    return _validate_storage_players(num_players, max_players)
+
+
 cdef void _seed_zeroed_storage(GameState state, int num_players):
     """Seed zero-initialized storage with the non-zero sentinels we require."""
     cdef int i
     cdef int owner_ids_base = LAYOUT.companies_offset + COMPANY_OFFSETS.owner_ids
 
-    # num_players is canonical engine metadata and must always match the
-    # backing-buffer size this GameState was initialized for.
+    # num_players is canonical engine metadata for the actual game. The
+    # backing buffer may be wider when padded storage is used.
     state._data[LAYOUT.turn_offset + TURN_OFFSETS.num_players] = <int16_t>num_players
 
     # Company locations default to LOC_DECK from zero-init, but owner_ids must
@@ -610,15 +652,17 @@ cdef void _seed_zeroed_storage(GameState state, int num_players):
     state._data[LAYOUT.fi_offset + FI_OFFSETS.income] = 5
 
 
-cdef void _reset_storage(GameState state, int num_players):
-    """Reset this GameState to a zeroed buffer for `num_players`.
+cdef void _reset_storage(GameState state, int num_players, int max_players):
+    """Reset this GameState to a zeroed buffer for `max_players` capacity.
 
     Reuses the current backing buffer when it already has the right size so a
     wrapped external buffer keeps its zero-copy behavior. If the requested
-    player count needs a different size, a fresh numpy buffer is allocated and
-    bound instead.
+    storage capacity needs a different size, a fresh numpy buffer is allocated
+    and bound instead. Only the actual ``num_players`` player strides are
+    initialized; padded strides stay zeroed.
     """
-    cdef int expected_size = _expected_size(num_players)
+    cdef int storage_players = _validate_storage_players(num_players, max_players)
+    cdef int expected_size = _expected_size(storage_players)
     cdef cnp.ndarray arr
 
     if state._array is not None:
@@ -630,16 +674,23 @@ cdef void _reset_storage(GameState state, int num_players):
             arr.fill(0)
             state._array = arr
             state._data = <int16_t*>cnp.PyArray_DATA(arr)
+            state.max_players = storage_players
             _seed_zeroed_storage(state, num_players)
             return
 
     arr = np.zeros(expected_size, dtype=np.int16)
     state._array = arr
     state._data = <int16_t*>cnp.PyArray_DATA(arr)
+    state.max_players = storage_players
     _seed_zeroed_storage(state, num_players)
 
 
-cdef inline _bind_buffer(GameState state, object buffer, int num_players):
+cdef inline _bind_buffer(
+    GameState state,
+    object buffer,
+    int num_players,
+    int max_players,
+):
     """Validate `buffer` and point `state` at it as its backing store.
 
     Shared body of ``from_buffer`` (which constructs a new wrapper) and
@@ -649,7 +700,8 @@ cdef inline _bind_buffer(GameState state, object buffer, int num_players):
     is a no-op when the caller already passes in a numpy array.
     """
     cdef cnp.ndarray buf = np.asarray(buffer)
-    cdef int expected_size = _expected_size(num_players)
+    cdef int storage_players = _validate_storage_players(num_players, max_players)
+    cdef int expected_size = _expected_size(storage_players)
     cdef int16_t* data
     cdef int canonical_num_players
     assert buf.dtype == np.int16, \
@@ -665,6 +717,7 @@ cdef inline _bind_buffer(GameState state, object buffer, int num_players):
         f"buffer canonical num_players {canonical_num_players} != claimed {num_players}"
     state._array = buf
     state._data = data
+    state.max_players = storage_players
 
 
 cdef class GameState:
@@ -678,12 +731,15 @@ cdef class GameState:
     value is the total buffer size, computed inline where needed. Logic
     is delegated to Entity handles and Phase classes.
     """
-    def __cinit__(self, unsigned int num_players, bint _alloc=True,
+    def __cinit__(self, int num_players, bint _alloc=True,
                   bint acq_same_president=True,
-                  bint allow_positive_income_closing=False):
-        assert 2 <= num_players <= <unsigned int>GameConstants.MAX_PLAYERS, \
-            f"num_players must be 2-{GameConstants.MAX_PLAYERS}, got {num_players}"
+                  bint allow_positive_income_closing=False,
+                  int max_players=0):
+        cdef int storage_players = _validate_storage_players(
+            num_players, max_players,
+        )
 
+        self.max_players = storage_players
         self.step_mode = False
         self.acq_same_president = acq_same_president
         self.allow_positive_income_closing = allow_positive_income_closing
@@ -694,21 +750,23 @@ cdef class GameState:
             # to already be populated in the supplied buffer.
             return
 
-        _reset_storage(self, <int>num_players)
+        _reset_storage(self, num_players, storage_players)
 
     @staticmethod
-    def from_array(array, int num_players):
+    def from_array(array, int num_players, int max_players=0):
         """Reconstruct GameState from raw numpy array.
 
         Args:
             array: numpy int16 array (will be copied)
-            num_players: number of players (required to compute layout)
+            num_players: actual number of players
+            max_players: storage capacity. Defaults to exact-size storage.
 
         Returns:
             New GameState with copied array data
         """
         cdef cnp.ndarray arr = np.asarray(array)
-        cdef int expected_size = _expected_size(num_players)
+        cdef int storage_players = _validate_storage_players(num_players, max_players)
+        cdef int expected_size = _expected_size(storage_players)
         cdef int canonical_num_players
         assert arr.dtype == np.int16, \
             f"Expected int16 array, got {arr.dtype}"
@@ -720,12 +778,12 @@ cdef class GameState:
         ]
         assert canonical_num_players == num_players, \
             f"array canonical num_players {canonical_num_players} != claimed {num_players}"
-        state = GameState(num_players)
+        state = GameState(num_players, max_players=storage_players)
         np.copyto(state._array, arr)
         return state
 
     @staticmethod
-    def from_buffer(buffer, int num_players):
+    def from_buffer(buffer, int num_players, int max_players=0):
         """Wrap an existing numpy array as backing store (zero-copy).
 
         The GameState will read/write directly into the provided buffer.
@@ -740,31 +798,34 @@ cdef class GameState:
 
         Args:
             buffer: numpy int16 array of correct size (not copied)
-            num_players: number of players (required for layout lookup)
+            num_players: actual number of players
+            max_players: storage capacity. Defaults to exact-size storage.
 
         Returns:
             GameState backed by the provided buffer
         """
-        state = GameState(num_players, _alloc=False)
-        _bind_buffer(state, buffer, num_players)
+        cdef int storage_players = _validate_storage_players(num_players, max_players)
+        state = GameState(num_players, _alloc=False, max_players=storage_players)
+        _bind_buffer(state, buffer, num_players, storage_players)
         return state
 
-    def rebind(self, buffer, int num_players):
+    def rebind(self, buffer, int num_players, int max_players=0):
         """Repoint this GameState at a different backing buffer (zero-copy).
 
         Reuses the existing wrapper instead of allocating a new one. Used
         in MCTS search hot paths to swap a scratch GameState across rows
         of a state pool. The new buffer may have a different player count
         than the current one — caller passes `num_players` explicitly so
-        the size validation matches the new buffer.
+        the size validation matches the new buffer. ``max_players`` defaults
+        to the exact-size layout; pass it when rebinding padded state rows.
         """
-        _bind_buffer(self, buffer, num_players)
+        _bind_buffer(self, buffer, num_players, max_players)
 
     # =========================================================================
     # GAME INITIALIZATION
     # =========================================================================
 
-    cpdef void initialize_game(self, int num_players, int seed=-1):
+    cpdef void initialize_game(self, int num_players, int seed=-1, int max_players=0):
         """
         Initialize a new game with all starting state.
 
@@ -784,10 +845,11 @@ cdef class GameState:
         cdef int16_t* turn
         cdef int16_t* player
         cdef int16_t* corp
-        assert 2 <= num_players <= <int>GameConstants.MAX_PLAYERS, \
-            f"num_players must be 2-{GameConstants.MAX_PLAYERS}, got {num_players}"
+        cdef int storage_players = _resolve_storage_players(
+            self, num_players, max_players,
+        )
 
-        _reset_storage(self, num_players)
+        _reset_storage(self, num_players, storage_players)
 
         # 1. Set player starting state (raw integers, no normalization)
         starting_cash = 25 if num_players == 6 else 30

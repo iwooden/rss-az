@@ -123,7 +123,7 @@ from libc.string cimport memset
 
 from core.state cimport (
     GameState, LAYOUT, TURN_OFFSETS, CORP_FIELDS, PLAYER_FIELDS,
-    COMPANY_OFFSETS, FI_OFFSETS,
+    COMPANY_OFFSETS, FI_OFFSETS, get_storage_player_capacity,
 )
 from core.data cimport (
     GameConstants,
@@ -345,15 +345,15 @@ cpdef void get_token_data_batch(
 
     Args:
         state_arrays: List of writable C-contiguous int16 state arrays, one
-            per leaf. Every entry must size-match the shared ``num_players``
-            layout (same constraint as ``GameState.rebind``).
+            per leaf. Every entry must have the same storage capacity; the
+            capacity may be wider than the shared actual ``num_players``.
         num_players: Training player count (3-5). Applies to every state
             array in the batch — mixed-player batches are not supported.
         buffer: ``(n, num_players + 54, TOKEN_DIM)`` float32 output, C-contig.
     """
     cdef int n = len(state_arrays)
     cdef int num_tokens = num_players + 54
-    cdef int i, p
+    cdef int i, p, max_players
     cdef GameState scratch_gs
 
     assert 3 <= num_players <= 5, \
@@ -369,11 +369,16 @@ cpdef void get_token_data_batch(
     assert buffer.shape[2] == <int>TokenDataSize.TOKEN_DIM, \
         f"get_token_data_batch: buffer cols {buffer.shape[2]} != TOKEN_DIM {<int>TokenDataSize.TOKEN_DIM}"
 
-    scratch_gs = GameState.from_buffer(state_arrays[0], num_players)
+    max_players = get_storage_player_capacity(len(state_arrays[0]))
+    scratch_gs = GameState.from_buffer(
+        state_arrays[0], num_players, max_players=max_players,
+    )
 
     for i in range(n):
         if i > 0:
-            scratch_gs.rebind(state_arrays[i], num_players)
+            scratch_gs.rebind(
+                state_arrays[i], num_players, max_players=max_players,
+            )
 
         with nogil:
             for p in range(num_players):

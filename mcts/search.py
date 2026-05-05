@@ -42,7 +42,7 @@ from core.actions import (
 )
 from core.data import MAX_ACTION_SIZE, GamePhases
 from core.driver import DRIVER, STATUS_GAME_OVER_PY, STATUS_INVALID_PY
-from core.state import GameState, get_layout
+from core.state import GameState, get_layout, get_storage_player_capacity
 from entities.turn import TURN
 from nn.transformer import UNIFIED_LOGIT_DIM, build_action_lut
 
@@ -69,6 +69,8 @@ class StatePool:
     __slots__ = (
         "states",
         "_next",
+        "_state_size",
+        "_max_players",
         "_action_lut_np",
         "_legal_scratch",
         "_pending_action_ids_buf",
@@ -86,6 +88,8 @@ class StatePool:
         # state arrays.
         self.states = np.zeros((capacity, state_size), dtype=np.int16)
         self._next = 0
+        self._state_size = state_size
+        self._max_players = get_storage_player_capacity(state_size)
         # (phase_id, phase-local action id) → unified-slot LUT. Used both
         # to scatter the dense legal mask per leaf and to gather the sparse
         # prior slice out of the server's dense priors for node.expand.
@@ -264,8 +268,14 @@ def run_search(
 
         # Set up state pool
         if state_pool is None:
-            total_size = get_layout(num_players).total_size
+            max_players = root_state.max_players
+            total_size = get_layout(max_players).total_size
             state_pool = StatePool(2 * (config.num_simulations + 1), total_size)
+        else:
+            assert root_state._array.shape[0] == state_pool._state_size, (
+                f"state_pool row width {state_pool._state_size} does not match "
+                f"root state width {root_state._array.shape[0]}"
+            )
         # Fresh search — reset pool and build root from scratch
         state_pool.reset()
 
@@ -320,7 +330,10 @@ def run_search(
     action_lut_np = state_pool._action_lut_np
 
     # Scratch GameState rebound to each pool row via rebind()
-    scratch_gs = GameState.from_buffer(state_pool.row(0), num_players)
+    max_players = state_pool._max_players
+    scratch_gs = GameState.from_buffer(
+        state_pool.row(0), num_players, max_players=max_players,
+    )
 
     # Add Dirichlet noise at root (fresh noise each search)
     if rng is None:
@@ -379,7 +392,11 @@ def run_search(
                 action_idx = descend_aidx
                 child = MCTSNode(num_players=num_players)
                 child.state_idx = state_pool.alloc_from_row(parent.state_idx)
-                scratch_gs.rebind(state_pool.row(child.state_idx), num_players)
+                scratch_gs.rebind(
+                    state_pool.row(child.state_idx),
+                    num_players,
+                    max_players=max_players,
+                )
                 status = DRIVER.apply_action(scratch_gs, action_idx)
                 assert status != STATUS_INVALID_PY, (
                     f"MCTS expansion got STATUS_INVALID for action {action_idx}"

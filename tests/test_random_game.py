@@ -25,6 +25,7 @@ MAX_RANDOM_STEPS = 5000
 
 def _apply_action_and_verify_driver_states(state, action_id, info, *, step, seed):
     num_players = TURN.get_num_players(state)
+    max_players = state.max_players
     history = []
     status = DRIVER.apply_action(state, action_id, history=history)
     assert status in (STATUS_OK, STATUS_GAME_OVER), (
@@ -37,7 +38,9 @@ def _apply_action_and_verify_driver_states(state, action_id, info, *, step, seed
         f"action_id={action_id} info={info}"
     )
     for i, (state_array, phase_id, hist_action_id) in enumerate(history):
-        intermediate = GameState.from_array(state_array, num_players)
+        intermediate = GameState.from_array(
+            state_array, num_players, max_players=max_players,
+        )
         ctx = (
             f"{base_ctx}\n"
             f"intermediate state {i}/{len(history)} before phase={phase_id} "
@@ -99,3 +102,14 @@ def test_random_legal_actions_reach_game_over_with_invariants(game_state):
     steps = _play_random_game_to_completion(game_state)
     assert steps > 0
     assert TURN.get_phase(game_state) == PHASE_GAME_OVER
+
+
+@pytest.mark.parametrize("num_players", [3, 4])
+def test_random_padded_games_reach_game_over_with_invariants(num_players):
+    state = GameState(num_players, max_players=5)
+    state.initialize_game(num_players, seed=42)
+
+    steps = _play_random_game_to_completion(state, seed=100 + num_players)
+
+    assert steps > 0
+    assert TURN.get_phase(state) == PHASE_GAME_OVER

@@ -29,7 +29,7 @@ from core.actions import (
 )
 from core.data import GamePhases, GameConstants, MAX_ACTION_SIZE
 from core.driver import DRIVER
-from core.state import GameState, get_layout
+from core.state import GameState, get_layout, get_turn_fields
 from entities.player import PLAYERS
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator, compute_terminal_values, fill_token_buffer
@@ -974,6 +974,40 @@ class TestStatePool:
         assert pool._pending_action_ids_buf is buf
         assert pool._saved_values_buf is sv
         assert pool._path_pool is pp
+
+    def test_run_search_with_padded_storage_preserves_padding(self, evaluator):
+        num_players = 3
+        max_players = 5
+        state = GameState(num_players, max_players=max_players)
+        state.initialize_game(num_players, seed=42)
+        pool = StatePool(
+            2 * (4 + 1),
+            get_layout(max_players).total_size,
+        )
+        cfg = MCTSConfig(
+            num_players=num_players,
+            num_simulations=4,
+            search_batch_size=2,
+            dirichlet_epsilon=0.0,
+        )
+
+        root = run_search(
+            state, evaluator, cfg, rng=np.random.default_rng(123),
+            state_pool=pool,
+        )
+
+        assert root.state_idx == 0
+        assert pool._max_players == max_players
+        assert pool.states.shape[1] == get_layout(max_players).total_size
+        turn = get_turn_fields()
+        layout = get_layout(max_players)
+        canonical_slot = layout.turn_offset + turn.num_players
+        padded_start = layout.players_offset + num_players * layout.player_size
+        padded_stop = layout.players_offset + max_players * layout.player_size
+        assert pool._next > 0
+        for row in pool.states[:pool._next]:
+            assert int(row[canonical_slot]) == num_players
+            np.testing.assert_array_equal(row[padded_start:padded_stop], 0)
 
 
 # ---------------------------------------------------------------------------

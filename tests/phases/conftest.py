@@ -215,16 +215,21 @@ class ApplyResult:
     For automated phases: phase_id is -1, action_id is the engine phase enum.
     """
 
-    def __init__(self, state, history, status, num_players):
+    def __init__(self, state, history, status, num_players, max_players):
         self.state = state
         self.history = history
         self.status = status
         self.applied_count = len(history)
         self._num_players = num_players
+        self._max_players = max_players
 
     def get_state_at(self, index):
         """Get state snapshot at position (supports negative indexing)."""
-        return GameState.from_array(self.history[index][0], self._num_players)
+        return GameState.from_array(
+            self.history[index][0],
+            self._num_players,
+            max_players=self._max_players,
+        )
 
     def get_action_at(self, index):
         """Get (phase_id, action_id) at position (supports negative indexing)."""
@@ -254,6 +259,7 @@ def apply_and_verify(state, action_id, msg="", expected_status=STATUS_OK):
         ApplyResult for history inspection.
     """
     num_players = TURN.get_num_players(state)
+    max_players = state.max_players
 
     # Verify action is legal before applying
     buf = np.zeros(MAX_ACTION_SIZE, dtype=np.uint16)
@@ -276,7 +282,9 @@ def apply_and_verify(state, action_id, msg="", expected_status=STATUS_OK):
     # invariant asserts the global-token phase one-hot matches what the driver
     # actually dispatched, independent of ENGINE_TO_DECISION_PHASE.
     for i, (state_array, phase_id, act_id) in enumerate(history):
-        intermediate = GameState.from_array(state_array, num_players)
+        intermediate = GameState.from_array(
+            state_array, num_players, max_players=max_players,
+        )
         ctx = (
             f"{msg}\nIntermediate state {i}/{len(history)}, "
             f"before phase={phase_id} action={act_id}"
@@ -300,7 +308,7 @@ def apply_and_verify(state, action_id, msg="", expected_status=STATUS_OK):
             count2 = enumerate_legal_actions_py(state, buf2)
             assert count2 > 0, f"{msg}\nNo legal actions after action {action_id}"
 
-    return ApplyResult(state, history, status, num_players)
+    return ApplyResult(state, history, status, num_players, max_players)
 
 
 # =============================================================================
