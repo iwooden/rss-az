@@ -38,6 +38,14 @@ def _progress_bar(done: int, total: int, width: int = 30) -> str:
     return f"{bar} {frac * 100:5.1f}%"
 
 
+def _format_player_range(config: TrainingConfig) -> str:
+    lo = config.effective_min_players
+    hi = config.effective_max_players
+    if lo == hi:
+        return str(lo)
+    return f"{lo}-{hi}"
+
+
 class TrainingLogger:
     """Tensorboard + Rich live terminal output for training."""
 
@@ -234,7 +242,7 @@ class TrainingLogger:
         table = Table(show_header=False, box=None, padding=(0, 2))
         table.add_column(style="bold")
         table.add_column()
-        table.add_row("Players", str(config.num_players))
+        table.add_row("Players", _format_player_range(config))
         table.add_row("Model", config.model_type)
         if config.model_path:
             table.add_row("Model path", config.model_path)

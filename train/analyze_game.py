@@ -308,7 +308,10 @@ def analyze_game(
         eval_dtype=config.eval_dtype,
         input_spec=get_model_input_spec(config),
     )
-    mcts_config = config.to_mcts_config(c_puct_override=c_puct)
+    mcts_config = config.to_mcts_config(
+        c_puct_override=c_puct,
+        num_players=num_players,
+    )
     mcts_config = MCTSConfig(
         num_simulations=num_simulations,
         c_puct=mcts_config.c_puct,

@@ -416,7 +416,7 @@ def main() -> None:
     print()
 
     # Build MCTS config from first checkpoint + CLI overrides
-    base_mcts = ref_config.to_mcts_config()
+    base_mcts = ref_config.to_mcts_config(num_players=ref_config.num_players)
     terminal_blend = (args.terminal_blend if args.terminal_blend is not None
                       else ref_config.terminal_blend)
     mcts_config = MCTSConfig(

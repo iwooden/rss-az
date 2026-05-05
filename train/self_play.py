@@ -185,6 +185,7 @@ def play_game(
     mcts_config = config.to_mcts_config(
         c_puct_override=c_puct_override,
         num_simulations_override=sims_override,
+        num_players=num_players,
     )
 
     # Profile stats (None when --profile not set → zero overhead)

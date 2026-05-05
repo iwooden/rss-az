@@ -59,6 +59,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-players", type=int,
                         help="Number of players (default: 3)")
     parser.add_argument(
+        "--min-players",
+        type=int,
+        help="Minimum player count for mixed player-count training",
+    )
+    parser.add_argument(
+        "--max-players",
+        type=int,
+        help="Maximum player count for mixed player-count training",
+    )
+    parser.add_argument(
         "--model-type",
         type=str,
         choices=["transformer", "resnet"],
@@ -207,7 +217,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 _CLI_FIELDS = (
-    "num_players", "eval_dtype", "model_type", "model_path", "phase_conditioning",
+    "num_players", "min_players", "max_players",
+    "eval_dtype", "model_type", "model_path", "phase_conditioning",
     "price_slot_fourier_bands", "price_slot_residual_scale",
     "resnet_hidden_dim", "resnet_num_blocks",
     "games_per_epoch", "num_epochs", "training_steps_per_epoch",

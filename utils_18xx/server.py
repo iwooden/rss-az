@@ -109,7 +109,10 @@ class AIServer:
         )
 
         # Build MCTS config
-        base_mcts = self._config.to_mcts_config(c_puct_override=self._c_puct)
+        base_mcts = self._config.to_mcts_config(
+            c_puct_override=self._c_puct,
+            num_players=self.num_players,
+        )
         self._mcts_config = MCTSConfig(
             num_simulations=self.num_simulations,
             c_puct=base_mcts.c_puct,

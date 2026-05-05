@@ -79,6 +79,8 @@ class TrainingConfig:
 
     # --- Game ---
     num_players: int = 3
+    min_players: int = 0
+    max_players: int = 0
 
     # --- Inference ---
     eval_dtype: str | None = None  # None = no autocast; "bfloat16" or "float16"
@@ -350,8 +352,7 @@ class TrainingConfig:
             )
 
         # Game fields
-        if not 3 <= self.num_players <= 5:
-            raise ValueError(f"num_players must be 3-5, got {self.num_players}")
+        self._validate_player_count_mode()
 
         # Optimizer
         if self.optimizer not in ("adamw", "muon"):
@@ -457,6 +458,82 @@ class TrainingConfig:
             return max(self.num_simulations, self.mcts_sims_end)
         return self.num_simulations
 
+    @property
+    def is_mixed_player_training(self) -> bool:
+        """Whether this config trains over a real range of player counts."""
+        return (
+            self.num_players == 0
+            and self.min_players != 0
+            and self.max_players != 0
+        )
+
+    @property
+    def effective_min_players(self) -> int:
+        """Lowest actual player count covered by this training run."""
+        if self.is_mixed_player_training:
+            return self.min_players
+        return self.num_players
+
+    @property
+    def effective_max_players(self) -> int:
+        """Padded model/storage player capacity for this training run."""
+        if self.is_mixed_player_training:
+            return self.max_players
+        return self.num_players
+
+    def iter_player_counts(self) -> range:
+        """Iterate all actual player counts this config may generate."""
+        return range(self.effective_min_players, self.effective_max_players + 1)
+
+    def _validate_player_count_mode(self) -> None:
+        """Validate single-count and mixed-count game configuration modes."""
+        for name in ("num_players", "min_players", "max_players"):
+            value = getattr(self, name)
+            if not isinstance(value, int):
+                raise ValueError(f"{name} must be an integer, got {value!r}")
+            if value < 0:
+                raise ValueError(f"{name} must be >= 0, got {value}")
+
+        has_single = self.num_players != 0
+        has_min = self.min_players != 0
+        has_max = self.max_players != 0
+        has_range = has_min or has_max
+
+        if has_single and has_range:
+            raise ValueError(
+                "num_players is mutually exclusive with min_players/max_players; "
+                "use either single-count mode or mixed-count mode"
+            )
+        if not has_single and not has_range:
+            raise ValueError(
+                "player count config must set num_players or both min_players and max_players"
+            )
+
+        if has_single:
+            if not 3 <= self.num_players <= 5:
+                raise ValueError(
+                    f"num_players must be 3-5, got {self.num_players}"
+                )
+            return
+
+        if has_min != has_max:
+            raise ValueError(
+                "min_players and max_players must both be set for mixed player training"
+            )
+        if not 3 <= self.min_players <= 5:
+            raise ValueError(
+                f"min_players must be 3-5, got {self.min_players}"
+            )
+        if not 3 <= self.max_players <= 5:
+            raise ValueError(
+                f"max_players must be 3-5, got {self.max_players}"
+            )
+        if self.min_players >= self.max_players:
+            raise ValueError(
+                f"min_players must be < max_players for mixed player training, "
+                f"got {self.min_players}-{self.max_players}"
+            )
+
     def compute_epoch_config(self, epoch: int) -> EpochConfig:
         """Compute per-epoch dynamic values for annealing schedules.
 
@@ -506,13 +583,37 @@ class TrainingConfig:
         self,
         c_puct_override: float | None = None,
         num_simulations_override: int | None = None,
+        num_players: int | None = None,
     ) -> MCTSConfig:
         """Create an MCTSConfig from the relevant training fields.
 
         Args:
             c_puct_override: If provided, use this c_puct instead of c_puct_final.
             num_simulations_override: If provided, use this instead of self.num_simulations.
+            num_players: Actual player count for the game/search. Required in
+                mixed-count mode; optional in single-count mode.
         """
+        if num_players is None:
+            if self.is_mixed_player_training:
+                raise ValueError(
+                    "num_players must be passed to to_mcts_config() when "
+                    "mixed player training is enabled"
+                )
+            actual_num_players = self.num_players
+        else:
+            actual_num_players = num_players
+
+        if not (
+            self.effective_min_players
+            <= actual_num_players
+            <= self.effective_max_players
+        ):
+            raise ValueError(
+                "num_players must be within the configured player range "
+                f"{self.effective_min_players}-{self.effective_max_players}, "
+                f"got {actual_num_players}"
+            )
+
         return MCTSConfig(
             num_simulations=(num_simulations_override if num_simulations_override is not None
                              else self.num_simulations),
@@ -521,7 +622,7 @@ class TrainingConfig:
             dirichlet_epsilon=self.dirichlet_epsilon,
             dirichlet_dynamic=self.dirichlet_dynamic,
             dirichlet_alpha_numerator=self.dirichlet_alpha_numerator,
-            num_players=self.num_players,
+            num_players=actual_num_players,
             search_batch_size=self.search_batch_size,
         )
 
