@@ -92,6 +92,13 @@ class TrainingConfig:
     model_path: str | None = None
     # Per-block adaLN-Zero conditioning on the active decision phase.
     phase_conditioning: bool = False
+    # Transformer model hyperparameters. These are checkpointed so runs can
+    # reload multiple model sizes from the same implementation module.
+    d_model: int = 256
+    d_proj: int = 64
+    num_heads: int = 4
+    num_layers: int = 15
+    ff_mult: float = 3.0
     # Price-like policy slots blend fixed Fourier projections for smoothness
     # with learned per-slot embeddings for slot identity.
     price_slot_fourier_bands: int = 4
@@ -262,6 +269,20 @@ class TrainingConfig:
         if not isinstance(self.phase_conditioning, bool):
             raise ValueError(
                 f"phase_conditioning must be bool, got {self.phase_conditioning!r}"
+            )
+        if self.d_model < 1:
+            raise ValueError(f"d_model must be >= 1, got {self.d_model}")
+        if self.d_proj < 1:
+            raise ValueError(f"d_proj must be >= 1, got {self.d_proj}")
+        if self.num_heads < 1:
+            raise ValueError(f"num_heads must be >= 1, got {self.num_heads}")
+        if self.num_layers < 1:
+            raise ValueError(f"num_layers must be >= 1, got {self.num_layers}")
+        if self.ff_mult <= 0:
+            raise ValueError(f"ff_mult must be > 0, got {self.ff_mult}")
+        if self.d_model % self.num_heads != 0:
+            raise ValueError(
+                f"d_model {self.d_model} must be divisible by num_heads {self.num_heads}"
             )
         if self.price_slot_fourier_bands < 0:
             raise ValueError(

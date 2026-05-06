@@ -94,6 +94,11 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         help="Optional Python module/file path that provides the selected model implementation",
     )
+    parser.add_argument("--d-model", type=int, help="Transformer trunk width")
+    parser.add_argument("--d-proj", type=int, help="Transformer policy projection width")
+    parser.add_argument("--num-heads", type=int, help="Transformer attention head count")
+    parser.add_argument("--num-layers", type=int, help="Transformer block count")
+    parser.add_argument("--ff-mult", type=float, help="Transformer SwiGLU FFN multiplier")
     parser.add_argument("--games-per-epoch", type=int)
     parser.add_argument("--num-epochs", type=int)
     parser.add_argument("--training-steps-per-epoch", type=int)
@@ -242,6 +247,7 @@ def _build_parser() -> argparse.ArgumentParser:
 _CLI_FIELDS = (
     "num_players", "min_players", "max_players",
     "eval_dtype", "model_type", "model_path", "phase_conditioning",
+    "d_model", "d_proj", "num_heads", "num_layers", "ff_mult",
     "price_slot_fourier_bands", "price_slot_residual_scale",
     "resnet_hidden_dim", "resnet_num_blocks",
     "games_per_epoch", "num_epochs", "training_steps_per_epoch",

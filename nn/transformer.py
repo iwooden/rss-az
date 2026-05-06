@@ -130,6 +130,20 @@ def _fourier_feature_width(input_width: int, num_bands: int) -> int:
     return input_width * (1 + 2 * num_bands)
 
 
+def _round_up_to_multiple(value: int, multiple: int) -> int:
+    """Round positive integer ``value`` up to the next ``multiple`` boundary."""
+    if value < 1:
+        raise ValueError(f"value must be positive, got {value}")
+    if multiple < 1:
+        raise ValueError(f"multiple must be positive, got {multiple}")
+    return ((value + multiple - 1) // multiple) * multiple
+
+
+def _ffn_hidden_dim(cfg: TransformerConfig) -> int:
+    """SwiGLU hidden width, rounded for tensor-core-friendly matmuls."""
+    return _round_up_to_multiple(math.ceil(cfg.ff_mult * cfg.d_model), 64)
+
+
 def build_action_lut() -> torch.Tensor:
     """Static (NUM_PHASES, MAX_PHASE_ACTION_SIZE) int64 LUT mapping each
     phase's phase-local action id to a slot in the unified logit tensor.
@@ -186,7 +200,7 @@ class TransformerConfig:
     d_proj: int = 64
     num_heads: int = 4
     num_layers: int = 15
-    ff_mult: float = 3.0  # FFN inner dimension = ceil(ff_mult * d_model)
+    ff_mult: float = 3.0  # FFN inner dimension is rounded up to a multiple of 64.
     phase_conditioning: bool = False
     price_slot_fourier_bands: int = 4
     # Blend weight between projected Fourier slot features and learned per-slot
@@ -202,7 +216,14 @@ class TransformerConfig:
 
     def __post_init__(self) -> None:
         assert 3 <= self.num_players <= 5, f"num_players must be 3-5, got {self.num_players}"
+        assert self.d_model > 0, f"d_model must be positive, got {self.d_model}"
         assert self.d_proj > 0, f"d_proj must be positive, got {self.d_proj}"
+        assert self.num_heads > 0, f"num_heads must be positive, got {self.num_heads}"
+        assert self.num_layers > 0, f"num_layers must be positive, got {self.num_layers}"
+        assert self.ff_mult > 0, f"ff_mult must be positive, got {self.ff_mult}"
+        assert self.d_model % self.num_heads == 0, (
+            f"d_model {self.d_model} must be divisible by num_heads {self.num_heads}"
+        )
         assert isinstance(self.phase_conditioning, bool), (
             f"phase_conditioning must be bool, got {self.phase_conditioning!r}"
         )
@@ -662,7 +683,7 @@ class RSSTransformerNet(nn.Module):
             TransformerBlock(
                 d,
                 cfg.num_heads,
-                math.ceil(cfg.ff_mult * cfg.d_model),
+                _ffn_hidden_dim(cfg),
                 phase_conditioning=cfg.phase_conditioning,
             )
             for _ in range(cfg.num_layers)
@@ -1987,7 +2008,7 @@ if __name__ == "__main__":
 
     print(f"Transformer model: {cfg.num_players}p")
     print(f"  d_model={cfg.d_model}, d_proj={cfg.d_proj}, heads={cfg.num_heads}, "
-          f"layers={cfg.num_layers}, d_ff={math.ceil(cfg.ff_mult * cfg.d_model)}")
+          f"layers={cfg.num_layers}, d_ff={_ffn_hidden_dim(cfg)}")
     print(f"  phase_conditioning={cfg.phase_conditioning}")
     print(f"  tokens={cfg.num_tokens}, token_dim={cfg.token_dim}")
     print(f"  Trainable parameters: {total:,}")

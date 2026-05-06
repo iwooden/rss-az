@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any, TYPE_CHECKING
 
@@ -406,6 +407,13 @@ class TrainingLogger:
         table.add_row("Training steps/epoch", f"{config.training_steps_per_epoch:,}")
         table.add_row("Batch size", str(config.batch_size))
         if config.model_type == "transformer":
+            raw_d_ff = math.ceil(config.ff_mult * config.d_model)
+            d_ff = ((raw_d_ff + 63) // 64) * 64
+            table.add_row(
+                "Transformer",
+                f"d_model={config.d_model}, d_proj={config.d_proj}, "
+                f"heads={config.num_heads}, layers={config.num_layers}, d_ff={d_ff}",
+            )
             table.add_row(
                 "Phase conditioning",
                 "adaLN enabled" if config.phase_conditioning else "disabled",

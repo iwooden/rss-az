@@ -109,3 +109,38 @@ def test_json_config_threads_model_path() -> None:
 
     assert config.model_path == "nn/transformer-v2.py"
     assert '"model_path": "nn/transformer-v2.py"' in config.to_json()
+
+
+def test_cli_overrides_transformer_size_hyperparameters() -> None:
+    parser = _build_parser()
+    args = parser.parse_args([
+        "--d-model", "320",
+        "--d-proj", "96",
+        "--num-heads", "5",
+        "--num-layers", "18",
+        "--ff-mult", "2.67",
+    ])
+    config = TrainingConfig()
+
+    _apply_overrides(config, args)
+    config.validate()
+
+    assert config.d_model == 320
+    assert config.d_proj == 96
+    assert config.num_heads == 5
+    assert config.num_layers == 18
+    assert config.ff_mult == 2.67
+
+
+def test_json_config_threads_transformer_size_hyperparameters() -> None:
+    config = TrainingConfig.from_json(
+        '{"d_model": 320, "d_proj": 96, "num_heads": 5, '
+        '"num_layers": 18, "ff_mult": 2.67}'
+    )
+
+    assert config.d_model == 320
+    assert config.d_proj == 96
+    assert config.num_heads == 5
+    assert config.num_layers == 18
+    assert config.ff_mult == 2.67
+    assert '"d_model": 320' in config.to_json()

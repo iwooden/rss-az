@@ -77,7 +77,7 @@ __all__ = [
 ]
 
 
-def _config_value(config: object, name: str, default: object) -> object:
+def _config_value(config: object, name: str, default: Any) -> Any:
     return getattr(config, name, default)
 
 
@@ -126,7 +126,7 @@ def _resnet_input_dim(num_players: int) -> int:
     return get_resnet_vector_size(num_players)
 
 
-def _config_kwargs(config_cls: type[object], values: dict[str, object]) -> dict[str, object]:
+def _config_kwargs(config_cls: type[object], values: dict[str, Any]) -> dict[str, Any]:
     """Filter unified TrainingConfig-derived values to a model config schema."""
     if is_dataclass(config_cls):
         valid = {
@@ -197,6 +197,11 @@ def create_model(
     config: object | int | None = None,
     *,
     num_players: int | None = None,
+    d_model: int = 256,
+    d_proj: int = 64,
+    num_heads: int = 4,
+    num_layers: int = 15,
+    ff_mult: float = 3.0,
     phase_conditioning: bool = False,
     price_slot_fourier_bands: int = 4,
     price_slot_residual_scale: float = 1.0,
@@ -224,8 +229,13 @@ def create_model(
         else:
             net_cls = RSSTransformerNet
             config_cls = TransformerConfig
-        values: dict[str, object] = {
+        values: dict[str, Any] = {
             "num_players": num_players,
+            "d_model": d_model,
+            "d_proj": d_proj,
+            "num_heads": num_heads,
+            "num_layers": num_layers,
+            "ff_mult": ff_mult,
             "phase_conditioning": phase_conditioning,
             "price_slot_fourier_bands": price_slot_fourier_bands,
             "price_slot_residual_scale": price_slot_residual_scale,
@@ -254,8 +264,13 @@ def create_model(
             _require_symbol(module, "TransformerConfig", cfg_model_path)
             if module is not None else TransformerConfig
         )
-        values = {
+        values: dict[str, Any] = {
             "num_players": cfg_max_players,
+            "d_model": int(_config_value(config, "d_model", 256)),
+            "d_proj": int(_config_value(config, "d_proj", 64)),
+            "num_heads": int(_config_value(config, "num_heads", 4)),
+            "num_layers": int(_config_value(config, "num_layers", 15)),
+            "ff_mult": float(_config_value(config, "ff_mult", 3.0)),
             "phase_conditioning": bool(
                 _config_value(config, "phase_conditioning", False)
             ),
@@ -276,7 +291,7 @@ def create_model(
         _require_symbol(module, "RSSResNetConfig", cfg_model_path)
         if module is not None else RSSResNetConfig
     )
-    values = {
+    values: dict[str, Any] = {
         "num_players": cfg_num_players,
         "input_dim": _resnet_input_dim(cfg_num_players),
         "hidden_dim": int(_config_value(config, "resnet_hidden_dim", 256)),

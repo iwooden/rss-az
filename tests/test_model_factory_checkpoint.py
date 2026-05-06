@@ -34,9 +34,35 @@ def test_factory_instantiates_transformer_from_config() -> None:
     assert isinstance(model, RSSTransformerNet)
     assert config.phase_conditioning is False
     assert model.cfg.num_players == config.num_players
+    assert model.cfg.d_model == config.d_model
+    assert model.cfg.d_proj == config.d_proj
+    assert model.cfg.num_heads == config.num_heads
+    assert model.cfg.num_layers == config.num_layers
+    assert model.cfg.ff_mult == config.ff_mult
     assert model.cfg.phase_conditioning is config.phase_conditioning
     assert model.cfg.price_slot_fourier_bands == config.price_slot_fourier_bands
     assert model.cfg.price_slot_residual_scale == config.price_slot_residual_scale
+
+
+def test_factory_instantiates_custom_sized_transformer_from_config() -> None:
+    config = TrainingConfig(
+        model_type="transformer",
+        d_model=64,
+        d_proj=16,
+        num_heads=4,
+        num_layers=2,
+        ff_mult=1.1,
+    )
+    model = create_model(config)
+
+    assert isinstance(model, RSSTransformerNet)
+    assert model.cfg.d_model == 64
+    assert model.cfg.d_proj == 16
+    assert model.cfg.num_heads == 4
+    assert model.cfg.num_layers == 2
+    assert model.cfg.ff_mult == 1.1
+    assert len(model.blocks) == 2
+    assert model.blocks[0].ffn_gate.out_features == 128
 
 
 def test_factory_instantiates_mixed_transformer_at_max_player_capacity() -> None:
@@ -68,10 +94,37 @@ def test_factory_instantiates_transformer_from_model_path() -> None:
     assert model.__class__.__name__ == "RSSTransformerNet"
     assert model.__class__ is not RSSTransformerNet
     assert model.cfg.num_players == config.num_players
+    assert model.cfg.d_model == config.d_model
+    assert model.cfg.d_proj == config.d_proj
+    assert model.cfg.num_heads == config.num_heads
+    assert model.cfg.num_layers == config.num_layers
+    assert model.cfg.ff_mult == config.ff_mult
     assert model.cfg.phase_conditioning is config.phase_conditioning
     assert model.cfg.price_slot_fourier_bands == config.price_slot_fourier_bands
     assert not hasattr(model.cfg, "price_slot_residual_scale")
     assert any(name.endswith("phase_mod.weight") for name, _ in model.named_parameters())
+
+
+def test_factory_threads_custom_size_into_model_path_transformer() -> None:
+    config = TrainingConfig(
+        model_type="transformer",
+        model_path="nn/transformer-v2.py",
+        d_model=64,
+        d_proj=16,
+        num_heads=4,
+        num_layers=1,
+        ff_mult=1.1,
+    )
+    model = create_model(config)
+
+    assert model.__class__.__name__ == "RSSTransformerNet"
+    assert model.__class__ is not RSSTransformerNet
+    assert model.cfg.d_model == 64
+    assert model.cfg.d_proj == 16
+    assert model.cfg.num_heads == 4
+    assert model.cfg.num_layers == 1
+    assert model.cfg.ff_mult == 1.1
+    assert model.blocks[0].ffn_gate.out_features == 128
 
 
 def test_factory_instantiates_mixed_model_path_transformer_at_max_player_capacity() -> None:
@@ -206,6 +259,41 @@ def test_new_checkpoints_reload_correct_model_type(tmp_path) -> None:
         assert isinstance(loaded, expected_type)
         assert loaded_config.model_type == config.model_type
         assert list(loaded.state_dict().keys()) == list(model.state_dict().keys())
+
+
+def test_checkpoint_reload_preserves_transformer_size(tmp_path) -> None:
+    device = torch.device("cpu")
+    config = TrainingConfig(
+        model_type="transformer",
+        d_model=64,
+        d_proj=16,
+        num_heads=4,
+        num_layers=1,
+        ff_mult=1.1,
+    )
+    model = create_model(config).to(device)
+    path = tmp_path / "custom-transformer.pt"
+
+    save_checkpoint(
+        path=path,
+        epoch=0,
+        model=model,
+        trainer_state={"global_step": 0},
+        config=config,
+        metrics={},
+        buffer_stats={"size": 0, "capacity": 0},
+    )
+
+    loaded, loaded_config, _cp = load_model_from_checkpoint(path, device)
+
+    assert isinstance(loaded, RSSTransformerNet)
+    assert loaded_config.d_model == config.d_model
+    assert loaded_config.d_proj == config.d_proj
+    assert loaded_config.num_heads == config.num_heads
+    assert loaded_config.num_layers == config.num_layers
+    assert loaded_config.ff_mult == config.ff_mult
+    assert loaded.cfg.d_model == config.d_model
+    assert loaded.blocks[0].ffn_gate.out_features == 128
 
 
 def test_checkpoint_reload_uses_model_path(tmp_path) -> None:
