@@ -118,6 +118,10 @@ class TrainingConfig:
     search_batch_size: int = 8
     num_workers: int = 4
     num_eval_servers: int = 1
+    # Optional one-device-per-eval-server mapping, e.g. ["cuda:0", "cuda:1"].
+    # Empty preserves the historical behavior: all eval servers use the main
+    # training device.
+    eval_devices: list[str] = field(default_factory=list)
     # When > 0, eval servers accumulate drained requests until the total
     # number of pending states reaches this floor before launching a GPU
     # forward pass. 0 (default) = greedy: submit on every non-empty drain,
@@ -432,6 +436,17 @@ class TrainingConfig:
                 f"num_eval_servers ({self.num_eval_servers}) must be <= "
                 f"num_workers ({self.num_workers})"
             )
+        if self.eval_devices:
+            if len(self.eval_devices) != self.num_eval_servers:
+                raise ValueError(
+                    f"eval_devices length ({len(self.eval_devices)}) must match "
+                    f"num_eval_servers ({self.num_eval_servers})"
+                )
+            for i, eval_device in enumerate(self.eval_devices):
+                if not isinstance(eval_device, str) or not eval_device.strip():
+                    raise ValueError(
+                        f"eval_devices[{i}] must be a non-empty device string"
+                    )
         if self.eval_min_batch_size < 0:
             raise ValueError(
                 f"eval_min_batch_size must be >= 0 (0 disables), "

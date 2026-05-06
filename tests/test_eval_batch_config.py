@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import pytest
+import torch
 
 from train.config import TrainingConfig
-from train.main import _apply_overrides, _build_parser
+from train.main import _apply_overrides, _build_parser, _resolve_eval_devices
 
 
 def test_training_config_defaults_to_dynamic_eval_batch_shapes() -> None:
@@ -26,6 +27,40 @@ def test_cli_overrides_eval_batch_shape_mode_and_eval_max_batch_size() -> None:
 
     assert config.eval_batch_shape_mode == "bucketed"
     assert config.eval_max_batch_size == 16
+
+
+def test_cli_overrides_eval_devices() -> None:
+    parser = _build_parser()
+    args = parser.parse_args([
+        "--num-eval-servers", "2",
+        "--eval-devices", "cuda:0,cuda:1",
+    ])
+    config = TrainingConfig(num_workers=8)
+
+    _apply_overrides(config, args)
+    config.validate()
+
+    assert config.eval_devices == ["cuda:0", "cuda:1"]
+
+
+def test_resolve_eval_devices_defaults_to_training_device() -> None:
+    config = TrainingConfig(num_workers=4, num_eval_servers=2)
+
+    devices = _resolve_eval_devices(config, torch.device("cpu"))
+
+    assert devices == [torch.device("cpu"), torch.device("cpu")]
+
+
+def test_resolve_eval_devices_uses_explicit_mapping() -> None:
+    config = TrainingConfig(
+        num_workers=4,
+        num_eval_servers=2,
+        eval_devices=["cuda:0", "cuda:1"],
+    )
+
+    devices = _resolve_eval_devices(config, torch.device("cpu"))
+
+    assert devices == [torch.device("cuda:0"), torch.device("cuda:1")]
 
 
 def test_cli_overrides_policy_target_temperature_schedule() -> None:
@@ -153,6 +188,15 @@ def test_cli_overrides_weight_decay() -> None:
 def test_training_config_rejects_unknown_eval_batch_shape_mode() -> None:
     with pytest.raises(ValueError, match="eval_batch_shape_mode"):
         TrainingConfig(eval_batch_shape_mode="wrong")
+
+
+def test_training_config_rejects_eval_devices_count_mismatch() -> None:
+    with pytest.raises(ValueError, match="eval_devices length"):
+        TrainingConfig(
+            num_workers=8,
+            num_eval_servers=2,
+            eval_devices=["cuda:0"],
+        )
 
 
 def test_training_config_rejects_inverted_policy_target_temp_schedule() -> None:

@@ -3,8 +3,9 @@
 Each EvaluationServer runs as a separate process with its own Python GIL,
 eliminating GIL contention that limited throughput when servers were threads.
 The model's GPU parameter tensors are shared zero-copy via CUDA IPC
-(torch.multiprocessing), so optimizer.step() in the main process is visible
-to eval servers automatically.
+(torch.multiprocessing) when an eval server stays on the trainer's device.
+Eval servers on other devices keep local replicas and reload a CPU weight
+snapshot after each training phase.
 
 Communication uses shared memory (torch tensors with share_memory_()):
 
@@ -569,6 +570,9 @@ def _eval_server_main(
     ready_event: Any,
     stats_report_event: Any,
     stats_queue: Any,
+    weight_sync_event: Any,
+    weight_sync_done_event: Any,
+    weight_sync_queue: Any,
     *,
     server_id: int,
     worker_start: int,
@@ -598,6 +602,7 @@ def _eval_server_main(
         _eval_server_serve(
             model, device, shared_bufs,
             stop_event, ready_event, stats_report_event, stats_queue,
+            weight_sync_event, weight_sync_done_event, weight_sync_queue,
             server_id=server_id,
             worker_start=worker_start, worker_end=worker_end,
             profile=profile, no_compile=no_compile,
@@ -622,6 +627,9 @@ def _eval_server_serve(
     ready_event: Any,
     stats_report_event: Any,
     stats_queue: Any,
+    weight_sync_event: Any,
+    weight_sync_done_event: Any,
+    weight_sync_queue: Any,
     *,
     server_id: int,
     worker_start: int,
@@ -655,9 +663,12 @@ def _eval_server_serve(
     # Prevent OpenMP oversubscription (same as worker processes)
     torch.set_num_threads(1)
 
-    model.eval()
-
     use_cuda = device.type == "cuda"
+    if use_cuda and device.index is not None:
+        torch.cuda.set_device(device)
+
+    model = model.to(device)
+    model.eval()
 
     # Apply vendor-specific per-process GPU settings (TF32 for NVIDIA, etc.).
     if gpu_vendor != "cpu":
@@ -1109,6 +1120,35 @@ def _eval_server_serve(
             stats_queue.put(snap)
             stats_report_event.clear()
 
+    def _check_weight_sync() -> None:
+        """Reload trainer weights when the main process requests a sync."""
+        if not weight_sync_event.is_set():
+            return
+        try:
+            state_payload = weight_sync_queue.get(timeout=1.0)
+        except _queue.Empty:
+            return
+
+        base_model = getattr(model, "_orig_mod", model)
+        current_state = base_model.state_dict()
+        state_dict: dict[str, torch.Tensor] = {}
+        for name, value in state_payload.items():
+            target = current_state.get(name)
+            if target is None:
+                state_dict[name] = torch.as_tensor(value, device=device)
+            else:
+                state_dict[name] = torch.as_tensor(
+                    value,
+                    dtype=target.dtype,
+                    device=target.device,
+                )
+        base_model.load_state_dict(state_dict, strict=True)
+        base_model.eval()
+        if use_cuda:
+            torch.cuda.synchronize(device)
+        weight_sync_event.clear()
+        weight_sync_done_event.set()
+
     def _idle_wait() -> None:
         """Lost-wakeup-safe doorbell wait when no work is pending."""
         server_event.clear()
@@ -1196,12 +1236,14 @@ def _eval_server_serve(
                     with _stats_lock:
                         stats.record_idle(perf_counter() - _tp)
                 _check_stats_report()
+                _check_weight_sync()
                 _idle_wait()
             else:
                 # Have partial work — brief wait for more arrivals, then
                 # flush whatever's accumulated on timeout (anti-starvation
                 # for epoch end and single-worker root evals).
                 _check_stats_report()
+                _check_weight_sync()
                 server_event.clear()
                 if not _peek(submitted_masks, server_id, num_words):
                     if not server_event.wait(timeout=_timeout_s):
@@ -1233,6 +1275,7 @@ def _eval_server_serve(
                     with _stats_lock:
                         stats.record_idle(perf_counter() - _tp)
                 _check_stats_report()
+                _check_weight_sync()
                 _idle_wait()
                 continue
 
@@ -1247,6 +1290,7 @@ def _eval_server_serve(
                     group.end - group.start,
                 )
             _check_stats_report()
+            _check_weight_sync()
 
     # Drain the scatter thread: any batches launched before stop_event was
     # observed must finish their notify so workers aren't left stuck on
@@ -1268,9 +1312,9 @@ class EvaluationServer:
     events signal completion to workers.
 
     Each EvaluationServer runs in its own process with a separate GIL,
-    eliminating GIL contention between servers. The model's GPU parameter
-    tensors are shared via CUDA IPC (torch.multiprocessing), so weight
-    updates from the trainer are visible automatically.
+    eliminating GIL contention between servers. Servers on the trainer's
+    device can observe shared CUDA IPC parameter storage; servers on other
+    devices keep replicas that the trainer synchronizes between epochs.
     """
 
     def __init__(
@@ -1301,11 +1345,16 @@ class EvaluationServer:
         self._ready_event = ctx.Event()
         self._stats_report_event: Any = ctx.Event() if profile else None
         self._stats_queue: Any = ctx.Queue() if profile else None
+        self._weight_sync_event = ctx.Event()
+        self._weight_sync_done_event = ctx.Event()
+        self._weight_sync_queue: Any = ctx.Queue()
         self._process: Any | None = None
         self._process_args = (
             model, device, shared_bufs,
             self._stop_event, self._ready_event,
             self._stats_report_event, self._stats_queue,
+            self._weight_sync_event, self._weight_sync_done_event,
+            self._weight_sync_queue,
         )
         self._process_kwargs = {
             "server_id": server_id,
@@ -1323,6 +1372,7 @@ class EvaluationServer:
         }
         self._mp_context = ctx
         self._server_id = server_id
+        self._shared_bufs = shared_bufs
 
     def start(self) -> None:
         """Start the server process."""
@@ -1351,6 +1401,36 @@ class EvaluationServer:
             if self._process.is_alive():
                 self._process.terminate()
             self._process = None
+
+    def sync_weights(
+        self,
+        state_dict: dict[str, Any],
+        *,
+        timeout: float = 300.0,
+    ) -> None:
+        """Synchronize this eval-server replica to a CPU state-dict snapshot."""
+        if self._process is None or not self._process.is_alive():
+            raise RuntimeError(
+                f"eval server {self._server_id} is not running; "
+                "cannot synchronize weights"
+            )
+        payload: dict[str, np.ndarray] = {}
+        for name, value in state_dict.items():
+            if torch.is_tensor(value):
+                payload[name] = value.detach().cpu().numpy().copy()
+            else:
+                payload[name] = np.array(value, copy=True)
+        self._weight_sync_done_event.clear()
+        self._weight_sync_queue.put(payload)
+        self._weight_sync_event.set()
+        if self._shared_bufs.server_events is not None:
+            self._shared_bufs.server_events[self._server_id].set()
+        if not self._weight_sync_done_event.wait(timeout=timeout):
+            raise RuntimeError(
+                f"eval server {self._server_id} did not synchronize weights "
+                f"within {timeout:g}s"
+            )
+        self._weight_sync_done_event.clear()
 
     def get_profile_stats(self) -> EvalServerStats | None:
         """Request stats from the server process and return them.

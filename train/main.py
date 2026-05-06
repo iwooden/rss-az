@@ -60,6 +60,17 @@ def _parse_int_list(value: str) -> list[int]:
         ) from exc
 
 
+def _parse_str_list(value: str) -> list[str]:
+    """Parse a comma-separated string list."""
+    parts = [part.strip() for part in value.split(",")]
+    values = [part for part in parts if part]
+    if not values:
+        raise argparse.ArgumentTypeError(
+            f"expected comma-separated non-empty strings, got {value!r}"
+        )
+    return values
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="AlphaZero self-play training for Rolling Stock Stars"
@@ -114,6 +125,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--search-batch-size", type=int)
     parser.add_argument("--num-workers", type=int)
     parser.add_argument("--num-eval-servers", type=int)
+    parser.add_argument(
+        "--eval-devices",
+        type=_parse_str_list,
+        help="Comma-separated eval-server devices, one per server "
+             "(for example: cuda:0,cuda:1). Defaults to the training device.",
+    )
     parser.add_argument("--buffer-capacity", type=int)
     parser.add_argument(
         "--eval-min-batch-size", type=int,
@@ -253,7 +270,7 @@ _CLI_FIELDS = (
     "games_per_epoch", "num_epochs", "training_steps_per_epoch",
     "num_simulations", "search_batch_size",
     "mcts_sims_start", "mcts_sims_end", "mcts_ramp_start_epoch", "mcts_ramp_end_epoch",
-    "num_workers", "num_eval_servers",
+    "num_workers", "num_eval_servers", "eval_devices",
     "buffer_capacity",
     "eval_min_batch_size", "eval_min_batch_timeout_ms",
     "eval_batch_shape_mode", "eval_max_batch_size",
@@ -634,6 +651,43 @@ def _apply_overrides(
             setattr(config, field, val)
 
 
+def _resolve_eval_devices(
+    config: TrainingConfig,
+    training_device: torch.device,
+) -> list[torch.device]:
+    """Return one eval-server device per configured eval server."""
+    if config.num_workers <= 0:
+        return []
+    if config.eval_devices:
+        return [torch.device(device) for device in config.eval_devices]
+    return [training_device for _ in range(config.num_eval_servers)]
+
+
+def _model_state_dict_cpu_snapshot(
+    model: torch.nn.Module,
+) -> dict[str, np.ndarray]:
+    """Clone model state to CPU for eval-server replica sync."""
+    base_model = getattr(model, "_orig_mod", model)
+    snapshot: dict[str, np.ndarray] = {}
+    for name, tensor in base_model.state_dict().items():
+        snapshot[name] = tensor.detach().cpu().numpy().copy()
+    return snapshot
+
+
+def _sync_eval_servers(
+    eval_servers: list[EvaluationServer],
+    model: torch.nn.Module,
+    *,
+    timeout: float = 300.0,
+) -> None:
+    """Push the trainer's current weights into all eval-server replicas."""
+    if not eval_servers:
+        return
+    state_dict = _model_state_dict_cpu_snapshot(model)
+    for server in eval_servers:
+        server.sync_weights(state_dict, timeout=timeout)
+
+
 def _scaled_training_steps(config: TrainingConfig, buffer_size: int) -> int:
     """Scale per-epoch training updates by replay-buffer fullness.
 
@@ -821,6 +875,8 @@ def main() -> None:
     if args.profile:
         config.profile = True
 
+    eval_devices = _resolve_eval_devices(config, device)
+
     # --- RNG ---
     master_rng = np.random.default_rng(config.seed)
     torch.manual_seed(config.seed)
@@ -916,8 +972,9 @@ def main() -> None:
             eval_batch_shape_mode=config.eval_batch_shape_mode,
         )
         for i, (ws, we) in enumerate(partitions):
+            server_device = eval_devices[i]
             server = EvaluationServer(
-                model, device, shared_bufs,
+                model, server_device, shared_bufs,
                 server_id=i,
                 worker_start=ws,
                 worker_end=we,
@@ -951,6 +1008,12 @@ def main() -> None:
                     "compilation may have failed (check stderr)"
                 )
         print(f"  {n_servers} eval server{'s' if n_servers > 1 else ''} ready.")
+        print(
+            "Eval server devices: "
+            + ", ".join(
+                f"{i}:{eval_devices[i]}" for i in range(n_servers)
+            )
+        )
 
         # Training-side torch.compile is disabled pending rss-az-mpxc: the AMD
         # Triton backend crashes in make_ttgir lowering the fused backward
@@ -1358,6 +1421,9 @@ def main() -> None:
                         )
 
                 logger.end_training()
+                if eval_servers:
+                    print("Syncing eval server weights...")
+                    _sync_eval_servers(eval_servers, model)
 
                 avg_losses = {k: sum(v) / len(v) for k, v in epoch_losses.items()}
 

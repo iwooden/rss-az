@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import multiprocessing as mp
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 import torch
@@ -11,11 +14,14 @@ from core.attention_relations import (
     AttentionRelation,
 )
 from core.resnet_data import get_resnet_vector_size
+from core.state import GameState
 from nn import get_model_input_spec
 from nn.model_contract import ModelKind
+from nn.transformer import UNIFIED_LOGIT_DIM
 from train.config import TrainingConfig
 from train.eval_server import (
     EvaluationServer,
+    RemoteEvaluator,
     RequestBatchGroup,
     SharedEvalBuffers,
     _materialize_relation_coords_,
@@ -25,6 +31,35 @@ from train.eval_server import (
     _resolve_launch_batch_size,
     _resolve_max_launch_batch_size,
 )
+
+
+NUM_PLAYERS = 3
+U_DIM = int(UNIFIED_LOGIT_DIM)
+
+
+class SyncValueModel(torch.nn.Module):
+    def __init__(self, num_players: int = NUM_PLAYERS) -> None:
+        super().__init__()
+        self.cfg = SimpleNamespace(num_players=num_players)
+        self.values = torch.nn.Parameter(torch.zeros(num_players))
+
+    def forward(
+        self,
+        tokens: torch.Tensor,
+        legal_mask: torch.Tensor,
+        relations: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        del tokens, relations
+        legal = legal_mask.to(torch.bool)
+        logits = torch.zeros(
+            legal.shape[0],
+            U_DIM,
+            dtype=self.values.dtype,
+            device=legal.device,
+        )
+        logits = logits.masked_fill(~legal, -1e9)
+        values = self.values.to(legal.device).expand(legal.shape[0], -1)
+        return logits, values
 
 
 def test_next_power_of_two_rounds_up() -> None:
@@ -138,6 +173,55 @@ def test_evaluation_server_threads_batch_shape_mode_and_max_batch_size_into_proc
 
     assert server._process_kwargs["batch_shape_mode"] == "bucketed"
     assert server._process_kwargs["max_batch_size"] == 64
+
+
+def test_evaluation_server_sync_weights_updates_remote_eval_outputs() -> None:
+    ctx = mp.get_context("spawn")
+    model = SyncValueModel()
+    shared_bufs = SharedEvalBuffers(
+        num_workers=1,
+        batch_size=1,
+        num_players=NUM_PLAYERS,
+    )
+    shared_bufs.init_bitmap([(0, 1)], ctx)
+    server = EvaluationServer(
+        model,
+        torch.device("cpu"),
+        shared_bufs,
+        mp_context=ctx,
+        no_compile=True,
+    )
+    state = GameState(NUM_PLAYERS)
+    state.initialize_game(NUM_PLAYERS, seed=123)
+    legal_mask = np.zeros((1, U_DIM), dtype=np.uint8)
+    legal_mask[0, 0] = 1
+
+    try:
+        server.start()
+        assert server.wait_ready(timeout=15.0)
+        evaluator = RemoteEvaluator(NUM_PLAYERS, shared_bufs, worker_idx=0)
+
+        _priors, values = evaluator.evaluate_leaves([state._array], legal_mask)
+        np.testing.assert_allclose(
+            values,
+            np.zeros((1, NUM_PLAYERS), dtype=np.float32),
+        )
+
+        with torch.no_grad():
+            model.values.copy_(torch.tensor([0.25, -0.5, 0.75]))
+        state_dict = {
+            name: tensor.detach().cpu().clone()
+            for name, tensor in model.state_dict().items()
+        }
+        server.sync_weights(state_dict, timeout=15.0)
+
+        _priors, values = evaluator.evaluate_leaves([state._array], legal_mask)
+        np.testing.assert_allclose(
+            values,
+            np.array([[0.25, -0.5, 0.75]], dtype=np.float32),
+        )
+    finally:
+        server.stop()
 
 
 def test_attention_relation_count_matches_enum_members() -> None:
