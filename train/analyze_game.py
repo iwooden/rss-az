@@ -278,6 +278,30 @@ def _append_mcts_stats_summary(
     lines.append(f"Terminal values (blend={terminal_rank_weight}): {', '.join(tv_parts)}")
 
 
+def _resolve_analysis_num_players(
+    config: TrainingConfig,
+    requested_num_players: int | None,
+) -> int:
+    """Resolve the actual game size for one analysis game."""
+    if requested_num_players is None:
+        return config.effective_min_players
+
+    if isinstance(requested_num_players, bool):
+        raise ValueError("num_players must be an integer player count")
+    num_players = int(requested_num_players)
+    if not (
+        config.effective_min_players
+        <= num_players
+        <= config.effective_max_players
+    ):
+        raise ValueError(
+            "analysis num_players must be within the configured player range "
+            f"{config.effective_min_players}-{config.effective_max_players}, "
+            f"got {num_players}"
+        )
+    return num_players
+
+
 def analyze_game(
     model: torch.nn.Module,
     device: torch.device,
@@ -294,16 +318,18 @@ def analyze_game(
     c_puct: float | None = None,
     mcts_stats_only: bool = False,
     token_dump: bool = False,
+    num_players: int | None = None,
 ) -> str:
     """Play a self-play game with full MCTS and return a detailed log."""
-    num_players = config.num_players
+    num_players = _resolve_analysis_num_players(config, num_players)
+    max_players = config.effective_max_players
 
-    state = GameState(num_players)
-    state.initialize_game(num_players, seed=seed)
+    state = GameState(num_players, max_players=max_players)
+    state.initialize_game(num_players, seed=seed, max_players=max_players)
 
     terminal_rank_weight = terminal_blend if terminal_blend is not None else config.terminal_blend
     evaluator = NNEvaluator(
-        model, device, num_players=num_players,
+        model, device, num_players=max_players,
         terminal_rank_weight=terminal_rank_weight,
         eval_dtype=config.eval_dtype,
         input_spec=get_model_input_spec(config),
@@ -323,7 +349,7 @@ def analyze_game(
         search_batch_size=search_batch_size,
     )
 
-    layout = get_layout(num_players)
+    layout = get_layout(max_players)
     state_pool = StatePool(2 * (num_simulations + 1), layout.total_size)
     rng = np.random.default_rng(seed)
 
@@ -480,7 +506,9 @@ def analyze_game(
         # Show auto-applied actions
         if not mcts_stats_only and len(history) > 1:
             for pre_state, h_phase_id, h_action_id in history[1:]:
-                history_state = GameState.from_array(pre_state, num_players)
+                history_state = GameState.from_array(
+                    pre_state, num_players, max_players=max_players,
+                )
                 auto_str = format_action(h_phase_id, h_action_id, history_state)
                 lines.append(f"  \u21b3 auto: {auto_str}")
             lines.append("")
@@ -557,9 +585,9 @@ def main() -> None:
     )
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument(
-        "--num-players", type=int, default=3,
-        help='Player count when using "new" (3-5). Ignored for loaded checkpoints — '
-             'num_players comes from the checkpoint config.',
+        "--num-players", type=int, default=None,
+        help='Actual player count to analyze (3-5). Defaults to 3 for "new"; '
+             "for mixed-player checkpoints, defaults to the configured minimum.",
     )
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
@@ -613,12 +641,13 @@ def main() -> None:
 
     # Load checkpoint (or build a fresh untrained model when "new")
     if args.checkpoint == "new":
-        assert 3 <= args.num_players <= 5, \
-            f"--num-players must be in [3, 5], got {args.num_players}"
-        config = TrainingConfig(num_players=args.num_players)
+        new_num_players = args.num_players if args.num_players is not None else 3
+        assert 3 <= new_num_players <= 5, \
+            f"--num-players must be in [3, 5], got {new_num_players}"
+        config = TrainingConfig(num_players=new_num_players)
         model = create_model(config).to(device)
         model.eval()
-        print(f"Using freshly-initialized (untrained) model, num_players={args.num_players}, device={device}")
+        print(f"Using freshly-initialized (untrained) model, num_players={new_num_players}, device={device}")
     else:
         if args.checkpoint == "latest":
             cp_path = find_latest_checkpoint(Path(args.checkpoint_dir))
@@ -646,6 +675,7 @@ def main() -> None:
         c_puct=args.c_puct,
         mcts_stats_only=args.mcts_stats_only,
         token_dump=args.token_dump,
+        num_players=args.num_players,
     )
 
     if args.output:

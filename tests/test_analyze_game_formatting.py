@@ -181,3 +181,32 @@ def test_analyze_game_token_dump_flag_appends_normalization_report() -> None:
     assert "market_info | market_price[0] |" in rendered
     assert "company[0] | low_price |" in rendered
     assert "global_info | cards_remaining |" in rendered
+
+
+def test_analyze_game_mixed_config_uses_requested_actual_player_count() -> None:
+    torch.manual_seed(0)
+    config = TrainingConfig(
+        num_players=0,
+        min_players=3,
+        max_players=5,
+        num_simulations=1,
+        search_batch_size=1,
+        dirichlet_epsilon=0.0,
+    )
+    model = create_model(config).to(torch.device("cpu"))
+    model.eval()
+
+    rendered = analyze_game(
+        model,
+        torch.device("cpu"),
+        config,
+        seed=1,
+        num_simulations=1,
+        search_batch_size=1,
+        top_n=1,
+        num_players=3,
+    )
+
+    assert "# Self-Play Analysis" in rendered
+    assert "P2: net worth $" in rendered
+    assert "P3: net worth $" not in rendered
