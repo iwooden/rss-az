@@ -19,7 +19,11 @@ from train.main import (
     _scaled_training_steps,
 )
 from train.replay_buffer import ReplayBuffer
-from train.self_play import play_game, self_play_worker
+from train.self_play import (
+    build_epoch_player_count_schedule,
+    play_game,
+    self_play_worker,
+)
 from train.trainer import Trainer
 
 
@@ -116,17 +120,23 @@ def test_local_mixed_mini_epoch_runs_one_game_per_count_and_trains() -> None:
     metrics = _SelfPlayMetricAccumulator()
     epoch_config = config.compute_epoch_config(0)
 
-    records = [
-        play_game(
-            evaluator,
-            config,
-            game_seed=seed,
-            rng=np.random.default_rng(10_000 + seed),
-            state_pool=state_pool,
-            epoch_config=epoch_config,
+    records = []
+    for seed, num_players in zip(
+        (0, 1, 2),
+        build_epoch_player_count_schedule(config),
+        strict=True,
+    ):
+        records.append(
+            play_game(
+                evaluator,
+                config,
+                game_seed=seed,
+                rng=np.random.default_rng(10_000 + seed),
+                state_pool=state_pool,
+                epoch_config=epoch_config,
+                num_players=num_players,
+            )
         )
-        for seed in (0, 1, 2)
-    ]
 
     assert [record.num_players for record in records] == [3, 4, 5]
     for record in records:
@@ -201,8 +211,12 @@ def test_eval_server_worker_runs_mixed_player_count_games() -> None:
         assert server.wait_ready(timeout=15.0)
         worker.start()
         epoch_config = config.compute_epoch_config(0)
-        for seed in (0, 1, 2):
-            task_queue.put((seed, 20_000 + seed, epoch_config))
+        for seed, num_players in zip(
+            (0, 1, 2),
+            build_epoch_player_count_schedule(config),
+            strict=True,
+        ):
+            task_queue.put((seed, 20_000 + seed, num_players, epoch_config))
         for _ in range(3):
             records.append(result_queue.get(timeout=60.0))
         task_queue.put(None)

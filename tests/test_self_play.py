@@ -23,7 +23,7 @@ from mcts.search import StatePool, prepare_reuse_root, run_search
 from nn import create_model, get_model_input_spec
 from nn.transformer import UNIFIED_LOGIT_DIM, RSSTransformerNet, TransformerConfig
 from train.config import EpochConfig, TrainingConfig
-from train.self_play import _select_game_num_players, play_game
+from train.self_play import build_epoch_player_count_schedule, play_game
 
 
 U_DIM = int(UNIFIED_LOGIT_DIM)
@@ -145,12 +145,29 @@ def test_resnet_play_game_short_3p_game_keeps_record_contract():
     )
 
 
-def test_seed_modulo_player_count_selection_is_deterministic():
+def test_epoch_player_count_schedule_is_quota_round_robin():
     config = TrainingConfig(num_players=0, min_players=3, max_players=5)
 
-    assert [_select_game_num_players(config, seed) for seed in range(6)] == [
-        3, 4, 5, 3, 4, 5,
+    assert build_epoch_player_count_schedule(config, 10) == [
+        3, 4, 5,
+        3, 4, 5,
+        3, 4, 5,
+        3,
     ]
+
+
+def test_epoch_player_count_schedule_puts_remainder_on_lowest_count():
+    config = TrainingConfig(num_players=0, min_players=3, max_players=5)
+
+    assert build_epoch_player_count_schedule(config, 5) == [3, 4, 5, 3, 3]
+    assert build_epoch_player_count_schedule(config, 2) == [3, 3]
+
+
+def test_mixed_play_game_requires_assigned_num_players():
+    config = TrainingConfig(num_players=0, min_players=3, max_players=5)
+
+    with pytest.raises(ValueError, match="explicit num_players"):
+        play_game(object(), config, game_seed=0, rng=np.random.default_rng(0))
 
 
 def test_play_game_mixed_config_runs_3p_4p_5p_with_one_max_pool():
@@ -189,6 +206,7 @@ def test_play_game_mixed_config_runs_3p_4p_5p_with_one_max_pool():
             rng=np.random.default_rng(seed),
             state_pool=state_pool,
             epoch_config=epoch_config,
+            num_players=expected_players,
         )
 
         assert record.num_players == expected_players

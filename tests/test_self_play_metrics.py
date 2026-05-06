@@ -110,6 +110,7 @@ def test_self_play_panel_formats_net_worth_by_player_count(tmp_path) -> None:
                 5: [500.0, 300.0, 200.0, 100.0, 50.0],
             },
             count_games={3: 1, 5: 1},
+            count_avg_moves={3: 8.0, 5: 11.0},
             count_total_net_worths={3: 600.0, 5: 1150.0},
         )
 
@@ -119,6 +120,8 @@ def test_self_play_panel_formats_net_worth_by_player_count(tmp_path) -> None:
         logger.close()
 
     assert "1st=$300" in text
+    assert "Examples: 32" in text
+    assert "Avg moves/game: 9.5    3p=8.0  5p=11.0" in text
     assert "3p: num games=1, total net worth=$600" in text
     assert "1st=$500" in text
     assert "5p: num games=1, total net worth=$1,150" in text

@@ -150,12 +150,77 @@ def _compute_policy_target_temperature(
     )
 
 
-def _select_game_num_players(config: TrainingConfig, game_seed: int) -> int:
-    """Select the actual player count for a new self-play game."""
-    if config.is_mixed_player_training:
-        count = config.effective_max_players - config.effective_min_players + 1
-        return config.effective_min_players + (game_seed % count)
-    return config.num_players
+def build_epoch_player_count_schedule(
+    config: TrainingConfig,
+    games_per_epoch: int | None = None,
+) -> list[int]:
+    """Build the deterministic per-epoch player-count assignment schedule.
+
+    Mixed-count epochs allocate an even quota to each player count, put the
+    remainder on the lowest count, then emit assignments round-robin from
+    non-depleted quotas.
+    """
+    total_games = (
+        config.games_per_epoch
+        if games_per_epoch is None
+        else int(games_per_epoch)
+    )
+    if total_games < 0:
+        raise ValueError(f"games_per_epoch must be >= 0, got {total_games}")
+
+    player_counts = list(config.iter_player_counts())
+    if len(player_counts) == 1:
+        return [player_counts[0]] * total_games
+
+    base_quota, remainder = divmod(total_games, len(player_counts))
+    quotas = {num_players: base_quota for num_players in player_counts}
+    quotas[player_counts[0]] += remainder
+
+    schedule: list[int] = []
+    while len(schedule) < total_games:
+        for num_players in player_counts:
+            remaining = quotas[num_players]
+            if remaining <= 0:
+                continue
+            schedule.append(num_players)
+            quotas[num_players] = remaining - 1
+            if len(schedule) == total_games:
+                break
+    return schedule
+
+
+def _validate_assigned_num_players(
+    config: TrainingConfig,
+    num_players: int,
+) -> int:
+    """Validate a main-process player-count assignment."""
+    num_players = int(num_players)
+    if not (
+        config.effective_min_players
+        <= num_players
+        <= config.effective_max_players
+    ):
+        raise ValueError(
+            f"assigned num_players must be in "
+            f"[{config.effective_min_players}, {config.effective_max_players}], "
+            f"got {num_players}"
+        )
+    return num_players
+
+
+def _resolve_game_num_players(
+    config: TrainingConfig,
+    num_players: int | None,
+) -> int:
+    """Resolve the actual player count for a game task."""
+    if num_players is None:
+        if config.is_mixed_player_training:
+            raise ValueError(
+                "mixed player-count self-play requires an explicit "
+                "num_players assignment"
+            )
+        return config.num_players
+    return _validate_assigned_num_players(config, num_players)
 
 
 def play_game(
@@ -165,6 +230,7 @@ def play_game(
     rng: np.random.Generator,
     state_pool: StatePool | None = None,
     epoch_config: EpochConfig | None = None,
+    num_players: int | None = None,
 ) -> GameRecord:
     """Play one self-play game, returning training examples.
 
@@ -174,10 +240,12 @@ def play_game(
             Reused across searches within the game and across games.
         epoch_config: Per-epoch dynamic parameters (c_puct, value blend).
             If None, uses config defaults (pure A0GB, c_puct_final).
+        num_players: Main-process assigned actual player count. Required for
+            mixed player-count training.
     """
     t0 = time.perf_counter()
 
-    num_players = _select_game_num_players(config, game_seed)
+    num_players = _resolve_game_num_players(config, num_players)
     max_players = config.effective_max_players
     state = GameState(num_players, max_players=max_players)
     state.initialize_game(num_players, seed=game_seed, max_players=max_players)
@@ -470,11 +538,21 @@ def self_play_worker(
                 continue
             if task is None:
                 break
-            game_seed, rng_seed, epoch_config = task
+            task_len = len(task)
+            if task_len == 3:
+                game_seed, rng_seed, epoch_config = task
+                num_players = None
+            elif task_len == 4:
+                game_seed, rng_seed, num_players, epoch_config = task
+            else:
+                raise ValueError(
+                    f"self-play task must have 3 or 4 fields, got {task_len}"
+                )
             rng = np.random.default_rng(rng_seed)
             record = play_game(
                 evaluator, config, game_seed, rng,
                 state_pool=state_pool, epoch_config=epoch_config,
+                num_players=num_players,
             )
             result_queue.put(record)
     except (KeyboardInterrupt, EOFError, BrokenPipeError, OSError):

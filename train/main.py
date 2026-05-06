@@ -41,7 +41,11 @@ from train.profile_stats import EvalServerStats, GameProfileData, format_epoch_p
 from train.replay_buffer import ReplayBuffer
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool
-from train.self_play import play_game, self_play_worker
+from train.self_play import (
+    build_epoch_player_count_schedule,
+    play_game,
+    self_play_worker,
+)
 from train.trainer import Trainer
 
 
@@ -678,13 +682,13 @@ def _drain_workers(
 ) -> int:
     """Drain in-flight games from worker processes.
 
-    Clears remaining seeds from the task queue, sends None sentinels to
-    workers, and collects results until all workers have exited or the
-    timeout is reached.
+    Clears remaining game assignments from the task queue, sends None
+    sentinels to workers, and collects results until all workers have exited
+    or the timeout is reached.
 
     Returns the total number of games collected (including pre-drain).
     """
-    # Clear remaining seeds from task queue
+    # Clear remaining game assignments from task queue.
     cleared = 0
     while True:
         try:
@@ -698,7 +702,7 @@ def _drain_workers(
         task_queue.put(None)
 
     if cleared > 0:
-        print(f"  Cleared {cleared} pending game seeds from queue")
+        print(f"  Cleared {cleared} pending game assignments from queue")
 
     # Collect results from in-flight games
     deadline = time.perf_counter() + timeout
@@ -1105,6 +1109,10 @@ def main() -> None:
                         n: int(stats["games"])
                         for n, stats in count_stats.items()
                     },
+                    count_avg_moves={
+                        n: float(stats["avg_moves"])
+                        for n, stats in count_stats.items()
+                    },
                     count_total_net_worths={
                         n: float(stats["total_net_worth"])
                         for n, stats in count_stats.items()
@@ -1122,14 +1130,15 @@ def main() -> None:
             logger.begin_self_play(epoch_num, config.num_epochs, config.games_per_epoch)
 
             games_collected = 0
+            player_count_schedule = build_epoch_player_count_schedule(config)
 
             if config.num_workers > 0:
                 assert task_queue is not None and result_queue is not None
-                # Feed all game seeds to workers (with epoch config)
-                for _ in range(config.games_per_epoch):
+                # Feed all game assignments to workers (with epoch config).
+                for num_players in player_count_schedule:
                     game_seed = int(master_rng.integers(0, 2**31))
                     rng_seed = int(master_rng.integers(0, 2**63))
-                    task_queue.put((game_seed, rng_seed, epoch_cfg))
+                    task_queue.put((game_seed, rng_seed, num_players, epoch_cfg))
 
                 # Collect results as they complete
                 for game_idx in range(config.games_per_epoch):
@@ -1159,13 +1168,14 @@ def main() -> None:
                         break
             else:
                 assert evaluator is not None
-                for game_idx in range(config.games_per_epoch):
+                for game_idx, num_players in enumerate(player_count_schedule):
                     game_seed = int(master_rng.integers(0, 2**31))
                     game_rng = np.random.default_rng(master_rng.integers(0, 2**63))
 
                     record = play_game(
                         evaluator, config, game_seed, game_rng,
                         state_pool=state_pool, epoch_config=epoch_cfg,
+                        num_players=num_players,
                     )
                     _collect_record(record, game_idx)
                     games_collected = game_idx + 1

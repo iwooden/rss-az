@@ -101,6 +101,13 @@ def _format_training_loss_by_count(stats: dict[str, Any]) -> str:
     return "  ".join(parts)
 
 
+def _format_avg_moves_by_count(count_avg_moves: dict[int, float]) -> str:
+    parts = []
+    for num_players in sorted(count_avg_moves):
+        parts.append(f"{num_players}p={count_avg_moves[num_players]:.1f}")
+    return "  ".join(parts)
+
+
 def _format_policy_stats(
     target_entropy: float,
     target_top1: float,
@@ -136,6 +143,7 @@ class TrainingLogger:
         self._sp_count_rank_mins: dict[int, list[float]] = {}
         self._sp_count_rank_maxs: dict[int, list[float]] = {}
         self._sp_count_games: dict[int, int] = {}
+        self._sp_count_avg_moves: dict[int, float] = {}
         self._sp_count_total_net_worths: dict[int, float] = {}
         self._sp_target_entropy: float = 0.0
         self._sp_target_top1_frac: float = 0.0
@@ -168,6 +176,7 @@ class TrainingLogger:
         self._sp_count_rank_mins = {}
         self._sp_count_rank_maxs = {}
         self._sp_count_games = {}
+        self._sp_count_avg_moves = {}
         self._sp_count_total_net_worths = {}
         self._sp_target_entropy = 0.0
         self._sp_target_top1_frac = 0.0
@@ -198,6 +207,7 @@ class TrainingLogger:
         count_rank_mins: dict[int, list[float]] | None = None,
         count_rank_maxs: dict[int, list[float]] | None = None,
         count_games: dict[int, int] | None = None,
+        count_avg_moves: dict[int, float] | None = None,
         count_total_net_worths: dict[int, float] | None = None,
     ) -> None:
         self._sp_games_done = games_done
@@ -225,6 +235,8 @@ class TrainingLogger:
             self._sp_count_rank_maxs = count_rank_maxs
         if count_games is not None:
             self._sp_count_games = count_games
+        if count_avg_moves is not None:
+            self._sp_count_avg_moves = count_avg_moves
         if count_total_net_worths is not None:
             self._sp_count_total_net_worths = count_total_net_worths
         if self._live is not None:
@@ -243,9 +255,16 @@ class TrainingLogger:
         lines.append(f"Games  {self._sp_games_done}/{self._sp_total_games}  {bar}\n")
         lines.append(
             f"Examples: {self._sp_total_examples:,}    "
-            f"Avg moves/game: {self._sp_avg_moves:.1f}    "
             f"Rate: {rate:.1f} games/min\n"
         )
+        count_avg_moves = _format_avg_moves_by_count(self._sp_count_avg_moves)
+        if count_avg_moves:
+            lines.append(
+                f"Avg moves/game: {self._sp_avg_moves:.1f}    "
+                f"{count_avg_moves}\n"
+            )
+        else:
+            lines.append(f"Avg moves/game: {self._sp_avg_moves:.1f}\n")
         if self._sp_count_rank_net_worths:
             lines.append("Net worth:\n")
             for num_players in sorted(self._sp_count_rank_net_worths):
