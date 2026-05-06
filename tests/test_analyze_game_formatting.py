@@ -1,5 +1,10 @@
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
 import torch
 
+import train.analyze_game as analyze_game_module
 from core.actions import (
     ACTION_AUCTION_PY as ACTION_AUCTION,
     ACTION_ISSUE_PY as ACTION_ISSUE,
@@ -16,7 +21,14 @@ from phases.issue import setup_issue_phase_py
 from phases.ipo import setup_ipo_phase_py
 from tests.phases.conftest import float_corp_for_test, find_legal_action_with_info
 from tests.phases.helpers.ownership import give_company_to_corp, give_company_to_player
-from train.analyze_game import analyze_game, format_action, format_phase_context, format_state_full, format_token_dump
+from train.analyze_game import (
+    Initial18xxSetup,
+    analyze_game,
+    format_action,
+    format_phase_context,
+    format_state_full,
+    format_token_dump,
+)
 from train.config import TrainingConfig
 
 
@@ -210,3 +222,79 @@ def test_analyze_game_mixed_config_uses_requested_actual_player_count() -> None:
     assert "# Self-Play Analysis" in rendered
     assert "P2: net worth $" in rendered
     assert "P3: net worth $" not in rendered
+
+
+def test_extract_18xx_seed_setup_builds_minimal_rss_game(monkeypatch) -> None:
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        game_path = cmd[2]
+        game_data = json.loads(Path(game_path).read_text())
+        seen["cmd"] = cmd
+        seen["cwd"] = kwargs["cwd"]
+        seen["game_data"] = game_data
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps([
+                {
+                    "deck_order": ["BPM", "MS"],
+                    "initial_offering": ["KME", "MHE", "BSE"],
+                    "cost_level": 1,
+                }
+            ]),
+            stderr="",
+        )
+
+    monkeypatch.setattr(analyze_game_module.subprocess, "run", fake_run)
+
+    setup = analyze_game_module._extract_18xx_seed_setup(560979115, 3)
+
+    assert setup == Initial18xxSetup(
+        deck_order=["BPM", "MS"],
+        initial_offering=["KME", "MHE", "BSE"],
+        cost_level=1,
+    )
+    assert seen["cmd"][0] == "ruby"
+    assert seen["game_data"]["title"] == "Rolling Stock Stars"
+    assert seen["game_data"]["settings"]["seed"] == 560979115
+    assert len(seen["game_data"]["players"]) == 3
+
+
+def test_analyze_game_18xx_seed_logs_applied_initial_setup(monkeypatch) -> None:
+    torch.manual_seed(0)
+    config = TrainingConfig(
+        num_players=3,
+        num_simulations=1,
+        search_batch_size=1,
+        dirichlet_epsilon=0.0,
+    )
+    model = create_model(config).to(torch.device("cpu"))
+    model.eval()
+    calls: list[tuple[int, int]] = []
+
+    def fake_apply(state, seed, num_players):
+        del state
+        calls.append((seed, num_players))
+        return Initial18xxSetup(
+            deck_order=["BPM", "MS"],
+            initial_offering=["KME", "MHE", "BSE"],
+            cost_level=1,
+        )
+
+    monkeypatch.setattr(analyze_game_module, "_apply_18xx_seed_setup", fake_apply)
+
+    rendered = analyze_game(
+        model,
+        torch.device("cpu"),
+        config,
+        seed=1,
+        seed_18xx=560979115,
+        num_simulations=1,
+        search_batch_size=1,
+        top_n=1,
+    )
+
+    assert calls == [(560979115, 3)]
+    assert "# 18xx seed: 560979115" in rendered
+    assert "initial offering: KME, MHE, BSE" in rendered
+    assert "remaining deck: 2" in rendered

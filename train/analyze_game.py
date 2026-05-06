@@ -9,6 +9,7 @@ Usage:
     .venv/bin/python -m train.analyze_game checkpoints/checkpoint_epoch_0005.pt
     .venv/bin/python -m train.analyze_game latest --checkpoint-dir checkpoints
     .venv/bin/python -m train.analyze_game latest --seed 123 --simulations 200
+    .venv/bin/python -m train.analyze_game latest --18xx-seed 560979115
     .venv/bin/python -m train.analyze_game latest --output game_log.md
     .venv/bin/python -m train.analyze_game new --num-players 4 --simulations 50
 """
@@ -16,6 +17,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
+import subprocess
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -43,6 +48,86 @@ from train.debug_trace import (
     format_token_dump_from_buffer,
 )
 from train.profile_stats import SearchStats
+
+
+@dataclass(frozen=True)
+class Initial18xxSetup:
+    """Initial deck metadata extracted from the 18xx Rolling Stock Stars engine."""
+
+    deck_order: list[str]
+    initial_offering: list[str]
+    cost_level: int | None
+
+
+def _extract_18xx_seed_setup(seed: int, num_players: int) -> Initial18xxSetup:
+    """Ask the bundled 18xx engine for the initial RSS setup for a seed."""
+    repo_root = Path(__file__).resolve().parents[1]
+    extractor = repo_root / "utils_18xx" / "extract_states.rb"
+    game_data = {
+        "id": int(seed),
+        "title": "Rolling Stock Stars",
+        "players": [
+            {"id": player_id + 1, "name": f"P{player_id}"}
+            for player_id in range(num_players)
+        ],
+        "settings": {
+            "seed": int(seed),
+            "optional_rules": [],
+        },
+        "actions": [],
+    }
+
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(game_data, f)
+        temp_path = Path(f.name)
+
+    try:
+        result = subprocess.run(
+            ["ruby", str(extractor), str(temp_path)],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            cwd=repo_root,
+        )
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or "(no stderr)"
+        raise RuntimeError(f"18xx seed extractor failed:\n{stderr}")
+
+    try:
+        snapshots = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        stdout = result.stdout.strip()
+        raise RuntimeError(
+            f"18xx seed extractor returned invalid JSON: {exc}\n{stdout}"
+        ) from exc
+
+    if not snapshots:
+        raise RuntimeError("18xx seed extractor returned no snapshots")
+
+    initial = snapshots[0]
+    return Initial18xxSetup(
+        deck_order=list(initial["deck_order"]),
+        initial_offering=list(initial["initial_offering"]),
+        cost_level=initial.get("cost_level"),
+    )
+
+
+def _apply_18xx_seed_setup(
+    state: GameState,
+    seed: int,
+    num_players: int,
+) -> Initial18xxSetup:
+    """Override the Cython deck/offering with 18xx seed-derived setup."""
+    from utils_18xx.action_parser import override_deck_and_offering
+
+    setup = _extract_18xx_seed_setup(seed, num_players)
+    override_deck_and_offering(state, setup.deck_order, setup.initial_offering)
+    if setup.cost_level is not None:
+        TURN.set_coo_level(state, int(setup.cost_level))
+    return setup
 
 
 def _format_nn_eval(
@@ -319,6 +404,7 @@ def analyze_game(
     mcts_stats_only: bool = False,
     token_dump: bool = False,
     num_players: int | None = None,
+    seed_18xx: int | None = None,
 ) -> str:
     """Play a self-play game with full MCTS and return a detailed log."""
     num_players = _resolve_analysis_num_players(config, num_players)
@@ -326,6 +412,9 @@ def analyze_game(
 
     state = GameState(num_players, max_players=max_players)
     state.initialize_game(num_players, seed=seed, max_players=max_players)
+    setup_18xx: Initial18xxSetup | None = None
+    if seed_18xx is not None:
+        setup_18xx = _apply_18xx_seed_setup(state, seed_18xx, num_players)
 
     terminal_rank_weight = terminal_blend if terminal_blend is not None else config.terminal_blend
     evaluator = NNEvaluator(
@@ -368,6 +457,12 @@ def analyze_game(
         )
     else:
         lines.append(f"# Self-Play Analysis: seed={seed}, {num_simulations} simulations/move")
+    if setup_18xx is not None:
+        lines.append(
+            f"# 18xx seed: {seed_18xx} | initial offering: "
+            f"{', '.join(setup_18xx.initial_offering)} | "
+            f"remaining deck: {len(setup_18xx.deck_order)}"
+        )
     lines.append(f"# Noise: {noise_desc} | Terminal blend: {terminal_rank_weight}")
     if mcts_stats_only:
         lines.append(
@@ -591,6 +686,16 @@ def main() -> None:
     )
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--18xx-seed",
+        dest="seed_18xx",
+        type=int,
+        default=None,
+        help=(
+            "Use the bundled 18xx Rolling Stock Stars engine to generate the "
+            "initial deck/offering for this seed before self-play starts"
+        ),
+    )
     parser.add_argument("--simulations", type=int, default=800)
     parser.add_argument("--search-batch-size", type=int, default=8)
     parser.add_argument(
@@ -676,6 +781,7 @@ def main() -> None:
         mcts_stats_only=args.mcts_stats_only,
         token_dump=args.token_dump,
         num_players=args.num_players,
+        seed_18xx=args.seed_18xx,
     )
 
     if args.output:
