@@ -126,26 +126,36 @@ def _compute_linear_temperature(
     return initial + t * (final - initial)
 
 
-def _compute_temperature(move_count: int, config: TrainingConfig) -> float:
+def _compute_temperature(
+    move_count: int,
+    config: TrainingConfig,
+    num_players: int,
+) -> float:
     """Compute action-sampling temperature for the current move."""
+    anneal_start, anneal_end = config.temp_anneal_window(num_players)
     return _compute_linear_temperature(
         move_count,
         config.temp_initial,
-        config.temp_anneal_start,
-        config.temp_anneal_end,
+        anneal_start,
+        anneal_end,
         config.temp_final,
     )
 
 
 def _compute_policy_target_temperature(
-    move_count: int, config: TrainingConfig,
+    move_count: int,
+    config: TrainingConfig,
+    num_players: int,
 ) -> float:
     """Compute policy-target temperature for the current move."""
+    anneal_start, anneal_end = config.policy_target_temp_anneal_window(
+        num_players
+    )
     return _compute_linear_temperature(
         move_count,
         config.policy_target_temp_initial,
-        config.policy_target_temp_anneal_start,
-        config.policy_target_temp_anneal_end,
+        anneal_start,
+        anneal_end,
         config.policy_target_temp_final,
     )
 
@@ -315,7 +325,9 @@ def play_game(
         counts = root.visit_counts.astype(np.float32)
         counts_sum = float(counts.sum())
         assert counts_sum > 0.0, "run_search produced zero total visits"
-        target_temperature = _compute_policy_target_temperature(move_count, config)
+        target_temperature = _compute_policy_target_temperature(
+            move_count, config, num_players,
+        )
         policy_target_sparse = scale_visit_counts_by_temperature(
             counts, target_temperature,
         )
@@ -324,7 +336,7 @@ def play_game(
         value_target = get_greedy_leaf_value(root, num_players)
 
         # Temperature-scaled sampling distribution over the same sparse list.
-        temperature = _compute_temperature(move_count, config)
+        temperature = _compute_temperature(move_count, config, num_players)
         sample_probs = scale_visit_counts_by_temperature(counts, temperature)
 
         # Stats: keep target and action-sampling distributions separate.

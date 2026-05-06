@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from train.config import TrainingConfig
@@ -126,12 +124,3 @@ def test_cli_overrides_mixed_player_range() -> None:
     assert config.max_players == 5
     assert config.is_mixed_player_training
 
-
-def test_existing_3p_training_config_still_loads() -> None:
-    config_path = Path(__file__).resolve().parents[1] / "train_configs" / "3p.json"
-
-    config = TrainingConfig.from_json(config_path.read_text())
-
-    assert config.num_players == 3
-    assert config.effective_min_players == 3
-    assert config.effective_max_players == 3

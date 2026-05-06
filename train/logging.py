@@ -108,6 +108,27 @@ def _format_avg_moves_by_count(count_avg_moves: dict[int, float]) -> str:
     return "  ".join(parts)
 
 
+def _format_anneal_windows(
+    config: TrainingConfig,
+    starts: list[int],
+    ends: list[int],
+) -> str:
+    windows = list(zip(config.iter_player_counts(), starts, ends))
+    if not windows:
+        return "anneal moves unavailable"
+    first_start, first_end = windows[0][1], windows[0][2]
+    if all(
+        start == first_start and end == first_end
+        for _, start, end in windows
+    ):
+        return f"anneal moves {first_start}\u2013{first_end}"
+    parts = [
+        f"{num_players}p={start}\u2013{end}"
+        for num_players, start, end in windows
+    ]
+    return "anneal moves " + "  ".join(parts)
+
+
 def _format_policy_stats(
     target_entropy: float,
     target_top1: float,
@@ -410,17 +431,23 @@ class TrainingLogger:
         table.add_row("LR", lr_desc)
         table.add_row("Weight decay", f"{config.weight_decay:.1e}")
         table.add_row("Buffer capacity", f"{config.buffer_capacity:,}")
+        action_window_desc = _format_anneal_windows(
+            config, config.temp_anneal_starts, config.temp_anneal_ends,
+        )
         table.add_row(
             "Action temp",
             f"{config.temp_initial} \u2192 {config.temp_final} "
-            f"(anneal moves {config.temp_anneal_start}\u2013{config.temp_anneal_end})",
+            f"({action_window_desc})",
+        )
+        target_window_desc = _format_anneal_windows(
+            config,
+            config.policy_target_temp_anneal_starts,
+            config.policy_target_temp_anneal_ends,
         )
         table.add_row(
             "Target temp",
             f"{config.policy_target_temp_initial} \u2192 "
-            f"{config.policy_target_temp_final} "
-            f"(anneal moves {config.policy_target_temp_anneal_start}\u2013"
-            f"{config.policy_target_temp_anneal_end})",
+            f"{config.policy_target_temp_final} ({target_window_desc})",
         )
         dirichlet_alpha = (
             f"{config.dirichlet_alpha_numerator:g}/K"

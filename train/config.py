@@ -135,19 +135,28 @@ class TrainingConfig:
     # temp_initial from move 0 to temp_anneal_start, then linearly decreases
     # to temp_final at temp_anneal_end. Stays at temp_final after that.
     # Measured in total game decision points (MCTS searches), not per-player.
+    # The scalar start/end fields act as global overrides when both are
+    # non-zero. Set both to 0 to use the per-player-count arrays below, whose
+    # index 0 corresponds to effective_min_players.
     temp_initial: float = 1.0
     temp_anneal_start: int = 60
     temp_anneal_end: int = 120
     temp_final: float = 0.5
+    temp_anneal_starts: list[int] = field(default_factory=list)
+    temp_anneal_ends: list[int] = field(default_factory=list)
 
     # --- Policy target temperature schedule ---
     # Independent temperature applied to the MCTS visit-count distribution
     # before storing replay policy targets. Defaults match the historical
     # action-temperature schedule used by production 3p training.
+    # The scalar start/end fields use the same global-override semantics as
+    # the action temperature schedule.
     policy_target_temp_initial: float = 1.0
     policy_target_temp_anneal_start: int = 60
     policy_target_temp_anneal_end: int = 120
     policy_target_temp_final: float = 0.5
+    policy_target_temp_anneal_starts: list[int] = field(default_factory=list)
+    policy_target_temp_anneal_ends: list[int] = field(default_factory=list)
 
     # --- MCTS simulation ramp (linear) ---
     # When set, num_simulations ramps linearly from mcts_sims_start to
@@ -273,6 +282,9 @@ class TrainingConfig:
                 f"resnet_num_blocks must be >= 0, got {self.resnet_num_blocks}"
             )
 
+        # Game fields
+        self._validate_player_count_mode()
+
         # MCTS fields
         if self.num_simulations < 1:
             raise ValueError(f"num_simulations must be >= 1, got {self.num_simulations}")
@@ -314,19 +326,34 @@ class TrainingConfig:
                 f"dirichlet_alpha_numerator must be > 0, got {self.dirichlet_alpha_numerator}"
             )
 
-        # Temperature schedule
-        if self.temp_anneal_start > self.temp_anneal_end:
-            raise ValueError(
-                f"temp_anneal_start ({self.temp_anneal_start}) must be <= "
-                f"temp_anneal_end ({self.temp_anneal_end})"
+        # Temperature schedules. Scalar start/end fields are global overrides
+        # unless both are 0, in which case the per-player-count arrays are
+        # required and validated.
+        self.temp_anneal_starts, self.temp_anneal_ends = (
+            self._resolve_move_schedule(
+                self.temp_anneal_start,
+                self.temp_anneal_end,
+                self.temp_anneal_starts,
+                self.temp_anneal_ends,
+                "temp_anneal_start",
+                "temp_anneal_end",
+                "temp_anneal_starts",
+                "temp_anneal_ends",
             )
-        if self.policy_target_temp_anneal_start > self.policy_target_temp_anneal_end:
-            raise ValueError(
-                "policy_target_temp_anneal_start "
-                f"({self.policy_target_temp_anneal_start}) must be <= "
-                "policy_target_temp_anneal_end "
-                f"({self.policy_target_temp_anneal_end})"
-            )
+        )
+        (
+            self.policy_target_temp_anneal_starts,
+            self.policy_target_temp_anneal_ends,
+        ) = self._resolve_move_schedule(
+            self.policy_target_temp_anneal_start,
+            self.policy_target_temp_anneal_end,
+            self.policy_target_temp_anneal_starts,
+            self.policy_target_temp_anneal_ends,
+            "policy_target_temp_anneal_start",
+            "policy_target_temp_anneal_end",
+            "policy_target_temp_anneal_starts",
+            "policy_target_temp_anneal_ends",
+        )
 
         # c_puct annealing
         if self.c_puct_initial < 0:
@@ -350,9 +377,6 @@ class TrainingConfig:
             raise ValueError(
                 f"terminal_blend must be in [0, 1], got {self.terminal_blend}"
             )
-
-        # Game fields
-        self._validate_player_count_mode()
 
         # Optimizer
         if self.optimizer not in ("adamw", "muon"):
@@ -484,6 +508,109 @@ class TrainingConfig:
     def iter_player_counts(self) -> range:
         """Iterate all actual player counts this config may generate."""
         return range(self.effective_min_players, self.effective_max_players + 1)
+
+    @staticmethod
+    def _coerce_move_schedule(values: Any, name: str) -> list[int]:
+        """Return a concrete integer move schedule list."""
+        if not isinstance(values, (list, tuple)):
+            raise ValueError(f"{name} must be a list of move counts")
+        result: list[int] = []
+        for idx, value in enumerate(values):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(
+                    f"{name}[{idx}] must be an integer move count, got {value!r}"
+                )
+            result.append(value)
+        return result
+
+    def _resolve_move_schedule(
+        self,
+        scalar_start: int,
+        scalar_end: int,
+        starts: Any,
+        ends: Any,
+        scalar_start_name: str,
+        scalar_end_name: str,
+        starts_name: str,
+        ends_name: str,
+    ) -> tuple[list[int], list[int]]:
+        """Resolve scalar-or-array move schedule fields to per-count arrays."""
+        if isinstance(scalar_start, bool) or not isinstance(scalar_start, int):
+            raise ValueError(f"{scalar_start_name} must be an integer")
+        if isinstance(scalar_end, bool) or not isinstance(scalar_end, int):
+            raise ValueError(f"{scalar_end_name} must be an integer")
+        if scalar_start < 0 or scalar_end < 0:
+            raise ValueError(
+                f"{scalar_start_name}/{scalar_end_name} must be >= 0"
+            )
+
+        width = self.effective_max_players - self.effective_min_players + 1
+        if scalar_start == 0 and scalar_end == 0:
+            resolved_starts = self._coerce_move_schedule(starts, starts_name)
+            resolved_ends = self._coerce_move_schedule(ends, ends_name)
+            if len(resolved_starts) != width:
+                raise ValueError(
+                    f"{starts_name} must have {width} entries for player counts "
+                    f"{self.effective_min_players}-{self.effective_max_players}, "
+                    f"got {len(resolved_starts)}"
+                )
+            if len(resolved_ends) != width:
+                raise ValueError(
+                    f"{ends_name} must have {width} entries for player counts "
+                    f"{self.effective_min_players}-{self.effective_max_players}, "
+                    f"got {len(resolved_ends)}"
+                )
+        else:
+            if scalar_start == 0 or scalar_end == 0:
+                raise ValueError(
+                    f"{scalar_start_name} and {scalar_end_name} must either "
+                    "both be 0 to use per-player-count arrays, or both be > 0"
+                )
+            resolved_starts = [scalar_start] * width
+            resolved_ends = [scalar_end] * width
+
+        for idx, (start, end) in enumerate(zip(resolved_starts, resolved_ends)):
+            num_players = self.effective_min_players + idx
+            if start <= 0 or end <= 0:
+                raise ValueError(
+                    f"{starts_name}/{ends_name} entries must be > 0; "
+                    f"{num_players}p has {start}-{end}"
+                )
+            if start > end:
+                raise ValueError(
+                    f"{starts_name}/{ends_name} entries must have start <= end; "
+                    f"{num_players}p has {start}-{end}"
+                )
+        return resolved_starts, resolved_ends
+
+    def _temperature_schedule_index(self, num_players: int) -> int:
+        """Map an actual player count to its schedule array index."""
+        if not (
+            self.effective_min_players
+            <= num_players
+            <= self.effective_max_players
+        ):
+            raise ValueError(
+                "num_players must be within the configured player range "
+                f"{self.effective_min_players}-{self.effective_max_players}, "
+                f"got {num_players}"
+            )
+        return num_players - self.effective_min_players
+
+    def temp_anneal_window(self, num_players: int) -> tuple[int, int]:
+        """Action-sampling temperature anneal window for a player count."""
+        idx = self._temperature_schedule_index(num_players)
+        return self.temp_anneal_starts[idx], self.temp_anneal_ends[idx]
+
+    def policy_target_temp_anneal_window(
+        self, num_players: int,
+    ) -> tuple[int, int]:
+        """Policy-target temperature anneal window for a player count."""
+        idx = self._temperature_schedule_index(num_players)
+        return (
+            self.policy_target_temp_anneal_starts[idx],
+            self.policy_target_temp_anneal_ends[idx],
+        )
 
     def _validate_player_count_mode(self) -> None:
         """Validate single-count and mixed-count game configuration modes."""

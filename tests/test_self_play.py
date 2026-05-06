@@ -23,7 +23,12 @@ from mcts.search import StatePool, prepare_reuse_root, run_search
 from nn import create_model, get_model_input_spec
 from nn.transformer import UNIFIED_LOGIT_DIM, RSSTransformerNet, TransformerConfig
 from train.config import EpochConfig, TrainingConfig
-from train.self_play import build_epoch_player_count_schedule, play_game
+from train.self_play import (
+    _compute_policy_target_temperature,
+    _compute_temperature,
+    build_epoch_player_count_schedule,
+    play_game,
+)
 
 
 U_DIM = int(UNIFIED_LOGIT_DIM)
@@ -168,6 +173,31 @@ def test_mixed_play_game_requires_assigned_num_players():
 
     with pytest.raises(ValueError, match="explicit num_players"):
         play_game(object(), config, game_seed=0, rng=np.random.default_rng(0))
+
+
+def test_temperature_helpers_use_player_count_specific_windows():
+    config = TrainingConfig(
+        num_players=0,
+        min_players=3,
+        max_players=5,
+        temp_anneal_start=0,
+        temp_anneal_end=0,
+        temp_anneal_starts=[10, 20, 30],
+        temp_anneal_ends=[20, 40, 60],
+        policy_target_temp_anneal_start=0,
+        policy_target_temp_anneal_end=0,
+        policy_target_temp_anneal_starts=[5, 10, 15],
+        policy_target_temp_anneal_ends=[15, 30, 45],
+    )
+
+    assert _compute_temperature(15, config, 3) == pytest.approx(0.75)
+    assert _compute_temperature(15, config, 5) == pytest.approx(1.0)
+    assert _compute_policy_target_temperature(
+        10, config, 3,
+    ) == pytest.approx(0.75)
+    assert _compute_policy_target_temperature(
+        10, config, 5,
+    ) == pytest.approx(1.0)
 
 
 def test_play_game_mixed_config_runs_3p_4p_5p_with_one_max_pool():

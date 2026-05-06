@@ -47,6 +47,76 @@ def test_cli_overrides_policy_target_temperature_schedule() -> None:
     assert config.policy_target_temp_anneal_end == 100
 
 
+def test_scalar_temperature_windows_expand_to_player_count_arrays() -> None:
+    config = TrainingConfig(
+        num_players=0,
+        min_players=3,
+        max_players=5,
+        temp_anneal_start=40,
+        temp_anneal_end=80,
+        policy_target_temp_anneal_start=50,
+        policy_target_temp_anneal_end=100,
+    )
+
+    assert config.temp_anneal_starts == [40, 40, 40]
+    assert config.temp_anneal_ends == [80, 80, 80]
+    assert config.policy_target_temp_anneal_starts == [50, 50, 50]
+    assert config.policy_target_temp_anneal_ends == [100, 100, 100]
+
+
+def test_per_player_temperature_windows_used_when_scalar_zero() -> None:
+    config = TrainingConfig(
+        num_players=0,
+        min_players=3,
+        max_players=5,
+        temp_anneal_start=0,
+        temp_anneal_end=0,
+        temp_anneal_starts=[30, 45, 60],
+        temp_anneal_ends=[60, 90, 120],
+        policy_target_temp_anneal_start=0,
+        policy_target_temp_anneal_end=0,
+        policy_target_temp_anneal_starts=[20, 35, 50],
+        policy_target_temp_anneal_ends=[40, 70, 100],
+    )
+
+    assert config.temp_anneal_window(3) == (30, 60)
+    assert config.temp_anneal_window(4) == (45, 90)
+    assert config.temp_anneal_window(5) == (60, 120)
+    assert config.policy_target_temp_anneal_window(3) == (20, 40)
+    assert config.policy_target_temp_anneal_window(4) == (35, 70)
+    assert config.policy_target_temp_anneal_window(5) == (50, 100)
+
+
+def test_per_player_temperature_windows_require_full_range() -> None:
+    with pytest.raises(ValueError, match="temp_anneal_starts"):
+        TrainingConfig(
+            num_players=0,
+            min_players=3,
+            max_players=5,
+            temp_anneal_start=0,
+            temp_anneal_end=0,
+            temp_anneal_starts=[30, 45],
+            temp_anneal_ends=[60, 90],
+        )
+
+
+def test_cli_overrides_per_player_temperature_windows() -> None:
+    parser = _build_parser()
+    args = parser.parse_args([
+        "--temp-anneal-start", "0",
+        "--temp-anneal-end", "0",
+        "--temp-anneal-starts", "30,45,60",
+        "--temp-anneal-ends", "60,90,120",
+    ])
+    config = TrainingConfig(num_players=0, min_players=3, max_players=5)
+
+    _apply_overrides(config, args)
+    config.validate()
+
+    assert config.temp_anneal_starts == [30, 45, 60]
+    assert config.temp_anneal_ends == [60, 90, 120]
+
+
 def test_cli_overrides_dirichlet_epsilon() -> None:
     parser = _build_parser()
     args = parser.parse_args(["--dirichlet-epsilon", "0.15"])

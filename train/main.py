@@ -49,6 +49,17 @@ from train.self_play import (
 from train.trainer import Trainer
 
 
+def _parse_int_list(value: str) -> list[int]:
+    """Parse a comma-separated integer list for per-player-count schedules."""
+    try:
+        parts = [part.strip() for part in value.split(",")]
+        return [int(part) for part in parts if part]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"expected comma-separated integers, got {value!r}"
+        ) from exc
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="AlphaZero self-play training for Rolling Stock Stars"
@@ -128,10 +139,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--temp-initial", type=float)
     parser.add_argument("--temp-anneal-start", type=int)
     parser.add_argument("--temp-anneal-end", type=int)
+    parser.add_argument("--temp-anneal-starts", type=_parse_int_list)
+    parser.add_argument("--temp-anneal-ends", type=_parse_int_list)
     parser.add_argument("--temp-final", type=float)
     parser.add_argument("--policy-target-temp-initial", type=float)
     parser.add_argument("--policy-target-temp-anneal-start", type=int)
     parser.add_argument("--policy-target-temp-anneal-end", type=int)
+    parser.add_argument(
+        "--policy-target-temp-anneal-starts", type=_parse_int_list,
+    )
+    parser.add_argument(
+        "--policy-target-temp-anneal-ends", type=_parse_int_list,
+    )
     parser.add_argument("--policy-target-temp-final", type=float)
     parser.add_argument("--c-puct-initial", type=float)
     parser.add_argument("--c-puct-final", type=float)
@@ -233,9 +252,12 @@ _CLI_FIELDS = (
     "eval_min_batch_size", "eval_min_batch_timeout_ms",
     "eval_batch_shape_mode", "eval_max_batch_size",
     "checkpoint_dir", "tensorboard_dir", "seed",
-    "temp_initial", "temp_anneal_start", "temp_anneal_end", "temp_final",
+    "temp_initial", "temp_anneal_start", "temp_anneal_end",
+    "temp_anneal_starts", "temp_anneal_ends", "temp_final",
     "policy_target_temp_initial", "policy_target_temp_anneal_start",
-    "policy_target_temp_anneal_end", "policy_target_temp_final",
+    "policy_target_temp_anneal_end",
+    "policy_target_temp_anneal_starts", "policy_target_temp_anneal_ends",
+    "policy_target_temp_final",
     "c_puct_initial", "c_puct_final", "c_puct_anneal_epochs",
     "value_blend_start_epoch", "value_blend_end_epoch",
     "terminal_blend", "lr_min", "warmup_epochs", "lr_decay_end_epoch",
