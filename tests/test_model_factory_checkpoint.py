@@ -374,6 +374,8 @@ def test_reloaded_resnet_checkpoint_runs_analyze_game(tmp_path) -> None:
         seed=1,
         num_simulations=1,
         top_n=1,
+        checkpoint_path=path,
     )
 
     assert "# Self-Play Analysis" in rendered
+    assert f"# Checkpoint: {path.as_posix()}" in rendered

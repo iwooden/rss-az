@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -34,7 +35,13 @@ from entities.player import PLAYERS
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator, compute_terminal_values
 from mcts.node import MCTSNode
-from mcts.search import StatePool, get_greedy_leaf_value, prepare_reuse_root, run_search
+from mcts.search import (
+    StatePool,
+    get_greedy_leaf_depth,
+    get_greedy_leaf_value,
+    prepare_reuse_root,
+    run_search,
+)
 from nn import create_model, get_model_input_spec
 from train.checkpoint import find_latest_checkpoint, load_model_from_checkpoint
 from train.config import MCTSConfig, TrainingConfig
@@ -387,6 +394,71 @@ def _resolve_analysis_num_players(
     return num_players
 
 
+def _parse_player_names_arg(value: str | None) -> list[str] | None:
+    """Parse ``--player-names`` into canonical player-order display names."""
+    if value is None:
+        return None
+    return [part.strip() for part in value.split(",")]
+
+
+def _validate_player_names(
+    player_names: list[str] | None,
+    num_players: int,
+) -> list[str] | None:
+    """Return sanitized display names or raise for malformed input."""
+    if player_names is None:
+        return None
+    if len(player_names) != num_players:
+        raise ValueError(
+            f"player_names must contain exactly {num_players} name(s), "
+            f"got {len(player_names)}"
+        )
+    for idx, name in enumerate(player_names):
+        if not name:
+            raise ValueError(f"player_names[{idx}] must not be empty")
+        if "\n" in name or "\r" in name:
+            raise ValueError(f"player_names[{idx}] must not contain newlines")
+    return list(player_names)
+
+
+def _apply_player_names(log_text: str, player_names: list[str] | None) -> str:
+    """Replace canonical ``P0``-style labels with optional display names."""
+    if player_names is None:
+        return log_text
+
+    def replace_player_label(match: re.Match[str]) -> str:
+        player_id = int(match.group(1))
+        if player_id >= len(player_names):
+            return match.group(0)
+        return player_names[player_id]
+
+    log_text = re.sub(r"\bP(\d+)\b", replace_player_label, log_text)
+
+    def replace_active_player(match: re.Match[str]) -> str:
+        player_id = int(match.group(2))
+        if player_id >= len(player_names):
+            return match.group(0)
+        return f"{match.group(1)}{player_names[player_id]}"
+
+    return re.sub(r"(Active Player:\s*)(\d+)\b", replace_active_player, log_text)
+
+
+def _format_checkpoint_path(checkpoint_path: str | Path) -> str:
+    """Format the checkpoint identity as a project-relative path when possible."""
+    if str(checkpoint_path) == "new":
+        return "new"
+
+    repo_root = Path(__file__).resolve().parents[1]
+    path = Path(checkpoint_path)
+    resolved = path if path.is_absolute() else repo_root / path
+    try:
+        return resolved.resolve(strict=False).relative_to(
+            repo_root.resolve(strict=False)
+        ).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def analyze_game(
     model: torch.nn.Module,
     device: torch.device,
@@ -397,6 +469,7 @@ def analyze_game(
     top_n: int = 10,
     verbose: bool = False,
     *,
+    checkpoint_path: str | Path,
     dirichlet_epsilon: float | None = None,
     dirichlet_dynamic: bool | None = None,
     terminal_blend: float | None = None,
@@ -405,9 +478,11 @@ def analyze_game(
     token_dump: bool = False,
     num_players: int | None = None,
     seed_18xx: int | None = None,
+    player_names: list[str] | None = None,
 ) -> str:
     """Play a self-play game with full MCTS and return a detailed log."""
     num_players = _resolve_analysis_num_players(config, num_players)
+    player_names = _validate_player_names(player_names, num_players)
     max_players = config.effective_max_players
 
     state = GameState(num_players, max_players=max_players)
@@ -450,13 +525,15 @@ def analyze_game(
             noise_desc += f", dynamic alpha={mcts_config.dirichlet_alpha_numerator}/K"
         else:
             noise_desc += f", alpha={mcts_config.dirichlet_alpha}"
+    title_seed = f"18xx seed={seed_18xx}" if setup_18xx is not None else f"seed={seed}"
     if mcts_stats_only:
         lines.append(
-            f"# Self-Play MCTS Stats: seed={seed}, {num_simulations} simulations/move, "
+            f"# Self-Play MCTS Stats: {title_seed}, {num_simulations} simulations/move, "
             f"batch={search_batch_size}"
         )
     else:
-        lines.append(f"# Self-Play Analysis: seed={seed}, {num_simulations} simulations/move")
+        lines.append(f"# Self-Play Analysis: {title_seed}, {num_simulations} simulations/move")
+    lines.append(f"# Checkpoint: {_format_checkpoint_path(checkpoint_path)}")
     if setup_18xx is not None:
         lines.append(
             f"# 18xx seed: {seed_18xx} | initial offering: "
@@ -559,9 +636,13 @@ def analyze_game(
             lines.append("")
             lines.extend(_format_mcts_visits(root, phase_id, state, top_n))
             a0gb = get_greedy_leaf_value(root, num_players)
+            a0gb_depth = get_greedy_leaf_depth(root)
             a0gb_parts = [f"P{i}={a0gb[i]:+.3f}" for i in range(num_players)]
             vb = search_stats.virtual_backups
-            lines.append(f"  A0GB Value: {', '.join(a0gb_parts)}{f' (vbackups: {vb})' if vb > 0 else ''}")
+            lines.append(
+                f"  A0GB Value: {', '.join(a0gb_parts)} "
+                f"(depth: {a0gb_depth}{f', vbackups: {vb}' if vb > 0 else ''})"
+            )
             lines.append("")
             lines.append(f"  **Action: {action_str}**")
             lines.append("")
@@ -665,7 +746,7 @@ def analyze_game(
         lines.append("")
         lines.append(token_normalization.format_report())
 
-    return "\n".join(lines)
+    return _apply_player_names("\n".join(lines), player_names)
 
 
 def main() -> None:
@@ -683,6 +764,12 @@ def main() -> None:
         "--num-players", type=int, default=None,
         help='Actual player count to analyze (3-5). Defaults to 3 for "new"; '
              "for mixed-player checkpoints, defaults to the configured minimum.",
+    )
+    parser.add_argument(
+        "--player-names",
+        type=str,
+        default=None,
+        help="Comma-separated display names for P0, P1, ... in canonical order",
     )
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
@@ -745,6 +832,7 @@ def main() -> None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load checkpoint (or build a fresh untrained model when "new")
+    checkpoint_path_for_log: str | Path
     if args.checkpoint == "new":
         new_num_players = args.num_players if args.num_players is not None else 3
         assert 3 <= new_num_players <= 5, \
@@ -752,6 +840,7 @@ def main() -> None:
         config = TrainingConfig(num_players=new_num_players)
         model = create_model(config).to(device)
         model.eval()
+        checkpoint_path_for_log = "new"
         print(f"Using freshly-initialized (untrained) model, num_players={new_num_players}, device={device}")
     else:
         if args.checkpoint == "latest":
@@ -765,6 +854,7 @@ def main() -> None:
         print(f"Loading checkpoint: {cp_path}")
         model, config, cp = load_model_from_checkpoint(cp_path, device)
         model.eval()
+        checkpoint_path_for_log = cp_path
 
         epoch = cp.get("epoch", "?")
         print(f"Model from epoch {epoch}, device={device}")
@@ -774,6 +864,7 @@ def main() -> None:
     result = analyze_game(
         model, device, config, args.seed, args.simulations,
         args.search_batch_size, args.top_n, args.verbose,
+        checkpoint_path=checkpoint_path_for_log,
         dirichlet_epsilon=args.dirichlet_epsilon,
         dirichlet_dynamic=args.dirichlet_dynamic,
         terminal_blend=args.terminal_blend,
@@ -782,6 +873,7 @@ def main() -> None:
         token_dump=args.token_dump,
         num_players=args.num_players,
         seed_18xx=args.seed_18xx,
+        player_names=_parse_player_names_arg(args.player_names),
     )
 
     if args.output:

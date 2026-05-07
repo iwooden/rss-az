@@ -159,6 +159,7 @@ def test_analyze_game_token_dump_flag_includes_token_tables() -> None:
         seed=1,
         num_simulations=1,
         top_n=1,
+        checkpoint_path="new",
         token_dump=True,
     )
 
@@ -180,6 +181,7 @@ def test_analyze_game_token_dump_flag_appends_normalization_report() -> None:
         seed=1,
         num_simulations=1,
         top_n=1,
+        checkpoint_path="new",
         token_dump=True,
     )
 
@@ -217,11 +219,51 @@ def test_analyze_game_mixed_config_uses_requested_actual_player_count() -> None:
         search_batch_size=1,
         top_n=1,
         num_players=3,
+        checkpoint_path=Path(analyze_game_module.__file__).resolve().parents[1]
+        / "checkpoints"
+        / "example.pt",
     )
 
     assert "# Self-Play Analysis" in rendered
+    assert "# Checkpoint: checkpoints/example.pt" in rendered
     assert "P2: net worth $" in rendered
     assert "P3: net worth $" not in rendered
+    assert "A0GB Value:" in rendered
+    assert "(depth:" in rendered
+
+
+def test_analyze_game_player_names_relabel_output() -> None:
+    torch.manual_seed(0)
+    config = TrainingConfig(
+        num_players=3,
+        num_simulations=1,
+        search_batch_size=1,
+        dirichlet_epsilon=0.0,
+    )
+    model = create_model(config).to(torch.device("cpu"))
+    model.eval()
+
+    rendered = analyze_game(
+        model,
+        torch.device("cpu"),
+        config,
+        seed=1,
+        num_simulations=1,
+        search_batch_size=1,
+        top_n=1,
+        checkpoint_path="new",
+        player_names=["yernab", "jmzed3", "enjoilife"],
+    )
+
+    assert "### Step 0: yernab [INVEST]" in rendered
+    assert "Active Player: yernab" in rendered
+    assert "NN Values: yernab=" in rendered
+    assert "jmzed3=" in rendered
+    assert "enjoilife=" in rendered
+    assert "A0GB Value: yernab=" in rendered
+    assert "P0" not in rendered
+    assert "P1" not in rendered
+    assert "P2" not in rendered
 
 
 def test_extract_18xx_seed_setup_builds_minimal_rss_game(monkeypatch) -> None:
@@ -292,9 +334,13 @@ def test_analyze_game_18xx_seed_logs_applied_initial_setup(monkeypatch) -> None:
         num_simulations=1,
         search_batch_size=1,
         top_n=1,
+        checkpoint_path="checkpoints/seeded.pt",
     )
 
     assert calls == [(560979115, 3)]
+    assert rendered.startswith("# Self-Play Analysis: 18xx seed=560979115, 1 simulations/move")
+    assert "# Self-Play Analysis: seed=1" not in rendered
+    assert "# Checkpoint: checkpoints/seeded.pt" in rendered
     assert "# 18xx seed: 560979115" in rendered
     assert "initial offering: KME, MHE, BSE" in rendered
     assert "remaining deck: 2" in rendered

@@ -624,6 +624,39 @@ def scale_visit_counts_by_temperature(
     return probs
 
 
+def _get_greedy_leaf_node_and_depth(root: MCTSNode) -> tuple[MCTSNode, int]:
+    """Return the A0GB greedy leaf and its decision-edge depth from root."""
+    node = root
+    depth = 0
+
+    while node.expanded() and not node.is_terminal:
+        assert node.visit_counts is not None and node.legal_actions is not None
+        best_idx = int(np.argmax(node.visit_counts))
+        if node.visit_counts[best_idx] == 0:
+            # All children are unvisited — this node is the tree-edge leaf.
+            # Its value_sum / visit_count equals V_NN from its single evaluation.
+            break
+        best_action = int(node.legal_actions[best_idx])
+        child = node.children.get(best_action)
+        if child is None:
+            break
+        node = child
+        depth += 1
+
+    return node, depth
+
+
+def get_greedy_leaf_depth(root: MCTSNode) -> int:
+    """Return the A0GB greedy leaf depth in MCTS decision edges.
+
+    Depth is counted from the current search root. A root value has depth 0;
+    each followed child edge increments the depth by 1. Automated engine
+    transitions inside ``DRIVER.apply_action`` are not counted separately.
+    """
+    _, depth = _get_greedy_leaf_node_and_depth(root)
+    return depth
+
+
 def get_greedy_leaf_value(root: MCTSNode, num_players: int) -> np.ndarray:
     """Compute the A0GB greedy backup value target.
 
@@ -644,19 +677,7 @@ def get_greedy_leaf_value(root: MCTSNode, num_players: int) -> np.ndarray:
     Returns:
         Canonical per-player values at the greedy leaf, shape (num_players,).
     """
-    node = root
-
-    while node.expanded() and not node.is_terminal:
-        assert node.visit_counts is not None and node.legal_actions is not None
-        best_idx = int(np.argmax(node.visit_counts))
-        if node.visit_counts[best_idx] == 0:
-            # All children are unvisited — this node is the tree-edge leaf.
-            # Its value_sum / visit_count equals V_NN from its single evaluation.
-            break
-        best_action = int(node.legal_actions[best_idx])
-        if best_action not in node.children:
-            break
-        node = node.children[best_action]
+    node, _ = _get_greedy_leaf_node_and_depth(root)
 
     # Return the mean value at this node
     if node.visit_count == 0:

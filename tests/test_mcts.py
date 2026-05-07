@@ -52,6 +52,7 @@ from mcts.search import (
     _propagate_unlock,
     _reset_root_for_reuse,
     get_action_probabilities,
+    get_greedy_leaf_depth,
     get_greedy_leaf_value,
     prepare_reuse_root,
     run_search,
@@ -1264,6 +1265,7 @@ class TestMCTSSearch:
         """A0GB traversal should follow the most-visited child at each level."""
         root, _ = search_root_deep
         node = root
+        expected_depth = 0
         while node.expanded() and not node.is_terminal:
             assert node.visit_counts is not None and node.legal_actions is not None
             best_idx = int(np.argmax(node.visit_counts))
@@ -1273,10 +1275,12 @@ class TestMCTSSearch:
             if best_action not in node.children:
                 break
             node = node.children[best_action]
+            expected_depth += 1
 
         expected = node.value_sum / node.visit_count
         actual = get_greedy_leaf_value(root, num_players=NUM_PLAYERS)
         np.testing.assert_array_almost_equal(actual, expected)
+        assert get_greedy_leaf_depth(root) == expected_depth
 
     def test_nodes_have_pool_state_indices(self, search_root):
         """Every visited node has a valid state_idx into the pool."""
