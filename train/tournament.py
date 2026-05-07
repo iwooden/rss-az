@@ -34,6 +34,7 @@ from core.data import GamePhases
 from core.driver import DRIVER, STATUS_GAME_OVER_PY as STATUS_GAME_OVER
 from core.state import GameState, get_layout
 from entities.player import PLAYERS
+from entities.turn import TURN
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool, run_search
 from nn import get_model_input_spec
@@ -71,17 +72,18 @@ def _play_game(
     evaluators: list[NNEvaluator],
     seat_to_model: list[int],
     num_players: int,
+    max_players: int,
     mcts_config: MCTSConfig,
     game_seed: int,
     rng: np.random.Generator,
     state_pool: StatePool,
 ) -> list[int]:
     """Play one tournament game. Returns net worths per seat."""
-    state = GameState(num_players)
-    state.initialize_game(seed=game_seed)
+    state = GameState(num_players, max_players=max_players)
+    state.initialize_game(num_players, seed=game_seed, max_players=max_players)
 
-    while state.get_phase() != GamePhases.PHASE_GAME_OVER:
-        active_player = state.get_active_player()
+    while TURN.get_phase(state) != GamePhases.PHASE_GAME_OVER:
+        active_player = TURN.get_active_player(state)
         evaluator = evaluators[seat_to_model[active_player]]
 
         # Fresh search each move (no subtree reuse — different models)
@@ -223,7 +225,10 @@ def _format_report(
     total_games = len(results)
     rank_labels = ["1st", "2nd", "3rd", "4th", "5th"][:num_players]
 
-    lines.append(f"# Tournament Report ({total_games} games, {elapsed:.1f}s)")
+    lines.append(
+        f"# Tournament Report ({total_games} games, {elapsed:.1f}s, "
+        f"{num_players} players)"
+    )
     lines.append("")
     lines.append("## Models")
     for i, e in enumerate(entries):
@@ -262,24 +267,26 @@ def run_tournament(
     entries: list[ModelEntry],
     device: torch.device,
     num_players: int,
+    max_players: int,
     mcts_config: MCTSConfig,
     min_games_per_pair: int,
     base_seed: int,
     terminal_rank_weight: float,
 ) -> tuple[list[GameResult], float]:
     """Run the full tournament. Returns (results, elapsed_seconds)."""
+    input_specs = [get_model_input_spec(e.config) for e in entries]
     evaluators = [
         NNEvaluator(
             e.model,
             device,
-            num_players=num_players,
+            num_players=input_spec.num_players,
             terminal_rank_weight=terminal_rank_weight,
-            input_spec=get_model_input_spec(e.config),
+            input_spec=input_spec,
         )
-        for e in entries
+        for e, input_spec in zip(entries, input_specs, strict=True)
     ]
 
-    layout = get_layout(num_players)
+    layout = get_layout(max_players)
     state_pool = StatePool(2 * (mcts_config.num_simulations + 1), layout.total_size)
     rng = np.random.default_rng(base_seed)
 
@@ -287,6 +294,7 @@ def run_tournament(
     total_games = sum(g for _, g in schedule)
 
     print(f"Tournament: {len(entries)} models, {total_games} games scheduled")
+    print(f"  Players/game: {num_players}")
     print(f"  Simulations/move: {mcts_config.num_simulations}, "
           f"batch size: {mcts_config.search_batch_size}")
     print()
@@ -304,7 +312,7 @@ def run_tournament(
 
             t_game = time.perf_counter()
             net_worths = _play_game(
-                evaluators, seat_to_model, num_players,
+                evaluators, seat_to_model, num_players, max_players,
                 mcts_config, int(game_seed), rng, state_pool,
             )
             ranks = _rank_players(net_worths)
@@ -329,6 +337,49 @@ def run_tournament(
     return results, elapsed
 
 
+def _resolve_tournament_num_players(
+    config: TrainingConfig,
+    requested_num_players: int | None,
+) -> int:
+    """Resolve the actual player count for every tournament game."""
+    if requested_num_players is None:
+        return config.effective_min_players
+
+    if isinstance(requested_num_players, bool):
+        raise ValueError("num_players must be an integer player count")
+    num_players = int(requested_num_players)
+    if not (
+        config.effective_min_players
+        <= num_players
+        <= config.effective_max_players
+    ):
+        raise ValueError(
+            "tournament num_players must be within the configured player range "
+            f"{config.effective_min_players}-{config.effective_max_players}, "
+            f"got {num_players}"
+        )
+    return num_players
+
+
+def _validate_tournament_num_players(
+    entries: list[ModelEntry],
+    num_players: int,
+) -> None:
+    """Ensure every checkpoint can play the selected actual player count."""
+    for entry in entries:
+        config = entry.config
+        if not (
+            config.effective_min_players
+            <= num_players
+            <= config.effective_max_players
+        ):
+            raise ValueError(
+                f"checkpoint {entry.path} supports player range "
+                f"{config.effective_min_players}-{config.effective_max_players}, "
+                f"but tournament num_players is {num_players}"
+            )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Tournament between model checkpoints"
@@ -347,6 +398,12 @@ def main() -> None:
                         help="Batched leaf evaluation size (default: 1)")
     parser.add_argument("--games-per-pair", type=int, default=10,
                         help="Minimum games per model pair (default: 10)")
+    parser.add_argument(
+        "--num-players", type=int, default=None,
+        help="Actual player count for every game (3-5). Defaults to the "
+             "configured count, or the configured minimum for mixed-player "
+             "checkpoints.",
+    )
     parser.add_argument("--output", type=str, default=None,
                         help="Output file (default: stdout)")
     parser.add_argument(
@@ -402,11 +459,6 @@ def main() -> None:
         model, config, epoch = _load_model(cp_path, device)
         if ref_config is None:
             ref_config = config
-        else:
-            if config.num_players != ref_config.num_players:
-                print(f"Error: checkpoint {cp_path} has num_players="
-                      f"{config.num_players}, expected {ref_config.num_players}")
-                sys.exit(1)
 
         label = f"epoch {epoch}" if epoch >= 0 else f"model {i}"
         entries.append(ModelEntry(cp_path, epoch, model, config, label))
@@ -415,8 +467,21 @@ def main() -> None:
     assert ref_config is not None
     print()
 
+    try:
+        tournament_num_players = _resolve_tournament_num_players(
+            ref_config, args.num_players,
+        )
+        _validate_tournament_num_players(entries, tournament_num_players)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    tournament_max_players = max(
+        tournament_num_players,
+        *(entry.config.effective_max_players for entry in entries),
+    )
+
     # Build MCTS config from first checkpoint + CLI overrides
-    base_mcts = ref_config.to_mcts_config(num_players=ref_config.num_players)
+    base_mcts = ref_config.to_mcts_config(num_players=tournament_num_players)
     terminal_blend = (args.terminal_blend if args.terminal_blend is not None
                       else ref_config.terminal_blend)
     mcts_config = MCTSConfig(
@@ -428,19 +493,21 @@ def main() -> None:
         dirichlet_dynamic=(args.dirichlet_dynamic if args.dirichlet_dynamic is not None
                            else base_mcts.dirichlet_dynamic),
         dirichlet_alpha_numerator=base_mcts.dirichlet_alpha_numerator,
-        num_players=ref_config.num_players,
+        num_players=tournament_num_players,
         search_batch_size=args.search_batch_size,
     )
 
     # Run tournament
     results, elapsed = run_tournament(
-        entries, device, ref_config.num_players, mcts_config,
+        entries, device, tournament_num_players, tournament_max_players, mcts_config,
         args.games_per_pair, args.seed, terminal_blend,
     )
 
     # Build report
-    stats = _collect_pair_stats(results, len(entries), ref_config.num_players)
-    report = _format_report(entries, results, stats, elapsed, ref_config.num_players)
+    stats = _collect_pair_stats(results, len(entries), tournament_num_players)
+    report = _format_report(
+        entries, results, stats, elapsed, tournament_num_players,
+    )
 
     if args.output:
         with open(args.output, "w") as f:
