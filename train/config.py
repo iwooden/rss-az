@@ -21,6 +21,7 @@ class MCTSConfig:
     dirichlet_alpha_numerator: float = 10.0
     num_players: int = 3
     search_batch_size: int = 8
+    check_nonfinite: bool = True
     action_dim: int = field(init=False)
 
     def __post_init__(self) -> None:
@@ -40,6 +41,10 @@ class MCTSConfig:
         if self.search_batch_size < 1:
             raise ValueError(
                 f"search_batch_size must be >= 1, got {self.search_batch_size}"
+            )
+        if not isinstance(self.check_nonfinite, bool):
+            raise ValueError(
+                f"check_nonfinite must be bool, got {self.check_nonfinite!r}"
             )
         if not 3 <= self.num_players <= 5:
             raise ValueError(f"num_players must be 3-5, got {self.num_players}")
@@ -116,6 +121,7 @@ class TrainingConfig:
     dirichlet_dynamic: bool = True
     dirichlet_alpha_numerator: float = 10.0
     search_batch_size: int = 8
+    check_nonfinite_mcts: bool = True
     num_workers: int = 4
     num_eval_servers: int = 1
     # Optional one-device-per-eval-server mapping, e.g. ["cuda:0", "cuda:1"].
@@ -337,6 +343,11 @@ class TrainingConfig:
         if self.search_batch_size < 1:
             raise ValueError(
                 f"search_batch_size must be >= 1, got {self.search_batch_size}"
+            )
+        if not isinstance(self.check_nonfinite_mcts, bool):
+            raise ValueError(
+                "check_nonfinite_mcts must be bool, "
+                f"got {self.check_nonfinite_mcts!r}"
             )
         if self.dirichlet_alpha <= 0:
             raise ValueError(
@@ -787,6 +798,7 @@ class TrainingConfig:
             dirichlet_alpha_numerator=self.dirichlet_alpha_numerator,
             num_players=actual_num_players,
             search_batch_size=self.search_batch_size,
+            check_nonfinite=self.check_nonfinite_mcts,
         )
 
     def to_json(self) -> str:

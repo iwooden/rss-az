@@ -100,6 +100,14 @@ def test_to_mcts_config_requires_actual_num_players_in_mixed_mode() -> None:
     assert mcts_config.num_players == 4
 
 
+def test_to_mcts_config_carries_nonfinite_check_flag() -> None:
+    config = TrainingConfig(check_nonfinite_mcts=False)
+
+    mcts_config = config.to_mcts_config()
+
+    assert mcts_config.check_nonfinite is False
+
+
 def test_to_mcts_config_rejects_actual_num_players_outside_configured_range() -> None:
     config = TrainingConfig(num_players=0, min_players=3, max_players=5)
 
@@ -124,3 +132,13 @@ def test_cli_overrides_mixed_player_range() -> None:
     assert config.max_players == 5
     assert config.is_mixed_player_training
 
+
+def test_cli_can_disable_mcts_nonfinite_checks() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["--no-check-nonfinite-mcts"])
+    config = TrainingConfig()
+
+    _apply_overrides(config, args)
+    config.validate()
+
+    assert config.check_nonfinite_mcts is False

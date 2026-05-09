@@ -511,6 +511,7 @@ def analyze_game(
         dirichlet_alpha_numerator=mcts_config.dirichlet_alpha_numerator,
         num_players=num_players,
         search_batch_size=search_batch_size,
+        check_nonfinite=mcts_config.check_nonfinite,
     )
 
     layout = get_layout(max_players)
@@ -568,6 +569,13 @@ def analyze_game(
         # Phase id is needed for action rendering in both modes, so compute
         # it unconditionally — cheap lookup off the state.
         phase_id = get_decision_phase_py(state)
+        phase_ctx = format_phase_context(state)
+        debug_context = (
+            f"analyze_game step={step} turn={cur_turn} active=P{active_player} "
+            f"phase={cur_phase} decision_phase_id={phase_id}"
+        )
+        if phase_ctx:
+            debug_context += f" context={phase_ctx}"
 
         token_dump_text: str | None = None
         if token_normalization is not None:
@@ -593,7 +601,7 @@ def analyze_game(
         root = run_search(
             state, evaluator, mcts_config, rng,
             state_pool=state_pool, reuse_root=reuse_root,
-            profile=search_stats,
+            profile=search_stats, debug_context=debug_context,
         )
 
         # Choose action (argmax = best play)
@@ -620,7 +628,6 @@ def analyze_game(
             # Log this decision point
             lines.append(f"### Step {step}: P{active_player} [{cur_phase}]")
             lines.append("")
-            phase_ctx = format_phase_context(state)
             if phase_ctx:
                 lines.append(f"  {phase_ctx}")
                 lines.append("")

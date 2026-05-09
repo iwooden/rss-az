@@ -45,6 +45,7 @@ from mcts.mcts_core import (
 )
 from mcts.node import MCTSNode
 from mcts.search import (
+    MCTSNonFiniteError,
     StatePool,
     _add_dirichlet_noise,
     _collect_subtree_nodes,
@@ -155,6 +156,28 @@ def _make_expanded_node(
     return node
 
 
+class _FiniteRootNanLeafEvaluator:
+    """Evaluator that is finite at root eval and returns NaN for leaf values."""
+
+    def evaluate(self, state):
+        action_ids = np.empty(MAX_ACTION_SIZE, dtype=np.uint16)
+        n = enumerate_legal_actions_py(state, action_ids)
+        priors = np.full(n, 1.0 / n, dtype=np.float32)
+        values = np.zeros(NUM_PLAYERS, dtype=np.float32)
+        return priors, values, action_ids[:n].copy(), n, get_decision_phase_py(state)
+
+    def evaluate_leaves(self, state_arrays, legal_mask):
+        priors = legal_mask.astype(np.float32)
+        row_sums = priors.sum(axis=1, keepdims=True)
+        priors = priors / np.maximum(row_sums, 1.0)
+        values = np.zeros((len(state_arrays), NUM_PLAYERS), dtype=np.float32)
+        values[0, 1] = np.nan
+        return priors, values
+
+    def evaluate_terminal(self, state):
+        return np.zeros(NUM_PLAYERS, dtype=np.float32)
+
+
 # ---------------------------------------------------------------------------
 # MCTSConfig
 # ---------------------------------------------------------------------------
@@ -170,6 +193,7 @@ class TestMCTSConfig:
         assert cfg.dirichlet_alpha_numerator == 10.0
         assert cfg.num_players == 3
         assert cfg.search_batch_size == 8
+        assert cfg.check_nonfinite is True
 
     def test_action_dim_is_max_action_size(self):
         """Post-refactor: dense pad width is player-count independent."""
@@ -187,6 +211,10 @@ class TestMCTSConfig:
     def test_validation_search_batch_size(self):
         with pytest.raises(ValueError, match="search_batch_size"):
             MCTSConfig(search_batch_size=0)
+
+    def test_validation_check_nonfinite(self):
+        with pytest.raises(ValueError, match="check_nonfinite"):
+            MCTSConfig(check_nonfinite="yes")  # type: ignore[arg-type]
 
     def test_validation_num_players(self):
         # NN/MCTS scope is 3-5 players only.
@@ -1364,6 +1392,84 @@ class TestMCTSSearch:
                 game_state, evaluator, config, reuse_root=dummy,
                 state_pool=None,
             )
+
+    def test_run_search_reports_nonfinite_leaf_values(
+        self, game_state,
+    ):
+        config = MCTSConfig(
+            num_simulations=1,
+            dirichlet_epsilon=0.0,
+            num_players=NUM_PLAYERS,
+            search_batch_size=1,
+        )
+
+        with pytest.raises(MCTSNonFiniteError) as exc:
+            run_search(
+                game_state,
+                _FiniteRootNanLeafEvaluator(),
+                config,
+                debug_context="unit-test step=7 phase=INVEST",
+            )
+
+        msg = str(exc.value)
+        assert "unit-test step=7 phase=INVEST" in msg
+        assert "evaluate_leaves.values" in msg
+        assert "(0, 1)=np.float32(nan)" in msg
+
+    def test_run_search_reports_nonfinite_virtual_backup_child(
+        self, game_state,
+    ):
+        root = _make_expanded_node(
+            active_player=0,
+            num_actions=1,
+            default_value=np.zeros(NUM_PLAYERS, dtype=np.float32),
+        )
+        child = MCTSNode(num_players=NUM_PLAYERS)
+        child.visit_count = 1
+        child.value_sum = np.array([0.0, np.nan, 0.0], dtype=np.float32)
+        root.children[0] = child
+
+        config = MCTSConfig(
+            num_simulations=1,
+            dirichlet_epsilon=0.0,
+            num_players=NUM_PLAYERS,
+        )
+        pool = StatePool(2, get_layout(NUM_PLAYERS).total_size)
+
+        with pytest.raises(MCTSNonFiniteError) as exc:
+            run_search(
+                None,
+                object(),
+                config,
+                state_pool=pool,
+                reuse_root=root,
+                debug_context="unit-test reuse",
+            )
+
+        msg = str(exc.value)
+        assert "unit-test reuse" in msg
+        assert "virtual_backup.child_value_sum" in msg
+        assert "child_visit_count=1" in msg
+
+    def test_run_search_can_disable_nonfinite_checks(
+        self, game_state,
+    ):
+        config = MCTSConfig(
+            num_simulations=1,
+            dirichlet_epsilon=0.0,
+            num_players=NUM_PLAYERS,
+            search_batch_size=1,
+            check_nonfinite=False,
+        )
+
+        root = run_search(
+            game_state,
+            _FiniteRootNanLeafEvaluator(),
+            config,
+            debug_context="unit-test disabled",
+        )
+
+        assert np.isnan(root.value_sum).any()
 
 
 # ---------------------------------------------------------------------------

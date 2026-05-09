@@ -495,6 +495,7 @@ def main() -> None:
         dirichlet_alpha_numerator=base_mcts.dirichlet_alpha_numerator,
         num_players=tournament_num_players,
         search_batch_size=args.search_batch_size,
+        check_nonfinite=base_mcts.check_nonfinite,
     )
 
     # Run tournament

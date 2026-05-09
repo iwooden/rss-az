@@ -49,6 +49,115 @@ from nn.transformer import UNIFIED_LOGIT_DIM, build_action_lut
 
 U_DIM = int(UNIFIED_LOGIT_DIM)
 _GREEDY_TEMPERATURE = 1e-8
+_MAX_BAD_VALUES_TO_REPORT = 8
+
+
+class MCTSNonFiniteError(RuntimeError):
+    """Raised when MCTS observes NaN or +/-inf in values or priors."""
+
+
+def _context_prefix(debug_context: str | None) -> str:
+    return f"{debug_context}: " if debug_context else ""
+
+
+def _array_nonfinite_summary(name: str, array: Any) -> str:
+    arr = np.asarray(array)
+    bad = np.argwhere(~np.isfinite(arr))
+    parts = [
+        f"{name} shape={arr.shape}",
+        f"dtype={arr.dtype}",
+        f"nonfinite={len(bad)}",
+    ]
+    if len(bad) > 0:
+        shown = bad[:_MAX_BAD_VALUES_TO_REPORT]
+        samples: list[str] = []
+        for idx in shown:
+            idx_tuple = tuple(int(i) for i in idx)
+            samples.append(f"{idx_tuple}={arr[idx_tuple]!r}")
+        parts.append(f"samples=[{', '.join(samples)}]")
+    finite = arr[np.isfinite(arr)]
+    if finite.size > 0:
+        parts.append(f"finite_min={float(finite.min()):.6g}")
+        parts.append(f"finite_max={float(finite.max()):.6g}")
+    return ", ".join(parts)
+
+
+def _raise_if_nonfinite(
+    array: Any,
+    *,
+    name: str,
+    debug_context: str | None,
+    extra: str = "",
+) -> None:
+    if np.isfinite(array).all():
+        return
+    suffix = f"; {extra}" if extra else ""
+    raise MCTSNonFiniteError(
+        f"{_context_prefix(debug_context)}non-finite MCTS data at {name}: "
+        f"{_array_nonfinite_summary(name, array)}{suffix}"
+    )
+
+
+def _path_summary(path: _Path) -> str:
+    if not path:
+        return "path=[]"
+    pieces: list[str] = []
+    for depth, (node, action_idx, array_idx) in enumerate(path):
+        visits = "?"
+        if node.visit_counts is not None and 0 <= array_idx < len(node.visit_counts):
+            visits = str(int(node.visit_counts[array_idx]))
+        pieces.append(
+            f"d{depth}:active=P{node.active_player_id},"
+            f"action={int(action_idx)},row={int(array_idx)},visits={visits}"
+        )
+    return "path=[" + " -> ".join(pieces) + "]"
+
+
+def _action_row_summary(
+    node: MCTSNode,
+    array_idx: int,
+    *,
+    label: str,
+) -> str:
+    action = "?"
+    visits = "?"
+    if node.legal_actions is not None and 0 <= array_idx < len(node.legal_actions):
+        action = str(int(node.legal_actions[array_idx]))
+    if node.visit_counts is not None and 0 <= array_idx < len(node.visit_counts):
+        visits = str(int(node.visit_counts[array_idx]))
+    return (
+        f"{label}_active=P{node.active_player_id}, "
+        f"{label}_action={action}, {label}_row={int(array_idx)}, "
+        f"{label}_visits={visits}"
+    )
+
+
+def _raise_pending_batch_if_nonfinite(
+    array: Any,
+    *,
+    name: str,
+    pending: list[tuple[_Path, MCTSNode]],
+    debug_context: str | None,
+    sim: int,
+) -> None:
+    arr = np.asarray(array)
+    if np.isfinite(arr).all():
+        return
+
+    bad = np.argwhere(~np.isfinite(arr))
+    batch_row = int(bad[0][0]) if bad.size > 0 and bad.shape[1] > 0 else -1
+    extra = f"sim={sim}; n_pending={len(pending)}"
+    if 0 <= batch_row < len(pending):
+        path, node = pending[batch_row]
+        extra += (
+            f"; batch_row={batch_row}; leaf_state_idx={node.state_idx}; "
+            f"leaf_pending_phase={node.pending_phase}; "
+            f"leaf_pending_n={node.pending_n}; {_path_summary(path)}"
+        )
+    raise MCTSNonFiniteError(
+        f"{_context_prefix(debug_context)}non-finite MCTS data at {name}: "
+        f"{_array_nonfinite_summary(name, arr)}; {extra}"
+    )
 
 
 class StatePool:
@@ -204,6 +313,7 @@ def run_search(
     state_pool: StatePool | None = None,
     reuse_root: MCTSNode | None = None,
     profile: SearchStats | None = None,
+    debug_context: str | None = None,
 ) -> MCTSNode:
     """Run MCTS search from the given root state.
 
@@ -243,12 +353,15 @@ def run_search(
             "virtual backups" (child Q echoed to root) until the root's
             per-action count catches up, then real search begins.
             The state_pool must already be compacted for this subtree.
+        debug_context: Optional caller-supplied context included in
+            fail-fast non-finite diagnostics.
 
     Returns:
         The root MCTSNode with search statistics populated.
     """
     num_players = config.num_players
     batch_size = config.search_batch_size
+    check_nonfinite = config.check_nonfinite
 
     if reuse_root is not None:
         # Reuse requires the matching pool — a fresh pool would make the
@@ -303,6 +416,12 @@ def run_search(
 
         if is_terminal:
             values = evaluator.evaluate_terminal(root_state)
+            if check_nonfinite:
+                _raise_if_nonfinite(
+                    values,
+                    name="root_terminal_values",
+                    debug_context=debug_context,
+                )
             root.terminal_values = values
             root.visit_count = 1
             root.value_sum += values
@@ -313,6 +432,19 @@ def run_search(
         priors, root_values, action_ids, n_legal, _ = evaluator.evaluate(
             root_state,
         )
+        if check_nonfinite:
+            _raise_if_nonfinite(
+                priors,
+                name="root_priors",
+                debug_context=debug_context,
+                extra=f"n_legal={n_legal}",
+            )
+            _raise_if_nonfinite(
+                root_values,
+                name="root_values",
+                debug_context=debug_context,
+                extra=f"n_legal={n_legal}",
+            )
 
         # Expand root onto the sparse legal list (no dense mask).
         root.expand(
@@ -325,6 +457,25 @@ def run_search(
         root.value_sum += root_values
 
         num_sims = config.num_simulations
+
+    if check_nonfinite:
+        _raise_if_nonfinite(
+            root.value_sum,
+            name="search_root.value_sum.start",
+            debug_context=debug_context,
+        )
+        if root.priors is not None:
+            _raise_if_nonfinite(
+                root.priors,
+                name="search_root.priors.start",
+                debug_context=debug_context,
+            )
+        if root.value_sums is not None:
+            _raise_if_nonfinite(
+                root.value_sums,
+                name="search_root.value_sums.start",
+                debug_context=debug_context,
+            )
 
     # Ensure per-batch scratch buffers are sized for this search
     state_pool.ensure_pending_bufs(batch_size, num_players)
@@ -391,7 +542,37 @@ def run_search(
             if outcome == DESCEND_VIRTUAL_BACKUP:
                 # Reuse-root case: echo child Q to root, no further descent.
                 child = descend_node.children[descend_aidx]
+                if check_nonfinite:
+                    _raise_if_nonfinite(
+                        child.value_sum,
+                        name="virtual_backup.child_value_sum",
+                        debug_context=debug_context,
+                        extra=(
+                            f"sim={sim}; child_visit_count={child.visit_count}; "
+                            f"{_action_row_summary(descend_node, descend_arr, label='parent')}"
+                        ),
+                    )
                 _virtual_backup(descend_node, child, descend_arr)
+                if check_nonfinite:
+                    assert descend_node.value_sums is not None
+                    _raise_if_nonfinite(
+                        descend_node.value_sums[descend_arr],
+                        name="virtual_backup.parent_edge_after",
+                        debug_context=debug_context,
+                        extra=(
+                            f"sim={sim}; child_visit_count={child.visit_count}; "
+                            f"{_action_row_summary(descend_node, descend_arr, label='parent')}"
+                        ),
+                    )
+                    _raise_if_nonfinite(
+                        descend_node.value_sum,
+                        name="virtual_backup.parent_value_sum_after",
+                        debug_context=debug_context,
+                        extra=(
+                            f"sim={sim}; child_visit_count={child.visit_count}; "
+                            f"{_action_row_summary(descend_node, descend_arr, label='parent')}"
+                        ),
+                    )
                 sim += 1
                 if profile is not None:
                     profile.virtual_backups += 1
@@ -452,6 +633,13 @@ def run_search(
             # Terminal node: increment visits along path and backup values
             if node.is_terminal:
                 assert node.terminal_values is not None
+                if check_nonfinite:
+                    _raise_if_nonfinite(
+                        node.terminal_values,
+                        name="terminal_values",
+                        debug_context=debug_context,
+                        extra=f"sim={sim}; {_path_summary(path)}",
+                    )
                 sim += 1
                 _increment_visits(path, node)
                 _backup(path, node, node.terminal_values)
@@ -475,6 +663,13 @@ def run_search(
             # current pending length (append happens below).
             parent, _, parent_aidx = path[-1]
             assert parent.value_sums is not None
+            if check_nonfinite:
+                _raise_if_nonfinite(
+                    parent.value_sums[parent_aidx],
+                    name="leaf_lock.parent_edge_before_lock",
+                    debug_context=debug_context,
+                    extra=f"sim={sim}; {_path_summary(path)}",
+                )
             saved_values_buf[len(pending)] = parent.value_sums[parent_aidx]
             parent.value_sums[parent_aidx] = neg_inf_row
 
@@ -509,6 +704,21 @@ def run_search(
             leaf_arrays,
             pending_legal_mask_buf[:n_pending],
         )
+        if check_nonfinite:
+            _raise_pending_batch_if_nonfinite(
+                priors_dense,
+                name="evaluate_leaves.priors_dense",
+                pending=pending,
+                debug_context=debug_context,
+                sim=sim,
+            )
+            _raise_pending_batch_if_nonfinite(
+                values_batch,
+                name="evaluate_leaves.values",
+                pending=pending,
+                debug_context=debug_context,
+                sim=sim,
+            )
 
         if profile is not None:
             _t2 = perf_counter()
@@ -534,6 +744,26 @@ def run_search(
             slots = action_lut_np[phase_id, action_ids]
             priors_legal = priors_dense[i, slots].copy()
             values = values_batch[i]
+            if check_nonfinite:
+                _raise_if_nonfinite(
+                    priors_legal,
+                    name="evaluate_leaves.priors_legal",
+                    debug_context=debug_context,
+                    extra=(
+                        f"sim={sim}; batch_row={i}; phase_id={phase_id}; "
+                        f"n_legal={n}; action_ids={action_ids.tolist()}; "
+                        f"{_path_summary(path)}"
+                    ),
+                )
+                _raise_if_nonfinite(
+                    values,
+                    name="evaluate_leaves.values_row",
+                    debug_context=debug_context,
+                    extra=(
+                        f"sim={sim}; batch_row={i}; phase_id={phase_id}; "
+                        f"n_legal={n}; {_path_summary(path)}"
+                    ),
+                )
 
             node.expand(
                 action_ids, n, priors_legal,
@@ -550,6 +780,19 @@ def run_search(
             profile.backup_secs += perf_counter() - _t2
             profile.num_eval_batches += 1
             profile.total_leaves += len(pending)
+
+    if check_nonfinite:
+        _raise_if_nonfinite(
+            root.value_sum,
+            name="search_root.value_sum.end",
+            debug_context=debug_context,
+        )
+        if root.value_sums is not None:
+            _raise_if_nonfinite(
+                root.value_sums,
+                name="search_root.value_sums.end",
+                debug_context=debug_context,
+            )
 
     return root
 

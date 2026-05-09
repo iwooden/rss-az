@@ -123,6 +123,20 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mcts-ramp-end-epoch", type=int,
                         help="Epoch where sim ramp ends")
     parser.add_argument("--search-batch-size", type=int)
+    nonfinite_group = parser.add_mutually_exclusive_group()
+    nonfinite_group.add_argument(
+        "--check-nonfinite-mcts",
+        dest="check_nonfinite_mcts",
+        action="store_true",
+        default=None,
+        help="Fail fast if MCTS observes NaN/inf values or priors",
+    )
+    nonfinite_group.add_argument(
+        "--no-check-nonfinite-mcts",
+        dest="check_nonfinite_mcts",
+        action="store_false",
+        help="Disable MCTS NaN/inf checks",
+    )
     parser.add_argument("--num-workers", type=int)
     parser.add_argument("--num-eval-servers", type=int)
     parser.add_argument(
@@ -268,7 +282,7 @@ _CLI_FIELDS = (
     "price_slot_fourier_bands", "price_slot_residual_scale",
     "resnet_hidden_dim", "resnet_num_blocks",
     "games_per_epoch", "num_epochs", "training_steps_per_epoch",
-    "num_simulations", "search_batch_size",
+    "num_simulations", "search_batch_size", "check_nonfinite_mcts",
     "mcts_sims_start", "mcts_sims_end", "mcts_ramp_start_epoch", "mcts_ramp_end_epoch",
     "num_workers", "num_eval_servers", "eval_devices",
     "buffer_capacity",
