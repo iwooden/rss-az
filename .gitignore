@@ -26,3 +26,6 @@ tests/games_18xx/data/*.json
 
 # Codex creates a persistent file for some reason
 .codex
+
+# 18xx runtime dir
+runtime/

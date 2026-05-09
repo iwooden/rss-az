@@ -20,6 +20,10 @@ from core.data import (
     CORP_NAMES,
     GamePhases,
 )
+from core.actions import (
+    ACTION_CLOSE_PY as ACTION_CLOSE,
+    ACTION_PASS_PY as ACTION_PASS,
+)
 from core.driver import (
     DRIVER,
     STATUS_INVALID_PY as STATUS_INVALID,
@@ -30,6 +34,7 @@ from entities.turn import TURN
 
 from .action_parser import (
     ActionLayout,
+    find_legal_action,
     filter_actions,
     flatten_auto_actions,
     map_action,
@@ -47,7 +52,12 @@ from .replay_state import (
     replay_acquisition_offer,
 )
 
-PHASE_ACQ = GamePhases.PHASE_ACQUISITION
+ACQ_PHASES = (
+    GamePhases.PHASE_ACQ_SELECT_CORP,
+    GamePhases.PHASE_ACQ_SELECT_COMPANY,
+    GamePhases.PHASE_ACQ_SELECT_PRICE,
+    GamePhases.PHASE_ACQ_OFFER,
+)
 PHASE_CLO = GamePhases.PHASE_CLOSING
 
 EXTRACTOR_PATH = Path(__file__).parent / "extract_states.rb"
@@ -64,14 +74,17 @@ class GameSession:
     initial offering, then is cached for subsequent replays.
     """
 
-    def __init__(self, num_players: int = 3):
+    def __init__(self, num_players: int = 3, max_players: int | None = None):
         self.num_players = num_players
+        self.max_players = max_players or num_players
         self.layout = ActionLayout(num_players)
         self.state: GameState | None = None
         self.game_id: str | None = None
         # Cached from the Ruby extractor (per game_id)
         self._deck_order: list[str] = []
         self._offering: list[str] = []
+        # Refreshed on every sync via Ruby extractor
+        self.committed_ids: set = set()
 
     def sync(self, game_data: dict) -> GameState:
         """Replay the full game from scratch and return the current state.
@@ -89,14 +102,16 @@ class GameSession:
             self.num_players,
             self._deck_order,
             self._offering,
+            max_players=self.max_players,
             pause_before_acq_transition=True,
             pause_before_closing_transition=True,
         )
         self.state = state
 
-        # Process actions using the same logic as the replay harness
+        # Process actions — use Ruby extractor to resolve undo/redo.
         raw_actions = game_data.get("actions", [])
-        actions = filter_actions(raw_actions)
+        self.committed_ids = self._extract_committed_ids(game_data)
+        actions = filter_actions(raw_actions, self.committed_ids)
         actions = flatten_auto_actions(actions)
 
         idx = 0
@@ -108,11 +123,22 @@ class GameSession:
             if phase == PHASE_GAME_OVER:
                 break
 
-            if phase == PHASE_ACQ:
-                idx = self._sync_acq_round(state, actions, idx)
+            if phase in ACQ_PHASES:
+                # Only enter ACQ handling if the next action is actually
+                # an ACQ action.  Otherwise drain through ACQ/CLO so the
+                # engine catches up to the action stream's phase.
+                next_type = action.get("type")
+                if next_type in ("offer", "respond"):
+                    idx = self._sync_acq_round(state, actions, idx)
+                else:
+                    drain_offer_phases(state, self.layout)
                 continue
             if phase == PHASE_CLO:
-                idx = self._sync_clo_round(state, actions, idx)
+                next_type = action.get("type")
+                if next_type in ("sell_company", "close"):
+                    idx = self._sync_clo_round(state, actions, idx)
+                else:
+                    drain_offer_phases(state, self.layout)
                 continue
 
             engine_action = map_action(state, action, phase, self.layout)
@@ -177,7 +203,7 @@ class GameSession:
         pending_offer: dict | None = None
         deferred_transfers: list[tuple[int, int, int]] = []
 
-        while idx < len(actions) and TURN.get_phase(state) == PHASE_ACQ:
+        while idx < len(actions) and TURN.get_phase(state) in ACQ_PHASES:
             action = actions[idx]
             atype = action.get("type")
 
@@ -212,7 +238,7 @@ class GameSession:
 
             break
 
-        if pending_offer is not None and TURN.get_phase(state) == PHASE_ACQ:
+        if pending_offer is not None and TURN.get_phase(state) in ACQ_PHASES:
             self._resolve_acq_offer(
                 state,
                 pending_offer,
@@ -220,7 +246,7 @@ class GameSession:
                 deferred_transfers=deferred_transfers,
             )
 
-        if TURN.get_phase(state) == PHASE_ACQ and DRIVER.is_non_player_phase(state):
+        if TURN.get_phase(state) in ACQ_PHASES and DRIVER.is_non_player_phase(state):
             for buyer_corp_id, company_id, price in deferred_transfers:
                 if not apply_external_acquisition_transfer(
                     state,
@@ -313,10 +339,18 @@ class GameSession:
                     continue
                 break
 
-            action_idx = (
-                self.layout.close_action
-                if closing_company in closed_companies
-                else self.layout.close_pass
+            action_idx = find_legal_action(
+                state,
+                action_type=(
+                    ACTION_CLOSE
+                    if closing_company in closed_companies
+                    else ACTION_PASS
+                ),
+                company_id=(
+                    closing_company
+                    if closing_company in closed_companies
+                    else None
+                ),
             )
             result = DRIVER.apply_action(state, action_idx)
             if result == STATUS_INVALID:
@@ -356,13 +390,13 @@ class GameSession:
                 f"game={num_players}"
             )
 
-        initial = self._extract_initial_state(game_data)
+        initial = self._run_extractor(game_data)
 
         self._deck_order = initial["deck_order"]
         self._offering = initial["initial_offering"]
 
-    def _extract_initial_state(self, game_data: dict) -> dict:
-        """Run Ruby extractor subprocess to get initial deck/offering state."""
+    def _run_extractor(self, game_data: dict) -> dict:
+        """Run Ruby extractor subprocess; return the initial record."""
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False
         ) as f:
@@ -390,3 +424,13 @@ class GameSession:
             raise RuntimeError("Expected initial record with action_id=0")
 
         return initial
+
+    def _extract_committed_ids(self, game_data: dict) -> set:
+        """Get committed action IDs from the Ruby extractor.
+
+        Runs the extractor on every sync to correctly handle undo/redo
+        in the live action stream.  The ~200ms cost is negligible next
+        to MCTS search time.
+        """
+        initial = self._run_extractor(game_data)
+        return set(initial.get("committed_action_ids", []))

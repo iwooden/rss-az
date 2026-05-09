@@ -51,6 +51,7 @@ def initialize_replay_state(
     deck_order_names: list[str],
     offering_names: list[str],
     *,
+    max_players: int = 0,
     cost_level: int | None = None,
     step_mode: bool = False,
     pause_before_acq_transition: bool = False,
@@ -66,8 +67,16 @@ def initialize_replay_state(
     """
     del pause_before_acq_transition, pause_before_closing_transition
 
-    state = GameState(num_players, acq_same_president=False)
-    state.initialize_game(num_players, seed=42)
+    if max_players:
+        state = GameState(
+            num_players,
+            max_players=max_players,
+            acq_same_president=False,
+        )
+        state.initialize_game(num_players, seed=42, max_players=max_players)
+    else:
+        state = GameState(num_players, acq_same_president=False)
+        state.initialize_game(num_players, seed=42)
     state.allow_positive_income_closing = True
     state.step_mode = step_mode
     override_deck_and_offering(state, deck_order_names, offering_names)

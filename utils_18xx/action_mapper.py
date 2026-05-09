@@ -1,49 +1,46 @@
-"""Reverse action mapping: engine action_idx → 18xx intent dict.
-
-Converts our Cython engine's integer action indices into simplified intent
-dicts that the 18xx.games frontend can translate into proper Engine::Action
-objects.
-"""
+"""Reverse action mapping: engine phase-local action id -> 18xx intent dict."""
 
 from __future__ import annotations
 
 from core.actions import (
-    decode_action_py,
-    ACTION_PASS_PY as ACTION_PASS,
+    ACTION_ACQ_OFFER_ACCEPT_PY as ACTION_ACQ_OFFER_ACCEPT,
+    ACTION_ACQ_PRICE_PY as ACTION_ACQ_PRICE,
+    ACTION_ACQ_SELECT_COMPANY_PY as ACTION_ACQ_SELECT_COMPANY,
+    ACTION_ACQ_SELECT_CORP_PY as ACTION_ACQ_SELECT_CORP,
     ACTION_AUCTION_PY as ACTION_AUCTION,
     ACTION_BUY_SHARE_PY as ACTION_BUY_SHARE,
-    ACTION_SELL_SHARE_PY as ACTION_SELL_SHARE,
-    ACTION_LEAVE_AUCTION_PY as ACTION_LEAVE_AUCTION,
-    ACTION_RAISE_BID_PY as ACTION_RAISE_BID,
-    ACTION_ACQ_PRICE_PY as ACTION_ACQ_PRICE,
-    ACTION_ACQ_FI_BUY_PY as ACTION_ACQ_FI_BUY,
     ACTION_CLOSE_PY as ACTION_CLOSE,
-    ACTION_ISSUE_PY as ACTION_ISSUE,
+    ACTION_DIVIDEND_PY as ACTION_DIVIDEND,
     ACTION_IPO_PY as ACTION_IPO,
+    ACTION_ISSUE_PY as ACTION_ISSUE,
+    ACTION_PAR_PY as ACTION_PAR,
+    ACTION_PASS_PY as ACTION_PASS,
+    ACTION_RAISE_PY as ACTION_RAISE,
+    ACTION_SELL_SHARE_PY as ACTION_SELL_SHARE,
+    decode_action_py,
+    get_decision_phase_py,
 )
-from core.data import (
-    COMPANY_NAMES,
-    CORP_NAMES,
-    GamePhases,
-    get_company_face_value,
-    get_company_low_price,
-    get_market_index,
-    get_par_price,
-)
+from core.data import ALL_PAR_PRICES, CORP_NAMES, CorpIndices, GamePhases
 from core.state import GameState
-from entities.company import COMPANIES
+from entities.company import COMPANIES, CompanyLocation
+from entities.market import MARKET
 from entities.turn import TURN
 
-NUM_COMPANIES = 36
+LOC_FI = CompanyLocation.LOC_FI
 
 
-def _auction_companies(state: GameState) -> list[tuple[int, int]]:
-    """Return list of (slot, company_id) for companies available for auction."""
-    result = []
-    for cid in range(NUM_COMPANIES):
-        if COMPANIES[cid].is_for_auction(state):
-            result.append((len(result), cid))
-    return result
+def _fi_purchase_price(corp_id: int, company_id: int) -> int:
+    if corp_id == int(CorpIndices.CORP_OS):
+        return COMPANIES[company_id].get_face_value()
+    return COMPANIES[company_id].get_high_price()
+
+
+def _par_share_price(par_index: int) -> str:
+    par_price = int(ALL_PAR_PRICES[par_index])
+    market_index = MARKET.get_index_for_price(par_price)
+    if market_index < 0:
+        raise ValueError(f"Par price {par_price} is not on the market")
+    return f"{par_price},0,{market_index}"
 
 
 def engine_action_to_18xx(
@@ -51,117 +48,125 @@ def engine_action_to_18xx(
     state: GameState,
     num_players: int = 3,
 ) -> dict:
-    """Convert an engine action index to an 18xx intent dict.
+    """Convert a current engine action id into a live 18xx action intent.
 
-    The intent dict is a simplified representation that the 18xx frontend
-    translates into proper Engine::Action Ruby objects.
-
-    Args:
-        action_idx: Engine action index from MCTS.
-        state: Current GameState (needed for auction slot lookups, etc.).
-        num_players: Number of players.
-
-    Returns:
-        Intent dict with 'type' key and phase-specific fields.
+    ``action_idx`` is a phase-local id from ``enumerate_legal_actions_py``.
+    Some split engine decisions are internal to a single 18xx action:
+    ACQ corp/company selection and IPO/PAR composition. Those return
+    ``select_*`` / ``par_price`` intents for the caller to combine before
+    posting to the 18xx API.
     """
-    phase, atype, slot, corp_id, amount = decode_action_py(action_idx, num_players)
+    del num_players
 
-    # INVEST phase
+    phase_id = get_decision_phase_py(state)
+    if phase_id < 0:
+        raise ValueError("Cannot map an action while the engine is in an auto phase")
+
+    info = decode_action_py(phase_id, action_idx)
+    phase = TURN.get_phase(state)
+    atype = info.action_type
+
     if phase == GamePhases.PHASE_INVEST:
         if atype == ACTION_PASS:
             return {"type": "pass"}
         if atype == ACTION_AUCTION:
-            auction = _auction_companies(state)
-            if slot >= len(auction):
-                raise ValueError(f"Auction slot {slot} out of range ({len(auction)} companies)")
-            cid = auction[slot][1]
-            company_name = COMPANY_NAMES[cid]
-            face = get_company_face_value(cid)
-            price = face + amount
-            return {"type": "bid", "company": company_name, "price": price}
+            company_id = info.company_id
+            return {
+                "type": "bid",
+                "company": COMPANIES[company_id].name,
+                "price": COMPANIES[company_id].get_face_value(),
+            }
         if atype == ACTION_BUY_SHARE:
-            return {"type": "buy_shares", "corporation": CORP_NAMES[corp_id]}
+            return {"type": "buy_shares", "corporation": CORP_NAMES[info.corp_id]}
         if atype == ACTION_SELL_SHARE:
-            return {"type": "sell_shares", "corporation": CORP_NAMES[corp_id]}
+            return {"type": "sell_shares", "corporation": CORP_NAMES[info.corp_id]}
 
-    # BID phase
     if phase == GamePhases.PHASE_BID:
-        if atype == ACTION_LEAVE_AUCTION:
+        if atype == ACTION_PASS:
             return {"type": "pass"}
-        if atype == ACTION_RAISE_BID:
-            company_id = TURN.get_auction_company(state)
-            face = get_company_face_value(company_id)
-            price = face + amount + 1
-            return {"type": "bid", "company": COMPANY_NAMES[company_id], "price": price}
+        if atype == ACTION_RAISE:
+            company_id = TURN.get_active_company(state)
+            price = COMPANIES[company_id].get_face_value() + info.amount
+            return {
+                "type": "bid",
+                "company": COMPANIES[company_id].name,
+                "price": price,
+            }
 
-    # IPO phase (returns ipo_select; caller combines with PAR)
     if phase == GamePhases.PHASE_IPO:
         if atype == ACTION_PASS:
             return {"type": "pass"}
         if atype == ACTION_IPO:
-            return {"type": "ipo_select", "corporation": CORP_NAMES[corp_id]}
+            return {"type": "ipo_select", "corporation": CORP_NAMES[info.corp_id]}
 
-    # PAR phase
     if phase == GamePhases.PHASE_PAR:
-        par_price = get_par_price(slot)
-        col = get_market_index(par_price)
-        return {
-            "type": "par_price",
-            "share_price": f"{par_price},0,{col}",
-            "par_price": par_price,
-        }
+        if atype == ACTION_PAR:
+            par_price = int(ALL_PAR_PRICES[info.amount])
+            return {
+                "type": "par_price",
+                "share_price": _par_share_price(info.amount),
+                "par_price": par_price,
+            }
 
-    # DIVIDENDS phase
     if phase == GamePhases.PHASE_DIVIDENDS:
-        return {"type": "dividend", "amount": amount}
+        if atype == ACTION_DIVIDEND:
+            return {"type": "dividend", "amount": info.amount}
 
-    # ISSUE phase
     if phase == GamePhases.PHASE_ISSUE_SHARES:
         if atype == ACTION_PASS:
             return {"type": "pass"}
         if atype == ACTION_ISSUE:
             return {"type": "issue"}
 
-    # ACQUISITION phase — 18xx uses offer + respond; our engine collapses
-    # these into a single decision.  We emit the 18xx-native "offer" type
-    # here; the server is responsible for appending "respond(accept=true)"
-    # when appropriate.
-    if phase == GamePhases.PHASE_ACQUISITION:
-        if atype == ACTION_ACQ_PRICE:
-            acq_company = TURN.get_acq_target_company(state)
-            low = get_company_low_price(acq_company)
-            price = low + amount
-            buyer_corp = TURN.get_active_corp(state)
-            return {
-                "type": "offer",
-                "corporation": CORP_NAMES[buyer_corp],
-                "company": COMPANY_NAMES[acq_company],
-                "price": price,
-            }
-        if atype == ACTION_ACQ_FI_BUY:
-            acq_company = TURN.get_acq_target_company(state)
-            buyer_corp = TURN.get_active_corp(state)
-            return {
-                "type": "offer",
-                "corporation": CORP_NAMES[buyer_corp],
-                "company": COMPANY_NAMES[acq_company],
-                "price": get_company_face_value(acq_company),
-            }
+    if phase == GamePhases.PHASE_ACQ_SELECT_CORP:
         if atype == ACTION_PASS:
             return {"type": "pass"}
+        if atype == ACTION_ACQ_SELECT_CORP:
+            return {"type": "select_corp", "corporation": CORP_NAMES[info.corp_id]}
 
-    # CLOSING phase
+    if phase == GamePhases.PHASE_ACQ_SELECT_COMPANY:
+        if atype == ACTION_ACQ_SELECT_COMPANY:
+            corp_id = TURN.get_active_corp(state)
+            company_id = info.company_id
+            if COMPANIES[company_id].get_location(state) == LOC_FI:
+                return {
+                    "type": "offer",
+                    "corporation": CORP_NAMES[corp_id],
+                    "company": COMPANIES[company_id].name,
+                    "price": _fi_purchase_price(corp_id, company_id),
+                }
+            return {
+                "type": "select_company",
+                "company": COMPANIES[company_id].name,
+            }
+
+    if phase == GamePhases.PHASE_ACQ_SELECT_PRICE:
+        if atype == ACTION_ACQ_PRICE:
+            corp_id = TURN.get_active_corp(state)
+            company_id = TURN.get_active_company(state)
+            return {
+                "type": "offer",
+                "corporation": CORP_NAMES[corp_id],
+                "company": COMPANIES[company_id].name,
+                "price": COMPANIES[company_id].get_low_price() + info.amount,
+            }
+
+    if phase == GamePhases.PHASE_ACQ_OFFER:
+        company_id = TURN.get_active_company(state)
+        return {
+            "type": "respond",
+            "corporation": CORP_NAMES[TURN.get_acq_offer_corp(state)],
+            "company": COMPANIES[company_id].name,
+            "accept": "true" if atype == ACTION_ACQ_OFFER_ACCEPT else "false",
+        }
+
     if phase == GamePhases.PHASE_CLOSING:
         if atype == ACTION_CLOSE:
-            closing_company = TURN.get_closing_company(state)
-            return {
-                "type": "close",
-                "company": COMPANY_NAMES[closing_company],
-            }
+            return {"type": "close", "company": COMPANIES[info.company_id].name}
         if atype == ACTION_PASS:
             return {"type": "pass"}
 
     raise ValueError(
-        f"Unknown action: idx={action_idx}, phase={phase}, type={atype}, "
-        f"slot={slot}, corp_id={corp_id}, amount={amount}"
+        f"Unknown action: idx={action_idx}, phase={phase}, "
+        f"decision_phase={phase_id}, type={atype}, info={info}"
     )
