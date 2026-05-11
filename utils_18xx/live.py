@@ -19,37 +19,72 @@ import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 import torch
 
+from core.actions import ACTION_PASS_PY as ACTION_PASS
 from core.data import (
+    COMPANY_NAME_TO_ID,
     COMPANY_NAMES,
+    CORP_NAME_TO_ID,
     CORP_NAMES,
     GamePhases,
 )
+from core.driver import (
+    DRIVER,
+    STATUS_GAME_OVER_PY as STATUS_GAME_OVER,
+    STATUS_INVALID_PY as STATUS_INVALID,
+)
 from core.state import get_layout
+from entities.company import COMPANIES
 from entities.corp import CORPS
-from entities.market import MARKET
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator
-from mcts.search import StatePool, run_search
+from mcts.search import StatePool, prepare_reuse_root, run_search
 from nn import get_model_input_spec
 from train.checkpoint import find_latest_checkpoint, load_model_from_checkpoint
 from train.config import MCTSConfig
 
 from .action_mapper import engine_action_to_18xx
 from .api_client import ApiClient, PermanentError, TransientError
-from .game_session import GameSession
+from .action_parser import get_legal_actions
+from .auto_actions import attach_expected_auto_actions
+from .game_session import GameSession, format_state_mismatches
+from .share_ledger import (
+    build_share_ownership as _build_share_ownership,
+    resolve_buyable_share as _resolve_buyable_share,
+    resolve_issuable_share as _resolve_issuable_share,
+    resolve_sellable_share as _resolve_sellable_share,
+)
 
 logger = logging.getLogger(__name__)
 
+AUTOMATED_PHASES = (
+    GamePhases.PHASE_WRAP_UP,
+    GamePhases.PHASE_INCOME,
+    GamePhases.PHASE_END_CARD,
+)
 ACQ_PHASES = (
     GamePhases.PHASE_ACQ_SELECT_CORP,
     GamePhases.PHASE_ACQ_SELECT_COMPANY,
     GamePhases.PHASE_ACQ_SELECT_PRICE,
     GamePhases.PHASE_ACQ_OFFER,
 )
+UNORDERED_PASS_PHASES = (
+    GamePhases.PHASE_ACQ_SELECT_CORP,
+    GamePhases.PHASE_CLOSING,
+)
+
+
+def prepare_live_decision_state(state) -> None:
+    """Set model-side rule flags after 18xx replay synchronization."""
+    # Replay uses acq_same_president=False so historical 18xx cross-president
+    # offers can be consumed. The live model/search policy should still only
+    # consider same-president acquisition offers.
+    state.acq_same_president = True
+    state.allow_positive_income_closing = False
 
 # ---------------------------------------------------------------------------
 # Webhook parsing
@@ -78,8 +113,309 @@ def parse_webhook_text(text: str) -> tuple[str | None, str | None]:
     return game_id, webhook_user_id
 
 
+def is_turn_webhook_text(text: str) -> bool:
+    """Return whether a webhook body is a turn notification."""
+    return "your turn" in text.lower()
+
+
+def parse_poke_game_id(path: str) -> str | None:
+    """Extract a game id from /poke/<id> or /poke?game_id=<id>."""
+    parsed = urlparse(path)
+    path_parts = [part for part in parsed.path.strip("/").split("/") if part]
+
+    if len(path_parts) == 2 and path_parts[0] == "poke":
+        return path_parts[1]
+
+    if len(path_parts) == 1 and path_parts[0] == "poke":
+        query = parse_qs(parsed.query)
+        for key in ("game_id", "game"):
+            values = query.get(key)
+            if values and values[0]:
+                return values[0]
+
+    return None
+
+
 def _same_id(left, right) -> bool:
     return str(left) == str(right)
+
+
+def _is_18xx_acquisition_round(game_data: dict) -> bool:
+    return "acquisition" in str(game_data.get("round", "")).lower()
+
+
+def _is_18xx_closing_round(game_data: dict) -> bool:
+    round_name = str(game_data.get("round", "")).lower()
+    return "closing" in round_name or "close" in round_name
+
+
+def _is_18xx_dividend_round(game_data: dict) -> bool:
+    round_name = str(game_data.get("round", "")).lower()
+    return "dividend" in round_name or round_name == "div"
+
+
+def _bot_is_acting(game_data: dict, bot_user_id) -> bool:
+    acting = game_data.get("acting", [])
+    return bool(acting) and any(_same_id(bot_user_id, actor) for actor in acting)
+
+
+def _acquisition_compatibility_action(
+    game_data: dict,
+    session: GameSession,
+    state,
+    bot_user_id,
+    engine_player_idx: int,
+) -> dict | None:
+    """Return an explicit 18xx ACQ action when RSS has already advanced.
+
+    18xx keeps Acquisition as an unordered blocking step because cross-
+    president and FI right-of-refusal choices are legal there.  The RSS model
+    intentionally searches only same-president acquisitions, so the replayed
+    engine state can already be on the next RSS decision while 18xx still
+    needs an explicit reject/pass from the currently acting bot.
+    """
+    if bot_user_id is None or not _is_18xx_acquisition_round(game_data):
+        return None
+
+    if not _bot_is_acting(game_data, bot_user_id):
+        return None
+
+    pending_offer = session.pending_offer_for_user_id(bot_user_id)
+    if pending_offer is not None:
+        corporation = pending_offer.get("corporation")
+        company = pending_offer.get("company")
+        if not corporation or not company:
+            return None
+        return {
+            "type": "respond",
+            "entity": bot_user_id,
+            "entity_type": "player",
+            "corporation": corporation,
+            "company": company,
+            "accept": "false",
+        }
+
+    phase = TURN.get_phase(state)
+    active = TURN.get_active_player(state)
+    if phase not in ACQ_PHASES or active != engine_player_idx:
+        return {
+            "type": "pass",
+            "entity": bot_user_id,
+            "entity_type": "player",
+        }
+
+    return None
+
+
+def _player_has_only_pass(state, player_idx: int) -> bool:
+    """Return whether ``player_idx`` has only PASS in the current phase."""
+    previous_active = TURN.get_active_player(state)
+    TURN.set_active_player(state, player_idx)
+    try:
+        legal_actions = get_legal_actions(state)
+    finally:
+        TURN.set_active_player(state, previous_active)
+    return (
+        len(legal_actions) == 1
+        and legal_actions[0][1].action_type == ACTION_PASS
+    )
+
+
+def _closing_compatibility_action(
+    game_data: dict,
+    state,
+    bot_user_id,
+    engine_player_idx: int,
+) -> dict | None:
+    """Return an explicit 18xx Closing pass when RSS has no model action."""
+    if bot_user_id is None or not _is_18xx_closing_round(game_data):
+        return None
+    if not _bot_is_acting(game_data, bot_user_id):
+        return None
+
+    phase = TURN.get_phase(state)
+    if phase != GamePhases.PHASE_CLOSING:
+        return {
+            "type": "pass",
+            "entity": bot_user_id,
+            "entity_type": "player",
+        }
+
+    active = TURN.get_active_player(state)
+    if active != engine_player_idx and _player_has_only_pass(state, engine_player_idx):
+        return {
+            "type": "pass",
+            "entity": bot_user_id,
+            "entity_type": "player",
+        }
+
+    return None
+
+
+def _dividend_compatibility_action(
+    game_data: dict,
+    session: GameSession,
+    state,
+    bot_user_id,
+    engine_player_idx: int,
+) -> dict | None:
+    """Return an explicit 18xx dividend when RSS auto-applied the only choice."""
+    if bot_user_id is None or not _is_18xx_dividend_round(game_data):
+        return None
+    if not _bot_is_acting(game_data, bot_user_id):
+        return None
+
+    active_corp_name = session._last_extract_record.get("active_corp")
+    if not active_corp_name:
+        return None
+
+    corp_id = CORP_NAME_TO_ID.get(active_corp_name)
+    if corp_id is None or not CORPS[corp_id].is_active(state):
+        return None
+
+    if CORPS[corp_id].get_president_id(state) != engine_player_idx:
+        return None
+
+    phase = TURN.get_phase(state)
+    if phase == GamePhases.PHASE_DIVIDENDS and TURN.get_active_corp(state) == corp_id:
+        return None
+
+    if TURN.is_dividend_remaining(state, corp_id):
+        return None
+
+    return {
+        "type": "dividend",
+        "entity": active_corp_name,
+        "entity_type": "corporation",
+        "kind": "variable",
+        "amount": 0,
+    }
+
+
+def _acting_engine_player_indices(
+    game_data: dict,
+    session: GameSession,
+) -> set[int]:
+    """Return engine player indices currently listed as acting by 18xx."""
+    indices: set[int] = set()
+    for actor in game_data.get("acting", []):
+        try:
+            indices.add(session.player_index_for_user_id(actor))
+        except ValueError:
+            continue
+    return indices
+
+
+def _align_unordered_round_to_18xx_actor(
+    game_data: dict,
+    session: GameSession,
+    state,
+    *,
+    bot_player_indices: set[int] | None = None,
+) -> int:
+    """Apply local non-bot passes until RSS active matches 18xx acting.
+
+    18xx Acquisition and Closing decisions are unordered: any eligible player
+    can act. RSS has an ordered active-player pointer for those same decisions.
+    When 18xx says a bot is acting but RSS is waiting on an earlier non-bot
+    player, consume a local replay-only pass before the active-player check.
+    """
+    acting_indices = _acting_engine_player_indices(game_data, session)
+    if not acting_indices:
+        return 0
+    bot_player_indices = set(bot_player_indices or ())
+
+    applied = 0
+    max_passes = max(1, TURN.get_num_players(state) + 2)
+    while applied < max_passes:
+        phase = TURN.get_phase(state)
+        if phase not in UNORDERED_PASS_PHASES:
+            break
+
+        active = TURN.get_active_player(state)
+        if active in acting_indices:
+            break
+        if active in bot_player_indices:
+            logger.info(
+                "Not injecting unordered pass for bot player: "
+                f"phase={phase}, active=P{active}, "
+                f"acting={sorted(acting_indices)}"
+            )
+            break
+
+        legal_actions = get_legal_actions(state)
+        pass_action = next(
+            (action_id for action_id, info in legal_actions if info.action_type == ACTION_PASS),
+            None,
+        )
+        if pass_action is None:
+            logger.info(
+                "Cannot locally align unordered round: "
+                f"phase={phase}, active=P{active}, "
+                f"acting={sorted(acting_indices)}, "
+                f"legal_count={len(legal_actions)}"
+            )
+            break
+
+        previous_step_mode = state.step_mode
+        state.step_mode = True
+        try:
+            status = DRIVER.apply_action(state, pass_action)
+        finally:
+            state.step_mode = previous_step_mode
+
+        if status == STATUS_INVALID:
+            raise RuntimeError(
+                f"Invalid local unordered pass alignment in phase {phase}"
+            )
+        applied += 1
+        if status == STATUS_GAME_OVER:
+            break
+
+    if applied >= max_passes:
+        logger.warning(
+            "Stopped unordered round alignment after max local passes: "
+            f"acting={sorted(acting_indices)}"
+        )
+
+    return applied
+
+
+def _retarget_closing_active_player_to_bot(
+    game_data: dict,
+    state,
+    bot_user_id,
+    engine_player_idx: int,
+) -> bool:
+    """Point RSS's ordered Closing turn at this 18xx acting bot."""
+    if bot_user_id is None or not _is_18xx_closing_round(game_data):
+        return False
+    if TURN.get_phase(state) != GamePhases.PHASE_CLOSING:
+        return False
+    if TURN.get_active_player(state) == engine_player_idx:
+        return False
+    if not _bot_is_acting(game_data, bot_user_id):
+        return False
+
+    TURN.set_active_player(state, engine_player_idx)
+    return True
+
+
+def _should_continue_after_postable_action(
+    pre_action_phase: int,
+    state,
+    bot_player_idx: int,
+) -> bool:
+    """Return whether live planning should keep selecting before posting."""
+    current_phase = TURN.get_phase(state)
+    same_round = (
+        pre_action_phase in ACQ_PHASES
+        and current_phase in ACQ_PHASES
+    ) or (
+        pre_action_phase == GamePhases.PHASE_CLOSING
+        and current_phase == GamePhases.PHASE_CLOSING
+    )
+    return same_round and TURN.get_active_player(state) == bot_player_idx
 
 
 # ---------------------------------------------------------------------------
@@ -93,13 +429,15 @@ def intent_to_api_action(
     game_data: dict,
     bot_player_idx: int,
     committed_ids: set,
+    bot_user_id=None,
 ) -> dict:
     """Convert an engine intent dict to the 18xx.games API action format.
 
     Maps entity/entity_type and adds fields the API expects.
     """
-    player_ids = [p["id"] for p in game_data["players"]]
-    bot_user_id = player_ids[bot_player_idx]
+    if bot_user_id is None:
+        player_ids = [p["id"] for p in game_data["players"]]
+        bot_user_id = player_ids[bot_player_idx]
     phase = TURN.get_phase(state)
     itype = intent["type"]
 
@@ -240,164 +578,165 @@ def intent_to_api_action(
     raise ValueError(f"Unknown intent type: {itype}")
 
 
+class _LiveActionComposer:
+    """Compose phase-local engine choices into postable 18xx actions."""
+
+    def __init__(
+        self,
+        game_data: dict,
+        bot_player_idx: int,
+        committed_ids: set,
+        bot_user_id=None,
+    ) -> None:
+        self.game_data = game_data
+        self.bot_player_idx = bot_player_idx
+        self.committed_ids = committed_ids
+        self._bot_user_id = bot_user_id
+        self.actions: list[dict] = []
+        self._pending_bid: dict | None = None
+        self._pending_par: dict | None = None
+        self._pending_acq: dict | None = None
+
+    @property
+    def bot_user_id(self):
+        if self._bot_user_id is not None:
+            return self._bot_user_id
+        return self.game_data["players"][self.bot_player_idx]["id"]
+
+    def add_step(self, phase: int, intent: dict, state=None) -> None:
+        """Add one pre-apply engine intent to the current 18xx action batch."""
+        itype = intent["type"]
+
+        if self._pending_bid is not None:
+            if phase == GamePhases.PHASE_BID and itype == "bid":
+                self._append_bid(intent)
+                self._pending_bid = None
+                return
+            raise ValueError(f"Expected BID price after INVEST auction, got {intent}")
+
+        if self._pending_par is not None:
+            if phase == GamePhases.PHASE_PAR and itype == "par_price":
+                self._append_par(intent)
+                self._pending_par = None
+                return
+            raise ValueError(f"Expected PAR price after IPO selection, got {intent}")
+
+        if self._pending_acq is not None:
+            if itype == "select_company":
+                self._pending_acq["company"] = intent["company"]
+                self._pending_acq.setdefault("corporation", intent.get("corporation"))
+                return
+            if itype == "offer":
+                self._append_offer(intent)
+                self._pending_acq = None
+                return
+            raise ValueError(f"Expected ACQ company/price after corp selection, got {intent}")
+
+        if phase == GamePhases.PHASE_INVEST and itype == "bid":
+            self._pending_bid = {"company": intent["company"]}
+            return
+
+        if itype == "ipo_select":
+            self._pending_par = {
+                "company": intent["company"],
+                "corporation": intent["corporation"],
+            }
+            return
+
+        if itype == "select_corp":
+            self._pending_acq = {"corporation": intent["corporation"]}
+            return
+
+        if itype == "select_company":
+            self._pending_acq = {
+                "company": intent["company"],
+                "corporation": intent.get("corporation"),
+            }
+            return
+
+        if itype == "offer":
+            self._append_offer(intent)
+            return
+
+        if itype == "par_price":
+            raise ValueError(f"PAR price without IPO selection: {intent}")
+
+        if state is None:
+            raise ValueError(f"Direct intent {intent} requires pre-action state")
+        self.actions.append(
+            intent_to_api_action(
+                intent,
+                state,
+                self._game_data_with_planned_actions(),
+                self.bot_player_idx,
+                self.committed_ids,
+                bot_user_id=self.bot_user_id,
+            )
+        )
+
+    def finish(self) -> list[dict]:
+        if self._pending_bid is not None:
+            raise ValueError(f"Incomplete INVEST/BID action: {self._pending_bid}")
+        if self._pending_par is not None:
+            raise ValueError(f"Incomplete IPO/PAR action: {self._pending_par}")
+        if self._pending_acq is not None:
+            raise ValueError(f"Incomplete ACQ action: {self._pending_acq}")
+        return list(self.actions)
+
+    def _game_data_with_planned_actions(self) -> dict:
+        if not self.actions:
+            return self.game_data
+        planned = []
+        for action in self.actions:
+            planned_action = dict(action)
+            planned_action.setdefault("user", self.bot_user_id)
+            planned.append(planned_action)
+        game_data = dict(self.game_data)
+        game_data["actions"] = list(self.game_data.get("actions", [])) + planned
+        return game_data
+
+    def _append_bid(self, intent: dict) -> None:
+        company = intent.get("company") or self._pending_bid["company"]
+        self.actions.append({
+            "type": "bid",
+            "entity": self.bot_user_id,
+            "entity_type": "player",
+            "company": company,
+            "price": intent["price"],
+        })
+
+    def _append_par(self, intent: dict) -> None:
+        assert self._pending_par is not None
+        self.actions.append({
+            "type": "par",
+            "entity": self._pending_par["company"],
+            "entity_type": "company",
+            "corporation": self._pending_par["corporation"],
+            "share_price": intent["share_price"],
+        })
+
+    def _append_offer(self, intent: dict) -> None:
+        pending = self._pending_acq or {}
+        corporation = intent.get("corporation") or pending.get("corporation")
+        company = intent.get("company") or pending.get("company")
+        if corporation is None or company is None:
+            raise ValueError(f"Incomplete ACQ offer intent: {intent}")
+        self.actions.append({
+            "type": "offer",
+            "entity": self.bot_user_id,
+            "entity_type": "player",
+            "corporation": corporation,
+            "company": company,
+            "price": intent["price"],
+        })
+
+
 def _get_corp_share_price(state, corp_name: str) -> int:
     """Get a corporation's current share price from engine state."""
     from core.data import CORP_NAME_TO_ID
 
     corp_id = CORP_NAME_TO_ID[corp_name]
     return CORPS[corp_id].get_share_price(state)
-
-
-# ---------------------------------------------------------------------------
-# Share ID resolution
-# ---------------------------------------------------------------------------
-
-# In 18xx.games, shares are identified as "{CORP}_{index}".
-# Share 0 is the president's share (20%), shares 1-N are regular (10%).
-# We track ownership by replaying the action history.
-
-
-def _build_share_ownership(
-    game_data: dict,
-    committed_ids: set,
-) -> tuple[dict[str, list[int]], dict[int, dict[str, list[int]]]]:
-    """Build share ownership maps from game action history.
-
-    Args:
-        game_data: Full game JSON from the 18xx API.
-        committed_ids: Set of committed action IDs (from Ruby extractor).
-
-    Returns:
-        (bank_shares, player_shares) where:
-        - bank_shares: {corp_name: [share_indices in bank]}
-        - player_shares: {user_id: {corp_name: [share_indices held]}}
-    """
-    # All 10 shares per corp start in the bank.
-    bank: dict[str, list[int]] = {}
-    players: dict[int, dict[str, list[int]]] = {}
-
-    for p in game_data.get("players", []):
-        players[p["id"]] = {}
-
-    for action in game_data.get("actions", []):
-        action_id = action.get("id")
-        if action_id is not None and action_id not in committed_ids:
-            continue
-        atype = action.get("type")
-
-        if atype == "par":
-            # President buys share 0
-            corp = action["corporation"]
-            if corp not in bank:
-                bank[corp] = list(range(10))
-            # Find who triggered this — look at the user field
-            user_id = action.get("user")
-            if user_id is not None:
-                if 0 in bank[corp]:
-                    bank[corp].remove(0)
-                    players.setdefault(user_id, {}).setdefault(
-                        corp, [],
-                    ).append(0)
-
-        elif atype == "buy_shares":
-            shares = action.get("shares", [])
-            user_id = action.get("entity")
-            if not isinstance(user_id, int):
-                continue
-            for share_ref in shares:
-                corp, idx = _parse_share_id(share_ref)
-                if corp and idx is not None:
-                    if corp in bank and idx in bank[corp]:
-                        bank[corp].remove(idx)
-                    players.setdefault(user_id, {}).setdefault(
-                        corp, [],
-                    ).append(idx)
-
-        elif atype == "sell_shares":
-            shares = action.get("shares", [])
-            entity = action.get("entity")
-            entity_type = action.get("entity_type")
-
-            if entity_type == "player" and isinstance(entity, int):
-                # Player selling to bank
-                for share_ref in shares:
-                    corp, idx = _parse_share_id(share_ref)
-                    if corp and idx is not None:
-                        p_shares = players.get(entity, {}).get(corp, [])
-                        if idx in p_shares:
-                            p_shares.remove(idx)
-                        bank.setdefault(corp, []).append(idx)
-            elif entity_type == "corporation" and isinstance(entity, str):
-                # Corp issuing shares (selling from treasury)
-                for share_ref in shares:
-                    corp, idx = _parse_share_id(share_ref)
-                    if corp and idx is not None:
-                        bank.setdefault(corp, []).append(idx)
-
-    return bank, players
-
-
-def _parse_share_id(share_ref: str) -> tuple[str | None, int | None]:
-    """Parse 'IC_2' into ('IC', 2)."""
-    parts = share_ref.rsplit("_", 1)
-    if len(parts) == 2:
-        try:
-            return parts[0], int(parts[1])
-        except ValueError:
-            pass
-    return None, None
-
-
-def _resolve_buyable_share(
-    game_data: dict, corp_name: str, committed_ids: set,
-) -> str:
-    """Find the lowest-numbered share available in the bank pool."""
-    bank, _ = _build_share_ownership(game_data, committed_ids)
-    available = sorted(bank.get(corp_name, []))
-    if not available:
-        raise ValueError(f"No shares of {corp_name} available in bank")
-    # Skip president's share (index 0) — it's bought via PAR, not buy_shares
-    non_president = [i for i in available if i > 0]
-    idx = non_president[0] if non_president else available[0]
-    return f"{corp_name}_{idx}"
-
-
-def _resolve_sellable_share(
-    game_data: dict, corp_name: str, user_id: int, committed_ids: set,
-) -> str:
-    """Find a share the player can sell (highest non-president share)."""
-    _, player_shares = _build_share_ownership(game_data, committed_ids)
-    held = sorted(
-        player_shares.get(user_id, {}).get(corp_name, []), reverse=True,
-    )
-    if not held:
-        raise ValueError(
-            f"User {user_id} holds no shares of {corp_name}"
-        )
-    # Prefer selling non-president shares
-    non_president = [i for i in held if i > 0]
-    idx = non_president[0] if non_president else held[0]
-    return f"{corp_name}_{idx}"
-
-
-def _resolve_issuable_share(
-    game_data: dict, corp_name: str, committed_ids: set,
-) -> str:
-    """Find the next share a corp can issue (from treasury/unissued)."""
-    bank, player_shares = _build_share_ownership(game_data, committed_ids)
-    # Issued shares are those held by bank pool or players.
-    # Unissued shares are those not yet in circulation.
-    in_circulation: set[int] = set()
-    for idx in bank.get(corp_name, []):
-        in_circulation.add(idx)
-    for user_shares in player_shares.values():
-        for idx in user_shares.get(corp_name, []):
-            in_circulation.add(idx)
-    # Find lowest unissued share (skip 0 = president)
-    for i in range(1, 10):
-        if i not in in_circulation:
-            return f"{corp_name}_{i}"
-    raise ValueError(f"No unissued shares of {corp_name}")
 
 
 # ---------------------------------------------------------------------------
@@ -569,146 +908,213 @@ class _SearchEngine:
         self,
         game_data: dict,
         bot_player_idx: int,
+        bot_user_id=None,
+        bot_user_ids: set | None = None,
     ) -> list[dict]:
         """Sync state, run MCTS, return API-format actions to post."""
         num_players = len(game_data.get("players", []))
         self.validate_player_count(num_players)
         session = self._session_for(game_data)
         state = session.sync(game_data)
-        phase = TURN.get_phase(state)
+        prepare_live_decision_state(state)
 
-        if phase == GamePhases.PHASE_GAME_OVER:
+        if TURN.get_phase(state) == GamePhases.PHASE_GAME_OVER:
             logger.info("Game is over")
             return []
 
-        active = state.get_active_player()
-        if active != bot_player_idx:
+        engine_player_idx = bot_player_idx
+        if bot_user_id is not None:
+            engine_player_idx = session.player_index_for_user_id(bot_user_id)
+        bot_player_indices = set()
+        for user_id in bot_user_ids or ():
+            try:
+                bot_player_indices.add(session.player_index_for_user_id(user_id))
+            except ValueError:
+                continue
+        if bot_user_id is not None:
+            bot_player_indices.add(engine_player_idx)
+
+        aligned_passes = _align_unordered_round_to_18xx_actor(
+            game_data,
+            session,
+            state,
+            bot_player_indices=bot_player_indices,
+        )
+        retargeted_closing = _retarget_closing_active_player_to_bot(
+            game_data,
+            state,
+            bot_user_id,
+            engine_player_idx,
+        )
+        active = TURN.get_active_player(state)
+        if aligned_passes:
             logger.info(
-                f"Not our turn yet: active=P{active}, bot=P{bot_player_idx}"
+                "Applied local unordered pass alignment: "
+                f"passes={aligned_passes}, active=P{active}"
+            )
+        if retargeted_closing:
+            logger.info(
+                "Retargeted unordered Closing decision to acting bot: "
+                f"active=P{active}"
+            )
+        logger.info(
+            "Player mapping: "
+            f"bot_user_id={bot_user_id}, api_idx={bot_player_idx}, "
+            f"engine_idx={engine_player_idx}, active=P{active}"
+        )
+
+        compatibility_action = _acquisition_compatibility_action(
+            game_data,
+            session,
+            state,
+            bot_user_id,
+            engine_player_idx,
+        )
+        if compatibility_action is None:
+            compatibility_action = _closing_compatibility_action(
+                game_data,
+                state,
+                bot_user_id,
+                engine_player_idx,
+            )
+        if compatibility_action is None:
+            compatibility_action = _dividend_compatibility_action(
+                game_data,
+                session,
+                state,
+                bot_user_id,
+                engine_player_idx,
+            )
+        if compatibility_action is not None:
+            logger.info(
+                "18xx compatibility action: "
+                f"{compatibility_action}"
+            )
+            return [compatibility_action]
+
+        if active != engine_player_idx:
+            logger.info(
+                f"Not our turn yet: active=P{active}, bot=P{engine_player_idx}"
             )
             return []
 
-        actions: list[dict] = []
-
-        if phase == GamePhases.PHASE_IPO:
-            actions = self._handle_ipo_par(
-                session, state, game_data, bot_player_idx,
-            )
-        elif phase in ACQ_PHASES:
-            actions = self._handle_acquisition(
-                session, state, game_data, bot_player_idx,
-            )
-        else:
-            action_idx = self._search(state, num_players)
-            intent = engine_action_to_18xx(
-                action_idx, state, self.max_players,
-            )
-            # Translate BEFORE apply — apply can auto-advance the phase
-            api_action = intent_to_api_action(
-                intent, state, game_data, bot_player_idx,
-                session.committed_ids,
-            )
-            session.apply_engine_action(action_idx)
-            actions = [api_action]
-
-        return actions
-
-    def _handle_ipo_par(
-        self, session: GameSession, state, game_data: dict, bot_player_idx: int,
-    ) -> list[dict]:
-        """IPO + PAR: two sequential searches combined into one par action."""
-        num_players = len(game_data.get("players", []))
-        action_idx = self._search(state, num_players)
-        intent = engine_action_to_18xx(
-            action_idx, state, self.max_players,
+        mismatches = session.validate_against_18xx(
+            game_data,
+            state,
+            context=f"game={game_data.get('id', '?')}",
         )
-
-        if intent["type"] == "pass":
-            api_action = intent_to_api_action(
-                intent, state, game_data, bot_player_idx,
-                session.committed_ids,
+        if mismatches:
+            logger.error(
+                "18xx/RSS replay mismatch before MCTS; refusing to move:\n%s",
+                format_state_mismatches(mismatches),
             )
-            session.apply_engine_action(action_idx)
-            return [api_action]
+            return []
 
-        # IPO selected a corp — get the company before apply
-        ipo_company_id = TURN.get_active_company(state)
-        ipo_company = COMPANY_NAMES[ipo_company_id]
-        ipo_corp = intent["corporation"]
+        previous_step_mode = state.step_mode
+        state.step_mode = True
+        try:
+            return self._plan_live_actions(
+                state, game_data, engine_player_idx, num_players,
+                session.committed_ids, bot_user_id=bot_user_id,
+            )
+        finally:
+            state.step_mode = previous_step_mode
 
-        session.apply_engine_action(action_idx)
-
-        if TURN.get_phase(state) != GamePhases.PHASE_PAR:
-            # PAR was auto-applied (only one valid price)
-            # We still need to tell the API about it
-            logger.info(f"PAR auto-applied for {ipo_corp}")
-            # Get the par price from the corp's share price
-            from core.data import CORP_NAME_TO_ID
-            corp_id = CORP_NAME_TO_ID[ipo_corp]
-            par_price = CORPS[corp_id].get_share_price(state)
-            col = MARKET.get_index_for_price(par_price)
-            return [{
-                "type": "par",
-                "entity": ipo_company,
-                "entity_type": "company",
-                "corporation": ipo_corp,
-                "share_price": f"{par_price},0,{col}",
-            }]
-
-        # Search for PAR price
-        par_action = self._search(state, num_players)
-        par_intent = engine_action_to_18xx(
-            par_action, state, self.max_players,
-        )
-        session.apply_engine_action(par_action)
-
-        return [{
-            "type": "par",
-            "entity": ipo_company,
-            "entity_type": "company",
-            "corporation": ipo_corp,
-            "share_price": par_intent["share_price"],
-        }]
-
-    def _handle_acquisition(
+    def _plan_live_actions(
         self,
-        session: GameSession,
         state,
         game_data: dict,
         bot_player_idx: int,
+        num_players: int,
+        committed_ids: set,
+        bot_user_id=None,
     ) -> list[dict]:
-        """Run split ACQ decisions until one postable 18xx action is chosen."""
-        num_players = len(game_data.get("players", []))
+        """Choose and apply engine steps until the bot no longer acts."""
+        composer = _LiveActionComposer(
+            game_data, bot_player_idx, committed_ids, bot_user_id=bot_user_id,
+        )
+        reuse_root = None
+        max_steps = 100
 
-        for _ in range(8):
+        for _ in range(max_steps):
             phase = TURN.get_phase(state)
-            if phase not in ACQ_PHASES:
-                return []
+            if phase == GamePhases.PHASE_GAME_OVER:
+                break
 
-            action_idx = self._search(state, num_players)
+            if phase in AUTOMATED_PHASES:
+                status = DRIVER.advance_phase(state)
+                if status == STATUS_INVALID:
+                    raise RuntimeError(f"Invalid automated advance in phase {phase}")
+                if status == STATUS_GAME_OVER:
+                    break
+                continue
+
+            active = TURN.get_active_player(state)
+            if active != bot_player_idx:
+                break
+
+            legal_actions = get_legal_actions(state)
+            if not legal_actions:
+                raise RuntimeError(f"No legal actions in live phase {phase}")
+
+            if len(legal_actions) == 1:
+                action_idx = legal_actions[0][0]
+            else:
+                search_reuse = (
+                    reuse_root
+                    if self._reuse_root_matches_state(reuse_root, state)
+                    else None
+                )
+                if reuse_root is not None and search_reuse is None:
+                    reuse_root = None
+                action_idx, root = self._search(
+                    state, num_players, reuse_root=search_reuse,
+                )
+                reuse_root = prepare_reuse_root(root, action_idx, self._state_pool)
+
             intent = engine_action_to_18xx(
                 action_idx, state, self.max_players,
             )
+            action_count_before = len(composer.actions)
+            composer.add_step(phase, intent, state)
 
-            if intent["type"] in {"select_corp", "select_company"}:
-                session.apply_engine_action(action_idx)
-                continue
+            status = DRIVER.apply_action(state, action_idx)
+            if status == STATUS_INVALID:
+                raise RuntimeError(f"Invalid engine action {action_idx} in phase {phase}")
+            if status == STATUS_GAME_OVER:
+                break
+            if len(composer.actions) > action_count_before:
+                if _should_continue_after_postable_action(
+                    phase,
+                    state,
+                    bot_player_idx,
+                ):
+                    continue
+                break
 
-            api_action = intent_to_api_action(
-                intent, state, game_data, bot_player_idx,
-                session.committed_ids,
-            )
-            session.apply_engine_action(action_idx)
-            return [api_action]
+        else:
+            raise RuntimeError("Exceeded live action step limit")
 
-        raise RuntimeError("Exceeded split acquisition decision limit")
+        return composer.finish()
 
-    def _search(self, state, num_players: int) -> int:
+    def _reuse_root_matches_state(self, reuse_root, state) -> bool:
+        if reuse_root is None or reuse_root.state_idx < 0:
+            return False
+        return np.array_equal(
+            self._state_pool.row(reuse_root.state_idx),
+            state._array,
+        )
+
+    def _search(self, state, num_players: int, reuse_root=None):
         """Run MCTS and return the best action index."""
         t0 = time.monotonic()
         root = run_search(
-            state, self._evaluator, self._mcts_config_for(num_players), self._rng,
+            None if reuse_root is not None else state,
+            self._evaluator,
+            self._mcts_config_for(num_players),
+            self._rng,
             state_pool=self._state_pool,
+            reuse_root=reuse_root,
         )
         elapsed = time.monotonic() - t0
 
@@ -722,7 +1128,7 @@ class _SearchEngine:
             f"MCTS: action={action_idx}, visits={top_visits}/{total_visits}, "
             f"time={elapsed:.1f}s"
         )
-        return action_idx
+        return action_idx, root
 
 
 # ---------------------------------------------------------------------------
@@ -767,8 +1173,19 @@ class WebhookHandler(BaseHTTPRequestHandler):
     work_queue: queue.Queue  # set by LiveService before serving
     auth: dict[str, dict]  # set by LiveService
 
+    def do_GET(self):
+        logger.info(f"Incoming GET: {self.path}")
+        if self._is_poke_path():
+            self._handle_poke()
+            return
+        self._send_json(404, {"error": "not_found"})
+
     def do_POST(self):
         logger.info(f"Incoming POST: {self.path}")
+
+        if self._is_poke_path():
+            self._handle_poke()
+            return
 
         # Extract bot name from URL path: /webhook/<bot_name>
         path_parts = self.path.strip("/").split("/")
@@ -792,16 +1209,29 @@ class WebhookHandler(BaseHTTPRequestHandler):
         try:
             data = json.loads(body)
         except json.JSONDecodeError:
+            logger.warning(
+                f"Webhook JSON parse failed: bot={bot_name}, body={body[:500]!r}"
+            )
             self.send_response(400)
             self.end_headers()
             return
 
         # Extract game_id from webhook text
         text = data.get("text", "")
+        if not text and "content" in data:
+            text = data.get("content", "")
+        logger.info(
+            "Webhook payload: "
+            f"bot={bot_name}, keys={sorted(data.keys())}, "
+            f"text={str(text)[:500]!r}"
+        )
 
-        # Only respond to "Your Turn" notifications
-        if "Your Turn" not in text:
-            logger.debug(f"Ignoring non-turn webhook: {text[:80]}")
+        # Only respond to turn notifications.
+        if not is_turn_webhook_text(str(text)):
+            logger.info(
+                f"Ignoring webhook for bot={bot_name}: "
+                f"missing turn marker"
+            )
             self.send_response(200)
             self.end_headers()
             return
@@ -809,7 +1239,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
         game_id, _ = parse_webhook_text(text)
 
         if not game_id:
-            logger.warning(f"Could not parse game_id from webhook: {text}")
+            logger.warning(
+                f"Ignoring webhook for bot={bot_name}: "
+                f"could not parse game id from text={text[:500]!r}"
+            )
             self.send_response(200)
             self.end_headers()
             return
@@ -819,6 +1252,56 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         self.send_response(200)
         self.end_headers()
+
+    def _is_poke_path(self) -> bool:
+        parsed = urlparse(self.path)
+        return parsed.path.strip("/").split("/", 1)[0] == "poke"
+
+    def _handle_poke(self):
+        game_id = parse_poke_game_id(self.path)
+        if game_id is None:
+            game_id = self._read_json_body_game_id()
+
+        if not game_id:
+            self._send_json(
+                400,
+                {"error": "missing_game_id", "usage": "/poke/<game_id>"},
+            )
+            return
+
+        bot_names = list(self.auth.keys())
+        for bot_name in bot_names:
+            self.work_queue.put((bot_name, game_id))
+
+        logger.info(
+            f"Manual poke: game={game_id}, queued bots={', '.join(bot_names)}"
+        )
+        self._send_json(
+            202,
+            {"status": "queued", "game_id": game_id, "bots": bot_names},
+        )
+
+    def _read_json_body_game_id(self) -> str | None:
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length <= 0:
+            return None
+
+        body = self.rfile.read(content_length).decode()
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            return None
+
+        game_id = data.get("game_id") or data.get("game")
+        return str(game_id) if game_id else None
+
+    def _send_json(self, status: int, payload: dict):
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, format, *args):
         """Suppress default HTTP logging — we use our own logger."""
@@ -913,13 +1396,24 @@ class MoveWorker(threading.Thread):
             logger.error(f"[{bot_name}] {e}")
             return
 
+        bot_user_ids = {
+            auth_info.get("user_id")
+            for auth_info in self._auth.values()
+            if auth_info.get("user_id") is not None
+        }
+
         # Loop: play moves until it's no longer our turn.
         # A single webhook may require multiple actions (e.g. sequential
-        # IPO decisions, or ACQ offers for multiple corps).
+        # IPO decisions, ACQ offers, or Closing choices).
         max_consecutive = 50  # safety limit
         for _ in range(max_consecutive):
             try:
-                api_actions = engine.process_turn(game_data, bot_player_idx)
+                api_actions = engine.process_turn(
+                    game_data,
+                    bot_player_idx,
+                    bot_user_id=bot_user_id,
+                    bot_user_ids=bot_user_ids,
+                )
             except Exception:
                 logger.exception(
                     f"[{bot_name}] Error processing turn in game {game_id}"
@@ -930,7 +1424,16 @@ class MoveWorker(threading.Thread):
                 return
 
             # Post each action (IPO+PAR is a single compound action)
-            for action in api_actions:
+            for post_idx, action in enumerate(api_actions):
+                try:
+                    action = attach_expected_auto_actions(game_data, action)
+                except Exception:
+                    logger.exception(
+                        f"[{bot_name}] Failed to compute auto_actions "
+                        f"for game {game_id}: {action}"
+                    )
+                    return
+
                 logger.info(
                     f"[{bot_name}] Posting to game {game_id}: {action}"
                 )
@@ -947,6 +1450,16 @@ class MoveWorker(threading.Thread):
                         f"[{bot_name}] Failed to post action after retries"
                     )
                     return
+
+                if post_idx < len(api_actions) - 1:
+                    try:
+                        game_data = self._api.fetch_game(game_id, token)
+                    except (TransientError, PermanentError) as e:
+                        logger.error(
+                            f"[{bot_name}] Failed to fetch game {game_id} "
+                            f"after posting action: {e}"
+                        )
+                        return
 
             # Wait for the server to process the action before re-fetching
             time.sleep(5)
@@ -1014,6 +1527,10 @@ class LiveService:
         logger.info(
             "Set webhook URLs to: "
             f"http://<host>:{self._port}/webhook/<bot_name>"
+        )
+        logger.info(
+            "Manual poke URL: "
+            f"http://<host>:{self._port}/poke/<game_id>"
         )
 
         try:

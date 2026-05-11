@@ -40,6 +40,7 @@ from core.data import (
 from core.state import GameState
 from entities.company import COMPANIES, CompanyLocation
 from entities.deck import DECK
+from entities.turn import TURN
 
 LOC_AUCTION = CompanyLocation.LOC_AUCTION
 LOC_REVEALED = CompanyLocation.LOC_REVEALED
@@ -123,7 +124,10 @@ def flatten_auto_actions(actions: list) -> list:
     for action in actions:
         result.append(action)
         for auto in action.get("auto_actions", []):
-            result.append(auto)
+            annotated = dict(auto)
+            annotated["_auto_parent_type"] = action.get("type")
+            annotated["_auto_parent_id"] = action.get("id")
+            result.append(annotated)
     return result
 
 
@@ -387,6 +391,11 @@ def map_acquisition_action(
 
     if phase != PHASE_ACQ_SELECT_PRICE:
         raise ValueError(f"Offer cannot be mapped in phase {phase}")
+
+    if TURN.get_active_corp(state) != corp_id:
+        raise ValueError("Offer corporation does not match active acquisition corp")
+    if TURN.get_active_company(state) != company_id:
+        raise ValueError("Offer company does not match active acquisition company")
 
     if COMPANIES[company_id].get_location(state) == LOC_FI:
         raise ValueError("FI target should execute during ACQ_SELECT_COMPANY, not ACQ_SELECT_PRICE")

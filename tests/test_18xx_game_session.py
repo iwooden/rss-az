@@ -1,0 +1,691 @@
+from core.data import COMPANY_NAME_TO_ID, COMPANY_NAMES, CORP_NAMES, GamePhases
+from core.driver import STATUS_INVALID_PY as STATUS_INVALID
+from core.state import GameState
+from entities.company import COMPANIES, CompanyLocation
+from entities.corp import CORPS
+from entities.fi import FI
+from entities.market import MARKET
+from entities.player import PLAYERS
+from entities.turn import TURN
+from phases.acq_select_corp import setup_acquisition_phase_py
+from phases.ipo import setup_ipo_phase_py
+from tests.phases.helpers.finance import set_player_cashs
+from tests.phases.helpers.ownership import (
+    give_company_to_corp,
+    give_company_to_fi,
+    give_company_to_player,
+)
+from tests.phases.conftest import draw_to_player, float_corp_for_test
+from utils_18xx.action_parser import map_action
+from utils_18xx.game_session import GameSession
+from utils_18xx.replay_state import apply_action_sequence
+
+
+def _new_state() -> GameState:
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    return state
+
+
+def test_session_replays_18xx_bid_as_invest_and_bid_steps():
+    players = [
+        {"id": 4, "name": "rss-az-3"},
+        {"id": 3, "name": "rss-az-2"},
+        {"id": 2, "name": "rss-az-1"},
+    ]
+    company = "MHE"
+    company_id = COMPANY_NAME_TO_ID[company]
+    price = COMPANIES[company_id].get_face_value()
+    initial = {
+        "action_id": 0,
+        "deck_order": [],
+        "initial_offering": [company],
+        "committed_action_ids": [1],
+        "players": players,
+    }
+    game_data = {
+        "id": "unit",
+        "players": players,
+        "actions": [{
+            "id": 1,
+            "type": "bid",
+            "entity": players[0]["id"],
+            "entity_type": "player",
+            "company": company,
+            "price": price,
+        }],
+    }
+
+    session = GameSession(3)
+    session._run_extractor = lambda data: initial
+
+    state = session.sync(game_data)
+
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_BID)
+    assert TURN.get_active_player(state) == 1
+    assert session.player_index_for_user_id(players[1]["id"]) == 1
+
+
+def test_split_followup_replays_18xx_par_price_after_ipo_selection():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+
+    company_id = 14
+    par_price = 20
+    give_company_to_player(state, company_id, 0)
+    set_player_cashs(state, {0: 100})
+    setup_ipo_phase_py(state)
+
+    session = GameSession(3)
+    action = {
+        "type": "par",
+        "entity": COMPANIES[company_id].name,
+        "entity_type": "company",
+        "corporation": CORP_NAMES[0],
+        "share_price": f"{par_price},0,{MARKET.get_index_for_price(par_price)}",
+    }
+
+    first_action = map_action(state, action, TURN.get_phase(state), session.layout)
+    assert apply_action_sequence(state, first_action) != STATUS_INVALID
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_PAR)
+
+    result = session._apply_split_action_followup(
+        state,
+        action,
+        GamePhases.PHASE_IPO,
+    )
+
+    assert result != STATUS_INVALID
+    assert TURN.get_phase(state) != int(GamePhases.PHASE_PAR)
+
+
+def test_session_consumes_closing_auto_passes_before_ipo():
+    players = [
+        {"id": 4, "name": "rss-az-3"},
+        {"id": 3, "name": "rss-az-2"},
+        {"id": 2, "name": "rss-az-1"},
+    ]
+    initial = {
+        "action_id": 0,
+        "deck_order": [
+            "BME",
+            "PR",
+            "OL",
+            "MS",
+            "BD",
+            "PKP",
+            "DR",
+            "SNCF",
+            "NS",
+            "SZD",
+            "FS",
+            "E",
+            "SJ",
+            "LHR",
+            "CDG",
+            "HA",
+            "FRA",
+        ],
+        "initial_offering": ["MHE", "BPM", "AKE"],
+        "committed_action_ids": list(range(1, 12)),
+        "players": players,
+    }
+    actions = [
+        {"id": 1, "type": "bid", "entity": 4, "entity_type": "player", "company": "MHE", "price": 8},
+        {"id": 2, "type": "bid", "entity": 3, "entity_type": "player", "company": "MHE", "price": 12},
+        {"id": 3, "type": "pass", "entity": 2, "entity_type": "player"},
+        {"id": 4, "type": "pass", "entity": 4, "entity_type": "player"},
+        {"id": 5, "type": "bid", "entity": 3, "entity_type": "player", "company": "BPM", "price": 10},
+        {"id": 6, "type": "pass", "entity": 2, "entity_type": "player"},
+        {"id": 7, "type": "bid", "entity": 4, "entity_type": "player", "company": "BPM", "price": 11},
+        {"id": 8, "type": "pass", "entity": 3, "entity_type": "player"},
+        {"id": 9, "type": "bid", "entity": 2, "entity_type": "player", "company": "AKE", "price": 10},
+        {"id": 10, "type": "pass", "entity": 4, "entity_type": "player"},
+        {
+            "id": 11,
+            "type": "pass",
+            "entity": 3,
+            "entity_type": "player",
+            "auto_actions": [
+                {"type": "pass", "entity": 2, "entity_type": "player"},
+                {"type": "pass", "entity": 4, "entity_type": "player"},
+                {"type": "pass", "entity": 3, "entity_type": "player"},
+            ],
+        },
+    ]
+    game_data = {"id": "unit", "players": players, "actions": actions}
+
+    session = GameSession(3)
+    session._run_extractor = lambda data: initial
+
+    state = session.sync(game_data)
+
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_IPO)
+    assert TURN.get_active_player(state) == 1
+    assert session.player_index_for_user_id(3) == 1
+
+
+def test_session_preserves_live_auction_after_share_price_cash_replay():
+    players = [
+        {"id": 4, "name": "rss-az-3"},
+        {"id": 3, "name": "rss-az-2"},
+        {"id": 2, "name": "rss-az-1"},
+    ]
+    initial = {
+        "action_id": 0,
+        "deck_order": [
+            "BME", "PR", "OL", "MS", "BD", "PKP", "DR", "SNCF", "NS",
+            "SZD", "FS", "E", "SJ", "LHR", "CDG", "HA", "FRA",
+        ],
+        "initial_offering": ["MHE", "BPM", "AKE"],
+        "committed_action_ids": list(range(1, 35)),
+        "players": players,
+    }
+    actions = [
+        {"id": 1, "type": "bid", "entity": 4, "entity_type": "player", "company": "MHE", "price": 8, "user": 4},
+        {"id": 2, "type": "bid", "entity": 3, "entity_type": "player", "company": "MHE", "price": 12, "user": 3},
+        {"id": 3, "type": "pass", "entity": 2, "entity_type": "player", "user": 2},
+        {"id": 4, "type": "pass", "entity": 4, "entity_type": "player", "user": 4},
+        {"id": 5, "type": "bid", "entity": 3, "entity_type": "player", "company": "BPM", "price": 10, "user": 3},
+        {"id": 6, "type": "pass", "entity": 2, "entity_type": "player", "user": 2},
+        {"id": 7, "type": "bid", "entity": 4, "entity_type": "player", "company": "BPM", "price": 11, "user": 4},
+        {"id": 8, "type": "pass", "entity": 3, "entity_type": "player", "user": 3},
+        {"id": 9, "type": "bid", "entity": 2, "entity_type": "player", "company": "AKE", "price": 10, "user": 2},
+        {"id": 10, "type": "pass", "entity": 4, "entity_type": "player", "user": 4},
+        {
+            "id": 11,
+            "type": "pass",
+            "entity": 3,
+            "entity_type": "player",
+            "user": 3,
+            "auto_actions": [
+                {"type": "pass", "entity": 2, "entity_type": "player"},
+                {"type": "pass", "entity": 4, "entity_type": "player"},
+                {"type": "pass", "entity": 3, "entity_type": "player"},
+            ],
+        },
+        {"id": 12, "type": "par", "entity": "MHE", "entity_type": "company", "corporation": "SI", "share_price": "10,0,6", "user": 3},
+        {"id": 13, "type": "par", "entity": "BPM", "entity_type": "company", "corporation": "DA", "share_price": "11,0,7", "user": 4},
+        {"id": 14, "type": "pass", "entity": "AKE", "entity_type": "company", "user": 2},
+        {"id": 15, "type": "bid", "entity": 2, "entity_type": "player", "company": "BME", "price": 4, "user": 2},
+        {"id": 16, "type": "pass", "entity": 4, "entity_type": "player", "user": 4},
+        {"id": 17, "type": "pass", "entity": 3, "entity_type": "player", "user": 3},
+        {"id": 18, "type": "buy_shares", "entity": 4, "entity_type": "player", "shares": ["DA_1"], "share_price": 11, "user": 4},
+        {"id": 19, "type": "bid", "entity": 3, "entity_type": "player", "company": "OL", "price": 16, "user": 3},
+        {"id": 20, "type": "bid", "entity": 2, "entity_type": "player", "company": "OL", "price": 17, "user": 2},
+        {"id": 21, "type": "pass", "entity": 3, "entity_type": "player", "user": 3},
+        {"id": 22, "type": "pass", "entity": 4, "entity_type": "player", "user": 4},
+        {"id": 23, "type": "buy_shares", "entity": 3, "entity_type": "player", "shares": ["SI_1"], "share_price": 10, "user": 3},
+        {"id": 24, "type": "pass", "entity": 4, "entity_type": "player", "user": 4},
+        {"id": 25, "type": "pass", "entity": 3, "entity_type": "player", "user": 3},
+        {"id": 26, "type": "pass", "entity": 3, "entity_type": "player", "user": 3},
+        {
+            "id": 27,
+            "type": "pass",
+            "entity": 4,
+            "entity_type": "player",
+            "user": 4,
+            "auto_actions": [
+                {"type": "pass", "entity": 2, "entity_type": "player"},
+                {"type": "pass", "entity": 3, "entity_type": "player"},
+                {"type": "pass", "entity": 4, "entity_type": "player"},
+            ],
+        },
+        {"id": 28, "type": "dividend", "entity": "DA", "entity_type": "corporation", "amount": 4, "user": 4},
+        {"id": 29, "type": "dividend", "entity": "SI", "entity_type": "corporation", "amount": 3, "user": 3},
+        {"id": 30, "type": "pass", "entity": "SI", "entity_type": "corporation", "user": 3},
+        {"id": 31, "type": "sell_shares", "entity": "DA", "entity_type": "corporation", "shares": ["DA_2"], "share_price": 12, "user": 4},
+        {"id": 32, "type": "pass", "entity": "OL", "entity_type": "company", "user": 2},
+        {"id": 33, "type": "par", "entity": "AKE", "entity_type": "company", "corporation": "PR", "share_price": "12,0,8", "user": 2},
+        {"id": 34, "type": "bid", "entity": 3, "entity_type": "player", "company": "BD", "price": 13, "user": 3},
+    ]
+
+    session = GameSession(3)
+    session._run_extractor = lambda data: initial
+
+    state = session.sync({"id": "unit", "round": "Investment", "players": players, "actions": actions})
+
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_BID)
+    assert TURN.get_active_player(state) == 0
+    assert session.player_index_for_user_id(4) == 0
+
+
+def test_acq_sync_applies_recorded_pass():
+    state = _new_state()
+    draw_to_player(state, 0)
+    draw_to_player(state, 1)
+    float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
+    float_corp_for_test(state, corp_id=1, player_id=1, par_index=12)
+    CORPS[0].set_cash(state, 100)
+    CORPS[1].set_cash(state, 100)
+    setup_acquisition_phase_py(state)
+
+    first_active = TURN.get_active_player(state)
+
+    session = GameSession(3)
+    next_idx = session._sync_acq_round(
+        state,
+        [{"type": "pass", "entity": "rss-az-2", "entity_type": "player"}],
+        0,
+    )
+
+    assert next_idx == 1
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_SELECT_CORP)
+    assert TURN.get_active_player(state) != first_active
+
+
+def test_acq_sync_applies_pass_for_recorded_entity():
+    state = _new_state()
+    for player_id, corp_id in enumerate((0, 1, 2)):
+        float_corp_for_test(state, corp_id=corp_id, player_id=player_id, par_index=10)
+        CORPS[corp_id].set_cash(state, 100)
+    setup_acquisition_phase_py(state)
+    state.step_mode = True
+
+    first_active = TURN.get_active_player(state)
+    target_player = (first_active + 1) % 3
+
+    session = GameSession(3)
+    session._player_ids = [4, 3, 2]
+    next_idx = session._sync_acq_round(
+        state,
+        [{
+            "type": "pass",
+            "entity": session._player_ids[target_player],
+            "entity_type": "player",
+        }],
+        0,
+    )
+
+    assert next_idx == 1
+    assert PLAYERS[target_player].has_passed(state)
+    assert not PLAYERS[first_active].has_passed(state)
+
+
+def test_acq_sync_discards_trailing_auto_pass_after_closing_transition():
+    state = _new_state()
+    for player_id, corp_id in enumerate((0, 1, 2)):
+        float_corp_for_test(state, corp_id=corp_id, player_id=player_id, par_index=10)
+        CORPS[corp_id].set_cash(state, 100)
+    setup_acquisition_phase_py(state)
+    state.step_mode = True
+
+    session = GameSession(3)
+    session._player_ids = [4, 3, 2]
+    actions = [
+        {"type": "pass", "entity": 4, "entity_type": "player"},
+        {
+            "type": "pass",
+            "entity": 3,
+            "entity_type": "player",
+            "_auto_parent_type": "pass",
+        },
+        {
+            "type": "pass",
+            "entity": 2,
+            "entity_type": "player",
+            "_auto_parent_type": "pass",
+        },
+        {
+            "type": "pass",
+            "entity": 4,
+            "entity_type": "player",
+            "_auto_parent_type": "pass",
+        },
+    ]
+
+    next_idx = session._sync_acq_round(state, actions, 0)
+
+    assert next_idx == len(actions)
+    assert TURN.get_phase(state) != int(GamePhases.PHASE_DIVIDENDS)
+
+
+def test_acq_sync_applies_same_president_offer_before_later_passes():
+    state = _new_state()
+    company_id = COMPANY_NAME_TO_ID["OL"]
+    corp_id = CORP_NAMES.index("PR")
+    give_company_to_player(state, company_id, 0)
+    float_corp_for_test(state, corp_id=corp_id, player_id=0, par_index=10)
+    CORPS[corp_id].set_cash(state, 100)
+    setup_acquisition_phase_py(state)
+    TURN.set_active_player(state, 0)
+
+    session = GameSession(3)
+    next_idx = session._sync_acq_round(
+        state,
+        [
+            {
+                "type": "offer",
+                "entity": "rss-az-1",
+                "entity_type": "player",
+                "corporation": "PR",
+                "company": "OL",
+                "price": COMPANIES[company_id].get_low_price(),
+            },
+            {"type": "pass", "entity": "rss-az-1", "entity_type": "player"},
+        ],
+        0,
+    )
+
+    assert next_idx >= 1
+    assert COMPANIES[company_id].is_owned_by_corp(state, corp_id)
+
+
+def test_acq_sync_resolves_fi_offer_before_following_passes():
+    state = _new_state()
+    corp_id = CORP_NAMES.index("OS")
+    company_id = COMPANY_NAME_TO_ID["B"]
+    float_corp_for_test(
+        state,
+        corp_id=corp_id,
+        company_id=COMPANY_NAME_TO_ID["MHE"],
+        player_id=2,
+        par_index=10,
+    )
+    give_company_to_fi(state, company_id)
+    CORPS[corp_id].set_cash(state, 50)
+    FI.set_cash(state, 10)
+    setup_acquisition_phase_py(state)
+    TURN.set_active_player(state, 2)
+
+    session = GameSession(3)
+    session._player_ids = [2, 3, 4]
+    next_idx = session._sync_acq_round(
+        state,
+        [
+            {
+                "id": 88,
+                "type": "offer",
+                "entity": 4,
+                "entity_type": "player",
+                "corporation": "OS",
+                "company": "B",
+                "price": COMPANIES[company_id].get_face_value(),
+            },
+            {
+                "id": 89,
+                "type": "pass",
+                "entity": 4,
+                "entity_type": "player",
+                "auto_actions": [
+                    {"type": "pass", "entity": 2, "entity_type": "player"},
+                    {"type": "pass", "entity": 3, "entity_type": "player"},
+                    {"type": "pass", "entity": 4, "entity_type": "player"},
+                ],
+            },
+            {
+                "type": "pass",
+                "entity": 2,
+                "entity_type": "player",
+                "_auto_parent_type": "pass",
+                "_auto_parent_id": 89,
+            },
+            {
+                "type": "pass",
+                "entity": 3,
+                "entity_type": "player",
+                "_auto_parent_type": "pass",
+                "_auto_parent_id": 89,
+            },
+            {
+                "type": "pass",
+                "entity": 4,
+                "entity_type": "player",
+                "_auto_parent_type": "pass",
+                "_auto_parent_id": 89,
+            },
+        ],
+        0,
+    )
+
+    assert next_idx == 5
+    assert (
+        COMPANIES[company_id].is_owned_by_corp(state, corp_id)
+        or COMPANIES[company_id].is_in_corp_acquisition(state, corp_id)
+    )
+    assert CORPS[corp_id].get_cash(state) < 50
+    assert FI.get_cash(state) > 10
+
+
+def test_fi_offer_waits_for_explicit_response():
+    state = _new_state()
+    corp_id = CORP_NAMES.index("OS")
+    company_id = COMPANY_NAME_TO_ID["B"]
+    float_corp_for_test(state, corp_id=corp_id, player_id=0, par_index=10)
+    give_company_to_fi(state, company_id)
+
+    session = GameSession(3)
+    offer = {
+        "id": 10,
+        "type": "offer",
+        "corporation": "OS",
+        "company": "B",
+        "price": COMPANIES[company_id].get_face_value(),
+    }
+    response = {
+        "id": 11,
+        "type": "respond",
+        "corporation": "OS",
+        "company": "B",
+        "accept": "true",
+    }
+
+    assert not session._offer_resolves_immediately(state, offer, response)
+
+
+def test_acq_replay_stops_after_same_president_offer_executes():
+    state = GameState(3, acq_same_president=False)
+    state.initialize_game(3, seed=42)
+
+    da_id = CORP_NAMES.index("DA")
+    pr_id = CORP_NAMES.index("PR")
+    bd_id = COMPANY_NAME_TO_ID["BD"]
+    ake_id = COMPANY_NAME_TO_ID["AKE"]
+    ol_id = COMPANY_NAME_TO_ID["OL"]
+
+    give_company_to_player(state, bd_id, 0)
+    give_company_to_corp(state, ake_id, pr_id)
+    give_company_to_corp(state, ol_id, pr_id)
+    float_corp_for_test(state, corp_id=da_id, player_id=0, par_index=10)
+    float_corp_for_test(state, corp_id=pr_id, player_id=2, par_index=10)
+    CORPS[da_id].set_cash(state, 25)
+    setup_acquisition_phase_py(state)
+    TURN.set_active_player(state, 0)
+
+    session = GameSession(3)
+    session._sync_acq_round(
+        state,
+        [{
+            "type": "offer",
+            "entity": "rss-az-3",
+            "entity_type": "player",
+            "corporation": "DA",
+            "company": "BD",
+            "price": COMPANIES[bd_id].get_low_price(),
+        }],
+        0,
+    )
+
+    assert (
+        COMPANIES[bd_id].is_owned_by_corp(state, da_id)
+        or COMPANIES[bd_id].is_in_corp_acquisition(state, da_id)
+    )
+    assert TURN.get_active_company(state) != ake_id
+
+
+def test_clo_sync_applies_recorded_pass_entity_only():
+    state = _new_state()
+    state.allow_positive_income_closing = True
+    give_company_to_player(state, COMPANY_NAME_TO_ID["BME"], 0)
+    give_company_to_player(state, COMPANY_NAME_TO_ID["OL"], 2)
+    TURN.set_phase(state, int(GamePhases.PHASE_CLOSING))
+    TURN.set_active_player(state, 0)
+
+    session = GameSession(3)
+    session._player_ids = [4, 3, 2]
+
+    next_idx = session._sync_clo_round(
+        state,
+        [{"type": "pass", "entity": 4, "entity_type": "player"}],
+        0,
+    )
+
+    assert next_idx == 1
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_CLOSING)
+    assert PLAYERS[0].has_passed(state)
+    assert not PLAYERS[2].has_passed(state)
+    assert TURN.get_active_player(state) == 2
+
+
+def test_clo_sync_respects_out_of_order_pass_entity():
+    state = _new_state()
+    state.allow_positive_income_closing = True
+    give_company_to_player(state, COMPANY_NAME_TO_ID["BME"], 0)
+    give_company_to_player(state, COMPANY_NAME_TO_ID["OL"], 2)
+    TURN.set_phase(state, int(GamePhases.PHASE_CLOSING))
+    TURN.set_active_player(state, 0)
+
+    session = GameSession(3)
+    session._player_ids = [4, 3, 2]
+
+    next_idx = session._sync_clo_round(
+        state,
+        [{"type": "pass", "entity": 2, "entity_type": "player"}],
+        0,
+    )
+
+    assert next_idx == 1
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_CLOSING)
+    assert not PLAYERS[0].has_passed(state)
+    assert PLAYERS[2].has_passed(state)
+    assert TURN.get_active_player(state) == 0
+
+
+def test_session_does_not_drain_live_acquisition_round():
+    state = _new_state()
+    float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
+    CORPS[0].set_cash(state, 100)
+    setup_acquisition_phase_py(state)
+
+    session = GameSession(3)
+
+    assert not session._should_drain_trailing_offer_phases(
+        {"round": "Acquisition"},
+        state,
+    )
+
+
+def test_live_state_validation_reports_corp_price_mismatch():
+    state = _new_state()
+    corp_id = CORP_NAMES.index("PR")
+    float_corp_for_test(state, corp_id=corp_id, player_id=0, par_index=10)
+    TURN.set_phase(state, int(GamePhases.PHASE_ISSUE_SHARES))
+    TURN.set_active_player(state, 0)
+    TURN.set_active_corp(state, corp_id)
+
+    actual_companies = sorted(
+        COMPANY_NAMES[cid]
+        for cid in range(len(COMPANY_NAMES))
+        if COMPANIES[cid].is_owned_by_corp(state, corp_id)
+        or COMPANIES[cid].is_in_corp_acquisition(state, corp_id)
+    )
+    actual_offering = sorted(
+        COMPANY_NAMES[cid]
+        for cid in range(len(COMPANY_NAMES))
+        if COMPANIES[cid].get_location(state)
+        in (int(CompanyLocation.LOC_AUCTION), int(CompanyLocation.LOC_REVEALED))
+    )
+    fi_companies = sorted(
+        COMPANY_NAMES[cid]
+        for cid in range(len(COMPANY_NAMES))
+        if COMPANIES[cid].is_owned_by_fi(state)
+    )
+
+    session = GameSession(3)
+    session._player_ids = [101, 202, 303]
+    session._last_extract_record = {
+        "action_id": 99,
+        "active_corp": "PR",
+        "players": [],
+        "corporations": [{
+            "name": "PR",
+            "floated": True,
+            "price": CORPS[corp_id].get_share_price(state) + 2,
+            "cash": CORPS[corp_id].get_cash(state),
+            "companies": actual_companies,
+            "shares_in_market": CORPS[corp_id].get_bank_shares(state),
+        }],
+        "foreign_investor": {
+            "cash": FI.get_cash(state),
+            "companies": fi_companies,
+        },
+        "offering": actual_offering,
+        "cost_level": TURN.get_coo_level(state),
+    }
+
+    mismatches = session.validate_against_18xx(
+        {"round": "Issue Shares"},
+        state,
+        context="unit",
+    )
+
+    assert any(
+        mismatch.field == "corp[PR].price"
+        and mismatch.expected == CORPS[corp_id].get_share_price(state) + 2
+        and mismatch.actual == CORPS[corp_id].get_share_price(state)
+        for mismatch in mismatches
+    )
+
+
+def test_live_state_validation_uses_acting_set_for_closing():
+    state = _new_state()
+    TURN.set_phase(state, int(GamePhases.PHASE_CLOSING))
+    TURN.set_active_player(state, 0)
+
+    actual_offering = sorted(
+        COMPANY_NAMES[cid]
+        for cid in range(len(COMPANY_NAMES))
+        if COMPANIES[cid].get_location(state)
+        in (int(CompanyLocation.LOC_AUCTION), int(CompanyLocation.LOC_REVEALED))
+    )
+    fi_companies = sorted(
+        COMPANY_NAMES[cid]
+        for cid in range(len(COMPANY_NAMES))
+        if COMPANIES[cid].is_owned_by_fi(state)
+    )
+
+    session = GameSession(3)
+    session._player_ids = [4, 3, 2]
+    session._last_extract_record = {
+        "action_id": 137,
+        "active_player": 2,
+        "players": [],
+        "corporations": [],
+        "foreign_investor": {
+            "cash": FI.get_cash(state),
+            "companies": fi_companies,
+        },
+        "offering": actual_offering,
+        "cost_level": TURN.get_coo_level(state),
+    }
+
+    mismatches = session.validate_against_18xx(
+        {"round": "Closing", "acting": [4]},
+        state,
+        context="unit",
+    )
+
+    assert not any(mismatch.field == "active_player" for mismatch in mismatches)
+
+    mismatches = session.validate_against_18xx(
+        {"round": "Closing", "acting": [3]},
+        state,
+        context="unit",
+    )
+
+    assert any(
+        mismatch.field == "active_player"
+        and mismatch.expected == [1]
+        and mismatch.actual == 0
+        for mismatch in mismatches
+    )

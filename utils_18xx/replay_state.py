@@ -241,6 +241,11 @@ def replay_acquisition_offer(
     }
 
     for _ in range(max_iterations):
+        if COMPANIES[company_id].is_owned_by_corp(state, buyer_corp_id):
+            return True
+        if COMPANIES[company_id].is_in_corp_acquisition(state, buyer_corp_id):
+            return True
+
         settle_to_player_choice(state)
         phase = TURN.get_phase(state)
 
@@ -260,6 +265,10 @@ def replay_acquisition_offer(
             result = DRIVER.apply_action(state, action_id)
             if result == STATUS_INVALID:
                 return False
+            if COMPANIES[company_id].is_owned_by_corp(state, buyer_corp_id):
+                return True
+            if COMPANIES[company_id].is_in_corp_acquisition(state, buyer_corp_id):
+                return True
             if TURN.get_phase(state) not in ACQ_PHASES:
                 return True
             continue

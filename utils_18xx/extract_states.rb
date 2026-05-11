@@ -126,6 +126,24 @@ def snapshot_foreign_investor(game)
   }
 end
 
+# Build outstanding acquisition offers from the live round, if present.
+def snapshot_offers(game)
+  return [] unless game.round.respond_to?(:offers)
+
+  game.round.offers.map do |offer|
+    responder = offer[:responder]
+    proposer = offer[:proposer]
+    {
+      proposer_id:    proposer&.player? ? proposer.id : nil,
+      responder_id:   responder&.player? ? responder.id : nil,
+      corporation:    offer[:corporation]&.name,
+      company:        offer[:company]&.sym,
+      price:          offer[:price],
+      responder_list: (offer[:responder_list] || []).map(&:name),
+    }
+  end
+end
+
 # Assemble a full state snapshot object.  The action_id and action_type fields
 # are set by the caller since this helper only reads the current game state.
 def build_snapshot(game, action_id:, action_type:, round_override: nil)
@@ -152,6 +170,7 @@ def build_snapshot(game, action_id:, action_type:, round_override: nil)
     players:          snapshot_players(game),
     corporations:     snapshot_corporations(game),
     foreign_investor: snapshot_foreign_investor(game),
+    offers:           snapshot_offers(game),
     offering:         game.offering.map(&:sym),
     deck_size:        game.company_deck.size,
     # Normalize cost_level to our engine's contiguous numbering:

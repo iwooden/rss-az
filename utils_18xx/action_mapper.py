@@ -97,7 +97,12 @@ def engine_action_to_18xx(
         if atype == ACTION_PASS:
             return {"type": "pass"}
         if atype == ACTION_IPO:
-            return {"type": "ipo_select", "corporation": CORP_NAMES[info.corp_id]}
+            company_id = TURN.get_active_company(state)
+            return {
+                "type": "ipo_select",
+                "company": COMPANIES[company_id].name,
+                "corporation": CORP_NAMES[info.corp_id],
+            }
 
     if phase == GamePhases.PHASE_PAR:
         if atype == ACTION_PAR:
@@ -137,6 +142,7 @@ def engine_action_to_18xx(
                 }
             return {
                 "type": "select_company",
+                "corporation": CORP_NAMES[corp_id],
                 "company": COMPANIES[company_id].name,
             }
 
