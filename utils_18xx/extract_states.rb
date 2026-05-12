@@ -97,9 +97,11 @@ end
 #   companies        - array of company symbols owned by this corp
 #   shares_in_market - number of shares sitting in the share pool (market)
 #   president        - name of the president player (or nil if in receivership)
+#   president_id     - id of the president player (or nil if in receivership)
 def snapshot_corporations(game)
   game.corporations.map do |corp|
     market_shares = game.share_pool.shares_by_corporation[corp]&.size || 0
+    president = corp.owner
 
     {
       name:             corp.name,
@@ -108,7 +110,8 @@ def snapshot_corporations(game)
       floated:          corp.floated?,
       companies:        corp.companies.map(&:sym),
       shares_in_market: market_shares,
-      president:        corp.owner&.name,
+      president:        president&.name,
+      president_id:     president&.player? ? president.id : nil,
     }
   end
 end

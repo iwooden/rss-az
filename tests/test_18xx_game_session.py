@@ -66,6 +66,35 @@ def test_session_replays_18xx_bid_as_invest_and_bid_steps():
     assert session.player_index_for_user_id(players[1]["id"]) == 1
 
 
+def test_new_game_sync_uses_initial_extractor_records_for_committed_ids():
+    players = [
+        {"id": 4, "name": "rss-az-3"},
+        {"id": 3, "name": "rss-az-2"},
+        {"id": 2, "name": "rss-az-1"},
+    ]
+    initial = {
+        "action_id": 0,
+        "deck_order": [],
+        "initial_offering": ["MHE"],
+        "committed_action_ids": [],
+        "players": players,
+    }
+    calls = []
+
+    session = GameSession(3)
+
+    def fake_run_extractor(data):
+        calls.append(data)
+        return initial
+
+    session._run_extractor = fake_run_extractor
+
+    session.sync({"id": "unit", "players": players, "actions": []})
+
+    assert len(calls) == 1
+    assert session.committed_ids == set()
+
+
 def test_split_followup_replays_18xx_par_price_after_ipo_selection():
     state = GameState(3)
     state.initialize_game(3, seed=42)
@@ -848,6 +877,69 @@ def test_live_state_validation_reports_corp_price_mismatch():
         mismatch.field == "corp[PR].price"
         and mismatch.expected == CORPS[corp_id].get_share_price(state) + 2
         and mismatch.actual == CORPS[corp_id].get_share_price(state)
+        for mismatch in mismatches
+    )
+
+
+def test_live_state_validation_reports_corp_president_mismatch():
+    state = _new_state()
+    corp_id = CORP_NAMES.index("PR")
+    float_corp_for_test(state, corp_id=corp_id, player_id=0, par_index=10)
+    TURN.set_phase(state, int(GamePhases.PHASE_ISSUE_SHARES))
+    TURN.set_active_player(state, 0)
+    TURN.set_active_corp(state, corp_id)
+
+    actual_companies = sorted(
+        COMPANY_NAMES[cid]
+        for cid in range(len(COMPANY_NAMES))
+        if COMPANIES[cid].is_owned_by_corp(state, corp_id)
+        or COMPANIES[cid].is_in_corp_acquisition(state, corp_id)
+    )
+    actual_offering = sorted(
+        COMPANY_NAMES[cid]
+        for cid in range(len(COMPANY_NAMES))
+        if COMPANIES[cid].get_location(state)
+        in (int(CompanyLocation.LOC_AUCTION), int(CompanyLocation.LOC_REVEALED))
+    )
+    fi_companies = sorted(
+        COMPANY_NAMES[cid]
+        for cid in range(len(COMPANY_NAMES))
+        if COMPANIES[cid].is_owned_by_fi(state)
+    )
+
+    session = GameSession(3)
+    session._player_ids = [101, 202, 303]
+    session._last_extract_record = {
+        "action_id": 99,
+        "active_corp": "PR",
+        "players": [],
+        "corporations": [{
+            "name": "PR",
+            "floated": True,
+            "price": CORPS[corp_id].get_share_price(state),
+            "cash": CORPS[corp_id].get_cash(state),
+            "companies": actual_companies,
+            "shares_in_market": CORPS[corp_id].get_bank_shares(state),
+            "president_id": 202,
+        }],
+        "foreign_investor": {
+            "cash": FI.get_cash(state),
+            "companies": fi_companies,
+        },
+        "offering": actual_offering,
+        "cost_level": TURN.get_coo_level(state),
+    }
+
+    mismatches = session.validate_against_18xx(
+        {"round": "Issue Shares"},
+        state,
+        context="unit",
+    )
+
+    assert any(
+        mismatch.field == "corp[PR].president"
+        and mismatch.expected == 1
+        and mismatch.actual == 0
         for mismatch in mismatches
     )
 

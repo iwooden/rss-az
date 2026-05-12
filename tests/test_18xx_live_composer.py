@@ -13,6 +13,7 @@ from utils_18xx.live import (
     _build_share_ownership,
     _closing_compatibility_action,
     _dividend_compatibility_action,
+    _filter_compatibility_mismatches,
     _resolve_buyable_share,
     _resolve_issuable_share,
     _resolve_sellable_share,
@@ -20,6 +21,7 @@ from utils_18xx.live import (
     _should_continue_after_postable_action,
     prepare_live_decision_state,
 )
+from utils_18xx.game_session import StateMismatch
 
 
 def _game_data():
@@ -420,6 +422,35 @@ def test_dividend_compatibility_ignores_normal_active_dividend_choice():
     )
 
     assert action is None
+
+
+def test_compatibility_mismatch_filter_keeps_economic_mismatches():
+    round_mismatch = StateMismatch(
+        action_id=1,
+        phase="PHASE_CLOSING",
+        field="round",
+        expected="Closing",
+        actual="PHASE_INCOME",
+    )
+    active_mismatch = StateMismatch(
+        action_id=1,
+        phase="PHASE_CLOSING",
+        field="active_player",
+        expected=[1],
+        actual=0,
+    )
+    cash_mismatch = StateMismatch(
+        action_id=1,
+        phase="PHASE_CLOSING",
+        field="corp[PR].cash",
+        expected=20,
+        actual=10,
+    )
+
+    assert _filter_compatibility_mismatches(
+        [round_mismatch, active_mismatch, cash_mismatch],
+        {"type": "pass"},
+    ) == [cash_mismatch]
 
 
 def test_share_ledger_resolves_issued_and_treasury_share_ids():

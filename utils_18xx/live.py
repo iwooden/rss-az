@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import logging
 import queue
@@ -264,6 +265,45 @@ def parse_poke_game_id(path: str) -> str | None:
 
 def _same_id(left, right) -> bool:
     return str(left) == str(right)
+
+
+def is_local_request_host(host: str) -> bool:
+    """Return whether an HTTP client address is local loopback."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_compatibility_surface_mismatch(
+    mismatch,
+    compatibility_action: dict,
+) -> bool:
+    """Return whether a mismatch is expected before a compatibility post."""
+    if mismatch.field == "round":
+        return True
+    if (
+        compatibility_action.get("type") == "pass"
+        and mismatch.field == "active_player"
+    ):
+        return True
+    return False
+
+
+def _filter_compatibility_mismatches(
+    mismatches: list,
+    compatibility_action: dict,
+) -> list:
+    return [
+        mismatch
+        for mismatch in mismatches
+        if not _is_compatibility_surface_mismatch(
+            mismatch,
+            compatibility_action,
+        )
+    ]
 
 
 def _is_18xx_acquisition_round(game_data: dict) -> bool:
@@ -1165,6 +1205,22 @@ class _SearchEngine:
                 engine_player_idx,
             )
         if compatibility_action is not None:
+            mismatches = session.validate_against_18xx(
+                game_data,
+                state,
+                context=f"game={game_data.get('id', '?')}",
+            )
+            blocking_mismatches = _filter_compatibility_mismatches(
+                mismatches,
+                compatibility_action,
+            )
+            if blocking_mismatches:
+                logger.error(
+                    "18xx/RSS replay mismatch before compatibility action; "
+                    "refusing to move:\n%s",
+                    format_state_mismatches(blocking_mismatches),
+                )
+                return []
             logger.info(
                 "18xx compatibility action: "
                 f"{compatibility_action}"
@@ -1400,6 +1456,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         logger.info(f"Incoming GET: {self.path}")
         if self._is_poke_path():
+            if not self._is_local_request():
+                self._send_json(403, {"error": "local_only"})
+                return
             self._handle_poke()
             return
         self._send_json(404, {"error": "not_found"})
@@ -1408,6 +1467,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
         logger.info(f"Incoming POST: {self.path}")
 
         if self._is_poke_path():
+            if not self._is_local_request():
+                self._send_json(403, {"error": "local_only"})
+                return
             self._handle_poke()
             return
 
@@ -1480,6 +1542,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
     def _is_poke_path(self) -> bool:
         parsed = urlparse(self.path)
         return parsed.path.strip("/").split("/", 1)[0] == "poke"
+
+    def _is_local_request(self) -> bool:
+        return is_local_request_host(str(self.client_address[0]))
 
     def _handle_poke(self):
         game_id = parse_poke_game_id(self.path)

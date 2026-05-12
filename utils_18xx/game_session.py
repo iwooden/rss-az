@@ -2,8 +2,10 @@
 
 Replays the full action history from scratch on each sync call.
 Uses the shared action mapping from utils_18xx.action_parser.
-The Ruby extractor runs once per game to get deck order; the Cython
-replay of hundreds of actions takes only milliseconds.
+The Ruby extractor supplies deck order and committed action metadata; the first
+sync for a game reuses one extractor result, and later syncs refresh metadata
+for undo/redo handling. The Cython replay of hundreds of actions takes only
+milliseconds.
 """
 
 from __future__ import annotations
@@ -113,8 +115,9 @@ class GameSession:
     This avoids state drift between the engine and the frontend — the
     Cython engine replays hundreds of actions in <10ms.
 
-    The Ruby extractor runs once per game_id to get the deck order and
-    initial offering, then is cached for subsequent replays.
+    The Ruby extractor runs on first sync for a game_id to get deck/order,
+    initial offering, and committed action metadata. Later syncs reuse the
+    deck metadata and refresh committed actions to handle undo/redo.
     """
 
     def __init__(self, num_players: int = 3, max_players: int | None = None):
@@ -140,8 +143,9 @@ class GameSession:
         of what happened in previous sync/AI-move cycles.
         """
         gid = game_data.get("id", "")
+        initial_extract_record = None
         if gid != self.game_id:
-            self._init_game_metadata(game_data)
+            initial_extract_record = self._init_game_metadata(game_data)
 
         # Fresh state every time.
         state = initialize_replay_state(
@@ -156,7 +160,12 @@ class GameSession:
 
         # Process actions — use Ruby extractor to resolve undo/redo.
         raw_actions = game_data.get("actions", [])
-        self.committed_ids = self._extract_committed_ids(game_data)
+        if initial_extract_record is not None:
+            self.committed_ids = set(
+                initial_extract_record.get("committed_action_ids", [])
+            )
+        else:
+            self.committed_ids = self._extract_committed_ids(game_data)
         actions = filter_actions(raw_actions, self.committed_ids)
         actions = flatten_auto_actions(actions)
 
@@ -534,6 +543,74 @@ class GameSession:
                 CORPS[corp_id].get_bank_shares(state),
                 context,
             )
+            self._compare_corp_president(
+                state,
+                ref,
+                ref_corp,
+                corp_id,
+                corp_name,
+                action_id,
+                phase_name,
+                context,
+                mismatches,
+            )
+
+    def _compare_corp_president(
+        self,
+        state: GameState,
+        ref: dict,
+        ref_corp: dict,
+        corp_id: int,
+        corp_name: str,
+        action_id: int,
+        phase_name: str,
+        context: str,
+        mismatches: list[StateMismatch],
+    ) -> None:
+        expected_idx = self._ref_corp_president_index(ref, ref_corp)
+        if expected_idx is None:
+            return
+
+        actual_idx = CORPS[corp_id].get_president_id(state)
+        if actual_idx == expected_idx:
+            return
+
+        mismatches.append(
+            StateMismatch(
+                action_id=action_id,
+                phase=phase_name,
+                field=f"corp[{corp_name}].president",
+                expected=expected_idx,
+                actual=actual_idx,
+                context=context,
+            )
+        )
+
+    def _ref_corp_president_index(self, ref: dict, ref_corp: dict) -> int | None:
+        """Return expected president index, -1 for receivership, None if unknown."""
+        if "president_id" in ref_corp:
+            president_id = ref_corp.get("president_id")
+            if president_id is None:
+                return -1
+            try:
+                return self.player_index_for_user_id(president_id)
+            except ValueError:
+                return None
+
+        president_name = ref_corp.get("president")
+        if president_name is None:
+            return None
+        if not president_name:
+            return -1
+
+        for ref_player in ref.get("players", []):
+            if ref_player.get("name") != president_name:
+                continue
+            try:
+                return self.player_index_for_user_id(ref_player.get("id"))
+            except ValueError:
+                return None
+        return None
 
     def _compare_foreign_investor(
         self,
@@ -1378,7 +1455,7 @@ class GameSession:
             and action.get("_auto_parent_type") in {"sell_company", "close", "pass"}
         )
 
-    def _init_game_metadata(self, game_data: dict) -> None:
+    def _init_game_metadata(self, game_data: dict) -> dict:
         """Extract and cache deck order / offering via Ruby extractor."""
         self.game_id = game_data.get("id", "")
         num_players = len(game_data.get("players", []))
@@ -1393,6 +1470,7 @@ class GameSession:
         self._deck_order = initial["deck_order"]
         self._offering = initial["initial_offering"]
         self._player_ids = [player["id"] for player in initial["players"]]
+        return initial
 
     def _run_extractor(self, game_data: dict) -> dict:
         """Run Ruby extractor subprocess; return the initial record."""
@@ -1433,9 +1511,9 @@ class GameSession:
     def _extract_committed_ids(self, game_data: dict) -> set:
         """Get committed action IDs from the Ruby extractor.
 
-        Runs the extractor on every sync to correctly handle undo/redo
-        in the live action stream.  The ~200ms cost is negligible next
-        to MCTS search time.
+        Runs the extractor on subsequent syncs to correctly handle undo/redo
+        in the live action stream.  The ~200ms cost is negligible next to
+        MCTS search time.
         """
         initial = self._run_extractor(game_data)
         return set(initial.get("committed_action_ids", []))

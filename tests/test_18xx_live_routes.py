@@ -1,4 +1,8 @@
-from utils_18xx.live import is_turn_webhook_text, parse_poke_game_id
+from utils_18xx.live import (
+    is_local_request_host,
+    is_turn_webhook_text,
+    parse_poke_game_id,
+)
 
 
 def test_parse_poke_game_id_from_path():
@@ -31,3 +35,11 @@ def test_turn_webhook_text_rejects_non_turn_notifications():
     assert not is_turn_webhook_text(
         '<@rss-az-2> Game Finished in Rolling Stock Stars "" (Issue Shares 13)'
     )
+
+
+def test_poke_endpoint_host_check_allows_only_loopback():
+    assert is_local_request_host("127.0.0.1")
+    assert is_local_request_host("::1")
+    assert is_local_request_host("localhost")
+    assert not is_local_request_host("192.168.1.10")
+    assert not is_local_request_host("203.0.113.7")
