@@ -8,6 +8,7 @@ Usage:
     .venv/bin/python -m utils_18xx.live --runtime-dir runtime --simulations 800
     .venv/bin/python -m utils_18xx.live --runtime-dir runtime --no-compile
     .venv/bin/python -m utils_18xx.live --runtime-dir runtime --model-output
+    .venv/bin/python -m utils_18xx.live --runtime-dir runtime --allow-cross-president-offers
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ from core.driver import (
     STATUS_INVALID_PY as STATUS_INVALID,
 )
 from core.state import get_layout
-from entities.company import COMPANIES
+from entities.company import COMPANIES, CompanyLocation
 from entities.corp import CORPS
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator
@@ -325,20 +326,63 @@ def _bot_is_acting(game_data: dict, bot_user_id) -> bool:
     return bool(acting) and any(_same_id(bot_user_id, actor) for actor in acting)
 
 
+def _pending_cross_president_offer_is_represented(
+    state,
+    pending_offer: dict,
+    engine_player_idx: int,
+) -> bool:
+    """Return whether RSS is sitting at the exact pending cross-president offer."""
+    if TURN.get_phase(state) != GamePhases.PHASE_ACQ_OFFER:
+        return False
+    if TURN.get_active_player(state) != engine_player_idx:
+        return False
+
+    try:
+        corp_id = CORP_NAME_TO_ID[pending_offer["corporation"]]
+        company_id = COMPANY_NAME_TO_ID[pending_offer["company"]]
+    except (KeyError, TypeError):
+        return False
+
+    if TURN.get_active_company(state) != company_id:
+        return False
+    if TURN.get_acq_offer_corp(state) != corp_id:
+        return False
+    if TURN.get_active_corp(state) != corp_id:
+        return False
+
+    price = pending_offer.get("price")
+    if price is not None:
+        try:
+            offer_price = int(price)
+        except (TypeError, ValueError):
+            return False
+        if TURN.get_acq_offer_price(state) != offer_price:
+            return False
+
+    location = COMPANIES[company_id].get_location(state)
+    return location in (
+        int(CompanyLocation.LOC_PLAYER),
+        int(CompanyLocation.LOC_CORP),
+    )
+
+
 def _acquisition_compatibility_action(
     game_data: dict,
     session: GameSession,
     state,
     bot_user_id,
     engine_player_idx: int,
+    *,
+    allow_cross_president_offers: bool = False,
 ) -> dict | None:
     """Return an explicit 18xx ACQ action when RSS has already advanced.
 
     18xx keeps Acquisition as an unordered blocking step because cross-
-    president and FI right-of-refusal choices are legal there.  The RSS model
-    intentionally searches only same-president acquisitions, so the replayed
-    engine state can already be on the next RSS decision while 18xx still
-    needs an explicit reject/pass from the currently acting bot.
+    president and FI right-of-refusal choices are legal there. By default the
+    RSS model searches only same-president acquisitions, so the replayed engine
+    state can already be on the next RSS decision while 18xx still needs an
+    explicit reject/pass from the currently acting bot. When enabled, an exact
+    pending cross-president ACQ_OFFER root is handed to model/search instead.
     """
     if bot_user_id is None or not _is_18xx_acquisition_round(game_data):
         return None
@@ -348,6 +392,19 @@ def _acquisition_compatibility_action(
 
     pending_offer = session.pending_offer_for_user_id(bot_user_id)
     if pending_offer is not None:
+        if (
+            allow_cross_president_offers
+            and _pending_cross_president_offer_is_represented(
+                state,
+                pending_offer,
+                engine_player_idx,
+            )
+        ):
+            logger.info(
+                "Evaluating pending cross-president ACQ offer with model: "
+                f"{pending_offer}"
+            )
+            return None
         corporation = pending_offer.get("corporation")
         company = pending_offer.get("company")
         if not corporation or not company:
@@ -574,6 +631,8 @@ def _should_continue_after_postable_action(
 ) -> bool:
     """Return whether live planning should keep selecting before posting."""
     current_phase = TURN.get_phase(state)
+    if pre_action_phase == GamePhases.PHASE_ACQ_OFFER:
+        return False
     if current_phase == GamePhases.PHASE_ACQ_OFFER:
         return False
     same_round = (
@@ -944,6 +1003,7 @@ class ModelRegistry:
         compile_model: bool = False,
         model_output: bool = False,
         eval_dtype: str | None = None,
+        allow_cross_president_offers: bool = False,
     ):
         self._config = models_config
         self._device = device
@@ -953,6 +1013,7 @@ class ModelRegistry:
         self._compile_model = compile_model
         self._model_output = model_output
         self._eval_dtype = eval_dtype
+        self._allow_cross_president_offers = allow_cross_president_offers
         self._engines: dict[Path, _SearchEngine] = {}
 
     def get_engine(self, num_players: int) -> _SearchEngine:
@@ -969,6 +1030,7 @@ class ModelRegistry:
                 compile_model=self._compile_model,
                 model_output=self._model_output,
                 eval_dtype=self._eval_dtype,
+                allow_cross_president_offers=self._allow_cross_president_offers,
             )
             self._engines[cp_path] = engine
         engine.validate_player_count(num_players)
@@ -1030,10 +1092,12 @@ class _SearchEngine:
         compile_model: bool = False,
         model_output: bool = False,
         eval_dtype: str | None = None,
+        allow_cross_president_offers: bool = False,
     ):
         self.device = device
         self.num_simulations = num_simulations
         self.model_output = model_output
+        self.allow_cross_president_offers = allow_cross_president_offers
 
         model, self.config, cp = load_model_from_checkpoint(checkpoint_path, device)
         self.search_batch_size = _resolve_live_search_batch_size(
@@ -1088,7 +1152,8 @@ class _SearchEngine:
             f"{self.min_players}-{self.max_players} players, "
             f"{num_simulations} sims/move, "
             f"search batch={self.search_batch_size}, "
-            f"eval dtype={self.eval_dtype or 'float32'}"
+            f"eval dtype={self.eval_dtype or 'float32'}, "
+            f"cross-president offers={self.allow_cross_president_offers}"
         )
 
     def validate_player_count(self, num_players: int) -> None:
@@ -1188,6 +1253,7 @@ class _SearchEngine:
             state,
             bot_user_id,
             engine_player_idx,
+            allow_cross_president_offers=self.allow_cross_president_offers,
         )
         if compatibility_action is None:
             compatibility_action = _closing_compatibility_action(
@@ -1886,6 +1952,14 @@ def main():
             "A0GB values for each live decision"
         ),
     )
+    parser.add_argument(
+        "--allow-cross-president-offers",
+        action="store_true",
+        help=(
+            "Let the model/search answer represented pending cross-president "
+            "ACQ offers instead of auto-rejecting them"
+        ),
+    )
     compile_group = parser.add_mutually_exclusive_group()
     compile_group.add_argument(
         "--compile",
@@ -1933,6 +2007,7 @@ def main():
         compile_model=args.compile_model,
         model_output=args.model_output,
         eval_dtype=args.eval_dtype,
+        allow_cross_president_offers=args.allow_cross_president_offers,
     )
 
     api = ApiClient(args.base_url)

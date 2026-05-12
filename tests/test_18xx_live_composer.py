@@ -2,12 +2,14 @@ import pytest
 
 from core.data import COMPANY_NAME_TO_ID, CORP_NAME_TO_ID, GamePhases
 from core.state import GameState
+from entities.company import COMPANIES
 from entities.corp import CORPS
 from entities.turn import TURN
 from tests.phases.conftest import float_corp_for_test
-from tests.phases.helpers.ownership import give_company_to_player
+from tests.phases.helpers.ownership import give_company_to_fi, give_company_to_player
 from utils_18xx.live import (
     _LiveActionComposer,
+    _SearchEngine,
     _acquisition_compatibility_action,
     _align_unordered_round_to_18xx_actor,
     _build_share_ownership,
@@ -52,6 +54,19 @@ class _FakeSession:
             if str(player_id) == str(user_id):
                 return idx
         raise ValueError(user_id)
+
+
+class _FakeProcessTurnSession(_FakeSession):
+    def __init__(self, state, offer=None, player_ids=None):
+        super().__init__(offer=offer, player_ids=player_ids)
+        self.state = state
+        self.committed_ids = set()
+
+    def sync(self, game_data):
+        return self.state
+
+    def validate_against_18xx(self, game_data, state, *, context="live"):
+        return []
 
 
 def test_composer_combines_invest_select_and_bid_price():
@@ -166,6 +181,119 @@ def test_acquisition_compatibility_rejects_pending_18xx_offer():
         "company": "OL",
         "accept": "false",
     }
+
+
+def test_acquisition_compatibility_allows_represented_cross_president_offer_when_enabled():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    corp_id = CORP_NAME_TO_ID["PR"]
+    company_id = COMPANY_NAME_TO_ID["OL"]
+    price = COMPANIES[company_id].get_low_price()
+    float_corp_for_test(state, corp_id=corp_id, player_id=0, par_index=10)
+    CORPS[corp_id].set_cash(state, 100)
+    give_company_to_player(state, company_id, 1)
+    TURN.enter_acq_offer(state, corp_id, company_id, price, corp_id, 1)
+
+    action = _acquisition_compatibility_action(
+        {"round": "Acquisition", "acting": [202]},
+        _FakeSession({
+            "responder_id": 202,
+            "corporation": "PR",
+            "company": "OL",
+            "price": price,
+        }),
+        state,
+        bot_user_id=202,
+        engine_player_idx=1,
+        allow_cross_president_offers=True,
+    )
+
+    assert action is None
+
+
+def test_acquisition_compatibility_still_rejects_fi_offer_when_cross_pres_enabled():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    original_corp_id = CORP_NAME_TO_ID["SM"]
+    offered_corp_id = CORP_NAME_TO_ID["OS"]
+    company_id = COMPANY_NAME_TO_ID["B"]
+    price = COMPANIES[company_id].get_face_value()
+    float_corp_for_test(state, corp_id=original_corp_id, player_id=0, par_index=10)
+    float_corp_for_test(state, corp_id=offered_corp_id, player_id=1, par_index=12)
+    give_company_to_fi(state, company_id)
+    TURN.enter_acq_offer(
+        state,
+        offered_corp_id,
+        company_id,
+        price,
+        original_corp_id,
+        1,
+    )
+
+    action = _acquisition_compatibility_action(
+        {"round": "Acquisition", "acting": [202]},
+        _FakeSession({
+            "responder_id": 202,
+            "corporation": "SM",
+            "company": "B",
+            "price": price,
+        }),
+        state,
+        bot_user_id=202,
+        engine_player_idx=1,
+        allow_cross_president_offers=True,
+    )
+
+    assert action == {
+        "type": "respond",
+        "entity": 202,
+        "entity_type": "player",
+        "corporation": "SM",
+        "company": "B",
+        "accept": "false",
+    }
+
+
+def test_search_engine_threads_cross_president_flag_to_acq_compatibility():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    engine = _SearchEngine.__new__(_SearchEngine)
+    engine.allow_cross_president_offers = True
+    engine.validate_player_count = lambda num_players: None
+    engine._session_for = lambda game_data: _FakeProcessTurnSession(
+        state,
+        offer={
+            "responder_id": 202,
+            "corporation": "PR",
+            "company": "OL",
+        },
+        player_ids=[101, 202, 303],
+    )
+
+    actions = engine.process_turn(
+        {
+            "id": 1,
+            "round": "Acquisition",
+            "acting": [202],
+            "players": [
+                {"id": 101, "name": "p1"},
+                {"id": 202, "name": "p2"},
+                {"id": 303, "name": "p3"},
+            ],
+        },
+        bot_player_idx=1,
+        bot_user_id=202,
+        bot_user_ids={202},
+    )
+
+    assert actions == [{
+        "type": "respond",
+        "entity": 202,
+        "entity_type": "player",
+        "corporation": "PR",
+        "company": "OL",
+        "accept": "false",
+    }]
 
 
 def test_acquisition_compatibility_passes_when_rss_phase_has_advanced():
@@ -317,6 +445,19 @@ def test_live_planning_stops_on_acq_offer():
 
     assert not _should_continue_after_postable_action(
         GamePhases.PHASE_ACQ_SELECT_COMPANY,
+        state,
+        bot_player_idx=2,
+    )
+
+
+def test_live_planning_stops_after_acq_offer_response():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_CORP))
+    TURN.set_active_player(state, 2)
+
+    assert not _should_continue_after_postable_action(
+        GamePhases.PHASE_ACQ_OFFER,
         state,
         bot_player_idx=2,
     )
