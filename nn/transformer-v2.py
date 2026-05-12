@@ -720,11 +720,15 @@ class RSSTransformerNet(nn.Module):
 
         self.dividend_query_proj = nn.Linear(3 * d, dp, bias=False)
         self.issue_query_proj = nn.Linear(3 * d, dp, bias=False)
-        self.issue_pass_key_proj = nn.Linear(d, dp, bias=False)
-        self.issue_share_key_proj = nn.Linear(d, dp, bias=False)
+        self.issue_action_key_embed = nn.Embedding(
+            _phase_action_size(DecisionPhase.DPHASE_ISSUE),
+            dp,
+        )
         self.acq_offer_query_proj = nn.Linear(4 * d, dp, bias=False)
-        self.acq_offer_pass_key_proj = nn.Linear(d, dp, bias=False)
-        self.acq_offer_accept_key_proj = nn.Linear(d, dp, bias=False)
+        self.acq_offer_action_key_embed = nn.Embedding(
+            _phase_action_size(DecisionPhase.DPHASE_ACQ_OFFER),
+            dp,
+        )
 
         self.acq_price_query_proj = nn.Linear(4 * d, dp, bias=False)
         self.par_query_proj = nn.Linear(4 * d, dp, bias=False)
@@ -981,12 +985,13 @@ class RSSTransformerNet(nn.Module):
             1
             + num_corps
         )
-        if _phase_action_size(DecisionPhase.DPHASE_ACQ_OFFER) != 2:
+        num_acq_offer_actions = self.acq_offer_action_key_embed.num_embeddings
+        if _phase_action_size(DecisionPhase.DPHASE_ACQ_OFFER) != num_acq_offer_actions:
             raise AssertionError(
-                "ACQ_OFFER policy readout has two projected keys; "
+                f"ACQ_OFFER policy readout has {num_acq_offer_actions} learned keys; "
                 f"PHASE_ACTION_SIZES reports {_phase_action_size(DecisionPhase.DPHASE_ACQ_OFFER)}"
             )
-        block_widths[int(DecisionPhase.DPHASE_ACQ_OFFER)] = 2
+        block_widths[int(DecisionPhase.DPHASE_ACQ_OFFER)] = num_acq_offer_actions
         block_widths[int(DecisionPhase.DPHASE_CLOSING)] = (
             1
             + num_companies
@@ -994,12 +999,13 @@ class RSSTransformerNet(nn.Module):
         block_widths[int(DecisionPhase.DPHASE_DIVIDENDS)] = (
             int(self._dividend_amount_features.shape[1])
         )
-        if _phase_action_size(DecisionPhase.DPHASE_ISSUE) != 2:
+        num_issue_actions = self.issue_action_key_embed.num_embeddings
+        if _phase_action_size(DecisionPhase.DPHASE_ISSUE) != num_issue_actions:
             raise AssertionError(
-                "ISSUE policy readout has two projected keys; "
+                f"ISSUE policy readout has {num_issue_actions} learned keys; "
                 f"PHASE_ACTION_SIZES reports {_phase_action_size(DecisionPhase.DPHASE_ISSUE)}"
             )
-        block_widths[int(DecisionPhase.DPHASE_ISSUE)] = 2
+        block_widths[int(DecisionPhase.DPHASE_ISSUE)] = num_issue_actions
         block_widths[int(DecisionPhase.DPHASE_IPO)] = (
             1
             + num_corps
@@ -1119,6 +1125,15 @@ class RSSTransformerNet(nn.Module):
         query = query_proj(query_input)
         logits = torch.bmm(keys, query.unsqueeze(-1)).squeeze(-1)
         return logits / math.sqrt(self.cfg.d_proj)
+
+    def _action_key_embeddings(
+        self,
+        embedding: nn.Embedding,
+        ref: torch.Tensor,
+    ) -> torch.Tensor:
+        """Broadcast learned action-key embeddings to the current batch."""
+        keys = self._match_dtype_device(embedding.weight, ref)
+        return keys.unsqueeze(0).expand(ref.shape[0], -1, -1)
 
     def _invest_logits(
         self,
@@ -1287,13 +1302,7 @@ class RSSTransformerNet(nn.Module):
 
     def _issue_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Build ISSUE logits: pass/no-issue plus issue one share."""
-        keys = torch.stack(
-            [
-                self.issue_pass_key_proj(ctx.active_corp),
-                self.issue_share_key_proj(ctx.active_corp),
-            ],
-            dim=1,
-        )
+        keys = self._action_key_embeddings(self.issue_action_key_embed, ctx.tokens)
         query_input = torch.cat(
             [ctx.active_player, ctx.active_corp, ctx.tokens[:, self._issue_idx]],
             dim=-1,
@@ -1302,13 +1311,7 @@ class RSSTransformerNet(nn.Module):
 
     def _acq_offer_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Build ACQ_OFFER logits: pass/reject plus accept offer."""
-        keys = torch.stack(
-            [
-                self.acq_offer_pass_key_proj(ctx.active_company),
-                self.acq_offer_accept_key_proj(ctx.active_company),
-            ],
-            dim=1,
-        )
+        keys = self._action_key_embeddings(self.acq_offer_action_key_embed, ctx.tokens)
         query_input = torch.cat(
             [
                 ctx.active_player,
@@ -1687,6 +1690,8 @@ class RSSTransformerNet(nn.Module):
         nn.init.trunc_normal_(self.corp_id_embed.weight, std=0.02)
         # Per-type additive embeddings: same small-random init.
         nn.init.trunc_normal_(self.type_embeds.weight, std=0.02)
+        nn.init.trunc_normal_(self.issue_action_key_embed.weight, std=0.02)
+        nn.init.trunc_normal_(self.acq_offer_action_key_embed.weight, std=0.02)
         # Relation attention starts behavior-preserving; training can learn
         # positive or negative head/layer-specific biases from zero.
         nn.init.zeros_(self.relation_bias_mult)
@@ -1732,6 +1737,8 @@ if __name__ == "__main__":
     corp_id_params = model.corp_id_embed.weight.numel()
     price_slot_params = sum(p.numel() for p in model.price_slot_proj.parameters())
     type_params = model.type_embeds.weight.numel()
+    issue_action_key_params = model.issue_action_key_embed.weight.numel()
+    acq_offer_action_key_params = model.acq_offer_action_key_embed.weight.numel()
     phase_mod_params = 0
     for block in model.blocks:
         assert isinstance(block, TransformerBlock)
@@ -1756,10 +1763,8 @@ if __name__ == "__main__":
         model.ipo_query_proj, model.ipo_pass_key_proj, model.ipo_corp_proj,
         model.bid_query_proj, model.bid_pass_key_proj,
         model.dividend_query_proj,
-        model.issue_query_proj, model.issue_pass_key_proj,
-        model.issue_share_key_proj,
-        model.acq_offer_query_proj, model.acq_offer_pass_key_proj,
-        model.acq_offer_accept_key_proj,
+        model.issue_query_proj,
+        model.acq_offer_query_proj,
         model.acq_price_query_proj,
         model.par_query_proj,
     ]
@@ -1772,6 +1777,8 @@ if __name__ == "__main__":
         ("Corp ID embeds", corp_id_params),
         ("Price slot proj", price_slot_params),
         ("Type embeds", type_params),
+        ("Issue action key embeds", issue_action_key_params),
+        ("ACQ offer key embeds", acq_offer_action_key_params),
         ("Transformer trunk", trunk_params),
         ("Phase mod embeds", phase_mod_params),
         ("Policy heads", policy_params),

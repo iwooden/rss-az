@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from core.attention_relations import NUM_ATTENTION_RELATIONS
+from core.data import DecisionPhase, PHASE_ACTION_SIZES
 from core.token_data import TokenDataSize, get_num_tokens
 from nn import create_model, get_model_input_spec
 from nn.resnet import RSSResNet
@@ -103,6 +104,42 @@ def test_factory_instantiates_transformer_from_model_path() -> None:
     assert model.cfg.price_slot_fourier_bands == config.price_slot_fourier_bands
     assert not hasattr(model.cfg, "price_slot_residual_scale")
     assert any(name.endswith("phase_mod.weight") for name, _ in model.named_parameters())
+
+
+def test_model_path_v2_binary_decision_keys_are_learned_embeddings() -> None:
+    config = TrainingConfig(
+        model_type="transformer",
+        model_path="nn/transformer-v2.py",
+        d_model=64,
+        d_proj=16,
+        num_heads=4,
+        num_layers=1,
+    )
+    model = create_model(config)
+
+    issue_actions = int(PHASE_ACTION_SIZES[int(DecisionPhase.DPHASE_ISSUE)])
+    acq_offer_actions = int(PHASE_ACTION_SIZES[int(DecisionPhase.DPHASE_ACQ_OFFER)])
+
+    assert isinstance(model.issue_action_key_embed, torch.nn.Embedding)
+    assert isinstance(model.acq_offer_action_key_embed, torch.nn.Embedding)
+    assert tuple(model.issue_action_key_embed.weight.shape) == (
+        issue_actions,
+        config.d_proj,
+    )
+    assert tuple(model.acq_offer_action_key_embed.weight.shape) == (
+        acq_offer_actions,
+        config.d_proj,
+    )
+    assert model.issue_query_proj.in_features == 3 * config.d_model
+    assert model.acq_offer_query_proj.in_features == 4 * config.d_model
+
+    parameter_names = dict(model.named_parameters())
+    assert "issue_action_key_embed.weight" in parameter_names
+    assert "acq_offer_action_key_embed.weight" in parameter_names
+    assert "issue_pass_key_proj.weight" not in parameter_names
+    assert "issue_share_key_proj.weight" not in parameter_names
+    assert "acq_offer_pass_key_proj.weight" not in parameter_names
+    assert "acq_offer_accept_key_proj.weight" not in parameter_names
 
 
 def test_factory_threads_custom_size_into_model_path_transformer() -> None:
