@@ -526,7 +526,13 @@ def test_replay_acquisition_offer_passes_until_offer_maps(monkeypatch):
     monkeypatch.setattr(
         replay_state,
         "COMPANIES",
-        [SimpleNamespace(name="KK")],
+        [
+            SimpleNamespace(
+                name="KK",
+                is_owned_by_corp=lambda current_state, corp_id: False,
+                is_in_corp_acquisition=lambda current_state, corp_id: False,
+            )
+        ],
     )
     monkeypatch.setattr(replay_state, "settle_to_player_choice", lambda current_state: None)
 

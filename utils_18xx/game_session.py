@@ -22,6 +22,7 @@ from core.data import (
     GamePhases,
 )
 from core.actions import (
+    ACTION_ACQ_OFFER_ACCEPT_PY as ACTION_ACQ_OFFER_ACCEPT,
     ACTION_CLOSE_PY as ACTION_CLOSE,
     ACTION_PASS_PY as ACTION_PASS,
 )
@@ -129,6 +130,7 @@ class GameSession:
         self.committed_ids: set = set()
         self._player_ids: list = []
         self._last_extract_record: dict = {}
+        self._extract_records_by_action_id: dict[int, dict] = {}
 
     def sync(self, game_data: dict) -> GameState:
         """Replay the full game from scratch and return the current state.
@@ -698,6 +700,8 @@ class GameSession:
             and atype == "bid"
             and phase == GamePhases.PHASE_BID
         ):
+            if self._bid_followup_already_applied(state, action):
+                return STATUS_OK
             return apply_action_sequence(state, map_bid_action(state, action, self.layout))
 
         if (
@@ -708,6 +712,25 @@ class GameSession:
             return apply_action_sequence(state, map_par_action(state, action, self.layout))
 
         return STATUS_OK
+
+    def _bid_followup_already_applied(
+        self,
+        state: GameState,
+        action: dict,
+    ) -> bool:
+        """Return whether a forced opening BID was auto-applied by the driver."""
+        try:
+            company_id = COMPANY_NAME_TO_ID[action["company"]]
+            price = int(action["price"])
+            bidder_idx = self.player_index_for_user_id(action.get("entity"))
+        except (KeyError, TypeError, ValueError):
+            return False
+
+        return (
+            TURN.get_active_company(state) == company_id
+            and TURN.get_auction_price(state) == price
+            and TURN.get_auction_high_bidder(state) == bidder_idx
+        )
 
     def _share_price_cash_snapshot(
         self,
@@ -867,10 +890,11 @@ class GameSession:
                         accepted=True,
                         deferred_transfers=deferred_transfers,
                     )
+                self._retarget_acq_active_player_to_action_entity(state, action)
                 if self._offer_resolves_immediately(
                     state,
                     action,
-                    self._next_real_action(actions, idx + 1),
+                    self._has_future_response_to_offer(actions, idx + 1, action),
                 ):
                     self._resolve_acq_offer(
                         state,
@@ -880,24 +904,40 @@ class GameSession:
                     )
                     pending_offer = None
                 else:
-                    pending_offer = action
+                    pending_offer = (
+                        action
+                        if self._begin_acq_offer(state, action, deferred_transfers)
+                        else None
+                    )
                 idx += 1
                 continue
 
             if atype == "respond":
                 if pending_offer is not None:
-                    accepted = str(action.get("accept", "")).lower() == "true"
-                    self._resolve_acq_offer(
-                        state,
-                        pending_offer,
-                        accepted=accepted,
-                        deferred_transfers=deferred_transfers,
-                    )
-                    pending_offer = None
+                    if self._is_response_to_offer(action, pending_offer):
+                        self._apply_acq_offer_response(state, action)
+                        if TURN.get_phase(state) != GamePhases.PHASE_ACQ_OFFER:
+                            pending_offer = None
+                elif self._is_current_acq_offer_response(state, action):
+                    self._apply_acq_offer_response(state, action)
                 idx += 1
                 continue
 
             if atype == "pass":
+                if pending_offer is not None and TURN.get_phase(state) == GamePhases.PHASE_ACQ_OFFER:
+                    pending_after_pass = self._extractor_offer_pending_after_action(
+                        action,
+                        pending_offer,
+                    )
+                    if pending_after_pass is True:
+                        idx += 1
+                        continue
+                    if pending_after_pass is False:
+                        self._cancel_pending_acq_offer(state)
+                        pending_offer = None
+                    else:
+                        idx += 1
+                        continue
                 self._apply_acq_pass(state, action)
                 idx += 1
                 continue
@@ -915,7 +955,11 @@ class GameSession:
             ):
                 idx += 1
 
-        if pending_offer is not None and TURN.get_phase(state) in ACQ_PHASES:
+        if (
+            pending_offer is not None
+            and TURN.get_phase(state) in ACQ_PHASES
+            and TURN.get_phase(state) != GamePhases.PHASE_ACQ_OFFER
+        ):
             self._resolve_acq_offer(
                 state,
                 pending_offer,
@@ -962,6 +1006,94 @@ class GameSession:
                 f"phase={TURN.get_phase(state)}"
             )
 
+    def _begin_acq_offer(
+        self,
+        state: GameState,
+        offer: dict,
+        deferred_transfers: list[tuple[int, int, int]],
+    ) -> bool:
+        """Replay an offer up to ACQ_OFFER without answering it."""
+        buyer_corp_id = CORP_NAME_TO_ID[offer["corporation"]]
+        company_id = COMPANY_NAME_TO_ID[offer["company"]]
+        price = int(offer["price"])
+
+        if not is_representable_acquisition_offer(state, buyer_corp_id, company_id):
+            deferred_transfers.append((buyer_corp_id, company_id, price))
+            return False
+
+        for _ in range(50):
+            if COMPANIES[company_id].is_owned_by_corp(state, buyer_corp_id):
+                return False
+            if COMPANIES[company_id].is_in_corp_acquisition(state, buyer_corp_id):
+                return False
+
+            phase = TURN.get_phase(state)
+            if phase == GamePhases.PHASE_ACQ_OFFER:
+                return True
+            if phase not in ACQ_PHASES:
+                return False
+
+            try:
+                action_idx = map_action(state, offer, phase, self.layout)
+            except (ValueError, KeyError, IndexError):
+                return False
+
+            result = apply_action_sequence(state, action_idx)
+            if result == STATUS_INVALID:
+                raise RuntimeError(
+                    "Invalid ACQ offer replay action while opening offer "
+                    f"phase={phase} corporation={offer.get('corporation')} "
+                    f"company={offer.get('company')}"
+                )
+
+        raise RuntimeError("Exceeded ACQ offer opening iteration limit")
+
+    def _retarget_acq_active_player_to_action_entity(
+        self,
+        state: GameState,
+        action: dict,
+    ) -> None:
+        """Align unordered 18xx ACQ offers with RSS's player-ordered surface."""
+        if TURN.get_phase(state) != GamePhases.PHASE_ACQ_SELECT_CORP:
+            return
+        player_idx = self._player_index_for_action_entity(action)
+        if player_idx is None:
+            return
+        TURN.set_active_player(state, player_idx)
+        TURN.clear_acquisition_context(state)
+
+    def _apply_acq_offer_response(self, state: GameState, action: dict) -> None:
+        """Apply one recorded 18xx ACQ_OFFER response."""
+        accepted = str(action.get("accept", "")).lower() == "true"
+        try:
+            action_idx = find_legal_action(
+                state,
+                action_type=(
+                    ACTION_ACQ_OFFER_ACCEPT
+                    if accepted
+                    else ACTION_PASS
+                ),
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                "Failed to replay ACQ offer response "
+                f"corporation={action.get('corporation')} "
+                f"company={action.get('company')} accept={action.get('accept')}"
+            ) from exc
+
+        result = DRIVER.apply_action(state, action_idx)
+        if result == STATUS_INVALID:
+            raise RuntimeError(
+                "Invalid ACQ offer response replay action "
+                f"phase={TURN.get_phase(state)}"
+            )
+
+    @staticmethod
+    def _cancel_pending_acq_offer(state: GameState) -> None:
+        """Drop a live 18xx offer that cleared without an RSS transfer."""
+        TURN.clear_acquisition_context(state)
+        TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_CORP))
+
     def _player_index_for_action_entity(self, action: dict) -> int | None:
         """Return engine player index for an 18xx player-entity action."""
         if action.get("entity_type") != "player":
@@ -997,7 +1129,7 @@ class GameSession:
         self,
         state: GameState,
         offer: dict,
-        next_action: dict | None = None,
+        has_future_response: bool = False,
     ) -> bool:
         """Return whether 18xx processes this ACQ offer without a response."""
         buyer_corp_id = CORP_NAME_TO_ID[offer["corporation"]]
@@ -1007,7 +1139,10 @@ class GameSession:
         owner_id = COMPANIES[company_id].get_owner_id(state)
 
         if owner_loc == int(CompanyLocation.LOC_FI):
-            return not self._is_response_to_offer(next_action, offer)
+            return not (
+                has_future_response
+                or self._extractor_has_pending_offer(offer)
+            )
 
         if owner_loc == int(CompanyLocation.LOC_PLAYER):
             return owner_id == buyer_president
@@ -1018,12 +1153,50 @@ class GameSession:
         return False
 
     @staticmethod
-    def _next_real_action(actions: list[dict], start_idx: int) -> dict | None:
+    def _has_future_response_to_offer(
+        actions: list[dict],
+        start_idx: int,
+        offer: dict,
+    ) -> bool:
         for probe in range(start_idx, len(actions)):
             action = actions[probe]
-            if action.get("id") is not None:
-                return action
-        return None
+            if action.get("type") == "offer":
+                return False
+            if GameSession._is_response_to_offer(action, offer):
+                return True
+        return False
+
+    def _extractor_has_pending_offer(self, offer: dict) -> bool:
+        if self._extractor_offer_pending_after_action(offer, offer) is True:
+            return True
+        return self._record_has_pending_offer(self._last_extract_record, offer)
+
+    def _extractor_offer_pending_after_action(
+        self,
+        action: dict,
+        offer: dict,
+    ) -> bool | None:
+        try:
+            action_id = int(action["id"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        record = self._extract_records_by_action_id.get(action_id)
+        if record is None:
+            return None
+        return self._record_has_pending_offer(
+            record,
+            offer,
+        )
+
+    @staticmethod
+    def _record_has_pending_offer(record: dict, offer: dict) -> bool:
+        for pending in record.get("offers", []):
+            if (
+                pending.get("corporation") == offer.get("corporation")
+                and pending.get("company") == offer.get("company")
+            ):
+                return True
+        return False
 
     @staticmethod
     def _is_response_to_offer(action: dict | None, offer: dict) -> bool:
@@ -1032,6 +1205,25 @@ class GameSession:
         return (
             action.get("corporation") == offer.get("corporation")
             and action.get("company") == offer.get("company")
+        )
+
+    @staticmethod
+    def _is_current_acq_offer_response(state: GameState, action: dict) -> bool:
+        """Return whether ``action`` answers the engine's open ACQ_OFFER."""
+        if (
+            action.get("type") != "respond"
+            or TURN.get_phase(state) != GamePhases.PHASE_ACQ_OFFER
+        ):
+            return False
+
+        original_corp_id = TURN.get_acq_offer_corp(state)
+        company_id = TURN.get_active_company(state)
+        if original_corp_id < 0 or company_id < 0:
+            return False
+
+        return (
+            action.get("corporation") == CORP_NAMES[original_corp_id]
+            and action.get("company") == COMPANY_NAMES[company_id]
         )
 
     def _should_drain_trailing_offer_phases(
@@ -1227,6 +1419,11 @@ class GameSession:
 
         records = json.loads(result.stdout)
         self._last_extract_record = records[-1] if records else {}
+        self._extract_records_by_action_id = {
+            int(record["action_id"]): record
+            for record in records
+            if record.get("action_id") is not None
+        }
         initial = records[0]
         if initial.get("action_id") != 0:
             raise RuntimeError("Expected initial record with action_id=0")

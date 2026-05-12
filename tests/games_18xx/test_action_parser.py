@@ -45,6 +45,14 @@ def test_map_acquisition_action_rejects_fi_target_in_select_price(monkeypatch):
         "COMPANIES",
         {7: SimpleNamespace(get_location=lambda state: action_parser.LOC_FI)},
     )
+    monkeypatch.setattr(
+        action_parser,
+        "TURN",
+        SimpleNamespace(
+            get_active_corp=lambda state: 2,
+            get_active_company=lambda state: 7,
+        ),
+    )
 
     with pytest.raises(ValueError, match="FI target should execute during ACQ_SELECT_COMPANY"):
         action_parser.map_acquisition_action(

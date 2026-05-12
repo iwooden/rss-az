@@ -6,6 +6,8 @@ Receives turn notifications via webhook, fetches game state from the
 Usage:
     .venv/bin/python -m utils_18xx.live --runtime-dir runtime
     .venv/bin/python -m utils_18xx.live --runtime-dir runtime --simulations 800
+    .venv/bin/python -m utils_18xx.live --runtime-dir runtime --no-compile
+    .venv/bin/python -m utils_18xx.live --runtime-dir runtime --model-output
 """
 
 from __future__ import annotations
@@ -42,10 +44,23 @@ from entities.company import COMPANIES
 from entities.corp import CORPS
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator
-from mcts.search import StatePool, prepare_reuse_root, run_search
+from mcts.search import (
+    StatePool,
+    get_greedy_leaf_depth,
+    get_greedy_leaf_value,
+    prepare_reuse_root,
+    run_search,
+)
 from nn import get_model_input_spec
+from train.analyze_game import (
+    _apply_player_names as _apply_analyze_player_names,
+    _format_mcts_visits as _format_analyze_mcts_visits,
+    _format_nn_eval as _format_analyze_nn_eval,
+)
 from train.checkpoint import find_latest_checkpoint, load_model_from_checkpoint
 from train.config import MCTSConfig
+from train.debug_trace import PHASE_NAMES, format_action, format_phase_context
+from train.profile_stats import SearchStats
 
 from .action_mapper import engine_action_to_18xx
 from .api_client import ApiClient, PermanentError, TransientError
@@ -85,6 +100,117 @@ def prepare_live_decision_state(state) -> None:
     # consider same-president acquisition offers.
     state.acq_same_president = True
     state.allow_positive_income_closing = False
+
+
+def _resolve_live_search_batch_size(config, override: int | None) -> int:
+    """Return CLI override or checkpoint search batch size."""
+    return int(override) if override is not None else int(config.search_batch_size)
+
+
+def _resolve_live_eval_dtype(config, override: str | None) -> str | None:
+    """Return CLI eval dtype override or checkpoint eval dtype."""
+    if override is None:
+        return config.eval_dtype
+    if override == "float32":
+        return None
+    return override
+
+
+def _player_names_from_game_data(game_data: dict, num_players: int) -> list[str]:
+    """Return canonical-order 18xx player display names."""
+    names: list[str] = []
+    players = game_data.get("players", [])
+    for idx in range(num_players):
+        raw_name = ""
+        if idx < len(players):
+            raw_name = str(players[idx].get("name") or "")
+        name = raw_name.replace("\n", " ").replace("\r", " ").strip()
+        names.append(name or f"P{idx}")
+    return names
+
+
+def _format_live_model_output(
+    *,
+    game_data: dict,
+    state,
+    priors: np.ndarray,
+    values: np.ndarray,
+    action_ids: np.ndarray,
+    phase_id: int,
+    num_players: int,
+    root,
+    action_idx: int,
+    mcts_config: MCTSConfig | None = None,
+    search_stats: SearchStats | None = None,
+    elapsed_secs: float | None = None,
+    top_n: int = 10,
+) -> str:
+    """Format one live decision using the analyzer's report style."""
+    engine_phase = TURN.get_phase(state)
+    phase_name = PHASE_NAMES.get(engine_phase, str(engine_phase))
+    turn_number = int(TURN.get_turn_number(state))
+    active_player = TURN.get_active_player(state)
+    player_names = _player_names_from_game_data(game_data, num_players)
+    phase_ctx = format_phase_context(state)
+
+    noised_priors: dict[int, float] | None = None
+    if (
+        root is not None
+        and mcts_config is not None
+        and mcts_config.dirichlet_epsilon > 0
+        and root.priors is not None
+    ):
+        assert root.legal_actions is not None
+        noised_priors = {
+            int(root.legal_actions[i]): float(root.priors[i])
+            for i in range(len(root.legal_actions))
+        }
+
+    search_text = (
+        f"{elapsed_secs:.1f}s"
+        if elapsed_secs is not None
+        else "skipped (single legal action)"
+    )
+    lines = [
+        f"### Live Decision: P{active_player} [{phase_name}]",
+        "",
+        f"  Game: {game_data.get('id', '?')} | Turn: {turn_number} | "
+        f"Search: {search_text}",
+    ]
+    if phase_ctx:
+        lines.append(f"  {phase_ctx}")
+    lines.append("")
+    lines.extend(
+        _format_analyze_nn_eval(
+            priors,
+            values,
+            action_ids,
+            phase_id,
+            num_players,
+            state,
+            top_n,
+            noised_priors=noised_priors,
+        )
+    )
+    lines.append("")
+    if root is None:
+        lines.append("  MCTS: skipped (single legal action)")
+        lines.append("  A0GB Value: skipped (single legal action)")
+    else:
+        lines.extend(_format_analyze_mcts_visits(root, phase_id, state, top_n))
+
+        a0gb = get_greedy_leaf_value(root, num_players)
+        a0gb_depth = get_greedy_leaf_depth(root)
+        a0gb_parts = [f"P{i}={a0gb[i]:+.3f}" for i in range(num_players)]
+        vb = search_stats.virtual_backups if search_stats is not None else 0
+        lines.append(
+            f"  A0GB Value: {', '.join(a0gb_parts)} "
+            f"(depth: {a0gb_depth}{f', vbackups: {vb}' if vb > 0 else ''})"
+        )
+    lines.append("")
+    lines.append(f"  **Action: {format_action(phase_id, action_idx, state)}**")
+
+    return _apply_analyze_player_names("\n".join(lines), player_names)
 
 # ---------------------------------------------------------------------------
 # Webhook parsing
@@ -408,6 +534,8 @@ def _should_continue_after_postable_action(
 ) -> bool:
     """Return whether live planning should keep selecting before posting."""
     current_phase = TURN.get_phase(state)
+    if current_phase == GamePhases.PHASE_ACQ_OFFER:
+        return False
     same_round = (
         pre_action_phase in ACQ_PHASES
         and current_phase in ACQ_PHASES
@@ -483,7 +611,14 @@ def intent_to_api_action(
 
     if itype == "buy_shares":
         corp_name = intent["corporation"]
-        share_id = _resolve_buyable_share(game_data, corp_name, committed_ids)
+        corp_id = CORP_NAME_TO_ID[corp_name]
+        share_id = _resolve_buyable_share(
+            game_data,
+            corp_name,
+            committed_ids,
+            market_share_count=CORPS[corp_id].get_bank_shares(state),
+            treasury_share_count=CORPS[corp_id].get_unissued_shares(state),
+        )
         share_price = _get_corp_share_price(state, corp_name)
         return {
             "type": "buy_shares",
@@ -531,7 +666,13 @@ def intent_to_api_action(
     if itype == "issue":
         corp_id = TURN.get_active_corp(state)
         corp_name = CORP_NAMES[corp_id]
-        share_id = _resolve_issuable_share(game_data, corp_name, committed_ids)
+        share_id = _resolve_issuable_share(
+            game_data,
+            corp_name,
+            committed_ids,
+            market_share_count=CORPS[corp_id].get_bank_shares(state),
+            treasury_share_count=CORPS[corp_id].get_unissued_shares(state),
+        )
         share_price = _get_corp_share_price(state, corp_name)
         return {
             "type": "sell_shares",
@@ -758,14 +899,20 @@ class ModelRegistry:
         models_config: dict[str, str],
         device: torch.device,
         num_simulations: int,
-        search_batch_size: int,
+        search_batch_size: int | None,
         checkpoint_dir: Path | None = None,
+        compile_model: bool = False,
+        model_output: bool = False,
+        eval_dtype: str | None = None,
     ):
         self._config = models_config
         self._device = device
         self._num_simulations = num_simulations
         self._search_batch_size = search_batch_size
         self._checkpoint_dir = checkpoint_dir
+        self._compile_model = compile_model
+        self._model_output = model_output
+        self._eval_dtype = eval_dtype
         self._engines: dict[Path, _SearchEngine] = {}
 
     def get_engine(self, num_players: int) -> _SearchEngine:
@@ -779,6 +926,9 @@ class ModelRegistry:
                 self._device,
                 num_simulations=self._num_simulations,
                 search_batch_size=self._search_batch_size,
+                compile_model=self._compile_model,
+                model_output=self._model_output,
+                eval_dtype=self._eval_dtype,
             )
             self._engines[cp_path] = engine
         engine.validate_player_count(num_players)
@@ -836,14 +986,41 @@ class _SearchEngine:
         checkpoint_path: Path,
         device: torch.device,
         num_simulations: int,
-        search_batch_size: int,
+        search_batch_size: int | None,
+        compile_model: bool = False,
+        model_output: bool = False,
+        eval_dtype: str | None = None,
     ):
         self.device = device
         self.num_simulations = num_simulations
-        self.search_batch_size = search_batch_size
+        self.model_output = model_output
 
         model, self.config, cp = load_model_from_checkpoint(checkpoint_path, device)
+        self.search_batch_size = _resolve_live_search_batch_size(
+            self.config,
+            search_batch_size,
+        )
+        self.eval_dtype = _resolve_live_eval_dtype(self.config, eval_dtype)
         model.eval()
+        if compile_model and device.type == "cuda":
+            from train.gpu import detect_gpu
+
+            gpu = detect_gpu(device.type)
+            compile_kwargs = gpu.get_compile_kwargs(
+                for_training=False,
+                eval_batch_shape_mode="dynamic",
+            )
+            logger.info(
+                f"Compiling live model with torch.compile: {compile_kwargs}"
+            )
+            model = torch.compile(model, **compile_kwargs)  # type: ignore[assignment]
+            model.eval()
+        elif compile_model:
+            logger.info(
+                f"Skipping torch.compile for non-CUDA live device: {device}"
+            )
+        else:
+            logger.info("torch.compile disabled for live model")
 
         self.min_players = self.config.effective_min_players
         self.max_players = self.config.effective_max_players
@@ -854,7 +1031,7 @@ class _SearchEngine:
             device,
             num_players=self.max_players,
             terminal_rank_weight=self.config.terminal_blend,
-            eval_dtype=self.config.eval_dtype,
+            eval_dtype=self.eval_dtype,
             input_spec=input_spec,
         )
 
@@ -869,7 +1046,9 @@ class _SearchEngine:
         logger.info(
             f"Loaded model epoch {epoch}, supports "
             f"{self.min_players}-{self.max_players} players, "
-            f"{num_simulations} sims/move"
+            f"{num_simulations} sims/move, "
+            f"search batch={self.search_batch_size}, "
+            f"eval dtype={self.eval_dtype or 'float32'}"
         )
 
     def validate_player_count(self, num_players: int) -> None:
@@ -1057,8 +1236,30 @@ class _SearchEngine:
             if not legal_actions:
                 raise RuntimeError(f"No legal actions in live phase {phase}")
 
+            model_eval = None
+            if self.model_output:
+                model_eval = self._evaluator.evaluate(state)
+
             if len(legal_actions) == 1:
                 action_idx = legal_actions[0][0]
+                if self.model_output:
+                    assert model_eval is not None
+                    priors, values, action_ids_arr, _, phase_id = model_eval
+                    print(
+                        _format_live_model_output(
+                            game_data=game_data,
+                            state=state,
+                            priors=priors,
+                            values=values,
+                            action_ids=action_ids_arr,
+                            phase_id=int(phase_id),
+                            num_players=num_players,
+                            root=None,
+                            action_idx=action_idx,
+                            elapsed_secs=None,
+                        ),
+                        flush=True,
+                    )
             else:
                 search_reuse = (
                     reuse_root
@@ -1067,9 +1268,30 @@ class _SearchEngine:
                 )
                 if reuse_root is not None and search_reuse is None:
                     reuse_root = None
-                action_idx, root = self._search(
+                action_idx, root, elapsed, search_stats = self._search(
                     state, num_players, reuse_root=search_reuse,
                 )
+                if self.model_output:
+                    assert model_eval is not None
+                    assert search_stats is not None
+                    priors, values, action_ids_arr, _, phase_id = model_eval
+                    print(
+                        _format_live_model_output(
+                            game_data=game_data,
+                            state=state,
+                            priors=priors,
+                            values=values,
+                            action_ids=action_ids_arr,
+                            phase_id=int(phase_id),
+                            num_players=num_players,
+                            root=root,
+                            action_idx=action_idx,
+                            mcts_config=self._mcts_config_for(num_players),
+                            search_stats=search_stats,
+                            elapsed_secs=elapsed,
+                        ),
+                        flush=True,
+                    )
                 reuse_root = prepare_reuse_root(root, action_idx, self._state_pool)
 
             intent = engine_action_to_18xx(
@@ -1107,6 +1329,7 @@ class _SearchEngine:
 
     def _search(self, state, num_players: int, reuse_root=None):
         """Run MCTS and return the best action index."""
+        search_stats = SearchStats() if self.model_output else None
         t0 = time.monotonic()
         root = run_search(
             None if reuse_root is not None else state,
@@ -1115,6 +1338,7 @@ class _SearchEngine:
             self._rng,
             state_pool=self._state_pool,
             reuse_root=reuse_root,
+            profile=search_stats,
         )
         elapsed = time.monotonic() - t0
 
@@ -1128,7 +1352,7 @@ class _SearchEngine:
             f"MCTS: action={action_idx}, visits={top_visits}/{total_visits}, "
             f"time={elapsed:.1f}s"
         )
-        return action_idx, root
+        return action_idx, root, elapsed, search_stats
 
 
 # ---------------------------------------------------------------------------
@@ -1571,8 +1795,15 @@ def main():
     parser.add_argument(
         "--search-batch-size",
         type=int,
-        default=1,
-        help="MCTS search batch size (default: 1)",
+        default=None,
+        help="MCTS search batch size override (default: checkpoint config)",
+    )
+    parser.add_argument(
+        "--eval-dtype",
+        type=str,
+        choices=["float32", "bfloat16", "float16"],
+        default=None,
+        help="Eval inference dtype override (default: checkpoint config)",
     )
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--host", type=str, default="0.0.0.0")
@@ -1581,6 +1812,28 @@ def main():
         type=str,
         default="checkpoints",
         help="Directory for 'latest' checkpoint resolution",
+    )
+    parser.add_argument(
+        "--model-output",
+        action="store_true",
+        help=(
+            "Print analyzer-style model values, priors, MCTS visits, and "
+            "A0GB values for each live decision"
+        ),
+    )
+    compile_group = parser.add_mutually_exclusive_group()
+    compile_group.add_argument(
+        "--compile",
+        dest="compile_model",
+        action="store_true",
+        default=False,
+        help="Opt into torch.compile for live inference",
+    )
+    compile_group.add_argument(
+        "--no-compile",
+        dest="compile_model",
+        action="store_false",
+        help="Disable torch.compile for live inference (default)",
     )
     args = parser.parse_args()
 
@@ -1598,12 +1851,23 @@ def main():
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    if device.type == "cuda":
+        torch.set_num_threads(1)
+        try:
+            torch.set_num_interop_threads(1)
+        except RuntimeError:
+            logger.debug("Torch interop thread pool was already initialized")
+        logger.info("Limited PyTorch CPU worker threads for live CUDA inference")
+
     registry = ModelRegistry(
         models_config,
         device,
         num_simulations=args.simulations,
         search_batch_size=args.search_batch_size,
         checkpoint_dir=Path(args.checkpoint_dir),
+        compile_model=args.compile_model,
+        model_output=args.model_output,
+        eval_dtype=args.eval_dtype,
     )
 
     api = ApiClient(args.base_url)

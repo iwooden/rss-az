@@ -1435,6 +1435,7 @@ class TestMCTSSearch:
             num_players=NUM_PLAYERS,
         )
         pool = StatePool(2, get_layout(NUM_PLAYERS).total_size)
+        root.state_idx = pool.alloc(game_state._array)
 
         with pytest.raises(MCTSNonFiniteError) as exc:
             run_search(

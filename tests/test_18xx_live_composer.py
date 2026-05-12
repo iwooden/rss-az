@@ -307,6 +307,19 @@ def test_live_planning_continues_same_player_acquisition_batch():
     )
 
 
+def test_live_planning_stops_on_acq_offer():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    TURN.set_phase(state, int(GamePhases.PHASE_ACQ_OFFER))
+    TURN.set_active_player(state, 2)
+
+    assert not _should_continue_after_postable_action(
+        GamePhases.PHASE_ACQ_SELECT_COMPANY,
+        state,
+        bot_player_idx=2,
+    )
+
+
 def test_live_planning_continues_same_player_closing_batch():
     state = GameState(3)
     state.initialize_game(3, seed=42)
@@ -662,3 +675,229 @@ def test_share_ledger_repar_buys_market_shares_before_treasury():
     assert owners["4"]["PR"] == [0, 1]
     assert pool["PR"] == [2, 3]
     assert _resolve_sellable_share(game_data, "PR", 4, set(range(1, 6))) == "PR_1"
+
+
+def test_share_ledger_repar_leaves_unissued_shares_in_treasury():
+    game_data = {
+        "players": [
+            {"id": 4, "name": "rss-az-3"},
+            {"id": 2, "name": "rss-az-1"},
+        ],
+        "actions": [
+            {
+                "id": 1,
+                "type": "par",
+                "entity": "MHE",
+                "entity_type": "company",
+                "corporation": "SI",
+                "share_price": "14,0,8",
+                "user": 2,
+            },
+            {
+                "id": 2,
+                "type": "sell_shares",
+                "entity": "SI",
+                "entity_type": "corporation",
+                "shares": ["SI_2"],
+                "share_price": 16,
+                "user": 2,
+            },
+            {
+                "id": 3,
+                "type": "sell_shares",
+                "entity": "SI",
+                "entity_type": "corporation",
+                "shares": ["SI_3"],
+                "share_price": 16,
+                "user": 2,
+            },
+            {
+                "id": 4,
+                "type": "sell_shares",
+                "entity": 2,
+                "entity_type": "player",
+                "shares": ["SI_0"],
+                "share_price": 10,
+                "user": 2,
+            },
+            {
+                "id": 5,
+                "type": "par",
+                "entity": "BR",
+                "entity_type": "company",
+                "corporation": "SI",
+                "share_price": "37,0,20",
+                "user": 4,
+            },
+        ],
+    }
+
+    pool, owners = _build_share_ownership(game_data, set(range(1, 6)))
+
+    assert owners["4"]["SI"] == [0]
+    assert pool["SI"] == [1]
+    assert _resolve_issuable_share(game_data, "SI", set(range(1, 6))) == "SI_2"
+
+
+def test_share_ledger_reconciles_hidden_receivership_issue():
+    game_data = {
+        "players": [
+            {"id": 4, "name": "rss-az-3"},
+            {"id": 2, "name": "rss-az-1"},
+        ],
+        "actions": [
+            {
+                "id": 1,
+                "type": "par",
+                "entity": "BPM",
+                "entity_type": "company",
+                "corporation": "SM",
+                "share_price": "12,0,8",
+                "user": 4,
+            },
+            {
+                "id": 2,
+                "type": "sell_shares",
+                "entity": "SM",
+                "entity_type": "corporation",
+                "shares": ["SM_2"],
+                "share_price": 12,
+                "user": 4,
+            },
+            {
+                "id": 3,
+                "type": "sell_shares",
+                "entity": "SM",
+                "entity_type": "corporation",
+                "shares": ["SM_3"],
+                "share_price": 10,
+                "user": 4,
+            },
+            {
+                "id": 4,
+                "type": "sell_shares",
+                "entity": 4,
+                "entity_type": "player",
+                "shares": ["SM_0"],
+                "share_price": 10,
+                "user": 4,
+            },
+            {
+                "id": 5,
+                "type": "buy_shares",
+                "entity": 2,
+                "entity_type": "player",
+                "shares": ["SM_0"],
+                "share_price": 8,
+                "user": 2,
+            },
+        ],
+    }
+
+    pool, owners = _build_share_ownership(game_data, set(range(1, 6)))
+
+    assert pool["SM"] == [1, 2, 3]
+    assert owners["2"]["SM"] == [0]
+    assert _resolve_issuable_share(
+        game_data,
+        "SM",
+        set(range(1, 6)),
+        market_share_count=4,
+        treasury_share_count=1,
+    ) == "SM_5"
+
+
+def test_share_ledger_reconciles_hidden_market_share_for_buy():
+    game_data = {
+        "players": [
+            {"id": 5, "name": "rss-az-4"},
+            {"id": 4, "name": "rss-az-3"},
+        ],
+        "actions": [
+            {
+                "id": 1,
+                "type": "par",
+                "entity": "WT",
+                "entity_type": "company",
+                "corporation": "VM",
+                "share_price": "16,0,11",
+                "user": 4,
+            },
+            {
+                "id": 2,
+                "type": "sell_shares",
+                "entity": "VM",
+                "entity_type": "corporation",
+                "shares": ["VM_2"],
+                "share_price": 16,
+                "user": 4,
+            },
+            {
+                "id": 3,
+                "type": "sell_shares",
+                "entity": 4,
+                "entity_type": "player",
+                "shares": ["VM_0"],
+                "share_price": 20,
+                "user": 4,
+            },
+            {
+                "id": 4,
+                "type": "buy_shares",
+                "entity": 4,
+                "entity_type": "player",
+                "shares": ["VM_0"],
+                "share_price": 13,
+                "user": 4,
+            },
+            {
+                "id": 5,
+                "type": "buy_shares",
+                "entity": 4,
+                "entity_type": "player",
+                "shares": ["VM_1"],
+                "share_price": 14,
+                "user": 4,
+            },
+            {
+                "id": 6,
+                "type": "sell_shares",
+                "entity": 4,
+                "entity_type": "player",
+                "shares": ["VM_1"],
+                "share_price": 13,
+                "user": 4,
+            },
+            {
+                "id": 7,
+                "type": "buy_shares",
+                "entity": 5,
+                "entity_type": "player",
+                "shares": ["VM_1"],
+                "share_price": 10,
+                "user": 5,
+            },
+            {
+                "id": 8,
+                "type": "buy_shares",
+                "entity": 4,
+                "entity_type": "player",
+                "shares": ["VM_2"],
+                "share_price": 11,
+                "user": 4,
+            },
+        ],
+    }
+
+    pool, owners = _build_share_ownership(game_data, set(range(1, 9)))
+
+    assert pool.get("VM", []) == []
+    assert owners["5"]["VM"] == [1]
+    assert owners["4"]["VM"] == [0, 2]
+    assert _resolve_buyable_share(
+        game_data,
+        "VM",
+        set(range(1, 9)),
+        market_share_count=1,
+        treasury_share_count=0,
+    ) == "VM_3"

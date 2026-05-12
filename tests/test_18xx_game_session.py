@@ -99,6 +99,42 @@ def test_split_followup_replays_18xx_par_price_after_ipo_selection():
     assert TURN.get_phase(state) != int(GamePhases.PHASE_PAR)
 
 
+def test_split_bid_followup_accepts_forced_opening_bid_auto_apply():
+    state = _new_state()
+    company_id = COMPANY_NAME_TO_ID["MS"]
+    price = COMPANIES[company_id].get_face_value()
+    COMPANIES[company_id].move_to_auction(state)
+    TURN.set_phase(state, int(GamePhases.PHASE_INVEST))
+    TURN.set_active_player(state, 1)
+    PLAYERS[1].set_cash(state, price)
+
+    session = GameSession(3)
+    session._player_ids = [2, 3, 4]
+    action = {
+        "type": "bid",
+        "entity": 3,
+        "entity_type": "player",
+        "company": "MS",
+        "price": price,
+    }
+
+    first_action = map_action(state, action, TURN.get_phase(state), session.layout)
+    assert apply_action_sequence(state, first_action) != STATUS_INVALID
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_BID)
+    assert TURN.get_auction_price(state) == price
+    assert TURN.get_auction_high_bidder(state) == 1
+
+    result = session._apply_split_action_followup(
+        state,
+        action,
+        GamePhases.PHASE_INVEST,
+    )
+
+    assert result != STATUS_INVALID
+    assert TURN.get_auction_price(state) == price
+    assert TURN.get_auction_high_bidder(state) == 1
+
+
 def test_session_consumes_closing_auto_passes_before_ipo():
     players = [
         {"id": 4, "name": "rss-az-3"},
@@ -302,6 +338,47 @@ def test_acq_sync_applies_pass_for_recorded_entity():
     assert not PLAYERS[first_active].has_passed(state)
 
 
+def test_acq_sync_retargets_unordered_offer_to_recorded_entity():
+    state = _new_state()
+    TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_CORP))
+    TURN.set_active_player(state, 0)
+    TURN.set_active_corp(state, 3)
+
+    session = GameSession(3)
+    session._player_ids = [4, 3, 2]
+    seen_active = []
+
+    def fake_immediate(current_state, offer, has_future_response=False):
+        del offer, has_future_response
+        seen_active.append(TURN.get_active_player(current_state))
+        return False
+
+    def fake_begin(current_state, offer, deferred_transfers):
+        del current_state, offer, deferred_transfers
+        return False
+
+    session._offer_resolves_immediately = fake_immediate
+    session._begin_acq_offer = fake_begin
+
+    next_idx = session._sync_acq_round(
+        state,
+        [{
+            "type": "offer",
+            "entity": 3,
+            "entity_type": "player",
+            "corporation": "DA",
+            "company": "BPM",
+            "price": 4,
+        }],
+        0,
+    )
+
+    assert next_idx == 1
+    assert seen_active == [1]
+    assert TURN.get_active_player(state) == 1
+    assert TURN.get_active_corp(state) == -1
+
+
 def test_acq_sync_discards_trailing_auto_pass_after_closing_transition():
     state = _new_state()
     for player_id, corp_id in enumerate((0, 1, 2)):
@@ -470,7 +547,144 @@ def test_fi_offer_waits_for_explicit_response():
         "accept": "true",
     }
 
-    assert not session._offer_resolves_immediately(state, offer, response)
+    assert not session._offer_resolves_immediately(
+        state,
+        offer,
+        has_future_response=session._has_future_response_to_offer([response], 0, offer),
+    )
+
+
+def test_acq_sync_replays_declined_fi_preemption_before_original_buy():
+    state = GameState(4, acq_same_president=False)
+    state.initialize_game(4, seed=42)
+
+    sm_id = CORP_NAMES.index("SM")
+    os_id = CORP_NAMES.index("OS")
+    sbb_id = COMPANY_NAME_TO_ID["SBB"]
+    float_corp_for_test(
+        state,
+        corp_id=sm_id,
+        company_id=COMPANY_NAME_TO_ID["MHE"],
+        player_id=1,
+        par_index=10,
+    )
+    float_corp_for_test(
+        state,
+        corp_id=os_id,
+        company_id=COMPANY_NAME_TO_ID["BY"],
+        player_id=3,
+        par_index=12,
+    )
+    give_company_to_fi(state, sbb_id)
+    CORPS[sm_id].set_cash(state, 100)
+    CORPS[os_id].set_cash(state, 100)
+    FI.set_cash(state, 1)
+    setup_acquisition_phase_py(state)
+    TURN.set_active_player(state, 1)
+
+    session = GameSession(4)
+    session._player_ids = [4, 2, 5, 3]
+    next_idx = session._sync_acq_round(
+        state,
+        [
+            {
+                "id": 130,
+                "type": "offer",
+                "entity": 2,
+                "entity_type": "player",
+                "corporation": "SM",
+                "company": "SBB",
+                "price": COMPANIES[sbb_id].get_high_price(),
+            },
+            {"id": 131, "type": "pass", "entity": 4, "entity_type": "player"},
+            {
+                "id": 132,
+                "type": "respond",
+                "entity": 3,
+                "entity_type": "player",
+                "corporation": "SM",
+                "company": "SBB",
+                "accept": "false",
+            },
+        ],
+        0,
+    )
+
+    assert next_idx == 3
+    assert (
+        COMPANIES[sbb_id].is_owned_by_corp(state, sm_id)
+        or COMPANIES[sbb_id].is_in_corp_acquisition(state, sm_id)
+    )
+    assert not COMPANIES[sbb_id].is_owned_by_corp(state, os_id)
+    assert CORPS[os_id].get_cash(state) == 100
+    assert CORPS[sm_id].get_cash(state) == 100 - COMPANIES[sbb_id].get_high_price()
+    assert FI.get_cash(state) == 1 + COMPANIES[sbb_id].get_high_price()
+
+
+def test_acq_sync_replays_implicit_fi_preemption_response():
+    state = GameState(4, acq_same_president=False)
+    state.initialize_game(4, seed=42)
+
+    sm_id = CORP_NAMES.index("SM")
+    os_id = CORP_NAMES.index("OS")
+    sbb_id = COMPANY_NAME_TO_ID["SBB"]
+    float_corp_for_test(
+        state,
+        corp_id=sm_id,
+        company_id=COMPANY_NAME_TO_ID["MHE"],
+        player_id=1,
+        par_index=10,
+    )
+    float_corp_for_test(
+        state,
+        corp_id=os_id,
+        company_id=COMPANY_NAME_TO_ID["BY"],
+        player_id=3,
+        par_index=12,
+    )
+    give_company_to_fi(state, sbb_id)
+    CORPS[sm_id].set_cash(state, 100)
+    CORPS[os_id].set_cash(state, 100)
+    FI.set_cash(state, 1)
+    setup_acquisition_phase_py(state)
+    TURN.set_active_player(state, 1)
+
+    session = GameSession(4)
+    session._player_ids = [4, 2, 5, 3]
+    offer = {
+        "id": 130,
+        "type": "offer",
+        "entity": 2,
+        "entity_type": "player",
+        "corporation": "SM",
+        "company": "SBB",
+        "price": COMPANIES[sbb_id].get_high_price(),
+    }
+    assert session._begin_acq_offer(state, offer, [])
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_OFFER)
+
+    next_idx = session._sync_acq_round(
+        state,
+        [{
+            "id": 132,
+            "type": "respond",
+            "entity": 3,
+            "entity_type": "player",
+            "corporation": "SM",
+            "company": "SBB",
+            "accept": "false",
+        }],
+        0,
+    )
+
+    assert next_idx == 1
+    assert (
+        COMPANIES[sbb_id].is_owned_by_corp(state, sm_id)
+        or COMPANIES[sbb_id].is_in_corp_acquisition(state, sm_id)
+    )
+    assert not COMPANIES[sbb_id].is_owned_by_corp(state, os_id)
+    assert CORPS[sm_id].get_cash(state) == 100 - COMPANIES[sbb_id].get_high_price()
+    assert FI.get_cash(state) == 1 + COMPANIES[sbb_id].get_high_price()
 
 
 def test_acq_replay_stops_after_same_president_offer_executes():
@@ -484,10 +698,11 @@ def test_acq_replay_stops_after_same_president_offer_executes():
     ol_id = COMPANY_NAME_TO_ID["OL"]
 
     give_company_to_player(state, bd_id, 0)
-    give_company_to_corp(state, ake_id, pr_id)
-    give_company_to_corp(state, ol_id, pr_id)
     float_corp_for_test(state, corp_id=da_id, player_id=0, par_index=10)
-    float_corp_for_test(state, corp_id=pr_id, player_id=2, par_index=10)
+    float_corp_for_test(
+        state, corp_id=pr_id, company_id=ake_id, player_id=2, par_index=10
+    )
+    give_company_to_corp(state, ol_id, pr_id)
     CORPS[da_id].set_cash(state, 25)
     setup_acquisition_phase_py(state)
     TURN.set_active_player(state, 0)

@@ -53,6 +53,8 @@ def build_share_ledger(
         if atype == "par":
             corp = action["corporation"]
             _ensure_treasury(treasury, corp)
+            if _is_market_owned_corporation(players, share_pool, corp):
+                _return_market_shares_to_treasury(share_pool, treasury, corp)
             num_to_buy = _ipo_player_share_count(action)
             player_bought = _take_shares(share_pool, corp, num_to_buy)
             if len(player_bought) < num_to_buy:
@@ -129,10 +131,22 @@ def build_share_ledger(
 
 
 def resolve_buyable_share(
-    game_data: dict, corp_name: str, committed_ids: set,
+    game_data: dict,
+    corp_name: str,
+    committed_ids: set,
+    *,
+    market_share_count: int | None = None,
+    treasury_share_count: int | None = None,
 ) -> str:
     """Find the lowest-numbered share available in the share pool."""
-    share_pool, _ = build_share_ownership(game_data, committed_ids)
+    share_pool, _, treasury = build_share_ledger(game_data, committed_ids)
+    _reconcile_share_counts(
+        share_pool,
+        treasury,
+        corp_name,
+        market_share_count=market_share_count,
+        treasury_share_count=treasury_share_count,
+    )
     available = sorted(share_pool.get(corp_name, []))
     if not available:
         raise ValueError(f"No shares of {corp_name} available in share pool")
@@ -156,10 +170,22 @@ def resolve_sellable_share(
 
 
 def resolve_issuable_share(
-    game_data: dict, corp_name: str, committed_ids: set,
+    game_data: dict,
+    corp_name: str,
+    committed_ids: set,
+    *,
+    market_share_count: int | None = None,
+    treasury_share_count: int | None = None,
 ) -> str:
     """Find the next corporation-held treasury share to issue."""
-    _, _, treasury = build_share_ledger(game_data, committed_ids)
+    share_pool, _, treasury = build_share_ledger(game_data, committed_ids)
+    _reconcile_share_counts(
+        share_pool,
+        treasury,
+        corp_name,
+        market_share_count=market_share_count,
+        treasury_share_count=treasury_share_count,
+    )
     available = sorted(treasury.get(corp_name, []))
     if available:
         return f"{corp_name}_{available[0]}"
@@ -298,6 +324,59 @@ def _ensure_president_share(
 
 def _ensure_treasury(treasury: dict[str, list[int]], corp_name: str) -> None:
     treasury.setdefault(corp_name, list(range(_corp_share_count(corp_name))))
+
+
+def _is_market_owned_corporation(
+    players: dict[str, dict[str, list[int]]],
+    share_pool: dict[str, list[int]],
+    corp_name: str,
+) -> bool:
+    if not share_pool.get(corp_name):
+        return False
+    return all(not by_corp.get(corp_name) for by_corp in players.values())
+
+
+def _return_market_shares_to_treasury(
+    share_pool: dict[str, list[int]],
+    treasury: dict[str, list[int]],
+    corp_name: str,
+) -> None:
+    market_shares = list(share_pool.get(corp_name, []))
+    share_pool[corp_name] = []
+    for idx in market_shares:
+        _append_share(treasury, corp_name, idx)
+
+
+def _reconcile_share_counts(
+    share_pool: dict[str, list[int]],
+    treasury: dict[str, list[int]],
+    corp_name: str,
+    *,
+    market_share_count: int | None,
+    treasury_share_count: int | None,
+) -> None:
+    """Adjust hidden 18xx share movements not represented as actions."""
+    if market_share_count is not None:
+        _ensure_treasury(treasury, corp_name)
+        while len(share_pool.get(corp_name, [])) < market_share_count:
+            moved = _take_shares(treasury, corp_name, 1)
+            if not moved:
+                break
+            _append_share(share_pool, corp_name, moved[0])
+
+        while len(share_pool.get(corp_name, [])) > market_share_count:
+            shares = share_pool.get(corp_name, [])
+            if not shares:
+                break
+            _append_share(treasury, corp_name, shares.pop())
+
+    if treasury_share_count is not None:
+        _ensure_treasury(treasury, corp_name)
+        while len(treasury.get(corp_name, [])) > treasury_share_count:
+            moved = _take_shares(treasury, corp_name, 1)
+            if not moved:
+                break
+            _append_share(share_pool, corp_name, moved[0])
 
 
 def _corp_share_count(corp_name: str) -> int:
