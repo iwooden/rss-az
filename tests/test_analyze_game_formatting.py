@@ -242,6 +242,24 @@ def test_analyze_game_mixed_config_uses_requested_actual_player_count() -> None:
     assert "(depth:" in rendered
 
 
+def test_analyze_game_eval_dtype_defaults_to_config_and_allows_fp32_override() -> None:
+    class _Config:
+        eval_dtype = "bfloat16"
+
+    assert (
+        analyze_game_module._resolve_analysis_eval_dtype(_Config(), None)
+        == "bfloat16"
+    )
+    assert (
+        analyze_game_module._resolve_analysis_eval_dtype(_Config(), "float16")
+        == "float16"
+    )
+    assert (
+        analyze_game_module._resolve_analysis_eval_dtype(_Config(), "float32")
+        is None
+    )
+
+
 def test_analyze_game_max_acq_price_actions_override_is_logged() -> None:
     device = _cuda_device()
     torch.manual_seed(0)

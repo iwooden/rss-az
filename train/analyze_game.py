@@ -11,6 +11,7 @@ Usage:
     .venv/bin/python -m train.analyze_game latest --seed 123 --simulations 200
     .venv/bin/python -m train.analyze_game latest --18xx-seed 560979115
     .venv/bin/python -m train.analyze_game latest --output game_log.md
+    .venv/bin/python -m train.analyze_game latest --eval-dtype bfloat16
     .venv/bin/python -m train.analyze_game new --num-players 4 --simulations 50
 """
 
@@ -402,6 +403,23 @@ def _parse_player_names_arg(value: str | None) -> list[str] | None:
     return [part.strip() for part in value.split(",")]
 
 
+def _resolve_analysis_eval_dtype(
+    config: TrainingConfig,
+    override: str | None,
+) -> str | None:
+    """Return CLI eval dtype override or checkpoint/config eval dtype."""
+    if override is None:
+        return config.eval_dtype
+    if override == "float32":
+        return None
+    if override not in ("bfloat16", "float16"):
+        raise ValueError(
+            "eval_dtype must be one of: float32, bfloat16, float16; "
+            f"got {override!r}"
+        )
+    return override
+
+
 def _validate_player_names(
     player_names: list[str] | None,
     num_players: int,
@@ -481,6 +499,7 @@ def analyze_game(
     seed_18xx: int | None = None,
     player_names: list[str] | None = None,
     max_acq_price_actions: int | None = None,
+    eval_dtype: str | None = None,
 ) -> str:
     """Play a self-play game with full MCTS and return a detailed log."""
     num_players = _resolve_analysis_num_players(config, num_players)
@@ -497,7 +516,7 @@ def analyze_game(
     evaluator = NNEvaluator(
         model, device, num_players=max_players,
         terminal_rank_weight=terminal_rank_weight,
-        eval_dtype=config.eval_dtype,
+        eval_dtype=_resolve_analysis_eval_dtype(config, eval_dtype),
         input_spec=get_model_input_spec(config),
     )
     base_mcts_config = config.to_mcts_config(
@@ -812,6 +831,16 @@ def main() -> None:
     parser.add_argument("--simulations", type=int, default=800)
     parser.add_argument("--search-batch-size", type=int, default=8)
     parser.add_argument(
+        "--eval-dtype",
+        type=str,
+        choices=["float32", "bfloat16", "float16"],
+        default=None,
+        help=(
+            "Eval inference dtype override "
+            "(default: checkpoint/config; float32 disables autocast)"
+        ),
+    )
+    parser.add_argument(
         "--max-acq-price-actions",
         type=int,
         default=None,
@@ -910,6 +939,7 @@ def main() -> None:
         seed_18xx=args.seed_18xx,
         player_names=_parse_player_names_arg(args.player_names),
         max_acq_price_actions=args.max_acq_price_actions,
+        eval_dtype=args.eval_dtype,
     )
 
     if args.output:
