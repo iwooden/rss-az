@@ -423,6 +423,10 @@ class TrainingLogger:
                 f"Fourier bands={config.price_slot_fourier_bands}, "
                 f"embedding blend={config.price_slot_residual_scale:g}",
             )
+            table.add_row(
+                "Binary phase heads",
+                "scalar" if config.nn_binary_phase_scalar else "query/key",
+            )
         else:
             table.add_row(
                 "ResNet",
