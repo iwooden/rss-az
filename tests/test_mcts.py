@@ -194,6 +194,7 @@ class TestMCTSConfig:
         assert cfg.num_players == 3
         assert cfg.search_batch_size == 8
         assert cfg.check_nonfinite is True
+        assert cfg.max_acq_price_actions == 0
 
     def test_action_dim_is_max_action_size(self):
         """Post-refactor: dense pad width is player-count independent."""
@@ -215,6 +216,17 @@ class TestMCTSConfig:
     def test_validation_check_nonfinite(self):
         with pytest.raises(ValueError, match="check_nonfinite"):
             MCTSConfig(check_nonfinite="yes")  # type: ignore[arg-type]
+
+    def test_validation_max_acq_price_actions(self):
+        MCTSConfig(max_acq_price_actions=0)
+        MCTSConfig(max_acq_price_actions=10)
+
+        with pytest.raises(ValueError, match="max_acq_price_actions"):
+            MCTSConfig(max_acq_price_actions=-2)
+        with pytest.raises(ValueError, match="divisible by 2"):
+            MCTSConfig(max_acq_price_actions=9)
+        with pytest.raises(ValueError, match="ACTION_SIZE_ACQ_SELECT_PRICE"):
+            MCTSConfig(max_acq_price_actions=52)
 
     def test_validation_num_players(self):
         # NN/MCTS scope is 3-5 players only.

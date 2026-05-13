@@ -38,9 +38,9 @@ from mcts.mcts_core import (
 )
 from core.actions import (
     get_decision_phase_py,
-    enumerate_legal_actions_py,
+    enumerate_policy_actions_py,
 )
-from core.data import MAX_ACTION_SIZE, GamePhases
+from core.data import DecisionPhase, MAX_ACTION_SIZE, GamePhases
 from core.driver import DRIVER, STATUS_GAME_OVER_PY, STATUS_INVALID_PY
 from core.state import GameState, get_layout, get_storage_player_capacity
 from entities.turn import TURN
@@ -203,7 +203,7 @@ class StatePool:
         # to scatter the dense legal mask per leaf and to gather the sparse
         # prior slice out of the server's dense priors for node.expand.
         self._action_lut_np: np.ndarray = build_action_lut().numpy()
-        # Per-leaf enumerate scratch — written by enumerate_legal_actions_py,
+        # Per-leaf enumerate scratch — written by enumerate_policy_actions_py,
         # then copied directly into the per-leaf row of _pending_action_ids_buf
         # at child creation time (no intermediate per-node allocation).
         self._legal_scratch = np.empty(MAX_ACTION_SIZE, dtype=np.uint16)
@@ -299,6 +299,38 @@ def _add_dirichlet_noise(
     assert node.priors is not None
     noise = rng.dirichlet([alpha] * len(node.priors))
     node.priors = ((1 - epsilon) * node.priors + epsilon * noise).astype(np.float32)
+
+
+def _filter_acq_price_root_priors(
+    priors: np.ndarray,
+    action_ids: np.ndarray,
+    n_legal: int,
+    phase_id: int,
+    max_acq_price_actions: int,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Apply the ACQ price edge cap to an already-softmaxed root eval."""
+    if (
+        max_acq_price_actions <= 0
+        or phase_id != int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)
+        or n_legal <= max_acq_price_actions
+    ):
+        return priors, action_ids, n_legal
+
+    edge_count = max_acq_price_actions // 2
+    keep = np.empty(max_acq_price_actions, dtype=np.intp)
+    keep[:edge_count] = np.arange(edge_count, dtype=np.intp)
+    keep[edge_count:] = np.arange(
+        n_legal - edge_count,
+        n_legal,
+        dtype=np.intp,
+    )
+    filtered_priors = priors[keep].astype(np.float32, copy=True)
+    prior_sum = float(filtered_priors.sum())
+    if prior_sum > 0.0:
+        filtered_priors /= prior_sum
+    else:
+        filtered_priors.fill(1.0 / float(max_acq_price_actions))
+    return filtered_priors, action_ids[keep].copy(), max_acq_price_actions
 
 
 # Type alias for a selection path: list of (parent_node, action, array_idx)
@@ -429,19 +461,33 @@ def run_search(
 
         # Evaluate root with NN. Sparse-priors contract:
         #   (sparse_priors, values, action_ids, n_legal, phase_id)
-        priors, root_values, action_ids, n_legal, _ = evaluator.evaluate(
+        priors, root_values, action_ids, n_legal, phase_id = evaluator.evaluate(
             root_state,
         )
         if check_nonfinite:
             _raise_if_nonfinite(
                 priors,
-                name="root_priors",
+                name="root_priors.raw",
                 debug_context=debug_context,
                 extra=f"n_legal={n_legal}",
             )
             _raise_if_nonfinite(
                 root_values,
                 name="root_values",
+                debug_context=debug_context,
+                extra=f"n_legal={n_legal}",
+            )
+        priors, action_ids, n_legal = _filter_acq_price_root_priors(
+            priors,
+            action_ids,
+            n_legal,
+            phase_id,
+            config.max_acq_price_actions,
+        )
+        if check_nonfinite:
+            _raise_if_nonfinite(
+                priors,
+                name="root_priors.filtered",
                 debug_context=debug_context,
                 extra=f"n_legal={n_legal}",
             )
@@ -609,8 +655,10 @@ def run_search(
                     # is the slot.
                     phase_id = get_decision_phase_py(scratch_gs)
                     child.pending_phase = phase_id
-                    n = enumerate_legal_actions_py(
-                        scratch_gs, legal_scratch,
+                    n = enumerate_policy_actions_py(
+                        scratch_gs,
+                        legal_scratch,
+                        config.max_acq_price_actions,
                     )
                     child.pending_n = n
                     slot = len(pending)

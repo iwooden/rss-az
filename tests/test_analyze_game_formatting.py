@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 import train.analyze_game as analyze_game_module
@@ -40,6 +41,12 @@ def _make_state(num_players: int = 3, seed: int = 42) -> GameState:
     # the setup only provides positive-income companies.
     state.allow_positive_income_closing = True
     return state
+
+
+def _cuda_device() -> torch.device:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required for analyze_game model tests")
+    return torch.device("cuda")
 
 
 def test_format_state_full_restores_old_trace_sections() -> None:
@@ -147,14 +154,15 @@ def test_format_token_dump_denormalizes_rows_into_compact_table() -> None:
 
 
 def test_analyze_game_token_dump_flag_includes_token_tables() -> None:
+    device = _cuda_device()
     torch.manual_seed(0)
     config = TrainingConfig(num_players=3)
-    model = create_model(config).to(torch.device("cpu"))
+    model = create_model(config).to(device)
     model.eval()
 
     rendered = analyze_game(
         model,
-        torch.device("cpu"),
+        device,
         config,
         seed=1,
         num_simulations=1,
@@ -169,14 +177,15 @@ def test_analyze_game_token_dump_flag_includes_token_tables() -> None:
 
 
 def test_analyze_game_token_dump_flag_appends_normalization_report() -> None:
+    device = _cuda_device()
     torch.manual_seed(0)
     config = TrainingConfig(num_players=3)
-    model = create_model(config).to(torch.device("cpu"))
+    model = create_model(config).to(device)
     model.eval()
 
     rendered = analyze_game(
         model,
-        torch.device("cpu"),
+        device,
         config,
         seed=1,
         num_simulations=1,
@@ -198,6 +207,7 @@ def test_analyze_game_token_dump_flag_appends_normalization_report() -> None:
 
 
 def test_analyze_game_mixed_config_uses_requested_actual_player_count() -> None:
+    device = _cuda_device()
     torch.manual_seed(0)
     config = TrainingConfig(
         num_players=0,
@@ -207,12 +217,12 @@ def test_analyze_game_mixed_config_uses_requested_actual_player_count() -> None:
         search_batch_size=1,
         dirichlet_epsilon=0.0,
     )
-    model = create_model(config).to(torch.device("cpu"))
+    model = create_model(config).to(device)
     model.eval()
 
     rendered = analyze_game(
         model,
-        torch.device("cpu"),
+        device,
         config,
         seed=1,
         num_simulations=1,
@@ -232,7 +242,8 @@ def test_analyze_game_mixed_config_uses_requested_actual_player_count() -> None:
     assert "(depth:" in rendered
 
 
-def test_analyze_game_player_names_relabel_output() -> None:
+def test_analyze_game_max_acq_price_actions_override_is_logged() -> None:
+    device = _cuda_device()
     torch.manual_seed(0)
     config = TrainingConfig(
         num_players=3,
@@ -240,12 +251,39 @@ def test_analyze_game_player_names_relabel_output() -> None:
         search_batch_size=1,
         dirichlet_epsilon=0.0,
     )
-    model = create_model(config).to(torch.device("cpu"))
+    model = create_model(config).to(device)
     model.eval()
 
     rendered = analyze_game(
         model,
-        torch.device("cpu"),
+        device,
+        config,
+        seed=1,
+        num_simulations=1,
+        search_batch_size=1,
+        top_n=1,
+        checkpoint_path="new",
+        max_acq_price_actions=10,
+    )
+
+    assert "# ACQ price action cap: 10" in rendered
+
+
+def test_analyze_game_player_names_relabel_output() -> None:
+    device = _cuda_device()
+    torch.manual_seed(0)
+    config = TrainingConfig(
+        num_players=3,
+        num_simulations=1,
+        search_batch_size=1,
+        dirichlet_epsilon=0.0,
+    )
+    model = create_model(config).to(device)
+    model.eval()
+
+    rendered = analyze_game(
+        model,
+        device,
         config,
         seed=1,
         num_simulations=1,
@@ -303,6 +341,7 @@ def test_extract_18xx_seed_setup_builds_minimal_rss_game(monkeypatch) -> None:
 
 
 def test_analyze_game_18xx_seed_logs_applied_initial_setup(monkeypatch) -> None:
+    device = _cuda_device()
     torch.manual_seed(0)
     config = TrainingConfig(
         num_players=3,
@@ -310,7 +349,7 @@ def test_analyze_game_18xx_seed_logs_applied_initial_setup(monkeypatch) -> None:
         search_batch_size=1,
         dirichlet_epsilon=0.0,
     )
-    model = create_model(config).to(torch.device("cpu"))
+    model = create_model(config).to(device)
     model.eval()
     calls: list[tuple[int, int]] = []
 
@@ -327,7 +366,7 @@ def test_analyze_game_18xx_seed_logs_applied_initial_setup(monkeypatch) -> None:
 
     rendered = analyze_game(
         model,
-        torch.device("cpu"),
+        device,
         config,
         seed=1,
         seed_18xx=560979115,

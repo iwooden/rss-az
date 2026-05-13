@@ -21,6 +21,7 @@ import pytest
 
 from core.actions import (
     enumerate_legal_actions_py,
+    enumerate_policy_actions_py,
     get_decision_phase_py,
 )
 from core.data import (
@@ -274,3 +275,31 @@ def test_enumerator_width_within_action_size(phase):
         f"Either the setup is too weak or ACTION_SIZE no longer matches the "
         f"encoder's maximum.\nLegal ids: {ids}"
     )
+
+
+def _policy_ids(state, max_acq_price_actions):
+    buf = np.zeros(MAX_ACTION_SIZE, dtype=np.uint16)
+    count = enumerate_policy_actions_py(state, buf, max_acq_price_actions)
+    return [int(buf[i]) for i in range(count)]
+
+
+def test_policy_actions_default_preserves_acq_select_price_legality():
+    state = _state_acq_select_price()
+    phase_id, legal_ids = _enumerate(state)
+
+    assert phase_id == int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)
+    assert _policy_ids(state, 0) == legal_ids
+
+
+def test_policy_actions_can_cap_acq_select_price_to_low_and_high_edges():
+    state = _state_acq_select_price()
+
+    assert _policy_ids(state, 10) == [0, 1, 2, 3, 4, 46, 47, 48, 49, 50]
+
+
+def test_policy_actions_leave_short_acq_price_ranges_unchanged():
+    state = _state_acq_select_price()
+    low = COMPANIES[35].get_low_price()
+    CORPS[7].set_cash(state, low + 7)
+
+    assert _policy_ids(state, 10) == list(range(8))

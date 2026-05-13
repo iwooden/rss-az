@@ -9,6 +9,32 @@ from typing import Any
 from nn.model_contract import ModelKind, normalize_model_type
 
 
+def _validate_max_acq_price_actions(value: int) -> None:
+    from core.data import ActionSize
+
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(
+            "max_acq_price_actions must be an integer, "
+            f"got {value!r}"
+        )
+    if value < 0:
+        raise ValueError(
+            "max_acq_price_actions must be >= 0, "
+            f"got {value}"
+        )
+    if value != 0 and value % 2 != 0:
+        raise ValueError(
+            "max_acq_price_actions must be divisible by 2, "
+            f"got {value}"
+        )
+    acq_price_width = int(ActionSize.ACTION_SIZE_ACQ_SELECT_PRICE)
+    if value > acq_price_width:
+        raise ValueError(
+            "max_acq_price_actions must be <= "
+            f"ACTION_SIZE_ACQ_SELECT_PRICE ({acq_price_width}), got {value}"
+        )
+
+
 @dataclass
 class MCTSConfig:
     """Hyperparameters for MCTS search."""
@@ -22,6 +48,7 @@ class MCTSConfig:
     num_players: int = 3
     search_batch_size: int = 8
     check_nonfinite: bool = True
+    max_acq_price_actions: int = 0
     action_dim: int = field(init=False)
 
     def __post_init__(self) -> None:
@@ -46,6 +73,7 @@ class MCTSConfig:
             raise ValueError(
                 f"check_nonfinite must be bool, got {self.check_nonfinite!r}"
             )
+        _validate_max_acq_price_actions(self.max_acq_price_actions)
         if not 3 <= self.num_players <= 5:
             raise ValueError(f"num_players must be 3-5, got {self.num_players}")
         if self.c_puct < 0:
@@ -125,6 +153,9 @@ class TrainingConfig:
     dirichlet_alpha_numerator: float = 10.0
     search_batch_size: int = 8
     check_nonfinite_mcts: bool = True
+    # 0 = full ACQ_SELECT_PRICE legal set. Positive even values cap policy/search
+    # to the low half and high half of legal acquisition prices.
+    max_acq_price_actions: int = 0
     num_workers: int = 4
     num_eval_servers: int = 1
     # Optional one-device-per-eval-server mapping, e.g. ["cuda:0", "cuda:1"].
@@ -357,6 +388,7 @@ class TrainingConfig:
                 "check_nonfinite_mcts must be bool, "
                 f"got {self.check_nonfinite_mcts!r}"
             )
+        _validate_max_acq_price_actions(self.max_acq_price_actions)
         if self.dirichlet_alpha <= 0:
             raise ValueError(
                 f"dirichlet_alpha must be > 0, got {self.dirichlet_alpha}"
@@ -807,6 +839,7 @@ class TrainingConfig:
             num_players=actual_num_players,
             search_batch_size=self.search_batch_size,
             check_nonfinite=self.check_nonfinite_mcts,
+            max_acq_price_actions=self.max_acq_price_actions,
         )
 
     def to_json(self) -> str:

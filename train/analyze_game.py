@@ -37,6 +37,7 @@ from mcts.evaluator import NNEvaluator, compute_terminal_values
 from mcts.node import MCTSNode
 from mcts.search import (
     StatePool,
+    _filter_acq_price_root_priors,
     get_greedy_leaf_depth,
     get_greedy_leaf_value,
     prepare_reuse_root,
@@ -479,6 +480,7 @@ def analyze_game(
     num_players: int | None = None,
     seed_18xx: int | None = None,
     player_names: list[str] | None = None,
+    max_acq_price_actions: int | None = None,
 ) -> str:
     """Play a self-play game with full MCTS and return a detailed log."""
     num_players = _resolve_analysis_num_players(config, num_players)
@@ -498,20 +500,26 @@ def analyze_game(
         eval_dtype=config.eval_dtype,
         input_spec=get_model_input_spec(config),
     )
-    mcts_config = config.to_mcts_config(
+    base_mcts_config = config.to_mcts_config(
         c_puct_override=c_puct,
         num_players=num_players,
     )
+    acq_price_cap = (
+        base_mcts_config.max_acq_price_actions
+        if max_acq_price_actions is None
+        else max_acq_price_actions
+    )
     mcts_config = MCTSConfig(
         num_simulations=num_simulations,
-        c_puct=mcts_config.c_puct,
-        dirichlet_alpha=mcts_config.dirichlet_alpha,
-        dirichlet_epsilon=dirichlet_epsilon if dirichlet_epsilon is not None else mcts_config.dirichlet_epsilon,
-        dirichlet_dynamic=dirichlet_dynamic if dirichlet_dynamic is not None else mcts_config.dirichlet_dynamic,
-        dirichlet_alpha_numerator=mcts_config.dirichlet_alpha_numerator,
+        c_puct=base_mcts_config.c_puct,
+        dirichlet_alpha=base_mcts_config.dirichlet_alpha,
+        dirichlet_epsilon=dirichlet_epsilon if dirichlet_epsilon is not None else base_mcts_config.dirichlet_epsilon,
+        dirichlet_dynamic=dirichlet_dynamic if dirichlet_dynamic is not None else base_mcts_config.dirichlet_dynamic,
+        dirichlet_alpha_numerator=base_mcts_config.dirichlet_alpha_numerator,
         num_players=num_players,
         search_batch_size=search_batch_size,
-        check_nonfinite=mcts_config.check_nonfinite,
+        check_nonfinite=base_mcts_config.check_nonfinite,
+        max_acq_price_actions=acq_price_cap,
     )
 
     layout = get_layout(max_players)
@@ -542,6 +550,8 @@ def analyze_game(
             f"remaining deck: {len(setup_18xx.deck_order)}"
         )
     lines.append(f"# Noise: {noise_desc} | Terminal blend: {terminal_rank_weight}")
+    if mcts_config.max_acq_price_actions > 0:
+        lines.append(f"# ACQ price action cap: {mcts_config.max_acq_price_actions}")
     if mcts_stats_only:
         lines.append(
             "# Columns: step turn player phase | legal visited top gap eff "
@@ -594,7 +604,16 @@ def analyze_game(
         values: np.ndarray | None = None
         action_ids_arr: np.ndarray | None = None
         if not mcts_stats_only:
-            priors, values, action_ids_arr, _, _ = evaluator.evaluate(state)
+            priors, values, action_ids_arr, n_legal, eval_phase_id = (
+                evaluator.evaluate(state)
+            )
+            priors, action_ids_arr, _ = _filter_acq_price_root_priors(
+                priors,
+                action_ids_arr,
+                n_legal,
+                eval_phase_id,
+                mcts_config.max_acq_price_actions,
+            )
 
         # MCTS search (reuses subtree from previous move when available)
         search_stats = SearchStats()
@@ -793,6 +812,15 @@ def main() -> None:
     parser.add_argument("--simulations", type=int, default=800)
     parser.add_argument("--search-batch-size", type=int, default=8)
     parser.add_argument(
+        "--max-acq-price-actions",
+        type=int,
+        default=None,
+        help=(
+            "Override ACQ_SELECT_PRICE policy/search cap for analysis "
+            "(default from checkpoint/config; 0 disables)"
+        ),
+    )
+    parser.add_argument(
         "--c-puct", type=float, default=None,
         help="Override c_puct for this analysis run (default from checkpoint)",
     )
@@ -881,6 +909,7 @@ def main() -> None:
         num_players=args.num_players,
         seed_18xx=args.seed_18xx,
         player_names=_parse_player_names_arg(args.player_names),
+        max_acq_price_actions=args.max_acq_price_actions,
     )
 
     if args.output:
