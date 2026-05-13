@@ -102,7 +102,78 @@ def test_factory_instantiates_transformer_from_model_path() -> None:
     assert model.cfg.phase_conditioning is config.phase_conditioning
     assert model.cfg.price_slot_fourier_bands == config.price_slot_fourier_bands
     assert not hasattr(model.cfg, "price_slot_residual_scale")
+    assert model.cfg.nn_binary_phase_scalar is False
     assert any(name.endswith("phase_mod.weight") for name, _ in model.named_parameters())
+
+
+def test_model_path_v2_binary_scalar_heads_are_opt_in() -> None:
+    config = TrainingConfig(
+        model_type="transformer",
+        model_path="nn/transformer-v2.py",
+        d_model=64,
+        d_proj=16,
+        num_heads=4,
+        num_layers=1,
+        nn_binary_phase_scalar=True,
+    )
+    model = create_model(config)
+
+    assert model.cfg.nn_binary_phase_scalar is True
+    assert model.issue_decision_head.in_features == 3 * config.d_model
+    assert model.issue_decision_head.out_features == 1
+    assert model.acq_offer_decision_head.in_features == 4 * config.d_model
+    assert model.acq_offer_decision_head.out_features == 1
+
+    parameter_names = dict(model.named_parameters())
+    assert "issue_decision_head.weight" in parameter_names
+    assert "issue_decision_head.bias" in parameter_names
+    assert "acq_offer_decision_head.weight" in parameter_names
+    assert "acq_offer_decision_head.bias" in parameter_names
+    assert "issue_query_proj.weight" not in parameter_names
+    assert "issue_pass_key_proj.weight" not in parameter_names
+    assert "issue_share_key_proj.weight" not in parameter_names
+    assert "acq_offer_query_proj.weight" not in parameter_names
+    assert "acq_offer_pass_key_proj.weight" not in parameter_names
+    assert "acq_offer_accept_key_proj.weight" not in parameter_names
+
+    model.eval()
+    tokens = torch.zeros(1, model.cfg.num_tokens, int(TokenDataSize.TOKEN_DIM))
+    tokens[:, :, 0] = 1.0
+    legal_mask = torch.ones(1, int(UNIFIED_LOGIT_DIM), dtype=torch.bool)
+    relations = torch.zeros(
+        1,
+        NUM_ATTENTION_RELATIONS,
+        model.cfg.num_tokens,
+        model.cfg.num_tokens,
+        dtype=torch.uint8,
+    )
+    with torch.inference_mode():
+        policy_logits, values = model(tokens, legal_mask, relations)
+    assert policy_logits.shape == (1, int(UNIFIED_LOGIT_DIM))
+    assert values.shape == (1, config.num_players)
+
+
+def test_model_path_v2_binary_scalar_default_preserves_query_key_modules() -> None:
+    config = TrainingConfig(
+        model_type="transformer",
+        model_path="nn/transformer-v2.py",
+        d_model=64,
+        d_proj=16,
+        num_heads=4,
+        num_layers=1,
+    )
+    model = create_model(config)
+
+    assert model.cfg.nn_binary_phase_scalar is False
+    parameter_names = dict(model.named_parameters())
+    assert "issue_query_proj.weight" in parameter_names
+    assert "issue_pass_key_proj.weight" in parameter_names
+    assert "issue_share_key_proj.weight" in parameter_names
+    assert "acq_offer_query_proj.weight" in parameter_names
+    assert "acq_offer_pass_key_proj.weight" in parameter_names
+    assert "acq_offer_accept_key_proj.weight" in parameter_names
+    assert "issue_decision_head.weight" not in parameter_names
+    assert "acq_offer_decision_head.weight" not in parameter_names
 
 
 def test_factory_threads_custom_size_into_model_path_transformer() -> None:

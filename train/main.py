@@ -270,6 +270,20 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         help="Blend weight for learned price-slot embeddings: 0=pure Fourier, 1=pure embedding",
     )
+    binary_phase_group = parser.add_mutually_exclusive_group()
+    binary_phase_group.add_argument(
+        "--nn-binary-phase-scalar",
+        dest="nn_binary_phase_scalar",
+        action="store_true",
+        default=None,
+        help="Use direct scalar logits for ISSUE and ACQ_OFFER binary policy heads",
+    )
+    binary_phase_group.add_argument(
+        "--no-nn-binary-phase-scalar",
+        dest="nn_binary_phase_scalar",
+        action="store_false",
+        help="Use query/key logits for ISSUE and ACQ_OFFER binary policy heads",
+    )
     parser.add_argument("--resnet-hidden-dim", type=int)
     parser.add_argument("--resnet-num-blocks", type=int)
     return parser
@@ -280,6 +294,7 @@ _CLI_FIELDS = (
     "eval_dtype", "model_type", "model_path", "phase_conditioning",
     "d_model", "d_proj", "num_heads", "num_layers", "ff_mult",
     "price_slot_fourier_bands", "price_slot_residual_scale",
+    "nn_binary_phase_scalar",
     "resnet_hidden_dim", "resnet_num_blocks",
     "games_per_epoch", "num_epochs", "training_steps_per_epoch",
     "num_simulations", "search_batch_size", "check_nonfinite_mcts",

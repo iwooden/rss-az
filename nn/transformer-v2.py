@@ -204,6 +204,7 @@ class TransformerConfig:
     ff_mult: float = 3.0  # FFN inner dimension is rounded up to a multiple of 64.
     phase_conditioning: bool = False
     price_slot_fourier_bands: int = 4
+    nn_binary_phase_scalar: bool = False
 
     # Raw feature width per token (zero-padded to same size across types).
     # Sourced from core.token_data so the model and the Cython extractor
@@ -228,6 +229,10 @@ class TransformerConfig:
         assert self.price_slot_fourier_bands >= 0, (
             "price_slot_fourier_bands must be >= 0, "
             f"got {self.price_slot_fourier_bands}"
+        )
+        assert isinstance(self.nn_binary_phase_scalar, bool), (
+            "nn_binary_phase_scalar must be bool, "
+            f"got {self.nn_binary_phase_scalar!r}"
         )
         object.__setattr__(self, "_num_tokens", int(get_num_tokens(self.num_players)))
 
@@ -719,12 +724,16 @@ class RSSTransformerNet(nn.Module):
         self.bid_pass_key_proj = nn.Linear(d, dp, bias=False)
 
         self.dividend_query_proj = nn.Linear(3 * d, dp, bias=False)
-        self.issue_query_proj = nn.Linear(3 * d, dp, bias=False)
-        self.issue_pass_key_proj = nn.Linear(d, dp, bias=False)
-        self.issue_share_key_proj = nn.Linear(d, dp, bias=False)
-        self.acq_offer_query_proj = nn.Linear(4 * d, dp, bias=False)
-        self.acq_offer_pass_key_proj = nn.Linear(d, dp, bias=False)
-        self.acq_offer_accept_key_proj = nn.Linear(d, dp, bias=False)
+        if cfg.nn_binary_phase_scalar:
+            self.issue_decision_head = nn.Linear(3 * d, 1)
+            self.acq_offer_decision_head = nn.Linear(4 * d, 1)
+        else:
+            self.issue_query_proj = nn.Linear(3 * d, dp, bias=False)
+            self.issue_pass_key_proj = nn.Linear(d, dp, bias=False)
+            self.issue_share_key_proj = nn.Linear(d, dp, bias=False)
+            self.acq_offer_query_proj = nn.Linear(4 * d, dp, bias=False)
+            self.acq_offer_pass_key_proj = nn.Linear(d, dp, bias=False)
+            self.acq_offer_accept_key_proj = nn.Linear(d, dp, bias=False)
 
         self.acq_price_query_proj = nn.Linear(4 * d, dp, bias=False)
         self.par_query_proj = nn.Linear(4 * d, dp, bias=False)
@@ -983,7 +992,7 @@ class RSSTransformerNet(nn.Module):
         )
         if _phase_action_size(DecisionPhase.DPHASE_ACQ_OFFER) != 2:
             raise AssertionError(
-                "ACQ_OFFER policy readout has two projected keys; "
+                "ACQ_OFFER policy readout has two logits; "
                 f"PHASE_ACTION_SIZES reports {_phase_action_size(DecisionPhase.DPHASE_ACQ_OFFER)}"
             )
         block_widths[int(DecisionPhase.DPHASE_ACQ_OFFER)] = 2
@@ -996,7 +1005,7 @@ class RSSTransformerNet(nn.Module):
         )
         if _phase_action_size(DecisionPhase.DPHASE_ISSUE) != 2:
             raise AssertionError(
-                "ISSUE policy readout has two projected keys; "
+                "ISSUE policy readout has two logits; "
                 f"PHASE_ACTION_SIZES reports {_phase_action_size(DecisionPhase.DPHASE_ISSUE)}"
             )
         block_widths[int(DecisionPhase.DPHASE_ISSUE)] = 2
@@ -1119,6 +1128,11 @@ class RSSTransformerNet(nn.Module):
         query = query_proj(query_input)
         logits = torch.bmm(keys, query.unsqueeze(-1)).squeeze(-1)
         return logits / math.sqrt(self.cfg.d_proj)
+
+    @staticmethod
+    def _centered_binary_logits(delta: torch.Tensor) -> torch.Tensor:
+        """Return pass/no-op and yes-action logits from one scalar margin."""
+        return torch.cat([-0.5 * delta, 0.5 * delta], dim=-1)
 
     def _invest_logits(
         self,
@@ -1287,6 +1301,12 @@ class RSSTransformerNet(nn.Module):
 
     def _issue_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Build ISSUE logits: pass/no-issue plus issue one share."""
+        query_input = torch.cat(
+            [ctx.active_player, ctx.active_corp, ctx.tokens[:, self._issue_idx]],
+            dim=-1,
+        )
+        if self.cfg.nn_binary_phase_scalar:
+            return self._centered_binary_logits(self.issue_decision_head(query_input))
         keys = torch.stack(
             [
                 self.issue_pass_key_proj(ctx.active_corp),
@@ -1294,21 +1314,10 @@ class RSSTransformerNet(nn.Module):
             ],
             dim=1,
         )
-        query_input = torch.cat(
-            [ctx.active_player, ctx.active_corp, ctx.tokens[:, self._issue_idx]],
-            dim=-1,
-        )
         return self._query_key_logits(query_input, self.issue_query_proj, keys)
 
     def _acq_offer_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Build ACQ_OFFER logits: pass/reject plus accept offer."""
-        keys = torch.stack(
-            [
-                self.acq_offer_pass_key_proj(ctx.active_company),
-                self.acq_offer_accept_key_proj(ctx.active_company),
-            ],
-            dim=1,
-        )
         query_input = torch.cat(
             [
                 ctx.active_player,
@@ -1317,6 +1326,15 @@ class RSSTransformerNet(nn.Module):
                 ctx.active_company,
             ],
             dim=-1,
+        )
+        if self.cfg.nn_binary_phase_scalar:
+            return self._centered_binary_logits(self.acq_offer_decision_head(query_input))
+        keys = torch.stack(
+            [
+                self.acq_offer_pass_key_proj(ctx.active_company),
+                self.acq_offer_accept_key_proj(ctx.active_company),
+            ],
+            dim=1,
         )
         return self._query_key_logits(query_input, self.acq_offer_query_proj, keys)
 
@@ -1716,6 +1734,7 @@ if __name__ == "__main__":
     print(f"  d_model={cfg.d_model}, d_proj={cfg.d_proj}, heads={cfg.num_heads}, "
           f"layers={cfg.num_layers}, d_ff={_ffn_hidden_dim(cfg)}")
     print(f"  phase_conditioning={cfg.phase_conditioning}")
+    print(f"  nn_binary_phase_scalar={cfg.nn_binary_phase_scalar}")
     print(f"  tokens={cfg.num_tokens}, token_dim={cfg.token_dim}")
     print(f"  Trainable parameters: {total:,}")
     print()
@@ -1756,13 +1775,21 @@ if __name__ == "__main__":
         model.ipo_query_proj, model.ipo_pass_key_proj, model.ipo_corp_proj,
         model.bid_query_proj, model.bid_pass_key_proj,
         model.dividend_query_proj,
-        model.issue_query_proj, model.issue_pass_key_proj,
-        model.issue_share_key_proj,
-        model.acq_offer_query_proj, model.acq_offer_pass_key_proj,
-        model.acq_offer_accept_key_proj,
         model.acq_price_query_proj,
         model.par_query_proj,
     ]
+    if model.cfg.nn_binary_phase_scalar:
+        policy_modules.extend([
+            model.issue_decision_head,
+            model.acq_offer_decision_head,
+        ])
+    else:
+        policy_modules.extend([
+            model.issue_query_proj, model.issue_pass_key_proj,
+            model.issue_share_key_proj,
+            model.acq_offer_query_proj, model.acq_offer_pass_key_proj,
+            model.acq_offer_accept_key_proj,
+        ])
     policy_params = sum(sum(p.numel() for p in m.parameters()) for m in policy_modules)
     value_params = sum(p.numel() for p in model.value_head.parameters())
 

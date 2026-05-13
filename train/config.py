@@ -109,6 +109,9 @@ class TrainingConfig:
     price_slot_fourier_bands: int = 4
     # 0.0 = pure Fourier projection, 1.0 = pure learned slot embedding.
     price_slot_residual_scale: float = 1.0
+    # Use direct centered scalar logits for 2-action ISSUE / ACQ_OFFER heads
+    # in model implementations that support it.
+    nn_binary_phase_scalar: bool = False
     # Residual MLP model hyperparameters.
     resnet_hidden_dim: int = 256
     resnet_num_blocks: int = 10
@@ -303,6 +306,11 @@ class TrainingConfig:
             raise ValueError(
                 "price_slot_residual_scale must be in [0, 1], "
                 f"got {self.price_slot_residual_scale}"
+            )
+        if not isinstance(self.nn_binary_phase_scalar, bool):
+            raise ValueError(
+                "nn_binary_phase_scalar must be bool, "
+                f"got {self.nn_binary_phase_scalar!r}"
             )
         if self.resnet_hidden_dim < 1:
             raise ValueError(

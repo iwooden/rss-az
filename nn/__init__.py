@@ -205,6 +205,7 @@ def create_model(
     phase_conditioning: bool = False,
     price_slot_fourier_bands: int = 4,
     price_slot_residual_scale: float = 1.0,
+    nn_binary_phase_scalar: bool = False,
     model_path: str | None = None,
 ) -> nn.Module:
     """Instantiate the configured model family.
@@ -239,6 +240,7 @@ def create_model(
             "phase_conditioning": phase_conditioning,
             "price_slot_fourier_bands": price_slot_fourier_bands,
             "price_slot_residual_scale": price_slot_residual_scale,
+            "nn_binary_phase_scalar": nn_binary_phase_scalar,
         }
         return net_cls(config_cls(**_config_kwargs(config_cls, values)))
 
@@ -279,6 +281,9 @@ def create_model(
             ),
             "price_slot_residual_scale": float(
                 _config_value(config, "price_slot_residual_scale", 1.0)
+            ),
+            "nn_binary_phase_scalar": bool(
+                _config_value(config, "nn_binary_phase_scalar", False)
             ),
         }
         return net_cls(config_cls(**_config_kwargs(config_cls, values)))
