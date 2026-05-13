@@ -1,6 +1,7 @@
 from core.data import GamePhases
 from entities.player import PLAYERS
 from entities.corp import CORPS
+from entities.market import MARKET
 
 from tests.phases.conftest import make_auto_phase_state, float_corp_for_test
 from tests.phases.helpers.finance import (
@@ -39,3 +40,23 @@ def test_prime_corp_income_for_test_overrides_cached_income_after_refresh():
     prime_corp_income_for_test(state, corp_id=0, income=7)
 
     assert CORPS[0].get_income(state) == 7
+
+
+def test_player_liquidity_sells_lower_price_holdings_first():
+    state = make_auto_phase_state(3, int(GamePhases.PHASE_INVEST))
+    float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
+    float_corp_for_test(state, corp_id=1, player_id=0, par_index=9)
+    PLAYERS[0].set_cash(state, 0)
+
+    expected = MARKET.get_price_at_index(8) + MARKET.get_price_at_index(9)
+
+    assert PLAYERS[0].get_liquidity(state) == expected
+
+
+def test_player_liquidity_frees_bankrupt_corp_market_slot():
+    state = make_auto_phase_state(3, int(GamePhases.PHASE_INVEST))
+    float_corp_for_test(state, corp_id=0, player_id=0, par_index=2)
+    float_corp_for_test(state, corp_id=1, player_id=0, par_index=1)
+    PLAYERS[0].set_cash(state, 0)
+
+    assert PLAYERS[0].get_liquidity(state) == MARKET.get_price_at_index(1)

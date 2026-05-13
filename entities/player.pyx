@@ -132,10 +132,15 @@ cdef int _calc_net_worth(GameState state, int player_id) noexcept nogil:
 
 
 cdef int _calc_liquidity(GameState state, int player_id) noexcept nogil:
-    """Compute iterative-sale liquidation value across all owned shares."""
+    """Compute liquidation value by selling lower-priced holdings first."""
     cdef int base = _player_base(player_id)
     cdef int total = <int>state._data[base + PLAYER_FIELDS.cash]
     cdef int corp_id, shares, sim_index, new_index, _i
+    cdef int order_count = 0
+    cdef int order_index, insert_index, sort_corp, sort_price
+    cdef int max_market_index = <int>GameConstants.NUM_MARKET_SPACES - 1
+    cdef int corp_order[8]
+    cdef int corp_prices[8]
     cdef int16_t sim_market[27]
 
     copy_market_availability(state, sim_market)
@@ -146,16 +151,35 @@ cdef int _calc_liquidity(GameState state, int player_id) noexcept nogil:
         shares = <int>state._data[base + PLAYER_FIELDS.owned_shares + corp_id]
         if shares <= 0:
             continue
+        corp_order[order_count] = corp_id
+        corp_prices[order_count] = corp_price_index(state, corp_id)
+        order_count += 1
 
-        sim_index = corp_price_index(state, corp_id)
+    for order_index in range(1, order_count):
+        sort_corp = corp_order[order_index]
+        sort_price = corp_prices[order_index]
+        insert_index = order_index - 1
+        while insert_index >= 0 and corp_prices[insert_index] > sort_price:
+            corp_order[insert_index + 1] = corp_order[insert_index]
+            corp_prices[insert_index + 1] = corp_prices[insert_index]
+            insert_index -= 1
+        corp_order[insert_index + 1] = sort_corp
+        corp_prices[insert_index + 1] = sort_price
+
+    for order_index in range(order_count):
+        corp_id = corp_order[order_index]
+        shares = <int>state._data[base + PLAYER_FIELDS.owned_shares + corp_id]
+        sim_index = corp_prices[order_index]
         for _i in range(shares):
             new_index = sim_index - 1
             while new_index > 0 and sim_market[new_index] != 1:
                 new_index -= 1
             if new_index <= 0:
+                if sim_index < max_market_index:
+                    sim_market[sim_index] = 1
                 break  # Bankruptcy — remaining shares worthless
             total += MARKET_PRICES[new_index]
-            if sim_index < 26:
+            if sim_index < max_market_index:
                 sim_market[sim_index] = 1
             sim_market[new_index] = 0
             sim_index = new_index
@@ -316,10 +340,10 @@ cdef class Player:
         Calculate player's total liquidation value.
 
         Liquidity = cash + iterative proceeds from selling all held shares.
-        Sells are simulated in corp index order (0-7). Each sell moves the
-        corp's price to the next lower available market space. Cross-corp
-        effects are captured: selling corp 0's shares frees/occupies market
-        spaces that affect corp 1's simulation, etc.
+        Held corps are sold from lowest current share price to highest current
+        share price. Each sell moves the corp's price to the next lower
+        available market space in one shared scratch market, so cross-corp
+        effects from earlier simulated sales affect later ones.
         """
         return _calc_liquidity(state, self.player_id)
 
