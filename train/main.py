@@ -36,6 +36,7 @@ from train.checkpoint import (
 )
 from train.config import TrainingConfig
 from train.eval_server import EvaluationServer, SharedEvalBuffers
+from train.fp8 import convert_transformer_trunk_to_fp8
 from train.logging import TrainingLogger
 from train.profile_stats import EvalServerStats, GameProfileData, format_epoch_profile
 from train.replay_buffer import ReplayBuffer
@@ -936,6 +937,14 @@ def main() -> None:
     if cp is not None:
         model.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
         start_epoch = cp["epoch"] + 1  # type: ignore[operator]
+
+    if config.model_type == ModelKind.TRANSFORMER.value:
+        fp8_stats = convert_transformer_trunk_to_fp8(model)
+        print(
+            "Converted transformer trunk to TorchAO FP8 training: "
+            f"{fp8_stats.modules} Linear modules, "
+            f"{fp8_stats.parameters:,} parameters"
+        )
 
     # --- Components (model-independent) ---
     # Compact int16 state — replay buffer stores raw GameState rows, the

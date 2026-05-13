@@ -55,5 +55,6 @@
   "eval_batch_shape_mode": "bucketed",
   "eval_max_batch_size": 256,
   "model_path": "nn/transformer-v2.py",
-  "nn_binary_phase_scalar": true
+  "nn_binary_phase_scalar": true,
+  "max_acq_price_actions": 8
 }
