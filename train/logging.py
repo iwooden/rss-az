@@ -470,6 +470,8 @@ class TrainingLogger:
             "Dirichlet",
             f"epsilon={config.dirichlet_epsilon:g}, alpha={dirichlet_alpha}",
         )
+        if config.max_acq_price_actions > 0:
+            table.add_row("ACQ price cap", str(config.max_acq_price_actions))
         table.add_row(
             "c_puct",
             f"{config.c_puct_initial} \u2192 {config.c_puct_final} "

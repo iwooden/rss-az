@@ -27,6 +27,12 @@ def _small_resnet_config() -> TrainingConfig:
     )
 
 
+def _cuda_device() -> torch.device:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required for analyze_game model tests")
+    return torch.device("cuda")
+
+
 def test_factory_instantiates_transformer_from_config() -> None:
     config = TrainingConfig(model_type="transformer")
     model = create_model(config)
@@ -421,7 +427,7 @@ def test_model_path_class_pickles_across_spawn() -> None:
 
 
 def test_reloaded_resnet_checkpoint_runs_analyze_game(tmp_path) -> None:
-    device = torch.device("cpu")
+    device = _cuda_device()
     config = _small_resnet_config()
     model = create_model(config).to(device)
     path = tmp_path / "resnet.pt"

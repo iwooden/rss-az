@@ -215,6 +215,16 @@ def test_training_config_rejects_price_slot_residual_blend_out_of_range() -> Non
         TrainingConfig(price_slot_residual_scale=1.1)
 
 
+def test_training_config_validates_max_acq_price_actions() -> None:
+    config = TrainingConfig(max_acq_price_actions=10)
+    assert config.to_mcts_config().max_acq_price_actions == 10
+
+    with pytest.raises(ValueError, match="max_acq_price_actions"):
+        TrainingConfig(max_acq_price_actions=-2)
+    with pytest.raises(ValueError, match="divisible by 2"):
+        TrainingConfig(max_acq_price_actions=9)
+
+
 def test_training_config_rejects_unknown_model_type() -> None:
     with pytest.raises(ValueError, match="model_type"):
         TrainingConfig(model_type="mlp")

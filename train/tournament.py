@@ -496,6 +496,7 @@ def main() -> None:
         num_players=tournament_num_players,
         search_batch_size=args.search_batch_size,
         check_nonfinite=base_mcts.check_nonfinite,
+        max_acq_price_actions=base_mcts.max_acq_price_actions,
     )
 
     # Run tournament

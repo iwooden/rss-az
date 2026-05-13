@@ -24,7 +24,7 @@ import numpy as np
 import torch
 
 from core.actions import (
-    enumerate_legal_actions_py,
+    enumerate_policy_actions_py,
     get_decision_phase_py,
 )
 from core.data import GameConstants, MAX_ACTION_SIZE
@@ -299,6 +299,7 @@ def play_game(
     # Scratch buffer for enumerating legal actions at each decision point.
     # Copied-out per move so the buffer is free to be reused.
     legal_scratch = np.empty(MAX_ACTION_SIZE, dtype=np.uint16)
+    max_acq_price_actions = config.max_acq_price_actions
     # Static LUT mapping (phase_id, phase-local action id) → unified slot.
     # Used once per decision to scatter the sparse visit distribution and
     # legal set into dense (UNIFIED_LOGIT_DIM,) rows for the trainer.
@@ -306,7 +307,11 @@ def play_game(
 
     while True:
         phase_id = get_decision_phase_py(state)
-        n_legal = enumerate_legal_actions_py(state, legal_scratch)
+        n_legal = enumerate_policy_actions_py(
+            state,
+            legal_scratch,
+            max_acq_price_actions,
+        )
         legal_actions = legal_scratch[:n_legal].copy()
 
         # MCTS search (reuses subtree from previous move when available).
