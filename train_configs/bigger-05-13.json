@@ -48,12 +48,13 @@
   "phase_conditioning": false,
   "price_slot_fourier_bands": 4,
   "price_slot_residual_scale": 0.0,
-  "optimizer": "muon",
+  "optimizer": "adamw",
   "weight_decay": 0.01,
   "grad_clip": 5,
   "eval_min_batch_size": 8,
   "eval_batch_shape_mode": "bucketed",
   "eval_max_batch_size": 256,
   "model_path": "nn/transformer-v2.py",
-  "nn_binary_phase_scalar": true
+  "nn_binary_phase_scalar": true,
+  "max_acq_price_actions": 8
 }
