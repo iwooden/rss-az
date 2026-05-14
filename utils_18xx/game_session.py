@@ -844,7 +844,7 @@ class GameSession:
         action: dict,
         snapshot: tuple[str, int, int] | None,
     ) -> None:
-        """Adjust replay cash to 18xx's explicit pre-move share price."""
+        """Adjust replay cash to 18xx's explicit transaction share price."""
         if snapshot is None:
             return
 

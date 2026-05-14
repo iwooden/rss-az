@@ -174,7 +174,10 @@ are `buy_shares`, `sell_shares`, `bid`, and `pass`; during an auction only
 ```
 
 `share_price` here is a numeric transaction/share price, not the market-cell
-ID string used by `par`. The browser may omit nullable fields such as
+ID string used by `par`. For RSS buy/sell/issue actions this is the price
+after the share-price movement: next higher for buys, next lower for player
+sells and normal issues, and current price for Stock Masters issues. The
+browser may omit nullable fields such as
 `share_price`, `swap`, `purchase_for`, and `borrow_from` when not needed.
 
 ### Sell Shares / Issue Shares

@@ -166,6 +166,85 @@ def test_composer_allows_fi_offer_without_price_phase():
     }]
 
 
+def _invest_action_fixture(corp_name: str, par_index: int = 10):
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    corp_id = CORP_NAME_TO_ID[corp_name]
+    company_id = COMPANY_NAME_TO_ID["MHE"]
+    float_corp_for_test(
+        state,
+        corp_id=corp_id,
+        company_id=company_id,
+        player_id=0,
+        par_index=par_index,
+    )
+    TURN.set_phase(state, int(GamePhases.PHASE_INVEST))
+    TURN.set_active_player(state, 0)
+
+    par_price = MARKET.get_price_at_index(par_index)
+    game_data = {
+        "players": [{"id": 101, "name": "bot"}],
+        "actions": [
+            {
+                "id": 1,
+                "type": "par",
+                "entity": COMPANY_NAMES[company_id],
+                "entity_type": "company",
+                "corporation": corp_name,
+                "share_price": f"{par_price},0,{par_index}",
+                "user": 101,
+            },
+        ],
+    }
+    return state, corp_id, game_data
+
+
+def test_composer_prices_invest_buy_at_next_higher_share_price():
+    state, corp_id, game_data = _invest_action_fixture("DA")
+    current_price = CORPS[corp_id].get_share_price(state)
+    next_index = MARKET.find_next_higher_space(
+        state,
+        CORPS[corp_id].get_price_index(state),
+    )
+    expected_price = MARKET.get_price_at_index(next_index)
+
+    composer = _LiveActionComposer(game_data, bot_player_idx=0, committed_ids={1})
+    composer.add_step(
+        GamePhases.PHASE_INVEST,
+        {"type": "buy_shares", "corporation": "DA"},
+        state,
+    )
+
+    action = composer.finish()[0]
+    assert action["type"] == "buy_shares"
+    assert action["entity"] == 101
+    assert action["share_price"] == expected_price
+    assert action["share_price"] != current_price
+
+
+def test_composer_prices_invest_sell_at_next_lower_share_price():
+    state, corp_id, game_data = _invest_action_fixture("DA")
+    current_price = CORPS[corp_id].get_share_price(state)
+    next_index = MARKET.find_next_lower_space(
+        state,
+        CORPS[corp_id].get_price_index(state),
+    )
+    expected_price = MARKET.get_price_at_index(next_index)
+
+    composer = _LiveActionComposer(game_data, bot_player_idx=0, committed_ids={1})
+    composer.add_step(
+        GamePhases.PHASE_INVEST,
+        {"type": "sell_shares", "corporation": "DA"},
+        state,
+    )
+
+    action = composer.finish()[0]
+    assert action["type"] == "sell_shares"
+    assert action["entity"] == 101
+    assert action["share_price"] == expected_price
+    assert action["share_price"] != current_price
+
+
 def _issue_action_fixture(corp_name: str, par_index: int = 13):
     state = GameState(3)
     state.initialize_game(3, seed=42)

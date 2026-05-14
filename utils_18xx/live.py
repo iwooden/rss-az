@@ -739,7 +739,7 @@ def intent_to_api_action(
             market_share_count=CORPS[corp_id].get_bank_shares(state),
             treasury_share_count=CORPS[corp_id].get_unissued_shares(state),
         )
-        share_price = _get_corp_share_price(state, corp_name)
+        share_price = _get_invest_buy_share_price(state, corp_id)
         return {
             "type": "buy_shares",
             "entity": bot_user_id,
@@ -754,7 +754,8 @@ def intent_to_api_action(
         share_id = _resolve_sellable_share(
             game_data, corp_name, bot_user_id, committed_ids,
         )
-        share_price = _get_corp_share_price(state, corp_name)
+        corp_id = CORP_NAME_TO_ID[corp_name]
+        share_price = _get_invest_sell_share_price(state, corp_id)
         return {
             "type": "sell_shares",
             "entity": bot_user_id,
@@ -992,12 +993,18 @@ class _LiveActionComposer:
         })
 
 
-def _get_corp_share_price(state, corp_name: str) -> int:
-    """Get a corporation's current share price from engine state."""
-    from core.data import CORP_NAME_TO_ID
+def _get_invest_buy_share_price(state, corp_id: int) -> int:
+    """Return the transaction price 18xx should record for an INVEST buy."""
+    price_index = CORPS[corp_id].get_price_index(state)
+    buy_index = MARKET.find_next_higher_space(state, price_index)
+    return MARKET.get_price_at_index(buy_index)
 
-    corp_id = CORP_NAME_TO_ID[corp_name]
-    return CORPS[corp_id].get_share_price(state)
+
+def _get_invest_sell_share_price(state, corp_id: int) -> int:
+    """Return the transaction price 18xx should record for an INVEST sell."""
+    price_index = CORPS[corp_id].get_price_index(state)
+    sell_index = MARKET.find_next_lower_space(state, price_index)
+    return MARKET.get_price_at_index(sell_index)
 
 
 def _get_issue_share_price(state, corp_id: int) -> int:
