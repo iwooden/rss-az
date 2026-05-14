@@ -1,9 +1,15 @@
 import pytest
 
-from core.data import COMPANY_NAME_TO_ID, CORP_NAME_TO_ID, GamePhases
+from core.data import (
+    COMPANY_NAME_TO_ID,
+    COMPANY_NAMES,
+    CORP_NAME_TO_ID,
+    GamePhases,
+)
 from core.state import GameState
 from entities.company import COMPANIES
 from entities.corp import CORPS
+from entities.market import MARKET
 from entities.turn import TURN
 from tests.phases.conftest import float_corp_for_test
 from tests.phases.helpers.ownership import give_company_to_fi, give_company_to_player
@@ -158,6 +164,71 @@ def test_composer_allows_fi_offer_without_price_phase():
         "company": "MHE",
         "price": 5,
     }]
+
+
+def _issue_action_fixture(corp_name: str, par_index: int = 13):
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    corp_id = CORP_NAME_TO_ID[corp_name]
+    company_id = COMPANY_NAME_TO_ID["MHE"]
+    float_corp_for_test(
+        state,
+        corp_id=corp_id,
+        company_id=company_id,
+        player_id=0,
+        par_index=par_index,
+    )
+    TURN.set_phase(state, int(GamePhases.PHASE_ISSUE_SHARES))
+    TURN.set_active_corp(state, corp_id)
+
+    par_price = MARKET.get_price_at_index(par_index)
+    game_data = {
+        "players": [{"id": 101, "name": "bot"}],
+        "actions": [
+            {
+                "id": 1,
+                "type": "par",
+                "entity": COMPANY_NAMES[company_id],
+                "entity_type": "company",
+                "corporation": corp_name,
+                "share_price": f"{par_price},0,{par_index}",
+                "user": 101,
+            },
+        ],
+    }
+    return state, corp_id, game_data
+
+
+def test_composer_prices_issue_at_next_lower_share_price():
+    state, corp_id, game_data = _issue_action_fixture("SI")
+    current_price = CORPS[corp_id].get_share_price(state)
+    next_index = MARKET.find_next_lower_space(
+        state,
+        CORPS[corp_id].get_price_index(state),
+    )
+    expected_price = MARKET.get_price_at_index(next_index)
+
+    composer = _LiveActionComposer(game_data, bot_player_idx=0, committed_ids={1})
+    composer.add_step(GamePhases.PHASE_ISSUE_SHARES, {"type": "issue"}, state)
+
+    action = composer.finish()[0]
+    assert action["type"] == "sell_shares"
+    assert action["entity"] == "SI"
+    assert action["share_price"] == expected_price
+    assert action["share_price"] != current_price
+
+
+def test_composer_prices_stock_masters_issue_at_current_share_price():
+    state, corp_id, game_data = _issue_action_fixture("SM")
+    current_price = CORPS[corp_id].get_share_price(state)
+
+    composer = _LiveActionComposer(game_data, bot_player_idx=0, committed_ids={1})
+    composer.add_step(GamePhases.PHASE_ISSUE_SHARES, {"type": "issue"}, state)
+
+    action = composer.finish()[0]
+    assert action["type"] == "sell_shares"
+    assert action["entity"] == "SM"
+    assert action["share_price"] == current_price
 
 
 def test_acquisition_compatibility_rejects_pending_18xx_offer():

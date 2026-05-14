@@ -32,6 +32,7 @@ from core.actions import ACTION_PASS_PY as ACTION_PASS
 from core.data import (
     COMPANY_NAME_TO_ID,
     COMPANY_NAMES,
+    CorpIndices,
     CORP_NAME_TO_ID,
     CORP_NAMES,
     GamePhases,
@@ -44,6 +45,7 @@ from core.driver import (
 from core.state import get_layout
 from entities.company import COMPANIES, CompanyLocation
 from entities.corp import CORPS
+from entities.market import MARKET
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator
 from mcts.search import (
@@ -791,7 +793,7 @@ def intent_to_api_action(
             market_share_count=CORPS[corp_id].get_bank_shares(state),
             treasury_share_count=CORPS[corp_id].get_unissued_shares(state),
         )
-        share_price = _get_corp_share_price(state, corp_name)
+        share_price = _get_issue_share_price(state, corp_id)
         return {
             "type": "sell_shares",
             "entity": corp_name,
@@ -996,6 +998,16 @@ def _get_corp_share_price(state, corp_name: str) -> int:
 
     corp_id = CORP_NAME_TO_ID[corp_name]
     return CORPS[corp_id].get_share_price(state)
+
+
+def _get_issue_share_price(state, corp_id: int) -> int:
+    """Return the transaction price 18xx should record for an issue action."""
+    if corp_id == int(CorpIndices.CORP_SM):
+        return CORPS[corp_id].get_share_price(state)
+
+    price_index = CORPS[corp_id].get_price_index(state)
+    issue_index = MARKET.find_next_lower_space(state, price_index)
+    return MARKET.get_price_at_index(issue_index)
 
 
 # ---------------------------------------------------------------------------
