@@ -275,7 +275,8 @@ class GameSession:
         phase_name = self._phase_name(phase)
         round_name = str(game_data.get("round", ""))
 
-        expected_stage = self._round_stage_key(round_name)
+        expected_round = ref.get("current_round") or round_name
+        expected_stage = self._round_stage_key(str(expected_round))
         actual_stage = self._phase_stage_key(phase)
         if expected_stage >= 0 and actual_stage >= 0 and expected_stage != actual_stage:
             mismatches.append(
@@ -731,17 +732,18 @@ class GameSession:
     @staticmethod
     def _round_stage_key(round_name: str) -> int:
         lower = round_name.lower()
-        if "investment" in lower:
+        upper = round_name.upper()
+        if upper == "INV" or "investment" in lower:
             return 0
-        if "acquisition" in lower:
+        if upper == "ACQ" or "acquisition" in lower:
             return 1
-        if "closing" in lower or "close" in lower:
+        if upper == "CLO" or "closing" in lower or "close" in lower:
             return 2
-        if "dividend" in lower:
+        if upper == "DIV" or "dividend" in lower:
             return 3
-        if "issue" in lower:
+        if upper == "ISS" or "issue" in lower:
             return 4
-        if "ipo" in lower:
+        if upper == "IPO" or "ipo" in lower:
             return 5
         return -1
 

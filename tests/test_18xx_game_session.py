@@ -1,3 +1,7 @@
+import json
+import subprocess
+from pathlib import Path
+
 from core.data import COMPANY_NAME_TO_ID, COMPANY_NAMES, CORP_NAMES, GamePhases
 from core.driver import STATUS_INVALID_PY as STATUS_INVALID
 from core.state import GameState
@@ -17,7 +21,7 @@ from tests.phases.helpers.ownership import (
 )
 from tests.phases.conftest import draw_to_player, float_corp_for_test
 from utils_18xx.action_parser import map_action
-from utils_18xx.game_session import GameSession
+from utils_18xx.game_session import EXTRACTOR_PATH, GameSession
 from utils_18xx.replay_state import apply_action_sequence
 
 
@@ -93,6 +97,42 @@ def test_new_game_sync_uses_initial_extractor_records_for_committed_ids():
 
     assert len(calls) == 1
     assert session.committed_ids == set()
+
+
+def test_extractor_undo_after_message_ignores_chat(tmp_path):
+    game_path = Path(__file__).parent / "games_18xx" / "data" / "223139.json"
+    game_data = json.loads(game_path.read_text())
+    game_data["actions"].extend([
+        {
+            "type": "message",
+            "entity": 15352,
+            "entity_type": "player",
+            "id": 2,
+            "message": "chat should not consume undo",
+            "created_at": 1757521849,
+        },
+        {
+            "type": "undo",
+            "entity": 15352,
+            "entity_type": "player",
+            "id": 3,
+            "created_at": 1757521850,
+        },
+    ])
+    tmp_game = tmp_path / "game.json"
+    tmp_game.write_text(json.dumps(game_data))
+
+    result = subprocess.run(
+        ["ruby", str(EXTRACTOR_PATH), str(tmp_game)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    records = json.loads(result.stdout)
+    assert [record["action_id"] for record in records] == [0]
+    assert records[0]["committed_action_ids"] == []
 
 
 def test_split_followup_replays_18xx_par_price_after_ipo_selection():

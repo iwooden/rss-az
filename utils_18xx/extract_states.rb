@@ -167,6 +167,7 @@ def build_snapshot(game, action_id:, action_type:, round_override: nil)
     action_id:        action_id,
     action_type:      action_type,
     round:            round_override || game.round.class.short_name,
+    current_round:    game.round.class.short_name,
     turn:             game.turn,
     active_player:    active_player_id,
     active_corp:      active_corp_name,
@@ -407,19 +408,20 @@ def process_game(json_path)
   snapshots = [initial_record]
   undo_groups = []  # stack of {engine: [...], snaps: [...]} hashes
 
-  # Track ALL processed action IDs+types (including skip_types like program_*)
-  # so that undo can determine what the engine actually undoes.  Snapshots only
-  # exist for non-skip actions, so we need this parallel stack to avoid popping
-  # a snapshot when the engine undoes a skip_type action.
+  # Track processed action IDs+types that participate in 18xx undo.  Snapshots
+  # only exist for non-skip actions, so we need this parallel stack to avoid
+  # popping a snapshot when the engine undoes a skip_type action.
   engine_action_stack = []
 
   actions = data['actions'] || []
 
   # Action types that carry no game-state meaning for our engine.
-  # program_* are auto-pass convenience features; message is chat.
-  # These are skipped entirely (though their auto_actions are preserved
-  # by flattening on the Python side).
+  # program_* are auto-pass convenience features; message is chat.  These are
+  # skipped entirely (though their auto_actions are preserved by flattening on
+  # the Python side).  Chat messages are retained by 18xx across undos, so they
+  # must not be pushed onto engine_action_stack.
   skip_types = Set.new(%w[program_share_pass program_close_pass program_disable message])
+  undo_stack_skip_types = skip_types - Set.new(%w[message])
 
   actions.each do |raw_action|
     action_id   = raw_action['id']
@@ -532,9 +534,12 @@ def process_game(json_path)
     result = game.process_action(raw_action)
     game = result if result.is_a?(Engine::Game::Base)
 
-    # Track on engine action stack (ALL actions including skip_types)
-    # so that undo can determine what was undone.
-    engine_action_stack.push({ id: action_id, type: action_type })
+    # Track undoable actions plus undoable skip_types so undo can determine
+    # what was undone.  Messages are intentionally excluded: 18xx keeps chat
+    # messages committed when a later game action is undone.
+    unless action_type == 'message'
+      engine_action_stack.push({ id: action_id, type: action_type })
+    end
 
     # Skip snapshots for meta actions (program_*, message) — they don't
     # change game state meaningfully, but they must still be processed above
@@ -550,12 +555,12 @@ def process_game(json_path)
   end
 
   # Collect ALL committed action IDs: snapshot IDs (for real actions) plus
-  # engine_action_stack IDs for skip_type actions (program_*, message) that
-  # remain committed but never produce snapshots.  The Python side needs
-  # both to correctly filter auto_actions from undone program_* actions.
+  # engine_action_stack IDs for undoable skip_type actions (program_*) that
+  # remain committed but never produce snapshots.  The Python side needs both
+  # to correctly filter auto_actions from undone program_* actions.
   committed_ids = snapshots.drop(1).map { |s| s[:action_id] }
   engine_action_stack.each do |entry|
-    committed_ids << entry[:id] if skip_types.include?(entry[:type])
+    committed_ids << entry[:id] if undo_stack_skip_types.include?(entry[:type])
   end
   snapshots[0][:committed_action_ids] = committed_ids
 
