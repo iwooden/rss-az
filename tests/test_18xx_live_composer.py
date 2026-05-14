@@ -19,6 +19,7 @@ from utils_18xx.live import (
     _resolve_buyable_share,
     _resolve_issuable_share,
     _resolve_sellable_share,
+    _retarget_acquisition_active_player_to_bot,
     _retarget_closing_active_player_to_bot,
     _should_continue_after_postable_action,
     prepare_live_decision_state,
@@ -311,6 +312,98 @@ def test_acquisition_compatibility_passes_when_rss_phase_has_advanced():
         "entity": 101,
         "entity_type": "player",
     }
+
+
+def test_acquisition_compatibility_does_not_pass_live_select_corp_mismatch():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_CORP))
+    TURN.set_active_player(state, 0)
+
+    action = _acquisition_compatibility_action(
+        {"round": "Acquisition", "acting": [202]},
+        _FakeSession(player_ids=[101, 202, 303]),
+        state,
+        bot_user_id=202,
+        engine_player_idx=1,
+    )
+
+    assert action is None
+
+
+def test_acquisition_retarget_points_ordered_turn_at_acting_bot():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_CORP))
+    TURN.set_active_player(state, 0)
+
+    changed = _retarget_acquisition_active_player_to_bot(
+        {"round": "Acquisition", "acting": [202]},
+        state,
+        bot_user_id=202,
+        engine_player_idx=1,
+    )
+
+    assert changed
+    assert TURN.get_active_player(state) == 1
+
+
+def test_search_engine_retargets_acquisition_before_compatibility_pass():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    state.acq_same_president = True
+    corp_id = CORP_NAME_TO_ID["SI"]
+    company_id = COMPANY_NAME_TO_ID["B"]
+    float_corp_for_test(
+        state,
+        corp_id=CORP_NAME_TO_ID["PR"],
+        player_id=0,
+        par_index=10,
+    )
+    float_corp_for_test(state, corp_id=corp_id, player_id=1, par_index=12)
+    CORPS[corp_id].set_cash(state, 100)
+    give_company_to_fi(state, company_id)
+    TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_CORP))
+    TURN.set_active_player(state, 0)
+
+    engine = _SearchEngine.__new__(_SearchEngine)
+    engine.allow_cross_president_offers = False
+    engine.validate_player_count = lambda num_players: None
+    engine._session_for = lambda game_data: _FakeProcessTurnSession(
+        state,
+        player_ids=[101, 202, 303],
+    )
+
+    def plan_live_actions(
+        planned_state,
+        game_data,
+        bot_player_idx,
+        num_players,
+        committed_ids,
+        bot_user_id=None,
+    ):
+        assert TURN.get_active_player(planned_state) == 1
+        return [{"type": "planned-acquisition"}]
+
+    engine._plan_live_actions = plan_live_actions
+
+    actions = engine.process_turn(
+        {
+            "id": 1,
+            "round": "Acquisition",
+            "acting": [202],
+            "players": [
+                {"id": 101, "name": "p1"},
+                {"id": 202, "name": "p2"},
+                {"id": 303, "name": "p3"},
+            ],
+        },
+        bot_player_idx=1,
+        bot_user_id=202,
+        bot_user_ids={101, 202},
+    )
+
+    assert actions == [{"type": "planned-acquisition"}]
 
 
 def test_composer_rejects_incomplete_split_action():

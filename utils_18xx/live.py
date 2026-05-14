@@ -90,7 +90,6 @@ ACQ_PHASES = (
     GamePhases.PHASE_ACQ_OFFER,
 )
 UNORDERED_PASS_PHASES = (
-    GamePhases.PHASE_ACQ_SELECT_CORP,
     GamePhases.PHASE_CLOSING,
 )
 
@@ -419,8 +418,7 @@ def _acquisition_compatibility_action(
         }
 
     phase = TURN.get_phase(state)
-    active = TURN.get_active_player(state)
-    if phase not in ACQ_PHASES or active != engine_player_idx:
+    if phase not in ACQ_PHASES:
         return {
             "type": "pass",
             "entity": bot_user_id,
@@ -536,12 +534,12 @@ def _align_unordered_round_to_18xx_actor(
     *,
     bot_player_indices: set[int] | None = None,
 ) -> int:
-    """Apply local non-bot passes until RSS active matches 18xx acting.
+    """Apply local non-bot Closing passes until RSS active matches 18xx acting.
 
-    18xx Acquisition and Closing decisions are unordered: any eligible player
-    can act. RSS has an ordered active-player pointer for those same decisions.
-    When 18xx says a bot is acting but RSS is waiting on an earlier non-bot
-    player, consume a local replay-only pass before the active-player check.
+    18xx Closing decisions are unordered: any eligible player can act. RSS has
+    an ordered active-player pointer for the same decision. When 18xx says a bot
+    is acting but RSS is waiting on an earlier non-bot player, consume a local
+    replay-only pass before the active-player check.
     """
     acting_indices = _acting_engine_player_indices(game_data, session)
     if not acting_indices:
@@ -602,6 +600,27 @@ def _align_unordered_round_to_18xx_actor(
         )
 
     return applied
+
+
+def _retarget_acquisition_active_player_to_bot(
+    game_data: dict,
+    state,
+    bot_user_id,
+    engine_player_idx: int,
+) -> bool:
+    """Point RSS's ordered Acquisition selection at this 18xx acting bot."""
+    if bot_user_id is None or not _is_18xx_acquisition_round(game_data):
+        return False
+    if TURN.get_phase(state) != GamePhases.PHASE_ACQ_SELECT_CORP:
+        return False
+    if TURN.get_active_player(state) == engine_player_idx:
+        return False
+    if not _bot_is_acting(game_data, bot_user_id):
+        return False
+
+    TURN.set_active_player(state, engine_player_idx)
+    TURN.clear_acquisition_context(state)
+    return True
 
 
 def _retarget_closing_active_player_to_bot(
@@ -1218,6 +1237,12 @@ class _SearchEngine:
         if bot_user_id is not None:
             bot_player_indices.add(engine_player_idx)
 
+        retargeted_acquisition = _retarget_acquisition_active_player_to_bot(
+            game_data,
+            state,
+            bot_user_id,
+            engine_player_idx,
+        )
         aligned_passes = _align_unordered_round_to_18xx_actor(
             game_data,
             session,
@@ -1235,6 +1260,11 @@ class _SearchEngine:
             logger.info(
                 "Applied local unordered pass alignment: "
                 f"passes={aligned_passes}, active=P{active}"
+            )
+        if retargeted_acquisition:
+            logger.info(
+                "Retargeted unordered Acquisition decision to acting bot: "
+                f"active=P{active}"
             )
         if retargeted_closing:
             logger.info(
