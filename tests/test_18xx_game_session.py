@@ -517,6 +517,74 @@ def test_acq_sync_applies_same_president_offer_before_later_passes():
     assert COMPANIES[company_id].is_owned_by_corp(state, corp_id)
 
 
+def test_acq_sync_rolls_back_unmappable_offer_prefix_before_next_offer():
+    state = GameState(4, acq_same_president=False)
+    state.initialize_game(4, seed=42)
+
+    da_id = CORP_NAMES.index("DA")
+    pr_id = CORP_NAMES.index("PR")
+    bse_id = COMPANY_NAME_TO_ID["BSE"]
+    by_id = COMPANY_NAME_TO_ID["BY"]
+    ms_id = COMPANY_NAME_TO_ID["MS"]
+
+    float_corp_for_test(
+        state,
+        corp_id=da_id,
+        company_id=COMPANY_NAME_TO_ID["WT"],
+        player_id=3,
+        par_index=10,
+    )
+    float_corp_for_test(
+        state,
+        corp_id=pr_id,
+        company_id=COMPANY_NAME_TO_ID["AKE"],
+        player_id=0,
+        par_index=10,
+    )
+    give_company_to_player(state, bse_id, 3)
+    give_company_to_player(state, by_id, 1)
+    give_company_to_player(state, ms_id, 0)
+    CORPS[da_id].set_cash(state, COMPANIES[bse_id].get_high_price())
+    CORPS[pr_id].set_cash(state, COMPANIES[ms_id].get_high_price())
+    setup_acquisition_phase_py(state)
+
+    session = GameSession(4)
+    session._player_ids = [101, 202, 303, 404]
+    next_idx = session._sync_acq_round(
+        state,
+        [
+            {
+                "id": 201,
+                "type": "offer",
+                "entity": 404,
+                "entity_type": "player",
+                "corporation": "DA",
+                "company": "BY",
+                "price": COMPANIES[by_id].get_high_price(),
+            },
+            {
+                "id": 202,
+                "type": "offer",
+                "entity": 101,
+                "entity_type": "player",
+                "corporation": "PR",
+                "company": "MS",
+                "price": COMPANIES[ms_id].get_high_price(),
+            },
+        ],
+        0,
+    )
+
+    assert next_idx == 2
+    assert not COMPANIES[by_id].is_in_corp_acquisition(state, da_id)
+    assert (
+        COMPANIES[ms_id].is_owned_by_corp(state, pr_id)
+        or COMPANIES[ms_id].is_in_corp_acquisition(state, pr_id)
+    )
+    assert TURN.get_phase(state) != int(GamePhases.PHASE_ACQ_SELECT_COMPANY)
+    assert TURN.get_active_corp(state) != da_id
+
+
 def test_acq_sync_resolves_fi_offer_before_following_passes():
     state = _new_state()
     corp_id = CORP_NAMES.index("OS")

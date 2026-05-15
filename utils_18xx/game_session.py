@@ -1100,6 +1100,13 @@ class GameSession:
             deferred_transfers.append((buyer_corp_id, company_id, price))
             return False
 
+        state_snapshot = state._array.copy()
+        deferred_len = len(deferred_transfers)
+
+        def rollback_speculative_offer() -> None:
+            state._array[:] = state_snapshot
+            del deferred_transfers[deferred_len:]
+
         for _ in range(50):
             if COMPANIES[company_id].is_owned_by_corp(state, buyer_corp_id):
                 return False
@@ -1115,16 +1122,19 @@ class GameSession:
             try:
                 action_idx = map_action(state, offer, phase, self.layout)
             except (ValueError, KeyError, IndexError):
+                rollback_speculative_offer()
                 return False
 
             result = apply_action_sequence(state, action_idx)
             if result == STATUS_INVALID:
+                rollback_speculative_offer()
                 raise RuntimeError(
                     "Invalid ACQ offer replay action while opening offer "
                     f"phase={phase} corporation={offer.get('corporation')} "
                     f"company={offer.get('company')}"
                 )
 
+        rollback_speculative_offer()
         raise RuntimeError("Exceeded ACQ offer opening iteration limit")
 
     def _retarget_acq_active_player_to_action_entity(
