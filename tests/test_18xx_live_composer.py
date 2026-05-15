@@ -1,5 +1,6 @@
 import pytest
 
+import utils_18xx.live as live_module
 from core.data import (
     COMPANY_NAME_TO_ID,
     COMPANY_NAMES,
@@ -806,6 +807,115 @@ def test_dividend_compatibility_ignores_normal_active_dividend_choice():
     )
 
     assert action is None
+
+
+def _single_dividend_engine_state():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    corp_id = CORP_NAME_TO_ID["DA"]
+    float_corp_for_test(state, corp_id=corp_id, player_id=0, par_index=10)
+    CORPS[corp_id].set_cash(state, 0)
+    TURN.set_phase(state, int(GamePhases.PHASE_DIVIDENDS))
+    TURN.set_active_player(state, 0)
+    TURN.set_active_corp(state, corp_id)
+    TURN.set_dividend_remaining(state, corp_id, True)
+    return state
+
+
+def _single_dividend_engine():
+    engine = _SearchEngine.__new__(_SearchEngine)
+    engine.model_output = False
+    engine.max_players = 3
+    return engine
+
+
+def test_live_planning_validates_post_action_state(monkeypatch):
+    state = _single_dividend_engine_state()
+    engine = _single_dividend_engine()
+    calls = []
+
+    def fake_validate(game_data, predicted_state, planned_actions, **kwargs):
+        calls.append((game_data, predicted_state, planned_actions, kwargs))
+        return []
+
+    monkeypatch.setattr(
+        live_module,
+        "_validate_planned_post_state",
+        fake_validate,
+    )
+
+    actions = engine._plan_live_actions(
+        state,
+        {
+            "id": 1,
+            "round": "Dividends",
+            "acting": [101],
+            "players": [
+                {"id": 101, "name": "bot"},
+                {"id": 202, "name": "p2"},
+                {"id": 303, "name": "p3"},
+            ],
+        },
+        bot_player_idx=0,
+        num_players=3,
+        committed_ids=set(),
+        bot_user_id=101,
+    )
+
+    assert actions == [{
+        "type": "dividend",
+        "entity": "DA",
+        "entity_type": "corporation",
+        "kind": "variable",
+        "amount": 0,
+    }]
+    assert calls
+    assert calls[0][2] == actions
+    assert calls[0][3] == {"num_players": 3, "max_players": 3}
+
+
+def test_live_planning_refuses_post_action_state_mismatch(monkeypatch):
+    state = _single_dividend_engine_state()
+    engine = _single_dividend_engine()
+
+    def fake_validate(game_data, predicted_state, planned_actions, **kwargs):
+        del game_data, predicted_state, planned_actions, kwargs
+        return [
+            StateMismatch(
+                action_id=999,
+                phase="PHASE_DIVIDENDS",
+                field="corp[DA].price",
+                expected=12,
+                actual=14,
+                context="unit",
+            )
+        ]
+
+    monkeypatch.setattr(
+        live_module,
+        "_validate_planned_post_state",
+        fake_validate,
+    )
+
+    actions = engine._plan_live_actions(
+        state,
+        {
+            "id": 1,
+            "round": "Dividends",
+            "acting": [101],
+            "players": [
+                {"id": 101, "name": "bot"},
+                {"id": 202, "name": "p2"},
+                {"id": 303, "name": "p3"},
+            ],
+        },
+        bot_player_idx=0,
+        num_players=3,
+        committed_ids=set(),
+        bot_user_id=101,
+    )
+
+    assert actions == []
 
 
 def test_compatibility_mismatch_filter_keeps_economic_mismatches():

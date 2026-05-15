@@ -308,6 +308,68 @@ def _filter_compatibility_mismatches(
     ]
 
 
+def _next_synthetic_action_id(game_data: dict) -> int:
+    action_ids = [
+        action.get("id")
+        for action in game_data.get("actions", [])
+        if isinstance(action.get("id"), int)
+    ]
+    return (max(action_ids) if action_ids else 0) + 1
+
+
+def _game_data_with_synthetic_post_actions(
+    game_data: dict,
+    planned_actions: list[dict],
+) -> dict:
+    """Return game data with planned POST actions applied for local replay."""
+    synthetic = dict(game_data)
+    actions = list(game_data.get("actions", []))
+    next_id = _next_synthetic_action_id(game_data)
+
+    for action in planned_actions:
+        before_action = dict(synthetic)
+        before_action["actions"] = actions
+        enriched = attach_expected_auto_actions(before_action, dict(action))
+        enriched["id"] = next_id
+        next_id += 1
+        actions.append(enriched)
+
+    synthetic["actions"] = actions
+    return synthetic
+
+
+def _validate_planned_post_state(
+    game_data: dict,
+    predicted_state,
+    planned_actions: list[dict],
+    *,
+    num_players: int,
+    max_players: int,
+) -> list:
+    """Validate predicted RSS state against 18xx after planned actions."""
+    if not planned_actions:
+        return []
+
+    synthetic_game_data = _game_data_with_synthetic_post_actions(
+        game_data,
+        planned_actions,
+    )
+    session = GameSession(num_players, max_players=max_players)
+    session.sync(synthetic_game_data)
+
+    validation_game_data = dict(synthetic_game_data)
+    ref_active_player = session._last_extract_record.get("active_player")
+    validation_game_data["acting"] = (
+        [ref_active_player] if ref_active_player is not None else []
+    )
+
+    return session.validate_against_18xx(
+        validation_game_data,
+        predicted_state,
+        context=f"planned_post game={game_data.get('id', '?')}",
+    )
+
+
 def _is_18xx_acquisition_round(game_data: dict) -> bool:
     return "acquisition" in str(game_data.get("round", "")).lower()
 
@@ -1477,6 +1539,21 @@ class _SearchEngine:
             if status == STATUS_GAME_OVER:
                 break
             if len(composer.actions) > action_count_before:
+                planned_actions = composer.finish()
+                post_mismatches = _validate_planned_post_state(
+                    game_data,
+                    state,
+                    planned_actions,
+                    num_players=num_players,
+                    max_players=self.max_players,
+                )
+                if post_mismatches:
+                    logger.error(
+                        "18xx/RSS replay mismatch after planned action; "
+                        "refusing to post:\n%s",
+                        format_state_mismatches(post_mismatches),
+                    )
+                    return []
                 if _should_continue_after_postable_action(
                     phase,
                     state,
