@@ -1,6 +1,7 @@
 import pytest
 
 import utils_18xx.live as live_module
+from core.driver import DRIVER, STATUS_INVALID_PY as STATUS_INVALID
 from core.data import (
     COMPANY_NAME_TO_ID,
     COMPANY_NAMES,
@@ -19,6 +20,8 @@ from utils_18xx.live import (
     _SearchEngine,
     _acquisition_compatibility_action,
     _align_unordered_round_to_18xx_actor,
+    _apply_live_planned_action,
+    _auto_advanced_validation_state,
     _build_share_ownership,
     _closing_compatibility_action,
     _dividend_compatibility_action,
@@ -599,6 +602,47 @@ def test_prepare_live_decision_state_restores_model_acquisition_rule():
     assert state.allow_positive_income_closing is False
 
 
+def test_live_closing_pass_preserves_18xx_positive_closing_surface():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    negative_company = COMPANY_NAME_TO_ID["BME"]
+    positive_company = COMPANY_NAME_TO_ID["OL"]
+    give_company_to_player(state, negative_company, 0)
+    give_company_to_player(state, positive_company, 1)
+    COMPANIES[negative_company].set_adjusted_income(state, -1)
+    TURN.set_phase(state, int(GamePhases.PHASE_CLOSING))
+    TURN.set_active_player(state, 0)
+    state.allow_positive_income_closing = False
+    state.step_mode = True
+
+    pass_action = next(
+        action_id
+        for action_id, info in live_module.get_legal_actions(state)
+        if info.action_type == live_module.ACTION_PASS
+    )
+
+    status = _apply_live_planned_action(
+        state,
+        GamePhases.PHASE_CLOSING,
+        pass_action,
+        {"type": "pass"},
+    )
+
+    assert status != STATUS_INVALID
+    assert state.allow_positive_income_closing is False
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_CLOSING)
+    assert TURN.get_active_player(state) == 1
+
+    validation_state = _auto_advanced_validation_state(
+        state,
+        num_players=3,
+        max_players=3,
+    )
+
+    assert TURN.get_phase(validation_state) == int(GamePhases.PHASE_CLOSING)
+    assert TURN.get_active_player(validation_state) == 1
+
+
 def test_unordered_round_alignment_consumes_nonacting_closing_pass():
     state = GameState(3)
     state.initialize_game(3, seed=42)
@@ -916,6 +960,28 @@ def test_live_planning_refuses_post_action_state_mismatch(monkeypatch):
     )
 
     assert actions == []
+
+
+def test_post_validation_state_advances_step_mode_automated_pause():
+    state = _single_dividend_engine_state()
+    state.step_mode = True
+
+    status = DRIVER.apply_action(state, 0)
+
+    assert status != STATUS_INVALID
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_END_CARD)
+    assert TURN.get_active_corp(state) == -1
+
+    validation_state = _auto_advanced_validation_state(
+        state,
+        num_players=3,
+        max_players=3,
+    )
+
+    assert TURN.get_phase(validation_state) == int(GamePhases.PHASE_ISSUE_SHARES)
+    assert TURN.get_active_corp(validation_state) == CORP_NAME_TO_ID["DA"]
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_END_CARD)
+    assert TURN.get_active_corp(state) == -1
 
 
 def test_compatibility_mismatch_filter_keeps_economic_mismatches():
@@ -1426,3 +1492,18 @@ def test_share_ledger_reconciles_hidden_market_share_for_buy():
         market_share_count=1,
         treasury_share_count=0,
     ) == "VM_3"
+
+
+def test_share_ledger_buy_prefers_non_president_market_share():
+    game_data = {
+        "players": [{"id": 4, "name": "rss-az-3"}],
+        "actions": [],
+    }
+
+    assert _resolve_buyable_share(
+        game_data,
+        "VM",
+        set(),
+        market_share_count=4,
+        treasury_share_count=1,
+    ) == "VM_1"

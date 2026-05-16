@@ -138,7 +138,7 @@ def resolve_buyable_share(
     market_share_count: int | None = None,
     treasury_share_count: int | None = None,
 ) -> str:
-    """Find the lowest-numbered share available in the share pool."""
+    """Find a share available in the share pool, preferring non-president shares."""
     share_pool, _, treasury = build_share_ledger(game_data, committed_ids)
     _reconcile_share_counts(
         share_pool,
@@ -150,7 +150,8 @@ def resolve_buyable_share(
     available = sorted(share_pool.get(corp_name, []))
     if not available:
         raise ValueError(f"No shares of {corp_name} available in share pool")
-    return f"{corp_name}_{available[0]}"
+    idx = next((share_idx for share_idx in available if share_idx > 0), available[0])
+    return f"{corp_name}_{idx}"
 
 
 def resolve_sellable_share(

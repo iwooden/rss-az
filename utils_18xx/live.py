@@ -42,7 +42,7 @@ from core.driver import (
     STATUS_GAME_OVER_PY as STATUS_GAME_OVER,
     STATUS_INVALID_PY as STATUS_INVALID,
 )
-from core.state import get_layout
+from core.state import GameState, get_layout
 from entities.company import COMPANIES, CompanyLocation
 from entities.corp import CORPS
 from entities.market import MARKET
@@ -350,6 +350,11 @@ def _validate_planned_post_state(
     if not planned_actions:
         return []
 
+    validation_state = _auto_advanced_validation_state(
+        predicted_state,
+        num_players=num_players,
+        max_players=max_players,
+    )
     synthetic_game_data = _game_data_with_synthetic_post_actions(
         game_data,
         planned_actions,
@@ -365,9 +370,41 @@ def _validate_planned_post_state(
 
     return session.validate_against_18xx(
         validation_game_data,
-        predicted_state,
+        validation_state,
         context=f"planned_post game={game_data.get('id', '?')}",
     )
+
+
+def _auto_advanced_validation_state(
+    state,
+    *,
+    num_players: int,
+    max_players: int,
+):
+    """Clone state and fast-forward step-mode pauses for 18xx comparison."""
+    validation_state = GameState.from_array(
+        state._array,
+        num_players,
+        max_players=max_players,
+    )
+    validation_state.acq_same_president = state.acq_same_president
+    validation_state.allow_positive_income_closing = (
+        state.allow_positive_income_closing
+    )
+    if TURN.get_phase(validation_state) == GamePhases.PHASE_CLOSING:
+        validation_state.allow_positive_income_closing = True
+    validation_state.step_mode = False
+
+    while DRIVER.is_non_player_phase(validation_state):
+        status = DRIVER.advance_phase(validation_state)
+        if status == STATUS_GAME_OVER:
+            break
+        if status == STATUS_INVALID:
+            raise RuntimeError(
+                "Invalid automated advance during planned post validation"
+            )
+
+    return validation_state
 
 
 def _is_18xx_acquisition_round(game_data: dict) -> bool:
@@ -726,6 +763,24 @@ def _should_continue_after_postable_action(
         and current_phase == GamePhases.PHASE_CLOSING
     )
     return same_round and TURN.get_active_player(state) == bot_player_idx
+
+
+def _apply_live_planned_action(
+    state,
+    phase: int,
+    action_idx: int,
+    intent: dict,
+) -> int:
+    """Apply a chosen live action while preserving 18xx round progression."""
+    if phase == GamePhases.PHASE_CLOSING and intent.get("type") == "pass":
+        previous_allow_positive = state.allow_positive_income_closing
+        state.allow_positive_income_closing = True
+        try:
+            return DRIVER.apply_action(state, action_idx)
+        finally:
+            state.allow_positive_income_closing = previous_allow_positive
+
+    return DRIVER.apply_action(state, action_idx)
 
 
 # ---------------------------------------------------------------------------
@@ -1533,7 +1588,12 @@ class _SearchEngine:
             action_count_before = len(composer.actions)
             composer.add_step(phase, intent, state)
 
-            status = DRIVER.apply_action(state, action_idx)
+            status = _apply_live_planned_action(
+                state,
+                phase,
+                action_idx,
+                intent,
+            )
             if status == STATUS_INVALID:
                 raise RuntimeError(f"Invalid engine action {action_idx} in phase {phase}")
             if status == STATUS_GAME_OVER:
