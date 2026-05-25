@@ -49,6 +49,44 @@ class _FakeRegistry:
         return _FakeEngine()
 
 
+class _StaleActingApi:
+    def fetch_game(self, game_id, token):
+        return {
+            "id": game_id,
+            "players": [
+                {"id": 1, "name": "bot"},
+                {"id": 2, "name": "other"},
+            ],
+            "acting": [2],
+            "actions": [],
+        }
+
+
+class _RecordingEngine:
+    def __init__(self):
+        self.calls = 0
+
+    def process_turn(
+        self,
+        game_data,
+        bot_player_idx,
+        bot_user_id=None,
+        bot_user_ids=None,
+    ):
+        del game_data, bot_player_idx, bot_user_id, bot_user_ids
+        self.calls += 1
+        return []
+
+
+class _RecordingRegistry:
+    def __init__(self, engine):
+        self.engine = engine
+
+    def get_engine(self, num_players):
+        del num_players
+        return self.engine
+
+
 def test_worker_refetches_full_game_between_batched_posts(monkeypatch):
     api = _FakeApi()
     seen_action_counts = []
@@ -71,3 +109,17 @@ def test_worker_refetches_full_game_between_batched_posts(monkeypatch):
 
     assert seen_action_counts == [1, 2]
     assert len(api.posts) == 2
+
+
+def test_worker_lets_replay_check_stale_top_level_acting():
+    engine = _RecordingEngine()
+    worker = MoveWorker(
+        queue.Queue(),
+        _StaleActingApi(),
+        {"bot": {"token": "token", "user_id": 1}},
+        _RecordingRegistry(engine),
+    )
+
+    worker._process("bot", "1")
+
+    assert engine.calls == 1

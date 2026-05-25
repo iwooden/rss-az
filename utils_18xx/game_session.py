@@ -46,6 +46,7 @@ from .action_parser import (
     find_legal_action,
     filter_actions,
     flatten_auto_actions,
+    get_legal_actions,
     map_action,
     map_bid_action,
     map_par_action,
@@ -178,17 +179,52 @@ class GameSession:
             if phase == PHASE_GAME_OVER:
                 break
 
+            action_round_stage = self._action_round_stage(action)
+            phase_stage = self._phase_stage_key(phase)
+            if (
+                action_round_stage >= 0
+                and phase_stage >= 0
+                and action_round_stage < phase_stage
+            ):
+                idx += 1
+                continue
+
             if phase in ACQ_PHASES:
+                if action_round_stage >= 2:
+                    self._drain_acq_phases(state)
+                    if TURN.get_phase(state) in ACQ_PHASES:
+                        raise RuntimeError(
+                            "Failed to drain ACQ before later 18xx round "
+                            f"action_id={action.get('id')}"
+                        )
+                    continue
+
                 # Only enter ACQ handling if the next action is actually
-                # an ACQ action.  Otherwise drain through ACQ/CLO so the
-                # engine catches up to the action stream's phase.
+                # an ACQ action. Otherwise drain only the ACQ surface; any
+                # recorded CLO actions must still replay below.
                 next_type = action.get("type")
                 if next_type in ("offer", "respond", "pass"):
                     idx = self._sync_acq_round(state, actions, idx)
                 else:
-                    drain_offer_phases(state, self.layout)
+                    self._drain_acq_phases(state)
+                    if TURN.get_phase(state) in ACQ_PHASES:
+                        raise RuntimeError(
+                            "Failed to drain ACQ before non-ACQ 18xx action "
+                            f"action_id={action.get('id')}"
+                        )
                 continue
             if phase == PHASE_CLO:
+                if (
+                    self._is_acq_auto_pass(action)
+                    or self._is_acq_redundant_pass_parent(action)
+                ):
+                    idx += 1
+                    continue
+
+                if action_round_stage > 2:
+                    drain_offer_phases(state, self.layout)
+                    continue
+
                 next_type = action.get("type")
                 if next_type in ("sell_company", "close", "pass"):
                     idx = self._sync_clo_round(state, actions, idx)
@@ -293,6 +329,7 @@ class GameSession:
         if expected_stage == 2:
             self._compare_unordered_active_player(
                 game_data,
+                ref,
                 state,
                 action_id,
                 phase_name,
@@ -370,6 +407,7 @@ class GameSession:
     def _compare_unordered_active_player(
         self,
         game_data: dict,
+        ref: dict,
         state: GameState,
         action_id: int,
         phase_name: str,
@@ -377,11 +415,20 @@ class GameSession:
         mismatches: list[StateMismatch],
     ) -> None:
         expected_indices: set[int] = set()
-        for actor in game_data.get("acting", []):
+        ref_round_stage = self._round_stage_key(str(ref.get("current_round", "")))
+        ref_active_player = ref.get("active_player")
+        if ref_round_stage == 2 and ref_active_player is not None:
             try:
-                expected_indices.add(self.player_index_for_user_id(actor))
+                expected_indices.add(self.player_index_for_user_id(ref_active_player))
             except ValueError:
-                continue
+                pass
+
+        if not expected_indices:
+            for actor in game_data.get("acting", []):
+                try:
+                    expected_indices.add(self.player_index_for_user_id(actor))
+                except ValueError:
+                    continue
 
         if not expected_indices:
             return
@@ -747,6 +794,20 @@ class GameSession:
             return 5
         return -1
 
+    def _action_round_stage(self, action: dict) -> int:
+        """Return extractor round stage for a recorded 18xx action, if known."""
+        try:
+            action_id = int(action["id"])
+        except (KeyError, TypeError, ValueError):
+            return -1
+
+        record = self._extract_records_by_action_id.get(action_id)
+        if record is None:
+            return -1
+
+        round_name = record.get("round") or record.get("current_round") or ""
+        return self._round_stage_key(str(round_name))
+
     def apply_engine_action(self, action_idx: int) -> list[tuple[object, int]]:
         """Apply an engine action directly (for AI moves).
 
@@ -903,12 +964,58 @@ class GameSession:
         except (KeyError, TypeError, ValueError):
             return None
 
+        cash_recipient = self._extractor_sell_share_cash_recipient(
+            int(action["id"]),
+            share_price,
+        )
+        if cash_recipient is not None:
+            if str(cash_recipient) == str(action.get("entity")):
+                return None
+            if str(cash_recipient) != str(owner_user_id):
+                return None
+
         return (
             CORP_NAME_TO_ID[corp_name],
             action_player_idx,
             owner_player_idx,
             share_price,
         )
+
+    def _extractor_sell_share_cash_recipient(
+        self,
+        action_id: int,
+        share_price: int,
+    ):
+        """Return the unique player whose extractor cash rose by share_price."""
+        after = self._extract_records_by_action_id.get(action_id)
+        before = self._extract_record_before_action(action_id)
+        if after is None or before is None:
+            return None
+
+        before_cash = {
+            player.get("id"): player.get("cash")
+            for player in before.get("players", [])
+        }
+        recipients = []
+        for player in after.get("players", []):
+            player_id = player.get("id")
+            old_cash = before_cash.get(player_id)
+            new_cash = player.get("cash")
+            if isinstance(old_cash, int) and isinstance(new_cash, int):
+                if new_cash - old_cash == share_price:
+                    recipients.append(player_id)
+
+        return recipients[0] if len(recipients) == 1 else None
+
+    def _extract_record_before_action(self, action_id: int) -> dict | None:
+        before_ids = [
+            record_id
+            for record_id in self._extract_records_by_action_id
+            if record_id < action_id
+        ]
+        if not before_ids:
+            return None
+        return self._extract_records_by_action_id[max(before_ids)]
 
     def _apply_share_owner_adjustment(
         self,
@@ -959,6 +1066,14 @@ class GameSession:
 
         while idx < len(actions) and TURN.get_phase(state) in ACQ_PHASES:
             action = actions[idx]
+            action_round_stage = self._action_round_stage(action)
+            if (
+                action_round_stage >= 0
+                and action_round_stage != 1
+                and not self._is_acq_auto_pass(action)
+            ):
+                break
+
             atype = action.get("type")
 
             if atype == "offer":
@@ -1061,6 +1176,34 @@ class GameSession:
             DRIVER.advance_phase(state)
 
         return idx
+
+    def _drain_acq_phases(
+        self,
+        state: GameState,
+        max_iterations: int = 500,
+    ) -> None:
+        """Pass through remaining ACQ choices without consuming CLO actions."""
+        for _ in range(max_iterations):
+            phase = TURN.get_phase(state)
+            if phase not in ACQ_PHASES:
+                return
+
+            if DRIVER.is_non_player_phase(state):
+                result = DRIVER.advance_phase(state)
+            else:
+                try:
+                    action_idx = find_legal_action(state, action_type=ACTION_PASS)
+                except ValueError:
+                    legal_actions = get_legal_actions(state)
+                    if len(legal_actions) != 1:
+                        return
+                    action_idx = legal_actions[0][0]
+                result = DRIVER.apply_action(state, action_idx)
+
+            if result == STATUS_INVALID:
+                raise RuntimeError(f"Invalid replay ACQ drain action in phase={phase}")
+
+        raise RuntimeError("Exceeded ACQ drain iteration limit")
 
     def _apply_acq_pass(self, state: GameState, action: dict | None = None) -> None:
         """Apply a recorded 18xx ACQ pass when the engine has a pass choice."""
@@ -1325,10 +1468,14 @@ class GameSession:
         if phase not in ACQ_PHASES and phase != PHASE_CLO:
             return False
 
-        round_name = str(game_data.get("round", "")).lower()
-        if phase in ACQ_PHASES and "acquisition" in round_name:
+        round_name = str(
+            self._last_extract_record.get("current_round")
+            or game_data.get("round", "")
+        )
+        round_stage = self._round_stage_key(round_name)
+        if phase in ACQ_PHASES and round_stage == 1:
             return False
-        if phase == PHASE_CLO and ("closing" in round_name or "close" in round_name):
+        if phase == PHASE_CLO and round_stage == 2:
             return False
 
         return True
@@ -1383,6 +1530,14 @@ class GameSession:
         """Replay one CLO round from raw close/pass actions."""
         while idx < len(actions) and TURN.get_phase(state) == PHASE_CLO:
             action = actions[idx]
+            action_round_stage = self._action_round_stage(action)
+            if (
+                action_round_stage >= 0
+                and action_round_stage != 2
+                and not self._is_clo_auto_pass(action)
+            ):
+                break
+
             atype = action.get("type")
 
             if atype == "pass":

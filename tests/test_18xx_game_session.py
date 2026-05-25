@@ -20,6 +20,7 @@ from tests.phases.helpers.ownership import (
     give_company_to_player,
 )
 from tests.phases.conftest import draw_to_player, float_corp_for_test
+import utils_18xx.game_session as game_session_module
 from utils_18xx.action_parser import map_action
 from utils_18xx.game_session import EXTRACTOR_PATH, GameSession
 from utils_18xx.replay_state import apply_action_sequence
@@ -202,6 +203,94 @@ def test_split_bid_followup_accepts_forced_opening_bid_auto_apply():
     assert result != STATUS_INVALID
     assert TURN.get_auction_price(state) == price
     assert TURN.get_auction_high_bidder(state) == 1
+
+
+def test_share_owner_snapshot_uses_extractor_cash_recipient(monkeypatch):
+    state = _new_state()
+    session = GameSession(3)
+    session._player_ids = [10, 20, 30]
+    session._extract_records_by_action_id = {
+        4: {
+            "action_id": 4,
+            "players": [
+                {"id": 10, "cash": 5},
+                {"id": 20, "cash": 7},
+                {"id": 30, "cash": 9},
+            ],
+        },
+        5: {
+            "action_id": 5,
+            "players": [
+                {"id": 10, "cash": 5},
+                {"id": 20, "cash": 15},
+                {"id": 30, "cash": 9},
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        game_session_module,
+        "share_owner_before_action",
+        lambda game_data, committed_ids, share_ref, action_id: 30,
+    )
+
+    snapshot = session._share_owner_snapshot(
+        {"actions": []},
+        state,
+        {
+            "id": 5,
+            "type": "sell_shares",
+            "entity": 20,
+            "entity_type": "player",
+            "shares": ["SI_0"],
+            "share_price": 8,
+        },
+    )
+
+    assert snapshot is None
+
+
+def test_share_owner_snapshot_keeps_adjustment_for_extractor_owner(monkeypatch):
+    state = _new_state()
+    session = GameSession(3)
+    session._player_ids = [10, 20, 30]
+    session._extract_records_by_action_id = {
+        4: {
+            "action_id": 4,
+            "players": [
+                {"id": 10, "cash": 5},
+                {"id": 20, "cash": 7},
+                {"id": 30, "cash": 9},
+            ],
+        },
+        5: {
+            "action_id": 5,
+            "players": [
+                {"id": 10, "cash": 5},
+                {"id": 20, "cash": 7},
+                {"id": 30, "cash": 17},
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        game_session_module,
+        "share_owner_before_action",
+        lambda game_data, committed_ids, share_ref, action_id: 30,
+    )
+
+    snapshot = session._share_owner_snapshot(
+        {"actions": []},
+        state,
+        {
+            "id": 5,
+            "type": "sell_shares",
+            "entity": 20,
+            "entity_type": "player",
+            "shares": ["SI_0"],
+            "share_price": 8,
+        },
+    )
+
+    assert snapshot == (CORP_NAMES.index("SI"), 1, 2, 8)
 
 
 def test_session_consumes_closing_auto_passes_before_ipo():
@@ -484,6 +573,39 @@ def test_acq_sync_discards_trailing_auto_pass_after_closing_transition():
 
     assert next_idx == len(actions)
     assert TURN.get_phase(state) != int(GamePhases.PHASE_DIVIDENDS)
+
+
+def test_acq_sync_stops_before_recorded_closing_pass():
+    state = _new_state()
+    for player_id, corp_id in enumerate((0, 1, 2)):
+        float_corp_for_test(state, corp_id=corp_id, player_id=player_id, par_index=10)
+        CORPS[corp_id].set_cash(state, 100)
+    setup_acquisition_phase_py(state)
+
+    session = GameSession(3)
+    session._player_ids = [4, 3, 2]
+    session._extract_records_by_action_id = {
+        10: {"action_id": 10, "round": "CLO", "current_round": "CLO"},
+    }
+    actions = [{"id": 10, "type": "pass", "entity": 4, "entity_type": "player"}]
+
+    next_idx = session._sync_acq_round(state, actions, 0)
+
+    assert next_idx == 0
+    assert TURN.get_phase(state) in (
+        int(GamePhases.PHASE_ACQ_SELECT_CORP),
+        int(GamePhases.PHASE_ACQ_SELECT_COMPANY),
+        int(GamePhases.PHASE_ACQ_SELECT_PRICE),
+        int(GamePhases.PHASE_ACQ_OFFER),
+    )
+
+    session._drain_acq_phases(state)
+    assert TURN.get_phase(state) not in (
+        int(GamePhases.PHASE_ACQ_SELECT_CORP),
+        int(GamePhases.PHASE_ACQ_SELECT_COMPANY),
+        int(GamePhases.PHASE_ACQ_SELECT_PRICE),
+        int(GamePhases.PHASE_ACQ_OFFER),
+    )
 
 
 def test_acq_sync_applies_same_president_offer_before_later_passes():
@@ -927,6 +1049,20 @@ def test_session_does_not_drain_live_acquisition_round():
     )
 
 
+def test_session_does_not_drain_when_extractor_round_is_closing():
+    state = _new_state()
+    TURN.set_phase(state, int(GamePhases.PHASE_CLOSING))
+    TURN.set_active_player(state, 0)
+
+    session = GameSession(3)
+    session._last_extract_record = {"current_round": "CLO"}
+
+    assert not session._should_drain_trailing_offer_phases(
+        {"round": "Acquisition"},
+        state,
+    )
+
+
 def test_live_state_validation_reports_corp_price_mismatch():
     state = _new_state()
     corp_id = CORP_NAMES.index("PR")
@@ -1104,3 +1240,29 @@ def test_live_state_validation_uses_acting_set_for_closing():
         and mismatch.actual == 0
         for mismatch in mismatches
     )
+
+
+def test_live_state_validation_prefers_extractor_actor_for_closing():
+    state = _new_state()
+    TURN.set_phase(state, int(GamePhases.PHASE_CLOSING))
+    TURN.set_active_player(state, 1)
+
+    session = GameSession(3)
+    session._player_ids = [4, 3, 2]
+    session._last_extract_record = {
+        "action_id": 137,
+        "current_round": "CLO",
+        "active_player": 3,
+        "players": [],
+        "corporations": [],
+        "foreign_investor": {},
+        "offering": [],
+    }
+
+    mismatches = session.validate_against_18xx(
+        {"round": "Acquisition", "acting": [4]},
+        state,
+        context="unit",
+    )
+
+    assert not any(mismatch.field == "active_player" for mismatch in mismatches)

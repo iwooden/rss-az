@@ -619,6 +619,17 @@ def _acting_engine_player_indices(
     session: GameSession,
 ) -> set[int]:
     """Return engine player indices currently listed as acting by 18xx."""
+    ref = session._last_extract_record
+    ref_active_player = ref.get("active_player")
+    if (
+        ref_active_player is not None
+        and GameSession._round_stage_key(str(ref.get("current_round", ""))) == 2
+    ):
+        try:
+            return {session.player_index_for_user_id(ref_active_player)}
+        except ValueError:
+            pass
+
     indices: set[int] = set()
     for actor in game_data.get("acting", []):
         try:
@@ -772,14 +783,6 @@ def _apply_live_planned_action(
     intent: dict,
 ) -> int:
     """Apply a chosen live action while preserving 18xx round progression."""
-    if phase == GamePhases.PHASE_CLOSING and intent.get("type") == "pass":
-        previous_allow_positive = state.allow_positive_income_closing
-        state.allow_positive_income_closing = True
-        try:
-            return DRIVER.apply_action(state, action_idx)
-        finally:
-            state.allow_positive_income_closing = previous_allow_positive
-
     return DRIVER.apply_action(state, action_idx)
 
 
@@ -1924,11 +1927,14 @@ class MoveWorker(threading.Thread):
             )
             return
 
-        # Check if it's actually our turn (acting contains user_ids)
+        # ``acting`` can lag round auto-actions in live RSS games; the replay
+        # sync below is the authoritative turn check.
         acting = game_data.get("acting", [])
         if acting and not any(_same_id(bot_user_id, actor) for actor in acting):
-            logger.info(f"[{bot_name}] Not in acting list for game {game_id}")
-            return
+            logger.info(
+                f"[{bot_name}] Not in top-level acting list for game {game_id}; "
+                "checking replay state"
+            )
 
         # Get the right model for this player count
         try:
@@ -2015,7 +2021,7 @@ class MoveWorker(threading.Thread):
                 return
 
             acting = game_data.get("acting", [])
-            if not any(_same_id(bot_user_id, actor) for actor in acting):
+            if not acting:
                 logger.info(
                     f"[{bot_name}] Turn complete in game {game_id}"
                 )

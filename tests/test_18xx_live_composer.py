@@ -602,7 +602,7 @@ def test_prepare_live_decision_state_restores_model_acquisition_rule():
     assert state.allow_positive_income_closing is False
 
 
-def test_live_closing_pass_preserves_18xx_positive_closing_surface():
+def test_live_closing_pass_preserves_model_negative_income_gate():
     state = GameState(3)
     state.initialize_game(3, seed=42)
     negative_company = COMPANY_NAME_TO_ID["BME"]
@@ -630,8 +630,7 @@ def test_live_closing_pass_preserves_18xx_positive_closing_surface():
 
     assert status != STATUS_INVALID
     assert state.allow_positive_income_closing is False
-    assert TURN.get_phase(state) == int(GamePhases.PHASE_CLOSING)
-    assert TURN.get_active_player(state) == 1
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_INCOME)
 
     validation_state = _auto_advanced_validation_state(
         state,
@@ -639,8 +638,7 @@ def test_live_closing_pass_preserves_18xx_positive_closing_surface():
         max_players=3,
     )
 
-    assert TURN.get_phase(validation_state) == int(GamePhases.PHASE_CLOSING)
-    assert TURN.get_active_player(validation_state) == 1
+    assert TURN.get_phase(validation_state) != int(GamePhases.PHASE_CLOSING)
 
 
 def test_unordered_round_alignment_consumes_nonacting_closing_pass():
@@ -655,6 +653,33 @@ def test_unordered_round_alignment_consumes_nonacting_closing_pass():
     applied = _align_unordered_round_to_18xx_actor(
         {"acting": [202]},
         _FakeSession(player_ids=[101, 202, 303]),
+        state,
+        bot_player_indices={1},
+    )
+
+    assert applied == 1
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_CLOSING)
+    assert TURN.get_active_player(state) == 1
+
+
+def test_unordered_round_alignment_uses_extractor_closing_actor():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    state.allow_positive_income_closing = True
+    give_company_to_player(state, COMPANY_NAME_TO_ID["BME"], 0)
+    give_company_to_player(state, COMPANY_NAME_TO_ID["OL"], 1)
+    TURN.set_phase(state, int(GamePhases.PHASE_CLOSING))
+    TURN.set_active_player(state, 0)
+
+    session = _FakeSession(player_ids=[101, 202, 303])
+    session._last_extract_record = {
+        "current_round": "CLO",
+        "active_player": 202,
+    }
+
+    applied = _align_unordered_round_to_18xx_actor(
+        {"acting": [101]},
+        session,
         state,
         bot_player_indices={1},
     )
