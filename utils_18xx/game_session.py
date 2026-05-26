@@ -415,6 +415,27 @@ class GameSession:
         mismatches: list[StateMismatch],
     ) -> None:
         expected_indices: set[int] = set()
+        for actor in game_data.get("acting") or []:
+            try:
+                expected_indices.add(self.player_index_for_user_id(actor))
+            except ValueError:
+                continue
+        if expected_indices:
+            actual_idx = TURN.get_active_player(state)
+            if actual_idx in expected_indices:
+                return
+            mismatches.append(
+                StateMismatch(
+                    action_id=action_id,
+                    phase=phase_name,
+                    field="active_player",
+                    expected=sorted(expected_indices),
+                    actual=actual_idx,
+                    context=context,
+                )
+            )
+            return
+
         ref_round_stage = self._round_stage_key(str(ref.get("current_round", "")))
         ref_active_player = ref.get("active_player")
         if ref_round_stage == 2 and ref_active_player is not None:
@@ -422,13 +443,6 @@ class GameSession:
                 expected_indices.add(self.player_index_for_user_id(ref_active_player))
             except ValueError:
                 pass
-
-        if not expected_indices:
-            for actor in game_data.get("acting", []):
-                try:
-                    expected_indices.add(self.player_index_for_user_id(actor))
-                except ValueError:
-                    continue
 
         if not expected_indices:
             return

@@ -68,7 +68,7 @@ from train.profile_stats import SearchStats
 
 from .action_mapper import engine_action_to_18xx
 from .api_client import ApiClient, PermanentError, TransientError
-from .action_parser import get_legal_actions
+from .action_parser import find_legal_action, get_legal_actions, map_action
 from .auto_actions import attach_expected_auto_actions
 from .game_session import GameSession, format_state_mismatches
 from .share_ledger import (
@@ -361,6 +361,17 @@ def _validate_planned_post_state(
     )
     session = GameSession(num_players, max_players=max_players)
     session.sync(synthetic_game_data)
+    if _apply_expected_post_auto_actions(
+        validation_state,
+        synthetic_game_data,
+        len(game_data.get("actions", [])),
+        session,
+    ):
+        validation_state = _auto_advanced_validation_state(
+            validation_state,
+            num_players=num_players,
+            max_players=max_players,
+        )
 
     validation_game_data = dict(synthetic_game_data)
     ref_active_player = session._last_extract_record.get("active_player")
@@ -375,13 +386,90 @@ def _validate_planned_post_state(
     )
 
 
+def _apply_expected_post_auto_actions(
+    state,
+    synthetic_game_data: dict,
+    original_action_count: int,
+    session: GameSession,
+) -> bool:
+    """Apply 18xx server-side auto-actions to a post-validation state."""
+    applied = False
+    for action in synthetic_game_data.get("actions", [])[original_action_count:]:
+        for auto_action in action.get("auto_actions", []):
+            applied |= _apply_expected_post_auto_action(
+                state,
+                auto_action,
+                session,
+            )
+    return applied
+
+
+def _apply_expected_post_auto_action(
+    state,
+    auto_action: dict,
+    session: GameSession,
+) -> bool:
+    """Apply one expected 18xx auto-action when it is representable."""
+    phase = TURN.get_phase(state)
+    atype = auto_action.get("type")
+    entity_type = auto_action.get("entity_type")
+
+    player_idx = None
+    if entity_type == "player":
+        try:
+            player_idx = session.player_index_for_user_id(auto_action.get("entity"))
+        except ValueError:
+            return False
+
+    if atype == "pass" and player_idx is not None:
+        if phase == GamePhases.PHASE_CLOSING:
+            TURN.set_active_player(state, player_idx)
+        elif TURN.get_active_player(state) != player_idx:
+            return False
+
+        try:
+            action_idx = find_legal_action(state, action_type=ACTION_PASS)
+        except ValueError:
+            return False
+        status = DRIVER.apply_action(state, action_idx)
+        if status == STATUS_INVALID:
+            raise RuntimeError(
+                "Invalid expected auto pass during planned post validation "
+                f"phase={phase}, entity={auto_action.get('entity')}"
+            )
+        return True
+
+    if (
+        phase == GamePhases.PHASE_CLOSING
+        and atype in {"sell_company", "close"}
+        and player_idx is not None
+    ):
+        TURN.set_active_player(state, player_idx)
+        try:
+            action_idx = map_action(state, auto_action, phase, None)
+        except (KeyError, ValueError):
+            return False
+        if action_idx is None:
+            return False
+        status = DRIVER.apply_action(state, action_idx)
+        if status == STATUS_INVALID:
+            raise RuntimeError(
+                "Invalid expected auto close during planned post validation "
+                f"entity={auto_action.get('entity')}, "
+                f"company={auto_action.get('company')}"
+            )
+        return True
+
+    return False
+
+
 def _auto_advanced_validation_state(
     state,
     *,
     num_players: int,
     max_players: int,
 ):
-    """Clone state and fast-forward step-mode pauses for 18xx comparison."""
+    """Clone state and fast-forward automated phase pauses for 18xx comparison."""
     validation_state = GameState.from_array(
         state._array,
         num_players,
@@ -395,7 +483,7 @@ def _auto_advanced_validation_state(
         validation_state.allow_positive_income_closing = True
     validation_state.step_mode = False
 
-    while DRIVER.is_non_player_phase(validation_state):
+    while _should_advance_post_validation_state(validation_state):
         status = DRIVER.advance_phase(validation_state)
         if status == STATUS_GAME_OVER:
             break
@@ -405,6 +493,20 @@ def _auto_advanced_validation_state(
             )
 
     return validation_state
+
+
+def _should_advance_post_validation_state(state) -> bool:
+    phase = TURN.get_phase(state)
+    if phase in AUTOMATED_PHASES:
+        return True
+    if phase != GamePhases.PHASE_BID:
+        return False
+
+    legal_actions = get_legal_actions(state)
+    return (
+        len(legal_actions) == 1
+        and legal_actions[0][1].action_type == ACTION_PASS
+    )
 
 
 def _is_18xx_acquisition_round(game_data: dict) -> bool:
@@ -619,6 +721,15 @@ def _acting_engine_player_indices(
     session: GameSession,
 ) -> set[int]:
     """Return engine player indices currently listed as acting by 18xx."""
+    indices: set[int] = set()
+    for actor in game_data.get("acting") or []:
+        try:
+            indices.add(session.player_index_for_user_id(actor))
+        except ValueError:
+            continue
+    if indices:
+        return indices
+
     ref = session._last_extract_record
     ref_active_player = ref.get("active_player")
     if (
@@ -630,13 +741,7 @@ def _acting_engine_player_indices(
         except ValueError:
             pass
 
-    indices: set[int] = set()
-    for actor in game_data.get("acting", []):
-        try:
-            indices.add(session.player_index_for_user_id(actor))
-        except ValueError:
-            continue
-    return indices
+    return set()
 
 
 def _align_unordered_round_to_18xx_actor(
