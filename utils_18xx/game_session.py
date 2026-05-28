@@ -337,24 +337,19 @@ class GameSession:
                 mismatches,
             )
         elif expected_stage in (0, 5):
-            ref_active_player = ref.get("active_player")
-            if ref_active_player is not None:
-                try:
-                    expected_idx = self.player_index_for_user_id(ref_active_player)
-                except ValueError:
-                    expected_idx = None
-                actual_idx = TURN.get_active_player(state)
-                if expected_idx is not None and actual_idx != expected_idx:
-                    mismatches.append(
-                        StateMismatch(
-                            action_id=action_id,
-                            phase=phase_name,
-                            field="active_player",
-                            expected=expected_idx,
-                            actual=actual_idx,
-                            context=context,
-                        )
+            expected_idx = self._ordered_active_player_index(game_data, ref)
+            actual_idx = TURN.get_active_player(state)
+            if expected_idx is not None and actual_idx != expected_idx:
+                mismatches.append(
+                    StateMismatch(
+                        action_id=action_id,
+                        phase=phase_name,
+                        field="active_player",
+                        expected=expected_idx,
+                        actual=actual_idx,
+                        context=context,
                     )
+                )
 
         if expected_stage in (3, 4):
             ref_active_corp = ref.get("active_corp")
@@ -404,6 +399,22 @@ class GameSession:
 
         return mismatches
 
+    def _ordered_active_player_index(self, game_data: dict, ref: dict) -> int | None:
+        """Return expected active player for ordered player rounds."""
+        for actor in game_data.get("acting") or []:
+            try:
+                return self.player_index_for_user_id(actor)
+            except ValueError:
+                continue
+
+        ref_active_player = ref.get("active_player")
+        if ref_active_player is None:
+            return None
+        try:
+            return self.player_index_for_user_id(ref_active_player)
+        except ValueError:
+            return None
+
     def _compare_unordered_active_player(
         self,
         game_data: dict,
@@ -415,28 +426,31 @@ class GameSession:
         mismatches: list[StateMismatch],
     ) -> None:
         expected_indices: set[int] = set()
-        for actor in game_data.get("acting") or []:
-            try:
-                expected_indices.add(self.player_index_for_user_id(actor))
-            except ValueError:
-                continue
-        if expected_indices:
-            actual_idx = TURN.get_active_player(state)
-            if actual_idx in expected_indices:
-                return
-            mismatches.append(
-                StateMismatch(
-                    action_id=action_id,
-                    phase=phase_name,
-                    field="active_player",
-                    expected=sorted(expected_indices),
-                    actual=actual_idx,
-                    context=context,
+        ref_round = ref.get("current_round") or game_data.get("round", "")
+        ref_round_stage = self._round_stage_key(str(ref_round))
+        game_round_stage = self._round_stage_key(str(game_data.get("round", "")))
+        if game_round_stage < 0 or game_round_stage == ref_round_stage:
+            for actor in game_data.get("acting") or []:
+                try:
+                    expected_indices.add(self.player_index_for_user_id(actor))
+                except ValueError:
+                    continue
+            if expected_indices:
+                actual_idx = TURN.get_active_player(state)
+                if actual_idx in expected_indices:
+                    return
+                mismatches.append(
+                    StateMismatch(
+                        action_id=action_id,
+                        phase=phase_name,
+                        field="active_player",
+                        expected=sorted(expected_indices),
+                        actual=actual_idx,
+                        context=context,
+                    )
                 )
-            )
-            return
+                return
 
-        ref_round_stage = self._round_stage_key(str(ref.get("current_round", "")))
         ref_active_player = ref.get("active_player")
         if ref_round_stage == 2 and ref_active_player is not None:
             try:

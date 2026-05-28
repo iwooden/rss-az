@@ -1242,6 +1242,48 @@ def test_live_state_validation_uses_acting_set_for_closing():
     )
 
 
+def test_live_state_validation_uses_acting_for_ordered_player_rounds():
+    state = _new_state()
+    TURN.set_phase(state, int(GamePhases.PHASE_INVEST))
+    TURN.set_active_player(state, 2)
+
+    actual_offering = sorted(
+        COMPANY_NAMES[cid]
+        for cid in range(len(COMPANY_NAMES))
+        if COMPANIES[cid].get_location(state)
+        in (int(CompanyLocation.LOC_AUCTION), int(CompanyLocation.LOC_REVEALED))
+    )
+    fi_companies = sorted(
+        COMPANY_NAMES[cid]
+        for cid in range(len(COMPANY_NAMES))
+        if COMPANIES[cid].is_owned_by_fi(state)
+    )
+
+    session = GameSession(3)
+    session._player_ids = [101, 202, 303]
+    session._last_extract_record = {
+        "action_id": 35,
+        "current_round": "INV",
+        "active_player": 202,
+        "players": [],
+        "corporations": [],
+        "foreign_investor": {
+            "cash": FI.get_cash(state),
+            "companies": fi_companies,
+        },
+        "offering": actual_offering,
+        "cost_level": TURN.get_coo_level(state),
+    }
+
+    mismatches = session.validate_against_18xx(
+        {"round": "Investment", "acting": [303]},
+        state,
+        context="unit",
+    )
+
+    assert not any(mismatch.field == "active_player" for mismatch in mismatches)
+
+
 def test_live_state_validation_prefers_extractor_actor_for_closing():
     state = _new_state()
     TURN.set_phase(state, int(GamePhases.PHASE_CLOSING))

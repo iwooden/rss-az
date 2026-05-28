@@ -6,6 +6,7 @@ from core.data import (
     COMPANY_NAME_TO_ID,
     COMPANY_NAMES,
     CORP_NAME_TO_ID,
+    CORP_NAMES,
     GamePhases,
 )
 from core.state import GameState
@@ -28,6 +29,7 @@ from utils_18xx.live import (
     _closing_compatibility_action,
     _dividend_compatibility_action,
     _filter_compatibility_mismatches,
+    _planned_post_validation_game_data,
     _resolve_buyable_share,
     _resolve_issuable_share,
     _resolve_sellable_share,
@@ -741,6 +743,59 @@ def test_unordered_active_validation_prefers_live_acting_over_extractor_actor():
     assert mismatches == []
 
 
+def test_planned_post_validation_preserves_unordered_closing_actors():
+    session = _FakeSession(player_ids=[101, 202, 303])
+    session._last_extract_record = {
+        "current_round": "CLO",
+        "active_player": 303,
+    }
+
+    game_data = _planned_post_validation_game_data(
+        {"round": "Closing", "acting": [101, 202]},
+        session,
+    )
+
+    assert game_data["acting"] == [101, 202, 303]
+
+
+def test_planned_post_validation_removes_planned_closing_pass_actor():
+    session = _FakeSession(player_ids=[101, 202, 303])
+    session._last_extract_record = {
+        "current_round": "CLO",
+        "active_player": 303,
+    }
+
+    game_data = _planned_post_validation_game_data(
+        {
+            "round": "Closing",
+            "acting": [101, 202, 303],
+            "actions": [{
+                "type": "pass",
+                "entity": 202,
+                "entity_type": "player",
+            }],
+        },
+        session,
+    )
+
+    assert game_data["acting"] == [101, 303]
+
+
+def test_planned_post_validation_narrows_ordered_round_actor():
+    session = _FakeSession(player_ids=[101, 202, 303])
+    session._last_extract_record = {
+        "current_round": "INV",
+        "active_player": 303,
+    }
+
+    game_data = _planned_post_validation_game_data(
+        {"round": "Investment", "acting": [101, 202]},
+        session,
+    )
+
+    assert game_data["acting"] == [303]
+
+
 def test_unordered_round_alignment_does_not_pass_bot_player():
     state = GameState(3)
     state.initialize_game(3, seed=42)
@@ -1086,6 +1141,33 @@ def test_post_validation_state_preserves_visible_forced_ipo_pass():
     assert TURN.get_active_company(validation_state) == company_id
 
 
+def test_post_validation_state_advances_unavailable_ipo_passes():
+    state = GameState(4, max_players=5)
+    state.initialize_game(4, seed=42, max_players=5)
+    company_id = COMPANY_NAME_TO_ID["HA"]
+    give_company_to_player(state, company_id, 2)
+    for corp_id in range(len(CORP_NAMES)):
+        CORPS[corp_id].set_active(state, True)
+    TURN.set_phase(state, int(GamePhases.PHASE_IPO))
+    TURN.set_active_player(state, 2)
+    TURN.set_active_company(state, company_id)
+    TURN.set_ipo_remaining(state, company_id, True)
+    state.step_mode = True
+
+    legal_actions = live_module.get_legal_actions(state)
+    assert len(legal_actions) == 1
+    assert legal_actions[0][1].action_type == live_module.ACTION_PASS
+
+    validation_state = _auto_advanced_validation_state(
+        state,
+        num_players=4,
+        max_players=5,
+    )
+
+    assert TURN.get_phase(validation_state) != int(GamePhases.PHASE_IPO)
+    assert TURN.get_active_company(validation_state) == -1
+
+
 def test_post_validation_state_advances_internal_forced_bid_leaves():
     state = GameState(5, max_players=5)
     state.initialize_game(5, seed=42, max_players=5)
@@ -1120,6 +1202,29 @@ def test_post_validation_state_advances_internal_forced_bid_leaves():
     assert COMPANIES[company_id].is_owned_by_player(validation_state, 1)
     assert PLAYERS[1].get_cash(validation_state) == 15
     assert TURN.get_active_company(validation_state) == -1
+
+
+def test_post_validation_state_advances_internal_forced_invest_pass():
+    state = GameState(4, max_players=6)
+    state.initialize_game(4, seed=42, max_players=6)
+    for player_idx in range(4):
+        PLAYERS[player_idx].set_cash(state, 0)
+    TURN.set_phase(state, int(GamePhases.PHASE_INVEST))
+    TURN.set_active_player(state, 0)
+    TURN.set_consecutive_passes(state, 3)
+    state.step_mode = True
+
+    legal_actions = live_module.get_legal_actions(state)
+    assert len(legal_actions) == 1
+    assert legal_actions[0][1].action_type == live_module.ACTION_PASS
+
+    validation_state = _auto_advanced_validation_state(
+        state,
+        num_players=4,
+        max_players=6,
+    )
+
+    assert TURN.get_phase(validation_state) != int(GamePhases.PHASE_INVEST)
 
 
 def test_post_validation_applies_expected_program_share_auto_pass():
