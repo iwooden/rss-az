@@ -10,16 +10,24 @@ loop.
   **Rolling Stock Stars**.
 - **Rolling Stock Stars is not Rolling Stock and not an 18xx game.** Read
   `RULES.md` before changing rules, phases, entity semantics, or model features.
-- Engine state supports 2-6 players. Token extraction, relations, NN, MCTS, and
-  training are scoped to 3-5 players. Only `train_configs/3p.json` exists as a
-  production training config.
+- Engine state supports 2-6 players. Token/relation extraction, ResNet vector
+  extraction, NN, MCTS, and training are scoped to 3-5 players.
+- Training supports single-count mode (`num_players=3..5`) and mixed
+  transformer mode (`num_players=0`, `min_players=3`, `max_players=5`).
+  ResNet requires a single player count.
+- Practical training/model focus is transformer v2 via
+  `model_path: "nn/transformer-v2.py"`; current successful runs are on that
+  architecture. Treat transformer v1 and ResNet as legacy/research paths unless
+  a task explicitly targets them.
 - `GameState` wraps one compact contiguous `int16` numpy array. Values are raw
   integers; normalization happens only while extracting model inputs.
-- The NN input bridge is `core/token_data.pyx` plus `core/relations.pyx`.
-  The model never reads `GameState` directly.
+- Transformer input bridge: `core/token_data.pyx` plus `core/relations.pyx`.
+  ResNet input bridge: `core/resnet_data.pyx`. Models never read `GameState`
+  directly.
 - The live pipeline is sparse phase-local legal actions -> dense unified legal
   masks/targets at NN/eval/training boundaries, token buffers, relation planes,
-  and canonical-order per-player values.
+  or ResNet vectors, and per-player values with model-specific rotation only at
+  evaluator/trainer boundaries.
 
 ## Source Of Truth
 
@@ -28,8 +36,9 @@ When sources disagree, prefer this order:
 1. `RULES.md` for game rules.
 2. Current code in `core/`, `entities/`, `phases/`, `nn/`, `mcts/`, `train/`.
 3. Runtime checks: clean build, imports, targeted pytest, smoke scripts.
-4. `VECTORS.md` for state/action layout and `token-data.md` for token features,
-   verified against code when touching internals.
+4. `VECTORS.md` for state/action layout, `token-data.md` for transformer token
+   features, and `resnet-data.md` for ResNet vectors, verified against code
+   when touching internals.
 5. `CLAUDE.md` for broader repo guidance, after checking task-critical claims
    against code.
 
@@ -59,18 +68,29 @@ widths.
   Graphormer-style relation planes. Current constants are
   `NUM_ATTENTION_RELATIONS == 10`, sparse IPC coord shape
   `(MAX_ATTENTION_RELATION_EDGES == 256, ATTENTION_RELATION_COORD_WIDTH == 3)`.
+- `core/resnet_data.{pxd,pyx}`: dense normalized ResNet vector extraction.
+  Vectors are active-relative; use `get_resnet_vector_size(num_players)`.
+- `nn/model_contract.py` and `nn/__init__.py`: model-family contract and
+  factory. `model_type` is `transformer` or `resnet`; `model_path` can point at
+  an alternate implementation such as `nn/transformer-v2.py`. Prefer
+  transformer v2 for practical training/model work.
 - `nn/transformer.py`: `RSSTransformerNet`. Forward contract is
   `model(tokens, legal_mask, relations) -> (policy_logits, values)`, where
   policy logits are dense over `UNIFIED_LOGIT_DIM == 255` and values are
-  canonical player order. Use `build_action_lut()` for phase-local action id
-  to unified slot mapping.
+  canonical player order. This is the v1/default implementation; keep it
+  contract-compatible, but do not optimize around it by default. Use
+  `build_action_lut()` for phase-local action id to unified slot mapping.
+- `nn/resnet.py`: `RSSResNet`. Forward contract is
+  `model(vector, legal_mask) -> (policy_logits, values)`. Policy logits use the
+  same unified slots; values are active-relative inside the model.
 - `mcts/search.py`, `mcts/node.py`, `mcts/evaluator.py`, `mcts/mcts_core.pyx`:
-  sparse/token/relation MCTS stack with batched leaf eval, leaf locking, lock
-  propagation, a compact `StatePool`, and subtree reuse.
+  sparse MCTS stack with model-family-specific batched leaf eval, leaf locking,
+  lock propagation, a compact `StatePool`, and subtree reuse.
 - `train/eval_server.py`, `train/self_play.py`, `train/replay_buffer.py`,
   `train/trainer.py`, `train/main.py`: live training pipeline. Replay stores
-  compact int16 states plus dense unified masks/targets; trainer materializes
-  tokens and dense relation planes per sampled batch.
+  compact int16 states plus dense unified masks/targets and canonical value
+  targets; trainer materializes transformer tokens/relations or ResNet vectors
+  per sampled batch.
 - `train/analyze_game.py`: checkpoint/game analysis entry point; re-check it if
   evaluator, search, model inputs, or model return shapes change.
 - `utils_18xx/` and `tests/games_18xx/`: 18xx.games compatibility harness and
@@ -81,20 +101,27 @@ widths.
 - Rules or phase behavior: `RULES.md`, relevant `phases/*.pyx`,
   `core/actions.pyx`, `core/driver.pyx`, relevant `tests/phases/*`.
 - State/layout/invariants: `core/state.{pyx,pxd}`, relevant `entities/*.pyx`,
-  `VECTORS.md`, and token/relation extraction if NN-visible state changes.
+  `VECTORS.md`, and token/relation/ResNet extraction if NN-visible state
+  changes.
 - Entity behavior: relevant `entities/<entity>.{pyx,pxd}` first, then callers.
 - Action-space changes: `core/data.pxd`, `core/actions.{pxd,pyx}`, relevant
-  phase module, `nn/transformer.py`, MCTS/eval/training mask consumers.
+  phase module, `nn/transformer.py`, `nn/resnet.py`, MCTS/eval/training mask
+  consumers.
 - Token/relation/model changes: `core/token_data.{pyx,pxd}`,
-  `core/relations.{pyx,pxd}`, `token-data.md`, `nn/transformer.py`,
-  `tests/test_transformer.py`, `tests/test_relations.py`, token invariant tests.
+  `core/relations.{pyx,pxd}`, `core/resnet_data.{pyx,pxd}`,
+  `token-data.md`, `resnet-data.md`, `nn/model_contract.py`,
+  `nn/transformer.py`, `nn/resnet.py`, `tests/test_transformer.py`,
+  `tests/test_relations.py`, `tests/test_resnet_data.py`,
+  `tests/test_resnet_model.py`, `tests/test_model_factory_checkpoint.py`,
+  token invariant tests.
 - Search/eval changes: `mcts/*`, `train/eval_server.py`,
   `tests/test_mcts.py`, `tests/test_eval_server_batching.py`,
-  `tests/test_eval_bitmap.py`.
+  `tests/test_eval_bitmap.py`, `tests/test_resnet_evaluator.py`.
 - Self-play/training changes: `train/self_play.py`, `train/replay_buffer.py`,
   `train/trainer.py`, `train/main.py`, `train/config.py`,
   `tests/test_self_play.py`, `tests/test_trainer_*`,
-  `tests/test_training_step_scaling.py`.
+  `tests/test_training_step_scaling.py`, `tests/test_training_config_players.py`,
+  `tests/test_replay_buffer_mixed.py`, `tests/test_multiplayer_smoke.py`.
 - 18xx replay compatibility: `utils_18xx/`, `tests/games_18xx/`,
   `tests/games_18xx/data/`.
 
@@ -102,7 +129,7 @@ widths.
 
 - Use `.venv/bin/python`, not bare `python`. Run commands from the repo root.
 - For ad hoc imports from outside the repo root, set
-  `PYTHONPATH=/home/icebreaker/rss-az-cython2_worktree2`.
+  `PYTHONPATH=/home/icebreaker/rss-az-cython2`.
 - `setup.py` is the build entry point; there is no `pyproject.toml`.
 - Build before importing compiled modules:
 
@@ -127,13 +154,17 @@ widths.
 .venv/bin/pytest tests/test_mcts.py tests/test_self_play.py -q
 .venv/bin/pytest tests/test_eval_server_batching.py tests/test_eval_bitmap.py tests/test_eval_batch_config.py -q
 .venv/bin/pytest tests/test_trainer_loss.py tests/test_trainer_optimizer.py tests/test_trainer_scheduler.py tests/test_training_step_scaling.py -q
+.venv/bin/pytest tests/test_resnet_data.py tests/test_resnet_model.py tests/test_resnet_evaluator.py tests/test_model_factory_checkpoint.py -q
+.venv/bin/pytest tests/test_training_config_players.py tests/test_replay_buffer_mixed.py tests/test_multiplayer_smoke.py -q
 ```
 
 - `pyright` is the system binary, not `.venv/bin/pyright`.
-- Training entry point:
+- Training entry point examples:
 
 ```bash
-.venv/bin/python -m train --config train_configs/3p.json
+.venv/bin/python -m train --config train_configs/bigger-multi.json
+# Legacy/research only:
+.venv/bin/python -m train --config train_configs/3p-resnet.json
 ```
 
 ## Working Rules
@@ -152,13 +183,15 @@ widths.
 - Phase handlers assume legal actions. Legality lives in `core/actions.pyx` and
   the driver checks it before dispatch.
 - Use sparse legal lists as the default engine/search contract. Convert to
-  dense unified masks only at NN/eval/trainer boundaries via the transformer
-  action LUT.
-- Model/eval/training values are canonical player order. There is no state
-  rotation.
-- Model forward calls require relation planes. Eval-server IPC ships sparse
-  relation coords and materializes dense planes on-device; trainer/replay use
-  `get_relation_data_batch`.
+  dense unified masks only at NN/eval/trainer boundaries via
+  `build_action_lut()`.
+- Replay/self-play/evaluator outputs use canonical player order. Transformer
+  values are canonical; ResNet inputs and model values are active-relative and
+  are rotated/unrotated at trainer/evaluator boundaries.
+- Transformer forward calls require relation planes. Eval-server IPC ships
+  sparse relation coords and materializes dense planes on-device; trainer/replay
+  use `get_relation_data_batch` for transformer paths. ResNet paths use
+  `get_resnet_data` / `get_resnet_data_batch` and no relations.
 - `GameState.step_mode`, `acq_same_president`, and
   `allow_positive_income_closing` are Python-level driver/config flags, not
   state-array fields. Replay and tests may set them deliberately.
