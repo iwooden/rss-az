@@ -13,6 +13,7 @@
 scratchpad/
 checkpoints/
 runs/
+strategy_data/
 interp/data/
 backups/
 gamelog.md

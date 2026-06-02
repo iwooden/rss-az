@@ -18,6 +18,7 @@ import torch
 
 from core.driver import DRIVER
 from core.state import GameState, get_layout
+from entities.company import COMPANIES
 from mcts.evaluator import NNEvaluator, compute_terminal_values
 from mcts.search import StatePool, prepare_reuse_root, run_search
 from nn import create_model, get_model_input_spec
@@ -148,6 +149,64 @@ def test_resnet_play_game_short_3p_game_keeps_record_contract():
         np.broadcast_to(expected, record.value_targets.shape),
         atol=1e-6,
     )
+
+
+def test_play_game_strategy_trace_captures_root_outputs(evaluator):
+    config = TrainingConfig(
+        num_players=NUM_PLAYERS,
+        num_simulations=2,
+        search_batch_size=2,
+        dirichlet_epsilon=0.0,
+    )
+    epoch_config = EpochConfig(
+        c_puct=config.c_puct_final,
+        value_blend_alpha=1.0,
+        num_simulations=config.num_simulations,
+    )
+
+    record = play_game(
+        evaluator,
+        config,
+        game_seed=11,
+        rng=np.random.default_rng(11),
+        epoch_config=epoch_config,
+        collect_strategy_trace=True,
+        game_id=123,
+        rng_seed=456,
+    )
+
+    trace = record.strategy_trace
+    assert trace is not None
+    assert record.game_id == 123
+    assert record.rng_seed == 456
+    assert record.final_state is not None
+    assert record.final_state.shape == (get_layout(NUM_PLAYERS).total_size,)
+    assert trace.nn_policy_pct.shape == record.policy_targets.shape
+    assert trace.mcts_visit_counts.shape == record.policy_targets.shape
+    assert trace.a0gb_values.shape == record.value_targets.shape
+    assert trace.mcts_root_values.shape == record.value_targets.shape
+    assert trace.selected_action_ids.shape == (record.num_examples,)
+    assert trace.player_shares.shape == (
+        record.num_examples,
+        NUM_PLAYERS,
+        8,
+    )
+    np.testing.assert_allclose(
+        trace.nn_policy_pct.sum(axis=1),
+        np.full(record.num_examples, 100.0, dtype=np.float32),
+        atol=1e-4,
+    )
+    np.testing.assert_allclose(trace.a0gb_values, record.value_targets, atol=1e-6)
+    assert trace.auction_events.shape[0] > 0
+    auction_company_ids = trace.auction_events[:, 2]
+    auction_prices = trace.auction_events[:, 4]
+    auction_face_values = np.asarray(
+        [COMPANIES[int(cid)].get_face_value() for cid in auction_company_ids],
+        dtype=np.int32,
+    )
+    assert (auction_prices >= auction_face_values).all()
+    if trace.acquisition_events.shape[0] > 0:
+        assert (trace.acquisition_events[:, 5] >= 0).all()
 
 
 def test_epoch_player_count_schedule_is_quota_round_robin():
