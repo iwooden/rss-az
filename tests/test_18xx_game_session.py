@@ -813,6 +813,75 @@ def test_fi_offer_waits_for_explicit_response():
     )
 
 
+def test_acq_sync_does_not_accept_interleaved_declined_offer():
+    state = GameState(3, acq_same_president=False)
+    state.initialize_game(3, seed=42)
+
+    vm_id = CORP_NAMES.index("VM")
+    si_id = CORP_NAMES.index("SI")
+    ake_id = COMPANY_NAME_TO_ID["AKE"]
+    mhe_id = COMPANY_NAME_TO_ID["MHE"]
+
+    float_corp_for_test(state, corp_id=vm_id, player_id=1, par_index=10)
+    float_corp_for_test(state, corp_id=si_id, player_id=0, par_index=10)
+    give_company_to_corp(state, ake_id, si_id)
+    give_company_to_corp(state, mhe_id, si_id)
+    CORPS[vm_id].set_cash(state, 100)
+    setup_acquisition_phase_py(state)
+    TURN.set_active_player(state, 1)
+
+    session = GameSession(3)
+    session._player_ids = [101, 202, 303]
+    next_idx = session._sync_acq_round(
+        state,
+        [
+            {
+                "id": 10,
+                "type": "offer",
+                "entity": 202,
+                "entity_type": "player",
+                "corporation": "VM",
+                "company": "AKE",
+                "price": COMPANIES[ake_id].get_low_price(),
+            },
+            {
+                "id": 11,
+                "type": "offer",
+                "entity": 202,
+                "entity_type": "player",
+                "corporation": "VM",
+                "company": "MHE",
+                "price": COMPANIES[mhe_id].get_low_price(),
+            },
+            {
+                "id": 12,
+                "type": "respond",
+                "entity": 101,
+                "entity_type": "player",
+                "corporation": "VM",
+                "company": "AKE",
+                "accept": "false",
+            },
+            {
+                "id": 13,
+                "type": "respond",
+                "entity": 101,
+                "entity_type": "player",
+                "corporation": "VM",
+                "company": "MHE",
+                "accept": "false",
+            },
+        ],
+        0,
+    )
+
+    assert next_idx == 4
+    assert COMPANIES[ake_id].is_owned_by_corp(state, si_id)
+    assert COMPANIES[mhe_id].is_owned_by_corp(state, si_id)
+    assert not COMPANIES[ake_id].is_in_corp_acquisition(state, vm_id)
+    assert not COMPANIES[mhe_id].is_in_corp_acquisition(state, vm_id)
+
+
 def test_acq_sync_replays_declined_fi_preemption_before_original_buy():
     state = GameState(4, acq_same_president=False)
     state.initialize_game(4, seed=42)

@@ -1106,12 +1106,23 @@ class GameSession:
 
             if atype == "offer":
                 if pending_offer is not None:
-                    self._resolve_acq_offer(
-                        state,
+                    future_response = self._future_response_to_offer(
+                        actions,
+                        idx,
                         pending_offer,
-                        accepted=True,
-                        deferred_transfers=deferred_transfers,
                     )
+                    if (
+                        future_response is not None
+                        and not self._response_accepts(future_response)
+                    ):
+                        self._cancel_pending_acq_offer(state)
+                    else:
+                        self._resolve_acq_offer(
+                            state,
+                            pending_offer,
+                            accepted=True,
+                            deferred_transfers=deferred_transfers,
+                        )
                 self._retarget_acq_active_player_to_action_entity(state, action)
                 if self._offer_resolves_immediately(
                     state,
@@ -1324,7 +1335,7 @@ class GameSession:
 
     def _apply_acq_offer_response(self, state: GameState, action: dict) -> None:
         """Apply one recorded 18xx ACQ_OFFER response."""
-        accepted = str(action.get("accept", "")).lower() == "true"
+        accepted = self._response_accepts(action)
         try:
             action_idx = find_legal_action(
                 state,
@@ -1418,13 +1429,29 @@ class GameSession:
         start_idx: int,
         offer: dict,
     ) -> bool:
+        return GameSession._future_response_to_offer(
+            actions,
+            start_idx,
+            offer,
+        ) is not None
+
+    @staticmethod
+    def _future_response_to_offer(
+        actions: list[dict],
+        start_idx: int,
+        offer: dict,
+    ) -> dict | None:
         for probe in range(start_idx, len(actions)):
             action = actions[probe]
-            if action.get("type") == "offer":
-                return False
+            if action.get("type") not in {"offer", "respond", "pass"}:
+                return None
             if GameSession._is_response_to_offer(action, offer):
-                return True
-        return False
+                return action
+        return None
+
+    @staticmethod
+    def _response_accepts(action: dict) -> bool:
+        return str(action.get("accept", "")).lower() == "true"
 
     def _extractor_has_pending_offer(self, offer: dict) -> bool:
         if self._extractor_offer_pending_after_action(offer, offer) is True:
