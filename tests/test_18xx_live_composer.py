@@ -606,7 +606,7 @@ def test_prepare_live_decision_state_restores_model_acquisition_rule():
     assert state.allow_positive_income_closing is False
 
 
-def test_live_closing_pass_preserves_model_negative_income_gate():
+def test_live_closing_pass_uses_18xx_progression_and_restores_model_gate():
     state = GameState(3)
     state.initialize_game(3, seed=42)
     negative_company = COMPANY_NAME_TO_ID["BME"]
@@ -634,7 +634,8 @@ def test_live_closing_pass_preserves_model_negative_income_gate():
 
     assert status != STATUS_INVALID
     assert state.allow_positive_income_closing is False
-    assert TURN.get_phase(state) == int(GamePhases.PHASE_INCOME)
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_CLOSING)
+    assert TURN.get_active_player(state) == 1
 
     validation_state = _auto_advanced_validation_state(
         state,
@@ -642,7 +643,9 @@ def test_live_closing_pass_preserves_model_negative_income_gate():
         max_players=3,
     )
 
-    assert TURN.get_phase(validation_state) != int(GamePhases.PHASE_CLOSING)
+    assert validation_state.allow_positive_income_closing is True
+    assert TURN.get_phase(validation_state) == int(GamePhases.PHASE_CLOSING)
+    assert TURN.get_active_player(validation_state) == 1
 
 
 def test_unordered_round_alignment_consumes_nonacting_closing_pass():

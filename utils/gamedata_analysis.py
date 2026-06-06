@@ -22,7 +22,7 @@ import numpy as np
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.data import DecisionPhase, GameConstants
+from core.data import DecisionPhase, GameConstants, GamePhases
 from core.state import (
     get_company_fields,
     get_corp_fields,
@@ -38,7 +38,24 @@ SHARD_RE = re.compile(r"strategy_(?P<num_players>\d+)p_shard_(?P<idx>\d+)\.npz$"
 BID_PHASE_ID = int(DecisionPhase.DPHASE_BID)
 INVEST_PHASE_ID = int(DecisionPhase.DPHASE_INVEST)
 DIVIDENDS_PHASE_ID = int(DecisionPhase.DPHASE_DIVIDENDS)
+IPO_PHASE_ID = int(DecisionPhase.DPHASE_IPO)
+PAR_PHASE_ID = int(DecisionPhase.DPHASE_PAR)
+ENGINE_IPO_PHASE_ID = int(GamePhases.PHASE_IPO)
+ENGINE_PAR_PHASE_ID = int(GamePhases.PHASE_PAR)
 LOC_PLAYER_INT = int(CompanyLocation.LOC_PLAYER)
+LOC_CORP_INT = int(CompanyLocation.LOC_CORP)
+LOC_CORP_ACQ_INT = int(CompanyLocation.LOC_CORP_ACQ)
+LOC_REMOVED_INT = int(CompanyLocation.LOC_REMOVED)
+AUCTION_OUTCOME_ACQUIRED = 0
+AUCTION_OUTCOME_IPO = 1
+AUCTION_OUTCOME_CLOSED = 2
+AUCTION_OUTCOME_HELD = 3
+AUCTION_OUTCOME_NAMES = (
+    "Acquired by Corp",
+    "IPO Seed",
+    "Closed",
+    "Held to End",
+)
 
 
 @dataclass(frozen=True)
@@ -157,6 +174,51 @@ class EarlyMaxPriceEndSummary:
     average_turn_count: float
     invest_early_games: int
     dividends_early_games: int
+
+
+@dataclass(frozen=True)
+class CompanyAuctionOutcomeSummary:
+    """Outcomes for companies after they are won by a player at auction."""
+
+    num_players: int
+    num_games: int
+    company_names: list[str]
+    company_stars: np.ndarray
+    outcome_names: tuple[str, ...]
+    counts: np.ndarray
+    percentages: np.ndarray
+    totals: np.ndarray
+
+
+@dataclass(frozen=True)
+class TurnOneOpeningSummary:
+    """Turn 1 auction deltas and first floated corporation percentages."""
+
+    num_players: int
+    num_games: int
+    company_names: list[str]
+    company_ids: np.ndarray
+    company_stars: np.ndarray
+    face_values: np.ndarray
+    auction_mean_deltas: np.ndarray
+    auction_counts: np.ndarray
+    corp_names: list[str]
+    first_ipo_counts: np.ndarray
+    first_ipo_percentages: np.ndarray
+    first_ipo_games: int
+
+
+@dataclass(frozen=True)
+class InitialAuctionPositionSummary:
+    """Auction deltas by face-value rank within the initial auction offering."""
+
+    num_players: int
+    num_games: int
+    offering_games: int
+    complete_games: int
+    position_ranks: np.ndarray
+    mean_deltas: np.ndarray
+    counts: np.ndarray
 
 
 class StrategyDataset:
@@ -1021,6 +1083,239 @@ class StrategyDataset:
             )
         return summaries
 
+    def auctioned_company_outcome_summary(
+        self,
+        *,
+        player_counts: Sequence[int] | None = None,
+    ) -> dict[int, CompanyAuctionOutcomeSummary]:
+        """Summarize outcomes for companies won by players at auction.
+
+        The denominator is strictly ``auction_events``: companies that moved
+        from auction to a player. Each such company is followed until its
+        first exit from that player's possession:
+
+        - player -> corp during IPO/PAR: IPO seed
+        - player -> corp outside IPO/PAR: acquired by corp
+        - player -> removed: closed while personally held
+        - still player-owned at terminal state: held to end
+        """
+        company_names = [str(v) for v in self.metadata["company_names"]]  # type: ignore[index]
+        company_static = self.metadata["company_static"]  # type: ignore[index]
+        company_stars = np.asarray(company_static["stars"], dtype=np.int16)  # type: ignore[index]
+        requested = (
+            set(self.player_counts)
+            if player_counts is None
+            else {int(v) for v in player_counts}
+        )
+        num_companies = len(company_names)
+        outcome_count = len(AUCTION_OUTCOME_NAMES)
+        counts = {
+            count: np.zeros((outcome_count, num_companies), dtype=np.int64)
+            for count in requested
+        }
+        totals = {
+            count: np.zeros(num_companies, dtype=np.int64)
+            for count in requested
+        }
+        game_counts = {count: 0 for count in requested}
+
+        for shard in self.iter_shards():
+            if shard.num_players not in requested:
+                continue
+            num_players = shard.num_players
+            with np.load(shard.path, allow_pickle=False) as data:
+                game_counts[num_players] += int(data["game_num_examples"].shape[0])
+                shard_counts, shard_totals = _auctioned_company_outcomes_for_shard(
+                    data,
+                    num_players=num_players,
+                    num_companies=num_companies,
+                )
+                counts[num_players] += shard_counts
+                totals[num_players] += shard_totals
+
+        summaries: dict[int, CompanyAuctionOutcomeSummary] = {}
+        for num_players in sorted(requested):
+            percentages = np.zeros_like(counts[num_players], dtype=np.float64)
+            np.divide(
+                counts[num_players] * 100.0,
+                totals[num_players][None, :],
+                out=percentages,
+                where=totals[num_players][None, :] > 0,
+            )
+            summaries[num_players] = CompanyAuctionOutcomeSummary(
+                num_players=num_players,
+                num_games=game_counts[num_players],
+                company_names=company_names,
+                company_stars=company_stars.copy(),
+                outcome_names=AUCTION_OUTCOME_NAMES,
+                counts=counts[num_players].copy(),
+                percentages=percentages,
+                totals=totals[num_players].copy(),
+            )
+        return summaries
+
+    def turn_one_opening_summary(
+        self,
+        *,
+        player_counts: Sequence[int] | None = None,
+    ) -> dict[int, TurnOneOpeningSummary]:
+        """Summarize Turn 1 red-company auctions and first corp IPO choices."""
+        all_company_names = [str(v) for v in self.metadata["company_names"]]  # type: ignore[index]
+        corp_names = [str(v) for v in self.metadata["corp_names"]]  # type: ignore[index]
+        company_static = self.metadata["company_static"]  # type: ignore[index]
+        company_stars_all = np.asarray(company_static["stars"], dtype=np.int16)  # type: ignore[index]
+        face_values_all = np.asarray(company_static["face_value"], dtype=np.float64)  # type: ignore[index]
+        red_company_ids = np.flatnonzero(company_stars_all == 1).astype(np.int64)
+        red_index_by_company = {
+            int(company_id): idx
+            for idx, company_id in enumerate(red_company_ids)
+        }
+        requested = (
+            set(self.player_counts)
+            if player_counts is None
+            else {int(v) for v in player_counts}
+        )
+        num_red = int(red_company_ids.shape[0])
+        num_corps = len(corp_names)
+        auction_sums = {
+            count: np.zeros(num_red, dtype=np.float64)
+            for count in requested
+        }
+        auction_counts = {
+            count: np.zeros(num_red, dtype=np.int64)
+            for count in requested
+        }
+        first_ipo_counts = {
+            count: np.zeros(num_corps, dtype=np.int64)
+            for count in requested
+        }
+        first_ipo_games = {count: 0 for count in requested}
+        game_counts = {count: 0 for count in requested}
+
+        for shard in self.iter_shards():
+            if shard.num_players not in requested:
+                continue
+            num_players = shard.num_players
+            with np.load(shard.path, allow_pickle=False) as data:
+                game_counts[num_players] += int(data["game_num_examples"].shape[0])
+
+                events = data["auction_events"]
+                if events.shape[0] > 0:
+                    turn_one = events[events[:, 2] == 1]
+                    for event in turn_one:
+                        company_id = int(event[3])
+                        red_idx = red_index_by_company.get(company_id)
+                        if red_idx is None:
+                            continue
+                        auction_sums[num_players][red_idx] += (
+                            float(event[5]) - face_values_all[company_id]
+                        )
+                        auction_counts[num_players][red_idx] += 1
+
+                first_corps = _first_ipo_corps_for_shard(
+                    data,
+                    num_players=num_players,
+                    num_corps=num_corps,
+                )
+                if first_corps.size:
+                    np.add.at(first_ipo_counts[num_players], first_corps, 1)
+                    first_ipo_games[num_players] += int(first_corps.size)
+
+        summaries: dict[int, TurnOneOpeningSummary] = {}
+        for num_players in sorted(requested):
+            observed = auction_counts[num_players]
+            mean_deltas = np.full(num_red, np.nan, dtype=np.float64)
+            np.divide(
+                auction_sums[num_players],
+                observed,
+                out=mean_deltas,
+                where=observed > 0,
+            )
+            first_pct = np.zeros(num_corps, dtype=np.float64)
+            denominator = first_ipo_games[num_players]
+            if denominator:
+                first_pct = first_ipo_counts[num_players].astype(np.float64) * (
+                    100.0 / denominator
+                )
+            summaries[num_players] = TurnOneOpeningSummary(
+                num_players=num_players,
+                num_games=game_counts[num_players],
+                company_names=[all_company_names[int(i)] for i in red_company_ids],
+                company_ids=red_company_ids.copy(),
+                company_stars=company_stars_all[red_company_ids].copy(),
+                face_values=face_values_all[red_company_ids].copy(),
+                auction_mean_deltas=mean_deltas,
+                auction_counts=observed.copy(),
+                corp_names=corp_names,
+                first_ipo_counts=first_ipo_counts[num_players].copy(),
+                first_ipo_percentages=first_pct,
+                first_ipo_games=first_ipo_games[num_players],
+            )
+        return summaries
+
+    def initial_auction_position_summary(
+        self,
+        *,
+        player_counts: Sequence[int] | None = None,
+    ) -> dict[int, InitialAuctionPositionSummary]:
+        """Summarize setup-offering auction deltas by face-value rank."""
+        company_static = self.metadata["company_static"]  # type: ignore[index]
+        face_values = np.asarray(company_static["face_value"], dtype=np.float64)  # type: ignore[index]
+        requested = (
+            set(self.player_counts)
+            if player_counts is None
+            else {int(v) for v in player_counts}
+        )
+        sums = {
+            count: np.zeros(count, dtype=np.float64)
+            for count in requested
+        }
+        counts = {
+            count: np.zeros(count, dtype=np.int64)
+            for count in requested
+        }
+        game_counts = {count: 0 for count in requested}
+        offering_games = {count: 0 for count in requested}
+        complete_games = {count: 0 for count in requested}
+
+        for shard in self.iter_shards():
+            if shard.num_players not in requested:
+                continue
+            num_players = shard.num_players
+            with np.load(shard.path, allow_pickle=False) as data:
+                game_counts[num_players] += int(data["game_num_examples"].shape[0])
+                shard_sums, shard_counts, shard_offerings, shard_complete = (
+                    _initial_auction_position_deltas_for_shard(
+                        data,
+                        num_players=num_players,
+                        face_values=face_values,
+                    )
+                )
+                sums[num_players] += shard_sums
+                counts[num_players] += shard_counts
+                offering_games[num_players] += shard_offerings
+                complete_games[num_players] += shard_complete
+
+        summaries: dict[int, InitialAuctionPositionSummary] = {}
+        for num_players in sorted(requested):
+            mean_deltas = np.full(num_players, np.nan, dtype=np.float64)
+            np.divide(
+                sums[num_players],
+                counts[num_players],
+                out=mean_deltas,
+                where=counts[num_players] > 0,
+            )
+            summaries[num_players] = InitialAuctionPositionSummary(
+                num_players=num_players,
+                num_games=game_counts[num_players],
+                offering_games=offering_games[num_players],
+                complete_games=complete_games[num_players],
+                position_ranks=np.arange(num_players, 0, -1, dtype=np.int64),
+                mean_deltas=mean_deltas,
+                counts=counts[num_players].copy(),
+            )
+        return summaries
+
 
 def _opening_bid_delta_rows(
     data: object,
@@ -1193,6 +1488,223 @@ def _states_turn_numbers(
     return states[:, layout.turn_offset + turn_fields.turn_number].astype(np.float64)
 
 
+def _auctioned_company_outcomes_for_shard(
+    data: object,
+    *,
+    num_players: int,
+    num_companies: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Classify auction-won company outcomes for one shard."""
+    outcome_count = len(AUCTION_OUTCOME_NAMES)
+    counts = np.zeros((outcome_count, num_companies), dtype=np.int64)
+    totals = np.zeros(num_companies, dtype=np.int64)
+    auction_events = data["auction_events"]
+    if auction_events.shape[0] == 0:
+        return counts, totals
+
+    layout = get_layout(num_players)
+    company_fields = get_company_fields()
+    company_ids = np.arange(num_companies, dtype=np.int64)
+    final_locations = data["final_states"][
+        :,
+        layout.companies_offset + company_fields.locations + company_ids,
+    ]
+    final_owners = data["final_states"][
+        :,
+        layout.companies_offset + company_fields.owner_ids + company_ids,
+    ]
+
+    game_ids_per_game = data["game_ids_per_game"].astype(np.int64)
+    starts = data["game_start_offsets"].astype(np.int64)
+    lengths = data["game_num_examples"].astype(np.int64)
+
+    for game_index, game_id in enumerate(game_ids_per_game):
+        game_auctions = auction_events[auction_events[:, 0] == game_id]
+        if game_auctions.shape[0] == 0 or lengths[game_index] <= 0:
+            continue
+
+        start = int(starts[game_index])
+        end = start + int(lengths[game_index])
+        move_numbers = data["move_numbers"][start:end]
+        phase_ids = data["phase_ids"][start:end]
+        engine_phase_ids = data["engine_phase_ids"][start:end]
+        locations = data["company_locations"][start:end]
+        owners = data["company_owners"][start:end]
+
+        for event in game_auctions:
+            auction_move = int(event[1])
+            company_id = int(event[3])
+            winner = int(event[4])
+            outcome = _classify_auctioned_company_outcome(
+                move_numbers=move_numbers,
+                phase_ids=phase_ids,
+                engine_phase_ids=engine_phase_ids,
+                company_locations=locations[:, company_id],
+                company_owners=owners[:, company_id],
+                final_location=int(final_locations[game_index, company_id]),
+                final_owner=int(final_owners[game_index, company_id]),
+                auction_move=auction_move,
+                winner=winner,
+            )
+            counts[outcome, company_id] += 1
+            totals[company_id] += 1
+
+    return counts, totals
+
+
+def _classify_auctioned_company_outcome(
+    *,
+    move_numbers: np.ndarray,
+    phase_ids: np.ndarray,
+    engine_phase_ids: np.ndarray,
+    company_locations: np.ndarray,
+    company_owners: np.ndarray,
+    final_location: int,
+    final_owner: int,
+    auction_move: int,
+    winner: int,
+) -> int:
+    """Classify one auction-won company by first exit from player ownership."""
+    held_after_auction = (
+        (move_numbers > auction_move)
+        & (company_locations == LOC_PLAYER_INT)
+        & (company_owners == winner)
+    )
+    if np.any(held_after_auction):
+        first_held = int(np.flatnonzero(held_after_auction)[0])
+        for idx in range(first_held + 1, move_numbers.shape[0]):
+            if (
+                int(company_locations[idx]) == LOC_PLAYER_INT
+                and int(company_owners[idx]) == winner
+            ):
+                continue
+            return _auction_exit_outcome(
+                int(company_locations[idx]),
+                int(phase_ids[idx - 1]),
+                int(engine_phase_ids[idx - 1]),
+            )
+
+    if final_location == LOC_PLAYER_INT and final_owner == winner:
+        return AUCTION_OUTCOME_HELD
+    if move_numbers.shape[0] == 0:
+        raise ValueError("cannot classify auctioned company in empty game trace")
+    return _auction_exit_outcome(
+        final_location,
+        int(phase_ids[-1]),
+        int(engine_phase_ids[-1]),
+    )
+
+
+def _auction_exit_outcome(
+    location: int,
+    phase_id: int,
+    engine_phase_id: int,
+) -> int:
+    """Map a location exit from player ownership to an outcome bucket."""
+    if location in (LOC_CORP_INT, LOC_CORP_ACQ_INT):
+        if phase_id in (IPO_PHASE_ID, PAR_PHASE_ID) or engine_phase_id in (
+            ENGINE_IPO_PHASE_ID,
+            ENGINE_PAR_PHASE_ID,
+        ):
+            return AUCTION_OUTCOME_IPO
+        return AUCTION_OUTCOME_ACQUIRED
+    if location == LOC_REMOVED_INT:
+        return AUCTION_OUTCOME_CLOSED
+    raise ValueError(
+        "unexpected auction-won company exit: "
+        f"location={location}, phase_id={phase_id}, engine_phase_id={engine_phase_id}"
+    )
+
+
+def _first_ipo_corps_for_shard(
+    data: object,
+    *,
+    num_players: int,
+    num_corps: int,
+) -> np.ndarray:
+    """Return first corp activated on Turn 1 in each game in one shard."""
+    layout = get_layout(num_players)
+    corp_fields = get_corp_fields()
+    corp_bases = (
+        layout.corps_offset
+        + np.arange(num_corps, dtype=np.int64) * layout.corp_size
+    )
+    final_active = (
+        data["final_states"][:, corp_bases + corp_fields.active] != 0
+    )
+    first_corps: list[int] = []
+
+    starts = data["game_start_offsets"].astype(np.int64)
+    lengths = data["game_num_examples"].astype(np.int64)
+    for game_index, (start_raw, length_raw) in enumerate(zip(starts, lengths)):
+        length = int(length_raw)
+        if length <= 0:
+            continue
+        start = int(start_raw)
+        end = start + length
+        active_history = data["corp_active"][start:end].astype(bool, copy=False)
+        combined = np.vstack((active_history, final_active[game_index]))
+        transitions = (~combined[:-1]) & combined[1:]
+        if not np.any(transitions):
+            continue
+        first_row = int(np.flatnonzero(transitions.any(axis=1))[0])
+        transition_turn = int(data["turn_numbers"][start + min(first_row, length - 1)])
+        if transition_turn != 1:
+            continue
+        corp_id = int(np.flatnonzero(transitions[first_row])[0])
+        first_corps.append(corp_id)
+
+    return np.asarray(first_corps, dtype=np.int64)
+
+
+def _initial_auction_position_deltas_for_shard(
+    data: object,
+    *,
+    num_players: int,
+    face_values: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, int, int]:
+    """Return sums/counts for initial-auction positions in one shard."""
+    sums = np.zeros(num_players, dtype=np.float64)
+    counts = np.zeros(num_players, dtype=np.int64)
+    offering_games = 0
+    complete_games = 0
+
+    auction_events = data["auction_events"]
+    auction_prices = {
+        (int(event[0]), int(event[3])): float(event[5])
+        for event in auction_events
+        if int(event[2]) == 1
+    }
+
+    starts = data["game_start_offsets"].astype(np.int64)
+    lengths = data["game_num_examples"].astype(np.int64)
+    game_ids = data["game_ids_per_game"].astype(np.int64)
+    for game_id, start, length in zip(game_ids, starts, lengths):
+        if int(length) <= 0:
+            continue
+        initial_locations = data["company_locations"][int(start)]
+        company_ids = np.flatnonzero(initial_locations == int(CompanyLocation.LOC_AUCTION))
+        if company_ids.shape[0] != num_players:
+            continue
+        offering_games += 1
+
+        sorted_company_ids = company_ids[
+            np.argsort(face_values[company_ids], kind="stable")
+        ]
+        complete = True
+        for position, company_id in enumerate(sorted_company_ids):
+            price = auction_prices.get((int(game_id), int(company_id)))
+            if price is None:
+                complete = False
+                continue
+            sums[position] += price - face_values[int(company_id)]
+            counts[position] += 1
+        if complete:
+            complete_games += 1
+
+    return sums, counts, offering_games, complete_games
+
+
 def _discover_shards(
     run_dir: Path,
     metadata: dict[str, object],
@@ -1336,6 +1848,39 @@ def early_max_price_end_summary(
 ) -> dict[int, EarlyMaxPriceEndSummary]:
     """Convenience wrapper for early max-share-price game endings."""
     return StrategyDataset(run_dir).early_max_price_end_summary(
+        player_counts=player_counts
+    )
+
+
+def auctioned_company_outcome_summary(
+    run_dir: str | Path,
+    *,
+    player_counts: Sequence[int] | None = None,
+) -> dict[int, CompanyAuctionOutcomeSummary]:
+    """Convenience wrapper for auction-won company outcome summaries."""
+    return StrategyDataset(run_dir).auctioned_company_outcome_summary(
+        player_counts=player_counts
+    )
+
+
+def turn_one_opening_summary(
+    run_dir: str | Path,
+    *,
+    player_counts: Sequence[int] | None = None,
+) -> dict[int, TurnOneOpeningSummary]:
+    """Convenience wrapper for Turn 1 auction and first-IPO summaries."""
+    return StrategyDataset(run_dir).turn_one_opening_summary(
+        player_counts=player_counts
+    )
+
+
+def initial_auction_position_summary(
+    run_dir: str | Path,
+    *,
+    player_counts: Sequence[int] | None = None,
+) -> dict[int, InitialAuctionPositionSummary]:
+    """Convenience wrapper for initial-offering Turn 1 auction positions."""
+    return StrategyDataset(run_dir).initial_auction_position_summary(
         player_counts=player_counts
     )
 

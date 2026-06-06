@@ -23,15 +23,18 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from utils.gamedata_analysis import (  # noqa: E402
+    CompanyAuctionOutcomeSummary,
     CompanyBidDeltaSummary,
     CorpIpoTurnShareSummary,
     EarlyMaxPriceEndSummary,
+    InitialAuctionPositionSummary,
     NetWorthBreakdownSummary,
     OpeningValueSummary,
     RankedNetWorthBreakdownSummary,
     StrategyDataset,
     TurnAverageSummary,
     TurnMeanSummary,
+    TurnOneOpeningSummary,
     WinRateSummary,
 )
 
@@ -74,6 +77,12 @@ NET_WORTH_COLORS = {
     "Cash": "#2f7d4f",
     "Companies": "#d69a2d",
     "Shares": "#356bb3",
+}
+AUCTION_OUTCOME_COLORS = {
+    "Acquired by Corp": "#3c7ea6",
+    "IPO Seed": "#3fa34d",
+    "Closed": "#b45c3a",
+    "Held to End": "#d1a33b",
 }
 
 
@@ -382,6 +391,206 @@ def plot_auction_bid_delta_charts(
     ]
 
 
+def plot_auctioned_company_outcomes(
+    summary: CompanyAuctionOutcomeSummary,
+    output_path: str | Path,
+) -> Path:
+    """Write a company-level stacked area chart of auction-won outcomes."""
+    x = np.arange(len(summary.company_names))
+    colors = [
+        AUCTION_OUTCOME_COLORS.get(name, "#777777")
+        for name in summary.outcome_names
+    ]
+
+    fig, ax = plt.subplots(figsize=(18.0, 5.8))
+    if x.size:
+        ax.stackplot(
+            x,
+            summary.percentages,
+            labels=summary.outcome_names,
+            colors=colors,
+            alpha=0.92,
+            linewidth=0.35,
+            edgecolor="#ffffff",
+        )
+    ax.set_title(
+        f"{summary.num_players} Players: Outcomes for Companies Won at Auction"
+    )
+    ax.set_ylabel("Outcome share (%)")
+    ax.set_xlabel("Company")
+    ax.set_xticks(x)
+    ax.set_xticklabels(summary.company_names, rotation=65, ha="right", fontsize=8)
+    for tick, stars in zip(ax.get_xticklabels(), summary.company_stars):
+        tick.set_color(COMPANY_STAR_COLORS.get(int(stars), "#555555"))
+        tick.set_fontweight("bold")
+    ax.set_xlim(float(x.min()), float(x.max())) if x.size else None
+    ax.set_ylim(0.0, 100.0)
+    ax.margins(x=0.005)
+    _style_axis(ax)
+    ax.legend(
+        loc="upper left",
+        ncols=len(summary.outcome_names),
+        frameon=False,
+        fontsize=9,
+    )
+    ax.text(
+        1.0,
+        -0.28,
+        (
+            "Denominator is companies won by players at auction; "
+            f"total observed outcomes: {int(summary.totals.sum())}."
+        ),
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=9,
+        color="#555555",
+    )
+    fig.tight_layout()
+    return _save_figure(fig, Path(output_path))
+
+
+def plot_auctioned_company_outcome_charts(
+    summaries: dict[int, CompanyAuctionOutcomeSummary],
+    output_dir: str | Path,
+) -> list[Path]:
+    """Write one auction-won outcome chart per player count."""
+    output = Path(output_dir)
+    return [
+        plot_auctioned_company_outcomes(
+            summary,
+            output / f"auctioned_company_outcomes_{num_players}p.png",
+        )
+        for num_players, summary in sorted(summaries.items())
+    ]
+
+
+def plot_turn_one_opening_summary(
+    summaries: dict[int, TurnOneOpeningSummary],
+    output_path: str | Path,
+) -> Path:
+    """Write a 2x3 chart of Turn 1 auctions and first IPO corp choices."""
+    counts = sorted(summaries)
+    fig, axes = plt.subplots(2, len(counts), figsize=(5.0 * len(counts), 7.6))
+    axes_arr = np.asarray(axes, dtype=object)
+
+    all_deltas = np.concatenate(
+        [
+            summary.auction_mean_deltas[np.isfinite(summary.auction_mean_deltas)]
+            for summary in summaries.values()
+            if np.any(np.isfinite(summary.auction_mean_deltas))
+        ]
+    )
+    auction_y_max = (
+        max(1.0, float(np.max(all_deltas)) * 1.22)
+        if all_deltas.size
+        else 1.0
+    )
+    first_pick_y_max = max(
+        5.0,
+        max(
+            (
+                float(np.max(summary.first_ipo_percentages))
+                for summary in summaries.values()
+                if summary.first_ipo_percentages.size
+            ),
+            default=0.0,
+        )
+        * 1.22,
+    )
+
+    for col, num_players in enumerate(counts):
+        summary = summaries[num_players]
+
+        auction_ax = axes_arr[0, col]
+        company_positions = np.arange(len(summary.company_names))
+        auction_values = np.nan_to_num(summary.auction_mean_deltas, nan=0.0)
+        auction_bars = auction_ax.bar(
+            company_positions,
+            auction_values,
+            width=0.72,
+            color=[
+                COMPANY_STAR_COLORS.get(int(stars), "#888888")
+                for stars in summary.company_stars
+            ],
+            edgecolor="#ffffff",
+            linewidth=0.7,
+        )
+        for bar, missing in zip(auction_bars, summary.auction_counts == 0):
+            if missing:
+                bar.set_hatch("//")
+                bar.set_alpha(0.35)
+        auction_ax.set_title(f"{num_players} Players")
+        auction_ax.set_xlabel("Red company")
+        auction_ax.set_ylabel("Auction price - face value" if col == 0 else "")
+        auction_ax.set_xticks(company_positions)
+        auction_ax.set_xticklabels(
+            summary.company_names,
+            rotation=45,
+            ha="right",
+            fontsize=9,
+        )
+        for tick, stars in zip(auction_ax.get_xticklabels(), summary.company_stars):
+            tick.set_color(COMPANY_STAR_COLORS.get(int(stars), "#555555"))
+            tick.set_fontweight("bold")
+        auction_ax.set_ylim(0.0, auction_y_max)
+        _style_axis(auction_ax)
+        _annotate_bars(
+            auction_ax,
+            auction_bars,
+            auction_values,
+            fmt="{:.2f}",
+            zero_based=True,
+        )
+
+        corp_ax = axes_arr[1, col]
+        corp_positions = np.arange(len(summary.corp_names))
+        corp_bars = corp_ax.bar(
+            corp_positions,
+            summary.first_ipo_percentages,
+            width=0.72,
+            color=[CORP_COLORS.get(name, "#777777") for name in summary.corp_names],
+            edgecolor="#ffffff",
+            linewidth=0.7,
+        )
+        corp_ax.set_xlabel("First floated corp")
+        corp_ax.set_ylabel("First pick share (%)" if col == 0 else "")
+        corp_ax.set_xticks(corp_positions)
+        corp_ax.set_xticklabels(summary.corp_names, rotation=45, ha="right", fontsize=9)
+        corp_ax.set_ylim(0.0, first_pick_y_max)
+        _style_axis(corp_ax)
+        _annotate_bars(
+            corp_ax,
+            corp_bars,
+            summary.first_ipo_percentages,
+            fmt="{:.1f}%",
+            zero_based=True,
+        )
+        corp_ax.text(
+            1.0,
+            -0.28,
+            f"First IPO observed in {summary.first_ipo_games}/{summary.num_games} games.",
+            transform=corp_ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=8.5,
+            color="#555555",
+        )
+
+    axes_arr[0, 0].set_title(f"{counts[0]} Players\nTurn 1 Auction Deltas")
+    for col in range(1, len(counts)):
+        axes_arr[0, col].set_title(
+            f"{counts[col]} Players\nTurn 1 Auction Deltas"
+        )
+    axes_arr[1, 0].set_title("First Corp to IPO")
+    for col in range(1, len(counts)):
+        axes_arr[1, col].set_title("First Corp to IPO")
+
+    fig.suptitle("Turn 1 Auction Prices and First IPO Corp", fontsize=14)
+    fig.tight_layout()
+    return _save_figure(fig, Path(output_path))
+
+
 def plot_corp_ipo_turn_share(
     summary: CorpIpoTurnShareSummary,
     output_path: str | Path,
@@ -626,6 +835,66 @@ def _rank_labels(ranks: np.ndarray) -> list[str]:
     return labels
 
 
+def plot_initial_auction_position_deltas(
+    summaries: dict[int, InitialAuctionPositionSummary],
+    output_path: str | Path,
+) -> Path:
+    """Write 3 panels of Turn 1 initial-offering auction deltas by FV rank."""
+    counts = sorted(summaries)
+    fig, axes = plt.subplots(1, len(counts), figsize=(4.8 * len(counts), 4.1))
+    axes_arr = _as_axes_array(axes)
+    all_values = np.concatenate(
+        [
+            summary.mean_deltas[np.isfinite(summary.mean_deltas)]
+            for summary in summaries.values()
+            if np.any(np.isfinite(summary.mean_deltas))
+        ]
+    )
+    y_max = max(1.0, float(np.max(all_values)) * 1.22) if all_values.size else 1.0
+
+    for ax, num_players in zip(axes_arr, counts):
+        summary = summaries[num_players]
+        positions = np.arange(summary.position_ranks.shape[0])
+        values = np.nan_to_num(summary.mean_deltas, nan=0.0)
+        bars = ax.bar(
+            positions,
+            values,
+            width=0.68,
+            color="#c43c39",
+            edgecolor="#ffffff",
+            linewidth=0.8,
+        )
+        for bar, missing in zip(bars, summary.counts == 0):
+            if missing:
+                bar.set_hatch("//")
+                bar.set_alpha(0.35)
+        ax.set_title(f"{num_players} Players")
+        ax.set_xlabel("Initial offering FV rank")
+        ax.set_ylabel("Auction price - face value" if ax is axes_arr[0] else "")
+        ax.set_xticks(positions)
+        ax.set_xticklabels(_rank_labels(summary.position_ranks))
+        ax.set_ylim(0.0, y_max)
+        _style_axis(ax)
+        _annotate_bars(ax, bars, values, fmt="{:.2f}", zero_based=True)
+        ax.text(
+            1.0,
+            -0.24,
+            (
+                f"Counted Turn 1 auctions only; "
+                f"{int(summary.counts.sum())} position observations."
+            ),
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=8.5,
+            color="#555555",
+        )
+
+    fig.suptitle("Turn 1 Auction Delta by Initial Offering Face-Value Rank", fontsize=14)
+    fig.tight_layout()
+    return _save_figure(fig, Path(output_path))
+
+
 def plot_final_rank_net_worth_breakdown(
     summaries: dict[int, RankedNetWorthBreakdownSummary],
     output_path: str | Path,
@@ -818,6 +1087,13 @@ def generate_default_charts(
     early_max_price = dataset.early_max_price_end_summary(
         player_counts=player_counts
     )
+    auctioned_outcomes = dataset.auctioned_company_outcome_summary(
+        player_counts=player_counts
+    )
+    turn_one_opening = dataset.turn_one_opening_summary(player_counts=player_counts)
+    initial_auction_positions = dataset.initial_auction_position_summary(
+        player_counts=player_counts
+    )
     output = Path(output_dir)
     written = [
         plot_opening_nn_values(opening, output / "opening_nn_values.png"),
@@ -875,6 +1151,19 @@ def generate_default_charts(
         plot_early_max_price_endings(
             early_max_price,
             output / "early_max_price_endings.png",
+        )
+    )
+    written.extend(plot_auctioned_company_outcome_charts(auctioned_outcomes, output))
+    written.append(
+        plot_turn_one_opening_summary(
+            turn_one_opening,
+            output / "turn1_auction_and_first_ipo.png",
+        )
+    )
+    written.append(
+        plot_initial_auction_position_deltas(
+            initial_auction_positions,
+            output / "turn1_initial_auction_position_deltas.png",
         )
     )
     return written

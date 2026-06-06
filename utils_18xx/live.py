@@ -966,7 +966,17 @@ def _apply_live_planned_action(
     intent: dict,
 ) -> int:
     """Apply a chosen live action while preserving 18xx round progression."""
-    return DRIVER.apply_action(state, action_idx)
+    del intent
+
+    if phase != GamePhases.PHASE_CLOSING:
+        return DRIVER.apply_action(state, action_idx)
+
+    previous_allow_positive = state.allow_positive_income_closing
+    state.allow_positive_income_closing = True
+    try:
+        return DRIVER.apply_action(state, action_idx)
+    finally:
+        state.allow_positive_income_closing = previous_allow_positive
 
 
 # ---------------------------------------------------------------------------
