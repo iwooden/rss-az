@@ -29,13 +29,17 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 import torch
 
-from core.actions import ACTION_PASS_PY as ACTION_PASS
+from core.actions import (
+    ACTION_ACQ_OFFER_ACCEPT_PY as ACTION_ACQ_OFFER_ACCEPT,
+    ACTION_PASS_PY as ACTION_PASS,
+)
 from core.data import (
     COMPANY_NAME_TO_ID,
     COMPANY_NAMES,
     CorpIndices,
     CORP_NAME_TO_ID,
     CORP_NAMES,
+    DecisionPhase,
     GamePhases,
 )
 from core.driver import (
@@ -59,6 +63,7 @@ from mcts.search import (
     run_search,
 )
 from nn import get_model_input_spec
+from nn.transformer import build_action_lut
 from train.analyze_game import (
     _apply_player_names as _apply_analyze_player_names,
     _format_mcts_visits as _format_analyze_mcts_visits,
@@ -97,6 +102,7 @@ ACQ_PHASES = (
 UNORDERED_PASS_PHASES = (
     GamePhases.PHASE_CLOSING,
 )
+GAME_BLACKLIST_FILE = "blacklisted_games.json"
 
 
 def prepare_live_decision_state(state) -> None:
@@ -277,6 +283,73 @@ def parse_poke_game_id(path: str) -> str | None:
                 return values[0]
 
     return None
+
+
+def _parse_blacklisted_game_ids(data) -> set[str]:
+    if not isinstance(data, list):
+        raise ValueError("game blacklist must be a JSON list")
+
+    game_ids: set[str] = set()
+    for value in data:
+        game_id = str(value).strip()
+        if game_id:
+            game_ids.add(game_id)
+    return game_ids
+
+
+class GameBlacklist:
+    """Runtime-backed list of game IDs whose webhooks should be ignored."""
+
+    def __init__(self, path: Path):
+        self._path = path
+        self._lock = threading.Lock()
+        self._loaded = False
+        self._mtime_ns: int | None = None
+        self._game_ids: set[str] = set()
+
+    def contains(self, game_id) -> bool:
+        self._refresh_if_needed()
+        return str(game_id).strip() in self._game_ids
+
+    def _refresh_if_needed(self) -> None:
+        with self._lock:
+            try:
+                stat = self._path.stat()
+            except FileNotFoundError:
+                if self._loaded and self._game_ids:
+                    logger.info(
+                        "Game blacklist removed; clearing %d entries",
+                        len(self._game_ids),
+                    )
+                self._loaded = True
+                self._mtime_ns = None
+                self._game_ids = set()
+                return
+
+            if self._loaded and stat.st_mtime_ns == self._mtime_ns:
+                return
+
+            try:
+                with open(self._path) as f:
+                    game_ids = _parse_blacklisted_game_ids(json.load(f))
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
+                logger.warning(
+                    "Failed to load game blacklist from %s: %s",
+                    self._path,
+                    exc,
+                )
+                self._loaded = True
+                self._mtime_ns = stat.st_mtime_ns
+                return
+
+            self._loaded = True
+            self._mtime_ns = stat.st_mtime_ns
+            self._game_ids = game_ids
+            logger.info(
+                "Loaded %d blacklisted game(s) from %s",
+                len(game_ids),
+                self._path,
+            )
 
 
 def _same_id(left, right) -> bool:
@@ -644,6 +717,121 @@ def _pending_cross_president_offer_is_represented(
         int(CompanyLocation.LOC_PLAYER),
         int(CompanyLocation.LOC_CORP),
     )
+
+
+def _is_cross_president_acq_offer_state(state) -> bool:
+    """Return whether ACQ_OFFER is deciding a non-FI cross-president offer."""
+    if TURN.get_phase(state) != GamePhases.PHASE_ACQ_OFFER:
+        return False
+
+    company_id = TURN.get_active_company(state)
+    if company_id < 0:
+        return False
+
+    location = COMPANIES[company_id].get_location(state)
+    return location in (
+        int(CompanyLocation.LOC_PLAYER),
+        int(CompanyLocation.LOC_CORP),
+    )
+
+
+def _equalize_sparse_acq_offer_priors(
+    state,
+    priors: np.ndarray,
+    action_ids: np.ndarray,
+) -> np.ndarray:
+    pass_action = find_legal_action(state, action_type=ACTION_PASS)
+    accept_action = find_legal_action(
+        state,
+        action_type=ACTION_ACQ_OFFER_ACCEPT,
+    )
+    response_mask = np.isin(action_ids, [pass_action, accept_action])
+    if int(response_mask.sum()) != 2:
+        return priors
+
+    adjusted = np.zeros_like(priors, dtype=np.float32)
+    adjusted[response_mask] = 0.5
+    return adjusted
+
+
+def _equalize_dense_acq_offer_priors(
+    state,
+    priors: np.ndarray,
+    row_idx: int,
+    action_lut_np: np.ndarray,
+) -> None:
+    pass_action = find_legal_action(state, action_type=ACTION_PASS)
+    accept_action = find_legal_action(
+        state,
+        action_type=ACTION_ACQ_OFFER_ACCEPT,
+    )
+    slots = action_lut_np[
+        int(DecisionPhase.DPHASE_ACQ_OFFER),
+        np.array([pass_action, accept_action], dtype=np.intp),
+    ]
+    priors[row_idx] = 0.0
+    priors[row_idx, slots] = 0.5
+
+
+class _CrossPresidentAcqOfferPriorEvaluator:
+    """Live-only evaluator adapter that neutralizes cross-president offer priors."""
+
+    def __init__(self, base, *, num_players: int, max_players: int) -> None:
+        self._base = base
+        self._num_players = num_players
+        self._max_players = max_players
+        self._action_lut_np = build_action_lut().numpy()
+        self._scratch_state = None
+
+    def __getattr__(self, name: str):
+        return getattr(self._base, name)
+
+    def evaluate(self, state):
+        priors, values, action_ids, n_legal, phase_id = self._base.evaluate(state)
+        if _is_cross_president_acq_offer_state(state):
+            priors = _equalize_sparse_acq_offer_priors(
+                state,
+                priors,
+                action_ids[:n_legal],
+            )
+        return priors, values, action_ids, n_legal, phase_id
+
+    def evaluate_leaves(
+        self,
+        state_arrays: list[np.ndarray],
+        legal_mask: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        priors, values = self._base.evaluate_leaves(state_arrays, legal_mask)
+        if not state_arrays:
+            return priors, values
+
+        scratch = self._scratch_state
+        if scratch is None:
+            scratch = GameState.from_buffer(
+                state_arrays[0],
+                self._num_players,
+                max_players=self._max_players,
+            )
+            self._scratch_state = scratch
+
+        for row_idx, state_array in enumerate(state_arrays):
+            scratch.rebind(
+                state_array,
+                self._num_players,
+                max_players=self._max_players,
+            )
+            if _is_cross_president_acq_offer_state(scratch):
+                _equalize_dense_acq_offer_priors(
+                    scratch,
+                    priors,
+                    row_idx,
+                    self._action_lut_np,
+                )
+
+        return priors, values
+
+    def evaluate_terminal(self, state):
+        return self._base.evaluate_terminal(state)
 
 
 def _acquisition_compatibility_action(
@@ -1545,6 +1733,15 @@ class _SearchEngine:
             search_batch_size=self.search_batch_size,
         )
 
+    def _live_evaluator_for(self, num_players: int):
+        if not getattr(self, "allow_cross_president_offers", False):
+            return self._evaluator
+        return _CrossPresidentAcqOfferPriorEvaluator(
+            self._evaluator,
+            num_players=num_players,
+            max_players=self.max_players,
+        )
+
     def process_turn(
         self,
         game_data: dict,
@@ -1702,6 +1899,7 @@ class _SearchEngine:
         composer = _LiveActionComposer(
             game_data, bot_player_idx, committed_ids, bot_user_id=bot_user_id,
         )
+        live_evaluator = None
         reuse_root = None
         max_steps = 100
 
@@ -1728,7 +1926,9 @@ class _SearchEngine:
 
             model_eval = None
             if self.model_output:
-                model_eval = self._evaluator.evaluate(state)
+                if live_evaluator is None:
+                    live_evaluator = self._live_evaluator_for(num_players)
+                model_eval = live_evaluator.evaluate(state)
 
             if len(legal_actions) == 1:
                 action_idx = legal_actions[0][0]
@@ -1762,8 +1962,13 @@ class _SearchEngine:
                     )
                     if reuse_root is not None and search_reuse is None:
                         reuse_root = None
+                if live_evaluator is None:
+                    live_evaluator = self._live_evaluator_for(num_players)
                 action_idx, root, elapsed, search_stats = self._search(
-                    state, num_players, reuse_root=search_reuse,
+                    state,
+                    num_players,
+                    reuse_root=search_reuse,
+                    evaluator=live_evaluator,
                 )
                 if self.model_output:
                     assert model_eval is not None
@@ -1809,20 +2014,21 @@ class _SearchEngine:
                 break
             if len(composer.actions) > action_count_before:
                 planned_actions = composer.finish()
-                post_mismatches = _validate_planned_post_state(
-                    game_data,
-                    state,
-                    planned_actions,
-                    num_players=num_players,
-                    max_players=self.max_players,
-                )
-                if post_mismatches:
-                    logger.error(
-                        "18xx/RSS replay mismatch after planned action; "
-                        "refusing to post:\n%s",
-                        format_state_mismatches(post_mismatches),
+                if phase != GamePhases.PHASE_CLOSING:
+                    post_mismatches = _validate_planned_post_state(
+                        game_data,
+                        state,
+                        planned_actions,
+                        num_players=num_players,
+                        max_players=self.max_players,
                     )
-                    return []
+                    if post_mismatches:
+                        logger.error(
+                            "18xx/RSS replay mismatch after planned action; "
+                            "refusing to post:\n%s",
+                            format_state_mismatches(post_mismatches),
+                        )
+                        return []
                 if _should_continue_after_postable_action(
                     phase,
                     state,
@@ -1844,16 +2050,21 @@ class _SearchEngine:
             state._array,
         )
 
-    def _search(self, state, num_players: int, reuse_root=None):
+    def _search(self, state, num_players: int, reuse_root=None, evaluator=None):
         """Run MCTS and return the best action index."""
+        if evaluator is None:
+            evaluator = self._evaluator
         if self.determinization_count > 0:
-            return self._search_determinized(state, num_players)
-
+            return self._search_determinized(
+                state,
+                num_players,
+                evaluator=evaluator,
+            )
         search_stats = SearchStats() if self.model_output else None
         t0 = time.monotonic()
         root = run_search(
             None if reuse_root is not None else state,
-            self._evaluator,
+            evaluator,
             self._mcts_config_for(num_players),
             self._rng,
             state_pool=self._state_pool,
@@ -1874,8 +2085,10 @@ class _SearchEngine:
         )
         return action_idx, root, elapsed, search_stats
 
-    def _search_determinized(self, state, num_players: int):
+    def _search_determinized(self, state, num_players: int, evaluator=None):
         """Run independent hidden-deck determinizations and aggregate visits."""
+        if evaluator is None:
+            evaluator = self._evaluator
         search_stats = SearchStats() if self.model_output else None
         mcts_config = self._mcts_config_for(num_players)
         count = self.determinization_count
@@ -1890,7 +2103,7 @@ class _SearchEngine:
             det_state = DECK.determinize_remaining(state, self._rng)
             root = run_search(
                 det_state,
-                self._evaluator,
+                evaluator,
                 mcts_config,
                 self._rng,
                 state_pool=self._state_pool,
@@ -2028,6 +2241,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
     work_queue: queue.Queue  # set by LiveService before serving
     auth: dict[str, dict]  # set by LiveService
+    game_blacklist: GameBlacklist | None = None  # set by LiveService
 
     def do_GET(self):
         logger.info(f"Incoming GET: {self.path}")
@@ -2104,6 +2318,18 @@ class WebhookHandler(BaseHTTPRequestHandler):
             logger.warning(
                 f"Ignoring webhook for bot={bot_name}: "
                 f"could not parse game id from text={text[:500]!r}"
+            )
+            self.send_response(200)
+            self.end_headers()
+            return
+
+        if (
+            self.game_blacklist is not None
+            and self.game_blacklist.contains(game_id)
+        ):
+            logger.info(
+                f"Ignoring webhook for blacklisted game: "
+                f"bot={bot_name}, game={game_id}"
             )
             self.send_response(200)
             self.end_headers()
@@ -2364,12 +2590,14 @@ class LiveService:
         registry: ModelRegistry,
         host: str = "0.0.0.0",
         port: int = 8080,
+        game_blacklist: GameBlacklist | None = None,
     ):
         self._api = api
         self._auth = auth
         self._registry = registry
         self._host = host
         self._port = port
+        self._game_blacklist = game_blacklist
         self._work_queue: queue.Queue = queue.Queue()
 
     def start(self):
@@ -2377,6 +2605,7 @@ class LiveService:
         # Configure handler class attributes
         WebhookHandler.work_queue = self._work_queue
         WebhookHandler.auth = self._auth
+        WebhookHandler.game_blacklist = self._game_blacklist
 
         # Start worker
         worker = MoveWorker(
@@ -2541,6 +2770,7 @@ def main():
         registry=registry,
         host=args.host,
         port=args.port,
+        game_blacklist=GameBlacklist(runtime_dir / GAME_BLACKLIST_FILE),
     )
     service.start()
 

@@ -17,7 +17,9 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.patches import Patch
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import TwoSlopeNorm
+from matplotlib.patches import Patch, Rectangle
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -25,6 +27,9 @@ if __package__ in (None, ""):
 from utils.gamedata_analysis import (  # noqa: E402
     CompanyAuctionOutcomeSummary,
     CompanyBidDeltaSummary,
+    CorpIpoAvailablePickSummary,
+    CorpIpoHeadToHeadSummary,
+    CorpIpoPositionPickSummary,
     CorpIpoTurnShareSummary,
     EarlyMaxPriceEndSummary,
     InitialAuctionPositionSummary,
@@ -652,6 +657,502 @@ def plot_corp_ipo_turn_share_charts(
     ]
 
 
+def plot_corp_ipo_positional_pick_bubbles(
+    summaries: dict[int, CorpIpoPositionPickSummary],
+    output_path: str | Path,
+) -> Path:
+    """Write a bubble matrix of corp pick share by turn and IPO slot."""
+    counts = sorted(summaries)
+    if not counts:
+        fig, ax = plt.subplots(figsize=(7.0, 4.0))
+        ax.text(0.5, 0.5, "No player counts", ha="center", va="center")
+        ax.axis("off")
+        return _save_figure(fig, Path(output_path))
+
+    first_summary = summaries[counts[0]]
+    corp_names = first_summary.corp_names
+    num_corps = len(corp_names)
+    max_picks = max(
+        (int(summary.pick_positions.shape[0]) for summary in summaries.values()),
+        default=0,
+    )
+    max_turn = max(
+        (int(summary.turns.max()) for summary in summaries.values()
+         if summary.turns.size),
+        default=0,
+    )
+    all_turns = np.arange(1, max_turn + 1, dtype=np.int64)
+    y_positions = np.arange(num_corps - 1, -1, -1, dtype=np.float64)
+
+    fig, axes = plt.subplots(
+        max_picks,
+        len(counts),
+        figsize=(5.8 * len(counts), 3.35 * max_picks),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+    )
+
+    for row in range(max_picks):
+        pick_label = _rank_labels(np.asarray([row + 1], dtype=np.int64))[0]
+        for col, num_players in enumerate(counts):
+            ax = axes[row, col]
+            summary = summaries[num_players]
+            turn_index = {
+                int(turn): idx
+                for idx, turn in enumerate(summary.turns)
+            }
+
+            if row < summary.percentages.shape[0]:
+                if row < summary.totals.shape[0] and int(summary.totals[row].sum()) == 0:
+                    ax.text(
+                        0.5,
+                        0.5,
+                        "No observed picks",
+                        transform=ax.transAxes,
+                        ha="center",
+                        va="center",
+                        fontsize=9,
+                        color="#777777",
+                    )
+                for corp_id, corp_name in enumerate(corp_names):
+                    xs: list[int] = []
+                    ys: list[float] = []
+                    sizes: list[float] = []
+                    for turn in all_turns:
+                        idx = turn_index.get(int(turn))
+                        if idx is None:
+                            continue
+                        pct = float(summary.percentages[row, idx, corp_id])
+                        if pct <= 0.0:
+                            continue
+                        xs.append(int(turn))
+                        ys.append(float(y_positions[corp_id]))
+                        sizes.append(18.0 + pct * 8.0)
+                    if xs:
+                        ax.scatter(
+                            xs,
+                            ys,
+                            s=sizes,
+                            c=CORP_COLORS.get(corp_name, "#777777"),
+                            alpha=0.90,
+                            edgecolors="#ffffff",
+                            linewidths=0.55,
+                        )
+
+            for turn in all_turns:
+                total = 0
+                idx = turn_index.get(int(turn))
+                if idx is not None and row < summary.totals.shape[0]:
+                    total = int(summary.totals[row, idx])
+                if total:
+                    ax.text(
+                        float(turn),
+                        -0.92,
+                        str(total),
+                        ha="center",
+                        va="center",
+                        fontsize=5.5,
+                        color="#666666",
+                    )
+            if all_turns.size:
+                ax.text(
+                    float(all_turns[0]) - 0.62,
+                    -0.92,
+                    "n",
+                    ha="right",
+                    va="center",
+                    fontsize=6.0,
+                    color="#555555",
+                    fontweight="bold",
+                )
+
+            if row == 0:
+                ax.set_title(f"{num_players} Players")
+            if col == 0:
+                ax.set_ylabel(f"{pick_label} pick\nCorp")
+            ax.set_xlabel("Turn", labelpad=2)
+
+            ax.set_yticks(y_positions)
+            ax.set_yticklabels(corp_names)
+            for tick, corp_name in zip(ax.get_yticklabels(), corp_names):
+                tick.set_color(CORP_COLORS.get(corp_name, "#555555"))
+                tick.set_fontweight("bold")
+            if all_turns.size:
+                ax.set_xlim(float(all_turns.min()) - 0.5, float(all_turns.max()) + 0.5)
+                ax.set_xticks(all_turns)
+                ax.tick_params(axis="x", labelbottom=True)
+            ax.set_ylim(-1.35, float(num_corps) - 0.35)
+            ax.grid(axis="both", color="#e1e1e1", linewidth=0.75, alpha=0.85)
+            ax.set_axisbelow(True)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+
+    size_handles = [
+        plt.scatter(
+            [],
+            [],
+            s=18.0 + pct * 8.0,
+            c="#777777",
+            alpha=0.85,
+            edgecolors="#ffffff",
+            linewidths=0.55,
+            label=f"{pct}%",
+        )
+        for pct in (25, 50, 100)
+    ]
+    fig.legend(
+        handles=size_handles,
+        title="Pick share",
+        loc="lower center",
+        ncols=3,
+        frameon=False,
+        bbox_to_anchor=(0.5, 0.015),
+    )
+    fig.suptitle(
+        "Corp IPO Positional Pick Percentage by Turn",
+        fontsize=14,
+    )
+    fig.text(
+        0.5,
+        0.085,
+        "Small gray numbers show the number of observed picks in each turn/slot bucket.",
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        color="#555555",
+    )
+    fig.subplots_adjust(left=0.07, right=0.99, top=0.92, bottom=0.16, hspace=0.38)
+    return _save_figure(fig, Path(output_path))
+
+
+def plot_corp_ipo_available_pick_bubbles(
+    summaries: dict[int, CorpIpoAvailablePickSummary],
+    output_path: str | Path,
+) -> Path:
+    """Write a bubble matrix of pick probability with at least two available corps."""
+    counts = sorted(summaries)
+    if not counts:
+        fig, ax = plt.subplots(figsize=(7.0, 4.0))
+        ax.text(0.5, 0.5, "No player counts", ha="center", va="center")
+        ax.axis("off")
+        return _save_figure(fig, Path(output_path))
+
+    first_summary = summaries[counts[0]]
+    corp_names = first_summary.corp_names
+    num_corps = len(corp_names)
+    max_picks = max(
+        (int(summary.pick_positions.shape[0]) for summary in summaries.values()),
+        default=0,
+    )
+    max_turn = max(
+        (int(summary.turns.max()) for summary in summaries.values()
+         if summary.turns.size),
+        default=0,
+    )
+    all_turns = np.arange(1, max_turn + 1, dtype=np.int64)
+    y_positions = np.arange(num_corps - 1, -1, -1, dtype=np.float64)
+
+    fig, axes = plt.subplots(
+        max_picks,
+        len(counts),
+        figsize=(5.8 * len(counts), 3.35 * max_picks),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+    )
+
+    for row in range(max_picks):
+        pick_label = _rank_labels(np.asarray([row + 1], dtype=np.int64))[0]
+        for col, num_players in enumerate(counts):
+            ax = axes[row, col]
+            summary = summaries[num_players]
+            turn_index = {
+                int(turn): idx
+                for idx, turn in enumerate(summary.turns)
+            }
+
+            if row < summary.percentages.shape[0]:
+                if (
+                    row < summary.available_counts.shape[0]
+                    and int(summary.available_counts[row].sum()) == 0
+                ):
+                    ax.text(
+                        0.5,
+                        0.5,
+                        "No available picks",
+                        transform=ax.transAxes,
+                        ha="center",
+                        va="center",
+                        fontsize=9,
+                        color="#777777",
+                    )
+                for corp_id, corp_name in enumerate(corp_names):
+                    xs: list[int] = []
+                    ys: list[float] = []
+                    sizes: list[float] = []
+                    for turn in all_turns:
+                        idx = turn_index.get(int(turn))
+                        if idx is None:
+                            continue
+                        available = int(summary.available_counts[row, idx, corp_id])
+                        if available <= 0:
+                            continue
+                        picked = int(summary.counts[row, idx, corp_id])
+                        pct = float(picked * 100.0 / available)
+                        if pct <= 0.0:
+                            continue
+                        xs.append(int(turn))
+                        ys.append(float(y_positions[corp_id]))
+                        sizes.append(18.0 + pct * 8.0)
+                    if xs:
+                        ax.scatter(
+                            xs,
+                            ys,
+                            s=sizes,
+                            c=CORP_COLORS.get(corp_name, "#777777"),
+                            alpha=0.90,
+                            edgecolors="#ffffff",
+                            linewidths=0.55,
+                        )
+
+            if row == 0:
+                ax.set_title(f"{num_players} Players")
+            if col == 0:
+                ax.set_ylabel(f"{pick_label} pick\nCorp")
+            ax.set_xlabel("Turn", labelpad=2)
+
+            ax.set_yticks(y_positions)
+            ax.set_yticklabels(corp_names)
+            for tick, corp_name in zip(ax.get_yticklabels(), corp_names):
+                tick.set_color(CORP_COLORS.get(corp_name, "#555555"))
+                tick.set_fontweight("bold")
+            if all_turns.size:
+                ax.set_xlim(float(all_turns.min()) - 0.5, float(all_turns.max()) + 0.5)
+                ax.set_xticks(all_turns)
+                ax.tick_params(axis="x", labelbottom=True)
+            ax.set_ylim(-0.35, float(num_corps) - 0.35)
+            ax.grid(axis="both", color="#e1e1e1", linewidth=0.75, alpha=0.85)
+            ax.set_axisbelow(True)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+
+    size_handles = [
+        plt.scatter(
+            [],
+            [],
+            s=18.0 + pct * 8.0,
+            c="#777777",
+            alpha=0.85,
+            edgecolors="#ffffff",
+            linewidths=0.55,
+            label=f"{pct}%",
+        )
+        for pct in (25, 50, 100)
+    ]
+    fig.legend(
+        handles=size_handles,
+        title="Pick probability",
+        loc="lower center",
+        ncols=3,
+        frameon=False,
+        bbox_to_anchor=(0.5, 0.015),
+    )
+    fig.suptitle(
+        "Corp IPO Pick Probability When Available with Alternatives by Turn",
+        fontsize=14,
+    )
+    fig.text(
+        0.5,
+        0.085,
+        (
+            "Bubble size is P(corp picked | at least two corps inactive, including this corp); "
+            "columns do not sum to 100%."
+        ),
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        color="#555555",
+    )
+    fig.subplots_adjust(left=0.07, right=0.99, top=0.92, bottom=0.16, hspace=0.38)
+    return _save_figure(fig, Path(output_path))
+
+
+def plot_corp_ipo_head_to_head_heatmaps(
+    summary: CorpIpoHeadToHeadSummary,
+    output_path: str | Path,
+) -> Path:
+    """Write 27 directional corp-vs-corp IPO heatmaps for one player count."""
+    corp_names = summary.corp_names
+    num_corps = len(corp_names)
+    pick_count = int(summary.pick_positions.shape[0])
+    turns = summary.turns[:9]
+    turn_grid_cols = 3
+    turn_grid_rows = 3
+    rows = turn_grid_rows
+    cols = pick_count * turn_grid_cols
+
+    fig, axes = plt.subplots(
+        rows,
+        cols,
+        figsize=(2.85 * cols, 2.75 * rows),
+        squeeze=False,
+    )
+    cmap = plt.get_cmap("RdBu_r").copy()
+    cmap.set_bad("#eeeeee")
+    norm = TwoSlopeNorm(vmin=0.0, vcenter=50.0, vmax=100.0)
+    colorbar_mappable = ScalarMappable(norm=norm, cmap=cmap)
+    colorbar_mappable.set_array([])
+    # Draw cells directly so subplot scaling cannot resample colors across rows.
+    cell_gap = 0.018
+
+    for pick_index, pick_position in enumerate(summary.pick_positions):
+        pick_label = _rank_labels(np.asarray([pick_position], dtype=np.int64))[0]
+        for turn_offset, turn in enumerate(turns):
+            grid_row = int(turn_offset // turn_grid_cols)
+            grid_col = (pick_index * turn_grid_cols) + int(turn_offset % turn_grid_cols)
+            ax = axes[grid_row, grid_col]
+            turn_index = int(turn) - 1
+            values = summary.percentages[pick_index, turn_index].copy()
+            values[summary.totals[pick_index, turn_index] == 0] = np.nan
+            np.fill_diagonal(values, np.nan)
+            ax.set_facecolor("#ffffff")
+            for row in range(num_corps):
+                for col in range(num_corps):
+                    value = values[row, col]
+                    facecolor = "#eeeeee" if np.isnan(value) else cmap(norm(float(value)))
+                    ax.add_patch(
+                        Rectangle(
+                            (col - 0.5 + cell_gap, row - 0.5 + cell_gap),
+                            1.0 - (2.0 * cell_gap),
+                            1.0 - (2.0 * cell_gap),
+                            facecolor=facecolor,
+                            edgecolor="none",
+                            antialiased=False,
+                        )
+                    )
+
+            ax.set_title(f"Turn {int(turn)}", fontsize=9, pad=4)
+            ax.set_xticks(np.arange(num_corps))
+            ax.set_yticks(np.arange(num_corps))
+            ax.set_xticklabels(corp_names, rotation=45, ha="right", fontsize=6)
+            for tick, corp_name in zip(ax.get_xticklabels(), corp_names):
+                tick.set_color(CORP_COLORS.get(corp_name, "#555555"))
+                tick.set_fontweight("bold")
+            ax.set_yticklabels(corp_names, fontsize=6)
+            for tick, corp_name in zip(ax.get_yticklabels(), corp_names):
+                tick.set_color(CORP_COLORS.get(corp_name, "#555555"))
+                tick.set_fontweight("bold")
+
+            ax.set_xlim(-0.5, num_corps - 0.5)
+            ax.set_ylim(num_corps - 0.5, -0.5)
+            ax.set_aspect("equal")
+            ax.tick_params(axis="both", length=0, pad=1)
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+
+        for turn_offset in range(len(turns), turn_grid_cols * turn_grid_rows):
+            grid_row = int(turn_offset // turn_grid_cols)
+            grid_col = (pick_index * turn_grid_cols) + int(turn_offset % turn_grid_cols)
+            axes[grid_row, grid_col].axis("off")
+
+    fig.suptitle(
+        f"{summary.num_players} Players: IPO Head-to-Head Pick Percentages",
+        fontsize=15,
+        y=0.965,
+    )
+    fig.text(
+        0.5,
+        0.025,
+        (
+            "Rows are the picked corp, columns are the comparison corp. "
+            "Each cell is P(row picked | row and column both inactive, picked corp is one of the pair)."
+        ),
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        color="#555555",
+    )
+    fig.subplots_adjust(
+        left=0.045,
+        right=0.99,
+        top=0.82,
+        bottom=0.19,
+        hspace=0.36,
+        wspace=0.08,
+    )
+    grid_top = axes[0, 0].get_position().y1
+    grid_bottom = axes[-1, 0].get_position().y0
+    for pick_index, pick_position in enumerate(summary.pick_positions):
+        pick_label = _rank_labels(np.asarray([pick_position], dtype=np.int64))[0]
+        start_col = pick_index * turn_grid_cols
+        end_col = start_col + turn_grid_cols - 1
+        section_left = axes[0, start_col].get_position().x0
+        section_right = axes[0, end_col].get_position().x1
+        fig.text(
+            (section_left + section_right) * 0.5,
+            grid_top + 0.045,
+            f"{pick_label} Pick",
+            ha="center",
+            va="bottom",
+            fontsize=11,
+            fontweight="bold",
+        )
+
+    for pick_index in range(1, pick_count):
+        previous_col = (pick_index * turn_grid_cols) - 1
+        next_col = pick_index * turn_grid_cols
+        x_mid = (
+            axes[0, previous_col].get_position().x1
+            + axes[0, next_col].get_position().x0
+        ) * 0.5
+        fig.add_artist(
+            Rectangle(
+                (x_mid - 0.0015, grid_bottom),
+                0.003,
+                grid_top - grid_bottom,
+                transform=fig.transFigure,
+                color="#b8b8b8",
+                linewidth=0,
+            )
+        )
+    if pick_count >= 2:
+        middle_start_col = turn_grid_cols
+        middle_end_col = (2 * turn_grid_cols) - 1
+        colorbar_left = axes[-1, middle_start_col].get_position().x0
+        colorbar_right = axes[-1, middle_end_col].get_position().x1
+    else:
+        colorbar_left = axes[-1, 0].get_position().x0
+        colorbar_right = axes[-1, -1].get_position().x1
+    colorbar_ax = fig.add_axes(
+        (colorbar_left, 0.085, colorbar_right - colorbar_left, 0.025)
+    )
+    colorbar = fig.colorbar(
+        colorbar_mappable,
+        cax=colorbar_ax,
+        orientation="horizontal",
+    )
+    colorbar.set_label("P(row corp picked over column corp)", fontsize=8)
+    colorbar.set_ticks([0, 25, 50, 75, 100])
+    colorbar.ax.tick_params(labelsize=8)
+    return _save_figure(fig, Path(output_path))
+
+
+def plot_corp_ipo_head_to_head_heatmap_charts(
+    summaries: dict[int, CorpIpoHeadToHeadSummary],
+    output_dir: str | Path,
+) -> list[Path]:
+    """Write one IPO head-to-head heatmap chart per player count."""
+    output = Path(output_dir)
+    return [
+        plot_corp_ipo_head_to_head_heatmaps(
+            summary,
+            output / f"corp_ipo_head_to_head_{num_players}p.png",
+        )
+        for num_players, summary in sorted(summaries.items())
+    ]
+
+
 def plot_floated_corps_by_turn(
     summaries: dict[int, TurnAverageSummary],
     output_path: str | Path,
@@ -1074,6 +1575,19 @@ def generate_default_charts(
     auction_opening = dataset.opening_bid_delta_summary(player_counts=player_counts)
     auction_spread = dataset.auction_price_spread_summary(player_counts=player_counts)
     ipo_turn_share = dataset.corp_ipo_turn_share_summary(player_counts=player_counts)
+    ipo_positional_picks = dataset.corp_ipo_positional_pick_summary(
+        player_counts=player_counts,
+        max_picks=4,
+    )
+    ipo_available_picks = dataset.corp_ipo_available_pick_summary(
+        player_counts=player_counts,
+        max_picks=4,
+    )
+    ipo_head_to_head = dataset.corp_ipo_head_to_head_summary(
+        player_counts=player_counts,
+        max_picks=3,
+        max_turn=9,
+    )
     floated_by_turn = dataset.floated_corps_by_turn_summary(player_counts=player_counts)
     par_price_by_turn = dataset.average_par_price_by_turn_summary(
         player_counts=player_counts
@@ -1128,6 +1642,19 @@ def generate_default_charts(
         )
     )
     written.extend(plot_corp_ipo_turn_share_charts(ipo_turn_share, output))
+    written.append(
+        plot_corp_ipo_positional_pick_bubbles(
+            ipo_positional_picks,
+            output / "corp_ipo_positional_pick_bubbles.png",
+        )
+    )
+    written.append(
+        plot_corp_ipo_available_pick_bubbles(
+            ipo_available_picks,
+            output / "corp_ipo_available_pick_bubbles.png",
+        )
+    )
+    written.extend(plot_corp_ipo_head_to_head_heatmap_charts(ipo_head_to_head, output))
     written.append(
         plot_floated_corps_by_turn(
             floated_by_turn,

@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 import utils_18xx.live as live_module
@@ -7,6 +8,7 @@ from core.data import (
     COMPANY_NAMES,
     CORP_NAME_TO_ID,
     CORP_NAMES,
+    DecisionPhase,
     GamePhases,
 )
 from core.state import GameState
@@ -18,6 +20,7 @@ from entities.turn import TURN
 from tests.phases.conftest import float_corp_for_test
 from tests.phases.helpers.ownership import give_company_to_fi, give_company_to_player
 from utils_18xx.live import (
+    _CrossPresidentAcqOfferPriorEvaluator,
     _LiveActionComposer,
     _SearchEngine,
     _acquisition_compatibility_action,
@@ -39,6 +42,7 @@ from utils_18xx.live import (
     prepare_live_decision_state,
 )
 from utils_18xx.game_session import GameSession, StateMismatch
+from nn.transformer import UNIFIED_LOGIT_DIM, build_action_lut
 
 
 def _game_data():
@@ -411,6 +415,140 @@ def test_acquisition_compatibility_still_rejects_fi_offer_when_cross_pres_enable
         "company": "B",
         "accept": "false",
     }
+
+
+class _BiasedAcqOfferEvaluator:
+    def __init__(self):
+        self.action_lut = build_action_lut().numpy()
+
+    def evaluate(self, state):
+        del state
+        return (
+            np.array([0.9, 0.1], dtype=np.float32),
+            np.zeros(3, dtype=np.float32),
+            np.array([0, 1], dtype=np.uint16),
+            2,
+            int(DecisionPhase.DPHASE_ACQ_OFFER),
+        )
+
+    def evaluate_leaves(self, state_arrays, legal_mask):
+        del legal_mask
+        priors = np.zeros(
+            (len(state_arrays), int(UNIFIED_LOGIT_DIM)),
+            dtype=np.float32,
+        )
+        slots = self.action_lut[
+            int(DecisionPhase.DPHASE_ACQ_OFFER),
+            np.array([0, 1], dtype=np.intp),
+        ]
+        priors[:, slots[0]] = 0.9
+        priors[:, slots[1]] = 0.1
+        values = np.zeros((len(state_arrays), 3), dtype=np.float32)
+        return priors, values
+
+    def evaluate_terminal(self, state):
+        del state
+        return np.zeros(3, dtype=np.float32)
+
+
+def _cross_president_offer_state_for_prior_test():
+    state = GameState(3, acq_same_president=False)
+    state.initialize_game(3, seed=42)
+    corp_id = CORP_NAME_TO_ID["PR"]
+    target_company = COMPANY_NAME_TO_ID["OL"]
+    float_company = COMPANY_NAME_TO_ID["BME"]
+    float_corp_for_test(
+        state,
+        corp_id=corp_id,
+        company_id=float_company,
+        player_id=0,
+        par_index=10,
+    )
+    give_company_to_player(state, target_company, 1)
+    TURN.enter_acq_offer(
+        state,
+        corp_id,
+        target_company,
+        COMPANIES[target_company].get_low_price(),
+        corp_id,
+        1,
+    )
+    return state
+
+
+def _fi_preemption_offer_state_for_prior_test():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    corp_id = CORP_NAME_TO_ID["PR"]
+    target_company = COMPANY_NAME_TO_ID["OL"]
+    float_company = COMPANY_NAME_TO_ID["BME"]
+    float_corp_for_test(
+        state,
+        corp_id=corp_id,
+        company_id=float_company,
+        player_id=0,
+        par_index=10,
+    )
+    give_company_to_fi(state, target_company)
+    TURN.enter_acq_offer(
+        state,
+        corp_id,
+        target_company,
+        COMPANIES[target_company].get_face_value(),
+        corp_id,
+        0,
+    )
+    return state
+
+
+def test_cross_president_acq_offer_prior_adapter_equalizes_response_priors():
+    state = _cross_president_offer_state_for_prior_test()
+    adapter = _CrossPresidentAcqOfferPriorEvaluator(
+        _BiasedAcqOfferEvaluator(),
+        num_players=3,
+        max_players=3,
+    )
+
+    sparse_priors, _values, action_ids, n_legal, _phase_id = adapter.evaluate(
+        state,
+    )
+    assert action_ids[:n_legal].tolist() == [0, 1]
+    np.testing.assert_allclose(sparse_priors, [0.5, 0.5])
+
+    dense_priors, _values = adapter.evaluate_leaves(
+        [state._array],
+        np.zeros((1, int(UNIFIED_LOGIT_DIM)), dtype=np.uint8),
+    )
+    slots = build_action_lut().numpy()[
+        int(DecisionPhase.DPHASE_ACQ_OFFER),
+        np.array([0, 1], dtype=np.intp),
+    ]
+    np.testing.assert_allclose(dense_priors[0, slots], [0.5, 0.5])
+    assert dense_priors[0].sum() == pytest.approx(1.0)
+
+
+def test_cross_president_acq_offer_prior_adapter_leaves_fi_priors_unchanged():
+    state = _fi_preemption_offer_state_for_prior_test()
+    adapter = _CrossPresidentAcqOfferPriorEvaluator(
+        _BiasedAcqOfferEvaluator(),
+        num_players=3,
+        max_players=3,
+    )
+
+    sparse_priors, _values, _action_ids, _n_legal, _phase_id = adapter.evaluate(
+        state,
+    )
+    np.testing.assert_allclose(sparse_priors, [0.9, 0.1])
+
+    dense_priors, _values = adapter.evaluate_leaves(
+        [state._array],
+        np.zeros((1, int(UNIFIED_LOGIT_DIM)), dtype=np.uint8),
+    )
+    slots = build_action_lut().numpy()[
+        int(DecisionPhase.DPHASE_ACQ_OFFER),
+        np.array([0, 1], dtype=np.intp),
+    ]
+    np.testing.assert_allclose(dense_priors[0, slots], [0.9, 0.1])
 
 
 def test_search_engine_threads_cross_president_flag_to_acq_compatibility():
@@ -1051,6 +1189,53 @@ def test_live_planning_validates_post_action_state(monkeypatch):
     assert calls
     assert calls[0][2] == actions
     assert calls[0][3] == {"num_players": 3, "max_players": 3}
+
+
+def test_live_planning_skips_post_action_state_validation_in_closing(monkeypatch):
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    TURN.set_phase(state, int(GamePhases.PHASE_CLOSING))
+    TURN.set_active_player(state, 0)
+    state.step_mode = True
+    assert len(live_module.get_legal_actions(state)) == 1
+
+    engine = _SearchEngine.__new__(_SearchEngine)
+    engine.model_output = False
+    engine.max_players = 3
+
+    def fake_validate(game_data, predicted_state, planned_actions, **kwargs):
+        del game_data, predicted_state, planned_actions, kwargs
+        raise AssertionError("CLOSING post-action validation should be skipped")
+
+    monkeypatch.setattr(
+        live_module,
+        "_validate_planned_post_state",
+        fake_validate,
+    )
+
+    actions = engine._plan_live_actions(
+        state,
+        {
+            "id": 1,
+            "round": "Closing",
+            "acting": [101],
+            "players": [
+                {"id": 101, "name": "bot"},
+                {"id": 202, "name": "p2"},
+                {"id": 303, "name": "p3"},
+            ],
+        },
+        bot_player_idx=0,
+        num_players=3,
+        committed_ids=set(),
+        bot_user_id=101,
+    )
+
+    assert actions == [{
+        "type": "pass",
+        "entity": 101,
+        "entity_type": "player",
+    }]
 
 
 def test_live_planning_refuses_post_action_state_mismatch(monkeypatch):

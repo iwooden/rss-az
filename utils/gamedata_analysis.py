@@ -117,6 +117,48 @@ class CorpIpoTurnShareSummary:
 
 
 @dataclass(frozen=True)
+class CorpIpoPositionPickSummary:
+    """Per-turn corp pick percentages by ordinal IPO position."""
+
+    num_players: int
+    num_games: int
+    corp_names: list[str]
+    turns: np.ndarray
+    pick_positions: np.ndarray
+    counts: np.ndarray
+    totals: np.ndarray
+    percentages: np.ndarray
+
+
+@dataclass(frozen=True)
+class CorpIpoAvailablePickSummary:
+    """Per-turn IPO pick probability conditional on corp inactivity."""
+
+    num_players: int
+    num_games: int
+    corp_names: list[str]
+    turns: np.ndarray
+    pick_positions: np.ndarray
+    counts: np.ndarray
+    available_counts: np.ndarray
+    percentages: np.ndarray
+
+
+@dataclass(frozen=True)
+class CorpIpoHeadToHeadSummary:
+    """Pairwise corp IPO pick percentages by turn and ordinal pick position."""
+
+    num_players: int
+    num_games: int
+    corp_names: list[str]
+    turns: np.ndarray
+    pick_positions: np.ndarray
+    counts: np.ndarray
+    totals: np.ndarray
+    percentages: np.ndarray
+
+
+@dataclass(frozen=True)
 class TurnAverageSummary:
     """Average per-game event counts by turn."""
 
@@ -689,6 +731,419 @@ class StrategyDataset:
                 turns=turns[observed],
                 counts=counts[observed],
                 percentages=percentages[observed],
+            )
+        return summaries
+
+    def corp_ipo_positional_pick_summary(
+        self,
+        *,
+        player_counts: Sequence[int] | None = None,
+        max_picks: int = 4,
+    ) -> dict[int, CorpIpoPositionPickSummary]:
+        """Summarize corp IPO percentages by turn and ordinal pick slot.
+
+        For each ``(game, turn)``, IPO events are ordered by move number and
+        counted as the 1st, 2nd, 3rd, ... pick on that turn. Percentages are
+        normalized independently within each ``(turn, pick slot)`` bucket.
+        """
+        if max_picks <= 0:
+            raise ValueError("max_picks must be positive")
+
+        corp_names = [str(v) for v in self.metadata["corp_names"]]  # type: ignore[index]
+        num_corps = len(corp_names)
+        requested = (
+            set(self.player_counts)
+            if player_counts is None
+            else {int(v) for v in player_counts}
+        )
+        game_counts = {count: 0 for count in requested}
+        events_by_count: dict[int, list[np.ndarray]] = {
+            count: [] for count in requested
+        }
+
+        for shard in self.iter_shards():
+            if shard.num_players not in requested:
+                continue
+            with np.load(shard.path, allow_pickle=False) as data:
+                game_counts[shard.num_players] += int(data["game_num_examples"].shape[0])
+                events = data["ipo_events"]
+                if events.shape[0] == 0:
+                    continue
+                # Columns: game_id, move_number, turn_number, player_id, corp_id, ...
+                selected = events[:, [0, 1, 2, 4]].astype(np.int64, copy=False)
+                events_by_count[shard.num_players].append(
+                    np.column_stack(
+                        (
+                            np.full(selected.shape[0], shard.shard_index, dtype=np.int64),
+                            selected,
+                        )
+                    )
+                )
+
+        summaries: dict[int, CorpIpoPositionPickSummary] = {}
+        for num_players in sorted(requested):
+            event_chunks = events_by_count[num_players]
+            pick_positions = np.arange(1, max_picks + 1, dtype=np.int64)
+            if not event_chunks:
+                summaries[num_players] = CorpIpoPositionPickSummary(
+                    num_players=num_players,
+                    num_games=game_counts[num_players],
+                    corp_names=corp_names,
+                    turns=np.empty(0, dtype=np.int64),
+                    pick_positions=pick_positions,
+                    counts=np.empty((max_picks, 0, num_corps), dtype=np.int64),
+                    totals=np.empty((max_picks, 0), dtype=np.int64),
+                    percentages=np.empty((max_picks, 0, num_corps), dtype=np.float64),
+                )
+                continue
+
+            events = np.concatenate(event_chunks, axis=0)
+            order = np.lexsort((events[:, 2], events[:, 3], events[:, 1], events[:, 0]))
+            events = events[order]
+            max_turn = int(events[:, 3].max())
+            turns = np.arange(1, max_turn + 1, dtype=np.int64)
+            counts = np.zeros((max_picks, turns.shape[0], num_corps), dtype=np.int64)
+
+            current_shard = -1
+            current_game = -1
+            current_turn = -1
+            pick_index = 0
+            for shard_index, game_id, _move_number, turn_number, corp_id in events:
+                shard_index_int = int(shard_index)
+                game_id_int = int(game_id)
+                turn_int = int(turn_number)
+                if (
+                    shard_index_int != current_shard
+                    or game_id_int != current_game
+                    or turn_int != current_turn
+                ):
+                    current_shard = shard_index_int
+                    current_game = game_id_int
+                    current_turn = turn_int
+                    pick_index = 0
+                if 1 <= turn_int <= max_turn and pick_index < max_picks:
+                    counts[pick_index, turn_int - 1, int(corp_id)] += 1
+                pick_index += 1
+
+            totals = counts.sum(axis=2)
+            percentages = np.zeros_like(counts, dtype=np.float64)
+            np.divide(
+                counts * 100.0,
+                totals[:, :, None],
+                out=percentages,
+                where=totals[:, :, None] > 0,
+            )
+            summaries[num_players] = CorpIpoPositionPickSummary(
+                num_players=num_players,
+                num_games=game_counts[num_players],
+                corp_names=corp_names,
+                turns=turns,
+                pick_positions=pick_positions,
+                counts=counts,
+                totals=totals,
+                percentages=percentages,
+            )
+        return summaries
+
+    def corp_ipo_available_pick_summary(
+        self,
+        *,
+        player_counts: Sequence[int] | None = None,
+        max_picks: int = 4,
+    ) -> dict[int, CorpIpoAvailablePickSummary]:
+        """Summarize IPO pick probability conditional on corp inactivity.
+
+        For each IPO event with at least two currently inactive corps, all
+        inactive corps contribute to that ``(turn, pick slot, corp)``
+        denominator. The picked corp contributes to the numerator for the same
+        bucket. Forced single-corp IPO choices are excluded.
+        """
+        if max_picks <= 0:
+            raise ValueError("max_picks must be positive")
+
+        corp_names = [str(v) for v in self.metadata["corp_names"]]  # type: ignore[index]
+        num_corps = len(corp_names)
+        requested = (
+            set(self.player_counts)
+            if player_counts is None
+            else {int(v) for v in player_counts}
+        )
+        game_counts = {count: 0 for count in requested}
+        events_by_count: dict[int, list[np.ndarray]] = {
+            count: [] for count in requested
+        }
+
+        for shard in self.iter_shards():
+            if shard.num_players not in requested:
+                continue
+            with np.load(shard.path, allow_pickle=False) as data:
+                game_counts[shard.num_players] += int(data["game_num_examples"].shape[0])
+                events = data["ipo_events"]
+                if events.shape[0] == 0:
+                    continue
+                # Columns: game_id, move_number, turn_number, player_id, corp_id, ...
+                selected = events[:, [0, 1, 2, 4]].astype(np.int64, copy=False)
+                active_before = np.zeros((events.shape[0], num_corps), dtype=np.int64)
+                starts = data["game_start_offsets"].astype(np.int64)
+                lengths = data["game_num_examples"].astype(np.int64)
+                game_ids = data["game_ids_per_game"].astype(np.int64)
+                for game_id, start, length in zip(game_ids, starts, lengths):
+                    event_indices = np.flatnonzero(events[:, 0] == int(game_id))
+                    if event_indices.shape[0] == 0 or int(length) <= 0:
+                        continue
+                    row_start = int(start)
+                    row_end = row_start + int(length)
+                    move_to_row = {
+                        int(move_number): row_index
+                        for row_index, move_number in enumerate(
+                            data["move_numbers"][row_start:row_end]
+                        )
+                    }
+                    active_history = data["corp_active"][row_start:row_end]
+                    for event_index in event_indices:
+                        row_index = move_to_row.get(int(events[event_index, 1]))
+                        if row_index is None:
+                            continue
+                        active_before[event_index] = active_history[row_index].astype(
+                            np.int64,
+                            copy=False,
+                        )
+                events_by_count[shard.num_players].append(
+                    np.column_stack(
+                        (
+                            np.full(selected.shape[0], shard.shard_index, dtype=np.int64),
+                            selected,
+                            active_before,
+                        )
+                    )
+                )
+
+        summaries: dict[int, CorpIpoAvailablePickSummary] = {}
+        for num_players in sorted(requested):
+            event_chunks = events_by_count[num_players]
+            pick_positions = np.arange(1, max_picks + 1, dtype=np.int64)
+            if not event_chunks:
+                summaries[num_players] = CorpIpoAvailablePickSummary(
+                    num_players=num_players,
+                    num_games=game_counts[num_players],
+                    corp_names=corp_names,
+                    turns=np.empty(0, dtype=np.int64),
+                    pick_positions=pick_positions,
+                    counts=np.empty((max_picks, 0, num_corps), dtype=np.int64),
+                    available_counts=np.empty(
+                        (max_picks, 0, num_corps),
+                        dtype=np.int64,
+                    ),
+                    percentages=np.empty((max_picks, 0, num_corps), dtype=np.float64),
+                )
+                continue
+
+            events = np.concatenate(event_chunks, axis=0)
+            order = np.lexsort((events[:, 2], events[:, 3], events[:, 1], events[:, 0]))
+            events = events[order]
+            max_turn = int(events[:, 3].max())
+            turns = np.arange(1, max_turn + 1, dtype=np.int64)
+            counts = np.zeros((max_picks, turns.shape[0], num_corps), dtype=np.int64)
+            available_counts = np.zeros_like(counts)
+
+            current_shard = -1
+            current_game = -1
+            current_turn = -1
+            pick_index = 0
+            for event in events:
+                shard_index = event[0]
+                game_id = event[1]
+                turn_number = event[3]
+                corp_id = event[4]
+                shard_index_int = int(shard_index)
+                game_id_int = int(game_id)
+                turn_int = int(turn_number)
+                corp_id_int = int(corp_id)
+                if shard_index_int != current_shard or game_id_int != current_game:
+                    current_shard = shard_index_int
+                    current_game = game_id_int
+                    current_turn = -1
+                    pick_index = 0
+                if turn_int != current_turn:
+                    current_turn = turn_int
+                    pick_index = 0
+
+                if 1 <= turn_int <= max_turn and pick_index < max_picks:
+                    inactive = ~event[5:5 + num_corps].astype(bool, copy=False)
+                    if int(inactive.sum()) >= 2:
+                        available_counts[pick_index, turn_int - 1, inactive] += 1
+                        if 0 <= corp_id_int < num_corps and inactive[corp_id_int]:
+                            counts[pick_index, turn_int - 1, corp_id_int] += 1
+
+                pick_index += 1
+
+            percentages = np.zeros_like(counts, dtype=np.float64)
+            np.divide(
+                counts * 100.0,
+                available_counts,
+                out=percentages,
+                where=available_counts > 0,
+            )
+            summaries[num_players] = CorpIpoAvailablePickSummary(
+                num_players=num_players,
+                num_games=game_counts[num_players],
+                corp_names=corp_names,
+                turns=turns,
+                pick_positions=pick_positions,
+                counts=counts,
+                available_counts=available_counts,
+                percentages=percentages,
+            )
+        return summaries
+
+    def corp_ipo_head_to_head_summary(
+        self,
+        *,
+        player_counts: Sequence[int] | None = None,
+        max_picks: int = 3,
+        max_turn: int = 9,
+    ) -> dict[int, CorpIpoHeadToHeadSummary]:
+        """Summarize directional head-to-head IPO choices by corp pair.
+
+        Cell ``A, B`` is ``P(A picked | A and B both inactive, picked corp is
+        A or B)`` for a given player count, turn, and pick position.
+        """
+        if max_picks <= 0:
+            raise ValueError("max_picks must be positive")
+        if max_turn <= 0:
+            raise ValueError("max_turn must be positive")
+
+        corp_names = [str(v) for v in self.metadata["corp_names"]]  # type: ignore[index]
+        num_corps = len(corp_names)
+        requested = (
+            set(self.player_counts)
+            if player_counts is None
+            else {int(v) for v in player_counts}
+        )
+        game_counts = {count: 0 for count in requested}
+        events_by_count: dict[int, list[np.ndarray]] = {
+            count: [] for count in requested
+        }
+
+        for shard in self.iter_shards():
+            if shard.num_players not in requested:
+                continue
+            with np.load(shard.path, allow_pickle=False) as data:
+                game_counts[shard.num_players] += int(data["game_num_examples"].shape[0])
+                events = data["ipo_events"]
+                if events.shape[0] == 0:
+                    continue
+
+                selected = events[:, [0, 1, 2, 4]].astype(np.int64, copy=False)
+                active_before = np.zeros((events.shape[0], num_corps), dtype=np.int64)
+                starts = data["game_start_offsets"].astype(np.int64)
+                lengths = data["game_num_examples"].astype(np.int64)
+                game_ids = data["game_ids_per_game"].astype(np.int64)
+                for game_id, start, length in zip(game_ids, starts, lengths):
+                    event_indices = np.flatnonzero(events[:, 0] == int(game_id))
+                    if event_indices.shape[0] == 0 or int(length) <= 0:
+                        continue
+                    row_start = int(start)
+                    row_end = row_start + int(length)
+                    move_to_row = {
+                        int(move_number): row_index
+                        for row_index, move_number in enumerate(
+                            data["move_numbers"][row_start:row_end]
+                        )
+                    }
+                    active_history = data["corp_active"][row_start:row_end]
+                    for event_index in event_indices:
+                        row_index = move_to_row.get(int(events[event_index, 1]))
+                        if row_index is None:
+                            continue
+                        active_before[event_index] = active_history[row_index].astype(
+                            np.int64,
+                            copy=False,
+                        )
+                events_by_count[shard.num_players].append(
+                    np.column_stack(
+                        (
+                            np.full(selected.shape[0], shard.shard_index, dtype=np.int64),
+                            selected,
+                            active_before,
+                        )
+                    )
+                )
+
+        summaries: dict[int, CorpIpoHeadToHeadSummary] = {}
+        turns = np.arange(1, max_turn + 1, dtype=np.int64)
+        pick_positions = np.arange(1, max_picks + 1, dtype=np.int64)
+        for num_players in sorted(requested):
+            counts = np.zeros(
+                (max_picks, max_turn, num_corps, num_corps),
+                dtype=np.int64,
+            )
+            totals = np.zeros_like(counts)
+            event_chunks = events_by_count[num_players]
+            if event_chunks:
+                events = np.concatenate(event_chunks, axis=0)
+                order = np.lexsort((events[:, 2], events[:, 3], events[:, 1], events[:, 0]))
+                events = events[order]
+
+                current_shard = -1
+                current_game = -1
+                current_turn = -1
+                pick_index = 0
+                for event in events:
+                    shard_index = event[0]
+                    game_id = event[1]
+                    turn_number = event[3]
+                    corp_id = event[4]
+                    shard_index_int = int(shard_index)
+                    game_id_int = int(game_id)
+                    turn_int = int(turn_number)
+                    corp_id_int = int(corp_id)
+                    if shard_index_int != current_shard or game_id_int != current_game:
+                        current_shard = shard_index_int
+                        current_game = game_id_int
+                        current_turn = -1
+                        pick_index = 0
+                    if turn_int != current_turn:
+                        current_turn = turn_int
+                        pick_index = 0
+
+                    if (
+                        1 <= turn_int <= max_turn
+                        and pick_index < max_picks
+                        and 0 <= corp_id_int < num_corps
+                    ):
+                        inactive = event[5:5 + num_corps].astype(bool, copy=False) == 0
+                        if inactive[corp_id_int]:
+                            opponents = np.flatnonzero(inactive)
+                            opponents = opponents[opponents != corp_id_int]
+                            if opponents.size:
+                                pick_slot = pick_index
+                                turn_slot = turn_int - 1
+                                counts[pick_slot, turn_slot, corp_id_int, opponents] += 1
+                                totals[pick_slot, turn_slot, corp_id_int, opponents] += 1
+                                totals[pick_slot, turn_slot, opponents, corp_id_int] += 1
+
+                    pick_index += 1
+
+            percentages = np.full_like(counts, np.nan, dtype=np.float64)
+            np.divide(
+                counts * 100.0,
+                totals,
+                out=percentages,
+                where=totals > 0,
+            )
+            for corp_id in range(num_corps):
+                percentages[:, :, corp_id, corp_id] = np.nan
+
+            summaries[num_players] = CorpIpoHeadToHeadSummary(
+                num_players=num_players,
+                num_games=game_counts[num_players],
+                corp_names=corp_names,
+                turns=turns.copy(),
+                pick_positions=pick_positions.copy(),
+                counts=counts,
+                totals=totals,
+                percentages=percentages,
             )
         return summaries
 
@@ -1794,6 +2249,47 @@ def corp_ipo_turn_share_summary(
     """Convenience wrapper for per-turn corp IPO percentage summaries."""
     return StrategyDataset(run_dir).corp_ipo_turn_share_summary(
         player_counts=player_counts
+    )
+
+
+def corp_ipo_positional_pick_summary(
+    run_dir: str | Path,
+    *,
+    player_counts: Sequence[int] | None = None,
+    max_picks: int = 4,
+) -> dict[int, CorpIpoPositionPickSummary]:
+    """Convenience wrapper for per-turn IPO pick-position summaries."""
+    return StrategyDataset(run_dir).corp_ipo_positional_pick_summary(
+        player_counts=player_counts,
+        max_picks=max_picks,
+    )
+
+
+def corp_ipo_available_pick_summary(
+    run_dir: str | Path,
+    *,
+    player_counts: Sequence[int] | None = None,
+    max_picks: int = 4,
+) -> dict[int, CorpIpoAvailablePickSummary]:
+    """Convenience wrapper for availability-conditional IPO pick summaries."""
+    return StrategyDataset(run_dir).corp_ipo_available_pick_summary(
+        player_counts=player_counts,
+        max_picks=max_picks,
+    )
+
+
+def corp_ipo_head_to_head_summary(
+    run_dir: str | Path,
+    *,
+    player_counts: Sequence[int] | None = None,
+    max_picks: int = 3,
+    max_turn: int = 9,
+) -> dict[int, CorpIpoHeadToHeadSummary]:
+    """Convenience wrapper for pairwise IPO head-to-head summaries."""
+    return StrategyDataset(run_dir).corp_ipo_head_to_head_summary(
+        player_counts=player_counts,
+        max_picks=max_picks,
+        max_turn=max_turn,
     )
 
 
