@@ -1304,7 +1304,7 @@ def test_post_validation_state_advances_step_mode_automated_pause():
     assert TURN.get_active_corp(state) == -1
 
 
-def test_post_validation_state_preserves_visible_forced_ipo_pass():
+def test_post_validation_state_advances_forced_ipo_pass_with_unfloated_corps():
     state = GameState(4, max_players=5)
     state.initialize_game(4, seed=42, max_players=5)
     company_id = COMPANY_NAME_TO_ID["HA"]
@@ -1324,9 +1324,41 @@ def test_post_validation_state_preserves_visible_forced_ipo_pass():
         max_players=5,
     )
 
+    assert TURN.get_phase(validation_state) != int(GamePhases.PHASE_IPO)
+    assert TURN.get_active_company(validation_state) == -1
+
+
+def test_post_validation_state_advances_market_blocked_ipo_to_next_company():
+    state = GameState(4, max_players=5)
+    state.initialize_game(4, seed=42, max_players=5)
+    blocked_company_id = COMPANY_NAME_TO_ID["HR"]
+    next_company_id = COMPANY_NAME_TO_ID["DSB"]
+    give_company_to_player(state, blocked_company_id, 2)
+    give_company_to_player(state, next_company_id, 3)
+    PLAYERS[2].set_cash(state, 100)
+    PLAYERS[3].set_cash(state, 100)
+    for price in (30, 33, 37):
+        MARKET.set_space_available(state, MARKET.get_index_for_price(price), False)
+    TURN.set_phase(state, int(GamePhases.PHASE_IPO))
+    TURN.set_active_player(state, 2)
+    TURN.set_active_company(state, blocked_company_id)
+    TURN.set_ipo_remaining(state, blocked_company_id, True)
+    TURN.set_ipo_remaining(state, next_company_id, True)
+    state.step_mode = True
+
+    legal_actions = live_module.get_legal_actions(state)
+    assert len(legal_actions) == 1
+    assert legal_actions[0][1].action_type == live_module.ACTION_PASS
+
+    validation_state = _auto_advanced_validation_state(
+        state,
+        num_players=4,
+        max_players=5,
+    )
+
     assert TURN.get_phase(validation_state) == int(GamePhases.PHASE_IPO)
-    assert TURN.get_active_player(validation_state) == 2
-    assert TURN.get_active_company(validation_state) == company_id
+    assert TURN.get_active_player(validation_state) == 3
+    assert TURN.get_active_company(validation_state) == next_company_id
 
 
 def test_post_validation_state_advances_unavailable_ipo_passes():

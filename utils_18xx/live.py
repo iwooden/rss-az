@@ -635,10 +635,7 @@ def _should_advance_post_validation_state(state) -> bool:
     if phase in AUTOMATED_PHASES:
         return True
     if phase == GamePhases.PHASE_IPO:
-        return (
-            not _has_unfloated_corporation(state)
-            and _has_single_legal_pass(state)
-        )
+        return _has_single_legal_pass(state)
     if phase not in (GamePhases.PHASE_INVEST, GamePhases.PHASE_BID):
         return False
 
@@ -650,13 +647,6 @@ def _has_single_legal_pass(state) -> bool:
     return (
         len(legal_actions) == 1
         and legal_actions[0][1].action_type == ACTION_PASS
-    )
-
-
-def _has_unfloated_corporation(state) -> bool:
-    return any(
-        not CORPS[corp_id].is_active(state)
-        for corp_id in range(len(CORP_NAMES))
     )
 
 
