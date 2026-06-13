@@ -344,9 +344,16 @@ def map_par_action(state: GameState, action: dict, layout: ActionLayout | None =
     )
 
 
-def map_dividend_action(state: GameState, action: dict, layout: ActionLayout | None = None) -> int:
+def _action_matches_active_corp(state: GameState, action: dict) -> bool:
+    corp_id = CORP_NAME_TO_ID.get(action.get("entity"))
+    return corp_id is not None and TURN.get_active_corp(state) == corp_id
+
+
+def map_dividend_action(state: GameState, action: dict, layout: ActionLayout | None = None) -> int | None:
     if action["type"] != "dividend":
         raise ValueError(f"Unrecognised DIVIDENDS action type: {action['type']!r}")
+    if not _action_matches_active_corp(state, action):
+        return None
     return find_legal_action(
         state,
         action_type=ACTION_DIVIDEND,
@@ -354,7 +361,10 @@ def map_dividend_action(state: GameState, action: dict, layout: ActionLayout | N
     )
 
 
-def map_issue_action(state: GameState, action: dict, layout: ActionLayout | None = None) -> int:
+def map_issue_action(state: GameState, action: dict, layout: ActionLayout | None = None) -> int | None:
+    if not _action_matches_active_corp(state, action):
+        return None
+
     atype = action["type"]
     if atype == "sell_shares":
         return find_legal_action(state, action_type=ACTION_ISSUE)

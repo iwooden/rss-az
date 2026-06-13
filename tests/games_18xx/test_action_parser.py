@@ -7,6 +7,66 @@ import pytest
 from utils_18xx import action_parser
 
 
+def test_map_dividend_action_ignores_non_active_corp(monkeypatch):
+    action = {"type": "dividend", "entity": "OS", "amount": 0}
+
+    monkeypatch.setattr(action_parser, "CORP_NAME_TO_ID", {"OS": 2})
+    monkeypatch.setattr(action_parser, "TURN", SimpleNamespace(get_active_corp=lambda state: 5))
+
+    def unexpected_find_legal_action(state, **kwargs):
+        raise AssertionError("non-active corporation should not map to a legal action")
+
+    monkeypatch.setattr(action_parser, "find_legal_action", unexpected_find_legal_action)
+
+    assert action_parser.map_dividend_action(object(), action, None) is None
+
+
+def test_map_dividend_action_uses_active_corp(monkeypatch):
+    action = {"type": "dividend", "entity": "OS", "amount": 3}
+    calls: list[dict] = []
+
+    monkeypatch.setattr(action_parser, "CORP_NAME_TO_ID", {"OS": 2})
+    monkeypatch.setattr(action_parser, "TURN", SimpleNamespace(get_active_corp=lambda state: 2))
+    monkeypatch.setattr(
+        action_parser,
+        "find_legal_action",
+        lambda state, **kwargs: calls.append(kwargs) or 123,
+    )
+
+    assert action_parser.map_dividend_action(object(), action, None) == 123
+    assert calls == [{"action_type": action_parser.ACTION_DIVIDEND, "amount": 3}]
+
+
+def test_map_issue_action_ignores_non_active_corp(monkeypatch):
+    action = {"type": "sell_shares", "entity": "OS"}
+
+    monkeypatch.setattr(action_parser, "CORP_NAME_TO_ID", {"OS": 2})
+    monkeypatch.setattr(action_parser, "TURN", SimpleNamespace(get_active_corp=lambda state: 5))
+
+    def unexpected_find_legal_action(state, **kwargs):
+        raise AssertionError("non-active corporation should not map to a legal action")
+
+    monkeypatch.setattr(action_parser, "find_legal_action", unexpected_find_legal_action)
+
+    assert action_parser.map_issue_action(object(), action, None) is None
+
+
+def test_map_issue_action_uses_active_corp(monkeypatch):
+    action = {"type": "sell_shares", "entity": "OS"}
+    calls: list[dict] = []
+
+    monkeypatch.setattr(action_parser, "CORP_NAME_TO_ID", {"OS": 2})
+    monkeypatch.setattr(action_parser, "TURN", SimpleNamespace(get_active_corp=lambda state: 2))
+    monkeypatch.setattr(
+        action_parser,
+        "find_legal_action",
+        lambda state, **kwargs: calls.append(kwargs) or 123,
+    )
+
+    assert action_parser.map_issue_action(object(), action, None) == 123
+    assert calls == [{"action_type": action_parser.ACTION_ISSUE}]
+
+
 def test_map_acquisition_action_uses_select_company_for_fi_target(monkeypatch):
     action = {"type": "offer", "company": "KK", "corporation": "OS", "price": 40}
     calls: list[dict] = []
