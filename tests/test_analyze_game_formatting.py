@@ -23,6 +23,7 @@ from tests.phases.conftest import float_corp_for_test, find_legal_action_with_in
 from tests.phases.helpers.ownership import give_company_to_corp, give_company_to_player
 from train.analyze_game import (
     Initial18xxSetup,
+    _resolve_eval_dtype_override,
     analyze_game,
     format_action,
     format_phase_context,
@@ -166,6 +167,15 @@ def test_analyze_game_token_dump_flag_includes_token_tables() -> None:
     assert "## Token Dump" in rendered
     assert "idx | token" in rendered
     assert "market_info" in rendered
+
+
+def test_analyze_game_eval_dtype_override_allows_float32() -> None:
+    config = TrainingConfig(num_players=3, eval_dtype="bfloat16")
+
+    assert _resolve_eval_dtype_override(config, None) == "bfloat16"
+    assert _resolve_eval_dtype_override(config, "float16") == "float16"
+    assert _resolve_eval_dtype_override(config, "bfloat16") == "bfloat16"
+    assert _resolve_eval_dtype_override(config, "float32") is None
 
 
 def test_analyze_game_token_dump_flag_appends_normalization_report() -> None:

@@ -137,6 +137,18 @@ def _apply_18xx_seed_setup(
     return setup
 
 
+def _resolve_eval_dtype_override(
+    config: TrainingConfig,
+    override: str | None,
+) -> str | None:
+    """Return CLI eval dtype override, mapping float32 to no autocast."""
+    if override is None:
+        return config.eval_dtype
+    if override == "float32":
+        return None
+    return override
+
+
 def _format_nn_eval(
     priors: np.ndarray,
     values: np.ndarray,
@@ -474,6 +486,7 @@ def analyze_game(
     dirichlet_dynamic: bool | None = None,
     terminal_blend: float | None = None,
     c_puct: float | None = None,
+    eval_dtype: str | None = None,
     mcts_stats_only: bool = False,
     token_dump: bool = False,
     num_players: int | None = None,
@@ -495,7 +508,7 @@ def analyze_game(
     evaluator = NNEvaluator(
         model, device, num_players=max_players,
         terminal_rank_weight=terminal_rank_weight,
-        eval_dtype=config.eval_dtype,
+        eval_dtype=_resolve_eval_dtype_override(config, eval_dtype),
         input_spec=get_model_input_spec(config),
     )
     mcts_config = config.to_mcts_config(
@@ -793,6 +806,13 @@ def main() -> None:
     parser.add_argument("--simulations", type=int, default=800)
     parser.add_argument("--search-batch-size", type=int, default=8)
     parser.add_argument(
+        "--eval-dtype",
+        type=str,
+        choices=("float32", "bfloat16", "float16"),
+        default=None,
+        help="Eval inference dtype override (default: checkpoint config; float32 disables autocast)",
+    )
+    parser.add_argument(
         "--c-puct", type=float, default=None,
         help="Override c_puct for this analysis run (default from checkpoint)",
     )
@@ -876,6 +896,7 @@ def main() -> None:
         dirichlet_dynamic=args.dirichlet_dynamic,
         terminal_blend=args.terminal_blend,
         c_puct=args.c_puct,
+        eval_dtype=args.eval_dtype,
         mcts_stats_only=args.mcts_stats_only,
         token_dump=args.token_dump,
         num_players=args.num_players,
